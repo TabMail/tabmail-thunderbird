@@ -1,0 +1,233 @@
+[
+  {
+    "namespace": "tmCalendar",
+    "description": "TabMail experiment API to read calendar data until MV3 calendar API is complete.",
+    "functions": [
+      {
+        "name": "listCalendars",
+        "type": "function",
+        "description": "Lists available calendars.",
+        "parameters": [],
+        "async": true
+      },
+      {
+        "name": "getCalendarEventDetails",
+        "type": "function",
+        "description": "Gets details for a specific calendar event by ID.",
+        "parameters": [
+          { "name": "event_id", "type": "string", "description": "Event identifier" },
+          { "name": "calendar_id", "type": "string", "optional": true, "description": "Optional calendar ID for faster lookup. If provided, searches this calendar first." }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "id": { "type": "string" },
+            "title": { "type": "string" },
+            "start": { "type": "number", "description": "Start time as Unix timestamp in seconds" },
+            "end": { "type": "number", "description": "End time as Unix timestamp in seconds" },
+            "isAllDay": { "type": "boolean" },
+            "location": { "type": "string" },
+            "organizer": { "type": "string" },
+            "attendees": { "type": "number", "description": "Number of attendees" },
+            "attendeeList": {
+              "type": "array",
+              "description": "Detailed list of attendees",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "email": { "type": "string" },
+                  "status": { "type": "string", "description": "Participation status (ACCEPTED, DECLINED, NEEDS-ACTION, etc.)" }
+                }
+              }
+            },
+            "calendarId": { "type": "string" },
+            "calendarName": { "type": "string" },
+            "isRecurring": { "type": "boolean" },
+            "recurrenceRRule": { "type": "string" },
+            "transparency": { "type": "string", "description": "Event availability: 'busy' or 'free'" },
+            "error": { "type": "string", "description": "Error message if ok is false" }
+          }
+        },
+        "async": true
+      },
+      {
+        "name": "queryCalendarItems",
+        "type": "function",
+        "description": "Queries events in a time range from selected calendars.",
+        "parameters": [
+          { "name": "start", "type": "string", "description": "Start time in ISO format" },
+          { "name": "end", "type": "string", "description": "End time in ISO format" }, 
+          { "name": "calendarIds", "type": "array", "items": { "type": "string" }, "description": "Calendar IDs to query" }
+        ],
+        "async": true
+      },
+      {
+        "name": "getCalendars",
+        "type": "function",
+        "description": "Gets a list of available calendars with their metadata.",
+        "parameters": [],
+        "async": true
+      },
+      {
+        "name": "createCalendarEvent",
+        "type": "function",
+        "description": "Creates a calendar event directly without opening a dialog.",
+        "parameters": [
+          {
+            "name": "details",
+            "type": "object",
+            "properties": {
+              "title": { "type": "string", "optional": true },
+              "start_iso": { "type": "string", "optional": true },
+              "end_iso": { "type": "string", "optional": true },
+              "all_day": { "type": "boolean", "optional": true },
+              "location": { "type": "string", "optional": true },
+              "description": { "type": "string", "optional": true },
+              "transparency": { "type": "string", "optional": true, "description": "Event availability: 'busy' or 'free' (default 'busy')." },
+              "calendar_id": { "type": "string", "optional": true },
+              "attendees": {
+                "type": "array",
+                "optional": true,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "email": { "type": "string" },
+                    "name": { "type": "string" }
+                  }
+                }
+              },
+              "conference_url": { "type": "string", "optional": true },
+              "conference_provider": { "type": "string", "optional": true },
+              "send_invitations": { "type": "boolean", "optional": true },
+              "organizer_email": { "type": "string", "optional": true },
+              "recurrence": {
+                "type": "object",
+                "optional": true,
+                "description": "Recurrence rule for repeating events.",
+                "properties": {
+                  "freq": { "type": "string", "optional": true },
+                  "interval": { "type": "integer", "optional": true },
+                  "count": { "type": "integer", "optional": true },
+                  "until": { "type": "string", "optional": true },
+                  "byDay": { "type": "array", "optional": true, "items": { "type": "string" } },
+                  "byMonthDay": { "type": "array", "optional": true, "items": { "type": "integer" } },
+                  "byMonth": { "type": "array", "optional": true, "items": { "type": "integer" } },
+                  "wkst": { "type": "string", "optional": true }
+                }
+              }
+            },
+            "required": []
+          }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "calendar_id": { "type": "string", "optional": true },
+            "event_id": { "type": "string", "optional": true },
+            "title": { "type": "string", "optional": true },
+            "invitations": { "type": "object", "optional": true },
+            "error": { "type": "string", "optional": true }
+          }
+        },
+        "async": true
+      },
+      {
+        "name": "modifyCalendarEvent",
+        "type": "function",
+        "description": "Modifies a calendar event directly without opening a dialog.",
+        "parameters": [
+          {
+            "name": "details",
+            "type": "object",
+            "properties": {
+              "event_id": { "type": "string" },
+              "calendar_id": { "type": "string", "optional": true, "description": "Optional calendar ID for faster lookup. If provided, searches this calendar first." },
+              "recurrence_id": { "type": "string", "optional": true, "description": "For recurring events, the recurrence ID to edit a specific occurrence." },
+              "title": { "type": "string", "optional": true },
+              "start_iso": { "type": "string", "optional": true },
+              "end_iso": { "type": "string", "optional": true },
+              "all_day": { "type": "boolean", "optional": true },
+              "location": { "type": "string", "optional": true },
+              "description": { "type": "string", "optional": true },
+              "transparency": { "type": "string", "optional": true, "description": "Set availability: 'busy' or 'free'." },
+              "attendees": {
+                "type": "array",
+                "optional": true,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "email": { "type": "string" },
+                    "name": { "type": "string" }
+                  }
+                }
+              },
+              "patch": {
+                "type": "object",
+                "optional": true,
+                "description": "Alternative way to pass modifications"
+              },
+              "conference_url": { "type": "string", "optional": true },
+              "conference_provider": { "type": "string", "optional": true },
+              "send_invitations": { "type": "boolean", "optional": true },
+              "organizer_email": { "type": "string", "optional": true },
+              "recurrence": {
+                "type": "object",
+                "optional": true,
+                "description": "Recurrence rule to set or update on the event.",
+                "properties": {
+                  "freq": { "type": "string", "optional": true },
+                  "interval": { "type": "integer", "optional": true },
+                  "count": { "type": "integer", "optional": true },
+                  "until": { "type": "string", "optional": true },
+                  "byDay": { "type": "array", "optional": true, "items": { "type": "string" } },
+                  "byMonthDay": { "type": "array", "optional": true, "items": { "type": "integer" } },
+                  "byMonth": { "type": "array", "optional": true, "items": { "type": "integer" } },
+                  "wkst": { "type": "string", "optional": true }
+                }
+              },
+              "exdates_add": { "type": "array", "optional": true, "items": { "type": "string" }, "description": "EXDATEs to add (ISO start datetimes of occurrences)." }
+            },
+            "required": ["event_id"]
+          }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "calendar_id": { "type": "string", "optional": true },
+            "event_id": { "type": "string", "optional": true },
+            "title": { "type": "string", "optional": true },
+            "invitations": { "type": "object", "optional": true },
+            "error": { "type": "string", "optional": true }
+          }
+        },
+        "async": true
+      },
+      {
+        "name": "deleteCalendarEvent",
+        "type": "function",
+        "description": "Deletes a calendar event.",
+        "parameters": [
+          {
+            "name": "details",
+            "type": "object",
+            "properties": {
+              "event_id": { "type": "string" },
+              "calendar_id": { "type": "string", "optional": true, "description": "Optional calendar ID for faster lookup. If provided, searches this calendar first." },
+              "confirm": { "type": "boolean", "optional": true },
+              "send_invitations": { "type": "boolean", "optional": true },
+              "organizer_email": { "type": "string", "optional": true }
+            },
+            "required": ["event_id"]
+          }
+        ],
+        "async": true
+      }
+    ]
+  }
+]
+
+

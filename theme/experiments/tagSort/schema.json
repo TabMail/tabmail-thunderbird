@@ -1,0 +1,60 @@
+[
+  {
+    "namespace": "tagSort",
+    "description": "Expose init() to apply Date→Tags sorting to the thread pane and refresh() to reapply it after tag changes.",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "description": "Initialise sorting logic for existing and future 3-pane windows.",
+        "parameters": [{"name":"opts","type":"any","optional": true}],
+        "async": false
+      },
+      {
+        "name": "refresh",
+        "type": "function",
+        "description": "Reapply Date→Tags sort on all open 3-pane windows (uses delayed sort mechanism).",
+        "parameters": [],
+        "async": false
+      },
+      {
+        "name": "refreshImmediate",
+        "type": "function",
+        "description": "Immediately reapply Date→Tags sort on all open 3-pane windows (bypasses delay).",
+        "parameters": [],
+        "async": false
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "description": "Clean up sorting listeners and unregister window listeners.",
+        "parameters": [],
+        "async": false
+      }
+    ],
+    "events": [
+      {
+        "name": "onUntaggedInboxMessages",
+        "type": "function",
+        "description": "Fired when the row coloring pass detects untagged inbox messages that need processing.",
+        "parameters": [
+          {
+            "name": "messages",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "messageKey": {"type": "integer", "description": "Native message key in folder"},
+                "messageId": {"type": "string", "description": "Header Message-ID"},
+                "weMsgId": {"type": "integer", "description": "WebExtension message ID (may be null if not convertible)"},
+                "folderUri": {"type": "string", "description": "Folder URI"},
+                "rowIndex": {"type": "integer", "description": "Row index in thread tree"}
+              }
+            },
+            "description": "Array of untagged inbox messages"
+          }
+        ]
+      }
+    ]
+  }
+]

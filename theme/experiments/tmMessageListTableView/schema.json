@@ -1,0 +1,22 @@
+[
+  {
+    "namespace": "tmMessageListTableView",
+    "description": "TabMail Message List Table View experiment API - handles sender stripping for table view",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "async": true,
+        "description": "Initialize table view sender stripping",
+        "parameters": []
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "async": true,
+        "description": "Shutdown and cleanup",
+        "parameters": []
+      }
+    ]
+  }
+]

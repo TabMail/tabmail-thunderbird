@@ -1,0 +1,38 @@
+[
+  {
+    "namespace": "tmPreviewGate",
+    "description": "Manages message preview gating in about:3pane to prevent content flash during navigation (TB 145+, MV3).",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "async": true,
+        "description": "Initialize preview gate CSS injection and window/document watchers across all 3-pane windows.",
+        "parameters": [{ "name": "opts", "type": "any", "optional": true }]
+      },
+      {
+        "name": "setMessagePreviewGated",
+        "type": "function",
+        "async": true,
+        "description": "Gate/un-gate the message preview pane in about:3pane by toggling a CSS class on the 3-pane window document and its about:3pane content documents.",
+        "parameters": [{ "name": "opts", "type": "any" }]
+      },
+      {
+        "name": "setPreviewAutoGateEnabled",
+        "type": "function",
+        "async": true,
+        "description": "Enable/disable experiment-side preemptive gating when the message preview browser navigates. When enabled, the preview will be gated immediately on navigation start to prevent flashes.",
+        "parameters": [{ "name": "opts", "type": "any" }]
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "async": true,
+        "description": "Remove injected CSS and cleanup preview gate listeners from all windows.",
+        "parameters": []
+      }
+    ]
+  }
+]
+
+

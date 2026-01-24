@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Newest on top (descending): up arrow (mask-compatible, solid fill) -->
+  <g fill="#000000">
+    <path d="M8 2.5 12 6.5h-2.3v7H6.3v-7H4z"/>
+  </g>
+</svg>
+

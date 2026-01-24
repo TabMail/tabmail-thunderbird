@@ -1,0 +1,69 @@
+[
+  {
+    "namespace": "threadMessages",
+    "description": "Get parent/ancestor messages in a thread for Gmail-like conversation view",
+    "functions": [
+      {
+        "name": "getThreadParents",
+        "type": "function",
+        "async": true,
+        "description": "Get all parent messages in a thread chain, from root to current message",
+        "parameters": [
+          {
+            "name": "weMsgId",
+            "type": "integer",
+            "description": "WebExtension message ID of the current message"
+          },
+          {
+            "name": "options",
+            "type": "object",
+            "optional": true,
+            "properties": {
+              "maxMessages": {
+                "type": "integer",
+                "optional": true,
+                "description": "Maximum number of parent messages to return (default: 10)"
+              },
+              "includeBody": {
+                "type": "boolean",
+                "optional": true,
+                "description": "Whether to include message body content (default: true)"
+              },
+              "bodyMaxLength": {
+                "type": "integer",
+                "optional": true,
+                "description": "Maximum body length per message in characters (default: 2000)"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "getThreadMessages",
+        "type": "function",
+        "async": true,
+        "description": "Get all messages in the Thunderbird thread containing the given message (does not rely on threadParent chain).",
+        "parameters": [
+          {
+            "name": "weMsgId",
+            "type": "integer",
+            "description": "WebExtension message ID of the current message"
+          },
+          {
+            "name": "options",
+            "type": "object",
+            "optional": true,
+            "properties": {
+              "maxMessages": {
+                "type": "integer",
+                "optional": true,
+                "description": "Maximum number of thread messages to return (default: 50)"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]
+

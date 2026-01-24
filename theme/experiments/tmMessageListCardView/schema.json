@@ -1,0 +1,123 @@
+[
+  {
+    "namespace": "tmMessageListCardView",
+    "description": "TabMail Message List Card View experiment API - handles snippets and sender stripping for card view",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "async": true,
+        "description": "Initialize card snippets for message list rows",
+        "parameters": [
+          {
+            "name": "opts",
+            "type": "object",
+            "optional": true,
+            "properties": {},
+            "additionalProperties": true
+          }
+        ]
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "async": true,
+        "description": "Shutdown card snippets",
+        "parameters": []
+      },
+      {
+        "name": "clearSnippetCache",
+        "type": "function",
+        "async": false,
+        "description": "Clear snippet cache (no-op, cache lives in MV3)",
+        "parameters": []
+      },
+      {
+        "name": "getCardSnippetNeeds",
+        "type": "function",
+        "async": true,
+        "description": "Get list of messages needing snippets",
+        "parameters": [
+          {
+            "name": "opts",
+            "type": "object",
+            "optional": true,
+            "properties": {
+              "max": {
+                "type": "integer",
+                "optional": true
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "provideCardSnippets",
+        "type": "function",
+        "async": true,
+        "description": "Provide snippets to render in card view",
+        "parameters": [
+          {
+            "name": "payload",
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "optional": true
+              },
+              "items": {
+                "type": "array",
+                "optional": true,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "hdrKey": {
+                      "type": "string"
+                    },
+                    "snippet": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "clearPending": {
+                "type": "array",
+                "optional": true,
+                "description": "Array of hdrKeys to clear from pending (for failed fetches)",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "getMemoryCacheStats",
+        "type": "function",
+        "async": false,
+        "description": "Get in-memory cache statistics",
+        "parameters": []
+      }
+    ],
+    "events": [
+      {
+        "name": "onSnippetsNeeded",
+        "type": "function",
+        "description": "Fired when snippets are needed (cache miss in fillRow). MV3 should call getCardSnippetNeeds() to get the list.",
+        "parameters": [
+          {
+            "name": "info",
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "description": "Number of snippets needed"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

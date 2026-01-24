@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TabMail Prompts</title>
+  <link rel="stylesheet" href="prompts.css" />
+</head>
+<body>
+  <div id="page">
+    <header>
+      <h2>TabMail Prompts</h2>
+      <p class="header-description">Manage your email composition settings and action classification rules</p>
+    </header>
+
+    <section id="prompt-selector">
+      <div class="prompt-tabs">
+        <button class="prompt-tab active" data-prompt="composition">Email Composition</button>
+        <button class="prompt-tab" data-prompt="action">Action Classification</button>
+        <button class="prompt-tab" data-prompt="kb">Knowledge Base</button>
+        <button class="prompt-tab" data-prompt="reminders">Reminders</button>
+        <button class="prompt-tab dev-only" data-prompt="developer" style="display: none;">Developer (Raw)</button>
+      </div>
+    </section>
+
+    <div id="composition-editor" class="prompt-content active">
+      <div id="composition-sections"></div>
+    </div>
+
+    <div id="action-editor" class="prompt-content">
+      <div id="action-sections"></div>
+    </div>
+
+    <div id="kb-editor" class="prompt-content">
+      <div class="section-container">
+        <div class="section-header">
+          <h3>Personal Knowledge Base</h3>
+          <div class="section-header-actions">
+            <button id="save-kb" class="save-section-btn">Save</button>
+            <button id="reload-kb" class="reload-section-btn">Reload</button>
+            <button id="reset-kb" class="reset-section-btn">Reset</button>
+          </div>
+        </div>
+        <div class="simple-content">
+          <textarea id="kb-content" placeholder="Add facts about yourself, preferences, and other information the AI should know..."></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div id="developer-editor" class="prompt-content">
+      <div class="dev-prompt-container">
+        <div class="dev-prompt-section">
+          <div class="dev-prompt-header">
+            <h3>user_composition.md</h3>
+            <div class="dev-prompt-actions">
+              <button id="save-raw-composition" class="save-section-btn">Save</button>
+              <button id="reload-raw-composition" class="reload-section-btn">Reload</button>
+              <button id="reset-raw-composition" class="reset-section-btn">Reset</button>
+            </div>
+          </div>
+          <textarea id="raw-composition-content" class="dev-prompt-textarea" spellcheck="false"></textarea>
+        </div>
+        
+        <div class="dev-prompt-section">
+          <div class="dev-prompt-header">
+            <h3>user_action.md</h3>
+            <div class="dev-prompt-actions">
+              <button id="save-raw-action" class="save-section-btn">Save</button>
+              <button id="reload-raw-action" class="reload-section-btn">Reload</button>
+              <button id="reset-raw-action" class="reset-section-btn">Reset</button>
+            </div>
+          </div>
+          <textarea id="raw-action-content" class="dev-prompt-textarea" spellcheck="false"></textarea>
+        </div>
+        
+        <div class="dev-prompt-section">
+          <div class="dev-prompt-header">
+            <h3>user_kb.md</h3>
+            <div class="dev-prompt-actions">
+              <button id="save-raw-kb" class="save-section-btn">Save</button>
+              <button id="reload-raw-kb" class="reload-section-btn">Reload</button>
+              <button id="reset-raw-kb" class="reset-section-btn">Reset</button>
+            </div>
+          </div>
+          <textarea id="raw-kb-content" class="dev-prompt-textarea" spellcheck="false"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div id="reminders-editor" class="prompt-content">
+      <div class="section-container">
+        <div class="section-header">
+          <h3>Reminders</h3>
+          <div class="section-header-actions">
+            <button id="refresh-reminders" class="reload-section-btn">Refresh</button>
+          </div>
+        </div>
+        <div class="reminders-content">
+          <p class="reminders-description">
+            Manage which reminders appear in your chat window. Disabled reminders won't be shown when you open the chat.
+          </p>
+          <div id="reminders-list">
+            <div class="reminders-loading">Loading reminders...</div>
+          </div>
+          <p id="reminders-empty" class="reminders-empty" style="display: none;">
+            No reminders found. Reminders are generated from your inbox messages and knowledge base.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div id="action-buttons">
+      <button id="save-changes" class="primary-button">Save Entire Prompt</button>
+      <button id="reload-prompts">Reload Entire Prompt</button>
+      <button id="reset-prompt" class="danger-button">Reset Entire Prompt</button>
+      <div id="status-message"></div>
+    </div>
+  </div>
+
+  <script type="module" src="prompts.js"></script>
+</body>
+</html>
+

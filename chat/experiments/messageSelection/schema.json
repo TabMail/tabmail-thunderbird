@@ -1,0 +1,100 @@
+[
+  {
+    "namespace": "messageSelection",
+    "description": "Track selected messages in the thread pane for chat context",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "description": "Initialize message selection tracking",
+        "parameters": [],
+        "async": false
+      },
+      {
+        "name": "getSelectedMessages",
+        "type": "function",
+        "description": "Get currently selected messages as comma-separated string of IDs",
+        "parameters": [],
+        "async": true,
+        "returns": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "getSelectionCount",
+        "type": "function",
+        "description": "Get count of currently selected messages",
+        "parameters": [],
+        "async": true,
+        "returns": {
+          "type": "integer"
+        }
+      },
+      {
+        "name": "openSelectedInConversation",
+        "type": "function",
+        "description": "Open currently selected messages in conversation view",
+        "parameters": [],
+        "async": true,
+        "returns": {
+          "type": "boolean"
+        }
+      },
+      {
+        "name": "openConversationInWindow",
+        "type": "function",
+        "description": "Open the currently selected message(s) in conversation view in the specified Thunderbird windowId (WebExtension window id).",
+        "parameters": [
+          {
+            "name": "windowId",
+            "type": "integer",
+            "description": "WebExtension windowId that owns the mail tab where the message was selected."
+          }
+        ],
+        "async": true,
+        "returns": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "description": "Clean up message selection tracking and unregister window listeners",
+        "parameters": [],
+        "async": false
+      }
+    ],
+    "events": [
+      {
+        "name": "onSelectionChanged",
+        "type": "function",
+        "description": "Fired when message selection changes",
+        "parameters": [
+          {
+            "name": "selectionData",
+            "type": "object",
+            "properties": {
+              "selectedMessageIds": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Array of selected message IDs"
+              },
+              "selectedMessageIdsString": {
+                "type": "string",
+                "description": "Comma-separated string of selected message IDs"
+              },
+              "selectionCount": {
+                "type": "integer",
+                "description": "Number of selected messages"
+              },
+              "timestamp": {
+                "type": "integer",
+                "description": "Timestamp when selection changed"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

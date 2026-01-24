@@ -1,0 +1,87 @@
+{
+  "TAG_COLORS": {
+    "tm_reply":   "#00a300",
+    "tm_delete":  "#ee1111",
+    "tm_archive": "#ffc40d",
+    "tm_none":    "#2d89ef",
+    "tm_untagged": "#6b7280"
+  },
+  "BASE": {
+    "GREEN":               "#00a300",
+    "RED":                 "#ee1111",
+    "YELLOW":              "#ffc40d",
+    "LIGHT_BLUE":          "#eff4ff",
+    "TEXT_UNREAD_LIGHT":   "#0b0c0e",
+    "TEXT_UNREAD_DARK":    "#f1f2f4",
+    "TEXT_READ_LIGHT":     "#5a6272",
+    "TEXT_READ_DARK":      "#d4d7dd",
+    "SELECTION_BLUE":      "#2d89ef",
+    "HOVER_LIGHT":         "#0b0c0e",
+    "HOVER_DARK":          "#f1f2f4",
+    "CURSOR_INDICATOR":    "#0078d4"
+  },
+  "OPACITY": {
+    "SUBTLE_LIGHT":   0.10,
+    "SUBTLE_DARK":    0.12,
+    "SUBTLE_CARD_DARK": 0.18,
+    "SELECTED_LIGHT": 0.40,
+    "SELECTED_DARK":  0.30
+  },
+  "SATURATION": {
+    "SUBTLE_LIGHT":   1.0,
+    "SUBTLE_DARK":    1.0,
+    "SELECTED_LIGHT": 1.8,
+    "SELECTED_DARK":  1.4
+  },
+  "BRIGHTNESS": {
+    "SUBTLE_LIGHT":   1.0,
+    "SUBTLE_DARK":    1.0,
+    "SELECTED_LIGHT": 0.7,
+    "SELECTED_DARK":  1.2
+  },
+  "THEME": {
+    "LIGHT": {
+      "PAGE_BG":           "#fff",
+      "PREVIEW_PANE_BG":   "#fff",
+      "PAGE_COLOR":        "#000",
+      "BOX_BG":            "#f9f9fa",
+      "BOX_BG_HOVER":      "#ededf0",
+      "BUTTON_BG":         "#ededf0",
+      "BUTTON_BG_HOVER":   "#e0e0e6",
+      "BUTTON_BG_ACTIVE":  "#d7d7db",
+      "BUTTON_COLOR":      "#000",
+      "TEXT_COLOR":        "#15141a",
+      "ACCENT_COLOR":      "#0060df",
+      "SEPARATOR_OPACITY": 0.15,
+      "ARROW_BG":          "#fff",
+      "ARROW_COLOR":       "#000",
+      "ARROW_DIMMED":      "#ededf0"
+    },
+    "DARK": {
+      "PAGE_BG":           "#1c1b22",
+      "PREVIEW_PANE_BG":   "#18181b",
+      "PAGE_COLOR":        "#fbfbfe",
+      "BOX_BG":            "#2b2a33",
+      "BOX_BG_HOVER":      "#52525e",
+      "BUTTON_BG":         "#2b2a33",
+      "BUTTON_BG_HOVER":   "#52525e",
+      "BUTTON_BG_ACTIVE":  "#42414d",
+      "BUTTON_COLOR":      "#fbfbfe",
+      "TEXT_COLOR":        "#fbfbfe",
+      "ACCENT_COLOR":      "#0a84ff",
+      "SEPARATOR_OPACITY": 0.15,
+      "ARROW_BG":          "#2b2a33",
+      "ARROW_COLOR":       "#fbfbfe",
+      "ARROW_DIMMED":      "#52525e"
+    }
+  },
+  "SPACING": {
+    "CARD_PADDING_TOP_PX": 2,
+    "CARD_PADDING_BOTTOM_PX": 8,
+    "READ_STATUS_SIZE_PX": 8
+  },
+  "TYPOGRAPHY": {
+    "CARD_SENDER_SCALE": 1.1
+  }
+}
+

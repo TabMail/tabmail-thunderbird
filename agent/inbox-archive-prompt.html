@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>TabMail - Inbox Optimization</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 32px;
+      background: var(--in-content-page-background);
+      color: var(--in-content-page-color);
+      overflow: auto;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      min-height: 100vh;
+      padding-bottom: 48px;
+    }
+    
+    .container {
+      max-width: 520px;
+      text-align: center;
+    }
+    
+    .icon {
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 20px;
+      display: block;
+    }
+    
+    h1 {
+      font-size: 20px;
+      font-weight: 600;
+      text-align: center;
+      margin-bottom: 16px;
+      color: var(--in-content-text-color);
+    }
+    
+    p {
+      font-size: 15px;
+      line-height: 1.6;
+      text-align: center;
+      margin-bottom: 16px;
+      color: var(--in-content-deemphasized-text);
+    }
+    
+    .stats {
+      background: var(--in-content-box-background);
+      border: 1px solid var(--panel-separator-color);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 16px 0 24px;
+      text-align: left;
+    }
+    
+    .stats-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      font-size: 14px;
+    }
+    
+    .stats-row:not(:last-child) {
+      border-bottom: 1px solid var(--panel-separator-color);
+    }
+    
+    .stats-label {
+      color: var(--in-content-deemphasized-text);
+    }
+    
+    .stats-value {
+      font-weight: 600;
+      color: var(--in-content-text-color);
+    }
+    
+    .highlight {
+      color: var(--in-content-accent-color);
+    }
+    
+    .weeks-select {
+      padding: 4px 8px;
+      font-size: 14px;
+      font-weight: 600;
+      border: 1px solid var(--in-content-accent-color);
+      border-radius: 4px;
+      background: var(--in-content-box-background);
+      color: var(--in-content-accent-color);
+      cursor: pointer;
+    }
+    
+    .weeks-select:focus {
+      outline: 2px solid var(--in-content-accent-color);
+      outline-offset: 1px;
+    }
+    
+    .warning {
+      font-size: 13px;
+      color: var(--in-content-text-color);
+      margin-bottom: 24px;
+      padding: 12px;
+      background: color-mix(in srgb, var(--in-content-accent-color) 10%, transparent);
+      border-radius: 6px;
+    }
+    
+    .buttons {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+    }
+    
+    button {
+      padding: 10px 24px;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+    }
+    
+    .btn-primary {
+      background: var(--in-content-accent-color);
+      color: #fff;
+      border: none;
+    }
+    
+    .btn-primary:hover {
+      background: color-mix(in srgb, var(--in-content-accent-color) 80%, black);
+    }
+    
+    .btn-primary:disabled {
+      background: var(--in-content-button-background);
+      color: var(--in-content-deemphasized-text);
+      cursor: not-allowed;
+    }
+    
+    .btn-secondary {
+      background: transparent;
+      color: var(--in-content-accent-color);
+      border: 1px solid var(--in-content-accent-color);
+    }
+    
+    .btn-secondary:hover {
+      background: color-mix(in srgb, var(--in-content-accent-color) 10%, transparent);
+    }
+    
+    .progress-container {
+      display: none;
+      margin-top: 16px;
+    }
+    
+    .progress-container.visible {
+      display: block;
+    }
+    
+    .progress-bar-bg {
+      height: 8px;
+      background: var(--in-content-button-background);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    
+    .progress-bar {
+      height: 100%;
+      background: var(--in-content-accent-color);
+      border-radius: 4px;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    
+    .progress-text {
+      font-size: 13px;
+      color: var(--in-content-deemphasized-text);
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <img src="../icons/tab.svg" alt="TabMail" class="icon">
+    <h1>Optimize Your Inbox for TabMail</h1>
+    <p>
+      To get the most out of TabMail's smart sorting and email management, 
+      we recommend keeping only your active emails in the inbox.
+    </p>
+    
+    <div class="stats" id="stats">
+      <div class="stats-row">
+        <span class="stats-label">Total emails in inbox</span>
+        <span class="stats-value" id="total-count">Loading...</span>
+      </div>
+      <div class="stats-row">
+        <span class="stats-label">Emails older than</span>
+        <span class="stats-value">
+          <select id="weeks-select" class="weeks-select">
+            <option value="1">1 week</option>
+            <option value="2" selected>2 weeks</option>
+            <option value="4">4 weeks</option>
+            <option value="8">8 weeks</option>
+            <option value="12">12 weeks</option>
+          </select>
+        </span>
+      </div>
+      <div class="stats-row">
+        <span class="stats-label">Emails to archive</span>
+        <span class="stats-value highlight" id="old-count">Loading...</span>
+      </div>
+    </div>
+    
+    <div class="warning">
+      <strong>Note:</strong> Archiving does NOT delete any emails. 
+      They will be moved to your Archive folder and remain fully searchable.
+    </div>
+    
+    <div class="buttons" id="buttons">
+      <button class="btn-primary" id="btn-archive" disabled>Archive Old Emails</button>
+      <button class="btn-secondary" id="btn-skip">No Thanks</button>
+    </div>
+    
+    <div class="progress-container" id="progress-container">
+      <div class="progress-bar-bg">
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      <div class="progress-text" id="progress-text">Archiving emails...</div>
+    </div>
+  </div>
+  
+  <script type="module" src="inbox-archive-prompt.js"></script>
+</body>
+</html>

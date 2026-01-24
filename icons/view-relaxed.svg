@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Relaxed / Cards view icon (mask-compatible, solid fill) -->
+  <g fill="#000000">
+    <rect x="2" y="3" width="12" height="4" rx="1.2" />
+    <rect x="2" y="9" width="12" height="4" rx="1.2" />
+    <rect x="3.2" y="4.2" width="6.2" height="1.0" rx="0.5" opacity="0.8" />
+    <rect x="3.2" y="10.2" width="7.4" height="1.0" rx="0.5" opacity="0.8" />
+  </g>
+</svg>
+

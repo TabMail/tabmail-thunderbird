@@ -1,0 +1,765 @@
+/* TabMail Prompts CSS - Uses TabMail Palette System */
+/* Theme colors are injected from palette.data.json via palette.js */
+
+body { 
+  font-family: sans-serif; 
+  padding: 12px; 
+  background: var(--in-content-page-background);
+  color: var(--in-content-page-color);
+  margin: 0;
+}
+
+#page {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+h2, h3, h4 { 
+  margin: 8px 0; 
+}
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--panel-separator-color);
+  padding-bottom: 16px;
+  margin-bottom: 24px;
+}
+
+.header-description {
+  margin: 8px 0 0 0;
+  opacity: 0.7;
+  font-size: 14px;
+}
+
+/* Prompt Tabs */
+#prompt-selector {
+  margin-bottom: 24px;
+}
+
+.prompt-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 2px solid var(--panel-separator-color);
+}
+
+.prompt-tab {
+  background: transparent;
+  color: var(--in-content-page-color);
+  border: none;
+  border-bottom: 3px solid transparent;
+  padding: 12px 24px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  opacity: 0.7;
+  transition: all 0.2s ease;
+  border-radius: 0;
+}
+
+.prompt-tab:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
+}
+
+.prompt-tab.active {
+  opacity: 1;
+  border-bottom-color: var(--in-content-accent-color);
+  background: transparent;
+}
+
+/* Prompt Content */
+.prompt-content {
+  display: none;
+}
+
+.prompt-content.active {
+  display: block;
+}
+
+/* Section Headers */
+.section-header {
+  background: var(--in-content-box-background);
+  padding: 16px;
+  margin: 24px 0 0 0;
+  border-radius: 8px 8px 0 0;
+  border: 1px solid var(--panel-separator-color);
+  border-bottom: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.section-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--in-content-page-color);
+  flex: 1;
+}
+
+.section-header .section-description {
+  margin: 8px 0 0 0;
+  opacity: 0.7;
+  font-size: 13px;
+}
+
+.section-header-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.section-header-actions button {
+  padding: 8px 16px;
+  font-size: 14px;
+  height: 36px;
+  box-sizing: border-box;
+}
+
+/* Section Content */
+.section-content {
+  background: var(--in-content-box-background);
+  padding: 16px;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 0 0 8px 8px;
+  margin-bottom: 16px;
+}
+
+/* Template Item */
+.template-item {
+  background: var(--in-content-page-background);
+  padding: 20px;
+  margin-bottom: 16px;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  position: relative;
+  transition: opacity 0.3s ease, background-color 0.3s ease, border-color 0.3s ease;
+}
+
+.template-item.marked-for-deletion {
+  opacity: 0.5;
+  background: color-mix(in srgb, var(--tag-tm-delete) 10%, var(--in-content-page-background));
+  border-color: var(--tag-tm-delete);
+}
+
+.template-item.marked-for-deletion * {
+  pointer-events: none;
+}
+
+.template-item.marked-for-deletion .template-actions {
+  pointer-events: auto;
+}
+
+.template-item.marked-for-deletion .template-actions * {
+  pointer-events: auto;
+}
+
+.template-item.marked-for-deletion .template-actions button:not(.undo-delete-btn):not(.delete-now-btn) {
+  display: none;
+}
+
+.template-item:last-child {
+  margin-bottom: 0;
+}
+
+.template-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  margin-bottom: 16px;
+  gap: 16px;
+}
+
+.template-title-input-wrapper {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 800px;
+}
+
+.template-title-label {
+  display: block;
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 6px;
+  opacity: 0.8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.template-title-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 16px;
+  font-weight: 500;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  height: 40px;
+  box-sizing: border-box;
+}
+
+.template-title-input:focus {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 1px;
+}
+
+.template-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.template-actions button {
+  padding: 8px 16px;
+  font-size: 14px;
+  height: 40px;
+  box-sizing: border-box;
+}
+
+.delete-template-btn,
+.reset-section-btn {
+  background: transparent;
+  color: color-mix(in srgb, var(--tag-tm-delete) 80%, white);
+  border: 1px solid color-mix(in srgb, var(--tag-tm-delete) 30%, transparent);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  opacity: 0.7;
+  transition: all 0.2s ease;
+}
+
+.delete-template-btn:hover,
+.reset-section-btn:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--tag-tm-delete) 10%, transparent);
+}
+
+.undo-delete-btn {
+  background: transparent;
+  color: color-mix(in srgb, var(--tag-tm-reply) 80%, white);
+  border: 1px solid color-mix(in srgb, var(--tag-tm-reply) 30%, transparent);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.undo-delete-btn:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--tag-tm-reply) 10%, transparent);
+}
+
+.delete-now-btn {
+  background: var(--tag-tm-delete);
+  color: white;
+  border: 1px solid var(--tag-tm-delete);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.delete-now-btn:hover {
+  background: color-mix(in srgb, var(--tag-tm-delete) 90%, black);
+}
+
+.save-section-btn {
+  background: var(--in-content-accent-color);
+  color: white;
+  border: none;
+  opacity: 0.9;
+}
+
+.save-section-btn:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--in-content-accent-color) 90%, black);
+}
+
+.reload-section-btn {
+  background: var(--in-content-button-background);
+  color: var(--in-content-button-color);
+  opacity: 0.8;
+}
+
+.reload-section-btn:hover {
+  opacity: 1;
+}
+
+/* Template Fields */
+.template-field {
+  margin-bottom: 20px;
+}
+
+.template-field:last-child {
+  margin-bottom: 0;
+}
+
+.template-field-label {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+  opacity: 0.9;
+}
+
+.template-field-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  resize: none;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.template-field-textarea:focus {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 1px;
+}
+
+.template-field-textarea.example-reply {
+  min-height: 200px;
+  font-family: inherit;
+}
+
+/* Add Template Button */
+.add-template-btn {
+  width: 100%;
+  padding: 16px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 2px dashed var(--panel-separator-color);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  margin-top: 16px;
+}
+
+.add-template-btn:hover {
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-box-background));
+  border-color: var(--in-content-accent-color);
+}
+
+.add-template-btn::before {
+  content: "+ ";
+  font-size: 18px;
+  font-weight: bold;
+}
+
+/* Action Buttons */
+#action-buttons {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 2px solid var(--panel-separator-color);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+button {
+  background: var(--in-content-button-background);
+  color: var(--in-content-button-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  padding: 10px 20px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  background: var(--in-content-button-background-hover);
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 2px;
+}
+
+.primary-button {
+  background: var(--in-content-accent-color);
+  color: white;
+  border: none;
+}
+
+.primary-button:hover {
+  background: color-mix(in srgb, var(--in-content-accent-color) 90%, black);
+}
+
+.danger-button {
+  background: transparent;
+  color: color-mix(in srgb, var(--tag-tm-delete) 80%, white);
+  border: 1px solid color-mix(in srgb, var(--tag-tm-delete) 30%, transparent);
+}
+
+.danger-button:hover {
+  background: color-mix(in srgb, var(--tag-tm-delete) 10%, transparent);
+}
+
+/* Status Message */
+#status-message {
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: center;
+  min-height: 20px;
+  transition: opacity 0.3s ease;
+}
+
+#status-message.success {
+  background: color-mix(in srgb, var(--tag-tm-reply) 20%, transparent);
+  color: var(--tag-tm-reply);
+  border: 1px solid color-mix(in srgb, var(--tag-tm-reply) 30%, transparent);
+  animation: fadeInOut 0.3s ease;
+}
+
+#status-message.error {
+  background: color-mix(in srgb, var(--tag-tm-delete) 20%, transparent);
+  color: var(--tag-tm-delete);
+  border: 1px solid color-mix(in srgb, var(--tag-tm-delete) 30%, transparent);
+  animation: fadeInOut 0.3s ease;
+}
+
+#status-message:empty {
+  display: none;
+}
+
+@keyframes fadeInOut {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Button flash animations */
+@keyframes buttonFlash {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(0.95);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes buttonFlashBlue {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 var(--in-content-accent-color);
+  }
+  50% {
+    transform: scale(0.95);
+    box-shadow: 0 0 10px 5px var(--in-content-accent-color);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 var(--in-content-accent-color);
+  }
+}
+
+@keyframes buttonFlashRed {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 var(--tag-tm-delete);
+  }
+  50% {
+    transform: scale(0.95);
+    box-shadow: 0 0 10px 5px var(--tag-tm-delete);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 var(--tag-tm-delete);
+  }
+}
+
+.button-flash {
+  animation: buttonFlash 0.3s ease !important;
+}
+
+.button-flash-blue {
+  animation: buttonFlashBlue 0.3s ease !important;
+}
+
+.button-flash-red {
+  animation: buttonFlashRed 0.3s ease !important;
+}
+
+/* Border flash animations */
+@keyframes borderFlashBlue {
+  0% {
+    border-color: var(--panel-separator-color);
+    box-shadow: 0 0 0 0 var(--in-content-accent-color);
+  }
+  25% {
+    border-color: var(--in-content-accent-color);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--in-content-accent-color) 30%, transparent);
+  }
+  50% {
+    border-color: var(--in-content-accent-color);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--in-content-accent-color) 20%, transparent);
+  }
+  100% {
+    border-color: var(--panel-separator-color);
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@keyframes borderFlashRed {
+  0% {
+    border-color: var(--panel-separator-color);
+    box-shadow: 0 0 0 0 var(--tag-tm-delete);
+  }
+  25% {
+    border-color: var(--tag-tm-delete);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--tag-tm-delete) 30%, transparent);
+  }
+  50% {
+    border-color: var(--tag-tm-delete);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--tag-tm-delete) 20%, transparent);
+  }
+  100% {
+    border-color: var(--panel-separator-color);
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.border-flash-blue {
+  animation: borderFlashBlue 0.6s ease !important;
+}
+
+.border-flash-red {
+  animation: borderFlashRed 0.6s ease !important;
+}
+
+/* Simple list items for non-template sections */
+.simple-content {
+  padding: 16px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+}
+
+.simple-content textarea {
+  width: 100%;
+  min-height: 150px;
+  padding: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  resize: none;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.simple-content textarea:focus {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 1px;
+}
+
+/* Developer tab styles */
+.dev-prompt-container {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.dev-prompt-section {
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.dev-prompt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--panel-separator-color);
+  background: var(--in-content-box-background);
+}
+
+.dev-prompt-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--in-content-page-color);
+}
+
+.dev-prompt-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.dev-prompt-actions button {
+  padding: 8px 16px;
+  font-size: 13px;
+  height: 36px;
+  box-sizing: border-box;
+}
+
+.dev-prompt-textarea {
+  width: 100%;
+  min-height: 400px;
+  padding: 16px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: none;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.dev-prompt-textarea:focus {
+  outline: none;
+  background: color-mix(in srgb, var(--in-content-accent-color) 3%, var(--in-content-box-background));
+}
+
+/* Reminders section styles */
+.reminders-content {
+  padding: 16px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+}
+
+.reminders-description {
+  margin: 0 0 16px 0;
+  opacity: 0.8;
+  font-size: 14px;
+}
+
+.reminders-loading {
+  text-align: center;
+  padding: 24px;
+  opacity: 0.7;
+}
+
+.reminders-empty {
+  text-align: center;
+  padding: 24px;
+  opacity: 0.6;
+  font-style: italic;
+}
+
+#reminders-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reminder-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  transition: opacity 0.2s ease, background-color 0.2s ease;
+}
+
+.reminder-item.disabled {
+  opacity: 0.5;
+  background: color-mix(in srgb, var(--in-content-page-color) 3%, var(--in-content-box-background));
+}
+
+.reminder-item:hover {
+  background: color-mix(in srgb, var(--in-content-accent-color) 5%, var(--in-content-box-background));
+}
+
+.reminder-checkbox {
+  flex-shrink: 0;
+  margin-top: 2px;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--in-content-accent-color);
+  cursor: pointer;
+}
+
+.reminder-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.reminder-content {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--in-content-page-color);
+  margin: 0 0 4px 0;
+}
+
+.reminder-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.reminder-source {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--in-content-accent-color) 15%, transparent);
+  color: var(--in-content-accent-color);
+  font-weight: 500;
+}
+
+.reminder-due {
+  color: var(--in-content-page-color);
+}
+
+.reminder-due.overdue {
+  color: var(--tag-tm-delete);
+  font-weight: 500;
+}
+
+.reminder-due.today,
+.reminder-due.tomorrow {
+  color: var(--tag-tm-archive);
+  font-weight: 500;
+}
+
+.reminder-subject {
+  color: var(--in-content-page-color);
+  opacity: 0.8;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+

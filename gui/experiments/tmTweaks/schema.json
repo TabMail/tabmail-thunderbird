@@ -1,0 +1,29 @@
+[
+  {
+    "namespace": "tmTweaks",
+    "description": "TabMail UI tweaks that require privileged access (beyond prefs).",
+    "functions": [
+      {
+        "name": "setSpacesToolbarHidden",
+        "type": "function",
+        "description": "Hide/show Thunderbird Spaces toolbar (applies immediately to open 3-pane windows and persists for future windows).",
+        "async": true,
+        "parameters": [
+          { "name": "hidden", "type": "boolean" }
+        ],
+        "returns": { "type": "object" }
+      },
+      {
+        "name": "setSystemFontsEnabled",
+        "type": "function",
+        "description": "Enable/disable TabMail system-font preferences for message display/composition.",
+        "async": true,
+        "parameters": [
+          { "name": "enabled", "type": "boolean" }
+        ],
+        "returns": { "type": "object" }
+      }
+    ]
+  }
+]
+

@@ -1,0 +1,143 @@
+[
+  {
+    "namespace": "tmPrefs",
+    "description": "Access Thunderbird preferences (read/write) via a tiny experiment.",
+    "functions": [
+      {
+        "name": "setBool",
+        "type": "function",
+        "description": "Set a boolean preference value.",
+        "parameters": [
+          { "name": "name", "type": "string" },
+          { "name": "value", "type": "boolean" }
+        ]
+      },
+      {
+        "name": "setInt",
+        "type": "function",
+        "description": "Set an integer preference value.",
+        "parameters": [
+          { "name": "name", "type": "string" },
+          { "name": "value", "type": "integer" }
+        ]
+      },
+      {
+        "name": "getBool",
+        "type": "function",
+        "description": "Get a boolean preference value.",
+        "async": true,
+        "parameters": [
+          { "name": "name", "type": "string" }
+        ],
+        "returns": { "type": "boolean" }
+      },
+      {
+        "name": "getInt",
+        "type": "function",
+        "description": "Get an integer preference value.",
+        "async": true,
+        "parameters": [
+          { "name": "name", "type": "string" }
+        ],
+        "returns": { "type": "integer" }
+      },
+      {
+        "name": "getBoolSafe",
+        "type": "function",
+        "description": "Get a boolean preference value with fallback.",
+        "async": true,
+        "parameters": [
+          { "name": "name", "type": "string" },
+          { "name": "fallback", "type": "boolean" }
+        ],
+        "returns": { "type": "boolean" }
+      },
+      {
+        "name": "getIntSafe",
+        "type": "function",
+        "description": "Get an integer preference value with fallback.",
+        "async": true,
+        "parameters": [
+          { "name": "name", "type": "string" },
+          { "name": "fallback", "type": "integer" }
+        ],
+        "returns": { "type": "integer" }
+      },
+      {
+        "name": "getStringSafe",
+        "type": "function",
+        "description": "Get a string preference value with fallback.",
+        "async": true,
+        "parameters": [
+          { "name": "name", "type": "string" },
+          { "name": "fallback", "type": "string" }
+        ],
+        "returns": { "type": "string" }
+      },
+      {
+        "name": "hasUserValue",
+        "type": "function",
+        "description": "Return true if the preference has a user-set value.",
+        "async": true,
+        "parameters": [
+          { "name": "name", "type": "string" }
+        ],
+        "returns": { "type": "boolean" }
+      },
+      {
+        "name": "clearUserPref",
+        "type": "function",
+        "description": "Clear a user-set preference value.",
+        "parameters": [
+          { "name": "name", "type": "string" }
+        ]
+      },
+      {
+        "name": "setPeriodicForAllServers",
+        "type": "function",
+        "description": "Enable periodic checks across existing accounts and set interval.",
+        "parameters": [
+          { "name": "minutes", "type": "integer" },
+          { "name": "enabled", "type": "boolean" }
+        ]
+      },
+      {
+        "name": "test",
+        "type": "function",
+        "description": "Simple test method to verify experiment is working.",
+        "async": true,
+        "parameters": [],
+        "returns": { "type": "string" }
+      },
+      {
+        "name": "setPaneLayoutLive",
+        "type": "function",
+        "description": "Set pane layout live for all open 3-pane windows.",
+        "parameters": [
+          { "name": "layout", "type": "integer" }
+        ]
+      },
+      {
+        "name": "dumpBranch",
+        "type": "function",
+        "description": "Dump a preferences branch for diagnostics (key -> {type, value}).",
+        "async": true,
+        "parameters": [
+          { "name": "prefix", "type": "string" }
+        ],
+        "returns": { "type": "object" }
+      },
+      {
+        "name": "setUnthreadedView",
+        "type": "function",
+        "description": "Force unthreaded view for all open 3-pane windows.",
+        "async": true,
+        "parameters": [
+          { "name": "enabled", "type": "boolean" }
+        ],
+        "returns": { "type": "object" }
+      }
+    ]
+  }
+]
+

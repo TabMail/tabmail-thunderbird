@@ -1,0 +1,306 @@
+{
+  "manifest_version": 3,
+  "name": "TabMail",
+  "version": "1.0.8",
+  "description": "TabMail extension for Thunderbird provides an AI assistant that helps the user manage their email and calendar through a natural, chat-based interface, with support for email indexing and autocomplete.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "thunderbird@tabmail.ai",
+      "strict_min_version": "140.0",
+      "strict_max_version": "149.*",
+      "update_url": "https://cdn.tabmail.ai/releases/thunderbird/updates.json"
+    }
+  },
+  "background": {
+    "scripts": [
+    "keepalive/background.js",
+    "theme/background.js",
+    "agent/background.js",
+    "compose/background.js",
+    "chat/background.js"
+  ],
+    "type": "module"
+  },
+  "action": {
+    "default_title": "TabMail",
+    "default_popup": "popup/popup.html",
+    "default_icon": "icons/tab.svg",
+    "allowed_spaces": []
+  },
+  "options_ui": {
+    "page": "config/config.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/tab.svg",
+    "32": "icons/tab.svg",
+    "48": "icons/tab.svg",
+    "64": "icons/tab.svg"
+  },
+  "permissions": [
+    "storage",
+    "nativeMessaging",
+    "notifications",
+    "activeTab",
+    "management",
+    "accountsRead",
+    "messagesRead",
+    "tabs",
+    "webNavigation",
+    "compose",
+    "addressBooks",
+    "accountsFolders",
+    "scripting",
+    "messagesUpdate",
+    "messagesTags",
+    "messagesTagsList",
+    "messagesDelete",
+    "messagesMove",
+    "menus",
+    "downloads",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://api.tabmail.ai/*",
+    "https://dev.tabmail.ai/*",
+    "https://auth.tabmail.ai/*",
+    "https://tabmail.ai/*",
+    "https://accounts.google.com/*",
+    "https://github.com/*",
+    "<all_urls>"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self'"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://api.tabmail.ai/*",
+        "https://dev.tabmail.ai/*",
+        "https://auth.tabmail.ai/*",
+        "https://tabmail.ai/*",
+        "https://accounts.google.com/*",
+        "https://github.com/*",
+        "http://localhost:8000/signin.html*",
+        "http://localhost:8000/signup.html*",
+        "http://localhost:8000/consent.html*",
+        "http://localhost:8000/signup-confirm.html*"
+      ],
+      "js": ["popup/auth/stay-in-window.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "experiment_apis": {
+    "tmKeepAlive": {
+      "schema": "keepalive/experiments/tmKeepAlive/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "keepalive/experiments/tmKeepAlive/tmKeepAlive.sys.mjs",
+        "paths": [["tmKeepAlive"]]
+      }
+    },
+    "tmCalendar": {
+      "schema": "chat/experiments/tmCalendar/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "chat/experiments/tmCalendar/tmCalendar.sys.mjs",
+        "paths": [["tmCalendar"]]
+      }
+    },
+    "glodaSearch": {
+        "schema": "chat/experiments/glodaSearch/schema.json",
+        "parent": {
+          "scopes": ["addon_parent"],
+          "script": "chat/experiments/glodaSearch/glodaSearch.sys.mjs",
+          "paths": [["glodaSearch"]]
+        }
+      },
+    "tmMsgNotify": {
+      "schema": "agent/experiments/tmMsgNotify/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "agent/experiments/tmMsgNotify/tmMsgNotify.sys.mjs",
+        "paths": [["tmMsgNotify"]]
+      }
+    },
+    "keyOverride": {
+      "schema": "theme/experiments/keyOverride/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/keyOverride/keyOverride.sys.mjs",
+        "paths": [["keyOverride"]]
+      }
+    },
+    "threadTooltip": {
+      "schema": "theme/experiments/threadTooltip/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/threadTooltip/threadTooltip.sys.mjs",
+        "paths": [["threadTooltip"]]
+      }
+    },
+    "tagSort": {
+      "schema": "theme/experiments/tagSort/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/tagSort/tagSort.sys.mjs",
+        "paths": [["tagSort"]]
+      }
+    },
+    "tmHdr": {
+      "schema": "agent/experiments/tmHdr/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "agent/experiments/tmHdr/tmHdr.sys.mjs",
+        "paths": [["tmHdr"]]
+      }
+    },
+    "messageSelection": {
+      "schema": "chat/experiments/messageSelection/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "chat/experiments/messageSelection/messageSelection.sys.mjs",
+        "paths": [["messageSelection"]]
+      }
+    },
+    "tmPrefs": {
+      "schema": "gui/experiments/tmPrefs/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "paths": [["tmPrefs"]],
+        "script": "gui/experiments/tmPrefs/tmPrefs.sys.mjs"
+      }
+    },
+    "tmTweaks": {
+      "schema": "gui/experiments/tmTweaks/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "paths": [["tmTweaks"]],
+        "script": "gui/experiments/tmTweaks/tmTweaks.sys.mjs"
+      }
+    },
+    "threadPaneDisplayToggle": {
+      "schema": "theme/experiments/threadPaneDisplayToggle/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/threadPaneDisplayToggle/threadPaneDisplayToggle.sys.mjs",
+        "paths": [["threadPaneDisplayToggle"]]
+      }
+    },
+    "tmTheme": {
+      "schema": "theme/experiments/tmTheme/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/tmTheme/tmTheme.sys.mjs",
+        "paths": [["tmTheme"]]
+      }
+    },
+    "tmMessageListCardView": {
+      "schema": "theme/experiments/tmMessageListCardView/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/tmMessageListCardView/tmMessageListCardView.sys.mjs",
+        "paths": [["tmMessageListCardView"]]
+      }
+    },
+    "tmMessageListTableView": {
+      "schema": "theme/experiments/tmMessageListTableView/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/tmMessageListTableView/tmMessageListTableView.sys.mjs",
+        "paths": [["tmMessageListTableView"]]
+      }
+    },
+    "tmPreviewGate": {
+      "schema": "theme/experiments/tmPreviewGate/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/tmPreviewGate/tmPreviewGate.sys.mjs",
+        "paths": [["tmPreviewGate"]]
+      }
+    },
+    "tmWebFetch": {
+      "schema": "chat/experiments/tmWebFetch/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "chat/experiments/tmWebFetch/tmWebFetch.sys.mjs",
+        "paths": [["tmWebFetch"]]
+      }
+    },
+    "threadMessages": {
+      "schema": "theme/experiments/threadMessages/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/threadMessages/threadMessages.sys.mjs",
+        "paths": [["threadMessages"]]
+      }
+    },
+    "tmUpdates": {
+      "schema": "gui/experiments/tmUpdates/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "gui/experiments/tmUpdates/tmUpdates.sys.mjs",
+        "paths": [["tmUpdates"]]
+      }
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "theme/experiments/threadTooltip/threadTooltip.css",
+        "agent/inbox-archive-prompt.html",
+        "agent/inbox-archive-prompt.js",
+        "prompts/user_action.md",
+        "prompts/user_composition.md",
+        "config/config.html",
+        "config/config.js",
+        "config/config.css",
+        "templates/templates.html",
+        "templates/templates.js",
+        "templates/templates.css",
+        "templates/default_templates.json",
+        "marketplace/marketplace.html",
+        "marketplace/marketplace.js",
+        "marketplace/marketplace.css",
+        "chat/chat.css",
+        "chat/chat.js",
+        "fts/nativeEngine.js",
+        "theme/experiments/tmTheme/theme.css",
+        "theme/experiments/tmPreviewGate/previewGate.css",
+        "agent/modules/quoteAndSignature.js",
+        "theme/modules/threadBubbleConfig.js",
+        "theme/modules/messageBubbleConfig.js",
+        "theme/modules/messageBubbleStyles.js",
+        "theme/modules/messageBubble.js",
+        "theme/modules/summaryBubbleConfig.js",
+        "theme/modules/summaryBubble.js",
+        "theme/modules/threadBubble.js",
+        "theme/modules/bubblesRenderer.js",
+        "theme/palette/palette.js",
+        "theme/palette/palette.build.js",
+        "theme/palette/palette.data.json",
+        "keepalive/relay.html",
+        "keepalive/relay.js",
+        "welcome/welcome.html",
+        "welcome/welcome.js",
+        "welcome/welcome.css",
+        "welcome/welcomeConfig.js",
+        "welcome/assets/*",
+        "welcome/pages/*"
+      ],
+      "matches": []
+    }
+  ],
+  "commands": {
+    "open-chat-window": {
+      "suggested_key": {
+        "default": "Alt+Ctrl+L",
+        "mac": "Alt+Command+L",
+        "windows": "Alt+Ctrl+L",
+        "linux": "Alt+Ctrl+L"
+      },
+      "description": "Open TabMail chat window"
+    }
+  }
+} 

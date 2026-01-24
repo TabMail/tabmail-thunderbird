@@ -1,0 +1,50 @@
+[
+  {
+    "namespace": "tmMessageList",
+    "description": "Manages thread list UI enhancements: tag coloring, card snippets, row observers (TB 145+, MV3).",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "async": true,
+        "description": "Initialize message list enhancements (tag coloring, card snippets) across all 3-pane windows.",
+        "parameters": [{"name": "opts", "type": "any", "optional": true}]
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "async": true,
+        "description": "Remove all message list enhancements and cleanup listeners.",
+        "parameters": []
+      },
+      {
+        "name": "recolorNow",
+        "type": "function",
+        "async": false,
+        "description": "Re-apply tag colors to all visible rows/cards immediately.",
+        "parameters": [{"name": "reason", "type": "string", "optional": true}]
+      },
+      {
+        "name": "clearSnippetCache",
+        "type": "function",
+        "async": false,
+        "description": "Clear the card snippet cache (useful for debugging or after major changes).",
+        "parameters": []
+      },
+      {
+        "name": "getCardSnippetNeeds",
+        "type": "function",
+        "async": true,
+        "description": "Return a bounded list of visible/near-visible card rows that currently need a snippet (for MV3-side fetching).",
+        "parameters": [{"name": "opts", "type": "any", "optional": true}]
+      },
+      {
+        "name": "provideCardSnippets",
+        "type": "function",
+        "async": true,
+        "description": "Provide computed snippets (from MV3 / native FTS) to be cached and applied to the message list UI.",
+        "parameters": [{"name": "payload", "type": "any"}]
+      }
+    ]
+  }
+]

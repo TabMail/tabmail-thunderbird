@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>TabMail Chat</title>
+    <link rel="stylesheet" href="chat.css" />
+</head>
+<body>
+    <div id="chat-header">
+        <div id="context-usage-container">
+            <span id="context-usage-label">Agent context usage:</span>
+            <div id="context-progress-bar" title="Shorter context provides better answers. Agent won't answer beyond limit.">
+                <div id="context-progress-fill"></div>
+            </div>
+        </div>
+        <div class="header-spacer"></div>
+        <button id="reload-btn" title="Start a new conversation topic">New topic <span id="new-topic-shortcut"></span></button>
+    </div>
+    <div id="chat-container"></div>
+    <div id="input-container">
+        <div id="user-input" contenteditable="true" data-placeholder="Type a message or @ to mention anything in inbox or the chat..." autocomplete="off" role="textbox" aria-multiline="true"></div>
+        <div id="input-toolbar">
+            <div id="input-suggestion-hint" class="input-suggestion-hint" aria-hidden="true"></div>
+            <button id="send-btn" title="Send ⏎">&#x27A4;</button>
+        </div>
+    </div>
+
+    <script type="module" src="chat.js"></script>
+</body>
+</html>

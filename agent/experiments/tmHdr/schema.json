@@ -1,0 +1,112 @@
+[
+  {
+    "namespace": "tmHdr",
+    "description": "Access nsIMsgDBHdr flags including Replied, Forwarded, Read, via a tiny experiment.",
+    "functions": [
+      {
+        "name": "getReplied",
+        "type": "function",
+        "description": "Return true if nsMsgMessageFlags.Replied is set.",
+        "async": true,
+        "parameters": [
+          { "name": "folderURI", "type": "string" },
+          { "name": "key", "type": "integer" },
+          { "name": "pathStr", "type": "string", "optional": true },
+          { "name": "messageId", "type": "string", "optional": true }
+        ],
+        "returns": { "type": "boolean" }
+      },
+      {
+        "name": "getMsgKey",
+        "type": "function",
+        "description": "Resolve native nsMsgKey for a given WebExtension id using folder + optional path.",
+        "async": true,
+        "parameters": [
+          { "name": "folderURI", "type": "string" },
+          { "name": "weId", "type": "integer" },
+          { "name": "pathStr", "type": "string", "optional": true }
+        ],
+        "returns": { "type": "integer" }
+      },
+      {
+        "name": "getFlags",
+        "type": "function",
+        "description": "Return selected flags from nsIMsgDBHdr.flags.",
+        "async": true,
+        "parameters": [
+          { "name": "folderURI", "type": "string" },
+          { "name": "key", "type": "integer" },
+          { "name": "pathStr", "type": "string", "optional": true },
+          { "name": "messageId", "type": "string", "optional": true }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "exists": { "type": "boolean" },
+            "raw": { "type": "integer" },
+            "replied": { "type": "boolean" },
+            "forwarded": { "type": "boolean" },
+            "read": { "type": "boolean" }
+          }
+        }
+      },
+      {
+        "name": "getRepliedBulk",
+        "type": "function",
+        "description": "Bulk version returning booleans for each { folderURI, key }.",
+        "async": true,
+        "parameters": [
+          {
+            "name": "items",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "folderURI": { "type": "string" },
+                "key": { "type": "integer" },
+                "pathStr": { "type": "string", "optional": true },
+                "messageId": { "type": "string", "optional": true }
+              }
+            }
+          }
+        ],
+        "returns": { "type": "array", "items": { "type": "boolean" } }
+      },
+      {
+        "name": "getRepliedByMessageId",
+        "type": "function",
+        "description": "Return true if Replied flag is set, resolving header by RFC Message-ID string.",
+        "async": true,
+        "parameters": [
+          { "name": "folderURI", "type": "string" },
+          { "name": "messageId", "type": "string" },
+          { "name": "pathStr", "type": "string", "optional": true }
+        ],
+        "returns": { "type": "boolean" }
+      },
+      {
+        "name": "getFlagsByMessageId",
+        "type": "function",
+        "description": "Return selected flags resolving header by RFC Message-ID string.",
+        "async": true,
+        "parameters": [
+          { "name": "folderURI", "type": "string" },
+          { "name": "messageId", "type": "string" },
+          { "name": "pathStr", "type": "string", "optional": true }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "exists": { "type": "boolean" },
+            "raw": { "type": "integer" },
+            "replied": { "type": "boolean" },
+            "forwarded": { "type": "boolean" },
+            "read": { "type": "boolean" }
+          }
+        }
+      }
+    ]
+  }
+]
+
+

@@ -1,0 +1,280 @@
+/* TabMail Popup CSS - Uses TabMail Palette System */
+/* Theme colors are injected from palette.data.json via palette.js */
+
+body {
+    width: 220px;
+    padding: 0;
+    margin: 0;
+    /* Prefer native Thunderbird/system UI font + sizing to avoid async font var flicker */
+    font: menu;
+    text-align: center;
+    background: var(--in-content-box-background);
+    color: var(--arrowpanel-color);
+}
+
+#popup-content {
+    padding: 10px;
+}
+
+/* Navigation Links - 2x2 grid layout */
+#popup-nav {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    margin: 8px 0;
+}
+
+.popup-link {
+    display: block;
+    color: var(--arrowpanel-color);
+    text-decoration: none;
+    font-weight: 500;
+    padding: 8px 12px;
+    border-radius: 6px;
+    opacity: 0.85;
+    transition: all 0.15s ease;
+    cursor: pointer;
+    text-align: center;
+}
+
+.popup-link #chat-hotkey {
+    font-weight: 400;
+    opacity: 0.7;
+    margin-left: 4px;
+    font-family: inherit;
+    letter-spacing: 0.5px;
+    font-size: smaller;
+}
+
+.popup-link:hover {
+    opacity: 1;
+    background: color-mix(in srgb, var(--arrowpanel-color) 10%, transparent);
+    text-decoration: none;
+}
+
+.popup-link:active {
+    background: color-mix(in srgb, var(--arrowpanel-color) 15%, transparent);
+}
+
+/* Keep button styles for auth button only */
+button {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--panel-separator-color);
+    background: var(--in-content-button-background);
+    color: var(--in-content-button-color);
+    cursor: pointer;
+    border-radius: 8px;
+    font-family: inherit;
+}
+
+button:hover {
+    background: var(--in-content-button-background-hover);
+}
+
+/* Server Status Warning */
+#server-status-warning {
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--tag-tm-delete, #ee1111) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--tag-tm-delete, #ee1111) 40%, transparent);
+    text-align: center;
+}
+
+#server-status-text {
+    font-weight: 500;
+    color: var(--tag-tm-delete, #ee1111);
+    margin-bottom: 6px;
+    font-size: smaller;
+}
+
+#server-status-link {
+    color: var(--in-content-accent-color, #0060df);
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: smaller;
+}
+
+#server-status-link:hover {
+    opacity: 0.8;
+}
+
+#usage-container { margin-bottom: 8px; }
+#usage-bar { width: 100%; height: 10px; }
+#usage-label { font-size: smaller; margin-top: 4px; opacity: 0.8; }
+#usage-reset { font-size: smaller; margin-top: 2px; opacity: 0.8; }
+#subscription-status { 
+    font-size: smaller; 
+    margin-top: 4px; 
+    color: var(--tag-tm-delete, #ee1111);
+    font-weight: 500;
+}
+
+#auth-status-container {
+    margin-bottom: 10px;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--in-content-box-background);
+    border: 1px solid var(--panel-separator-color);
+}
+
+#auth-status-text {
+    margin-bottom: 6px;
+    text-align: center;
+    opacity: 0.9;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    line-height: 1.4;
+    font-size: smaller;
+}
+
+#auth-status-text.logged-in {
+    color: var(--tag-tm-reply, #5cb85c); /* Use TabMail green/reply color for success */
+}
+
+#auth-status-text.logged-out {
+    color: var(--tag-tm-archive, #ff9500); /* Use TabMail yellow/archive color for warnings */
+}
+
+#auth-status-text.maintenance {
+    color: var(--tag-tm-read-later, #ff6b6b); /* Use TabMail red/read-later color for maintenance */
+}
+
+#auth-action-btn {
+    margin-top: 4px;
+    padding: 6px 10px;
+}
+
+#auth-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--in-content-button-background);
+}
+
+.auth-preference {
+    margin-top: 8px;
+    opacity: 0.9;
+    font-size: smaller;
+}
+
+.auth-preference label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.auth-preference input[type="checkbox"] {
+    cursor: pointer;
+}
+
+#status {
+    margin-top: 10px;
+    opacity: 0.8;
+    font-size: smaller;
+}
+
+/* Debug Mode Indicator */
+#debug-mode-indicator {
+    color: var(--tag-tm-archive, #ff9500); /* Use TabMail yellow for debug mode */
+    text-align: center;
+    margin: 8px 0;
+    opacity: 0.9;
+    font-size: smaller;
+}
+
+/* FTS Status Banner - flat status bar style */
+#fts-status-banner {
+    position: relative;
+    width: 100%;
+    padding: 6px 10px;
+    background: color-mix(in srgb, var(--in-content-page-color) 3%, transparent);
+    border-top: 1px solid var(--panel-separator-color);
+    text-align: center;
+    margin: 0;
+    box-sizing: border-box;
+    font-size: smaller;
+}
+
+#fts-status-text {
+    margin: 0;
+    opacity: 0.85;
+    line-height: 1.4;
+}
+
+#fts-status-text.scanning {
+    color: var(--tag-tm-archive, #ffa500); /* Use TabMail yellow/archive color for in-progress */
+    font-weight: 500;
+}
+
+#fts-status-text.complete {
+    color: var(--tag-tm-reply, #5cb85c); /* Use TabMail green/reply color for success */
+}
+
+#fts-status-text.uptodate {
+    color: var(--arrowpanel-color);
+    opacity: 0.6;
+}
+
+#fts-status-progress {
+    opacity: 0.6;
+    margin-top: 2px;
+    line-height: 1.2;
+    font-size: smaller;
+}
+
+/* Version Status Banner */
+#version-status-banner {
+    width: 100%;
+    padding: 4px 10px;
+    background: color-mix(in srgb, var(--in-content-page-color) 3%, transparent);
+    border-top: 1px solid var(--panel-separator-color);
+    text-align: center;
+    margin: 0;
+    box-sizing: border-box;
+    font-size: smaller;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+}
+
+#version-text {
+    opacity: 0.6;
+}
+
+#version-text.update-available {
+    opacity: 1;
+    color: var(--in-content-accent-color);
+    cursor: pointer;
+    font-weight: 500;
+}
+
+#version-text.update-available:hover {
+    text-decoration: underline;
+}
+
+#check-updates-link {
+    opacity: 0.6;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+#check-updates-link:hover {
+    opacity: 1;
+    color: var(--in-content-accent-color);
+}
+
+#check-updates-link.checking {
+    opacity: 0.5;
+    cursor: wait;
+    text-decoration: none;
+}
+
+#check-updates-link.hidden {
+    display: none;
+}
+
+/* removed old chat-config UI; kept styles minimal for compact popup */

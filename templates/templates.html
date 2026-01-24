@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TabMail Templates</title>
+  <link rel="stylesheet" href="templates.css" />
+</head>
+<body>
+  <div id="page">
+    <header>
+      <h2>TabMail Templates</h2>
+      <p class="header-description">Manage your email reply templates</p>
+    </header>
+
+    <div id="template-container">
+      <!-- Left Panel: Template List -->
+      <div id="template-list-panel">
+        <div class="panel-header">
+          <h3>Templates</h3>
+          <div class="panel-actions">
+            <button id="add-template-btn" class="primary-button" title="Create a new template">
+              <span class="btn-icon">+</span> Add
+            </button>
+          </div>
+        </div>
+        
+        <div id="template-list">
+          <!-- Template items will be rendered here -->
+          <div class="template-list-empty">
+            <p>No templates yet</p>
+            <p class="hint">Click "Add" to create your first template</p>
+          </div>
+        </div>
+        
+        <div class="panel-footer">
+          <button id="get-more-templates-btn" class="secondary-button" title="Browse template marketplace">
+            <svg class="btn-icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+              <polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+            Template Marketplace
+          </button>
+        </div>
+      </div>
+
+      <!-- Right Panel: Template Editor -->
+      <div id="template-editor-panel">
+        <div class="panel-header">
+          <h3 id="editor-title">Select a Template</h3>
+          <div class="panel-actions" id="editor-actions" style="display: none;">
+            <button id="save-template-btn" class="save-section-btn" title="Save changes (Ctrl/Cmd+S)">Save</button>
+            <button id="share-template-btn" class="secondary-action-btn" title="Share this template with the community">Share</button>
+            <button id="duplicate-template-btn" class="reload-section-btn" title="Create a copy of this template">Duplicate</button>
+            <button id="delete-template-btn" class="reset-section-btn" title="Delete this template">Delete</button>
+          </div>
+        </div>
+        
+        <div id="editor-content">
+          <!-- Empty state -->
+          <div id="editor-empty" class="editor-empty-state">
+            <p>Select a template from the list to edit it</p>
+            <p class="hint">Or click "Add" to create a new one</p>
+          </div>
+          
+          <!-- Editor form -->
+          <div id="editor-form" style="display: none;">
+            <div class="form-field">
+              <label for="template-name">Template Name</label>
+              <input type="text" id="template-name" placeholder="Enter template name..." />
+            </div>
+            
+            <div class="form-field">
+              <label>Instructions</label>
+              <div id="instructions-list" class="bullet-list">
+                <!-- Instruction items will be rendered here -->
+              </div>
+              <button type="button" id="add-instruction-btn" class="add-bullet-btn">+ Add instruction</button>
+              <small class="field-hint">Each instruction guides the AI on how to use this template.</small>
+            </div>
+            
+            <div class="form-field">
+              <label for="template-content">Content</label>
+              <textarea id="template-content" class="content-textarea" placeholder="Enter the template content...&#10;&#10;Hello [sender's first name],&#10;&#10;Thank you for your email...&#10;&#10;Best,&#10;[User Name]"></textarea>
+              <small class="field-hint">The main content of the reply. Use placeholders like [sender's first name] or [User Name]. You may also refer to useful links in your composition prompt, e.g. [Application Website].</small>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="action-buttons">
+      <button id="import-templates-btn">Import Templates</button>
+      <button id="export-templates-btn">Export Templates</button>
+      <button id="reset-templates-btn" class="reset-section-btn">Reset to Defaults</button>
+      <div id="status-message"></div>
+    </div>
+  </div>
+
+  <!-- Import Dialog -->
+  <div id="import-dialog" class="dialog-overlay" style="display: none;">
+    <div class="dialog-content">
+      <h3>Import Templates</h3>
+      <p>Paste your template JSON below:</p>
+      <textarea id="import-textarea" placeholder="[{ &quot;name&quot;: &quot;Template Name&quot;, ... }]"></textarea>
+      <div class="dialog-actions">
+        <button id="import-cancel-btn">Cancel</button>
+        <button id="import-confirm-btn" class="primary-button">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Template Marketplace Dialog -->
+  <div id="marketplace-dialog" class="dialog-overlay" style="display: none;">
+    <div class="dialog-content marketplace-content">
+      <div class="marketplace-header">
+        <h3>Template Marketplace</h3>
+        <button id="marketplace-close-btn" class="close-btn" title="Close">&times;</button>
+      </div>
+      
+      <div class="marketplace-controls">
+        <input type="text" id="marketplace-search" placeholder="Search templates..." class="marketplace-search">
+        <select id="marketplace-sort" class="marketplace-sort">
+          <option value="popular">Most Popular</option>
+          <option value="recent">Most Recent</option>
+          <option value="name">Alphabetical</option>
+        </select>
+      </div>
+      
+      <div id="marketplace-loading" class="marketplace-loading">
+        <div class="spinner"></div>
+        <p>Loading templates...</p>
+      </div>
+      
+      <div id="marketplace-error" class="marketplace-error" style="display: none;">
+        <p id="marketplace-error-text">Failed to load templates</p>
+        <button id="marketplace-retry-btn" class="secondary-button">Retry</button>
+      </div>
+      
+      <div id="marketplace-list" class="marketplace-list" style="display: none;">
+        <!-- Template cards will be rendered here -->
+      </div>
+      
+      <div id="marketplace-empty" class="marketplace-empty" style="display: none;">
+        <p>No templates found</p>
+        <p class="hint">Try a different search term or be the first to share a template!</p>
+      </div>
+      
+      <div class="marketplace-pagination" id="marketplace-pagination" style="display: none;">
+        <button id="marketplace-load-more" class="secondary-button">Load More</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Share Template Confirmation Dialog -->
+  <div id="share-dialog" class="dialog-overlay" style="display: none;">
+    <div class="dialog-content">
+      <h3>Share Template</h3>
+      <p>Share "<strong id="share-template-name"></strong>" with the TabMail community?</p>
+      
+      <div class="share-notice">
+        <p class="share-review-notice">
+          <strong>Review Process:</strong> Your template will be reviewed before being made public. 
+          Templates that meet our community guidelines will be approved and visible to all TabMail users.
+        </p>
+      </div>
+
+      <div class="form-field">
+        <label for="share-description">Description (optional)</label>
+        <textarea id="share-description" placeholder="Briefly describe what this template is for..."></textarea>
+      </div>
+
+      <div class="share-guidelines">
+        <p class="guidelines-summary">
+          By sharing, you agree to our 
+          <a href="https://tabmail.io/docs/#/community/template-guidelines" target="_blank" rel="noopener">Community Guidelines</a>. 
+          Templates must be professional, respectful, and your own work. 
+          We reserve the right to reject or remove any template at any time.
+        </p>
+        <label class="guidelines-checkbox">
+          <input type="checkbox" id="share-guidelines-agree">
+          <span>I agree to the Community Guidelines and understand my template may be rejected</span>
+        </label>
+      </div>
+
+      <div class="dialog-actions">
+        <button id="share-cancel-btn">Cancel</button>
+        <button id="share-confirm-btn" class="primary-button" disabled>Share Template</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="templates.js"></script>
+</body>
+</html>

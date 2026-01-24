@@ -1,0 +1,573 @@
+/* TabMail Theme – Static Styling Rules
+ * 
+ * This file contains static CSS rules that use color variables from the palette system.
+ * Color values themselves are defined in /theme/palette/palette.data.json
+ * 
+ * The palette CSS variables are injected dynamically by tmTheme.sys.mjs
+ * This file contains the styling rules that consume those variables.
+ * 
+ * See: /theme/palette/README.md for color system documentation
+ */
+
+/* Scope to Messenger / about:3pane environments only */
+@-moz-document url("chrome://messenger/content/messenger.xhtml"),
+               url-prefix("about:3pane"),
+               url-prefix("about:message") {
+
+/* While TabMail gate is active (messageDisplayGate.js), paint the preview background so we don't
+   flash the default TB backing color behind the mask. */
+:root:not(.tm-gate-revealed),
+:root:not(.tm-gate-revealed) body {
+  background-color: var(--tm-preview-pane-bg) !important;
+}
+
+/* ===== Performance Optimizations ===== */
+
+/* Kill animations/transitions on rows */
+[is="thread-card"],
+[is="thread-card"] *,
+#threadTree [id^="threadTree-row"],
+#threadTree [id^="threadTree-row"] *,
+tree-view#threadTree [id^="threadTree-row"],
+tree-view#threadTree [id^="threadTree-row"] *,
+.card-container,
+.card-container * {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* Kill smooth scrolling on tree */
+#threadTree,
+tree-view#threadTree {
+  scroll-behavior: auto !important;
+}
+
+/* Prevent scroll anchoring from causing "back-and-forth" when TB virtualizes/re-renders rows.
+   Card rows can change height shortly after insertion; anchoring tries to preserve a visual
+   anchor and can appear as a bounce. */
+#threadTree,
+tree-view#threadTree {
+  overflow-anchor: none !important;
+}
+
+/* Some TB builds scroll a parent container rather than #threadTree itself; disable anchoring broadly
+   for the message list subtree to avoid bounce when row heights settle after virtualization. */
+mail-message-list,
+mail-message-list *,
+table.tree-table,
+table[is="tree-view-table"],
+tbody[is="tree-view-table-body"],
+tr[is="thread-card"],
+#threadTree [id^="threadTree-row"],
+tree-view#threadTree [id^="threadTree-row"] {
+  overflow-anchor: none !important;
+}
+
+/* ===== Thread Tree Container Background =====
+ * Match the preview pane background color using palette variable
+ */
+
+#messageBrowser,
+#multiMessageBrowser,
+#messagepane,
+#messagepanebox,
+browser#messagepane,
+browser[name="messagepane"] {
+  background-color: var(--tm-preview-pane-bg) !important;
+}
+
+/* Message header area should be slightly brighter than the preview pane background. */
+#messageHeader,
+#messageHeaderView,
+#messageHeaderPane,
+#expandedHeaderView,
+#collapsedHeaderView,
+#messageHeaderBox,
+#messageHeaderDeck,
+#messageHeader .message-header,
+#messageHeader .message-header-container {
+  background-color: var(--in-content-box-background) !important;
+}
+
+#threadTree,
+tree-view#threadTree,
+mail-message-list {
+  background-color: var(--tm-preview-pane-bg) !important;
+}
+
+/* Table container needs background */
+table.tree-table,
+table[is="tree-view-table"] {
+  background-color: var(--tm-preview-pane-bg) !important;
+}
+
+/* Spacer tbody elements need background */
+tbody[is="tree-view-table-spacer"],
+tbody[is="tree-view-table-spacer"] tr,
+tbody[is="tree-view-table-spacer"] td {
+  background-color: var(--tm-preview-pane-bg) !important;
+}
+
+/* Card view rows need background (table view rows have tag tinting instead) */
+tr[is="thread-card"],
+tr[is="thread-card"] > td {
+  background-color: var(--tm-preview-pane-bg) !important;
+}
+
+/* ===== Additional Theme Variables ===== */
+/* These reference the palette variables defined by palette.build.js */
+
+:root {
+  --tm-tag-tint-base-light: var(--tm-opacity-subtle-light);
+  --tm-tag-tint-base-dark: var(--tm-opacity-subtle-dark);
+  --tm-tag-tint-card-dark: var(--tm-opacity-subtle-card-dark);
+  --tm-tag-tint-sel-light: var(--tm-opacity-sel-light);
+  --tm-tag-tint-sel-dark: var(--tm-opacity-sel-dark);
+
+  /* Card View separator styling (no layout impact) */
+  --tm-card-separator-width: 95%;
+  --tm-card-separator-height: 1px;
+  /* IMPORTANT: use fallback values so card padding is stable even before palette CSS is injected.
+     The fallbacks match SPACING.CARD_PADDING_TOP_PX and CARD_PADDING_BOTTOM_PX in palette.data.json. */
+  --tm-card-padding-top: var(--tm-spacing-card-padding-top, 6px);
+  --tm-card-padding-bottom: var(--tm-spacing-card-padding-bottom, 8px);
+
+  /* IMPORTANT: avoid late layout shifts before palette injection.
+     The 1.1 fallback matches TYPOGRAPHY.CARD_SENDER_SCALE in palette.data.json. */
+  --tm-card-sender-scale-fallback: 1.1;
+}
+
+/* ===== Card View - Non-Selected ===== */
+
+/* Non-selected cards: transparent background with a 95% centered separator line */
+[is="thread-card"] td > div.card-container,
+[is="thread-card"] div.card-container,
+.card-container {
+  background-color: transparent !important;
+  background-image: linear-gradient(var(--panel-separator-color), var(--panel-separator-color));
+  background-repeat: no-repeat;
+  background-size: var(--tm-card-separator-width) var(--tm-card-separator-height);
+  background-position: center bottom;
+  padding-block-start: var(--tm-card-padding-top) !important;
+  padding-block-end: var(--tm-card-padding-bottom) !important;
+  /* Allow card to grow when padding is increased (avoid clipping) */
+  box-sizing: border-box !important;
+  max-height: none !important;
+  height: auto !important;
+  overflow: visible !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  [is="thread-card"] td > div.card-container,
+  [is="thread-card"] div.card-container,
+  .card-container {
+    background-color: transparent !important;
+  }
+}
+
+/* ===== Card View - Read/Unread ===== */
+
+/* Unread messages - subtle bold (500 vs TB's 700) for less prominent emphasis */
+[is="thread-card"]:not([data-properties~="read"]) td > div.card-container,
+[is="thread-card"]:not([data-properties~="read"]) div.card-container,
+.card-container[isunread="true"] {
+  font-weight: 500 !important;
+  color: var(--tm-message-unread-color) !important;
+}
+
+/* Read messages */
+[is="thread-card"][data-properties~="read"] td > div.card-container,
+[is="thread-card"][data-properties~="read"] div.card-container,
+.card-container[isunread="false"] {
+  font-weight: 400 !important;
+  color: var(--tm-message-read-color) !important;
+}
+
+/* Flagged items */
+.card-container[isflagged="true"] .card-subject {
+  text-decoration: underline;
+}
+
+/* ===== Card View - Subject Snippet (TabMail) ===== */
+/* A readable preview line under the subject (single-line for now). */
+.card-container .tm-card-snippet {
+  font-size: x-small !important;
+  line-height: 1.35;
+  /* Snippet text: same color and weight as subject (inherits from card container). */
+  color: inherit;
+  font-weight: inherit !important;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Snippet is injected inside .thread-card-dynamic-row, before .thread-card-icon-info.
+   
+   Grid structure (inferred from DOM order):
+   - Column 1: sort-header-details (auto)
+   - Column 2: thread-card-button (auto)  
+   - Column 3: thread-card-subject-container (1fr)
+   - Column 4: thread-card-icon-info (auto)
+   
+   Row 1: subject line with all elements
+   Row 2: button content (col 2) + snippet (col 2-3), icons should NOT be on row 2
+   
+   Solution: snippet spans columns 2-3 on row 2, with right padding for icon space */
+#threadTree .thread-card-dynamic-row > .tm-card-snippet,
+tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet {
+  grid-row: 2;
+  grid-column: 2 / 4; /* Span button + subject columns, stop before icons */
+  display: block !important;
+  font-size: x-small !important;
+  line-height: 1.35 !important;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin: 0 !important;
+  padding: 0 !important;
+  padding-inline-start: 0.25em !important; /* Align with subject text */
+  padding-inline-end: 3em !important; /* Leave room for icons - scales with font size */
+  min-width: 0;
+}
+
+/* ===== Card View Typography =====
+   Use absolute CSS keywords so sizing respects TB's font prefs and isn't affected by relative scaling. */
+
+/* Card View sender: x-large */
+.card-container .tm-card-sender,
+[is="thread-card"] .card-container .sender {
+  font-size: small !important;
+}
+
+/* Card View subject: large */
+.card-container .subject,
+[is="thread-card"] .card-container .thread-card-subject-container,
+[is="thread-card"] .card-container .subject {
+  font-size: small !important;
+}
+
+/* ===== Card View - Sender/Subject Alignment Fix (Two-Row Card) ===== */
+/* In 2-row card mode, the .thread-card-button is hidden (aria-hidden="hidden").
+   When hidden, it and .sort-header-details still take up space, pushing the subject right.
+   We only fix alignment when the button is hidden (2-row mode), leaving 3-row mode untouched.
+   
+   First row structure: .account-indicator (small space) + .sender + ...
+   Second row structure: .sort-header-details + .thread-card-button + .thread-card-subject-container + ...
+   
+   We need the subject to align with the sender. The account-indicator adds a small offset. */
+
+/* 3-row mode: Indent the snippet element to align with subject.
+   The .tm-card-snippet is injected inside .thread-card-button by TabMail. */
+[is="thread-card"] .tm-card-snippet {
+  margin-inline-start: 0.25em !important;
+}
+
+/* 2-row mode: Unindent the subject to align with sender.
+   Thunderbird adds .cards-row-compact class in 2-row card view mode. */
+.cards-row-compact [is="thread-card"] .thread-card-subject-container {
+  margin-inline-start: 0.1em !important;
+}
+
+/* 2-row mode: Hide the snippet since there's no room for it */
+.cards-row-compact [is="thread-card"] .tm-card-snippet,
+.cards-row-compact .tm-card-snippet {
+  display: none !important;
+}
+
+/* ===== Card View - Hover ===== */
+
+[is="thread-card"]:hover:not([data-properties~="selected"]):not(.selected) td > div.card-container,
+[is="thread-card"]:hover:not([data-properties~="selected"]):not(.selected) div.card-container,
+.card-container:hover:not([isselected="true"]) {
+  background-color: color-mix(in srgb, var(--panel-separator-color) 30%, transparent) !important;
+}
+
+/* Hover tint (non-selected only): when a tag color exists, use it for hover so selection tint feels natural. */
+[is="thread-card"]:hover:not([data-properties~="selected"]):not(.selected)[style*="--tag-color"] td > div.card-container,
+[is="thread-card"]:hover:not([data-properties~="selected"]):not(.selected)[style*="--tag-color"] div.card-container,
+.card-container:hover:not([isselected="true"]) {
+  background-color: color-mix(in srgb, var(--tag-color) var(--tm-tag-tint-base-light), transparent) !important;
+}
+
+/* Hide separator on hover for cleaner look */
+/* (keep separator visible on hover to avoid visual jumping) */
+
+@media (prefers-color-scheme: dark) {
+  [is="thread-card"]:hover:not([data-properties~="selected"]):not(.selected) td > div.card-container,
+  [is="thread-card"]:hover:not([data-properties~="selected"]):not(.selected) div.card-container,
+  .card-container:hover:not([isselected="true"]) {
+    background-color: color-mix(in srgb, var(--panel-separator-color) 40%, transparent) !important;
+  }
+
+  [is="thread-card"]:hover:not([data-properties~="selected"]):not(.selected)[style*="--tag-color"] td > div.card-container,
+  [is="thread-card"]:hover:not([data-properties~="selected"]):not(.selected)[style*="--tag-color"] div.card-container,
+  .card-container:hover:not([isselected="true"]) {
+    background-color: color-mix(in srgb, var(--tag-color) var(--tm-tag-tint-card-dark), transparent) !important;
+  }
+}
+
+/* ===== Card View - Selected ===== */
+
+[is="thread-card"][data-properties~="selected"] td > div.card-container,
+[is="thread-card"].selected div.card-container,
+.card-container[isselected="true"] {
+  background-color: color-mix(in srgb, var(--tag-color, var(--tag-tm-untagged)) var(--tm-tag-tint-sel-light), transparent) !important;
+  filter: brightness(var(--tm-brightness-sel-light)) saturate(var(--tm-saturation-sel-light)) !important;
+  background-image: none !important;
+}
+
+/* Selected + hover/active: explicitly keep selected tint (avoid hover override during click). */
+.card-container[isselected="true"]:hover,
+.card-container[isselected="true"]:active {
+  background-color: color-mix(in srgb, var(--tag-color, var(--tag-tm-untagged)) var(--tm-tag-tint-sel-light), transparent) !important;
+  background-image: none !important;
+}
+
+/* Hide separator on selected cards */
+/* (handled by background-image: none on selected card container) */
+
+[is="thread-card"][data-properties~="selected"] .button-star,
+[is="thread-card"].selected .button-star,
+.card-container[isselected="true"] .button-star {
+  stroke: var(--tm-message-unread-color) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  [is="thread-card"][data-properties~="selected"] td > div.card-container,
+  [is="thread-card"].selected div.card-container,
+  .card-container[isselected="true"] {
+    background-color: color-mix(in srgb, var(--tag-color, var(--tag-tm-untagged)) var(--tm-tag-tint-sel-dark), transparent) !important;
+    filter: brightness(var(--tm-brightness-sel-dark)) saturate(var(--tm-saturation-sel-dark)) !important;
+  }
+
+  .card-container[isselected="true"]:hover,
+  .card-container[isselected="true"]:active {
+    background-color: color-mix(in srgb, var(--tag-color, var(--tag-tm-untagged)) var(--tm-tag-tint-sel-dark), transparent) !important;
+    background-image: none !important;
+  }
+}
+
+/* ===== Table View - Typography ===== */
+/* Use absolute CSS keyword so sizing respects TB's font prefs.
+   Padding uses em units so vertical space scales with font size. */
+
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]),
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]) {
+  font-size: x-small !important;
+  line-height: 1.5 !important;
+}
+
+/* ===== Table View - Tag Tint ===== */
+/* Use :not([is="thread-card"]) to exclude Card View rows from Table View styling 
+ * Fallback to --tag-tm-untagged so untagged rows get the untagged color automatically */
+
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]),
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]) {
+  background-color: color-mix(in srgb, var(--tag-color, var(--tag-tm-untagged)) var(--tm-tag-tint-base-light), transparent) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]),
+  tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]) {
+    background-color: color-mix(in srgb, var(--tag-color, var(--tag-tm-untagged)) var(--tm-tag-tint-base-dark), transparent) !important;
+  }
+}
+
+/* ===== Table View - Read/Unread ===== */
+
+/* Unread rows - subtle bold (500 vs TB's 700) for less prominent emphasis */
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]):not([data-properties~="read"]),
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]):not([data-properties~="read"]) {
+  font-weight: 500 !important;
+  color: var(--tm-message-unread-color) !important;
+}
+
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]):not([data-properties~="read"]) *,
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]):not([data-properties~="read"]) * {
+  font-weight: 500 !important;
+  color: var(--tm-message-unread-color) !important;
+}
+
+/* Read rows */
+#threadTree [id^="threadTree-row"]:not([is="thread-card"])[data-properties~="read"],
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"])[data-properties~="read"] {
+  font-weight: 400 !important;
+  color: var(--tm-message-read-color) !important;
+}
+
+#threadTree [id^="threadTree-row"]:not([is="thread-card"])[data-properties~="read"] *,
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"])[data-properties~="read"] * {
+  font-weight: 400 !important;
+  color: var(--tm-message-read-color) !important;
+}
+
+/* ===== Table View - Hover ===== */
+
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]):hover,
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]):hover {
+  filter: brightness(0.92) saturate(1.6) contrast(1.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-color-scheme: dark) {
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]):hover,
+  tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]):hover {
+    filter: brightness(1.3) saturate(1.3);
+    box-shadow: 0 1px 3px rgba(255, 255, 255, 0.08), 0 1px 2px rgba(255, 255, 255, 0.04);
+  }
+}
+
+/* ===== Table View - Selected ===== */
+
+#threadTree [id^="threadTree-row"]:not([is="thread-card"])[data-properties~="selected"],
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).selected,
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"])[data-properties~="selected"],
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]).selected {
+  background-color: color-mix(in srgb, var(--tag-color, var(--tag-tm-untagged)) var(--tm-tag-tint-sel-light), transparent) !important;
+  filter: brightness(var(--tm-brightness-sel-light)) saturate(var(--tm-saturation-sel-light)) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"])[data-properties~="selected"],
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).selected,
+  tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"])[data-properties~="selected"],
+  tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]).selected {
+    background-color: color-mix(in srgb, var(--tag-color, var(--tag-tm-untagged)) var(--tm-tag-tint-sel-dark), transparent) !important;
+    filter: brightness(var(--tm-brightness-sel-dark)) saturate(var(--tm-saturation-sel-dark)) !important;
+  }
+}
+
+/* ===== Table View - Flagged ===== */
+
+#threadTree [id^="threadTree-row"][data-properties~="flagged"] .subject-line,
+#threadTree [id^="threadTree-row"][data-properties~="flagged"] [data-column-name="subjectcol"],
+tree-view#threadTree [id^="threadTree-row"][data-properties~="flagged"] .subject-line,
+tree-view#threadTree [id^="threadTree-row"][data-properties~="flagged"] [data-column-name="subjectcol"] {
+  text-decoration: underline;
+}
+
+/* ===== Remove Outlines ===== */
+
+/* Remove dashed outlines from tree and rows */
+#threadTree [id^="threadTree-row"],
+#threadTree [id^="threadTree-row"] *,
+tree-view#threadTree [id^="threadTree-row"],
+tree-view#threadTree [id^="threadTree-row"] *,
+#threadTree,
+tree-view#threadTree {
+  outline: none !important;
+  border: none !important;
+}
+
+#threadTree:focus,
+tree-view#threadTree:focus,
+#threadTree [id^="threadTree-row"]:focus,
+tree-view#threadTree [id^="threadTree-row"]:focus {
+  outline: none !important;
+}
+
+#threadTree [id^="threadTree-row"][data-properties~="selected"],
+#threadTree [id^="threadTree-row"].selected,
+tree-view#threadTree [id^="threadTree-row"][data-properties~="selected"],
+tree-view#threadTree [id^="threadTree-row"].selected {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* ===== Status Bar Progress Meter Override =====
+ * Replace the animated <html:progress> element with a static "Syncing..." label.
+ * The native progress meter has high CPU/GPU usage due to continuous animation.
+ */
+
+/* Hide the progress meter element completely */
+#statusbar-progresspanel .progressmeter-statusbar,
+#statusbar-progresspanel #statusbar-icon {
+  display: none !important;
+}
+
+/* Show static "Syncing..." text instead */
+#statusbar-progresspanel:not([collapsed="true"])::after {
+  content: "Syncing...";
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--tm-text-read-light);
+  padding-inline: 6px;
+  white-space: nowrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  #statusbar-progresspanel:not([collapsed="true"])::after {
+    color: var(--tm-text-read-dark);
+  }
+}
+
+/* ===== Subject Color Override =====
+ * Remove blue/special colors from subjects, use consistent unread/read colors.
+ * Subjects should only differ in color (not bold) between read/unread states.
+ */
+
+/* Subject in card view - inherit from parent container */
+[is="thread-card"] .subject,
+[is="thread-card"] .thread-card-subject-container .subject,
+#threadTree [is="thread-card"] .subject,
+tree-view#threadTree [is="thread-card"] .subject {
+  color: inherit !important;
+  font-weight: inherit !important;
+}
+
+/* Subject in table view - inherit from parent row */
+#threadTree [id^="threadTree-row"] .subject-line,
+#threadTree [id^="threadTree-row"] [data-column-name="subjectCol"] .subject,
+tree-view#threadTree [id^="threadTree-row"] .subject-line,
+tree-view#threadTree [id^="threadTree-row"] [data-column-name="subjectCol"] .subject {
+  color: inherit !important;
+  font-weight: inherit !important;
+}
+
+/* Sender - slightly bolder for emphasis (both card and table view) */
+[is="thread-card"] .sender,
+[is="thread-card"] .tm-card-sender,
+#threadTree [is="thread-card"] .sender,
+tree-view#threadTree [is="thread-card"] .sender,
+#threadTree [id^="threadTree-row"] [data-column-name="senderCol"],
+#threadTree [id^="threadTree-row"] [data-column-name="correspondentCol"],
+tree-view#threadTree [id^="threadTree-row"] [data-column-name="senderCol"],
+tree-view#threadTree [id^="threadTree-row"] [data-column-name="correspondentCol"] {
+  color: inherit !important;
+  font-weight: 500 !important;
+}
+
+/* ===== Folder Pane - Remove Unread Styling =====
+ * Disable blue coloring and bolding on folder names with unread messages.
+ * The unread count badge is sufficient indicator.
+ */
+
+/* Remove bold and special color from folder names with unread messages */
+#folderTree li.unread > .container > .name,
+#folderTree li.new-messages > .container > .name,
+#folderTree li[class*="unread"] > .container > .name,
+#folderTree [data-properties~="hasUnread"] > .container > .name,
+#folderTree [data-properties~="hasNewMessages"] > .container > .name {
+  font-weight: 400 !important;
+  color: inherit !important;
+}
+
+/* Also target the nested structure if different */
+#folderTree .container > .name {
+  font-weight: 400 !important;
+}
+
+/* Ensure selected folder name doesn't get special unread styling either */
+#folderTree li.selected.unread > .container > .name,
+#folderTree li.selected.new-messages > .container > .name {
+  font-weight: 400 !important;
+  color: inherit !important;
+}
+
+}  /* End @-moz-document */

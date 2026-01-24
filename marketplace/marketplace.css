@@ -1,0 +1,651 @@
+/* TabMail Marketplace CSS - Uses TabMail Palette System */
+/* Theme colors are injected from palette.data.json via palette.js */
+
+body { 
+  font-family: sans-serif; 
+  padding: 12px; 
+  background: var(--in-content-page-background);
+  color: var(--in-content-page-color);
+  margin: 0;
+}
+
+#page {
+  max-width: 1200px;
+  margin: 0 auto;
+  min-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+}
+
+h2, h3, h4 { 
+  margin: 8px 0; 
+}
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--panel-separator-color);
+  padding-bottom: 16px;
+  margin-bottom: 24px;
+  flex-shrink: 0;
+}
+
+.header-description {
+  margin: 8px 0 0 0;
+  opacity: 0.7;
+  font-size: 14px;
+}
+
+/* Controls */
+.marketplace-controls {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.marketplace-search {
+  flex: 1;
+  padding: 10px 14px;
+  font-size: 14px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+}
+
+.marketplace-search:focus {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 1px;
+}
+
+.marketplace-sort {
+  padding: 10px 14px;
+  font-size: 14px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  min-width: 150px;
+}
+
+.refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.refresh-btn:hover {
+  background: var(--in-content-button-background-hover);
+  border-color: var(--in-content-accent-color);
+}
+
+.refresh-btn svg {
+  flex-shrink: 0;
+}
+
+/* Loading, Error, Empty States */
+.marketplace-loading,
+.marketplace-error,
+.marketplace-empty {
+  text-align: center;
+  padding: 60px 20px;
+}
+
+.marketplace-loading .spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--panel-separator-color);
+  border-top-color: var(--in-content-accent-color);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 16px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.marketplace-error {
+  color: var(--tag-tm-delete);
+}
+
+.marketplace-empty {
+  opacity: 0.6;
+}
+
+.hint {
+  font-size: 13px;
+  opacity: 0.7;
+  margin-top: 8px;
+}
+
+/* Template List - Grid Layout */
+.marketplace-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  padding: 4px;
+}
+
+/* Template Card */
+.marketplace-card {
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+  cursor: pointer;
+}
+
+.marketplace-card:hover {
+  border-color: var(--in-content-accent-color);
+  transform: translateY(-2px);
+}
+
+.marketplace-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.marketplace-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.marketplace-card-name {
+  font-weight: 600;
+  font-size: 15px;
+  margin: 0 0 4px 0;
+}
+
+.marketplace-card-expand-hint {
+  font-size: 11px;
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.marketplace-card-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.marketplace-card-stat {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.marketplace-card-description {
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.8;
+  margin: 0;
+}
+
+.marketplace-card-preview {
+  font-size: 12px;
+  color: var(--in-content-page-color);
+  opacity: 0.7;
+  background: var(--in-content-page-background);
+  padding: 12px;
+  border-radius: 6px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  max-height: 80px;
+  overflow: hidden;
+  position: relative;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.marketplace-card-preview::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  background: linear-gradient(transparent, var(--in-content-page-background));
+}
+
+.marketplace-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+}
+
+/* Buttons */
+.primary-button {
+  background: var(--in-content-accent-color);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s ease;
+}
+
+.primary-button:hover {
+  background: color-mix(in srgb, var(--in-content-accent-color) 85%, black);
+}
+
+/* Install button - regular button style */
+.install-btn {
+  background: var(--in-content-button-background);
+  color: var(--in-content-button-color);
+  border: 1px solid var(--panel-separator-color);
+  padding: 8px 16px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s ease;
+}
+
+.install-btn:hover {
+  background: var(--in-content-button-background-hover);
+}
+
+/* Installed button - accent color */
+.install-btn.installed {
+  background: var(--in-content-accent-color);
+  color: white;
+  border: 1px solid var(--in-content-accent-color);
+  cursor: default;
+}
+
+.install-btn.installed:hover {
+  background: var(--in-content-accent-color);
+}
+
+.install-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.secondary-button {
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  padding: 8px 16px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.secondary-button:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
+}
+
+/* Pagination */
+.marketplace-pagination {
+  padding: 24px 0;
+  text-align: center;
+}
+
+/* Status Message */
+#status-message {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 24px;
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  font-size: 14px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  z-index: 1000;
+}
+
+#status-message.visible {
+  opacity: 1;
+}
+
+#status-message.error {
+  border-color: var(--tag-tm-delete);
+  color: var(--tag-tm-delete);
+}
+
+/* Modal Overlay */
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.dialog-content {
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 600px;
+  width: 100%;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  position: relative;
+}
+
+.modal-content {
+  max-width: 700px;
+}
+
+.close-btn {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: transparent;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 8px;
+  line-height: 1;
+  color: var(--in-content-page-color);
+  opacity: 0.6;
+}
+
+.close-btn:hover {
+  opacity: 1;
+  color: var(--in-content-page-color);
+}
+
+/* Modal Content */
+.modal-header {
+  margin-bottom: 16px;
+  padding-right: 32px;
+}
+
+.modal-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+}
+
+.modal-description {
+  font-size: 14px;
+  opacity: 0.8;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.modal-section {
+  margin-top: 20px;
+}
+
+.modal-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+  margin: 0 0 12px 0;
+}
+
+.modal-instructions {
+  list-style: disc;
+  padding-left: 20px;
+  margin: 0;
+}
+
+.modal-instructions li {
+  margin: 6px 0;
+  line-height: 1.5;
+}
+
+.modal-preview {
+  background: var(--in-content-page-background);
+  padding: 16px;
+  border-radius: 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 250px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+.modal-actions {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--panel-separator-color);
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.modal-install-btn {
+  padding: 10px 24px;
+  font-size: 14px;
+}
+
+/* Modal install button inherits .install-btn styles */
+.modal-install-btn.installed {
+  background: var(--in-content-accent-color);
+  color: white;
+  border: 1px solid var(--in-content-accent-color);
+  cursor: default;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .marketplace-controls {
+    flex-direction: column;
+  }
+  
+  .marketplace-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Tab Switcher */
+.marketplace-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--panel-separator-color);
+  padding-bottom: 0;
+}
+
+.tab-btn {
+  padding: 10px 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--in-content-page-color);
+  font-size: 14px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.tab-btn:hover {
+  opacity: 1;
+}
+
+.tab-btn.active {
+  opacity: 1;
+  border-bottom-color: var(--in-content-accent-color);
+  font-weight: 500;
+}
+
+.tab-content {
+  display: block;
+}
+
+/* My Templates Header */
+.my-templates-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: var(--in-content-box-background);
+  border-radius: 8px;
+}
+
+#my-templates-limits {
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+.secondary-button.small {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+/* Status Badges */
+.status-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.status-badge.status-pending {
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+}
+
+.status-badge.status-approved {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+}
+
+.status-badge.status-auto-approved {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
+}
+
+.status-badge.status-rejected {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+
+/* Dark mode status badge colors */
+@media (prefers-color-scheme: dark) {
+  .status-badge.status-pending {
+    background: rgba(245, 158, 11, 0.2);
+    color: #fbbf24;
+  }
+  .status-badge.status-approved {
+    background: rgba(34, 197, 94, 0.2);
+    color: #4ade80;
+  }
+  .status-badge.status-auto-approved {
+    background: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
+  }
+  .status-badge.status-rejected {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+  }
+}
+
+/* Rejection reason */
+.rejection-reason {
+  font-size: 12px;
+  color: #dc2626;
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 4px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .rejection-reason {
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.15);
+  }
+}
+
+/* Modal status */
+.modal-status {
+  margin: 8px 0;
+}
+
+.modal-rejection-reason {
+  font-size: 13px;
+  color: #dc2626;
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .modal-rejection-reason {
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.15);
+  }
+}
+
+/* My template card styling - with footer for status and actions */
+.my-template-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.my-template-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-separator-color);
+}
+
+.my-template-card .status-badge {
+  font-size: 10px;
+  padding: 4px 10px;
+  border: 1px solid currentColor;
+  opacity: 1.0;
+}
+
+.unshare-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  border: 1px solid var(--tag-tm-delete);
+  background: color-mix(in srgb, var(--tag-tm-delete) 10%, transparent);
+  color: var(--tag-tm-delete);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  font-weight: 500;
+}
+
+.unshare-btn:hover {
+  background: var(--tag-tm-delete);
+  color: white;
+  border-color: var(--tag-tm-delete);
+}

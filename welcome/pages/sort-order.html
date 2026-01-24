@@ -1,0 +1,40 @@
+<!-- Step 3: Sort Order Selection -->
+<h1 class="step-title">Default Sort Order</h1>
+<p class="step-description">Choose how your messages are sorted by default.</p>
+<div class="step-content">
+  <div class="option-cards-large sort-options view-options--spaced">
+    <label class="option-card-large">
+      <input type="radio" name="sort-order" value="descending" checked />
+      <div class="option-preview-large sort-preview">
+        <div class="sort-visual">
+          <div class="sort-item newest">Today</div>
+          <div class="sort-item">Yesterday</div>
+          <div class="sort-item oldest">Last Week</div>
+        </div>
+      </div>
+      <span class="option-label">Newest First</span>
+      <span class="option-description">Most recent messages at the top</span>
+    </label>
+    <label class="option-card-large">
+      <input type="radio" name="sort-order" value="ascending" />
+      <div class="option-preview-large sort-preview">
+        <div class="sort-visual">
+          <div class="sort-item oldest">Last Week</div>
+          <div class="sort-item">Yesterday</div>
+          <div class="sort-item newest">Today</div>
+        </div>
+      </div>
+      <span class="option-label">Oldest First</span>
+      <span class="option-description">Oldest messages at the top</span>
+    </label>
+  </div>
+
+  <div class="recommendation-box welcome-callout-card welcome-callout-card--text-top">
+    <p class="welcome-callout-inline-tip"><strong>ℹ️ Tip</strong> You can flip between newest-first and oldest-first anytime from the message list header.</p>
+    <div class="welcome-callout-media welcome-callout-media--sort-arrow welcome-callout-media--medium">
+      <img class="asset-image" id="sort-order-callout-image" src="" alt="Sort direction toggle button" />
+      <div class="welcome-callout-arrow welcome-callout-arrow--sort-arrow"></div>
+    </div>
+  </div>
+</div>
+

@@ -1,0 +1,35 @@
+[
+  {
+    "namespace": "tmWebFetch",
+    "description": "Fetch web content bypassing CORS restrictions",
+    "functions": [
+      {
+        "name": "fetch",
+        "type": "function",
+        "description": "Fetch URL content from privileged context",
+        "async": true,
+        "parameters": [
+          {
+            "name": "url",
+            "type": "string",
+            "description": "URL to fetch"
+          },
+          {
+            "name": "options",
+            "type": "object",
+            "description": "Fetch options",
+            "optional": true,
+            "properties": {
+              "timeout": {
+                "type": "integer",
+                "description": "Timeout in milliseconds",
+                "optional": true
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]
+

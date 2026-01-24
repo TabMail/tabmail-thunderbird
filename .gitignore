@@ -1,0 +1,9 @@
+# Local environment & secrets
+.env
+.env.*
+*.key
+*.pem
+secrets/
+config.local.json
+dist/
+.DS_Store

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Compact / Table view icon (mask-compatible, solid fill) -->
+  <g fill="#000000">
+    <rect x="2" y="3" width="12" height="2" rx="1" />
+    <rect x="2" y="6" width="12" height="2" rx="1" />
+    <rect x="2" y="9" width="12" height="2" rx="1" />
+    <rect x="2" y="12" width="12" height="2" rx="1" />
+    <rect x="3.2" y="3.6" width="2.0" height="0.8" rx="0.4" opacity="0.8" />
+    <rect x="3.2" y="6.6" width="2.8" height="0.8" rx="0.4" opacity="0.8" />
+    <rect x="3.2" y="9.6" width="2.4" height="0.8" rx="0.4" opacity="0.8" />
+    <rect x="3.2" y="12.6" width="3.2" height="0.8" rx="0.4" opacity="0.8" />
+  </g>
+</svg>
+

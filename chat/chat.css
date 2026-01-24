@@ -1,0 +1,1360 @@
+/* TabMail Chat Window CSS - Uses TabMail Palette System */
+/* Theme colors are injected from palette.data.json via palette.js */
+
+html, body {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    background: var(--in-content-page-background);
+    color: var(--in-content-page-color);
+    /* Typography: match message content (TB system preset) */
+    font: message-box;
+}
+
+/* Ensure form controls inherit the same system preset typography */
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+:root {
+    /* Configurable width for right-aligned user bubbles to create left indent */
+    --tm-user-bubble-max-width: 72%;
+}
+
+#chat-container {
+    flex: 1;
+    /* Always reserve space for vertical scrollbar to avoid width jitter */
+    overflow-y: scroll;
+    border: 1px solid var(--panel-separator-color);
+    padding: 8px;
+    background: var(--in-content-box-background);
+    box-sizing: border-box;
+    /* Markdown renderer handles line breaks; avoid extra whitespace handling here */
+    white-space: normal;
+    font-size: var(--tm-chat-font-msg-chatContainer);
+}
+
+.agent-message {
+    background: transparent;
+    color: var(--in-content-page-color);
+    padding: 6px 10px;
+    border-radius: 8px;
+    margin: 0 0 8px 0;
+    line-height: 1.4em;
+    /* preserve non-breaking spaces in content but allow normal wrapping */
+    white-space: normal;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+    border: none;
+    border-left: none;
+    max-width: 95%;
+}
+
+.system-message {
+    background: transparent;
+    color: var(--tag-tm-archive);
+    padding: 6px 10px;
+    border-radius: 8px;
+    margin: 8px auto;
+    line-height: 1.4em;
+    white-space: normal;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+    border: none;
+    border-left: none;
+    max-width: 95%;
+    opacity: 0.8;
+    font-style: italic;
+    text-align: center;
+    display: block;
+}
+
+/* Retry link in system error messages */
+.system-message .retry-link {
+    color: var(--in-content-accent-color);
+    text-decoration: underline;
+    cursor: pointer;
+    font-style: normal;
+    font-weight: 500;
+    transition: opacity 0.15s ease;
+}
+
+.system-message .retry-link:hover {
+    opacity: 0.8;
+}
+
+.user-message {
+    background: color-mix(in srgb, var(--in-content-page-color) 6%, transparent);
+    color: var(--in-content-page-color);
+    padding: 8px 10px;
+    border-radius: 8px;
+    margin: 0 0 8px 0;
+    line-height: 1.4em;
+    text-align: left;
+    white-space: normal;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+    border: 1px solid var(--panel-separator-color);
+    /* border-right: 3px solid var(--in-content-accent-color); */
+    margin-left: auto; /* keep bubble stuck to the right */
+    max-width: var(--tm-user-bubble-max-width, 72%);
+}
+
+/* Markdown content tweaks */
+.agent-message p,
+.user-message p { margin: 0; }
+.agent-message p + p,
+.user-message p + p { margin-top: 6px; }
+
+.agent-message h1, .user-message h1,
+.agent-message h2, .user-message h2,
+.agent-message h3, .user-message h3,
+.agent-message h4, .user-message h4,
+.agent-message h5, .user-message h5,
+.agent-message h6, .user-message h6 {
+    margin: 8px 0 4px 0;
+    font-weight: 600;
+}
+.agent-message h1, .user-message h1 { font-size: 1.35em; }
+.agent-message h2, .user-message h2 { font-size: 1.25em; }
+.agent-message h3, .user-message h3 { font-size: 1.15em; }
+.agent-message h4, .user-message h4 { font-size: 1.1em; }
+.agent-message h5, .user-message h5 { font-size: 1.05em; }
+.agent-message h6, .user-message h6 { font-size: 1.0em; }
+
+.agent-message pre,
+.user-message pre {
+    background: var(--in-content-box-background);
+    border: 1px solid var(--panel-separator-color);
+    border-radius: 3px;
+    padding: 6px;
+    box-sizing: border-box;
+    max-width: 100%;
+    /* Allow horizontal scrolling for long code lines */
+    white-space: pre;              /* preserve whitespace and do not wrap */
+    overflow-x: auto;              /* horizontal scroll if needed */
+    overflow-y: auto;              /* vertical scroll if needed */
+}
+
+/* Ensure nested code inside fenced blocks inherits wrapping from pre */
+.agent-message pre code,
+.user-message pre code {
+    white-space: inherit;
+}
+
+.agent-message code,
+.user-message code {
+    background: var(--in-content-box-background);
+    padding: 0 3px;
+    border-radius: 3px;
+}
+
+.agent-message table.md-table,
+.user-message table.md-table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 4px 0;
+    /* Use auto layout to size columns based on content instead of equal widths */
+    table-layout: auto;
+}
+.agent-message table.md-table th,
+.agent-message table.md-table td,
+.user-message table.md-table th,
+.user-message table.md-table td {
+    border: 1px solid var(--panel-separator-color);
+    padding: 4px 6px;
+    text-align: left;
+}
+
+/* LaTeX booktabs-style rules: toprule, midrule (after thead), bottomrule */
+
+/* Allow wide content to wrap sensibly inside table cells */
+.agent-message table.md-table th,
+.agent-message table.md-table td,
+.user-message table.md-table th,
+.user-message table.md-table td {
+    white-space: normal;
+    /* Override bubble-level overflow-wrap:anywhere; it collapses min-content width */
+    overflow-wrap: break-word;
+    word-break: normal;
+}
+
+/* Prevent tiny columns by setting a reasonable minimum width */
+.agent-message table.md-table th,
+.user-message table.md-table th {
+    min-width: 4ch;
+}
+
+/* Reduce front indent for markdown lists inside bubbles */
+.agent-message ul, .user-message ul,
+.agent-message ol, .user-message ol {
+    margin: 6px 0 10px 12px; /* add extra bottom spacing for bubble separation */
+    padding-left: 0;
+    list-style-position: outside; /* standard list alignment under bubble */
+}
+.agent-message li, .user-message li {
+    margin-left: 0;
+    padding-left: 0;
+}
+
+/* Nested list styling with proper indentation */
+.agent-message li > ul, .user-message li > ul,
+.agent-message li > ol, .user-message li > ol {
+    margin: 4px 0 4px 20px; /* indent nested lists */
+    padding-left: 0;
+}
+
+/* Different list styles for nested levels */
+/* Level 1: default (disc for ul, decimal for ol) */
+.agent-message ul, .user-message ul {
+    list-style-type: disc;
+}
+.agent-message ol, .user-message ol {
+    list-style-type: decimal;
+}
+
+/* Level 2: nested once */
+.agent-message li > ul, .user-message li > ul {
+    list-style-type: circle;
+}
+.agent-message li > ol, .user-message li > ol {
+    list-style-type: lower-alpha;
+}
+
+/* Level 3: nested twice */
+.agent-message li > ul li > ul, .user-message li > ul li > ul {
+    list-style-type: square;
+}
+.agent-message li > ol li > ol, .user-message li > ol li > ol {
+    list-style-type: lower-roman;
+}
+
+/* Markdown link styling - uses palette accent color for both light and dark themes */
+.agent-message a,
+.user-message a {
+    color: var(--in-content-accent-color);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-bottom-color 0.2s ease, opacity 0.2s ease;
+    cursor: pointer;
+}
+
+.agent-message a:hover,
+.user-message a:hover {
+    border-bottom-color: var(--in-content-accent-color);
+    opacity: 0.8;
+}
+
+.agent-message a:active,
+.user-message a:active {
+    opacity: 0.6;
+}
+
+/* Email, Contact, and Event links styled as chips */
+.agent-message a.tm-email-link,
+.user-message a.tm-email-link,
+.agent-message a.tm-contact-link,
+.user-message a.tm-contact-link,
+.agent-message a.tm-event-link,
+.user-message a.tm-event-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: color-mix(in srgb, var(--in-content-accent-color) 12%, var(--in-content-box-background));
+    border: 1.5px solid var(--in-content-accent-color);
+    border-radius: 14px;
+    padding: 2px 10px;
+    margin: 0 2px;
+    font-size: 0.95em;
+    color: var(--in-content-page-color);
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+    vertical-align: baseline;
+}
+
+.agent-message a.tm-email-link:hover,
+.user-message a.tm-email-link:hover,
+.agent-message a.tm-contact-link:hover,
+.user-message a.tm-contact-link:hover,
+.agent-message a.tm-event-link:hover,
+.user-message a.tm-event-link:hover {
+    background: color-mix(in srgb, var(--in-content-accent-color) 20%, var(--in-content-box-background));
+    border-color: color-mix(in srgb, var(--in-content-accent-color) 130%, transparent);
+    border-bottom: 1.5px solid var(--in-content-accent-color);
+    opacity: 1;
+}
+
+/* Make links more visible in code blocks by adding subtle underline */
+.agent-message code a,
+.user-message code a {
+    text-decoration: underline;
+    text-decoration-style: dotted;
+}
+
+/* Blockquote styling for markdown quotes (> text) */
+.agent-message blockquote,
+.user-message blockquote {
+    margin: 8px 0;
+    padding: 8px 12px;
+    border-left: 4px solid var(--panel-separator-color);
+    background: color-mix(in srgb, var(--in-content-page-color) 3%, transparent);
+    border-radius: 0 4px 4px 0;
+}
+
+.agent-message blockquote p,
+.user-message blockquote p {
+    margin: 0;
+    font-style: italic;
+    opacity: 0.9;
+}
+
+/* Reminder cards - styled similar to blockquotes with dismiss button inline right */
+.tm-reminder-card {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 12px;
+    margin: 8px 0;
+    padding: 8px 12px;
+    border-left: 4px solid var(--panel-separator-color);
+    background: color-mix(in srgb, var(--in-content-page-color) 3%, transparent);
+    border-radius: 0 4px 4px 0;
+}
+
+.tm-reminder-card-text {
+    flex: 1 1 auto;
+    font-style: italic;
+    opacity: 0.9;
+}
+
+/* Reminder "don't show again" dismiss button - inline right-aligned */
+.tm-reminder-dismiss {
+    flex: 0 0 auto;
+    align-self: flex-end;
+    font-size: var(--tm-chat-font-ui-inputHint, 0.85em);
+    font-style: normal;
+    opacity: 0.4;
+    color: var(--in-content-page-color);
+    cursor: default;
+    transition: opacity 0.15s ease, color 0.15s ease;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.tm-reminder-dismiss:hover {
+    opacity: 1;
+    color: var(--in-content-accent-color);
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+#user-input {
+    width: 100%;
+    min-height: 40px;
+    max-height: 33vh;
+    padding: 8px;
+    box-sizing: border-box;
+    font-size: var(--tm-chat-font-msg-userInput);
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--in-content-box-background);
+    color: var(--in-content-page-color);
+    border: 1px solid var(--panel-separator-color);
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    outline: none;
+}
+
+/* Placeholder for contenteditable */
+#user-input:empty:before {
+    content: attr(data-placeholder);
+    color: color-mix(in srgb, var(--in-content-page-color) 40%, transparent);
+    pointer-events: none;
+    position: absolute;
+}
+
+/* FSM suggestions should be more prominent and visible even when focused */
+#user-input.has-fsm-suggestion:empty:before {
+    color: color-mix(in srgb, var(--in-content-page-color) 50%, transparent);
+    font-style: italic;
+}
+
+/* Retry suggestions follow same style as FSM suggestions */
+#user-input.has-retry-suggestion:empty:before {
+    color: color-mix(in srgb, var(--in-content-page-color) 50%, transparent);
+    font-style: italic;
+}
+
+/* Hide placeholder only when has content (keep visible when focused and empty for FSM suggestions) */
+#user-input:not(:empty):before {
+    content: '';
+}
+
+/* Email mention chips inside contenteditable */
+#user-input .email-mention-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--in-content-box-background);
+    border: 1.5px solid var(--in-content-accent-color);
+    border-radius: 12px;
+    padding: 1px 7px;
+    font-size: var(--tm-chat-font-msg-emailMentionChip);
+    line-height: 1.3;
+    color: var(--in-content-page-color);
+    cursor: default;
+    user-select: none;
+    vertical-align: baseline;
+    margin: 0 2px;
+    white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+#user-input .email-mention-chip:hover {
+    background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-box-background));
+    border-color: color-mix(in srgb, var(--in-content-accent-color) 130%, transparent);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+#user-input .email-mention-chip .chip-delete {
+    cursor: pointer;
+    font-weight: bold;
+    font-size: var(--tm-chat-font-msg-emailMentionChipDelete);
+    line-height: 1;
+    margin-left: 2px;
+    opacity: 0.6;
+    transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+#user-input .email-mention-chip .chip-delete:hover {
+    opacity: 1;
+    color: var(--tag-tm-delete);
+}
+
+/* Header and reload button */
+#chat-header {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    padding: 4px 12px;
+    background: var(--in-content-box-background);
+    border-bottom: 1px solid var(--panel-separator-color);
+}
+
+.header-spacer {
+    flex: 1;
+}
+
+#reload-btn {
+    background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: var(--tm-chat-font-ui-contextUsageLabel);
+    padding: 4px 8px;
+    color: var(--in-content-page-color);
+    opacity: 0.7;
+    white-space: nowrap;
+    transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+#reload-btn:hover {
+    opacity: 1;
+    background: color-mix(in srgb, var(--in-content-accent-color) 12%, transparent);
+}
+
+#reload-btn:focus-visible {
+    outline: 2px solid var(--in-content-accent-color);
+    outline-offset: 2px;
+}
+
+#new-topic-shortcut {
+    opacity: 0.7;
+    margin-left: 4px;
+}
+
+/* Context usage progress bar */
+#context-usage-container {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#context-usage-label {
+    font-size: var(--tm-chat-font-ui-contextUsageLabel);
+    color: var(--in-content-page-color);
+    white-space: nowrap;
+    opacity: 0.8;
+}
+
+#context-progress-bar {
+    width: 120px;
+    height: 8px;
+    background: var(--in-content-box-background);
+    border: 1px solid var(--panel-separator-color);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+}
+
+#context-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, 
+        var(--in-content-accent-color) 0%,
+        var(--in-content-accent-color) 70%,
+        var(--tag-tm-archive) 80%,
+        #ff6b6b 90%,
+        var(--tag-tm-delete) 100%
+    );
+    width: 0%;
+    transition: width 0.3s ease;
+    border-radius: 3px;
+}
+
+/* Loading animation for agent bubble */
+.agent-message .bubble-content,
+.user-message .bubble-content {
+    display: block;
+}
+
+/* Inline spinner as a leading character inside the bubble */
+.agent-message.loading .bubble-content > :first-child::before {
+    content: "";
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    margin-right: 6px;
+    vertical-align: text-bottom;
+    border: 2px solid color-mix(in srgb, var(--in-content-page-color) 25%, transparent);
+    border-top-color: var(--in-content-accent-color);
+    border-radius: 50%;
+    animation: tm-spin 0.8s linear infinite;
+}
+
+@keyframes tm-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+/* Fade/slide animation used for line-by-line streaming reveals */
+.tm-fade-swipe {
+    animation: tm-fade-down 180ms ease-out;
+}
+
+@keyframes tm-fade-down {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Tool activity icon inline with text */
+.agent-message.tool .bubble-content > :first-child::before {
+    content: "\2692"; /* hammer and pick (fallback emoji), behaves inline */
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: text-bottom;
+}
+
+/* Indent tool bubbles and mute them slightly */
+.agent-message.tool {
+    margin-left: 18px;
+    margin-bottom: 4px;
+    opacity: 0.85;
+    padding: 4px 8px;
+}
+
+/* Tool activity labels: truncate with ellipsis when too long */
+.agent-message.tool.loading .bubble-content {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+/* Selection lists should not display the tool icon while preserving indentation */
+.agent-message.tool .bubble-content > [data-tm-tool="email-selection-list"]::before {
+    content: none !important;
+}
+
+/* Indent user bubbles as part of tool sessions to visually group with tool flow */
+.user-message.tool {
+    margin-right: 18px;
+    margin-bottom: 4px;
+    opacity: 0.9;
+}
+
+/* Subtle grey background to distinguish tool activity - removed for cleaner look */
+.agent-message.tool {
+    background: transparent;
+    border-radius: 6px;
+}
+
+/* Fade-out transition for temporary tool bubbles and system messages */
+.agent-message.tool.tm-fade-out,
+.system-message.tm-fade-out {
+    opacity: 0;
+    transition: opacity 250ms ease;
+}
+
+/* =============================================
+   Tool Group Collapsible Container
+   ============================================= */
+
+.tool-group {
+    margin: 4px 0 8px 0;
+    border-left: 2px solid color-mix(in srgb, var(--in-content-accent-color) 40%, transparent);
+    border-radius: 0 6px 6px 0;
+    background: color-mix(in srgb, var(--in-content-page-color) 3%, transparent);
+    /* Prevent browser scroll anchoring during collapse animations */
+    overflow-anchor: none;
+}
+
+.tool-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    user-select: none;
+    font-size: var(--tm-chat-font-ui-toolGroupHeader);
+    color: color-mix(in srgb, var(--in-content-page-color) 70%, transparent);
+    transition: background-color 0.15s ease;
+}
+
+.tool-group-header:hover {
+    background: color-mix(in srgb, var(--in-content-accent-color) 8%, transparent);
+}
+
+.tool-group-toggle {
+    font-size: var(--tm-chat-font-ui-toolGroupToggle);
+    width: 12px;
+    text-align: center;
+    transition: transform 0.2s ease;
+}
+
+.tool-group-label {
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 300px;
+}
+
+.tool-group-content {
+    padding: 0 4px 4px 4px;
+    /* Prevent browser scroll anchoring during collapse animations */
+    overflow-anchor: none;
+    /* Position context for stacked/crossfade layout */
+    position: relative;
+}
+
+/* =============================================
+   Tool Bubble Fade Animation (content changes in place, no vertical movement)
+   ============================================= */
+
+/* Collapsed tool bubble - hidden but preserves data for expand */
+.tool-group-content .agent-message.tool.collapsed,
+.tool-group-content .user-message.tool.collapsed {
+    display: none;
+    pointer-events: none;
+}
+
+/* Fading in (new content appears smoothly) */
+.tool-group-content .agent-message.tool.fading-in,
+.tool-group-content .user-message.tool.fading-in {
+    animation: toolFadeIn 500ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes toolFadeIn {
+    0% { 
+        opacity: 0;
+        transform: translateY(-2px);
+    }
+    100% { 
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Visible tool bubble styling */
+.tool-group-content .agent-message.tool:not(.collapsed),
+.tool-group-content .user-message.tool:not(.collapsed) {
+    opacity: 1;
+}
+
+/* Fade-out transition for tool groups */
+.tool-group.tm-fade-out {
+    opacity: 0;
+    transition: opacity 250ms ease;
+}
+
+/* When expanded, show all bubbles in a list */
+.tool-group.expanded .tool-group-content .agent-message.tool,
+.tool-group.expanded .tool-group-content .user-message.tool {
+    display: block;
+    opacity: 1;
+    padding-top: 4px;
+    padding-bottom: 4px;
+    margin-bottom: 4px;
+    pointer-events: auto;
+}
+
+/* Expanded state shows bubbles with subtle separator */
+.tool-group.expanded .tool-group-content .agent-message.tool:not(:last-child),
+.tool-group.expanded .tool-group-content .user-message.tool:not(:last-child) {
+    border-bottom: 1px solid color-mix(in srgb, var(--panel-separator-color) 30%, transparent);
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+}
+
+/* Reset indentation for tool bubbles inside group (group provides the indent) */
+.tool-group-content .agent-message.tool {
+    margin-left: 8px;
+}
+
+.tool-group-content .user-message.tool {
+    margin-right: 8px;
+}
+
+/* =============================================
+   Tool Lists within Tool Groups
+   ============================================= */
+
+/* Email and recipient selection lists inside tool groups */
+.tool-group-content .email-selection-list,
+.tool-group-content .recipient-selection-list {
+    margin: 4px 0;
+    padding: 4px;
+    background: var(--in-content-box-background);
+    border: 1px solid var(--panel-separator-color);
+    border-radius: 4px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* Email item rows in tool group context - enhanced visibility */
+.tool-group-content .email-item-row {
+    background-color: color-mix(in srgb, var(--in-content-page-color) 4%, var(--in-content-box-background));
+    border-bottom: 1px solid color-mix(in srgb, var(--panel-separator-color) 50%, transparent);
+    padding: 6px 8px;
+    margin: 0;
+}
+
+.tool-group-content .email-item-row:last-child {
+    border-bottom: none;
+}
+
+.tool-group-content .email-item-row:hover,
+.tool-group-content .email-item-row.hovered {
+    background: color-mix(in srgb, var(--in-content-accent-color) 15%, var(--in-content-box-background));
+}
+
+/* Recipient rows in tool group context */
+.tool-group-content .recipient-row {
+    background-color: color-mix(in srgb, var(--in-content-page-color) 4%, var(--in-content-box-background));
+    border-bottom: 1px solid color-mix(in srgb, var(--panel-separator-color) 50%, transparent);
+    padding: 6px 8px;
+}
+
+.tool-group-content .recipient-row:last-child {
+    border-bottom: none;
+}
+
+.tool-group-content .recipient-row:hover,
+.tool-group-content .recipient-row.hovered {
+    background: color-mix(in srgb, var(--in-content-accent-color) 15%, var(--in-content-box-background));
+}
+
+/* Checkboxes in tool lists - use accent color */
+.tool-group-content input[type="checkbox"] {
+    accent-color: var(--in-content-accent-color);
+}
+
+/* Scrollbar styling for tool lists */
+.tool-group-content .email-selection-list::-webkit-scrollbar,
+.tool-group-content .recipient-selection-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.tool-group-content .email-selection-list::-webkit-scrollbar-track,
+.tool-group-content .recipient-selection-list::-webkit-scrollbar-track {
+    background: var(--in-content-box-background);
+}
+
+.tool-group-content .email-selection-list::-webkit-scrollbar-thumb,
+.tool-group-content .recipient-selection-list::-webkit-scrollbar-thumb {
+    background: var(--panel-separator-color);
+    border-radius: 3px;
+}
+
+.tool-group-content .email-selection-list::-webkit-scrollbar-thumb:hover,
+.tool-group-content .recipient-selection-list::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--in-content-accent-color) 50%, var(--panel-separator-color));
+}
+
+/* When both tool and loading are present, prefer the spinner */
+.agent-message.loading.tool .bubble-content > :first-child::before {
+    content: "";
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    margin-right: 6px;
+    vertical-align: text-bottom;
+    border: 2px solid color-mix(in srgb, var(--in-content-page-color) 25%, transparent);
+    border-top-color: var(--in-content-accent-color);
+    border-radius: 50%;
+    animation: tm-spin 0.8s linear infinite;
+}
+
+/* Error state for failed tool calls */
+.agent-message.tool.error .bubble-content > :first-child::before {
+    content: "✗"; /* xmark for error */
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: text-bottom;
+    color: var(--tag-tm-delete, #d70022); /* Use TabMail red/delete color */
+    font-weight: bold;
+}
+
+/* Error state takes precedence over loading when both are present */
+.agent-message.loading.tool.error .bubble-content > :first-child::before {
+    content: "✗";
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: text-bottom;
+    color: var(--tag-tm-delete, #d70022); /* Use TabMail red/delete color */
+    font-weight: bold;
+    animation: none;
+    border: none;
+    width: auto;
+    height: auto;
+}
+
+/* Retry bubbles: special styling for MCP retry attempts */
+.agent-message.tool.retry {
+    opacity: 0.75;
+}
+
+.agent-message.tool.retry.error .bubble-content > :first-child::before {
+    content: "↻"; /* retry symbol */
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: text-bottom;
+    color: var(--tag-tm-archive, #ff9500); /* Use TabMail yellow/archive color for warnings */
+    font-weight: bold;
+}
+
+/* Ensure first child doesn't add unexpected top spacing that would separate icon */
+.agent-message .bubble-content > :first-child {
+    margin-top: 0;
+}
+
+/* Input area (textarea + bottom toolbar) */
+#input-container {
+    display: flex;
+    flex-direction: column;
+    padding: 6px;
+    border-top: 1px solid var(--panel-separator-color);
+    box-sizing: border-box;
+    position: relative;
+    background: var(--in-content-box-background);
+}
+
+/* Textarea grows to fill available width */
+#input-container #user-input {
+    width: 100%;
+    margin: 0;
+}
+
+/* Toolbar holding icon buttons */
+#input-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding-top: 4px;
+}
+
+/* Send button styling */
+#send-btn {
+    background: var(--in-content-button-background);
+    border: 1px solid var(--panel-separator-color);
+    cursor: pointer;
+    font-size: var(--tm-chat-font-ui-sendBtn);
+    padding: 6px;
+    line-height: 1;
+    color: var(--in-content-button-color);
+    border-radius: 6px;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+#send-btn:hover {
+    background: var(--in-content-button-background-hover);
+}
+
+/* Stop mode styling - same colors as default, only shape differs */
+
+/* Retry mode styling */
+#send-btn.retry-mode {
+    background: color-mix(in srgb, var(--in-content-accent-color) 15%, var(--in-content-button-background));
+    border-color: var(--in-content-accent-color);
+    color: var(--in-content-accent-color);
+}
+
+#send-btn.retry-mode:hover {
+    background: color-mix(in srgb, var(--in-content-accent-color) 25%, var(--in-content-button-background));
+}
+
+
+
+/* suggestion overlay removed; we now use the textarea placeholder */
+
+/* Inline hint next to the send button to explain suggestion interface */
+.input-suggestion-hint {
+    align-self: center;
+    margin-right: auto; /* push hint to the left, send button to the right */
+    font-size: var(--tm-chat-font-ui-inputHint);
+    color: color-mix(in srgb, var(--in-content-page-color) 50%, transparent);
+    pointer-events: none;
+    user-select: none;
+}
+
+/* Selection indicator styling */
+.selection-indicator {
+    align-self: center;
+    font-size: var(--tm-chat-font-ui-selectionIndicator);
+    color: var(--in-content-page-color);
+    background: var(--in-content-box-background);
+    border: 1px solid var(--panel-separator-color);
+    border-radius: 4px;
+    padding: 2px 6px;
+    margin-right: 6px;
+    white-space: nowrap;
+    opacity: 0.7;
+    user-select: none;
+    transition: opacity 0.2s ease;
+}
+
+.selection-indicator.has-selection {
+    opacity: 1;
+    background: color-mix(in srgb, var(--in-content-accent-color) 15%, var(--in-content-box-background));
+    border-color: var(--in-content-accent-color);
+}
+
+/* Email selection list */
+.email-selection-list {
+    margin: 0;
+    max-width: 100%;
+}
+
+/* Recipient selection list */
+.recipient-selection-list {
+    margin: 0;
+    max-width: 100%;
+}
+
+/* Mention autocomplete dropdown (dropup style) */
+.mention-autocomplete-dropdown {
+    position: fixed;
+    background: var(--in-content-box-background);
+    border: 1px solid var(--panel-separator-color);
+    border-radius: 6px;
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
+    overflow-y: auto;
+    overflow-x: hidden;
+    z-index: 10000;
+    max-height: 180px; /* Max 3 items * 60px = 180px */
+}
+
+/* Show scrollbar always for consistency */
+.mention-autocomplete-dropdown::-webkit-scrollbar {
+    width: 8px;
+}
+
+.mention-autocomplete-dropdown::-webkit-scrollbar-track {
+    background: var(--in-content-box-background);
+}
+
+.mention-autocomplete-dropdown::-webkit-scrollbar-thumb {
+    background: var(--panel-separator-color);
+    border-radius: 4px;
+}
+
+.mention-autocomplete-dropdown::-webkit-scrollbar-thumb:hover {
+    background: var(--in-content-deemphasized-text);
+}
+
+.mention-autocomplete-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--panel-separator-color);
+    transition: background-color 0.1s ease;
+}
+
+.mention-autocomplete-item:last-child {
+    border-bottom: none;
+}
+
+.mention-autocomplete-item:hover,
+.mention-autocomplete-item.selected {
+    background: color-mix(in srgb, var(--in-content-accent-color) 15%, var(--in-content-box-background));
+}
+
+.mention-item-label {
+    font-weight: 500;
+    color: var(--in-content-page-color);
+    font-size: var(--tm-chat-font-msg-mentionItemLabel);
+    margin-bottom: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mention-item-description {
+    font-size: var(--tm-chat-font-msg-mentionItemDescription);
+    color: var(--in-content-deemphasized-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Mention chips overlay for textarea */
+.mention-chips-overlay {
+    position: absolute;
+    top: 6px; /* Match input-container padding */
+    left: 6px;
+    right: 6px;
+    bottom: auto;
+    padding: 8px;
+    pointer-events: none;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    font: inherit;
+    font-size: var(--tm-chat-font-msg-mentionOverlay);
+    line-height: 1.5;
+    z-index: 2;
+    display: none;
+    min-height: 40px;
+    max-height: calc(33vh - 12px);
+    overflow: hidden;
+}
+
+.mention-chips-overlay .mention-overlay-spacer {
+    visibility: hidden;
+    user-select: none;
+    pointer-events: none;
+    white-space: pre-wrap;
+}
+
+.mention-chips-overlay .mention-chip-overlay {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--in-content-box-background); /* Solid background to cover text underneath */
+    border: 1.5px solid var(--in-content-accent-color);
+    border-radius: 14px;
+    padding: 3px 10px;
+    font-size: var(--tm-chat-font-msg-emailMentionChip);
+    color: var(--in-content-page-color);
+    pointer-events: auto;
+    cursor: default;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+    vertical-align: middle;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    position: relative;
+    z-index: 3;
+    /* Add a subtle shadow to make it stand out */
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.mention-chips-overlay .mention-chip-overlay:hover {
+    background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-box-background));
+    border-color: color-mix(in srgb, var(--in-content-accent-color) 130%, transparent);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.mention-chips-overlay .mention-chip-delete-btn {
+    cursor: pointer;
+    font-weight: bold;
+    font-size: var(--tm-chat-font-msg-mentionChipDeleteBtn);
+    line-height: 1;
+    margin-left: 4px;
+    opacity: 0.6;
+    transition: opacity 0.15s ease, color 0.15s ease;
+    flex-shrink: 0;
+}
+
+.mention-chips-overlay .mention-chip-delete-btn:hover {
+    opacity: 1;
+    color: var(--tag-tm-delete);
+}
+
+/* Textarea with mention chips */
+#input-container {
+    position: relative;
+}
+
+#input-container #user-input {
+    position: relative;
+    z-index: 0;
+    background: var(--in-content-box-background);
+}
+
+/* When textarea has mention chips, we need to hide the [Email](id) text but show other text */
+#user-input.has-mention-chips {
+    color: var(--in-content-page-color);
+    /* We'll use a gradient/mask approach to hide [Email](id) portions */
+    /* For now, just lower the z-index so overlay chips appear on top */
+}
+
+/* Alternative: Use a background gradient to "cover" the [Email](id) text with overlay */
+#user-input.has-mention-chips {
+    position: relative;
+    z-index: 1;
+}
+
+/* Make the overlay sit on top */
+#input-container .mention-chips-overlay {
+    z-index: 2;
+}
+
+.recipient-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: background-color 0.15s ease;
+}
+
+.recipient-row:hover, .recipient-row.hovered {
+    background: color-mix(in srgb, var(--in-content-accent-color) 22%, var(--in-content-box-background));
+}
+
+.recipient-row.unchecked {
+    color: color-mix(in srgb, var(--in-content-page-color) 60%, transparent);
+}
+
+.recipient-row input[type="checkbox"] {
+    margin: 0 4px 0 0;
+}
+
+.name-col {
+    flex: 0 0 40%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.email-col {
+    flex: 0 0 60%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.email-item-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    margin: 0;
+    border-radius: 3px;
+    transition: background-color 0.15s ease;
+    background-color: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
+}
+
+.email-item-row:hover {
+    background: color-mix(in srgb, var(--in-content-accent-color) 22%, var(--in-content-box-background));
+}
+
+.email-item-row.hovered {
+    background: color-mix(in srgb, var(--in-content-accent-color) 22%, var(--in-content-box-background));
+}
+
+.email-item-row.unchecked {
+    color: color-mix(in srgb, var(--in-content-page-color) 60%, transparent);
+}
+
+.email-item-row input[type="checkbox"] {
+    margin: 0 4px 0 0;
+}
+
+.subject-col {
+    flex: 0 0 60%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.from-col {
+    flex: 0 0 20%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.date-col {
+    flex: 0 0 15%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.email-item-tooltip {
+    position: absolute;
+    max-width: 260px;
+    /* Use Thunderbird's built-in theme variables with enhanced contrast */
+    /* Make background slightly different from surrounding content for better visibility */
+    background-color: color-mix(in srgb, var(--arrowpanel-background) 95%, var(--arrowpanel-color));
+    border: 1.5px solid var(--arrowpanel-border-color);
+    border-radius: 4px;
+    padding: 6px 8px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    font-size: 13px;
+    line-height: 1.3;
+    color: var(--arrowpanel-color);
+    /* High z-index to appear above agent bubbles and other content */
+    z-index: 999999 !important;
+    pointer-events: none;
+    /* Ensure tooltip is fully opaque - no transparency */
+    opacity: 1 !important;
+    /* Force solid background - prevent any inherited transparency */
+    background-clip: padding-box;
+    /* Create new stacking context to escape parent opacity inheritance */
+    isolation: isolate;
+    will-change: opacity, transform;
+}
+
+.tooltip-todos {
+    margin: 4px 0 6px;
+    padding-left: 1em;
+    list-style: disc outside;
+    color: var(--arrowpanel-color);
+}
+
+.tooltip-summary {
+    margin: 4px 0 0;
+    max-width: 100%;
+    color: var(--arrowpanel-color);
+}
+
+.tooltip-todos strong,
+.tooltip-summary strong {
+    color: var(--arrowpanel-color);
+    font-weight: 600;
+}
+
+/* TabMail Special Links */
+.tm-link {
+    color: var(--in-content-accent-color, #0060df);
+    text-decoration: underline;
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 1px 2px;
+    transition: background-color 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.tm-link:hover {
+    background-color: var(--in-content-button-background-hover, rgba(255, 255, 255, 0.1));
+    text-decoration: none;
+    border-radius: 3px;
+}
+
+/* Individual link colors removed - all special links now use unified chip styling above */
+
+/* Better icon styling for TB theme */
+.tm-link {
+    font-size: 0.95em;
+}
+
+/* Icon styling */
+.tm-link .tm-icon {
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+/* TabMail Tooltips */
+.tm-tooltip {
+    position: fixed;
+    background-color: var(--in-content-box-background);
+    border: 1px solid var(--panel-separator-color);
+    border-radius: 6px;
+    padding: 8px 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    font-size: 13px;
+    line-height: 1.3;
+    color: var(--in-content-page-color);
+    z-index: 10000;
+    max-width: 400px;
+    pointer-events: auto;
+    display: none;
+}
+
+.tm-tooltip-title {
+    font-weight: bold;
+    margin-bottom: 6px;
+    color: var(--in-content-accent-color);
+    word-wrap: break-word;
+}
+
+.tm-tooltip-field {
+    margin: 3px 0;
+    word-wrap: break-word;
+}
+
+.tm-tooltip-field strong {
+    color: var(--in-content-text-color);
+    font-weight: 600;
+}
+
+.tm-tooltip-click {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--panel-separator-color);
+    color: var(--in-content-accent-color);
+    font-size: 12px;
+    font-style: italic;
+}
+
+/* Tooltip improvements */
+.tm-tooltip-link {
+    color: var(--in-content-accent-color);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.tm-tooltip-link:hover {
+    text-decoration: underline;
+}
+
+/* Horizontal scrolling for long content */
+.tm-tooltip {
+    overflow-x: auto;
+    overflow-y: visible;
+}
+
+.tm-tooltip-field {
+    white-space: nowrap;
+    overflow-x: auto;
+}

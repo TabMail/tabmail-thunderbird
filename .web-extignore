@@ -1,0 +1,16 @@
+# Keep docs out of the XPI
+TabMail_Release_Guide.md
+docs/
+README.md
+
+# Usual build/test folders not needed in XPI
+node_modules/
+tests/
+.git/
+.github/
+.env*
+*.key
+*.pem
+secrets/
+config.local.json
+dist/

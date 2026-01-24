@@ -1,0 +1,45 @@
+[
+  {
+    "namespace": "threadTooltip",
+    "description": "Expose init() to attach hover tooltips on threadTree rows that show summary and todo items.",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "description": "Initialise tooltip listeners for existing and future 3-pane windows.",
+        "parameters": [],
+        "async": false
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "description": "Remove tooltip listeners and clean up resources.",
+        "parameters": [],
+        "async": false
+      },
+      {
+        "name": "display",
+        "type": "function",
+        "description": "Display tooltip content computed by the background worker.",
+        "parameters": [
+          { "name": "msgId", "type": "string" },
+          { "name": "blurb", "type": "string" },
+          { "name": "todos", "type": "string" }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "name": "onHover",
+        "type": "function",
+        "description": "Fired when the user hovers over a message row. Payload includes headerId and folderUri.",
+        "parameters": [
+          {
+            "name": "payload",
+            "type": "object"
+          }
+        ]
+      }
+    ]
+  }
+] 

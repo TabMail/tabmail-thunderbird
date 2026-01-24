@@ -1,0 +1,89 @@
+[
+  {
+    "namespace": "tmUpdates",
+    "description": "Update notification bar and Thunderbird restart functionality.",
+    "types": [
+      {
+        "id": "NotificationOptions",
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Message to display in the notification bar"
+          },
+          "version": {
+            "type": "string",
+            "optional": true,
+            "description": "Version number to display"
+          }
+        }
+      },
+      {
+        "id": "NotificationAction",
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["dismiss", "restart"],
+            "description": "The action the user took"
+          }
+        }
+      }
+    ],
+    "functions": [
+      {
+        "name": "showUpdateBar",
+        "type": "function",
+        "description": "Show update notification bar in all 3-pane windows.",
+        "parameters": [
+          {
+            "name": "options",
+            "$ref": "NotificationOptions"
+          }
+        ],
+        "async": true
+      },
+      {
+        "name": "hideUpdateBar",
+        "type": "function",
+        "description": "Hide update notification bar from all windows.",
+        "parameters": [],
+        "async": true
+      },
+      {
+        "name": "restartThunderbird",
+        "type": "function",
+        "description": "Restart Thunderbird application.",
+        "parameters": [],
+        "async": true
+      },
+      {
+        "name": "isUpdateBarVisible",
+        "type": "function",
+        "description": "Check if update bar is currently visible in any window.",
+        "parameters": [],
+        "async": true
+      },
+      {
+        "name": "checkForUpdates",
+        "type": "function",
+        "description": "Manually trigger an addon update check.",
+        "parameters": [],
+        "async": true
+      }
+    ],
+    "events": [
+      {
+        "name": "onNotificationAction",
+        "type": "function",
+        "description": "Fired when user interacts with the notification bar.",
+        "parameters": [
+          {
+            "name": "action",
+            "$ref": "NotificationAction"
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,1208 @@
+/**
+ * TabMail Welcome Wizard CSS
+ * Mimics the tabmail-site landing page style
+ * Uses TabMail Palette System - theme colors injected from palette.data.json via palette.js
+ */
+
+/* Reset and base */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--in-content-page-background);
+  color: var(--in-content-page-color);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+/* Main container */
+#welcome-container {
+  width: 100%;
+  max-width: 780px;
+  min-height: 670px;
+  display: flex;
+  flex-direction: column;
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 16px;
+  padding: 28px 32px;
+  position: relative;
+}
+
+/* ============================================
+   Category Indicators (Labels + Bubbles)
+   ============================================ */
+#category-indicators {
+  display: flex;
+  justify-content: center;
+  gap: 32px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.category-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.category-label {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--in-content-page-color);
+  opacity: 0.35;
+  cursor: default;
+  transition: opacity 0.3s ease, color 0.3s ease;
+  padding: 4px 0;
+}
+
+.category-label.active {
+  opacity: 1;
+  color: var(--in-content-accent-color);
+}
+
+/* ============================================
+   Progress Bubbles (grouped under categories)
+   ============================================ */
+.category-bubbles {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.progress-bubble {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--panel-separator-color);
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.progress-bubble:hover {
+  background: color-mix(in srgb, var(--in-content-accent-color) 50%, transparent);
+}
+
+.progress-bubble.active {
+  background: var(--in-content-accent-color);
+  transform: scale(1.4);
+}
+
+.progress-bubble.completed {
+  background: var(--tag-tm-reply);
+}
+
+/* ============================================
+   Steps Wrapper
+   ============================================ */
+#steps-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.step {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 0 16px;
+  overflow-y: auto;
+}
+
+/* Single container mode - always visible */
+#step-container {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Loading and error placeholders */
+.loading-placeholder,
+.error-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 14px;
+  color: var(--in-content-page-color);
+  opacity: 0.6;
+}
+
+.error-placeholder {
+  color: var(--tag-tm-later);
+}
+
+/* ============================================
+   Welcome Hero (Step 0 - simplified)
+   ============================================ */
+.welcome-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  height: 100%;
+  width: 100%;
+  max-width: 80%;
+  padding: 40px 20px;
+  margin: 0 auto;
+}
+
+.logo-container {
+  margin-bottom: 48px;
+}
+
+.welcome-logo {
+  max-width: 320px;
+  height: auto;
+}
+
+/* Hide broken image icon when asset doesn't exist */
+.welcome-logo[src=""],
+.welcome-logo:not([src]),
+.asset-image[src=""],
+.asset-image:not([src]) {
+  display: none;
+}
+
+/* Show placeholder when image fails to load */
+.asset-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.welcome-title {
+  font-size: clamp(2rem, 4vw, 2.5rem);
+  font-weight: 600;
+  margin-bottom: 20px;
+  line-height: 1.3;
+  color: var(--in-content-page-color);
+}
+
+.welcome-tagline {
+  font-size: clamp(1.2rem, 2.5vw, 1.5rem);
+  font-weight: 400;
+  opacity: 0.8;
+  margin-bottom: 40px;
+  max-width: 600px;
+  line-height: 1.5;
+  color: var(--in-content-page-color);
+}
+
+.welcome-intro {
+  font-size: clamp(1.1rem, 2.2vw, 1.3rem);
+  font-weight: 500;
+  opacity: 0.65;
+  max-width: 550px;
+  line-height: 1.5;
+  color: var(--in-content-page-color);
+}
+
+/* ============================================
+   Step Titles and Descriptions
+   ============================================ */
+.step-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+  margin-bottom: 8px;
+}
+
+.step-description {
+  font-size: 15px;
+  color: var(--in-content-page-color);
+  opacity: 0.75;
+  max-width: 450px;
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+
+.step-description .hint {
+  display: block;
+  font-size: 14px;
+  opacity: 0.6;
+  margin-top: 6px;
+}
+
+.step-content {
+  width: 100%;
+  max-width: 680px;
+  text-align: left;
+}
+
+/* ============================================
+   Asset Image Placeholders
+   ============================================ */
+.option-preview-large,
+.feature-screenshot-large {
+  position: relative;
+}
+
+/* Placeholder overlay - shows when image is missing */
+.placeholder-overlay,
+.placeholder-label {
+  position: absolute;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--in-content-page-color);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* Hide placeholder when image loads successfully */
+.option-preview-large:has(.asset-image:not([src=""]):not(:only-child)) .placeholder-overlay,
+.feature-screenshot-large:has(.asset-image:not([src=""]):not(:only-child)) .placeholder-label {
+  /* Will hide when image is present */
+}
+
+/* ============================================
+   Large Option Cards (full-page selections)
+   ============================================ */
+.option-cards-large {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.option-card-large {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  background: var(--in-content-page-background);
+  border: 2px solid var(--panel-separator-color);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex: 1;
+  min-width: 280px;
+  max-width: 320px;
+}
+
+.option-card-large:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, var(--in-content-page-background));
+}
+
+.option-card-large:has(input:checked) {
+  border-color: var(--in-content-accent-color);
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-page-background));
+}
+
+.option-card-large input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.option-preview-large {
+  width: 100%;
+  height: 180px; /* ← ADJUST: default height for option card previews */
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  background: color-mix(in srgb, var(--in-content-accent-color) 6%, var(--in-content-page-background));
+  border: 1px dashed var(--panel-separator-color);
+}
+
+/* ============================================
+   MANUAL ADJUSTMENT: View-mode & Sort-order preview heights
+   - Reduce these to crop more from bottom and shorten the page
+   ============================================ */
+.view-options .option-preview-large {
+  height: 150px; /* ← ADJUST: Card/Table view preview height (default 180px) */
+}
+
+.sort-options .option-preview-large {
+  height: 160px; /* ← ADJUST: Sort order preview height (default 180px) */
+}
+
+/* Special container for view previews to enable proper zoom/crop */
+.view-preview {
+  position: relative;
+  overflow: hidden;
+}
+
+/* When image loads, remove dashed border */
+.option-preview-large:has(.asset-image[src]:not([src=""])) {
+  border-style: solid;
+}
+
+.option-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+}
+
+.option-description {
+  font-size: 11px;
+  color: var(--in-content-page-color);
+  opacity: 0.6;
+  text-align: center;
+}
+
+/* Theme previews - fallback backgrounds */
+.theme-preview-light {
+  background: #fff;
+  border-color: #ededf0;
+}
+
+.theme-preview-dark {
+  background: #1c1b22;
+  border-color: #2b2a33;
+}
+
+.theme-preview-dark .placeholder-overlay {
+  color: #fbfbfe;
+}
+
+/* Option cards layout variations */
+.option-cards-row {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.option-cards-row.system-option {
+  margin-top: 16px;
+}
+
+/* Inline option card (for system/follow option) */
+.option-card-inline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--in-content-page-background);
+  border: 2px solid var(--panel-separator-color);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.option-card-inline:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, var(--in-content-page-background));
+}
+
+.option-card-inline:has(input:checked) {
+  border-color: var(--in-content-accent-color);
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-page-background));
+}
+
+.option-card-inline input[type="radio"] {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.option-card-inline .option-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.option-card-inline .option-description {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+/* View previews */
+.view-preview {
+  background: var(--in-content-box-background);
+  border-color: var(--panel-separator-color);
+}
+
+/* Crop/zoom view mode images to show 20%-60% width region, starting 10% from top */
+.view-preview .asset-image {
+  width: 100%;
+  height: auto;
+  object-fit: cover; /* Fill container while maintaining aspect ratio */
+  object-position: 34% 13%; /* Position: 40% horizontally (centers 20-60% region), 10% from top */
+  /* Use transform scale to control zoom - this is more predictable than width percentage */
+  transform: scale(2.5); /* zoom - adjust this value to control zoom level */
+  transform-origin: 34% 13%; /* Scale from the crop position point */
+}
+
+/* Sort preview visual */
+.sort-preview {
+  background: var(--in-content-box-background);
+  border-color: var(--panel-separator-color);
+  padding: 8px;
+}
+
+.sort-visual {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.sort-item {
+  background: color-mix(in srgb, var(--in-content-accent-color) 12%, transparent);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--in-content-page-color);
+  opacity: 0.7;
+}
+
+.sort-item.newest {
+  opacity: 1;
+  font-weight: 500;
+}
+
+.sort-item.oldest {
+  opacity: 0.5;
+}
+
+/* ============================================
+   Setting Groups (Calendar/Contacts step)
+   ============================================ */
+.setting-group-full {
+  margin-bottom: 24px;
+}
+
+.setting-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+  margin-bottom: 8px;
+}
+
+.setting-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--in-content-page-color);
+  opacity: 0.6;
+  margin-top: 6px;
+}
+
+select {
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 14px;
+  background: var(--in-content-page-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+select:focus {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 2px;
+}
+
+/* ============================================
+   Info and Status Boxes
+   ============================================ */
+.info-box {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  background: color-mix(in srgb, var(--in-content-accent-color) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--in-content-accent-color) 25%, transparent);
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.info-text {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.info-text strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--in-content-page-color);
+}
+
+.info-text p {
+  color: var(--in-content-page-color);
+  opacity: 0.8;
+  margin: 0;
+}
+
+.status-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.status-box.success {
+  border-color: var(--tag-tm-reply);
+  background: color-mix(in srgb, var(--tag-tm-reply) 10%, transparent);
+}
+
+.status-box.warning {
+  border-color: var(--tag-tm-archive);
+  background: color-mix(in srgb, var(--tag-tm-archive) 10%, transparent);
+}
+
+.action-button {
+  width: 100%;
+  padding: 12px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--in-content-accent-color);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.action-button:hover {
+  filter: brightness(1.1);
+}
+
+.action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.secondary-button {
+  padding: 12px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--in-content-accent-color);
+  border: 1px solid var(--in-content-accent-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.secondary-button:hover {
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, transparent);
+}
+
+/* ============================================
+   Inbox Optimization Step
+   ============================================ */
+.inbox-stats-box {
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+}
+
+.inbox-stats-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  font-size: 14px;
+}
+
+.inbox-stats-row:not(:last-child) {
+  border-bottom: 1px solid var(--panel-separator-color);
+}
+
+.inbox-stats-label {
+  color: var(--in-content-deemphasized-text);
+}
+
+.inbox-stats-value {
+  font-weight: 600;
+  color: var(--in-content-text-color);
+}
+
+.inbox-stats-highlight {
+  color: var(--in-content-accent-color);
+}
+
+.inbox-weeks-select {
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid var(--in-content-accent-color);
+  border-radius: 4px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-accent-color);
+  cursor: pointer;
+}
+
+.inbox-weeks-select:focus {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 1px;
+}
+
+.inbox-progress-bar-bg {
+  height: 8px;
+  background: var(--in-content-button-background);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.inbox-progress-bar {
+  height: 100%;
+  background: var(--in-content-accent-color);
+  border-radius: 4px;
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+.inbox-progress-text {
+  font-size: 13px;
+  color: var(--in-content-deemphasized-text);
+  margin-top: 8px;
+  text-align: center;
+}
+
+/* ============================================
+   Feature Showcase (Interface intro steps)
+   ============================================ */
+.feature-showcase {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  align-items: center;
+}
+
+/* Reduce gap when using feature-description instead of feature-list */
+.feature-showcase:has(.feature-description) {
+  gap: 12px;
+}
+
+.feature-screenshot-large {
+  width: 100%;
+  max-width: 400px;
+  height: 200px;
+  background: color-mix(in srgb, var(--in-content-accent-color) 6%, var(--in-content-page-background));
+  border: 2px dashed var(--panel-separator-color);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Feature screenshots in step-content - global height constraint, auto width */
+.step-content .feature-screenshot-large {
+  border-radius: 0;
+  margin-left: auto;
+  margin-right: auto;
+  height: 300px;
+  width: auto;
+  min-width: 200px;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+.step-content .feature-screenshot-large .asset-image {
+  height: 100%;
+  width: auto;
+  display: block;
+  object-fit: contain;
+}
+
+/* Apply view-preview zoom styles when view-preview class is present */
+.step-content .feature-screenshot-large.view-preview .asset-image {
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+  object-position: 34% 13%;
+  transform: scale(2.5);
+  transform-origin: 34% 13%;
+}
+
+/* Ensure placeholder label is visible and centered when no image */
+.step-content .feature-screenshot-large .placeholder-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+/* When image loads, remove dashed border */
+.feature-screenshot-large:has(.asset-image[src]:not([src=""])) {
+  border-style: solid;
+}
+
+.feature-details {
+  width: 100%;
+  max-width: 600px;
+  text-align: center;
+}
+
+.feature-description {
+  font-size: 14px;
+  color: var(--in-content-page-color);
+  opacity: 0.75;
+  line-height: 1.6;
+  margin: 0;
+  padding: 12px 0;
+}
+
+.feature-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.feature-list li {
+  position: relative;
+  padding: 8px 0 8px 24px;
+  font-size: 13px;
+  color: var(--in-content-page-color);
+  opacity: 0.85;
+  line-height: 1.4;
+}
+
+.feature-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  width: 8px;
+  height: 8px;
+  background: var(--in-content-accent-color);
+  border-radius: 50%;
+  opacity: 0.6;
+}
+
+/* ============================================
+   Ready Message
+   ============================================ */
+.ready-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--tag-tm-reply) 10%, transparent);
+  border: 1px solid var(--tag-tm-reply);
+  border-radius: 10px;
+  margin-top: 20px;
+}
+
+.ready-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--in-content-page-color);
+}
+
+/* ============================================
+   Navigation Buttons
+   ============================================ */
+#navigation {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--panel-separator-color);
+}
+
+.nav-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 28px;
+  font-size: 14px;
+  font-weight: 500;
+  background: var(--in-content-button-background);
+  color: var(--in-content-button-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.2s ease, filter 0.2s ease;
+}
+
+.nav-button:hover:not(:disabled) {
+  background: var(--in-content-button-background-hover);
+}
+
+.nav-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.nav-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.nav-button.primary {
+  background: var(--in-content-accent-color) !important;
+  color: #fff !important;
+  border-color: var(--in-content-accent-color) !important;
+  opacity: 1 !important;
+}
+
+.nav-button.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+  background: var(--in-content-accent-color) !important;
+  color: #fff !important;
+}
+
+.nav-button.primary:disabled {
+  opacity: 1 !important;
+  background: color-mix(in srgb, var(--in-content-accent-color) 40%, var(--in-content-page-background)) !important;
+  color: var(--in-content-page-color) !important;
+  border-color: var(--panel-separator-color) !important;
+  cursor: not-allowed;
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+@media (max-width: 600px) {
+  body {
+    padding: 16px;
+  }
+
+  #welcome-container {
+    padding: 20px;
+    min-height: auto;
+  }
+
+  #category-labels {
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .category-label {
+    font-size: 10px;
+  }
+
+  .step-title {
+    font-size: 18px;
+  }
+
+  .option-cards-large {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .option-card-large {
+    max-width: 100%;
+    width: 100%;
+  }
+}
+
+/* ============================================
+   Diff Styling (deletions and additions)
+   Uses the same color scheme as compose autocomplete (selected style)
+   ============================================ */
+.diff-insert,
+[data-diff="insert"] {
+  background-color: var(--tm-insert-selbg-light, rgba(0, 163, 0, 0.40));
+  color: var(--tm-insert-seltext-light, #5a6272);
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+
+.diff-delete,
+[data-diff="delete"] {
+  background-color: var(--tm-delete-selbg-light, rgba(238, 17, 17, 0.40));
+  color: inherit;
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .diff-insert,
+  [data-diff="insert"] {
+    background-color: var(--tm-insert-selbg-dark, rgba(0, 163, 0, 0.30));
+    color: var(--tm-insert-seltext-dark, #d4d7dd);
+  }
+  
+  .diff-delete,
+  [data-diff="delete"] {
+    background-color: var(--tm-delete-selbg-dark, rgba(238, 17, 17, 0.30));
+  }
+}
+
+/* ============================================
+   Keyboard Shortcut Styling
+   ============================================ */
+.keyboard-shortcut {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 6px;
+  margin: 0 2px;
+  background: var(--in-content-button-background);
+  color: var(--in-content-button-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 0.5px;
+  line-height: 1.4;
+  opacity: 0.9;
+}
+
+/* ============================================
+   Large Checkbox Option (for settings pages)
+   ============================================ */
+.checkbox-option-large {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: var(--in-content-page-background);
+  border: 2px solid var(--panel-separator-color);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.checkbox-option-large:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, var(--in-content-page-background));
+}
+
+.checkbox-option-large:has(input:checked) {
+  border-color: var(--in-content-accent-color);
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-page-background));
+}
+
+.checkbox-option-large input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  flex-shrink: 0;
+  accent-color: var(--in-content-accent-color);
+}
+
+.checkbox-option-large .checkbox-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+}
+
+/* ============================================
+   Recommendation Box
+   ============================================ */
+.recommendation-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--tag-tm-archive) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tag-tm-archive) 30%, transparent);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.recommendation-box strong {
+  color: var(--in-content-page-color);
+}
+
+.recommendation-box p {
+  margin: 0;
+  color: var(--in-content-page-color);
+  opacity: 0.8;
+  line-height: 1.5;
+}
+
+/* ============================================
+   Callout Cards (images with spotlight overlays)
+   ============================================ */
+:root {
+  /* Layout */
+  --tm-welcome-callout-media-gap: 12px;
+  --tm-welcome-callout-media-radius: 10px;
+  --tm-welcome-callout-media-border-width: 1px;
+
+  /* Spotlight */
+  --tm-welcome-callout-spot-size: 18px;
+  --tm-welcome-callout-spot-border-width: 2px;
+  --tm-welcome-callout-spot-halo-width: 10px;
+  --tm-welcome-callout-spot-accent-mix: 18%;
+
+  /* Label */
+  --tm-welcome-callout-label-font-size: 12px;
+  --tm-welcome-callout-label-padding-y: 8px;
+  --tm-welcome-callout-label-padding-x: 10px;
+  --tm-welcome-callout-label-radius: 8px;
+  --tm-welcome-callout-label-border-width: 1px;
+  --tm-welcome-callout-label-shadow-mix: 18%;
+  --tm-welcome-callout-label-arrow-size: 8px;
+}
+
+.welcome-callout-card {
+  text-align: left;
+}
+
+.welcome-callout-media {
+  position: relative;
+  margin-top: var(--tm-welcome-callout-media-gap);
+  border-radius: var(--tm-welcome-callout-media-radius);
+  overflow: hidden;
+  border: var(--tm-welcome-callout-media-border-width) solid var(--panel-separator-color);
+  background: var(--in-content-box-background);
+}
+
+.welcome-callout-media .asset-image {
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: cover;
+}
+
+.welcome-callout-spotlight {
+  position: absolute;
+  left: var(--tm-welcome-callout-x, 50%);
+  top: var(--tm-welcome-callout-y, 50%);
+  width: var(--tm-welcome-callout-size, var(--tm-welcome-callout-spot-size));
+  height: var(--tm-welcome-callout-size, var(--tm-welcome-callout-spot-size));
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  border: var(--tm-welcome-callout-spot-border-width) solid var(--in-content-accent-color);
+  box-shadow: 0 0 0 var(--tm-welcome-callout-spot-halo-width)
+    color-mix(in srgb, var(--in-content-accent-color) var(--tm-welcome-callout-spot-accent-mix), transparent);
+  pointer-events: none;
+}
+
+.welcome-callout-label {
+  position: absolute;
+  left: var(--tm-welcome-callout-label-x, 50%);
+  top: var(--tm-welcome-callout-label-y, 20%);
+  transform: translate(-50%, -50%);
+  max-width: 80%;
+  font-size: var(--tm-welcome-callout-label-font-size);
+  line-height: 1.35;
+  padding: var(--tm-welcome-callout-label-padding-y) var(--tm-welcome-callout-label-padding-x);
+  border-radius: var(--tm-welcome-callout-label-radius);
+  color: var(--in-content-page-color);
+  background: var(--in-content-box-background);
+  border: var(--tm-welcome-callout-label-border-width) solid var(--panel-separator-color);
+  box-shadow: 0 8px 22px
+    color-mix(in srgb, var(--in-content-page-color) var(--tm-welcome-callout-label-shadow-mix), transparent);
+  pointer-events: none;
+}
+
+.welcome-callout-label::after {
+  content: "";
+  position: absolute;
+  left: 16%;
+  bottom: calc(var(--tm-welcome-callout-label-arrow-size) * -1);
+  width: 0;
+  height: 0;
+  border-left: var(--tm-welcome-callout-label-arrow-size) solid transparent;
+  border-right: var(--tm-welcome-callout-label-arrow-size) solid transparent;
+  border-top: var(--tm-welcome-callout-label-arrow-size) solid var(--in-content-box-background);
+  filter: drop-shadow(
+    0 2px 2px
+      color-mix(in srgb, var(--in-content-page-color) var(--tm-welcome-callout-label-shadow-mix), transparent)
+  );
+}
+
+/* Text-top callout layout (tip text on top, image below) */
+.welcome-callout-card--text-top {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+/* Inline tip: "ℹ️ Tip" and text on same line */
+.welcome-callout-inline-tip {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.3;
+  opacity: 0.85;
+}
+
+.welcome-callout-inline-tip strong {
+  margin-right: 4px;
+}
+
+/* Medium callout media (70% width, centered) */
+.welcome-callout-media--medium {
+  width: 70%;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 4px;
+}
+
+/* ============================================
+   MANUAL ADJUSTMENT: Callout image cropping
+   - max-height: controls how tall the image area is (smaller = more cropped)
+   - object-position: which part of image to show (top/center/bottom)
+   ============================================ */
+
+/* View-mode callout: crop bottom to keep page height manageable */
+.welcome-callout-media--toggle-menu {
+  max-height: 70px; /* ← ADJUST: increase to show more, decrease to crop more */
+}
+
+.welcome-callout-media--toggle-menu .asset-image {
+  object-fit: cover;
+  object-position: top center; /* Shows top portion of image */
+}
+
+/* Sort-order callout: shorter image */
+.welcome-callout-media--sort-arrow {
+  max-height: 70px; /* ← ADJUST: increase to show more, decrease to crop more */
+}
+
+.welcome-callout-media--sort-arrow .asset-image {
+  object-fit: cover;
+  object-position: top center; /* Shows top portion of image */
+}
+
+/* Downward-pointing arrow indicator (inside image, pointing at button) */
+.welcome-callout-arrow {
+  position: absolute;
+  top: 2px;
+  left: var(--tm-welcome-arrow-x, 50%);
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 9px solid var(--in-content-accent-color);
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+}
+
+/* Toggle-menu arrow positioning (≡ menu button, second from right) */
+.welcome-callout-arrow--toggle-menu {
+  --tm-welcome-arrow-x: 88%;
+}
+
+/* Sort-arrow arrow positioning (rightmost arrow button) */
+.welcome-callout-arrow--sort-arrow {
+  --tm-welcome-arrow-x: 95%; /* ← ADJUST: move left (smaller) or right (larger) */
+}
+
+/* Add spacing between view option cards */
+.view-options--spaced {
+  margin-bottom: 16px;
+}

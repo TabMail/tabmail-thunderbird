@@ -1,0 +1,22 @@
+[
+  {
+    "namespace": "threadPaneDisplayToggle",
+    "description": "Override the built-in thread pane display options button (threadPaneDisplayButton) to toggle relaxed vs compact (Card vs Table) view in TB 145 (MV3).",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "description": "Attach to all open 3-pane windows and override the thread pane display button.",
+        "parameters": [],
+        "async": false
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "description": "Remove listeners and restore the original button behavior/icon where possible.",
+        "parameters": [],
+        "async": false
+      }
+    ]
+  }
+]

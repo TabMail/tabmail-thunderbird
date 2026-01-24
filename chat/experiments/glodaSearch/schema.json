@@ -1,0 +1,80 @@
+[
+  {
+    "namespace": "glodaSearch",
+    "description": "TabMail experiment API to access Gloda (Global Database) for full-text mail search in TB 140.",
+    "functions": [
+      {
+        "name": "searchMessagesQuery",
+        "type": "function",
+        "description": "Single-string fast search. Unquoted words are AND terms; a quoted phrase (\"...\") is treated as one token. Uses date window + keyset-paginated FTS for speed.",
+        "async": true,
+        "parameters": [
+          { "name": "query", "type": "string" },
+          { "name": "from", "type": "string", "optional": true },
+          { "name": "to",   "type": "string", "optional": true },
+          { "name": "limit", "type": "integer", "optional": true },
+          { "name": "ignoreDate", "type": "boolean", "optional": true }
+        ],
+        "returns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "headerId": { "type": "string" },
+              "headerMessageId": { "type": "string" },
+              "weMsgId": { "type": "integer" },
+              "weFolderId": { "type": "string" },
+              "msgKey": { "type": "integer" },
+              "subject": { "type": "string" },
+              "author": { "type": "string" },
+              "dateMs": { "type": "integer" },
+              "folderUri": { "type": "string" }
+            }
+          }
+        }
+      }
+      ,
+      {
+        "name": "getConversationMessages",
+        "type": "function",
+        "description": "Given a WebExtension message id, return all messages in the same Gloda conversation (cross-folder).",
+        "async": true,
+        "parameters": [
+          { "name": "weMsgId", "type": "integer" },
+          { "name": "options", "type": "object", "optional": true,
+            "properties": {
+              "maxMessages": { "type": "integer", "optional": true }
+            }
+          }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "success": { "type": "boolean" },
+            "error": { "type": "string" },
+            "conversationId": { "type": "string" },
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "headerMessageId": { "type": "string" },
+                  "weMsgId": { "type": "integer" },
+                  "weFolderId": { "type": "string" },
+                  "msgKey": { "type": "integer" },
+                  "subject": { "type": "string" },
+                  "author": { "type": "string" },
+                  "dateMs": { "type": "integer" },
+                  "folderUri": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+]
+
+
+

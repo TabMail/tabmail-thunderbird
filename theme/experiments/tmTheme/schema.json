@@ -1,0 +1,40 @@
+[
+  {
+    "namespace": "tmTheme",
+    "description": "Injects TabMail theme CSS for Card View and Table View text colors and related tweaks (TB 141+, MV3).",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "async": true,
+        "description": "Initialize theme CSS injection across all 3-pane windows.",
+        "parameters": [{"name":"opts","type":"any","optional": true}]
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "async": true,
+        "description": "Remove injected CSS and cleanup listeners from all windows.",
+        "parameters": []
+      },
+      {
+        "name": "setFlag",
+        "type": "function",
+        "async": false,
+        "description": "Update a tmTheme runtime flag without full re-init.",
+        "parameters": [
+          {"name":"flagName","type":"string"},
+          {"name":"value","type":"any"}
+        ]
+      },
+      {
+        "name": "recolorNow",
+        "type": "function",
+        "async": false,
+        "description": "Recolor visible rows/cards now after flag changes (no full re-init).",
+        "parameters": [{"name":"reason","type":"string","optional": true}]
+      }
+    ]
+  }
+]
+

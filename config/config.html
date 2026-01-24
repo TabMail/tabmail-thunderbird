@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TabMail Settings</title>
+  <link rel="stylesheet" href="config.css" />
+</head>
+<body>
+  <div id="page">
+    <header>
+      <div class="header-row">
+        <div class="header-content">
+          <h2>TabMail Settings</h2>
+          <p class="header-description">Configure your TabMail preferences and integrations</p>
+        </div>
+        <button id="rerun-welcome-wizard" class="header-button" title="Open the welcome wizard again">Rerun Welcome Wizard</button>
+      </div>
+    </header>
+
+    <section id="plan-usage-settings">
+      <div id="plan-status-row">
+        <span id="plan-status-label">Plan: Loading...</span>
+        <button id="upgrade-to-pro-btn" style="display: none;">Upgrade to Pro</button>
+        <button id="refresh-usage" title="Refresh usage">Refresh</button>
+      </div>
+      <div id="usage-separator"></div>
+      <div id="usage-container">
+        <div id="usage-label">Monthly usage: N/A</div>
+        <progress id="usage-bar" value="0" max="100"></progress>
+        <div id="usage-status-right">
+          <div id="usage-reset"></div>
+          <div id="subscription-status" style="display: none;"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== SIMPLE MODE SECTIONS ==================== -->
+
+    <section id="appearance-settings">
+      <h3>Appearance</h3>
+      
+      <!-- Theme (the rest of appearance controls moved to header buttons in TB UI) -->
+      <div class="appearance-theme-only">
+        <div class="appearance-theme-cell">
+          <label class="grid-cell-label">Theme</label>
+          <div class="visual-options">
+            <label class="visual-option-card">
+              <input type="radio" name="theme" id="theme-light" value="light" />
+              <div class="visual-option-preview theme-preview-light">
+                <img src="../welcome/assets/light-card-view.webp" alt="Light Theme" />
+              </div>
+              <span class="visual-option-label">Light</span>
+            </label>
+            <label class="visual-option-card">
+              <input type="radio" name="theme" id="theme-dark" value="dark" />
+              <div class="visual-option-preview theme-preview-dark">
+                <img src="../welcome/assets/dark-card-view.webp" alt="Dark Theme" />
+              </div>
+              <span class="visual-option-label">Dark</span>
+            </label>
+            <label class="visual-option-card">
+              <input type="radio" name="theme" id="theme-system" value="system" checked />
+              <div class="visual-option-preview theme-preview-system" aria-label="Follow system theme preview">
+                <div class="theme-split-diagonal">
+                  <img
+                    class="theme-split-img theme-split-img-light"
+                    src="../welcome/assets/light-card-view.webp"
+                    alt="Light preview"
+                  />
+                  <img
+                    class="theme-split-img theme-split-img-dark"
+                    src="../welcome/assets/dark-card-view.webp"
+                    alt="Dark preview"
+                  />
+                </div>
+              </div>
+              <span class="visual-option-label">Follow System</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-full" style="margin-top: 24px;">
+        <label>Fonts</label>
+        <div style="display: flex; gap: 24px; align-items: baseline;">
+          <div style="display: flex; align-items: baseline; gap: 8px;">
+            <span style="font-size: 0.9em;">GUI</span>
+            <input type="number" id="font-size-ui" min="9" max="24" step="1" style="width: 60px;" />
+          </div>
+          <div style="display: flex; align-items: baseline; gap: 8px;">
+            <span style="font-size: 0.9em;">Message</span>
+            <input type="number" id="font-size-message" min="10" max="28" step="1" style="width: 60px;" />
+          </div>
+          <div style="display: flex; align-items: baseline; gap: 8px;">
+            <span style="font-size: 0.9em;">Monospace</span>
+            <input type="number" id="font-size-monospace" min="10" max="28" step="1" style="width: 60px;" />
+          </div>
+        </div>
+        <small style="display: block; margin-top: 8px;">Font sizes in pixels. GUI affects menus/toolbars. Message affects email body. Monospace affects code blocks.</small>
+      </div>
+
+      <div class="field" style="margin-top: 24px;">
+        <label>Compose Window</label>
+        <div style="margin-top: 8px;">
+          <label class="checkbox-option">
+            <input type="checkbox" id="compose-hints-banner" checked />
+            <span>Show keyboard hints</span>
+          </label>
+        </div>
+        <small style="display: block; margin-top: 4px;">Shows shortcuts like Tab to accept, Shift-Tab to accept all, ⌘K to edit when suggestions are available.</small>
+      </div>
+      <div class="field" style="margin-top: 16px;">
+        <label>Tag by Thread</label>
+        <div style="margin-top: 8px;">
+          <label class="checkbox-option">
+            <input type="checkbox" id="tag-by-thread-enabled" />
+            <span>Group action tags by thread -- use a SINGLE tag per thread </span>
+          </label>
+        </div>
+        <small style="display: block; margin-top: 4px;">
+          When enabled, TabMail shows the <strong>highest-priority</strong> action tag across the whole thread on every message in that thread.
+        </small>
+      </div>
+      <div id="appearance-status" class="field">
+        <small id="appearance-status-text"></small>
+      </div>
+    </section>
+
+    <section id="reminder-basic-settings">
+      <h3>Reminders</h3>
+      <div class="field">
+        <label for="max-reminders-to-show-basic" title="Number of reminders to display when opening chat (1-5)">Reminders to Show</label>
+        <input type="number" id="max-reminders-to-show-basic" min="1" max="5" step="1" style="width: 80px;" />
+        <small style="display: block; margin-top: 4px;">Number of reminders shown when you open the chat interface. Default: 3.</small>
+      </div>
+    </section>
+
+    <section id="inbox-settings">
+      <h3>Inbox</h3>
+      <div class="field">
+        <label>Inbox Optimization</label>
+        <div style="margin-top: 8px;">
+          <button id="open-archive-prompt" class="action-button">Archive Old Emails</button>
+        </div>
+        <small style="display: block; margin-top: 4px;">For optimal triage, keep only active emails in your inbox. Archive older emails to reduce clutter.</small>
+      </div>
+    </section>
+
+    <section id="contacts-settings">
+      <h3>Contacts Settings</h3>
+      <div class="row has-label">
+        <label for="default-addressbook">Default Address Book</label>
+        <select id="default-addressbook">
+          <option value="">Loading address books...</option>
+        </select>
+      </div>
+      <div class="field">
+        <small>Select the default address book used by contacts tools (add/edit/delete).</small>
+      </div>
+    </section>
+
+    <section id="calendar-settings">
+      <h3>Calendar Settings</h3>
+      <div class="row has-label">
+        <label for="default-calendar">Default Calendar</label>
+        <select id="default-calendar">
+          <option value="">Loading calendars...</option>
+        </select>
+      </div>
+      <div class="field">
+        <small>Select the default calendar for creating new events when no specific calendar is requested.</small>
+      </div>
+    </section>
+
+    <section id="fts-settings">
+      <h3>Full Text Search (FTS)</h3>
+      <div class="field">
+        <small><strong>Native FTS:</strong> Full-text email search powered by SQLite FTS5 via native helper. Always enabled for optimal performance.</small>
+      </div>
+      
+      <!-- Native FTS version info (shown in both simple and debug mode) -->
+      <div class="field" id="fts-version-info">
+        <small><strong>Version:</strong> <span id="fts-host-version">Loading...</span></small>
+      </div>
+      
+      <!-- Simple mode: Full Maintenance Scan, Full Reindex, Refresh, and Check for Updates buttons -->
+      <div id="fts-simple-controls" class="row">
+        <button id="fts-smart-reindex" title="Run a full maintenance scan now - checks all messages for missing or stale index entries">Full Maintenance Scan</button>
+        <button id="fts-reindex-all" title="Clear and rebuild entire index (slow but thorough)">Full Reindex</button>
+        <button id="fts-refresh-status" title="Refresh FTS status to show current index information">Refresh Status</button>
+        <button id="fts-check-update" title="Check for native FTS helper updates">Check for Updates</button>
+      </div>
+      
+      <div class="field">
+        <div id="fts-status">
+          <div id="fts-stats">Loading FTS status...</div>
+          <div id="fts-progress" style="display: none;">
+            <progress id="fts-progress-bar" value="0" max="100"></progress>
+            <span id="fts-progress-text">Indexing...</span>
+          </div>
+        </div>
+      </div>
+      
+      <div class="tm-section-header-row" style="margin-top: 16px;">
+        <h4 style="margin: 0;">Maintenance Schedule</h4>
+      </div>
+      <div class="field" id="weekly-schedule-container">
+        <label>
+          <input type="checkbox" id="fts-maintenance-weekly" />
+          Weekly maintenance scan
+        </label>
+        <div class="row" style="gap: 8px; align-items: center; margin-top: 8px; margin-left: 20px;">
+          <select id="fts-maintenance-weekly-day">
+            <option value="0">Sunday</option>
+            <option value="1">Monday</option>
+            <option value="2">Tuesday</option>
+            <option value="3">Wednesday</option>
+            <option value="4">Thursday</option>
+            <option value="5">Friday</option>
+            <option value="6">Saturday</option>
+          </select>
+          <input type="number" id="fts-maintenance-weekly-hour-start" min="0" max="23" style="width: 60px;" />
+          <span>to</span>
+          <input type="number" id="fts-maintenance-weekly-hour-end" min="0" max="23" style="width: 60px;" />
+          <span>hours</span>
+          <span style="flex: 1;"></span>
+          <button id="fts-maintenance-weekly-run-now" class="tm-section-header-action" title="Run weekly maintenance scan now">Run Now</button>
+        </div>
+        <small>Weekly scan checks recent messages for missing/stale index entries. Runs only during the configured time window (24h format).</small>
+      </div>
+      
+      <div class="tm-section-header-row" style="margin-top: 16px;">
+        <h4 style="margin: 0;">Maintenance History</h4>
+        <button id="fts-maintenance-refresh-log" class="tm-section-header-action" title="Refresh maintenance history">
+          Refresh
+        </button>
+      </div>
+      <div class="field">
+        <div id="fts-maintenance-log" style="
+          border: 1px solid var(--panel-separator-color);
+          border-radius: 4px;
+          padding: 8px;
+          overflow-y: auto;
+          font-family: monospace;
+          font-size: 12px;
+          background: var(--in-content-box-background);
+          color: var(--in-content-page-color);
+        ">
+          <div style="text-align: center; opacity: 0.7; padding: 8px;">
+            Loading maintenance history...
+          </div>
+        </div>
+        <small style="display: block; margin-top: 4px;">
+          Shows the last 100 maintenance runs with scanned vs corrected counts
+        </small>
+      </div>
+      
+    </section>
+
+    <section id="ui-tweaks-settings">
+      <div class="tm-section-header-row">
+        <h3>TabMail UI Tweaks</h3>
+        <button id="ui-tweaks-apply-all" class="tm-section-header-action" title="Apply TabMail's recommended UI tweaks">
+          Apply all
+        </button>
+      </div>
+
+      <div class="tm-ui-tweaks-warning">
+        <strong>⚠️ Warning</strong>
+        Applying UI tweaks overwrites some of your Thunderbird UI preferences. If you've customized your UI and want to keep it, skip these.
+      </div>
+
+      <div class="tm-ui-tweaks-list">
+        <div class="tm-ui-tweak-item">
+          <button type="button" id="ui-tweak-apply-hide-spaces-toolbar" class="tm-ui-tweak-apply-button">
+            Apply
+          </button>
+          <div class="tm-ui-tweak-text">
+            <div class="tm-ui-tweak-title">Hide Spaces toolbar</div>
+            <div class="tm-ui-tweak-desc">Hides the left Spaces toolbar (Mail/Calendar/Tasks/Chat).</div>
+          </div>
+        </div>
+
+        <div class="tm-ui-tweak-item">
+          <button type="button" id="ui-tweak-apply-compact-density" class="tm-ui-tweak-apply-button">
+            Apply
+          </button>
+          <div class="tm-ui-tweak-text">
+            <div class="tm-ui-tweak-title">Set Compact density</div>
+            <div class="tm-ui-tweak-desc">Sets Thunderbird UI density to Compact.</div>
+          </div>
+        </div>
+
+        <div class="tm-ui-tweak-item">
+          <button type="button" id="ui-tweak-apply-system-fonts" class="tm-ui-tweak-apply-button">
+            Apply
+          </button>
+          <div class="tm-ui-tweak-text">
+            <div class="tm-ui-tweak-title">Use system fonts</div>
+            <div class="tm-ui-tweak-desc">Uses system fonts for message display/composition (improves readability).</div>
+          </div>
+        </div>
+
+        <div class="tm-ui-tweak-item">
+          <button type="button" id="ui-tweak-apply-plaintext-fixedwidth-off" class="tm-ui-tweak-apply-button">
+            Apply
+          </button>
+          <div class="tm-ui-tweak-text">
+            <div class="tm-ui-tweak-title">Use monospace fonts in plaintext: Off</div>
+            <div class="tm-ui-tweak-desc">Ensures plaintext messages do not render with fixed-width fonts.</div>
+          </div>
+        </div>
+
+        <div class="tm-ui-tweak-item">
+          <button type="button" id="ui-tweak-apply-adjust-font-sizes" class="tm-ui-tweak-apply-button">
+            Apply
+          </button>
+          <div class="tm-ui-tweak-text">
+            <div class="tm-ui-tweak-title">Adjust font sizes</div>
+            <div class="tm-ui-tweak-desc">Sets UI to 13, regular message text to 17, monospace to 16.</div>
+          </div>
+        </div>
+
+        <div class="tm-ui-tweak-item">
+          <button type="button" id="ui-tweak-apply-vertical-layout" class="tm-ui-tweak-apply-button">
+            Apply
+          </button>
+          <div class="tm-ui-tweak-text">
+            <div class="tm-ui-tweak-title">Set Vertical layout</div>
+            <div class="tm-ui-tweak-desc">Sets Thunderbird to Vertical layout (message pane below the message list).</div>
+          </div>
+        </div>
+
+        <div class="tm-ui-tweak-item">
+          <button type="button" id="ui-tweak-apply-card-view-three-rows" class="tm-ui-tweak-apply-button">
+            Apply
+          </button>
+          <div class="tm-ui-tweak-text">
+            <div class="tm-ui-tweak-title">3-Row Card View (enables snippets)</div>
+            <div class="tm-ui-tweak-desc">Sets Card View to 3-row layout, which shows email body snippets below the subject line.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field" id="ui-tweaks-status">
+        <small id="ui-tweaks-status-text"></small>
+      </div>
+    </section>
+
+    <section id="privacy-settings">
+      <h3>Privacy</h3>
+      <div class="field" style="margin-top: 8px;">
+        <label class="checkbox-option">
+          <input type="checkbox" id="privacy-opt-out-all-ai" />
+          <span>Opt out from sending ANY email data to TabMail AI backend</span>
+        </label>
+      </div>
+      <div id="privacy-opt-out-warning" style="display: none; margin-top: 8px; padding: 12px; background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent); border-left: 4px solid var(--tag-tm-archive); border-radius: 4px;">
+        <strong style="color: var(--tag-tm-archive);">Privacy opt-out enabled</strong>
+        <p style="margin: 8px 0 0 0; font-size: 0.9em;">
+          This will disable <strong>ALL AI features</strong> (chat, summaries, autocomplete, and any other AI calls).
+        </p>
+      </div>
+      <div class="field">
+        <small>
+          When enabled, TabMail will block all AI/backend calls. TabMail UI enhancements may still work, but AI features will not.
+        </small>
+      </div>
+    </section>    
+
+    <!-- Debug mode toggle - shown in both simple and debug modes, at bottom of simple mode -->
+    <section id="debug-settings">
+      <h3>Advanced Settings</h3>
+      <div class="field">
+        <label>
+          <input type="checkbox" id="debug-mode" />
+          Debug Mode
+        </label>
+        <div id="debug-warning" style="display: none; margin-top: 8px; padding: 12px; background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent); border-left: 4px solid var(--tag-tm-archive); border-radius: 4px;">
+          <strong style="color: var(--tag-tm-archive);">⚠️ WARNING - FOR DEVELOPERS ONLY</strong>
+          <p style="margin: 8px 0 0 0; font-size: 0.9em;">
+            When Debug Mode is enabled:
+          </p>
+          <ul style="margin: 4px 0 0 20px; font-size: 0.9em;">
+            <li>Your <strong>email messages will be sent to the development backend</strong> and exposed to developers</li>
+            <li>All chat logs will be saved to your Downloads folder</li>
+            <li>Only developers have access to the development backend</li>
+          </ul>
+          <p style="margin: 8px 0 0 0; font-size: 0.9em;">
+            <strong>Do NOT enable this unless you are a developer or have been instructed to do so.</strong>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== DEBUG MODE ONLY SECTIONS ==================== -->
+
+    <!-- Detailed FTS Settings - Debug mode only, appears right after Advanced Settings -->
+    <section id="fts-detailed-settings" class="debug-only" style="display: none;">
+      <h3>Detailed FTS Settings</h3>
+      
+      <div class="row">
+        <button id="fts-pause" title="Pause background indexing">Pause Indexing</button>
+        <button id="fts-resume" title="Resume background indexing">Resume Indexing</button>
+        <button id="fts-clear" title="Delete entire search index">Clear Index</button>
+      </div>
+      
+      <div style="margin-top: 8px;">
+        <small><strong>Storage:</strong> FTS database is included in your total storage quota (check usage meter above).</small>
+      </div>
+      
+      <h4>Indexing Parameters</h4>
+      <div class="field">
+        <label for="fts-batch-size" title="Number of messages indexed per batch. Smaller = slower but safer.">Batch Size</label>
+        <input type="number" id="fts-batch-size" min="50" max="1000" step="50" />
+      </div>
+      
+      <div class="field">
+        <label for="fts-sleep-delay" title="Delay between batches in milliseconds. Higher = less aggressive indexing.">Sleep Delay (ms)</label>
+        <input type="number" id="fts-sleep-delay" min="100" max="5000" step="100" />
+      </div>
+      
+      <div class="field">
+        <label>
+          <input type="checkbox" id="fts-incremental-enabled" />
+          Enable Incremental Updates
+        </label>
+        <small>Automatically update index when new emails arrive or messages are moved. <strong>Recommended: ON</strong></small>
+      </div>
+      
+      <div class="field">
+        <label for="fts-incremental-batch-delay" title="Wait time before processing batched incremental updates.">Incremental Batch Delay (ms)</label>
+        <input type="number" id="fts-incremental-batch-delay" min="200" max="5000" step="100" value="1000" />
+      </div>
+      
+      <div class="field">
+        <label for="fts-incremental-batch-size" title="Maximum number of messages to process in each incremental batch.">Incremental Batch Size</label>
+        <input type="number" id="fts-incremental-batch-size" min="10" max="200" step="10" value="50" />
+      </div>
+      
+      <div class="row">
+        <button id="refresh-fts-status">Refresh Status</button>
+        <button id="fts-diagnostics">Run Diagnostics</button>
+        <button id="fts-debug-sample">Debug Sample</button>
+        <button id="fts-debug-checkpoints">Debug Checkpoints</button>
+        <button id="fts-flush-incremental">Flush Pending</button>
+      </div>
+      
+      <h4>📅 Periodic Maintenance</h4>
+      <div class="field">
+        <label>
+          <input type="checkbox" id="fts-maintenance-enabled" />
+          Enable periodic maintenance scans
+        </label>
+        <small>Automatically scan recent messages to keep index accurate</small>
+      </div>
+      
+      <div class="field">
+        <label>
+          <input type="checkbox" id="fts-maintenance-hourly" />
+          Hourly scan (last 1 day)
+        </label>
+        <small>Quick scan of very recent messages</small>
+      </div>
+      
+      <div class="field">
+        <label>
+          <input type="checkbox" id="fts-maintenance-hourly" />
+          Hourly scan (last 24 hours)
+        </label>
+        <small>Light scan of recent messages</small>
+      </div>
+      
+      <div class="field">
+        <label>
+          <input type="checkbox" id="fts-maintenance-daily" />
+          Daily scan (last 3 days)
+        </label>
+        <small>Medium scan of recent messages</small>
+      </div>
+      
+      <div class="field">
+        <label>
+          <input type="checkbox" id="fts-maintenance-monthly" />
+          Monthly scan (last 3 months)
+        </label>
+        <small><strong>Heavy operation</strong> - comprehensive maintenance scan</small>
+      </div>
+      
+      <div class="row">
+        <button id="fts-maintenance-status">Show Maintenance Status</button>
+        <button id="fts-maintenance-trigger-hourly" title="Manually trigger hourly maintenance scan">Trigger Hourly Scan</button>
+        <button id="fts-maintenance-trigger-daily" title="Manually trigger daily maintenance scan">Trigger Daily Scan</button>
+        <button id="fts-maintenance-debug" title="Debug alarm status and timing">Debug Alarms</button>
+      </div>
+      
+      <div class="row" style="margin-top: 8px;">
+        <button id="fts-cleanup-trigger-daily" title="Manually trigger daily cleanup scan (removes missing entries)">Trigger Daily Cleanup</button>
+        <button id="fts-cleanup-trigger-weekly" title="Manually trigger weekly cleanup scan (removes missing entries)">Trigger Weekly Cleanup</button>
+        <button id="fts-cleanup-trigger-monthly" title="Manually trigger monthly cleanup scan (removes missing entries)">Trigger Monthly Cleanup</button>
+      </div>
+    </section>
+
+    <section id="tb-auth-preview" class="debug-only" style="display: none;">
+      <h3>TB Auth Page Previews (Localhost)</h3>
+      <div class="field">
+        <small>
+          Opens the real auth pages on localhost in a popup window using <code>preview=1</code> (same HTML/CSS/JS, but network/auth calls are suppressed).
+          Requires the local server to be running at <strong>http://localhost:8000</strong>.
+        </small>
+      </div>
+      <div class="row">
+        <button id="tb-preview-signin">Preview Signin</button>
+        <button id="tb-preview-signup">Preview Signup</button>
+        <button id="tb-preview-consent">Preview Consent</button>
+        <button id="tb-preview-signup-confirm">Preview Signup Confirm</button>
+      </div>
+    </section>
+
+    <section id="compose-settings" class="debug-only" style="display: none;">
+      <h3>Compose Settings</h3>
+      <div class="field">
+        <label for="trigger-delay" title="Delay after you stop typing before autocomplete suggestions appear.">Autocomplete Trigger Delay (ms)</label>
+        <input type="number" id="trigger-delay" min="0" step="50" />
+      </div>
+      <div class="field">
+        <label for="diff-restore-delay" title="Delay after you stop typing before diffs re-appear (auto-hide restoration).">Diff Restore Delay (ms)</label>
+        <input type="number" id="diff-restore-delay" min="0" step="50" />
+      </div>
+      
+      <div id="plaintext-composition-section">
+        <h4>Plaintext Composition</h4>
+        <div id="plaintext-warning" style="display: none; margin: 8px 0; padding: 12px; background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent); border-left: 4px solid var(--tag-tm-archive); border-radius: 4px;">
+          <strong style="color: var(--tag-tm-archive);">⚠️ Warning</strong>
+          <p style="margin: 8px 0 0 0; font-size: 0.9em;">
+            TabMail only supports plaintext email composition. Some of your email identities are currently set to compose HTML emails, which may cause issues.
+          </p>
+          <p style="margin: 8px 0 0 0; font-size: 0.9em;">
+            <strong>Identities not set to plaintext:</strong>
+            <span id="plaintext-problematic-identities"></span>
+          </p>
+        </div>
+        <div class="row" style="margin-top: 8px;">
+          <button id="force-plaintext-all" title="Force all email identities to use plaintext composition">Force Plaintext for All Identities</button>
+          <button id="refresh-plaintext-status" title="Refresh plaintext composition status">Refresh Status</button>
+        </div>
+        <div class="field">
+          <small>TabMail requires plaintext composition mode. Click "Force Plaintext" to set all your email identities to compose in plaintext mode. This setting is required for TabMail to function properly.</small>
+        </div>
+        <div id="plaintext-status" style="margin-top: 8px; font-size: 0.9em; color: var(--in-content-deemphasized-text);">
+          Checking status...
+        </div>
+      </div>
+    </section>
+
+    <section id="reminder-settings" class="debug-only" style="display: none;">
+      <h3>Reminder Settings</h3>
+      <div class="field">
+        <label for="max-reminders-to-show" title="Number of reminders to display when opening chat (1-5)">Reminders to Show</label>
+        <input type="number" id="max-reminders-to-show" min="1" max="5" step="1" style="width: 80px;" />
+        <small>Default: 3. Number of reminders shown when you open the chat interface.</small>
+      </div>
+      <div class="row">
+        <button id="save-reminder-settings">Save</button>
+        <button id="reload-reminder-settings">Reload</button>
+      </div>
+    </section>
+
+    <section id="folder-sync" class="debug-only" style="display: none;">
+      <h3>Folder Sync</h3>
+      <table class="kv">
+        <thead>
+          <tr><th>Setting</th><th>Current</th><th>Change</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Check all IMAP folders for new</td>
+            <td id="fs-val-all">—</td>
+            <td>
+              <label><input type="checkbox" id="fs-in-all" /> Enable</label>
+            </td>
+          </tr>
+          <tr>
+            <td>Periodic checks enabled</td>
+            <td id="fs-val-periodic">—</td>
+            <td>
+              <label><input type="checkbox" id="fs-in-periodic" /> Enable</label>
+            </td>
+          </tr>
+          <tr>
+            <td>Check interval (minutes)</td>
+            <td id="fs-val-mins">—</td>
+            <td>
+              <input type="number" id="fs-in-mins" min="1" step="1" style="width:80px" />
+              <small>Recommended: 5</small>
+            </td>
+          </tr>
+          <tr>
+            <td>Thread pane layout</td>
+            <td id="fs-val-layout">—</td>
+            <td>
+              <select id="fs-in-layout">
+                <option value="0">Classic</option>
+                <option value="1">Wide</option>
+                <option value="2">Vertical</option>
+              </select>
+              <small>(One-time nudge only on install)</small>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="row" style="margin-top:8px;">
+        <button id="fs-reload">Reload</button>
+        <button id="fs-apply">Apply</button>
+      </div>
+    </section>
+
+    <section id="cache-controls" class="debug-only" style="display: none;">
+      <h3>Caches</h3>
+      <div class="row">
+        <button id="clear-action-cache">Clear Action Cache</button>
+        <button id="clear-summary-cache">Clear Summary Cache</button>
+        <button id="clear-reply-cache">Clear Reply Cache</button>
+        <button id="clear-reminders">Clear Reminders</button>
+      </div>
+      <div class="row" style="margin-top: 12px;">
+        <button id="test-inbox-archive-prompt">Test Inbox Archive Prompt</button>
+      </div>
+    </section>
+
+    <section id="keepalive-settings" class="debug-only" style="display: none;">
+      <h3>Service Worker Keepalive</h3>
+      <p>Keepalive is always enabled to ensure reliable operation. The service worker stays alive via periodic message pings (every 10 seconds).</p>
+    </section>
+
+    <section id="update-debug-settings" class="debug-only" style="display: none;">
+      <h3>Update Notification (Debug)</h3>
+      <div class="field">
+        <label>Current Update State</label>
+        <div id="update-debug-status">
+          <span id="update-debug-state">Checking...</span>
+        </div>
+      </div>
+      <div class="row">
+        <button id="update-debug-simulate" title="Simulate an update available notification">Simulate Update Available</button>
+        <button id="update-debug-clear" title="Clear update state from storage">Clear Update State</button>
+        <button id="update-debug-refresh" title="Refresh current update state">Refresh Status</button>
+      </div>
+      <div class="row" style="margin-top: 8px;">
+        <button id="update-debug-show-bar" title="Show the update notification bar">Show Update Bar</button>
+        <button id="update-debug-hide-bar" title="Hide the update notification bar">Hide Update Bar</button>
+        <button id="update-debug-restart" title="Actually restart Thunderbird (use with caution!)">Restart TB (Real!)</button>
+      </div>
+      <div class="field">
+        <small>Use these controls to test the update notification system. "Simulate Update" sets storage state as if an update is pending. The notification bar and popup will reflect this state.</small>
+      </div>
+    </section>
+
+    <section id="welcome-wizard-settings" class="debug-only" style="display: none;">
+      <h3>Welcome Wizard (Debug)</h3>
+      <div class="field">
+        <label>First-Run Status</label>
+        <div id="welcome-status-display">
+          <span id="welcome-status-icon">⏳</span>
+          <span id="welcome-status-text">Checking...</span>
+        </div>
+      </div>
+      <div class="row">
+        <button id="welcome-open-wizard">Open Welcome Wizard</button>
+        <button id="welcome-clear-status">Clear First-Run Status</button>
+        <button id="welcome-refresh-status">Refresh Status</button>
+      </div>
+      <div class="field">
+        <small>Use these controls to test the welcome wizard. "Clear First-Run Status" will reset the wizard so it appears again on next open.</small>
+      </div>
+    </section>
+
+    <p id="status"></p>
+  </div>
+
+  <script src="../compose/modules/config.js"></script>
+  <script type="module" src="config.js"></script>
+</body>
+</html>

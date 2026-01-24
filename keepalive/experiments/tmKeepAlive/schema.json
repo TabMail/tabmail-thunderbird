@@ -1,0 +1,15 @@
+[
+  {
+    "namespace": "tmKeepAlive",
+    "description": "Service worker keepalive via periodic message pings (always-on).",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "description": "Initialize keepalive by injecting hidden relay page into 3-pane windows.",
+        "parameters": [],
+        "async": false
+      }
+    ]
+  }
+]

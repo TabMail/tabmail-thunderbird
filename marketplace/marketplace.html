@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Template Marketplace - TabMail</title>
+  <link rel="stylesheet" href="marketplace.css" />
+</head>
+<body>
+  <div id="page">
+    <header>
+      <h2>TabMail Template Marketplace</h2>
+      <p class="header-description">Browse and install email templates from the community</p>
+    </header>
+
+    <!-- Tab Switcher -->
+    <div class="marketplace-tabs">
+      <button class="tab-btn active" data-tab="browse">Browse Templates</button>
+      <button class="tab-btn" data-tab="my-templates">My Templates</button>
+    </div>
+
+    <!-- Browse Tab Controls -->
+    <div id="browse-tab" class="tab-content active">
+    <div class="marketplace-controls">
+      <input type="text" id="marketplace-search" placeholder="Search templates..." class="marketplace-search">
+      <select id="marketplace-sort" class="marketplace-sort">
+        <option value="popular">Most Popular</option>
+        <option value="recent">Most Recent</option>
+        <option value="name">Alphabetical</option>
+      </select>
+      <button id="marketplace-refresh-btn" class="refresh-btn" title="Refresh templates">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"/>
+          <polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+        </svg>
+      </button>
+    </div>
+
+    <div id="marketplace-loading" class="marketplace-loading">
+      <div class="spinner"></div>
+      <p>Loading templates...</p>
+    </div>
+
+    <div id="marketplace-error" class="marketplace-error" style="display: none;">
+      <p id="marketplace-error-text">Failed to load templates</p>
+      <button id="marketplace-retry-btn" class="secondary-button">Retry</button>
+    </div>
+
+    <div id="marketplace-list" class="marketplace-list" style="display: none;">
+      <!-- Template cards will be rendered here -->
+    </div>
+
+    <div id="marketplace-empty" class="marketplace-empty" style="display: none;">
+      <p>No templates found</p>
+      <p class="hint">Try a different search term or be the first to share a template!</p>
+    </div>
+
+    <div class="marketplace-pagination" id="marketplace-pagination" style="display: none;">
+      <button id="marketplace-load-more" class="secondary-button">Load More</button>
+    </div>
+    </div><!-- End browse-tab -->
+
+    <!-- My Templates Tab -->
+    <div id="my-templates-tab" class="tab-content" style="display: none;">
+      <div class="my-templates-header">
+        <span id="my-templates-limits">-</span>
+        <button id="my-templates-refresh-btn" class="secondary-button small">Refresh</button>
+      </div>
+
+      <div id="my-templates-loading" class="marketplace-loading" style="display: none;">
+        <div class="spinner"></div>
+        <p>Loading your templates...</p>
+      </div>
+
+      <div id="my-templates-error" class="marketplace-error" style="display: none;">
+        <p id="my-templates-error-text">Failed to load your templates</p>
+        <button id="my-templates-retry-btn" class="secondary-button">Retry</button>
+      </div>
+
+      <div id="my-templates-list" class="marketplace-list" style="display: none;">
+        <!-- My template cards will be rendered here -->
+      </div>
+
+      <div id="my-templates-empty" class="marketplace-empty" style="display: none;">
+        <p>You haven't shared any templates yet</p>
+        <p class="hint">Create a template in the Agent Panel and click "Share" to submit it.</p>
+      </div>
+    </div><!-- End my-templates-tab -->
+
+    <div id="status-message"></div>
+  </div>
+
+  <!-- Template Detail Modal -->
+  <div id="template-modal" class="dialog-overlay" style="display: none;">
+    <div class="dialog-content modal-content">
+      <button id="modal-close-btn" class="close-btn" title="Close">&times;</button>
+      <div id="modal-body">
+        <!-- Modal content rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="marketplace.js"></script>
+</body>
+</html>

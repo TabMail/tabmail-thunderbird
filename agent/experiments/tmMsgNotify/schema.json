@@ -1,0 +1,58 @@
+[
+  {
+    "namespace": "tmMsgNotify",
+    "description": "TabMail experiment API for nsIMsgFolderNotificationService message delta events. Provides real-time notifications for message add/delete/move/copy operations.",
+    "events": [
+      {
+        "name": "onMessageAdded",
+        "type": "function",
+        "description": "Fired when a message is added to a folder (new mail, move, copy, filter).",
+        "parameters": [
+          {
+            "name": "messageInfo",
+            "type": "object",
+            "properties": {
+              "headerMessageId": { "type": "string", "description": "Message-ID header value" },
+              "weMsgId": { "type": "integer", "description": "WebExtension message ID (may be null)" },
+              "weFolderId": { "type": "string", "description": "WebExtension folder ID" },
+              "folderPath": { "type": "string", "description": "Folder path (e.g., /INBOX, /[Gmail]/Starred)" },
+              "accountId": { "type": "string", "description": "Account ID" },
+              "subject": { "type": "string" },
+              "author": { "type": "string" },
+              "dateMs": { "type": "integer", "description": "Message date in epoch milliseconds" },
+              "eventType": { "type": "string", "description": "Type of add event: added, classified, copyCompleted, moveCompleted" }
+            }
+          }
+        ]
+      },
+      {
+        "name": "onMessageRemoved",
+        "type": "function",
+        "description": "Fired when a message is removed from a folder (delete, move out, expunge).",
+        "parameters": [
+          {
+            "name": "messageInfo",
+            "type": "object",
+            "properties": {
+              "headerMessageId": { "type": "string", "description": "Message-ID header value" },
+              "weFolderId": { "type": "string", "description": "WebExtension folder ID where message was removed from" },
+              "folderPath": { "type": "string", "description": "Folder path where message was removed from" },
+              "accountId": { "type": "string", "description": "Account ID" },
+              "eventType": { "type": "string", "description": "Type of remove event: deleted, moveCompleted" }
+            }
+          }
+        ]
+      }
+    ],
+    "functions": [
+      {
+        "name": "isListenerActive",
+        "type": "function",
+        "description": "Check if the notification listener is currently active.",
+        "async": true,
+        "parameters": [],
+        "returns": { "type": "boolean" }
+      }
+    ]
+  }
+]

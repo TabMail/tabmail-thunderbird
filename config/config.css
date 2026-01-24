@@ -1,0 +1,1155 @@
+/* TabMail Config CSS - Uses TabMail Palette System */
+/* Theme colors are injected from palette.data.json via palette.js */
+
+.md-editor textarea.md-input { color: inherit; }
+body { 
+  font-family: sans-serif; 
+  padding: 12px; 
+  background: var(--in-content-page-background);
+  color: var(--in-content-page-color);
+  margin: 0;
+}
+
+:root {
+  /* Configurable sizing/spacing for form controls on the settings page */
+  --tm-config-input-min-width: 120px;
+  --tm-config-toggle-size: 16px;
+  --tm-config-toggle-gap: 6px;
+  --tm-config-toggle-indent: 20px;
+}
+
+#page {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+h2, h3, h4 { 
+  margin: 8px 0; 
+}
+
+/* Header */
+header {
+  border-bottom: 1px solid var(--panel-separator-color);
+  padding-bottom: 16px;
+  margin-bottom: 24px;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.header-content {
+  flex: 1;
+}
+
+.header-description {
+  margin: 8px 0 0 0;
+  opacity: 0.7;
+  font-size: 14px;
+}
+
+.header-button {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--in-content-button-background);
+  color: var(--in-content-button-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s ease;
+}
+
+.header-button:hover {
+  background: var(--in-content-button-background-hover);
+}
+
+/* Section styling with modern cards */
+section {
+  margin: 24px 0;
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  padding: 20px;
+}
+
+section h3 {
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  color: var(--in-content-page-color);
+  border-bottom: 1px solid var(--panel-separator-color);
+  padding-bottom: 12px;
+}
+
+/* Section header row with action button (e.g. UI Tweaks "Apply all") */
+.tm-section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 16px 0;
+  border-bottom: 1px solid var(--panel-separator-color);
+  padding-bottom: 12px;
+}
+
+.tm-section-header-row h3 {
+  margin: 0;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.tm-section-header-action {
+  white-space: nowrap;
+}
+
+/* UI Tweaks section */
+.tm-ui-tweaks-warning {
+  margin-top: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent);
+  border-left: 4px solid var(--tag-tm-archive);
+  border-radius: 4px;
+}
+
+.tm-ui-tweaks-warning strong {
+  color: var(--tag-tm-archive);
+}
+
+.tm-ui-tweaks-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tm-ui-tweak-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 6px 0;
+  width: 100%;
+  text-align: left;
+}
+
+.tm-ui-tweak-apply-button {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tm-ui-tweak-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.tm-ui-tweak-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+}
+
+.tm-ui-tweak-desc {
+  font-size: 12px;
+  opacity: 0.75;
+  color: var(--in-content-page-color);
+}
+
+#ui-tweaks-status-text {
+  color: var(--tag-tm-reply);
+  font-style: italic;
+}
+
+section h4 {
+  margin: 16px 0 12px 0;
+  font-size: 15px;
+  color: var(--in-content-page-color);
+}
+.field { 
+  margin-bottom: 16px; 
+  display: grid; 
+  grid-template-columns: 260px 1fr; 
+  gap: 16px; 
+  align-items: center; 
+  width: 100%; 
+}
+
+table.kv { 
+  width: 100%; 
+  border-collapse: collapse; 
+  background: var(--in-content-page-background);
+  border-radius: 6px;
+  overflow: hidden;
+}
+table.kv th, table.kv td { 
+  padding: 12px; 
+  border-bottom: 1px solid var(--panel-separator-color); 
+  text-align: left; 
+}
+table.kv thead th { 
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
+  font-weight: 600;
+}
+table.kv tbody tr:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 3%, transparent);
+}
+
+.row { 
+  display: flex; 
+  align-items: center; 
+  gap: 8px; 
+  margin: 8px 0; 
+  flex-wrap: wrap; 
+}
+.checkbox { margin-top: 6px; }
+
+button {
+  background: var(--in-content-button-background);
+  color: var(--in-content-button-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+button:hover {
+  background: var(--in-content-button-background-hover);
+}
+button:active {
+  transform: translateY(1px);
+}
+button:focus-visible {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 2px;
+}
+
+input, textarea, select {
+  background: var(--in-content-page-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
+/* Remove padding/border from checkbox and radio inputs */
+input[type="checkbox"],
+input[type="radio"],
+.field input[type="checkbox"],
+.field input[type="radio"] {
+  padding: 0 !important;
+  border: none !important;
+  background: none !important;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 1px;
+}
+/* Plan and Usage section */
+#plan-usage-settings {
+  margin-top: 0;
+}
+
+#plan-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+#plan-status-label {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+  flex: 1;
+}
+
+#plan-status-label.plan-pro {
+  color: var(--in-content-accent-color);
+}
+
+#plan-status-label.plan-basic {
+  color: var(--in-content-page-color);
+}
+
+#upgrade-to-pro-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--in-content-accent-color);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#upgrade-to-pro-btn:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+#usage-separator {
+  height: 1px;
+  background: var(--panel-separator-color);
+  margin: 12px 0;
+}
+
+#usage-container { 
+  display: flex; 
+  align-items: center; 
+  gap: 12px;
+}
+#usage-label {
+  font-size: 14px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+#usage-bar { 
+  flex: 1;
+  max-width: 300px;
+  height: 12px; 
+  border-radius: 6px;
+}
+
+#usage-status-right {
+  margin-left: auto;
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#usage-reset {
+  font-size: 14px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+#subscription-status {
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--tag-tm-delete);
+  white-space: nowrap;
+}
+
+#refresh-usage {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+textarea { 
+  width: 100%; 
+  min-height: 240px; 
+  height: auto; 
+  overflow: hidden; 
+  font-family: ui-monospace, Menlo, Consolas, monospace; 
+  font-size: 13px; 
+  line-height: 1.6;
+  transition: background 0.25s ease, border-color 0.25s ease; 
+}
+
+/* Ensure text elements can use full page width */
+small, .field small {
+  display: block;
+  width: 100%;
+  line-height: 1.4;
+  margin-top: 4px;
+  grid-column: 1 / -1; /* Span across all grid columns */
+}
+
+/* Special indentation for small text in checkbox fields */
+.field:has(input[type="checkbox"]) small,
+.field.checkbox-field small {
+  margin-left: var(--tm-config-toggle-indent); /* Align with checkbox text */
+  margin-top: 2px;
+}
+
+/* Handle different label types */
+.field label {
+  align-self: start;
+  padding-top: 2px; /* Align with input text */
+}
+
+/* Checkbox styling with proper alignment */
+.field label input[type="checkbox"] {
+  margin: 0 var(--tm-config-toggle-gap) 0 0 !important;
+  width: var(--tm-config-toggle-size) !important;
+  height: var(--tm-config-toggle-size) !important;
+  min-width: var(--tm-config-toggle-size) !important;
+  max-width: var(--tm-config-toggle-size) !important;
+  box-sizing: border-box !important;
+  flex-shrink: 0;
+}
+
+.field:has(input[type="checkbox"]) {
+  grid-template-columns: auto 1fr; /* Checkbox column + text column */
+  gap: 0;
+  align-items: start;
+}
+
+.field:has(input[type="checkbox"]) label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding: 2px 0;
+  grid-column: 1 / -1;
+}
+
+/* For browsers without :has() support, use a specific class */
+.field.checkbox-field {
+  grid-template-columns: auto 1fr;
+  gap: 0;
+}
+
+.field.checkbox-field label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding: 2px 0;
+  grid-column: 1 / -1;
+}
+
+/* Align input elements consistently */
+.field input, .field select, .field textarea {
+  justify-self: start;
+}
+
+.field input:not([type="checkbox"]):not([type="radio"]) {
+  min-width: var(--tm-config-input-min-width);
+}
+
+/* Different sizes for different dropdowns */
+#default-addressbook {
+  width: 160px;
+}
+
+#default-calendar {
+  width: 200px;
+}
+
+.field select {
+  min-width: 140px;
+  max-width: 200px;
+}
+
+.field input[type="number"] {
+  max-width: 120px;
+}
+
+/* Rows with labels that need grid alignment */
+.row.has-label {
+  display: grid;
+  grid-template-columns: 260px 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Button-only rows use flexbox */
+.row:not(.has-label) {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+/* For rows with multiple buttons, make them compact */
+.row button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Special elements that should span full width without labels */
+.field > div:only-child,
+.field #fts-status,
+.field > progress {
+  grid-column: 1 / -1; /* Span full width when no label is present */
+}
+
+/* Maintenance history: this field contains a log div + a <small> note.
+   Ensure the log spans both grid columns (otherwise it ends up in the label column). */
+#fts-maintenance-log {
+  grid-column: 1 / -1;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Ensure status elements have proper spacing */
+#fts-status {
+  margin: 8px 0;
+}
+
+#fts-stats {
+  margin-bottom: 8px;
+  font-style: italic;
+}
+
+#fts-progress {
+  margin-top: 8px;
+}
+
+#fts-progress-bar {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+/* Status messages and indicators */
+.status-pill { 
+  min-width: 120px; 
+  text-align: right; 
+  font-size: 12px; 
+  opacity: 0.85; 
+}
+.status-ok { 
+  color: var(--tag-tm-reply); 
+}
+.status-err { 
+  color: var(--tag-tm-delete); 
+}
+
+/* Subtle success flash on textareas */
+textarea.flash-ok {
+  background: color-mix(in srgb, var(--in-content-accent-color) 18%, var(--in-content-box-background));
+  border-color: var(--in-content-accent-color);
+}
+
+/* Progress bars */
+progress {
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+/* Warning boxes */
+section > div[style*="background-color"] {
+  margin: 12px 0;
+}
+
+/* Appearance section radio button styling */
+.appearance-options {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.radio-option {
+  display: flex;
+  align-items: center;
+  gap: 4px !important;
+  cursor: pointer;
+  padding: 6px 6px !important;
+  border-radius: 6px;
+  border: 1px solid var(--panel-separator-color);
+  background: var(--in-content-page-background);
+  transition: all 0.2s ease;
+}
+
+.radio-option:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, var(--in-content-page-background));
+}
+
+.radio-option:has(input:checked) {
+  border-color: var(--in-content-accent-color);
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-page-background));
+}
+
+.radio-option input[type="radio"],
+.appearance-options input[type="radio"],
+.field .appearance-options input[type="radio"],
+#appearance-settings input[type="radio"] {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 16px !important;
+  height: 16px !important;
+  cursor: pointer;
+  flex-shrink: 0 !important;
+  flex-grow: 0 !important;
+  min-width: 16px !important;
+  max-width: 16px !important;
+  box-sizing: border-box !important;
+}
+
+.radio-option .radio-label {
+  font-size: 14px;
+}
+
+#appearance-status-text {
+  color: var(--tag-tm-reply);
+  font-style: italic;
+}
+
+/* Welcome wizard status display */
+#welcome-status-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+#welcome-status-icon {
+  font-size: 16px;
+}
+
+#welcome-status-text {
+  flex: 1;
+}
+
+
+/* ============================================
+   Visual Option Cards (compact wizard-style)
+   ============================================ */
+.field-full {
+  margin-bottom: 16px;
+  width: 100%;
+}
+
+.field-full > label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 12px;
+  color: var(--in-content-page-color);
+}
+
+.visual-options {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.visual-option-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px;
+  background: var(--in-content-page-background);
+  border: 2px solid var(--panel-separator-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex: 1;
+  min-width: 180px;
+  max-width: 220px;
+  position: relative;
+}
+
+.visual-option-card:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, var(--in-content-page-background));
+}
+
+.visual-option-card:has(input:checked) {
+  border-color: var(--in-content-accent-color);
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-page-background));
+}
+
+.visual-option-card input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.visual-option-preview {
+  width: 100%;
+  height: 100px;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--in-content-accent-color) 6%, var(--in-content-page-background));
+  border: 1px solid var(--panel-separator-color);
+}
+
+.visual-option-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 15%;
+}
+
+.visual-option-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+  margin-top: 4px;
+}
+
+.visual-option-desc {
+  font-size: 10px;
+  color: var(--in-content-page-color);
+  opacity: 0.6;
+  text-align: center;
+}
+
+/* Theme split preview (for System theme option) */
+.theme-preview-system {
+  background: linear-gradient(135deg, #fff 50%, #1c1b22 50%);
+}
+
+.theme-split {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+  border-radius: 3px;
+}
+
+.theme-split-light {
+  flex: 1;
+  background: #fff;
+}
+
+.theme-split-dark {
+  flex: 1;
+  background: #1c1b22;
+}
+
+/* Theme preview backgrounds */
+.theme-preview-light {
+  background: #fff;
+}
+
+.theme-preview-dark {
+  background: #1c1b22;
+}
+
+/* Sort order visual preview */
+.sort-preview {
+  padding: 12px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sort-visual {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.sort-item {
+  background: color-mix(in srgb, var(--in-content-accent-color) 15%, transparent);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 9px;
+  color: var(--in-content-page-color);
+  opacity: 0.7;
+  text-align: center;
+}
+
+.sort-item.newest {
+  opacity: 1;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--in-content-accent-color) 30%, transparent);
+}
+
+.sort-item.oldest {
+  opacity: 0.4;
+}
+
+/* Recommendation note (inline tip) */
+.recommendation-note {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--tag-tm-archive) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tag-tm-archive) 25%, transparent);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--in-content-page-color);
+}
+
+.recommendation-note strong {
+  color: var(--in-content-page-color);
+}
+
+/* ============================================
+   Appearance 2x2 Grid Layout
+   ============================================ */
+
+.appearance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--in-content-box-background);
+}
+
+/* Grid cells with internal separators */
+.appearance-grid-cell {
+  padding: 20px;
+  position: relative;
+}
+
+/* Right border for left column cells */
+.appearance-grid-cell:nth-child(odd) {
+  border-right: 1px solid var(--panel-separator-color);
+}
+
+/* Bottom border for top row cells */
+.appearance-grid-cell:nth-child(1),
+.appearance-grid-cell:nth-child(2) {
+  border-bottom: 1px solid var(--panel-separator-color);
+}
+
+/* Grid cell label - like wizard step title */
+.grid-cell-label {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+  margin-bottom: 16px;
+}
+
+/* Visual options inside grid cells */
+.appearance-grid-cell .visual-options {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.appearance-grid-cell .visual-option-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--in-content-page-background);
+  border: 2px solid var(--panel-separator-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  position: relative;
+}
+
+.appearance-grid-cell .visual-option-card:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, var(--in-content-page-background));
+}
+
+.appearance-grid-cell .visual-option-card:has(input:checked) {
+  border-color: var(--in-content-accent-color);
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-page-background));
+}
+
+.appearance-grid-cell .visual-option-card input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.appearance-grid-cell .visual-option-preview {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+}
+
+.appearance-grid-cell .visual-option-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 15%;
+}
+
+.appearance-grid-cell .visual-option-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+  text-align: center;
+}
+
+/* Sort order visual inside grid */
+.appearance-grid-cell .sort-visual {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 8px;
+}
+
+.appearance-grid-cell .sort-item {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  text-align: center;
+  background: color-mix(in srgb, var(--in-content-page-color) 8%, transparent);
+  color: var(--in-content-page-color);
+  opacity: 0.7;
+}
+
+.appearance-grid-cell .sort-item.newest {
+  opacity: 1;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--in-content-accent-color) 30%, transparent);
+}
+
+.appearance-grid-cell .sort-item.oldest {
+  opacity: 0.4;
+}
+
+/* Theme split preview for System option */
+.appearance-grid-cell .theme-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.appearance-grid-cell .theme-split-light {
+  flex: 1;
+  background: linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%);
+}
+
+.appearance-grid-cell .theme-split-dark {
+  flex: 1;
+  background: linear-gradient(135deg, #2b2a33 0%, #1c1b22 100%);
+}
+
+/* Responsive: stack to single column on narrow windows */
+@media (max-width: 600px) {
+  .appearance-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .appearance-grid-cell:nth-child(odd) {
+    border-right: none;
+  }
+  
+  .appearance-grid-cell:not(:last-child) {
+    border-bottom: 1px solid var(--panel-separator-color);
+  }
+}
+
+/* ============================================
+   Appearance: Theme-only layout (TB header buttons control view/sort)
+   ============================================ */
+
+.appearance-theme-only {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.appearance-theme-cell {
+  width: 100%;
+  max-width: 560px;
+  padding: 20px;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--in-content-box-background);
+}
+
+.appearance-theme-cell .visual-options {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.appearance-theme-cell .visual-option-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--in-content-page-background);
+  border: 2px solid var(--panel-separator-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  position: relative;
+}
+
+.appearance-theme-cell .visual-option-card:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, var(--in-content-page-background));
+}
+
+.appearance-theme-cell .visual-option-card:has(input:checked) {
+  border-color: var(--in-content-accent-color);
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-page-background));
+}
+
+.appearance-theme-cell .visual-option-card input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.appearance-theme-cell .visual-option-preview {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+}
+
+.appearance-theme-cell .visual-option-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 15%;
+}
+
+.appearance-theme-cell .theme-preview-system {
+  padding: 0;
+}
+
+.appearance-theme-cell .theme-split-diagonal {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.appearance-theme-cell .theme-split-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 15%;
+}
+
+/* Diagonal split: light is top-left, dark is bottom-right */
+.appearance-theme-cell .theme-split-img-light {
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+.appearance-theme-cell .theme-split-img-dark {
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+
+.appearance-theme-cell .visual-option-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+  text-align: center;
+}
+
+/* System option inline radio (below Light/Dark cards) */
+.system-option-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  width: 90%;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 10px 14px;
+  background: var(--in-content-page-background);
+  border: 2px solid var(--panel-separator-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.system-option-inline:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, var(--in-content-page-background));
+}
+
+.system-option-inline:has(input:checked) {
+  border-color: var(--in-content-accent-color);
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, var(--in-content-page-background));
+}
+
+.system-option-inline input[type="radio"] {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.system-option-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+}
+
+/* Grid cell note (tip inside grid cell) */
+.grid-cell-note {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  width: 90%;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--tag-tm-archive) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tag-tm-archive) 30%, transparent);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--in-content-page-color);
+  opacity: 1;
+}
+
+.grid-cell-note strong {
+  color: var(--in-content-page-color);
+}
+
+/* ========================= */
+/* Maintenance Log Entries   */
+/* ========================= */
+
+.tm-maint-entry {
+  /* Container for maintenance log entry */
+  display: block;
+}
+
+.tm-maint-entry > summary {
+  list-style: none;
+}
+
+.tm-maint-entry > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tm-maint-entry > summary::marker {
+  display: none;
+  content: "";
+}
+
+/* Arrow indicator rotation when expanded */
+.tm-maint-entry .tm-maint-expand-indicator {
+  transition: transform 0.15s ease;
+}
+
+.tm-maint-entry[open] .tm-maint-expand-indicator {
+  transform: rotate(90deg);
+}
+

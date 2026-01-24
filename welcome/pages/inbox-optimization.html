@@ -1,0 +1,52 @@
+<!-- Inbox Optimization Step -->
+<h1 class="step-title">Optimize Your Inbox</h1>
+<p class="step-description">
+  For optimal email triage, keep only active emails in your inbox.
+  <span class="hint">Archiving moves old emails to your Archive folder—they remain fully searchable.</span>
+</p>
+
+<div class="step-content">
+  <div class="inbox-stats-box" id="inbox-stats">
+    <div class="inbox-stats-row">
+      <span class="inbox-stats-label">Total emails in inbox</span>
+      <span class="inbox-stats-value" id="inbox-total-count">Loading...</span>
+    </div>
+    <div class="inbox-stats-row">
+      <span class="inbox-stats-label">Emails older than</span>
+      <span class="inbox-stats-value">
+        <select id="inbox-weeks-select" class="inbox-weeks-select">
+          <option value="1">1 week</option>
+          <option value="2" selected>2 weeks</option>
+          <option value="4">4 weeks</option>
+          <option value="8">8 weeks</option>
+          <option value="12">12 weeks</option>
+        </select>
+      </span>
+    </div>
+    <div class="inbox-stats-row">
+      <span class="inbox-stats-label">Emails to archive</span>
+      <span class="inbox-stats-value inbox-stats-highlight" id="inbox-old-count">Loading...</span>
+    </div>
+  </div>
+
+  <div class="recommendation-box" style="margin-top: 16px;">
+    <p>
+      <strong>Note:</strong> Archiving does NOT delete any emails. They will be moved to your Archive folder and remain fully searchable.
+    </p>
+  </div>
+
+  <div style="margin-top: 16px; display: flex; gap: 12px; justify-content: center;">
+    <button id="inbox-archive-btn" class="action-button" disabled>Archive Old Emails</button>
+    <button id="inbox-skip-btn" class="secondary-button">Skip</button>
+  </div>
+
+  <div id="inbox-progress-container" style="display: none; margin-top: 16px;">
+    <div class="inbox-progress-bar-bg">
+      <div class="inbox-progress-bar" id="inbox-progress-bar"></div>
+    </div>
+    <div class="inbox-progress-text" id="inbox-progress-text">Archiving emails...</div>
+  </div>
+
+  <div id="inbox-optimization-status" class="status-box" style="display: none; margin-top: 12px;"></div>
+</div>
+

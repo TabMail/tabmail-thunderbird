@@ -1,0 +1,73 @@
+[
+  {
+    "id": "daeec4f2-1d74-4756-b440-537b179cf151",
+    "name": "No positions available",
+    "enabled": true,
+    "instructions": [
+      "Reply as below ignoring most of the sender's email making it apparent that this is a standard reply and not a personal one.",
+      "Do not complement/comment/paraphrase on the sender's email contents.",
+      "For all position inquiries",
+      "Use user company info from either knowledgebase, or if possible, infer from user email address."
+    ],
+    "exampleReply": "Hi [sender's first name],\n\nWe regret to let you know that there are currently no openings in [User Company]\nThank you very much for your interest.\n\nThanks,\n[User Company]",
+    "createdAt": "2026-01-11T01:37:18.932Z",
+    "updatedAt": "2026-01-27T07:22:04.014Z"
+  },
+  {
+    "id": "a1b2c3d4-5678-4abc-9def-111111111111",
+    "name": "Out of Office Auto-Reply",
+    "enabled": true,
+    "instructions": [
+      "This is an automatic out-of-office reply.",
+      "Keep it brief and professional.",
+      "Include the return date and alternative contact if provided in knowledgebase.",
+      "Do not engage with the content of the sender's email.",
+      "Do not include alternate contact if not found in knowledgebase."
+    ],
+    "exampleReply": "Hi [sender's first name],\n\nThank you for your email. I am currently out of the office with limited access to email and will return on [return date].\n\nFor urgent matters, please contact [alternative contact name] at [alternative contact email].\n\nI will respond to your email upon my return.\n\nBest regards,\n[User Name]",
+    "createdAt": "2026-01-26T00:00:00.000Z",
+    "updatedAt": "2026-01-27T04:51:30.077Z"
+  },
+  {
+    "id": "a1b2c3d4-5678-4abc-9def-444444444444",
+    "name": "Quick Acknowledgment",
+    "enabled": true,
+    "instructions": [
+      "Acknowledge receipt of an email, document, or request.",
+      "Keep it very brief.",
+      "Indicate when a full response or action can be expected if applicable.",
+      "Professional but warm tone."
+    ],
+    "exampleReply": "Hi [sender's first name],\n\nThank you for sending this over. I have received [item/document/request] and will review it shortly.\n\nI will get back to you by [expected response timeframe] with my feedback/response.\n\nThanks,\n[User Name]",
+    "createdAt": "2026-01-26T00:00:00.000Z",
+    "updatedAt": "2026-01-27T04:51:25.782Z"
+  },
+  {
+    "id": "a089b3d6-6beb-4a0e-94f2-bf1e8e15622a",
+    "name": "Support request initial reply",
+    "enabled": true,
+    "instructions": [
+      "Reply to support requests.",
+      "Be professional, and be compassionate.",
+      "Acknowledge the user's request.",
+      "Mention that we will get back to the request within either 2 days, or days defined in knowledgebase."
+    ],
+    "exampleReply": "Hello [Sender name],\n\n[Greet politely]\n[Acknowledgement and do a compenssionate reply]\n\nWe will do our best to resolve your issue. We will be back on your request within the next [X] business days.\n\nBest regards,\n[User Company Name]",
+    "createdAt": "2026-01-27T04:37:14.202Z",
+    "updatedAt": "2026-01-27T04:51:22.317Z"
+  },
+  {
+    "id": "b2c24934-07f3-405a-a81c-9df318b77213",
+    "name": "Technical support request redirect",
+    "enabled": true,
+    "instructions": [
+      "Use for emails requesting technical support",
+      "Redirect to official channel defined in the template, or in the knowledgebase (prefer knowledgebase)",
+      "Polite but sound professional",
+      "Acknowledge user problem first to look compassionate"
+    ],
+    "exampleReply": "Dear [Sender Name],\n\n[Acknowledge user problem and greetings]\n\nFor these technical problems, it is best to use the official support channel at [official support link].\nWe will do our best to resolve [the problem] as quickly as possible.\n\nThank you for your understanding.\n\nBest regards,\n[Company Name]",
+    "createdAt": "2026-01-27T04:41:23.469Z",
+    "updatedAt": "2026-01-27T04:51:18.976Z"
+  }
+]

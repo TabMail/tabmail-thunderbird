@@ -1,0 +1,50 @@
+[
+  {
+    "namespace": "tmMessageListTagColoring",
+    "description": "TabMail Message List Tag Coloring experiment API",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "async": true,
+        "description": "Initialize tag coloring for message list rows",
+        "parameters": [
+          {
+            "name": "opts",
+            "type": "object",
+            "optional": true,
+            "properties": {},
+            "additionalProperties": true
+          }
+        ]
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "async": true,
+        "description": "Shutdown tag coloring",
+        "parameters": []
+      },
+      {
+        "name": "recolorNow",
+        "type": "function",
+        "async": false,
+        "description": "Force immediate recoloring of all visible rows",
+        "parameters": [
+          {
+            "name": "reason",
+            "type": "string",
+            "optional": true
+          }
+        ]
+      },
+      {
+        "name": "refresh",
+        "type": "function",
+        "async": false,
+        "description": "Trigger debounced recolor (call after tag changes)",
+        "parameters": []
+      }
+    ]
+  }
+]

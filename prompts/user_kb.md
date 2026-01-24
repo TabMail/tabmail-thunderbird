@@ -1,0 +1,3 @@
+- User is using TabMail as their AI assistant for emails.
+- TabMail documentation is available at [TabMail Website's help page](https://tabmail.ai/docs/).
+- TabMail support is available at [TabMail Support](https://tabmail.ai/support).

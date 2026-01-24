@@ -1,0 +1,73 @@
+/* TabMail Preview Gate – Static Styling Rules
+ *
+ * This file contains ONLY the message preview gating rules that prevent
+ * content flashing in the 3-pane message preview while scripts initialize.
+ *
+ * Controlled by tmPreviewGate experiment API:
+ * - tmPreviewGate.setMessagePreviewGated({ gated: true/false })
+ *
+ * The experiment toggles :root.tm-message-preview-gated on the 3-pane document
+ * (and relevant about:3pane content documents).
+ */
+
+/* Scope to Messenger / about:3pane environments only */
+@-moz-document url("chrome://messenger/content/messenger.xhtml"),
+               url-prefix("about:3pane"),
+               url-prefix("about:message") {
+
+/* ===== Message Preview Gate (3-pane anti-flash) =====
+ * IMPORTANT: We hide ONLY the preview <browser> elements, not the whole window.
+ * This avoids blanking the entire UI while still preventing message content flash.
+ */
+
+/* Message preview animation config (single source of truth). */
+:root {
+  /* Disabled: preview gating should be instant to avoid “fade out then reappear” artifacts. */
+  --tm-message-preview-anim-duration: 0ms;
+  --tm-message-preview-anim-offset: 0px;
+}
+
+/* TB 145 (3-pane): the actual message content browser is often #messagepane */
+browser#messagepane,
+#messagepane,
+browser[name="messagepane"] {
+  visibility: visible !important;
+  opacity: 1 !important;
+  transform: none !important;
+  transition: none !important;
+}
+
+:root.tm-message-preview-gated browser#messagepane,
+:root.tm-message-preview-gated #messagepane,
+:root.tm-message-preview-gated browser[name="messagepane"] {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  transform: none !important;
+  transition: none !important;
+  pointer-events: none !important;
+}
+
+/* While the message browser is hidden, ensure the preview region still paints using TabMail's
+   palette-driven preview background to avoid a dark "flash" behind the mask. */
+:root.tm-message-preview-gated,
+:root.tm-message-preview-gated body,
+:root.tm-message-preview-gated #messagepane,
+:root.tm-message-preview-gated #messagepanebox,
+:root.tm-message-preview-gated #messageBrowser,
+:root.tm-message-preview-gated #multiMessageBrowser,
+:root.tm-message-preview-gated browser#messagepane,
+:root.tm-message-preview-gated browser[name="messagepane"] {
+  background-color: var(--tm-preview-pane-bg) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  browser#messagepane,
+  #messagepane,
+  browser[name="messagepane"] {
+    transition: none !important;
+  }
+}
+
+}  /* End @-moz-document */
+
+
