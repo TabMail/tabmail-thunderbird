@@ -18,6 +18,7 @@
         <button class="prompt-tab" data-prompt="action">Action Classification</button>
         <button class="prompt-tab" data-prompt="kb">Knowledge Base</button>
         <button class="prompt-tab" data-prompt="reminders">Reminders</button>
+        <button class="prompt-tab" data-prompt="history">Chat History</button>
         <button class="prompt-tab dev-only" data-prompt="developer" style="display: none;">Developer (Raw)</button>
       </div>
     </section>
@@ -31,6 +32,28 @@
     </div>
 
     <div id="kb-editor" class="prompt-content">
+      <div class="section-container">
+        <div class="section-header">
+          <h3>Knowledge Base Configuration</h3>
+        </div>
+        <div class="kb-config-content">
+          <div class="kb-config-row">
+            <label for="kb-recent-chats">Recent chats as context:</label>
+            <input type="number" id="kb-recent-chats" min="0" max="20" value="10" />
+            <span class="kb-config-hint">Recent chat sessions to include (may be truncated based on context limit)</span>
+          </div>
+          <div class="kb-config-row">
+            <label for="kb-reminder-retention">Reminder retention period (days):</label>
+            <input type="number" id="kb-reminder-retention" min="1" max="365" value="14" />
+            <span class="kb-config-hint">Reminders past due by more than this are automatically removed</span>
+          </div>
+          <div class="kb-config-row">
+            <label for="kb-max-bullets">Maximum Knowledge Base entries:</label>
+            <input type="number" id="kb-max-bullets" min="10" max="1000" value="200" />
+            <span class="kb-config-hint">Excludes reminders. Knowledge Base trimmed if over limit (higher = more context)</span>
+          </div>
+        </div>
+      </div>
       <div class="section-container">
         <div class="section-header">
           <h3>Personal Knowledge Base</h3>
@@ -47,6 +70,25 @@
     </div>
 
     <div id="developer-editor" class="prompt-content">
+      <div class="dev-test-section">
+        <div class="dev-test-header">
+          <h3>Backend Tests</h3>
+        </div>
+        <div class="dev-test-content">
+          <div class="dev-test-row">
+            <button id="test-kb-refine" class="test-btn">Test KB Refinement</button>
+            <span class="dev-test-hint">Tests the full KB orchestration pipeline with fake data</span>
+          </div>
+          <div id="test-kb-refine-output" class="dev-test-output" style="display: none;">
+            <div class="dev-test-output-header">
+              <span>Output</span>
+              <button id="clear-test-output" class="clear-btn">Clear</button>
+            </div>
+            <pre id="test-kb-refine-result"></pre>
+          </div>
+        </div>
+      </div>
+
       <div class="dev-prompt-container">
         <div class="dev-prompt-section">
           <div class="dev-prompt-header">
@@ -103,6 +145,29 @@
           </div>
           <p id="reminders-empty" class="reminders-empty" style="display: none;">
             No reminders found. Reminders are generated from your inbox messages and knowledge base.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div id="history-editor" class="prompt-content">
+      <div class="section-container">
+        <div class="section-header">
+          <h3>Chat History <span class="section-subtitle">(Recent 100)</span></h3>
+          <div class="section-header-actions">
+            <button id="refresh-history" class="reload-section-btn">Refresh</button>
+            <button id="clear-history" class="reset-section-btn">Clear All</button>
+          </div>
+        </div>
+        <div class="history-content">
+          <div class="history-stats" id="history-stats">
+            <span class="history-stat">Loading...</span>
+          </div>
+          <div id="history-list">
+            <div class="history-loading">Loading chat history...</div>
+          </div>
+          <p id="history-empty" class="history-empty" style="display: none;">
+            No chat history stored. Chat sessions are saved when you close or renew a chat.
           </p>
         </div>
       </div>

@@ -1,6 +1,14 @@
 import { log } from "../agent/modules/utils.js";
 import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
 
+// Import modular components
+import { clearTestOutput, runKbRefineTest } from "./modules/developer.js";
+import { clearChatHistory, loadChatHistory } from "./modules/history.js";
+import { parseMarkdown, reconstructMarkdown } from "./modules/markdown.js";
+import { loadReminders } from "./modules/reminders.js";
+import { loadKbConfig, loadPromptFile, resetPromptFile, saveKbConfig, savePromptFile } from "./modules/storage.js";
+import { autoGrowTextarea, deepClone, flashBorder, flashButton, showStatus } from "./modules/utils.js";
+
 // Inject TabMail palette CSS
 injectPaletteIntoDocument(document).then(() => {
   console.log("[Prompts] Palette CSS injected");
@@ -18,271 +26,8 @@ let originalActionData = null; // Store original for reload
 let originalKbData = null; // Store original for reload
 let isDebugMode = false; // Track debug mode state
 
-// Auto-grow textarea function
-function autoGrowTextarea(textarea) {
-  // Reset height to recalculate
-  textarea.style.height = "auto";
-  // Set to scrollHeight + 2px to ensure there's always room for one more line
-  textarea.style.height = `${textarea.scrollHeight + 2}px`;
-}
-
-// Parse markdown into structured data
-function parseMarkdown(content, isComposition) {
-  const lines = content.split("\n");
-  const sections = [];
-  let currentSection = null;
-  let currentTemplate = null;
-  let preContent = [];
-  let inSections = false;
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    
-    // Check for section header with DO NOT EDIT marker
-    const sectionMatch = line.match(/^#\s+(.+?)\s*\(DO NOT EDIT\/DELETE THIS SECTION HEADER\)/);
-    if (sectionMatch) {
-      inSections = true;
-      const title = sectionMatch[1];
-      
-      // Save previous section
-      if (currentSection) {
-        if (currentTemplate) {
-          currentSection.templates.push(currentTemplate);
-          currentTemplate = null;
-        }
-        // Trim content to remove extra whitespace
-        if (currentSection.content) {
-          currentSection.content = currentSection.content.trim();
-        }
-        sections.push(currentSection);
-      }
-      
-      currentSection = {
-        title,
-        type: "templates", // Will determine type based on content
-        templates: [],
-        content: "",
-      };
-      continue;
-    }
-    
-    // Check for regular section header (# without DO NOT EDIT)
-    const regularSectionMatch = line.match(/^#\s+(.+)/);
-    if (regularSectionMatch && !inSections) {
-      // This is pre-content section, add to preContent
-      preContent.push(line);
-      continue;
-    }
-    
-    // Collect pre-content (everything before first DO NOT EDIT section)
-    if (!inSections) {
-      preContent.push(line);
-      continue;
-    }
-    
-    // Skip if no current section
-    if (!currentSection) {
-      continue;
-    }
-    
-    // Check for template header (##)
-    const templateMatch = line.match(/^##\s+(.+)/);
-    if (templateMatch) {
-      const title = templateMatch[1].trim();
-      
-      // Save previous template
-      if (currentTemplate) {
-        currentSection.templates.push(currentTemplate);
-      }
-      
-      currentTemplate = {
-        title,
-        instructions: [],
-        exampleReply: "",
-      };
-      continue;
-    }
-    
-    // Parse template content if we're in a template
-    if (currentTemplate) {
-      // Check for bullet points (instructions)
-      if (line.match(/^-\s+(.+)/)) {
-        const instruction = line.match(/^-\s+(.+)/)[1];
-        // Skip "Example reply:" line - don't add as instruction
-        if (!instruction.match(/^Example reply:/i)) {
-          currentTemplate.instructions.push(instruction);
-        }
-      }
-      
-      // Check for code block start (example reply)
-      else if (line.trim() === "```") {
-        // Find the end of code block
-        let exampleLines = [];
-        i++;
-        while (i < lines.length && lines[i].trim() !== "```") {
-          exampleLines.push(lines[i]);
-          i++;
-        }
-        currentTemplate.exampleReply = exampleLines.join("\n");
-      }
-      continue;
-    }
-    
-    // If no template, add to section content (for simple sections)
-    if (currentSection && !currentTemplate) {
-      // Stop parsing when we hit the END marker
-      if (line.trim() === "====END USER INSTRUCTIONS====") {
-        // Save current section and stop processing
-        if (currentTemplate) {
-          currentSection.templates.push(currentTemplate);
-          currentTemplate = null;
-        }
-        // Trim content to remove extra whitespace
-        if (currentSection.content) {
-          currentSection.content = currentSection.content.trim();
-        }
-        sections.push(currentSection);
-        currentSection = null;
-        // Skip the rest of the file
-        break;
-      }
-      
-      if (currentSection.content) {
-        currentSection.content += "\n" + line;
-      } else {
-        currentSection.content = line;
-      }
-    }
-  }
-  
-  // Save last section/template if not already saved
-  if (currentTemplate && currentSection) {
-    currentSection.templates.push(currentTemplate);
-  }
-  if (currentSection) {
-    // Trim content to remove extra whitespace
-    if (currentSection.content) {
-      currentSection.content = currentSection.content.trim();
-    }
-    sections.push(currentSection);
-  }
-  
-  return {
-    preContent: preContent.join("\n"),
-    sections,
-  };
-}
-
-// Reconstruct markdown from structured data
-function reconstructMarkdown(data, isComposition) {
-  let lines = [];
-  
-  // Add pre-content
-  if (data.preContent) {
-    lines.push(data.preContent);
-  }
-  
-  // Add sections
-  for (const section of data.sections) {
-    lines.push("");
-    lines.push(`# ${section.title} (DO NOT EDIT/DELETE THIS SECTION HEADER)`);
-    
-    if (isComposition && section.templates && section.templates.length > 0) {
-      // Reconstruct templates
-      for (const template of section.templates) {
-        lines.push("");
-        lines.push(`## ${template.title}`);
-        
-        // Add instructions
-        for (const instruction of template.instructions) {
-          lines.push(`- ${instruction}`);
-        }
-        
-        // Add example reply marker
-        if (template.exampleReply && template.exampleReply.trim()) {
-          lines.push("- Example reply:");
-          lines.push("```");
-          lines.push(template.exampleReply);
-          lines.push("```");
-        }
-      }
-    } else {
-      // Simple content - trim to avoid extra newlines
-      const content = (section.content || "").trim();
-      if (content) {
-        lines.push(content);
-      }
-    }
-  }
-  
-  // Add ending markers for composition prompts
-  if (isComposition) {
-    lines.push("");
-    lines.push("====END USER INSTRUCTIONS====");
-    lines.push("");
-    lines.push("Now, acknowledge these user instructions and do not deviate from them.");
-  }
-  
-  return lines.join("\n");
-}
-
-// Load prompt file
-async function loadPromptFile(filename) {
-  try {
-    const response = await browser.runtime.sendMessage({
-      command: "read-prompt-file",
-      filename,
-    });
-    
-    if (!response || response.error || !response.ok) {
-      throw new Error(response?.error || "Failed to load prompt file");
-    }
-    
-    return response.content;
-  } catch (e) {
-    log(`[Prompts] Failed to load ${filename}: ${e}`, "error");
-    throw e;
-  }
-}
-
-// Save prompt file
-async function savePromptFile(filename, content) {
-  try {
-    const response = await browser.runtime.sendMessage({
-      command: "write-prompt-file",
-      filename,
-      content,
-    });
-    
-    if (!response || response.error || !response.ok) {
-      throw new Error(response?.error || "Failed to save prompt file");
-    }
-    
-    return true;
-  } catch (e) {
-    log(`[Prompts] Failed to save ${filename}: ${e}`, "error");
-    throw e;
-  }
-}
-
-// Reset prompt to default
-async function resetPromptFile(filename) {
-  try {
-    const response = await browser.runtime.sendMessage({
-      command: "reset-prompt-file",
-      filename,
-    });
-    
-    if (!response || response.error || !response.ok) {
-      throw new Error(response?.error || "Failed to reset prompt file");
-    }
-    
-    return true;
-  } catch (e) {
-    log(`[Prompts] Failed to reset ${filename}: ${e}`, "error");
-    throw e;
-  }
-}
+// Note: parseMarkdown, reconstructMarkdown, loadPromptFile, savePromptFile, resetPromptFile
+// are now imported from modules
 
 // Render composition templates
 function renderCompositionTemplates() {
@@ -712,14 +457,18 @@ function switchTab(promptType) {
     document.getElementById("reminders-editor").classList.add("active");
     // Load reminders when switching to reminders tab
     loadReminders();
+  } else if (promptType === "history") {
+    document.getElementById("history-editor").classList.add("active");
+    // Load chat history when switching to history tab
+    loadChatHistory();
   } else if (promptType === "developer") {
     document.getElementById("developer-editor").classList.add("active");
     // Reload raw content when switching to developer tab
     loadRawContent();
   }
   
-  // Re-calculate textarea heights after tab is visible (except for developer and reminders tabs)
-  if (promptType !== "developer" && promptType !== "reminders") {
+  // Re-calculate textarea heights after tab is visible (except for developer, reminders, history tabs)
+  if (promptType !== "developer" && promptType !== "reminders" && promptType !== "history") {
     requestAnimationFrame(() => {
       const activeContent = document.querySelector(".prompt-content.active");
       if (activeContent) {
@@ -733,273 +482,7 @@ function switchTab(promptType) {
   }
 }
 
-// ============================================================
-// Reminders Tab Functions
-// ============================================================
-
-let remindersData = [];
-
-/**
- * Load reminders from background script (builds fresh list including disabled)
- */
-async function loadReminders() {
-  try {
-    log("[Prompts] Loading reminders...");
-    
-    const response = await browser.runtime.sendMessage({
-      command: "get-all-reminders",
-    });
-    
-    if (!response || !response.ok) {
-      throw new Error(response?.error || "Failed to load reminders");
-    }
-    
-    remindersData = response.reminders || [];
-    log(`[Prompts] Loaded ${remindersData.length} reminders (${response.counts?.disabled || 0} disabled)`);
-    
-    renderReminders();
-  } catch (e) {
-    log(`[Prompts] Error loading reminders: ${e}`, "error");
-    document.getElementById("reminders-list").innerHTML = 
-      '<div class="reminders-loading">Failed to load reminders</div>';
-  }
-}
-
-/**
- * Render reminders list
- */
-function renderReminders() {
-  const container = document.getElementById("reminders-list");
-  const emptyMessage = document.getElementById("reminders-empty");
-  
-  if (!remindersData || remindersData.length === 0) {
-    container.innerHTML = "";
-    emptyMessage.style.display = "block";
-    return;
-  }
-  
-  emptyMessage.style.display = "none";
-  container.innerHTML = "";
-  
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  
-  remindersData.forEach((reminder) => {
-    const item = document.createElement("div");
-    item.className = "reminder-item" + (reminder.enabled === false ? " disabled" : "");
-    item.setAttribute("data-hash", reminder.hash);
-    
-    // Checkbox
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.className = "reminder-checkbox";
-    checkbox.checked = reminder.enabled !== false;
-    checkbox.title = reminder.enabled !== false ? "Click to hide this reminder" : "Click to show this reminder";
-    checkbox.addEventListener("change", () => handleReminderToggle(reminder.hash, checkbox.checked));
-    
-    // Details container
-    const details = document.createElement("div");
-    details.className = "reminder-details";
-    
-    // Content
-    const content = document.createElement("p");
-    content.className = "reminder-content";
-    content.textContent = reminder.content || "No content";
-    details.appendChild(content);
-    
-    // Meta info
-    const meta = document.createElement("div");
-    meta.className = "reminder-meta";
-    
-    // Source badge
-    const source = document.createElement("span");
-    source.className = "reminder-source";
-    source.textContent = reminder.source === "kb" ? "Knowledge Base" : "Email";
-    meta.appendChild(source);
-    
-    // Due date
-    if (reminder.dueDate) {
-      const dueSpan = document.createElement("span");
-      dueSpan.className = "reminder-due";
-      
-      try {
-        const dateParts = reminder.dueDate.split("-");
-        if (dateParts.length === 3) {
-          const dueYear = parseInt(dateParts[0], 10);
-          const dueMonth = parseInt(dateParts[1], 10) - 1;
-          const dueDay = parseInt(dateParts[2], 10);
-          const dueDateMidnight = new Date(dueYear, dueMonth, dueDay);
-          const dueDateTimestamp = dueDateMidnight.getTime();
-          const todayTimestamp = today.getTime();
-          const tomorrowTimestamp = tomorrow.getTime();
-          
-          if (dueDateTimestamp < todayTimestamp) {
-            const msPerDay = 24 * 60 * 60 * 1000;
-            const daysOverdue = Math.floor((todayTimestamp - dueDateTimestamp) / msPerDay);
-            dueSpan.textContent = `Overdue (${daysOverdue} day${daysOverdue > 1 ? "s" : ""})`;
-            dueSpan.classList.add("overdue");
-          } else if (dueDateTimestamp === todayTimestamp) {
-            dueSpan.textContent = "Due Today";
-            dueSpan.classList.add("today");
-          } else if (dueDateTimestamp === tomorrowTimestamp) {
-            dueSpan.textContent = "Due Tomorrow";
-            dueSpan.classList.add("tomorrow");
-          } else {
-            const options = { weekday: "short", month: "short", day: "numeric" };
-            dueSpan.textContent = `Due ${dueDateMidnight.toLocaleDateString("en-US", options)}`;
-          }
-          meta.appendChild(dueSpan);
-        }
-      } catch (e) {
-        log(`[Prompts] Error formatting due date: ${e}`, "warn");
-      }
-    }
-    
-    // Subject (for message reminders)
-    if (reminder.subject && reminder.source === "message") {
-      const subject = document.createElement("span");
-      subject.className = "reminder-subject";
-      subject.textContent = `From: ${reminder.subject}`;
-      subject.title = reminder.subject;
-      meta.appendChild(subject);
-    }
-    
-    details.appendChild(meta);
-    
-    item.appendChild(checkbox);
-    item.appendChild(details);
-    container.appendChild(item);
-  });
-  
-  log(`[Prompts] Rendered ${remindersData.length} reminders`);
-}
-
-/**
- * Handle reminder enable/disable toggle
- */
-async function handleReminderToggle(hash, enabled) {
-  try {
-    log(`[Prompts] Toggling reminder ${hash} to enabled=${enabled}`);
-    
-    const command = enabled ? "enable-reminder" : "disable-reminder";
-    const response = await browser.runtime.sendMessage({
-      command,
-      hash,
-    });
-    
-    if (!response || !response.ok) {
-      throw new Error(response?.error || "Failed to update reminder");
-    }
-    
-    // Update local data
-    const reminder = remindersData.find(r => r.hash === hash);
-    if (reminder) {
-      reminder.enabled = enabled;
-    }
-    
-    // Update UI
-    const item = document.querySelector(`.reminder-item[data-hash="${hash}"]`);
-    if (item) {
-      if (enabled) {
-        item.classList.remove("disabled");
-      } else {
-        item.classList.add("disabled");
-      }
-    }
-    
-    showStatus(enabled ? "Reminder enabled" : "Reminder hidden");
-    log(`[Prompts] Reminder ${hash} toggled to enabled=${enabled}`);
-  } catch (e) {
-    log(`[Prompts] Error toggling reminder: ${e}`, "error");
-    showStatus("Failed to update reminder", true);
-    // Reload to get correct state
-    loadReminders();
-  }
-}
-
-// Show status message
-function showStatus(message, isError = false) {
-  const statusEl = document.getElementById("status-message");
-  statusEl.textContent = message;
-  statusEl.className = isError ? "error" : "success";
-  
-  log(`[Prompts] Status: ${message}`);
-  
-  setTimeout(() => {
-    statusEl.textContent = "";
-    statusEl.className = "";
-  }, 3000);
-}
-
-// Add flash effect to button using inline styles (to bypass CSS blocking)
-function flashButton(button, color = null) {
-  const flashColor = color === "blue" ? "var(--in-content-accent-color)" : color === "red" ? "var(--tag-tm-delete)" : "#666";
-  log(`[Prompts] Flashing button: ${button.textContent} with color: ${color}`);
-  
-  const originalBoxShadow = button.style.boxShadow;
-  const originalTransform = button.style.transform;
-  
-  // Apply flash effect with inline styles
-  button.style.boxShadow = `0 0 10px 5px ${flashColor}`;
-  button.style.transform = "scale(0.95)";
-  button.style.transition = "all 0.15s ease";
-  
-  setTimeout(() => {
-    button.style.transform = "scale(1)";
-    button.style.boxShadow = "0 0 0 0 transparent";
-    
-    setTimeout(() => {
-      button.style.boxShadow = originalBoxShadow;
-      button.style.transform = originalTransform;
-      button.style.transition = "";
-    }, 150);
-  }, 150);
-}
-
-// Simple subtle flash effect like the old config page
-function flashBorder(element, color = "blue") {
-  if (!element) {
-    log(`[Prompts] ERROR: flashBorder called with null element!`, "error");
-    return;
-  }
-  
-  log(`[Prompts] Flashing border: className="${element.className}", tagName="${element.tagName}", color="${color}"`);
-  
-  // Get computed styles to preserve them
-  const computedStyle = window.getComputedStyle(element);
-  const originalBackground = element.style.backgroundColor || computedStyle.backgroundColor;
-  const originalBorderColor = element.style.borderColor || computedStyle.borderColor;
-  const originalTransition = element.style.transition;
-  
-  // Apply subtle flash - background tint + border color change
-  element.style.transition = "background-color 0.3s ease, border-color 0.3s ease";
-  
-  if (color === "blue") {
-    element.style.backgroundColor = "color-mix(in srgb, var(--in-content-accent-color) 18%, var(--in-content-box-background))";
-    element.style.borderColor = "var(--in-content-accent-color)";
-  } else {
-    element.style.backgroundColor = "color-mix(in srgb, var(--tag-tm-delete) 18%, var(--in-content-box-background))";
-    element.style.borderColor = "var(--tag-tm-delete)";
-  }
-  
-  // Fade back to normal after 300ms
-  setTimeout(() => {
-    element.style.backgroundColor = originalBackground;
-    element.style.borderColor = originalBorderColor;
-    
-    // Clean up after transition completes
-    setTimeout(() => {
-      element.style.transition = originalTransition;
-    }, 300);
-  }, 300);
-}
-
-// Deep clone for backup
-function deepClone(obj) {
-  return JSON.parse(JSON.stringify(obj));
-}
+// Note: Utility functions, reminders, chat history, KB config now in modules
 
 // Load KB content
 async function loadKbContent() {
@@ -1318,8 +801,9 @@ async function initialize() {
     originalActionData = deepClone(actionData);
     renderActionSections();
     
-    // Load KB content
+    // Load KB content and config
     await loadKbContent();
+    await loadKbConfig();
     
     // Load raw content if debug mode is enabled
     if (isDebugMode) {
@@ -1629,6 +1113,24 @@ document.addEventListener("DOMContentLoaded", () => {
     await resetKbContent();
   });
   
+  // KB config auto-save on change
+  const kbConfigInputs = [
+    document.getElementById("kb-recent-chats"),
+    document.getElementById("kb-reminder-retention"),
+    document.getElementById("kb-max-bullets"),
+  ];
+  for (const input of kbConfigInputs) {
+    if (input) {
+      input.addEventListener("change", async () => {
+        await saveKbConfig();
+      });
+    }
+  }
+  
+  // Developer test handlers (implementation in modules/developer.js)
+  document.getElementById("test-kb-refine").addEventListener("click", runKbRefineTest);
+  document.getElementById("clear-test-output").addEventListener("click", clearTestOutput);
+
   // Raw developer tab handlers
   document.getElementById("save-raw-composition").addEventListener("click", async () => {
     try {
@@ -1813,6 +1315,23 @@ document.addEventListener("DOMContentLoaded", () => {
     flashButton(refreshBtn, "blue");
     await loadReminders();
     showStatus("Reminders refreshed");
+  });
+  
+  // Chat history handlers
+  document.getElementById("refresh-history").addEventListener("click", async () => {
+    const refreshBtn = document.getElementById("refresh-history");
+    flashButton(refreshBtn, "blue");
+    await loadChatHistory();
+    showStatus("Chat history refreshed");
+  });
+  
+  document.getElementById("clear-history").addEventListener("click", async () => {
+    if (!confirm("Are you sure you want to clear all chat history? This cannot be undone.")) {
+      return;
+    }
+    const clearBtn = document.getElementById("clear-history");
+    flashButton(clearBtn, "red");
+    await clearChatHistory();
   });
   
   // Storage listener for auto-updating reminders when they change

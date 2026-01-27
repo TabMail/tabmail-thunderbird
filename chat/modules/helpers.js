@@ -9,6 +9,86 @@ import { attachSpecialLinkListeners, renderMarkdown } from "./markdown.js";
 // Controller used to manage streaming timers per element so we can cancel old streams
 const STREAM_CTRL = Symbol.for("tm_stream_control");
 
+/**
+ * Sanitize text to ensure valid UTF-8 for JSON serialization.
+ * Removes null bytes, control characters, and other problematic chars.
+ * @param {string} text - Input text
+ * @returns {string} - Sanitized text
+ */
+function sanitizeForJson(text) {
+  if (!text || typeof text !== 'string') return '';
+  // Remove null bytes and control characters (except newline, tab)
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+}
+
+/**
+ * Extract plain text from rendered HTML, preserving resolved entity names in brackets.
+ * Used for capturing rendered chat content for KB snapshot.
+ * @param {string} html - Rendered HTML from bubble
+ * @returns {string} - Plain text with resolved entities
+ */
+function extractPlainTextFromHtml(html) {
+  if (!html) return "";
+  let text = html;
+  
+  // Convert block elements to newlines
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<\/p>/gi, "\n\n");
+  text = text.replace(/<\/div>/gi, "\n");
+  text = text.replace(/<\/h[1-6]>/gi, "\n\n");
+  text = text.replace(/<\/li>/gi, "\n");
+  text = text.replace(/<\/tr>/gi, "\n");
+  text = text.replace(/<\/td>/gi, " | ");
+  text = text.replace(/<\/th>/gi, " | ");
+  
+  // Extract text from TabMail special links, wrap in brackets with type prefix
+  text = text.replace(/<a[^>]*class="[^"]*tm-(email|contact|event)-link[^"]*"[^>]*>([^<]*)<\/a>/gi, (match, type, content) => {
+    // Remove emoji prefix - match common email/contact/calendar emojis
+    const cleanContent = content.replace(/^[\u{1F4E7}\u{1F4E9}\u{1F464}\u{1F4C5}\u{1F4C6}📧👤📅]\s*/u, '').trim();
+    if (!cleanContent) return '';
+    // Add type prefix instead of emoji
+    const prefix = type === 'email' ? 'Email' : type === 'contact' ? 'Contact' : 'Calendar';
+    return `[${prefix}: ${cleanContent}]`;
+  });
+  
+  // Handle regular links - keep the link text
+  text = text.replace(/<a[^>]*>([^<]*)<\/a>/gi, "$1");
+  
+  // Strip remaining HTML tags
+  text = text.replace(/<[^>]+>/g, "");
+  
+  // Decode HTML entities
+  text = text.replace(/&nbsp;/gi, " ");
+  text = text.replace(/&quot;/g, '"');
+  text = text.replace(/&amp;/g, "&");
+  text = text.replace(/&lt;/g, "<");
+  text = text.replace(/&gt;/g, ">");
+  text = text.replace(/&#39;/g, "'");
+  text = text.replace(/&apos;/gi, "'");
+  
+  // Clean up whitespace and sanitize for JSON
+  text = text.replace(/\n{3,}/g, "\n\n").trim();
+  return sanitizeForJson(text);
+}
+
+
+/**
+ * Extract plain text from a bubble element's rendered content.
+ * @param {HTMLElement} bubble - The bubble element
+ * @returns {string} - Plain text with resolved entities
+ */
+export function extractTextFromBubble(bubble) {
+  if (!bubble) return "";
+  try {
+    const contentEl = bubble.querySelector(".bubble-content") || bubble;
+    return extractPlainTextFromHtml(contentEl.innerHTML || "");
+  } catch (e) {
+    log(`[ChatSnapshot] Failed to extract text from bubble: ${e}`, "warn");
+    return "";
+  }
+}
+
 function _cancelExistingStream(element) {
   try {
     const ctrl = element && element[STREAM_CTRL];

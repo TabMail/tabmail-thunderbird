@@ -1502,5 +1502,3 @@ function hideTooltip() {
   }
 }
 
-
-

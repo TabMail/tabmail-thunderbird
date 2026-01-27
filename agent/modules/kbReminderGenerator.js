@@ -1,31 +1,13 @@
-// kbReminderGenerator.js – Generate KB-based reminders
-// Thunderbird 142 MV3
-// These reminders are based solely on the user's knowledge base content
-// and are separate from email-based reminders generated from summaries
+// kbReminderGenerator.js – Extract KB-based reminders directly from KB content
+// Thunderbird 145 MV3
+// These reminders are parsed directly from the user's knowledge base
+// Format expected: "- Reminder: Due YYYY/MM/DD, reminder text"
 
-import { formatTimestampForAgent, getUserName } from "../../chat/modules/helpers.js";
-import { SETTINGS } from "./config.js";
-import { processJSONResponse, sendChat } from "./llm.js";
 import { getUserKBPrompt } from "./promptGenerator.js";
-import { log, saveChatLog } from "./utils.js";
+import { log } from "./utils.js";
 
 // Storage key for KB reminder list
 const KB_REMINDER_STORAGE_KEY = "reminder_kb_list";
-
-// ----------------------------------------------------------
-// Simple debouncing queue for KB reminder updates
-// - First call executes immediately
-// - Subsequent calls while one is running get queued
-// - After completion, queued requests run after debounce delay
-// ----------------------------------------------------------
-let _kbReminderUpdateState = {
-  isRunning: false,
-  hasQueuedRequest: false,
-  queueTimer: null,
-  queuedForce: false,
-};
-
-const KB_REMINDER_DEBOUNCE_MS = SETTINGS.reminderGeneration?.debounceMs || 2000;
 
 /**
  * Generate a simple hash from a string (for KB content comparison)
@@ -34,18 +16,79 @@ const KB_REMINDER_DEBOUNCE_MS = SETTINGS.reminderGeneration?.debounceMs || 2000;
 function simpleHash(str) {
   let hash = 5381;
   for (let i = 0; i < str.length; i++) {
-    hash = (hash * 33) ^ str.charCodeAt(i); // hash * 33 + c
+    hash = (hash * 33) ^ str.charCodeAt(i);
   }
-  return hash >>> 0; // Convert to unsigned 32-bit integer
+  return hash >>> 0;
 }
 
 /**
- * Implementation of KB reminder generation
- * Analyzes knowledge base only to generate helpful reminders
+ * Parse reminders directly from KB content
+ * Format: "- Reminder: Due YYYY/MM/DD, reminder text"
+ * Returns array of { dueDate: "YYYY-MM-DD" | null, content: "reminder text" }
+ */
+function parseRemindersFromKB(kbContent) {
+  if (!kbContent || !kbContent.trim()) {
+    return [];
+  }
+
+  const reminders = [];
+  const lines = kbContent.split('\n');
+
+  // Regex to match: "- Reminder: Due YYYY/MM/DD, reminder text"
+  const reminderRegex = /^-\s*Reminder:\s*Due\s+(\d{4})\/(\d{2})\/(\d{2}),\s*(.+)$/i;
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    const match = trimmedLine.match(reminderRegex);
+
+    if (match) {
+      const [, year, month, day, content] = match;
+      const dueDate = `${year}-${month}-${day}`;
+
+      reminders.push({
+        dueDate,
+        content: content.trim(),
+      });
+    }
+  }
+
+  return reminders;
+}
+
+/**
+ * Filter out past-due reminders (more than 1 day old)
+ */
+function filterActiveReminders(reminders) {
+  const now = new Date();
+  // Set to start of today for comparison
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // Allow 1 day grace period
+  const cutoffDate = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+
+  return reminders.filter(reminder => {
+    if (!reminder.dueDate) {
+      // No due date = always active
+      return true;
+    }
+
+    try {
+      const dueDate = new Date(reminder.dueDate);
+      // Keep if due date is after cutoff (today - 1 day)
+      return dueDate >= cutoffDate;
+    } catch {
+      // Invalid date = keep it
+      return true;
+    }
+  });
+}
+
+/**
+ * Implementation of KB reminder extraction
+ * Parses reminders directly from KB content (no LLM call)
  */
 async function _kbReminderGenerationImpl(force = false) {
   try {
-    log(`-- KB Reminder -- Starting KB reminder generation (force=${force})`);
+    log(`-- KB Reminder -- Starting KB reminder extraction (force=${force})`);
 
     // Get user KB content
     const userKBContent = (await getUserKBPrompt()) || "";
@@ -74,13 +117,13 @@ async function _kbReminderGenerationImpl(force = false) {
           Array.isArray(existingReminders.reminders)
         ) {
           log(
-            `-- KB Reminder -- ✅ KB content unchanged (hash=${contentHash}), skipping generation`
+            `-- KB Reminder -- ✅ KB content unchanged (hash=${contentHash}), skipping extraction`
           );
           return;
         }
 
         log(
-          `-- KB Reminder -- ⚠️ Need to regenerate: existingReminders=${!!existingReminders}, hashMatch=${existingReminders?.contentHash === contentHash}`
+          `-- KB Reminder -- ⚠️ Need to re-extract: existingReminders=${!!existingReminders}, hashMatch=${existingReminders?.contentHash === contentHash}`
         );
       } catch (e) {
         log(`-- KB Reminder -- ❌ Error checking existing KB reminders: ${e}`, "warn");
@@ -89,99 +132,47 @@ async function _kbReminderGenerationImpl(force = false) {
       log(`-- KB Reminder -- ⚠️ Force flag set, bypassing cache check`);
     }
 
-    log(`-- KB Reminder -- 🚀 KB content changed or no reminders, generating new KB reminders...`);
+    log(`-- KB Reminder -- 🚀 Extracting reminders from KB content...`);
 
-    // Get user name for system prompt
-    const userName = await getUserName({ fullname: true });
+    // Parse reminders directly from KB content
+    const allReminders = parseRemindersFromKB(userKBContent);
+    log(`-- KB Reminder -- Found ${allReminders.length} reminder entries in KB`);
 
-    // Build system message for LLM
-    const systemMsg = {
-      role: "system",
-      content: "system_prompt_kb_reminder",
-      user_name: userName,
-      user_kb_content: userKBContent,
-      time_stamp: formatTimestampForAgent(),
-    };
-
-    const requestStartTime = Date.now();
-
-    let assistantResp;
-    try {
-      // Add timeout wrapper around sendChat
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("KB reminder LLM request timeout after 60s")), 60000)
-      );
-
-      const sendChatPromise = sendChat([systemMsg], { ignoreSemaphore: true });
-
-      assistantResp = await Promise.race([sendChatPromise, timeoutPromise]);
-    } catch (error) {
-      const requestDuration = Date.now() - requestStartTime;
-      log(`-- KB Reminder -- LLM request failed after ${requestDuration}ms: ${error}`, "error");
-      saveChatLog("tabmail_kb_reminder_failed", Date.now(), [systemMsg], `ERROR: ${error}`);
-      return;
-    }
-
-    const requestDuration = Date.now() - requestStartTime;
-    log(`-- KB Reminder -- LLM request completed in ${requestDuration}ms`);
-
-    // Log the chat exchange for debugging
-    saveChatLog("tabmail_kb_reminder", Date.now(), [systemMsg], assistantResp);
-
-    if (!assistantResp) {
-      log(`-- KB Reminder -- LLM returned empty response for KB reminder generation`, "warn");
-      return;
-    }
-
-    // Parse strict JSON: { reminders: [...] }
-    const parsed = processJSONResponse(assistantResp) || {};
-
-    if (!Array.isArray(parsed.reminders)) {
-      log(
-        `-- KB Reminder -- Invalid response format. Expected 'reminders' array, got: ${JSON.stringify(parsed).slice(0, 200)}`,
-        "error"
-      );
-      return;
-    }
-
-    const reminders = parsed.reminders;
-    log(`-- KB Reminder -- Generated ${reminders.length} KB reminders`);
-
-    // Validate reminder format
-    // Note: Date conversion (relative to absolute) is now handled by backend post-processor
-    const validReminders = reminders.filter((r) => {
-      if (typeof r !== "object" || r === null) return false;
-      if (typeof r.content !== "string" || !r.content.trim()) return false;
-      if (r.dueDate !== null && typeof r.dueDate !== "string") return false;
-      return true;
-    });
-
-    if (validReminders.length !== reminders.length) {
-      log(
-        `-- KB Reminder -- Filtered out ${reminders.length - validReminders.length} invalid reminders`,
-        "warn"
-      );
-    }
+    // Filter out past-due reminders
+    const activeReminders = filterActiveReminders(allReminders);
+    log(`-- KB Reminder -- ${activeReminders.length} active reminders after filtering`);
 
     // Store KB reminders with content hash
     const reminderData = {
-      reminders: validReminders,
+      reminders: activeReminders,
       contentHash: contentHash,
       generatedAt: Date.now(),
     };
 
     await browser.storage.local.set({ [KB_REMINDER_STORAGE_KEY]: reminderData });
     log(
-      `-- KB Reminder -- ✅ Stored ${validReminders.length} KB reminders (hash=${contentHash})`
+      `-- KB Reminder -- ✅ Stored ${activeReminders.length} KB reminders (hash=${contentHash})`
     );
   } catch (e) {
-    log(`-- KB Reminder -- Error in KB reminder generation: ${e}`, "error");
-    console.error("KB reminder generation error:", e);
+    log(`-- KB Reminder -- Error in KB reminder extraction: ${e}`, "error");
+    console.error("KB reminder extraction error:", e);
   }
 }
 
+// ----------------------------------------------------------
+// Simple debouncing queue for KB reminder updates
+// ----------------------------------------------------------
+let _kbReminderUpdateState = {
+  isRunning: false,
+  hasQueuedRequest: false,
+  queueTimer: null,
+  queuedForce: false,
+};
+
+const KB_REMINDER_DEBOUNCE_MS = 2000;
+
 /**
- * Queue handler for KB reminder generation with debouncing
+ * Queue handler for KB reminder extraction with debouncing
  */
 async function _queueKBReminderGeneration(force = false) {
   log(`-- KB Reminder -- _queueKBReminderGeneration called (force=${force}, isRunning=${_kbReminderUpdateState.isRunning})`);
@@ -189,7 +180,7 @@ async function _queueKBReminderGeneration(force = false) {
   if (!_kbReminderUpdateState.isRunning) {
     // Not running, execute immediately
     _kbReminderUpdateState.isRunning = true;
-    log(`-- KB Reminder -- Starting KB reminder generation immediately`);
+    log(`-- KB Reminder -- Starting KB reminder extraction immediately`);
 
     // Clear any pending timer since we're executing now
     if (_kbReminderUpdateState.queueTimer) {
@@ -201,7 +192,7 @@ async function _queueKBReminderGeneration(force = false) {
     try {
       await _kbReminderGenerationImpl(force);
     } catch (e) {
-      log(`-- KB Reminder -- Error during KB reminder generation: ${e}`, "error");
+      log(`-- KB Reminder -- Error during KB reminder extraction: ${e}`, "error");
     } finally {
       _kbReminderUpdateState.isRunning = false;
 
@@ -227,7 +218,7 @@ async function _queueKBReminderGeneration(force = false) {
     }
   } else {
     // Already running, queue a request
-    log(`-- KB Reminder -- KB reminder generation in progress, queuing request (force=${force})`);
+    log(`-- KB Reminder -- KB reminder extraction in progress, queuing request (force=${force})`);
     _kbReminderUpdateState.hasQueuedRequest = true;
 
     // If this request has force=true, remember it for the queued execution
@@ -245,23 +236,23 @@ async function _queueKBReminderGeneration(force = false) {
 }
 
 /**
- * Public API: Generate and store KB reminders based on current knowledge base
+ * Public API: Extract and store KB reminders based on current knowledge base
  * Uses smart debouncing queue to prevent concurrent updates and collapse rapid calls
- * @param {boolean} force - If true, regenerate even if KB hasn't changed
+ * @param {boolean} force - If true, re-extract even if KB hasn't changed
  */
 export async function generateKBReminders(force = false) {
   return _queueKBReminderGeneration(force);
 }
 
 /**
- * Cleanup function to cancel any pending KB reminder generation
+ * Cleanup function to cancel any pending KB reminder extraction
  * Should be called when extension is suspending/uninstalling
  */
 export function cleanupKBReminderGenerator() {
   if (_kbReminderUpdateState.queueTimer) {
     clearTimeout(_kbReminderUpdateState.queueTimer);
     _kbReminderUpdateState.queueTimer = null;
-    log(`-- KB Reminder -- Cancelled pending KB reminder generation timer`);
+    log(`-- KB Reminder -- Cancelled pending KB reminder extraction timer`);
   }
   _kbReminderUpdateState.hasQueuedRequest = false;
   _kbReminderUpdateState.queuedForce = false;
@@ -275,7 +266,7 @@ export async function getKBReminders() {
   try {
     const stored = await browser.storage.local.get(KB_REMINDER_STORAGE_KEY);
     const reminderData = stored[KB_REMINDER_STORAGE_KEY];
-    
+
     if (reminderData && Array.isArray(reminderData.reminders)) {
       return reminderData.reminders;
     }
@@ -285,4 +276,3 @@ export async function getKBReminders() {
     return [];
   }
 }
-

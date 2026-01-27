@@ -8,7 +8,7 @@ import { processUserInput } from "./fsm/core.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
 import { ctx } from "./modules/context.js";
 import { awaitUserInput } from "./modules/converse.js";
-import { cleanupScrollObservers, initAggressiveScrollStick, isAtBottom, scrollToBottom, setBubbleText, setStickToBottom } from "./modules/helpers.js";
+import { cleanupScrollObservers, extractTextFromBubble, initAggressiveScrollStick, isAtBottom, scrollToBottom, setBubbleText, setStickToBottom } from "./modules/helpers.js";
 import { remapUniqueId } from "./modules/idTranslator.js";
 import { initAndGreetUser } from "./modules/init.js";
 import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromContentEditable, initMentionAutocomplete } from "./modules/mentionAutocomplete.js";
@@ -682,19 +682,8 @@ window.addEventListener("DOMContentLoaded", async () => {
       log(`[TMDBG Chat] Failed to import SSE tools cleanup: ${e}`, "warn");
     }
 
-    // Clean up ID translation cache for this chat window
-    try {
-      import("./modules/idTranslator.js").then(({ cleanupIdTranslationCache }) => {
-        cleanupIdTranslationCache();
-        log(`[TMDBG Chat] Cleaned up ID translation cache on window close`);
-      }).catch((e) => {
-        log(`[TMDBG Chat] Failed to cleanup ID translation cache: ${e}`, "warn");
-      });
-    } catch (e) {
-      log(`[TMDBG Chat] Failed to import ID translation cleanup: ${e}`, "warn");
-    }
-
     // Only run KB update if there's an actual user-then-assistant conversation exchange
+    // KB update must happen BEFORE cleanup so ID translation map is still available
     if (Array.isArray(ctx.agentConverseMessages)) {
       // Check for at least one user message followed by an assistant response
       let hasUserThenAssistantPair = false;
@@ -712,24 +701,57 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (hasUserThenAssistantPair) {
         log(`-- KB -- Sending conversation to background script for KB update`);
         try {
-          // Send conversation data to background script - much more reliable!
-          const conversationSnapshot = JSON.parse(
-            JSON.stringify(ctx.agentConverseMessages)
-          );
-          browser.runtime
-            .sendMessage({
-              command: "kb-update-from-window-close",
-              conversationHistory: conversationSnapshot,
-            })
-            .catch((e) => {
-              log(`-- KB -- Failed to send to background: ${e}`, "warn");
-            });
+          // Extract rendered content directly from DOM - already has resolved entities!
+          const chatContainer = document.getElementById("chat-container");
+          const conversationSnapshot = [];
+          
+          if (chatContainer) {
+            const bubbles = chatContainer.querySelectorAll(".user-message, .agent-message");
+            for (const bubble of bubbles) {
+              // Skip tool bubbles and loading states
+              if (bubble.classList.contains("tool") || bubble.classList.contains("loading")) {
+                continue;
+              }
+              
+              const role = bubble.classList.contains("user-message") ? "user" : "assistant";
+              const plainText = extractTextFromBubble(bubble);
+              
+              if (plainText && plainText.trim()) {
+                conversationSnapshot.push({ role, content: plainText });
+              }
+            }
+          }
+          
+          log(`-- KB -- Extracted ${conversationSnapshot.length} messages from rendered DOM`);
+          
+          // Send synchronously - the message will be queued even if window closes
+          browser.runtime.sendMessage({
+            command: "kb-update-from-window-close",
+            conversationHistory: conversationSnapshot,
+          }).catch((e) => {
+            log(`-- KB -- Failed to send to background: ${e}`, "warn");
+          });
         } catch (e) {
           log(`-- KB -- Failed to prepare background message: ${e}`, "warn");
         }
       } else {
         log(`-- KB -- Skipping KB update: no user-then-assistant conversation exchange found`);
+        // Still clean up ID translation cache even if no KB update
+        import("./modules/idTranslator.js").then(({ cleanupIdTranslationCache }) => {
+          cleanupIdTranslationCache();
+          log(`[TMDBG Chat] Cleaned up ID translation cache on window close`);
+        }).catch((e) => {
+          log(`[TMDBG Chat] Failed to cleanup ID translation cache: ${e}`, "warn");
+        });
       }
+    } else {
+      // No messages, still clean up
+      import("./modules/idTranslator.js").then(({ cleanupIdTranslationCache }) => {
+        cleanupIdTranslationCache();
+        log(`[TMDBG Chat] Cleaned up ID translation cache on window close`);
+      }).catch((e) => {
+        log(`[TMDBG Chat] Failed to cleanup ID translation cache: ${e}`, "warn");
+      });
     }
   });
 

@@ -97,6 +97,13 @@ header {
   flex: 1;
 }
 
+.section-subtitle {
+  font-size: 14px;
+  font-weight: normal;
+  opacity: 0.6;
+  margin-left: 8px;
+}
+
 .section-header .section-description {
   margin: 8px 0 0 0;
   opacity: 0.7;
@@ -587,6 +594,154 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
+/* KB Configuration styles */
+.kb-config-content {
+  padding: 16px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
+.kb-config-row {
+  display: grid;
+  grid-template-columns: 280px 80px 1fr;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.kb-config-row label {
+  font-weight: 500;
+  text-align: right;
+}
+
+.kb-config-row input[type="number"] {
+  width: 80px;
+  padding: 6px 10px;
+  font-size: 14px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+}
+
+.kb-config-row input[type="number"]:focus {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 1px;
+}
+
+.kb-config-hint {
+  font-size: 12px;
+  opacity: 0.7;
+  font-style: italic;
+  padding-left: 16px;
+}
+
+/* Developer test section */
+.dev-test-section {
+  margin-bottom: 24px;
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.dev-test-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--panel-separator-color);
+  background: var(--in-content-box-background);
+}
+
+.dev-test-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--in-content-page-color);
+}
+
+.dev-test-content {
+  padding: 20px;
+}
+
+.dev-test-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.test-btn {
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 13px;
+  transition: all 0.15s ease;
+}
+
+.test-btn:hover {
+  background: color-mix(in srgb, var(--in-content-accent-color) 15%, transparent);
+  border-color: var(--in-content-accent-color);
+}
+
+.test-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dev-test-hint {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.dev-test-output {
+  margin-top: 20px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.dev-test-output-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
+  border-bottom: 1px solid var(--panel-separator-color);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.clear-btn {
+  background: transparent;
+  border: 1px solid var(--panel-separator-color);
+  color: var(--in-content-page-color);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.clear-btn:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 10%, transparent);
+}
+
+.dev-test-output pre {
+  margin: 0;
+  padding: 14px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
 /* Developer tab styles */
 .dev-prompt-container {
   display: flex;
@@ -761,5 +916,183 @@ button:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Chat History section styles */
+.history-content {
+  padding: 16px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+}
+
+.history-stats {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, transparent);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.history-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.history-stat-label {
+  opacity: 0.7;
+}
+
+.history-stat-value {
+  font-weight: 600;
+}
+
+.history-loading {
+  text-align: center;
+  padding: 24px;
+  opacity: 0.6;
+}
+
+.history-empty {
+  text-align: center;
+  padding: 24px;
+  opacity: 0.6;
+  font-style: italic;
+}
+
+#history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.history-session {
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.history-session.remembered {
+  opacity: 0.7;
+}
+
+.history-session-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
+  border-bottom: 1px solid var(--panel-separator-color);
+  cursor: pointer;
+}
+
+.history-session-header:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 8%, transparent);
+}
+
+.history-session-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.history-session-time {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.history-session-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--in-content-page-color) 15%, transparent);
+  color: var(--in-content-page-color);
+  border: 1px solid color-mix(in srgb, var(--in-content-page-color) 20%, transparent);
+}
+
+.history-session-badge.remembered {
+  background: color-mix(in srgb, var(--in-content-page-color) 10%, transparent);
+  color: var(--in-content-page-color);
+  opacity: 0.6;
+  border-color: transparent;
+}
+
+.history-session-meta {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.history-session-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.history-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--in-content-page-color);
+  font-size: 16px;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: all 0.15s ease;
+}
+
+.history-delete-btn:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--in-content-danger-button-background) 20%, transparent);
+  color: var(--in-content-danger-button-background);
+}
+
+.history-session-messages {
+  display: none;
+  padding: 12px 16px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.history-session.expanded .history-session-messages {
+  display: block;
+}
+
+.history-message {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.history-message.user {
+  background: color-mix(in srgb, var(--in-content-accent-color) 15%, transparent);
+  margin-left: 24px;
+}
+
+.history-message.assistant {
+  background: color-mix(in srgb, var(--in-content-page-color) 8%, transparent);
+  margin-right: 24px;
+}
+
+.history-message-role {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.history-message-content {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 

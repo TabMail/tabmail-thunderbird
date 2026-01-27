@@ -1095,6 +1095,59 @@ export async function sendChat(
 }
 
 /**
+ * Send a chat request and return the full response object.
+ * Use this when you need access to all response fields (e.g., refined_kb, token_usage).
+ * Tools are disabled by default.
+ * 
+ * @param {Array} messages - Chat messages
+ * @param {Object} options - Options
+ * @param {boolean} options.ignoreSemaphore - Bypass concurrency guard
+ * @returns {Promise<Object>} - Full response object { assistant, token_usage, refined_kb, etc. }
+ */
+export async function sendChatRaw(
+  messages,
+  { ignoreSemaphore = false } = {}
+) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    log("sendChatRaw called with empty messages", "error");
+    return { err: "Invalid request: empty messages" };
+  }
+  
+  const payload = {
+    messages,
+    client_timestamp_ms: Date.now(),
+    disable_tools: true,
+  };
+  
+  let acquired = false;
+  try {
+    if (!ignoreSemaphore) {
+      await _acquire();
+      acquired = true;
+    }
+    
+    const json = await sendChatCompletions(payload, null);
+    
+    if (json.err) {
+      log(`sendChatRaw error: ${json.err}`, "error");
+      return json;
+    }
+    
+    // Normalize assistant text if present
+    if (json && typeof json.assistant === "string") {
+      json.assistant = normalizeUnicode(json.assistant.trim());
+    }
+    
+    return json || { err: "Empty response from server" };
+  } catch (e) {
+    log(`sendChatRaw network error: ${e}`, "error");
+    return { err: e instanceof Error ? e.message : String(e) };
+  } finally {
+    if (acquired) _release();
+  }
+}
+
+/**
  * Send a chat request with tool support.
  * Executes tools automatically via callback.
  * Backend loads tool definitions from its own /tools/*.json files.

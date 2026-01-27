@@ -1,6 +1,10 @@
 // init.js – greet user and prime chat
 // Thunderbird 140 MV3
 
+import {
+  getRecentChatHistoryForPrompt,
+  pruneOldSessions,
+} from "../../agent/modules/chatHistoryQueue.js";
 import { SETTINGS } from "../../agent/modules/config.js";
 import {
   getUserKBPrompt
@@ -181,6 +185,18 @@ export async function initAndGreetUser() {
         remindersJson = "";
       }
 
+      // Load recent chat history from queue (mid-term memory)
+      let recentChatHistory = "";
+      try {
+        await pruneOldSessions(); // Clean up old sessions first
+        recentChatHistory = await getRecentChatHistoryForPrompt();
+        if (recentChatHistory) {
+          log(`[TMDBG Init] Loaded recent chat history (${recentChatHistory.length} chars)`);
+        }
+      } catch (e) {
+        log(`[TMDBG Init] Failed to load recent chat history: ${e}`, "warn");
+      }
+
       ctx.agentConverseMessages = [
         {
           role: "system",
@@ -189,6 +205,7 @@ export async function initAndGreetUser() {
           user_kb_content: userKBContent,
           // user_composition_prompt: userCompositionPrompt,
           user_reminders_json: remindersJson,
+          recent_chat_history: recentChatHistory,
         },
       ];
       log(`[TMDBG Init] Initialised agentConverseMessages.`);
