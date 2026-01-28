@@ -450,8 +450,24 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
   const base = await getBackendUrl(endpointType);
   const url = `${base}/${endpointType}/completions/chat`;
   
+  // Get web search setting (disabled by default)
+  let webSearchEnabled = false;
+  try {
+    const { getWebSearchEnabled } = await import("../../config/modules/webSearch.js");
+    webSearchEnabled = await getWebSearchEnabled();
+    log(`[COMPLETIONS] Web search enabled: ${webSearchEnabled}`);
+  } catch (e) {
+    log(`[COMPLETIONS] Failed to get web search setting, defaulting to disabled: ${e}`, "warn");
+  }
+  
+  // Add web_search_enabled to payload (backend will filter tools accordingly)
+  const payloadWithOptions = {
+    ...payload,
+    web_search_enabled: webSearchEnabled,
+  };
+  
   log(`[COMPLETIONS] Sending request to ${url}`);
-  log(`[COMPLETIONS] Payload keys: ${Object.keys(payload).join(', ')}`);
+  log(`[COMPLETIONS] Payload keys: ${Object.keys(payloadWithOptions).join(', ')}`);
   
   // Get access token
   const { getAccessToken } = await import("./supabaseAuth.js");
@@ -480,7 +496,7 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
     const fetchOptions = {
       method: "POST",
       headers: headers,
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payloadWithOptions),
     };
     
     if (abortSignal) {
@@ -547,7 +563,7 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
             "Authorization": `Bearer ${retryAccessToken}`,
             "X-Client-Version": clientVersion
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(payloadWithOptions),
           signal: abortSignal,
         });
       } catch (jsonError) {
@@ -603,7 +619,7 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
               "Authorization": `Bearer ${newAccessToken}`,
               "X-Client-Version": clientVersion
             },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(payloadWithOptions),
             signal: abortSignal,
           });
           

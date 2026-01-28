@@ -53,6 +53,7 @@ import {
   openWelcomeWizard,
   updateWelcomeStatusDisplay,
 } from "./welcomeWizard.js";
+import { handleWebSearchChange, loadWebSearchSettings } from "./webSearch.js";
 
 export async function initConfigPage({
   SETTINGS,
@@ -181,6 +182,7 @@ export async function initConfigPage({
     await handleDebugChange(e, getBackendUrl);
     await handlePrivacyChange(e, setPrivacyOptOutAllAiEnabled);
     await handleReminderChange(e, log);
+    await handleWebSearchChange(e);
 
     // Auto-save calendar selection
     if (e.target.id === "default-calendar") {
@@ -424,6 +426,7 @@ export async function initConfigPage({
     updatePlaintextStatusUI(log),
     updateWelcomeStatusDisplay(log),
     updateDebugStatusDisplay(),
+    loadWebSearchSettings(log),
   ]);
 }
 
