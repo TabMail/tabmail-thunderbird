@@ -74,7 +74,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
 
     // Per-window state constants
     const SORT_DEBOUNCE_MS = 100;
-    const SELECTION_GRACE_MS = 500;
     const RESORT_COALESCE_MS = 250;
     const DELAYED_SORT_MS = 30000;
     const VISIBILITY_RESTORE_FALLBACK_MS = 2000;
@@ -93,8 +92,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
     // Per-window state helpers
     function getWinSortTimestamp(win) { return win?.__tmTagSortLastSortTs || 0; }
     function setWinSortTimestamp(win, ts) { if (win) win.__tmTagSortLastSortTs = ts; }
-    function getWinSelectionTimestamp(win) { return win?.__tmTagSortLastSelectionTs || 0; }
-    function setWinSelectionTimestamp(win, ts) { if (win) win.__tmTagSortLastSelectionTs = ts; }
     function getWinResortTimer(win) { return win?.__tmTagSortResortTimer || null; }
     function setWinResortTimer(win, timer) { if (win) win.__tmTagSortResortTimer = timer; }
     function getWinDelayedSortTimer(win) { return win?.__tmTagSortDelayedTimer || null; }
@@ -333,10 +330,10 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
       setWinResortTimer(win, timer);
     }
 
-    function scheduleDelayedSort(win, immediate = false, preserveSelection = true) {
+    function scheduleDelayedSort(win, immediate = false) {
       if (!win) return;
       if (immediate) {
-        applySort(win, preserveSelection);
+        applySort(win);
         return;
       }
       const existingTimer = getWinDelayedSortTimer(win);
@@ -455,7 +452,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
       return tree?.view?.dbView || null;
     }
 
-    function applySort(win, preserveSelection = true) {
+    function applySort(win) {
       if (!win) return;
 
       if (!isTagSortEnabled()) {
@@ -465,7 +462,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
 
       const now = Date.now();
       if (now - getWinSortTimestamp(win) < SORT_DEBOUNCE_MS) return;
-      if (now - getWinSelectionTimestamp(win) < SELECTION_GRACE_MS) return;
 
       const tabmail = win.document.getElementById("tabmail");
       try {
@@ -510,39 +506,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
           } catch (_) {}
         }
 
-        function hdrForRowGeneric(row) {
-          try { return view?.hdrForRow?.(row); } catch (_) {}
-          try { return view?.getMsgHdrAt?.(row); } catch (_) {}
-          try { return view?.getMessageHdrAt?.(row); } catch (_) {}
-          return null;
-        }
-
-        // Capture selection
-        let captured = { hadSelection: false, origHdrs: [], focusedHdr: null };
-        if (preserveSelection) {
-          try {
-            const sel = view?.selection;
-            if (sel?.count > 0) {
-              captured.hadSelection = true;
-              const focusedIndex = sel.currentIndex;
-              let selectedIndices = [];
-              for (let i = 0; i < sel.getRangeCount(); i++) {
-                let start = {}, end = {};
-                sel.getRangeAt(i, start, end);
-                for (let j = start.value; j <= end.value; j++) selectedIndices.push(j);
-              }
-              for (const index of selectedIndices) {
-                const hdr = hdrForRowGeneric(index);
-                if (hdr) {
-                  const info = { hdrKey: hdr.messageKey, hdrMessageId: hdr.messageId, folderUri: hdr.folder?.URI };
-                  captured.origHdrs.push(info);
-                  if (index === focusedIndex) captured.focusedHdr = info;
-                }
-              }
-            }
-          } catch (_) {}
-        }
-
         if (!view.sort) return;
 
         // Always sort when applySort is called - debouncing handles rate limiting
@@ -563,7 +526,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
         const isCardView = mailList && mailList.shadowRoot;
 
         if (!view.rowCount || view.rowCount < 2) {
-          win.setTimeout(() => applySort(win, preserveSelection), 32);
+          win.setTimeout(() => applySort(win), 32);
           return;
         }
 
@@ -590,14 +553,10 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
           doc.documentElement.setAttribute("data-tm-sort-busy", "1");
         } catch (_) {}
 
-        const sel = threadTree?.view?.selection || view?.selection;
-        const hadSuppressed = !!sel?.selectEventsSuppressed;
         const tbo = threadTree?.treeBoxObject;
 
         try {
           tbo?.beginUpdateBatch?.();
-          if (sel) sel.selectEventsSuppressed = true;
-          sel?.clearSelection?.();
 
           if (!BY_CUSTOM || !ensureCustomColumnHandlerAttached(view)) {
             throw new Error("custom-sort-unavailable");
@@ -630,61 +589,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
 
           view.sort(BY_CUSTOM, targetOrder);
         } finally {
-          if (sel) sel.selectEventsSuppressed = hadSuppressed;
           tbo?.endUpdateBatch?.();
-        }
-
-        // Restore selection
-        if (preserveSelection && captured.hadSelection && captured.origHdrs.length > 0) {
-          try {
-            const rowCountNow = view.rowCount || 0;
-            const uniqueHdrs = new Map();
-            for (const info of captured.origHdrs) {
-              if (info.hdrKey != null && info.folderUri) uniqueHdrs.set(`key:${info.hdrKey}:${info.folderUri}`, true);
-              if (info.hdrMessageId && info.folderUri) uniqueHdrs.set(`id:${info.hdrMessageId}:${info.folderUri}`, true);
-            }
-
-            let foundIndices = [];
-            let newFocusedIndex = -1;
-
-            for (let i = 0; i < rowCountNow; i++) {
-              const hdr = hdrForRowGeneric(i);
-              if (!hdr) continue;
-              const uri = hdr.folder?.URI;
-              if ((hdr.messageKey != null && uri && uniqueHdrs.has(`key:${hdr.messageKey}:${uri}`)) ||
-                  (hdr.messageId && uri && uniqueHdrs.has(`id:${hdr.messageId}:${uri}`))) {
-                foundIndices.push(i);
-              }
-              if (captured.focusedHdr && newFocusedIndex === -1) {
-                const f = captured.focusedHdr;
-                if ((f.hdrKey != null && f.folderUri && hdr.messageKey === f.hdrKey && uri === f.folderUri) ||
-                    (f.hdrMessageId && f.folderUri && hdr.messageId === f.hdrMessageId && uri === f.folderUri)) {
-                  newFocusedIndex = i;
-                }
-              }
-            }
-
-            if (foundIndices.length > 0) {
-              const targetSel = threadTree?.view?.selection || view?.selection;
-              if (targetSel?.rangedSelect) {
-                targetSel.clearSelection();
-                let isFirst = true;
-                let start = foundIndices[0], end = foundIndices[0];
-                for (let i = 1; i <= foundIndices.length; i++) {
-                  if (i < foundIndices.length && foundIndices[i] === end + 1) {
-                    end = foundIndices[i];
-                  } else {
-                    targetSel.rangedSelect(start, end, !isFirst);
-                    isFirst = false;
-                    if (i < foundIndices.length) {
-                      start = end = foundIndices[i];
-                    }
-                  }
-                }
-                if (newFocusedIndex !== -1) targetSel.currentIndex = newFocusedIndex;
-              }
-            }
-          } catch (_) {}
         }
 
         // Recolor and reveal
@@ -763,10 +668,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
             try { MailServicesTagSort.mfn.removeListener(win.__tmTagSortFolderListener); } catch (_) {}
             delete win.__tmTagSortFolderListener;
           }
-          if (win.__tmTagSortSelectionObserver) {
-            try { ServicesTS.obs.removeObserver(win.__tmTagSortSelectionObserver, "messageSelection-changed"); } catch (_) {}
-            delete win.__tmTagSortSelectionObserver;
-          }
           if (win.__tmTagSortTabSelectHandler) {
             try {
               const tabmail = win.document.getElementById("tabmail");
@@ -796,7 +697,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
           const delayedTimer = getWinDelayedSortTimer(win);
           if (delayedTimer) { win.clearTimeout(delayedTimer); setWinDelayedSortTimer(win, null); }
           delete win.__tmTagSortLastSortTs;
-          delete win.__tmTagSortLastSelectionTs;
           delete win.__tmTagSortLastFolderUri;
         }
 
@@ -901,18 +801,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
                     } catch (_) {}
                   }
 
-                  // Selection observer
-                  if (!win.__tmTagSortSelectionObserver) {
-                    try {
-                      win.__tmTagSortSelectionObserver = {
-                        observe(subject, topic) {
-                          if (topic === "messageSelection-changed") setWinSelectionTimestamp(win, Date.now());
-                        }
-                      };
-                      ServicesTS.obs.addObserver(win.__tmTagSortSelectionObserver, "messageSelection-changed");
-                    } catch (_) {}
-                  }
-
                   const tabmail = win.document.getElementById("tabmail");
 
                   const ensureContentWinListeners = (reason) => {
@@ -925,24 +813,18 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
                       if (!contentWin.__tmTagSortFolderURIHandler) {
                         contentWin.__tmTagSortFolderURIHandler = () => {
                           ensureContentWinListeners('folderURIChanged');
-                          // Only clear selection if folder actually changed
                           const currentUri = getCurrentFolderUri(win);
-                          const lastUri = getWinLastFolderUri(win);
-                          const folderChanged = currentUri && lastUri && currentUri !== lastUri;
                           if (currentUri) setWinLastFolderUri(win, currentUri);
-                          scheduleDelayedSort(win, true, !folderChanged);
+                          scheduleDelayedSort(win, true);
                         };
                         contentWin.addEventListener("folderURIChanged", contentWin.__tmTagSortFolderURIHandler);
                       }
 
                       if (!contentWin.__tmTagSortThreadPaneHandler) {
                         contentWin.__tmTagSortThreadPaneHandler = () => {
-                          // Only clear selection if folder actually changed
                           const currentUri = getCurrentFolderUri(win);
-                          const lastUri = getWinLastFolderUri(win);
-                          const folderChanged = currentUri && lastUri && currentUri !== lastUri;
                           if (currentUri) setWinLastFolderUri(win, currentUri);
-                          scheduleDelayedSort(win, true, !folderChanged);
+                          scheduleDelayedSort(win, true);
                         };
                         contentWin.addEventListener("threadpane-loaded", contentWin.__tmTagSortThreadPaneHandler);
                       }
@@ -959,13 +841,10 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
                     win.__tmTagSortTabSelectHandler = () => {
                       try {
                         ensureContentWinListeners('TabSelect');
-                        // Only clear selection if folder actually changed
                         const currentUri = getCurrentFolderUri(win);
-                        const lastUri = getWinLastFolderUri(win);
-                        const folderChanged = currentUri && lastUri && currentUri !== lastUri;
                         if (currentUri) {
                           setWinLastFolderUri(win, currentUri);
-                          scheduleDelayedSort(win, true, !folderChanged);
+                          scheduleDelayedSort(win, true);
                         }
                       } catch (_) {}
                     };
@@ -991,7 +870,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
           const enumWin = ServicesTS.wm.getEnumerator("mail:3pane");
           while (enumWin.hasMoreElements()) {
             const win = enumWin.getNext();
-            if (win.document?.readyState === "complete") scheduleDelayedSort(win, false, true);
+            if (win.document?.readyState === "complete") scheduleDelayedSort(win, false);
           }
         },
 
