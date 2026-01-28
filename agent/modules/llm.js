@@ -463,9 +463,18 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
   // Make request
   let response;
   try {
+    // Get client version from manifest
+    let clientVersion = "1.0.9"; // Default fallback
+    try {
+      clientVersion = browser.runtime.getManifest().version;
+    } catch (e) {
+      log(`[COMPLETIONS] Failed to get manifest version: ${e}`, "warn");
+    }
+
     const headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${accessToken}`
+      "Authorization": `Bearer ${accessToken}`,
+      "X-Client-Version": clientVersion
     };
     
     const fetchOptions = {
@@ -535,7 +544,8 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${retryAccessToken}`
+            "Authorization": `Bearer ${retryAccessToken}`,
+            "X-Client-Version": clientVersion
           },
           body: JSON.stringify(payload),
           signal: abortSignal,
@@ -590,7 +600,8 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Authorization": `Bearer ${newAccessToken}`
+              "Authorization": `Bearer ${newAccessToken}`,
+              "X-Client-Version": clientVersion
             },
             body: JSON.stringify(payload),
             signal: abortSignal,

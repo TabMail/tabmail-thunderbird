@@ -4,7 +4,7 @@
 
 import { SETTINGS } from "../agent/modules/config.js";
 import { log } from "../agent/modules/utils.js";
-import { initNativeFts, nativeFtsSearch } from "./nativeEngine.js";
+import { initNativeFts, nativeFtsSearch, nativeMemorySearch } from "./nativeEngine.js";
 
 let _inited = false;
 let _runtimeMessageHandler = null;
@@ -304,6 +304,34 @@ function attachCommandInterface() {
               sendResponse(result);
               return;
             }
+            // Memory database commands (separate from email FTS)
+            case "memorySearch": {
+              const { q, from, to, limit, ignoreDate } = msg;
+              const result = await memorySearch.search(q, { from, to, limit, ignoreDate });
+              log(`[FTS Engine] Memory search completed, returning ${Array.isArray(result) ? result.length : 'non-array'} results`);
+              sendResponse(result);
+              return;
+            }
+            case "memoryIndexBatch": {
+              const result = await memorySearch.indexBatch(msg.rows || []);
+              sendResponse(result);
+              return;
+            }
+            case "memoryStats":
+              sendResponse(await memorySearch.stats());
+              return;
+            case "memoryClear":
+              sendResponse(await memorySearch.clear());
+              return;
+            case "memoryRemoveBatch":
+              sendResponse(await memorySearch.removeBatch(msg.ids || []));
+              return;
+            case "memoryDebugSample":
+              sendResponse(await memorySearch.debugSample());
+              return;
+            case "memoryRead":
+              sendResponse(await memorySearch.read(msg.timestampMs, msg.toleranceMs));
+              return;
             default: 
               sendResponse({ error: "Unknown FTS command: " + msg.cmd });
               return;
@@ -362,6 +390,19 @@ export async function initFtsEngine() {
       log("[TMDBG FTS] Maintenance scheduler initialized");
     } catch (e) {
       log(`[TMDBG FTS] Failed to initialize maintenance scheduler: ${e}`, "error");
+    }
+
+    // One-time migration of existing chat history to memory FTS
+    try {
+      const { migrateExistingChatHistory } = await import("./memoryIndexer.js");
+      const migrationResult = await migrateExistingChatHistory();
+      if (migrationResult.migrated) {
+        log(`[TMDBG FTS] Memory migration: ${migrationResult.sessions} sessions, ${migrationResult.indexed} turns`);
+      } else {
+        log(`[TMDBG FTS] Memory migration: already done or skipped`);
+      }
+    } catch (e) {
+      log(`[TMDBG FTS] Memory migration failed (non-fatal): ${e}`, "warn");
     }
     
     _inited = true;
@@ -501,6 +542,53 @@ export const ftsSearch = {
     }
     return { checkpointKeys: checkpointKeys.length, data: checkpointData };
   }
+};
+
+// Memory API exposed to the rest of the extension (separate from email FTS)
+export const memorySearch = {
+  async indexBatch(rows) {
+    log(`[TMDBG Memory] indexBatch called with ${rows.length} rows`);
+    return await nativeMemorySearch.indexBatch(rows);
+  },
+
+  async search(query, options = {}) {
+    const { from, to, limit, ignoreDate } = options;
+    log(`[TMDBG Memory] search called: "${query}" from=${from || '-'} to=${to || '-'}`);
+    return await nativeMemorySearch.search(query, { from, to, limit, ignoreDate });
+  },
+
+  async stats() {
+    return await nativeMemorySearch.stats();
+  },
+
+  async clear() {
+    log("[TMDBG Memory] Clearing memory index");
+    return await nativeMemorySearch.clear();
+  },
+
+  async removeBatch(ids) {
+    log(`[TMDBG Memory] removeBatch called with ${ids.length} IDs`);
+    return await nativeMemorySearch.removeBatch(ids);
+  },
+
+  async debugSample() {
+    return await nativeMemorySearch.debugSample();
+  },
+
+  async read(timestampMs, toleranceMs = 600000) {
+    log(`[TMDBG Memory] read called: timestamp=${timestampMs} tolerance=${toleranceMs}`);
+    return await nativeMemorySearch.read(timestampMs, toleranceMs);
+  },
+
+  async ping() {
+    // Simple connectivity test
+    try {
+      await nativeMemorySearch.stats();
+      return { ok: true };
+    } catch (e) {
+      throw new Error(`Native memory DB ping failed: ${e.message}`);
+    }
+  },
 };
 
 // Command queue for background processing

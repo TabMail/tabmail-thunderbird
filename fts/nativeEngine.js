@@ -4,7 +4,8 @@
 import { log } from "../agent/modules/utils.js";
 
 // Minimum required host version (update this when you need new host features)
-const MIN_HOST_VERSION = "0.6.0";
+// 0.6.10: Added memory database for chat history search (memory_search tool)
+const MIN_HOST_VERSION = "0.6.10";
 
 // Storage key for tracking last indexed host version (for auto-reindex on minor version bump)
 const STORAGE_KEY_LAST_INDEXED_VERSION = "ftsLastIndexedHostVersion";
@@ -340,11 +341,31 @@ export async function initNativeFts() {
 }
 
 /**
- * Send RPC to native helper
+ * Reconnect to native helper if disconnected
+ */
+async function ensureConnected() {
+  if (nativePort) return true;
+  
+  log("[TMDBG FTS] Attempting to reconnect to native helper...");
+  try {
+    await initNativeFts();
+    return true;
+  } catch (e) {
+    log(`[TMDBG FTS] Reconnection failed: ${e}`, "error");
+    return false;
+  }
+}
+
+/**
+ * Send RPC to native helper (auto-reconnects if needed)
  */
 async function nativeRPC(method, params) {
+  // Auto-reconnect if not connected
   if (!nativePort) {
-    throw new Error("Native FTS helper not connected");
+    const reconnected = await ensureConnected();
+    if (!reconnected || !nativePort) {
+      throw new Error("Native FTS helper not connected");
+    }
   }
   
   const id = `rpc-${++messageId}`;
@@ -510,6 +531,41 @@ export const nativeFtsSearch = {
       return { ok: false, error: e.message || String(e) };
     }
   }
+};
+
+/**
+ * Memory API - separate database for chat history and learned facts
+ * This database is NOT cleared when email FTS is reindexed.
+ */
+export const nativeMemorySearch = {
+  async indexBatch(rows) {
+    return nativeRPC('memoryIndexBatch', { rows });
+  },
+  
+  async search(query, options = {}) {
+    const { from, to, limit = 50, ignoreDate = false } = options;
+    return nativeRPC('memorySearch', { q: query, from, to, limit, ignoreDate });
+  },
+  
+  async stats() {
+    return nativeRPC('memoryStats', {});
+  },
+  
+  async clear() {
+    return nativeRPC('memoryClear', {});
+  },
+  
+  async removeBatch(ids) {
+    return nativeRPC('memoryRemoveBatch', { ids });
+  },
+  
+  async debugSample() {
+    return nativeRPC('memoryDebugSample', {});
+  },
+
+  async read(timestampMs, toleranceMs = 600000) {
+    return nativeRPC('memoryRead', { timestampMs, toleranceMs });
+  },
 };
 
 /**

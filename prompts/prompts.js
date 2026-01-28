@@ -1333,6 +1333,17 @@ document.addEventListener("DOMContentLoaded", () => {
     flashButton(clearBtn, "red");
     await clearChatHistory();
   });
+
+  document.getElementById("remigrate-history").addEventListener("click", async () => {
+    const remigrateBtn = document.getElementById("remigrate-history");
+    flashButton(remigrateBtn, "blue");
+    try {
+      const { remigrateChatHistory } = await import("./modules/history.js");
+      await remigrateChatHistory();
+    } catch (e) {
+      showStatus("Re-migration failed: " + e, true);
+    }
+  });
   
   // Storage listener for auto-updating reminders when they change
   browser.storage.onChanged.addListener((changes, areaName) => {
