@@ -3,7 +3,7 @@ import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
 
 // Import modular components
 import { clearTestOutput, runKbRefineTest } from "./modules/developer.js";
-import { clearChatHistory, loadChatHistory } from "./modules/history.js";
+import { initHistoryHandlers, loadChatHistory, showClearAllConfirmation } from "./modules/history.js";
 import { parseMarkdown, reconstructMarkdown } from "./modules/markdown.js";
 import { loadReminders } from "./modules/reminders.js";
 import { loadKbConfig, loadPromptFile, resetPromptFile, saveKbConfig, savePromptFile } from "./modules/storage.js";
@@ -1325,25 +1325,12 @@ document.addEventListener("DOMContentLoaded", () => {
     showStatus("Chat history refreshed");
   });
   
-  document.getElementById("clear-history").addEventListener("click", async () => {
-    if (!confirm("Are you sure you want to clear all chat history? This cannot be undone.")) {
-      return;
-    }
-    const clearBtn = document.getElementById("clear-history");
-    flashButton(clearBtn, "red");
-    await clearChatHistory();
+  document.getElementById("clear-history").addEventListener("click", () => {
+    showClearAllConfirmation();
   });
 
-  document.getElementById("remigrate-history").addEventListener("click", async () => {
-    const remigrateBtn = document.getElementById("remigrate-history");
-    flashButton(remigrateBtn, "blue");
-    try {
-      const { remigrateChatHistory } = await import("./modules/history.js");
-      await remigrateChatHistory();
-    } catch (e) {
-      showStatus("Re-migration failed: " + e, true);
-    }
-  });
+  // Initialize history-specific handlers (search, pagination, delete old)
+  initHistoryHandlers();
   
   // Storage listener for auto-updating reminders when they change
   browser.storage.onChanged.addListener((changes, areaName) => {

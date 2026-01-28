@@ -1,10 +1,9 @@
-import { $, restoreScrollPosition, saveScrollPosition } from "./dom.js";
+// Note: dom.js imports removed - no longer needed since prompts are on dedicated page
 
 // Listen for runtime message indicating prompts were updated elsewhere.
 //
 // NOTE: Prompts are now managed in the dedicated prompts page (prompts/prompts.html).
-// The runtime message handler is kept as-is (including references to loadPrompts)
-// to avoid changing behavior/logs.
+// This listener just logs the event for debugging purposes - no action needed on config page.
 export function createPromptsUpdatedRuntimeListener(SETTINGS, log) {
   const actionEvt =
     (SETTINGS && SETTINGS.events && SETTINGS.events.userActionPromptUpdated) ||
@@ -17,52 +16,13 @@ export function createPromptsUpdatedRuntimeListener(SETTINGS, log) {
     try {
       if (!msg || !msg.command) return; // Important: return undefined synchronously for unrelated messages
 
+      // Just log - prompts are managed on the dedicated prompts page
       if (msg.command === actionEvt && msg.key === "user_prompts:user_action.md") {
-        log(`[TMDBG Config] Received ${actionEvt}; reloading prompts.`);
-        // Do not return a Promise to avoid hijacking other sendMessage calls
-        const scrollPos = saveScrollPosition();
-        // eslint-disable-next-line no-undef
-        loadPrompts()
-          .then(() => {
-            try {
-              const ta = $("action-prompt-src");
-              if (ta) {
-                ta.classList.add("flash-ok");
-                setTimeout(() => ta.classList.remove("flash-ok"), 500);
-                ta.style.height = "auto";
-                ta.style.height = `${ta.scrollHeight}px`;
-              }
-              restoreScrollPosition(scrollPos);
-            } catch (_) {}
-          })
-          .catch((e) => {
-            console.warn("[TMDBG Config] loadPrompts via message failed", e);
-            restoreScrollPosition(scrollPos);
-          });
+        log(`[TMDBG Config] Received ${actionEvt} (prompts managed on prompts page)`);
       }
 
       if (msg.command === kbEvt && msg.key === "user_prompts:user_kb.md") {
-        log(`[TMDBG Config] Received ${kbEvt}; reloading prompts.`);
-        // Do not return a Promise to avoid hijacking other sendMessage calls
-        const scrollPos = saveScrollPosition();
-        // eslint-disable-next-line no-undef
-        loadPrompts()
-          .then(() => {
-            try {
-              const ta = $("kb-prompt-src");
-              if (ta) {
-                ta.classList.add("flash-ok");
-                setTimeout(() => ta.classList.remove("flash-ok"), 500);
-                ta.style.height = "auto";
-                ta.style.height = `${ta.scrollHeight}px`;
-              }
-              restoreScrollPosition(scrollPos);
-            } catch (_) {}
-          })
-          .catch((e) => {
-            console.warn("[TMDBG Config] loadPrompts via message failed", e);
-            restoreScrollPosition(scrollPos);
-          });
+        log(`[TMDBG Config] Received ${kbEvt} (prompts managed on prompts page)`);
       }
     } catch (e) {
       console.warn(`[TMDBG Config] onMessage handler error:`, e);

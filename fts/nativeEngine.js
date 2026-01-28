@@ -227,7 +227,31 @@ async function checkAndUpdateHost() {
         });
         
         if (updateResult.success) {
-          log(`[TMDBG FTS] ✅ Host update successful! Process will restart.`);
+          log(`[TMDBG FTS] ✅ Host update successful! Prompting for Thunderbird restart.`);
+          
+          // Show restart prompt using the update bar mechanism
+          try {
+            if (browser.tmUpdates?.showUpdateBar) {
+              await browser.tmUpdates.showUpdateBar({
+                version: `FTS ${latestRelease.version}`,
+                message: "Native search updated. Restart Thunderbird for full compatibility."
+              });
+              log(`[TMDBG FTS] Restart prompt shown via update bar`);
+            } else {
+              // Fallback: show popup window
+              await browser.windows.create({
+                url: browser.runtime.getURL('fts/migration-notice.html?type=update'),
+                type: 'popup',
+                width: 520,
+                height: 280,
+                allowScriptsToClose: true
+              });
+              log(`[TMDBG FTS] Restart prompt shown via popup`);
+            }
+          } catch (e) {
+            log(`[TMDBG FTS] Could not show restart prompt: ${e.message}`, "warn");
+          }
+          
           return true; // Updated
         } else {
           isUpdatingHost = false; // Failed, so no disconnect expected (or not due to update)
