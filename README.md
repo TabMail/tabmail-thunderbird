@@ -16,7 +16,7 @@ Thunderbird (local mail + calendars)
   ├─ chat/        (UI + tool orchestration + FSM workflows)
   ├─ agent/       (message workflows, tagging, summarization, reminders)
   ├─ compose/     (autocomplete + editing UX)
-  ├─ fts/         (local search index; optional native host)
+  ├─ fts/         (local search index + memory; native host required)
   ├─ theme/       (palette-based theming + UI tweaks)
   ├─ config/      (options UI)
   ├─ prompts/     (custom user prompts)
@@ -47,7 +47,7 @@ The add-on is split into several MV3 “background modules” (see `manifest.jso
   - `chat/fsm/` — Finite state machines for multi-step workflows (compose, delete, archive, calendar CRUD, etc.).
   - `chat/modules/` — Core chat functionality (context, converse, markdown, SSE/WS tools, etc.).
 - **`compose/`**: Composer integration for smart compose and inline edits.
-- **`fts/`**: Local search/indexing (native FTS helper); see `fts/README.md`.
+- **`fts/`**: Local search/indexing via native FTS helper (required); see `fts/README.md`.
 
 ### UI and configuration
 
@@ -102,7 +102,15 @@ All colors come from the palette system:
 
 FTS is implemented in `fts/` and uses a **native messaging host** (Rust binary with bundled SQLite + FTS5) for fast local indexing.
 
+**The native FTS helper is required** — it powers both email search and chat memory features.
+
 The native FTS helper is source-available: **[github.com/TabMail/tabmail-native-fts](https://github.com/TabMail/tabmail-native-fts)**
+
+### Features
+
+- **Email search** — Fast full-text search across all indexed emails with stemming, synonyms, and BM25 ranking. Also provides fast access to email content and metadata.
+- **Memory search** — Chat history is indexed locally, allowing the agent to recall past conversations
+- **Memory read** — Retrieve full chat sessions by timestamp for context continuity
 
 See `fts/README.md` for architecture and operational notes.
 
