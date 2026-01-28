@@ -204,6 +204,20 @@ async function _kbUpdateImpl(conversationHistory = []) {
             }
         }
 
+        // Index sessions to memory database (for memory_search tool)
+        if (unrememberedSessions && unrememberedSessions.length > 0) {
+            try {
+                const { indexChatSession } = await import("../../fts/memoryIndexer.js");
+                for (const session of unrememberedSessions) {
+                    await indexChatSession(session.id, session.messages, session.timestamp);
+                }
+                log(`-- KB -- Indexed ${unrememberedSessions.length} sessions to memory DB`);
+            } catch (e) {
+                log(`-- KB -- Failed to index sessions to memory DB: ${e}`, "warn");
+                // Continue anyway - memory indexing failure shouldn't block KB update
+            }
+        }
+
         // Mark ALL processed sessions as remembered
         if (sessionIds && sessionIds.length > 0) {
             try {

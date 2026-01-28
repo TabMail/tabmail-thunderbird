@@ -23,6 +23,8 @@ import * as emailSearchTool from "./email_search.js";
 import * as inboxReadTool from "./inbox_read.js";
 import * as kbAddTool from "./kb_add.js";
 import * as kbDelTool from "./kb_del.js";
+import * as memoryReadTool from "./memory_read.js";
+import * as memorySearchTool from "./memory_search.js";
 import * as webReadTool from "./web_read.js";
 
 // --- FSM Chain Tracking ---
@@ -54,6 +56,8 @@ const TOOL_IMPL = {
   email_move_to_inbox: emailMoveToInboxTool,
   kb_add: kbAddTool,
   kb_del: kbDelTool,
+  memory_read: memoryReadTool,
+  memory_search: memorySearchTool,
   web_read: webReadTool,
 };
 
@@ -168,6 +172,15 @@ export async function getToolActivityLabel(name, args = {}) {
       return "Updating knowledge base…";
     case "kb_del":
       return "Removing from knowledge base…";
+    case "memory_search": {
+      const query = args?.query || "";
+      if (query) {
+        return `Searching memory: ${query}`;
+      }
+      return "Searching memory…";
+    }
+    case "memory_read":
+      return "Reading memory conversation…";
     case "web_read": {
       const url = args?.url || "";
       if (url) {

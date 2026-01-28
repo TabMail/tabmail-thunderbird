@@ -153,9 +153,10 @@
     <div id="history-editor" class="prompt-content">
       <div class="section-container">
         <div class="section-header">
-          <h3>Chat History <span class="section-subtitle">(Recent 100)</span></h3>
+          <h3>Chat History</h3>
           <div class="section-header-actions">
             <button id="refresh-history" class="reload-section-btn">Refresh</button>
+            <button id="delete-old-history" class="reload-section-btn">Delete Old…</button>
             <button id="clear-history" class="reset-section-btn">Clear All</button>
           </div>
         </div>
@@ -163,12 +164,33 @@
           <div class="history-stats" id="history-stats">
             <span class="history-stat">Loading...</span>
           </div>
+          <div class="history-search-bar">
+            <input type="text" id="history-search-input" placeholder="Search chat history…" />
+            <button id="history-search-btn" class="reload-section-btn">Search</button>
+          </div>
           <div id="history-list">
             <div class="history-loading">Loading chat history...</div>
+          </div>
+          <div id="history-pagination" class="history-pagination" style="display: none;">
+            <button id="history-prev-page" class="pagination-btn" disabled>← Previous</button>
+            <span id="history-page-info" class="pagination-info">Page 1 of 1</span>
+            <button id="history-next-page" class="pagination-btn" disabled>Next →</button>
           </div>
           <p id="history-empty" class="history-empty" style="display: none;">
             No chat history stored. Chat sessions are saved when you close or renew a chat.
           </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirmation Modal Overlay -->
+    <div id="history-modal-overlay" class="modal-overlay" style="display: none;">
+      <div class="modal-dialog">
+        <h3 id="modal-title">Confirm Action</h3>
+        <div id="modal-content"></div>
+        <div class="modal-actions">
+          <button id="modal-cancel" class="reload-section-btn">Cancel</button>
+          <button id="modal-confirm" class="reset-section-btn">Confirm</button>
         </div>
       </div>
     </div>

@@ -32,6 +32,10 @@ export function buildPaletteCSS(P) {
   --tag-tm-none: ${TAG_COLORS.tm_none};
   --tag-tm-untagged: ${TAG_COLORS.tm_untagged};
 
+  /* TabMail Danger Colors - Light Mode (based on BASE.RED with brightness adjustment) */
+  --tm-danger-text: ${BASE.RED};
+  --tm-danger-text-bright: color-mix(in srgb, ${BASE.RED} 85%, white);
+
   /* TabMail Warning Colors - Light Mode (derived from BASE.YELLOW) */
   --tm-warning-bg: rgba(${yR},${yG},${yB},${OPACITY.SUBTLE_LIGHT + 0.05});
   --tm-warning-border: ${BASE.YELLOW};
@@ -133,6 +137,10 @@ export function buildPaletteCSS(P) {
 
 @media (prefers-color-scheme: dark) {
   :root {
+    /* TabMail Danger Colors - Dark Mode (brighter for visibility) */
+    --tm-danger-text: color-mix(in srgb, ${BASE.RED} 75%, white);
+    --tm-danger-text-bright: color-mix(in srgb, ${BASE.RED} 60%, white);
+
     /* TabMail Warning Colors - Dark Mode (derived from BASE.YELLOW) */
     --tm-warning-bg: rgba(${yR},${yG},${yB},${OPACITY.SELECTED_LIGHT});
     --tm-warning-border: ${BASE.YELLOW};

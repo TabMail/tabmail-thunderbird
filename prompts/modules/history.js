@@ -1,24 +1,76 @@
 /**
  * Chat History tab functionality
+ * Shows entries from Memory FTS database with search and pagination
  */
 
 import { log } from "../../agent/modules/utils.js";
 import { showStatus } from "./utils.js";
 
 const CHAT_HISTORY_STORAGE_KEY = "chat_history_queue";
+const PAGE_SIZE = 10;
+
 let chatHistoryData = [];
+let memoryFtsData = [];
+let memoryFtsStats = null;
+let currentPage = 1;
+let totalPages = 1;
+let currentSearchQuery = "";
+let isSearchMode = false;
 
 /**
- * Load chat history from storage
+ * Load chat history from Memory FTS database
+ * Uses memorySearch with empty query to list all by date
  */
 export async function loadChatHistory() {
     try {
-        log("[Prompts] Loading chat history...");
+        log("[Prompts] Loading chat history from Memory FTS...");
         
-        const result = await browser.storage.local.get(CHAT_HISTORY_STORAGE_KEY);
-        chatHistoryData = result[CHAT_HISTORY_STORAGE_KEY] || [];
+        // Reset search mode
+        currentSearchQuery = "";
+        isSearchMode = false;
+        currentPage = 1;
         
-        log(`[Prompts] Loaded ${chatHistoryData.length} chat sessions`);
+        // Clear search input
+        const searchInput = document.getElementById("history-search-input");
+        if (searchInput) searchInput.value = "";
+        
+        // Load Memory FTS stats
+        try {
+            memoryFtsStats = await browser.runtime.sendMessage({
+                type: "fts",
+                cmd: "memoryStats"
+            });
+            log(`[Prompts] Memory FTS stats: ${JSON.stringify(memoryFtsStats)}`);
+        } catch (e) {
+            log(`[Prompts] Failed to get Memory FTS stats: ${e}`, "warn");
+            memoryFtsStats = null;
+        }
+
+        // Load all entries using memorySearch with empty query (returns all sorted by date)
+        try {
+            const results = await browser.runtime.sendMessage({
+                type: "fts",
+                cmd: "memorySearch",
+                q: "", // Empty query = list all by date
+                limit: 200, // Get enough for pagination
+                ignoreDate: true
+            });
+            memoryFtsData = Array.isArray(results) ? results : [];
+            log(`[Prompts] Loaded ${memoryFtsData.length} entries from Memory FTS`);
+        } catch (e) {
+            log(`[Prompts] Failed to load Memory FTS entries: ${e}`, "warn");
+            memoryFtsData = [];
+        }
+
+        // Also load local queue for comparison
+        try {
+            const result = await browser.storage.local.get(CHAT_HISTORY_STORAGE_KEY);
+            chatHistoryData = result[CHAT_HISTORY_STORAGE_KEY] || [];
+            log(`[Prompts] Local queue has ${chatHistoryData.length} sessions`);
+        } catch (e) {
+            chatHistoryData = [];
+        }
+        
         renderChatHistory();
     } catch (e) {
         log(`[Prompts] Error loading chat history: ${e}`, "error");
@@ -28,40 +80,86 @@ export async function loadChatHistory() {
 }
 
 /**
- * Render chat history list
+ * Search chat history using Memory FTS
+ */
+export async function searchChatHistory(query) {
+    if (!query || query.trim().length === 0) {
+        // Empty query - reload all
+        await loadChatHistory();
+        return;
+    }
+
+    try {
+        log(`[Prompts] Searching chat history for: "${query}"`);
+        currentSearchQuery = query.trim();
+        isSearchMode = true;
+        currentPage = 1;
+
+        const results = await browser.runtime.sendMessage({
+            type: "fts",
+            cmd: "memorySearch",
+            q: currentSearchQuery,
+            limit: 200, // Get more for local pagination
+            ignoreDate: true
+        });
+
+        memoryFtsData = Array.isArray(results) ? results : [];
+        log(`[Prompts] Search returned ${memoryFtsData.length} results`);
+
+        renderChatHistory();
+    } catch (e) {
+        log(`[Prompts] Search failed: ${e}`, "error");
+        showStatus("Search failed: " + e, true);
+    }
+}
+
+/**
+ * Render chat history list with pagination
  */
 function renderChatHistory() {
     const container = document.getElementById("history-list");
     const emptyMessage = document.getElementById("history-empty");
     const statsDiv = document.getElementById("history-stats");
+    const paginationDiv = document.getElementById("history-pagination");
     
-    // Calculate stats
-    const totalSessions = chatHistoryData.length;
-    const rememberedCount = chatHistoryData.filter(s => s.remembered).length;
-    const unrememberedCount = totalSessions - rememberedCount;
-    const totalMessages = chatHistoryData.reduce((sum, s) => sum + (s.messages?.length || 0), 0);
+    // Show Memory FTS stats
+    const ftsDocsCount = memoryFtsStats?.docs || 0;
+    const ftsDbBytes = memoryFtsStats?.dbBytes || 0;
+    const ftsDbSize = ftsDbBytes > 0 ? `${(ftsDbBytes / 1024).toFixed(1)} KB` : "0 KB";
+    const localQueueCount = chatHistoryData.length;
     
-    statsDiv.innerHTML = `
+    let statsHtml = `
         <span class="history-stat">
-            <span class="history-stat-label">Sessions:</span>
-            <span class="history-stat-value">${totalSessions}</span>
+            <span class="history-stat-label">Memory FTS Entries:</span>
+            <span class="history-stat-value">${ftsDocsCount}</span>
         </span>
         <span class="history-stat">
-            <span class="history-stat-label">Pending:</span>
-            <span class="history-stat-value">${unrememberedCount}</span>
+            <span class="history-stat-label">DB Size:</span>
+            <span class="history-stat-value">${ftsDbSize}</span>
         </span>
         <span class="history-stat">
-            <span class="history-stat-label">In Knowledge Base:</span>
-            <span class="history-stat-value">${rememberedCount}</span>
-        </span>
-        <span class="history-stat">
-            <span class="history-stat-label">Messages:</span>
-            <span class="history-stat-value">${totalMessages}</span>
+            <span class="history-stat-label">Local Queue:</span>
+            <span class="history-stat-value">${localQueueCount} sessions</span>
         </span>
     `;
     
-    if (!chatHistoryData || chatHistoryData.length === 0) {
+    if (isSearchMode) {
+        statsHtml += `
+            <span class="history-stat">
+                <span class="history-stat-label">Search:</span>
+                <span class="history-stat-value">"${escapeHtml(currentSearchQuery)}" (${memoryFtsData.length} results)</span>
+            </span>
+        `;
+    }
+    
+    statsDiv.innerHTML = statsHtml;
+    
+    if (!memoryFtsData || memoryFtsData.length === 0) {
         container.innerHTML = "";
+        paginationDiv.style.display = "none";
+        emptyMessage.textContent = isSearchMode 
+            ? `No results found for "${currentSearchQuery}".`
+            : "No entries in Memory FTS database yet.";
         emptyMessage.style.display = "block";
         return;
     }
@@ -69,91 +167,131 @@ function renderChatHistory() {
     emptyMessage.style.display = "none";
     container.innerHTML = "";
     
-    // Sort by timestamp descending (most recent first)
-    const sortedSessions = [...chatHistoryData].sort((a, b) => b.timestamp - a.timestamp);
+    // Calculate pagination
+    totalPages = Math.ceil(memoryFtsData.length / PAGE_SIZE);
+    currentPage = Math.max(1, Math.min(currentPage, totalPages));
     
-    sortedSessions.forEach((session) => {
-        const sessionDiv = document.createElement("div");
-        sessionDiv.className = "history-session" + (session.remembered ? " remembered" : "");
-        sessionDiv.setAttribute("data-session-id", session.id);
+    const startIdx = (currentPage - 1) * PAGE_SIZE;
+    const endIdx = Math.min(startIdx + PAGE_SIZE, memoryFtsData.length);
+    const pageData = memoryFtsData.slice(startIdx, endIdx);
+    
+    // Add header
+    const headerDiv = document.createElement("div");
+    headerDiv.className = "history-section-header";
+    headerDiv.textContent = isSearchMode 
+        ? `Search Results (${memoryFtsData.length} total)`
+        : `Memory FTS Entries (${memoryFtsData.length} total)`;
+    container.appendChild(headerDiv);
+    
+    // Render entries for current page
+    pageData.forEach((entry, idx) => {
+        const entryDiv = document.createElement("div");
+        entryDiv.className = "history-session";
+        entryDiv.setAttribute("data-mem-id", entry.memId || "");
         
-        // Header
+        // Flatten the content to single line for snippet
+        const flatContent = (entry.content || "")
+            .replace(/\n+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 150);
+        
+        // Header with timestamp and snippet
         const header = document.createElement("div");
         header.className = "history-session-header";
         header.onclick = () => {
-            sessionDiv.classList.toggle("expanded");
+            entryDiv.classList.toggle("expanded");
         };
         
-        const info = document.createElement("div");
-        info.className = "history-session-info";
-        
+        // Left side: timestamp
         const timeSpan = document.createElement("span");
         timeSpan.className = "history-session-time";
-        timeSpan.textContent = formatSessionTime(session.timestamp);
-        info.appendChild(timeSpan);
+        timeSpan.textContent = formatSessionTime(entry.dateMs);
+        header.appendChild(timeSpan);
         
-        const badge = document.createElement("span");
-        badge.className = "history-session-badge" + (session.remembered ? " remembered" : "");
-        badge.textContent = session.remembered ? "In Knowledge Base" : "Pending";
-        info.appendChild(badge);
+        // Snippet in header
+        const snippetSpan = document.createElement("span");
+        snippetSpan.className = "history-session-snippet";
+        // Use search snippet if available, otherwise use flattened content
+        // FTS returns [matched] format, convert to highlight spans
+        snippetSpan.innerHTML = entry.snippet 
+            ? escapeHtml(entry.snippet)
+                .replace(/\[/g, '<span class="search-highlight">')
+                .replace(/\]/g, '</span>')
+            : escapeHtml(flatContent) || "(empty)";
+        header.appendChild(snippetSpan);
         
-        const rightSide = document.createElement("div");
-        rightSide.className = "history-session-right";
+        entryDiv.appendChild(header);
         
-        const meta = document.createElement("span");
-        meta.className = "history-session-meta";
-        meta.textContent = `${session.messages?.length || 0} messages`;
-        rightSide.appendChild(meta);
+        // Expandable full content
+        const contentDiv = document.createElement("div");
+        contentDiv.className = "history-session-messages";
         
-        const deleteBtn = document.createElement("button");
-        deleteBtn.className = "history-delete-btn";
-        deleteBtn.textContent = "×";
-        deleteBtn.title = "Delete this session";
-        deleteBtn.onclick = (e) => {
-            e.stopPropagation(); // Prevent expand/collapse
-            deleteSession(session.id);
-        };
-        rightSide.appendChild(deleteBtn);
+        const msgDiv = document.createElement("div");
+        msgDiv.className = "history-message";
         
-        header.appendChild(info);
-        header.appendChild(rightSide);
-        sessionDiv.appendChild(header);
+        // Highlight search terms in expanded content if in search mode
+        if (isSearchMode && currentSearchQuery) {
+            msgDiv.innerHTML = highlightSearchTerms(entry.content || "(empty)", currentSearchQuery);
+        } else {
+            msgDiv.textContent = entry.content || "(empty)";
+        }
         
-        // Messages (hidden by default)
-        const messagesDiv = document.createElement("div");
-        messagesDiv.className = "history-session-messages";
+        // Debug info
+        const debugDiv = document.createElement("div");
+        debugDiv.className = "history-message-debug";
+        debugDiv.textContent = `memId: ${entry.memId || "?"}`;
         
-        (session.messages || []).forEach((msg) => {
-            const msgDiv = document.createElement("div");
-            msgDiv.className = "history-message " + msg.role;
-            
-            // Check if this is the automated greeting marker
-            const isGreeting = msg.content === "[automated greeting]";
-            
-            const roleDiv = document.createElement("div");
-            roleDiv.className = "history-message-role";
-            roleDiv.textContent = msg.role === "user" ? "You" : (isGreeting ? "Agent (greeting)" : "Agent");
-            
-            const contentDiv = document.createElement("div");
-            contentDiv.className = "history-message-content";
-            if (isGreeting) {
-                contentDiv.textContent = "(automated inbox summary and reminders)";
-                contentDiv.style.fontStyle = "italic";
-                contentDiv.style.opacity = "0.7";
-            } else {
-                contentDiv.textContent = msg.content || "";
-            }
-            
-            msgDiv.appendChild(roleDiv);
-            msgDiv.appendChild(contentDiv);
-            messagesDiv.appendChild(msgDiv);
-        });
-        
-        sessionDiv.appendChild(messagesDiv);
-        container.appendChild(sessionDiv);
+        contentDiv.appendChild(msgDiv);
+        contentDiv.appendChild(debugDiv);
+        entryDiv.appendChild(contentDiv);
+        container.appendChild(entryDiv);
     });
     
-    log(`[Prompts] Rendered ${chatHistoryData.length} chat sessions`);
+    // Update pagination controls
+    updatePaginationControls();
+    
+    log(`[Prompts] Rendered page ${currentPage}/${totalPages} (${pageData.length} entries)`);
+}
+
+/**
+ * Update pagination controls
+ */
+function updatePaginationControls() {
+    const paginationDiv = document.getElementById("history-pagination");
+    const prevBtn = document.getElementById("history-prev-page");
+    const nextBtn = document.getElementById("history-next-page");
+    const pageInfo = document.getElementById("history-page-info");
+    
+    if (totalPages <= 1) {
+        paginationDiv.style.display = "none";
+        return;
+    }
+    
+    paginationDiv.style.display = "flex";
+    prevBtn.disabled = currentPage <= 1;
+    nextBtn.disabled = currentPage >= totalPages;
+    pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+}
+
+/**
+ * Go to previous page
+ */
+export function prevPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        renderChatHistory();
+    }
+}
+
+/**
+ * Go to next page
+ */
+export function nextPage() {
+    if (currentPage < totalPages) {
+        currentPage++;
+        renderChatHistory();
+    }
 }
 
 /**
@@ -182,37 +320,253 @@ function formatSessionTime(timestamp) {
 }
 
 /**
- * Delete a single chat session
+ * Escape HTML special characters
  */
-async function deleteSession(sessionId) {
+function escapeHtml(str) {
+    if (!str) return "";
+    return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+/**
+ * Highlight search terms in text
+ */
+function highlightSearchTerms(text, query) {
+    if (!text || !query) return escapeHtml(text);
+    
+    // Split query into words, filter short ones
+    const terms = query.split(/\s+/).filter(t => t.length >= 2);
+    if (terms.length === 0) return escapeHtml(text);
+    
+    // Escape text first
+    let result = escapeHtml(text);
+    
+    // Highlight each term (case insensitive)
+    for (const term of terms) {
+        const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(${escapedTerm})`, 'gi');
+        result = result.replace(regex, '<span class="search-highlight">$1</span>');
+    }
+    
+    return result;
+}
+
+/**
+ * Show confirmation modal
+ */
+function showModal(title, contentHtml, onConfirm) {
+    const overlay = document.getElementById("history-modal-overlay");
+    const titleEl = document.getElementById("modal-title");
+    const contentEl = document.getElementById("modal-content");
+    const confirmBtn = document.getElementById("modal-confirm");
+    const cancelBtn = document.getElementById("modal-cancel");
+    
+    titleEl.textContent = title;
+    contentEl.innerHTML = contentHtml;
+    overlay.style.display = "flex";
+    
+    // Remove old listeners
+    const newConfirmBtn = confirmBtn.cloneNode(true);
+    const newCancelBtn = cancelBtn.cloneNode(true);
+    confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+    cancelBtn.parentNode.replaceChild(newCancelBtn, cancelBtn);
+    
+    // Add new listeners
+    newConfirmBtn.addEventListener("click", () => {
+        overlay.style.display = "none";
+        onConfirm();
+    });
+    
+    newCancelBtn.addEventListener("click", () => {
+        overlay.style.display = "none";
+    });
+    
+    // Close on overlay click
+    overlay.onclick = (e) => {
+        if (e.target === overlay) {
+            overlay.style.display = "none";
+        }
+    };
+}
+
+/**
+ * Show Clear All confirmation
+ */
+export function showClearAllConfirmation() {
+    showModal(
+        "Clear All Chat History",
+        `<p>This will permanently delete <strong>all</strong> chat history from both the local queue and the Memory FTS database.</p>
+         <p style="color: var(--in-content-danger-button-background);">⚠️ This action cannot be undone.</p>`,
+        async () => {
+            await clearChatHistory();
+        }
+    );
+}
+
+/**
+ * Show Delete Old History dialog
+ */
+export function showDeleteOldHistoryDialog() {
+    showModal(
+        "Delete Old History",
+        `<p>Delete chat history older than a specified number of days.</p>
+         <div class="modal-input-row">
+             <label for="delete-days-input">Delete entries older than:</label>
+             <input type="number" id="delete-days-input" value="30" min="1" max="365" />
+             <span>days</span>
+         </div>
+         <p style="opacity: 0.7; font-size: 13px;">This will remove both local queue entries and Memory FTS entries older than the specified date.</p>`,
+        async () => {
+            const daysInput = document.getElementById("delete-days-input");
+            const days = parseInt(daysInput?.value || "30", 10);
+            if (days > 0) {
+                await deleteOldHistory(days);
+            }
+        }
+    );
+}
+
+/**
+ * Delete history older than X days
+ */
+async function deleteOldHistory(days) {
     try {
-        // Filter out the session to delete
-        chatHistoryData = chatHistoryData.filter(s => s.id !== sessionId);
+        log(`[Prompts] Deleting history older than ${days} days...`);
+        showStatus(`Deleting history older than ${days} days...`);
         
-        // Save to storage
-        await browser.storage.local.set({ [CHAT_HISTORY_STORAGE_KEY]: chatHistoryData });
+        const cutoffMs = Date.now() - (days * 24 * 60 * 60 * 1000);
+        const cutoffDate = new Date(cutoffMs);
         
-        // Re-render
-        renderChatHistory();
-        log(`[Prompts] Deleted chat session: ${sessionId}`);
+        // Find entries to delete from Memory FTS
+        let deletedCount = 0;
+        const idsToDelete = [];
+        
+        for (const entry of memoryFtsData) {
+            if (entry.dateMs && entry.dateMs < cutoffMs && entry.memId) {
+                idsToDelete.push(entry.memId);
+            }
+        }
+        
+        // Delete from Memory FTS
+        if (idsToDelete.length > 0) {
+            try {
+                const result = await browser.runtime.sendMessage({
+                    type: "fts",
+                    cmd: "memoryRemoveBatch",
+                    ids: idsToDelete
+                });
+                deletedCount = result?.count || idsToDelete.length;
+                log(`[Prompts] Deleted ${deletedCount} entries from Memory FTS`);
+            } catch (e) {
+                log(`[Prompts] Failed to delete from Memory FTS: ${e}`, "warn");
+            }
+        }
+        
+        // Also clean up local queue
+        const oldLocalCount = chatHistoryData.length;
+        chatHistoryData = chatHistoryData.filter(session => {
+            const sessionTime = session.timestamp || session.createdAt || 0;
+            return sessionTime >= cutoffMs;
+        });
+        const localDeleted = oldLocalCount - chatHistoryData.length;
+        
+        if (localDeleted > 0) {
+            await browser.storage.local.set({ [CHAT_HISTORY_STORAGE_KEY]: chatHistoryData });
+            log(`[Prompts] Deleted ${localDeleted} sessions from local queue`);
+        }
+        
+        showStatus(`Deleted ${deletedCount} entries older than ${cutoffDate.toLocaleDateString()}`);
+        
+        // Reload
+        await loadChatHistory();
     } catch (e) {
-        log(`[Prompts] Error deleting session: ${e}`, "error");
-        showStatus("Failed to delete session", true);
+        log(`[Prompts] Error deleting old history: ${e}`, "error");
+        showStatus("Failed to delete old history: " + e, true);
     }
 }
 
 /**
- * Clear all chat history
+ * Clear all chat history (both local queue and Memory FTS)
  */
 export async function clearChatHistory() {
     try {
+        log("[Prompts] Clearing all chat history...");
+        showStatus("Clearing chat history...");
+
+        // Clear local queue
         await browser.storage.local.remove(CHAT_HISTORY_STORAGE_KEY);
         chatHistoryData = [];
+
+        // Clear Memory FTS database
+        try {
+            await browser.runtime.sendMessage({
+                type: "fts",
+                cmd: "memoryClear"
+            });
+            log("[Prompts] Memory FTS cleared");
+        } catch (e) {
+            log(`[Prompts] Failed to clear Memory FTS: ${e}`, "warn");
+        }
+
+        // Clear migration flags so it can re-migrate if needed
+        await browser.storage.local.remove([
+            "memory_fts_migration_v1_done",
+            "memory_fts_migrated_sessions"
+        ]);
+
+        memoryFtsData = [];
+        memoryFtsStats = null;
+        currentPage = 1;
         renderChatHistory();
         showStatus("Chat history cleared");
         log("[Prompts] Chat history cleared");
     } catch (e) {
         log(`[Prompts] Error clearing chat history: ${e}`, "error");
         showStatus("Failed to clear chat history", true);
+    }
+}
+
+/**
+ * Initialize history tab event handlers
+ */
+export function initHistoryHandlers() {
+    // Search handlers
+    const searchInput = document.getElementById("history-search-input");
+    const searchBtn = document.getElementById("history-search-btn");
+    
+    if (searchBtn) {
+        searchBtn.addEventListener("click", () => {
+            searchChatHistory(searchInput?.value || "");
+        });
+    }
+    
+    if (searchInput) {
+        searchInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                searchChatHistory(searchInput.value);
+            }
+        });
+    }
+    
+    // Pagination handlers
+    const prevBtn = document.getElementById("history-prev-page");
+    const nextBtn = document.getElementById("history-next-page");
+    
+    if (prevBtn) {
+        prevBtn.addEventListener("click", prevPage);
+    }
+    
+    if (nextBtn) {
+        nextBtn.addEventListener("click", nextPage);
+    }
+    
+    // Delete old history button
+    const deleteOldBtn = document.getElementById("delete-old-history");
+    if (deleteOldBtn) {
+        deleteOldBtn.addEventListener("click", showDeleteOldHistoryDialog);
     }
 }

@@ -229,20 +229,19 @@ header {
 .delete-template-btn,
 .reset-section-btn {
   background: transparent;
-  color: color-mix(in srgb, var(--tag-tm-delete) 80%, white);
-  border: 1px solid color-mix(in srgb, var(--tag-tm-delete) 30%, transparent);
+  color: var(--tm-danger-text-bright);
+  border: 1px solid color-mix(in srgb, var(--tm-danger-text) 50%, transparent);
   padding: 6px 12px;
   border-radius: 4px;
   cursor: pointer;
   font-size: 13px;
-  opacity: 0.7;
   transition: all 0.2s ease;
 }
 
 .delete-template-btn:hover,
 .reset-section-btn:hover {
-  opacity: 1;
-  background: color-mix(in srgb, var(--tag-tm-delete) 10%, transparent);
+  background: color-mix(in srgb, var(--tm-danger-text) 15%, transparent);
+  border-color: var(--tm-danger-text-bright);
 }
 
 .undo-delete-btn {
@@ -415,12 +414,13 @@ button:focus-visible {
 
 .danger-button {
   background: transparent;
-  color: color-mix(in srgb, var(--tag-tm-delete) 80%, white);
-  border: 1px solid color-mix(in srgb, var(--tag-tm-delete) 30%, transparent);
+  color: var(--tm-danger-text-bright);
+  border: 1px solid color-mix(in srgb, var(--tm-danger-text) 50%, transparent);
 }
 
 .danger-button:hover {
-  background: color-mix(in srgb, var(--tag-tm-delete) 10%, transparent);
+  background: color-mix(in srgb, var(--tm-danger-text) 15%, transparent);
+  border-color: var(--tm-danger-text-bright);
 }
 
 /* Status Message */
@@ -442,9 +442,9 @@ button:focus-visible {
 }
 
 #status-message.error {
-  background: color-mix(in srgb, var(--tag-tm-delete) 20%, transparent);
-  color: var(--tag-tm-delete);
-  border: 1px solid color-mix(in srgb, var(--tag-tm-delete) 30%, transparent);
+  background: color-mix(in srgb, var(--tm-danger-text) 20%, transparent);
+  color: var(--tm-danger-text-bright);
+  border: 1px solid color-mix(in srgb, var(--tm-danger-text) 40%, transparent);
   animation: fadeInOut 0.3s ease;
 }
 
@@ -899,8 +899,8 @@ button:focus-visible {
 }
 
 .reminder-due.overdue {
-  color: var(--tag-tm-delete);
-  font-weight: 500;
+  color: var(--tm-danger-text-bright);
+  font-weight: 600;
 }
 
 .reminder-due.today,
@@ -1003,6 +1003,21 @@ button:focus-visible {
 .history-session-time {
   font-size: 13px;
   font-weight: 500;
+  flex-shrink: 0;
+}
+
+.history-session-snippet {
+  flex: 1;
+  margin-left: 16px;
+  font-size: 13px;
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-session.expanded .history-session-snippet {
+  display: none;
 }
 
 .history-session-badge {
@@ -1071,6 +1086,8 @@ button:focus-visible {
   border-radius: 6px;
   font-size: 13px;
   line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .history-message.user {
@@ -1094,5 +1111,169 @@ button:focus-visible {
 .history-message-content {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.history-message-debug {
+  font-size: 11px;
+  opacity: 0.4;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-separator-color);
+}
+
+/* History Search Bar */
+.history-search-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.history-search-bar input {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+}
+
+.history-search-bar input:focus {
+  outline: none;
+  border-color: var(--in-content-accent-color);
+}
+
+/* History Pagination */
+.history-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 12px;
+  border-top: 1px solid var(--panel-separator-color);
+}
+
+.pagination-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  cursor: pointer;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--in-content-page-color) 10%, transparent);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: 13px;
+  color: var(--in-content-page-color);
+  opacity: 0.7;
+}
+
+/* Modal Overlay */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-dialog {
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 400px;
+  max-width: 500px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.modal-dialog h3 {
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  color: var(--in-content-page-color);
+}
+
+.modal-dialog p {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--in-content-page-color);
+  opacity: 0.9;
+}
+
+.modal-dialog .modal-input-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.modal-dialog .modal-input-row label {
+  font-size: 14px;
+  color: var(--in-content-page-color);
+}
+
+.modal-dialog .modal-input-row input {
+  width: 80px;
+  padding: 6px 10px;
+  font-size: 14px;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.modal-actions .reload-section-btn {
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+}
+
+.modal-actions .reload-section-btn:hover {
+  background: color-mix(in srgb, var(--in-content-page-color) 10%, var(--in-content-box-background));
+}
+
+.modal-actions .reset-section-btn {
+  background: var(--in-content-danger-button-background);
+  color: var(--in-content-danger-button-background-color, white);
+  border: none;
+  opacity: 1;
+}
+
+.modal-actions .reset-section-btn:hover {
+  background: color-mix(in srgb, var(--in-content-danger-button-background) 85%, black);
+}
+
+/* Search highlight styling */
+.history-session-snippet .search-highlight,
+.history-message .search-highlight {
+  background: color-mix(in srgb, var(--in-content-accent-color) 40%, transparent);
+  color: var(--in-content-page-color);
+  padding: 1px 3px;
+  border-radius: 2px;
+  font-weight: 500;
 }
 

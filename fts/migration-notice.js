@@ -19,7 +19,64 @@ document.addEventListener('DOMContentLoaded', () => {
   const container = document.querySelector('.container');
 
   if (type === 'update') {
-    titleEl.textContent = "TabMail search component updated. Please restart Thunderbird.";
+    titleEl.textContent = "TabMail search component updated. Please restart Thunderbird for full compatibility.";
+    
+    // Add restart button
+    const btnContainer = document.createElement('div');
+    btnContainer.style.marginTop = '20px';
+    
+    const restartBtn = document.createElement('button');
+    restartBtn.textContent = 'Restart Now';
+    restartBtn.style.cssText = `
+      padding: 10px 24px;
+      font-size: 14px;
+      font-weight: 500;
+      background: var(--in-content-accent-color);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 12px;
+    `;
+    restartBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        if (browser.tmUpdates?.restartThunderbird) {
+          await browser.tmUpdates.restartThunderbird();
+        } else {
+          alert('Please restart Thunderbird manually.');
+          window.close();
+        }
+      } catch (err) {
+        console.warn('Failed to restart:', err);
+        alert('Please restart Thunderbird manually.');
+        window.close();
+      }
+    });
+    
+    const laterBtn = document.createElement('button');
+    laterBtn.textContent = 'Later';
+    laterBtn.style.cssText = `
+      padding: 10px 24px;
+      font-size: 14px;
+      font-weight: 500;
+      background: transparent;
+      color: var(--in-content-accent-color);
+      border: 1px solid var(--in-content-accent-color);
+      border-radius: 4px;
+      cursor: pointer;
+    `;
+    laterBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.close();
+    });
+    
+    btnContainer.appendChild(restartBtn);
+    btnContainer.appendChild(laterBtn);
+    container.appendChild(btnContainer);
+    
+    // Don't auto-close on click for update type
+    return;
   } else if (type === 'migration') {
     titleEl.textContent = "TabMail search is now set to auto-update after next Thunderbird restart.";
   } else if (type === 'reindex') {

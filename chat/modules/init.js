@@ -2,7 +2,6 @@
 // Thunderbird 140 MV3
 
 import {
-  getRecentChatHistoryForPrompt,
   pruneOldSessions,
 } from "../../agent/modules/chatHistoryQueue.js";
 import { SETTINGS } from "../../agent/modules/config.js";
@@ -185,16 +184,13 @@ export async function initAndGreetUser() {
         remindersJson = "";
       }
 
-      // Load recent chat history from queue (mid-term memory)
-      let recentChatHistory = "";
+      // NOTE: Recent chat history is no longer loaded into context.
+      // Instead, the agent uses the memory_search tool to look up past conversations.
+      // This reduces context size and allows more targeted retrieval.
       try {
-        await pruneOldSessions(); // Clean up old sessions first
-        recentChatHistory = await getRecentChatHistoryForPrompt();
-        if (recentChatHistory) {
-          log(`[TMDBG Init] Loaded recent chat history (${recentChatHistory.length} chars)`);
-        }
+        await pruneOldSessions(); // Clean up old sessions (still needed for indexing)
       } catch (e) {
-        log(`[TMDBG Init] Failed to load recent chat history: ${e}`, "warn");
+        log(`[TMDBG Init] Failed to prune old sessions: ${e}`, "warn");
       }
 
       ctx.agentConverseMessages = [
@@ -205,7 +201,7 @@ export async function initAndGreetUser() {
           user_kb_content: userKBContent,
           // user_composition_prompt: userCompositionPrompt,
           user_reminders_json: remindersJson,
-          recent_chat_history: recentChatHistory,
+          // recent_chat_history removed - agent uses memory_search tool instead
         },
       ];
       log(`[TMDBG Init] Initialised agentConverseMessages.`);
