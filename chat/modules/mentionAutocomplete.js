@@ -15,7 +15,7 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { ctx } from "./context.js";
-import { clearEntityCaches, resolveContactDetails, resolveEventDetails } from "./entityResolver.js";
+import { resolveContactDetails, resolveEventDetails } from "./entityResolver.js";
 import { toNumericId } from "./idTranslator.js";
 
 // Store email data for fuzzy matching - populated from inbox on init
@@ -987,9 +987,6 @@ export function cleanupMentionAutocomplete() {
     if (dropdown) {
       dropdown.remove();
     }
-    
-    // Clear entity resolver caches
-    clearEntityCaches();
     
     // Clear local caches
     emailCache = [];

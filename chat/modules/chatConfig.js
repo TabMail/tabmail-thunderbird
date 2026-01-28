@@ -107,9 +107,6 @@ export const CHAT_SETTINGS = {
   // --- LLM retry behavior ---
   // Maximum retries when LLM returns empty response (typically indicates an error)
   llmEmptyResponseMaxRetries: 5,
-  // --- Entity resolver caching ---
-  // TTL for contact/event resolution cache in milliseconds (default 5 minutes)
-  entityResolverCacheTTLMs: 300000,
 };
 
 
