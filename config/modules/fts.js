@@ -868,6 +868,78 @@ function applyMaintenanceLogSizing(logContainer) {
   }
 }
 
+/**
+ * Download all message event logs to the logs folder
+ */
+export async function downloadEventLogs() {
+  const statusEl = document.getElementById("fts-event-log-status");
+  try {
+    if (statusEl) statusEl.textContent = "Fetching event logs...";
+
+    // Get the full event log from the background script
+    const result = await browser.runtime.sendMessage({
+      command: "get-event-log",
+      options: { export: true },
+    });
+
+    if (!result?.ok) {
+      throw new Error(result?.error || "Failed to get event log");
+    }
+
+    const eventCount = result.events?.length || 0;
+    if (eventCount === 0) {
+      if (statusEl) statusEl.textContent = "No events to download";
+      return;
+    }
+
+    // Create a blob with the event log data
+    const blob = new Blob([JSON.stringify(result, null, 2)], {
+      type: "application/json",
+    });
+
+    const url = URL.createObjectURL(blob);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `logs/tabmail_event_log_${timestamp}.json`;
+
+    await browser.downloads.download({ url, filename, saveAs: false });
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+    if (statusEl) statusEl.textContent = `Downloaded ${eventCount} events`;
+    console.log(`[TMDBG Config] Downloaded ${eventCount} event log entries`);
+  } catch (e) {
+    console.error("[TMDBG Config] downloadEventLogs failed:", e);
+    if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+  }
+}
+
+/**
+ * Clear all stored event logs
+ */
+export async function clearEventLogs() {
+  const statusEl = document.getElementById("fts-event-log-status");
+  try {
+    if (!confirm("Are you sure you want to clear all message event logs?")) {
+      return;
+    }
+
+    if (statusEl) statusEl.textContent = "Clearing...";
+
+    const result = await browser.runtime.sendMessage({
+      command: "clear-event-log",
+    });
+
+    if (!result?.ok) {
+      throw new Error(result?.error || "Failed to clear event log");
+    }
+
+    if (statusEl) statusEl.textContent = "Event logs cleared";
+    console.log("[TMDBG Config] Event logs cleared");
+  } catch (e) {
+    console.error("[TMDBG Config] clearEventLogs failed:", e);
+    if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+  }
+}
+
 export async function handleFtsMaintenanceChange(e) {
   // Auto-save FTS maintenance checkboxes
   if (e.target.id === "fts-maintenance-enabled") {

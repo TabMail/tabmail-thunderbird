@@ -1,19 +1,20 @@
 import { autoUpdateUserPromptOnMove } from "./autoUpdateUserPrompt.js";
 import { SETTINGS } from "./config.js";
+import { logMessageEvent, logMoveEvent } from "./eventLogger.js";
 import { getAllFoldersForAccount, isInboxFolder } from "./folderUtils.js";
 import * as idb from "./idbStorage.js";
 import { getInboxForAccount } from "./inboxContext.js";
 import { ACTION_TAG_IDS, recomputeThreadForInboxMessage } from "./tagHelper.js";
 import {
-  clearAlarm,
-  ensureAlarm,
-  getArchiveFolderForHeader,
-  getTrashFolderForHeader,
-  getUniqueMessageKey,
-  indexHeader,
-  log,
-  removeHeaderIndexForDeletedMessage,
-  updateHeaderIndexForMovedMessage
+    clearAlarm,
+    ensureAlarm,
+    getArchiveFolderForHeader,
+    getTrashFolderForHeader,
+    getUniqueMessageKey,
+    indexHeader,
+    log,
+    removeHeaderIndexForDeletedMessage,
+    updateHeaderIndexForMovedMessage
 } from "./utils.js";
 
 const STALE_TAG_SWEEP_ALARM_NAME = "agent-stale-tag-sweep";
@@ -859,6 +860,23 @@ export function attachOnMovedListeners() {
         try {
           const { details, items, hasTwoLists, beforeList, afterList } = _extractListsFromArgs(args);
 
+          // IMMEDIATELY log to persistent storage for debugging race conditions
+          if (hasTwoLists && afterList.length > 0) {
+            // TB 141+ style with before/after lists
+            const srcFolder = beforeList[0]?.folder || details.source;
+            const dstFolder = afterList[0]?.folder || details.destination;
+            logMoveEvent("onMoved:detail", "onMovedModule", srcFolder, afterList, dstFolder);
+          } else if (items.length > 0) {
+            logMoveEvent("onMoved:simple", "onMovedModule", details.source, items, details.destination);
+          } else {
+            logMessageEvent("onMoved:empty", "onMovedModule", {
+              source: details.source?.path,
+              destination: details.destination?.path,
+              itemCount: 0,
+              note: "no items in event",
+            });
+          }
+
           // Integrate FTS incremental indexing (avoid duplicate listeners)
           try {
             const { onMessageMoved: ftsOnMoved } = await import("../../fts/incrementalIndexer.js");
@@ -1206,6 +1224,17 @@ export function attachOnMovedListeners() {
     if (browser.messages && browser.messages.onDeleted && !_onDeletedHandler) {
       _onDeletedHandler = async (details) => {
         try {
+          // IMMEDIATELY log to persistent storage for debugging race conditions
+          if (details.messages && details.messages.length > 0) {
+            logMoveEvent("onDeleted", "onMovedModule", details.folder, details.messages);
+          } else {
+            logMessageEvent("onDeleted:empty", "onMovedModule", {
+              folderPath: details.folder?.path,
+              messageCount: 0,
+              note: "no messages in event",
+            });
+          }
+
           // Integrate FTS incremental indexing (avoid duplicate listeners)
           try {
             const { onMessageDeleted: ftsOnDeleted } = await import("../../fts/incrementalIndexer.js");
@@ -1300,6 +1329,22 @@ export function attachOnMovedListeners() {
       _onCopiedHandler = async (...args) => {
         try {
           const { details, hasTwoLists, beforeList, afterList } = _extractListsFromArgs(args);
+
+          // IMMEDIATELY log to persistent storage for debugging race conditions
+          if (hasTwoLists && afterList.length > 0) {
+            const srcFolder = beforeList[0]?.folder || details.source;
+            const dstFolder = afterList[0]?.folder || details.destination;
+            logMoveEvent("onCopied:detail", "onMovedModule", srcFolder, afterList, dstFolder);
+          } else if (afterList.length > 0) {
+            logMoveEvent("onCopied:simple", "onMovedModule", details.source, afterList, details.destination);
+          } else {
+            logMessageEvent("onCopied:empty", "onMovedModule", {
+              source: details.source?.path,
+              destination: details.destination?.path,
+              itemCount: 0,
+              note: "no items in event",
+            });
+          }
 
           // Integrate FTS incremental indexing for copies (e.g., Sent)
           try {

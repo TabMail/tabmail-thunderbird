@@ -4,56 +4,58 @@ import { handleDebugChange, loadDebugSettings } from "./debugSettings.js";
 import { $ } from "./dom.js";
 import { fsApply, fsLoad } from "./folderSync.js";
 import {
-  ftsCheckForUpdates,
-  ftsCleanupTrigger,
-  ftsClear,
-  ftsDebugCheckpoints,
-  ftsDebugSample,
-  ftsDiagnostics,
-  ftsFlushIncremental,
-  ftsMaintenanceDebug,
-  ftsMaintenanceStatus,
-  ftsMaintenanceTrigger,
-  ftsPause,
-  ftsReindexAll,
-  ftsResume,
-  ftsSmartReindex,
-  handleFtsMaintenanceChange,
-  loadFtsSettings,
-  loadMaintenanceLog,
-  updateFtsStatus,
+    clearEventLogs,
+    downloadEventLogs,
+    ftsCheckForUpdates,
+    ftsCleanupTrigger,
+    ftsClear,
+    ftsDebugCheckpoints,
+    ftsDebugSample,
+    ftsDiagnostics,
+    ftsFlushIncremental,
+    ftsMaintenanceDebug,
+    ftsMaintenanceStatus,
+    ftsMaintenanceTrigger,
+    ftsPause,
+    ftsReindexAll,
+    ftsResume,
+    ftsSmartReindex,
+    handleFtsMaintenanceChange,
+    loadFtsSettings,
+    loadMaintenanceLog,
+    updateFtsStatus,
 } from "./fts.js";
 import {
-  loadAddressBooks,
-  loadCalendars,
-  saveAddressBookConfig,
-  saveCalendarConfig,
+    loadAddressBooks,
+    loadCalendars,
+    saveAddressBookConfig,
+    saveCalendarConfig,
 } from "./integrations.js";
 import { forcePlaintextAll, updatePlaintextStatusUI } from "./plaintext.js";
 import { updateQuotaDisplay } from "./planUsage.js";
 import { handlePrivacyChange, loadPrivacySettings } from "./privacy.js";
 import { handleReminderChange, loadReminderSettings, saveReminderSettings } from "./reminders.js";
 import {
-  createPromptEditorsInputHandler,
-  createPromptsUpdatedRuntimeListener,
+    createPromptEditorsInputHandler,
+    createPromptsUpdatedRuntimeListener,
 } from "./runtimeListeners.js";
 import {
-  handleUiTweaksClick,
+    handleUiTweaksClick,
 } from "./uiTweaks.js";
 import {
-  clearUpdateState,
-  hideUpdateBar,
-  restartThunderbird,
-  showUpdateBar,
-  simulateUpdateAvailable,
-  updateDebugStatusDisplay,
+    clearUpdateState,
+    hideUpdateBar,
+    restartThunderbird,
+    showUpdateBar,
+    simulateUpdateAvailable,
+    updateDebugStatusDisplay,
 } from "./updateDebug.js";
-import {
-  clearWelcomeStatus,
-  openWelcomeWizard,
-  updateWelcomeStatusDisplay,
-} from "./welcomeWizard.js";
 import { handleWebSearchChange, loadWebSearchSettings } from "./webSearch.js";
+import {
+    clearWelcomeStatus,
+    openWelcomeWizard,
+    updateWelcomeStatusDisplay,
+} from "./welcomeWizard.js";
 
 export async function initConfigPage({
   SETTINGS,
@@ -312,6 +314,12 @@ export async function initConfigPage({
     if (e.target.id === "fts-flush-incremental") {
       await ftsFlushIncremental();
     }
+    if (e.target.id === "fts-download-event-log") {
+      await downloadEventLogs();
+    }
+    if (e.target.id === "fts-clear-event-log") {
+      await clearEventLogs();
+    }
     if (e.target.id === "fts-maintenance-status") {
       await ftsMaintenanceStatus();
     }
@@ -326,6 +334,9 @@ export async function initConfigPage({
     }
     if (e.target.id === "fts-maintenance-refresh-log") {
       await loadMaintenanceLog();
+    }
+    if (e.target.id === "fts-maintenance-daily-run-now") {
+      await ftsMaintenanceTrigger("daily", true);
     }
     if (e.target.id === "fts-maintenance-weekly-run-now") {
       await ftsMaintenanceTrigger("weekly", true);

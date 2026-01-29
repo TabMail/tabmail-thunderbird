@@ -18,6 +18,13 @@ import { attachOnMovedListeners, cleanupOnMovedListeners } from "./modules/onMov
 import { purgeExpiredReplyEntries } from "./modules/replyGenerator.js";
 import { purgeExpiredSummaryEntries } from "./modules/summaryGenerator.js";
 // Reminder generation is now integrated into messageProcessor.js
+import {
+    cleanupEventLogger,
+    initEventLogger,
+    logMessageEvent,
+    logMessageEventBatch,
+    logMoveEvent,
+} from "./modules/eventLogger.js";
 import { enforceMailSyncPrefs } from "./modules/startupPrefs.js";
 import { initSummaryFeatures, refreshCurrentMessageSummary, signalBubbleReady } from "./modules/summary.js";
 import { registerTabKeyHandlers } from "./modules/tagActionKey.js";
@@ -217,6 +224,57 @@ function setupRuntimeMessageListener() {
             }
         })();
         return { ok: true };
+    }
+
+    // --- Event Log Commands (for debugging race conditions) ---
+    if (message.command === "get-event-log") {
+        log("Received get-event-log command");
+        return (async () => {
+            try {
+                const { getEventLog, getEventSummary, exportEventLog } = await import("./modules/eventLogger.js");
+                const options = message.options || {};
+                if (options.export) {
+                    return { ok: true, ...exportEventLog() };
+                }
+                if (options.summary) {
+                    return { ok: true, ...getEventSummary(options.sinceMins || 60) };
+                }
+                const events = getEventLog(options);
+                return { ok: true, events, count: events.length };
+            } catch (e) {
+                log(`Error getting event log: ${e}`, "error");
+                return { ok: false, error: String(e), events: [] };
+            }
+        })();
+    }
+
+    if (message.command === "find-events-by-header-id") {
+        const { headerMessageId } = message;
+        log(`Received find-events-by-header-id command for: ${headerMessageId}`);
+        return (async () => {
+            try {
+                const { findEventsByHeaderId } = await import("./modules/eventLogger.js");
+                const events = findEventsByHeaderId(headerMessageId);
+                return { ok: true, events, count: events.length };
+            } catch (e) {
+                log(`Error finding events: ${e}`, "error");
+                return { ok: false, error: String(e), events: [] };
+            }
+        })();
+    }
+
+    if (message.command === "clear-event-log") {
+        log("Received clear-event-log command");
+        return (async () => {
+            try {
+                const { clearEventLog } = await import("./modules/eventLogger.js");
+                await clearEventLog();
+                return { ok: true };
+            } catch (e) {
+                log(`Error clearing event log: ${e}`, "error");
+                return { ok: false, error: String(e) };
+            }
+        })();
     }
 
     if (message.command === "reset-user-prompts") {
@@ -782,6 +840,19 @@ if (!_onNewMailReceivedListener) {
     console.log("[InboxActivity] Folder object:", folder);
     log(`[InboxActivity] ★★★ onNewMailReceived: folder='${folder?.name}' (type=${folder?.type}, path=${folder?.path}), messages=${notification?.messages?.length || 0}`);
 
+    // IMMEDIATELY log to persistent storage for debugging race conditions
+    if (notification?.messages && notification.messages.length > 0) {
+      logMessageEventBatch("onNewMailReceived", "background", folder, notification.messages);
+    } else {
+      logMessageEvent("onNewMailReceived", "background", {
+        folderName: folder?.name,
+        folderPath: folder?.path,
+        folderType: folder?.type,
+        messageCount: 0,
+        note: "empty notification",
+      });
+    }
+
     if (!notification.messages || notification.messages.length === 0) {
         log("[InboxActivity] New mail notification received, but it contained no messages. Ignoring.", "warn");
         return;
@@ -852,6 +923,18 @@ if (!_onMovedInboxListener) {
     console.log("[InboxActivity] ★★★ onMoved FIRED ★★★");
     console.log("[InboxActivity] originalFolder:", originalFolder, "movedMessages:", movedMessages);
     
+    // IMMEDIATELY log to persistent storage for debugging race conditions
+    if (movedMessages?.messages && movedMessages.messages.length > 0) {
+      logMoveEvent("onMoved", "background", originalFolder, movedMessages.messages);
+    } else {
+      logMessageEvent("onMoved", "background", {
+        originalFolderName: originalFolder?.name,
+        originalFolderPath: originalFolder?.path,
+        messageCount: 0,
+        note: "empty MessageList",
+      });
+    }
+    
     // movedMessages is a MessageList with a messages array
     if (!movedMessages?.messages || movedMessages.messages.length === 0) {
       log("[InboxActivity] onMoved fired but no messages in MessageList");
@@ -901,6 +984,18 @@ if (!_onCopiedInboxListener) {
   _onCopiedInboxListener = async (originalFolder, copiedMessages) => {
     console.log("[InboxActivity] ★★★ onCopied FIRED ★★★");
     console.log("[InboxActivity] originalFolder:", originalFolder, "copiedMessages:", copiedMessages);
+    
+    // IMMEDIATELY log to persistent storage for debugging race conditions
+    if (copiedMessages?.messages && copiedMessages.messages.length > 0) {
+      logMoveEvent("onCopied", "background", originalFolder, copiedMessages.messages);
+    } else {
+      logMessageEvent("onCopied", "background", {
+        originalFolderName: originalFolder?.name,
+        originalFolderPath: originalFolder?.path,
+        messageCount: 0,
+        note: "empty MessageList",
+      });
+    }
     
     // copiedMessages is a MessageList with a messages array
     if (!copiedMessages?.messages || copiedMessages.messages.length === 0) {
@@ -963,6 +1058,17 @@ function attachTmMsgNotifyListeners() {
   _tmMsgNotifyAddedListener = async (messageInfo) => {
     console.log("[tmMsgNotify] ★★★ onMessageAdded FIRED ★★★", messageInfo.eventType);
     log(`[tmMsgNotify] onMessageAdded: eventType=${messageInfo.eventType}, folder=${messageInfo.folderPath}, subject="${messageInfo.subject?.substring(0, 50)}"`);
+    
+    // IMMEDIATELY log to persistent storage for debugging race conditions
+    logMessageEvent("tmMsgNotify:onMessageAdded", "experiment", {
+      eventType: messageInfo.eventType,
+      folderPath: messageInfo.folderPath,
+      headerMessageId: messageInfo.headerMessageId,
+      weMsgId: messageInfo.weMsgId,
+      weFolderId: messageInfo.weFolderId,
+      subject: (messageInfo.subject || "").substring(0, 100),
+      isInbox: messageInfo.isInbox,
+    });
     
     // Skip if no WebExtension folder ID or message ID
     if (!messageInfo.weFolderId) {
@@ -1459,6 +1565,14 @@ async function init() {
         log(`[TMDBG PMQ] Failed to init processMessage queue: ${e}`, "error");
     }
 
+    // 2b. Initialise event logger for debugging race conditions / queue dropping
+    try {
+        await initEventLogger();
+        log("[EventLogger] Event logger initialised for debugging");
+    } catch (e) {
+        log(`[EventLogger] Failed to init event logger: ${e}`, "error");
+    }
+
     // // 2a. Diagnostics – enumerate tmHdr namespace presence and methods
     // try {
     //     const hasTmHdr = !!(browser && browser.tmHdr);
@@ -1716,6 +1830,11 @@ if (typeof browser !== 'undefined' && browser.runtime) {
             const { cleanupComposeTrackerListeners } = await import("./modules/composeTracker.js");
             cleanupComposeTrackerListeners();
           } catch (e) { log(`Error cleaning compose tracker listeners: ${e}`, "warn"); }
+          
+          // Cleanup event logger (persist pending events)
+          try {
+            await cleanupEventLogger();
+          } catch (e) { log(`Error cleaning event logger: ${e}`, "warn"); }
           
           log("Module listener cleanup completed");
         } catch (e) {

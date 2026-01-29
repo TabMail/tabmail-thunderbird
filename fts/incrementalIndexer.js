@@ -2,16 +2,21 @@
 // Incremental FTS indexer that listens for mail events and updates the index automatically
 
 import { SETTINGS } from "../agent/modules/config.js";
+import { logMessageEventBatch, logMoveEvent } from "../agent/modules/eventLogger.js";
 import { log } from "../agent/modules/utils.js";
 import { buildBatchHeader, populateBatchBody } from "./indexer.js";
 
 // Incremental indexing state
 let _isEnabled = false;
 let _ftsSearch = null;
-let _pendingUpdates = new Map(); // uniqueKey -> { type, uniqueKey, timestamp, metadata }
+let _pendingUpdates = new Map(); // uniqueKey -> { type, uniqueKey, timestamp, metadata, hasFailed }
 let _batchTimer = null;
 let _persistTimer = null; // Timer for debounced persistence
 let _isProcessing = false; // Prevents concurrent processing
+
+// Queue stability tracking - counts consecutive processing cycles with no successful dequeues
+// Reset to 0 whenever anything is successfully processed (dequeued from _pendingUpdates)
+let _consecutiveNoProgressCycles = 0;
 
 // Mutex for atomic enqueue operations - prevents interleaving during async key generation
 let _enqueueMutex = Promise.resolve();
@@ -60,6 +65,9 @@ async function persistPendingUpdates() {
       uniqueKey,
       type: data.type,
       timestamp: data.timestamp,
+      // Failure tracking - persist so status survives restarts
+      hasFailed: data.hasFailed || false,
+      lastFailedAt: data.lastFailedAt || 0,
       // Store minimal metadata for logging only (uniqueKey is what matters)
       metadata: {
         subject: data.metadata?.subject,
@@ -91,6 +99,9 @@ async function restorePendingUpdates() {
             type: item.type,
             uniqueKey: item.uniqueKey,
             timestamp: item.timestamp,
+            // Restore failure tracking
+            hasFailed: item.hasFailed || false,
+            lastFailedAt: item.lastFailedAt || 0,
             metadata: item.metadata || {}
           });
           restoredCount++;
@@ -185,14 +196,18 @@ async function queueMessageUpdate(type, messageHeader) {
     const existing = _pendingUpdates.get(uniqueKey);
     if (existing) {
       // Log the overwrite for debugging batch notification issues
-      log(`[TMDBG FTS] Queue update: ${uniqueKey} already queued (type=${existing.type}→${type}, age=${timestamp - existing.timestamp}ms)`);
+      log(`[TMDBG FTS] Queue update: ${uniqueKey} already queued (type=${existing.type}→${type}, age=${timestamp - existing.timestamp}ms, failed=${existing.hasFailed || false})`);
     }
     
     // Update or add to pending updates (latest event wins)
+    // Preserve failure state if re-queuing an existing entry
     _pendingUpdates.set(uniqueKey, { 
       type, 
       uniqueKey, 
       timestamp,
+      // Preserve failure tracking from existing entry, or initialize
+      hasFailed: existing?.hasFailed || false,
+      lastFailedAt: existing?.lastFailedAt || 0,
       metadata: {
         subject: messageHeader.subject,
         folderName: messageHeader.folder?.name
@@ -214,6 +229,59 @@ async function queueMessageUpdate(type, messageHeader) {
     // Always release the mutex
     release();
   }
+}
+
+// Get retry configuration from SETTINGS
+function _getRetryConfig() {
+  const cfg = SETTINGS?.agentQueues?.ftsIncremental || {};
+  return {
+    maxConsecutiveNoProgress: typeof cfg.maxConsecutiveNoProgress === 'number' ? cfg.maxConsecutiveNoProgress : 20,
+    retryDelayMs: typeof cfg.retryDelayMs === 'number' ? cfg.retryDelayMs : 10000,
+  };
+}
+
+/**
+ * Check if failed updates should be dropped based on queue stability.
+ * Returns true if we've had maxConsecutiveNoProgress cycles with no successful dequeues.
+ * Only applies to entries that have failed at least once (hasFailed=true).
+ */
+function _shouldDropFailedUpdates() {
+  const cfg = _getRetryConfig();
+  return _consecutiveNoProgressCycles >= cfg.maxConsecutiveNoProgress;
+}
+
+/**
+ * Mark an update as having failed resolution.
+ * Sets hasFailed=true so it can be dropped if queue is stuck.
+ */
+function _markResolveFailed(update) {
+  const now = Date.now();
+  const updated = {
+    ...update,
+    hasFailed: true,
+    lastFailedAt: now,
+  };
+  _pendingUpdates.set(update.uniqueKey, updated);
+  return updated;
+}
+
+/**
+ * Reset the no-progress counter (called when anything is successfully dequeued)
+ */
+function _resetNoProgressCounter() {
+  if (_consecutiveNoProgressCycles > 0) {
+    log(`[TMDBG FTS] Queue made progress - resetting no-progress counter (was ${_consecutiveNoProgressCycles})`);
+    _consecutiveNoProgressCycles = 0;
+  }
+}
+
+/**
+ * Increment the no-progress counter (called when a cycle completes with no dequeues)
+ */
+function _incrementNoProgressCounter() {
+  _consecutiveNoProgressCycles++;
+  const cfg = _getRetryConfig();
+  log(`[TMDBG FTS] No progress this cycle - counter now ${_consecutiveNoProgressCycles}/${cfg.maxConsecutiveNoProgress}`);
 }
 
 // Process batched updates
@@ -304,30 +372,41 @@ async function processPendingUpdates() {
       log(`[TMDBG FTS] Resolving ${toIndexUpdates.length} messages to index from uniqueKeys`);
       
       const resolvedEntries = [];
+      let retriedCount = 0;
+      let droppedCount = 0;
+      
       for (const update of toIndexUpdates) {
         try {
           // Parse uniqueKey: accountId:folderPath:headerMessageId
           const parsed = parseUniqueId(update.uniqueKey);
           if (!parsed) {
-            log(`[TMDBG FTS] Failed to parse uniqueKey: ${update.uniqueKey}`, "warn");
+            // Unparseable key is a permanent failure - drop immediately
+            log(`[TMDBG FTS] Failed to parse uniqueKey: ${update.uniqueKey} - dropping (unparseable)`, "warn");
             processedKeys.add(update.uniqueKey);
+            droppedCount++;
             continue;
           }
           
           const { weFolder, headerID } = parsed;
           
           let weID = null;
+          let resolveFailed = false;
           try {
             weID = await headerIDToWeID(headerID, weFolder, false);
           } catch (resolveError) {
             log(`[TMDBG FTS] Error resolving uniqueKey ${update.uniqueKey}: ${resolveError}`, "warn");
-            processedKeys.add(update.uniqueKey);
-            continue;
+            resolveFailed = true;
           }
           
           if (!weID) {
-            log(`[TMDBG FTS] Failed to resolve uniqueKey to weID: ${update.uniqueKey} (message may have been deleted)`, "warn");
-            processedKeys.add(update.uniqueKey);
+            resolveFailed = true;
+          }
+          
+          // Handle resolution failure - mark as failed, will be dropped when queue is stuck
+          if (resolveFailed) {
+            _markResolveFailed(update);
+            log(`[TMDBG FTS] Failed to resolve uniqueKey: ${update.uniqueKey} - marked for retry`);
+            retriedCount++;
             continue;
           }
           
@@ -339,15 +418,29 @@ async function processPendingUpdates() {
           }
           
           if (messageHeader) {
+            // Success - clear failed flag since we resolved successfully
+            if (update.hasFailed) {
+              const resetUpdate = { ...update, hasFailed: false, lastFailedAt: 0 };
+              _pendingUpdates.set(update.uniqueKey, resetUpdate);
+            }
             resolvedEntries.push({ update, messageHeader });
           } else {
-            log(`[TMDBG FTS] Failed to fetch message header for weID ${weID}`, "warn");
-            processedKeys.add(update.uniqueKey);
+            // messages.get failed - mark as failed, will be dropped when queue is stuck
+            _markResolveFailed(update);
+            log(`[TMDBG FTS] Failed to fetch message header for weID ${weID} - marked for retry`);
+            retriedCount++;
           }
         } catch (e) {
+          // General error - mark as failed, will be dropped when queue is stuck
           log(`[TMDBG FTS] Error resolving update ${update.uniqueKey}: ${e}`, "warn");
-          processedKeys.add(update.uniqueKey);
+          _markResolveFailed(update);
+          retriedCount++;
         }
+      }
+      
+      // Log retry summary
+      if (retriedCount > 0 || droppedCount > 0) {
+        log(`[TMDBG FTS] Resolution summary: ${resolvedEntries.length} resolved, ${retriedCount} marked for retry, ${droppedCount} dropped (unparseable)`);
       }
       
       if (resolvedEntries.length > 0) {
@@ -510,11 +603,42 @@ async function processPendingUpdates() {
       log(`[TMDBG FTS] Successfully processed ${processedCount} updates, ${_pendingUpdates.size} remaining`);
     }
     
+    // Update queue stability tracking
+    if (processedCount > 0) {
+      // Made progress - reset the no-progress counter
+      _resetNoProgressCounter();
+    } else if (_pendingUpdates.size > 0) {
+      // No progress but queue not empty - increment counter
+      _incrementNoProgressCounter();
+      
+      // If queue is stuck, drop entries that have failed
+      if (_shouldDropFailedUpdates()) {
+        const cfg = _getRetryConfig();
+        log(`[TMDBG FTS] Queue stuck for ${_consecutiveNoProgressCycles} cycles - dropping failed entries`, "warn");
+        
+        let droppedStuckCount = 0;
+        for (const [key, entry] of _pendingUpdates.entries()) {
+          if (entry.hasFailed) {
+            log(`[TMDBG FTS] Dropping stuck entry: ${key}`, "warn");
+            _pendingUpdates.delete(key);
+            droppedStuckCount++;
+          }
+        }
+        
+        if (droppedStuckCount > 0) {
+          log(`[TMDBG FTS] Dropped ${droppedStuckCount} stuck entries, ${_pendingUpdates.size} remaining`);
+          // Reset counter after cleanup so we don't immediately drop new entries
+          _consecutiveNoProgressCycles = 0;
+        }
+      }
+    }
+    
   } catch (e) {
     hadError = true;
     log(`[TMDBG FTS] Incremental indexing failed: ${e}`, "error");
     log(`[TMDBG FTS] Updates retained in queue for retry: ${updates.length}`, "warn");
     // Don't delete from map - will retry on next batch
+    // Don't count as no-progress since we had an error (not a stable state)
   }
   
   // Clear persist timer to avoid redundant persistence
@@ -601,6 +725,9 @@ async function checkGmailVirtualFolders(messageHeader) {
 
 // Event handlers - exported so agent listeners can call them
 export function onNewMailReceived(folder, messageHeaders) {
+  // Log to persistent storage IMMEDIATELY for debugging (before isEnabled check)
+  logMessageEventBatch("fts:onNewMailReceived", "ftsIndexer", folder, messageHeaders);
+  
   if (!_isEnabled) return;
   
   log(`[TMDBG FTS] New mail received in ${folder.name}: ${messageHeaders.length} messages`);
@@ -619,6 +746,9 @@ export function onNewMailReceived(folder, messageHeaders) {
 }
 
 export function onMessageMoved(originalMessage, movedMessage) {
+  // Log to persistent storage IMMEDIATELY for debugging (before isEnabled check)
+  logMoveEvent("fts:onMessageMoved", "ftsIndexer", originalMessage?.folder, [movedMessage], movedMessage?.folder);
+  
   if (!_isEnabled) return;
   
   log(`[TMDBG FTS] Message moved: ${originalMessage.id} -> ${movedMessage.id} to folder ${movedMessage.folder?.name}`);
@@ -633,6 +763,9 @@ export function onMessageMoved(originalMessage, movedMessage) {
 }
 
 export function onMessageDeleted(folder, messageHeaders) {
+  // Log to persistent storage IMMEDIATELY for debugging (before isEnabled check)
+  logMoveEvent("fts:onMessageDeleted", "ftsIndexer", folder, messageHeaders);
+  
   if (!_isEnabled) return;
   
   // Handle case where folder might be undefined (common in onDeleted events)
@@ -648,6 +781,9 @@ export function onMessageDeleted(folder, messageHeaders) {
 }
 
 export function onMessageCopied(originalMessage, copiedMessage) {
+  // Log to persistent storage IMMEDIATELY for debugging (before isEnabled check)
+  logMoveEvent("fts:onMessageCopied", "ftsIndexer", originalMessage?.folder, [copiedMessage], copiedMessage?.folder);
+  
   if (!_isEnabled) return;
   
   log(`[TMDBG FTS] Message copied: ${originalMessage.id} -> ${copiedMessage.id} to folder ${copiedMessage.folder?.name}`);

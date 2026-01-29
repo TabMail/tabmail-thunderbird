@@ -419,6 +419,10 @@ export const SETTINGS = {
         // This does NOT change the normal batchDelay used after new events; it only affects retry cadence on errors.
         ftsIncremental: {
             retryDelayMs: 10000,
+            // Max consecutive processing cycles with no progress (no successful dequeues)
+            // before dropping stuck entries. With 10s watchdog, 20 cycles = ~200 seconds.
+            // If anything gets dequeued, the counter resets.
+            maxConsecutiveNoProgress: 20,
         },
         // Proactive inbox scan - DISABLED.
         // Replaced by tagSort row coloring pass coverage which detects untagged
@@ -427,6 +431,14 @@ export const SETTINGS = {
         inboxScan: {
             intervalMs: 0, // Disabled - coverage handled by tagSort
         },
+    },
+    // Event logger configuration for debugging race conditions
+    // Captures ALL message events immediately for later inspection
+    eventLogger: {
+        // Enable/disable event logging (default: true)
+        enabled: true,
+        // Debounce persistence to avoid storage thrashing (ms)
+        persistDebounceMs: 1000,
     },
 };
 

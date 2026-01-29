@@ -224,7 +224,8 @@
           <input type="number" id="fts-maintenance-weekly-hour-end" min="0" max="23" style="width: 60px;" />
           <span>hours</span>
           <span style="flex: 1;"></span>
-          <button id="fts-maintenance-weekly-run-now" class="tm-section-header-action" title="Run weekly maintenance scan now">Run Now</button>
+          <button id="fts-maintenance-daily-run-now" class="tm-section-header-action" title="Run daily maintenance scan now (quick debug)">Daily Scan</button>
+          <button id="fts-maintenance-weekly-run-now" class="tm-section-header-action" title="Run weekly maintenance scan now">Weekly Scan</button>
         </div>
         <small>Weekly scan checks recent messages for missing/stale index entries. Runs only during the configured time window (24h format).</small>
       </div>
@@ -459,6 +460,16 @@
         <button id="fts-debug-sample">Debug Sample</button>
         <button id="fts-debug-checkpoints">Debug Checkpoints</button>
         <button id="fts-flush-incremental">Flush Pending</button>
+      </div>
+      
+      <h4>📋 Event Logging</h4>
+      <div class="field">
+        <small>All message events (inbox moves, arrivals, etc.) are logged for debugging. Download logs to diagnose race conditions or missing events.</small>
+      </div>
+      <div class="row">
+        <button id="fts-download-event-log" title="Download all message event logs to your logs folder">Download Event Logs</button>
+        <button id="fts-clear-event-log" title="Clear all stored event logs">Clear Event Logs</button>
+        <span id="fts-event-log-status" style="opacity: 0.7; margin-left: 8px;"></span>
       </div>
       
       <h4>📅 Periodic Maintenance</h4>
