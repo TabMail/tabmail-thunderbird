@@ -1,4 +1,5 @@
 import { SETTINGS } from "./config.js";
+import { isInboxFolder } from "./folderUtils.js";
 import { processMessage } from "./messageProcessor.js";
 import { getUniqueMessageKey, headerIDToWeID, log, parseUniqueId } from "./utils.js";
 
@@ -314,6 +315,18 @@ async function _processOneItem(it) {
     _pending.set(key, { ...it, resolveAttempts: 0 });
   }
 
+  // Check if message is still in inbox BEFORE processing
+  // If message left inbox (moved, archived, deleted), drop it immediately
+  const folder = header?.folder;
+  if (!folder || !isInboxFolder(folder)) {
+    log(
+      `[TMDBG PMQ] Message no longer in inbox - dropping before processing: weId=${header.id} key=${key} folder="${folder?.name || "none"}" path="${folder?.path || ""}" type="${folder?.type || ""}"`,
+      "warn"
+    );
+    _pending.delete(key);
+    return { status: "dropped" };
+  }
+
   // Attempt processing; only remove from queue when processMessage reports ok=true.
   const attemptNo = (Number(it?.attempts) || 0) + 1;
   _pending.set(key, { ...it, attempts: attemptNo });
@@ -331,7 +344,7 @@ async function _processOneItem(it) {
         lastErrorAtMs: Date.now(),
       });
       log(
-        `[TMDBG PMQ] processMessage incomplete: weId=${header.id} key=${key} res=${JSON.stringify(res || {})}`,
+        `[TMDBG PMQ] processMessage incomplete: weId=${header.id} key=${key} attempt=${attemptNo} res=${JSON.stringify(res || {})}`,
         "warn"
       );
       return { status: "retry" };
@@ -341,7 +354,7 @@ async function _processOneItem(it) {
       ..._pending.get(key),
       lastErrorAtMs: Date.now(),
     });
-    log(`[TMDBG PMQ] processMessage threw: weId=${header.id} key=${key} err=${eProc}`, "warn");
+    log(`[TMDBG PMQ] processMessage threw: weId=${header.id} key=${key} attempt=${attemptNo} err=${eProc}`, "warn");
     return { status: "retry" };
   }
 }
