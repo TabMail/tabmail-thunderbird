@@ -333,3 +333,73 @@ export function exportEventLog() {
         events: [..._eventLog].sort((a, b) => b.ts - a.ts),
     };
 }
+
+/**
+ * Log an FTS operation for debugging the full pipeline
+ * 
+ * This captures everything from queue → resolution → indexing → verification
+ * so we can trace a message's full journey through the FTS system.
+ * 
+ * @param {string} operation - Operation type: 'enqueue', 'resolve', 'filter', 'index', 'verify', 'dequeue', 'drop', 'retry', etc.
+ * @param {string} status - Status: 'start', 'success', 'failure', 'skip'
+ * @param {Object} details - Operation details
+ */
+export function logFtsOperation(operation, status, details = {}) {
+    if (!_isEnabled()) return;
+
+    const now = Date.now();
+    const isoTime = new Date(now).toISOString();
+
+    const entry = {
+        ts: now,
+        iso: isoTime,
+        eventType: `fts:${operation}`,
+        source: "fts",
+        status,
+        ...details,
+    };
+
+    _eventLog.push(entry);
+
+    // Build a concise log line
+    const headerMsgIdPart = details.headerMessageId ? ` | headerMsgId=${details.headerMessageId}` : "";
+    const uniqueKeyPart = details.uniqueKey ? ` | key=${details.uniqueKey}` : "";
+    const weIdPart = details.weId ? ` | weId=${details.weId}` : "";
+    const countPart = details.count !== undefined ? ` | count=${details.count}` : "";
+    const reasonPart = details.reason ? ` | reason=${details.reason}` : "";
+    const subjectPart = details.subject ? ` | subject="${(details.subject || "").substring(0, 50)}"` : "";
+
+    console.log(`[EventLogger] ${isoTime} | fts:${operation} | ${status}${uniqueKeyPart}${headerMsgIdPart}${weIdPart}${countPart}${reasonPart}${subjectPart}`);
+
+    _schedulePersist();
+}
+
+/**
+ * Log a batch FTS operation (e.g., indexBatch results)
+ */
+export function logFtsBatchOperation(operation, status, details = {}) {
+    if (!_isEnabled()) return;
+
+    const now = Date.now();
+    const isoTime = new Date(now).toISOString();
+
+    const entry = {
+        ts: now,
+        iso: isoTime,
+        eventType: `fts:${operation}`,
+        source: "fts",
+        status,
+        ...details,
+    };
+
+    _eventLog.push(entry);
+
+    const totalPart = details.total !== undefined ? ` | total=${details.total}` : "";
+    const successPart = details.successCount !== undefined ? ` | success=${details.successCount}` : "";
+    const failPart = details.failCount !== undefined ? ` | fail=${details.failCount}` : "";
+    const skipPart = details.skipCount !== undefined ? ` | skip=${details.skipCount}` : "";
+
+    console.log(`[EventLogger] ${isoTime} | fts:${operation} | ${status}${totalPart}${successPart}${failPart}${skipPart}`);
+
+    _schedulePersist();
+}

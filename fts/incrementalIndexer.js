@@ -2,7 +2,7 @@
 // Incremental FTS indexer that listens for mail events and updates the index automatically
 
 import { SETTINGS } from "../agent/modules/config.js";
-import { logMessageEventBatch, logMoveEvent } from "../agent/modules/eventLogger.js";
+import { logFtsBatchOperation, logFtsOperation, logMessageEventBatch, logMoveEvent } from "../agent/modules/eventLogger.js";
 import { log } from "../agent/modules/utils.js";
 import { buildBatchHeader, populateBatchBody } from "./indexer.js";
 
@@ -189,6 +189,12 @@ async function queueMessageUpdate(type, messageHeader) {
     
     if (!uniqueKey) {
       log(`[TMDBG FTS] Failed to generate unique key for message ${messageHeader.id}, skipping`, "warn");
+      logFtsOperation("enqueue", "failure", {
+        reason: "no_unique_key",
+        weId: messageHeader.id,
+        headerMessageId: messageHeader.headerMessageId,
+        subject: messageHeader.subject,
+      });
       return;
     }
     
@@ -215,6 +221,18 @@ async function queueMessageUpdate(type, messageHeader) {
     });
     
     log(`[TMDBG FTS] Queued ${type} for message ${uniqueKey}: "${(messageHeader.subject || '').slice(0, 40)}" (queue size: ${_pendingUpdates.size})`);
+    
+    // Log enqueue to event logger for full traceability
+    logFtsOperation("enqueue", "success", {
+      type,
+      uniqueKey,
+      headerMessageId: messageHeader.headerMessageId,
+      weId: messageHeader.id,
+      folderPath: messageHeader.folder?.path,
+      subject: messageHeader.subject,
+      queueSize: _pendingUpdates.size,
+      wasRequeued: !!existing,
+    });
     
     // Schedule persistence (debounced)
     schedulePersist();
@@ -297,6 +315,13 @@ async function processPendingUpdates() {
   _isProcessing = true;
   log(`[TMDBG FTS] Processing ${_pendingUpdates.size} pending incremental updates`);
   
+  // Log processing cycle start
+  logFtsBatchOperation("process_cycle", "start", {
+    queueSize: _pendingUpdates.size,
+    batchSize: INCREMENTAL_BATCH_SIZE,
+    noProgressCycles: _consecutiveNoProgressCycles,
+  });
+  
   const updates = Array.from(_pendingUpdates.values())
     .sort((a, b) => a.timestamp - b.timestamp) // Process in chronological order
     .slice(0, INCREMENTAL_BATCH_SIZE); // Limit batch size
@@ -327,6 +352,13 @@ async function processPendingUpdates() {
       const removedCount = removeResult.count || 0;
       const missedCount = toDeleteUniqueKeys.length - removedCount;
       
+      // Log removeBatch result
+      logFtsBatchOperation("delete", "complete", {
+        total: toDeleteUniqueKeys.length,
+        removedCount,
+        missedCount,
+      });
+      
       if (missedCount > 0) {
         // Log missed deletions for debugging - these will be cleaned up by maintenance
         log(`[TMDBG FTS] Removed ${removedCount}/${toDeleteUniqueKeys.length} messages - ${missedCount} may have stale folder keys (maintenance will cleanup)`);
@@ -350,17 +382,35 @@ async function processPendingUpdates() {
             // Confirmed deleted or never existed - safe to dequeue
             processedKeys.add(key);
             verifiedDeletes++;
+            logFtsOperation("verify_delete", "success", {
+              uniqueKey: key,
+            });
           } else {
             // Still exists in FTS - deletion failed, keep in queue
             log(`[TMDBG FTS] DELETE VERIFY FAILED: ${key} still in FTS after removeBatch (will retry)`, "warn");
+            logFtsOperation("verify_delete", "failure", {
+              uniqueKey: key,
+              reason: "still_in_fts",
+            });
             deleteVerifyFailed++;
           }
         } catch (verifyErr) {
           // Verification error - assume deleted (most errors mean not found)
           processedKeys.add(key);
           verifiedDeletes++;
+          logFtsOperation("verify_delete", "success", {
+            uniqueKey: key,
+            note: "assumed_deleted_on_error",
+          });
         }
       }
+      
+      // Log delete verification summary
+      logFtsBatchOperation("verify_delete", "complete", {
+        total: toDeleteUniqueKeys.length,
+        successCount: verifiedDeletes,
+        failCount: deleteVerifyFailed,
+      });
       
       if (deleteVerifyFailed > 0) {
         log(`[TMDBG FTS] Delete verification: ${verifiedDeletes}/${toDeleteUniqueKeys.length} confirmed removed, ${deleteVerifyFailed} still present (retained in queue)`);
@@ -378,10 +428,17 @@ async function processPendingUpdates() {
       for (const update of toIndexUpdates) {
         try {
           // Parse uniqueKey: accountId:folderPath:headerMessageId
+          // NOTE: Queue is based on headerMessageId (stable), NOT weId (unstable)
+          // At processing time, we re-resolve to get the CURRENT weId
           const parsed = parseUniqueId(update.uniqueKey);
           if (!parsed) {
             // Unparseable key is a permanent failure - drop immediately
             log(`[TMDBG FTS] Failed to parse uniqueKey: ${update.uniqueKey} - dropping (unparseable)`, "warn");
+            logFtsOperation("resolve", "failure", {
+              uniqueKey: update.uniqueKey,
+              reason: "unparseable_key",
+              subject: update.metadata?.subject,
+            });
             processedKeys.add(update.uniqueKey);
             droppedCount++;
             continue;
@@ -389,32 +446,36 @@ async function processPendingUpdates() {
           
           const { weFolder, headerID } = parsed;
           
+          // Re-resolve headerMessageId -> current weId at processing time
+          // This handles weId instability during IMAP sync - if it fails, we retry
           let weID = null;
-          let resolveFailed = false;
           try {
             weID = await headerIDToWeID(headerID, weFolder, false);
           } catch (resolveError) {
-            log(`[TMDBG FTS] Error resolving uniqueKey ${update.uniqueKey}: ${resolveError}`, "warn");
-            resolveFailed = true;
+            log(`[TMDBG FTS] Error resolving headerID ${headerID}: ${resolveError}`, "warn");
           }
           
           if (!weID) {
-            resolveFailed = true;
-          }
-          
-          // Handle resolution failure - mark as failed, will be dropped when queue is stuck
-          if (resolveFailed) {
+            // Resolution failed - mark for retry (weId may stabilize on next attempt)
             _markResolveFailed(update);
-            log(`[TMDBG FTS] Failed to resolve uniqueKey: ${update.uniqueKey} - marked for retry`);
+            log(`[TMDBG FTS] Failed to resolve headerID to weId: ${headerID} - marked for retry`);
+            logFtsOperation("resolve", "failure", {
+              uniqueKey: update.uniqueKey,
+              headerMessageId: headerID,
+              reason: "headerID_to_weId_failed",
+              hasFailed: true,
+              subject: update.metadata?.subject,
+            });
             retriedCount++;
             continue;
           }
           
+          // Fetch current header using resolved weId
           let messageHeader = null;
           try {
             messageHeader = await browser.messages.get(weID);
           } catch (fetchError) {
-            log(`[TMDBG FTS] Error fetching message header for weID ${weID}: ${fetchError}`, "warn");
+            log(`[TMDBG FTS] Error fetching header for weID ${weID}: ${fetchError}`, "warn");
           }
           
           if (messageHeader) {
@@ -424,15 +485,37 @@ async function processPendingUpdates() {
               _pendingUpdates.set(update.uniqueKey, resetUpdate);
             }
             resolvedEntries.push({ update, messageHeader });
+            logFtsOperation("resolve", "success", {
+              uniqueKey: update.uniqueKey,
+              headerMessageId: headerID,
+              weId: weID,
+              currentFolder: messageHeader.folder?.path,
+              subject: messageHeader.subject,
+              wasRetried: update.hasFailed,
+            });
           } else {
-            // messages.get failed - mark as failed, will be dropped when queue is stuck
+            // Fetch failed - weId may have changed again, retry
             _markResolveFailed(update);
-            log(`[TMDBG FTS] Failed to fetch message header for weID ${weID} - marked for retry`);
+            log(`[TMDBG FTS] Failed to fetch header for weID ${weID} (may have changed) - marked for retry`);
+            logFtsOperation("resolve", "failure", {
+              uniqueKey: update.uniqueKey,
+              headerMessageId: headerID,
+              weId: weID,
+              reason: "fetch_header_failed",
+              hasFailed: true,
+              subject: update.metadata?.subject,
+            });
             retriedCount++;
           }
         } catch (e) {
           // General error - mark as failed, will be dropped when queue is stuck
           log(`[TMDBG FTS] Error resolving update ${update.uniqueKey}: ${e}`, "warn");
+          logFtsOperation("resolve", "failure", {
+            uniqueKey: update.uniqueKey,
+            reason: "exception",
+            error: String(e),
+            subject: update.metadata?.subject,
+          });
           _markResolveFailed(update);
           retriedCount++;
         }
@@ -442,6 +525,14 @@ async function processPendingUpdates() {
       if (retriedCount > 0 || droppedCount > 0) {
         log(`[TMDBG FTS] Resolution summary: ${resolvedEntries.length} resolved, ${retriedCount} marked for retry, ${droppedCount} dropped (unparseable)`);
       }
+      
+      // Log resolution batch summary
+      logFtsBatchOperation("resolve", "complete", {
+        total: toIndexUpdates.length,
+        successCount: resolvedEntries.length,
+        retryCount: retriedCount,
+        dropCount: droppedCount,
+      });
       
       if (resolvedEntries.length > 0) {
         // Step 1: Build header-only batch (no expensive body extraction)
@@ -467,6 +558,13 @@ async function processPendingUpdates() {
           const newMsgIds = filterResult.newMsgIds || [];
           const batchKeys = headerBatch.map(row => row.msgId);
           
+          // Log filterNewMessages results
+          logFtsBatchOperation("filter", "complete", {
+            total: headerBatch.length,
+            newCount: newMsgIds.length,
+            existingCount: headerBatch.length - newMsgIds.length,
+          });
+          
           // Messages reported as already indexed - VERIFY they actually exist in FTS
           // This catches cases where filterNewMessages incorrectly reports messages as indexed
           const alreadyIndexedKeys = batchKeys.filter(key => !newMsgIds.includes(key));
@@ -480,16 +578,31 @@ async function processPendingUpdates() {
                 // Actually exists in FTS - safe to dequeue
                 processedKeys.add(msgIdToQueuedKey.get(key) || key);
                 verifiedExisting++;
+                logFtsOperation("verify_existing", "success", {
+                  uniqueKey: msgIdToQueuedKey.get(key) || key,
+                  msgId: key,
+                });
               } else {
                 // filterNewMessages said it exists but it doesn't - need to index
                 // Add to newMsgIds for processing
                 log(`[TMDBG FTS] EXISTING VERIFY FAILED: ${key} not actually in FTS (filterNewMessages said it was)`, "warn");
+                logFtsOperation("verify_existing", "failure", {
+                  uniqueKey: msgIdToQueuedKey.get(key) || key,
+                  msgId: key,
+                  reason: "not_in_fts",
+                });
                 newMsgIds.push(key);
                 existingVerifyFailed++;
               }
             } catch (verifyErr) {
               // Verification error - be conservative, try to index it
               log(`[TMDBG FTS] EXISTING VERIFY ERROR for ${key}: ${verifyErr} (will try to index)`, "warn");
+              logFtsOperation("verify_existing", "failure", {
+                uniqueKey: msgIdToQueuedKey.get(key) || key,
+                msgId: key,
+                reason: "verify_error",
+                error: String(verifyErr),
+              });
               newMsgIds.push(key);
               existingVerifyFailed++;
             }
@@ -528,6 +641,13 @@ async function processPendingUpdates() {
               const result = await _ftsSearch.indexBatch(successfulRows);
               log(`[TMDBG FTS] Incrementally indexed ${result.count} new messages, ${headerBatch.length - newMsgIds.length} already up-to-date, ${failedMsgIds.length} failed`);
               
+              // Log indexBatch result
+              logFtsBatchOperation("index", "complete", {
+                indexedCount: result.count,
+                attemptedCount: successfulRows.length,
+                bodyFailCount: failedMsgIds.length,
+              });
+              
               // Step 7: VERIFY entries exist in FTS before marking as processed
               // This prevents dequeuing updates that didn't actually commit to FTS
               let verifiedCount = 0;
@@ -539,17 +659,39 @@ async function processPendingUpdates() {
                     // Verified - safe to dequeue
                     processedKeys.add(msgIdToQueuedKey.get(row.msgId) || row.msgId);
                     verifiedCount++;
+                    logFtsOperation("verify_indexed", "success", {
+                      uniqueKey: msgIdToQueuedKey.get(row.msgId) || row.msgId,
+                      msgId: row.msgId,
+                    });
                   } else {
                     // FTS entry not found or mismatched - keep in queue for retry
                     log(`[TMDBG FTS] VERIFY FAILED: message ${row.msgId} not found in FTS after indexBatch (will retry)`, "warn");
+                    logFtsOperation("verify_indexed", "failure", {
+                      uniqueKey: msgIdToQueuedKey.get(row.msgId) || row.msgId,
+                      msgId: row.msgId,
+                      reason: "not_in_fts_after_index",
+                    });
                     verifyFailedCount++;
                   }
                 } catch (verifyErr) {
                   // Verification query failed - assume not indexed, keep in queue
                   log(`[TMDBG FTS] VERIFY ERROR for ${row.msgId}: ${verifyErr} (will retry)`, "warn");
+                  logFtsOperation("verify_indexed", "failure", {
+                    uniqueKey: msgIdToQueuedKey.get(row.msgId) || row.msgId,
+                    msgId: row.msgId,
+                    reason: "verify_error",
+                    error: String(verifyErr),
+                  });
                   verifyFailedCount++;
                 }
               }
+              
+              // Log verification batch summary
+              logFtsBatchOperation("verify_indexed", "complete", {
+                total: successfulRows.length,
+                successCount: verifiedCount,
+                failCount: verifyFailedCount,
+              });
               
               if (verifyFailedCount > 0) {
                 log(`[TMDBG FTS] Verification: ${verifiedCount}/${successfulRows.length} confirmed in FTS, ${verifyFailedCount} failed (retained in queue)`);
@@ -558,6 +700,10 @@ async function processPendingUpdates() {
               }
             } else {
               log(`[TMDBG FTS] No successful incremental messages to index (all ${newFilteredBatch.length} failed)`);
+              logFtsBatchOperation("index", "skip", {
+                reason: "all_body_extraction_failed",
+                failCount: newFilteredBatch.length,
+              });
             }
           } else {
             log(`[TMDBG FTS] All ${headerBatch.length} incremental messages already indexed`);
@@ -590,9 +736,18 @@ async function processPendingUpdates() {
         // Timestamp matches - safe to delete, this is the entry we processed
         _pendingUpdates.delete(key);
         processedCount++;
+        logFtsOperation("dequeue", "success", {
+          uniqueKey: key,
+          subject: current.metadata?.subject,
+        });
       } else {
         // Entry was re-queued during processing - keep the newer entry
         log(`[TMDBG FTS] Keeping re-queued entry: ${key} (processed ts=${snapshotTs}, current ts=${current.timestamp}, delta=${current.timestamp - snapshotTs}ms)`);
+        logFtsOperation("dequeue", "skip", {
+          uniqueKey: key,
+          reason: "requeued_during_processing",
+          deltaMs: current.timestamp - snapshotTs,
+        });
         reQueuedCount++;
       }
     }
@@ -603,13 +758,30 @@ async function processPendingUpdates() {
       log(`[TMDBG FTS] Successfully processed ${processedCount} updates, ${_pendingUpdates.size} remaining`);
     }
     
+    // Log processing cycle end
+    logFtsBatchOperation("process_cycle", "complete", {
+      processedCount,
+      reQueuedCount,
+      remainingQueueSize: _pendingUpdates.size,
+    });
+    
     // Update queue stability tracking
     if (processedCount > 0) {
       // Made progress - reset the no-progress counter
       _resetNoProgressCounter();
+      logFtsOperation("queue_stability", "progress", {
+        resetNoProgressCounter: true,
+        processedCount,
+      });
     } else if (_pendingUpdates.size > 0) {
       // No progress but queue not empty - increment counter
       _incrementNoProgressCounter();
+      
+      logFtsOperation("queue_stability", "no_progress", {
+        noProgressCycles: _consecutiveNoProgressCycles,
+        maxNoProgress: _getRetryConfig().maxConsecutiveNoProgress,
+        queueSize: _pendingUpdates.size,
+      });
       
       // If queue is stuck, drop entries that have failed
       if (_shouldDropFailedUpdates()) {
@@ -620,6 +792,13 @@ async function processPendingUpdates() {
         for (const [key, entry] of _pendingUpdates.entries()) {
           if (entry.hasFailed) {
             log(`[TMDBG FTS] Dropping stuck entry: ${key}`, "warn");
+            logFtsOperation("drop", "stuck", {
+              uniqueKey: key,
+              headerMessageId: entry.metadata?.headerMessageId,
+              subject: entry.metadata?.subject,
+              reason: "queue_stuck",
+              noProgressCycles: _consecutiveNoProgressCycles,
+            });
             _pendingUpdates.delete(key);
             droppedStuckCount++;
           }
@@ -627,6 +806,10 @@ async function processPendingUpdates() {
         
         if (droppedStuckCount > 0) {
           log(`[TMDBG FTS] Dropped ${droppedStuckCount} stuck entries, ${_pendingUpdates.size} remaining`);
+          logFtsBatchOperation("drop_stuck", "complete", {
+            droppedCount: droppedStuckCount,
+            remainingQueueSize: _pendingUpdates.size,
+          });
           // Reset counter after cleanup so we don't immediately drop new entries
           _consecutiveNoProgressCycles = 0;
         }
@@ -637,6 +820,10 @@ async function processPendingUpdates() {
     hadError = true;
     log(`[TMDBG FTS] Incremental indexing failed: ${e}`, "error");
     log(`[TMDBG FTS] Updates retained in queue for retry: ${updates.length}`, "warn");
+    logFtsBatchOperation("process_cycle", "error", {
+      error: String(e),
+      retainedCount: updates.length,
+    });
     // Don't delete from map - will retry on next batch
     // Don't count as no-progress since we had an error (not a stable state)
   }
