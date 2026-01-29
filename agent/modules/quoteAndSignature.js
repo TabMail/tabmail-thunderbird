@@ -94,13 +94,15 @@
     {
       pattern: /^-{10,}\s*$/,
       type: "dash-separator",
-      comment: "Long dash line (72+ dashes) followed by From:/보낸 사람: etc — Outlook/Korean clients",
+      comment: "Long dash line (72+ dashes) followed by From:/보낸 사람:/发件人: etc — Outlook/Korean/Chinese clients",
       eatBlankLinesBefore: 1,
       lookahead: [
         /^\*?From\s*:\*?\s*/i,                    // English: From:
         /^\*?Sent\s*:\*?\s*/i,                    // English: Sent:
         /^\*?(보낸\s*사람|보낸\s*날짜)\s*:\*?\s*/i, // Korean: 보낸 사람: / 보낸 날짜:
         /^\*?(받는\s*사람|제목)\s*:\*?\s*/i,       // Korean: 받는 사람: / 제목:
+        /^\*?(发件人|日期)\s*:\*?\s*/,             // Chinese: 发件人: (From) / 日期: (Date)
+        /^\*?(收件人|主题)\s*:\*?\s*/,             // Chinese: 收件人: (To) / 主题: (Subject)
       ],
     },
 
@@ -117,6 +119,18 @@
       pattern: /^\*?(보낸\s*날짜)\s*:\*?\s*/i,
       type: "localized-sender",
       comment: "Korean bold date: *보낸 날짜:* (standalone)",
+      eatBlankLinesBefore: 0,
+    },
+    {
+      pattern: /^\*?发件人\s*:\*?\s*/,
+      type: "localized-sender",
+      comment: "Chinese sender: 发件人: (standalone, no preceding dash line)",
+      eatBlankLinesBefore: 0,
+    },
+    {
+      pattern: /^\*?日期\s*:\*?\s*/,
+      type: "localized-sender",
+      comment: "Chinese date: 日期: (standalone)",
       eatBlankLinesBefore: 0,
     },
 
