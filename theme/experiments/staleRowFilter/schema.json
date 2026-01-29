@@ -1,0 +1,22 @@
+[
+  {
+    "namespace": "staleRowFilter",
+    "description": "Filters stale rows from unified inbox (TB bug workaround). Hides rows with empty subject/correspondent and handles keyboard navigation to skip them.",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "description": "Initialize stale row detection and navigation filtering for existing and future 3-pane windows.",
+        "parameters": [],
+        "async": false
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "description": "Clean up listeners and unregister window listeners.",
+        "parameters": [],
+        "async": false
+      }
+    ]
+  }
+]

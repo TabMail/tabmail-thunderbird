@@ -21,6 +21,36 @@
   background-color: var(--tm-preview-pane-bg) !important;
 }
 
+/* ===== Stale Row Hiding (Unified Inbox Bug Workaround) =====
+ * TB has a bug where "stale" rows appear in unified inbox with:
+ * - Empty subject title
+ * - Empty correspondent title  
+ * - Date showing Unix epoch (12/31/69 in US timezones)
+ * 
+ * CSS hides these rows. staleRowFilter experiment marks them read, deletes them,
+ * and handles navigation (if selection lands on stale row → moves to previous).
+ * 
+ * Detection: empty subject AND empty correspondent (both must have title="")
+ */
+
+/* Hide stale rows in table view */
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]):has([data-column-name="subjectcol"][title=""]):has([data-column-name="correspondentcol"][title=""]),
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]):has([data-column-name="subjectcol"][title=""]):has([data-column-name="correspondentcol"][title=""]) {
+  display: none !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Hide stale rows in card view (if they appear there) */
+[is="thread-card"]:has([data-column-name="subjectcol"][title=""]):has([data-column-name="correspondentcol"][title=""]),
+tr[is="thread-card"]:has(.subject:empty):has(.sender:empty) {
+  display: none !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+}
+
 /* ===== Performance Optimizations ===== */
 
 /* Kill animations/transitions on rows */

@@ -159,6 +159,19 @@ async function initTheme() {
         console.error("[TabMail Theme] tmMessageListTableView.init failed:", eTableView);
     }
 
+    // (4d) Stale row filter experiment (unified inbox bug workaround)
+    try {
+        if (browser.staleRowFilter?.init) {
+            console.log("[TabMail Theme] → Calling browser.staleRowFilter.init()...");
+            await browser.staleRowFilter.init();
+            console.log("[TabMail Theme] ✓ staleRowFilter initialised");
+        } else {
+            console.warn("[TabMail Theme] staleRowFilter experiment NOT available – stale row filtering disabled.");
+        }
+    } catch (eStaleRow) {
+        console.error("[TabMail Theme] staleRowFilter.init failed:", eStaleRow);
+    }
+
     console.log(`[TabMail Theme] initTheme() complete after ${Date.now() - t0}ms`);
 }
 
@@ -514,8 +527,12 @@ browser.runtime.onSuspend?.addListener(async () => {
             await browser.tmPreviewGate.shutdown();
             console.log("[TabMail PreviewGate] ✓ tmPreviewGate.shutdown() called on suspend");
         }
+        if (browser.staleRowFilter?.shutdown) {
+            await browser.staleRowFilter.shutdown();
+            console.log("[TabMail StaleRowFilter] ✓ staleRowFilter.shutdown() called on suspend");
+        }
     } catch (e) {
-        console.error("[TabMail Theme] tmTheme.shutdown on suspend failed:", e);
+        console.error("[TabMail Theme] experiment shutdown on suspend failed:", e);
     }
     
     // Reset content script registration flags so scripts can be re-registered after reload
