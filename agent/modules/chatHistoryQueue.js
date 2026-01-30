@@ -33,6 +33,8 @@ const CONFIG_KEY = "chat_history_queue_config";
 const DEFAULT_CONFIG = {
     maxQueueSize: 100, // Keep up to N chat sessions
     maxAgeDays: 30, // Prune sessions older than N days
+    // Recent chat history limit for prompt inclusion
+    maxRecentChatChars: 20000, // Max characters of recent chat history to send to backend
 };
 
 /**
@@ -234,19 +236,27 @@ export async function markAllAsRemembered() {
 
 /**
  * Get formatted recent chat history for inclusion in system prompt
- * Only returns the most recent N sessions that are NOT marked as remembered
+ * Applies limits:
+ * - Max N sessions (from user config)
+ * - Max total characters (from DEFAULT_CONFIG.maxRecentChatChars)
+ * Backend further trims to recentChatHistoryContextRatio (5%) of context.
+ * 
+ * Format: older sessions at TOP, recent at BOTTOM
+ * When trimming, we trim from TOP (older) to keep recent context.
+ * 
  * @param {number} maxSessions - Maximum number of sessions to include (default from config)
  */
 export async function getRecentChatHistoryForPrompt(maxSessions = null) {
+    const config = await getConfig();
     const queue = await loadChatHistoryQueue();
     
-    // Get limit from config if not provided
+    // Get limit from user config if not provided
     if (maxSessions === null) {
         try {
             const key = "user_prompts:kb_config";
             const obj = await browser.storage.local.get(key);
-            const config = obj[key] || {};
-            maxSessions = config.recent_chats_as_context ?? 10;
+            const kbConfig = obj[key] || {};
+            maxSessions = kbConfig.recent_chats_as_context ?? 10;
         } catch (e) {
             maxSessions = 10; // Default fallback
         }
@@ -258,22 +268,22 @@ export async function getRecentChatHistoryForPrompt(maxSessions = null) {
         return "";
     }
     
-    // Include ALL recent sessions (both remembered and unremembered) within limit
-    // Sort by timestamp (most recent first), take limit
+    // Sort by timestamp (most recent first), take session limit, then reverse for oldest-first order
     const recentSessions = queue
         .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, maxSessions);
+        .slice(0, maxSessions)
+        .reverse(); // Now oldest is first (top), recent is last (bottom)
     
     if (recentSessions.length === 0) {
+        log(`[ChatHistoryQueue] No recent sessions available`);
         return "";
     }
 
-    log(`[ChatHistoryQueue] Including ${recentSessions.length} recent sessions as context (max=${maxSessions})`);
+    log(`[ChatHistoryQueue] Found ${recentSessions.length} sessions (max=${maxSessions})`);
 
+    // Build all session texts first (oldest at top, recent at bottom)
     const parts = [];
-    
-    // Reverse to show oldest first in the context
-    for (const session of recentSessions.reverse()) {
+    for (const session of recentSessions) {
         const sessionDate = new Date(session.timestamp);
         const dateStr = sessionDate.toLocaleDateString("en-US", {
             month: "short",
@@ -302,8 +312,18 @@ export async function getRecentChatHistoryForPrompt(maxSessions = null) {
         }
     }
 
-    // Sanitize the entire output to ensure valid UTF-8 for JSON serialization
-    return sanitizeForJson(parts.join("\n\n"));
+    // Join all parts
+    let result = sanitizeForJson(parts.join("\n\n"));
+    
+    // Trim from TOP (older sessions) if over limit, keeping recent (bottom)
+    const maxChars = config.maxRecentChatChars || DEFAULT_CONFIG.maxRecentChatChars;
+    if (result.length > maxChars) {
+        log(`[ChatHistoryQueue] Trimming from ${result.length} to ${maxChars} chars (keeping recent)`);
+        result = "...(earlier sessions truncated)...\n\n" + result.slice(-maxChars);
+    }
+    
+    log(`[ChatHistoryQueue] Returning ${parts.length} sessions, ${result.length} chars (limit: ${maxChars})`);
+    return result;
 }
 
 /**
