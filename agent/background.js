@@ -19,20 +19,20 @@ import { purgeExpiredReplyEntries } from "./modules/replyGenerator.js";
 import { purgeExpiredSummaryEntries } from "./modules/summaryGenerator.js";
 // Reminder generation is now integrated into messageProcessor.js
 import {
-    cleanupEventLogger,
-    initEventLogger,
-    logMessageEvent,
-    logMessageEventBatch,
-    logMoveEvent,
+  cleanupEventLogger,
+  initEventLogger,
+  logMessageEvent,
+  logMessageEventBatch,
+  logMoveEvent,
 } from "./modules/eventLogger.js";
 import { enforceMailSyncPrefs } from "./modules/startupPrefs.js";
 import { initSummaryFeatures, refreshCurrentMessageSummary, signalBubbleReady } from "./modules/summary.js";
 import { registerTabKeyHandlers } from "./modules/tagActionKey.js";
 import {
-    attachTagByThreadListener,
-    attachThreadTagWatchers,
-    cleanupTagByThreadListener,
-    cleanupThreadTagWatchers,
+  attachTagByThreadListener,
+  attachThreadTagWatchers,
+  cleanupTagByThreadListener,
+  cleanupThreadTagWatchers,
 } from "./modules/tagHelper.js";
 import { attachThreadTooltipHandlers } from "./modules/threadTooltip.js";
 import { log } from "./modules/utils.js";
@@ -234,12 +234,12 @@ function setupRuntimeMessageListener() {
                 const { getEventLog, getEventSummary, exportEventLog } = await import("./modules/eventLogger.js");
                 const options = message.options || {};
                 if (options.export) {
-                    return { ok: true, ...exportEventLog() };
+                    return { ok: true, ...(await exportEventLog()) };
                 }
                 if (options.summary) {
-                    return { ok: true, ...getEventSummary(options.sinceMins || 60) };
+                    return { ok: true, ...(await getEventSummary(options.sinceMins || 60)) };
                 }
-                const events = getEventLog(options);
+                const events = await getEventLog(options);
                 return { ok: true, events, count: events.length };
             } catch (e) {
                 log(`Error getting event log: ${e}`, "error");
@@ -254,7 +254,7 @@ function setupRuntimeMessageListener() {
         return (async () => {
             try {
                 const { findEventsByHeaderId } = await import("./modules/eventLogger.js");
-                const events = findEventsByHeaderId(headerMessageId);
+                const events = await findEventsByHeaderId(headerMessageId);
                 return { ok: true, events, count: events.length };
             } catch (e) {
                 log(`Error finding events: ${e}`, "error");

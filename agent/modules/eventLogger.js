@@ -15,9 +15,9 @@
 import { SETTINGS } from "./config.js";
 
 const EVENT_LOG_STORAGE_KEY = "debug_event_log";
-const MAX_EVENT_LOG_ENTRIES = 500; // Ring buffer size
+const MAX_EVENT_LOG_ENTRIES = 500000; // Ring buffer size (500k max)
 
-let _eventLog = []; // In-memory buffer
+let _sessionBuffer = []; // In-memory buffer for NEW events this session only (not full history)
 let _persistTimer = null;
 let _inited = false;
 let _debugMode = false; // Cached debug mode state
@@ -55,17 +55,10 @@ export async function initEventLogger() {
         const debugStored = await browser.storage.local.get({ debugMode: false });
         _debugMode = !!debugStored.debugMode;
         
-        // Only restore event log if debug mode is enabled
-        if (_debugMode) {
-            const stored = await browser.storage.local.get(EVENT_LOG_STORAGE_KEY);
-            const arr = stored?.[EVENT_LOG_STORAGE_KEY] || [];
-            if (Array.isArray(arr)) {
-                _eventLog = arr;
-                console.log(`[EventLogger] Debug mode ON - restored ${_eventLog.length} events from storage`);
-            }
-        } else {
-            console.log(`[EventLogger] Debug mode OFF - event logging disabled`);
-        }
+        // Don't load full history into memory - we use append-only approach
+        // Session buffer starts empty, gets appended to storage on persist
+        _sessionBuffer = [];
+        console.log(`[EventLogger] Initialized (append-only mode, no memory preload)`);
         
         // Listen for debug mode changes
         _storageChangeListener = (changes, area) => {
@@ -74,11 +67,6 @@ export async function initEventLogger() {
                 if (newValue !== _debugMode) {
                     _debugMode = newValue;
                     console.log(`[EventLogger] Debug mode changed to ${_debugMode ? "ON" : "OFF"}`);
-                    
-                    // If debug mode turned off, clear the in-memory log to save memory
-                    if (!_debugMode) {
-                        _eventLog = [];
-                    }
                 }
             }
         };
@@ -90,16 +78,34 @@ export async function initEventLogger() {
 }
 
 /**
- * Persist the event log to storage
+ * Persist the session buffer to storage (append-only approach)
+ * Reads existing entries, appends new ones, trims to max, saves back
  */
 async function _persistNow() {
+    if (_sessionBuffer.length === 0) return;
+    
     try {
-        // Trim to max size before persisting
-        if (_eventLog.length > MAX_EVENT_LOG_ENTRIES) {
-            _eventLog = _eventLog.slice(-MAX_EVENT_LOG_ENTRIES);
-        }
-        await browser.storage.local.set({ [EVENT_LOG_STORAGE_KEY]: _eventLog });
-        console.log(`[EventLogger] Persisted ${_eventLog.length} events`);
+        // Read existing from storage
+        const stored = await browser.storage.local.get(EVENT_LOG_STORAGE_KEY);
+        let existing = stored?.[EVENT_LOG_STORAGE_KEY] || [];
+        if (!Array.isArray(existing)) existing = [];
+        
+        // Append new session events
+        const combined = [...existing, ..._sessionBuffer];
+        
+        // Trim to max size (keep most recent)
+        const trimmed = combined.length > MAX_EVENT_LOG_ENTRIES
+            ? combined.slice(-MAX_EVENT_LOG_ENTRIES)
+            : combined;
+        
+        // Save back to storage
+        await browser.storage.local.set({ [EVENT_LOG_STORAGE_KEY]: trimmed });
+        
+        const newCount = _sessionBuffer.length;
+        // Clear session buffer after successful persist
+        _sessionBuffer = [];
+        
+        console.log(`[EventLogger] Appended ${newCount} events (total: ${trimmed.length})`);
     } catch (e) {
         console.error(`[EventLogger] Failed to persist: ${e}`);
     }
@@ -139,7 +145,7 @@ export function logMessageEvent(eventType, source, details) {
         ...details,
     };
 
-    _eventLog.push(entry);
+    _sessionBuffer.push(entry);
 
     // Log to console immediately for debugging
     console.log(`[EventLogger] ${isoTime} | ${eventType} | ${source} | ${JSON.stringify(details)}`);
@@ -177,7 +183,7 @@ export function logMessageEventBatch(eventType, source, folder, messages) {
             messageCount: messages.length,
         };
 
-        _eventLog.push(entry);
+        _sessionBuffer.push(entry);
 
         console.log(`[EventLogger] ${isoTime} | ${eventType} | ${source} | folder=${entry.folderPath} | headerMsgId=${entry.headerMessageId} | subject="${entry.subject}"`);
     }
@@ -213,12 +219,27 @@ export function logMoveEvent(eventType, source, originalFolder, messages, destin
             messageCount: messages.length,
         };
 
-        _eventLog.push(entry);
+        _sessionBuffer.push(entry);
 
         console.log(`[EventLogger] ${isoTime} | ${eventType} | ${source} | from=${entry.originalFolderPath} to=${entry.destinationFolderPath} | headerMsgId=${entry.headerMessageId} | subject="${entry.subject}"`);
     }
 
     _schedulePersist();
+}
+
+/**
+ * Get all events from storage (reads from disk, not memory)
+ */
+async function _getAllEventsFromStorage() {
+    try {
+        const stored = await browser.storage.local.get(EVENT_LOG_STORAGE_KEY);
+        const arr = stored?.[EVENT_LOG_STORAGE_KEY] || [];
+        // Combine with any pending session buffer entries
+        return Array.isArray(arr) ? [...arr, ..._sessionBuffer] : [..._sessionBuffer];
+    } catch (e) {
+        console.error(`[EventLogger] Failed to read from storage: ${e}`);
+        return [..._sessionBuffer];
+    }
 }
 
 /**
@@ -228,10 +249,10 @@ export function logMoveEvent(eventType, source, originalFolder, messages, destin
  * @param {number} options.since - Only return events after this timestamp
  * @param {string} options.eventType - Filter by event type
  * @param {number} options.limit - Max number of events to return (default: 100)
- * @returns {Array} Event log entries
+ * @returns {Promise<Array>} Event log entries
  */
-export function getEventLog(options = {}) {
-    let result = [..._eventLog];
+export async function getEventLog(options = {}) {
+    let result = await _getAllEventsFromStorage();
 
     if (options.since) {
         result = result.filter(e => e.ts >= options.since);
@@ -251,9 +272,10 @@ export function getEventLog(options = {}) {
 /**
  * Get event summary statistics for debugging
  */
-export function getEventSummary(sinceMins = 60) {
+export async function getEventSummary(sinceMins = 60) {
+    const allEvents = await _getAllEventsFromStorage();
     const sinceTs = Date.now() - (sinceMins * 60 * 1000);
-    const recentEvents = _eventLog.filter(e => e.ts >= sinceTs);
+    const recentEvents = allEvents.filter(e => e.ts >= sinceTs);
 
     const counts = {};
     for (const e of recentEvents) {
@@ -273,8 +295,9 @@ export function getEventSummary(sinceMins = 60) {
 /**
  * Search for a specific headerMessageId in the event log
  */
-export function findEventsByHeaderId(headerMessageId) {
-    return _eventLog.filter(e => 
+export async function findEventsByHeaderId(headerMessageId) {
+    const allEvents = await _getAllEventsFromStorage();
+    return allEvents.filter(e => 
         e.headerMessageId === headerMessageId || 
         (e.headerMessageId && headerMessageId && e.headerMessageId.includes(headerMessageId))
     ).sort((a, b) => b.ts - a.ts);
@@ -284,7 +307,7 @@ export function findEventsByHeaderId(headerMessageId) {
  * Clear the event log (for testing/debugging)
  */
 export async function clearEventLog() {
-    _eventLog = [];
+    _sessionBuffer = [];
     try {
         await browser.storage.local.remove(EVENT_LOG_STORAGE_KEY);
         console.log("[EventLogger] Event log cleared");
@@ -312,8 +335,8 @@ export async function cleanupEventLogger() {
         _storageChangeListener = null;
     }
 
-    // Persist any pending events before cleanup (only if debug mode was on)
-    if (_debugMode && _eventLog.length > 0) {
+    // Persist any pending session buffer events
+    if (_sessionBuffer.length > 0) {
         await _persistNow();
     }
 
@@ -325,12 +348,13 @@ export async function cleanupEventLogger() {
  * Export the entire event log for external inspection
  * (e.g., for correlating with scan results)
  */
-export function exportEventLog() {
+export async function exportEventLog() {
+    const allEvents = await _getAllEventsFromStorage();
     return {
         exportedAt: new Date().toISOString(),
-        totalEvents: _eventLog.length,
+        totalEvents: allEvents.length,
         maxEntries: MAX_EVENT_LOG_ENTRIES,
-        events: [..._eventLog].sort((a, b) => b.ts - a.ts),
+        events: allEvents.sort((a, b) => b.ts - a.ts),
     };
 }
 
@@ -359,7 +383,7 @@ export function logFtsOperation(operation, status, details = {}) {
         ...details,
     };
 
-    _eventLog.push(entry);
+    _sessionBuffer.push(entry);
 
     // Build a concise log line
     const headerMsgIdPart = details.headerMessageId ? ` | headerMsgId=${details.headerMessageId}` : "";
@@ -392,7 +416,7 @@ export function logFtsBatchOperation(operation, status, details = {}) {
         ...details,
     };
 
-    _eventLog.push(entry);
+    _sessionBuffer.push(entry);
 
     const totalPart = details.total !== undefined ? ` | total=${details.total}` : "";
     const successPart = details.successCount !== undefined ? ` | success=${details.successCount}` : "";
