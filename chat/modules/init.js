@@ -27,6 +27,8 @@ import {
   turnsToLLMMessages,
   migrateFromSessions,
   generateTurnId,
+  enforceBudget,
+  getMaxExchanges,
 } from "./persistentChatStore.js";
 import {
   initIdTranslation,
@@ -34,6 +36,7 @@ import {
   collectTurnRefs,
   registerTurnRefs,
   unregisterTurnRefs,
+  cleanupEvictedIds,
   buildRefCounts,
 } from "./idTranslator.js";
 
@@ -174,12 +177,22 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
     saveMeta(meta);
   }
 
+  // Enforce budget on load (handles user lowering max_chat_exchanges since last open)
+  const maxExchanges = await getMaxExchanges();
+  const evictedOnLoad = enforceBudget(persistedTurns, meta, maxExchanges);
+  if (evictedOnLoad.length > 0) {
+    log(`[TMDBG Init] Budget enforcement on load evicted ${evictedOnLoad.length} turns (maxExchanges=${maxExchanges})`);
+    cleanupEvictedIds(evictedOnLoad);
+    saveTurns(persistedTurns);
+    saveMeta(meta);
+  }
+
   // Build agentConverseMessages: system prompt + all persisted turns
   ctx.agentConverseMessages = [systemMessage, ...turnsToLLMMessages(persistedTurns)];
   ctx.greetedUser = true;
 
   // Lazy render: render bottom (viewport) first, then older turns above
-  const chatContainer = document.getElementById("chat-messages");
+  const chatContainer = document.getElementById("chat-container");
   const totalTurns = persistedTurns.length;
   const splitIdx = Math.max(0, totalTurns - LAZY_RENDER_VIEWPORT_TURNS);
 
@@ -462,7 +475,7 @@ async function _insertNudge(meta, text, type) {
   try {
     log(`[TMDBG Init] Inserting ${type} nudge (idle ${Math.round((Date.now() - meta.lastActivityTs) / 60000)} min)`);
 
-    const chatContainer = document.getElementById("chat-messages");
+    const chatContainer = document.getElementById("chat-container");
 
     // Remove previous in-session nudge if one exists (e.g. repeated tab refocus)
     if (_currentNudgeDOMRow) {
@@ -655,7 +668,7 @@ export async function checkAndInsertWelcomeBack() {
 }
 
 function _renderSeparator(text) {
-  const chatContainer = document.getElementById("chat-messages");
+  const chatContainer = document.getElementById("chat-container");
   if (!chatContainer) return;
   const sep = document.createElement("div");
   sep.className = "topic-separator";

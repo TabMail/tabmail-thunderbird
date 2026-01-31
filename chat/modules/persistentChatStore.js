@@ -98,7 +98,7 @@ export async function appendTurn(turn, turns, meta) {
   meta.totalChars = (meta.totalChars || 0) + (turn._chars || 0);
 
   // Load user's max exchanges setting
-  const maxExchanges = await _getMaxExchanges();
+  const maxExchanges = await getMaxExchanges();
   const evictedTurns = enforceBudget(turns, meta, maxExchanges);
 
   // Debounced save
@@ -174,7 +174,7 @@ function _isProtected(idx, lastWelcomeIdx, turns) {
   return idx >= currentLastWelcome;
 }
 
-async function _getMaxExchanges() {
+export async function getMaxExchanges() {
   try {
     const key = "user_prompts:kb_config";
     const obj = await browser.storage.local.get(key);
