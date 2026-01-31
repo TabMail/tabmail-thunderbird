@@ -1347,11 +1347,11 @@ select {
 .history-pre-welcome {
     opacity: 0.55 !important;
     filter: grayscale(20%);
-    transition: opacity 0.3s ease, filter 0.3s ease;
 }
 .history-pre-welcome:hover {
     opacity: 0.85 !important;
     filter: grayscale(0%);
+    transition: opacity 0.3s ease, filter 0.3s ease;
 }
 
 /* Truncation indicator at top of chat */
