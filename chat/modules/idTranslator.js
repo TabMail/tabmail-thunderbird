@@ -1,9 +1,16 @@
 // idTranslator.js – Simplified ID translation layer for TabMail
 // Maps complex Thunderbird IDs to simple numeric IDs for LLM interaction
 // Uses ctx.idTranslation for session persistence
+// Supports persistent idMap across window opens (infinite chat)
 
 import { log } from "../../agent/modules/utils.js";
 import { ctx } from "./context.js";
+import { loadIdMap, saveIdMap, saveIdMapImmediate } from "./persistentChatStore.js";
+
+// Collector for per-turn ref bookkeeping. When non-null, toRealId records every
+// numeric ID it resolves. Only active during collectTurnRefs() calls in the main
+// chat window — headless sessions never set this.
+let _activeRefsCollector = null;
 
 // Resolve translation context: use provided override or fall back to global ctx.
 // Headless sessions pass an isolated context to avoid cross-session contamination.
@@ -19,7 +26,51 @@ export function createIsolatedContext() {
     idMap: new Map(),
     nextNumericId: 1,
     lastAccessed: Date.now(),
+    freeIds: [],
   };
+}
+
+/**
+ * Initialize idTranslation from persistent storage.
+ * Called on chat window open to restore the idMap from the previous session.
+ */
+export async function initIdTranslation() {
+  try {
+    const persisted = await loadIdMap();
+    const idTranslation = ctx.idTranslation;
+
+    // Restore map entries
+    idTranslation.idMap.clear();
+    for (const [numericId, realId] of persisted.entries) {
+      if (typeof numericId === "number" && typeof realId === "string") {
+        idTranslation.idMap.set(numericId, realId);
+      }
+    }
+    idTranslation.nextNumericId = persisted.nextNumericId || 1;
+    idTranslation.freeIds = Array.isArray(persisted.freeIds) ? [...persisted.freeIds] : [];
+    idTranslation.refCounts = new Map(persisted.refCounts || []);
+    idTranslation.lastAccessed = Date.now();
+
+    log(`[TMDBG IDTranslator] initIdTranslation: restored ${idTranslation.idMap.size} entries, nextId=${idTranslation.nextNumericId}, freeIds=${idTranslation.freeIds.length}, refCounts=${idTranslation.refCounts.size}`);
+  } catch (e) {
+    log(`[TMDBG IDTranslator] initIdTranslation failed: ${e}`, "error");
+  }
+}
+
+/**
+ * Persist current idMap to storage (debounced).
+ */
+export function persistIdMap() {
+  const idTranslation = ctx.idTranslation;
+  saveIdMap(idTranslation.idMap, idTranslation.nextNumericId, idTranslation.freeIds || [], idTranslation.refCounts);
+}
+
+/**
+ * Force-persist idMap immediately (for beforeunload).
+ */
+export async function persistIdMapImmediate() {
+  const idTranslation = ctx.idTranslation;
+  await saveIdMapImmediate(idTranslation.idMap, idTranslation.nextNumericId, idTranslation.freeIds || [], idTranslation.refCounts);
 }
 
 // Convert real Thunderbird ID to numeric ID for LLM consumption
@@ -45,11 +96,24 @@ export function toNumericId(realId, overrideCtx) {
     }
   }
 
-  // Create new mapping
-  const numericId = idTranslation.nextNumericId++;
+  // Create new mapping — check freeIds first, then use nextNumericId
+  let numericId;
+  const freeIds = idTranslation.freeIds || [];
+  if (freeIds.length > 0) {
+    numericId = freeIds.pop();
+    log(`[Translate] Reused free ID ${numericId} for: ${realId}`);
+  } else {
+    numericId = idTranslation.nextNumericId++;
+  }
   idTranslation.idMap.set(numericId, realId);
   idTranslation.lastAccessed = Date.now();
   log(`[Translate] Real->Numeric: ${realId} -> ${numericId}`);
+
+  // Persist idMap (debounced) — only for the main chat context, not overrides
+  if (!overrideCtx) {
+    persistIdMap();
+  }
+
   return numericId;
 }
 
@@ -65,6 +129,9 @@ export function toRealId(numericId, overrideCtx) {
     log(`[TMDBG IDTranslator] Invalid numericId: ${numericId}`, "warn");
     return null;
   }
+
+  // Record this ID if a ref collector is active (per-turn bookkeeping)
+  if (_activeRefsCollector) _activeRefsCollector.add(numericIdNum);
 
   const idTranslation = _resolveCtx(overrideCtx);
   const realId = idTranslation.idMap.get(numericIdNum);
@@ -781,6 +848,158 @@ export function getTranslationStats() {
             realId.includes('_') && realId.includes('@') ? 'event' : 'unknown'
     }))
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-turn ID reference bookkeeping
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect all numeric IDs referenced in a turn by running its content through
+ * the LLM-to-TB translation pipeline. This uses toRealId as the chokepoint —
+ * every pattern (standard, exception, loose) funnels through it, so we capture
+ * all IDs without duplicating regex logic.
+ *
+ * @param {object} turn - A persisted turn object
+ * @returns {number[]} Array of unique numeric IDs referenced in this turn
+ */
+export function collectTurnRefs(turn) {
+  const collector = new Set();
+  _activeRefsCollector = collector;
+  try {
+    // Process assistant content through the full LLM->TB pipeline
+    if (turn.content && turn.content !== "chat_converse") {
+      processStringLLMtoTB(turn.content);
+    }
+    // Also process user_message (user turns may contain [Email](N) references)
+    if (turn.user_message) {
+      processStringLLMtoTB(turn.user_message);
+    }
+  } finally {
+    _activeRefsCollector = null;
+  }
+  return Array.from(collector);
+}
+
+/**
+ * Register a turn's refs in the global refCounts map. Call after creating a
+ * turn and populating its _refs. Debounced persist.
+ *
+ * @param {object} turn - Turn with _refs populated
+ */
+export function registerTurnRefs(turn) {
+  if (!turn._refs || turn._refs.length === 0) return;
+  const refCounts = ctx.idTranslation.refCounts;
+  for (const id of turn._refs) {
+    refCounts.set(id, (refCounts.get(id) || 0) + 1);
+  }
+  persistIdMap();
+}
+
+/**
+ * Internal: decrement refCounts for a turn's refs, freeing IDs that drop to 0.
+ * Does NOT persist — caller is responsible for batching and calling persistIdMap().
+ *
+ * @param {object} turn - Turn with _refs populated
+ * @returns {number} Count of IDs freed (removed from idMap, added to freeIds)
+ */
+function _unregisterRefsInternal(turn) {
+  if (!turn._refs || turn._refs.length === 0) return 0;
+  const idTranslation = ctx.idTranslation;
+  const refCounts = idTranslation.refCounts;
+  if (!idTranslation.freeIds) idTranslation.freeIds = [];
+  let freedCount = 0;
+  for (const id of turn._refs) {
+    const current = refCounts.get(id) || 0;
+    if (current <= 1) {
+      refCounts.delete(id);
+      // Free this ID: remove from idMap, add to freeIds pool
+      if (idTranslation.idMap.has(id)) {
+        idTranslation.idMap.delete(id);
+        idTranslation.freeIds.push(id);
+        freedCount++;
+      }
+    } else {
+      refCounts.set(id, current - 1);
+    }
+  }
+  return freedCount;
+}
+
+/**
+ * Unregister a single turn's refs and persist. Use for one-off removals
+ * (e.g. retryLastMessage popping a turn, nudge removal).
+ *
+ * @param {object} turn - Turn with _refs populated
+ */
+export function unregisterTurnRefs(turn) {
+  const freedCount = _unregisterRefsInternal(turn);
+  if (freedCount > 0 || (turn._refs && turn._refs.length > 0)) {
+    persistIdMap();
+  }
+}
+
+/**
+ * One-time migration helper: build refCounts from all turns' _refs arrays.
+ * Also sweeps orphan IDs (in idMap but not referenced by any turn).
+ * Persists the result immediately.
+ *
+ * @param {object[]} turns - All persisted turns (must have _refs populated)
+ */
+export function buildRefCounts(turns) {
+  const idTranslation = ctx.idTranslation;
+  const refCounts = new Map();
+
+  // Build counts from all turns
+  for (const turn of turns) {
+    if (!turn._refs) continue;
+    for (const id of turn._refs) {
+      refCounts.set(id, (refCounts.get(id) || 0) + 1);
+    }
+  }
+
+  // Sweep orphan IDs: in idMap but not referenced by any turn
+  if (!idTranslation.freeIds) idTranslation.freeIds = [];
+  let orphanCount = 0;
+  for (const [numericId] of idTranslation.idMap.entries()) {
+    if (!refCounts.has(numericId)) {
+      idTranslation.idMap.delete(numericId);
+      idTranslation.freeIds.push(numericId);
+      orphanCount++;
+    }
+  }
+
+  idTranslation.refCounts = refCounts;
+  log(`[TMDBG IDTranslator] buildRefCounts: ${refCounts.size} IDs referenced, ${orphanCount} orphans freed`);
+  persistIdMap();
+}
+
+/**
+ * Clean up idMap entries for evicted turns.
+ * Uses per-turn _refs metadata and refCounts for O(k) cleanup where k = refs in evicted turns.
+ *
+ * @param {object[]} evictedTurns - Turns that were just evicted (must have _refs)
+ */
+export function cleanupEvictedIds(evictedTurns) {
+  try {
+    if (!evictedTurns || evictedTurns.length === 0) return;
+
+    // Batch unregister all evicted turns' refs (no per-turn persist)
+    let totalFreed = 0;
+    for (const turn of evictedTurns) {
+      totalFreed += _unregisterRefsInternal(turn);
+    }
+
+    if (totalFreed > 0) {
+      const idTranslation = ctx.idTranslation;
+      log(`[TMDBG IDTranslator] cleanupEvictedIds: freed ${totalFreed} IDs from ${evictedTurns.length} evicted turns, freeIds pool now ${idTranslation.freeIds.length}`);
+    }
+
+    // Single persist for the whole batch
+    persistIdMap();
+  } catch (e) {
+    log(`[TMDBG IDTranslator] cleanupEvictedIds error: ${e}`, "error");
+  }
 }
 
 // Remap any numeric IDs that currently point to oldRealId so they point to newRealId

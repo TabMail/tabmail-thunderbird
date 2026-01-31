@@ -11,6 +11,14 @@ import {
     formatTimestampForAgent,
     streamText
 } from "./helpers.js";
+import {
+  appendTurn,
+  generateTurnId,
+  saveTurns,
+  saveMeta,
+} from "./persistentChatStore.js";
+import { cleanupEvictedIds, collectTurnRefs, registerTurnRefs, unregisterTurnRefs } from "./idTranslator.js";
+import { consumePendingNudge } from "./init.js";
 import { getPrivacyOptOutAllAiEnabled, PRIVACY_OPT_OUT_ERROR_MESSAGE } from "./privacySettings.js";
 import { finalizeToolGroup, isToolCollapseEnabled } from "./toolCollapse.js";
 
@@ -91,6 +99,25 @@ export async function retryLastMessage() {
           break; // Don't remove assistant messages
         }
       }
+    }
+
+    // Remove last persisted user turn (system error turns are not persisted)
+    try {
+      if (ctx.persistedTurns?.length > 0) {
+        const lastTurn = ctx.persistedTurns[ctx.persistedTurns.length - 1];
+        if (lastTurn.role === "user") {
+          unregisterTurnRefs(lastTurn);
+          ctx.persistedTurns.pop();
+          if (ctx.chatMeta) {
+            ctx.chatMeta.totalChars -= lastTurn._chars || 0;
+          }
+          saveTurns(ctx.persistedTurns);
+          saveMeta(ctx.chatMeta);
+          log(`[TMDBG Converse] Removed last persisted user turn for retry`);
+        }
+      }
+    } catch (e) {
+      log(`[TMDBG Converse] Failed to cleanup persisted turns for retry: ${e}`, "warn");
     }
 
     // Clear retry state before re-sending
@@ -226,25 +253,68 @@ export async function agentConverse(userText) {
     }
 
     const latestUser = userText;
-    
+
     // DISABLED: selectedMessageIds prompt injection
     // We now use @ mention UI where user explicitly references emails as [Email](id)
     // The email mentions are part of the user message text itself
-    
+
     log(
       `[TMDBG MessageSelection] Using @ mention system - no selectedMessageIds sent to backend`
     );
 
+    const timeStamp = formatTimestampForAgent();
     messages.push({
       role: "user",
       content: "chat_converse",
-      time_stamp: formatTimestampForAgent(),
+      time_stamp: timeStamp,
       user_message: latestUser,
     });
-    
+
     log(
       `[TMDBG Converse] Appended latest user message to message list (using @ mention system)`
     );
+
+    // Persist pending nudge first (if any). Nudges are only persisted once the user
+    // sends a message after them — at that point they're no longer trailing.
+    try {
+      const pendingNudge = consumePendingNudge();
+      if (pendingNudge && ctx.persistedTurns && ctx.chatMeta) {
+        pendingNudge._refs = collectTurnRefs(pendingNudge);
+        registerTurnRefs(pendingNudge);
+        await appendTurn(pendingNudge, ctx.persistedTurns, ctx.chatMeta);
+        log(`[CONVERSE] Persisted pending ${pendingNudge._type} nudge before user message`);
+      }
+    } catch (e) {
+      log(`[CONVERSE] Failed to persist pending nudge: ${e}`, "warn");
+    }
+
+    // Persist user turn to storage
+    const userTurn = {
+      role: "user",
+      content: "chat_converse",
+      user_message: latestUser,
+      time_stamp: timeStamp,
+      _id: generateTurnId(),
+      _ts: Date.now(),
+      _type: "normal",
+      _chars: latestUser.length,
+    };
+    userTurn._refs = collectTurnRefs(userTurn);
+    registerTurnRefs(userTurn);
+    ctx._lastPersistedUserTurn = userTurn;
+    try {
+      if (ctx.persistedTurns && ctx.chatMeta) {
+        const { evictedTurns } = await appendTurn(userTurn, ctx.persistedTurns, ctx.chatMeta);
+        if (evictedTurns?.length) {
+          cleanupEvictedIds(evictedTurns);
+          log(`[CONVERSE] Evicted ${evictedTurns.length} turns after user message`);
+        }
+        ctx.chatMeta.lastActivityTs = Date.now();
+        saveMeta(ctx.chatMeta);
+      }
+    } catch (e) {
+      log(`[CONVERSE] Failed to persist user turn: ${e}`, "warn");
+    }
 
     // Get agent response
     await getAgentResponse(messages);
@@ -875,5 +945,43 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
 
     // Append assistant to history only when there's no error
     messages.push({ role: "assistant", content: assistantText });
+
+    // Persist assistant turn to storage
+    const assistantTurn = {
+      role: "assistant",
+      content: assistantText,
+      _id: generateTurnId(),
+      _ts: Date.now(),
+      _type: "normal",
+      _chars: assistantText.length,
+    };
+    assistantTurn._refs = collectTurnRefs(assistantTurn);
+    registerTurnRefs(assistantTurn);
+    try {
+      if (ctx.persistedTurns && ctx.chatMeta) {
+        const { evictedTurns } = await appendTurn(assistantTurn, ctx.persistedTurns, ctx.chatMeta);
+        if (evictedTurns?.length) {
+          cleanupEvictedIds(evictedTurns);
+          // Show truncation indicator in DOM
+          const indicator = document.getElementById("history-truncated-indicator");
+          if (indicator) indicator.style.display = "";
+          log(`[CONVERSE] Evicted ${evictedTurns.length} turns after assistant response`);
+        }
+      }
+    } catch (e) {
+      log(`[CONVERSE] Failed to persist assistant turn: ${e}`, "warn");
+    }
+
+    // FTS indexing is deferred — happens when periodicKbUpdate advances the cursor.
+    // Recent turns stay mutable (welcome-backs, nudges can be replaced without FTS inconsistency).
+
+    // Trigger periodic KB refinement + deferred FTS indexing (fire-and-forget, guards internally)
+    try {
+      import("../../agent/modules/knowledgebase.js").then(({ periodicKbUpdate }) => {
+        periodicKbUpdate().catch(e => {
+          log(`[CONVERSE] Periodic KB update failed (non-fatal): ${e}`, "warn");
+        });
+      }).catch(() => {});
+    } catch (_) {}
   }
 }

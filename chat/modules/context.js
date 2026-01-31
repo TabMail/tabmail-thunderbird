@@ -31,7 +31,9 @@ export const ctx = {
   idTranslation: {
     idMap: new Map(), // numericId -> realId
     nextNumericId: 1,
-    lastAccessed: Date.now()
+    lastAccessed: Date.now(),
+    freeIds: [],          // freed numeric IDs available for reuse
+    refCounts: new Map(), // numericId -> count of turns referencing it
   },
   // Entity map for events/contacts with compound IDs
   // Key: compound numeric ID (e.g., "1:2"), Value: { type, compoundNumericId, realIds, ... }
@@ -39,6 +41,10 @@ export const ctx = {
   // Retry state: stores last user message for retry functionality
   lastUserMessage: null, // The last user message text that can be retried
   canRetry: false, // Whether retry is available (true after error, false after successful response)
+  // Persistent chat state (populated by init.js, used by converse.js)
+  persistedTurns: [], // in-memory reference to persisted turns array
+  chatMeta: null, // in-memory reference to chat metadata
+  _lastPersistedUserTurn: null, // last persisted user turn (for FTS pairing)
 };
 
 // --- History length guards ---

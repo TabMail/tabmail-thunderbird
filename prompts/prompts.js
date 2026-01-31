@@ -1113,15 +1113,18 @@ document.addEventListener("DOMContentLoaded", () => {
     await resetKbContent();
   });
   
-  // KB config auto-save on change
-  const kbConfigInputs = [
-    document.getElementById("kb-recent-chats"),
-    document.getElementById("kb-reminder-retention"),
-    document.getElementById("kb-max-bullets"),
+  // KB config sliders: sync displayed value on input, auto-save on change
+  const kbSliders = [
+    { slider: document.getElementById("kb-max-exchanges"), display: document.getElementById("kb-max-exchanges-val") },
+    { slider: document.getElementById("kb-reminder-retention"), display: document.getElementById("kb-reminder-retention-val") },
+    { slider: document.getElementById("kb-max-bullets"), display: document.getElementById("kb-max-bullets-val") },
   ];
-  for (const input of kbConfigInputs) {
-    if (input) {
-      input.addEventListener("change", async () => {
+  for (const { slider, display } of kbSliders) {
+    if (slider) {
+      if (display) {
+        slider.addEventListener("input", () => { display.textContent = slider.value; });
+      }
+      slider.addEventListener("change", async () => {
         await saveKbConfig();
       });
     }

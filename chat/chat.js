@@ -8,9 +8,10 @@ import { processUserInput } from "./fsm/core.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
 import { ctx } from "./modules/context.js";
 import { awaitUserInput } from "./modules/converse.js";
-import { cleanupScrollObservers, extractTextFromBubble, initAggressiveScrollStick, isAtBottom, scrollToBottom, setBubbleText, setStickToBottom } from "./modules/helpers.js";
-import { mergeIdMapFromHeadless, remapUniqueId } from "./modules/idTranslator.js";
-import { initAndGreetUser } from "./modules/init.js";
+import { cleanupScrollObservers, initAggressiveScrollStick, isAtBottom, scrollToBottom, setBubbleText, setStickToBottom } from "./modules/helpers.js";
+import { mergeIdMapFromHeadless, persistIdMapImmediate, remapUniqueId } from "./modules/idTranslator.js";
+import { checkAndInsertWelcomeBack, initAndGreetUser } from "./modules/init.js";
+import { saveTurnsImmediate, saveMetaImmediate } from "./modules/persistentChatStore.js";
 import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromContentEditable, initMentionAutocomplete } from "./modules/mentionAutocomplete.js";
 import { addToolBubbleToGroup, cleanupToolGroups, isToolCollapseEnabled } from "./modules/toolCollapse.js";
 import { shutdownToolWebSocket } from "./modules/wsTools.js";
@@ -172,6 +173,7 @@ async function stopExecution() {
   }
 }
 
+
 window.setChatMode = setChatMode;
 window.stopExecution = stopExecution;
 
@@ -266,7 +268,7 @@ export async function createNewAgentBubble(initialText = "") {
   return bubble;
 }
 
-function createNewUserBubble(text) {
+export function createNewUserBubble(text) {
   const container = document.getElementById("chat-container");
   const bubble = document.createElement("div");
   bubble.className = "user-message";
@@ -382,7 +384,6 @@ window.updateContextUsageDisplay = updateContextUsageDisplay;
 // Store listener references for cleanup
 let messageSelectionListener = null;
 let chatDOMListeners = {
-  reloadClickHandler: null,
   windowKeydownHandler: null,
   textareaInputHandler: null,
   textareaPasteHandler: null,
@@ -408,18 +409,6 @@ function cleanupMessageSelectionListener() {
 
 function cleanupChatDOMListeners() {
   try {
-    // Remove reload button click handler
-    if (chatDOMListeners.reloadClickHandler) {
-      const reloadBtn = document.getElementById("reload-btn");
-      if (reloadBtn) {
-        reloadBtn.removeEventListener(
-          "click",
-          chatDOMListeners.reloadClickHandler
-        );
-      }
-      chatDOMListeners.reloadClickHandler = null;
-    }
-
     // Remove window keydown handler
     if (chatDOMListeners.windowKeydownHandler) {
       window.removeEventListener(
@@ -640,6 +629,8 @@ window.addEventListener("DOMContentLoaded", async () => {
             });
           }
 
+          // Proactive messages are ephemeral (DOM + agentConverseMessages only, not persisted)
+
           log(`[TMDBG Chat] Injected proactive check-in bubble into open chat`);
         } catch (e) {
           log(`[TMDBG Chat] Failed to handle proactive-checkin-message: ${e}`, "warn");
@@ -679,6 +670,23 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   } catch (_) {}
 
+  // Idle detection: insert welcome-back greeting when user returns to tab
+  try {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        checkAndInsertWelcomeBack().catch(e => {
+          log(`[TMDBG Chat] checkAndInsertWelcomeBack failed: ${e}`, "warn");
+        });
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("beforeunload", () => {
+      try { document.removeEventListener("visibilitychange", onVisibilityChange); } catch (_) {}
+    });
+  } catch (e) {
+    log(`[TMDBG Chat] Failed to setup visibilitychange listener: ${e}`, "warn");
+  }
+
   // Setup the chat window and start the chat conversation
 
   // Create a per-window session id for MCP websocket
@@ -698,8 +706,18 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Initialize context usage tracking
   initContextUsageTracking();
 
-  // Add KB update trigger on window close (BEST-EFFORT ONLY - may be killed by browser)
+  // Window close: force-save persistent state and cleanup (BEST-EFFORT ONLY)
   window.addEventListener("beforeunload", () => {
+    // Force-save persistent state first (turns, meta, idMap) — timers won't fire after unload
+    try {
+      if (ctx.persistedTurns) saveTurnsImmediate(ctx.persistedTurns);
+      if (ctx.chatMeta) saveMetaImmediate(ctx.chatMeta);
+      persistIdMapImmediate();
+      log(`[TMDBG Chat] Force-saved persistent chat state on window close`);
+    } catch (e) {
+      log(`[TMDBG Chat] Failed to force-save persistent state: ${e}`, "warn");
+    }
+
     // Clean up runtime message listeners
     cleanupMessageSelectionListener();
 
@@ -721,7 +739,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     } catch (e) {
       log(`[TMDBG Chat] Failed to abort SSE request: ${e}`, "warn");
     }
-    
+
     try {
       import("./modules/sseTools.js").then(({ stopToolListener }) => {
         stopToolListener();
@@ -733,114 +751,21 @@ window.addEventListener("DOMContentLoaded", async () => {
       log(`[TMDBG Chat] Failed to import SSE tools cleanup: ${e}`, "warn");
     }
 
-    // Only run KB update if there's an actual user-then-assistant conversation exchange
-    // KB update must happen BEFORE cleanup so ID translation map is still available
-    if (Array.isArray(ctx.agentConverseMessages)) {
-      // Check for at least one user message followed by an assistant response
-      let hasUserThenAssistantPair = false;
-      let foundUserMessage = false;
-      
-      for (const msg of ctx.agentConverseMessages) {
-        if (msg.role === "user") {
-          foundUserMessage = true;
-        } else if (msg.role === "assistant" && foundUserMessage) {
-          hasUserThenAssistantPair = true;
-          break;
-        }
-      }
-      
-      if (hasUserThenAssistantPair) {
-        log(`-- KB -- Sending conversation to background script for KB update`);
-        try {
-          // Extract rendered content directly from DOM - already has resolved entities!
-          const chatContainer = document.getElementById("chat-container");
-          const conversationSnapshot = [];
-          
-          if (chatContainer) {
-            const bubbles = chatContainer.querySelectorAll(".user-message, .agent-message");
-            for (const bubble of bubbles) {
-              // Skip tool bubbles and loading states
-              if (bubble.classList.contains("tool") || bubble.classList.contains("loading")) {
-                continue;
-              }
-              
-              const role = bubble.classList.contains("user-message") ? "user" : "assistant";
-              const plainText = extractTextFromBubble(bubble);
-              
-              if (plainText && plainText.trim()) {
-                conversationSnapshot.push({ role, content: plainText });
-              }
-            }
-          }
-          
-          log(`-- KB -- Extracted ${conversationSnapshot.length} messages from rendered DOM`);
-          
-          // Send synchronously - the message will be queued even if window closes
-          browser.runtime.sendMessage({
-            command: "kb-update-from-window-close",
-            conversationHistory: conversationSnapshot,
-          }).catch((e) => {
-            log(`-- KB -- Failed to send to background: ${e}`, "warn");
-          });
-        } catch (e) {
-          log(`-- KB -- Failed to prepare background message: ${e}`, "warn");
-        }
-      } else {
-        log(`-- KB -- Skipping KB update: no user-then-assistant conversation exchange found`);
-        // Still clean up ID translation cache even if no KB update
-        import("./modules/idTranslator.js").then(({ cleanupIdTranslationCache }) => {
-          cleanupIdTranslationCache();
-          log(`[TMDBG Chat] Cleaned up ID translation cache on window close`);
-        }).catch((e) => {
-          log(`[TMDBG Chat] Failed to cleanup ID translation cache: ${e}`, "warn");
-        });
-      }
-    } else {
-      // No messages, still clean up
-      import("./modules/idTranslator.js").then(({ cleanupIdTranslationCache }) => {
-        cleanupIdTranslationCache();
-        log(`[TMDBG Chat] Cleaned up ID translation cache on window close`);
+    // Trigger KB update for pending turns via background script
+    // Turns are already persisted — background will read from persistent store
+    try {
+      browser.runtime.sendMessage({
+        command: "kb-update-from-window-close",
       }).catch((e) => {
-        log(`[TMDBG Chat] Failed to cleanup ID translation cache: ${e}`, "warn");
+        log(`-- KB -- Failed to send KB update trigger to background: ${e}`, "warn");
       });
+    } catch (e) {
+      log(`-- KB -- Failed to trigger KB update on close: ${e}`, "warn");
     }
   });
 
-  // Setup reload button click handler
-  chatDOMListeners.reloadClickHandler = () => window.location.reload();
-  const reloadBtn = document.getElementById("reload-btn");
-  reloadBtn?.addEventListener("click", chatDOMListeners.reloadClickHandler);
-
-  // Update new topic shortcut display based on OS
-  try {
-    const shortcutSpan = document.getElementById("new-topic-shortcut");
-    if (shortcutSpan) {
-      browser.runtime.getPlatformInfo().then((platformInfo) => {
-        const os = platformInfo?.os || "unknown";
-        // Mac: ⌘N, Windows/Linux: ⌃N
-        shortcutSpan.textContent = os === "mac" ? "(⌘N)" : "(⌃N)";
-        log(`[Chat] New topic shortcut display updated for OS: ${os}`);
-      }).catch((e) => {
-        shortcutSpan.textContent = "(⌃N)";
-        log(`[Chat] Failed to detect OS for shortcut: ${e}`, "warn");
-      });
-    }
-  } catch (e) {
-    log(`[Chat] Failed to update new topic shortcut: ${e}`, "warn");
-  }
-
-  // Setup window keydown handler for reload shortcuts and Esc to stop
+  // Setup window keydown handler for Esc to stop
   chatDOMListeners.windowKeydownHandler = (e) => {
-    const isNewTopicShortcut =
-      e.key === "F5" ||
-      (e.key.toLowerCase() === "r" && (e.ctrlKey || e.metaKey)) ||
-      (e.key.toLowerCase() === "n" && (e.ctrlKey || e.metaKey));
-    if (isNewTopicShortcut) {
-      e.preventDefault();
-      window.location.reload();
-    }
-    
-    // Esc key to stop when in stop mode
     if (e.key === "Escape" && chatMode === "stop") {
       e.preventDefault();
       stopExecution();
@@ -896,11 +821,7 @@ window.addEventListener("DOMContentLoaded", async () => {
         textarea.classList.remove("has-fsm-suggestion");
         textarea.classList.remove("has-retry-suggestion");
         log(`[TMDBG Chat] Set placeholder to default: "${defaultPlaceholder}"`, "info");
-        // Show tip when no suggestion
-        if (hintEl) {
-          hintEl.textContent = "Tip: Keep chat with TabMail to a single topic for best experience.";
-          hintEl.hidden = false;
-        }
+        if (hintEl) hintEl.hidden = true;
       } else {
         // log(`[TMDBG Chat] Hiding hint (val has content)`, "info");
         textarea.classList.remove("has-fsm-suggestion");

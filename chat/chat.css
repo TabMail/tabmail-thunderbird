@@ -461,34 +461,6 @@ select {
     flex: 1;
 }
 
-#reload-btn {
-    background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: var(--tm-chat-font-ui-contextUsageLabel);
-    padding: 4px 8px;
-    color: var(--in-content-page-color);
-    opacity: 0.7;
-    white-space: nowrap;
-    transition: opacity 0.15s ease, background-color 0.15s ease;
-}
-
-#reload-btn:hover {
-    opacity: 1;
-    background: color-mix(in srgb, var(--in-content-accent-color) 12%, transparent);
-}
-
-#reload-btn:focus-visible {
-    outline: 2px solid var(--in-content-accent-color);
-    outline-offset: 2px;
-}
-
-#new-topic-shortcut {
-    opacity: 0.7;
-    margin-left: 4px;
-}
-
 /* Context usage progress bar */
 #context-usage-container {
     display: flex;
@@ -1365,4 +1337,55 @@ select {
 .tm-tooltip-field {
     white-space: nowrap;
     overflow-x: auto;
+}
+
+/* =============================================
+   Persistent Chat: History & Session Boundaries
+   ============================================= */
+
+/* Grey-out previous session bubbles above welcome-back */
+.history-pre-welcome {
+    opacity: 0.55;
+    transition: opacity 0.3s ease;
+}
+.history-pre-welcome:hover {
+    opacity: 0.85;
+}
+
+/* Truncation indicator at top of chat */
+.history-truncated {
+    text-align: center;
+    padding: 8px 16px;
+    font-size: 12px;
+    color: var(--in-content-deemphasized-text);
+    font-style: italic;
+    border-bottom: 1px solid var(--panel-separator-color);
+    margin-bottom: 8px;
+}
+
+/* Topic separator */
+.topic-separator {
+    text-align: center;
+    padding: 12px 0;
+    font-size: 11px;
+    color: var(--in-content-deemphasized-text);
+    position: relative;
+}
+.topic-separator::before,
+.topic-separator::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    width: 30%;
+    border-top: 1px solid var(--panel-separator-color);
+}
+.topic-separator::before { left: 5%; }
+.topic-separator::after { right: 5%; }
+
+/* Welcome-back greeting bubble */
+.agent-message.welcome-back {
+    background: color-mix(in srgb, var(--in-content-accent-color) 6%, transparent);
+    border-left: 3px solid var(--in-content-accent-color);
+    border-radius: 0 8px 8px 0;
+    padding: 8px 12px;
 }
