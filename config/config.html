@@ -126,6 +126,68 @@
       </div>
     </section>
 
+    <section id="notification-settings">
+      <h3>Notifications</h3>
+
+      <!-- Proactive check-in toggle -->
+      <div class="field">
+        <label class="checkbox-option">
+          <input type="checkbox" id="proactive-checkin-enabled" />
+          <span>Allow TabMail to initiate chat in Thunderbird</span>
+        </label>
+      </div>
+      <div class="field">
+        <small>When enabled, TabMail may proactively reach out via the chat window
+        with suggestions based on your reminders and inbox activity.</small>
+      </div>
+
+      <div class="field" style="margin-top: 12px; grid-template-columns: 320px 1fr;">
+        <label for="proactive-checkin-interval">Minimum interval between check-in</label>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <input type="number" id="proactive-checkin-interval" min="1" max="60" step="1" style="width: 70px;" />
+          <span>minutes</span>
+        </div>
+        <small>Default: 5 minutes.</small>
+      </div>
+    </section>
+
+    <!-- ─── External Accounts ─── -->
+    <section id="external-accounts-settings" style="opacity: 0.4; pointer-events: none;">
+      <h3>External Accounts (coming soon)</h3>
+
+      <div class="field" style="margin-bottom: 8px;">
+        <label class="checkbox-option">
+          <input type="checkbox" disabled />
+          <span>Enable Slack connection</span>
+        </label>
+        <button disabled style="justify-self: end; opacity: 0.6;">Link with Slack</button>
+      </div>
+
+      <div class="field" style="margin-bottom: 8px;">
+        <label class="checkbox-option">
+          <input type="checkbox" disabled />
+          <span>Enable Discord connection</span>
+        </label>
+        <button disabled style="justify-self: end; opacity: 0.6;">Link with Discord</button>
+      </div>
+
+      <div class="field" style="margin-bottom: 8px;">
+        <label class="checkbox-option">
+          <input type="checkbox" disabled />
+          <span>Enable Signal connection</span>
+        </label>
+        <button disabled style="justify-self: end; opacity: 0.6;">Link with Signal</button>
+      </div>
+
+      <div class="field" style="margin-bottom: 8px;">
+        <label class="checkbox-option">
+          <input type="checkbox" disabled />
+          <span>Enable Telegram connection</span>
+        </label>
+        <button disabled style="justify-self: end; opacity: 0.6;">Link with Telegram</button>
+      </div>
+    </section>
+
     <section id="reminder-basic-settings">
       <h3>Reminders</h3>
       <div class="field">

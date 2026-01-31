@@ -11,11 +11,15 @@ const PENDING_MSG_KEY = "proactiveCheckin_pendingMessage";
 const LAST_CHECKIN_KEY = "proactiveCheckin_lastCheckin";
 
 let _debounceTimer = null;
+let _postCooldownTimer = null;
 let _alarmListener = null;
 let _isCheckinInFlight = false;
 let _lastCheckinTime = 0;
 let _lastCheckinResult = null;
 let _isInitialized = false;
+
+const INTERVAL_STORAGE_KEY = "proactiveCheckinIntervalMinutes";
+const INTERVAL_DEFAULT = 5;
 
 // ─────────────────────────────────────────────────────────────
 // Config helpers
@@ -25,20 +29,33 @@ function _cfg() {
   return SETTINGS?.proactiveCheckin || {};
 }
 
-function _isEnabled() {
-  return !!_cfg().enabled;
+async function _isEnabled() {
+  try {
+    const stored = await browser.storage.local.get({ proactiveCheckinEnabled: false });
+    return stored.proactiveCheckinEnabled === true;
+  } catch (e) {
+    log(`[ProActCheck] _isEnabled storage read failed: ${e}`, "warn");
+    return !!_cfg().enabled; // fallback to in-memory config
+  }
 }
 
 function _debounceMs() {
   return Number(_cfg().debounceMs) || 1000;
 }
 
-function _cooldownMinutes() {
-  return Number(_cfg().cooldownMinutes) || 5;
+async function _intervalMinutes() {
+  try {
+    const stored = await browser.storage.local.get({ [INTERVAL_STORAGE_KEY]: INTERVAL_DEFAULT });
+    const val = Number(stored[INTERVAL_STORAGE_KEY]);
+    return (val >= 1 && val <= 60) ? val : INTERVAL_DEFAULT;
+  } catch (e) {
+    log(`[ProActCheck] _intervalMinutes storage read failed: ${e}`, "warn");
+    return INTERVAL_DEFAULT;
+  }
 }
 
-function _cooldownMs() {
-  return _cooldownMinutes() * 60 * 1000;
+async function _intervalMs() {
+  return (await _intervalMinutes()) * 60 * 1000;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -143,11 +160,36 @@ async function _persistState() {
 // Core check-in logic
 // ─────────────────────────────────────────────────────────────
 
+function _schedulePostIntervalCheck() {
+  // Cancel any existing post-interval timer
+  if (_postCooldownTimer) {
+    clearTimeout(_postCooldownTimer);
+    _postCooldownTimer = null;
+  }
+
+  // Read interval from storage (async) and schedule the timer
+  _intervalMs().then(intervalMs => {
+    // Timer fires after the full interval from _lastCheckinTime
+    const remaining = Math.max(0, intervalMs - (Date.now() - _lastCheckinTime));
+    log(`[ProActCheck] Scheduling post-interval auto-check in ${Math.round(remaining / 1000)}s`);
+
+    _postCooldownTimer = setTimeout(() => {
+      _postCooldownTimer = null;
+      log(`[ProActCheck] Post-interval timer fired, triggering auto-check`);
+      _triggerCheckin("post_interval").catch(e => {
+        log(`[ProActCheck] Post-interval auto-check failed: ${e}`, "warn");
+      });
+    }, remaining);
+  }).catch(e => {
+    log(`[ProActCheck] Failed to schedule post-interval check: ${e}`, "warn");
+  });
+}
+
 async function _triggerCheckin(triggerReason) {
   log(`[ProActCheck] ── _triggerCheckin called: reason="${triggerReason}"`);
 
   // Guard: feature disabled
-  if (!_isEnabled()) {
+  if (!(await _isEnabled())) {
     log(`[ProActCheck] SKIP: feature disabled (reason=${triggerReason})`);
     return;
   }
@@ -158,23 +200,16 @@ async function _triggerCheckin(triggerReason) {
     return;
   }
 
-  // Guard: chat window currently open — don't interrupt active conversation
-  const chatOpen = await _isChatWindowOpen();
-  if (chatOpen) {
-    log(`[ProActCheck] SKIP: chat window open (reason=${triggerReason})`);
-    return;
-  }
-  log(`[ProActCheck] Guard passed: chat window not open`);
-
-  // Guard: cooldown
-  const cd = _cooldownMs();
+  // Guard: minimum interval — block all triggers during the interval window.
+  // When the interval expires, a post-cooldown auto-check fires to catch missed changes.
+  const intervalMs = await _intervalMs();
   const elapsed = _lastCheckinTime ? Date.now() - _lastCheckinTime : Infinity;
-  if (_lastCheckinTime && elapsed < cd) {
-    const remaining = Math.ceil((cd - elapsed) / 1000);
-    log(`[ProActCheck] SKIP: cooldown active, ${remaining}s remaining, elapsed=${Math.round(elapsed / 1000)}s, cooldown=${Math.round(cd / 1000)}s (reason=${triggerReason})`);
+  if (_lastCheckinTime && elapsed < intervalMs) {
+    const remaining = Math.ceil((intervalMs - elapsed) / 1000);
+    log(`[ProActCheck] SKIP: interval active, ${remaining}s remaining, elapsed=${Math.round(elapsed / 1000)}s, interval=${Math.round(intervalMs / 1000)}s (reason=${triggerReason})`);
     return;
   }
-  log(`[ProActCheck] Guard passed: cooldown OK (elapsed=${_lastCheckinTime ? Math.round(elapsed / 1000) + "s" : "never"}, cooldown=${Math.round(cd / 1000)}s)`);
+  log(`[ProActCheck] Guard passed: interval OK (elapsed=${_lastCheckinTime ? Math.round(elapsed / 1000) + "s" : "never"}, interval=${Math.round(intervalMs / 1000)}s)`);
 
   // Guard: user must be signed in
   try {
@@ -255,19 +290,35 @@ async function _triggerCheckin(triggerReason) {
     log(`[ProActCheck] Decision: reach_out=${reachOut}, message_len=${message.length}${message ? `, message="${message.substring(0, 200)}"` : ""}`);
 
     if (reachOut && message) {
-      // Persist the idMap alongside the message so the chat window can restore it.
-      // The idMap (numericId → realId) was populated during this headless session
-      // from reminder translation + tool calls, but the chat window is a separate
-      // context that needs the mapping to resolve [Email](id) references.
+      // Persist the idMap alongside the message so the chat window can restore/merge it.
       let idMapEntries = [];
       if (idContext?.idMap?.size > 0) {
         idMapEntries = Array.from(idContext.idMap.entries());
         log(`[ProActCheck] Captured idMap with ${idMapEntries.length} entries for pending message`);
       }
 
-      await _storePendingMessage(message, idMapEntries);
+      const chatOpen = await _isChatWindowOpen();
+      if (chatOpen) {
+        // Chat is already open — inject directly via runtime message
+        log(`[ProActCheck] Chat window open, sending runtime message for direct injection`);
+        try {
+          await browser.runtime.sendMessage({
+            command: "proactive-checkin-message",
+            message,
+            idMapEntries,
+          });
+          log(`[ProActCheck] Runtime message sent for direct injection`);
+        } catch (e) {
+          log(`[ProActCheck] Failed to send runtime message, falling back to pending: ${e}`, "warn");
+          await _storePendingMessage(message, idMapEntries);
+          await _openChatWindow();
+        }
+      } else {
+        // Chat is closed — store pending message and open window
+        await _storePendingMessage(message, idMapEntries);
+        await _openChatWindow();
+      }
       _lastCheckinResult = "reached_out";
-      await _openChatWindow();
     } else {
       _lastCheckinResult = "no_action";
       log(`[ProActCheck] No proactive outreach needed`);
@@ -280,6 +331,10 @@ async function _triggerCheckin(triggerReason) {
     const elapsedMs = Date.now() - startTime;
     log(`[ProActCheck] ══ CHECK-IN DONE ══ result="${_lastCheckinResult}" elapsed=${elapsedMs}ms trigger="${triggerReason}"`);
     await _persistState();
+
+    // Schedule a post-interval auto-check: when the interval expires, run one more
+    // check-in to catch any changes that arrived while we were in the interval window.
+    _schedulePostIntervalCheck();
   }
 }
 
@@ -383,9 +438,10 @@ export async function consumePendingProactiveMessage() {
     // Clear it immediately
     await browser.storage.local.remove(PENDING_MSG_KEY);
 
-    // Check staleness (reuse cooldown as the stale threshold)
-    if (age > _cooldownMs()) {
-      log(`[ProActCheck] consumePending: DISCARDING stale message (age=${Math.round(age / 1000)}s > cooldown=${Math.round(_cooldownMs() / 1000)}s)`);
+    // Check staleness (reuse interval as the stale threshold)
+    const staleMs = await _intervalMs();
+    if (age > staleMs) {
+      log(`[ProActCheck] consumePending: DISCARDING stale message (age=${Math.round(age / 1000)}s > interval=${Math.round(staleMs / 1000)}s)`);
       return null;
     }
 
@@ -406,8 +462,9 @@ export async function consumePendingProactiveMessage() {
  * Rebuilds reminder list, hashes it, and triggers check-in only if changed.
  */
 export async function onInboxUpdated() {
-  log(`[ProActCheck] onInboxUpdated called, enabled=${_isEnabled()}`);
-  if (!_isEnabled()) {
+  const enabled = await _isEnabled();
+  log(`[ProActCheck] onInboxUpdated called, enabled=${enabled}`);
+  if (!enabled) {
     log(`[ProActCheck] onInboxUpdated: feature disabled, returning`);
     return;
   }
@@ -461,7 +518,9 @@ export async function initProactiveCheckin() {
   _isInitialized = true;
 
   const cfg = _cfg();
-  log(`[ProActCheck] ══ INIT ══ enabled=${_isEnabled()}, debounceMs=${_debounceMs()}, cooldownMin=${_cooldownMinutes()}, config=${JSON.stringify(cfg)}`);
+  const enabledAtInit = await _isEnabled();
+  const intervalMin = await _intervalMinutes();
+  log(`[ProActCheck] ══ INIT ══ enabled=${enabledAtInit}, debounceMs=${_debounceMs()}, intervalMin=${intervalMin}, config=${JSON.stringify(cfg)}`);
 
   // Restore persisted state
   await _restoreState();
@@ -497,10 +556,14 @@ export async function initProactiveCheckin() {
 export function cleanupProactiveCheckin() {
   log(`[ProActCheck] Cleaning up`);
 
-  // Clear debounce timer
+  // Clear timers
   if (_debounceTimer) {
     clearTimeout(_debounceTimer);
     _debounceTimer = null;
+  }
+  if (_postCooldownTimer) {
+    clearTimeout(_postCooldownTimer);
+    _postCooldownTimer = null;
   }
 
   // Remove alarm listener

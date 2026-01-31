@@ -1,4 +1,4 @@
-// schedule_proactive_alarm.js – schedule a proactive check-in alarm (TB 145, MV3)
+// proactive_schedule_alarm.js – schedule a proactive check-in alarm (TB 145, MV3)
 // Supports relative (delay_minutes) and absolute (anchor_time + offset_minutes) modes.
 // Timezone-aware: anchor_time interpreted in user's local TZ by default (see ADR-013).
 
@@ -47,7 +47,7 @@ function parseAnchorTime(anchorTimeStr, tz) {
     // that represents this naive time in the target TZ
     return new Date(naive.getTime() - offsetMs);
   } catch (e) {
-    log(`[TMDBG Tools] schedule_proactive_alarm: TZ-aware parsing failed for "${anchorTimeStr}" in ${tz}, falling back to default: ${e}`, "warn");
+    log(`[TMDBG Tools] proactive_schedule_alarm: TZ-aware parsing failed for "${anchorTimeStr}" in ${tz}, falling back to default: ${e}`, "warn");
     return new Date(anchorTimeStr);
   }
 }
@@ -56,7 +56,7 @@ export async function run(args = {}, options = {}) {
   try {
     const reason = typeof args?.reason === "string" ? args.reason.trim() : "";
     if (!reason) {
-      log(`[TMDBG Tools] schedule_proactive_alarm: missing reason`, "error");
+      log(`[TMDBG Tools] proactive_schedule_alarm: missing reason`, "error");
       return { error: "reason is required" };
     }
 
@@ -69,7 +69,7 @@ export async function run(args = {}, options = {}) {
     const hasAnchor = args?.anchor_time != null;
 
     if (hasDelay && hasAnchor) {
-      log(`[TMDBG Tools] schedule_proactive_alarm: both delay_minutes and anchor_time provided`, "error");
+      log(`[TMDBG Tools] proactive_schedule_alarm: both delay_minutes and anchor_time provided`, "error");
       return { error: "Provide either delay_minutes OR anchor_time, not both." };
     }
 
@@ -79,7 +79,7 @@ export async function run(args = {}, options = {}) {
       // Absolute mode: compute delay from anchor_time + offset_minutes
       const anchorDate = parseAnchorTime(String(args.anchor_time), userTz);
       if (isNaN(anchorDate.getTime())) {
-        log(`[TMDBG Tools] schedule_proactive_alarm: invalid anchor_time=${args.anchor_time}`, "error");
+        log(`[TMDBG Tools] proactive_schedule_alarm: invalid anchor_time=${args.anchor_time}`, "error");
         return { error: `Invalid anchor_time: ${args.anchor_time}. Must be a valid ISO 8601 timestamp.` };
       }
 
@@ -87,21 +87,21 @@ export async function run(args = {}, options = {}) {
       const targetMs = anchorDate.getTime() + offsetMinutes * 60 * 1000;
       delayMinutes = (targetMs - Date.now()) / (60 * 1000);
 
-      log(`[TMDBG Tools] schedule_proactive_alarm: anchor=${anchorDate.toISOString()}, offset=${offsetMinutes}min, tz=${userTz}, computed_delay=${delayMinutes.toFixed(1)}min`);
+      log(`[TMDBG Tools] proactive_schedule_alarm: anchor=${anchorDate.toISOString()}, offset=${offsetMinutes}min, tz=${userTz}, computed_delay=${delayMinutes.toFixed(1)}min`);
 
       if (delayMinutes < 1) {
-        log(`[TMDBG Tools] schedule_proactive_alarm: computed delay ${delayMinutes.toFixed(1)}min is in the past, clamping to 1min`, "warn");
+        log(`[TMDBG Tools] proactive_schedule_alarm: computed delay ${delayMinutes.toFixed(1)}min is in the past, clamping to 1min`, "warn");
         delayMinutes = 1;
       }
     } else if (hasDelay) {
       // Relative mode: use delay_minutes directly (timezone irrelevant)
       delayMinutes = Number(args.delay_minutes);
       if (!Number.isFinite(delayMinutes) || delayMinutes < 1) {
-        log(`[TMDBG Tools] schedule_proactive_alarm: invalid delay_minutes=${args.delay_minutes}`, "error");
+        log(`[TMDBG Tools] proactive_schedule_alarm: invalid delay_minutes=${args.delay_minutes}`, "error");
         return { error: "delay_minutes must be a number >= 1" };
       }
     } else {
-      log(`[TMDBG Tools] schedule_proactive_alarm: neither delay_minutes nor anchor_time provided`, "error");
+      log(`[TMDBG Tools] proactive_schedule_alarm: neither delay_minutes nor anchor_time provided`, "error");
       return { error: "Provide either delay_minutes or anchor_time." };
     }
 
@@ -110,7 +110,7 @@ export async function run(args = {}, options = {}) {
 
     const scheduledAt = new Date(Date.now() + delayMinutes * 60 * 1000).toISOString();
 
-    log(`[TMDBG Tools] schedule_proactive_alarm: scheduled in ${Math.round(delayMinutes)}min, reason="${reason}", tz=${userTz}, at=${scheduledAt}`);
+    log(`[TMDBG Tools] proactive_schedule_alarm: scheduled in ${Math.round(delayMinutes)}min, reason="${reason}", tz=${userTz}, at=${scheduledAt}`);
 
     return {
       ok: true,
@@ -121,7 +121,7 @@ export async function run(args = {}, options = {}) {
       reason,
     };
   } catch (e) {
-    log(`[TMDBG Tools] schedule_proactive_alarm failed: ${e}`, "error");
-    return { error: String(e || "unknown error in schedule_proactive_alarm") };
+    log(`[TMDBG Tools] proactive_schedule_alarm failed: ${e}`, "error");
+    return { error: String(e || "unknown error in proactive_schedule_alarm") };
   }
 }

@@ -682,6 +682,83 @@ export function restoreIdMap(entries) {
   log(`[TMDBG IDTranslator] Restored ${restored} entries from serialized idMap`);
 }
 
+/**
+ * Merge idMap entries from a headless session into the active chat window's map.
+ * Handles conflicts: if a headless numericId is already used for a different realId,
+ * assigns a new numericId and rewrites references in the message.
+ *
+ * @param {Array<[number, string]>} entries - Serialized idMap from headless session
+ * @param {string} message - Proactive message containing [Email](numericId) references
+ * @returns {string} - Message with numericIds remapped to the chat window's map
+ */
+export function mergeIdMapFromHeadless(entries, message) {
+  if (!Array.isArray(entries) || !entries.length) return message;
+
+  const idTranslation = ctx.idTranslation;
+  const remapTable = new Map(); // headless numericId → chat numericId
+
+  for (const [headlessNumericId, realId] of entries) {
+    if (typeof headlessNumericId !== "number" || typeof realId !== "string") continue;
+
+    // Check if this realId already exists in the chat's map
+    let existingNumericId = null;
+    for (const [numId, mappedRealId] of idTranslation.idMap.entries()) {
+      if (mappedRealId === realId) {
+        existingNumericId = numId;
+        break;
+      }
+    }
+
+    if (existingNumericId !== null) {
+      // realId already mapped — reuse existing numeric ID
+      remapTable.set(headlessNumericId, existingNumericId);
+    } else if (!idTranslation.idMap.has(headlessNumericId)) {
+      // No conflict — add directly with same numeric ID
+      idTranslation.idMap.set(headlessNumericId, realId);
+      if (headlessNumericId >= idTranslation.nextNumericId) {
+        idTranslation.nextNumericId = headlessNumericId + 1;
+      }
+      remapTable.set(headlessNumericId, headlessNumericId);
+    } else {
+      // Conflict: headlessNumericId already maps to a different realId
+      const newNumericId = idTranslation.nextNumericId++;
+      idTranslation.idMap.set(newNumericId, realId);
+      remapTable.set(headlessNumericId, newNumericId);
+    }
+  }
+
+  idTranslation.lastAccessed = Date.now();
+
+  // Rewrite entity references in the message using the remap table
+  const remappedMessage = message.replace(
+    /\[(Email|Contact|Event)\]\((\d+(?::\d+)?)\)/g,
+    (match, type, idPart) => {
+      if (idPart.includes(":")) {
+        // Compound ID (e.g., calendar:event or addressbook:contact)
+        const parts = idPart.split(":");
+        const newParts = parts.map((p) => {
+          const oldNum = Number(p);
+          return remapTable.has(oldNum) ? String(remapTable.get(oldNum)) : p;
+        });
+        return `[${type}](${newParts.join(":")})`;
+      }
+      const oldNum = Number(idPart);
+      if (remapTable.has(oldNum)) {
+        return `[${type}](${remapTable.get(oldNum)})`;
+      }
+      return match;
+    }
+  );
+
+  const remappedCount = [...remapTable.entries()].filter(([o, n]) => o !== n).length;
+  log(
+    `[TMDBG IDTranslator] mergeIdMapFromHeadless: merged ${entries.length} entries, ` +
+    `${remappedCount} needed remapping, map now has ${idTranslation.idMap.size} entries`
+  );
+
+  return remappedMessage;
+}
+
 // Clean up the current session's cache (called when chat window closes)
 export function cleanupIdTranslationCache() {
   ctx.idTranslation.idMap.clear();

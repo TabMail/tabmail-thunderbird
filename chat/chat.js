@@ -9,7 +9,7 @@ import { CHAT_SETTINGS } from "./modules/chatConfig.js";
 import { ctx } from "./modules/context.js";
 import { awaitUserInput } from "./modules/converse.js";
 import { cleanupScrollObservers, extractTextFromBubble, initAggressiveScrollStick, isAtBottom, scrollToBottom, setBubbleText, setStickToBottom } from "./modules/helpers.js";
-import { remapUniqueId } from "./modules/idTranslator.js";
+import { mergeIdMapFromHeadless, remapUniqueId } from "./modules/idTranslator.js";
 import { initAndGreetUser } from "./modules/init.js";
 import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromContentEditable, initMentionAutocomplete } from "./modules/mentionAutocomplete.js";
 import { addToolBubbleToGroup, cleanupToolGroups, isToolCollapseEnabled } from "./modules/toolCollapse.js";
@@ -603,6 +603,57 @@ window.addEventListener("DOMContentLoaded", async () => {
   } catch (e) {
     log(`[TMDBG Chat] Failed to attach idMapRemap listener: ${e}`, "warn");
   }
+
+  // Listen for proactive check-in messages injected while chat is already open
+  try {
+    // IMPORTANT: Must NOT be async — async onMessage handlers break other listeners in TB.
+    // Fire-and-forget the async work inside.
+    const onProactiveCheckinMessage = (message) => {
+      if (!message || message.command !== "proactive-checkin-message") return;
+
+      const { message: proactiveText, idMapEntries } = message;
+      if (!proactiveText) return;
+
+      log(`[TMDBG Chat] Received proactive check-in message (${proactiveText.length} chars, ${(idMapEntries || []).length} idMap entries)`);
+
+      // Fire-and-forget async bubble creation
+      (async () => {
+        try {
+          // Merge headless idMap into the active chat's map and remap message references
+          let displayMessage = proactiveText;
+          if (Array.isArray(idMapEntries) && idMapEntries.length > 0) {
+            displayMessage = mergeIdMapFromHeadless(idMapEntries, proactiveText);
+            log(`[TMDBG Chat] Merged idMap from proactive session`);
+          }
+
+          // Create a proactive-styled agent bubble
+          const bubble = await createNewAgentBubble("");
+          bubble.classList.remove("loading");
+          bubble.classList.add("proactive-message");
+          await setBubbleText(bubble, displayMessage);
+
+          // Add to conversation history so the agent knows what the user saw
+          if (Array.isArray(ctx.agentConverseMessages)) {
+            ctx.agentConverseMessages.push({
+              role: "assistant",
+              content: displayMessage,
+            });
+          }
+
+          log(`[TMDBG Chat] Injected proactive check-in bubble into open chat`);
+        } catch (e) {
+          log(`[TMDBG Chat] Failed to handle proactive-checkin-message: ${e}`, "warn");
+        }
+      })();
+    };
+    browser.runtime.onMessage.addListener(onProactiveCheckinMessage);
+    window.addEventListener("beforeunload", () => {
+      try { browser.runtime.onMessage.removeListener(onProactiveCheckinMessage); } catch (_) {}
+    });
+  } catch (e) {
+    log(`[TMDBG Chat] Failed to attach proactive check-in listener: ${e}`, "warn");
+  }
+
   // Track stick-to-bottom state on user scrolling
   try {
     const container = document.getElementById("chat-container");
