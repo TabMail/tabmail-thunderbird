@@ -1573,6 +1573,15 @@ async function init() {
         log(`[EventLogger] Failed to init event logger: ${e}`, "error");
     }
 
+    // 2c. Initialise proactive check-in (alarm listener + state restore)
+    try {
+        const { initProactiveCheckin } = await import("./modules/proactiveCheckin.js");
+        await initProactiveCheckin();
+        log("[ProactiveCheckin] Proactive check-in initialised");
+    } catch (e) {
+        log(`[ProactiveCheckin] Failed to init proactive check-in: ${e}`, "error");
+    }
+
     // // 2a. Diagnostics – enumerate tmHdr namespace presence and methods
     // try {
     //     const hasTmHdr = !!(browser && browser.tmHdr);
@@ -1889,6 +1898,19 @@ if (typeof browser !== 'undefined' && browser.runtime) {
           log("Cleared reminder generation timers on suspend");
         } catch (e) {
           log(`Error clearing reminder timers: ${e}`, "warn");
+        }
+      })();
+    } catch (_) {}
+
+    // Cleanup proactive check-in (timers + alarm listener + persist state)
+    try {
+      (async () => {
+        try {
+          const { cleanupProactiveCheckin } = await import("./modules/proactiveCheckin.js");
+          cleanupProactiveCheckin();
+          log("[ProactiveCheckin] Proactive check-in cleaned up on suspend");
+        } catch (e) {
+          log(`[ProactiveCheckin] Error cleaning up proactive check-in: ${e}`, "warn");
         }
       })();
     } catch (_) {}

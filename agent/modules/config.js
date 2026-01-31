@@ -279,6 +279,12 @@ export const SETTINGS = {
         initialDelayMs: 150,
         maxDelayMs: 1000,
     },
+    // Proactive check-in settings
+    proactiveCheckin: {
+        enabled: false,                  // Default disabled — opt-in feature
+        debounceMs: 1000,               // Debounce after reminder change detected
+        cooldownMinutes: 5,             // Min minutes between check-in LLM calls; also used as stale message threshold
+    },
     // Reminder (MOTD) generation settings
     reminderGeneration: {
         enabled: true,                // Enable/disable reminder generation feature

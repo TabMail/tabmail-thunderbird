@@ -26,6 +26,7 @@ import * as kbDelTool from "./kb_del.js";
 import * as memoryReadTool from "./memory_read.js";
 import * as memorySearchTool from "./memory_search.js";
 import * as webReadTool from "./web_read.js";
+import * as scheduleProactiveAlarmTool from "./schedule_proactive_alarm.js";
 
 // --- FSM Chain Tracking ---
 // Track the last FSM tool executed in the current tool-call-chain to detect
@@ -59,6 +60,7 @@ const TOOL_IMPL = {
   memory_read: memoryReadTool,
   memory_search: memorySearchTool,
   web_read: webReadTool,
+  schedule_proactive_alarm: scheduleProactiveAlarmTool,
 };
 
 // Generic marker for server-side tools (backend sends this name)
@@ -188,6 +190,8 @@ export async function getToolActivityLabel(name, args = {}) {
       }
       return "Reading web content…";
     }
+    case "schedule_proactive_alarm":
+      return "Scheduling check-in…";
     default:
       log(`[TMDBG Tools] Missing activity label for tool '${name}'`);
       return "Thinking…";

@@ -647,6 +647,26 @@ export function resetIdTranslationCache() {
   log(`[TMDBG IDTranslator] Reset ID translation cache`);
 }
 
+// Restore an idMap from serialized entries (e.g., from a persisted proactive check-in session).
+// Merges into the current map so any existing mappings are preserved.
+export function restoreIdMap(entries) {
+  if (!Array.isArray(entries)) return;
+  const idTranslation = ctx.idTranslation;
+  let restored = 0;
+  for (const [numericId, realId] of entries) {
+    if (typeof numericId === "number" && typeof realId === "string") {
+      idTranslation.idMap.set(numericId, realId);
+      restored++;
+      // Advance nextNumericId past any restored IDs to avoid collisions
+      if (numericId >= idTranslation.nextNumericId) {
+        idTranslation.nextNumericId = numericId + 1;
+      }
+    }
+  }
+  idTranslation.lastAccessed = Date.now();
+  log(`[TMDBG IDTranslator] Restored ${restored} entries from serialized idMap`);
+}
+
 // Clean up the current session's cache (called when chat window closes)
 export function cleanupIdTranslationCache() {
   ctx.idTranslation.idMap.clear();

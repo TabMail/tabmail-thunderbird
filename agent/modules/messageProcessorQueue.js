@@ -414,6 +414,14 @@ export async function drainProcessMessageQueue() {
       } catch (eRefresh) {
         log(`[TMDBG PMQ] Failed to trigger tagSort.refresh(): ${eRefresh}`, "warn");
       }
+
+      // Check for reminder changes → may trigger proactive check-in
+      try {
+        const { onInboxUpdated } = await import("./proactiveCheckin.js");
+        onInboxUpdated();
+      } catch (e) {
+        log(`[TMDBG PMQ] Failed to notify proactive checkin: ${e}`, "warn");
+      }
     }
 
     if (_pending.size > 0) {

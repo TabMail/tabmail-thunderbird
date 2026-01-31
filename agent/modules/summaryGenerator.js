@@ -260,8 +260,15 @@ export async function generateSummary(messageHeader, highPriority = false) {
   //   return promoted;
   // }
 
-  // Get user name for system prompt
+  // Get user name and KB content for system prompt
   const userName = await getUserName({ fullname: true });
+  let userKBContent = "";
+  try {
+    const { getUserKBPrompt } = await import("./promptGenerator.js");
+    userKBContent = (await getUserKBPrompt()) || "";
+  } catch (e) {
+    log(`${PFX}Failed to load KB for summary: ${e}`, "warn");
+  }
 
   // Analyze email for no-reply and unsubscribe filters
   // This comprehensive check includes full message analysis
@@ -279,6 +286,7 @@ export async function generateSummary(messageHeader, highPriority = false) {
     role: "system",
     content: "system_prompt_summary",
     user_name: userName,
+    user_kb_content: userKBContent,
     subject: messageHeader.subject || "Not Available",
     from_sender: messageHeader.author || "Unknown",
     email_date: emailDateFormatted,

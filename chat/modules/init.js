@@ -118,7 +118,33 @@ export async function initAndGreetUser() {
       log(`[TMDBG Init] ℹ️ Reminder feature disabled in config`);
     }
 
-    greetingParts.push("What would you like to do next?");
+    // Check for pending proactive check-in message — replaces the default closing
+    let closingText = "What would you like to do next?";
+    try {
+      const { consumePendingProactiveMessage } = await import("../../agent/modules/proactiveCheckin.js");
+      const proactiveData = await consumePendingProactiveMessage();
+      if (proactiveData?.message) {
+        // Restore the idMap from the headless session so [Email](numericId) links resolve.
+        // The headless proactive call built an idMap (numericId → realId) during reminder
+        // translation + tool calls. That map was serialized alongside the pending message
+        // because the chat window is a separate context that resets the idTranslationCache.
+        if (Array.isArray(proactiveData.idMapEntries) && proactiveData.idMapEntries.length > 0) {
+          try {
+            const { restoreIdMap } = await import("./idTranslator.js");
+            restoreIdMap(proactiveData.idMapEntries);
+            log(`[TMDBG Init] Restored idMap with ${proactiveData.idMapEntries.length} entries from proactive session`);
+          } catch (e) {
+            log(`[TMDBG Init] Failed to restore proactive idMap: ${e}`, "warn");
+          }
+        }
+        closingText = proactiveData.message;
+        log(`[TMDBG Init] Using proactive check-in message as closing (${proactiveData.message.length} chars)`);
+      }
+    } catch (e) {
+      log(`[TMDBG Init] Failed to check proactive message: ${e}`, "warn");
+    }
+
+    greetingParts.push(closingText);
     displayText = greetingParts.join("");
     ctx.greetedUser = true;
   } else {
