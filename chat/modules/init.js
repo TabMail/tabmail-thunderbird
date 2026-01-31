@@ -74,8 +74,40 @@ export async function initAndGreetUser() {
     log(`[TMDBG Init] Failed to parse inboxContextJson: ${e}`, "error");
   }
 
+  // Check for pending proactive check-in message FIRST — if present, skip greeting entirely
+  let proactiveMessage = null;
+  try {
+    const { consumePendingProactiveMessage } = await import("../../agent/modules/proactiveCheckin.js");
+    const proactiveData = await consumePendingProactiveMessage();
+    if (proactiveData?.message) {
+      // Restore the idMap from the headless session so [Email](numericId) links resolve.
+      // The chat window just reset its map, so restoreIdMap (no merge needed) is fine here.
+      if (Array.isArray(proactiveData.idMapEntries) && proactiveData.idMapEntries.length > 0) {
+        try {
+          const { restoreIdMap } = await import("./idTranslator.js");
+          restoreIdMap(proactiveData.idMapEntries);
+          log(`[TMDBG Init] Restored idMap with ${proactiveData.idMapEntries.length} entries from proactive session`);
+        } catch (e) {
+          log(`[TMDBG Init] Failed to restore proactive idMap: ${e}`, "warn");
+        }
+      }
+      proactiveMessage = proactiveData.message;
+      log(`[TMDBG Init] Pending proactive message found (${proactiveMessage.length} chars), will replace greeting`);
+    }
+  } catch (e) {
+    log(`[TMDBG Init] Failed to check proactive message: ${e}`, "warn");
+  }
+
   let displayText = "";
-  if (!ctx.greetedUser) {
+  let isProactiveBubble = false;
+
+  if (proactiveMessage) {
+    // Proactive message replaces the entire greeting
+    displayText = proactiveMessage;
+    isProactiveBubble = true;
+    ctx.greetedUser = true;
+    log(`[TMDBG Init] Using proactive message instead of greeting`);
+  } else if (!ctx.greetedUser) {
     const greetingParts = [
       `Hello ${userName},\n\n`,
       `You currently have a total of ${total} emails, with ${countArchive} marked for archiving, `,
@@ -127,6 +159,9 @@ export async function initAndGreetUser() {
 
   const agentBubble = await createNewAgentBubble("");
   agentBubble.classList.remove("loading");
+  if (isProactiveBubble) {
+    agentBubble.classList.add("proactive-message");
+  }
   streamText(agentBubble, displayText);
 
   // Initialise persistent agent converse message list once
@@ -241,7 +276,8 @@ export async function initAndGreetUser() {
     //   ctx.pendingSuggestion = "";
     //   console.log(`[TMDBG Init] Cleared pendingSuggestion (no actionable emails)`);
     // }
-    ctx.pendingSuggestion = "anything urgent?";
+    // Proactive message: use default placeholder ("Type a message..."), not "anything urgent?"
+    ctx.pendingSuggestion = isProactiveBubble ? "" : "anything urgent?";
     if (window.tmShowSuggestion) window.tmShowSuggestion();
   } catch (_) {}
 

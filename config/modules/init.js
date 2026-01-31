@@ -50,6 +50,7 @@ import {
     simulateUpdateAvailable,
     updateDebugStatusDisplay,
 } from "./updateDebug.js";
+import { handleNotificationChange, loadNotificationSettings } from "./notifications.js";
 import { handleWebSearchChange, loadWebSearchSettings } from "./webSearch.js";
 import {
     clearWelcomeStatus,
@@ -185,6 +186,7 @@ export async function initConfigPage({
     await handlePrivacyChange(e, setPrivacyOptOutAllAiEnabled);
     await handleReminderChange(e, log);
     await handleWebSearchChange(e);
+    await handleNotificationChange(e);
 
     // Auto-save calendar selection
     if (e.target.id === "default-calendar") {
@@ -438,6 +440,7 @@ export async function initConfigPage({
     updateWelcomeStatusDisplay(log),
     updateDebugStatusDisplay(),
     loadWebSearchSettings(log),
+    loadNotificationSettings(log),
   ]);
 }
 

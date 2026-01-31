@@ -76,6 +76,14 @@ select {
     display: block;
 }
 
+/* Proactive check-in message bubble — subtle yellow-ish highlight from palette */
+.agent-message.proactive-message {
+    background: color-mix(in srgb, var(--tag-tm-archive) 12%, transparent);
+    border-left: 3px solid var(--tag-tm-archive);
+    border-radius: 0 8px 8px 0;
+    padding: 8px 12px;
+}
+
 /* Retry link in system error messages */
 .system-message .retry-link {
     color: var(--in-content-accent-color);
