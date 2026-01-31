@@ -155,11 +155,22 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
         related_cc: details.related_cc || "",
     };
     
+    // Create an isolated ID translation context so concurrent reply generations
+    // don't contaminate each other's or the proactive check-in's idMap.
+    let idContext;
+    try {
+        const { createIsolatedContext } = await import("../../chat/modules/idTranslator.js");
+        idContext = createIsolatedContext();
+    } catch (e) {
+        log(`${PFX}Failed to create isolated idContext: ${e}`, "warn");
+    }
+
     // Use sendChatWithTools with headless tool executor for reply generation
     // Backend will filter tools based on system_prompt_compose config
-    const response = await sendChatWithTools([systemMsg], { 
+    const scopedExecutor = (toolCalls, tokenUsage) => executeToolsHeadless(toolCalls, tokenUsage, idContext);
+    const response = await sendChatWithTools([systemMsg], {
         ignoreSemaphore,
-        onToolExecution: executeToolsHeadless,
+        onToolExecution: scopedExecutor,
     });
 
     // Handle error response

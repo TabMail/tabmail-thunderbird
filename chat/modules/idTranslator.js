@@ -5,8 +5,25 @@
 import { log } from "../../agent/modules/utils.js";
 import { ctx } from "./context.js";
 
+// Resolve translation context: use provided override or fall back to global ctx.
+// Headless sessions pass an isolated context to avoid cross-session contamination.
+function _resolveCtx(overrideCtx) {
+  return overrideCtx || ctx.idTranslation;
+}
+
+// Create an isolated translation context for headless sessions.
+// Each headless call (proactive check-in, reply generation, etc.) should create its own
+// context so concurrent background sessions don't contaminate each other's idMap.
+export function createIsolatedContext() {
+  return {
+    idMap: new Map(),
+    nextNumericId: 1,
+    lastAccessed: Date.now(),
+  };
+}
+
 // Convert real Thunderbird ID to numeric ID for LLM consumption
-export function toNumericId(realId) {
+export function toNumericId(realId, overrideCtx) {
   if (!realId || typeof realId !== 'string') {
     log(`[TMDBG IDTranslator] Invalid realId: ${realId}`, "warn");
     return null;
@@ -18,8 +35,7 @@ export function toNumericId(realId) {
     return Number(realId);
   }
 
-  // Use ctx.idTranslation for session persistence
-  const idTranslation = ctx.idTranslation;
+  const idTranslation = _resolveCtx(overrideCtx);
 
   // Check if we already have this real ID mapped
   for (const [numericId, mappedRealId] of idTranslation.idMap.entries()) {
@@ -38,7 +54,7 @@ export function toNumericId(realId) {
 }
 
 // Convert numeric ID back to real Thunderbird ID for tool execution
-export function toRealId(numericId) {
+export function toRealId(numericId, overrideCtx) {
   if (typeof numericId !== 'number' && typeof numericId !== 'string') {
     log(`[TMDBG IDTranslator] Invalid numericId: ${numericId}`, "warn");
     return null;
@@ -50,8 +66,7 @@ export function toRealId(numericId) {
     return null;
   }
 
-  // Use ctx.idTranslation for session persistence
-  const idTranslation = ctx.idTranslation;
+  const idTranslation = _resolveCtx(overrideCtx);
   const realId = idTranslation.idMap.get(numericIdNum);
 
   if (!realId) {
@@ -65,7 +80,7 @@ export function toRealId(numericId) {
 }
 
 // Process tool call arguments to convert LLM numeric IDs to Thunderbird real IDs
-export function processToolCallLLMtoTB(toolName, args) {
+export function processToolCallLLMtoTB(toolName, args, overrideCtx) {
   if (!args || typeof args !== 'object') return args;
 
   try {
@@ -77,19 +92,19 @@ export function processToolCallLLMtoTB(toolName, args) {
     if (toolName.startsWith('email_')) {
       // Handle single unique_id parameter
       if ((processedArgs.unique_id || processedArgs.UniqueID) && (typeof (processedArgs.unique_id || processedArgs.UniqueID) === 'number' || typeof (processedArgs.unique_id || processedArgs.UniqueID) === 'string')) {
-        const realId = toRealId(processedArgs.unique_id || processedArgs.UniqueID);
+        const realId = toRealId(processedArgs.unique_id || processedArgs.UniqueID, overrideCtx);
         if (realId) {
           if (processedArgs.unique_id) processedArgs.unique_id = realId;
           if (processedArgs.UniqueID) processedArgs.UniqueID = realId;
         }
       }
-      
+
       // Handle unique_ids array parameter (for email_archive, email_delete, email_move_to_inbox, etc.)
       if (processedArgs.unique_ids && Array.isArray(processedArgs.unique_ids)) {
         log(`[TMDBG IDTranslator] Email tool - unique_ids array: ${JSON.stringify(processedArgs.unique_ids)}`);
         const translatedIds = processedArgs.unique_ids.map(id => {
           if (typeof id === 'number' || typeof id === 'string') {
-            const realId = toRealId(id);
+            const realId = toRealId(id, overrideCtx);
             log(`[TMDBG IDTranslator] Email tool - translated unique_id: ${id} -> ${realId}`);
             return realId || id;
           }
@@ -105,7 +120,7 @@ export function processToolCallLLMtoTB(toolName, args) {
       const eventId = processedArgs.event_id || processedArgs.EventID;
       log(`[TMDBG IDTranslator] Calendar event tool - eventId: ${eventId}, type: ${typeof eventId}`);
       if (eventId && (typeof eventId === 'number' || typeof eventId === 'string')) {
-        const realId = toRealId(eventId);
+        const realId = toRealId(eventId, overrideCtx);
         log(`[TMDBG IDTranslator] Calendar event tool - translated eventId: ${eventId} -> ${realId}`);
         if (realId) {
           if (processedArgs.event_id) processedArgs.event_id = realId;
@@ -115,20 +130,20 @@ export function processToolCallLLMtoTB(toolName, args) {
       // Handle compound calendar event IDs (calendar_id:event_id)
       if (eventId && typeof eventId === 'string' && eventId.includes(':')) {
         const [numericCalendarId, numericEventId] = eventId.split(':');
-        const realCalendarId = toRealId(Number(numericCalendarId));
-        const realEventId = toRealId(Number(numericEventId));
+        const realCalendarId = toRealId(Number(numericCalendarId), overrideCtx);
+        const realEventId = toRealId(Number(numericEventId), overrideCtx);
         if (realCalendarId && realEventId) {
           const compoundId = `${realCalendarId}:${realEventId}`;
           if (processedArgs.event_id) processedArgs.event_id = compoundId;
           if (processedArgs.EventID) processedArgs.EventID = compoundId;
         }
       }
-      
+
       // Also handle calendar_id parameter for calendar event tools
       const calendarId = processedArgs.calendar_id || processedArgs.CalendarID;
       log(`[TMDBG IDTranslator] Calendar event tool - calendarId: ${calendarId}, type: ${typeof calendarId}`);
       if (calendarId && (typeof calendarId === 'number' || typeof calendarId === 'string')) {
-        const realId = toRealId(calendarId);
+        const realId = toRealId(calendarId, overrideCtx);
         log(`[TMDBG IDTranslator] Calendar event tool - translated calendarId: ${calendarId} -> ${realId}`);
         if (realId) {
           if (processedArgs.calendar_id) processedArgs.calendar_id = realId;
@@ -140,7 +155,7 @@ export function processToolCallLLMtoTB(toolName, args) {
     // Contact tools (contacts_*)
     if (toolName.startsWith('contacts_')) {
       if ((processedArgs.contact_id || processedArgs.ContactID) && (typeof (processedArgs.contact_id || processedArgs.ContactID) === 'number' || typeof (processedArgs.contact_id || processedArgs.ContactID) === 'string')) {
-        const realId = toRealId(processedArgs.contact_id || processedArgs.ContactID);
+        const realId = toRealId(processedArgs.contact_id || processedArgs.ContactID, overrideCtx);
         if (realId) {
           if (processedArgs.contact_id) processedArgs.contact_id = realId;
           if (processedArgs.ContactID) processedArgs.ContactID = realId;
@@ -148,7 +163,7 @@ export function processToolCallLLMtoTB(toolName, args) {
       }
       // Handle addressbook_id parameter
       if (processedArgs.addressbook_id && (typeof processedArgs.addressbook_id === 'number' || typeof processedArgs.addressbook_id === 'string')) {
-        const realAddressbookId = toRealId(processedArgs.addressbook_id);
+        const realAddressbookId = toRealId(processedArgs.addressbook_id, overrideCtx);
         if (realAddressbookId) {
           processedArgs.addressbook_id = realAddressbookId;
         }
@@ -160,7 +175,7 @@ export function processToolCallLLMtoTB(toolName, args) {
       const calendarId = processedArgs.calendar_id || processedArgs.CalendarID;
       log(`[TMDBG IDTranslator] Calendar tool - calendarId: ${calendarId}, type: ${typeof calendarId}`);
       if (calendarId && (typeof calendarId === 'number' || typeof calendarId === 'string')) {
-        const realId = toRealId(calendarId);
+        const realId = toRealId(calendarId, overrideCtx);
         log(`[TMDBG IDTranslator] Calendar tool - translated calendarId: ${calendarId} -> ${realId}`);
         if (realId) {
           if (processedArgs.calendar_id) processedArgs.calendar_id = realId;
@@ -335,7 +350,7 @@ function processStringLLMtoTB(str) {
 }
 
 // Process string content to convert Thunderbird real IDs to LLM numeric IDs
-function processStringTBtoLLM(str) {
+function processStringTBtoLLM(str, overrideCtx) {
   if (typeof str !== 'string') return str;
 
   let processed = str;
@@ -353,7 +368,7 @@ function processStringTBtoLLM(str) {
   // Use greedy match to capture full folder paths with spaces
   processed = processed.replace(/(unique_id|contact_id|event_id|calendar_id|addressbook_id):\s+([^\n]+?)(?=\n|$)/g, (match, fieldName, realId) => {
     log(`[TMDBG IDTranslator] Found pattern: ${match} -> fieldName: ${fieldName}, realId: ${realId}`);
-    const numericId = toNumericId(realId);
+    const numericId = toNumericId(realId, overrideCtx);
     const result = numericId ? `${fieldName}: ${numericId}` : match;
     log(`[TMDBG IDTranslator] Translation result: ${result}`);
     return result;
@@ -361,7 +376,7 @@ function processStringTBtoLLM(str) {
 
   // Replace markdown links
   processed = processed.replace(/\[(Email|email)\]\(([^\)]+?)\)/g, (match, type, realId) => {
-    const numericId = toNumericId(realId);
+    const numericId = toNumericId(realId, overrideCtx);
     return numericId ? `[${type}](${numericId})` : match;
   });
 
@@ -370,8 +385,8 @@ function processStringTBtoLLM(str) {
   processed = processed.replace(/\[(Contact|contact)\]\(([^\)]+?)\)/g, (match, type, contactId) => {
     if (contactId.includes(':')) {
       const [addressbookId, contactIdPart] = contactId.split(':');
-      const numericAddressbookId = toNumericId(addressbookId);
-      const numericContactId = toNumericId(contactIdPart);
+      const numericAddressbookId = toNumericId(addressbookId, overrideCtx);
+      const numericContactId = toNumericId(contactIdPart, overrideCtx);
       if (numericAddressbookId && numericContactId) {
         log(`[TMDBG IDTranslator] Contact link TB->LLM: ${contactId} -> ${numericAddressbookId}:${numericContactId}`);
         return `[${type}](${numericAddressbookId}:${numericContactId})`;
@@ -385,8 +400,8 @@ function processStringTBtoLLM(str) {
   processed = processed.replace(/\[(Event|event)\]\(([^\)]+?)\)/g, (match, type, eventId) => {
     if (eventId.includes(':')) {
       const [calendarId, eventIdPart] = eventId.split(':');
-      const numericCalendarId = toNumericId(calendarId);
-      const numericEventId = toNumericId(eventIdPart);
+      const numericCalendarId = toNumericId(calendarId, overrideCtx);
+      const numericEventId = toNumericId(eventIdPart, overrideCtx);
       if (numericCalendarId && numericEventId) {
         log(`[TMDBG IDTranslator] Event link TB->LLM: ${eventId} -> ${numericCalendarId}:${numericEventId}`);
         return `[${type}](${numericCalendarId}:${numericEventId})`;
@@ -558,11 +573,11 @@ function handleIdExceptions(str) {
 }
 
 // Process object data to convert Thunderbird real IDs to LLM numeric IDs
-function processObjectTBtoLLM(obj) {
+function processObjectTBtoLLM(obj, overrideCtx) {
   if (!obj || typeof obj !== 'object') return obj;
 
   if (Array.isArray(obj)) {
-    return obj.map(item => processObjectTBtoLLM(item));
+    return obj.map(item => processObjectTBtoLLM(item, overrideCtx));
   }
 
   const processed = {};
@@ -572,39 +587,39 @@ function processObjectTBtoLLM(obj) {
          key === 'event_id' || key === 'EventID' || key === 'eventId' ||
          key === 'contact_id' || key === 'ContactID' || key === 'contactId' ||
          key === 'calendar_id' || key === 'CalendarID' || key === 'calendarId' ||
-         key === 'addressbook_id' || key === 'AddressbookID' || key === 'addressbookId') && 
+         key === 'addressbook_id' || key === 'AddressbookID' || key === 'addressbookId') &&
         typeof value === 'string') {
       log(`[TMDBG IDTranslator] Processing object field: ${key} = ${value}`);
-      const numericId = toNumericId(value);
+      const numericId = toNumericId(value, overrideCtx);
       processed[key] = numericId || value;
       log(`[TMDBG IDTranslator] Object field result: ${key} = ${processed[key]}`);
-    } else if (typeof value === 'string' && 
-               (value.includes('unique_id:') || value.includes('contact_id:') || 
+    } else if (typeof value === 'string' &&
+               (value.includes('unique_id:') || value.includes('contact_id:') ||
                 value.includes('event_id:') || value.includes('calendar_id:') ||
                 value.includes('addressbook_id:'))) {
       // Process string fields that contain ID patterns (like 'results' field)
       log(`[TMDBG IDTranslator] Processing string field '${key}' with ID patterns: ${value.substring(0, 100)}...`);
-      processed[key] = processStringTBtoLLM(value);
+      processed[key] = processStringTBtoLLM(value, overrideCtx);
       log(`[TMDBG IDTranslator] String field result: ${processed[key].substring(0, 100)}...`);
     } else {
-      processed[key] = processObjectTBtoLLM(value);
+      processed[key] = processObjectTBtoLLM(value, overrideCtx);
     }
   }
   return processed;
 }
 
 // Process tool result data to convert Thunderbird real IDs to LLM numeric IDs
-export function processToolResultTBtoLLM(result) {
+export function processToolResultTBtoLLM(result, overrideCtx) {
   if (!result) return result;
 
   try {
     log(`[TMDBG IDTranslator] processToolResultTBtoLLM called with: ${typeof result}`);
     if (typeof result === 'string') {
       log(`[TMDBG IDTranslator] Processing string result: ${result.substring(0, 200)}...`);
-      return processStringTBtoLLM(result);
+      return processStringTBtoLLM(result, overrideCtx);
     } else if (typeof result === 'object' && result !== null) {
       log(`[TMDBG IDTranslator] Processing object result: ${JSON.stringify(result).substring(0, 200)}...`);
-      return processObjectTBtoLLM(result);
+      return processObjectTBtoLLM(result, overrideCtx);
     }
     return result;
   } catch (e) {
