@@ -185,8 +185,19 @@ async function _triggerCheckin(triggerReason) {
   try {
     log(`[ProactiveCheckin] Starting check-in: trigger=${triggerReason}`);
 
-    // Build messages for the LLM
-    const messages = await _buildMessages(triggerReason);
+    // Create an isolated ID translation context for this session.
+    // Each headless session gets its own idMap so concurrent sessions
+    // (proactiveCheckin, replyGenerator) don't contaminate each other.
+    let idContext;
+    try {
+      const { createIsolatedContext } = await import("../../chat/modules/idTranslator.js");
+      idContext = createIsolatedContext();
+    } catch (e) {
+      log(`[ProactiveCheckin] Failed to create isolated idContext: ${e}`, "warn");
+    }
+
+    // Build messages for the LLM (pass idContext so reminder IDs use isolated map)
+    const messages = await _buildMessages(triggerReason, idContext);
     if (!messages || messages.length === 0) {
       log(`[ProactiveCheckin] Failed to build messages, aborting`, "warn");
       return;
@@ -196,9 +207,13 @@ async function _triggerCheckin(triggerReason) {
     const { sendChatWithTools, processJSONResponse } = await import("./llm.js");
     const { executeToolsHeadless } = await import("../../chat/tools/core.js");
 
+    // Wrap executeToolsHeadless with the isolated idContext so all tool
+    // call translations during this session use the same scoped map.
+    const scopedExecutor = (toolCalls, tokenUsage) => executeToolsHeadless(toolCalls, tokenUsage, idContext);
+
     const response = await sendChatWithTools(messages, {
       ignoreSemaphore: true,
-      onToolExecution: executeToolsHeadless,
+      onToolExecution: scopedExecutor,
     });
 
     if (response?.err) {
@@ -225,15 +240,11 @@ async function _triggerCheckin(triggerReason) {
       // Persist the idMap alongside the message so the chat window can restore it.
       // The idMap (numericId → realId) was populated during this headless session
       // from reminder translation + tool calls, but the chat window is a separate
-      // context that resets idTranslationCache on load.
+      // context that needs the mapping to resolve [Email](id) references.
       let idMapEntries = [];
-      try {
-        const { getIdMap } = await import("../../chat/modules/idTranslator.js");
-        const idMap = getIdMap();
-        idMapEntries = Array.from(idMap.entries());
+      if (idContext?.idMap?.size > 0) {
+        idMapEntries = Array.from(idContext.idMap.entries());
         log(`[ProactiveCheckin] Captured idMap with ${idMapEntries.length} entries for pending message`);
-      } catch (e) {
-        log(`[ProactiveCheckin] Failed to capture idMap: ${e}`, "warn");
       }
 
       await _storePendingMessage(message, idMapEntries);
@@ -252,7 +263,7 @@ async function _triggerCheckin(triggerReason) {
   }
 }
 
-async function _buildMessages(triggerReason) {
+async function _buildMessages(triggerReason, idContext) {
   try {
     const { getUserKBPrompt } = await import("./promptGenerator.js");
     const { buildReminderList } = await import("./reminderBuilder.js");
@@ -274,7 +285,7 @@ async function _buildMessages(triggerReason) {
       let translatedReminders = reminderResult.reminders;
       try {
         const { processToolResultTBtoLLM } = await import("../../chat/modules/idTranslator.js");
-        translatedReminders = processToolResultTBtoLLM(reminderResult.reminders);
+        translatedReminders = processToolResultTBtoLLM(reminderResult.reminders, idContext);
       } catch (e) {
         log(`[ProactiveCheckin] ID translation failed, using original: ${e}`, "warn");
       }
