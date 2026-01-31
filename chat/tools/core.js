@@ -339,8 +339,8 @@ export function resetFsmChainTracking() {
  * @param {Object} tokenUsage - Token usage info (logged but not displayed)
  * @returns {Promise<Array>} - Array of {call_id, output} results
  */
-export async function executeToolsHeadless(toolCalls, tokenUsage) {
-  log(`[Tools Headless] Executing ${toolCalls.length} tool(s)`);
+export async function executeToolsHeadless(toolCalls, tokenUsage, idContext) {
+  log(`[Tools Headless] Executing ${toolCalls.length} tool(s)${idContext ? ' (scoped ctx)' : ''}`);
   
   if (tokenUsage) {
     const used = tokenUsage.total_tokens || 0;
@@ -388,7 +388,7 @@ export async function executeToolsHeadless(toolCalls, tokenUsage) {
     let processedArgs = args;
     try {
       const { processToolCallLLMtoTB } = await import("../modules/idTranslator.js");
-      processedArgs = processToolCallLLMtoTB(name, args);
+      processedArgs = processToolCallLLMtoTB(name, args, idContext);
       log(`[Tools Headless] ID translation applied for ${name}`);
     } catch (e) {
       log(`[Tools Headless] ID translation failed, using original args: ${e}`, "warn");
@@ -401,10 +401,20 @@ export async function executeToolsHeadless(toolCalls, tokenUsage) {
       const result = await executeToolByName(name, processedArgs);
       const elapsed = Date.now() - startTime;
       log(`[Tools Headless] Completed: ${name} (${elapsed}ms)`);
-      
+
+      // ID Translation: Convert real TB IDs in results to numeric IDs for LLM
+      let processedResult = result;
+      try {
+        const { processToolResultTBtoLLM } = await import("../modules/idTranslator.js");
+        processedResult = processToolResultTBtoLLM(result, idContext);
+        log(`[Tools Headless] Result ID translation applied for ${name}`);
+      } catch (e) {
+        log(`[Tools Headless] Result ID translation failed, using original: ${e}`, "warn");
+      }
+
       results.push({
         call_id: callId,
-        output: JSON.stringify(result),
+        output: JSON.stringify(processedResult),
       });
     } catch (e) {
       log(`[Tools Headless] Failed: ${name} - ${e}`, "error");
