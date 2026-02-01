@@ -1247,14 +1247,14 @@ button:focus-visible {
 }
 
 .modal-actions .reset-section-btn {
-  background: var(--in-content-danger-button-background);
-  color: var(--in-content-danger-button-background-color, white);
+  background: var(--tag-tm-delete);
+  color: white;
   border: none;
   opacity: 1;
 }
 
 .modal-actions .reset-section-btn:hover {
-  background: color-mix(in srgb, var(--in-content-danger-button-background) 85%, black);
+  background: color-mix(in srgb, var(--tag-tm-delete) 85%, black);
 }
 
 /* Search highlight styling */

@@ -21,16 +21,17 @@ let currentSearchQuery = "";
 let isSearchMode = false;
 
 /**
- * Load chat history — default view from persistent chat_turns
+ * Load chat history — shows stats + search bar only (no entries until search).
  */
 export async function loadChatHistory() {
     try {
-        log("[Prompts] Loading chat history from persistent turns...");
+        log("[Prompts] Loading chat history stats...");
 
         // Reset search mode
         currentSearchQuery = "";
         isSearchMode = false;
         currentPage = 1;
+        displayData = [];
 
         // Clear search input
         const searchInput = document.getElementById("history-search-input");
@@ -47,17 +48,11 @@ export async function loadChatHistory() {
             memoryFtsStats = null;
         }
 
-        // Load turns from persistent store (newest first for display)
+        // Load active turns count for stats display
         try {
             const result = await browser.storage.local.get(CHAT_TURNS_KEY);
-            const turns = result[CHAT_TURNS_KEY] || [];
-            turnsCount = turns.length;
-            // Reverse to show newest first
-            displayData = turns.slice().reverse();
-            log(`[Prompts] Loaded ${turnsCount} turns from chat_turns`);
+            turnsCount = (result[CHAT_TURNS_KEY] || []).length;
         } catch (e) {
-            log(`[Prompts] Failed to load chat turns: ${e}`, "warn");
-            displayData = [];
             turnsCount = 0;
         }
 
@@ -145,10 +140,14 @@ function renderChatHistory() {
     if (!displayData || displayData.length === 0) {
         container.innerHTML = "";
         paginationDiv.style.display = "none";
-        emptyMessage.textContent = isSearchMode
-            ? `No results found for "${currentSearchQuery}".`
-            : "No chat history yet. Chat turns are saved as you use the chat.";
-        emptyMessage.style.display = "block";
+        if (isSearchMode) {
+            emptyMessage.textContent = `No results found for "${currentSearchQuery}".`;
+            emptyMessage.style.display = "block";
+        } else {
+            // Default view: no entries shown, just stats + search bar
+            emptyMessage.textContent = "Use the search bar to find past conversations.";
+            emptyMessage.style.display = "block";
+        }
         return;
     }
 
@@ -163,87 +162,30 @@ function renderChatHistory() {
     const endIdx = Math.min(startIdx + PAGE_SIZE, displayData.length);
     const pageData = displayData.slice(startIdx, endIdx);
 
-    if (isSearchMode) {
-        renderSearchResults(container, pageData);
-    } else {
-        renderTurns(container, pageData);
-    }
+    // Both default and search views use FTS data — render as conversation entries
+    renderFtsEntries(container, pageData);
 
     updatePaginationControls();
     log(`[Prompts] Rendered page ${currentPage}/${totalPages} (${pageData.length} entries)`);
 }
 
 /**
- * Render turns from persistent store (default view).
- * Simple flat list — each turn shows role, timestamp, content.
+ * Render FTS entries (used for both default and search views).
+ * Each entry is a user+assistant exchange with clean rendered text.
  */
-function renderTurns(container, turns) {
-    for (const turn of turns) {
-        if (turn._type === "separator") {
-            const sep = document.createElement("div");
-            sep.className = "history-turn-separator";
-            sep.textContent = turn.content?.replace("--- ", "").replace(" ---", "") || "New topic";
-            container.appendChild(sep);
-            continue;
-        }
-
-        const turnDiv = document.createElement("div");
-        const roleClass = turn.role === "user" ? "user" : "assistant";
-        turnDiv.className = `history-turn history-turn-${roleClass}`;
-
-        // Role + timestamp header
+function renderFtsEntries(container, entries) {
+    if (isSearchMode) {
         const headerDiv = document.createElement("div");
-        headerDiv.className = "history-turn-header";
-
-        const roleSpan = document.createElement("span");
-        roleSpan.className = "history-turn-role";
-        roleSpan.textContent = turn.role === "user" ? "You" : "TabMail";
-        headerDiv.appendChild(roleSpan);
-
-        if (turn._ts) {
-            const timeSpan = document.createElement("span");
-            timeSpan.className = "history-turn-time";
-            timeSpan.textContent = formatSessionTime(turn._ts);
-            headerDiv.appendChild(timeSpan);
-        }
-
-        if (turn._type && turn._type !== "normal") {
-            const typeSpan = document.createElement("span");
-            typeSpan.className = "history-turn-type";
-            typeSpan.textContent = turn._type.replace(/_/g, " ");
-            headerDiv.appendChild(typeSpan);
-        }
-
-        turnDiv.appendChild(headerDiv);
-
-        // Content — for user turns show user_message (actual text), not template token
-        const contentDiv = document.createElement("div");
-        contentDiv.className = "history-turn-content";
-        const text = turn.role === "user"
-            ? (turn.user_message || turn.content || "")
-            : (turn.content || "");
-        contentDiv.textContent = text;
-        turnDiv.appendChild(contentDiv);
-
-        container.appendChild(turnDiv);
+        headerDiv.className = "history-section-header";
+        headerDiv.textContent = `Search Results (${displayData.length} total)`;
+        container.appendChild(headerDiv);
     }
-}
 
-/**
- * Render search results from FTS (search view).
- * Formatted like memory_read output: "--- Conversation from <date> ---" + content.
- */
-function renderSearchResults(container, results) {
-    const headerDiv = document.createElement("div");
-    headerDiv.className = "history-section-header";
-    headerDiv.textContent = `Search Results (${displayData.length} total)`;
-    container.appendChild(headerDiv);
-
-    for (const entry of results) {
+    for (const entry of entries) {
         const entryDiv = document.createElement("div");
         entryDiv.className = "history-search-result";
 
-        // Date header (like memory_read format)
+        // Date header
         const dateStr = entry.dateMs
             ? new Date(entry.dateMs).toLocaleDateString("en-US", {
                   month: "short", day: "numeric", year: "numeric",
@@ -256,10 +198,10 @@ function renderSearchResults(container, results) {
         dateHeader.textContent = `Conversation from ${dateStr}`;
         entryDiv.appendChild(dateHeader);
 
-        // Content with search highlight
+        // Content — with search highlight if in search mode
         const contentDiv = document.createElement("div");
         contentDiv.className = "history-search-result-content";
-        if (currentSearchQuery) {
+        if (isSearchMode && currentSearchQuery) {
             contentDiv.innerHTML = highlightSearchTerms(entry.content || "(empty)", currentSearchQuery);
         } else {
             contentDiv.textContent = entry.content || "(empty)";

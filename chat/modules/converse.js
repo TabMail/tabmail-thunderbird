@@ -14,6 +14,7 @@ import {
 import {
   appendTurn,
   generateTurnId,
+  indexTurnToFTS,
   saveTurns,
   saveMeta,
 } from "./persistentChatStore.js";
@@ -283,6 +284,10 @@ export async function agentConverse(userText) {
         registerTurnRefs(pendingNudge);
         await appendTurn(pendingNudge, ctx.persistedTurns, ctx.chatMeta);
         log(`[CONVERSE] Persisted pending ${pendingNudge._type} nudge before user message`);
+        // Index nudge to FTS so it appears in chat history (fire-and-forget)
+        indexTurnToFTS(null, pendingNudge).catch(e =>
+          log(`[CONVERSE] FTS indexing of nudge failed (non-fatal): ${e}`, "warn")
+        );
       }
     } catch (e) {
       log(`[CONVERSE] Failed to persist pending nudge: ${e}`, "warn");
@@ -972,10 +977,14 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
       log(`[CONVERSE] Failed to persist assistant turn: ${e}`, "warn");
     }
 
-    // FTS indexing is deferred — happens when periodicKbUpdate advances the cursor.
-    // Recent turns stay mutable (welcome-backs, nudges can be replaced without FTS inconsistency).
+    // Index user+assistant exchange to FTS immediately so it appears in Chat History
+    if (ctx._lastPersistedUserTurn) {
+      indexTurnToFTS(ctx._lastPersistedUserTurn, assistantTurn).catch(e =>
+        log(`[CONVERSE] FTS indexing failed (non-fatal): ${e}`, "warn")
+      );
+    }
 
-    // Trigger periodic KB refinement + deferred FTS indexing (fire-and-forget, guards internally)
+    // Trigger periodic KB refinement (fire-and-forget, guards internally)
     try {
       import("../../agent/modules/knowledgebase.js").then(({ periodicKbUpdate }) => {
         periodicKbUpdate().catch(e => {

@@ -338,13 +338,11 @@ async function _periodicKbUpdateImpl(options = {}) {
         }
 
         // --- Deferred FTS indexing: index pending turns now (before KB refinement) ---
-        // Only index real conversation exchanges, not automated greetings/nudges.
-        // FTS stores plain text (references stripped) — no idMap needed.
+        // FTS stores plain text (rendered via markdown pipeline) — no idMap needed.
         // FTS upserts by memId, so re-indexing on retry is safe.
         try {
             let ftsIndexed = 0;
             for (const pair of messagePairs) {
-                if (pair.assistant._type && pair.assistant._type !== "normal") continue;
                 try {
                     await indexTurnToFTS(pair.user, pair.assistant);
                     ftsIndexed++;
@@ -352,8 +350,25 @@ async function _periodicKbUpdateImpl(options = {}) {
                     log(`-- KB Periodic -- FTS index failed for turn ${pair.assistant._id}: ${e}`, "warn");
                 }
             }
+            // Also index standalone assistant turns (welcome_back, proactive, greeting)
+            // that aren't part of user+assistant pairs
+            const pairedTurnIds = new Set();
+            for (const pair of messagePairs) {
+                pairedTurnIds.add(pair.user._id);
+                pairedTurnIds.add(pair.assistant._id);
+            }
+            for (const t of pending) {
+                if (t.role === "assistant" && !pairedTurnIds.has(t._id) && t._type !== "separator") {
+                    try {
+                        await indexTurnToFTS(null, t);
+                        ftsIndexed++;
+                    } catch (e) {
+                        log(`-- KB Periodic -- FTS index failed for standalone turn ${t._id}: ${e}`, "warn");
+                    }
+                }
+            }
             if (ftsIndexed > 0) {
-                log(`-- KB Periodic -- Indexed ${ftsIndexed} exchanges to FTS`);
+                log(`-- KB Periodic -- Indexed ${ftsIndexed} entries to FTS`);
             }
         } catch (e) {
             log(`-- KB Periodic -- FTS batch indexing failed (non-fatal): ${e}`, "warn");
