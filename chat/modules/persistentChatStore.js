@@ -341,60 +341,40 @@ export function turnsToLLMMessages(turns) {
 }
 
 // ---------------------------------------------------------------------------
-// FTS indexing (rendered text, no id-mapped references)
+// FTS indexing (uses the real render pipeline for future-proof text extraction)
 // ---------------------------------------------------------------------------
 
 /**
  * Index a user+assistant exchange to native FTS for immediate searchability.
- * Resolves [Email](N), [Contact](N:M), [Event](N:M) references to readable
- * text using the idMap before indexing, so FTS stores clean rendered text.
+ * Runs the same render pipeline as the chat DOM: renderMarkdown() to produce HTML
+ * with resolved entities, then extractPlainTextFromHtml() to get searchable plain
+ * text. This is identical to the old DOM-based extraction and automatically picks
+ * up any future rendering changes.
  *
  * @param {object} userTurn - User turn object
  * @param {object} assistantTurn - Assistant turn object
- * @param {Map} idMap - Current idMap (numericId -> realId) for resolving refs
  */
-export async function indexTurnToFTS(userTurn, assistantTurn, idMap) {
+export async function indexTurnToFTS(userTurn, assistantTurn) {
   try {
     const userText = userTurn?.user_message || userTurn?.content || "";
     const assistantText = assistantTurn?.content || "";
 
     if (!userText.trim() && !assistantText.trim()) return;
 
-    // Resolve id references in assistant text to clean readable text
-    const cleanAssistantText = _resolveIdRefsForFTS(assistantText, idMap);
+    const { renderMarkdown } = await import("./markdown.js");
+    const { extractPlainTextFromHtml } = await import("./helpers.js");
+
+    // Run through the real render pipeline: markdown → HTML → plain text
+    // This resolves [Email](N) → <a class="tm-email-link">📧 Subject</a> → [Email: Subject]
+    const cleanUserText = userText ? extractPlainTextFromHtml(await renderMarkdown(userText)) : "";
+    const cleanAssistantText = assistantText ? extractPlainTextFromHtml(await renderMarkdown(assistantText)) : "";
 
     const { indexChatTurn } = await import("../../fts/memoryIndexer.js");
-    await indexChatTurn(userText, cleanAssistantText, assistantTurn._id, assistantTurn._ts);
+    await indexChatTurn(cleanUserText, cleanAssistantText, assistantTurn._id, assistantTurn._ts);
     log(`[PersistentChat] Indexed turn ${assistantTurn._id} to FTS`);
   } catch (e) {
     log(`[PersistentChat] FTS indexing failed (non-fatal): ${e}`, "warn");
   }
-}
-
-/**
- * Resolve [Email](N), [Contact](N:M), [Event](N:M) references in text
- * to readable format for FTS storage.
- * E.g., "[Email](42)" with idMap 42->"folder/msg123" becomes "[Email](folder/msg123)"
- * which is still descriptive for search purposes.
- */
-function _resolveIdRefsForFTS(text, idMap) {
-  if (!text || !idMap || idMap.size === 0) return text || "";
-
-  // Resolve simple numeric IDs: [Email](N)
-  let resolved = text.replace(/\[(Email|email)\]\((\d+)\)/g, (match, type, numId) => {
-    const realId = idMap.get(Number(numId));
-    return realId ? `[${type}](${realId})` : match;
-  });
-
-  // Resolve compound IDs: [Contact](N:M), [Event](N:M)
-  resolved = resolved.replace(/\[(Contact|contact|Event|event)\]\((\d+):(\d+)\)/g, (match, type, numId1, numId2) => {
-    const realId1 = idMap.get(Number(numId1));
-    const realId2 = idMap.get(Number(numId2));
-    if (realId1 && realId2) return `[${type}](${realId1}:${realId2})`;
-    return match;
-  });
-
-  return resolved;
 }
 
 // ---------------------------------------------------------------------------

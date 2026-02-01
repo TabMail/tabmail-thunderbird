@@ -594,9 +594,12 @@ function _renderTurnSync(turn, container, beforeNode) {
       bubble.textContent = turn.content || "";
       row.appendChild(bubble);
       container.insertBefore(row, beforeNode);
-      // Fire-and-forget markdown render upgrade
-      import("./markdown.js").then(({ renderMarkdown }) =>
-        renderMarkdown(turn.content || "").then(html => { bubble.innerHTML = html; })
+      // Fire-and-forget markdown render upgrade + attach click handlers
+      import("./markdown.js").then(({ renderMarkdown, attachSpecialLinkListeners }) =>
+        renderMarkdown(turn.content || "").then(html => {
+          bubble.innerHTML = html;
+          attachSpecialLinkListeners(bubble);
+        })
       ).catch(() => {});
     }
   } catch (e) {

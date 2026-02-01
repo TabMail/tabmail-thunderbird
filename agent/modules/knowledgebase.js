@@ -285,7 +285,7 @@ async function _periodicKbUpdateImpl(options = {}) {
     const { skipTimeGuard = false } = options;
 
     try {
-        const { loadTurns, loadMeta, getTurnsAfterCursor, advanceCursor, saveMeta, indexTurnToFTS, loadIdMap } =
+        const { loadTurns, loadMeta, getTurnsAfterCursor, advanceCursor, saveMeta, indexTurnToFTS } =
             await import("../../chat/modules/persistentChatStore.js");
 
         const [turns, meta] = await Promise.all([loadTurns(), loadMeta()]);
@@ -339,15 +339,14 @@ async function _periodicKbUpdateImpl(options = {}) {
 
         // --- Deferred FTS indexing: index pending turns now (before KB refinement) ---
         // Only index real conversation exchanges, not automated greetings/nudges.
+        // FTS stores plain text (references stripped) — no idMap needed.
         // FTS upserts by memId, so re-indexing on retry is safe.
         try {
-            const idMapData = await loadIdMap();
-            const idMap = idMapData?.idMap || new Map();
             let ftsIndexed = 0;
             for (const pair of messagePairs) {
                 if (pair.assistant._type && pair.assistant._type !== "normal") continue;
                 try {
-                    await indexTurnToFTS(pair.user, pair.assistant, idMap);
+                    await indexTurnToFTS(pair.user, pair.assistant);
                     ftsIndexed++;
                 } catch (e) {
                     log(`-- KB Periodic -- FTS index failed for turn ${pair.assistant._id}: ${e}`, "warn");

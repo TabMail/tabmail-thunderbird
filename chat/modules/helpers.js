@@ -28,7 +28,7 @@ function sanitizeForJson(text) {
  * @param {string} html - Rendered HTML from bubble
  * @returns {string} - Plain text with resolved entities
  */
-function extractPlainTextFromHtml(html) {
+export function extractPlainTextFromHtml(html) {
   if (!html) return "";
   let text = html;
   
