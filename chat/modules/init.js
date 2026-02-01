@@ -15,7 +15,7 @@ import { getUserName, streamText } from "./helpers.js";
 import { buildInboxContext } from "../../agent/modules/inboxContext.js";
 import { log } from "../../agent/modules/utils.js";
 
-import { createNewAgentBubble, createNewUserBubble } from "../chat.js";
+import { createNewAgentBubble } from "../chat.js";
 import { awaitUserInput } from "./converse.js";
 import { updateEmailCacheForMentions } from "./mentionAutocomplete.js";
 
@@ -205,13 +205,15 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
   truncationIndicator.style.display = "none"; // show only if we know there were evictions
   if (chatContainer) chatContainer.prepend(truncationIndicator);
 
-  // First pass: render visible viewport turns (last N)
+  // First pass: render visible viewport turns (last N) synchronously to avoid flash.
+  // _renderTurnSync places all elements in the DOM in a single JS frame — browser
+  // repaints only after we've scrolled to bottom, so no top-to-bottom flash.
   const viewportTurns = persistedTurns.slice(splitIdx);
   for (const turn of viewportTurns) {
-    await _renderTurn(turn);
+    _renderTurnSync(turn, chatContainer, null); // null beforeNode = append at end
   }
 
-  // Scroll to bottom immediately
+  // Scroll to bottom before browser repaints
   if (chatContainer) {
     chatContainer.scrollTop = chatContainer.scrollHeight;
   }
@@ -553,36 +555,6 @@ export function consumePendingNudge() {
 // Render helpers for persisted turns
 // ---------------------------------------------------------------------------
 
-/**
- * Render a single turn into the DOM (async — creates bubble via existing helpers).
- */
-async function _renderTurn(turn) {
-  try {
-    if (turn._type === "separator") {
-      _renderSeparator(turn.content || "New topic");
-      return;
-    }
-
-    if (turn.role === "user") {
-      const text = turn.user_message || turn.content || "";
-      if (text && typeof createNewUserBubble === "function") {
-        createNewUserBubble(text);
-      }
-    } else if (turn.role === "assistant") {
-      const agentBubble = await createNewAgentBubble("");
-      agentBubble.classList.remove("loading");
-      if (turn._type === "proactive") agentBubble.classList.add("proactive-message");
-      if (turn._type === "welcome_back") agentBubble.classList.add("welcome-back");
-      if (turn._type === "greeting") agentBubble.classList.add("greeting-message");
-      // Render full content immediately (not streamed — it's persisted history)
-      const { renderMarkdown } = await import("./markdown.js");
-      agentBubble.innerHTML = await renderMarkdown(turn.content || "");
-    }
-    // system turns (separators) handled above
-  } catch (e) {
-    log(`[TMDBG Init] Failed to render turn ${turn._id}: ${e}`, "warn");
-  }
-}
 
 /**
  * Render a turn synchronously, inserting before a reference node (for lazy render).
@@ -667,11 +639,4 @@ export async function checkAndInsertWelcomeBack() {
   await _insertNudge(meta, parts.join(""), "welcome_back");
 }
 
-function _renderSeparator(text) {
-  const chatContainer = document.getElementById("chat-container");
-  if (!chatContainer) return;
-  const sep = document.createElement("div");
-  sep.className = "topic-separator";
-  sep.textContent = text.replace("--- ", "").replace(" ---", "");
-  chatContainer.appendChild(sep);
-}
+
