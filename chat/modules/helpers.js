@@ -31,7 +31,16 @@ function sanitizeForJson(text) {
 export function extractPlainTextFromHtml(html) {
   if (!html) return "";
   let text = html;
-  
+
+  // Mark blockquote boundaries with PUA markers (processed after tag stripping)
+  const BQ_OPEN = "\uE000";
+  const BQ_CLOSE = "\uE001";
+  text = text.replace(/<blockquote[^>]*>/gi, `\n${BQ_OPEN}`);
+  text = text.replace(/<\/blockquote>/gi, `${BQ_CLOSE}\n`);
+
+  // Convert horizontal rules to text separator
+  text = text.replace(/<hr[^>]*>/gi, "\n---\n");
+
   // Convert block elements to newlines
   text = text.replace(/<br\s*\/?>/gi, "\n");
   text = text.replace(/<\/p>/gi, "\n\n");
@@ -41,7 +50,7 @@ export function extractPlainTextFromHtml(html) {
   text = text.replace(/<\/tr>/gi, "\n");
   text = text.replace(/<\/td>/gi, " | ");
   text = text.replace(/<\/th>/gi, " | ");
-  
+
   // Extract text from TabMail special links, wrap in brackets with type prefix
   text = text.replace(/<a[^>]*class="[^"]*tm-(email|contact|event)-link[^"]*"[^>]*>([^<]*)<\/a>/gi, (match, type, content) => {
     // Remove emoji prefix - match common email/contact/calendar emojis
@@ -51,13 +60,13 @@ export function extractPlainTextFromHtml(html) {
     const prefix = type === 'email' ? 'Email' : type === 'contact' ? 'Contact' : 'Calendar';
     return `[${prefix}: ${cleanContent}]`;
   });
-  
+
   // Handle regular links - keep the link text
   text = text.replace(/<a[^>]*>([^<]*)<\/a>/gi, "$1");
-  
+
   // Strip remaining HTML tags
   text = text.replace(/<[^>]+>/g, "");
-  
+
   // Decode HTML entities
   text = text.replace(/&nbsp;/gi, " ");
   text = text.replace(/&quot;/g, '"');
@@ -66,7 +75,13 @@ export function extractPlainTextFromHtml(html) {
   text = text.replace(/&gt;/g, ">");
   text = text.replace(/&#39;/g, "'");
   text = text.replace(/&apos;/gi, "'");
-  
+
+  // Convert blockquote markers to > prefixed lines (now that content is plain text)
+  text = text.replace(new RegExp(`${BQ_OPEN}([\\s\\S]*?)${BQ_CLOSE}`, "g"), (match, inner) => {
+    const lines = inner.split("\n").map(l => l.trim()).filter(l => l);
+    return lines.map(l => `> ${l}`).join("\n");
+  });
+
   // Clean up whitespace and sanitize for JSON
   text = text.replace(/\n{3,}/g, "\n\n").trim();
   return sanitizeForJson(text);
