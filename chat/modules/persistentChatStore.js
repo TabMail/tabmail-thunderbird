@@ -128,12 +128,9 @@ export function enforceBudget(turns, meta, maxExchanges) {
 
   const evictedList = [];
 
-  // Find last welcome_back index for protection
-  const lastWelcomeIdx = _findLastWelcomeBackIndex(turns);
-
   // Step 1: Enforce exchange count limit
   while (turns.length > maxMessages) {
-    if (_isProtected(0, lastWelcomeIdx, turns)) break;
+    if (_isHeadProtected(turns)) break;
     const evicted = turns.shift();
     meta.totalChars -= evicted._chars || 0;
     evictedList.push(evicted);
@@ -141,7 +138,7 @@ export function enforceBudget(turns, meta, maxExchanges) {
 
   // Step 2: Enforce derived char cap (handles unusually long messages)
   while (meta.totalChars > maxChars && turns.length > 0) {
-    if (_isProtected(0, lastWelcomeIdx, turns)) break;
+    if (_isHeadProtected(turns)) break;
     const evicted = turns.shift();
     meta.totalChars -= evicted._chars || 0;
     evictedList.push(evicted);
@@ -154,24 +151,16 @@ export function enforceBudget(turns, meta, maxExchanges) {
   return evictedList;
 }
 
-function _findLastWelcomeBackIndex(turns) {
+/**
+ * Check if turns[0] is protected from eviction.
+ * The last welcome_back and everything after it are protected.
+ * Must recalculate each call since turns mutates during eviction.
+ */
+function _isHeadProtected(turns) {
   for (let i = turns.length - 1; i >= 0; i--) {
-    if (turns[i]._type === "welcome_back") return i;
+    if (turns[i]._type === "welcome_back") return i === 0;
   }
-  return -1;
-}
-
-function _isProtected(idx, lastWelcomeIdx, turns) {
-  // Protect the last welcome_back and everything after it
-  if (lastWelcomeIdx < 0) return false;
-  // Recalculate: since we shift from front, lastWelcomeIdx moves.
-  // Actually, we always evict turns[0]. Check if turns[0]._type === "welcome_back"
-  // or if there's only one welcome_back left and it's at the front.
-  // Simpler: after evictions, recalculate. But for efficiency:
-  // Protect if the turn at idx is the last welcome_back or newer.
-  const currentLastWelcome = _findLastWelcomeBackIndex(turns);
-  if (currentLastWelcome < 0) return false;
-  return idx >= currentLastWelcome;
+  return false; // no welcome_back → nothing protected
 }
 
 export async function getMaxExchanges() {

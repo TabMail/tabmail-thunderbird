@@ -721,14 +721,6 @@ export function getIdMap() {
   return new Map(ctx.idTranslation.idMap);
 }
 
-// Reset the ID translation cache for the current session
-export function resetIdTranslationCache() {
-  ctx.idTranslation.idMap.clear();
-  ctx.idTranslation.nextNumericId = 1;
-  ctx.idTranslation.lastAccessed = Date.now();
-  log(`[TMDBG IDTranslator] Reset ID translation cache`);
-}
-
 // Restore an idMap from serialized entries (e.g., from a persisted proactive check-in session).
 // Merges into the current map so any existing mappings are preserved.
 export function restoreIdMap(entries) {

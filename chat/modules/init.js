@@ -29,6 +29,7 @@ import {
   generateTurnId,
   enforceBudget,
   getMaxExchanges,
+  indexTurnToFTS,
 } from "./persistentChatStore.js";
 import {
   initIdTranslation,
@@ -407,6 +408,11 @@ async function _initFirstTimeUser(meta, systemMessage, userName, inboxCounts) {
   } catch (e) {
     log(`[TMDBG Init] Failed to persist greeting turn: ${e}`, "warn");
   }
+
+  // Index greeting to FTS so it's immediately searchable (fire-and-forget)
+  indexTurnToFTS(null, greetingTurn).catch(e =>
+    log(`[TMDBG Init] FTS indexing of greeting failed (non-fatal): ${e}`, "warn")
+  );
 
   // Proactive message: use default placeholder
   if (isProactiveBubble) {
