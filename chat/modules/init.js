@@ -196,13 +196,12 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
   const totalTurns = persistedTurns.length;
   const splitIdx = Math.max(0, totalTurns - LAZY_RENDER_VIEWPORT_TURNS);
 
-  // Show truncation indicator if turns were evicted (we can detect this from meta)
-  // Also shown if budget enforcement happened during load
+  // Truncation indicator — shown only when budget eviction actually removed turns
   const truncationIndicator = document.createElement("div");
   truncationIndicator.className = "history-truncated";
   truncationIndicator.id = "history-truncated-indicator";
-  truncationIndicator.textContent = "Earlier messages moved to searchable memory";
-  truncationIndicator.style.display = "none"; // show only if we know there were evictions
+  truncationIndicator.textContent = "Earlier messages truncated";
+  truncationIndicator.style.display = evictedOnLoad.length > 0 ? "" : "none";
   if (chatContainer) chatContainer.prepend(truncationIndicator);
 
   // First pass: render visible viewport turns (last N) synchronously to avoid flash.
@@ -220,7 +219,6 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
 
   // Second pass: render older turns above (lazy, via requestIdleCallback)
   if (splitIdx > 0) {
-    truncationIndicator.style.display = "";
     const olderTurns = persistedTurns.slice(0, splitIdx);
     const renderOlder = () => {
       // Insert older turns before the viewport turns

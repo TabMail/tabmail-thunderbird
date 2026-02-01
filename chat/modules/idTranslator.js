@@ -826,14 +826,6 @@ export function mergeIdMapFromHeadless(entries, message) {
   return remappedMessage;
 }
 
-// Clean up the current session's cache (called when chat window closes)
-export function cleanupIdTranslationCache() {
-  ctx.idTranslation.idMap.clear();
-  ctx.idTranslation.nextNumericId = 1;
-  ctx.idTranslation.lastAccessed = Date.now();
-  log(`[TMDBG IDTranslator] Cleaned up ID translation cache`);
-}
-
 // Get translation statistics for debugging
 export function getTranslationStats() {
   return {

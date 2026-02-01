@@ -282,7 +282,11 @@ export async function agentConverse(userText) {
       if (pendingNudge && ctx.persistedTurns && ctx.chatMeta) {
         pendingNudge._refs = collectTurnRefs(pendingNudge);
         registerTurnRefs(pendingNudge);
-        await appendTurn(pendingNudge, ctx.persistedTurns, ctx.chatMeta);
+        const { evictedTurns: nudgeEvicted } = await appendTurn(pendingNudge, ctx.persistedTurns, ctx.chatMeta);
+        if (nudgeEvicted?.length) {
+          cleanupEvictedIds(nudgeEvicted);
+          log(`[CONVERSE] Evicted ${nudgeEvicted.length} turns after nudge persist`);
+        }
         log(`[CONVERSE] Persisted pending ${pendingNudge._type} nudge before user message`);
         // Index nudge to FTS so it appears in chat history (fire-and-forget)
         indexTurnToFTS(null, pendingNudge).catch(e =>
