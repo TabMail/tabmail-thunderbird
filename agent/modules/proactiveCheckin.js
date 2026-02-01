@@ -1,84 +1,195 @@
-// proactiveCheckin.js – Proactive check-in orchestrator (TB 145, MV3)
-// Triggers headless LLM calls when reminders change or alarms fire.
-// If the LLM decides to reach out, stores a pending message and opens the chat window.
+// proactiveCheckin.js – Deterministic proactive reachout orchestrator (TB 145, MV3)
+// Triggers notifications when reminders change or due dates approach.
+// No headless LLM calls — all reachout decisions are programmatic.
+//
+// Two triggers:
+//   1. New reminder formed → if within N-day window → notify
+//   2. Due date/time approaching → alarm fires X minutes before → notify
 
 import { SETTINGS } from "./config.js";
+import { hashReminder } from "./reminderStateStore.js";
 import { log } from "./utils.js";
 
-const ALARM_NAME = "tabmail-proactive-checkin";
-const REMINDER_HASH_KEY = "proactiveCheckin_reminderHash";
-const PENDING_MSG_KEY = "proactiveCheckin_pendingMessage";
-const LAST_CHECKIN_KEY = "proactiveCheckin_lastCheckin";
+// ─────────────────────────────────────────────────────────────
+// Storage keys (all under "notifications." namespace)
+// ─────────────────────────────────────────────────────────────
 
-let _debounceTimer = null;
-let _postCooldownTimer = null;
-let _alarmListener = null;
-let _isCheckinInFlight = false;
-let _lastCheckinTime = 0;
-let _lastCheckinResult = null;
-let _isInitialized = false;
+const STORAGE = {
+  ENABLED: "notifications.proactive_enabled",
+  WINDOW_DAYS: "notifications.new_reminder_window_days",
+  ADVANCE_MINUTES: "notifications.due_reminder_advance_minutes",
+  GRACE_MINUTES: "notifications.grace_minutes",
+  REACHED_OUT_IDS: "notifications.reached_out_ids",
+  REMINDER_HASH: "notifications.reminder_hash",
+  LAST_REACHOUT: "notifications.last_reachout",
+  PENDING_MSG: "proactiveCheckin_pendingMessage", // kept for compat with chat init
+};
 
-const INTERVAL_STORAGE_KEY = "proactiveCheckinIntervalMinutes";
-const INTERVAL_DEFAULT = 5;
+const ALARM_NAME = "tabmail-proactive-reachout";
+
+// Legacy keys for one-time migration
+const LEGACY_KEYS = {
+  ENABLED: "proactiveCheckinEnabled",
+  INTERVAL: "proactiveCheckinIntervalMinutes",
+  HASH: "proactiveCheckin_reminderHash",
+  LAST: "proactiveCheckin_lastCheckin",
+};
 
 // ─────────────────────────────────────────────────────────────
-// Config helpers
+// Module state
+// ─────────────────────────────────────────────────────────────
+
+let _debounceTimer = null;
+let _alarmListener = null;
+let _isInitialized = false;
+let _lastReachoutTime = 0;
+
+// ─────────────────────────────────────────────────────────────
+// Config defaults (also in config.js under "notifications")
 // ─────────────────────────────────────────────────────────────
 
 function _cfg() {
-  return SETTINGS?.proactiveCheckin || {};
+  return SETTINGS?.notifications || {};
 }
+
+const DEFAULTS = {
+  enabled: false,
+  windowDays: 7,
+  advanceMinutes: 30,
+  graceMinutes: 5,
+  debounceMs: 1000,
+  minIntervalMs: 60_000, // minimum 1 minute between reachouts
+};
+
+// ─────────────────────────────────────────────────────────────
+// Settings helpers (read from storage, fallback to config/defaults)
+// ─────────────────────────────────────────────────────────────
 
 async function _isEnabled() {
   try {
-    const stored = await browser.storage.local.get({ proactiveCheckinEnabled: false });
-    return stored.proactiveCheckinEnabled === true;
+    const stored = await browser.storage.local.get({ [STORAGE.ENABLED]: null });
+    const val = stored[STORAGE.ENABLED];
+    if (val !== null && val !== undefined) return val === true;
+    return !!(_cfg().proactiveEnabled ?? DEFAULTS.enabled);
   } catch (e) {
-    log(`[ProActCheck] _isEnabled storage read failed: ${e}`, "warn");
-    return !!_cfg().enabled; // fallback to in-memory config
+    log(`[ProActReach] _isEnabled storage read failed: ${e}`, "warn");
+    return DEFAULTS.enabled;
+  }
+}
+
+async function _windowDays() {
+  try {
+    const stored = await browser.storage.local.get({ [STORAGE.WINDOW_DAYS]: null });
+    const val = stored[STORAGE.WINDOW_DAYS];
+    if (val !== null && val !== undefined) {
+      const n = Number(val);
+      if (n >= 1 && n <= 30) return n;
+    }
+    return Number(_cfg().newReminderWindowDays) || DEFAULTS.windowDays;
+  } catch {
+    return DEFAULTS.windowDays;
+  }
+}
+
+async function _advanceMinutes() {
+  try {
+    const stored = await browser.storage.local.get({ [STORAGE.ADVANCE_MINUTES]: null });
+    const val = stored[STORAGE.ADVANCE_MINUTES];
+    if (val !== null && val !== undefined) {
+      const n = Number(val);
+      if (n >= 5 && n <= 120) return n;
+    }
+    return Number(_cfg().dueReminderAdvanceMinutes) || DEFAULTS.advanceMinutes;
+  } catch {
+    return DEFAULTS.advanceMinutes;
+  }
+}
+
+async function _graceMinutes() {
+  try {
+    const stored = await browser.storage.local.get({ [STORAGE.GRACE_MINUTES]: null });
+    const val = stored[STORAGE.GRACE_MINUTES];
+    if (val !== null && val !== undefined) {
+      const n = Number(val);
+      if (n >= 1 && n <= 30) return n;
+    }
+    return Number(_cfg().graceMinutes) || DEFAULTS.graceMinutes;
+  } catch {
+    return DEFAULTS.graceMinutes;
   }
 }
 
 function _debounceMs() {
-  return Number(_cfg().debounceMs) || 1000;
-}
-
-async function _intervalMinutes() {
-  try {
-    const stored = await browser.storage.local.get({ [INTERVAL_STORAGE_KEY]: INTERVAL_DEFAULT });
-    const val = Number(stored[INTERVAL_STORAGE_KEY]);
-    return (val >= 1 && val <= 60) ? val : INTERVAL_DEFAULT;
-  } catch (e) {
-    log(`[ProActCheck] _intervalMinutes storage read failed: ${e}`, "warn");
-    return INTERVAL_DEFAULT;
-  }
-}
-
-async function _intervalMs() {
-  return (await _intervalMinutes()) * 60 * 1000;
+  return Number(_cfg().debounceMs) || DEFAULTS.debounceMs;
 }
 
 // ─────────────────────────────────────────────────────────────
-// Hashing
+// Hashing (same scheme as reminderStateStore.js for consistency)
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Simple hash of reminder list content for change detection.
- * Uses content + dueDate to detect meaningful changes.
+ * Hash the full reminder list for change detection.
+ * Includes content + dueDate + dueTime for a stable fingerprint.
  */
 function _hashReminderList(reminders) {
   if (!Array.isArray(reminders) || reminders.length === 0) return "empty";
-  // Sort by content for stable hash regardless of order
   const items = reminders
-    .map(r => `${r.content || ""}|${r.dueDate || ""}`)
+    .map(r => `${r.content || ""}|${r.dueDate || ""}|${r.dueTime || ""}`)
     .sort()
     .join("||");
-  // Simple djb2 hash
   let hash = 5381;
   for (let i = 0; i < items.length; i++) {
     hash = ((hash << 5) + hash + items.charCodeAt(i)) & 0xffffffff;
   }
   return String(hash);
+}
+
+// ─────────────────────────────────────────────────────────────
+// reached_out deduplication store
+// ─────────────────────────────────────────────────────────────
+
+async function _getReachedOutIds() {
+  try {
+    const stored = await browser.storage.local.get({ [STORAGE.REACHED_OUT_IDS]: {} });
+    return stored[STORAGE.REACHED_OUT_IDS] || {};
+  } catch (e) {
+    log(`[ProActReach] Failed to read reached_out_ids: ${e}`, "warn");
+    return {};
+  }
+}
+
+async function _markReachedOut(reminderHash, trigger) {
+  try {
+    const ids = await _getReachedOutIds();
+    ids[reminderHash] = { reachedAt: new Date().toISOString(), trigger };
+    await browser.storage.local.set({ [STORAGE.REACHED_OUT_IDS]: ids });
+    log(`[ProActReach] Marked ${reminderHash} as reached_out (trigger=${trigger})`);
+  } catch (e) {
+    log(`[ProActReach] Failed to mark reached_out: ${e}`, "warn");
+  }
+}
+
+/**
+ * Prune reached_out entries whose hashes no longer exist in the active reminder set.
+ */
+async function _pruneReachedOutIds(activeReminders) {
+  try {
+    const ids = await _getReachedOutIds();
+    const activeHashes = new Set(activeReminders.map(r => r.hash || hashReminder(r)));
+    let pruned = 0;
+    for (const h of Object.keys(ids)) {
+      if (!activeHashes.has(h)) {
+        delete ids[h];
+        pruned++;
+      }
+    }
+    if (pruned > 0) {
+      await browser.storage.local.set({ [STORAGE.REACHED_OUT_IDS]: ids });
+      log(`[ProActReach] Pruned ${pruned} orphaned reached_out entries`);
+    }
+  } catch (e) {
+    log(`[ProActReach] Prune reached_out failed: ${e}`, "warn");
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -96,7 +207,7 @@ async function _isChatWindowOpen() {
       }
     }
   } catch (e) {
-    log(`[ProActCheck] _isChatWindowOpen failed: ${e}`, "warn");
+    log(`[ProActReach] _isChatWindowOpen failed: ${e}`, "warn");
   }
   return false;
 }
@@ -104,312 +215,506 @@ async function _isChatWindowOpen() {
 async function _openChatWindow() {
   try {
     const url = browser.runtime.getURL("chat/chat.html");
-    // Check for existing window first
     const wins = await browser.windows.getAll({ populate: true });
     for (const w of wins) {
       if (w && Array.isArray(w.tabs)) {
         if (w.tabs.some(t => t && typeof t.url === "string" && t.url.endsWith("/chat/chat.html"))) {
           await browser.windows.update(w.id, { focused: true });
-          log(`[ProActCheck] Focused existing chat window id=${w.id}`);
+          log(`[ProActReach] Focused existing chat window id=${w.id}`);
           return;
         }
       }
     }
     await browser.windows.create({ url, type: "popup", width: 600, height: 800 });
-    log("[ProActCheck] Opened new chat window for proactive message");
+    log("[ProActReach] Opened new chat window for proactive message");
   } catch (e) {
-    log(`[ProActCheck] Failed to open chat window: ${e}`, "error");
+    log(`[ProActReach] Failed to open chat window: ${e}`, "error");
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-// State persistence
+// Pending message storage (consumed by chat init)
 // ─────────────────────────────────────────────────────────────
 
-async function _restoreState() {
-  try {
-    const stored = await browser.storage.local.get(LAST_CHECKIN_KEY);
-    const data = stored?.[LAST_CHECKIN_KEY];
-    if (data) {
-      _lastCheckinTime = Number(data.time) || 0;
-      _lastCheckinResult = data.result || null;
-      const ago = _lastCheckinTime ? Math.round((Date.now() - _lastCheckinTime) / 1000) : 0;
-      log(`[ProActCheck] Restored state: lastCheckin=${new Date(_lastCheckinTime).toISOString()} (${ago}s ago), result="${_lastCheckinResult}"`);
-    } else {
-      log(`[ProActCheck] No persisted state found (first run)`);
-    }
-  } catch (e) {
-    log(`[ProActCheck] Failed to restore state: ${e}`, "warn");
-  }
-}
-
-async function _persistState() {
+async function _storePendingMessage(message) {
   try {
     await browser.storage.local.set({
-      [LAST_CHECKIN_KEY]: {
-        time: _lastCheckinTime,
-        result: _lastCheckinResult,
+      [STORAGE.PENDING_MSG]: {
+        message,
+        timestamp: Date.now(),
+        idMapEntries: [], // No LLM call = no isolated idMap needed
       },
     });
+    log(`[ProActReach] Stored pending message (${message.length} chars)`);
   } catch (e) {
-    log(`[ProActCheck] Failed to persist state: ${e}`, "warn");
+    log(`[ProActReach] Failed to store pending message: ${e}`, "error");
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// Core check-in logic
-// ─────────────────────────────────────────────────────────────
-
-function _schedulePostIntervalCheck() {
-  // Cancel any existing post-interval timer
-  if (_postCooldownTimer) {
-    clearTimeout(_postCooldownTimer);
-    _postCooldownTimer = null;
-  }
-
-  // Read interval from storage (async) and schedule the timer
-  _intervalMs().then(intervalMs => {
-    // Timer fires after the full interval from _lastCheckinTime
-    const remaining = Math.max(0, intervalMs - (Date.now() - _lastCheckinTime));
-    log(`[ProActCheck] Scheduling post-interval auto-check in ${Math.round(remaining / 1000)}s`);
-
-    _postCooldownTimer = setTimeout(() => {
-      _postCooldownTimer = null;
-      log(`[ProActCheck] Post-interval timer fired, triggering auto-check`);
-      _triggerCheckin("post_interval").catch(e => {
-        log(`[ProActCheck] Post-interval auto-check failed: ${e}`, "warn");
-      });
-    }, remaining);
-  }).catch(e => {
-    log(`[ProActCheck] Failed to schedule post-interval check: ${e}`, "warn");
-  });
-}
-
-async function _triggerCheckin(triggerReason) {
-  log(`[ProActCheck] ── _triggerCheckin called: reason="${triggerReason}"`);
-
-  // Guard: feature disabled
-  if (!(await _isEnabled())) {
-    log(`[ProActCheck] SKIP: feature disabled (reason=${triggerReason})`);
-    return;
-  }
-
-  // Guard: already in flight
-  if (_isCheckinInFlight) {
-    log(`[ProActCheck] SKIP: already in flight (reason=${triggerReason})`);
-    return;
-  }
-
-  // Guard: minimum interval — block all triggers during the interval window.
-  // When the interval expires, a post-cooldown auto-check fires to catch missed changes.
-  const intervalMs = await _intervalMs();
-  const elapsed = _lastCheckinTime ? Date.now() - _lastCheckinTime : Infinity;
-  if (_lastCheckinTime && elapsed < intervalMs) {
-    const remaining = Math.ceil((intervalMs - elapsed) / 1000);
-    log(`[ProActCheck] SKIP: interval active, ${remaining}s remaining, elapsed=${Math.round(elapsed / 1000)}s, interval=${Math.round(intervalMs / 1000)}s (reason=${triggerReason})`);
-    return;
-  }
-  log(`[ProActCheck] Guard passed: interval OK (elapsed=${_lastCheckinTime ? Math.round(elapsed / 1000) + "s" : "never"}, interval=${Math.round(intervalMs / 1000)}s)`);
-
-  // Guard: user must be signed in
-  try {
-    const { isLoggedIn } = await import("./supabaseAuth.js");
-    const signedIn = await isLoggedIn();
-    if (!signedIn) {
-      log(`[ProActCheck] SKIP: user not signed in (reason=${triggerReason})`);
-      return;
-    }
-    log(`[ProActCheck] Guard passed: user signed in`);
-  } catch (e) {
-    log(`[ProActCheck] SKIP: auth check failed: ${e} (reason=${triggerReason})`, "warn");
-    return;
-  }
-
-  _isCheckinInFlight = true;
-  _lastCheckinTime = Date.now();
-  const startTime = Date.now();
-
-  try {
-    log(`[ProActCheck] ══ STARTING CHECK-IN ══ trigger="${triggerReason}" at ${new Date().toISOString()}`);
-
-    // Create an isolated ID translation context for this session.
-    // Each headless session gets its own idMap so concurrent sessions
-    // (proactiveCheckin, replyGenerator) don't contaminate each other.
-    let idContext;
+async function _deliverMessage(message) {
+  const chatOpen = await _isChatWindowOpen();
+  if (chatOpen) {
     try {
-      const { createIsolatedContext } = await import("../../chat/modules/idTranslator.js");
-      idContext = createIsolatedContext();
+      await browser.runtime.sendMessage({
+        command: "proactive-checkin-message",
+        message,
+        idMapEntries: [],
+      });
+      log(`[ProActReach] Injected message directly into open chat`);
+      return;
     } catch (e) {
-      log(`[ProActCheck] Failed to create isolated idContext: ${e}`, "warn");
+      log(`[ProActReach] Direct inject failed, falling back to pending: ${e}`, "warn");
     }
+  }
+  await _storePendingMessage(message);
+  await _openChatWindow();
+}
 
-    // Build messages for the LLM (pass idContext so reminder IDs use isolated map)
-    const messages = await _buildMessages(triggerReason, idContext);
-    if (!messages || messages.length === 0) {
-      log(`[ProActCheck] Failed to build messages, aborting`, "warn");
-      return;
-    }
+// ─────────────────────────────────────────────────────────────
+// Message templates
+// ─────────────────────────────────────────────────────────────
 
-    // Call LLM with tools (headless — no UI callback)
-    const { sendChatWithTools, processJSONResponse } = await import("./llm.js");
-    const { executeToolsHeadless } = await import("../../chat/tools/core.js");
-
-    // Wrap executeToolsHeadless with the isolated idContext so all tool
-    // call translations during this session use the same scoped map.
-    const scopedExecutor = (toolCalls, tokenUsage) => executeToolsHeadless(toolCalls, tokenUsage, idContext);
-
-    const response = await sendChatWithTools(messages, {
-      ignoreSemaphore: true,
-      onToolExecution: scopedExecutor,
-    });
-
-    log(`[ProActCheck] sendChatWithTools returned, response keys: ${response ? Object.keys(response).join(",") : "null"}`);
-
-    if (response?.err) {
-      log(`[ProActCheck] LLM error: ${response.err}`, "error");
-      _lastCheckinResult = "error";
-      return;
-    }
-
-    const assistantText = response?.assistant || "";
-    log(`[ProActCheck] Raw assistant text (${assistantText.length} chars): ${assistantText.substring(0, 500)}${assistantText.length > 500 ? "..." : ""}`);
-
-    if (!assistantText) {
-      log(`[ProActCheck] LLM returned empty assistant text`, "warn");
-      _lastCheckinResult = "empty";
-      return;
-    }
-
-    // Parse JSON response
-    const parsed = processJSONResponse(assistantText);
-    log(`[ProActCheck] Parsed JSON: ${JSON.stringify(parsed)}`);
-
-    const reachOut = parsed?.reach_out === true;
-    const message = typeof parsed?.message === "string" ? parsed.message.trim() : "";
-
-    log(`[ProActCheck] Decision: reach_out=${reachOut}, message_len=${message.length}${message ? `, message="${message.substring(0, 200)}"` : ""}`);
-
-    if (reachOut && message) {
-      // Persist the idMap alongside the message so the chat window can restore/merge it.
-      let idMapEntries = [];
-      if (idContext?.idMap?.size > 0) {
-        idMapEntries = Array.from(idContext.idMap.entries());
-        log(`[ProActCheck] Captured idMap with ${idMapEntries.length} entries for pending message`);
-      }
-
-      const chatOpen = await _isChatWindowOpen();
-      if (chatOpen) {
-        // Chat is already open — inject directly via runtime message
-        log(`[ProActCheck] Chat window open, sending runtime message for direct injection`);
-        try {
-          await browser.runtime.sendMessage({
-            command: "proactive-checkin-message",
-            message,
-            idMapEntries,
-          });
-          log(`[ProActCheck] Runtime message sent for direct injection`);
-        } catch (e) {
-          log(`[ProActCheck] Failed to send runtime message, falling back to pending: ${e}`, "warn");
-          await _storePendingMessage(message, idMapEntries);
-          await _openChatWindow();
-        }
-      } else {
-        // Chat is closed — store pending message and open window
-        await _storePendingMessage(message, idMapEntries);
-        await _openChatWindow();
-      }
-      _lastCheckinResult = "reached_out";
-    } else {
-      _lastCheckinResult = "no_action";
-      log(`[ProActCheck] No proactive outreach needed`);
-    }
-  } catch (e) {
-    log(`[ProActCheck] Check-in failed: ${e}`, "error");
-    _lastCheckinResult = "error";
-  } finally {
-    _isCheckinInFlight = false;
-    const elapsedMs = Date.now() - startTime;
-    log(`[ProActCheck] ══ CHECK-IN DONE ══ result="${_lastCheckinResult}" elapsed=${elapsedMs}ms trigger="${triggerReason}"`);
-    await _persistState();
-
-    // Schedule a post-interval auto-check: when the interval expires, run one more
-    // check-in to catch any changes that arrived while we were in the interval window.
-    _schedulePostIntervalCheck();
+async function _getUserName() {
+  try {
+    const { getUserName } = await import("../../chat/modules/helpers.js");
+    return await getUserName({ fullname: true }) || "there";
+  } catch {
+    return "there";
   }
 }
 
-async function _buildMessages(triggerReason, idContext) {
-  try {
-    log(`[ProActCheck] _buildMessages: loading context for trigger="${triggerReason}"`);
+/**
+ * Format a due date label matching the welcome-back reminder card style.
+ * Examples: "Today at 14:00", "Tomorrow", "Overdue (2 days)", "Due Mon, Nov 5 at 14:00"
+ */
+function _formatDueLabel(dueDate, dueTime) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const { getUserKBPrompt } = await import("./promptGenerator.js");
-    const { buildReminderList } = await import("./reminderBuilder.js");
-    const { getRecentChatHistoryForPrompt, pruneOldSessions } = await import("./chatHistoryQueue.js");
-    const { getUserName, formatTimestampForAgent } = await import("../../chat/modules/helpers.js");
+  const parts = dueDate.split("-");
+  if (parts.length !== 3) return "";
+  const year = parseInt(parts[0]);
+  const month = parseInt(parts[1]) - 1;
+  const day = parseInt(parts[2]);
+  const dueMidnight = new Date(year, month, day);
 
-    // Load context in parallel
-    const [userName, userKBContent, reminderResult, recentChatHistory] = await Promise.all([
-      getUserName({ fullname: true }),
-      getUserKBPrompt().then(v => v || "").catch(() => ""),
-      buildReminderList().catch(() => ({ reminders: [] })),
-      pruneOldSessions().then(() => getRecentChatHistoryForPrompt()).catch(() => ""),
-    ]);
+  const timeSuffix = dueTime ? ` at ${dueTime}` : "";
+  const dueTs = dueMidnight.getTime();
+  const todayTs = today.getTime();
 
-    const reminderCount = reminderResult?.reminders?.length || 0;
-    log(`[ProActCheck] _buildMessages: userName="${userName}", kbLen=${userKBContent.length}, reminders=${reminderCount}, historyLen=${(recentChatHistory || "").length}`);
+  if (dueTs === todayTs) return `Today${timeSuffix}`;
+  if (dueTs === tomorrow.getTime()) return `Tomorrow${timeSuffix}`;
 
-    // Build reminders JSON
-    let remindersJson = "";
-    if (reminderCount > 0) {
-      // Apply ID translation
-      let translatedReminders = reminderResult.reminders;
-      try {
-        const { processToolResultTBtoLLM } = await import("../../chat/modules/idTranslator.js");
-        translatedReminders = processToolResultTBtoLLM(reminderResult.reminders, idContext);
-      } catch (e) {
-        log(`[ProActCheck] _buildMessages: ID translation failed, using original: ${e}`, "warn");
-      }
-      remindersJson = JSON.stringify(translatedReminders);
-      log(`[ProActCheck] _buildMessages: remindersJson (${remindersJson.length} chars): ${remindersJson.substring(0, 300)}${remindersJson.length > 300 ? "..." : ""}`);
-    } else {
-      log(`[ProActCheck] _buildMessages: no reminders found`);
+  if (dueTs < todayTs) {
+    const daysOverdue = Math.round((todayTs - dueTs) / 86400000);
+    return `Overdue (${daysOverdue} day${daysOverdue > 1 ? "s" : ""})`;
+  }
+
+  const formatted = dueMidnight.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  return `Due ${formatted}${timeSuffix}`;
+}
+
+function _buildNewReminderMessage(userName, reminder) {
+  const detail = reminder.content || "Check this email";
+  const dueLabel = reminder.dueDate ? `**${_formatDueLabel(reminder.dueDate, reminder.dueTime)}** — ` : "";
+  const emailRef = reminder.uniqueId ? ` — [Email](${reminder.uniqueId})` : "";
+  return `Hey ${userName}, you have a new email that may need your attention:\n\n${dueLabel}${detail}${emailRef}`;
+}
+
+function _buildNewRemindersMessage(userName, reminders) {
+  const lines = reminders.map(r => {
+    const dueLabel = r.dueDate ? `**${_formatDueLabel(r.dueDate, r.dueTime)}** — ` : "";
+    const emailRef = r.uniqueId ? ` — [Email](${r.uniqueId})` : "";
+    return `- ${dueLabel}${r.content}${emailRef}`;
+  });
+  return `Hey ${userName}, you have ${reminders.length} new emails that may need your attention:\n\n${lines.join("\n")}`;
+}
+
+function _buildDueApproachingMessage(userName, reminders) {
+  if (reminders.length === 1) {
+    const r = reminders[0];
+    const dueLabel = _formatDueLabel(r.dueDate, r.dueTime);
+    const emailRef = r.uniqueId ? ` — [Email](${r.uniqueId})` : "";
+    return `Hey ${userName}, you have a reminder coming up soon:\n\n**${dueLabel}**: ${r.content}${emailRef}`;
+  }
+
+  const lines = reminders.map(r => {
+    const dueLabel = _formatDueLabel(r.dueDate, r.dueTime);
+    const emailRef = r.uniqueId ? ` — [Email](${r.uniqueId})` : "";
+    return `- **${dueLabel}**: ${r.content}${emailRef}`;
+  });
+  return `Hey ${userName}, you have ${reminders.length} reminders coming up soon:\n\n${lines.join("\n")}`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Trigger 1: New Reminder Formed
+// ─────────────────────────────────────────────────────────────
+
+async function _handleNewReminders(reminders) {
+  log(`[ProActReach] Evaluating ${reminders.length} reminders for new-reminder reachout`);
+
+  const windowDays = await _windowDays();
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const windowEnd = new Date(today.getTime() + windowDays * 86400000);
+
+  const reachedOutIds = await _getReachedOutIds();
+  const qualifying = [];
+
+  for (const r of reminders) {
+    const rHash = r.hash || hashReminder(r);
+
+    // Already reached out for this reminder (new_reminder trigger)?
+    if (reachedOutIds[rHash]?.trigger === "new_reminder") {
+      log(`[ProActReach] Skip ${rHash}: already reached out (new_reminder)`);
+      continue;
     }
 
-    const currentTime = formatTimestampForAgent();
+    // Window check: skip if due date is beyond the window
+    if (r.dueDate) {
+      try {
+        const parts = r.dueDate.split("-");
+        const dueDateObj = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+        if (dueDateObj.getTime() > windowEnd.getTime()) {
+          log(`[ProActReach] Skip ${rHash}: dueDate ${r.dueDate} beyond ${windowDays}-day window`);
+          continue;
+        }
+      } catch {
+        // Invalid date — include it (fail open)
+      }
+    }
+    // No due date = always qualifies
 
-    // Single system message — backend expander builds full multi-message sequence
-    // (system prompt + KB + reminders + history + agent_proactive_checkin user prompt)
-    const systemMsg = {
-      role: "system",
-      content: "system_prompt_proactive_checkin",
-      user_name: userName,
-      user_kb_content: userKBContent,
-      user_reminders_json: remindersJson,
-      recent_chat_history: recentChatHistory || "",
-      current_time: currentTime,
-      trigger_reason: triggerReason,
-    };
+    qualifying.push(r);
+  }
 
-    log(`[ProActCheck] _buildMessages: built systemMsg, currentTime="${currentTime}", trigger="${triggerReason}"`);
-    return [systemMsg];
-  } catch (e) {
-    log(`[ProActCheck] _buildMessages failed: ${e}`, "error");
+  if (qualifying.length === 0) {
+    log(`[ProActReach] No qualifying new reminders for reachout`);
+    return;
+  }
+
+  log(`[ProActReach] ${qualifying.length} new reminders qualify for reachout`);
+
+  // Rate limit
+  if (_lastReachoutTime && (Date.now() - _lastReachoutTime) < DEFAULTS.minIntervalMs) {
+    log(`[ProActReach] Rate limited, skipping reachout`);
+    return;
+  }
+
+  const userName = await _getUserName();
+
+  const message = qualifying.length === 1
+    ? _buildNewReminderMessage(userName, qualifying[0])
+    : _buildNewRemindersMessage(userName, qualifying);
+
+  await _deliverMessage(message);
+  _lastReachoutTime = Date.now();
+
+  // Mark all as reached out
+  for (const r of qualifying) {
+    await _markReachedOut(r.hash || hashReminder(r), "new_reminder");
+  }
+
+  await _persistLastReachout();
+}
+
+// ─────────────────────────────────────────────────────────────
+// Trigger 2: Due Date/Time Approaching (alarm-fired)
+// ─────────────────────────────────────────────────────────────
+
+async function _handleAlarmFired() {
+  log(`[ProActReach] Alarm fired, checking for approaching due reminders`);
+
+  if (!(await _isEnabled())) {
+    log(`[ProActReach] Feature disabled, skipping alarm handler`);
+    await _scheduleNextAlarm();
+    return;
+  }
+
+  const advMins = await _advanceMinutes();
+  const graceMins = await _graceMinutes();
+  const now = Date.now();
+  const windowEnd = now + (advMins + graceMins) * 60_000;
+
+  const { buildReminderList } = await import("./reminderBuilder.js");
+  const result = await buildReminderList();
+  const reminders = result?.reminders || [];
+
+  const reachedOutIds = await _getReachedOutIds();
+  const qualifying = [];
+
+  for (const r of reminders) {
+    if (!r.dueDate) continue; // No due date = skip for alarm-based trigger
+
+    const rHash = r.hash || hashReminder(r);
+
+    // Already reached out for due_approaching trigger?
+    if (reachedOutIds[rHash]?.trigger === "due_approaching") {
+      continue;
+    }
+
+    // Compute due datetime
+    const dueMs = _resolveDueDateTime(r.dueDate, r.dueTime, r.timezone);
+    if (!dueMs) continue;
+
+    // Is it within the window [now, now + advance + grace]?
+    if (dueMs >= now && dueMs <= windowEnd) {
+      qualifying.push(r);
+    }
+  }
+
+  if (qualifying.length > 0) {
+    log(`[ProActReach] ${qualifying.length} reminders due within window`);
+
+    if (!_lastReachoutTime || (Date.now() - _lastReachoutTime) >= DEFAULTS.minIntervalMs) {
+      const userName = await _getUserName();
+      const message = _buildDueApproachingMessage(userName, qualifying);
+      await _deliverMessage(message);
+      _lastReachoutTime = Date.now();
+
+      for (const r of qualifying) {
+        await _markReachedOut(r.hash || hashReminder(r), "due_approaching");
+      }
+      await _persistLastReachout();
+    } else {
+      log(`[ProActReach] Rate limited, skipping due-approaching reachout`);
+    }
+  } else {
+    log(`[ProActReach] No reminders due within window`);
+  }
+
+  // Always reschedule the next alarm
+  await _scheduleNextAlarm();
+}
+
+/**
+ * Resolve a reminder's due date + optional time to epoch ms.
+ * If no time, defaults to start of day (00:00).
+ * If timezone is provided (from KB storage), interprets the date/time
+ * in that timezone for travel resilience.  Without a timezone, falls
+ * back to the current local timezone (legacy behavior).
+ */
+function _resolveDueDateTime(dueDate, dueTime, timezone) {
+  try {
+    const parts = dueDate.split("-");
+    if (parts.length !== 3) return null;
+    const year = parseInt(parts[0]);
+    const month = parseInt(parts[1]) - 1;
+    const day = parseInt(parts[2]);
+
+    let hours = 0, minutes = 0;
+    if (dueTime) {
+      const tp = dueTime.split(":");
+      if (tp.length >= 2) {
+        hours = parseInt(tp[0]);
+        minutes = parseInt(tp[1]);
+      }
+    }
+
+    if (!timezone) {
+      // Legacy: interpret in current local timezone
+      return new Date(year, month, day, hours, minutes).getTime();
+    }
+
+    // Timezone-aware: resolve the date/time in the stored timezone.
+    // Create the date as UTC, then adjust by the timezone offset.
+    const utcGuess = new Date(Date.UTC(year, month, day, hours, minutes));
+    const offset = _getTimezoneOffsetMs(utcGuess, timezone);
+    return utcGuess.getTime() - offset;
+  } catch {
     return null;
   }
 }
 
-async function _storePendingMessage(message, idMapEntries = []) {
+/**
+ * Compute the offset (in ms) of a timezone at a given instant.
+ * Returns positive for timezones ahead of UTC (e.g., +5h for Asia/Kolkata).
+ */
+function _getTimezoneOffsetMs(date, timezone) {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric", month: "numeric", day: "numeric",
+      hour: "numeric", minute: "numeric", second: "numeric",
+      hour12: false,
+    });
+    const p = {};
+    for (const { type, value } of formatter.formatToParts(date)) {
+      p[type] = parseInt(value);
+    }
+    const tzAsUtc = Date.UTC(
+      p.year, p.month - 1, p.day,
+      p.hour === 24 ? 0 : p.hour, p.minute, p.second || 0,
+    );
+    return tzAsUtc - date.getTime();
+  } catch {
+    return 0; // Fall back to treating as UTC
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Alarm scheduling
+// ─────────────────────────────────────────────────────────────
+
+async function _scheduleNextAlarm() {
+  try {
+    const { buildReminderList } = await import("./reminderBuilder.js");
+    const result = await buildReminderList();
+    const reminders = result?.reminders || [];
+
+    const advMins = await _advanceMinutes();
+    const now = Date.now();
+    let earliestWakeUp = Infinity;
+
+    for (const r of reminders) {
+      if (!r.dueDate) continue;
+      const dueMs = _resolveDueDateTime(r.dueDate, r.dueTime, r.timezone);
+      if (!dueMs) continue;
+
+      const wakeUp = dueMs - advMins * 60_000;
+      if (wakeUp > now && wakeUp < earliestWakeUp) {
+        earliestWakeUp = wakeUp;
+      }
+    }
+
+    // Clear any existing alarm
+    await browser.alarms.clear(ALARM_NAME);
+
+    if (earliestWakeUp < Infinity) {
+      await browser.alarms.create(ALARM_NAME, { when: earliestWakeUp });
+      const inMinutes = Math.round((earliestWakeUp - now) / 60_000);
+      log(`[ProActReach] Scheduled alarm for ${new Date(earliestWakeUp).toISOString()} (in ${inMinutes} min)`);
+    } else {
+      log(`[ProActReach] No upcoming due dates, no alarm scheduled`);
+    }
+  } catch (e) {
+    log(`[ProActReach] Failed to schedule alarm: ${e}`, "warn");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Persistence
+// ─────────────────────────────────────────────────────────────
+
+async function _persistLastReachout() {
   try {
     await browser.storage.local.set({
-      [PENDING_MSG_KEY]: {
-        message,
-        timestamp: Date.now(),
-        idMapEntries,
-      },
+      [STORAGE.LAST_REACHOUT]: { time: _lastReachoutTime },
     });
-    log(`[ProActCheck] Stored pending message (${message.length} chars)`);
   } catch (e) {
-    log(`[ProActCheck] Failed to store pending message: ${e}`, "error");
+    log(`[ProActReach] Failed to persist last reachout: ${e}`, "warn");
+  }
+}
+
+async function _restoreState() {
+  try {
+    const stored = await browser.storage.local.get(STORAGE.LAST_REACHOUT);
+    const data = stored?.[STORAGE.LAST_REACHOUT];
+    if (data) {
+      _lastReachoutTime = Number(data.time) || 0;
+      const ago = _lastReachoutTime ? Math.round((Date.now() - _lastReachoutTime) / 1000) : 0;
+      log(`[ProActReach] Restored state: lastReachout=${ago}s ago`);
+    }
+  } catch (e) {
+    log(`[ProActReach] Failed to restore state: ${e}`, "warn");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// One-time migration from legacy storage keys
+// ─────────────────────────────────────────────────────────────
+
+async function _migrateLegacyKeys() {
+  try {
+    const stored = await browser.storage.local.get([LEGACY_KEYS.ENABLED, LEGACY_KEYS.HASH, LEGACY_KEYS.LAST]);
+    let migrated = false;
+
+    if (stored[LEGACY_KEYS.ENABLED] !== undefined) {
+      await browser.storage.local.set({ [STORAGE.ENABLED]: stored[LEGACY_KEYS.ENABLED] === true });
+      migrated = true;
+    }
+
+    if (stored[LEGACY_KEYS.HASH] !== undefined) {
+      await browser.storage.local.set({ [STORAGE.REMINDER_HASH]: stored[LEGACY_KEYS.HASH] });
+      migrated = true;
+    }
+
+    if (stored[LEGACY_KEYS.LAST] !== undefined) {
+      const lastData = stored[LEGACY_KEYS.LAST];
+      if (lastData?.time) {
+        await browser.storage.local.set({ [STORAGE.LAST_REACHOUT]: { time: lastData.time } });
+      }
+      migrated = true;
+    }
+
+    if (migrated) {
+      await browser.storage.local.remove([LEGACY_KEYS.ENABLED, LEGACY_KEYS.INTERVAL, LEGACY_KEYS.HASH, LEGACY_KEYS.LAST]);
+      log(`[ProActReach] Migrated legacy storage keys`);
+    }
+  } catch (e) {
+    log(`[ProActReach] Legacy migration failed (non-fatal): ${e}`, "warn");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Public API: called from messageProcessorQueue.js after drain
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Called after PMQ processes messages (processed > 0).
+ * Rebuilds reminder list, detects changes, and triggers deterministic reachout.
+ */
+export async function onInboxUpdated() {
+  const enabled = await _isEnabled();
+  log(`[ProActReach] onInboxUpdated called, enabled=${enabled}`);
+  if (!enabled) return;
+
+  try {
+    const { buildReminderList } = await import("./reminderBuilder.js");
+    const result = await buildReminderList();
+    const reminders = result?.reminders || [];
+    const newHash = _hashReminderList(reminders);
+
+    // Load stored hash
+    const stored = await browser.storage.local.get(STORAGE.REMINDER_HASH);
+    const oldHash = stored?.[STORAGE.REMINDER_HASH] || "";
+
+    log(`[ProActReach] onInboxUpdated: reminders=${reminders.length}, oldHash=${oldHash || "(none)"}, newHash=${newHash}`);
+
+    if (newHash === oldHash) {
+      log(`[ProActReach] Hash unchanged, no action needed`);
+      return;
+    }
+
+    // Hash changed — persist new hash
+    await browser.storage.local.set({ [STORAGE.REMINDER_HASH]: newHash });
+
+    // All enabled reminders are candidates. The reached_out deduplication
+    // prevents repeat notifications for reminders we've already notified about.
+    const candidateReminders = reminders.filter(r => r.enabled !== false);
+
+    // Prune orphaned reached_out entries
+    await _pruneReachedOutIds(candidateReminders);
+
+    // Debounce
+    if (_debounceTimer) {
+      clearTimeout(_debounceTimer);
+      _debounceTimer = null;
+    }
+
+    _debounceTimer = setTimeout(() => {
+      _debounceTimer = null;
+      _handleNewReminders(candidateReminders).catch(e => {
+        log(`[ProActReach] Debounced new-reminder handler failed: ${e}`, "warn");
+      });
+    }, _debounceMs());
+
+    // Reschedule alarm for due-date-approaching trigger
+    await _scheduleNextAlarm();
+  } catch (e) {
+    log(`[ProActReach] onInboxUpdated failed: ${e}`, "warn");
   }
 }
 
@@ -423,89 +728,30 @@ async function _storePendingMessage(message, idMapEntries = []) {
  */
 export async function consumePendingProactiveMessage() {
   try {
-    const stored = await browser.storage.local.get(PENDING_MSG_KEY);
-    const data = stored?.[PENDING_MSG_KEY];
+    const stored = await browser.storage.local.get(STORAGE.PENDING_MSG);
+    const data = stored?.[STORAGE.PENDING_MSG];
     if (!data?.message) {
-      log(`[ProActCheck] consumePending: no pending message found`);
+      log(`[ProActReach] consumePending: no pending message found`);
       return null;
     }
 
     const age = Date.now() - (data.timestamp || 0);
-    const msgPreview = data.message.substring(0, 100);
-    const idMapCount = Array.isArray(data.idMapEntries) ? data.idMapEntries.length : 0;
-    log(`[ProActCheck] consumePending: found message (${data.message.length} chars, age=${Math.round(age / 1000)}s, idMap=${idMapCount} entries): "${msgPreview}..."`);
+    log(`[ProActReach] consumePending: found message (${data.message.length} chars, age=${Math.round(age / 1000)}s)`);
 
     // Clear it immediately
-    await browser.storage.local.remove(PENDING_MSG_KEY);
+    await browser.storage.local.remove(STORAGE.PENDING_MSG);
 
-    // Check staleness (reuse interval as the stale threshold)
-    const staleMs = await _intervalMs();
+    // Stale threshold: 5 minutes
+    const staleMs = 5 * 60_000;
     if (age > staleMs) {
-      log(`[ProActCheck] consumePending: DISCARDING stale message (age=${Math.round(age / 1000)}s > interval=${Math.round(staleMs / 1000)}s)`);
+      log(`[ProActReach] consumePending: DISCARDING stale message (age=${Math.round(age / 1000)}s)`);
       return null;
     }
 
-    log(`[ProActCheck] consumePending: returning message to chat (age=${Math.round(age / 1000)}s)`);
     return data;
   } catch (e) {
-    log(`[ProActCheck] consumePending failed: ${e}`, "warn");
+    log(`[ProActReach] consumePending failed: ${e}`, "warn");
     return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// Public API: called from messageProcessorQueue.js after drain
-// ─────────────────────────────────────────────────────────────
-
-/**
- * Called after PMQ processes messages (processed > 0).
- * Rebuilds reminder list, hashes it, and triggers check-in only if changed.
- */
-export async function onInboxUpdated() {
-  const enabled = await _isEnabled();
-  log(`[ProActCheck] onInboxUpdated called, enabled=${enabled}`);
-  if (!enabled) {
-    log(`[ProActCheck] onInboxUpdated: feature disabled, returning`);
-    return;
-  }
-
-  try {
-    const { buildReminderList } = await import("./reminderBuilder.js");
-    const result = await buildReminderList();
-    const reminderCount = result?.reminders?.length || 0;
-    const newHash = _hashReminderList(result?.reminders || []);
-
-    // Load stored hash
-    const stored = await browser.storage.local.get(REMINDER_HASH_KEY);
-    const oldHash = stored?.[REMINDER_HASH_KEY] || "";
-
-    log(`[ProActCheck] onInboxUpdated: reminders=${reminderCount}, oldHash=${oldHash || "(none)"}, newHash=${newHash}`);
-
-    if (newHash === oldHash) {
-      log(`[ProActCheck] onInboxUpdated: hash unchanged, no check-in needed`);
-      return;
-    }
-
-    // Hash changed — persist new hash and trigger check-in (debounced)
-    await browser.storage.local.set({ [REMINDER_HASH_KEY]: newHash });
-    log(`[ProActCheck] onInboxUpdated: hash CHANGED ${oldHash || "(none)"} -> ${newHash}, scheduling debounced check-in (${_debounceMs()}ms)`);
-
-    // Debounce: cancel any pending trigger
-    if (_debounceTimer) {
-      clearTimeout(_debounceTimer);
-      _debounceTimer = null;
-      log(`[ProActCheck] onInboxUpdated: cancelled previous debounce timer`);
-    }
-
-    _debounceTimer = setTimeout(() => {
-      _debounceTimer = null;
-      log(`[ProActCheck] onInboxUpdated: debounce timer fired, triggering check-in`);
-      _triggerCheckin("reminder_change").catch(e => {
-        log(`[ProActCheck] Debounced trigger failed: ${e}`, "warn");
-      });
-    }, _debounceMs());
-  } catch (e) {
-    log(`[ProActCheck] onInboxUpdated failed: ${e}`, "warn");
   }
 }
 
@@ -517,10 +763,11 @@ export async function initProactiveCheckin() {
   if (_isInitialized) return;
   _isInitialized = true;
 
-  const cfg = _cfg();
   const enabledAtInit = await _isEnabled();
-  const intervalMin = await _intervalMinutes();
-  log(`[ProActCheck] ══ INIT ══ enabled=${enabledAtInit}, debounceMs=${_debounceMs()}, intervalMin=${intervalMin}, config=${JSON.stringify(cfg)}`);
+  log(`[ProActReach] INIT enabled=${enabledAtInit}`);
+
+  // One-time migration from legacy storage keys
+  await _migrateLegacyKeys();
 
   // Restore persisted state
   await _restoreState();
@@ -529,55 +776,38 @@ export async function initProactiveCheckin() {
   if (!_alarmListener) {
     _alarmListener = (alarm) => {
       if (alarm.name === ALARM_NAME) {
-        log(`[ProActCheck] ⏰ Alarm fired: ${ALARM_NAME}`);
-        _triggerCheckin("scheduled_alarm").catch(e => {
-          log(`[ProActCheck] Alarm-triggered check-in failed: ${e}`, "warn");
+        log(`[ProActReach] Alarm fired: ${ALARM_NAME}`);
+        _handleAlarmFired().catch(e => {
+          log(`[ProActReach] Alarm handler failed: ${e}`, "warn");
         });
       }
     };
     browser.alarms.onAlarm.addListener(_alarmListener);
-    log(`[ProActCheck] Alarm listener registered for "${ALARM_NAME}"`);
+    log(`[ProActReach] Alarm listener registered`);
   }
 
-  // Log any existing alarms for this name
-  try {
-    const existing = await browser.alarms.get(ALARM_NAME);
-    if (existing) {
-      const firesIn = Math.round((existing.scheduledTime - Date.now()) / 1000);
-      log(`[ProActCheck] Existing alarm found: fires in ${firesIn}s (at ${new Date(existing.scheduledTime).toISOString()})`);
-    } else {
-      log(`[ProActCheck] No existing alarm found`);
-    }
-  } catch (e) {
-    log(`[ProActCheck] Failed to check existing alarms: ${e}`, "warn");
+  // Schedule initial alarm if enabled
+  if (enabledAtInit) {
+    await _scheduleNextAlarm();
   }
 }
 
 export function cleanupProactiveCheckin() {
-  log(`[ProActCheck] Cleaning up`);
+  log(`[ProActReach] Cleaning up`);
 
-  // Clear timers
   if (_debounceTimer) {
     clearTimeout(_debounceTimer);
     _debounceTimer = null;
   }
-  if (_postCooldownTimer) {
-    clearTimeout(_postCooldownTimer);
-    _postCooldownTimer = null;
-  }
 
-  // Remove alarm listener
   if (_alarmListener) {
     try {
       browser.alarms.onAlarm.removeListener(_alarmListener);
     } catch (e) {
-      log(`[ProActCheck] Failed to remove alarm listener: ${e}`, "warn");
+      log(`[ProActReach] Failed to remove alarm listener: ${e}`, "warn");
     }
     _alarmListener = null;
   }
-
-  // Persist state synchronously-ish (best effort)
-  _persistState().catch(() => {});
 
   _isInitialized = false;
 }

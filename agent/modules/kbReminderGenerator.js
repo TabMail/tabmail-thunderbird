@@ -1,7 +1,7 @@
 // kbReminderGenerator.js – Extract KB-based reminders directly from KB content
 // Thunderbird 145 MV3
 // These reminders are parsed directly from the user's knowledge base
-// Format expected: "- Reminder: Due YYYY/MM/DD, reminder text"
+// Formats: "- Reminder: Due YYYY/MM/DD [HH:MM] [TZ], text" or "- Reminder: text"
 
 import { getUserKBPrompt } from "./promptGenerator.js";
 import { log } from "./utils.js";
@@ -23,8 +23,13 @@ function simpleHash(str) {
 
 /**
  * Parse reminders directly from KB content
- * Format: "- Reminder: Due YYYY/MM/DD, reminder text"
- * Returns array of { dueDate: "YYYY-MM-DD" | null, content: "reminder text" }
+ * Supported formats:
+ *   "- Reminder: Due YYYY/MM/DD HH:MM [TZ], reminder text"  (date + time + timezone)
+ *   "- Reminder: Due YYYY/MM/DD [TZ], reminder text"         (date + timezone)
+ *   "- Reminder: Due YYYY/MM/DD HH:MM, reminder text"        (date + time, no timezone — legacy)
+ *   "- Reminder: Due YYYY/MM/DD, reminder text"               (date only — legacy)
+ *   "- Reminder: reminder text"                               (no date)
+ * Returns array of { dueDate: "YYYY-MM-DD" | null, dueTime: "HH:MM" | null, timezone: string | null, content: "reminder text" }
  */
 function parseRemindersFromKB(kbContent) {
   if (!kbContent || !kbContent.trim()) {
@@ -34,20 +39,37 @@ function parseRemindersFromKB(kbContent) {
   const reminders = [];
   const lines = kbContent.split('\n');
 
-  // Regex to match: "- Reminder: Due YYYY/MM/DD, reminder text"
-  const reminderRegex = /^-\s*Reminder:\s*Due\s+(\d{4})\/(\d{2})\/(\d{2}),\s*(.+)$/i;
+  // Regex to match: "- Reminder: Due YYYY/MM/DD [HH:MM] [TZ], reminder text"
+  // Timezone is optional, enclosed in square brackets (e.g., [America/New_York])
+  const reminderWithDateRegex = /^-\s*Reminder:\s*Due\s+(\d{4})\/(\d{2})\/(\d{2})(?:\s+(\d{2}):(\d{2}))?(?:\s+\[([^\]]+)\])?,\s*(.+)$/i;
+  // Regex to match: "- Reminder: reminder text" (no due date)
+  const reminderNoDueRegex = /^-\s*Reminder:\s*(?!Due\s)(.+)$/i;
 
   for (const line of lines) {
     const trimmedLine = line.trim();
-    const match = trimmedLine.match(reminderRegex);
 
-    if (match) {
-      const [, year, month, day, content] = match;
+    const dateMatch = trimmedLine.match(reminderWithDateRegex);
+    if (dateMatch) {
+      const [, year, month, day, hour, minute, timezone, content] = dateMatch;
       const dueDate = `${year}-${month}-${day}`;
+      const dueTime = hour && minute ? `${hour}:${minute}` : null;
 
       reminders.push({
         dueDate,
+        dueTime,
+        timezone: timezone || null,
         content: content.trim(),
+      });
+      continue;
+    }
+
+    const noDueMatch = trimmedLine.match(reminderNoDueRegex);
+    if (noDueMatch) {
+      reminders.push({
+        dueDate: null,
+        dueTime: null,
+        timezone: null,
+        content: noDueMatch[1].trim(),
       });
     }
   }

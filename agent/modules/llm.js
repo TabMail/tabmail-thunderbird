@@ -926,11 +926,14 @@ export function processSummaryResponse(text) {
   let todosSection = "";
   let twoLineSection = "";
   let reminderDueDateSection = "";
+  let reminderDueTimeSection = "";
   let reminderContentSection = "";
 
   const regexTodos = /Todos:\s*([\s\S]*?)(?:Two-line summary:|$)/i;
   const regexTwoLine = /Two-line summary:\s*([\s\S]*?)(?:Reminder due date:|$)/i;
-  const regexReminderDueDate = /Reminder due date:\s*([\s\S]*?)(?:Reminder content:|$)/i;
+  // Due date stops at "Reminder due time:" or "Reminder content:" (backward compat if time field absent)
+  const regexReminderDueDate = /Reminder due date:\s*([\s\S]*?)(?:Reminder due time:|Reminder content:|$)/i;
+  const regexReminderDueTime = /Reminder due time:\s*([\s\S]*?)(?:Reminder content:|$)/i;
   const regexReminderContent = /Reminder content:\s*([\s\S]*?)$/i;
 
   const todosMatch = preCleaned.match(regexTodos);
@@ -946,6 +949,11 @@ export function processSummaryResponse(text) {
   const reminderDueDateMatch = preCleaned.match(regexReminderDueDate);
   if (reminderDueDateMatch) {
     reminderDueDateSection = reminderDueDateMatch[1].trim();
+  }
+
+  const reminderDueTimeMatch = preCleaned.match(regexReminderDueTime);
+  if (reminderDueTimeMatch) {
+    reminderDueTimeSection = reminderDueTimeMatch[1].trim();
   }
 
   const reminderContentMatch = preCleaned.match(regexReminderContent);
@@ -979,20 +987,21 @@ export function processSummaryResponse(text) {
 
   const blurbClean = twoLineSection.replace(/\n/g, " ").trim();
   
-  // 3. Parse reminder due date and content
+  // 3. Parse reminder due date, due time, and content
   let reminderObj = null;
-  
+
   const dueDateClean = reminderDueDateSection.replace(/\n/g, " ").trim();
+  const dueTimeClean = reminderDueTimeSection.replace(/\n/g, " ").trim();
   const contentClean = reminderContentSection.replace(/\n/g, " ").trim();
-  
-  log(`[LLM] Parsing reminder - dueDate: "${dueDateClean}", content: "${contentClean.slice(0, 60)}..."`);
-  
+
+  log(`[LLM] Parsing reminder - dueDate: "${dueDateClean}", dueTime: "${dueTimeClean}", content: "${contentClean.slice(0, 60)}..."`);
+
   // Check if we have valid reminder content
   if (contentClean && contentClean.toLowerCase() !== "none" && contentClean !== "") {
     // Parse due date - backend post-processor converts relative dates to YYYY-MM-DD
     // We accept YYYY-MM-DD format here; if format is invalid, set to null
     let dueDate = null;
-    
+
     if (dueDateClean && dueDateClean.toLowerCase() !== "none" && dueDateClean !== "") {
       // Check for full YYYY-MM-DD format (backend should have converted relative dates)
       if (/^\d{4}-\d{2}-\d{2}$/.test(dueDateClean)) {
@@ -1005,9 +1014,21 @@ export function processSummaryResponse(text) {
         dueDate = dueDateClean;
       }
     }
-    
+
+    // Parse due time - HH:MM format (24-hour)
+    let dueTime = null;
+    if (dueTimeClean && dueTimeClean.toLowerCase() !== "none" && dueTimeClean !== "") {
+      if (/^\d{2}:\d{2}$/.test(dueTimeClean)) {
+        dueTime = dueTimeClean;
+        log(`[LLM] ✓ Valid reminder time parsed: dueTime=${dueTime}`);
+      } else {
+        log(`[LLM] ⚠️ Unexpected time format: "${dueTimeClean}", expected HH:MM`, "warn");
+      }
+    }
+
     reminderObj = {
       dueDate: dueDate,
+      dueTime: dueTime,
       content: contentClean
     };
   } else {
@@ -1052,17 +1073,18 @@ function _release() {
  */
 export async function sendChat(
   messages,
-  { ignoreSemaphore = false } = {}
+  { ignoreSemaphore = false, enableServerTools = false } = {}
 ) {
   if (!Array.isArray(messages) || messages.length === 0) {
     log("sendChat called with empty messages", "error");
     return null;
   }
-  
+
   const payload = {
     messages,
     client_timestamp_ms: Date.now(),
-    disable_tools: true,
+    disable_tools: !enableServerTools,
+    ...(enableServerTools && { client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
   };
   
   let acquired = false;
@@ -1203,15 +1225,16 @@ export async function sendChatWithTools(
     messages,
     client_timestamp_ms: Date.now(),
     disable_tools: false,
+    client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
-  
+
   let acquired = false;
   try {
     if (!ignoreSemaphore) {
       await _acquire();
       acquired = true;
     }
-    
+
     const json = await sendChatCompletions(
       payload,
       abortController?.signal || null,
