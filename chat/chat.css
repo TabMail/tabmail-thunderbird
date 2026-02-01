@@ -1384,6 +1384,22 @@ select {
 .topic-separator::before { left: 5%; }
 .topic-separator::after { right: 5%; }
 
+/* Past turns: rendered snapshot — entity links displayed but non-clickable */
+.history-static .tm-email-link,
+.history-static .tm-contact-link,
+.history-static .tm-event-link {
+    pointer-events: none;
+    cursor: default;
+    text-decoration: none;
+    opacity: 0.85;
+}
+
+/* Disable all link interactions in static history bubbles */
+.history-static a {
+    pointer-events: none;
+    cursor: default;
+}
+
 /* Welcome-back greeting bubble */
 .agent-message.welcome-back {
     background: color-mix(in srgb, var(--in-content-accent-color) 6%, transparent);

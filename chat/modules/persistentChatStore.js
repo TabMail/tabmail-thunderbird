@@ -357,17 +357,28 @@ export function turnsToLLMMessages(turns) {
 export async function indexTurnToFTS(userTurn, assistantTurn) {
   try {
     const userText = userTurn?.user_message || userTurn?.content || "";
-    const assistantText = assistantTurn?.content || "";
+    const assistantContent = assistantTurn?.content || "";
 
-    if (!userText.trim() && !assistantText.trim()) return;
+    if (!userText.trim() && !assistantContent.trim()) return;
 
-    const { renderMarkdown } = await import("./markdown.js");
     const { extractPlainTextFromHtml } = await import("./helpers.js");
+    const { renderMarkdown } = await import("./markdown.js");
 
-    // Run through the real render pipeline: markdown → HTML → plain text
-    // This resolves [Email](N) → <a class="tm-email-link">📧 Subject</a> → [Email: Subject]
-    const cleanUserText = userText ? extractPlainTextFromHtml(await renderMarkdown(userText)) : "";
-    const cleanAssistantText = assistantText ? extractPlainTextFromHtml(await renderMarkdown(assistantText)) : "";
+    // User text: render through markdown pipeline to resolve [Email](N) references
+    const cleanUserText = userText
+      ? extractPlainTextFromHtml(await renderMarkdown(userText))
+      : "";
+
+    // Assistant text: use _rendered snapshot if available (skip renderMarkdown)
+    let cleanAssistantText;
+    if (assistantTurn._rendered) {
+      cleanAssistantText = extractPlainTextFromHtml(assistantTurn._rendered);
+    } else {
+      // Fallback: full render pipeline (for turns without snapshot)
+      cleanAssistantText = assistantContent
+        ? extractPlainTextFromHtml(await renderMarkdown(assistantContent))
+        : "";
+    }
 
     const { indexChatTurn } = await import("../../fts/memoryIndexer.js");
     await indexChatTurn(cleanUserText, cleanAssistantText, assistantTurn._id, assistantTurn._ts);

@@ -385,6 +385,15 @@ async function _initFirstTimeUser(meta, systemMessage, userName, inboxCounts) {
     _type: isProactiveBubble ? "proactive" : "greeting",
     _chars: displayText.length,
   };
+
+  // Generate rendered HTML snapshot for persistence
+  try {
+    const { renderMarkdown } = await import("./markdown.js");
+    greetingTurn._rendered = await renderMarkdown(displayText);
+  } catch (e) {
+    log(`[TMDBG Init] Failed to generate greeting snapshot: ${e}`, "warn");
+  }
+
   greetingTurn._refs = collectTurnRefs(greetingTurn);
   registerTurnRefs(greetingTurn);
 
@@ -502,6 +511,15 @@ async function _insertNudge(meta, text, type) {
       _chars: text.length,
     };
 
+    // Generate rendered HTML snapshot for persistence (streamText is fire-and-forget,
+    // so we generate _rendered via renderMarkdown directly)
+    try {
+      const { renderMarkdown } = await import("./markdown.js");
+      _pendingNudgeTurn._rendered = await renderMarkdown(text);
+    } catch (e) {
+      log(`[TMDBG Init] Failed to generate nudge snapshot: ${e}`, "warn");
+    }
+
     // Add to agentConverseMessages
     ctx.agentConverseMessages.push({
       role: "assistant",
@@ -537,6 +555,22 @@ async function _insertNudge(meta, text, type) {
   } finally {
     _nudgeInProgress = false;
   }
+}
+
+/**
+ * Insert a proactive nudge into the chat. Exported wrapper around _insertNudge
+ * for use by chat.js's runtime message handler when a proactive check-in arrives
+ * while the chat window is already open. This ensures the nudge system properly
+ * replaces any existing welcome-back greeting.
+ * @param {string} text - The proactive message text
+ */
+export async function insertProactiveNudge(text) {
+  const meta = ctx.chatMeta;
+  if (!meta) {
+    log(`[TMDBG Init] Cannot insert proactive nudge: no chatMeta`, "warn");
+    return;
+  }
+  await _insertNudge(meta, text, "proactive");
 }
 
 /**
@@ -590,17 +624,24 @@ function _renderTurnSync(turn, container, beforeNode) {
       bubble.className = "message agent-message";
       if (turn._type === "proactive") bubble.classList.add("proactive-message");
       if (turn._type === "welcome_back") bubble.classList.add("welcome-back");
-      // Insert with textContent first (fast), then upgrade to rendered markdown
-      bubble.textContent = turn.content || "";
+
+      if (turn._rendered) {
+        // Fast path: pre-rendered snapshot — non-clickable, no async, instant
+        bubble.innerHTML = turn._rendered;
+        bubble.classList.add("history-static");
+      } else {
+        // Fallback: live render for turns without snapshot (pre-upgrade turns)
+        bubble.textContent = turn.content || "";
+        import("./markdown.js").then(({ renderMarkdown, attachSpecialLinkListeners }) =>
+          renderMarkdown(turn.content || "").then(html => {
+            bubble.innerHTML = html;
+            attachSpecialLinkListeners(bubble);
+          })
+        ).catch(() => {});
+      }
+
       row.appendChild(bubble);
       container.insertBefore(row, beforeNode);
-      // Fire-and-forget markdown render upgrade + attach click handlers
-      import("./markdown.js").then(({ renderMarkdown, attachSpecialLinkListeners }) =>
-        renderMarkdown(turn.content || "").then(html => {
-          bubble.innerHTML = html;
-          attachSpecialLinkListeners(bubble);
-        })
-      ).catch(() => {});
     }
   } catch (e) {
     log(`[TMDBG Init] Failed to sync-render turn ${turn._id}: ${e}`, "warn");

@@ -951,10 +951,21 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
     // Append assistant to history only when there's no error
     messages.push({ role: "assistant", content: assistantText });
 
-    // Persist assistant turn to storage
+    // Persist assistant turn to storage (with rendered HTML snapshot for instant replay)
+    // NOTE: Cannot use agentBubble.innerHTML — streamText() uses setInterval internally
+    // and returns before any streaming steps execute, so the DOM is empty at this point.
+    // Generate _rendered directly via renderMarkdown() instead.
+    let renderedHtml = "";
+    try {
+      const { renderMarkdown } = await import("./markdown.js");
+      renderedHtml = await renderMarkdown(assistantText);
+    } catch (e) {
+      log(`[CONVERSE] Failed to generate rendered snapshot: ${e}`, "warn");
+    }
     const assistantTurn = {
       role: "assistant",
       content: assistantText,
+      _rendered: renderedHtml,
       _id: generateTurnId(),
       _ts: Date.now(),
       _type: "normal",

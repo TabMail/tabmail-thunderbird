@@ -10,7 +10,7 @@ import { ctx } from "./modules/context.js";
 import { awaitUserInput } from "./modules/converse.js";
 import { cleanupScrollObservers, initAggressiveScrollStick, isAtBottom, scrollToBottom, setBubbleText, setStickToBottom } from "./modules/helpers.js";
 import { mergeIdMapFromHeadless, persistIdMapImmediate, remapUniqueId } from "./modules/idTranslator.js";
-import { checkAndInsertWelcomeBack, initAndGreetUser } from "./modules/init.js";
+import { checkAndInsertWelcomeBack, initAndGreetUser, insertProactiveNudge } from "./modules/init.js";
 import { saveTurnsImmediate, saveMetaImmediate } from "./modules/persistentChatStore.js";
 import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromContentEditable, initMentionAutocomplete } from "./modules/mentionAutocomplete.js";
 import { addToolBubbleToGroup, cleanupToolGroups, isToolCollapseEnabled } from "./modules/toolCollapse.js";
@@ -605,7 +605,8 @@ window.addEventListener("DOMContentLoaded", async () => {
 
       log(`[TMDBG Chat] Received proactive check-in message (${proactiveText.length} chars, ${(idMapEntries || []).length} idMap entries)`);
 
-      // Fire-and-forget async bubble creation
+      // Fire-and-forget async — use _insertNudge via exported wrapper so proactive
+      // messages properly replace any existing welcome-back greeting
       (async () => {
         try {
           // Merge headless idMap into the active chat's map and remap message references
@@ -615,21 +616,9 @@ window.addEventListener("DOMContentLoaded", async () => {
             log(`[TMDBG Chat] Merged idMap from proactive session`);
           }
 
-          // Create a proactive-styled agent bubble
-          const bubble = await createNewAgentBubble("");
-          bubble.classList.remove("loading");
-          bubble.classList.add("proactive-message");
-          await setBubbleText(bubble, displayMessage);
-
-          // Add to conversation history so the agent knows what the user saw
-          if (Array.isArray(ctx.agentConverseMessages)) {
-            ctx.agentConverseMessages.push({
-              role: "assistant",
-              content: displayMessage,
-            });
-          }
-
-          // Proactive messages are ephemeral (DOM + agentConverseMessages only, not persisted)
+          // Insert via the nudge system — replaces welcome-back if present,
+          // handles agentConverseMessages, grey-out, and ephemeral persistence
+          await insertProactiveNudge(displayMessage);
 
           log(`[TMDBG Chat] Injected proactive check-in bubble into open chat`);
         } catch (e) {
