@@ -613,7 +613,13 @@ function _renderTurnSync(turn, container, beforeNode) {
         row.className = "message-row user-row";
         const bubble = document.createElement("div");
         bubble.className = "message user-message";
-        bubble.textContent = text;
+        if (turn._rendered) {
+          // Use pre-rendered snapshot (resolves [Email](N) refs to readable text)
+          bubble.innerHTML = turn._rendered;
+          bubble.classList.add("history-static");
+        } else {
+          bubble.textContent = text;
+        }
         row.appendChild(bubble);
         container.insertBefore(row, beforeNode);
       }

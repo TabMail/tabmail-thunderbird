@@ -294,11 +294,20 @@ export async function agentConverse(userText) {
     }
 
     // Persist user turn to storage
+    // Generate _rendered for user messages that may contain [Email](N) @ mention refs
+    let userRenderedHtml = "";
+    try {
+      const { renderMarkdown } = await import("./markdown.js");
+      userRenderedHtml = await renderMarkdown(latestUser);
+    } catch (e) {
+      log(`[CONVERSE] Failed to generate user rendered snapshot: ${e}`, "warn");
+    }
     const userTurn = {
       role: "user",
       content: "chat_converse",
       user_message: latestUser,
       time_stamp: timeStamp,
+      _rendered: userRenderedHtml,
       _id: generateTurnId(),
       _ts: Date.now(),
       _type: "normal",
