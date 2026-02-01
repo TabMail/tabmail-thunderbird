@@ -139,6 +139,32 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    // HEADER-LEVEL STALE VALIDATION
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function isStaleHeader_SRF(hdr) {
+      if (!hdr) return false;
+      try {
+        // A truly stale message has empty subject, empty author, AND epoch date.
+        // New messages being rendered may have empty DOM titles temporarily,
+        // but their nsIMsgDBHdr will always have real data.
+        const subject = (hdr.mime2DecodedSubject || hdr.subject || "").trim();
+        const author = (hdr.mime2DecodedAuthor || hdr.author || "").trim();
+        const date = hdr.date || 0; // PRTime: microseconds since epoch
+
+        if (subject !== "" || author !== "") return false;
+
+        // Stale rows have date at or very near epoch. Real messages won't.
+        // 60 000 000 µs = 60 seconds from epoch — generous threshold.
+        if (date > 60000000) return false;
+
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     // ACTIONS: MARK READ + DELETE
     // ═══════════════════════════════════════════════════════════════════════
 
@@ -148,6 +174,10 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
         try { hdr = view?.getMsgHdrAt?.(rowIndex); } catch (_) {}
         if (!hdr) try { hdr = view?.getMessageHdrAt?.(rowIndex); } catch (_) {}
         if (!hdr) return;
+
+        // Verify the message is truly stale via its DB header, not just DOM state.
+        // This prevents false positives on new messages whose DOM hasn't rendered yet.
+        if (!isStaleHeader_SRF(hdr)) return;
 
         const messageId = hdr.messageId || "";
         
