@@ -259,3 +259,232 @@ async function _kbUpdateImpl(conversationHistory = []) {
 export async function kbUpdate(conversationHistory = []) {
     return _runExclusively("kbUpdate", () => _kbUpdateImpl(conversationHistory));
 }
+
+// ----------------------------------------------------------
+// Periodic KB update for infinite chat (cursor-based, chunked)
+// ----------------------------------------------------------
+const KB_PERIODIC = {
+    minPendingExchanges: 3,       // minimum exchanges before running
+    cooldownMs: 30 * 60 * 1000,   // 30 minutes between updates
+    chunkSize: 10,                 // exchanges per LLM call
+    chunkOverlap: 2,               // overlapping exchanges between chunks
+};
+
+/**
+ * Periodic KB refinement from accumulated persistent turns.
+ * Processes unprocessed turns (after cursor) in overlapping chunks.
+ * FTS indexing is NOT done here — it's immediate per-turn in converse.js.
+ *
+ * @param {{ skipTimeGuard?: boolean }} options
+ */
+export async function periodicKbUpdate(options = {}) {
+    return _runExclusively("periodicKbUpdate", () => _periodicKbUpdateImpl(options));
+}
+
+async function _periodicKbUpdateImpl(options = {}) {
+    const { skipTimeGuard = false } = options;
+
+    try {
+        const { loadTurns, loadMeta, getTurnsAfterCursor, advanceCursor, saveMeta, indexTurnToFTS } =
+            await import("../../chat/modules/persistentChatStore.js");
+
+        const [turns, meta] = await Promise.all([loadTurns(), loadMeta()]);
+
+        if (!turns.length) {
+            log(`-- KB Periodic -- No turns, skipping`);
+            return;
+        }
+
+        // Get unprocessed turns
+        const pending = getTurnsAfterCursor(turns, meta);
+
+        // Count exchanges (user+assistant pairs)
+        const pendingExchanges = Math.floor(
+            pending.filter(t => t.role === "user" || t.role === "assistant").length / 2
+        );
+
+        if (pendingExchanges < KB_PERIODIC.minPendingExchanges) {
+            log(`-- KB Periodic -- Only ${pendingExchanges} pending exchanges (min ${KB_PERIODIC.minPendingExchanges}), skipping`);
+            return;
+        }
+
+        // Time guard (skip if recently updated, unless triggered by tool)
+        if (!skipTimeGuard && meta.lastKbUpdateTs) {
+            const sinceLastUpdate = Date.now() - meta.lastKbUpdateTs;
+            if (sinceLastUpdate < KB_PERIODIC.cooldownMs) {
+                log(`-- KB Periodic -- Last update ${Math.round(sinceLastUpdate / 60000)}min ago (cooldown ${KB_PERIODIC.cooldownMs / 60000}min), skipping`);
+                return;
+            }
+        }
+
+        log(`-- KB Periodic -- Starting: ${pendingExchanges} exchanges to process`);
+
+        // Build message pairs from pending turns
+        const messagePairs = [];
+        for (let i = 0; i < pending.length; i++) {
+            const t = pending[i];
+            if (t.role === "user") {
+                const next = pending[i + 1];
+                if (next && next.role === "assistant") {
+                    messagePairs.push({ user: t, assistant: next });
+                    i++; // skip paired assistant
+                }
+            }
+        }
+
+        if (messagePairs.length === 0) {
+            log(`-- KB Periodic -- No complete exchange pairs found, skipping`);
+            return;
+        }
+
+        // --- Deferred FTS indexing: index pending turns now (before KB refinement) ---
+        // FTS stores plain text (rendered via markdown pipeline) — no idMap needed.
+        // FTS upserts by memId, so re-indexing on retry is safe.
+        try {
+            let ftsIndexed = 0;
+            for (const pair of messagePairs) {
+                try {
+                    await indexTurnToFTS(pair.user, pair.assistant);
+                    ftsIndexed++;
+                } catch (e) {
+                    log(`-- KB Periodic -- FTS index failed for turn ${pair.assistant._id}: ${e}`, "warn");
+                }
+            }
+            // Also index standalone assistant turns (welcome_back, proactive, greeting)
+            // that aren't part of user+assistant pairs
+            const pairedTurnIds = new Set();
+            for (const pair of messagePairs) {
+                pairedTurnIds.add(pair.user._id);
+                pairedTurnIds.add(pair.assistant._id);
+            }
+            for (const t of pending) {
+                if (t.role === "assistant" && !pairedTurnIds.has(t._id) && t._type !== "separator") {
+                    try {
+                        await indexTurnToFTS(null, t);
+                        ftsIndexed++;
+                    } catch (e) {
+                        log(`-- KB Periodic -- FTS index failed for standalone turn ${t._id}: ${e}`, "warn");
+                    }
+                }
+            }
+            if (ftsIndexed > 0) {
+                log(`-- KB Periodic -- Indexed ${ftsIndexed} entries to FTS`);
+            }
+        } catch (e) {
+            log(`-- KB Periodic -- FTS batch indexing failed (non-fatal): ${e}`, "warn");
+        }
+
+        // Process in overlapping chunks
+        const { chunkSize, chunkOverlap } = KB_PERIODIC;
+        const advance = chunkSize - chunkOverlap;
+
+        let chunkStart = 0;
+        let chunkIndex = 0;
+
+        while (chunkStart < messagePairs.length) {
+            const chunkEnd = Math.min(chunkStart + chunkSize, messagePairs.length);
+            const chunk = messagePairs.slice(chunkStart, chunkEnd);
+            chunkIndex++;
+
+            log(`-- KB Periodic -- Chunk ${chunkIndex}: exchanges ${chunkStart + 1}-${chunkEnd} of ${messagePairs.length}`);
+
+            // Build chat history text from chunk
+            const chatHistoryParts = [];
+            for (const pair of chunk) {
+                const userText = pair.user.user_message || pair.user.content || "";
+                const assistantText = pair.assistant.content || "";
+                if (userText) chatHistoryParts.push(`[USER]: ${userText}`);
+                if (assistantText) chatHistoryParts.push(`[ASSISTANT]: ${assistantText}`);
+            }
+            const chatHistory = chatHistoryParts.join("\n\n");
+
+            // Send to backend for KB refinement
+            try {
+                const currentUserKBMd = (await getUserKBPrompt()) || "";
+                const kbConfig = await getKbConfig();
+                const currentTime = formatTimestampForAgent();
+
+                const systemMsg = {
+                    role: "system",
+                    content: "system_prompt_kb_refine",
+                    current_user_kb_md: currentUserKBMd,
+                    chat_history: chatHistory,
+                    current_time: currentTime,
+                    reminder_retention_days: kbConfig.reminder_retention_days,
+                    max_bullets: kbConfig.max_bullets,
+                };
+
+                const requestStartTime = Date.now();
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error("KB periodic chunk timeout")), KB_CONFIG.llmTimeoutMs)
+                );
+                const sendChatPromise = sendChatRaw([systemMsg], { ignoreSemaphore: true });
+                const response = await Promise.race([sendChatPromise, timeoutPromise]);
+
+                const requestDuration = Date.now() - requestStartTime;
+                log(`-- KB Periodic -- Chunk ${chunkIndex} completed in ${requestDuration}ms`);
+
+                if (response && typeof response.refined_kb === "string") {
+                    const updatedKb = response.refined_kb;
+                    if (updatedKb !== currentUserKBMd) {
+                        const key = "user_prompts:user_kb.md";
+                        await browser.storage.local.set({ [key]: updatedKb });
+                        log(`-- KB Periodic -- Chunk ${chunkIndex}: KB updated (${updatedKb.length} chars)`);
+
+                        // Notify listeners
+                        try {
+                            const evt = (SETTINGS?.events?.userKBPromptUpdated) || "user-kb-prompt-updated";
+                            await browser.runtime.sendMessage({ command: evt, key, source: "periodic_kb_update" });
+                        } catch (_) {}
+
+                        // Trigger KB reminder extraction
+                        try {
+                            const { generateKBReminders } = await import("./kbReminderGenerator.js");
+                            generateKBReminders(false).catch(() => {});
+                        } catch (_) {}
+                    } else {
+                        log(`-- KB Periodic -- Chunk ${chunkIndex}: no KB changes`);
+                    }
+                } else {
+                    log(`-- KB Periodic -- Chunk ${chunkIndex}: no refined_kb in response`, "warn");
+                }
+
+                saveChatLog("tabmail_kb_periodic", Date.now(), [systemMsg], response);
+            } catch (e) {
+                log(`-- KB Periodic -- Chunk ${chunkIndex} failed: ${e}`, "error");
+                // Continue to next chunk — partial progress is saved via cursor
+            }
+
+            // Advance cursor to last pair in this chunk
+            const lastPairInChunk = chunk[chunk.length - 1];
+            advanceCursor(meta, lastPairInChunk.assistant._id);
+
+            // Move to next chunk (advance by chunkSize - overlap)
+            chunkStart += advance;
+        }
+
+        // Update lastKbUpdateTs
+        meta.lastKbUpdateTs = Date.now();
+        saveMeta(meta);
+
+        log(`-- KB Periodic -- Complete: processed ${chunkIndex} chunk(s), ${messagePairs.length} exchanges`);
+    } catch (e) {
+        log(`-- KB Periodic -- Error: ${e}`, "error");
+    }
+}
+
+// ----------------------------------------------------------
+// Debounced KB update (triggered by kb_add / kb_del tools)
+// ----------------------------------------------------------
+let _kbUpdateDebounceTimer = null;
+const KB_TOOL_DEBOUNCE_MS = 30000; // 30 seconds after last kb_add/kb_del call
+
+export function debouncedKbUpdate() {
+    if (_kbUpdateDebounceTimer) clearTimeout(_kbUpdateDebounceTimer);
+    _kbUpdateDebounceTimer = setTimeout(() => {
+        _kbUpdateDebounceTimer = null;
+        periodicKbUpdate({ skipTimeGuard: true }).catch(e => {
+            log(`-- KB -- Debounced KB update failed: ${e}`, "warn");
+        });
+    }, KB_TOOL_DEBOUNCE_MS);
+}

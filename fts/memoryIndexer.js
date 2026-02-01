@@ -89,9 +89,63 @@ export async function indexChatSession(sessionId, messages, sessionTimestamp = n
 }
 
 /**
+ * Index a single user+assistant exchange to the memory FTS database.
+ * Used by persistent chat to index turns immediately for searchability.
+ * Content should be pre-rendered plain text (no [Email](N) id-mapped references).
+ *
+ * @param {string} userText - Rendered user message text
+ * @param {string} assistantText - Rendered assistant response text
+ * @param {string} turnId - Unique turn ID (used as FTS document key)
+ * @param {number} dateMs - Timestamp in milliseconds
+ */
+export async function indexChatTurn(userText, assistantText, turnId, dateMs) {
+  if ((!userText || !userText.trim()) && (!assistantText || !assistantText.trim())) {
+    return { ok: false, reason: "empty" };
+  }
+
+  const contentParts = [];
+  if (userText && userText.trim()) {
+    contentParts.push(`[USER]: ${userText}`);
+  }
+  if (assistantText && assistantText.trim()) {
+    contentParts.push(`[ASSISTANT]: ${assistantText}`);
+  }
+
+  const content = contentParts.join("\n\n");
+  const rows = [{
+    memId: `turn:${turnId}`,
+    role: "session",
+    content,
+    sessionId: "persistent_chat",
+    turnIndex: 0,
+    dateMs: dateMs || Date.now(),
+  }];
+
+  try {
+    // Use runtime message passing (works from chat window context)
+    const result = await browser.runtime.sendMessage({
+      type: "fts",
+      cmd: "memoryIndexBatch",
+      rows,
+    });
+
+    if (result?.error) {
+      log(`[TMDBG Memory Indexer] Failed to index turn ${turnId}: ${result.error}`, "error");
+      return { ok: false, error: result.error };
+    }
+
+    log(`[TMDBG Memory Indexer] Indexed turn ${turnId} to FTS`);
+    return { ok: true };
+  } catch (e) {
+    log(`[TMDBG Memory Indexer] Error indexing turn ${turnId}: ${e}`, "error");
+    return { ok: false, error: String(e) };
+  }
+}
+
+/**
  * Index chat sessions from the chat history queue
  * This indexes all unremembered sessions from chatHistoryQueue
- * 
+ *
  * @returns {Promise<{ok: boolean, indexed: number, sessions: number}>}
  */
 export async function indexQueuedSessions() {

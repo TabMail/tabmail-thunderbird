@@ -1,7 +1,7 @@
 import { $ } from "./dom.js";
 
 export const PROACTIVE_CHECKIN_STORAGE_KEY = "proactiveCheckinEnabled";
-export const PROACTIVE_CHECKIN_DEFAULT = false;
+export const PROACTIVE_CHECKIN_DEFAULT = true;
 export const PROACTIVE_CHECKIN_INTERVAL_KEY = "proactiveCheckinIntervalMinutes";
 export const PROACTIVE_CHECKIN_INTERVAL_DEFAULT = 5;
 

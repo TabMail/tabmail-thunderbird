@@ -28,10 +28,30 @@ function sanitizeForJson(text) {
  * @param {string} html - Rendered HTML from bubble
  * @returns {string} - Plain text with resolved entities
  */
-function extractPlainTextFromHtml(html) {
+export function extractPlainTextFromHtml(html) {
   if (!html) return "";
   let text = html;
-  
+
+  // PUA markers for blockquote-style content (processed after tag stripping)
+  const BQ_OPEN = "\uE000";
+  const BQ_CLOSE = "\uE001";
+
+  // Strip buttons/interactive elements (e.g. "don't show again" in reminder cards)
+  text = text.replace(/<button[^>]*>[\s\S]*?<\/button>/gi, "");
+
+  // Handle reminder cards: strip buttons (done above), mark as quoted content.
+  // No nested divs inside cards, so non-greedy match is safe.
+  text = text.replace(/<div[^>]*class="[^"]*tm-reminder-card[^"]*"[^>]*>([\s\S]*?)<\/div>/gi, (match, inner) => {
+    return `\n${BQ_OPEN}${inner}${BQ_CLOSE}\n`;
+  });
+
+  // Mark blockquote boundaries
+  text = text.replace(/<blockquote[^>]*>/gi, `\n${BQ_OPEN}`);
+  text = text.replace(/<\/blockquote>/gi, `${BQ_CLOSE}\n`);
+
+  // Convert horizontal rules to text separator
+  text = text.replace(/<hr[^>]*>/gi, "\n---\n");
+
   // Convert block elements to newlines
   text = text.replace(/<br\s*\/?>/gi, "\n");
   text = text.replace(/<\/p>/gi, "\n\n");
@@ -41,7 +61,7 @@ function extractPlainTextFromHtml(html) {
   text = text.replace(/<\/tr>/gi, "\n");
   text = text.replace(/<\/td>/gi, " | ");
   text = text.replace(/<\/th>/gi, " | ");
-  
+
   // Extract text from TabMail special links, wrap in brackets with type prefix
   text = text.replace(/<a[^>]*class="[^"]*tm-(email|contact|event)-link[^"]*"[^>]*>([^<]*)<\/a>/gi, (match, type, content) => {
     // Remove emoji prefix - match common email/contact/calendar emojis
@@ -51,13 +71,13 @@ function extractPlainTextFromHtml(html) {
     const prefix = type === 'email' ? 'Email' : type === 'contact' ? 'Contact' : 'Calendar';
     return `[${prefix}: ${cleanContent}]`;
   });
-  
+
   // Handle regular links - keep the link text
   text = text.replace(/<a[^>]*>([^<]*)<\/a>/gi, "$1");
-  
+
   // Strip remaining HTML tags
   text = text.replace(/<[^>]+>/g, "");
-  
+
   // Decode HTML entities
   text = text.replace(/&nbsp;/gi, " ");
   text = text.replace(/&quot;/g, '"');
@@ -66,7 +86,13 @@ function extractPlainTextFromHtml(html) {
   text = text.replace(/&gt;/g, ">");
   text = text.replace(/&#39;/g, "'");
   text = text.replace(/&apos;/gi, "'");
-  
+
+  // Convert quoted-content markers to > prefixed lines (now that content is plain text)
+  text = text.replace(new RegExp(`${BQ_OPEN}([\\s\\S]*?)${BQ_CLOSE}`, "g"), (match, inner) => {
+    const lines = inner.split("\n").map(l => l.trim()).filter(l => l);
+    return lines.map(l => `> ${l}`).join("\n");
+  });
+
   // Clean up whitespace and sanitize for JSON
   text = text.replace(/\n{3,}/g, "\n\n").trim();
   return sanitizeForJson(text);

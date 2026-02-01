@@ -605,7 +605,7 @@ button:focus-visible {
 
 .kb-config-row {
   display: grid;
-  grid-template-columns: 280px 80px 1fr;
+  grid-template-columns: 220px 1fr auto;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
@@ -616,26 +616,65 @@ button:focus-visible {
   text-align: right;
 }
 
-.kb-config-row input[type="number"] {
-  width: 80px;
-  padding: 6px 10px;
-  font-size: 14px;
-  background: var(--in-content-box-background);
-  color: var(--in-content-page-color);
-  border: 1px solid var(--panel-separator-color);
-  border-radius: 4px;
+.kb-slider-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 180px;
 }
 
-.kb-config-row input[type="number"]:focus {
+.kb-slider-group input[type="range"] {
+  flex: 1;
+  height: 4px;
+  appearance: none;
+  background: var(--panel-separator-color);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.kb-slider-group input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--in-content-accent-color);
+  border: none;
+  cursor: pointer;
+}
+
+.kb-slider-group input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: var(--panel-separator-color);
+  border-radius: 2px;
+}
+
+.kb-slider-group input[type="range"]::-moz-range-progress {
+  height: 4px;
+  background: var(--in-content-accent-color);
+  border-radius: 2px;
+}
+
+.kb-slider-group input[type="range"]:focus-visible {
   outline: 2px solid var(--in-content-accent-color);
-  outline-offset: 1px;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.kb-slider-value {
+  min-width: 36px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--in-content-page-color);
 }
 
 .kb-config-hint {
   font-size: 12px;
   opacity: 0.7;
   font-style: italic;
-  padding-left: 16px;
+  grid-column: 2 / -1;
+  margin-top: -4px;
 }
 
 /* Developer test section */
@@ -966,160 +1005,111 @@ button:focus-visible {
 #history-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
 }
 
-.history-session {
+/* --- Turn-based history (default view) --- */
+
+.history-turn {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.history-turn-user {
+  background: color-mix(in srgb, var(--in-content-accent-color) 10%, transparent);
+}
+
+.history-turn-assistant {
+  background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
+}
+
+.history-turn-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.history-turn-role {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.history-turn-time {
+  font-size: 11px;
+  opacity: 0.5;
+}
+
+.history-turn-type {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--in-content-page-color) 12%, transparent);
+  opacity: 0.6;
+  text-transform: capitalize;
+}
+
+.history-turn-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
+}
+
+.history-turn-separator {
+  text-align: center;
+  padding: 8px 0;
+  font-size: 11px;
+  color: var(--in-content-deemphasized-text);
+  position: relative;
+}
+
+.history-turn-separator::before,
+.history-turn-separator::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 30%;
+  border-top: 1px solid var(--panel-separator-color);
+}
+
+.history-turn-separator::before { left: 5%; }
+.history-turn-separator::after { right: 5%; }
+
+/* --- Search results (FTS view) --- */
+
+.history-search-result {
   background: var(--in-content-box-background);
   border: 1px solid var(--panel-separator-color);
   border-radius: 8px;
   overflow: hidden;
 }
 
-.history-session.remembered {
-  opacity: 0.7;
-}
-
-.history-session-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
+.history-search-result-date {
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--in-content-deemphasized-text);
   background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
   border-bottom: 1px solid var(--panel-separator-color);
-  cursor: pointer;
 }
 
-.history-session-header:hover {
-  background: color-mix(in srgb, var(--in-content-page-color) 8%, transparent);
-}
-
-.history-session-info {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.history-session-time {
-  font-size: 13px;
-  font-weight: 500;
-  flex-shrink: 0;
-}
-
-.history-session-snippet {
-  flex: 1;
-  margin-left: 16px;
-  font-size: 13px;
-  opacity: 0.7;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.history-session.expanded .history-session-snippet {
-  display: none;
-}
-
-.history-session-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--in-content-page-color) 15%, transparent);
-  color: var(--in-content-page-color);
-  border: 1px solid color-mix(in srgb, var(--in-content-page-color) 20%, transparent);
-}
-
-.history-session-badge.remembered {
-  background: color-mix(in srgb, var(--in-content-page-color) 10%, transparent);
-  color: var(--in-content-page-color);
-  opacity: 0.6;
-  border-color: transparent;
-}
-
-.history-session-meta {
-  font-size: 12px;
-  opacity: 0.6;
-}
-
-.history-session-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.history-delete-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--in-content-page-color);
-  font-size: 16px;
-  cursor: pointer;
-  opacity: 0.4;
-  transition: all 0.15s ease;
-}
-
-.history-delete-btn:hover {
-  opacity: 1;
-  background: color-mix(in srgb, var(--in-content-danger-button-background) 20%, transparent);
-  color: var(--in-content-danger-button-background);
-}
-
-.history-session-messages {
-  display: none;
-  padding: 12px 16px;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.history-session.expanded .history-session-messages {
-  display: block;
-}
-
-.history-message {
-  padding: 8px 12px;
-  margin-bottom: 8px;
-  border-radius: 6px;
+.history-search-result-content {
+  padding: 10px 14px;
   font-size: 13px;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
-.history-message.user {
-  background: color-mix(in srgb, var(--in-content-accent-color) 15%, transparent);
-  margin-left: 24px;
-}
-
-.history-message.assistant {
-  background: color-mix(in srgb, var(--in-content-page-color) 8%, transparent);
-  margin-right: 24px;
-}
-
-.history-message-role {
-  font-size: 11px;
-  font-weight: 600;
-  opacity: 0.7;
-  margin-bottom: 4px;
-  text-transform: uppercase;
-}
-
-.history-message-content {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.history-message-debug {
-  font-size: 11px;
-  opacity: 0.4;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--panel-separator-color);
-}
 
 /* History Search Bar */
 .history-search-bar {
@@ -1257,19 +1247,18 @@ button:focus-visible {
 }
 
 .modal-actions .reset-section-btn {
-  background: var(--in-content-danger-button-background);
-  color: var(--in-content-danger-button-background-color, white);
+  background: var(--tag-tm-delete);
+  color: white;
   border: none;
   opacity: 1;
 }
 
 .modal-actions .reset-section-btn:hover {
-  background: color-mix(in srgb, var(--in-content-danger-button-background) 85%, black);
+  background: color-mix(in srgb, var(--tag-tm-delete) 85%, black);
 }
 
 /* Search highlight styling */
-.history-session-snippet .search-highlight,
-.history-message .search-highlight {
+.history-search-result-content .search-highlight {
   background: color-mix(in srgb, var(--in-content-accent-color) 40%, transparent);
   color: var(--in-content-page-color);
   padding: 1px 3px;

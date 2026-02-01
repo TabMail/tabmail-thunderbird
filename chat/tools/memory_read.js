@@ -12,9 +12,10 @@ export async function run(args = {}, options = {}) {
     const toleranceMs = args?.tolerance_minutes
       ? Number(args.tolerance_minutes) * 60 * 1000
       : DEFAULT_TOLERANCE_MS;
+    const maxTurns = args?.max_turns ? Math.max(1, Math.floor(Number(args.max_turns))) : 20;
 
     log(
-      `[TMDBG Tools] memory_read: timestamp=${timestamp} tolerance=${toleranceMs}ms`
+      `[TMDBG Tools] memory_read: timestamp=${timestamp} tolerance=${toleranceMs}ms maxTurns=${maxTurns}`
     );
 
     if (!timestamp || typeof timestamp !== "number") {
@@ -60,6 +61,27 @@ export async function run(args = {}, options = {}) {
     if (results.length === 0) {
       log(`[TMDBG Tools] memory_read: no entries found for timestamp ${timestamp}`);
       return "No conversation found around this timestamp.";
+    }
+
+    // Trim to max_turns, centered around the entry closest to the query timestamp
+    if (results.length > maxTurns) {
+      let closestIdx = 0;
+      let closestDist = Infinity;
+      for (let i = 0; i < results.length; i++) {
+        const dist = Math.abs((results[i].dateMs || 0) - timestamp);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestIdx = i;
+        }
+      }
+      let start = Math.max(0, closestIdx - Math.floor(maxTurns / 2));
+      let end = start + maxTurns;
+      if (end > results.length) {
+        end = results.length;
+        start = Math.max(0, end - maxTurns);
+      }
+      log(`[TMDBG Tools] memory_read: trimming ${results.length} entries to ${maxTurns} (centered at idx ${closestIdx})`);
+      results = results.slice(start, end);
     }
 
     // Format results for LLM consumption
