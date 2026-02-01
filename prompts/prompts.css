@@ -605,7 +605,7 @@ button:focus-visible {
 
 .kb-config-row {
   display: grid;
-  grid-template-columns: 220px 1fr auto;
+  grid-template-columns: 260px 1fr auto;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;

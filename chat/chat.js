@@ -11,8 +11,8 @@ import { awaitUserInput } from "./modules/converse.js";
 import { cleanupScrollObservers, initAggressiveScrollStick, isAtBottom, scrollToBottom, setBubbleText, setStickToBottom } from "./modules/helpers.js";
 import { mergeIdMapFromHeadless, persistIdMapImmediate, remapUniqueId } from "./modules/idTranslator.js";
 import { checkAndInsertWelcomeBack, initAndGreetUser, insertProactiveNudge } from "./modules/init.js";
-import { saveTurnsImmediate, saveMetaImmediate } from "./modules/persistentChatStore.js";
 import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromContentEditable, initMentionAutocomplete } from "./modules/mentionAutocomplete.js";
+import { saveMetaImmediate, saveTurnsImmediate } from "./modules/persistentChatStore.js";
 import { addToolBubbleToGroup, cleanupToolGroups, isToolCollapseEnabled } from "./modules/toolCollapse.js";
 import { shutdownToolWebSocket } from "./modules/wsTools.js";
 
@@ -699,7 +699,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   window.addEventListener("beforeunload", () => {
     // Force-save persistent state first (turns, meta, idMap) — timers won't fire after unload
     try {
-      if (ctx.persistedTurns) saveTurnsImmediate(ctx.persistedTurns);
+     if (ctx.persistedTurns) saveTurnsImmediate(ctx.persistedTurns);
       if (ctx.chatMeta) saveMetaImmediate(ctx.chatMeta);
       persistIdMapImmediate();
       log(`[TMDBG Chat] Force-saved persistent chat state on window close`);

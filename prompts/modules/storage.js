@@ -70,7 +70,7 @@ export async function resetPromptFile(filename) {
 
 // KB Config defaults
 const KB_CONFIG_DEFAULTS = {
-    max_chat_exchanges: 100,
+    max_chat_exchanges: 20,
     reminder_retention_days: 14,
     max_bullets: 200,
 };
