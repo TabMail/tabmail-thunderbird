@@ -318,14 +318,16 @@ function _formatDueLabel(dueDate, dueTime) {
 
 function _buildNewReminderMessage(userName, reminder) {
   const detail = reminder.content || "Check this email";
-  const dueLabel = reminder.dueDate ? `**${_formatDueLabel(reminder.dueDate, reminder.dueTime)}** — ` : "";
+  const dueLabelText = reminder.dueDate ? _formatDueLabel(reminder.dueDate, reminder.dueTime) : "";
+  const dueLabel = dueLabelText ? `**${dueLabelText}** — ` : "";
   const emailRef = reminder.uniqueId ? ` — [Email](${reminder.uniqueId})` : "";
   return `Hey ${userName}, you have a new email that may need your attention:\n\n${dueLabel}${detail}${emailRef}`;
 }
 
 function _buildNewRemindersMessage(userName, reminders) {
   const lines = reminders.map(r => {
-    const dueLabel = r.dueDate ? `**${_formatDueLabel(r.dueDate, r.dueTime)}** — ` : "";
+    const dueLabelText = r.dueDate ? _formatDueLabel(r.dueDate, r.dueTime) : "";
+    const dueLabel = dueLabelText ? `**${dueLabelText}** — ` : "";
     const emailRef = r.uniqueId ? ` — [Email](${r.uniqueId})` : "";
     return `- ${dueLabel}${r.content}${emailRef}`;
   });
