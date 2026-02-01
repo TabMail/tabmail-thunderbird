@@ -87,6 +87,7 @@ async function collectMessageReminders() {
         const reminder = {
           content: reminderData.content.trim(),
           dueDate: reminderData.dueDate || null, // May have due date from summary
+          dueTime: reminderData.dueTime || null, // Optional HH:MM time
           source: "message",
           messageId: item.internalId, // Keep internalId for reference
           uniqueId: uniqueId, // Also keep uniqueId
@@ -160,17 +161,23 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       log(`[ReminderBuilder] Filtered out ${disabledCount} disabled reminders`);
     }
 
-    // Sort by due date (items with dates first, then null dates)
+    // Sort by due date+time (items with dates first, then null dates)
     allReminders.sort((a, b) => {
       // Items with due dates come first
       if (a.dueDate && !b.dueDate) return -1;
       if (!a.dueDate && b.dueDate) return 1;
-      
-      // Both have due dates - sort by date
+
+      // Both have due dates - sort by date, then time
       if (a.dueDate && b.dueDate) {
-        return a.dueDate.localeCompare(b.dueDate);
+        const dateCmp = a.dueDate.localeCompare(b.dueDate);
+        if (dateCmp !== 0) return dateCmp;
+        // Same date — compare time (null time sorts after specific time)
+        if (a.dueTime && !b.dueTime) return -1;
+        if (!a.dueTime && b.dueTime) return 1;
+        if (a.dueTime && b.dueTime) return a.dueTime.localeCompare(b.dueTime);
+        return 0;
       }
-      
+
       // Both null - maintain original order (stable sort)
       return 0;
     });
@@ -383,11 +390,12 @@ export function formatRemindersForDisplay(reminders) {
   const dateStr = now.toLocaleDateString("en-US", dateOptions);
 
   /**
-   * Format a due date for display
+   * Format a due date (and optional time) for display
    * @param {string|null} dueDateStr - Date string in YYYY-MM-DD format or null
+   * @param {string|null} dueTimeStr - Time string in HH:MM format or null
    * @returns {string} Formatted date label (never null - returns empty string for missing dates)
    */
-  const formatDueDate = (dueDateStr) => {
+  const formatDueDate = (dueDateStr, dueTimeStr = null) => {
     if (!dueDateStr) return "";
 
     try {
@@ -425,8 +433,9 @@ export function formatRemindersForDisplay(reminders) {
       const todayTimestamp = today.getTime();
       const tomorrowTimestamp = tomorrow.getTime();
 
-      if (dueDateTimestamp === todayTimestamp) return "**Today**";
-      if (dueDateTimestamp === tomorrowTimestamp) return "**Tomorrow**";
+      const timeSuffix = dueTimeStr ? ` at ${dueTimeStr}` : "";
+      if (dueDateTimestamp === todayTimestamp) return `**Today${timeSuffix}**`;
+      if (dueDateTimestamp === tomorrowTimestamp) return `**Tomorrow${timeSuffix}**`;
       
       // Calculate days overdue for past dates
       if (dueDateTimestamp < todayTimestamp) {
@@ -438,14 +447,14 @@ export function formatRemindersForDisplay(reminders) {
         return `**Overdue (${daysOverdue} days)**`;
       }
 
-      // Format as "Due Mon, Nov 5"
+      // Format as "Due Mon, Nov 5" or "Due Mon, Nov 5 at 14:00"
       const options = {
         weekday: "short",
         month: "short",
         day: "numeric",
       };
       const formatted = dueDateMidnight.toLocaleDateString("en-US", options);
-      return `Due ${formatted}`;
+      return `Due ${formatted}${timeSuffix}`;
     } catch (e) {
       log(
         `[ReminderBuilder] Failed to format due date: ${dueDateStr}`,
@@ -466,7 +475,7 @@ export function formatRemindersForDisplay(reminders) {
   // The markdown renderer detects this and creates a styled card with dismiss button
   // Hashes are stored separately and linked post-hoc by index
   sortedReminders.forEach((reminder) => {
-    const dueDateLabel = formatDueDate(reminder.dueDate);
+    const dueDateLabel = formatDueDate(reminder.dueDate, reminder.dueTime);
     const prefix = dueDateLabel ? `${dueDateLabel}: ` : "";
     
     // [reminder] prefix tells the renderer to create a reminder card

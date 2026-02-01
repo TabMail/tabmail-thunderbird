@@ -933,6 +933,14 @@ button:focus-visible {
   font-weight: 500;
 }
 
+.reminder-notified {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--tag-tm-reply) 15%, transparent);
+  color: var(--tag-tm-reply);
+  font-weight: 500;
+}
+
 .reminder-due {
   color: var(--in-content-page-color);
 }

@@ -279,11 +279,13 @@ export const SETTINGS = {
         initialDelayMs: 150,
         maxDelayMs: 1000,
     },
-    // Proactive check-in settings
-    proactiveCheckin: {
-        enabled: false,                  // Default disabled — opt-in feature
-        debounceMs: 1000,               // Debounce after reminder change detected
-        cooldownMinutes: 5,             // Min minutes between check-in LLM calls; also used as stale message threshold
+    // Proactive reachout / notification settings
+    notifications: {
+        proactiveEnabled: false,             // Default disabled — opt-in feature
+        newReminderWindowDays: 7,            // Only reach out for new reminders with due dates within this many days
+        dueReminderAdvanceMinutes: 30,       // Reach out this many minutes before a reminder's due time
+        graceMinutes: 5,                     // Grace window added to advance minutes when batching upcoming reminders
+        debounceMs: 1000,                    // Debounce after reminder change detected
     },
     // Reminder (MOTD) generation settings
     reminderGeneration: {

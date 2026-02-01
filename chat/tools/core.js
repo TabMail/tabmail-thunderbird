@@ -26,8 +26,9 @@ import * as kbDelTool from "./kb_del.js";
 import * as memoryReadTool from "./memory_read.js";
 import * as memorySearchTool from "./memory_search.js";
 import * as webReadTool from "./web_read.js";
-import * as proactiveScheduleAlarmTool from "./proactive_schedule_alarm.js";
-import * as proactiveToggleCheckinTool from "./proactive_toggle_checkin.js";
+import * as reminderAddTool from "./reminder_add.js";
+import * as reminderDelTool from "./reminder_del.js";
+import * as changeSettingTool from "./change_setting.js";
 
 // --- FSM Chain Tracking ---
 // Track the last FSM tool executed in the current tool-call-chain to detect
@@ -61,8 +62,9 @@ const TOOL_IMPL = {
   memory_read: memoryReadTool,
   memory_search: memorySearchTool,
   web_read: webReadTool,
-  proactive_schedule_alarm: proactiveScheduleAlarmTool,
-  proactive_toggle_checkin: proactiveToggleCheckinTool,
+  reminder_add: reminderAddTool,
+  reminder_del: reminderDelTool,
+  change_setting: changeSettingTool,
 };
 
 // Generic marker for server-side tools (backend sends this name)
@@ -192,10 +194,12 @@ export async function getToolActivityLabel(name, args = {}) {
       }
       return "Reading web content…";
     }
-    case "proactive_schedule_alarm":
-      return "Scheduling check-in…";
-    case "proactive_toggle_checkin":
-      return args?.enabled ? "Enabling proactive check-in…" : "Disabling proactive check-in…";
+    case "reminder_add":
+      return "Adding reminder…";
+    case "reminder_del":
+      return "Removing reminder…";
+    case "change_setting":
+      return "Updating setting…";
     default:
       log(`[TMDBG Tools] Missing activity label for tool '${name}'`);
       return "Thinking…";

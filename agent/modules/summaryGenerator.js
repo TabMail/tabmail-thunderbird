@@ -296,7 +296,7 @@ export async function generateSummary(messageHeader, highPriority = false) {
     has_unsubscribe_link: emailFilter.hasUnsubscribe,
   };
 
-  const assistantResp = await sendChat([systemMsg], { ignoreSemaphore: highPriority });
+  const assistantResp = await sendChat([systemMsg], { ignoreSemaphore: highPriority, enableServerTools: true });
   if (!assistantResp) {
     log(`${PFX}LLM returned empty summary for ${uniqueKey}`, "error");
     return null;

@@ -7,6 +7,7 @@ import { showStatus } from "./utils.js";
 
 // Module state
 let remindersData = [];
+let reachedOutIds = {};
 
 /**
  * Load reminders from background script
@@ -14,18 +15,20 @@ let remindersData = [];
 export async function loadReminders() {
     try {
         log("[Prompts] Loading reminders...");
-        
-        const response = await browser.runtime.sendMessage({
-            command: "get-all-reminders",
-        });
-        
+
+        const [response, reachedOutStored] = await Promise.all([
+            browser.runtime.sendMessage({ command: "get-all-reminders" }),
+            browser.storage.local.get({ "notifications.reached_out_ids": {} }),
+        ]);
+
         if (!response || !response.ok) {
             throw new Error(response?.error || "Failed to load reminders");
         }
-        
+
         remindersData = response.reminders || [];
-        log(`[Prompts] Loaded ${remindersData.length} reminders (${response.counts?.disabled || 0} disabled)`);
-        
+        reachedOutIds = reachedOutStored["notifications.reached_out_ids"] || {};
+        log(`[Prompts] Loaded ${remindersData.length} reminders (${response.counts?.disabled || 0} disabled, ${Object.keys(reachedOutIds).length} notified)`);
+
         renderReminders();
     } catch (e) {
         log(`[Prompts] Error loading reminders: ${e}`, "error");
@@ -87,6 +90,15 @@ function renderReminders() {
         source.className = "reminder-source";
         source.textContent = reminder.source === "kb" ? "Knowledge Base" : "Email";
         meta.appendChild(source);
+
+        // Notified badge (if user was reached out about this reminder)
+        if (reminder.hash && reachedOutIds[reminder.hash]) {
+            const notified = document.createElement("span");
+            notified.className = "reminder-notified";
+            notified.textContent = "✓ Notified";
+            notified.title = `User was notified (${reachedOutIds[reminder.hash].trigger === "due_approaching" ? "due approaching" : "new reminder"})`;
+            meta.appendChild(notified);
+        }
         
         // Due date
         if (reminder.dueDate) {
