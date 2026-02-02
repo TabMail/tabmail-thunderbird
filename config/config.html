@@ -149,6 +149,33 @@
         </div>
         <small>Default: 5 minutes.</small>
       </div>
+
+      <div class="field" style="margin-top: 12px; grid-template-columns: 320px 1fr;">
+        <label for="notif-advance-minutes">Remind me before due time</label>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <input type="number" id="notif-advance-minutes" min="5" max="120" step="1" style="width: 70px;" />
+          <span>minutes</span>
+        </div>
+        <small>How far in advance to notify you before a reminder's due time. Default: 30 minutes.</small>
+      </div>
+
+      <div class="field" style="margin-top: 12px; grid-template-columns: 320px 1fr;">
+        <label for="notif-window-days">New reminder window</label>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <input type="number" id="notif-window-days" min="1" max="30" step="1" style="width: 70px;" />
+          <span>days</span>
+        </div>
+        <small>Only reach out for new reminders with due dates within this many days. Default: 7 days.</small>
+      </div>
+
+      <div class="field" style="margin-top: 12px; grid-template-columns: 320px 1fr;">
+        <label for="notif-grace-minutes">Grace window</label>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <input type="number" id="notif-grace-minutes" min="1" max="30" step="1" style="width: 70px;" />
+          <span>minutes</span>
+        </div>
+        <small>Extra window added when batching upcoming reminders. Default: 5 minutes.</small>
+      </div>
     </section>
 
     <!-- ─── External Accounts ─── -->
