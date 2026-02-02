@@ -9,7 +9,10 @@ import { log } from "../agent/modules/utils.js";
 // 0.7.0:  Semantic search (sqlite-vec embeddings + hybrid FTS5/vector scoring)
 const MIN_HOST_VERSION = "0.7.1";
 
-// Storage key for tracking last indexed host version (for auto-reindex on minor version bump)
+// Storage key for tracking last indexed schema version (for auto-reindex on schema change)
+const STORAGE_KEY_LAST_INDEXED_SCHEMA_VERSION = "ftsLastIndexedSchemaVersion";
+
+// Legacy storage key (migrated to schema version on first run with new host)
 const STORAGE_KEY_LAST_INDEXED_VERSION = "ftsLastIndexedHostVersion";
 
 // Storage key for tracking interrupted embedding rebuild (resume on next startup)
@@ -71,15 +74,6 @@ function versionLessThan(a, b) {
     if (va > vb) return false;
   }
   return false;
-}
-
-/**
- * Extract major.minor from version string (ignoring patch)
- * e.g., "0.6.1" -> "0.6"
- */
-function getMinorVersion(version) {
-  const parts = version.split('.');
-  return `${parts[0] || 0}.${parts[1] || 0}`;
 }
 
 /**
@@ -162,45 +156,54 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate) {
 }
 
 /**
- * Check if minor version has changed (requires reindex due to schema/tokenizer changes)
- * Returns true if reindex is needed
+ * Check if schema version has changed (requires reindex due to schema/tokenizer/model changes).
+ * Compares the integer schemaVersion from the native host hello response against the stored value.
+ * Handles migration from the old hostVersion-based tracking.
  */
-async function checkMinorVersionChange(currentVersion) {
+async function checkSchemaVersionChange(currentSchemaVersion) {
   try {
-    const stored = await browser.storage.local.get(STORAGE_KEY_LAST_INDEXED_VERSION);
-    const lastVersion = stored[STORAGE_KEY_LAST_INDEXED_VERSION];
-    
-    if (!lastVersion) {
-      // First time - no previous version, no need to reindex
-      log(`[TMDBG FTS] No previous host version stored, skipping reindex check`);
+    const stored = await browser.storage.local.get([
+      STORAGE_KEY_LAST_INDEXED_SCHEMA_VERSION,
+      STORAGE_KEY_LAST_INDEXED_VERSION, // old key for migration
+    ]);
+    const lastSchemaVersion = stored[STORAGE_KEY_LAST_INDEXED_SCHEMA_VERSION];
+
+    if (lastSchemaVersion === undefined || lastSchemaVersion === null) {
+      // Migration: if old key exists, user has indexed before — no spurious reindex
+      const oldVersion = stored[STORAGE_KEY_LAST_INDEXED_VERSION];
+      if (oldVersion) {
+        log(`[TMDBG FTS] Migrating from hostVersion tracking to schemaVersion tracking (old=${oldVersion}, new schema=${currentSchemaVersion})`);
+        await browser.storage.local.remove(STORAGE_KEY_LAST_INDEXED_VERSION);
+        await browser.storage.local.set({ [STORAGE_KEY_LAST_INDEXED_SCHEMA_VERSION]: currentSchemaVersion });
+        return { needsReindex: false, migrated: true };
+      }
+      // True first run — no previous data
+      log(`[TMDBG FTS] No previous schema version stored, skipping reindex check`);
       return { needsReindex: false, isFirstRun: true };
     }
-    
-    const currentMinor = getMinorVersion(currentVersion);
-    const lastMinor = getMinorVersion(lastVersion);
-    
-    if (currentMinor !== lastMinor) {
-      log(`[TMDBG FTS] ⚠️ Minor version changed: ${lastMinor} → ${currentMinor}, reindex required!`);
-      return { needsReindex: true, lastVersion, currentVersion };
+
+    if (currentSchemaVersion !== lastSchemaVersion) {
+      log(`[TMDBG FTS] ⚠️ Schema version changed: ${lastSchemaVersion} → ${currentSchemaVersion}, reindex required!`);
+      return { needsReindex: true, lastSchemaVersion, currentSchemaVersion };
     }
-    
-    log(`[TMDBG FTS] Minor version unchanged (${currentMinor}), no reindex needed`);
+
+    log(`[TMDBG FTS] Schema version unchanged (${currentSchemaVersion}), no reindex needed`);
     return { needsReindex: false };
   } catch (e) {
-    log(`[TMDBG FTS] Error checking version change: ${e}`, "error");
+    log(`[TMDBG FTS] Error checking schema version change: ${e}`, "error");
     return { needsReindex: false, error: e.message };
   }
 }
 
 /**
- * Mark the current version as indexed (call after successful reindex)
+ * Mark the current schema version as indexed (call after successful reindex)
  */
-async function markVersionAsIndexed(version) {
+async function markSchemaVersionAsIndexed(schemaVersion) {
   try {
-    await browser.storage.local.set({ [STORAGE_KEY_LAST_INDEXED_VERSION]: version });
-    log(`[TMDBG FTS] Marked version ${version} as indexed`);
+    await browser.storage.local.set({ [STORAGE_KEY_LAST_INDEXED_SCHEMA_VERSION]: schemaVersion });
+    log(`[TMDBG FTS] Marked schema version ${schemaVersion} as indexed`);
   } catch (e) {
-    log(`[TMDBG FTS] Error marking version as indexed: ${e}`, "error");
+    log(`[TMDBG FTS] Error marking schema version as indexed: ${e}`, "error");
   }
 }
 
@@ -572,19 +575,21 @@ export const nativeFtsSearch = {
     return hostInfo;
   },
   
-  // Mark current version as indexed (call after successful reindex)
+  // Mark current schema version as indexed (call after successful reindex)
   async markVersionAsIndexed() {
-    if (hostInfo?.hostVersion) {
-      await markVersionAsIndexed(hostInfo.hostVersion);
+    if (hostInfo?.schemaVersion !== undefined) {
+      await markSchemaVersionAsIndexed(hostInfo.schemaVersion);
     }
   },
-  
-  // Check if reindex is needed due to version change
+
+  // Check if reindex is needed due to schema version change
   async checkReindexNeeded() {
-    if (!hostInfo?.hostVersion) {
-      return { needsReindex: false, error: "Host not connected" };
+    if (hostInfo?.schemaVersion === undefined) {
+      // Pre-schemaVersion host (< 0.7.4): fall back to no reindex
+      log(`[TMDBG FTS] Host does not report schemaVersion, skipping reindex check`);
+      return { needsReindex: false, error: "Host does not support schemaVersion" };
     }
-    return checkMinorVersionChange(hostInfo.hostVersion);
+    return checkSchemaVersionChange(hostInfo.schemaVersion);
   },
   
   // Manually check for and apply updates (called from settings / maintenance)

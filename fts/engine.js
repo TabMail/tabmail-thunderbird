@@ -418,16 +418,16 @@ export async function initFtsEngine() {
     attachCommandInterface(); // Attach command handlers
 
     // Check if embeddings need rebuilding AFTER command interface is registered.
-    // Two triggers: (1) minor version bump, (2) missing embeddings (state-based).
+    // Two triggers: (1) schema version bump, (2) missing embeddings (state-based).
     try {
       let needsRebuild = false;
       let rebuildReason = "";
 
-      // Trigger 1: minor version change (e.g., schema/tokenizer updates)
+      // Trigger 1: schema version change (e.g., DB schema/tokenizer/model updates)
       const versionCheck = await nativeFtsSearch.checkReindexNeeded();
       if (versionCheck.needsReindex) {
         needsRebuild = true;
-        rebuildReason = `minor version upgrade ${versionCheck.lastVersion} → ${versionCheck.currentVersion}`;
+        rebuildReason = `schema version upgrade ${versionCheck.lastSchemaVersion} → ${versionCheck.currentSchemaVersion}`;
       } else if (versionCheck.isFirstRun) {
         await nativeFtsSearch.markVersionAsIndexed();
       }
