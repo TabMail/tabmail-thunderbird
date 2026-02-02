@@ -114,7 +114,7 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate) {
   const updateManifestUrl = `${UPDATE_BASE_URL}/${platformKey}/update-manifest.json`;
   log(`[TMDBG FTS] Fetching native-fts update manifest for ${platformKey} from ${updateManifestUrl}`);
 
-  const response = await fetch(updateManifestUrl);
+  const response = await fetch(updateManifestUrl, { cache: 'no-cache' });
   if (!response.ok) {
     throw new Error(`Failed to fetch update manifest: ${response.status}`);
   }
