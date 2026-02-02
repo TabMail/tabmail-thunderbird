@@ -317,11 +317,13 @@ function _formatDueLabel(dueDate, dueTime) {
 }
 
 function _buildNewReminderMessage(userName, reminder) {
-  const detail = reminder.content || "Check this email";
+  const isKB = reminder.source === "kb";
+  const detail = reminder.content || (isKB ? "Check this reminder" : "Check this email");
   const dueLabelText = reminder.dueDate ? _formatDueLabel(reminder.dueDate, reminder.dueTime) : "";
   const dueLabel = dueLabelText ? `**${dueLabelText}** — ` : "";
   const emailRef = reminder.uniqueId ? ` — [Email](${reminder.uniqueId})` : "";
-  return `Hey ${userName}, you have a new email that may need your attention:\n\n${dueLabel}${detail}${emailRef}`;
+  const noun = isKB ? "reminder" : "email";
+  return `Hey ${userName}, you have a new ${noun} that may need your attention:\n\n${dueLabel}${detail}${emailRef}`;
 }
 
 function _buildNewRemindersMessage(userName, reminders) {
@@ -331,7 +333,9 @@ function _buildNewRemindersMessage(userName, reminders) {
     const emailRef = r.uniqueId ? ` — [Email](${r.uniqueId})` : "";
     return `- ${dueLabel}${r.content}${emailRef}`;
   });
-  return `Hey ${userName}, you have ${reminders.length} new emails that may need your attention:\n\n${lines.join("\n")}`;
+  const allKB = reminders.every(r => r.source === "kb");
+  const noun = allKB ? "reminders" : "emails";
+  return `Hey ${userName}, you have ${reminders.length} new ${noun} that may need your attention:\n\n${lines.join("\n")}`;
 }
 
 function _buildDueApproachingMessage(userName, reminders) {
