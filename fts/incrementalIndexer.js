@@ -395,13 +395,15 @@ async function processPendingUpdates() {
             deleteVerifyFailed++;
           }
         } catch (verifyErr) {
-          // Verification error - assume deleted (most errors mean not found)
-          processedKeys.add(key);
-          verifiedDeletes++;
-          logFtsOperation("verify_delete", "success", {
+          // Verification error - be conservative, keep in queue for retry
+          // If native FTS disconnected, we can't confirm the delete succeeded
+          log(`[TMDBG FTS] DELETE VERIFY ERROR for ${key}: ${verifyErr} (will retry)`, "warn");
+          logFtsOperation("verify_delete", "failure", {
             uniqueKey: key,
-            note: "assumed_deleted_on_error",
+            reason: "verify_error",
+            error: String(verifyErr),
           });
+          deleteVerifyFailed++;
         }
       }
       
