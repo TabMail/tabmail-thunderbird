@@ -298,6 +298,15 @@ function attachCommandInterface() {
               sendResponse({ ok: true });
               return;
             }
+            case "rebuildEmbeddings": {
+              // Non-destructive: rebuild vector embeddings from existing FTS data
+              const result = await nativeFtsSearch.rebuildEmbeddings();
+              if (result?.ok) {
+                await nativeFtsSearch.markVersionAsIndexed();
+              }
+              sendResponse(result);
+              return;
+            }
             case "checkForUpdates": {
               // Manually check for native FTS updates
               const result = await nativeFtsSearch.checkForUpdates();
@@ -373,7 +382,52 @@ export async function initFtsEngine() {
   try {
     await initNativeFts();
     attachCommandInterface(); // Attach command handlers
-    
+
+    // Check if embeddings need rebuilding AFTER command interface is registered.
+    // Two triggers: (1) minor version bump, (2) missing embeddings (state-based).
+    try {
+      let needsRebuild = false;
+      let rebuildReason = "";
+
+      // Trigger 1: minor version change (e.g., schema/tokenizer updates)
+      const versionCheck = await nativeFtsSearch.checkReindexNeeded();
+      if (versionCheck.needsReindex) {
+        needsRebuild = true;
+        rebuildReason = `minor version upgrade ${versionCheck.lastVersion} → ${versionCheck.currentVersion}`;
+      } else if (versionCheck.isFirstRun) {
+        await nativeFtsSearch.markVersionAsIndexed();
+      }
+
+      // Trigger 2: embeddings missing (catches failed migrations like the 0.7.0 race bug)
+      if (!needsRebuild) {
+        const stats = await nativeFtsSearch.stats();
+        if (stats.docs > 0 && (!stats.vecDocs || stats.vecDocs === 0)) {
+          needsRebuild = true;
+          rebuildReason = `missing embeddings (${stats.docs} FTS docs, 0 vec docs)`;
+        }
+      }
+
+      if (needsRebuild) {
+        log(`[TMDBG FTS] 🔄 Embedding rebuild needed: ${rebuildReason}`);
+        log(`[TMDBG FTS] Auto-rebuilding embeddings (non-destructive, FTS5 index preserved)`);
+
+        // Non-destructive: rebuild embeddings from existing FTS data via native RPC.
+        // Uses batch-based RPC so FTS search remains accessible during rebuild.
+        nativeFtsSearch.rebuildEmbeddings().then(async (result) => {
+          if (result?.ok) {
+            log(`[TMDBG FTS] ✅ Embedding rebuild completed: ${result.emailEmbedded}/${result.emailTotal} emails, ${result.memoryEmbedded}/${result.memoryTotal} memory`);
+            await nativeFtsSearch.markVersionAsIndexed();
+          } else {
+            log(`[TMDBG FTS] ❌ Embedding rebuild failed: ${result?.error || "unknown error"}`, "error");
+          }
+        }).catch(e => {
+          log(`[TMDBG FTS] ❌ Embedding rebuild error: ${e.message}`, "error");
+        });
+      }
+    } catch (e) {
+      log(`[TMDBG FTS] Init embedding check failed (non-fatal): ${e}`, "warn");
+    }
+
     // Initialize incremental indexer for automatic updates
     try {
       const { initIncrementalIndexer } = await import("./incrementalIndexer.js");

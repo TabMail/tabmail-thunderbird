@@ -7,7 +7,7 @@ import { log } from "../agent/modules/utils.js";
 // 0.6.10: Added memory database for chat history search (memory_search tool)
 // 0.6.12: Stability improvements, empty query support for memory search
 // 0.7.0:  Semantic search (sqlite-vec embeddings + hybrid FTS5/vector scoring)
-const MIN_HOST_VERSION = "0.7.0";
+const MIN_HOST_VERSION = "0.7.1";
 
 // Storage key for tracking last indexed host version (for auto-reindex on minor version bump)
 const STORAGE_KEY_LAST_INDEXED_VERSION = "ftsLastIndexedHostVersion";
@@ -119,32 +119,6 @@ async function markVersionAsIndexed(version) {
     log(`[TMDBG FTS] Marked version ${version} as indexed`);
   } catch (e) {
     log(`[TMDBG FTS] Error marking version as indexed: ${e}`, "error");
-  }
-}
-
-/**
- * Trigger automatic reindex after upgrade
- * Sends message to FTS engine to perform full reindex
- */
-async function triggerAutoReindex() {
-  log(`[TMDBG FTS] Starting automatic reindex after upgrade`);
-  
-  try {
-    // Send reindexAll command via runtime message (goes through engine.js)
-    const result = await browser.runtime.sendMessage({
-      type: "fts",
-      cmd: "reindexAll",
-      progress: false // No UI progress needed for auto-reindex
-    });
-    
-    if (result?.ok) {
-      log(`[TMDBG FTS] ✅ Auto-reindex completed: ${result.indexed} messages in ${result.batches} batches`);
-    } else {
-      log(`[TMDBG FTS] ❌ Auto-reindex failed: ${result?.error || "unknown error"}`, "error");
-    }
-  } catch (e) {
-    log(`[TMDBG FTS] ❌ Auto-reindex error: ${e.message}`, "error");
-    throw e;
   }
 }
 
@@ -343,22 +317,11 @@ export async function initNativeFts() {
     log(`[TMDBG FTS] DB initialized at: ${initResult.dbPath}`);
     
     log("[TMDBG FTS] Native FTS helper connected successfully");
-    
-    // Check if minor version changed (requires reindex for schema/tokenizer changes)
-    const versionCheck = await checkMinorVersionChange(hostInfo.hostVersion);
-    if (versionCheck.needsReindex) {
-      log(`[TMDBG FTS] 🔄 Minor version upgrade detected: ${versionCheck.lastVersion} → ${versionCheck.currentVersion}`);
-      log(`[TMDBG FTS] Auto-triggering full reindex due to tokenizer/schema changes`);
-      
-      // Trigger automatic reindex - don't await, let it run in background
-      triggerAutoReindex().catch(e => {
-        log(`[TMDBG FTS] Auto-reindex failed: ${e.message}`, "error");
-      });
-    } else if (versionCheck.isFirstRun) {
-      // First run - mark the current version as indexed
-      await markVersionAsIndexed(hostInfo.hostVersion);
-    }
-    
+
+    // NOTE: Version check + auto-reindex is handled by initFtsEngine() in engine.js
+    // AFTER attachCommandInterface() is called. Do NOT trigger reindex here — the
+    // runtime message handler isn't registered yet and the message would be lost.
+
     return true;
   } catch (error) {
     log(`[TMDBG FTS] Failed to connect to native helper: ${error.message}`);
@@ -456,7 +419,49 @@ export const nativeFtsSearch = {
   async debugSample() {
     return nativeRPC('debugSample', {});
   },
-  
+
+  // Non-destructive: rebuild vector embeddings from existing FTS data.
+  // Does NOT clear the FTS5 keyword index or re-read emails from Thunderbird.
+  // Uses batch-based RPC so FTS search remains accessible between batches.
+  async rebuildEmbeddings() {
+    const start = await nativeRPC('rebuildEmbeddingsStart', {});
+    log(`[TMDBG FTS] Embedding rebuild started: ${start.emailTotal} emails, ${start.memoryTotal} memory entries`);
+
+    // Rebuild email embeddings in batches
+    let lastRowid = 0;
+    let totalProcessed = 0;
+    let totalEmbedded = 0;
+    while (true) {
+      const batch = await nativeRPC('rebuildEmbeddingsBatch', { target: 'email', lastRowid, batchSize: 500 });
+      lastRowid = batch.lastRowid;
+      totalProcessed += batch.processed;
+      totalEmbedded += batch.embedded;
+      if (batch.done) break;
+    }
+    log(`[TMDBG FTS] Email embeddings done: ${totalEmbedded}/${totalProcessed}`);
+
+    // Rebuild memory embeddings in batches
+    let memLastRowid = 0;
+    let memProcessed = 0;
+    let memEmbedded = 0;
+    while (true) {
+      const batch = await nativeRPC('rebuildEmbeddingsBatch', { target: 'memory', lastRowid: memLastRowid, batchSize: 500 });
+      memLastRowid = batch.lastRowid;
+      memProcessed += batch.processed;
+      memEmbedded += batch.embedded;
+      if (batch.done) break;
+    }
+    log(`[TMDBG FTS] Memory embeddings done: ${memEmbedded}/${memProcessed}`);
+
+    return {
+      ok: true,
+      emailTotal: totalProcessed,
+      emailEmbedded: totalEmbedded,
+      memoryTotal: memProcessed,
+      memoryEmbedded: memEmbedded,
+    };
+  },
+
   // Get host info (version, install path, etc.)
   getHostInfo() {
     return hostInfo;
