@@ -255,7 +255,17 @@ function attachCommandInterface() {
             }
             case "maintenanceTrigger": {
               const { triggerMaintenanceScan } = await import("./maintenanceScheduler.js");
-              const result = await triggerMaintenanceScan(msg.scheduleType || 'hourly', !!msg.force);
+
+              // Create progress callback if requested (for manual triggers from settings page)
+              const maintProgressCb = msg.progress ? (p) => {
+                browser.runtime.sendMessage({
+                  type: "ftsProgress", scanType: "maintenance",
+                  folder: p.folder || "", folderIndexed: p.folderIndexed || 0,
+                  totalIndexed: p.totalIndexed || 0, totalBatches: p.totalBatches || 0,
+                }).catch(() => {});
+              } : null;
+
+              const result = await triggerMaintenanceScan(msg.scheduleType || 'hourly', !!msg.force, maintProgressCb);
               sendResponse(result);
               return;
             }
@@ -299,17 +309,41 @@ function attachCommandInterface() {
               return;
             }
             case "rebuildEmbeddings": {
+              // Set scan status for UI
+              await browser.storage.local.set({
+                "fts_scan_status": { isScanning: true, scanType: "embeddingRebuild", startTime: Date.now() }
+              });
+
+              const rebuildProgressCb = (p) => {
+                browser.storage.local.set({
+                  "fts_scan_status": {
+                    isScanning: true, scanType: "embeddingRebuild",
+                    progress: { phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total }
+                  }
+                }).catch(() => {});
+                browser.runtime.sendMessage({
+                  type: "ftsProgress", scanType: "embeddingRebuild",
+                  phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total,
+                }).catch(() => {});
+              };
+
               // Non-destructive: rebuild vector embeddings from existing FTS data
-              const result = await nativeFtsSearch.rebuildEmbeddings();
+              const result = await nativeFtsSearch.rebuildEmbeddings(rebuildProgressCb);
+
+              // Clear scan status
+              await browser.storage.local.set({
+                "fts_scan_status": { isScanning: false, scanType: "none", lastCompleted: Date.now() }
+              });
+
               if (result?.ok) {
                 await nativeFtsSearch.markVersionAsIndexed();
               }
               sendResponse(result);
               return;
             }
-            case "checkForUpdates": {
+            case "manualCheckAndUpdateHost": {
               // Manually check for native FTS updates
-              const result = await nativeFtsSearch.checkForUpdates();
+              const result = await nativeFtsSearch.manualCheckAndUpdateHost();
               sendResponse(result);
               return;
             }
@@ -407,20 +441,57 @@ export async function initFtsEngine() {
         }
       }
 
+      // Trigger 3: interrupted rebuild (resume from checkpoint)
+      if (!needsRebuild) {
+        try {
+          const stored = await browser.storage.local.get("fts_embedding_rebuild_status");
+          const saved = stored.fts_embedding_rebuild_status;
+          if (saved?.interrupted) {
+            needsRebuild = true;
+            rebuildReason = `interrupted rebuild (email ${saved.emailProcessed || 0}/${saved.emailTotal || '?'})`;
+          }
+        } catch (_) {}
+      }
+
       if (needsRebuild) {
         log(`[TMDBG FTS] 🔄 Embedding rebuild needed: ${rebuildReason}`);
         log(`[TMDBG FTS] Auto-rebuilding embeddings (non-destructive, FTS5 index preserved)`);
 
+        // Set scan status so the settings page can show progress
+        await browser.storage.local.set({
+          "fts_scan_status": { isScanning: true, scanType: "embeddingRebuild", startTime: Date.now() }
+        });
+
+        // Progress callback: update scan status + send runtime messages for UI
+        const rebuildProgress = (p) => {
+          browser.storage.local.set({
+            "fts_scan_status": {
+              isScanning: true, scanType: "embeddingRebuild",
+              progress: { phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total }
+            }
+          }).catch(() => {});
+          browser.runtime.sendMessage({
+            type: "ftsProgress", scanType: "embeddingRebuild",
+            phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total,
+          }).catch(() => {});
+        };
+
         // Non-destructive: rebuild embeddings from existing FTS data via native RPC.
         // Uses batch-based RPC so FTS search remains accessible during rebuild.
-        nativeFtsSearch.rebuildEmbeddings().then(async (result) => {
+        nativeFtsSearch.rebuildEmbeddings(rebuildProgress).then(async (result) => {
+          await browser.storage.local.set({
+            "fts_scan_status": { isScanning: false, scanType: "none", lastCompleted: Date.now() }
+          }).catch(() => {});
           if (result?.ok) {
             log(`[TMDBG FTS] ✅ Embedding rebuild completed: ${result.emailEmbedded}/${result.emailTotal} emails, ${result.memoryEmbedded}/${result.memoryTotal} memory`);
             await nativeFtsSearch.markVersionAsIndexed();
           } else {
             log(`[TMDBG FTS] ❌ Embedding rebuild failed: ${result?.error || "unknown error"}`, "error");
           }
-        }).catch(e => {
+        }).catch(async (e) => {
+          await browser.storage.local.set({
+            "fts_scan_status": { isScanning: false, scanType: "none", lastCompleted: Date.now() }
+          }).catch(() => {});
           log(`[TMDBG FTS] ❌ Embedding rebuild error: ${e.message}`, "error");
         });
       }

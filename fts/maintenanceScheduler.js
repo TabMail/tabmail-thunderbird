@@ -459,10 +459,10 @@ async function runScheduledMaintenanceTick(triggerSource) {
   }
 
   // Optional: on DAILY maintenance run, check native FTS updates before the scan.
-  if (dueType === "daily" && _ftsSearch?.checkForUpdates) {
+  if (dueType === "daily" && _ftsSearch?.manualCheckAndUpdateHost) {
     try {
       log(`[TMDBG FTS] Maintenance tick: checking for native FTS updates (before daily maintenance)`);
-      const updateResult = await _ftsSearch.checkForUpdates();
+      const updateResult = await _ftsSearch.manualCheckAndUpdateHost();
       if (updateResult?.updated) {
         log(`[TMDBG FTS] ✅ Native FTS updated: ${updateResult.oldVersion} → ${updateResult.newVersion}`);
       } else if (updateResult?.updateAvailable && !updateResult?.canUpdate) {
@@ -713,7 +713,7 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
 /**
  * Run a maintenance scan for the given schedule
  */
-async function runMaintenanceScan(scheduleType, config, force = false) {
+async function runMaintenanceScan(scheduleType, config, force = false, progressCallback = null) {
   if (!_ftsSearch) {
     throw new Error("FTS search not initialized");
   }
@@ -756,7 +756,7 @@ async function runMaintenanceScan(scheduleType, config, force = false) {
     // Run the maintenance scan
     const { indexMessages } = await import("./indexer.js");
     const maxDetailEntries = Number(SETTINGS?.ftsMaintenanceLog?.maxCorrectionEntriesPerRun) || 0;
-    result = await indexMessages(_ftsSearch, () => {}, dateRange.start, dateRange.end, {
+    result = await indexMessages(_ftsSearch, progressCallback || (() => {}), dateRange.start, dateRange.end, {
       collectDetails: true,
       maxDetailEntries,
     });
@@ -1146,14 +1146,14 @@ export async function triggerCleanupScan(scheduleType = 'daily') {
 /**
  * Manually trigger a maintenance scan (for testing/debugging)
  */
-export async function triggerMaintenanceScan(scheduleType = 'hourly', force = false) {
+export async function triggerMaintenanceScan(scheduleType = 'hourly', force = false, progressCallback = null) {
   const config = MAINTENANCE_SCHEDULES[scheduleType];
   if (!config) {
     throw new Error(`Unknown schedule type: ${scheduleType}`);
   }
-  
+
   log(`[TMDBG FTS] Manually triggering ${scheduleType} maintenance scan`);
-  return await runMaintenanceScan(scheduleType, config, force);
+  return await runMaintenanceScan(scheduleType, config, force, progressCallback);
 }
 
 /**

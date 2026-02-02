@@ -12,6 +12,9 @@ const MIN_HOST_VERSION = "0.7.1";
 // Storage key for tracking last indexed host version (for auto-reindex on minor version bump)
 const STORAGE_KEY_LAST_INDEXED_VERSION = "ftsLastIndexedHostVersion";
 
+// Storage key for tracking interrupted embedding rebuild (resume on next startup)
+const STORAGE_KEY_EMBEDDING_REBUILD_STATUS = "fts_embedding_rebuild_status";
+
 // Update server URL - points to the same CDN as addon updates.
 // Native-FTS updates are platform-first so each OS/arch can be deployed independently:
 //   ${UPDATE_BASE_URL}/${platformKey}/update-manifest.json
@@ -80,6 +83,85 @@ function getMinorVersion(version) {
 }
 
 /**
+ * Show the native update restart banner (shared by auto and manual update paths).
+ * Tries the experiment update bar first, falls back to a popup window.
+ */
+async function showNativeUpdateBanner(version) {
+  try {
+    if (browser.tmUpdates?.showUpdateBar) {
+      await browser.tmUpdates.showUpdateBar({
+        version: `FTS ${version}`,
+        message: "Native search updated. Restart Thunderbird for full compatibility."
+      });
+      log(`[TMDBG FTS] Restart prompt shown via update bar`);
+    } else {
+      await browser.windows.create({
+        url: browser.runtime.getURL('fts/migration-notice.html?type=update'),
+        type: 'popup',
+        width: 520,
+        height: 280,
+        allowScriptsToClose: true
+      });
+      log(`[TMDBG FTS] Restart prompt shown via popup`);
+    }
+  } catch (e) {
+    log(`[TMDBG FTS] Could not show restart prompt: ${e.message}`, "warn");
+  }
+}
+
+/**
+ * Fetch the update manifest, compare versions, and apply the update if possible.
+ * Shared core between initCheckAndUpdateHost() and manualCheckAndUpdateHost().
+ *
+ * Returns { updateAvailable, canUpdate, updated, latestVersion, oldVersion, newVersion, error }
+ */
+async function fetchAndApplyUpdate(currentVersion, canSelfUpdate) {
+  const platformKey = await getNativeFtsPlatformKey();
+  const updateManifestUrl = `${UPDATE_BASE_URL}/${platformKey}/update-manifest.json`;
+  log(`[TMDBG FTS] Fetching native-fts update manifest for ${platformKey} from ${updateManifestUrl}`);
+
+  const response = await fetch(updateManifestUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch update manifest: ${response.status}`);
+  }
+
+  const updateManifest = await response.json();
+  const latestRelease = updateManifest.latest;
+  log(`[TMDBG FTS] Latest host version available for ${platformKey}: ${latestRelease.version}`);
+
+  if (!versionLessThan(currentVersion, latestRelease.version)) {
+    log(`[TMDBG FTS] Host version ${currentVersion} is up to date`);
+    return { updateAvailable: false, latestVersion: latestRelease.version };
+  }
+
+  log(`[TMDBG FTS] 🔄 Update available: ${currentVersion} → ${latestRelease.version}`);
+
+  if (!canSelfUpdate) {
+    return { updateAvailable: true, canUpdate: false, latestVersion: latestRelease.version };
+  }
+
+  isUpdatingHost = true;
+
+  const updateResult = await nativeRPC('updateRequest', {
+    targetVersion: latestRelease.version,
+    updateUrl: latestRelease.downloadUrl,
+    sha256: latestRelease.sha256,
+    platform: platformKey,
+    signature: latestRelease.signature,
+  });
+
+  if (updateResult.success) {
+    log(`[TMDBG FTS] ✅ Host update successful! Prompting for Thunderbird restart.`);
+    await showNativeUpdateBanner(latestRelease.version);
+    return { updateAvailable: true, canUpdate: true, updated: true, oldVersion: currentVersion, newVersion: latestRelease.version };
+  } else {
+    isUpdatingHost = false;
+    log(`[TMDBG FTS] ❌ Host update failed: ${updateResult.error}`, "error");
+    return { updateAvailable: true, canUpdate: true, updated: false, error: updateResult.error || "Update failed" };
+  }
+}
+
+/**
  * Check if minor version has changed (requires reindex due to schema/tokenizer changes)
  * Returns true if reindex is needed
  */
@@ -123,29 +205,29 @@ async function markVersionAsIndexed(version) {
 }
 
 /**
- * Check for and perform host updates if needed
+ * Init-time: hello handshake, migration popup, and auto-update check.
+ * Returns true if an update was applied (caller should wait for reconnect).
  */
-async function checkAndUpdateHost() {
+async function initCheckAndUpdateHost() {
   try {
     // Say hello to get host version
     const manifest = browser.runtime.getManifest();
     const addonVersion = manifest.version;
-    
+
     log(`[TMDBG FTS] Addon version: ${addonVersion}, Min host version: ${MIN_HOST_VERSION}`);
-    
+
     hostInfo = await nativeRPC('hello', { addonVersion });
     log(`[TMDBG FTS] Native host version: ${hostInfo.hostVersion}, installed at: ${hostInfo.installPath}`);
     log(`[TMDBG FTS] Native host impl: ${hostInfo.hostImpl || "unknown"}`);
     log(`[TMDBG FTS] Can self-update: ${hostInfo.canSelfUpdate}, User install: ${hostInfo.isUserInstall}`);
-    
+
     // Inform user about auto-migration with popup window
     if (hostInfo.userLocalReady && hostInfo.isSystemInstall) {
       log(`[TMDBG FTS] ✅ Auto-migrated to user-local install! Restart Thunderbird to enable auto-updates.`, "info");
-      
-      // Show popup window with restart message (always show when migration is detected)
+
       try {
         log(`[TMDBG FTS] Opening migration notification popup...`);
-        
+
         await browser.windows.create({
           url: browser.runtime.getURL('fts/migration-notice.html?type=migration'),
           type: 'popup',
@@ -153,15 +235,14 @@ async function checkAndUpdateHost() {
           height: 280,
           allowScriptsToClose: true
         });
-        
+
         log(`[TMDBG FTS] Migration notification popup shown to user`);
       } catch (e) {
         log(`[TMDBG FTS] Could not show migration notification: ${e.message}`, "warn");
         log(`[TMDBG FTS] Notification error stack: ${e.stack}`, "warn");
-        // Non-fatal - just log it
       }
     }
-    
+
     // Check if update is needed
     let needsMandatoryUpdate = false;
     if (versionLessThan(hostInfo.hostVersion, MIN_HOST_VERSION)) {
@@ -173,73 +254,12 @@ async function checkAndUpdateHost() {
 
     // Always check for updates if self-update is possible
     if (hostInfo.canSelfUpdate) {
-      const platformKey = await getNativeFtsPlatformKey();
-
-      // Fetch platform update manifest from releases repo (platform-specific versioning)
-      const updateManifestUrl = `${UPDATE_BASE_URL}/${platformKey}/update-manifest.json`;
-      log(`[TMDBG FTS] Fetching native-fts update manifest for ${platformKey} from ${updateManifestUrl}`);
-      
-      const response = await fetch(updateManifestUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch update manifest: ${response.status}`);
-      }
-      
-      const updateManifest = await response.json();
-      const latestRelease = updateManifest.latest;
-      
-      log(`[TMDBG FTS] Latest host version available for ${platformKey}: ${latestRelease.version}`);
-      
-      if (versionLessThan(hostInfo.hostVersion, latestRelease.version)) {
-        log(`[TMDBG FTS] 🔄 Starting host update: ${hostInfo.hostVersion} → ${latestRelease.version}`);
-        
-        isUpdatingHost = true; // Set flag to expect disconnect
-
-        const updateResult = await nativeRPC('updateRequest', {
-          targetVersion: latestRelease.version,
-          updateUrl: latestRelease.downloadUrl,
-          sha256: latestRelease.sha256,
-          platform: platformKey,
-          signature: latestRelease.signature
-        });
-        
-        if (updateResult.success) {
-          log(`[TMDBG FTS] ✅ Host update successful! Prompting for Thunderbird restart.`);
-          
-          // Show restart prompt using the update bar mechanism
-          try {
-            if (browser.tmUpdates?.showUpdateBar) {
-              await browser.tmUpdates.showUpdateBar({
-                version: `FTS ${latestRelease.version}`,
-                message: "Native search updated. Restart Thunderbird for full compatibility."
-              });
-              log(`[TMDBG FTS] Restart prompt shown via update bar`);
-            } else {
-              // Fallback: show popup window
-              await browser.windows.create({
-                url: browser.runtime.getURL('fts/migration-notice.html?type=update'),
-                type: 'popup',
-                width: 520,
-                height: 280,
-                allowScriptsToClose: true
-              });
-              log(`[TMDBG FTS] Restart prompt shown via popup`);
-            }
-          } catch (e) {
-            log(`[TMDBG FTS] Could not show restart prompt: ${e.message}`, "warn");
-          }
-          
-          return true; // Updated
-        } else {
-          isUpdatingHost = false; // Failed, so no disconnect expected (or not due to update)
-          log(`[TMDBG FTS] ❌ Host update failed: ${updateResult.error}`, "error");
-        }
-      } else {
-        log(`[TMDBG FTS] Host version ${hostInfo.hostVersion} is up to date`);
-      }
+      const result = await fetchAndApplyUpdate(hostInfo.hostVersion, true);
+      if (result.updated) return true;
     } else if (needsMandatoryUpdate) {
        log(`[TMDBG FTS] ⚠️ Host cannot self-update (needs admin permissions). Please reinstall TabMail.`, "warn");
     }
-    
+
     return false; // No update performed
   } catch (error) {
     isUpdatingHost = false; // Reset on error
@@ -303,7 +323,7 @@ export async function initNativeFts() {
     
     // Check for updates FIRST (before init)
     // If update is triggered, the process will exit and we'll reconnect via onDisconnect
-    const updated = await checkAndUpdateHost();
+    const updated = await initCheckAndUpdateHost();
     if (updated) {
       log("[TMDBG FTS] Host update initiated. Waiting for restart...");
       return true; // Treat as success, reconnection will happen automatically
@@ -423,35 +443,120 @@ export const nativeFtsSearch = {
   // Non-destructive: rebuild vector embeddings from existing FTS data.
   // Does NOT clear the FTS5 keyword index or re-read emails from Thunderbird.
   // Uses batch-based RPC so FTS search remains accessible between batches.
-  async rebuildEmbeddings() {
-    const start = await nativeRPC('rebuildEmbeddingsStart', {});
-    log(`[TMDBG FTS] Embedding rebuild started: ${start.emailTotal} emails, ${start.memoryTotal} memory entries`);
-
-    // Rebuild email embeddings in batches
+  // Supports resumability: saves checkpoints to storage, resumes after interruption.
+  async rebuildEmbeddings(progressCallback) {
+    // Check for interrupted rebuild to resume from
+    let resuming = false;
+    let emailTotal = 0;
+    let memoryTotal = 0;
     let lastRowid = 0;
     let totalProcessed = 0;
     let totalEmbedded = 0;
-    while (true) {
-      const batch = await nativeRPC('rebuildEmbeddingsBatch', { target: 'email', lastRowid, batchSize: 500 });
-      lastRowid = batch.lastRowid;
-      totalProcessed += batch.processed;
-      totalEmbedded += batch.embedded;
-      if (batch.done) break;
-    }
-    log(`[TMDBG FTS] Email embeddings done: ${totalEmbedded}/${totalProcessed}`);
-
-    // Rebuild memory embeddings in batches
     let memLastRowid = 0;
     let memProcessed = 0;
     let memEmbedded = 0;
+    let phase = 'email';
+
+    try {
+      const stored = await browser.storage.local.get(STORAGE_KEY_EMBEDDING_REBUILD_STATUS);
+      const saved = stored[STORAGE_KEY_EMBEDDING_REBUILD_STATUS];
+      if (saved?.interrupted) {
+        resuming = true;
+        emailTotal = saved.emailTotal || 0;
+        memoryTotal = saved.memoryTotal || 0;
+        phase = saved.phase || 'email';
+        if (phase === 'email') {
+          lastRowid = saved.emailLastRowid || 0;
+          totalProcessed = saved.emailProcessed || 0;
+          totalEmbedded = saved.emailEmbedded || 0;
+        } else {
+          totalProcessed = saved.emailProcessed || 0;
+          totalEmbedded = saved.emailEmbedded || 0;
+          memLastRowid = saved.memoryLastRowid || 0;
+          memProcessed = saved.memoryProcessed || 0;
+          memEmbedded = saved.memoryEmbedded || 0;
+        }
+        log(`[TMDBG FTS] Resuming interrupted embedding rebuild: phase=${phase}, emailProcessed=${totalProcessed}/${emailTotal}, memoryProcessed=${memProcessed}/${memoryTotal}`);
+      }
+    } catch (e) {
+      log(`[TMDBG FTS] Failed to check for interrupted rebuild: ${e.message}`, "warn");
+    }
+
+    if (!resuming) {
+      const start = await nativeRPC('rebuildEmbeddingsStart', {});
+      emailTotal = start.emailTotal;
+      memoryTotal = start.memoryTotal;
+      log(`[TMDBG FTS] Embedding rebuild started: ${emailTotal} emails, ${memoryTotal} memory entries`);
+    }
+
+    let batchCount = 0;
+
+    // Rebuild email embeddings in batches
+    if (phase === 'email') {
+      if (progressCallback) progressCallback({ phase: 'email', processed: totalProcessed, embedded: totalEmbedded, total: emailTotal });
+
+      while (true) {
+        const batch = await nativeRPC('rebuildEmbeddingsBatch', { target: 'email', lastRowid, batchSize: 500 });
+        lastRowid = batch.lastRowid;
+        totalProcessed += batch.processed;
+        totalEmbedded += batch.embedded;
+        batchCount++;
+
+        if (progressCallback) progressCallback({ phase: 'email', processed: totalProcessed, embedded: totalEmbedded, total: emailTotal });
+
+        // Save checkpoint every 10 batches (5000 rows)
+        if (batchCount % 10 === 0) {
+          try {
+            await browser.storage.local.set({
+              [STORAGE_KEY_EMBEDDING_REBUILD_STATUS]: {
+                interrupted: true, emailTotal, memoryTotal,
+                emailLastRowid: lastRowid, emailProcessed: totalProcessed, emailEmbedded: totalEmbedded,
+                memoryLastRowid: 0, memoryProcessed: 0, memoryEmbedded: 0,
+                phase: 'email', updatedAt: Date.now(),
+              }
+            });
+          } catch (_) {}
+        }
+
+        if (batch.done) break;
+      }
+      log(`[TMDBG FTS] Email embeddings done: ${totalEmbedded}/${totalProcessed}`);
+      phase = 'memory';
+    }
+
+    // Rebuild memory embeddings in batches
+    if (progressCallback) progressCallback({ phase: 'memory', processed: memProcessed, embedded: memEmbedded, total: memoryTotal });
+
     while (true) {
       const batch = await nativeRPC('rebuildEmbeddingsBatch', { target: 'memory', lastRowid: memLastRowid, batchSize: 500 });
       memLastRowid = batch.lastRowid;
       memProcessed += batch.processed;
       memEmbedded += batch.embedded;
+      batchCount++;
+
+      if (progressCallback) progressCallback({ phase: 'memory', processed: memProcessed, embedded: memEmbedded, total: memoryTotal });
+
+      if (batchCount % 10 === 0) {
+        try {
+          await browser.storage.local.set({
+            [STORAGE_KEY_EMBEDDING_REBUILD_STATUS]: {
+              interrupted: true, emailTotal, memoryTotal,
+              emailLastRowid: lastRowid, emailProcessed: totalProcessed, emailEmbedded: totalEmbedded,
+              memoryLastRowid: memLastRowid, memoryProcessed: memProcessed, memoryEmbedded: memEmbedded,
+              phase: 'memory', updatedAt: Date.now(),
+            }
+          });
+        } catch (_) {}
+      }
+
       if (batch.done) break;
     }
     log(`[TMDBG FTS] Memory embeddings done: ${memEmbedded}/${memProcessed}`);
+
+    // Clear checkpoint on successful completion
+    try {
+      await browser.storage.local.remove(STORAGE_KEY_EMBEDDING_REBUILD_STATUS);
+    } catch (_) {}
 
     return {
       ok: true,
@@ -482,82 +587,30 @@ export const nativeFtsSearch = {
     return checkMinorVersionChange(hostInfo.hostVersion);
   },
   
-  // Manually check for updates (called from settings)
-  async checkForUpdates() {
+  // Manually check for and apply updates (called from settings / maintenance)
+  async manualCheckAndUpdateHost() {
     try {
       if (!hostInfo) {
         return { ok: false, error: "Host not connected" };
       }
-      
+
       const currentVersion = hostInfo.hostVersion;
       log(`[TMDBG FTS] Manual update check - current version: ${currentVersion}`);
-      
-      // Fetch update manifest
-      const platformKey = await getNativeFtsPlatformKey();
-      const updateManifestUrl = `${UPDATE_BASE_URL}/${platformKey}/update-manifest.json`;
-      const response = await fetch(updateManifestUrl);
-      
-      if (!response.ok) {
-        return { ok: false, error: `Failed to fetch update manifest: ${response.status}` };
-      }
-      
-      const updateManifest = await response.json();
-      const latestRelease = updateManifest.latest;
-      
-      log(`[TMDBG FTS] Latest available version for ${platformKey}: ${latestRelease.version}`);
-      
-      if (versionLessThan(currentVersion, latestRelease.version)) {
-        // Update available
-        log(`[TMDBG FTS] 🔄 Update available: ${currentVersion} → ${latestRelease.version}`);
-        
-        if (!hostInfo.canSelfUpdate) {
-          return {
-            ok: true,
-            updateAvailable: true,
-            currentVersion,
-            latestVersion: latestRelease.version,
-            canUpdate: false,
-            message: `Update available (${currentVersion} → ${latestRelease.version}) but cannot self-update. Please reinstall TabMail.`
-          };
-        }
-        
-        // Perform the update
-        isUpdatingHost = true;
 
-        const updateResult = await nativeRPC('updateRequest', {
-          targetVersion: latestRelease.version,
-          updateUrl: latestRelease.downloadUrl,
-          sha256: latestRelease.sha256,
-          platform: platformKey,
-          signature: latestRelease.signature
-        });
-        
-        if (updateResult.success) {
-          return {
-            ok: true,
-            updated: true,
-            oldVersion: currentVersion,
-            newVersion: latestRelease.version,
-            message: `Updated ${currentVersion} → ${latestRelease.version}. Reconnecting automatically...`
-          };
-        } else {
-          isUpdatingHost = false;
-          return {
-            ok: false,
-            error: updateResult.error || "Update failed"
-          };
-        }
-      } else {
-        // Already up to date
-        return {
-          ok: true,
-          updateAvailable: false,
-          currentVersion,
-          latestVersion: latestRelease.version,
-          message: `Already up to date (v${currentVersion})`
-        };
+      const result = await fetchAndApplyUpdate(currentVersion, hostInfo.canSelfUpdate);
+
+      if (!result.updateAvailable) {
+        return { ok: true, updateAvailable: false, currentVersion, latestVersion: result.latestVersion, message: `Already up to date (v${currentVersion})` };
       }
+      if (!result.canUpdate) {
+        return { ok: true, updateAvailable: true, currentVersion, latestVersion: result.latestVersion, canUpdate: false, message: `Update available (${currentVersion} → ${result.latestVersion}) but cannot self-update. Please reinstall TabMail.` };
+      }
+      if (result.updated) {
+        return { ok: true, updated: true, oldVersion: currentVersion, newVersion: result.newVersion, message: `Updated ${currentVersion} → ${result.newVersion}. Reconnecting automatically...` };
+      }
+      return { ok: false, error: result.error || "Update failed" };
     } catch (e) {
+      isUpdatingHost = false;
       log(`[TMDBG FTS] Manual update check failed: ${e}`, "error");
       return { ok: false, error: e.message || String(e) };
     }

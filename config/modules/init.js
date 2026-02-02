@@ -6,7 +6,7 @@ import { fsApply, fsLoad } from "./folderSync.js";
 import {
     clearEventLogs,
     downloadEventLogs,
-    ftsCheckForUpdates,
+    ftsManualCheckAndUpdateHost,
     ftsCleanupTrigger,
     ftsClear,
     ftsDebugCheckpoints,
@@ -287,7 +287,7 @@ export async function initConfigPage({
       await ftsReindexAll();
     }
     if (e.target.id === "fts-check-update") {
-      await ftsCheckForUpdates();
+      await ftsManualCheckAndUpdateHost();
     }
     if (e.target.id === "fts-smart-reindex") {
       await ftsSmartReindex();

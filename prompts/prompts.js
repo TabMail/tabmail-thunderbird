@@ -16,6 +16,9 @@ injectPaletteIntoDocument(document).then(() => {
   console.warn("[Prompts] Failed to inject palette CSS:", e);
 });
 
+// Regex for reminder lines (matches backend REMINDER_ITEM_REGEX)
+const REMINDER_LINE_REGEX = /^-\s*Reminder:\s*/i;
+
 // Current state
 let currentPrompt = "composition";
 let compositionData = null;
@@ -25,6 +28,8 @@ let originalCompositionData = null; // Store original for reload
 let originalActionData = null; // Store original for reload
 let originalKbData = null; // Store original for reload
 let isDebugMode = false; // Track debug mode state
+let lastKnownCompositionMd = null; // Raw markdown last loaded/saved — for detecting external changes
+let lastKnownActionMd = null; // Raw markdown last loaded/saved — for detecting external changes
 
 // Note: parseMarkdown, reconstructMarkdown, loadPromptFile, savePromptFile, resetPromptFile
 // are now imported from modules
@@ -500,11 +505,28 @@ async function loadKbContent() {
       });
     }
     
+    updateKbEntryCount();
     log(`[Prompts] KB content loaded`);
   } catch (e) {
     log(`[Prompts] Failed to load KB: ${e}`, "error");
     showStatus(`Failed to load KB: ${e.message}`, true);
   }
+}
+
+// Update KB entry count display
+function updateKbEntryCount() {
+  const kbTextarea = document.getElementById("kb-content");
+  const countSpan = document.getElementById("kb-entry-count");
+  const maxBulletsSlider = document.getElementById("kb-max-bullets");
+  if (!countSpan) return;
+
+  const content = kbTextarea ? kbTextarea.value : "";
+  const lines = content.split("\n").filter(l => l.trim());
+  // Exclude reminder lines (consistent with backend counting)
+  const entryCount = lines.filter(l => !REMINDER_LINE_REGEX.test(l.trim())).length;
+  const maxBullets = maxBulletsSlider ? parseInt(maxBulletsSlider.value, 10) : 200;
+
+  countSpan.textContent = `(${entryCount}/${maxBullets})`;
 }
 
 // Save KB content
@@ -539,6 +561,7 @@ async function reloadKbContent() {
       autoGrowTextarea(kbTextarea);
     }
     
+    updateKbEntryCount();
     showStatus("KB reloaded from disk!");
     log(`[Prompts] KB reloaded`);
   } catch (e) {
@@ -554,13 +577,14 @@ async function resetKbContent() {
     await savePromptFile("user_kb.md", content);
     kbData = content;
     originalKbData = content;
-    
+
     const kbTextarea = document.getElementById("kb-content");
     if (kbTextarea) {
       kbTextarea.value = content;
       autoGrowTextarea(kbTextarea);
     }
-    
+
+    updateKbEntryCount();
     showStatus("KB reset to default!");
     log(`[Prompts] KB reset to default`);
   } catch (e) {
@@ -584,15 +608,16 @@ async function saveSectionBlock(section, promptType) {
     
     const markdown = reconstructMarkdown(data, promptType === "composition");
     await savePromptFile(filename, markdown);
-    
-    // Update original data without re-rendering (which causes the shrink issue)
+
+    // Track saved content for external-change detection
     if (promptType === "composition") {
+      lastKnownCompositionMd = markdown;
       originalCompositionData = deepClone(compositionData);
-      // Don't re-render - just update the data
     } else {
+      lastKnownActionMd = markdown;
       originalActionData = deepClone(actionData);
     }
-    
+
     showStatus(`Saved: ${section.title}`);
     log(`[Prompts] Saved section: ${section.title}`);
   } catch (e) {
@@ -609,14 +634,16 @@ async function saveTemplateBlock(template, section, promptType) {
     
     const markdown = reconstructMarkdown(data, promptType === "composition");
     await savePromptFile(filename, markdown);
-    
-    // Update original data
+
+    // Track saved content for external-change detection
     if (promptType === "composition") {
+      lastKnownCompositionMd = markdown;
       originalCompositionData = deepClone(compositionData);
     } else {
+      lastKnownActionMd = markdown;
       originalActionData = deepClone(actionData);
     }
-    
+
     showStatus(`Saved template: ${template.title}`);
     log(`[Prompts] Saved template: ${template.title}`);
   } catch (e) {
@@ -630,6 +657,8 @@ async function reloadSectionBlock(section, promptType) {
   try {
     const filename = promptType === "composition" ? "user_composition.md" : "user_action.md";
     const content = await loadPromptFile(filename);
+    if (promptType === "composition") lastKnownCompositionMd = content;
+    else lastKnownActionMd = content;
     const parsedData = parseMarkdown(content, promptType === "composition");
     
     // Find the matching section
@@ -726,12 +755,14 @@ async function resetSectionBlock(section, promptType) {
       // Save the modified (not fully reset) data back
       const markdown = reconstructMarkdown(currentData, promptType === "composition");
       await savePromptFile(filename, markdown);
-      
-      // Update original data
+
+      // Track saved content for external-change detection
       if (promptType === "composition") {
+        lastKnownCompositionMd = markdown;
         originalCompositionData = deepClone(compositionData);
         renderCompositionTemplates();
       } else {
+        lastKnownActionMd = markdown;
         originalActionData = deepClone(actionData);
         renderActionSections();
       }
@@ -791,12 +822,14 @@ async function initialize() {
     
     // Load composition prompt
     const compositionContent = await loadPromptFile("user_composition.md");
+    lastKnownCompositionMd = compositionContent;
     compositionData = parseMarkdown(compositionContent, true);
     originalCompositionData = deepClone(compositionData);
     renderCompositionTemplates();
-    
+
     // Load action prompt
     const actionContent = await loadPromptFile("user_action.md");
+    lastKnownActionMd = actionContent;
     actionData = parseMarkdown(actionContent, false);
     originalActionData = deepClone(actionData);
     renderActionSections();
@@ -804,7 +837,9 @@ async function initialize() {
     // Load KB content and config
     await loadKbContent();
     await loadKbConfig();
-    
+    // Re-update count now that loadKbConfig has set the real max_bullets slider value
+    updateKbEntryCount();
+
     // Load raw content if debug mode is enabled
     if (isDebugMode) {
       await loadRawContent();
@@ -960,10 +995,12 @@ document.addEventListener("DOMContentLoaded", () => {
             if (currentPrompt === "composition") {
               const markdown = reconstructMarkdown(compositionData, true);
               await savePromptFile("user_composition.md", markdown);
+              lastKnownCompositionMd = markdown;
               originalCompositionData = deepClone(compositionData);
             } else if (currentPrompt === "action") {
               const markdown = reconstructMarkdown(actionData, false);
               await savePromptFile("user_action.md", markdown);
+              lastKnownActionMd = markdown;
               originalActionData = deepClone(actionData);
             } else if (currentPrompt === "kb") {
               await saveKbContent();
@@ -993,12 +1030,14 @@ document.addEventListener("DOMContentLoaded", () => {
         
         const markdown = reconstructMarkdown(compositionData, true);
         await savePromptFile("user_composition.md", markdown);
+        lastKnownCompositionMd = markdown;
         originalCompositionData = deepClone(compositionData);
         renderCompositionTemplates();
         showStatus("Saved entire Email Composition!");
       } else if (currentPrompt === "action") {
         const markdown = reconstructMarkdown(actionData, false);
         await savePromptFile("user_action.md", markdown);
+        lastKnownActionMd = markdown;
         originalActionData = deepClone(actionData);
         showStatus("Saved entire Action Classification!");
       } else if (currentPrompt === "kb") {
@@ -1021,12 +1060,14 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       if (currentPrompt === "composition") {
         const content = await loadPromptFile("user_composition.md");
+        lastKnownCompositionMd = content;
         compositionData = parseMarkdown(content, true);
         originalCompositionData = deepClone(compositionData);
         renderCompositionTemplates();
         showStatus("Reloaded entire Email Composition from disk!");
       } else if (currentPrompt === "action") {
         const content = await loadPromptFile("user_action.md");
+        lastKnownActionMd = content;
         actionData = parseMarkdown(content, false);
         originalActionData = deepClone(actionData);
         renderActionSections();
@@ -1067,11 +1108,13 @@ document.addEventListener("DOMContentLoaded", () => {
       // Reload the specific prompt type
       if (currentPrompt === "composition") {
         const content = await loadPromptFile("user_composition.md");
+        lastKnownCompositionMd = content;
         compositionData = parseMarkdown(content, true);
         originalCompositionData = deepClone(compositionData);
         renderCompositionTemplates();
       } else if (currentPrompt === "action") {
         const content = await loadPromptFile("user_action.md");
+        lastKnownActionMd = content;
         actionData = parseMarkdown(content, false);
         originalActionData = deepClone(actionData);
         renderActionSections();
@@ -1085,6 +1128,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   
+  // KB textarea input — update entry count live
+  const kbContentTextarea = document.getElementById("kb-content");
+  if (kbContentTextarea) {
+    kbContentTextarea.addEventListener("input", () => {
+      updateKbEntryCount();
+    });
+  }
+
   // KB-specific buttons
   document.getElementById("save-kb").addEventListener("click", async () => {
     const saveBtn = document.getElementById("save-kb");
@@ -1122,7 +1173,11 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const { slider, display } of kbSliders) {
     if (slider) {
       if (display) {
-        slider.addEventListener("input", () => { display.textContent = slider.value; });
+        slider.addEventListener("input", () => {
+          display.textContent = slider.value;
+          // Update KB entry count when max_bullets slider changes
+          if (slider.id === "kb-max-bullets") updateKbEntryCount();
+        });
       }
       slider.addEventListener("change", async () => {
         await saveKbConfig();
@@ -1139,28 +1194,30 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const content = document.getElementById("raw-composition-content").value;
       await savePromptFile("user_composition.md", content);
-      
+      lastKnownCompositionMd = content;
+
       // Reload parsed data
       compositionData = parseMarkdown(content, true);
       originalCompositionData = deepClone(compositionData);
       renderCompositionTemplates();
-      
+
       showStatus("Saved user_composition.md");
     } catch (e) {
       showStatus("Failed to save: " + e.message, true);
     }
   });
-  
+
   document.getElementById("reload-raw-composition").addEventListener("click", async () => {
     try {
       const content = await loadPromptFile("user_composition.md");
+      lastKnownCompositionMd = content;
       document.getElementById("raw-composition-content").value = content;
       showStatus("Reloaded user_composition.md");
     } catch (e) {
       showStatus("Failed to reload: " + e.message, true);
     }
   });
-  
+
   document.getElementById("reset-raw-composition").addEventListener("click", async () => {
     if (!confirm("Are you sure you want to reset user_composition.md to default? This cannot be undone.")) {
       return;
@@ -1168,38 +1225,41 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       await resetPromptFile("user_composition.md");
       const content = await loadPromptFile("user_composition.md");
+      lastKnownCompositionMd = content;
       document.getElementById("raw-composition-content").value = content;
-      
+
       // Reload parsed data
       compositionData = parseMarkdown(content, true);
       originalCompositionData = deepClone(compositionData);
       renderCompositionTemplates();
-      
+
       showStatus("Reset user_composition.md");
     } catch (e) {
       showStatus("Failed to reset: " + e.message, true);
     }
   });
-  
+
   document.getElementById("save-raw-action").addEventListener("click", async () => {
     try {
       const content = document.getElementById("raw-action-content").value;
       await savePromptFile("user_action.md", content);
-      
+      lastKnownActionMd = content;
+
       // Reload parsed data
       actionData = parseMarkdown(content, false);
       originalActionData = deepClone(actionData);
       renderActionSections();
-      
+
       showStatus("Saved user_action.md");
     } catch (e) {
       showStatus("Failed to save: " + e.message, true);
     }
   });
-  
+
   document.getElementById("reload-raw-action").addEventListener("click", async () => {
     try {
       const content = await loadPromptFile("user_action.md");
+      lastKnownActionMd = content;
       document.getElementById("raw-action-content").value = content;
       showStatus("Reloaded user_action.md");
     } catch (e) {
@@ -1214,13 +1274,14 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       await resetPromptFile("user_action.md");
       const content = await loadPromptFile("user_action.md");
+      lastKnownActionMd = content;
       document.getElementById("raw-action-content").value = content;
-      
+
       // Reload parsed data
       actionData = parseMarkdown(content, false);
       originalActionData = deepClone(actionData);
       renderActionSections();
-      
+
       showStatus("Reset user_action.md");
     } catch (e) {
       showStatus("Failed to reset: " + e.message, true);
@@ -1304,6 +1365,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Save silently
       try {
         const markdown = reconstructMarkdown(compositionData, true);
+        lastKnownCompositionMd = markdown;
         await savePromptFile("user_composition.md", markdown);
         log("[Prompts] Cleaned up marked templates on page close");
       } catch (error) {
@@ -1335,10 +1397,51 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initialize history-specific handlers (search, pagination, delete old)
   initHistoryHandlers();
   
-  // Storage listener for auto-updating reminders when they change
+  // Storage listener for auto-reloading when prompts change externally
   browser.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === "local" && changes.disabled_reminders) {
-      // Only auto-update if we're on the reminders tab
+    if (areaName !== "local") return;
+
+    // KB content changed (e.g., background KB refinement, kb_add/kb_del tools)
+    if (changes["user_prompts:user_kb.md"]) {
+      const newValue = changes["user_prompts:user_kb.md"].newValue;
+      const kbTextarea = document.getElementById("kb-content");
+      // Skip if this page already has the same content (self-save)
+      if (kbTextarea && newValue !== undefined && kbTextarea.value !== newValue) {
+        log("[Prompts] KB content changed externally, reloading");
+        kbData = newValue;
+        originalKbData = newValue;
+        kbTextarea.value = newValue;
+        autoGrowTextarea(kbTextarea);
+        updateKbEntryCount();
+      }
+    }
+
+    // Composition prompt changed externally
+    if (changes["user_prompts:user_composition.md"] && compositionData) {
+      const newValue = changes["user_prompts:user_composition.md"].newValue;
+      if (newValue !== undefined && newValue !== lastKnownCompositionMd) {
+        log("[Prompts] Composition prompt changed externally, reloading");
+        lastKnownCompositionMd = newValue;
+        compositionData = parseMarkdown(newValue, true);
+        originalCompositionData = deepClone(compositionData);
+        if (currentPrompt === "composition") renderCompositionTemplates();
+      }
+    }
+
+    // Action prompt changed externally (e.g., auto-update from tag corrections)
+    if (changes["user_prompts:user_action.md"] && actionData) {
+      const newValue = changes["user_prompts:user_action.md"].newValue;
+      if (newValue !== undefined && newValue !== lastKnownActionMd) {
+        log("[Prompts] Action prompt changed externally, reloading");
+        lastKnownActionMd = newValue;
+        actionData = parseMarkdown(newValue, false);
+        originalActionData = deepClone(actionData);
+        if (currentPrompt === "action") renderActionSections();
+      }
+    }
+
+    // Reminders changed
+    if (changes.disabled_reminders) {
       if (currentPrompt === "reminders") {
         log("[Prompts] Disabled reminders changed, refreshing list");
         loadReminders();

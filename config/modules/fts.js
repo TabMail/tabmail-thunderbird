@@ -172,6 +172,49 @@ export async function updateFtsStatus() {
 
     // Also update FTS host version display
     await updateFtsHostVersion();
+
+    // Check for active embedding rebuild and show progress bar
+    try {
+      const scanData = await browser.storage.local.get("fts_scan_status");
+      const scanStatus = scanData.fts_scan_status;
+      if (scanStatus?.isScanning && scanStatus?.scanType === "embeddingRebuild") {
+        const progress = scanStatus.progress || {};
+        const pct = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0;
+        $("fts-progress").style.display = "block";
+        $("fts-progress-bar").value = pct;
+        $("fts-progress-text").textContent = `Rebuilding embeddings (${progress.phase || 'email'}): ${(progress.processed || 0).toLocaleString()}/${(progress.total || 0).toLocaleString()} processed, ${(progress.embedded || 0).toLocaleString()} embedded`;
+
+        // Listen for real-time progress updates
+        const embeddingProgressListener = (msg) => {
+          if (msg?.type === "ftsProgress" && msg?.scanType === "embeddingRebuild") {
+            const pctNow = msg.total > 0 ? Math.round((msg.processed / msg.total) * 100) : 0;
+            $("fts-progress-bar").value = pctNow;
+            $("fts-progress-text").textContent = `Rebuilding embeddings (${msg.phase || 'email'}): ${(msg.processed || 0).toLocaleString()}/${(msg.total || 0).toLocaleString()} processed, ${(msg.embedded || 0).toLocaleString()} embedded`;
+          }
+        };
+        browser.runtime.onMessage.addListener(embeddingProgressListener);
+
+        // Poll for completion (check every 5 seconds)
+        const pollInterval = setInterval(async () => {
+          try {
+            const data = await browser.storage.local.get("fts_scan_status");
+            const status = data.fts_scan_status;
+            if (!status?.isScanning || status?.scanType !== "embeddingRebuild") {
+              clearInterval(pollInterval);
+              browser.runtime.onMessage.removeListener(embeddingProgressListener);
+              $("fts-progress-bar").value = 100;
+              $("fts-progress-text").textContent = "Embedding rebuild complete";
+              setTimeout(() => {
+                $("fts-progress").style.display = "none";
+                updateFtsStatus();
+              }, 3000);
+            }
+          } catch (_) {}
+        }, 5000);
+      }
+    } catch (e) {
+      console.warn("[TMDBG Config] Error checking scan status:", e);
+    }
   } catch (e) {
     console.warn("[TMDBG Config] updateFtsStatus failed", e);
     $("fts-stats").textContent = "FTS status unavailable";
@@ -206,7 +249,7 @@ export async function updateFtsHostVersion() {
   }
 }
 
-export async function ftsCheckForUpdates() {
+export async function ftsManualCheckAndUpdateHost() {
   try {
     const btn = $("fts-check-update");
     const versionEl = $("fts-host-version");
@@ -216,7 +259,7 @@ export async function ftsCheckForUpdates() {
 
     const result = await browser.runtime.sendMessage({
       type: "fts",
-      cmd: "checkForUpdates",
+      cmd: "manualCheckAndUpdateHost",
     });
 
     if (btn) btn.disabled = false;
@@ -256,7 +299,7 @@ export async function ftsCheckForUpdates() {
       $("status").style.color = "";
     }, 5000);
   } catch (e) {
-    console.warn("[TMDBG Config] ftsCheckForUpdates failed", e);
+    console.warn("[TMDBG Config] ftsManualCheckAndUpdateHost failed", e);
     $("status").textContent = "Update check failed: " + e.message;
     $("status").style.color = "red";
     const btn = $("fts-check-update");
@@ -599,27 +642,45 @@ export async function ftsMaintenanceStatus() {
 
 export async function ftsMaintenanceTrigger(type, force = true) {
   try {
-    $("status").textContent = `Triggering ${type} maintenance scan${
-      force ? " (forced)" : ""
-    }...`;
+    $("fts-progress").style.display = "block";
+    $("fts-progress-bar").value = 0;
+    $("fts-progress-text").textContent = `Running ${type} maintenance scan...`;
+
+    // Listen for progress updates from the background
+    const progressListener = (msg) => {
+      if (msg?.type === "ftsProgress" && msg?.scanType === "maintenance") {
+        const { folder, folderIndexed, totalIndexed, totalBatches } = msg;
+        $("fts-progress-text").textContent = `Maintenance: ${folder}: ${folderIndexed || 0} this folder | Total: ${totalIndexed || 0} messages (${totalBatches || 0} batches)`;
+        const current = $("fts-progress-bar").value;
+        $("fts-progress-bar").value = (current + 5) % 100;
+      }
+    };
+    browser.runtime.onMessage.addListener(progressListener);
 
     const result = await browser.runtime.sendMessage({
       type: "fts",
       cmd: "maintenanceTrigger",
-      scheduleType: type, // Don't overwrite the "fts" type!
+      scheduleType: type,
       force,
+      progress: true,
     });
 
+    browser.runtime.onMessage.removeListener(progressListener);
+
     if (result?.ok) {
-      $("status").textContent = `${type} maintenance scan completed: ${
+      $("fts-progress-text").textContent = `${type} maintenance scan completed: ${
         result.indexed || 0
       } messages processed${result.skipped ? `, ${result.skipped} skipped` : ""}`;
-      // Refresh maintenance log after completion
-      await loadMaintenanceLog();
+      setTimeout(async () => {
+        $("fts-progress").style.display = "none";
+        await loadMaintenanceLog();
+      }, 3000);
     } else {
+      $("fts-progress").style.display = "none";
       $("status").textContent = `Failed to run ${type} maintenance scan`;
     }
   } catch (e) {
+    $("fts-progress").style.display = "none";
     console.error(`${type} maintenance scan failed:`, e);
     $("status").textContent = `Failed to run ${type} maintenance scan: ` + e.message;
   }
