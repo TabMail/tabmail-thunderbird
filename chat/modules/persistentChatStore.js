@@ -153,14 +153,15 @@ export function enforceBudget(turns, meta, maxExchanges) {
 
 /**
  * Check if turns[0] is protected from eviction.
- * The last welcome_back and everything after it are protected.
+ * The last welcome_back or session_break and everything after it are protected.
  * Must recalculate each call since turns mutates during eviction.
  */
 function _isHeadProtected(turns) {
   for (let i = turns.length - 1; i >= 0; i--) {
-    if (turns[i]._type === "welcome_back") return i === 0;
+    const t = turns[i]._type;
+    if (t === "welcome_back" || t === "session_break") return i === 0;
   }
-  return false; // no welcome_back → nothing protected
+  return false; // no session boundary → nothing protected
 }
 
 export async function getMaxExchanges() {

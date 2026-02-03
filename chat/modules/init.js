@@ -44,7 +44,7 @@ import {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const IDLE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const IDLE_THRESHOLD_MS = (SETTINGS.chat?.idleThresholdMinutes || 10) * 60 * 1000;
 const LAZY_RENDER_VIEWPORT_TURNS = 10; // render this many turns first (visible viewport)
 
 export async function initAndGreetUser() {
@@ -160,20 +160,31 @@ export async function initAndGreetUser() {
 async function _initReturningUser(persistedTurns, meta, systemMessage, userName) {
   log(`[TMDBG Init] Returning user: ${persistedTurns.length} persisted turns, lastActivity=${meta.lastActivityTs}`);
 
-  // Strip trailing nudges (welcome_back/proactive) from persisted turns before rendering.
-  // A fresh nudge will be inserted below — we never want stale nudges from prior sessions
-  // lingering in the rendered history.
-  let strippedCount = 0;
+  // Strip trailing nudges (welcome_back/proactive) and deduplicate session_breaks.
+  // Session_break is NEVER fully stripped — exactly one is preserved if any exist.
+  // Nudges are always stripped (a fresh one is inserted below).
+  // Handles any interleaving order (e.g. session_break, welcome_back, session_break).
+  const trailingSpecial = [];
   while (persistedTurns.length > 0) {
     const last = persistedTurns[persistedTurns.length - 1];
-    if (last._type !== "welcome_back" && last._type !== "proactive") break;
-    persistedTurns.pop();
-    meta.totalChars -= (last._chars || 0);
-    unregisterTurnRefs(last);
-    strippedCount++;
+    if (last._type === "welcome_back" || last._type === "proactive" || last._type === "session_break") {
+      trailingSpecial.push(persistedTurns.pop());
+    } else {
+      break;
+    }
   }
+  const keptBreak = trailingSpecial.find(t => t._type === "session_break");
+  const strippedNudges = trailingSpecial.filter(t => t._type !== "session_break");
+  const extraBreaks = trailingSpecial.filter(t => t._type === "session_break").slice(1);
+  const strippedCount = strippedNudges.length + extraBreaks.length;
+  for (const nudge of strippedNudges) {
+    meta.totalChars -= (nudge._chars || 0);
+    unregisterTurnRefs(nudge);
+  }
+  // Re-add exactly one session_break (the most recent one found)
+  if (keptBreak) persistedTurns.push(keptBreak);
   if (strippedCount > 0) {
-    log(`[TMDBG Init] Stripped ${strippedCount} trailing nudge(s) from persisted turns`);
+    log(`[TMDBG Init] Stripped ${strippedNudges.length} trailing nudge(s) and ${extraBreaks.length} extra session_break(s)`);
     saveTurns(persistedTurns);
     saveMeta(meta);
   }
@@ -227,6 +238,8 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
       for (const turn of olderTurns) {
         _renderTurnSync(turn, chatContainer, firstViewportElement);
       }
+      // Re-apply grey-out after lazy-rendered turns are in the DOM
+      _applySessionGreyOut();
       log(`[TMDBG Init] Lazy-rendered ${olderTurns.length} older turns`);
     };
 
@@ -237,8 +250,11 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
     }
   }
 
-  // Insert nudge: proactive message (if pending) OR welcome-back with reminders.
-  // These are mutually exclusive — proactive nudge takes priority.
+  // Apply grey-out for existing session_break markers from prior sessions
+  // (before potentially inserting a new one below)
+  _applySessionGreyOut();
+
+  // Check for pending proactive message (arrives regardless of idle state)
   let proactiveText = null;
   try {
     const { consumePendingProactiveMessage } = await import("../../agent/modules/proactiveCheckin.js");
@@ -260,6 +276,12 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
     log(`[TMDBG Init] Failed to check proactive message: ${e}`, "warn");
   }
 
+  // Always insert session_break on page load — a reload/restart is a session boundary.
+  // The duplicate guard inside _insertSessionBreak prevents back-to-back duplicates
+  // (e.g. if trailing strip already preserved one from the prior load).
+  await _insertSessionBreak(meta);
+
+  // Always insert nudge on page load — proactive takes priority over welcome-back
   if (proactiveText) {
     await _insertNudge(meta, proactiveText, "proactive");
   } else {
@@ -284,7 +306,8 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
     await _insertNudge(meta, parts.join(""), "welcome_back");
   }
 
-  log(`[TMDBG Init] Returning user init complete (${persistedTurns.length} turns rendered)`);
+  const idleMs = Date.now() - (meta.lastActivityTs || 0);
+  log(`[TMDBG Init] Returning user init complete (${persistedTurns.length} turns, idle=${Math.round(idleMs / 60000)}min)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +489,100 @@ async function _buildSystemMessage(userName) {
 }
 
 // ---------------------------------------------------------------------------
+// Session break: hidden boundary marker for idle-based grey-out
+// ---------------------------------------------------------------------------
+
+/**
+ * Insert a session_break turn into persisted history. This is the boundary
+ * marker used to determine where to grey out old messages. The turn is:
+ * - Persisted immediately (not ephemeral like nudges)
+ * - Sent to the LLM as an assistant message (via turnsToLLMMessages)
+ * - NOT rendered as a visible DOM element (_renderTurnSync skips it)
+ * Guards against duplicate: skips if last persisted turn is already session_break.
+ */
+async function _insertSessionBreak(meta) {
+  const turns = ctx.persistedTurns;
+  if (turns.length > 0 && turns[turns.length - 1]._type === "session_break") {
+    log(`[TMDBG Init] Skipping session_break (last turn is already session_break)`);
+    return;
+  }
+
+  const content = "User idled, chat session likely discontinued and new session started";
+  const breakTurn = {
+    role: "assistant",
+    content,
+    _id: generateTurnId(),
+    _ts: Date.now(),
+    _type: "session_break",
+    _chars: 0, // structural metadata — free from char budget
+  };
+
+  // Persist immediately (must survive page reloads to serve as grey boundary)
+  turns.push(breakTurn);
+  saveTurns(turns);
+
+  // Add to agentConverseMessages so LLM sees the session break
+  ctx.agentConverseMessages.push({
+    role: "assistant",
+    content,
+  });
+
+  meta.lastActivityTs = Date.now();
+  saveMeta(meta);
+
+  log(`[TMDBG Init] Inserted session_break turn (persisted immediately)`);
+}
+
+// ---------------------------------------------------------------------------
+// Grey-out: apply history-pre-welcome based on last session_break position
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply grey-out to DOM elements for turns that precede the last session_break
+ * in persisted history. Uses data-turn-id attributes on rendered rows for
+ * robust targeting regardless of lazy render timing. Idempotent — safe to call
+ * multiple times (adding an existing class is a no-op).
+ */
+function _applySessionGreyOut() {
+  const chatContainer = document.getElementById("chat-container");
+  if (!chatContainer) return;
+
+  const turns = ctx.persistedTurns;
+
+  // Find the _id of the last session_break
+  let breakTurnId = null;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i]._type === "session_break") {
+      breakTurnId = turns[i]._id;
+      break;
+    }
+  }
+
+  if (!breakTurnId) return; // no session_break → no greying
+
+  // Build set of turn IDs that are BEFORE the session_break
+  const greyTurnIds = new Set();
+  for (const turn of turns) {
+    if (turn._id === breakTurnId) break;
+    if (turn._id) greyTurnIds.add(turn._id);
+  }
+
+  // Apply to DOM elements tagged with data-turn-id
+  let greyedCount = 0;
+  for (const child of chatContainer.children) {
+    const turnId = child.getAttribute("data-turn-id");
+    if (turnId && greyTurnIds.has(turnId)) {
+      child.classList.add("history-pre-welcome");
+      greyedCount++;
+    }
+  }
+
+  if (greyedCount > 0) {
+    log(`[TMDBG Init] Applied session grey-out: ${greyedCount} elements greyed (breakId=${breakTurnId})`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Welcome-back greeting (inserted after idle period)
 // ---------------------------------------------------------------------------
 
@@ -489,8 +606,6 @@ async function _insertNudge(meta, text, type) {
   _nudgeInProgress = true;
   try {
     log(`[TMDBG Init] Inserting ${type} nudge (idle ${Math.round((Date.now() - meta.lastActivityTs) / 60000)} min)`);
-
-    const chatContainer = document.getElementById("chat-container");
 
     // Remove previous in-session nudge if one exists (e.g. repeated tab refocus)
     if (_currentNudgeDOMRow) {
@@ -540,15 +655,9 @@ async function _insertNudge(meta, text, type) {
     // Track the DOM row for future replacement
     _currentNudgeDOMRow = agentBubble.closest(".message-row") || agentBubble;
 
-    // Grey out all preceding bubbles
-    if (chatContainer) {
-      for (const child of chatContainer.children) {
-        if (child === _currentNudgeDOMRow) break;
-        if (child.classList && !child.classList.contains("history-truncated")) {
-          child.classList.add("history-pre-welcome");
-        }
-      }
-    }
+    // Grey-out is now handled by _applySessionGreyOut() based on session_break
+    // markers in persisted turns — nudges no longer control greying directly.
+    _applySessionGreyOut();
 
     meta.lastActivityTs = Date.now();
     saveMeta(meta);
@@ -601,9 +710,13 @@ function _renderTurnSync(turn, container, beforeNode) {
   try {
     if (!container) return;
 
+    // session_break turns are invisible boundary markers — never render them
+    if (turn._type === "session_break") return;
+
     if (turn._type === "separator") {
       const sep = document.createElement("div");
       sep.className = "topic-separator";
+      if (turn._id) sep.setAttribute("data-turn-id", turn._id);
       sep.textContent = turn.content?.replace("--- ", "").replace(" ---", "") || "New topic";
       container.insertBefore(sep, beforeNode);
       return;
@@ -615,6 +728,7 @@ function _renderTurnSync(turn, container, beforeNode) {
         // Create a simple user bubble without the full createNewUserBubble flow
         const row = document.createElement("div");
         row.className = "message-row user-row";
+        if (turn._id) row.setAttribute("data-turn-id", turn._id);
         const bubble = document.createElement("div");
         bubble.className = "message user-message";
         if (turn._rendered) {
@@ -630,6 +744,7 @@ function _renderTurnSync(turn, container, beforeNode) {
     } else if (turn.role === "assistant") {
       const row = document.createElement("div");
       row.className = "message-row agent-row";
+      if (turn._id) row.setAttribute("data-turn-id", turn._id);
       const bubble = document.createElement("div");
       bubble.className = "message agent-message";
       if (turn._type === "proactive") bubble.classList.add("proactive-message");
@@ -665,12 +780,16 @@ function _renderTurnSync(turn, container, beforeNode) {
 /**
  * Check if user has been idle beyond threshold and insert welcome-back greeting.
  * Called on visibilitychange (tab focus) from chat.js.
+ * Inserts a session_break boundary marker before the visible welcome-back nudge.
  */
 export async function checkAndInsertWelcomeBack() {
   const meta = ctx.chatMeta;
   if (!meta || !meta.lastActivityTs) return;
   const idleMs = Date.now() - meta.lastActivityTs;
   if (idleMs <= IDLE_THRESHOLD_MS) return;
+
+  // Insert session_break first — persistent boundary marker for grey-out
+  await _insertSessionBreak(meta);
 
   const userName = await getUserName();
   const parts = [`Welcome back ${userName}`];

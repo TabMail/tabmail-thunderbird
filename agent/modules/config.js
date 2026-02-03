@@ -287,6 +287,10 @@ export const SETTINGS = {
         graceMinutes: 5,                     // Grace window added to advance minutes when batching upcoming reminders
         debounceMs: 1000,                    // Debounce after reminder change detected
     },
+    // Chat session settings
+    chat: {
+        idleThresholdMinutes: 10,        // Minutes of inactivity before inserting a session_break (grey boundary)
+    },
     // Reminder (MOTD) generation settings
     reminderGeneration: {
         enabled: true,                // Enable/disable reminder generation feature
