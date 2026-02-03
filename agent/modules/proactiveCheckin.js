@@ -43,6 +43,7 @@ let _debounceTimer = null;
 let _alarmListener = null;
 let _isInitialized = false;
 let _lastReachoutTime = 0;
+let _openingChatWindow = false;
 
 // ─────────────────────────────────────────────────────────────
 // Config defaults (also in config.js under "notifications")
@@ -213,6 +214,11 @@ async function _isChatWindowOpen() {
 }
 
 async function _openChatWindow() {
+  if (_openingChatWindow) {
+    log(`[ProActReach] Already opening chat window, skipping duplicate`);
+    return;
+  }
+  _openingChatWindow = true;
   try {
     const url = browser.runtime.getURL("chat/chat.html");
     const wins = await browser.windows.getAll({ populate: true });
@@ -229,6 +235,8 @@ async function _openChatWindow() {
     log("[ProActReach] Opened new chat window for proactive message");
   } catch (e) {
     log(`[ProActReach] Failed to open chat window: ${e}`, "error");
+  } finally {
+    _openingChatWindow = false;
   }
 }
 
