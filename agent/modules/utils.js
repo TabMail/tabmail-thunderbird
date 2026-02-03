@@ -1261,11 +1261,20 @@ export async function headerIDToWeID(headerID, weFolder = null, multiple = false
             if (lookupKey) {
                 const indexEntry = headerIndex.get(lookupKey);
                 if (indexEntry && indexEntry.id) {
-                    // Validate that the message still exists
+                    // Validate that the message still exists AND is the correct message.
+                    // weIds can be silently reassigned during rapid batch moves/deletes,
+                    // so we must verify the headerMessageId matches — not just that
+                    // *some* message exists at this weId.
                     try {
                         const validationHeader = await browser.messages.get(indexEntry.id);
                         if (validationHeader) {
-                            return indexEntry.id;
+                            const resolvedHeaderId = (validationHeader.headerMessageId || "").replace(/[<>]/g, "");
+                            if (resolvedHeaderId === headerID) {
+                                return indexEntry.id;
+                            }
+                            // weId was reassigned to a different message — stale cache entry
+                            log(`${resolverPrefix} STAGE 1: weId ${indexEntry.id} reassigned (expected headerID=${headerID}, got=${resolvedHeaderId}) — invalidating cache`);
+                            headerIndex.delete(lookupKey);
                         } else {
                             // Delete stale entry to prevent repeated failed lookups
                             headerIndex.delete(lookupKey);
