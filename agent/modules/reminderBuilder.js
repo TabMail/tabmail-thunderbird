@@ -89,6 +89,7 @@ async function collectMessageReminders() {
           dueDate: reminderData.dueDate || null, // May have due date from summary
           dueTime: reminderData.dueTime || null, // Optional HH:MM time
           source: "message",
+          action: item.action || "", // Action classification (reply/archive/delete/"")
           messageId: item.internalId, // Keep internalId for reference
           uniqueId: uniqueId, // Also keep uniqueId
           subject: item.subject || "Unknown",

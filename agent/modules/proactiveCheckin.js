@@ -462,6 +462,9 @@ async function _handleAlarmFired() {
   for (const r of reminders) {
     if (!r.dueDate) continue; // No due date = skip for alarm-based trigger
 
+    // Only reply-tagged messages (and KB reminders) qualify
+    if (r.source !== "kb" && r.action !== "reply") continue;
+
     const rHash = r.hash || hashReminder(r);
 
     // Already reached out for due_approaching trigger?
@@ -705,9 +708,13 @@ export async function onInboxUpdated() {
     // Hash changed — persist new hash
     await browser.storage.local.set({ [STORAGE.REMINDER_HASH]: newHash });
 
-    // All enabled reminders are candidates. The reached_out deduplication
-    // prevents repeat notifications for reminders we've already notified about.
-    const candidateReminders = reminders.filter(r => r.enabled !== false);
+    // Only reply-tagged message reminders (and all KB reminders) are candidates.
+    // Messages classified as archive/delete/none should not trigger proactive reachout.
+    const candidateReminders = reminders.filter(r => {
+      if (r.enabled === false) return false;
+      if (r.source === "kb") return true;
+      return r.action === "reply";
+    });
 
     // Prune orphaned reached_out entries
     await _pruneReachedOutIds(candidateReminders);
