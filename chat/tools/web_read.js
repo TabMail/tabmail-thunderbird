@@ -200,7 +200,13 @@ export async function run(args = {}, options = {}) {
       log(`[TMDBG Tools] web_read: Fetch failed: ${e}`, "error");
       return { error: `Failed to fetch URL: ${e.message || String(e)}` };
     }
-    
+
+    // tmWebFetch resolves (not rejects) network errors to preserve details
+    if (response.error) {
+      log(`[TMDBG Tools] web_read: Network error: ${response.errorMessage}`, "error");
+      return { error: `Failed to fetch URL: ${response.errorMessage}` };
+    }
+
     if (response.status !== 200) {
       log(`[TMDBG Tools] web_read: HTTP error ${response.status} ${response.statusText}`, "error");
       return { error: `HTTP error: ${response.status} ${response.statusText}` };

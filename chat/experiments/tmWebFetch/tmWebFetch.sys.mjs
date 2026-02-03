@@ -9,6 +9,34 @@ const EXPORTED_SYMBOLS = ["tmWebFetch"];
 // Get Services for IO and other utilities
 var ServicesWebFetch = globalThis.Services;
 
+/**
+ * Map XPCOM/NSS status codes to human-readable network error descriptions.
+ * Resolving with these (instead of rejecting) ensures the message survives
+ * the privileged → WebExtension boundary.
+ */
+function describeNetworkError(status) {
+  const code = status >>> 0; // unsigned 32-bit
+  const hex = code.toString(16);
+
+  const known = {
+    0x804B000D: "Connection refused by the server",
+    0x804B000E: "Connection timed out",
+    0x804B001E: "Could not resolve hostname (DNS lookup failed)",
+    0x804B0004: "Connection was reset by the remote server",
+    0x804B0047: "Could not connect to the server",
+    0x804B002F: "Too many redirects",
+  };
+
+  if (known[code]) return known[code];
+
+  // 0x805Axxxx = SEC/NSS errors, 0x805Exxxx = PKIX errors — all SSL/TLS related
+  if (hex.startsWith("805a") || hex.startsWith("805e")) {
+    return "SSL/TLS certificate error — the site may have an invalid, expired, or misconfigured certificate";
+  }
+
+  return `Network error (code: 0x${hex})`;
+}
+
 var tmWebFetch = class extends ExtensionCommonWebFetch.ExtensionAPI {
   getAPI(context) {
     return {
@@ -71,7 +99,15 @@ var tmWebFetch = class extends ExtensionCommonWebFetch.ExtensionAPI {
                 
                 try {
                   if (!Components.isSuccessCode(status)) {
-                    reject(new Error(`Network error: ${status}`));
+                    // Resolve (not reject) so the message survives the API boundary
+                    resolve({
+                      status: 0,
+                      statusText: "",
+                      responseText: "",
+                      contentType: "",
+                      error: true,
+                      errorMessage: describeNetworkError(status),
+                    });
                     return;
                   }
                   
