@@ -351,23 +351,17 @@ export async function indexTurnToFTS(userTurn, assistantTurn) {
 
     if (!userText.trim() && !assistantContent.trim()) return;
 
-    const { extractPlainTextFromHtml } = await import("./helpers.js");
-    const { renderMarkdown } = await import("./markdown.js");
+    const { renderToPlainText, extractPlainTextFromHtml } = await import("./helpers.js");
 
     // User text: render through markdown pipeline to resolve [Email](N) references
-    const cleanUserText = userText
-      ? extractPlainTextFromHtml(await renderMarkdown(userText))
-      : "";
+    const cleanUserText = await renderToPlainText(userText);
 
     // Assistant text: use _rendered snapshot if available (skip renderMarkdown)
     let cleanAssistantText;
     if (assistantTurn._rendered) {
       cleanAssistantText = extractPlainTextFromHtml(assistantTurn._rendered);
     } else {
-      // Fallback: full render pipeline (for turns without snapshot)
-      cleanAssistantText = assistantContent
-        ? extractPlainTextFromHtml(await renderMarkdown(assistantContent))
-        : "";
+      cleanAssistantText = await renderToPlainText(assistantContent);
     }
 
     const { indexChatTurn } = await import("../../fts/memoryIndexer.js");

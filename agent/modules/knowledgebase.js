@@ -1,4 +1,4 @@
-import { formatTimestampForAgent } from "../../chat/modules/helpers.js";
+import { formatTimestampForAgent, renderToPlainText } from "../../chat/modules/helpers.js";
 import { addChatToQueue, getUnrememberedSessions, markSessionsAsRemembered } from "./chatHistoryQueue.js";
 import { SETTINGS } from "./config.js";
 import { sendChatRaw } from "./llm.js";
@@ -109,22 +109,24 @@ async function _kbUpdateImpl(conversationHistory = []) {
         log(`-- KB -- Processing ${unrememberedSessions.length} unremembered sessions`);
 
         // Step 3: Build chat history from ALL unremembered sessions
+        // Render through markdown pipeline so [Email](id) becomes stable subject text
         const chatHistoryParts = [];
         for (const session of unrememberedSessions) {
             // Add session header
             const sessionDate = new Date(session.timestamp).toLocaleString();
             chatHistoryParts.push(`--- Session from ${sessionDate} ---`);
-            
+
             for (const msg of session.messages || []) {
                 // Skip automated greeting marker
                 if (msg.content === "[automated greeting]") {
                     continue;
                 }
-                
+
+                const rendered = await renderToPlainText(msg.content);
                 if (msg.role === "user") {
-                    chatHistoryParts.push(`[USER]: ${msg.content}`);
+                    chatHistoryParts.push(`[USER]: ${rendered}`);
                 } else if (msg.role === "assistant") {
-                    chatHistoryParts.push(`[ASSISTANT]: ${msg.content}`);
+                    chatHistoryParts.push(`[AGENT]: ${rendered}`);
                 }
             }
         }
@@ -223,6 +225,10 @@ async function _kbUpdateImpl(conversationHistory = []) {
             try {
                 await markSessionsAsRemembered(sessionIds);
                 log(`-- KB -- Marked ${sessionIds.length} sessions as remembered`);
+                // Record timestamp so init.js can filter out KB-summarized turns
+                // from agentConverseMessages (avoids sending redundant history to backend)
+                await browser.storage.local.set({ kb_last_summarized_ts: Date.now() });
+                log(`-- KB -- Set kb_last_summarized_ts for chat history filtering`);
             } catch (e) {
                 log(`-- KB -- Failed to mark sessions as remembered: ${e}`, "warn");
             }
@@ -265,7 +271,7 @@ export async function kbUpdate(conversationHistory = []) {
 // ----------------------------------------------------------
 const KB_PERIODIC = {
     minPendingExchanges: 3,       // minimum exchanges before running
-    cooldownMs: 30 * 60 * 1000,   // 30 minutes between updates
+    cooldownMs: 5 * 60 * 1000,    // 5 minutes between updates
     chunkSize: 10,                 // exchanges per LLM call
     chunkOverlap: 2,               // overlapping exchanges between chunks
 };
@@ -389,12 +395,13 @@ async function _periodicKbUpdateImpl(options = {}) {
             log(`-- KB Periodic -- Chunk ${chunkIndex}: exchanges ${chunkStart + 1}-${chunkEnd} of ${messagePairs.length}`);
 
             // Build chat history text from chunk
+            // Render through markdown pipeline so [Email](id) becomes stable subject text
             const chatHistoryParts = [];
             for (const pair of chunk) {
                 const userText = pair.user.user_message || pair.user.content || "";
                 const assistantText = pair.assistant.content || "";
-                if (userText) chatHistoryParts.push(`[USER]: ${userText}`);
-                if (assistantText) chatHistoryParts.push(`[ASSISTANT]: ${assistantText}`);
+                if (userText) chatHistoryParts.push(`[USER]: ${await renderToPlainText(userText)}`);
+                if (assistantText) chatHistoryParts.push(`[AGENT]: ${await renderToPlainText(assistantText)}`);
             }
             const chatHistory = chatHistoryParts.join("\n\n");
 
@@ -466,6 +473,15 @@ async function _periodicKbUpdateImpl(options = {}) {
         // Update lastKbUpdateTs
         meta.lastKbUpdateTs = Date.now();
         saveMeta(meta);
+
+        // Record timestamp so init.js can filter out KB-summarized turns
+        // from agentConverseMessages (avoids sending redundant history to backend)
+        try {
+            await browser.storage.local.set({ kb_last_summarized_ts: Date.now() });
+            log(`-- KB Periodic -- Set kb_last_summarized_ts for chat history filtering`);
+        } catch (e) {
+            log(`-- KB Periodic -- Failed to set kb_last_summarized_ts: ${e}`, "warn");
+        }
 
         log(`-- KB Periodic -- Complete: processed ${chunkIndex} chunk(s), ${messagePairs.length} exchanges`);
     } catch (e) {

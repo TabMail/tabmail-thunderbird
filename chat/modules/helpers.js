@@ -100,6 +100,24 @@ export function extractPlainTextFromHtml(html) {
 
 
 /**
+ * Render raw message content to plain text via the markdown pipeline.
+ * Resolves [Email](uniqueId) to subject lines, strips HTML.
+ * Falls back to raw content if rendering fails.
+ * Used by KB refinement and FTS indexing.
+ * @param {string} rawContent - Raw message content (may contain markdown entity refs)
+ * @returns {Promise<string>} - Rendered plain text
+ */
+export async function renderToPlainText(rawContent) {
+  if (!rawContent || !rawContent.trim()) return "";
+  try {
+    return extractPlainTextFromHtml(await renderMarkdown(rawContent));
+  } catch (e) {
+    log(`[Helpers] renderToPlainText failed, using raw: ${e}`, "warn");
+    return rawContent;
+  }
+}
+
+/**
  * Extract plain text from a bubble element's rendered content.
  * @param {HTMLElement} bubble - The bubble element
  * @returns {string} - Plain text with resolved entities

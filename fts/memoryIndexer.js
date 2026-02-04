@@ -39,7 +39,7 @@ export async function indexChatSession(sessionId, messages, sessionTimestamp = n
       continue;
     }
 
-    const roleLabel = msg.role === "user" ? "[USER]" : "[ASSISTANT]";
+    const roleLabel = msg.role === "user" ? "[USER]" : "[AGENT]";
     contentParts.push(`${roleLabel}: ${content}`);
     turnCount++;
   }
@@ -108,7 +108,7 @@ export async function indexChatTurn(userText, assistantText, turnId, dateMs) {
     contentParts.push(`[USER]: ${userText}`);
   }
   if (assistantText && assistantText.trim()) {
-    contentParts.push(`[ASSISTANT]: ${assistantText}`);
+    contentParts.push(`[AGENT]: ${assistantText}`);
   }
 
   const content = contentParts.join("\n\n");
@@ -274,7 +274,7 @@ export async function migrateExistingChatHistory() {
           const content = msg.content || "";
           if (!content.trim()) continue;
 
-          const roleLabel = msg.role === "user" ? "[USER]" : "[ASSISTANT]";
+          const roleLabel = msg.role === "user" ? "[USER]" : "[AGENT]";
           contentParts.push(`${roleLabel}: ${content}`);
         }
 
