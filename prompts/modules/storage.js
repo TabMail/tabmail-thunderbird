@@ -70,9 +70,8 @@ export async function resetPromptFile(filename) {
 
 // KB Config defaults
 const KB_CONFIG_DEFAULTS = {
-    max_chat_exchanges: 20,
     reminder_retention_days: 14,
-    max_bullets: 200,
+    max_bullets: 100,
 };
 
 /**
@@ -84,7 +83,6 @@ export async function loadKbConfig() {
         const obj = await browser.storage.local.get(key);
         const config = obj[key] || {};
 
-        const maxExchanges = config.max_chat_exchanges ?? KB_CONFIG_DEFAULTS.max_chat_exchanges;
         const retention = config.reminder_retention_days || KB_CONFIG_DEFAULTS.reminder_retention_days;
         const maxBullets = config.max_bullets || KB_CONFIG_DEFAULTS.max_bullets;
 
@@ -95,11 +93,10 @@ export async function loadKbConfig() {
             if (slider) slider.value = value;
             if (display) display.textContent = String(value);
         };
-        setSlider("kb-max-exchanges", "kb-max-exchanges-val", maxExchanges);
         setSlider("kb-reminder-retention", "kb-reminder-retention-val", retention);
         setSlider("kb-max-bullets", "kb-max-bullets-val", maxBullets);
 
-        log(`[Prompts] KB config loaded: maxExchanges=${maxExchanges}, retention=${retention}d, max_bullets=${maxBullets}`);
+        log(`[Prompts] KB config loaded: retention=${retention}d, max_bullets=${maxBullets}`);
     } catch (e) {
         log(`[Prompts] Failed to load KB config: ${e}`, "error");
     }
@@ -110,12 +107,10 @@ export async function loadKbConfig() {
  */
 export async function saveKbConfig() {
     try {
-        const maxExchangesSlider = document.getElementById("kb-max-exchanges");
         const reminderSlider = document.getElementById("kb-reminder-retention");
         const maxBulletsSlider = document.getElementById("kb-max-bullets");
 
         const config = {
-            max_chat_exchanges: parseInt(maxExchangesSlider?.value, 10) || KB_CONFIG_DEFAULTS.max_chat_exchanges,
             reminder_retention_days: parseInt(reminderSlider?.value, 10) || KB_CONFIG_DEFAULTS.reminder_retention_days,
             max_bullets: parseInt(maxBulletsSlider?.value, 10) || KB_CONFIG_DEFAULTS.max_bullets,
         };
@@ -123,7 +118,7 @@ export async function saveKbConfig() {
         const key = "user_prompts:kb_config";
         await browser.storage.local.set({ [key]: config });
 
-        log(`[Prompts] KB config saved: maxExchanges=${config.max_chat_exchanges}, retention=${config.reminder_retention_days}d, max_bullets=${config.max_bullets}`);
+        log(`[Prompts] KB config saved: retention=${config.reminder_retention_days}d, max_bullets=${config.max_bullets}`);
     } catch (e) {
         log(`[Prompts] Failed to save KB config: ${e}`, "error");
         throw e;

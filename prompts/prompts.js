@@ -1166,7 +1166,6 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // KB config sliders: sync displayed value on input, auto-save on change
   const kbSliders = [
-    { slider: document.getElementById("kb-max-exchanges"), display: document.getElementById("kb-max-exchanges-val") },
     { slider: document.getElementById("kb-reminder-retention"), display: document.getElementById("kb-reminder-retention-val") },
     { slider: document.getElementById("kb-max-bullets"), display: document.getElementById("kb-max-bullets-val") },
   ];

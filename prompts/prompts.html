@@ -38,14 +38,6 @@
         </div>
         <div class="kb-config-content">
           <div class="kb-config-row">
-            <label for="kb-max-exchanges">Chat history (exchanges):</label>
-            <div class="kb-slider-group">
-              <input type="range" id="kb-max-exchanges" min="10" max="100" step="5" value="20" />
-              <span class="kb-slider-value" id="kb-max-exchanges-val">20</span>
-            </div>
-            <span class="kb-config-hint">Max user+assistant exchanges kept in active chat. Increasing this may consume your quota faster</span>
-          </div>
-          <div class="kb-config-row">
             <label for="kb-reminder-retention">Reminder retention (days):</label>
             <div class="kb-slider-group">
               <input type="range" id="kb-reminder-retention" min="1" max="90" step="1" value="14" />
@@ -56,8 +48,8 @@
           <div class="kb-config-row">
             <label for="kb-max-bullets">Max Knowledge Base entries:</label>
             <div class="kb-slider-group">
-              <input type="range" id="kb-max-bullets" min="10" max="500" step="10" value="200" />
-              <span class="kb-slider-value" id="kb-max-bullets-val">200</span>
+              <input type="range" id="kb-max-bullets" min="10" max="500" step="10" value="100" />
+              <span class="kb-slider-value" id="kb-max-bullets-val">100</span>
             </div>
             <span class="kb-config-hint">Excludes reminders. KB trimmed if over limit (higher = more context)</span>
           </div>

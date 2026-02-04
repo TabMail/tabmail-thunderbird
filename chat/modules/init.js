@@ -28,7 +28,6 @@ import {
   migrateFromSessions,
   generateTurnId,
   enforceBudget,
-  getMaxExchanges,
   indexTurnToFTS,
 } from "./persistentChatStore.js";
 import {
@@ -189,11 +188,10 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
     saveMeta(meta);
   }
 
-  // Enforce budget on load (handles user lowering max_chat_exchanges since last open)
-  const maxExchanges = await getMaxExchanges();
-  const evictedOnLoad = enforceBudget(persistedTurns, meta, maxExchanges);
+  // Enforce budget on load
+  const evictedOnLoad = enforceBudget(persistedTurns, meta);
   if (evictedOnLoad.length > 0) {
-    log(`[TMDBG Init] Budget enforcement on load evicted ${evictedOnLoad.length} turns (maxExchanges=${maxExchanges})`);
+    log(`[TMDBG Init] Budget enforcement on load evicted ${evictedOnLoad.length} turns`);
     cleanupEvictedIds(evictedOnLoad);
     saveTurns(persistedTurns);
     saveMeta(meta);

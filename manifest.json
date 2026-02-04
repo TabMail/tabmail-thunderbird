@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TabMail",
-  "version": "1.2.9",
+  "version": "1.2.10",
   "description": "TabMail extension for Thunderbird provides an AI assistant that helps the user manage their email and calendar through a natural, chat-based interface, with support for email indexing and autocomplete.",
   "browser_specific_settings": {
     "gecko": {

@@ -16,7 +16,7 @@ const IDMAP_KEY = "chat_id_map";
 // ---------------------------------------------------------------------------
 // Budget constants
 // ---------------------------------------------------------------------------
-const MAX_EXCHANGES_HARD_CAP = 100; // absolute max regardless of user config
+const MAX_EXCHANGES = 50; // max exchanges kept in active chat buffer (UI only, not token budget)
 const CHARS_PER_EXCHANGE = 500; // approximate average for derived char cap
 
 // ---------------------------------------------------------------------------
@@ -97,9 +97,7 @@ export async function appendTurn(turn, turns, meta) {
   turns.push(turn);
   meta.totalChars = (meta.totalChars || 0) + (turn._chars || 0);
 
-  // Load user's max exchanges setting
-  const maxExchanges = await getMaxExchanges();
-  const evictedTurns = enforceBudget(turns, meta, maxExchanges);
+  const evictedTurns = enforceBudget(turns, meta);
 
   // Debounced save
   saveTurns(turns);
@@ -118,13 +116,11 @@ export async function appendTurn(turn, turns, meta) {
  *
  * @param {object[]} turns - Turns array (mutated)
  * @param {object} meta - Metadata (mutated: totalChars)
- * @param {number} maxExchanges - Max exchanges (user setting, capped at 100)
  * @returns {object[]} evicted turns
  */
-export function enforceBudget(turns, meta, maxExchanges) {
-  const safeMax = Math.min(Math.max(maxExchanges || MAX_EXCHANGES_HARD_CAP, 1), MAX_EXCHANGES_HARD_CAP);
-  const maxMessages = safeMax * 2; // user + assistant per exchange
-  const maxChars = safeMax * CHARS_PER_EXCHANGE;
+export function enforceBudget(turns, meta) {
+  const maxMessages = MAX_EXCHANGES * 2; // user + assistant per exchange
+  const maxChars = MAX_EXCHANGES * CHARS_PER_EXCHANGE;
 
   const evictedList = [];
 
@@ -145,7 +141,7 @@ export function enforceBudget(turns, meta, maxExchanges) {
   }
 
   if (evictedList.length > 0) {
-    log(`[PersistentChat] Evicted ${evictedList.length} turns (maxExchanges=${safeMax}, maxChars=${maxChars}, remaining=${turns.length}, chars=${meta.totalChars})`);
+    log(`[PersistentChat] Evicted ${evictedList.length} turns (maxExchanges=${MAX_EXCHANGES}, maxChars=${maxChars}, remaining=${turns.length}, chars=${meta.totalChars})`);
   }
 
   return evictedList;
@@ -164,20 +160,6 @@ function _isHeadProtected(turns) {
   return false; // no session boundary → nothing protected
 }
 
-export async function getMaxExchanges() {
-  try {
-    const key = "user_prompts:kb_config";
-    const obj = await browser.storage.local.get(key);
-    const kbConfig = obj[key] || {};
-    const val = kbConfig.max_chat_exchanges;
-    if (typeof val === "number" && val > 0) {
-      return Math.min(val, MAX_EXCHANGES_HARD_CAP);
-    }
-  } catch (e) {
-    log(`[PersistentChat] Failed to load max_chat_exchanges: ${e}`, "warn");
-  }
-  return MAX_EXCHANGES_HARD_CAP; // default 100
-}
 
 // ---------------------------------------------------------------------------
 // Metadata: load / save
