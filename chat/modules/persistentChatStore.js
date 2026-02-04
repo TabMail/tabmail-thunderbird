@@ -330,6 +330,40 @@ export function turnsToLLMMessages(turns) {
   return turns.map(turnToLLMMessage);
 }
 
+/**
+ * Filter persistedTurns to exclude KB-summarized prior sessions, then convert
+ * to LLM messages. Checks kb_last_summarized_ts from storage; if a session_break
+ * predates that marker, all turns up to and including it are dropped (already
+ * distilled into KB). persistedTurns is never mutated.
+ *
+ * @param {Array} persistedTurns - Full persisted turns array
+ * @returns {Promise<Array>} - LLM-format messages (without system message)
+ */
+export async function filterAndConvertTurns(persistedTurns) {
+  const { kb_last_summarized_ts } = await browser.storage.local.get("kb_last_summarized_ts");
+
+  if (!kb_last_summarized_ts) {
+    return turnsToLLMMessages(persistedTurns);
+  }
+
+  // Walk backward: find the latest session_break whose _ts <= marker
+  let cutIdx = -1;
+  for (let i = persistedTurns.length - 1; i >= 0; i--) {
+    if (persistedTurns[i]._type === "session_break" && persistedTurns[i]._ts <= kb_last_summarized_ts) {
+      cutIdx = i;
+      break;
+    }
+  }
+
+  if (cutIdx < 0) {
+    return turnsToLLMMessages(persistedTurns);
+  }
+
+  const kept = persistedTurns.slice(cutIdx + 1);
+  log(`[PersistentChat] KB filter: dropped ${cutIdx + 1} summarized turns, keeping ${kept.length}`);
+  return turnsToLLMMessages(kept);
+}
+
 // ---------------------------------------------------------------------------
 // FTS indexing (uses the real render pipeline for future-proof text extraction)
 // ---------------------------------------------------------------------------

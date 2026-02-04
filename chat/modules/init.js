@@ -200,6 +200,7 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
   }
 
   // Build agentConverseMessages: system prompt + all persisted turns
+  // (KB filtering happens JIT in converse.js before each send)
   ctx.agentConverseMessages = [systemMessage, ...turnsToLLMMessages(persistedTurns)];
   ctx.greetedUser = true;
 

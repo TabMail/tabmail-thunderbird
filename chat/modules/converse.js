@@ -13,6 +13,7 @@ import {
 } from "./helpers.js";
 import {
   appendTurn,
+  filterAndConvertTurns,
   generateTurnId,
   indexTurnToFTS,
   saveTurns,
@@ -222,14 +223,20 @@ export async function processUserInput(userText) {
 export async function agentConverse(userText) {
   try {
     // No context switching; converse uses persistent history
-    const messages = ctx.agentConverseMessages;
-    if (!Array.isArray(messages)) {
+    if (!Array.isArray(ctx.agentConverseMessages)) {
       log(
         `[TMDBG Converse] Missing agentConverseMessages; init must create it.`,
         "error"
       );
       return;
     }
+
+    // JIT KB filter: rebuild agentConverseMessages from persistedTurns,
+    // dropping prior-session turns already distilled into KB
+    const sysMsg = ctx.agentConverseMessages[0];
+    const filtered = await filterAndConvertTurns(ctx.persistedTurns);
+    ctx.agentConverseMessages = [sysMsg, ...filtered];
+    const messages = ctx.agentConverseMessages;
 
     // Track last user message for retry functionality
     ctx.lastUserMessage = userText;
