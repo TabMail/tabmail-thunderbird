@@ -123,7 +123,14 @@
       console.log('[TabMail MsgBubble] No quote boundary found');
       return;
     }
-    
+
+    // Skip collapsing if inline answers are detected — the user's content is
+    // interleaved with quoted text and should remain fully visible.
+    if (quoteMatch.hasInlineAnswers) {
+      console.log('[TabMail MsgBubble] Inline answers detected — skipping quote collapse');
+      return;
+    }
+
     const { textNode: quoteTextNode, elementNode: quoteElementNode, charOffset: quoteCharOffset, patternType, isForward } = quoteMatch;
     
     // IMPORTANT: use the detector's coordinate space (it inserts \n for <br>/blocks).

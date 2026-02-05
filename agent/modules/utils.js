@@ -658,22 +658,41 @@ export function stripHtml(html) {
 export function extractUserWrittenContent(body, contentType) {
     if (!body) return "";
 
-    // For HTML content, extract text first then use text-based detection
+    const qd = globalThis.TabMailQuoteDetection;
+
+    // For HTML content, check for inline answers in the DOM structure first,
+    // then extract text and use text-based detection.
     let textContent = body;
     if (contentType && contentType.startsWith("text/html")) {
         try {
             const doc = new DOMParser().parseFromString(body, "text/html");
+
+            // Check for inline answers via DOM structure (blockquote interleaving).
+            // recursiveHtmlToText doesn't add ">" markers for blockquotes, so the
+            // plain text detection can't catch this — we need the DOM check here.
+            if (qd && qd.hasInlineAnswersInDOM && qd.hasInlineAnswersInDOM(doc.body)) {
+                log(`Inline answers detected in HTML email (DOM) — returning full text`);
+                textContent = recursiveHtmlToText(doc.body);
+                return String(textContent || "").replace(/(\n\s*){3,}/g, '\n\n').trim();
+            }
+
             textContent = recursiveHtmlToText(doc.body);
         } catch (e) {
             log(`Failed to parse HTML for user content extraction. Error: ${e}`);
             // Fallback: use body as-is
         }
     }
-    
+
     // Use text-based quote detection (single source of truth)
-    const qd = globalThis.TabMailQuoteDetection;
     const boundary = qd && qd.findBoundaryInPlainText ? qd.findBoundaryInPlainText(textContent) : null;
     if (!boundary) {
+        return String(textContent || "").replace(/(\n\s*){3,}/g, '\n\n').trim();
+    }
+
+    // If inline answers detected (plain text with ">" markers), return full text —
+    // the user's inline responses need the quoted context to be understood.
+    if (boundary.hasInlineAnswers) {
+        log(`Inline answers detected in plain text email — returning full text`);
         return String(textContent || "").replace(/(\n\s*){3,}/g, '\n\n').trim();
     }
 

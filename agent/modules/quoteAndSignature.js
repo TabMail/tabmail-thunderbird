@@ -40,6 +40,10 @@
     // from signature separators that happen to contain a single "From:"-like line.
     dashSeparatorLookaheadMinHits: 2,
 
+    // Inline answer detection: minimum trimmed line length for a non-quoted line
+    // to count as an inline answer (avoids false positives from whitespace artifacts).
+    inlineAnswerMinLineLength: 2,
+
     // DOM marker classnames (used by theme CSS for invisibility + reuse checks)
     dom: {
       quoteBoundaryMarkerClass: "tm-quote-boundary-marker",
@@ -333,7 +337,7 @@
    *
    * @param {string} text
    * @param {{ includeForward?: boolean }} [opts] - Options. includeForward defaults to true for agent use.
-   * @returns {{ lineIndex: number, charIndex: number, type: string, eatBlankLinesBefore?: number }|null}
+   * @returns {{ lineIndex: number, charIndex: number, type: string, eatBlankLinesBefore?: number, hasInlineAnswers: boolean }|null}
    */
   function findBoundaryInPlainText(text, opts = {}) {
     const includeForward = opts.includeForward !== false; // Default true
@@ -428,7 +432,17 @@
     const chosenList = candidates.length > 0 ? candidates : fallbackCandidates;
     if (chosenList.length === 0) return null;
     chosenList.sort((a, b) => a.lineIndex - b.lineIndex);
-    return chosenList[0];
+    const chosen = chosenList[0];
+
+    // Detect inline answers after the boundary
+    chosen.hasInlineAnswers = detectInlineAnswersInPlainText(src, chosen.lineIndex);
+    if (chosen.hasInlineAnswers) {
+      try {
+        console.log(`[TabMailQuoteDetection] findBoundaryInPlainText: inline answers detected after "${chosen.type}" boundary at line ${chosen.lineIndex}`);
+      } catch (_) {}
+    }
+
+    return chosen;
   }
 
   /**
@@ -539,6 +553,171 @@
     return trimmed.startsWith(">");
   }
 
+  // ---------------------------------------------------------------------------
+  // INLINE ANSWER DETECTION
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Detect whether inline answers exist after a quote boundary in plain text.
+   * Requires the "full cycle" interleaving pattern:
+   *   > quoted line(s) → non-blank non-> line(s) → > quoted line(s)
+   *
+   * The full cycle is required to avoid false positives from closing text
+   * after a quote block (e.g., "Thanks, Name" after a "> ..." block).
+   *
+   * @param {string} text - The full plain text
+   * @param {number} boundaryLineIndex - The line index where the quote boundary was found
+   * @returns {boolean} - True if inline answers are detected
+   */
+  function detectInlineAnswersInPlainText(text, boundaryLineIndex) {
+    try {
+      const lines = String(text || "").split(/\r?\n/);
+      const minLen = config.inlineAnswerMinLineLength;
+
+      let sawQuoted = false;
+      let sawNonQuotedAfterQuoted = false;
+
+      for (let i = boundaryLineIndex + 1; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = String(line || "").trim();
+
+        // Skip blank lines
+        if (!trimmed) continue;
+
+        if (isInsideQuotedBlock(line)) {
+          if (sawNonQuotedAfterQuoted) {
+            // Full cycle complete: quoted → non-quoted → quoted
+            console.log(`[TabMailQuoteDetection] Inline answers detected (plain text) at line ${i}`);
+            return true;
+          }
+          sawQuoted = true;
+        } else {
+          // Non-quoted, non-blank line — count as inline answer candidate
+          // only if it meets the minimum length threshold
+          if (sawQuoted && trimmed.length >= minLen) {
+            sawNonQuotedAfterQuoted = true;
+          }
+        }
+      }
+
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Check if a line in the detection text is inside a quoted segment (blockquote).
+   * Uses segment metadata from _buildDetectionTextAndSegments.
+   *
+   * @param {Array} segments - Segments with quoted flags
+   * @param {number} lineStart - Char offset of line start in detection text
+   * @param {number} lineEnd - Char offset of line end in detection text
+   * @returns {boolean}
+   */
+  function _isLineInQuotedSegment(segments, lineStart, lineEnd) {
+    for (const seg of segments) {
+      if (seg.end <= lineStart) continue;
+      if (seg.start >= lineEnd) break;
+      if (seg.kind === "text" && seg.quoted) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Detect inline answers using segment metadata from _buildDetectionTextAndSegments.
+   * Works for DOM detection text where blockquote content doesn't have ">" markers.
+   * Uses the same full-cycle pattern as detectInlineAnswersInPlainText.
+   *
+   * @param {string} text - The detection text
+   * @param {Array} segments - Segments with quoted flags from _buildDetectionTextAndSegments
+   * @param {number} boundaryLineIndex - The line index of the quote boundary
+   * @returns {boolean}
+   */
+  function _detectInlineAnswersFromSegments(text, segments, boundaryLineIndex) {
+    try {
+      const { lines, startOffsets } = _splitLinesWithCharOffsets(text);
+      const minLen = config.inlineAnswerMinLineLength;
+
+      let sawQuoted = false;
+      let sawNonQuotedAfterQuoted = false;
+
+      for (let i = boundaryLineIndex + 1; i < lines.length; i++) {
+        const trimmed = String(lines[i] || "").trim();
+        if (!trimmed) continue;
+
+        const lineStart = startOffsets[i];
+        const lineEnd = lineStart + (lines[i] || "").length;
+        const isQuoted = _isLineInQuotedSegment(segments, lineStart, lineEnd);
+
+        if (isQuoted) {
+          if (sawNonQuotedAfterQuoted) {
+            console.log(`[TabMailQuoteDetection] Inline answers detected (segments) at line ${i}`);
+            return true;
+          }
+          sawQuoted = true;
+        } else {
+          if (sawQuoted && trimmed.length >= minLen) {
+            sawNonQuotedAfterQuoted = true;
+          }
+        }
+      }
+
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Check if a DOM tree contains inline answers by inspecting blockquote structure.
+   * Looks for non-trivial text content between consecutive top-level <blockquote> elements.
+   * Used by the agent path (extractUserWrittenContent) for HTML emails where
+   * recursiveHtmlToText doesn't add ">" markers for blockquotes.
+   *
+   * @param {Element} container - The DOM container (e.g., doc.body from DOMParser)
+   * @returns {boolean}
+   */
+  function hasInlineAnswersInDOM(container) {
+    try {
+      if (!container || !container.querySelectorAll) return false;
+      const minLen = config.inlineAnswerMinLineLength;
+
+      const allBQs = Array.from(container.querySelectorAll("blockquote"));
+      // Filter to top-level blockquotes (not nested inside another blockquote)
+      const topLevelBQs = allBQs.filter(function (bq) {
+        try {
+          return !bq.parentElement || !bq.parentElement.closest("blockquote");
+        } catch (_) {
+          return true;
+        }
+      });
+
+      if (topLevelBQs.length < 2) return false;
+
+      // Check for non-trivial text between consecutive top-level blockquotes
+      for (let i = 0; i < topLevelBQs.length - 1; i++) {
+        const bq1 = topLevelBQs[i];
+        const bq2 = topLevelBQs[i + 1];
+
+        // Walk siblings between bq1 and bq2
+        let node = bq1.nextSibling;
+        while (node && node !== bq2) {
+          const text = String(node.textContent || "").trim();
+          if (text.length >= minLen) {
+            console.log("[TabMailQuoteDetection] Inline answers detected (DOM) between blockquotes");
+            return true;
+          }
+          node = node.nextSibling;
+        }
+      }
+
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /**
    * Find the LAST signature delimiter from the bottom of the text.
    * Only finds signatures that are NOT inside quoted content (lines starting with >).
@@ -591,6 +770,15 @@
     // For DOM/display collapse, callers should pass { includeForward: false } or use findQuoteBoundaryByText.
     const quoteBoundary = findBoundaryInPlainText(src, opts);
     if (!quoteBoundary) return null;
+
+    // If inline answers are detected, don't split into quote regions —
+    // the user's content is interleaved with quoted text and should remain visible.
+    if (quoteBoundary.hasInlineAnswers) {
+      try {
+        console.log("[TabMailQuoteDetection] findQuoteRegion: inline answers detected, not splitting quote region");
+      } catch (_) {}
+      return null;
+    }
 
     // Find the last signature that is NOT inside quoted content and is AFTER the quote start
     const lastSig = findLastSignatureFromBottom(src, { afterLine: quoteBoundary.lineIndex });
@@ -647,25 +835,25 @@
     const segments = [];
     let out = "";
 
-    function appendText(node, text) {
+    function appendText(node, text, quoted) {
       const s = String(text || "");
       if (!s) return;
       const start = out.length;
       out += s;
-      segments.push({ kind: "text", node, start, end: out.length });
+      segments.push({ kind: "text", node, start, end: out.length, quoted: !!quoted });
     }
 
-    function appendNewline(node, reason) {
+    function appendNewline(node, reason, quoted) {
       if (out.endsWith("\n")) return;
       const start = out.length;
       out += "\n";
-      segments.push({ kind: "break", node, reason: reason || "newline", start, end: out.length });
+      segments.push({ kind: "break", node, reason: reason || "newline", start, end: out.length, quoted: !!quoted });
     }
 
-    function walk(node) {
+    function walk(node, inBlockquote) {
       if (!node) return;
       if (node.nodeType === Node.TEXT_NODE) {
-        appendText(node, node.textContent || "");
+        appendText(node, node.textContent || "", inBlockquote);
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
@@ -684,32 +872,35 @@
       } catch (_) {}
 
       if (tag === "BR") {
-        appendNewline(node, "br");
+        appendNewline(node, "br", inBlockquote);
         return;
       }
       if (tag === "HR") {
         // Emit a synthetic dash line so the dash-separator pattern can match <hr> elements.
         // This ensures the detection text includes something like "----------" on its own line,
         // which allows our lookahead-based dash-separator rule to fire for HTML emails.
-        appendNewline(node, "hr-pre");
-        appendText(node, "----------"); // synthetic dashes (min 10 to match the pattern)
-        appendNewline(node, "hr");
+        appendNewline(node, "hr-pre", inBlockquote);
+        appendText(node, "----------", inBlockquote); // synthetic dashes (min 10 to match the pattern)
+        appendNewline(node, "hr", inBlockquote);
         return;
       }
 
+      // BLOCKQUOTE: recurse children with inBlockquote=true
+      const childInBlockquote = tag === "BLOCKQUOTE" ? true : inBlockquote;
+
       // Walk children
       for (let c = node.firstChild; c; c = c.nextSibling) {
-        walk(c);
+        walk(c, childInBlockquote);
       }
 
       // Add a newline after common block-ish elements to preserve visual line breaks
       if (_isBlockElementTag(tag)) {
-        appendNewline(node, "block");
+        appendNewline(node, "block", inBlockquote);
       }
     }
 
     try {
-      walk(root);
+      walk(root, false);
     } catch (e) {
       console.error("[TabMailQuoteDetection] _buildDetectionTextAndSegments error:", e);
     }
@@ -760,7 +951,7 @@
    * @param {ParentNode} container - DOM container to search
    * @param {{ includeForward?: boolean }} [opts] - Options. includeForward defaults to FALSE for DOM/display
    *        (forwards should be visible, only reply quotes should collapse).
-   * @returns {{ textNode?: Text|null, elementNode?: Element|null, charOffset: number, patternType: string, isForward: boolean, detectionCharIndex?: number, detectionLineIndex?: number }|null}
+   * @returns {{ textNode?: Text|null, elementNode?: Element|null, charOffset: number, patternType: string, isForward: boolean, detectionCharIndex?: number, detectionLineIndex?: number, hasInlineAnswers?: boolean }|null}
    */
   function findQuoteBoundaryByText(container, opts = {}) {
     try {
@@ -799,6 +990,20 @@
           console.log("[TabMailQuoteDetection] Interesting lines (first few):", interesting);
         } catch (_) {}
         return null;
+      }
+
+      // Detect inline answers using segment metadata (blockquote tracking).
+      // This covers HTML emails where blockquote content doesn't have ">" markers
+      // in the detection text. Falls back to the plain text ">" detection from
+      // findBoundaryInPlainText if segments don't have quoted metadata.
+      let hasInlineAnswers = !!boundary.hasInlineAnswers;
+      if (!hasInlineAnswers) {
+        hasInlineAnswers = _detectInlineAnswersFromSegments(detectionText, segments, boundary.lineIndex);
+      }
+      if (hasInlineAnswers) {
+        try {
+          console.log(`[TabMailQuoteDetection] findQuoteBoundaryByText: inline answers detected after "${boundary.type}" boundary`);
+        } catch (_) {}
       }
 
       // IMPORTANT: for DOM collapsing we want to start at the beginning of the *line*,
@@ -880,6 +1085,7 @@
           isForward: boundary.type === "forwarded-message",
           detectionCharIndex: effectiveCharIndex,
           detectionLineIndex: boundary.lineIndex,
+          hasInlineAnswers,
         };
       }
 
@@ -899,6 +1105,7 @@
         // used by findLastSignatureByText (line breaks inserted for BR/block).
         detectionCharIndex: effectiveCharIndex,
         detectionLineIndex: boundary.lineIndex,
+        hasInlineAnswers,
       };
     } catch (e) {
       console.error('[TabMailQuoteDetection] findQuoteBoundaryByText error:', e);
@@ -981,18 +1188,22 @@
   g.TabMailQuoteDetection = {
     config,
     patterns,
-    
+
     // Plain text detection (for agent/utils.js)
     findBoundaryInPlainText,
     findLastSignatureFromBottom,
     findQuoteRegion,
     splitPlainTextForQuote,
-    
+
     // Signature helpers
     isSignatureDelimiterLine,
     textContainsSignatureDelimiter,
     isInsideQuotedBlock,
-    
+
+    // Inline answer detection
+    detectInlineAnswersInPlainText,
+    hasInlineAnswersInDOM,
+
     // DOM text-based detection (for messageBubble.js)
     findQuoteBoundaryByText,
     findLastSignatureByText,
