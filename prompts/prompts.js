@@ -1163,7 +1163,38 @@ document.addEventListener("DOMContentLoaded", () => {
     if (kbTextarea) flashBorder(kbTextarea, "red");
     await resetKbContent();
   });
-  
+
+  // KB Compress button
+  document.getElementById("compress-kb").addEventListener("click", async () => {
+    const compressBtn = document.getElementById("compress-kb");
+    const spinner = document.getElementById("compress-kb-spinner");
+    const originalText = compressBtn.textContent;
+    compressBtn.disabled = true;
+    compressBtn.textContent = "Compressing\u2026";
+    spinner.style.display = "inline-block";
+    try {
+      const result = await browser.runtime.sendMessage({ command: "kb-compress" });
+      if (result && result.ok) {
+        // Update textarea with refined KB
+        const kbTextarea = document.getElementById("kb-content");
+        if (kbTextarea && typeof result.refined_kb === "string") {
+          kbTextarea.value = result.refined_kb;
+          updateKbEntryCount();
+        }
+        flashButton(compressBtn, "blue");
+        showStatus("Knowledge base compressed successfully!");
+      } else {
+        showStatus("Compress failed: " + (result?.error || "unknown error"), true);
+      }
+    } catch (e) {
+      showStatus("Compress failed: " + e.message, true);
+    } finally {
+      compressBtn.disabled = false;
+      compressBtn.textContent = originalText;
+      spinner.style.display = "none";
+    }
+  });
+
   // KB config sliders: sync displayed value on input, auto-save on change
   const kbSliders = [
     { slider: document.getElementById("kb-reminder-retention"), display: document.getElementById("kb-reminder-retention-val") },

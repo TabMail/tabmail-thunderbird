@@ -11,7 +11,7 @@ import { checkAndShowArchivePrompt, setDefaultSortForLargeInbox } from "./module
 // getInboxForAccount no longer needed - messages are processed directly from event listeners
 import { purgeExpiredActionEntries } from "./modules/actionGenerator.js";
 import { purgeOlderThanByPrefixes } from "./modules/idbStorage.js";
-import { kbUpdate } from "./modules/knowledgebase.js";
+import { kbCompress, kbUpdate } from "./modules/knowledgebase.js";
 import { scanAllInboxes } from "./modules/messageProcessor.js";
 import { enqueueProcessMessage, initProcessMessageQueue } from "./modules/messageProcessorQueue.js";
 import { attachOnMovedListeners, cleanupOnMovedListeners } from "./modules/onMoved.js";
@@ -391,6 +391,18 @@ function setupRuntimeMessageListener() {
             });
         }
         return { ok: true }; // Immediate response, KB update continues async
+    }
+
+    if (message.command === "kb-compress") {
+        log("-- KB -- Received manual KB compress request from prompts page");
+        return (async () => {
+            try {
+                return await kbCompress();
+            } catch (e) {
+                log(`-- KB -- Manual KB compress failed: ${e}`, "warn");
+                return { ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+        })();
     }
 
     if (message.command === "update-icon-auth-state") {

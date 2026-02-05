@@ -600,6 +600,59 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
+/* KB Compress spinner */
+.kb-compress-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+  padding-right: 16px;
+  border-right: 1px solid var(--panel-separator-color);
+}
+
+.kb-spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid color-mix(in srgb, var(--in-content-page-color) 25%, transparent);
+  border-top-color: var(--in-content-accent-color);
+  border-radius: 50%;
+  animation: kbSpin 0.8s linear infinite;
+}
+
+@keyframes kbSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* KB section note (between header and textarea) */
+.kb-section-note {
+  background: var(--in-content-box-background);
+  border-left: 1px solid var(--panel-separator-color);
+  border-right: 1px solid var(--panel-separator-color);
+  padding: 0 16px 14px 16px;
+}
+
+.kb-section-note::before {
+  content: '';
+  display: block;
+  border-top: 1px solid var(--panel-separator-color);
+  margin-bottom: 12px;
+}
+
+.kb-section-note p {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.7;
+  line-height: 1.5;
+}
+
+.kb-section-note code {
+  background: color-mix(in srgb, var(--in-content-page-color) 10%, transparent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
 /* KB Configuration styles */
 .kb-config-content {
   padding: 16px;

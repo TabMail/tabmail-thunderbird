@@ -266,6 +266,85 @@ export async function kbUpdate(conversationHistory = []) {
     return _runExclusively("kbUpdate", () => _kbUpdateImpl(conversationHistory));
 }
 
+/**
+ * Compress/refine the KB without chat history.
+ * Triggered manually from the prompts config page.
+ * Returns { ok, refined_kb, error }.
+ */
+export async function kbCompress() {
+    return _runExclusively("kbCompress", async () => {
+        try {
+            const currentUserKBMd = (await getUserKBPrompt()) || "";
+            if (!currentUserKBMd.trim()) {
+                return { ok: true, refined_kb: "" };
+            }
+
+            const kbConfig = await getKbConfig();
+            const currentTime = formatTimestampForAgent();
+
+            const systemMsg = {
+                role: "system",
+                content: "system_prompt_kb_refine",
+                current_user_kb_md: currentUserKBMd,
+                chat_history: "",
+                current_time: currentTime,
+                reminder_retention_days: kbConfig.reminder_retention_days,
+                max_bullets: kbConfig.max_bullets,
+            };
+
+            log(`-- KB -- Starting manual KB compress (${currentUserKBMd.split('\n').filter(l => l.trim()).length} entries)`);
+
+            const response = await Promise.race([
+                sendChatRaw([systemMsg], { ignoreSemaphore: true }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("KB compress timeout")), KB_CONFIG.llmTimeoutMs)),
+            ]);
+
+            saveChatLog("tabmail_kb_compress", Date.now(), [systemMsg], response);
+
+            if (!response || response.err) {
+                const errMsg = response?.err || "empty response";
+                log(`-- KB -- KB compress error: ${errMsg}`, "warn");
+                return { ok: false, error: errMsg };
+            }
+
+            if (typeof response.refined_kb !== "string") {
+                log(`-- KB -- No refined_kb in compress response`);
+                return { ok: false, error: "No refined KB returned" };
+            }
+
+            const updatedKb = response.refined_kb;
+            const kbChanged = updatedKb !== currentUserKBMd;
+
+            if (kbChanged) {
+                await browser.storage.local.set({ "user_prompts:user_kb.md": updatedKb });
+                log(`-- KB -- Compressed KB saved (${updatedKb.split('\n').filter(l => l.trim()).length} entries)`);
+
+                // Trigger reminder extraction after KB save
+                try {
+                    const { generateKBReminders } = await import("./kbReminderGenerator.js");
+                    generateKBReminders(false).catch(e => {
+                        log(`-- KB -- Failed to trigger KB reminder extraction after compress: ${e}`, "warn");
+                    });
+                } catch (e) {
+                    log(`-- KB -- Failed to import KB reminder extraction: ${e}`, "warn");
+                }
+            } else {
+                log(`-- KB -- No changes after compress`);
+            }
+
+            const result = { ok: true, refined_kb: updatedKb };
+            if (response.debug_steps) {
+                result.debug_steps = response.debug_steps;
+            }
+            return result;
+        } catch (e) {
+            log(`-- KB -- Error in kbCompress: ${e}`, "error");
+            saveChatLog("tabmail_kb_compress_failed", Date.now(), [], `ERROR: ${e}`);
+            return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+    });
+}
+
 // ----------------------------------------------------------
 // Periodic KB update for infinite chat (cursor-based, chunked)
 // ----------------------------------------------------------

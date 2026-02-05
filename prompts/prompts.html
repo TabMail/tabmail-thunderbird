@@ -59,13 +59,20 @@
         <div class="section-header">
           <h3>Personal Knowledge Base <span id="kb-entry-count" class="kb-entry-count"></span></h3>
           <div class="section-header-actions">
+            <div class="kb-compress-group">
+              <span id="compress-kb-spinner" class="kb-spinner" style="display: none;"></span>
+              <button id="compress-kb" class="reload-section-btn">Compress</button>
+            </div>
             <button id="save-kb" class="save-section-btn">Save</button>
             <button id="reload-kb" class="reload-section-btn">Reload</button>
             <button id="reset-kb" class="reset-section-btn">Reset</button>
           </div>
         </div>
+        <div class="kb-section-note">
+          <p>Stores <strong>behavioral directives</strong> (how the agent should act) and <strong>preemptive knowledge</strong> (facts needed before being asked). Searchable content is retrieved on demand via Chat History Search. Prefix with <code>[Pinned]</code> to protect from automatic cleanup.</p>
+        </div>
         <div class="simple-content">
-          <textarea id="kb-content" placeholder="Add facts about yourself, preferences, and other information the AI should know..."></textarea>
+          <textarea id="kb-content" placeholder="Add behavioral directives (e.g., 'Always CC my assistant on replies to the VP') and preemptive knowledge (e.g., Zoom links, PTO schedules)..."></textarea>
         </div>
       </div>
     </div>
