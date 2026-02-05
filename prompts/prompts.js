@@ -608,9 +608,8 @@ async function saveSectionBlock(section, promptType) {
     }
     
     const markdown = reconstructMarkdown(data, promptType === "composition");
-    await savePromptFile(filename, markdown);
 
-    // Track saved content for external-change detection
+    // Track saved content BEFORE savePromptFile to prevent storage listener from re-rendering
     if (promptType === "composition") {
       lastKnownCompositionMd = markdown;
       originalCompositionData = deepClone(compositionData);
@@ -618,6 +617,8 @@ async function saveSectionBlock(section, promptType) {
       lastKnownActionMd = markdown;
       originalActionData = deepClone(actionData);
     }
+
+    await savePromptFile(filename, markdown);
 
     showStatus(`Saved: ${section.title}`);
     log(`[Prompts] Saved section: ${section.title}`);
@@ -632,11 +633,10 @@ async function saveTemplateBlock(template, section, promptType) {
   try {
     const filename = promptType === "composition" ? "user_composition.md" : "user_action.md";
     const data = promptType === "composition" ? compositionData : actionData;
-    
-    const markdown = reconstructMarkdown(data, promptType === "composition");
-    await savePromptFile(filename, markdown);
 
-    // Track saved content for external-change detection
+    const markdown = reconstructMarkdown(data, promptType === "composition");
+
+    // Track saved content BEFORE savePromptFile to prevent storage listener from re-rendering
     if (promptType === "composition") {
       lastKnownCompositionMd = markdown;
       originalCompositionData = deepClone(compositionData);
@@ -644,6 +644,8 @@ async function saveTemplateBlock(template, section, promptType) {
       lastKnownActionMd = markdown;
       originalActionData = deepClone(actionData);
     }
+
+    await savePromptFile(filename, markdown);
 
     showStatus(`Saved template: ${template.title}`);
     log(`[Prompts] Saved template: ${template.title}`);
