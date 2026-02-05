@@ -8,7 +8,9 @@ import { log, normalizeUnicode } from "../../agent/modules/utils.js";
 function buildAddPatch(statement) {
   // Create a KB patch using existing normalization in applyKBPatch path
   // Format: ADD\n<content>
-  return `ADD\n${statement}`;
+  // Prefix with [Pinned] since kb_add is used when user explicitly asks to remember something
+  const pinned = statement.startsWith("[Pinned]") ? statement : `[Pinned] ${statement}`;
+  return `ADD\n${pinned}`;
 }
 
 export async function run(args = {}, options = {}) {

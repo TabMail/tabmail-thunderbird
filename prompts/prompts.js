@@ -17,7 +17,8 @@ injectPaletteIntoDocument(document).then(() => {
 });
 
 // Regex for reminder lines (matches backend REMINDER_ITEM_REGEX)
-const REMINDER_LINE_REGEX = /^-\s*Reminder:\s*/i;
+// Supports both new format "[Reminder]" and legacy format "Reminder:"
+const REMINDER_LINE_REGEX = /^-\s*(?:Reminder:|\[Reminder\])\s*/i;
 
 // Current state
 let currentPrompt = "composition";

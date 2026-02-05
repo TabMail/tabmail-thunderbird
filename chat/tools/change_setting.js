@@ -6,16 +6,22 @@ import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
 import { log } from "../../agent/modules/utils.js";
 
 // Setting definitions: key → { type, min, max, default, kbTemplate }
+// KB entries are prefixed with [Pinned] to protect from automatic cleanup
 const SETTING_DEFS = {
   "notifications.proactive_enabled": {
     type: "boolean",
     default: false,
-    kbEntryOn: "TabMail proactive notifications are enabled.",
-    kbEntryOff: "TabMail proactive notifications are disabled.",
-    // Also clean up legacy KB entries from proactive_toggle_checkin
+    kbEntryOn: "[Pinned] TabMail proactive notifications are enabled.",
+    kbEntryOff: "[Pinned] TabMail proactive notifications are disabled.",
+    // Also clean up legacy KB entries from proactive_toggle_checkin (with and without [Pinned])
     legacyKbEntries: [
       "TabMail is set to allow the agent to initiate chat proactively.",
       "TabMail is NOT set to allow the agent to initiate chat proactively.",
+      "[Pinned] TabMail is set to allow the agent to initiate chat proactively.",
+      "[Pinned] TabMail is NOT set to allow the agent to initiate chat proactively.",
+      // Also clean up non-pinned versions of current entries
+      "TabMail proactive notifications are enabled.",
+      "TabMail proactive notifications are disabled.",
     ],
   },
   "notifications.new_reminder_window_days": {
@@ -23,16 +29,16 @@ const SETTING_DEFS = {
     min: 1,
     max: 30,
     default: 7,
-    kbTemplate: (v) => `TabMail reaches out for new reminders within ${v} days of their due date.`,
-    kbPattern: /^TabMail reaches out for new reminders within \d+ days/,
+    kbTemplate: (v) => `[Pinned] TabMail reaches out for new reminders within ${v} days of their due date.`,
+    kbPattern: /^(\[Pinned\] )?TabMail reaches out for new reminders within \d+ days/,
   },
   "notifications.due_reminder_advance_minutes": {
     type: "number",
     min: 5,
     max: 120,
     default: 30,
-    kbTemplate: (v) => `TabMail reaches out ${v} minutes before reminder due times.`,
-    kbPattern: /^TabMail reaches out \d+ minutes before reminder due times/,
+    kbTemplate: (v) => `[Pinned] TabMail reaches out ${v} minutes before reminder due times.`,
+    kbPattern: /^(\[Pinned\] )?TabMail reaches out \d+ minutes before reminder due times/,
   },
   "notifications.grace_minutes": {
     type: "number",

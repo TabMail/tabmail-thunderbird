@@ -9,21 +9,26 @@ import { log, normalizeUnicode } from "../../agent/modules/utils.js";
  * Build a formatted KB reminder entry from structured params.
  * Includes the user's IANA timezone when a due date is present, so the
  * reminder remains correct if the user travels across timezones.
+ *
+ * New format (v1.2.0+): "[Reminder] Due YYYY/MM/DD HH:MM [TZ], text"
+ * Old format (legacy): "Reminder: Due YYYY/MM/DD HH:MM [TZ], text"
+ * Both formats are recognized by detection code for backward compatibility.
+ *
  * @param {string} text - Reminder text
  * @param {string|null} dueDate - Due date in YYYY/MM/DD format
  * @param {string|null} dueTime - Due time in HH:MM format
- * @returns {string} Formatted KB entry (e.g., "Reminder: Due 2026/02/07 14:00 [America/New_York], Reply to Prof.")
+ * @returns {string} Formatted KB entry (e.g., "[Reminder] Due 2026/02/07 14:00 [America/New_York], Reply to Prof.")
  */
 function formatReminderEntry(text, dueDate, dueTime) {
   const tz = dueDate ? Intl.DateTimeFormat().resolvedOptions().timeZone : null;
   const tzSuffix = tz ? ` [${tz}]` : "";
   if (dueDate && dueTime) {
-    return `Reminder: Due ${dueDate} ${dueTime}${tzSuffix}, ${text}`;
+    return `[Reminder] Due ${dueDate} ${dueTime}${tzSuffix}, ${text}`;
   }
   if (dueDate) {
-    return `Reminder: Due ${dueDate}${tzSuffix}, ${text}`;
+    return `[Reminder] Due ${dueDate}${tzSuffix}, ${text}`;
   }
-  return `Reminder: ${text}`;
+  return `[Reminder] ${text}`;
 }
 
 export async function run(args = {}, options = {}) {

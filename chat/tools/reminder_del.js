@@ -23,15 +23,16 @@ export async function run(args = {}, options = {}) {
       return { error: "no reminders found (knowledge base is empty)" };
     }
 
-    // Find lines matching "Reminder:" that contain the search text
+    // Find lines matching reminders that contain the search text
+    // Supports both old format "- Reminder:" and new format "- [Reminder]"
     const lines = current.split("\n");
     const textLower = text.toLowerCase();
     const matches = [];
 
     for (const line of lines) {
       const trimmed = line.trim();
-      // Match lines that start with "- Reminder:" (KB list format)
-      if (/^-\s*Reminder:/i.test(trimmed)) {
+      // Match lines that start with "- Reminder:" or "- [Reminder]" (KB list format)
+      if (/^-\s*(?:Reminder:|\[Reminder\])/i.test(trimmed)) {
         // Check if the reminder content contains the search text (case-insensitive)
         if (trimmed.toLowerCase().includes(textLower)) {
           // Extract the raw statement (without leading "- ")
@@ -50,7 +51,7 @@ export async function run(args = {}, options = {}) {
       log(`[TMDBG Tools] reminder_del: ${matches.length} matching reminders found, returning list for clarification`);
       return {
         error: `Multiple reminders match '${text}'. Please be more specific.`,
-        matches: matches.map(m => m.replace(/^Reminder:\s*/, "")),
+        matches: matches.map(m => m.replace(/^(?:Reminder:\s*|\[Reminder\]\s*)/, "")),
       };
     }
 
