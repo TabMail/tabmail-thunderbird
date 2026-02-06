@@ -136,7 +136,13 @@ export async function retryLastMessage() {
 // Expose retry function globally for UI access
 window.tmRetryLastMessage = retryLastMessage;
 
-export async function processUserInput(userText) {
+export async function processUserInput(userText, options = {}) {
+  // ChatLink source tracking - store source info in ctx for response routing
+  const { source = "sidebar", replyTo, platform, platformChatId } = options;
+  if (source === "chatlink") {
+    ctx.chatLinkSource = { source, replyTo, platform, platformChatId };
+  }
+
   // Determine pid early; pid>0 means this belongs to an FSM session
   const pid = ctx.awaitingPid || 0;
 
@@ -1013,6 +1019,15 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
       indexTurnToFTS(ctx._lastPersistedUserTurn, assistantTurn).catch(e =>
         log(`[CONVERSE] FTS indexing failed (non-fatal): ${e}`, "warn")
       );
+    }
+
+    // ChatLink: Relay response to external platform if this was a ChatLink message
+    if (ctx.chatLinkSource) {
+      import("../chatlink.js").then(({ relayResponse }) => {
+        relayResponse(assistantText).catch(e =>
+          log(`[CONVERSE] ChatLink relay failed (non-fatal): ${e}`, "warn")
+        );
+      }).catch(() => {});
     }
 
     // Trigger periodic KB refinement (fire-and-forget, guards internally)
