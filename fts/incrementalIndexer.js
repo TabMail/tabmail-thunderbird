@@ -259,6 +259,72 @@ function _getRetryConfig() {
 }
 
 /**
+ * Try to delete FTS entries when the original key doesn't match.
+ * Uses native search by headerMessageId to find entries regardless of folder path.
+ * This handles cases where onDeleted event has stale/wrong folder info (common with Gmail/IMAP).
+ *
+ * @param {string} originalKey - The original uniqueKey that was tried (accountId:folderPath:headerMessageId)
+ * @param {Object} ftsSearch - The FTS search instance
+ * @returns {Promise<{found: boolean, deletedKeys: string[]}>}
+ */
+async function _tryFallbackDeletion(originalKey, ftsSearch) {
+  const { parseUniqueId } = await import("../agent/modules/utils.js");
+  const parsed = parseUniqueId(originalKey);
+  if (!parsed?.headerID || !parsed?.weFolder?.accountId) {
+    return { found: false, deletedKeys: [] };
+  }
+
+  const { weFolder, headerID } = parsed;
+  const accountId = weFolder.accountId;
+  const originalFolder = weFolder.path;
+
+  try {
+    // Use native search to find all FTS entries with this headerMessageId in this account
+    const matchingKeys = await ftsSearch.findByHeaderMessageId(accountId, headerID);
+
+    if (!matchingKeys || matchingKeys.length === 0) {
+      log(`[TMDBG FTS] No FTS entries found for headerMessageId ${headerID} in account ${accountId}`);
+      return { found: false, deletedKeys: [] };
+    }
+
+    log(`[TMDBG FTS] Found ${matchingKeys.length} FTS entries for headerMessageId ${headerID}: ${matchingKeys.join(', ')}`);
+
+    // Delete all matching entries (they all represent the same message in different folder paths)
+    const deletedKeys = [];
+    for (const key of matchingKeys) {
+      // Skip the original key - it was already tried in the main deletion
+      if (key === originalKey) continue;
+
+      try {
+        await ftsSearch.removeBatch([key]);
+
+        // Verify deletion succeeded
+        const verifyEntry = await ftsSearch.getMessageByMsgId(key);
+        if (!verifyEntry || verifyEntry.msgId !== key) {
+          log(`[TMDBG FTS] Native search deletion: removed ${key} (original was ${originalFolder})`);
+          logFtsOperation("fallback_delete", "success", {
+            originalKey,
+            foundKey: key,
+            originalFolder,
+            method: "native_search",
+          });
+          deletedKeys.push(key);
+        } else {
+          log(`[TMDBG FTS] Native search deletion failed to remove: ${key}`, "warn");
+        }
+      } catch (e) {
+        log(`[TMDBG FTS] Error deleting found key ${key}: ${e}`, "warn");
+      }
+    }
+
+    return { found: deletedKeys.length > 0, deletedKeys };
+  } catch (e) {
+    log(`[TMDBG FTS] Native search fallback error: ${e}`, "warn");
+    return { found: false, deletedKeys: [] };
+  }
+}
+
+/**
  * Check if failed updates should be dropped based on queue stability.
  * Returns true if we've had maxConsecutiveNoProgress cycles with no successful dequeues.
  * Only applies to entries that have failed at least once (hasFailed=true).
@@ -345,45 +411,49 @@ async function processPendingUpdates() {
     
     // Process deletions first - use unique keys directly
     // NOTE: If folder info was stale in onDeleted event, the key might not match FTS.
-    // Maintenance scans will clean up any orphaned entries.
+    // We now try fallback folder paths to catch these cases.
     if (toDeleteUpdates.length > 0) {
       const toDeleteUniqueKeys = toDeleteUpdates.map(u => u.uniqueKey);
       const removeResult = await _ftsSearch.removeBatch(toDeleteUniqueKeys);
       const removedCount = removeResult.count || 0;
       const missedCount = toDeleteUniqueKeys.length - removedCount;
-      
+
       // Log removeBatch result
       logFtsBatchOperation("delete", "complete", {
         total: toDeleteUniqueKeys.length,
         removedCount,
         missedCount,
       });
-      
+
       if (missedCount > 0) {
-        // Log missed deletions for debugging - these will be cleaned up by maintenance
-        log(`[TMDBG FTS] Removed ${removedCount}/${toDeleteUniqueKeys.length} messages - ${missedCount} may have stale folder keys (maintenance will cleanup)`);
-        for (const update of toDeleteUpdates) {
-          const parsed = parseUniqueId(update.uniqueKey);
-          if (parsed?.headerID) {
-            log(`[TMDBG FTS] Deletion may have missed: headerMessageId=${parsed.headerID}, key=${update.uniqueKey}`);
-          }
-        }
+        log(`[TMDBG FTS] Removed ${removedCount}/${toDeleteUniqueKeys.length} messages - ${missedCount} may have stale folder keys, trying fallbacks`);
       } else {
         log(`[TMDBG FTS] Removed ${removedCount} messages from index`);
       }
-      
-      // Verify deletions - confirm messages are no longer in FTS
+
+      // Verify deletions and use native search by headerMessageId for missed entries
+      // This handles cases where onDeleted event has wrong folder info (common with Gmail/IMAP)
       let verifiedDeletes = 0;
+      let fallbackDeletes = 0;
       let deleteVerifyFailed = 0;
       for (const key of toDeleteUniqueKeys) {
         try {
           const ftsEntry = await _ftsSearch.getMessageByMsgId(key);
           if (!ftsEntry || ftsEntry.msgId !== key) {
-            // Confirmed deleted or never existed - safe to dequeue
+            // Original key not in FTS - use native search to find entries with same headerMessageId
+            // This is the key fix: the delete event may have had wrong folder info
+            const fallbackResult = await _tryFallbackDeletion(key, _ftsSearch);
+            if (fallbackResult.found) {
+              log(`[TMDBG FTS] Native search deletion succeeded: ${fallbackResult.deletedKeys.join(', ')}`);
+              fallbackDeletes += fallbackResult.deletedKeys.length;
+            }
+            // Whether fallback found something or not, mark as processed (original is gone)
             processedKeys.add(key);
             verifiedDeletes++;
             logFtsOperation("verify_delete", "success", {
               uniqueKey: key,
+              usedFallback: fallbackResult.found,
+              fallbackKeys: fallbackResult.deletedKeys,
             });
           } else {
             // Still exists in FTS - deletion failed, keep in queue
@@ -411,11 +481,15 @@ async function processPendingUpdates() {
       logFtsBatchOperation("verify_delete", "complete", {
         total: toDeleteUniqueKeys.length,
         successCount: verifiedDeletes,
+        fallbackCount: fallbackDeletes,
         failCount: deleteVerifyFailed,
       });
-      
+
+      if (fallbackDeletes > 0) {
+        log(`[TMDBG FTS] Delete verification: ${verifiedDeletes}/${toDeleteUniqueKeys.length} confirmed removed (${fallbackDeletes} via native headerMessageId search)`);
+      }
       if (deleteVerifyFailed > 0) {
-        log(`[TMDBG FTS] Delete verification: ${verifiedDeletes}/${toDeleteUniqueKeys.length} confirmed removed, ${deleteVerifyFailed} still present (retained in queue)`);
+        log(`[TMDBG FTS] Delete verification: ${deleteVerifyFailed} still present (retained in queue)`);
       }
     }
     
