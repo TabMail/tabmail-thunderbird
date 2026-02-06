@@ -626,6 +626,10 @@ export const ftsSearch = {
     return await nativeFtsSearch.getMessageByMsgId(msgId);
   },
 
+  async findByHeaderMessageId(accountId, headerMessageId) {
+    return await nativeFtsSearch.findByHeaderMessageId(accountId, headerMessageId);
+  },
+
   async queryByDateRange(from, to, limit = 1000) {
     return await nativeFtsSearch.queryByDateRange(from, to, limit);
   },

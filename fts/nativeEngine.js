@@ -7,7 +7,7 @@ import { log } from "../agent/modules/utils.js";
 // 0.6.10: Added memory database for chat history search (memory_search tool)
 // 0.6.12: Stability improvements, empty query support for memory search
 // 0.7.0:  Semantic search (sqlite-vec embeddings + hybrid FTS5/vector scoring)
-const MIN_HOST_VERSION = "0.7.1";
+const MIN_HOST_VERSION = "0.8.1";
 
 // Storage key for tracking last indexed schema version (for auto-reindex on schema change)
 const STORAGE_KEY_LAST_INDEXED_SCHEMA_VERSION = "ftsLastIndexedSchemaVersion";
@@ -434,7 +434,11 @@ export const nativeFtsSearch = {
   async getMessageByMsgId(msgId) {
     return nativeRPC('getMessageByMsgId', { msgId });
   },
-  
+
+  async findByHeaderMessageId(accountId, headerMessageId) {
+    return nativeRPC('findByHeaderMessageId', { accountId, headerMessageId });
+  },
+
   async queryByDateRange(from, to, limit = 1000) {
     return nativeRPC('queryByDateRange', { from, to, limit });
   },
