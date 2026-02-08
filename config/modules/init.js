@@ -57,6 +57,12 @@ import {
     openWelcomeWizard,
     updateWelcomeStatusDisplay,
 } from "./welcomeWizard.js";
+import {
+    generateWhatsAppLinkCode,
+    handleWhatsAppButtonClick,
+    hideWhatsAppDialog,
+    loadChatLinkStatus,
+} from "./chatlink.js";
 
 export async function initConfigPage({
   SETTINGS,
@@ -419,6 +425,17 @@ export async function initConfigPage({
 
     // Prompt editors moved to dedicated prompts page (prompts/prompts.html)
     // Handlers for prompt save/reload/reset removed
+
+    // ChatLink / External Accounts
+    if (e.target.id === "whatsapp-link-btn") {
+      await handleWhatsAppButtonClick();
+    }
+    if (e.target.id === "whatsapp-generate-code-btn") {
+      await generateWhatsAppLinkCode();
+    }
+    if (e.target.id === "whatsapp-cancel-btn") {
+      hideWhatsAppDialog();
+    }
   };
   document.addEventListener("click", configDOMListeners.documentClickHandler);
 
@@ -441,6 +458,7 @@ export async function initConfigPage({
     updateDebugStatusDisplay(),
     loadWebSearchSettings(log),
     loadNotificationSettings(log),
+    loadChatLinkStatus(),
   ]);
 }
 

@@ -300,6 +300,57 @@ export async function enableChatLink(platform) {
   }
 }
 
+// Privacy warning required at linking time (from CHAT_LINK.md Section 10)
+const CHATLINK_PRIVACY_WARNING = `ChatLink relays your messages between WhatsApp and Thunderbird. Your messages and TabMail's responses — which may include email content — pass through Meta's servers. Meta may store this data per their privacy policy. TabMail never stores your email content nor chat contents on our servers.`;
+
+/**
+ * Generate a linking code to connect WhatsApp.
+ * Returns the code, instructions, and REQUIRED privacy warning.
+ *
+ * IMPORTANT: The privacy_warning MUST be shown to the user before they proceed
+ * with linking. This is a requirement from the design doc (CHAT_LINK.md Section 10).
+ *
+ * @returns {Promise<{ok: boolean, code?: string, wa_link?: string, instructions?: string, privacy_warning?: string, expires_in?: number, error?: string}>}
+ */
+export async function generateLinkingCode() {
+  try {
+    const { getAccessToken } = await import("../agent/modules/supabaseAuth.js");
+    const accessToken = await getAccessToken();
+
+    if (!accessToken) {
+      return { ok: false, error: "Not logged in" };
+    }
+
+    const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/link`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      log(`[ChatLink] Failed to generate code: ${data.error || response.status}`, "error");
+      return { ok: false, error: data.error || data.message || "Failed to generate code" };
+    }
+
+    log(`[ChatLink] Generated linking code: ${data.code}`);
+    return {
+      ok: true,
+      code: data.code,
+      wa_link: data.wa_link,
+      instructions: data.instructions,
+      privacy_warning: CHATLINK_PRIVACY_WARNING,
+      expires_in: data.expires_in,
+    };
+  } catch (e) {
+    log(`[ChatLink] Generate code error: ${e}`, "error");
+    return { ok: false, error: e.message };
+  }
+}
+
 /**
  * Disable ChatLink after unlinking.
  */
@@ -326,4 +377,13 @@ if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
     disconnectChatLink();
   });
+
+  // Expose for dev testing (remove before production)
+  // Usage: await window._chatlink.generateCode()
+  window._chatlink = {
+    generateCode: generateLinkingCode,
+    enable: enableChatLink,
+    disable: disableChatLink,
+    status: getChatLinkStatus,
+  };
 }

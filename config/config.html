@@ -179,39 +179,74 @@
     </section>
 
     <!-- ─── External Accounts ─── -->
-    <section id="external-accounts-settings" style="opacity: 0.4; pointer-events: none;">
-      <h3>External Accounts (coming soon)</h3>
+    <section id="external-accounts-settings">
+      <h3>External Accounts</h3>
 
-      <div class="field" style="margin-bottom: 8px;">
-        <label class="checkbox-option">
-          <input type="checkbox" disabled />
-          <span>Enable Slack connection</span>
-        </label>
-        <button disabled style="justify-self: end; opacity: 0.6;">Link with Slack</button>
+      <!-- WhatsApp (active) -->
+      <div class="chatlink-account-row" id="whatsapp-link-row">
+        <div class="chatlink-account-info">
+          <span class="chatlink-platform-name">WhatsApp</span>
+          <span id="whatsapp-status" class="chatlink-status">Not connected</span>
+        </div>
+        <button id="whatsapp-link-btn" class="chatlink-action-btn">Connect</button>
       </div>
 
-      <div class="field" style="margin-bottom: 8px;">
-        <label class="checkbox-option">
-          <input type="checkbox" disabled />
-          <span>Enable Discord connection</span>
-        </label>
-        <button disabled style="justify-self: end; opacity: 0.6;">Link with Discord</button>
+      <!-- WhatsApp linking dialog (hidden by default) -->
+      <div id="whatsapp-link-dialog" class="chatlink-dialog" style="display: none;">
+        <div class="chatlink-dialog-content">
+          <h4>Connect WhatsApp</h4>
+          <div id="whatsapp-privacy-warning" class="chatlink-privacy-warning">
+            <strong>⚠️ Privacy Notice</strong>
+            <p>ChatLink relays your messages between WhatsApp and Thunderbird. Your messages and TabMail's responses — which may include email content — pass through Meta's servers. Meta may store this data per their privacy policy. TabMail never stores your email content nor chat contents on our servers.</p>
+          </div>
+          <div id="whatsapp-link-instructions">
+            <p>To connect WhatsApp:</p>
+            <ol>
+              <li>Click "Generate Code" below</li>
+              <li>Send the code to the TabMail WhatsApp number (shown after generating)</li>
+              <li>You'll receive a confirmation message when connected</li>
+            </ol>
+          </div>
+          <div id="whatsapp-link-code-display" style="display: none;">
+            <div class="chatlink-code-box">
+              <span id="whatsapp-link-code">------</span>
+              <small>Expires in <span id="whatsapp-link-expires">5:00</span></small>
+            </div>
+            <p id="whatsapp-link-message"></p>
+            <a id="whatsapp-link-wa-link" href="#" target="_blank" style="display: none;">Open WhatsApp</a>
+          </div>
+          <div class="chatlink-dialog-buttons">
+            <button id="whatsapp-generate-code-btn" class="primary">Generate Code</button>
+            <button id="whatsapp-cancel-btn">Cancel</button>
+          </div>
+        </div>
       </div>
 
-      <div class="field" style="margin-bottom: 8px;">
-        <label class="checkbox-option">
-          <input type="checkbox" disabled />
-          <span>Enable Signal connection</span>
-        </label>
-        <button disabled style="justify-self: end; opacity: 0.6;">Link with Signal</button>
+      <!-- Telegram (coming soon) -->
+      <div class="chatlink-account-row chatlink-coming-soon">
+        <div class="chatlink-account-info">
+          <span class="chatlink-platform-name">Telegram</span>
+          <span class="chatlink-status coming-soon">Coming soon</span>
+        </div>
+        <button disabled class="chatlink-action-btn">Connect</button>
       </div>
 
-      <div class="field" style="margin-bottom: 8px;">
-        <label class="checkbox-option">
-          <input type="checkbox" disabled />
-          <span>Enable Telegram connection</span>
-        </label>
-        <button disabled style="justify-self: end; opacity: 0.6;">Link with Telegram</button>
+      <!-- Slack (coming soon) -->
+      <div class="chatlink-account-row chatlink-coming-soon">
+        <div class="chatlink-account-info">
+          <span class="chatlink-platform-name">Slack</span>
+          <span class="chatlink-status coming-soon">Coming soon</span>
+        </div>
+        <button disabled class="chatlink-action-btn">Connect</button>
+      </div>
+
+      <!-- Discord (coming soon) -->
+      <div class="chatlink-account-row chatlink-coming-soon">
+        <div class="chatlink-account-info">
+          <span class="chatlink-platform-name">Discord</span>
+          <span class="chatlink-status coming-soon">Coming soon</span>
+        </div>
+        <button disabled class="chatlink-action-btn">Connect</button>
       </div>
     </section>
 

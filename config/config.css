@@ -1153,3 +1153,207 @@ section > div[style*="background-color"] {
   transform: rotate(90deg);
 }
 
+/* ============================================
+   ChatLink / External Accounts
+   ============================================ */
+
+.chatlink-account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.chatlink-account-row:last-of-type {
+  margin-bottom: 0;
+}
+
+.chatlink-account-row.chatlink-coming-soon {
+  opacity: 0.6;
+}
+
+.chatlink-account-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.chatlink-platform-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.chatlink-status {
+  font-size: 12px;
+  color: var(--in-content-deemphasized-text);
+}
+
+.chatlink-status.connected {
+  color: var(--tag-tm-reply);
+}
+
+.chatlink-status.coming-soon {
+  font-style: italic;
+}
+
+.chatlink-action-btn {
+  padding: 6px 16px;
+  font-size: 13px;
+  background: var(--in-content-button-background);
+  color: var(--in-content-button-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.chatlink-action-btn:hover:not(:disabled) {
+  background: var(--in-content-button-background-hover);
+}
+
+.chatlink-action-btn.disconnect {
+  background: transparent;
+  color: var(--tag-tm-delete);
+  border-color: var(--tag-tm-delete);
+}
+
+.chatlink-action-btn.disconnect:hover {
+  background: color-mix(in srgb, var(--tag-tm-delete) 10%, transparent);
+}
+
+/* ChatLink Dialog */
+.chatlink-dialog {
+  margin-top: 16px;
+  padding: 20px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+}
+
+.chatlink-dialog h4 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+}
+
+.chatlink-privacy-warning {
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--tag-tm-archive) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tag-tm-archive) 30%, transparent);
+  border-left: 4px solid var(--tag-tm-archive);
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
+.chatlink-privacy-warning strong {
+  color: var(--tag-tm-archive);
+  display: block;
+  margin-bottom: 8px;
+}
+
+.chatlink-privacy-warning p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#whatsapp-link-instructions {
+  margin-bottom: 16px;
+}
+
+#whatsapp-link-instructions p {
+  margin: 0 0 8px 0;
+}
+
+#whatsapp-link-instructions ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+#whatsapp-link-instructions li {
+  margin-bottom: 4px;
+}
+
+.chatlink-code-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px;
+  background: var(--in-content-box-background);
+  border: 2px dashed var(--panel-separator-color);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+#whatsapp-link-code {
+  font-family: monospace;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  color: var(--in-content-accent-color);
+}
+
+.chatlink-code-box small {
+  color: var(--in-content-deemphasized-text);
+}
+
+#whatsapp-link-message {
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+#whatsapp-link-wa-link {
+  display: inline-block;
+  padding: 8px 16px;
+  background: #25d366;
+  color: white;
+  text-decoration: none;
+  border-radius: 6px;
+  font-weight: 500;
+  margin-top: 8px;
+}
+
+#whatsapp-link-wa-link:hover {
+  background: #1ebe5d;
+}
+
+.chatlink-dialog-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.chatlink-dialog-buttons button {
+  padding: 8px 20px;
+  font-size: 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.chatlink-dialog-buttons button.primary {
+  background: var(--in-content-accent-color);
+  color: white;
+  border: none;
+}
+
+.chatlink-dialog-buttons button.primary:hover {
+  background: var(--in-content-accent-color-hover, var(--in-content-accent-color));
+  filter: brightness(1.1);
+}
+
+.chatlink-dialog-buttons button:not(.primary) {
+  background: var(--in-content-button-background);
+  color: var(--in-content-button-color);
+  border: 1px solid var(--panel-separator-color);
+}
+
+.chatlink-dialog-buttons button:not(.primary):hover {
+  background: var(--in-content-button-background-hover);
+}
+
