@@ -263,12 +263,16 @@ function _getRetryConfig() {
  * Uses native search by headerMessageId to find entries regardless of folder path.
  * This handles cases where onDeleted event has stale/wrong folder info (common with Gmail/IMAP).
  *
+ * IMPORTANT: Before deleting a found entry, we verify the message is actually gone from that folder.
+ * This prevents incorrect deletion when a message exists in multiple Gmail virtual folders
+ * (e.g., "deleting" from INBOX just archives to All Mail, so we shouldn't delete the All Mail entry).
+ *
  * @param {string} originalKey - The original uniqueKey that was tried (accountId:folderPath:headerMessageId)
  * @param {Object} ftsSearch - The FTS search instance
  * @returns {Promise<{found: boolean, deletedKeys: string[]}>}
  */
 async function _tryFallbackDeletion(originalKey, ftsSearch) {
-  const { parseUniqueId } = await import("../agent/modules/utils.js");
+  const { parseUniqueId, headerIDToWeID } = await import("../agent/modules/utils.js");
   const parsed = parseUniqueId(originalKey);
   if (!parsed?.headerID || !parsed?.weFolder?.accountId) {
     return { found: false, deletedKeys: [] };
@@ -289,12 +293,45 @@ async function _tryFallbackDeletion(originalKey, ftsSearch) {
 
     log(`[TMDBG FTS] Found ${matchingKeys.length} FTS entries for headerMessageId ${headerID}: ${matchingKeys.join(', ')}`);
 
-    // Delete all matching entries (they all represent the same message in different folder paths)
+    // Check each found entry - only delete if message is actually gone from that folder
     const deletedKeys = [];
+    const skippedKeys = [];
     for (const key of matchingKeys) {
       // Skip the original key - it was already tried in the main deletion
       if (key === originalKey) continue;
 
+      // Parse the found key to get its folder path
+      const foundParsed = parseUniqueId(key);
+      if (!foundParsed?.weFolder) {
+        log(`[TMDBG FTS] Skipping unparseable found key: ${key}`, "warn");
+        continue;
+      }
+
+      const foundFolder = foundParsed.weFolder;
+
+      // CRITICAL: Check if the message still exists in the found folder
+      // If it does, we should NOT delete it from FTS (e.g., Gmail virtual folders)
+      try {
+        const weId = await headerIDToWeID(headerID, foundFolder, false);
+        if (weId) {
+          // Message still exists in this folder - do NOT delete from FTS
+          log(`[TMDBG FTS] Message still exists in ${foundFolder.path} (weId=${weId}), skipping FTS deletion`);
+          logFtsOperation("fallback_delete", "skipped", {
+            originalKey,
+            foundKey: key,
+            originalFolder,
+            foundFolder: foundFolder.path,
+            reason: "message_still_exists",
+          });
+          skippedKeys.push(key);
+          continue;
+        }
+      } catch (e) {
+        // If we can't verify, assume message is gone (conservative approach for actual deletions)
+        log(`[TMDBG FTS] Could not verify message existence in ${foundFolder.path}: ${e}`, "info");
+      }
+
+      // Message is gone from this folder - safe to delete from FTS
       try {
         await ftsSearch.removeBatch([key]);
 
@@ -315,6 +352,10 @@ async function _tryFallbackDeletion(originalKey, ftsSearch) {
       } catch (e) {
         log(`[TMDBG FTS] Error deleting found key ${key}: ${e}`, "warn");
       }
+    }
+
+    if (skippedKeys.length > 0) {
+      log(`[TMDBG FTS] Skipped ${skippedKeys.length} entries where message still exists in folder`);
     }
 
     return { found: deletedKeys.length > 0, deletedKeys };
