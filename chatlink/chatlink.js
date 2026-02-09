@@ -1,38 +1,41 @@
 /**
- * ChatLink - WhatsApp Messaging Bridge for TabMail Chat
+ * ChatLink - WhatsApp Messaging Bridge for TabMail Chat (Chat Window Side)
  *
- * Connects to Supabase Realtime to receive messages from WhatsApp,
- * feeds them into the chat system, and relays responses back.
+ * This module runs in the chat window context. The background script maintains
+ * the Realtime WebSocket connection and forwards messages here for processing.
+ *
+ * Flow:
+ * 1. Background receives message via Supabase Realtime
+ * 2. Background forwards to chat window via runtime.sendMessage
+ * 3. This module processes the message through converse.js
+ * 4. Response is relayed back to WhatsApp via background → worker
  *
  * Thunderbird 145 MV3 WebExtension
  */
 
 import { log } from "../agent/modules/utils.js";
-import { ctx } from "./modules/context.js";
+import { ctx } from "../chat/modules/context.js";
+import { renderToPlainText } from "../chat/modules/helpers.js";
 
-// Supabase Realtime state
-let supabaseClient = null;
-let realtimeChannel = null;
-let isConnected = false;
+// Config
+const CHATLINK_CONFIG = {
+  workerUrl: "https://chatlink-dev.tabmail.ai",
+};
 
 // ChatLink state
 let chatLinkEnabled = false;
 let linkedPlatform = null;
-let userId = null;
-
-// Config (loaded from settings or defaults)
-const CHATLINK_CONFIG = {
-  supabaseUrl: "https://rnclwzcuplqlasphskuc.supabase.co",
-  // chatlink-dev.tabmail.ai for dev, chatlink.tabmail.ai for prod
-  workerUrl: "https://chatlink-dev.tabmail.ai",
-};
 
 /**
- * Initialize ChatLink module.
- * Call this after user is authenticated and chat is ready.
+ * Initialize ChatLink module in chat window.
+ * Sets up message listener and processes any pending messages.
  */
 export async function initChatLink() {
   try {
+    // Always set up listener first (before async storage check) to avoid race conditions
+    browser.runtime.onMessage.addListener(handleBackgroundMessage);
+    log(`[ChatLink] Message listener registered`);
+
     // Check if ChatLink is enabled
     const stored = await browser.storage.local.get([
       "chatlink_enabled",
@@ -46,122 +49,91 @@ export async function initChatLink() {
       return;
     }
 
-    log(`[ChatLink] Initializing for platform: ${linkedPlatform}`);
+    log(`[ChatLink] Initializing chat window integration for ${linkedPlatform}`);
 
-    // Connect to Supabase Realtime
-    await connectRealtime();
+    // Check for pending message (set by background when chat window was closed)
+    await processPendingMessage();
+
+    log(`[ChatLink] Chat window integration ready`);
   } catch (e) {
     log(`[ChatLink] Init failed: ${e}`, "error");
   }
 }
 
 /**
- * Connect to Supabase Realtime channel for receiving messages.
+ * Handle message from background script
  */
-async function connectRealtime() {
+function handleBackgroundMessage(message, sender, sendResponse) {
+  if (message.type === "chatlink_inbound") {
+    log(`[ChatLink] Received inbound message from background`);
+    // Process the inbound WhatsApp message
+    handleInboundMessage(message.message).catch(e => {
+      log(`[ChatLink] Failed to handle inbound message: ${e}`, "error");
+    });
+    return true; // Async response
+  }
+  return false;
+}
+
+/**
+ * Process any pending message stored by background
+ */
+async function processPendingMessage() {
   try {
-    // Get session from auth module
-    const { getSession } = await import("../agent/modules/supabaseAuth.js");
-    const session = await getSession();
+    const stored = await browser.storage.local.get(["chatlink_pending_message"]);
+    const pending = stored.chatlink_pending_message;
 
-    if (!session?.access_token) {
-      log(`[ChatLink] No session, cannot connect to Realtime`);
-      return;
+    if (pending && pending.text) {
+      log(`[ChatLink] Found pending message: ${pending.text.substring(0, 50)}...`);
+
+      // Clear the pending message
+      await browser.storage.local.remove(["chatlink_pending_message"]);
+
+      // Process it
+      await handleInboundMessage(pending);
     }
-
-    // Decode JWT to get user ID
-    try {
-      const payload = JSON.parse(atob(session.access_token.split(".")[1]));
-      userId = payload.sub;
-    } catch {
-      log(`[ChatLink] Failed to decode JWT`, "error");
-      return;
-    }
-
-    // Use Supabase client from CDN (loaded in chat.html)
-    if (!window.supabase) {
-      log(`[ChatLink] Supabase client not loaded`, "error");
-      return;
-    }
-
-    supabaseClient = window.supabase.createClient(
-      CHATLINK_CONFIG.supabaseUrl,
-      // Use anon key for Realtime (it will use the JWT for auth)
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJuY2x3emN1cGxxbGFzcGhza3VjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mzc4MjM3NzQsImV4cCI6MjA1MzM5OTc3NH0.k-Jj4-VZv2b89Mj9wA8tQ4kGQwF3fYvNxLRRGlbPPpM",
-      {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
-        global: {
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
-        },
-      }
-    );
-
-    // Subscribe to user's ChatLink channel
-    const channelName = `chatlink:${userId}`;
-    log(`[ChatLink] Subscribing to channel: ${channelName}`);
-
-    realtimeChannel = supabaseClient
-      .channel(channelName, {
-        config: { presence: { key: userId } },
-      })
-      .on("broadcast", { event: "message" }, handleInboundMessage)
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") {
-          isConnected = true;
-          log(`[ChatLink] Connected to Realtime channel`);
-
-          // Track presence to signal TB is online
-          realtimeChannel.track({ online: true, connected_at: Date.now() });
-        } else if (status === "CHANNEL_ERROR") {
-          isConnected = false;
-          log(`[ChatLink] Realtime connection error`, "error");
-        } else if (status === "CLOSED") {
-          isConnected = false;
-          log(`[ChatLink] Realtime channel closed`);
-        }
-      });
   } catch (e) {
-    log(`[ChatLink] Failed to connect Realtime: ${e}`, "error");
+    log(`[ChatLink] Failed to process pending message: ${e}`, "warn");
   }
 }
 
 /**
- * Handle inbound message from external platform (via Supabase Realtime broadcast).
+ * Handle inbound message from WhatsApp (via background)
  */
-async function handleInboundMessage(event) {
+async function handleInboundMessage(message) {
   try {
-    const payload = event.payload;
-    const { id, text, platform, platform_chat_id, timestamp, callback_data } =
-      payload;
+    const { id, text, platform, platformChatId, timestamp, callbackData } = message;
 
-    log(
-      `[ChatLink] Received message from ${platform}: ${text.substring(0, 50)}...`
-    );
+    log(`[ChatLink] Processing message from ${platform}: ${text.substring(0, 50)}...`);
 
     // Store source info in ctx for response routing
     ctx.chatLinkSource = {
       source: "chatlink",
       replyTo: id,
       platform,
-      platformChatId: platform_chat_id,
-      callbackData: callback_data,
+      platformChatId,
+      callbackData,
       timestamp,
     };
 
-    // Import processUserInput dynamically to avoid circular dependency
-    const { processUserInput } = await import("./modules/converse.js");
+    // Import UI functions dynamically to avoid circular dependency
+    const { createNewUserBubble } = await import("../chat/chat.js");
+    const { processUserInput } = await import("../chat/modules/converse.js");
 
-    // Feed into converse.js - this creates DOM bubbles and processes through LLM
+    // Create user bubble in chat UI (matching normal input flow)
+    createNewUserBubble(text);
+
+    // Set chat mode to stop (matching normal input flow)
+    if (window.setChatMode) {
+      window.setChatMode("stop");
+    }
+
+    // Process through LLM
     await processUserInput(text, {
       source: "chatlink",
       replyTo: id,
       platform,
-      platformChatId: platform_chat_id,
+      platformChatId,
     });
   } catch (e) {
     log(`[ChatLink] Failed to handle inbound message: ${e}`, "error");
@@ -187,6 +159,9 @@ export async function relayResponse(assistantText, options = {}) {
   const { buttons, fsmPid, isIntermediate } = options;
 
   try {
+    // Render markdown and resolve entity references (reuses FTS chat history rendering)
+    const resolvedText = await renderToPlainText(assistantText);
+
     // Get access token
     const { getAccessToken } = await import("../agent/modules/supabaseAuth.js");
     const accessToken = await getAccessToken();
@@ -204,7 +179,7 @@ export async function relayResponse(assistantText, options = {}) {
       },
       body: JSON.stringify({
         reply_to: replyTo,
-        text: assistantText,
+        text: resolvedText,
         platform,
         platform_chat_id: platformChatId,
         buttons: buttons || null,
@@ -241,63 +216,42 @@ export async function relayFsmPrompt(text, buttons, fsmPid) {
 }
 
 /**
- * Disconnect from Realtime (cleanup).
+ * Cleanup on chat window close
  */
 export async function disconnectChatLink() {
   try {
-    if (realtimeChannel && supabaseClient) {
-      await supabaseClient.removeChannel(realtimeChannel);
-      realtimeChannel = null;
-    }
-    isConnected = false;
+    browser.runtime.onMessage.removeListener(handleBackgroundMessage);
     ctx.chatLinkSource = null;
-    log(`[ChatLink] Disconnected`);
+    log(`[ChatLink] Chat window integration disconnected`);
   } catch (e) {
     log(`[ChatLink] Disconnect error: ${e}`, "warn");
   }
 }
 
 /**
- * Check if ChatLink is currently connected.
+ * Check if ChatLink is enabled
  */
 export function isChatLinkConnected() {
-  return isConnected && chatLinkEnabled;
+  return chatLinkEnabled;
 }
 
 /**
- * Get ChatLink status for UI.
+ * Get ChatLink status for UI
  */
-export function getChatLinkStatus() {
+export async function getChatLinkStatus() {
+  const stored = await browser.storage.local.get([
+    "chatlink_enabled",
+    "chatlink_platform",
+    "chatlink_connection_status",
+    "chatlink_connection_error",
+  ]);
+
   return {
-    enabled: chatLinkEnabled,
-    platform: linkedPlatform,
-    connected: isConnected,
+    enabled: stored.chatlink_enabled === true,
+    platform: stored.chatlink_platform || null,
+    connectionStatus: stored.chatlink_connection_status || "disconnected",
+    connectionError: stored.chatlink_connection_error || null,
   };
-}
-
-/**
- * Enable ChatLink after linking.
- * Call this after user successfully links a platform.
- *
- * @param {string} platform - The platform that was linked (e.g., 'whatsapp')
- */
-export async function enableChatLink(platform) {
-  try {
-    await browser.storage.local.set({
-      chatlink_enabled: true,
-      chatlink_platform: platform,
-    });
-
-    chatLinkEnabled = true;
-    linkedPlatform = platform;
-
-    // Connect to Realtime
-    await connectRealtime();
-
-    log(`[ChatLink] Enabled for ${platform}`);
-  } catch (e) {
-    log(`[ChatLink] Failed to enable: ${e}`, "error");
-  }
 }
 
 // Privacy warning required at linking time (from CHAT_LINK.md Section 10)
@@ -352,6 +306,29 @@ export async function generateLinkingCode() {
 }
 
 /**
+ * Enable ChatLink after linking.
+ * Call this after user successfully links a platform.
+ *
+ * @param {string} platform - The platform that was linked (e.g., 'whatsapp')
+ */
+export async function enableChatLink(platform) {
+  try {
+    await browser.storage.local.set({
+      chatlink_enabled: true,
+      chatlink_platform: platform,
+    });
+
+    chatLinkEnabled = true;
+    linkedPlatform = platform;
+
+    // Background script will automatically connect when it sees storage change
+    log(`[ChatLink] Enabled for ${platform}`);
+  } catch (e) {
+    log(`[ChatLink] Failed to enable: ${e}`, "error");
+  }
+}
+
+/**
  * Disable ChatLink after unlinking.
  */
 export async function disableChatLink() {
@@ -366,6 +343,7 @@ export async function disableChatLink() {
     chatLinkEnabled = false;
     linkedPlatform = null;
 
+    // Background script will automatically disconnect when it sees storage change
     log(`[ChatLink] Disabled`);
   } catch (e) {
     log(`[ChatLink] Failed to disable: ${e}`, "error");

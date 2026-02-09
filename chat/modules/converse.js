@@ -1023,7 +1023,7 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
 
     // ChatLink: Relay response to external platform if this was a ChatLink message
     if (ctx.chatLinkSource) {
-      import("../chatlink.js").then(({ relayResponse }) => {
+      import("../../chatlink/chatlink.js").then(({ relayResponse }) => {
         relayResponse(assistantText).catch(e =>
           log(`[CONVERSE] ChatLink relay failed (non-fatal): ${e}`, "warn")
         );

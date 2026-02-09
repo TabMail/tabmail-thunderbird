@@ -13,6 +13,7 @@ import { mergeIdMapFromHeadless, persistIdMapImmediate, remapUniqueId } from "./
 import { checkAndInsertWelcomeBack, initAndGreetUser, insertProactiveNudge } from "./modules/init.js";
 import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromContentEditable, initMentionAutocomplete } from "./modules/mentionAutocomplete.js";
 import { saveMetaImmediate, saveTurnsImmediate } from "./modules/persistentChatStore.js";
+import { initChatLink, disconnectChatLink } from "../chatlink/chatlink.js";
 import { addToolBubbleToGroup, cleanupToolGroups, isToolCollapseEnabled } from "./modules/toolCollapse.js";
 import { shutdownToolWebSocket } from "./modules/wsTools.js";
 
@@ -713,6 +714,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     // Clean up DOM event listeners
     cleanupChatDOMListeners();
 
+    // Clean up ChatLink Realtime connection
+    try {
+      disconnectChatLink();
+    } catch (_) {}
+
     // Clean up any active tool websocket
     try {
       shutdownToolWebSocket();
@@ -998,5 +1004,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   }
 
   // Once everything is set up, start the chat conversation
-  initAndGreetUser();
+  // Must await so context is ready before ChatLink processes pending messages
+  await initAndGreetUser();
+
+  // Initialize ChatLink for WhatsApp relay (if user has linked)
+  initChatLink().catch(e => log(`[TMDBG Chat] ChatLink init failed (non-fatal): ${e}`, "warn"));
 });

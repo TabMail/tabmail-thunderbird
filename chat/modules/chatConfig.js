@@ -1,6 +1,11 @@
 // chatConfig.js – Chat-only defaults and configuration (TB 140, MV3)
 
 export const CHAT_SETTINGS = {
+  // Chat window popup dimensions (shared across all chat window openers)
+  chatWindow: {
+    defaultWidth: 600,
+    defaultHeight: 800,
+  },
   // Streaming behavior for assistant bubbles in chat UI
   // streamMode: 'block' | 'line' | 'char'
   streamMode: 'block',

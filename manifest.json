@@ -17,7 +17,8 @@
     "theme/background.js",
     "agent/background.js",
     "compose/background.js",
-    "chat/background.js"
+    "chat/background.js",
+    "chatlink/background.js"
   ],
     "type": "module"
   },
@@ -70,7 +71,7 @@
     "<all_urls>"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.tabmail.ai wss://*.tabmail.ai"
   },
   "content_scripts": [
     {
@@ -273,6 +274,8 @@
         "marketplace/marketplace.css",
         "chat/chat.css",
         "chat/chat.js",
+        "chatlink/chatlink.js",
+        "chatlink/supabase.min.js",
         "fts/nativeEngine.js",
         "theme/experiments/tmTheme/theme.css",
         "theme/experiments/tmPreviewGate/previewGate.css",

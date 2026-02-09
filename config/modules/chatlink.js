@@ -14,31 +14,76 @@ let expiryInterval = null;
 let expiryEndTime = null;
 
 /**
- * Load ChatLink status and update UI
+ * Load ChatLink status and update UI.
+ * Fetches from backend to ensure accuracy, syncs to local storage.
  */
 export async function loadChatLinkStatus() {
   try {
+    // First check local storage for fast initial render
     const stored = await browser.storage.local.get([
       "chatlink_enabled",
       "chatlink_platform",
     ]);
 
-    const statusEl = $("whatsapp-status");
-    const btnEl = $("whatsapp-link-btn");
+    // Update UI from local storage first
+    updateChatLinkUI(stored.chatlink_enabled && stored.chatlink_platform === "whatsapp");
 
-    if (stored.chatlink_enabled && stored.chatlink_platform === "whatsapp") {
-      statusEl.textContent = "Connected";
-      statusEl.classList.add("connected");
-      btnEl.textContent = "Disconnect";
-      btnEl.classList.add("disconnect");
-    } else {
-      statusEl.textContent = "Not connected";
-      statusEl.classList.remove("connected");
-      btnEl.textContent = "Connect";
-      btnEl.classList.remove("disconnect");
+    // Then fetch from backend to ensure accuracy
+    const { getAccessToken } = await import("../../agent/modules/supabaseAuth.js");
+    const accessToken = await getAccessToken();
+
+    if (!accessToken) {
+      // Not logged in - can't check backend
+      return;
+    }
+
+    const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/link`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+
+      // Sync local storage with backend
+      if (data.linked) {
+        await browser.storage.local.set({
+          chatlink_enabled: true,
+          chatlink_platform: data.platform || "whatsapp",
+        });
+        updateChatLinkUI(true, data.phone_hint);
+      } else {
+        await browser.storage.local.set({
+          chatlink_enabled: false,
+          chatlink_platform: null,
+        });
+        updateChatLinkUI(false);
+      }
     }
   } catch (e) {
     console.error("[ChatLink Config] Failed to load status:", e);
+  }
+}
+
+/**
+ * Update ChatLink UI elements.
+ */
+function updateChatLinkUI(connected, phoneHint = null) {
+  const statusEl = $("whatsapp-status");
+  const btnEl = $("whatsapp-link-btn");
+
+  if (connected) {
+    statusEl.textContent = phoneHint ? `Connected (${phoneHint})` : "Connected";
+    statusEl.classList.add("connected");
+    btnEl.textContent = "Disconnect";
+    btnEl.classList.add("disconnect");
+  } else {
+    statusEl.textContent = "Not connected";
+    statusEl.classList.remove("connected");
+    btnEl.textContent = "Connect";
+    btnEl.classList.remove("disconnect");
   }
 }
 
@@ -142,6 +187,24 @@ export async function generateWhatsAppLinkCode() {
 
   } catch (e) {
     console.error("[ChatLink Config] Failed to generate code:", e);
+
+    // Handle "already_linked" - user is connected but local storage wasn't synced
+    if (e.message === "already_linked") {
+      // Sync local storage
+      await browser.storage.local.set({
+        chatlink_enabled: true,
+        chatlink_platform: "whatsapp",
+      });
+
+      // Update UI and close dialog
+      await loadChatLinkStatus();
+      hideWhatsAppDialog();
+
+      // Show success message (could use a toast, but alert works)
+      console.log("[ChatLink Config] Already connected - synced local state");
+      return;
+    }
+
     generateBtn.disabled = false;
     generateBtn.textContent = "Generate Code";
     messageEl.textContent = `Error: ${e.message}`;
@@ -205,15 +268,14 @@ export async function disconnectWhatsApp() {
 }
 
 /**
- * Handle WhatsApp connect/disconnect button click
+ * Handle WhatsApp connect/disconnect button click.
+ * Uses UI state (which is synced with backend) to determine action.
  */
 export async function handleWhatsAppButtonClick() {
-  const stored = await browser.storage.local.get([
-    "chatlink_enabled",
-    "chatlink_platform",
-  ]);
+  const btnEl = $("whatsapp-link-btn");
 
-  if (stored.chatlink_enabled && stored.chatlink_platform === "whatsapp") {
+  // Check if button shows "Disconnect" (means connected state)
+  if (btnEl.classList.contains("disconnect")) {
     // Already connected - disconnect
     if (confirm("Disconnect WhatsApp from TabMail?")) {
       await disconnectWhatsApp();

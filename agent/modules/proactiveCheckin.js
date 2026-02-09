@@ -7,6 +7,7 @@
 //   2. Due date/time approaching → alarm fires X minutes before → notify
 
 import { SETTINGS } from "./config.js";
+import { isChatWindowOpen, openOrFocusChatWindow } from "../../chat/modules/chatWindowUtils.js";
 import { hashReminder } from "./reminderStateStore.js";
 import { log } from "./utils.js";
 
@@ -194,24 +195,8 @@ async function _pruneReachedOutIds(activeReminders) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Chat window helpers
+// Chat window helpers (using shared utility from chatWindowUtils.js)
 // ─────────────────────────────────────────────────────────────
-
-async function _isChatWindowOpen() {
-  try {
-    const wins = await browser.windows.getAll({ populate: true });
-    for (const w of wins) {
-      if (w && Array.isArray(w.tabs)) {
-        if (w.tabs.some(t => t && typeof t.url === "string" && t.url.endsWith("/chat/chat.html"))) {
-          return true;
-        }
-      }
-    }
-  } catch (e) {
-    log(`[ProActReach] _isChatWindowOpen failed: ${e}`, "warn");
-  }
-  return false;
-}
 
 async function _openChatWindow() {
   if (_openingChatWindow) {
@@ -220,19 +205,8 @@ async function _openChatWindow() {
   }
   _openingChatWindow = true;
   try {
-    const url = browser.runtime.getURL("chat/chat.html");
-    const wins = await browser.windows.getAll({ populate: true });
-    for (const w of wins) {
-      if (w && Array.isArray(w.tabs)) {
-        if (w.tabs.some(t => t && typeof t.url === "string" && t.url.endsWith("/chat/chat.html"))) {
-          await browser.windows.update(w.id, { focused: true });
-          log(`[ProActReach] Focused existing chat window id=${w.id}`);
-          return;
-        }
-      }
-    }
-    await browser.windows.create({ url, type: "popup", width: 600, height: 800 });
-    log("[ProActReach] Opened new chat window for proactive message");
+    await openOrFocusChatWindow();
+    log("[ProActReach] Chat window opened/focused for proactive message");
   } catch (e) {
     log(`[ProActReach] Failed to open chat window: ${e}`, "error");
   } finally {
@@ -260,7 +234,7 @@ async function _storePendingMessage(message) {
 }
 
 async function _deliverMessage(message) {
-  const chatOpen = await _isChatWindowOpen();
+  const chatOpen = await isChatWindowOpen();
   if (chatOpen) {
     try {
       await browser.runtime.sendMessage({
