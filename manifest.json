@@ -49,6 +49,7 @@
     "tabs",
     "webNavigation",
     "compose",
+    "compose.send",
     "addressBooks",
     "accountsFolders",
     "scripting",
