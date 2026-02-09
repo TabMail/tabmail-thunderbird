@@ -27,6 +27,39 @@ let chatLinkEnabled = false;
 let linkedPlatform = null;
 
 /**
+ * Get or create a persistent device ID for this TB installation.
+ * Uses crypto.randomUUID() for cryptographically secure generation.
+ * Stored in browser.storage.local (extension-scoped, secure).
+ *
+ * This ID is used for multi-device detection, NOT authentication.
+ * JWT provides actual authentication for all API calls.
+ *
+ * @returns {Promise<string>} The device ID
+ */
+async function getDeviceId() {
+  try {
+    const stored = await browser.storage.local.get(["chatlink_device_id"]);
+
+    if (stored.chatlink_device_id) {
+      return stored.chatlink_device_id;
+    }
+
+    // Generate new cryptographically secure UUID
+    const deviceId = crypto.randomUUID();
+
+    // Persist for future sessions
+    await browser.storage.local.set({ chatlink_device_id: deviceId });
+
+    log(`[ChatLink] Generated new device ID: ${deviceId.substring(0, 8)}...`);
+    return deviceId;
+  } catch (e) {
+    log(`[ChatLink] Failed to get device ID: ${e}`, "warn");
+    // Fallback to session-only ID (less ideal but functional)
+    return crypto.randomUUID();
+  }
+}
+
+/**
  * Initialize ChatLink module in chat window.
  * Sets up message listener and processes any pending messages.
  */
@@ -362,12 +395,16 @@ export async function generateLinkingCode() {
       return { ok: false, error: "Not logged in" };
     }
 
+    // Get persistent device ID for multi-device detection
+    const deviceId = await getDeviceId();
+
     const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/link`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
       },
+      body: JSON.stringify({ device_id: deviceId }),
     });
 
     const data = await response.json();
