@@ -112,6 +112,10 @@ export const CHAT_SETTINGS = {
   // --- LLM retry behavior ---
   // Maximum retries when LLM returns empty response (typically indicates an error)
   llmEmptyResponseMaxRetries: 5,
+  // --- ChatLink headless compose ---
+  // When true, compose flows (new/reply/forward) show preview in chat and send
+  // programmatically without opening the compose window. For ChatLink/WhatsApp users.
+  headlessComposeEnabled: false,
 };
 
 
