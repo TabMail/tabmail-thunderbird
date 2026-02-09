@@ -6,6 +6,7 @@ import { parseVCardBasic } from "../modules/contacts.js";
 import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
 import { streamText } from "../modules/helpers.js";
+import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
 
 async function resolveAddressBookName(parentId) {
   try {
@@ -184,6 +185,13 @@ export async function runStateDeleteContactsList() {
   confirmBubble.classList.remove("loading");
   const bubbleText = "Should I go ahead and delete this contact?";
   streamText(confirmBubble, bubbleText);
+
+  // Relay confirmation to ChatLink (WhatsApp) if applicable
+  try {
+    await relayFsmConfirmation(`${assistantText}\n\n${bubbleText}`, "yes");
+  } catch (e) {
+    log(`[ContactsDelete] ChatLink relay failed (non-fatal): ${e}`, "warn");
+  }
 
   try {
     ctx.pendingSuggestion = "yes";

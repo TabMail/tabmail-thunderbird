@@ -5,6 +5,7 @@ import { createNewAgentBubble } from "../chat.js";
 import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
 import { formatTimestampForAgent, streamText } from "../modules/helpers.js";
+import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
 
 function formatEventDetailsForDisplay(details) {
   try {
@@ -108,6 +109,13 @@ export async function runStateDeleteCalendarEventList() {
   confirmBubble.classList.remove("loading");
   const bubbleText = "Should I go ahead and delete this calendar event?";
   streamText(confirmBubble, bubbleText);
+
+  // Relay confirmation to ChatLink (WhatsApp) if applicable
+  try {
+    await relayFsmConfirmation(`${assistantText}\n\n${bubbleText}`, "yes");
+  } catch (e) {
+    log(`[CalendarDelete] ChatLink relay failed (non-fatal): ${e}`, "warn");
+  }
 
   try {
     ctx.pendingSuggestion = "yes";

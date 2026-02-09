@@ -1,11 +1,11 @@
 /**
- * ChatLink - WhatsApp Messaging Bridge for TabMail Chat (Chat Window Side)
+ * ChatLink Core - WhatsApp Messaging Bridge for TabMail Chat
  *
  * This module runs in the chat window context. The background script maintains
- * the Realtime WebSocket connection and forwards messages here for processing.
+ * the WebSocket connection and forwards messages here for processing.
  *
  * Flow:
- * 1. Background receives message via Supabase Realtime
+ * 1. Background receives message via Durable Object WebSocket
  * 2. Background forwards to chat window via runtime.sendMessage
  * 3. This module processes the message through converse.js
  * 4. Response is relayed back to WhatsApp via background → worker
@@ -13,12 +13,12 @@
  * Thunderbird 145 MV3 WebExtension
  */
 
-import { log } from "../agent/modules/utils.js";
-import { ctx } from "../chat/modules/context.js";
-import { renderToPlainText } from "../chat/modules/helpers.js";
+import { log } from "../../agent/modules/utils.js";
+import { ctx } from "../../chat/modules/context.js";
+import { renderToPlainText } from "../../chat/modules/helpers.js";
 
 // Config
-const CHATLINK_CONFIG = {
+export const CHATLINK_CONFIG = {
   workerUrl: "https://chatlink-dev.tabmail.ai",
 };
 
@@ -102,9 +102,18 @@ async function processPendingMessage() {
  */
 async function handleInboundMessage(message) {
   try {
-    const { id, text, platform, platformChatId, timestamp, callbackData } = message;
+    log(`[ChatLink] handleInboundMessage received: ${JSON.stringify(message)}`);
 
-    log(`[ChatLink] Processing message from ${platform}: ${text.substring(0, 50)}...`);
+    // Handle both camelCase (from runtime.sendMessage) and snake_case (from pending storage)
+    const id = message.id;
+    const text = message.text;
+    const platform = message.platform;
+    const platformChatId = message.platformChatId || message.platform_chat_id;
+    const timestamp = message.timestamp;
+    const callbackData = message.callbackData || message.callback_data;
+
+    log(`[ChatLink] Processing message from ${platform}: ${text?.substring(0, 50)}...`);
+    log(`[ChatLink] Extracted: id=${id}, platform=${platform}, platformChatId=${platformChatId}`);
 
     // Store source info in ctx for response routing
     ctx.chatLinkSource = {
@@ -116,9 +125,19 @@ async function handleInboundMessage(message) {
       timestamp,
     };
 
+    log(`[ChatLink] Set chatLinkSource: ${JSON.stringify(ctx.chatLinkSource)}`);
+
+    // Clear any pending suggestion (from FSM confirmation prompts)
+    try {
+      ctx.pendingSuggestion = null;
+      if (window.tmHideSuggestion) {
+        window.tmHideSuggestion();
+      }
+    } catch (_) {}
+
     // Import UI functions dynamically to avoid circular dependency
-    const { createNewUserBubble } = await import("../chat/chat.js");
-    const { processUserInput } = await import("../chat/modules/converse.js");
+    const { createNewUserBubble } = await import("../../chat/chat.js");
+    const { processUserInput } = await import("../../chat/modules/converse.js");
 
     // Create user bubble in chat UI (matching normal input flow)
     createNewUserBubble(text);
@@ -127,6 +146,15 @@ async function handleInboundMessage(message) {
     if (window.setChatMode) {
       window.setChatMode("stop");
     }
+
+    // Clear the input box (in case there was text from suggestion)
+    try {
+      const input = document.getElementById("user-input");
+      if (input) {
+        input.value = "";
+        input.textContent = "";
+      }
+    } catch (_) {}
 
     // Process through LLM
     await processUserInput(text, {
@@ -151,19 +179,40 @@ async function handleInboundMessage(message) {
  * @param {boolean} options.isIntermediate - Whether this is an intermediate FSM message
  */
 export async function relayResponse(assistantText, options = {}) {
+  log(`[ChatLink] relayResponse called, chatLinkSource=${JSON.stringify(ctx.chatLinkSource)}`);
+
   if (!ctx.chatLinkSource) {
+    log(`[ChatLink] No chatLinkSource, skipping relay`);
     return; // Not a ChatLink message
   }
 
   const { replyTo, platform, platformChatId } = ctx.chatLinkSource;
   const { buttons, fsmPid, isIntermediate } = options;
 
+  log(`[ChatLink] Relay params: replyTo=${replyTo}, platform=${platform}, platformChatId=${platformChatId}`);
+
   try {
     // Render markdown and resolve entity references (reuses FTS chat history rendering)
     const resolvedText = await renderToPlainText(assistantText);
 
+    log(`[ChatLink] Resolved text length: ${resolvedText?.length || 0}, first 100 chars: ${(resolvedText || "").substring(0, 100)}`);
+
+    // Validate required fields before sending
+    if (!resolvedText) {
+      log(`[ChatLink] ERROR: resolvedText is empty/null`, "error");
+      return;
+    }
+    if (!platform) {
+      log(`[ChatLink] ERROR: platform is empty/null`, "error");
+      return;
+    }
+    if (!platformChatId) {
+      log(`[ChatLink] ERROR: platformChatId is empty/null`, "error");
+      return;
+    }
+
     // Get access token
-    const { getAccessToken } = await import("../agent/modules/supabaseAuth.js");
+    const { getAccessToken } = await import("../../agent/modules/supabaseAuth.js");
     const accessToken = await getAccessToken();
 
     if (!accessToken) {
@@ -171,21 +220,25 @@ export async function relayResponse(assistantText, options = {}) {
       return;
     }
 
+    const requestBody = {
+      reply_to: replyTo,
+      text: resolvedText,
+      platform,
+      platform_chat_id: platformChatId,
+      buttons: buttons || null,
+      fsm_pid: fsmPid || null,
+      is_intermediate: isIntermediate || false,
+    };
+
+    log(`[ChatLink] Sending to worker: ${JSON.stringify(requestBody).substring(0, 500)}`);
+
     const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/respond`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({
-        reply_to: replyTo,
-        text: resolvedText,
-        platform,
-        platform_chat_id: platformChatId,
-        buttons: buttons || null,
-        fsm_pid: fsmPid || null,
-        is_intermediate: isIntermediate || false,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -236,6 +289,13 @@ export function isChatLinkConnected() {
 }
 
 /**
+ * Check if current message is from ChatLink
+ */
+export function isChatLinkMessage() {
+  return !!ctx.chatLinkSource;
+}
+
+/**
  * Get ChatLink status for UI
  */
 export async function getChatLinkStatus() {
@@ -268,7 +328,7 @@ const CHATLINK_PRIVACY_WARNING = `ChatLink relays your messages between WhatsApp
  */
 export async function generateLinkingCode() {
   try {
-    const { getAccessToken } = await import("../agent/modules/supabaseAuth.js");
+    const { getAccessToken } = await import("../../agent/modules/supabaseAuth.js");
     const accessToken = await getAccessToken();
 
     if (!accessToken) {

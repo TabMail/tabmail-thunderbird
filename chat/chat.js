@@ -13,7 +13,7 @@ import { mergeIdMapFromHeadless, persistIdMapImmediate, remapUniqueId } from "./
 import { checkAndInsertWelcomeBack, initAndGreetUser, insertProactiveNudge } from "./modules/init.js";
 import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromContentEditable, initMentionAutocomplete } from "./modules/mentionAutocomplete.js";
 import { saveMetaImmediate, saveTurnsImmediate } from "./modules/persistentChatStore.js";
-import { initChatLink, disconnectChatLink } from "../chatlink/chatlink.js";
+import { initChatLink, disconnectChatLink } from "../chatlink/modules/core.js";
 import { addToolBubbleToGroup, cleanupToolGroups, isToolCollapseEnabled } from "./modules/toolCollapse.js";
 import { shutdownToolWebSocket } from "./modules/wsTools.js";
 

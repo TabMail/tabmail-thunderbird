@@ -9,6 +9,7 @@ import { getArchiveFolderForHeader, log } from "../../agent/modules/utils.js";
 
 import { createNewAgentBubble } from "../chat.js";
 import { awaitUserInput } from "../modules/converse.js";
+import { relayFsmConfirmation, buildEmailListSummary } from "../../chatlink/modules/fsm.js";
 
 export async function runStateArchiveListEmails() {
   const agentBubble = await createNewAgentBubble(
@@ -174,6 +175,17 @@ export async function runStateArchiveListEmails() {
     const bubbleText = "Should I go ahead and archive these emails?";
     streamText(confirmBubble, bubbleText);
     assistantText += bubbleText;
+
+    // Relay confirmation to ChatLink (WhatsApp) if applicable
+    try {
+      const emailSummary = buildEmailListSummary(archiveContextArray.map(e => ({
+        subject: e.subject,
+        from: e.from,
+      })));
+      await relayFsmConfirmation(`${emailSummary}\n\n${bubbleText}`, "yes");
+    } catch (e) {
+      log(`[ArchiveList] ChatLink relay failed (non-fatal): ${e}`, "warn");
+    }
 
     // Default confirmation suggestion
     try {

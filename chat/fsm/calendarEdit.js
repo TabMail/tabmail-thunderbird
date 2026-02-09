@@ -8,6 +8,7 @@ import {
   formatTimestampForAgent,
   streamText
 } from "../modules/helpers.js";
+import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
 
 async function formatEventDetailsForDisplay(details, editArgs) {
   try {
@@ -253,6 +254,13 @@ export async function runStateEditCalendarEventList() {
   const bubbleText =
     "Should I go ahead and apply these changes to the calendar event?";
   streamText(confirmBubble, bubbleText);
+
+  // Relay confirmation to ChatLink (WhatsApp) if applicable
+  try {
+    await relayFsmConfirmation(`${assistantText}\n\n${bubbleText}`, "yes");
+  } catch (e) {
+    log(`[CalendarEdit] ChatLink relay failed (non-fatal): ${e}`, "warn");
+  }
 
   try {
     ctx.pendingSuggestion = "yes";
