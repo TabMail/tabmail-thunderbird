@@ -269,6 +269,33 @@ export async function relayFsmPrompt(text, buttons, fsmPid) {
 }
 
 /**
+ * Relay a status message (thinking, tool activity) to WhatsApp.
+ * These are informational messages that don't expect a response.
+ * Uses italic formatting for subtle appearance.
+ *
+ * @param {string} statusText - The status message (e.g., "Thinking...", "Searching emails...")
+ * @returns {Promise<void>}
+ */
+export async function relayStatusMessage(statusText) {
+  if (!isChatLinkMessage()) {
+    return; // Not a ChatLink message
+  }
+
+  try {
+    // Format as italic for subtle appearance
+    const formattedText = `_${statusText}_`;
+
+    // Use isIntermediate: true so it doesn't clear the source
+    await relayResponse(formattedText, { isIntermediate: true });
+
+    log(`[ChatLink] Status relayed: ${statusText}`);
+  } catch (e) {
+    // Non-fatal - don't block UI for status relay failures
+    log(`[ChatLink] Status relay failed (non-fatal): ${e}`, "warn");
+  }
+}
+
+/**
  * Cleanup on chat window close
  */
 export async function disconnectChatLink() {

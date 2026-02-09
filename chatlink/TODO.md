@@ -1,22 +1,30 @@
 # ChatLink Implementation TODOs
 
-## Remaining Work
+## Completed
 
 ### Message Relay Improvements
 
-- [ ] **Relay tool/thinking messages for better feedback**
-  - Currently only final responses are relayed to WhatsApp
-  - Should relay intermediate "thinking" bubbles and tool execution status
-  - Provides better UX for users waiting on WhatsApp during long operations
-  - Consider throttling to avoid WhatsApp rate limits
+- [x] **Relay tool/thinking messages for better feedback**
+  - Relays "Thinking..." status when LLM is processing
+  - Relays tool execution status (e.g., "Searching emails...")
+  - Uses italic formatting for subtle appearance on WhatsApp
 
 ### Timeout Handling
 
-- [ ] **Set timeout for WhatsApp-initiated FSM tool calls (5 min max)**
-  - WhatsApp sessions can disconnect without notice
-  - FSM tools that await user confirmation should timeout gracefully
-  - After timeout, auto-cancel the FSM session and notify user
-  - Prevents zombie sessions waiting indefinitely for confirmation
+- [x] **Set timeout for WhatsApp-initiated FSM tool calls (5 min max)**
+  - FSM tools that await user confirmation timeout after 5 minutes (configurable)
+  - After timeout, auto-cancels the FSM session and notifies user
+  - Sends proper error to LLM so it knows user didn't respond
+  - Config: `CHAT_SETTINGS.chatLinkFsmTimeoutMs` (default: 300000ms)
+
+## Remaining Work
+
+### Device Linking
+
+- [ ] **Single WhatsApp number per TB instance enforcement**
+  - A single WhatsApp number should only be paired with one TB instance
+  - Attempting to link to a new device should warn user that previous link will disconnect
+  - Worker should track active device and invalidate old sessions on re-link
 
 ### Future Enhancements
 

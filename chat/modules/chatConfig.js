@@ -116,6 +116,11 @@ export const CHAT_SETTINGS = {
   // When true, compose flows (new/reply/forward) show preview in chat and send
   // programmatically without opening the compose window. For ChatLink/WhatsApp users.
   headlessComposeEnabled: false,
+  // --- ChatLink FSM timeout ---
+  // Timeout (ms) for FSM tools awaiting user confirmation via WhatsApp.
+  // After this time, the FSM session auto-cancels with a timeout message.
+  // Set to 0 to disable. Default: 5 minutes (300000ms)
+  chatLinkFsmTimeoutMs: 300000,
 };
 
 

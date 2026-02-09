@@ -277,6 +277,7 @@
         "chat/chat.js",
         "chatlink/modules/core.js",
         "chatlink/modules/fsm.js",
+        "chatlink/modules/fsmTimeout.js",
         "chatlink/modules/compose.js",
         "fts/nativeEngine.js",
         "theme/experiments/tmTheme/theme.css",

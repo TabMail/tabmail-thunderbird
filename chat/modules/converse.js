@@ -23,6 +23,8 @@ import { cleanupEvictedIds, collectTurnRefs, registerTurnRefs, unregisterTurnRef
 import { consumePendingNudge } from "./init.js";
 import { getPrivacyOptOutAllAiEnabled, PRIVACY_OPT_OUT_ERROR_MESSAGE } from "./privacySettings.js";
 import { finalizeToolGroup, isToolCollapseEnabled } from "./toolCollapse.js";
+import { isChatLinkMessage, relayStatusMessage } from "../../chatlink/modules/core.js";
+import { startFsmTimeout, clearFsmTimeout } from "../../chatlink/modules/fsm.js";
 
 /**
  * Update context usage display for conversation-specific token tracking
@@ -58,6 +60,14 @@ export async function awaitUserInput() {
     if (window.tmShowSuggestion) window.tmShowSuggestion();
     // Update retry button visibility based on canRetry state
     if (window.tmUpdateRetryVisibility) window.tmUpdateRetryVisibility();
+  } catch (_) {}
+
+  // Start FSM timeout for ChatLink sessions awaiting confirmation
+  try {
+    const pid = ctx.activePid || ctx.awaitingPid || 0;
+    if (pid && isChatLinkMessage()) {
+      startFsmTimeout(pid);
+    }
   } catch (_) {}
 }
 
@@ -145,6 +155,13 @@ export async function processUserInput(userText, options = {}) {
 
   // Determine pid early; pid>0 means this belongs to an FSM session
   const pid = ctx.awaitingPid || 0;
+
+  // Clear any FSM timeout since user has responded
+  try {
+    if (pid) {
+      clearFsmTimeout(pid);
+    }
+  } catch (_) {}
 
   // If pid is 0, this is a top-level conversation, simply head to
   // agentConverse with the txt message
@@ -373,10 +390,17 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
   
   // Reuse existing bubble on retries, create new one only on first attempt
   const agentBubble = existingBubble || await createNewAgentBubble("Thinking...");
-  
+
   if (!existingBubble) {
     try {
       agentBubble.classList.add("loading");
+    } catch (_) {}
+
+    // Relay thinking status to WhatsApp if applicable
+    try {
+      if (isChatLinkMessage()) {
+        relayStatusMessage("Thinking...").catch(() => {});
+      }
     } catch (_) {}
   }
 
@@ -405,7 +429,14 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
         bubble.classList.add("loading");
         bubble.classList.add("tool");  // Mark as tool bubble for styling
         serverToolBubbles.set(exec.execution_id, bubble);
-        
+
+        // Relay server-side tool status to WhatsApp if applicable
+        try {
+          if (isChatLinkMessage()) {
+            relayStatusMessage(exec.display_label).catch(() => {});
+          }
+        } catch (_) {}
+
         // Clear active tool call id after this bubble
         try {
           ctx.activeToolCallId = null;
@@ -504,7 +535,14 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
       // Show activity bubble for this tool
       const activity = await getToolActivityLabel(name, args);
       const toolBubble = await createNewAgentBubble(activity);
-      
+
+      // Relay tool activity status to WhatsApp if applicable
+      try {
+        if (isChatLinkMessage()) {
+          relayStatusMessage(activity).catch(() => {});
+        }
+      } catch (_) {}
+
       // Check if this is a server-side tool (shouldn't happen, but handle it)
       if (isServerSideTool(name)) {
         log(`[CONVERSE] Server-side tool ${name} in client-side execution (should not happen)`, "warn");

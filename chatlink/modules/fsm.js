@@ -11,6 +11,10 @@
 import { log } from "../../agent/modules/utils.js";
 import { ctx } from "../../chat/modules/context.js";
 import { relayFsmPrompt, isChatLinkMessage } from "./core.js";
+import { startFsmTimeout, clearFsmTimeout, clearAllFsmTimeouts } from "./fsmTimeout.js";
+
+// Re-export timeout functions for use by other modules
+export { startFsmTimeout, clearFsmTimeout, clearAllFsmTimeouts };
 
 /**
  * Relay an FSM confirmation prompt to WhatsApp with Yes/Cancel buttons.
