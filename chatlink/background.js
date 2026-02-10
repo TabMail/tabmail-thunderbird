@@ -75,6 +75,13 @@ async function handleMessage(data) {
         break;
 
       case "message":
+        // Check for disconnect event (sent when user sends STOP from WhatsApp)
+        if (parsed.message?.disconnect) {
+          log(`[ChatLink BG] Received disconnect event: ${parsed.message.disconnect_reason}`);
+          await handleRemoteDisconnect(parsed.message.disconnect_reason);
+          break;
+        }
+
         // Inbound message from WhatsApp
         if (parsed.message && parsed.message.text) {
           log(`[ChatLink BG] Received message: ${parsed.message.text.substring(0, 50)}...`);
@@ -147,6 +154,26 @@ async function openChatWindowWithMessage(message) {
 
   // Open the chat window - it will pick up the pending message on init
   await openOrFocusChatWindow();
+}
+
+/**
+ * Handle remote disconnect (user sent STOP from WhatsApp).
+ * Clears local state and closes WebSocket.
+ */
+async function handleRemoteDisconnect(reason) {
+  log(`[ChatLink BG] Remote disconnect: ${reason}`);
+
+  // Clear local ChatLink state
+  await browser.storage.local.set({
+    chatlink_enabled: false,
+    chatlink_platform: null,
+    chatlink_connection_status: "disconnected",
+  });
+
+  // Disconnect WebSocket (will not auto-reconnect since chatlink_enabled is now false)
+  disconnect();
+
+  log(`[ChatLink BG] ChatLink disabled due to remote disconnect`);
 }
 
 /**
