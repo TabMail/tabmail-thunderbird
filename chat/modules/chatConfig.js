@@ -1,6 +1,11 @@
 // chatConfig.js – Chat-only defaults and configuration (TB 140, MV3)
 
 export const CHAT_SETTINGS = {
+  // Chat window popup dimensions (shared across all chat window openers)
+  chatWindow: {
+    defaultWidth: 600,
+    defaultHeight: 800,
+  },
   // Streaming behavior for assistant bubbles in chat UI
   // streamMode: 'block' | 'line' | 'char'
   streamMode: 'block',
@@ -107,6 +112,15 @@ export const CHAT_SETTINGS = {
   // --- LLM retry behavior ---
   // Maximum retries when LLM returns empty response (typically indicates an error)
   llmEmptyResponseMaxRetries: 5,
+  // --- ChatLink headless compose ---
+  // When true, compose flows (new/reply/forward) show preview in chat and send
+  // programmatically without opening the compose window. For ChatLink/WhatsApp users.
+  headlessComposeEnabled: false,
+  // --- ChatLink FSM timeout ---
+  // Timeout (ms) for FSM tools awaiting user confirmation via WhatsApp.
+  // After this time, the FSM session auto-cancels with a timeout message.
+  // Set to 0 to disable. Default: 5 minutes (300000ms)
+  chatLinkFsmTimeoutMs: 300000,
 };
 
 

@@ -8,7 +8,7 @@ import { runStateDeleteCalendarEventExec, runStateDeleteCalendarEventList } from
 import { runStateEditCalendarEventExec, runStateEditCalendarEventList } from "./calendarEdit.js";
 import { runStateDeleteContactsExecute, runStateDeleteContactsList } from "./contactsDelete.js";
 import { runStateArchiveExecute, runStateArchiveListEmails } from "./emailArchive.js";
-import { runStateSendEmail } from "./emailCompose.js";
+import { runStateSendEmail, runStateSendEmailPreview, runStateSendEmailHeadless } from "./emailCompose.js";
 import { runStateDeleteExecute, runStateDeleteListEmails } from "./emailDelete.js";
 import { runStateExecFail, runStateExecSuccess } from "./fsmExec.js";
 
@@ -90,9 +90,15 @@ export async function executeAgentAction() {
     case "email_archive_execute":
       await runStateArchiveExecute();
       break;
-    // -------- Compose workflow states all end here now --------
+    // -------- Compose workflow states --------
     case "send_email":
       await runStateSendEmail();
+      break;
+    case "send_email_preview":
+      await runStateSendEmailPreview();
+      break;
+    case "send_email_headless":
+      await runStateSendEmailHeadless();
       break;
     // -------- FSM terminal states --------
     case "exec_success":

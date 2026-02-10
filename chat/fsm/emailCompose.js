@@ -9,7 +9,13 @@ import { trackComposeWindow } from "../../agent/modules/composeTracker.js";
 import * as idb from "../../agent/modules/idbStorage.js";
 import { getIdentityForMessage, log } from "../../agent/modules/utils.js";
 import { ctx } from "../modules/context.js";
-import { initialiseEmailCompose } from "../modules/helpers.js";
+import { CHAT_SETTINGS } from "../modules/chatConfig.js";
+import { initialiseEmailCompose, streamText } from "../modules/helpers.js";
+import { createNewAgentBubble } from "../chat.js";
+import { awaitUserInput } from "../modules/converse.js";
+import { isChatLinkMessage } from "../../chatlink/modules/core.js";
+import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
+import { waitForComposeReady, setComposeBody, sendComposedEmail } from "../../chatlink/modules/compose.js";
 
 // ---------------------------------------------------------------------------
 // Shared validator/normalizer for recipients, cc, bcc lists used by tools
@@ -123,6 +129,15 @@ export async function validateAndNormalizeRecipientSets(
 // send_email – open compose window and wait until closed
 // ---------------------------------------------------------------------------
 export async function runStateSendEmail() {
+  // Check for headless compose mode (ChatLink users bypass compose window)
+  const useHeadless = CHAT_SETTINGS.headlessComposeEnabled || isChatLinkMessage();
+  if (useHeadless) {
+    log(`[Compose/send_email] Headless mode detected, redirecting to preview`);
+    ctx.state = "send_email_preview";
+    import("./core.js").then((m) => m.executeAgentAction());
+    return;
+  }
+
   // Bubble update hidden for this state.
   // const agentBubble = await createNewAgentBubble("Sending email…");
 
@@ -405,6 +420,323 @@ export async function runStateSendEmail() {
   } else {
     // Non-FSM path should NEVER happen
     log(`[Compose/send_email] Non-FSM path should NEVER happen`, "error");
+    ctx.state = "exec_fail";
+    import("./core.js").then((m) => m.executeAgentAction());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// send_email_preview – show email preview in chat for headless compose mode
+// ---------------------------------------------------------------------------
+export async function runStateSendEmailPreview() {
+  const agentBubble = await createNewAgentBubble("Preparing email preview...");
+
+  try {
+    const draft = ctx.composeDraft || {};
+    const pid = ctx.activePid || ctx.activeToolCallId || 0;
+
+    // Build recipients display
+    const toList = (draft.recipients || []).map((r) => r.name ? `${r.name} <${r.email}>` : r.email);
+    const ccList = (draft.cc || []).map((r) => r.name ? `${r.name} <${r.email}>` : r.email);
+    const bccList = (draft.bcc || []).map((r) => r.name ? `${r.name} <${r.email}>` : r.email);
+
+    // Build preview text
+    const previewLines = [];
+
+    // Type indicator
+    if (draft.replyToId) {
+      previewLines.push("📧 **Reply**");
+    } else if (draft.forwardOfId) {
+      previewLines.push("📧 **Forward**");
+    } else {
+      previewLines.push("📧 **New Email**");
+    }
+    previewLines.push("");
+
+    // Recipients
+    if (toList.length > 0) {
+      previewLines.push(`**To:** ${toList.join(", ")}`);
+    }
+    if (ccList.length > 0) {
+      previewLines.push(`**Cc:** ${ccList.join(", ")}`);
+    }
+    if (bccList.length > 0) {
+      previewLines.push(`**Bcc:** ${bccList.join(", ")}`);
+    }
+
+    // Subject
+    if (draft.subject) {
+      previewLines.push(`**Subject:** ${draft.subject}`);
+    }
+
+    previewLines.push("");
+
+    // Body preview (truncate if too long for WhatsApp)
+    const maxBodyLength = 1000;
+    let bodyPreview = draft.body || "(no content)";
+    if (bodyPreview.length > maxBodyLength) {
+      bodyPreview = bodyPreview.substring(0, maxBodyLength) + "...";
+    }
+    previewLines.push(bodyPreview);
+
+    const previewText = previewLines.join("\n");
+
+    // Display preview in chat bubble
+    agentBubble.classList.remove("loading");
+    streamText(agentBubble, previewText);
+
+    // Show confirmation prompt
+    const confirmBubble = await createNewAgentBubble("Thinking...");
+    confirmBubble.classList.remove("loading");
+    const confirmText = "Would you like me to send this email?";
+    streamText(confirmBubble, confirmText);
+
+    // Relay to ChatLink (WhatsApp) with Send/Cancel buttons
+    try {
+      // For WhatsApp, format as plain text (no markdown)
+      const plainPreviewLines = [];
+      if (draft.replyToId) {
+        plainPreviewLines.push("📧 Reply");
+      } else if (draft.forwardOfId) {
+        plainPreviewLines.push("📧 Forward");
+      } else {
+        plainPreviewLines.push("📧 New Email");
+      }
+      plainPreviewLines.push("");
+      if (toList.length > 0) {
+        plainPreviewLines.push(`To: ${toList.join(", ")}`);
+      }
+      if (ccList.length > 0) {
+        plainPreviewLines.push(`Cc: ${ccList.join(", ")}`);
+      }
+      if (draft.subject) {
+        plainPreviewLines.push(`Subject: ${draft.subject}`);
+      }
+      plainPreviewLines.push("");
+      plainPreviewLines.push(bodyPreview);
+      plainPreviewLines.push("");
+      plainPreviewLines.push(confirmText);
+
+      await relayFsmConfirmation(plainPreviewLines.join("\n"), "send");
+    } catch (e) {
+      log(`[Compose/preview] ChatLink relay failed (non-fatal): ${e}`, "warn");
+    }
+
+    // Set suggestion for desktop UI
+    try {
+      ctx.pendingSuggestion = "send";
+      if (window.tmShowSuggestion) window.tmShowSuggestion();
+    } catch (_) {}
+
+    // Store pid for the headless send state
+    if (pid && ctx.fsmSessions[pid]) {
+      ctx.fsmSessions[pid].headlessComposeReady = true;
+    }
+
+    // Wait for user input
+    awaitUserInput();
+
+  } catch (e) {
+    log(`[Compose/preview] Failed to build preview: ${e}`, "error");
+    agentBubble.classList.remove("loading");
+    streamText(agentBubble, "Failed to prepare email preview.");
+
+    // Mark as failed
+    try {
+      const pid = ctx.activePid || ctx.activeToolCallId || 0;
+      if (pid && ctx.fsmSessions[pid]) {
+        ctx.fsmSessions[pid].failReason = `Preview failed: ${e}`;
+      }
+    } catch (_) {}
+
+    ctx.state = "exec_fail";
+    import("./core.js").then((m) => m.executeAgentAction());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// send_email_headless – programmatically create, set content, and send email
+// ---------------------------------------------------------------------------
+export async function runStateSendEmailHeadless() {
+  const agentBubble = await createNewAgentBubble("Sending email...");
+
+  try {
+    const draft = ctx.composeDraft || {};
+    const pid = ctx.activePid || ctx.activeToolCallId || 0;
+
+    // Determine plain-text preference
+    let isPlainTextPref = false;
+    try {
+      const accounts = await browser.accounts.list();
+      const defaultIdentity = accounts?.[0]?.identities?.[0] || null;
+      if (defaultIdentity && Object.prototype.hasOwnProperty.call(defaultIdentity, "composeHtml")) {
+        isPlainTextPref = !defaultIdentity.composeHtml;
+      }
+    } catch (e) {
+      log(`[Compose/headless] Failed to read accounts: ${e}`, "warn");
+    }
+
+    let tabId = null;
+
+    // Open compose window based on type (reply/forward/new)
+    if (draft.replyToId) {
+      log(`[Compose/headless] Opening reply compose for msgId ${draft.replyToId}`);
+
+      // Update reply cache for consistency
+      try {
+        const { getUniqueMessageKey } = await import("../../agent/modules/utils.js");
+        const { STORAGE_PREFIX, TS_PREFIX } = await import("../../agent/modules/replyGenerator.js");
+
+        const uniqueMessageKey = await getUniqueMessageKey(draft.replyToId);
+        if (uniqueMessageKey && draft.body) {
+          const replyKey = STORAGE_PREFIX + uniqueMessageKey;
+          const replyMetaKey = TS_PREFIX + uniqueMessageKey;
+          await idb.set({
+            [replyKey]: {
+              reply: draft.body,
+              ts: Date.now(),
+              source: "chat_headless",
+              directReplace: true,
+            },
+          });
+          await idb.set({ [replyMetaKey]: { ts: Date.now() } });
+        }
+      } catch (cacheErr) {
+        log(`[Compose/headless] Failed to update reply cache: ${cacheErr}`, "warn");
+      }
+
+      const identityInfo = await getIdentityForMessage(draft.replyToId);
+      const replyDetails = { isPlainText: isPlainTextPref };
+      if (identityInfo?.identityId) {
+        replyDetails.identityId = identityInfo.identityId;
+      }
+
+      const replyTab = await browser.compose.beginReply(draft.replyToId, "replyToAll", replyDetails);
+      tabId = typeof replyTab === "object" && replyTab !== null && "id" in replyTab ? replyTab.id : replyTab;
+
+    } else if (draft.forwardOfId) {
+      log(`[Compose/headless] Opening forward compose for msgId ${draft.forwardOfId}`);
+
+      const fwdIdentityInfo = await getIdentityForMessage(draft.forwardOfId);
+      const fwdDetails = { isPlainText: isPlainTextPref };
+      if (fwdIdentityInfo?.identityId) {
+        fwdDetails.identityId = fwdIdentityInfo.identityId;
+      }
+
+      const fwdTab = await browser.compose.beginForward(draft.forwardOfId, fwdDetails);
+      tabId = typeof fwdTab === "object" && fwdTab !== null && "id" in fwdTab ? fwdTab.id : fwdTab;
+
+    } else {
+      log(`[Compose/headless] Opening new compose`);
+
+      const details = {
+        to: (draft.recipients || []).map((r) => `${r.name} <${r.email}>`),
+        cc: (draft.cc || []).map((r) => `${r.name} <${r.email}>`),
+        bcc: (draft.bcc || []).map((r) => `${r.name} <${r.email}>`),
+        subject: draft.subject,
+        isPlainText: isPlainTextPref,
+      };
+      const newTab = await browser.compose.beginNew(details);
+      tabId = typeof newTab === "object" && newTab !== null && "id" in newTab ? newTab.id : newTab;
+    }
+
+    if (!tabId) {
+      throw new Error("Failed to open compose window");
+    }
+
+    log(`[Compose/headless] Compose window opened, tabId=${tabId}`);
+
+    // Wait for compose to be ready (especially for replies/forwards with quotes)
+    const isReplyOrForward = Boolean(draft.replyToId || draft.forwardOfId);
+    const readyResult = await waitForComposeReady(tabId, {
+      expectQuote: isReplyOrForward,
+      maxWaitMs: 10000,
+    });
+
+    if (!readyResult.ok) {
+      throw new Error(readyResult.error || "Compose window not ready");
+    }
+
+    log(`[Compose/headless] Compose ready, setting body`);
+
+    // Set recipients if needed (for replies/forwards where recipients were specified)
+    try {
+      const hasTo = Array.isArray(draft.recipients) && draft.recipients.length > 0;
+      const hasCc = Array.isArray(draft.cc) && draft.cc.length > 0;
+      const hasBcc = Array.isArray(draft.bcc) && draft.bcc.length > 0;
+
+      if (hasTo || hasCc || hasBcc || draft.subject) {
+        const update = {};
+        if (hasTo) update.to = draft.recipients.map((r) => `${r.name} <${r.email}>`);
+        if (hasCc) update.cc = draft.cc.map((r) => `${r.name} <${r.email}>`);
+        if (hasBcc) update.bcc = draft.bcc.map((r) => `${r.name} <${r.email}>`);
+        if (draft.subject && !draft.replyToId) update.subject = draft.subject;
+
+        if (Object.keys(update).length > 0) {
+          await browser.compose.setComposeDetails(tabId, update);
+          log(`[Compose/headless] Applied recipients/subject to compose`);
+        }
+      }
+    } catch (recErr) {
+      log(`[Compose/headless] Failed to set recipients: ${recErr}`, "warn");
+    }
+
+    // Set body content
+    if (draft.body) {
+      const bodyResult = await setComposeBody(tabId, draft.body, {
+        isReplyOrForward,
+      });
+      if (!bodyResult.ok) {
+        throw new Error(bodyResult.error || "Failed to set compose body");
+      }
+      log(`[Compose/headless] Body set successfully`);
+    }
+
+    // Send the email
+    log(`[Compose/headless] Sending email...`);
+    const sendResult = await sendComposedEmail(tabId, { mode: "sendNow" });
+
+    if (!sendResult.ok) {
+      throw new Error(sendResult.error || "Failed to send email");
+    }
+
+    log(`[Compose/headless] Email sent successfully, mode=${sendResult.mode}`);
+
+    // Update bubble with success message
+    agentBubble.classList.remove("loading");
+    streamText(agentBubble, "Email sent successfully.");
+
+    // Reset compose draft
+    initialiseEmailCompose();
+
+    // Move to success state
+    ctx.state = "exec_success";
+    import("./core.js").then((m) => m.executeAgentAction());
+
+  } catch (e) {
+    log(`[Compose/headless] Failed to send email: ${e}`, "error");
+
+    agentBubble.classList.remove("loading");
+    streamText(agentBubble, `Failed to send email: ${e.message || e}`);
+
+    // Clean up compose window if it was opened
+    // Note: sendComposedEmail should have closed it, but just in case
+    try {
+      // We don't have tabId in scope here after catch, so we can't close it
+      // The compose window will need to be closed manually if send failed mid-way
+    } catch (_) {}
+
+    // Reset compose draft
+    initialiseEmailCompose();
+
+    // Mark as failed
+    try {
+      const pid = ctx.activePid || ctx.activeToolCallId || 0;
+      if (pid && ctx.fsmSessions[pid]) {
+        ctx.fsmSessions[pid].failReason = `Headless send failed: ${e}`;
+      }
+    } catch (_) {}
+
     ctx.state = "exec_fail";
     import("./core.js").then((m) => m.executeAgentAction());
   }

@@ -4,6 +4,7 @@
 import { log } from "../agent/modules/utils.js";
 import { initFtsEngine } from "../fts/engine.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
+import { openOrFocusChatWindow } from "./modules/chatWindowUtils.js";
 import { handleMessageSelectionRequest, initMessageSelectionListener } from "./modules/messageSelection.js";
 
 // Navigation handlers for special TabMail links
@@ -168,31 +169,7 @@ async function handleOpenCalendarEvent(message) {
   }
 }
 
-async function openChatWindow() {
-  try {
-    const url = browser.runtime.getURL("chat/chat.html");
-    try {
-      const wins = await browser.windows.getAll({ populate: true });
-      for (const w of wins) {
-        if (w && Array.isArray(w.tabs)) {
-          const hasChat = w.tabs.some(t => t && typeof t.url === "string" && t.url.endsWith("/chat/chat.html"));
-          if (hasChat) {
-            await browser.windows.update(w.id, { focused: true });
-            log(`[TMDBG Chat] Focused existing chat window id=${w.id}`);
-            return;
-          }
-        }
-      }
-    } catch (e) {
-      log(`[TMDBG Chat] Failed to search existing chat windows: ${e}`, "warn");
-    }
-
-    await browser.windows.create({ url, type: "popup", width: 600, height: 800 });
-    log("[TMDBG Chat] Chat window opened.");
-  } catch (e) {
-    log(`[TMDBG Chat] Failed to open chat window: ${e}`, "error");
-  }
-}
+// openChatWindow is now imported from chatWindowUtils.js as openOrFocusChatWindow
 
 // FTS Initial Scan Management
 // Storage key for tracking initial scan completion
@@ -401,7 +378,7 @@ function setupRuntimeMessageListener() {
     // Only handle messages that are specifically for chat functionality
     if (message && message.command === "open-chat-window") {
       try {
-        openChatWindow(); // Don't await - fire and forget
+        openOrFocusChatWindow(); // Don't await - fire and forget
         return { ok: true };
       } catch (e) {
         log(`[Chat Background] Failed to open chat window: ${e}`, "error");
@@ -505,7 +482,7 @@ function setupChatHotkeyListener() {
     chatHotkeyListener = async () => {
       try {
         log("[TMDBG Chat] onChatHotkey event received – opening chat window");
-        await openChatWindow();
+        await openOrFocusChatWindow();
       } catch (e) {
         log(`[TMDBG Chat] Failed to handle chat hotkey: ${e}`, "error");
       }
@@ -534,7 +511,7 @@ function setupChatCommandsListener() {
       try {
         if (command === "open-chat-window") {
           log("[TMDBG Chat] commands.onCommand=open-chat-window – opening chat window");
-          await openChatWindow();
+          await openOrFocusChatWindow();
         }
       } catch (e) {
         log(`[TMDBG Chat] Failed handling commands.onCommand: ${e}`, "error");
@@ -548,6 +525,8 @@ function setupChatCommandsListener() {
 }
 
 setupChatCommandsListener();
+
+// NOTE: ChatLink Realtime connection is now handled in chatlink/background.js
 
 // --- Extension Install/Update Handler ---
 // Handle extension install/update to trigger initial FTS scan
@@ -626,7 +605,14 @@ if (typeof browser !== 'undefined' && browser.runtime) {
     } catch (e) {
       log(`Error during commands listener cleanup: ${e}`, "error");
     }
-    
+
+    try {
+      stopChatLinkPolling();
+      log("[TMDBG Chat] ChatLink background polling stopped");
+    } catch (e) {
+      log(`Error during ChatLink polling cleanup: ${e}`, "error");
+    }
+
     // Note: ID translation cache cleanup is handled per-chat-window in chat.js beforeunload
     // This ensures each window cleans up its own cache when closed
     log("[TMDBG Chat] Extension suspend cleanup completed");

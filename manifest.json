@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TabMail",
-  "version": "1.2.14",
+  "version": "1.3.0",
   "description": "TabMail extension for Thunderbird provides an AI assistant that helps the user manage their email and calendar through a natural, chat-based interface, with support for email indexing and autocomplete.",
   "browser_specific_settings": {
     "gecko": {
@@ -17,7 +17,8 @@
     "theme/background.js",
     "agent/background.js",
     "compose/background.js",
-    "chat/background.js"
+    "chat/background.js",
+    "chatlink/background.js"
   ],
     "type": "module"
   },
@@ -48,6 +49,7 @@
     "tabs",
     "webNavigation",
     "compose",
+    "compose.send",
     "addressBooks",
     "accountsFolders",
     "scripting",
@@ -70,7 +72,7 @@
     "<all_urls>"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.tabmail.ai wss://*.tabmail.ai"
   },
   "content_scripts": [
     {
@@ -273,6 +275,10 @@
         "marketplace/marketplace.css",
         "chat/chat.css",
         "chat/chat.js",
+        "chatlink/modules/core.js",
+        "chatlink/modules/fsm.js",
+        "chatlink/modules/fsmTimeout.js",
+        "chatlink/modules/compose.js",
         "fts/nativeEngine.js",
         "theme/experiments/tmTheme/theme.css",
         "theme/experiments/tmPreviewGate/previewGate.css",

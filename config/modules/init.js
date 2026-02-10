@@ -57,6 +57,16 @@ import {
     openWelcomeWizard,
     updateWelcomeStatusDisplay,
 } from "./welcomeWizard.js";
+import {
+    generateWhatsAppLinkCode,
+    handleWhatsAppButtonClick,
+    hideWhatsAppDialog,
+    loadChatLinkStatus,
+} from "./chatlink.js";
+import {
+    sendTestNudge,
+    updateChatlinkStatusDisplay,
+} from "./chatlinkDebug.js";
 
 export async function initConfigPage({
   SETTINGS,
@@ -417,8 +427,27 @@ export async function initConfigPage({
       await restartThunderbird();
     }
 
+    // ChatLink debug controls
+    if (e.target.id === "chatlink-test-nudge") {
+      await sendTestNudge(log);
+    }
+    if (e.target.id === "chatlink-refresh-status") {
+      await updateChatlinkStatusDisplay(log);
+    }
+
     // Prompt editors moved to dedicated prompts page (prompts/prompts.html)
     // Handlers for prompt save/reload/reset removed
+
+    // ChatLink / External Accounts
+    if (e.target.id === "whatsapp-link-btn") {
+      await handleWhatsAppButtonClick();
+    }
+    if (e.target.id === "whatsapp-generate-code-btn") {
+      await generateWhatsAppLinkCode();
+    }
+    if (e.target.id === "whatsapp-cancel-btn") {
+      hideWhatsAppDialog();
+    }
   };
   document.addEventListener("click", configDOMListeners.documentClickHandler);
 
@@ -439,8 +468,10 @@ export async function initConfigPage({
     updatePlaintextStatusUI(log),
     updateWelcomeStatusDisplay(log),
     updateDebugStatusDisplay(),
+    updateChatlinkStatusDisplay(log),
     loadWebSearchSettings(log),
     loadNotificationSettings(log),
+    loadChatLinkStatus(),
   ]);
 }
 

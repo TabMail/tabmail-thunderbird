@@ -179,39 +179,86 @@
     </section>
 
     <!-- ─── External Accounts ─── -->
-    <section id="external-accounts-settings" style="opacity: 0.4; pointer-events: none;">
-      <h3>External Accounts (coming soon)</h3>
+    <section id="external-accounts-settings">
+      <h3>External Accounts</h3>
 
-      <div class="field" style="margin-bottom: 8px;">
-        <label class="checkbox-option">
-          <input type="checkbox" disabled />
-          <span>Enable Slack connection</span>
-        </label>
-        <button disabled style="justify-self: end; opacity: 0.6;">Link with Slack</button>
+      <!-- WhatsApp (active) -->
+      <div class="chatlink-account-row" id="whatsapp-link-row">
+        <div class="chatlink-account-info">
+          <span class="chatlink-platform-name">WhatsApp</span>
+          <span id="whatsapp-status" class="chatlink-status">Not connected</span>
+        </div>
+        <button id="whatsapp-link-btn" class="chatlink-action-btn">Connect</button>
       </div>
 
-      <div class="field" style="margin-bottom: 8px;">
-        <label class="checkbox-option">
-          <input type="checkbox" disabled />
-          <span>Enable Discord connection</span>
-        </label>
-        <button disabled style="justify-self: end; opacity: 0.6;">Link with Discord</button>
+      <!-- WhatsApp linking dialog (hidden by default) -->
+      <div id="whatsapp-link-dialog" class="chatlink-dialog" style="display: none;">
+        <div class="chatlink-dialog-content">
+          <h4>Connect WhatsApp</h4>
+          <div id="whatsapp-privacy-warning" class="chatlink-privacy-warning">
+            <strong>⚠️ Privacy Notice</strong>
+            <p>ChatLink relays your messages between WhatsApp and Thunderbird. Your messages and TabMail's responses — which may include email content — pass through Meta's servers. Meta may store this data per their privacy policy. TabMail never stores your email content nor chat contents on our servers.</p>
+          </div>
+          <div id="whatsapp-link-instructions">
+            <p>To connect WhatsApp:</p>
+            <ol>
+              <li>Click "Generate Code" below</li>
+              <li>Send the code to the TabMail WhatsApp number (shown after generating)</li>
+              <li>You'll receive a confirmation message when connected</li>
+            </ol>
+          </div>
+          <div id="whatsapp-link-code-display" style="display: none;">
+            <p class="chatlink-send-label">Send this message to WhatsApp:</p>
+            <div id="whatsapp-phone-display" class="chatlink-phone-display">
+              <span id="whatsapp-phone-number">+1 236 983 4703</span>
+            </div>
+            <div class="chatlink-code-box">
+              <div class="chatlink-code-row">
+                <span id="whatsapp-link-code">START ------</span>
+                <button id="whatsapp-copy-btn" class="chatlink-copy-btn" title="Copy to clipboard">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </div>
+              <small>Expires in <span id="whatsapp-link-expires">5:00</span></small>
+            </div>
+            <p id="whatsapp-link-message" class="chatlink-hint-text">Or tap the button below to open WhatsApp directly</p>
+            <a id="whatsapp-link-wa-link" href="#" target="_blank" style="display: none;">Open in WhatsApp</a>
+          </div>
+          <div class="chatlink-dialog-buttons">
+            <button id="whatsapp-generate-code-btn" class="primary">Generate Code</button>
+            <button id="whatsapp-cancel-btn">Cancel</button>
+          </div>
+        </div>
       </div>
 
-      <div class="field" style="margin-bottom: 8px;">
-        <label class="checkbox-option">
-          <input type="checkbox" disabled />
-          <span>Enable Signal connection</span>
-        </label>
-        <button disabled style="justify-self: end; opacity: 0.6;">Link with Signal</button>
+      <!-- Telegram (coming soon) -->
+      <div class="chatlink-account-row chatlink-coming-soon">
+        <div class="chatlink-account-info">
+          <span class="chatlink-platform-name">Telegram</span>
+          <span class="chatlink-status coming-soon">Coming soon</span>
+        </div>
+        <button disabled class="chatlink-action-btn">Connect</button>
       </div>
 
-      <div class="field" style="margin-bottom: 8px;">
-        <label class="checkbox-option">
-          <input type="checkbox" disabled />
-          <span>Enable Telegram connection</span>
-        </label>
-        <button disabled style="justify-self: end; opacity: 0.6;">Link with Telegram</button>
+      <!-- Slack (coming soon) -->
+      <div class="chatlink-account-row chatlink-coming-soon">
+        <div class="chatlink-account-info">
+          <span class="chatlink-platform-name">Slack</span>
+          <span class="chatlink-status coming-soon">Coming soon</span>
+        </div>
+        <button disabled class="chatlink-action-btn">Connect</button>
+      </div>
+
+      <!-- Discord (coming soon) -->
+      <div class="chatlink-account-row chatlink-coming-soon">
+        <div class="chatlink-account-info">
+          <span class="chatlink-platform-name">Discord</span>
+          <span class="chatlink-status coming-soon">Coming soon</span>
+        </div>
+        <button disabled class="chatlink-action-btn">Connect</button>
       </div>
     </section>
 
@@ -787,6 +834,24 @@
       </div>
       <div class="field">
         <small>Use these controls to test the welcome wizard. "Clear First-Run Status" will reset the wizard so it appears again on next open.</small>
+      </div>
+    </section>
+
+    <section id="chatlink-debug-settings" class="debug-only" style="display: none;">
+      <h3>ChatLink (Debug)</h3>
+      <div class="field">
+        <label>ChatLink Status</label>
+        <div id="chatlink-debug-status">
+          <span id="chatlink-debug-icon">⏳</span>
+          <span id="chatlink-debug-text">Checking...</span>
+        </div>
+      </div>
+      <div class="row">
+        <button id="chatlink-test-nudge" title="Send a test proactive nudge to WhatsApp">Test Nudge</button>
+        <button id="chatlink-refresh-status" title="Refresh ChatLink connection status">Refresh Status</button>
+      </div>
+      <div class="field">
+        <small>Use "Test Nudge" to send a test proactive message to WhatsApp. This uses the exact same flow as real reminder nudges. ChatLink must be connected.</small>
       </div>
     </section>
 
