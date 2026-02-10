@@ -14,13 +14,9 @@
  */
 
 import { log } from "../../agent/modules/utils.js";
+import { getChatLinkUrl } from "./config.js";
 import { ctx } from "../../chat/modules/context.js";
 import { renderToPlainText } from "../../chat/modules/helpers.js";
-
-// Config
-export const CHATLINK_CONFIG = {
-  workerUrl: "https://chatlink-dev.tabmail.ai",
-};
 
 // ChatLink state
 let chatLinkEnabled = false;
@@ -265,7 +261,8 @@ export async function relayResponse(assistantText, options = {}) {
 
     log(`[ChatLink] Sending to worker: ${JSON.stringify(requestBody).substring(0, 500)}`);
 
-    const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/respond`, {
+    const workerUrl = await getChatLinkUrl();
+    const response = await fetch(`${workerUrl}/chatlink/respond`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -365,7 +362,8 @@ export async function relayProactiveMessage(text) {
     }
 
     // Send to worker - platform_chat_id will be looked up from user's link
-    const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/respond`, {
+    const workerUrl = await getChatLinkUrl();
+    const response = await fetch(`${workerUrl}/chatlink/respond`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -462,7 +460,8 @@ export async function generateLinkingCode() {
     // Get persistent device ID for multi-device detection
     const deviceId = await getDeviceId();
 
-    const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/link`, {
+    const workerUrl = await getChatLinkUrl();
+    const response = await fetch(`${workerUrl}/chatlink/link`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -4,11 +4,7 @@
  */
 
 import { $ } from "./dom.js";
-
-// ChatLink worker URL (matches chatlink.js)
-const CHATLINK_CONFIG = {
-  workerUrl: "https://chatlink-dev.tabmail.ai",
-};
+import { getChatLinkUrl } from "../../chatlink/modules/config.js";
 
 let expiryInterval = null;
 let expiryEndTime = null;
@@ -37,7 +33,8 @@ export async function loadChatLinkStatus() {
       return;
     }
 
-    const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/link`, {
+    const workerUrl = await getChatLinkUrl();
+    const response = await fetch(`${workerUrl}/chatlink/link`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -144,7 +141,8 @@ export async function generateWhatsAppLinkCode() {
       throw new Error("Not logged in. Please sign in first.");
     }
 
-    const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/link`, {
+    const workerUrl = await getChatLinkUrl();
+    const response = await fetch(`${workerUrl}/chatlink/link`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -242,7 +240,8 @@ export async function disconnectWhatsApp() {
 
     if (accessToken) {
       // Call the unlink endpoint
-      await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/link`, {
+      const workerUrl = await getChatLinkUrl();
+      await fetch(`${workerUrl}/chatlink/link`, {
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",

@@ -7,7 +7,7 @@
  * Background context avoids CSP restrictions that affect extension pages.
  *
  * Flow:
- * 1. Connect to ChatLink worker via WebSocket (wss://chatlink-dev.tabmail.ai/ws)
+ * 1. Connect to ChatLink worker via WebSocket (dev: wss://chatlink-dev.tabmail.ai/ws, prod: wss://chatlink.tabmail.ai/ws)
  * 2. Authenticate with Supabase JWT token
  * 3. Receive broadcast messages from ChatLink worker
  * 4. Forward to chat window (if open) or open chat window
@@ -16,11 +16,11 @@
  */
 
 import { log } from "../agent/modules/utils.js";
+import { getChatLinkUrl } from "./modules/config.js";
 import { isChatWindowOpen, openOrFocusChatWindow } from "../chat/modules/chatWindowUtils.js";
 
 // Config
 const CHATLINK_CONFIG = {
-  workerUrl: "https://chatlink-dev.tabmail.ai",
   pingIntervalMs: 30000, // Send ping every 30 seconds
   reconnectDelayMs: 5000, // Reconnect after 5 seconds on disconnect
 };
@@ -159,7 +159,8 @@ async function fetchAndProcessPendingMessages() {
 
     if (!accessToken) return;
 
-    const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/pending`, {
+    const workerUrl = await getChatLinkUrl();
+    const response = await fetch(`${workerUrl}/chatlink/pending`, {
       method: "GET",
       headers: { Authorization: `Bearer ${accessToken}` },
     });
@@ -179,7 +180,7 @@ async function fetchAndProcessPendingMessages() {
     }
 
     // Clear pending after processing
-    await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/pending`, {
+    await fetch(`${workerUrl}/chatlink/pending`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${accessToken}` },
     });
@@ -240,8 +241,9 @@ async function connect() {
   log(`[ChatLink BG] Connecting to WebSocket for user ${userId?.substring(0, 8)}...`);
   updateConnectionStatus("connecting");
 
-  // Build WebSocket URL with token for auth
-  const wsUrl = `wss://chatlink-dev.tabmail.ai/ws?token=${encodeURIComponent(accessToken)}`;
+  // Build WebSocket URL with token for auth (convert https:// to wss://)
+  const workerUrl = await getChatLinkUrl();
+  const wsUrl = `${workerUrl.replace("https://", "wss://")}/ws?token=${encodeURIComponent(accessToken)}`;
 
   try {
     socket = new WebSocket(wsUrl);
