@@ -1278,28 +1278,91 @@ section > div[style*="background-color"] {
   margin-bottom: 4px;
 }
 
+.chatlink-send-label {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0 0 12px 0;
+  color: var(--in-content-text-color);
+}
+
+.chatlink-phone-display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+#whatsapp-phone-number {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--in-content-text-color);
+  letter-spacing: 1px;
+}
+
 .chatlink-code-box {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 20px;
+  gap: 10px;
+  padding: 16px 20px;
   background: var(--in-content-box-background);
-  border: 2px dashed var(--panel-separator-color);
+  border: 1px solid var(--panel-separator-color);
   border-radius: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+}
+
+.chatlink-code-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 #whatsapp-link-code {
   font-family: monospace;
-  font-size: 32px;
+  font-size: 24px;
   font-weight: 700;
-  letter-spacing: 6px;
+  letter-spacing: 3px;
   color: var(--in-content-accent-color);
+  user-select: all;
+}
+
+.chatlink-copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: var(--in-content-button-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--in-content-text-color);
+  transition: all 0.15s ease;
+}
+
+.chatlink-copy-btn:hover {
+  background: var(--in-content-button-background-hover);
+  border-color: var(--in-content-accent-color);
+}
+
+.chatlink-copy-btn.copied {
+  background: var(--in-content-accent-color);
+  border-color: var(--in-content-accent-color);
+  color: white;
 }
 
 .chatlink-code-box small {
   color: var(--in-content-deemphasized-text);
+  font-size: 12px;
+}
+
+.chatlink-hint-text {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: var(--in-content-deemphasized-text);
+  text-align: center;
 }
 
 #whatsapp-link-message {
@@ -1309,17 +1372,19 @@ section > div[style*="background-color"] {
 
 #whatsapp-link-wa-link {
   display: inline-block;
-  padding: 8px 16px;
-  background: #25d366;
+  padding: 10px 20px;
+  background: var(--in-content-accent-color);
   color: white;
   text-decoration: none;
   border-radius: 6px;
   font-weight: 500;
-  margin-top: 8px;
+  font-size: 14px;
+  margin-top: 4px;
+  transition: filter 0.15s ease;
 }
 
 #whatsapp-link-wa-link:hover {
-  background: #1ebe5d;
+  filter: brightness(1.1);
 }
 
 .chatlink-dialog-buttons {

@@ -8,6 +8,7 @@ import { getChatLinkUrl } from "../../chatlink/modules/config.js";
 
 let expiryInterval = null;
 let expiryEndTime = null;
+let linkPollInterval = null;
 
 /**
  * Load ChatLink status and update UI.
@@ -92,6 +93,8 @@ export function showWhatsAppDialog() {
   const codeDisplay = $("whatsapp-link-code-display");
   const instructions = $("whatsapp-link-instructions");
   const generateBtn = $("whatsapp-generate-code-btn");
+  const messageEl = $("whatsapp-link-message");
+  const copyBtn = $("whatsapp-copy-btn");
 
   // Reset state
   codeDisplay.style.display = "none";
@@ -99,6 +102,11 @@ export function showWhatsAppDialog() {
   generateBtn.style.display = "inline-block";
   generateBtn.disabled = false;
   generateBtn.textContent = "Generate Code";
+  messageEl.style.color = "";
+
+  // Reset copy button
+  copyBtn.classList.remove("copied");
+  copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
 
   dialog.style.display = "block";
 }
@@ -115,6 +123,12 @@ export function hideWhatsAppDialog() {
     clearInterval(expiryInterval);
     expiryInterval = null;
   }
+
+  // Clear link poll timer
+  if (linkPollInterval) {
+    clearInterval(linkPollInterval);
+    linkPollInterval = null;
+  }
 }
 
 /**
@@ -128,6 +142,9 @@ export async function generateWhatsAppLinkCode() {
   const expiresEl = $("whatsapp-link-expires");
   const messageEl = $("whatsapp-link-message");
   const waLinkEl = $("whatsapp-link-wa-link");
+  const phoneEl = $("whatsapp-phone-number");
+  const phoneDisplayEl = $("whatsapp-phone-display");
+  const copyBtn = $("whatsapp-copy-btn");
 
   generateBtn.disabled = true;
   generateBtn.textContent = "Generating...";
@@ -156,24 +173,45 @@ export async function generateWhatsAppLinkCode() {
       throw new Error(data.error || data.message || "Failed to generate code");
     }
 
-    // Show the code
-    codeEl.textContent = data.code;
+    // Store full message for copy functionality
+    const fullMessage = `START ${data.code}`;
+
+    // Show the full START CODE message
+    codeEl.textContent = fullMessage;
     instructions.style.display = "none";
     codeDisplay.style.display = "block";
     generateBtn.style.display = "none";
 
-    // Show instructions with phone number if available
+    // Show phone number prominently
     if (data.wa_phone_display) {
-      messageEl.innerHTML = `Send <strong>START ${data.code}</strong> to <strong>${data.wa_phone_display}</strong> on WhatsApp`;
+      phoneEl.textContent = data.wa_phone_display;
+      phoneDisplayEl.style.display = "flex";
+      messageEl.textContent = "Or tap the button below to open WhatsApp directly";
     } else {
+      phoneDisplayEl.style.display = "none";
       messageEl.textContent = data.instructions;
     }
+
+    // Set up copy button
+    copyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(fullMessage);
+        copyBtn.classList.add("copied");
+        // Show checkmark briefly
+        copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+        setTimeout(() => {
+          copyBtn.classList.remove("copied");
+          copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
+        }, 1500);
+      } catch (err) {
+        console.error("[ChatLink Config] Copy failed:", err);
+      }
+    };
 
     // Show wa.me link if available
     if (data.wa_link) {
       waLinkEl.href = data.wa_link;
       waLinkEl.style.display = "inline-block";
-      waLinkEl.textContent = "Open in WhatsApp";
     } else {
       waLinkEl.style.display = "none";
     }
@@ -182,6 +220,9 @@ export async function generateWhatsAppLinkCode() {
     expiryEndTime = Date.now() + (data.expires_in * 1000);
     updateExpiryDisplay(expiresEl);
     expiryInterval = setInterval(() => updateExpiryDisplay(expiresEl), 1000);
+
+    // Start polling for link completion (every 3 seconds)
+    startLinkPolling(accessToken);
 
   } catch (e) {
     console.error("[ChatLink Config] Failed to generate code:", e);
@@ -226,7 +267,63 @@ function updateExpiryDisplay(expiresEl) {
     expiryInterval = null;
     expiresEl.textContent = "Expired";
     expiresEl.style.color = "var(--tag-tm-delete)";
+
+    // Stop polling when code expires
+    if (linkPollInterval) {
+      clearInterval(linkPollInterval);
+      linkPollInterval = null;
+    }
   }
+}
+
+/**
+ * Start polling for link completion.
+ * Checks every 3 seconds if the user has linked their WhatsApp.
+ */
+async function startLinkPolling(accessToken) {
+  // Clear any existing poll
+  if (linkPollInterval) {
+    clearInterval(linkPollInterval);
+  }
+
+  const pollForLink = async () => {
+    try {
+      const workerUrl = await getChatLinkUrl();
+      const response = await fetch(`${workerUrl}/chatlink/link`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+
+        if (data.linked) {
+          // Link successful! Update state and close dialog
+          console.log("[ChatLink Config] Link detected via polling");
+
+          await browser.storage.local.set({
+            chatlink_enabled: true,
+            chatlink_platform: data.platform || "whatsapp",
+          });
+
+          // Stop polling
+          clearInterval(linkPollInterval);
+          linkPollInterval = null;
+
+          // Update UI and close dialog
+          updateChatLinkUI(true, data.phone_hint);
+          hideWhatsAppDialog();
+        }
+      }
+    } catch (e) {
+      console.warn("[ChatLink Config] Poll error (non-fatal):", e);
+    }
+  };
+
+  // Poll every 3 seconds
+  linkPollInterval = setInterval(pollForLink, 3000);
 }
 
 /**
