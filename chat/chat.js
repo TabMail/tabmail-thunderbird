@@ -90,9 +90,12 @@ function updateRetryVisibility() {
 // Expose retry visibility update globally
 window.tmUpdateRetryVisibility = updateRetryVisibility;
 
+/**
+ * Stop the current chat execution.
+ */
 async function stopExecution() {
   log(`[TMDBG Chat] Stop execution requested`);
-  
+
   try {
     // Abort the current chat operation if it exists
     if (window.currentChatAbortController) {
@@ -101,7 +104,7 @@ async function stopExecution() {
     } else {
       log(`[TMDBG Chat] No active chat operation to abort`);
     }
-    
+
     // Clean up all pending operations
     try {
       // 1. Stop SSE tool listener if active
@@ -112,7 +115,7 @@ async function stopExecution() {
       } catch (e) {
         log(`[TMDBG Chat] Failed to stop SSE tool listener: ${e}`, "warn");
       }
-      
+
       // 2. Clean up all FSM waiters (resolve them with cancelled status)
       if (ctx && ctx.fsmWaiters && typeof ctx.fsmWaiters === "object") {
         const pids = Object.keys(ctx.fsmWaiters);
@@ -130,7 +133,7 @@ async function stopExecution() {
         }
         ctx.fsmWaiters = {};
       }
-      
+
       // 3. Remove all tool bubbles (both regular and server-side) with loading indicators
       const container = document.getElementById("chat-container");
       if (container) {
@@ -145,26 +148,26 @@ async function stopExecution() {
           }
         });
       }
-      
+
       // 4. Clear active tool call ids
       if (ctx) {
         ctx.activeToolCallId = null;
         ctx.activePid = null;
       }
-      
+
       // 5. Show system message that user stopped
       const systemBubble = appendSystemBubble(container);
       systemBubble.textContent = "User stopped execution";
       log(`[TMDBG Chat] Added 'User stopped' system message`);
-      
+
     } catch (cleanupError) {
       log(`[TMDBG Chat] Cleanup error: ${cleanupError}`, "error");
     }
-    
+
     // Reset to await user input
     setChatMode("send");
     awaitUserInput();
-    
+
     log(`[TMDBG Chat] Stop execution completed`);
   } catch (e) {
     log(`[TMDBG Chat] Error during stop execution: ${e}`, "error");
@@ -176,6 +179,7 @@ async function stopExecution() {
 
 
 window.setChatMode = setChatMode;
+window.getChatMode = () => chatMode;
 window.stopExecution = stopExecution;
 
 export function appendAgentBubble(
@@ -928,9 +932,9 @@ window.addEventListener("DOMContentLoaded", async () => {
           log(`[TMDBG Chat] Enter blocked - mention autocomplete is active`, "info");
           return; // Don't send message
         }
-        
+
         e.preventDefault();
-        
+
         // Handle retry mode - Enter on empty input triggers retry
         if (chatMode === "retry") {
           log(`[TMDBG Chat] Enter pressed in retry mode - triggering retry`, "info");
@@ -939,7 +943,7 @@ window.addEventListener("DOMContentLoaded", async () => {
           }
           return;
         }
-        
+
         if (chatMode !== "send") return;
         const txt = extractMarkdownFromContentEditable(textarea).trim();
         log(`[TMDBG Chat] Enter pressed, sending message: "${txt}"`, "info");
@@ -970,7 +974,7 @@ window.addEventListener("DOMContentLoaded", async () => {
         await stopExecution();
         return;
       }
-      
+
       if (chatMode === "retry") {
         // Retry button was clicked
         log(`[TMDBG Chat] Retry button clicked`, "info");
@@ -979,7 +983,7 @@ window.addEventListener("DOMContentLoaded", async () => {
         }
         return;
       }
-      
+
       if (chatMode !== "send") return;
       const txt = extractMarkdownFromContentEditable(textarea).trim();
       log(`[TMDBG Chat] Send button clicked, message: "${txt}"`, "info");

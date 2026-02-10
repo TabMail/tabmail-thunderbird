@@ -268,26 +268,29 @@ async function _getUserName() {
 /**
  * Format a due date label matching the welcome-back reminder card style.
  * Examples: "Today at 14:00", "Tomorrow", "Overdue (2 days)", "Due Mon, Nov 5 at 14:00"
+ * @param {string} dueDate - Date in YYYY-MM-DD format
+ * @param {string|null} dueTime - Optional time in HH:MM format
+ * @param {string|null} timezone - Optional IANA timezone (e.g., "America/Vancouver")
  */
-function _formatDueLabel(dueDate, dueTime) {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
+function _formatDueLabel(dueDate, dueTime, timezone) {
   const parts = dueDate.split("-");
   if (parts.length !== 3) return "";
   const year = parseInt(parts[0]);
   const month = parseInt(parts[1]) - 1;
   const day = parseInt(parts[2]);
-  const dueMidnight = new Date(year, month, day);
+
+  // Compute "today" and "tomorrow" in the reminder's timezone (or local if none)
+  const { todayMidnight, tomorrowMidnight, dueMidnight } = _getDateMidnightsInTimezone(
+    year, month, day, timezone
+  );
 
   const timeSuffix = dueTime ? ` at ${dueTime}` : "";
   const dueTs = dueMidnight.getTime();
-  const todayTs = today.getTime();
+  const todayTs = todayMidnight.getTime();
+  const tomorrowTs = tomorrowMidnight.getTime();
 
   if (dueTs === todayTs) return `Today${timeSuffix}`;
-  if (dueTs === tomorrow.getTime()) return `Tomorrow${timeSuffix}`;
+  if (dueTs === tomorrowTs) return `Tomorrow${timeSuffix}`;
 
   if (dueTs < todayTs) {
     const daysOverdue = Math.round((todayTs - dueTs) / 86400000);
@@ -298,10 +301,57 @@ function _formatDueLabel(dueDate, dueTime) {
   return `Due ${formatted}${timeSuffix}`;
 }
 
+/**
+ * Get midnight timestamps for today, tomorrow, and a specific date in a given timezone.
+ * This ensures "Today"/"Tomorrow" comparisons are correct when the reminder was
+ * created in a different timezone than the current local timezone.
+ */
+function _getDateMidnightsInTimezone(dueYear, dueMonth, dueDay, timezone) {
+  const now = new Date();
+
+  if (!timezone) {
+    // No timezone stored - use local time (legacy behavior)
+    const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrowMidnight = new Date(todayMidnight);
+    tomorrowMidnight.setDate(tomorrowMidnight.getDate() + 1);
+    const dueMidnight = new Date(dueYear, dueMonth, dueDay);
+    return { todayMidnight, tomorrowMidnight, dueMidnight };
+  }
+
+  // Get today's date components in the reminder's timezone
+  const tzFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  try {
+    // Parse "YYYY-MM-DD" format from en-CA locale
+    const todayInTz = tzFormatter.format(now);
+    const [tYear, tMonth, tDay] = todayInTz.split("-").map(Number);
+
+    // Create midnight timestamps (these are conceptual - we use them for comparison only)
+    const todayMidnight = new Date(tYear, tMonth - 1, tDay);
+    const tomorrowMidnight = new Date(tYear, tMonth - 1, tDay + 1);
+    const dueMidnight = new Date(dueYear, dueMonth, dueDay);
+
+    return { todayMidnight, tomorrowMidnight, dueMidnight };
+  } catch (e) {
+    // Invalid timezone - fall back to local time
+    log(`[ProActReach] Invalid timezone "${timezone}", falling back to local`, "warn");
+    const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrowMidnight = new Date(todayMidnight);
+    tomorrowMidnight.setDate(tomorrowMidnight.getDate() + 1);
+    const dueMidnight = new Date(dueYear, dueMonth, dueDay);
+    return { todayMidnight, tomorrowMidnight, dueMidnight };
+  }
+}
+
 function _buildNewReminderMessage(userName, reminder) {
   const isKB = reminder.source === "kb";
   const detail = reminder.content || (isKB ? "Check this reminder" : "Check this email");
-  const dueLabelText = reminder.dueDate ? _formatDueLabel(reminder.dueDate, reminder.dueTime) : "";
+  const dueLabelText = reminder.dueDate ? _formatDueLabel(reminder.dueDate, reminder.dueTime, reminder.timezone) : "";
   const dueLabel = dueLabelText ? `**${dueLabelText}** — ` : "";
   const emailRef = reminder.uniqueId ? ` — [Email](${reminder.uniqueId})` : "";
   const noun = isKB ? "reminder" : "email";
@@ -310,7 +360,7 @@ function _buildNewReminderMessage(userName, reminder) {
 
 function _buildNewRemindersMessage(userName, reminders) {
   const lines = reminders.map(r => {
-    const dueLabelText = r.dueDate ? _formatDueLabel(r.dueDate, r.dueTime) : "";
+    const dueLabelText = r.dueDate ? _formatDueLabel(r.dueDate, r.dueTime, r.timezone) : "";
     const dueLabel = dueLabelText ? `**${dueLabelText}** — ` : "";
     const emailRef = r.uniqueId ? ` — [Email](${r.uniqueId})` : "";
     return `- ${dueLabel}${r.content}${emailRef}`;
@@ -323,13 +373,13 @@ function _buildNewRemindersMessage(userName, reminders) {
 function _buildDueApproachingMessage(userName, reminders) {
   if (reminders.length === 1) {
     const r = reminders[0];
-    const dueLabel = _formatDueLabel(r.dueDate, r.dueTime);
+    const dueLabel = _formatDueLabel(r.dueDate, r.dueTime, r.timezone);
     const emailRef = r.uniqueId ? ` — [Email](${r.uniqueId})` : "";
     return `Hey ${userName}, you have a reminder coming up soon:\n\n**${dueLabel}**: ${r.content}${emailRef}`;
   }
 
   const lines = reminders.map(r => {
-    const dueLabel = _formatDueLabel(r.dueDate, r.dueTime);
+    const dueLabel = _formatDueLabel(r.dueDate, r.dueTime, r.timezone);
     const emailRef = r.uniqueId ? ` — [Email](${r.uniqueId})` : "";
     return `- **${dueLabel}**: ${r.content}${emailRef}`;
   });

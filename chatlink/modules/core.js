@@ -144,6 +144,15 @@ async function handleInboundMessage(message) {
     log(`[ChatLink] Processing message from ${platform}: ${text?.substring(0, 50)}...`);
     log(`[ChatLink] Extracted: id=${id}, platform=${platform}, platformChatId=${platformChatId}`);
 
+    // Check if agent is currently processing (in "stop" mode)
+    // If so, interrupt and process this new message instead
+    if (window.getChatMode && window.getChatMode() === "stop") {
+      log(`[ChatLink] Interrupt detected - agent is processing, stopping current execution`);
+      if (window.stopExecution) {
+        await window.stopExecution();
+      }
+    }
+
     // Store source info in ctx for response routing
     ctx.chatLinkSource = {
       source: "chatlink",

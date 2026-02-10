@@ -493,8 +493,10 @@ export async function runStateSendEmailPreview() {
 
     // Relay to ChatLink (WhatsApp) with Send/Cancel buttons
     try {
-      // For WhatsApp, format as plain text (no markdown)
+      // For WhatsApp, format as plain text (no markdown) with comprehensive recipient info
       const plainPreviewLines = [];
+
+      // Header with type
       if (draft.replyToId) {
         plainPreviewLines.push("📧 Reply");
       } else if (draft.forwardOfId) {
@@ -503,15 +505,57 @@ export async function runStateSendEmailPreview() {
         plainPreviewLines.push("📧 New Email");
       }
       plainPreviewLines.push("");
+
+      // Get From address (identity being used) - critical for multi-account users
+      try {
+        let fromAddress = null;
+        if (draft.replyToId) {
+          const identityInfo = await getIdentityForMessage(draft.replyToId);
+          if (identityInfo?.email) {
+            fromAddress = identityInfo.name
+              ? `${identityInfo.name} <${identityInfo.email}>`
+              : identityInfo.email;
+          }
+        } else if (draft.forwardOfId) {
+          const identityInfo = await getIdentityForMessage(draft.forwardOfId);
+          if (identityInfo?.email) {
+            fromAddress = identityInfo.name
+              ? `${identityInfo.name} <${identityInfo.email}>`
+              : identityInfo.email;
+          }
+        } else {
+          // New email - get default identity
+          const accounts = await browser.accounts.list();
+          const defaultIdentity = accounts?.[0]?.identities?.[0];
+          if (defaultIdentity?.email) {
+            fromAddress = defaultIdentity.name
+              ? `${defaultIdentity.name} <${defaultIdentity.email}>`
+              : defaultIdentity.email;
+          }
+        }
+        if (fromAddress) {
+          plainPreviewLines.push(`From: ${fromAddress}`);
+        }
+      } catch (fromErr) {
+        log(`[Compose/preview] Failed to get From address: ${fromErr}`, "warn");
+      }
+
+      // Recipients - show all fields including Bcc
       if (toList.length > 0) {
         plainPreviewLines.push(`To: ${toList.join(", ")}`);
       }
       if (ccList.length > 0) {
         plainPreviewLines.push(`Cc: ${ccList.join(", ")}`);
       }
+      if (bccList.length > 0) {
+        plainPreviewLines.push(`Bcc: ${bccList.join(", ")}`);
+      }
+
+      // Subject
       if (draft.subject) {
         plainPreviewLines.push(`Subject: ${draft.subject}`);
       }
+
       plainPreviewLines.push("");
       plainPreviewLines.push(bodyPreview);
       plainPreviewLines.push("");
