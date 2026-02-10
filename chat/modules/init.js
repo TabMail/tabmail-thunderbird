@@ -662,6 +662,20 @@ async function _insertNudge(meta, text, type) {
     saveMeta(meta);
 
     log(`[TMDBG Init] ${type} nudge inserted (ephemeral, not persisted)`);
+
+    // Relay proactive nudges to ChatLink (WhatsApp) if enabled
+    // Note: relayProactiveMessage checks storage directly, so no need for isChatLinkConnected()
+    if (type === "proactive") {
+      try {
+        const { relayProactiveMessage } = await import("../../chatlink/modules/core.js");
+        const relayed = await relayProactiveMessage(text);
+        if (relayed) {
+          log(`[TMDBG Init] Proactive nudge relayed to ChatLink`);
+        }
+      } catch (e) {
+        log(`[TMDBG Init] Failed to relay proactive nudge to ChatLink: ${e}`, "warn");
+      }
+    }
   } catch (e) {
     log(`[TMDBG Init] Failed to insert ${type} nudge: ${e}`, "error");
   } finally {

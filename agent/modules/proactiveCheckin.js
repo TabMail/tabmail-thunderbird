@@ -806,3 +806,28 @@ export function cleanupProactiveCheckin() {
 
   _isInitialized = false;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Debug: Test nudge (uses exact same flow as real nudges)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Send a test proactive nudge using the exact same flow as real nudges.
+ * Opens chat window, displays message, and relays to ChatLink if enabled.
+ *
+ * @returns {Promise<boolean>} True if delivered successfully
+ */
+export async function sendTestProactiveNudge() {
+  const testMessage = `🧪 **Test Nudge**\n\nThis is a test proactive message from TabMail.\n\nIf you see this in your chat window (and WhatsApp if connected), the nudge system is working correctly!\n\n_Sent at ${new Date().toLocaleTimeString()}_`;
+
+  log(`[ProActReach] Sending test nudge`);
+
+  try {
+    await _deliverMessage(testMessage);
+    log(`[ProActReach] Test nudge delivered`);
+    return true;
+  } catch (e) {
+    log(`[ProActReach] Test nudge failed: ${e}`, "error");
+    return false;
+  }
+}

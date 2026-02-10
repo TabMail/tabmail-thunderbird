@@ -329,6 +329,70 @@ export async function relayStatusMessage(statusText) {
 }
 
 /**
+ * Relay a proactive message (nudge) to WhatsApp.
+ * Used for reminders and other TB-initiated messages.
+ * Does NOT require an active chatLinkSource - the worker looks up the platform_chat_id.
+ *
+ * @param {string} text - The message text to send
+ * @returns {Promise<boolean>} True if sent successfully
+ */
+export async function relayProactiveMessage(text) {
+  try {
+    // Check storage directly (module state may not be initialized in all contexts)
+    const stored = await browser.storage.local.get(["chatlink_enabled", "chatlink_platform"]);
+    const isEnabled = stored.chatlink_enabled === true && stored.chatlink_platform === "whatsapp";
+
+    if (!isEnabled) {
+      log(`[ChatLink] Proactive relay skipped - not enabled (storage check)`);
+      return false;
+    }
+
+    const { getAccessToken } = await import("../../agent/modules/supabaseAuth.js");
+    const accessToken = await getAccessToken();
+
+    if (!accessToken) {
+      log(`[ChatLink] Proactive relay skipped - no access token`);
+      return false;
+    }
+
+    // Render markdown to plain text for WhatsApp
+    const { renderToPlainText } = await import("../../chat/modules/helpers.js");
+    const resolvedText = await renderToPlainText(text);
+
+    if (!resolvedText) {
+      log(`[ChatLink] Proactive relay skipped - empty text after render`);
+      return false;
+    }
+
+    // Send to worker - platform_chat_id will be looked up from user's link
+    const response = await fetch(`${CHATLINK_CONFIG.workerUrl}/chatlink/respond`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        text: resolvedText,
+        platform: "whatsapp",
+        // platform_chat_id intentionally omitted - worker looks it up
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      log(`[ChatLink] Proactive relay failed: HTTP ${response.status}: ${errorBody}`, "warn");
+      return false;
+    }
+
+    log(`[ChatLink] Proactive message relayed to WhatsApp`);
+    return true;
+  } catch (e) {
+    log(`[ChatLink] Proactive relay error: ${e}`, "warn");
+    return false;
+  }
+}
+
+/**
  * Cleanup on chat window close
  */
 export async function disconnectChatLink() {

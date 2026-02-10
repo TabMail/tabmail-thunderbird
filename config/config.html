@@ -825,6 +825,24 @@
       </div>
     </section>
 
+    <section id="chatlink-debug-settings" class="debug-only" style="display: none;">
+      <h3>ChatLink (Debug)</h3>
+      <div class="field">
+        <label>ChatLink Status</label>
+        <div id="chatlink-debug-status">
+          <span id="chatlink-debug-icon">⏳</span>
+          <span id="chatlink-debug-text">Checking...</span>
+        </div>
+      </div>
+      <div class="row">
+        <button id="chatlink-test-nudge" title="Send a test proactive nudge to WhatsApp">Test Nudge</button>
+        <button id="chatlink-refresh-status" title="Refresh ChatLink connection status">Refresh Status</button>
+      </div>
+      <div class="field">
+        <small>Use "Test Nudge" to send a test proactive message to WhatsApp. This uses the exact same flow as real reminder nudges. ChatLink must be connected.</small>
+      </div>
+    </section>
+
     <p id="status"></p>
   </div>
 
