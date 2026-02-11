@@ -387,11 +387,14 @@ function _buildDueApproachingMessage(userName, reminders) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Trigger 1: New Reminder Formed
+// Trigger 1: New Reminder Formed (MESSAGE reminders only)
+// KB reminders are excluded — they only notify via due_approaching.
 // ─────────────────────────────────────────────────────────────
 
 async function _handleNewReminders(reminders) {
-  log(`[ProActReach] Evaluating ${reminders.length} reminders for new-reminder reachout`);
+  // Note: This function receives only MESSAGE reminders (source !== "kb").
+  // KB reminders are filtered out by onInboxUpdated and only notify via alarm.
+  log(`[ProActReach] Evaluating ${reminders.length} message reminders for new-reminder reachout`);
 
   const windowDays = await _windowDays();
   const now = new Date();
@@ -732,29 +735,36 @@ export async function onInboxUpdated() {
     // Hash changed — persist new hash
     await browser.storage.local.set({ [STORAGE.REMINDER_HASH]: newHash });
 
-    // Only reply-tagged message reminders (and all KB reminders) are candidates.
-    // Messages classified as archive/delete/none should not trigger proactive reachout.
-    const candidateReminders = reminders.filter(r => {
+    // All reminders for alarm scheduling (both KB and message reminders)
+    const allCandidates = reminders.filter(r => {
       if (r.enabled === false) return false;
       if (r.source === "kb") return true;
       return r.action === "reply";
     });
 
-    // Prune orphaned reached_out entries
-    await _pruneReachedOutIds(candidateReminders);
+    // Only MESSAGE reminders trigger "new_reminder" nudges.
+    // KB reminders (user-created) should ONLY notify via "due_approaching" (near time).
+    const newReminderCandidates = allCandidates.filter(r => r.source !== "kb");
 
-    // Debounce
-    if (_debounceTimer) {
-      clearTimeout(_debounceTimer);
-      _debounceTimer = null;
+    // Prune orphaned reached_out entries (using all candidates)
+    await _pruneReachedOutIds(allCandidates);
+
+    // Debounce - only process message reminders for "new_reminder" nudge
+    if (newReminderCandidates.length > 0) {
+      if (_debounceTimer) {
+        clearTimeout(_debounceTimer);
+        _debounceTimer = null;
+      }
+
+      _debounceTimer = setTimeout(() => {
+        _debounceTimer = null;
+        _handleNewReminders(newReminderCandidates).catch(e => {
+          log(`[ProActReach] Debounced new-reminder handler failed: ${e}`, "warn");
+        });
+      }, _debounceMs());
+    } else {
+      log(`[ProActReach] No message reminders for new-reminder nudge (KB reminders only notify at due time)`);
     }
-
-    _debounceTimer = setTimeout(() => {
-      _debounceTimer = null;
-      _handleNewReminders(candidateReminders).catch(e => {
-        log(`[ProActReach] Debounced new-reminder handler failed: ${e}`, "warn");
-      });
-    }, _debounceMs());
 
     // Reschedule alarm for due-date-approaching trigger
     await _scheduleNextAlarm();
