@@ -256,6 +256,29 @@ export async function agentConverse(userText) {
       return;
     }
 
+    // Persist pending nudge first (if any). Nudges are only persisted once the user
+    // sends a message after them. Must happen BEFORE the JIT rebuild so the nudge
+    // is included in the LLM context.
+    try {
+      const pendingNudge = consumePendingNudge();
+      if (pendingNudge && ctx.persistedTurns && ctx.chatMeta) {
+        pendingNudge._refs = collectTurnRefs(pendingNudge);
+        registerTurnRefs(pendingNudge);
+        const { evictedTurns: nudgeEvicted } = await appendTurn(pendingNudge, ctx.persistedTurns, ctx.chatMeta);
+        if (nudgeEvicted?.length) {
+          cleanupEvictedIds(nudgeEvicted);
+          log(`[CONVERSE] Evicted ${nudgeEvicted.length} turns after nudge persist`);
+        }
+        log(`[CONVERSE] Persisted pending ${pendingNudge._type} nudge before user message`);
+        // Index nudge to FTS so it appears in chat history (fire-and-forget)
+        indexTurnToFTS(null, pendingNudge).catch(e =>
+          log(`[CONVERSE] FTS indexing of nudge failed (non-fatal): ${e}`, "warn")
+        );
+      }
+    } catch (e) {
+      log(`[CONVERSE] Failed to persist pending nudge: ${e}`, "warn");
+    }
+
     // JIT KB filter: rebuild agentConverseMessages from persistedTurns,
     // dropping prior-session turns already distilled into KB
     const sysMsg = ctx.agentConverseMessages[0];
@@ -337,28 +360,6 @@ export async function agentConverse(userText) {
     log(
       `[TMDBG Converse] Appended latest user message to message list (using @ mention system)`
     );
-
-    // Persist pending nudge first (if any). Nudges are only persisted once the user
-    // sends a message after them — at that point they're no longer trailing.
-    try {
-      const pendingNudge = consumePendingNudge();
-      if (pendingNudge && ctx.persistedTurns && ctx.chatMeta) {
-        pendingNudge._refs = collectTurnRefs(pendingNudge);
-        registerTurnRefs(pendingNudge);
-        const { evictedTurns: nudgeEvicted } = await appendTurn(pendingNudge, ctx.persistedTurns, ctx.chatMeta);
-        if (nudgeEvicted?.length) {
-          cleanupEvictedIds(nudgeEvicted);
-          log(`[CONVERSE] Evicted ${nudgeEvicted.length} turns after nudge persist`);
-        }
-        log(`[CONVERSE] Persisted pending ${pendingNudge._type} nudge before user message`);
-        // Index nudge to FTS so it appears in chat history (fire-and-forget)
-        indexTurnToFTS(null, pendingNudge).catch(e =>
-          log(`[CONVERSE] FTS indexing of nudge failed (non-fatal): ${e}`, "warn")
-        );
-      }
-    } catch (e) {
-      log(`[CONVERSE] Failed to persist pending nudge: ${e}`, "warn");
-    }
 
     // Persist user turn to storage
     // Generate _rendered for user messages that may contain [Email](N) @ mention refs
