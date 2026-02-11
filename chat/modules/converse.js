@@ -19,8 +19,10 @@ import {
   saveTurns,
   saveMeta,
 } from "./persistentChatStore.js";
-import { cleanupEvictedIds, collectTurnRefs, registerTurnRefs, unregisterTurnRefs } from "./idTranslator.js";
+import { cleanupEvictedIds, collectTurnRefs, registerTurnRefs, unregisterTurnRefs, processToolResultTBtoLLM } from "./idTranslator.js";
 import { consumePendingNudge } from "./init.js";
+import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { buildReminderList } from "../../agent/modules/reminderBuilder.js";
 import { getPrivacyOptOutAllAiEnabled, PRIVACY_OPT_OUT_ERROR_MESSAGE } from "./privacySettings.js";
 import { finalizeToolGroup, isToolCollapseEnabled } from "./toolCollapse.js";
 import { isChatLinkMessage, relayStatusMessage } from "../../chatlink/modules/core.js";
@@ -260,6 +262,37 @@ export async function agentConverse(userText) {
     const filtered = await filterAndConvertTurns(ctx.persistedTurns);
     ctx.agentConverseMessages = [sysMsg, ...filtered];
     const messages = ctx.agentConverseMessages;
+
+    // Refresh KB and reminders on every turn (ensures fresh context for all users)
+    try {
+      const freshKB = (await getUserKBPrompt()) || "";
+      if (freshKB !== sysMsg.user_kb_content) {
+        sysMsg.user_kb_content = freshKB;
+        log(`[TMDBG Converse] Refreshed KB content (${freshKB.length} chars)`);
+      }
+    } catch (e) {
+      log(`[TMDBG Converse] Failed to refresh KB (non-fatal): ${e}`, "warn");
+    }
+
+    try {
+      const { reminders } = await buildReminderList();
+      if (reminders && reminders.length > 0) {
+        let translatedReminders = reminders;
+        try {
+          translatedReminders = processToolResultTBtoLLM(reminders);
+        } catch (_) {}
+        const freshRemindersJson = JSON.stringify(translatedReminders);
+        if (freshRemindersJson !== sysMsg.user_reminders_json) {
+          sysMsg.user_reminders_json = freshRemindersJson;
+          log(`[TMDBG Converse] Refreshed reminders (${reminders.length} items)`);
+        }
+      } else if (sysMsg.user_reminders_json) {
+        sysMsg.user_reminders_json = "";
+        log(`[TMDBG Converse] Cleared stale reminders`);
+      }
+    } catch (e) {
+      log(`[TMDBG Converse] Failed to refresh reminders (non-fatal): ${e}`, "warn");
+    }
 
     // Track last user message for retry functionality
     ctx.lastUserMessage = userText;
