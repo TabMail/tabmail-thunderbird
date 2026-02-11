@@ -1045,7 +1045,38 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
       }
     }
 
-    // Append assistant to history only when there's no error
+    // ChatLink: Relay response to external platform BEFORE persistence
+    // If relay fails, remove bubble + skip persistence for chat history consistency
+    if (ctx.chatLinkSource) {
+      try {
+        const { relayResponse } = await import("../../chatlink/modules/core.js");
+        const relaySuccess = await relayResponse(assistantText);
+        if (!relaySuccess) {
+          // Relay failed - remove bubble, show error, skip persistence
+          log(`[CONVERSE] ChatLink relay failed - removing bubble and skipping persistence`);
+          try {
+            agentBubble.remove();
+          } catch (_) {}
+          const systemBubble = appendSystemBubble();
+          const bubbleContent = systemBubble.querySelector(".bubble-content") || systemBubble;
+          bubbleContent.textContent = "Failed to deliver response to WhatsApp. The message was not saved.";
+          ctx.chatLinkSource = null;
+          return;
+        }
+      } catch (e) {
+        log(`[CONVERSE] ChatLink relay exception: ${e}`, "error");
+        try {
+          agentBubble.remove();
+        } catch (_) {}
+        const systemBubble = appendSystemBubble();
+        const bubbleContent = systemBubble.querySelector(".bubble-content") || systemBubble;
+        bubbleContent.textContent = "Failed to deliver response to WhatsApp. The message was not saved.";
+        ctx.chatLinkSource = null;
+        return;
+      }
+    }
+
+    // Append assistant to history only when there's no error (and ChatLink relay succeeded if applicable)
     messages.push({ role: "assistant", content: assistantText });
 
     // Persist assistant turn to storage (with rendered HTML snapshot for instant replay)
@@ -1090,15 +1121,6 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
       indexTurnToFTS(ctx._lastPersistedUserTurn, assistantTurn).catch(e =>
         log(`[CONVERSE] FTS indexing failed (non-fatal): ${e}`, "warn")
       );
-    }
-
-    // ChatLink: Relay response to external platform if this was a ChatLink message
-    if (ctx.chatLinkSource) {
-      import("../../chatlink/modules/core.js").then(({ relayResponse }) => {
-        relayResponse(assistantText).catch(e =>
-          log(`[CONVERSE] ChatLink relay failed (non-fatal): ${e}`, "warn")
-        );
-      }).catch(() => {});
     }
 
     // Trigger periodic KB refinement (fire-and-forget, guards internally)

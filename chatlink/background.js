@@ -59,6 +59,16 @@ function sendPing() {
 }
 
 /**
+ * Send ACK for a received message
+ */
+function sendAck(messageId) {
+  if (socket && socket.readyState === WebSocket.OPEN && messageId) {
+    socket.send(JSON.stringify({ type: "ack", messageId }));
+    log(`[ChatLink BG] Sent ACK for message ${messageId.substring(0, 8)}...`);
+  }
+}
+
+/**
  * Handle incoming WebSocket message
  */
 async function handleMessage(data) {
@@ -70,8 +80,6 @@ async function handleMessage(data) {
         // Connection confirmed by server
         log(`[ChatLink BG] ✅ Connected as user ${parsed.userId?.substring(0, 8)}...`);
         updateConnectionStatus("connected");
-        // Fetch any pending messages that arrived while disconnected
-        fetchAndProcessPendingMessages();
         break;
 
       case "message":
@@ -82,7 +90,11 @@ async function handleMessage(data) {
           break;
         }
 
-        // Inbound message from WhatsApp
+        // Inbound message from WhatsApp - ACK immediately to confirm delivery
+        if (parsed.messageId) {
+          sendAck(parsed.messageId);
+        }
+
         if (parsed.message && parsed.message.text) {
           log(`[ChatLink BG] Received message: ${parsed.message.text.substring(0, 50)}...`);
           await handleInboundMessage(parsed.message);
@@ -174,46 +186,6 @@ async function handleRemoteDisconnect(reason) {
   disconnect();
 
   log(`[ChatLink BG] ChatLink disabled due to remote disconnect`);
-}
-
-/**
- * Fetch and process any pending messages (from when disconnected)
- */
-async function fetchAndProcessPendingMessages() {
-  try {
-    const { getAccessToken } = await import("../agent/modules/supabaseAuth.js");
-    const accessToken = await getAccessToken();
-
-    if (!accessToken) return;
-
-    const workerUrl = await getChatLinkUrl();
-    const response = await fetch(`${workerUrl}/chatlink/pending`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-
-    if (!response.ok) return;
-
-    const data = await response.json();
-
-    if (!data.ok || !data.messages || data.messages.length === 0) {
-      return;
-    }
-
-    log(`[ChatLink BG] Processing ${data.messages.length} pending message(s)`);
-
-    for (const msg of data.messages) {
-      await handleInboundMessage(msg);
-    }
-
-    // Clear pending after processing
-    await fetch(`${workerUrl}/chatlink/pending`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-  } catch (e) {
-    log(`[ChatLink BG] Pending fetch failed: ${e}`, "warn");
-  }
 }
 
 /**

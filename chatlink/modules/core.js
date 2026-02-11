@@ -215,13 +215,14 @@ async function handleInboundMessage(message) {
  * @param {Array<{label: string, data: string}>} options.buttons - FSM buttons
  * @param {string} options.fsmPid - FSM process ID
  * @param {boolean} options.isIntermediate - Whether this is an intermediate FSM message
+ * @returns {Promise<boolean>} True if relay succeeded, false otherwise
  */
 export async function relayResponse(assistantText, options = {}) {
   log(`[ChatLink] relayResponse called, chatLinkSource=${JSON.stringify(ctx.chatLinkSource)}`);
 
   if (!ctx.chatLinkSource) {
     log(`[ChatLink] No chatLinkSource, skipping relay`);
-    return; // Not a ChatLink message
+    return true; // Not a ChatLink message - considered success (nothing to relay)
   }
 
   const { replyTo, platform, platformChatId } = ctx.chatLinkSource;
@@ -238,15 +239,15 @@ export async function relayResponse(assistantText, options = {}) {
     // Validate required fields before sending
     if (!resolvedText) {
       log(`[ChatLink] ERROR: resolvedText is empty/null`, "error");
-      return;
+      return false;
     }
     if (!platform) {
       log(`[ChatLink] ERROR: platform is empty/null`, "error");
-      return;
+      return false;
     }
     if (!platformChatId) {
       log(`[ChatLink] ERROR: platformChatId is empty/null`, "error");
-      return;
+      return false;
     }
 
     // Get access token
@@ -255,7 +256,7 @@ export async function relayResponse(assistantText, options = {}) {
 
     if (!accessToken) {
       log(`[ChatLink] No access token, cannot relay response`);
-      return;
+      return false;
     }
 
     const requestBody = {
@@ -291,8 +292,11 @@ export async function relayResponse(assistantText, options = {}) {
     if (!isIntermediate) {
       ctx.chatLinkSource = null;
     }
+
+    return true;
   } catch (e) {
     log(`[ChatLink] Failed to relay response: ${e}`, "error");
+    return false;
   }
 }
 
