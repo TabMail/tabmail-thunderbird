@@ -1226,6 +1226,30 @@ section > div[style*="background-color"] {
   background: color-mix(in srgb, var(--tag-tm-delete) 10%, transparent);
 }
 
+/* ChatLink Relay Setting Row */
+.chatlink-relay-row {
+  padding: 8px 16px 12px 16px;
+  margin-top: -8px;
+  margin-bottom: 8px;
+  background: var(--in-content-page-background);
+  border: 1px solid var(--panel-separator-color);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+}
+
+.chatlink-relay-row small {
+  display: block;
+  margin-left: 24px;
+  margin-top: 4px;
+  color: var(--in-content-deemphasized-text);
+}
+
+/* Adjust the account row above relay setting to merge visually */
+#whatsapp-link-row.has-relay-setting {
+  border-radius: 8px 8px 0 0;
+  margin-bottom: 0;
+}
+
 /* ChatLink Dialog */
 .chatlink-dialog {
   margin-top: 16px;

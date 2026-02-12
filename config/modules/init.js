@@ -62,6 +62,7 @@ import {
     handleWhatsAppButtonClick,
     hideWhatsAppDialog,
     loadChatLinkStatus,
+    saveRelaySetting,
 } from "./chatlink.js";
 import {
     sendTestNudge,
@@ -206,6 +207,11 @@ export async function initConfigPage({
     // Auto-save address book selection
     if (e.target.id === "default-addressbook") {
       await saveAddressBookConfig();
+    }
+
+    // ChatLink relay proactive setting
+    if (e.target.id === "whatsapp-relay-proactive") {
+      await saveRelaySetting(e.target.checked);
     }
 
     // Keepalive is always-on, no manual configuration

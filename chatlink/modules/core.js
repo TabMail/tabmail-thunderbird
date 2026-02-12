@@ -349,11 +349,21 @@ export async function relayStatusMessage(statusText) {
 export async function relayProactiveMessage(text) {
   try {
     // Check storage directly (module state may not be initialized in all contexts)
-    const stored = await browser.storage.local.get(["chatlink_enabled", "chatlink_platform"]);
+    const stored = await browser.storage.local.get([
+      "chatlink_enabled",
+      "chatlink_platform",
+      "chatlink_relay_proactive",
+    ]);
     const isEnabled = stored.chatlink_enabled === true && stored.chatlink_platform === "whatsapp";
 
     if (!isEnabled) {
       log(`[ChatLink] Proactive relay skipped - not enabled (storage check)`);
+      return false;
+    }
+
+    // Check if relay for proactive messages is enabled (default: true)
+    if (stored.chatlink_relay_proactive === false) {
+      log(`[ChatLink] Proactive relay skipped - relay setting disabled`);
       return false;
     }
 

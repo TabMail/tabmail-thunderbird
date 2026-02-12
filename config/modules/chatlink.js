@@ -23,7 +23,7 @@ export async function loadChatLinkStatus() {
     ]);
 
     // Update UI from local storage first
-    updateChatLinkUI(stored.chatlink_enabled && stored.chatlink_platform === "whatsapp");
+    await updateChatLinkUI(stored.chatlink_enabled && stored.chatlink_platform === "whatsapp");
 
     // Then fetch from backend to ensure accuracy
     const { getAccessToken } = await import("../../agent/modules/supabaseAuth.js");
@@ -51,13 +51,13 @@ export async function loadChatLinkStatus() {
           chatlink_enabled: true,
           chatlink_platform: data.platform || "whatsapp",
         });
-        updateChatLinkUI(true, data.phone_hint);
+        await updateChatLinkUI(true, data.phone_hint);
       } else {
         await browser.storage.local.set({
           chatlink_enabled: false,
           chatlink_platform: null,
         });
-        updateChatLinkUI(false);
+        await updateChatLinkUI(false);
       }
     }
   } catch (e) {
@@ -68,20 +68,64 @@ export async function loadChatLinkStatus() {
 /**
  * Update ChatLink UI elements.
  */
-function updateChatLinkUI(connected, phoneHint = null) {
+async function updateChatLinkUI(connected, phoneHint = null) {
   const statusEl = $("whatsapp-status");
   const btnEl = $("whatsapp-link-btn");
+  const relayRow = $("whatsapp-relay-setting");
+  const linkRow = $("whatsapp-link-row");
 
   if (connected) {
     statusEl.textContent = phoneHint ? `Connected (${phoneHint})` : "Connected";
     statusEl.classList.add("connected");
     btnEl.textContent = "Disconnect";
     btnEl.classList.add("disconnect");
+
+    // Show relay setting and load current value
+    if (relayRow) {
+      relayRow.style.display = "block";
+      linkRow?.classList.add("has-relay-setting");
+      await loadRelaySetting();
+    }
   } else {
     statusEl.textContent = "Not connected";
     statusEl.classList.remove("connected");
     btnEl.textContent = "Connect";
     btnEl.classList.remove("disconnect");
+
+    // Hide relay setting when not connected
+    if (relayRow) {
+      relayRow.style.display = "none";
+      linkRow?.classList.remove("has-relay-setting");
+    }
+  }
+}
+
+/**
+ * Load and apply the relay proactive setting
+ */
+async function loadRelaySetting() {
+  const checkbox = $("whatsapp-relay-proactive");
+  if (!checkbox) return;
+
+  try {
+    const { chatlink_relay_proactive } = await browser.storage.local.get("chatlink_relay_proactive");
+    // Default to true if not set
+    checkbox.checked = chatlink_relay_proactive !== false;
+  } catch (e) {
+    console.error("[ChatLink Config] Failed to load relay setting:", e);
+    checkbox.checked = true; // Default to enabled
+  }
+}
+
+/**
+ * Save the relay proactive setting when checkbox changes
+ */
+export async function saveRelaySetting(enabled) {
+  try {
+    await browser.storage.local.set({ chatlink_relay_proactive: enabled });
+    console.log("[ChatLink Config] Relay setting saved:", enabled);
+  } catch (e) {
+    console.error("[ChatLink Config] Failed to save relay setting:", e);
   }
 }
 
@@ -313,7 +357,7 @@ async function startLinkPolling(accessToken) {
           linkPollInterval = null;
 
           // Update UI and close dialog
-          updateChatLinkUI(true, data.phone_hint);
+          await updateChatLinkUI(true, data.phone_hint);
           hideWhatsAppDialog();
         }
       }

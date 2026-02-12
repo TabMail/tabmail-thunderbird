@@ -191,6 +191,15 @@
         <button id="whatsapp-link-btn" class="chatlink-action-btn">Connect</button>
       </div>
 
+      <!-- WhatsApp relay setting (only shown when connected) -->
+      <div id="whatsapp-relay-setting" class="chatlink-relay-row" style="display: none;">
+        <label class="checkbox-option">
+          <input type="checkbox" id="whatsapp-relay-proactive" checked />
+          <span>Relay TabMail Initiated Messages</span>
+        </label>
+        <small>When enabled, proactive check-ins and reminders are also sent to WhatsApp.</small>
+      </div>
+
       <!-- WhatsApp linking dialog (hidden by default) -->
       <div id="whatsapp-link-dialog" class="chatlink-dialog" style="display: none;">
         <div class="chatlink-dialog-content">
