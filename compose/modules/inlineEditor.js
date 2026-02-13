@@ -883,6 +883,30 @@ Object.assign(TabMail, {
         focusGraceUntil =
           Date.now() + (TabMail.config.inlineEdit.focusGraceMs || 0);
       };
+
+      // Toggle designMode OFF early, BEFORE iframe initialization
+      // This is critical - when designMode is ON, focus on iframe elements doesn't work
+      let prevDesignMode = null;
+      let didToggleDesignMode = false;
+      try {
+        prevDesignMode = document.designMode;
+        if (prevDesignMode === "on") {
+          document.designMode = "off";
+          didToggleDesignMode = true;
+          console.log(
+            "[TabMail Edit] Toggled designMode off before iframe init."
+          );
+        }
+      } catch (dmErr) {
+        console.warn("[TabMail Edit] Could not toggle designMode:", dmErr);
+      }
+
+      // Store designMode state on wrapper for cleanup
+      try {
+        wrapper.dataset._prevDesignMode = prevDesignMode || "";
+        wrapper.dataset._didToggleDesignMode = didToggleDesignMode ? "1" : "0";
+      } catch (_) {}
+
       // While inline is active and we are using designMode toggling, hide the editor's
       // caret to prevent dual-caret visuals. Restore on cleanup.
       try {
@@ -1182,49 +1206,34 @@ Object.assign(TabMail, {
         );
       }
 
-      // Focus flow – temporarily toggle document.designMode off→on
-      input.setAttribute("autofocus", "true");
-      let prevDesignMode = null;
-      let didToggleDesignMode = false;
+      // Focus the iframe input (iinput) - designMode was already toggled off earlier
+      const iframeInput = wrapper._tm_iinput;
       try {
-        prevDesignMode = document.designMode;
-        if (prevDesignMode === "on") {
-          document.designMode = "off";
-          didToggleDesignMode = true;
-          console.log(
-            "[TabMail Edit] Temporarily toggled designMode off to focus dropdown input."
-          );
+        if (iframeInput) {
+          iframeInput.focus();
+          const p = iframeInput.value.length;
+          iframeInput.setSelectionRange(p, p);
         }
-      } catch (dmErr) {
-        console.warn("[TabMail Edit] Could not toggle designMode:", dmErr);
-      }
-
-      try {
-        input.focus();
         armFocusGrace();
       } catch (_) {}
       // Second chance focus on next tick.
       setTimeout(() => {
         try {
-          input.focus();
+          if (iframeInput) {
+            iframeInput.focus();
+            const p = iframeInput.value.length;
+            iframeInput.setSelectionRange(p, p);
+          }
           armFocusGrace();
         } catch (_) {}
-        // Optionally keep designMode off while inline edit is open to avoid caret swap
-        // and restore on cleanup.
-        try {
-          // Record for cleanup scope
-          wrapper.dataset._prevDesignMode = prevDesignMode || "";
-          wrapper.dataset._didToggleDesignMode = didToggleDesignMode
-            ? "1"
-            : "0";
-          console.log(
-            "[TabMail Edit] Locking designMode off during inline edit."
-          );
-        } catch (_) {}
-        // Extra refocus after a short delay to bring back caret if it vanished on restore.
+        // Extra refocus after a short delay to bring back caret if it vanished.
         setTimeout(() => {
           try {
-            input.focus();
+            if (iframeInput) {
+              iframeInput.focus();
+              const p = iframeInput.value.length;
+              iframeInput.setSelectionRange(p, p);
+            }
             armFocusGrace();
           } catch (_) {}
         }, TabMail.config.inlineEdit.focusRefocusMs || 0);
