@@ -436,9 +436,47 @@ export async function runStateSendEmailPreview() {
     const pid = ctx.activePid || ctx.activeToolCallId || 0;
 
     // Build recipients display
-    const toList = (draft.recipients || []).map((r) => r.name ? `${r.name} <${r.email}>` : r.email);
-    const ccList = (draft.cc || []).map((r) => r.name ? `${r.name} <${r.email}>` : r.email);
+    let toList = (draft.recipients || []).map((r) => r.name ? `${r.name} <${r.email}>` : r.email);
+    let ccList = (draft.cc || []).map((r) => r.name ? `${r.name} <${r.email}>` : r.email);
     const bccList = (draft.bcc || []).map((r) => r.name ? `${r.name} <${r.email}>` : r.email);
+
+    // For replies/forwards without explicit recipients, fetch from original message
+    // Thunderbird's beginReply auto-determines recipients, but we need to show them in preview
+    if (toList.length === 0 && (draft.replyToId || draft.forwardOfId)) {
+      try {
+        const msgId = draft.replyToId || draft.forwardOfId;
+        const originalMsg = await browser.messages.get(msgId);
+        if (originalMsg) {
+          if (draft.replyToId) {
+            // Reply: To = original sender (author)
+            if (originalMsg.author) {
+              toList = [originalMsg.author];
+            }
+            // Reply-all: Cc = original To + Cc (minus our own address)
+            // Note: For simplicity, we show the original To recipients
+            // The actual Thunderbird reply-all logic is more complex
+            if (ccList.length === 0 && originalMsg.recipients && originalMsg.recipients.length > 0) {
+              // Get our identity to filter it out from Cc
+              const identityInfo = await getIdentityForMessage(msgId);
+              const ourEmail = identityInfo?.email?.toLowerCase();
+              const filteredRecipients = originalMsg.recipients.filter(r => {
+                const email = r.toLowerCase();
+                return !ourEmail || !email.includes(ourEmail);
+              });
+              if (filteredRecipients.length > 0) {
+                ccList = filteredRecipients;
+              }
+            }
+          } else if (draft.forwardOfId) {
+            // Forward: No auto-recipients, user must specify
+            // Leave toList empty - forward requires explicit recipients
+          }
+          log(`[Compose/preview] Fetched recipients from original message: To=${toList.length}, Cc=${ccList.length}`);
+        }
+      } catch (msgErr) {
+        log(`[Compose/preview] Failed to fetch original message for recipients: ${msgErr}`, "warn");
+      }
+    }
 
     // Build preview text
     const previewLines = [];
@@ -452,6 +490,40 @@ export async function runStateSendEmailPreview() {
       previewLines.push("📧 **New Email**");
     }
     previewLines.push("");
+
+    // From address (identity being used) - critical for multi-account users
+    try {
+      let fromAddress = null;
+      if (draft.replyToId) {
+        const identityInfo = await getIdentityForMessage(draft.replyToId);
+        if (identityInfo?.email) {
+          fromAddress = identityInfo.name
+            ? `${identityInfo.name} <${identityInfo.email}>`
+            : identityInfo.email;
+        }
+      } else if (draft.forwardOfId) {
+        const identityInfo = await getIdentityForMessage(draft.forwardOfId);
+        if (identityInfo?.email) {
+          fromAddress = identityInfo.name
+            ? `${identityInfo.name} <${identityInfo.email}>`
+            : identityInfo.email;
+        }
+      } else {
+        // New email - get default identity
+        const accounts = await browser.accounts.list();
+        const defaultIdentity = accounts?.[0]?.identities?.[0];
+        if (defaultIdentity?.email) {
+          fromAddress = defaultIdentity.name
+            ? `${defaultIdentity.name} <${defaultIdentity.email}>`
+            : defaultIdentity.email;
+        }
+      }
+      if (fromAddress) {
+        previewLines.push(`**From:** ${fromAddress}`);
+      }
+    } catch (fromErr) {
+      log(`[Compose/preview] Failed to get From address for desktop: ${fromErr}`, "warn");
+    }
 
     // Recipients
     if (toList.length > 0) {
