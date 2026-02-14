@@ -14,6 +14,7 @@
 // This matches the existing ID translation system used throughout TabMail.
 
 import { log } from "../../agent/modules/utils.js";
+import { SETTINGS } from "../../agent/modules/config.js";
 import { ctx } from "./context.js";
 import { resolveContactDetails, resolveEventDetails } from "./entityResolver.js";
 import { toNumericId } from "./idTranslator.js";
@@ -55,7 +56,13 @@ export async function updateEmailCacheForMentions(emails) {
       const db = b.date ? new Date(b.date) : 0;
       return db - da;
     });
-    
+
+    // Cap to most recent N emails to prevent memory bloat on large inboxes
+    const maxSize = SETTINGS?.memoryManagement?.emailCacheMaxSize || 2000;
+    if (emailCache.length > maxSize) {
+      emailCache = emailCache.slice(0, maxSize);
+    }
+
     log(`[MentionAutocomplete] Updated email cache: ${emailCache.length} emails`);
   } catch (e) {
     log(`[MentionAutocomplete] Failed to update email cache: ${e}`, "error");

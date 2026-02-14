@@ -94,6 +94,32 @@ let _onMessageUpdatedHandler = null;
 let _watchdogLastHandledAt = new Map(); // messageId -> ts
 let _watchdogSelfUpdateUntil = new Map(); // messageId -> ts
 let _reassertGuardTimers = new Map(); // messageId -> [timeoutId...]
+let _watchdogPruneTimer = null;
+
+/**
+ * Prune stale entries from watchdog maps. Entries older than 5 minutes
+ * are no longer useful — the ignore/debounce windows are typically < 30s.
+ */
+function _scheduleWatchdogPrune() {
+  if (_watchdogPruneTimer) return;
+  _watchdogPruneTimer = setTimeout(() => {
+    _watchdogPruneTimer = null;
+    try {
+      const now = Date.now();
+      const STALE_MS = SETTINGS?.memoryManagement?.watchdogStaleMs || 5 * 60_000;
+      for (const [id, ts] of _watchdogLastHandledAt) {
+        if (now - ts > STALE_MS) _watchdogLastHandledAt.delete(id);
+      }
+      for (const [id, ts] of _watchdogSelfUpdateUntil) {
+        if (ts <= now) _watchdogSelfUpdateUntil.delete(id);
+      }
+    } catch (_) {}
+    // Re-schedule if entries remain
+    if (_watchdogLastHandledAt.size > 0 || _watchdogSelfUpdateUntil.size > 0) {
+      _scheduleWatchdogPrune();
+    }
+  }, SETTINGS?.memoryManagement?.watchdogPruneIntervalMs || 5 * 60_000);
+}
 
 function _isMessageNotFoundError(e) {
   try {
@@ -1155,6 +1181,7 @@ export function attachOnMovedListeners() {
                 return;
               }
               _watchdogLastHandledAt.set(id, now);
+              _scheduleWatchdogPrune();
 
               let live = null;
               try {
@@ -1436,6 +1463,7 @@ export function cleanupOnMovedListeners() {
   }
   try { _watchdogLastHandledAt = new Map(); } catch (_) {}
   try { _watchdogSelfUpdateUntil = new Map(); } catch (_) {}
+  try { if (_watchdogPruneTimer) { clearTimeout(_watchdogPruneTimer); _watchdogPruneTimer = null; } } catch (_) {}
   try {
     if (_onMovedHandler && browser.messages?.onMoved) {
       browser.messages.onMoved.removeListener(_onMovedHandler);

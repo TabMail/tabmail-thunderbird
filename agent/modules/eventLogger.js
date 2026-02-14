@@ -147,6 +147,12 @@ export function logMessageEvent(eventType, source, details) {
 
     _sessionBuffer.push(entry);
 
+    // Prevent unbounded in-memory growth between persist cycles
+    const maxBuf = _cfg().maxSessionBufferSize || 10000;
+    if (_sessionBuffer.length > maxBuf) {
+        _sessionBuffer = _sessionBuffer.slice(-maxBuf);
+    }
+
     // Log to console immediately for debugging
     console.log(`[EventLogger] ${isoTime} | ${eventType} | ${source} | ${JSON.stringify(details)}`);
 

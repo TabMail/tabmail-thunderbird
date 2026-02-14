@@ -451,6 +451,27 @@ export const SETTINGS = {
         enabled: true,
         // Debounce persistence to avoid storage thrashing (ms)
         persistDebounceMs: 1000,
+        // Max in-memory events between persist cycles (prevents burst-induced bloat)
+        maxSessionBufferSize: 10000,
+    },
+    // ----------------------------------------------------------
+    // Memory management: pruning / eviction settings for in-memory Maps and caches.
+    // These are conservative defaults — entries are tiny, so caps are generous.
+    // ----------------------------------------------------------
+    memoryManagement: {
+        // tagHelper: _selfTagUpdateIgnoreUntilByMsgId prune interval (ms)
+        selfTagIgnorePruneIntervalMs: 60_000,
+        // onMoved: watchdog maps prune interval and stale threshold (ms)
+        watchdogPruneIntervalMs: 5 * 60_000,
+        watchdogStaleMs: 5 * 60_000,
+        // headerIndex: max entries before LRU eviction
+        headerIndexMaxSize: 10000,
+        // nativeEngine: RPC timeout (ms) for stuck native helper calls
+        nativeRpcTimeoutMs: 60_000,
+        // mentionAutocomplete: max emails to keep in memory cache
+        emailCacheMaxSize: 2000,
+        // theme/background: max entries in proactive inject URL tracking map
+        proactiveInjectMaxEntries: 500,
     },
 };
 

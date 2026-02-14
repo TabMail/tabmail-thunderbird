@@ -195,7 +195,7 @@ const scriptsReadyTabs = new Set();
 
 // Proactive injection guard (hot-reload safe)
 let _proactiveInjectorAttached = false;
-const _lastProactiveInjectUrlByTabId = new Map();
+const _lastProactiveInjectUrlByTabId = new Map(); // tabId -> { url, ts }
 
 function getThemeScriptsInitDelayMs() {
     try {
@@ -490,11 +490,21 @@ function attachProactiveMessageDisplayInjector() {
                 if (!tab || tab.type !== "messageDisplay") return;
 
                 const url = String(tab.url || "");
-                const prev = _lastProactiveInjectUrlByTabId.get(tabId) || "";
-                if (url && prev === url) {
+                const entry = _lastProactiveInjectUrlByTabId.get(tabId);
+                if (url && entry && entry.url === url) {
                     return;
                 }
-                _lastProactiveInjectUrlByTabId.set(tabId, url);
+                _lastProactiveInjectUrlByTabId.set(tabId, { url, ts: Date.now() });
+                // Prune oldest entries when over size cap
+                const maxEntries = SETTINGS?.memoryManagement?.proactiveInjectMaxEntries || 500;
+                if (_lastProactiveInjectUrlByTabId.size > maxEntries) {
+                    try {
+                        const sorted = [..._lastProactiveInjectUrlByTabId.entries()]
+                            .sort((a, b) => (a[1].ts || 0) - (b[1].ts || 0));
+                        const toRemove = _lastProactiveInjectUrlByTabId.size - maxEntries;
+                        for (let i = 0; i < toRemove; i++) _lastProactiveInjectUrlByTabId.delete(sorted[i][0]);
+                    } catch (_) {}
+                }
                 console.log(`[TabMail Theme] Proactive inject for messageDisplay tab ${tabId} url="${url}"`);
 
                 await injectThemeScriptsForMessageDisplayTab(tabId, "tabs.onUpdated");

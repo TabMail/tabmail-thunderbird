@@ -131,10 +131,31 @@ let _tagByThreadListener = null;
 
 let _threadTagWatchListener = null;
 let _selfTagUpdateIgnoreUntilByMsgId = new Map(); // msgId -> ts
+let _selfTagIgnorePruneTimer = null;
 
 // Per-threadKey semaphores to serialize updates to the same thread
 // Each write may update different message actions, so we queue rather than skip
 const _threadTagSemaphores = new Map(); // Map<threadKey, { active: boolean, queue: Function[] }>
+
+/**
+ * Prune expired entries from _selfTagUpdateIgnoreUntilByMsgId.
+ * Entries are timestamps in the future; once expired they serve no purpose.
+ * Called lazily — schedules itself on first .set(), runs once, cleans up.
+ */
+function _scheduleSelfTagIgnorePrune() {
+  if (_selfTagIgnorePruneTimer) return; // already scheduled
+  _selfTagIgnorePruneTimer = setTimeout(() => {
+    _selfTagIgnorePruneTimer = null;
+    try {
+      const now = Date.now();
+      for (const [msgId, ts] of _selfTagUpdateIgnoreUntilByMsgId) {
+        if (ts <= now) _selfTagUpdateIgnoreUntilByMsgId.delete(msgId);
+      }
+    } catch (_) {}
+    // Re-schedule if entries remain
+    if (_selfTagUpdateIgnoreUntilByMsgId.size > 0) _scheduleSelfTagIgnorePrune();
+  }, SETTINGS?.memoryManagement?.selfTagIgnorePruneIntervalMs || 60_000);
+}
 
 async function _acquireThreadTagSemaphore(threadKey) {
   if (!_threadTagSemaphores.has(threadKey)) {
@@ -542,6 +563,7 @@ async function _applyActionTagToCrossFolderCopies(accountId, headerMessageId, ef
 
         if (ignoreDelta > 0) {
           _selfTagUpdateIgnoreUntilByMsgId.set(weId, Date.now() + ignoreDelta);
+          _scheduleSelfTagIgnorePrune();
         }
         await browser.messages.update(weId, { tags: newTags });
         if (hadNonTabMail) {
@@ -793,6 +815,9 @@ export function cleanupThreadTagWatchers() {
     console.log(`[TMDBG Tag] Failed to cleanup thread tag watcher: ${e}`);
   }
   try { _selfTagUpdateIgnoreUntilByMsgId = new Map(); } catch (_) {}
+  try {
+    if (_selfTagIgnorePruneTimer) { clearTimeout(_selfTagIgnorePruneTimer); _selfTagIgnorePruneTimer = null; }
+  } catch (_) {}
   try { _threadTagSemaphores.clear(); } catch (_) {}
 }
 
@@ -964,6 +989,7 @@ async function _applyEffectiveActionToWeIds(weIds, effectiveAction) {
         try {
           if (ignoreDelta > 0) {
             _selfTagUpdateIgnoreUntilByMsgId.set(hdr.id, Date.now() + ignoreDelta);
+            _scheduleSelfTagIgnorePrune();
           }
         } catch (_) {}
 
@@ -1105,6 +1131,7 @@ async function _retagThreadForGroupingDisabled(weMsgId) {
           const ignoreMs = Number(SETTINGS?.actionTagging?.selfTagUpdateIgnoreMs);
           if (Number.isFinite(ignoreMs) && ignoreMs > 0) {
             _selfTagUpdateIgnoreUntilByMsgId.set(hdr.id, Date.now() + ignoreMs);
+            _scheduleSelfTagIgnorePrune();
           }
         } catch (_) {}
         await browser.messages.update(hdr.id, { tags: newTags });

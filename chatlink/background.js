@@ -319,7 +319,7 @@ setTimeout(() => {
 }, 5000);
 
 // Listen for storage changes to connect/disconnect when ChatLink is enabled/disabled
-browser.storage.onChanged.addListener((changes, area) => {
+const _chatlinkStorageListener = (changes, area) => {
   if (area === "local" && changes.chatlink_enabled) {
     if (changes.chatlink_enabled.newValue) {
       log("[ChatLink BG] ChatLink enabled, connecting to WebSocket");
@@ -329,6 +329,15 @@ browser.storage.onChanged.addListener((changes, area) => {
       disconnect();
     }
   }
+};
+browser.storage.onChanged.addListener(_chatlinkStorageListener);
+
+// Clean up storage listener on suspend to prevent accumulation on hot-reload
+browser.runtime.onSuspend?.addListener(() => {
+  try {
+    browser.storage.onChanged.removeListener(_chatlinkStorageListener);
+    log("[ChatLink BG] Storage listener removed on suspend");
+  } catch (_) {}
 });
 
 // Export for potential use by other modules

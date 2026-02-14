@@ -191,7 +191,6 @@ export async function clearAlarm(name) {
 
 // getFull cache – in-memory storage with TTL based on uniqueHeaderID
 const getFullCache = new Map(); // Map<uniqueKey, { data, timestamp }>
-let getFullCacheCleanupTimer = null;
 let getFullCacheCleanupAlarmName = "agent-getfull-cleanup";
 
 function enforceGetFullCacheMaxEntries(reason = "unknown") {
@@ -246,10 +245,6 @@ function cleanupGetFullCache() {
  * Safe to call multiple times.
  */
 function startGetFullCacheCleanup() {
-  // Clear any leftover old interval timer (for hot-reload safety)
-  try { clearInterval(getFullCacheCleanupTimer); } catch (_) {}
-  getFullCacheCleanupTimer = null;
-
   const minutes = Math.max(1, Math.ceil(Number(SETTINGS.getFullCleanupIntervalMinutes || 5)));
   ensureAlarm({
     name: getFullCacheCleanupAlarmName,
@@ -268,11 +263,6 @@ function startGetFullCacheCleanup() {
  * Called during extension shutdown/suspension.
  */
 export function stopGetFullCacheCleanup() {
-  if (getFullCacheCleanupTimer) {
-    clearInterval(getFullCacheCleanupTimer);
-    getFullCacheCleanupTimer = null;
-    log("getFull cache cleanup timer stopped");
-  }
   try { clearAlarm(getFullCacheCleanupAlarmName); } catch (_) {}
 }
 
@@ -1075,7 +1065,7 @@ export async function getIdentityForMessage(messageOrId) {
 // worker can resolve Message-Id to numeric id instantly.
 // ----------------------------------------------------------
 
-export const headerIndex = new Map(); // Map<headerId, { weID, weFolder }>
+export const headerIndex = new Map(); // Map<headerId, { id, folder, _ts }>
 
 export function indexHeader(header) {
     // Keep call sites synchronous but run async logic internally so we can
@@ -1096,11 +1086,31 @@ export function indexHeader(header) {
             headerIndex.set(uniqueKey, {
                 id: header.id,
                 folder: header.folder,
+                _ts: Date.now(),
             });
+
+            // Evict oldest entries when over size cap
+            const maxSize = SETTINGS?.memoryManagement?.headerIndexMaxSize || 10000;
+            if (headerIndex.size > maxSize) {
+                _pruneHeaderIndex();
+            }
         } catch (e) {
             console.error("Agent IDX error adding", e);
         }
     })();
+}
+
+function _pruneHeaderIndex() {
+    try {
+        const entries = [];
+        for (const [k, v] of headerIndex) entries.push([k, v._ts || 0]);
+        entries.sort((a, b) => a[1] - b[1]); // oldest first
+        const maxSize = SETTINGS?.memoryManagement?.headerIndexMaxSize || 10000;
+        const toRemove = headerIndex.size - maxSize;
+        for (let i = 0; i < toRemove && i < entries.length; i++) {
+            headerIndex.delete(entries[i][0]);
+        }
+    } catch (_) {}
 }
 
 /**
@@ -1139,6 +1149,7 @@ export async function updateHeaderIndexForMovedMessage(beforeHeader, afterHeader
         headerIndex.set(afterKey, {
             id: afterHeader.id,
             folder: afterHeader.folder,
+            _ts: Date.now(),
         });
         log(`[TMDBG HeaderIndex] Added new mapping for moved message: ${afterKey} -> weID=${afterHeader.id}`);
 

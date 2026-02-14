@@ -2,6 +2,7 @@
 // Native messaging adapter for FTS operations
 
 import { log } from "../agent/modules/utils.js";
+import { SETTINGS } from "../agent/modules/config.js";
 
 // Minimum required host version (update this when you need new host features)
 // 0.6.10: Added memory database for chat history search (memory_search tool)
@@ -381,13 +382,25 @@ async function nativeRPC(method, params) {
   }
   
   const id = `rpc-${++messageId}`;
-  
+  const RPC_TIMEOUT_MS = SETTINGS?.memoryManagement?.nativeRpcTimeoutMs || 60_000;
+
   return new Promise((resolve, reject) => {
-    pendingRPCs.set(id, { resolve, reject });
-    
+    const timer = setTimeout(() => {
+      if (pendingRPCs.has(id)) {
+        pendingRPCs.delete(id);
+        reject(new Error(`Native RPC '${method}' timed out after ${RPC_TIMEOUT_MS}ms`));
+      }
+    }, RPC_TIMEOUT_MS);
+
+    pendingRPCs.set(id, {
+      resolve: (val) => { clearTimeout(timer); resolve(val); },
+      reject: (err) => { clearTimeout(timer); reject(err); },
+    });
+
     try {
       nativePort.postMessage({ id, method, params });
     } catch (error) {
+      clearTimeout(timer);
       pendingRPCs.delete(id);
       reject(error);
     }

@@ -635,6 +635,26 @@ export function initAggressiveScrollStick(container) {
 export function cleanupScrollObservers(container) {
   if (!container) return;
   try {
+    // Disconnect per-bubble MutationObservers attached by createNewAgentBubble
+    const BUBBLE_OBS_SYM = Symbol.for("tm_scrollObserver");
+    const bubbles = container.querySelectorAll(".agent-message");
+    let bubbleObsCount = 0;
+    for (const bubble of bubbles) {
+      try {
+        if (bubble[BUBBLE_OBS_SYM]) {
+          bubble[BUBBLE_OBS_SYM].disconnect();
+          bubble[BUBBLE_OBS_SYM] = null;
+          bubbleObsCount++;
+        }
+      } catch (_) {}
+    }
+    if (bubbleObsCount > 0) {
+      log(`[TMDBG ChatHelpers] Disconnected ${bubbleObsCount} per-bubble MutationObserver(s)`);
+    }
+  } catch (e) {
+    log(`[TMDBG ChatHelpers] Failed to cleanup per-bubble observers: ${e}`, 'warn');
+  }
+  try {
     if (container[RESIZE_OBS_SYM]) {
       container[RESIZE_OBS_SYM].disconnect();
       container[RESIZE_OBS_SYM] = null;
