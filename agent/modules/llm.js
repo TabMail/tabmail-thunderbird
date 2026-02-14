@@ -181,6 +181,12 @@ async function readSSEStream(response, abortSignal = null, onToolExecution = nul
               } catch (e) {
                 log(`[SSE] Failed to notify UI about tool start: ${e}`, "warn");
               }
+              // Notify inline status callback
+              try {
+                if (window._tabmailStatusCallback) {
+                  window._tabmailStatusCallback(eventData.display_label);
+                }
+              } catch (_) {}
             } else if (currentEvent === "tool_completed") {
               log(`[SSE] Tool completed: ${eventData.display_label} (${eventData.elapsed_ms}ms)`);
               
@@ -226,6 +232,12 @@ async function readSSEStream(response, abortSignal = null, onToolExecution = nul
                 } catch (e) {
                   log(`[SSE] Failed to notify UI about tool completion: ${e}`, "warn");
                 }
+                // Revert inline status to thinking
+                try {
+                  if (window._tabmailStatusCallback) {
+                    window._tabmailStatusCallback("Thinking\u2026");
+                  }
+                } catch (_) {}
               }
             } else if (currentEvent === "tool_failed") {
               log(`[SSE] Tool failed: ${eventData.display_label} - ${eventData.error}`, "error");
@@ -272,11 +284,17 @@ async function readSSEStream(response, abortSignal = null, onToolExecution = nul
                 } catch (e) {
                   log(`[SSE] Failed to notify UI about tool failure: ${e}`, "warn");
                 }
+                // Revert inline status to thinking
+                try {
+                  if (window._tabmailStatusCallback) {
+                    window._tabmailStatusCallback("Thinking\u2026");
+                  }
+                } catch (_) {}
               }
             } else if (currentEvent === "final") {
               log(`[SSE] Received final response`);
               finalResponse = eventData;
-              
+
               // Notify UI that server tools are done
               if (serverToolStatuses.size > 0) {
         try {
@@ -287,6 +305,12 @@ async function readSSEStream(response, abortSignal = null, onToolExecution = nul
                   log(`[SSE] Failed to notify UI about completion: ${e}`, "warn");
                 }
               }
+              // Clear inline status
+              try {
+                if (window._tabmailStatusCallback) {
+                  window._tabmailStatusCallback("");
+                }
+              } catch (_) {}
             } else if (currentEvent === "error") {
               log(`[SSE] Received error event: ${eventData.error}`, "error");
               finalResponse = { err: eventData.error };
@@ -675,10 +699,28 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
         // Execute tools if callback provided
         if (onToolExecution && typeof onToolExecution === 'function') {
           try {
+            // Notify inline status about client-side tool execution
+            try {
+              if (window._tabmailStatusCallback && data.tool_calls.length > 0) {
+                const firstName = data.tool_calls[0]?.function?.name || "";
+                const label = data.tool_calls.length === 1 && firstName
+                  ? `Running ${firstName.replace(/_/g, " ")}\u2026`
+                  : `Running ${data.tool_calls.length} tools\u2026`;
+                window._tabmailStatusCallback(label);
+              }
+            } catch (_) {}
+
             // Execute all tools and collect results
             const toolResults = await onToolExecution(data.tool_calls, data.token_usage);
-            
+
             log(`[COMPLETIONS] Tool execution completed, ${toolResults.length} results`);
+
+            // Revert inline status to thinking before continuing
+            try {
+              if (window._tabmailStatusCallback) {
+                window._tabmailStatusCallback("Thinking\u2026");
+              }
+            } catch (_) {}
             
             // Build conversation state from response
             const conversationState = data.conversation_state || {};
@@ -779,15 +821,33 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
     // Execute tools if callback provided
     if (onToolExecution && typeof onToolExecution === 'function') {
       try {
+        // Notify inline status about client-side tool execution
+        try {
+          if (window._tabmailStatusCallback && data.tool_calls.length > 0) {
+            const firstName = data.tool_calls[0]?.function?.name || "";
+            const label = data.tool_calls.length === 1 && firstName
+              ? `Running ${firstName.replace(/_/g, " ")}\u2026`
+              : `Running ${data.tool_calls.length} tools\u2026`;
+            window._tabmailStatusCallback(label);
+          }
+        } catch (_) {}
+
         // Execute all tools and collect results
         const toolResults = await onToolExecution(data.tool_calls, data.token_usage);
-        
+
         log(`[COMPLETIONS] Tool execution completed, ${toolResults.length} results`);
-        
+
+        // Revert inline status to thinking before continuing
+        try {
+          if (window._tabmailStatusCallback) {
+            window._tabmailStatusCallback("Thinking\u2026");
+          }
+        } catch (_) {}
+
         // Build conversation state from response
         const conversationState = data.conversation_state || {};
         const harmonyMessages = conversationState.harmony_messages || [];
-        
+
         // Append tool results to conversation
         for (const result of toolResults) {
           const toolMsg = {

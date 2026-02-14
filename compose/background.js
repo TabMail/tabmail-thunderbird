@@ -204,6 +204,13 @@ async function handleRuntimeMessage(message, sender) {
             console.error(`[TabMail BG] Failed to send ${messageType}: ${e}`);
           });
       };
+      // Set up status callback to relay AI activity status to this tab
+      window._tabmailStatusCallback = (text) => {
+        messenger.tabs.sendMessage(senderTabId, { type: 'tabmail-status-update', text })
+          .catch((e) => {
+            console.error(`[TabMail BG] Failed to send status update: ${e}`);
+          });
+      };
       callbackInstalled = true;
       
       const details = await messenger.compose.getComposeDetails(senderTabId);
@@ -296,9 +303,10 @@ async function handleRuntimeMessage(message, sender) {
       );
       return { error: String(error?.message || error) };
     } finally {
-      // Always clear throttle callback, even on error (prevents global pollution leak)
+      // Always clear callbacks, even on error (prevents global pollution leak)
       if (callbackInstalled) {
         delete window._tabmailThrottleCallback;
+        delete window._tabmailStatusCallback;
       }
     }
   } else if (message.type === "initialTriggerCheck") {

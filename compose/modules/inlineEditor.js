@@ -25,6 +25,14 @@ Object.assign(TabMail, {
       }
 
       spinner && (spinner.style.display = "flex");
+      // Show initial "Thinking..." status below spinner
+      try {
+        const statusEl = spinner?.querySelector('.tm-inline-status');
+        if (statusEl) {
+          statusEl.textContent = "Thinking\u2026";
+          statusEl.style.display = "block";
+        }
+      } catch (_) {}
       try {
         if (wrapper && wrapper._tm_container)
           wrapper._tm_container.style.filter = "grayscale(0.9) opacity(0.6)";
@@ -34,6 +42,30 @@ Object.assign(TabMail, {
       let throttleOverlay = null;
       let throttleMessageEl = null;
       
+      // Listen for status updates from the background script (AI activity)
+      const handleStatusMessage = (message) => {
+        if (message.type === 'tabmail-status-update') {
+          try {
+            const statusEl = spinner?.querySelector('.tm-inline-status');
+            if (statusEl) {
+              const text = message.text || "";
+              if (text) {
+                statusEl.textContent = text;
+                statusEl.style.display = "block";
+              } else {
+                statusEl.style.display = "none";
+                statusEl.textContent = "";
+              }
+              console.log(`[TabMail InlineEdit] Status update: ${text || "(cleared)"}`);
+            }
+          } catch (e) {
+            console.error('[TabMail InlineEdit] Error updating status:', e);
+          }
+        }
+      };
+
+      browser.runtime.onMessage.addListener(handleStatusMessage);
+
       // Listen for throttle events from the background script via runtime messages
       const handleThrottleMessage = (message) => {
         if (message.type === 'tabmail-throttle-start') {
@@ -84,6 +116,11 @@ Object.assign(TabMail, {
               
               throttleOverlay.appendChild(throttleMessageEl);
               spinner.appendChild(throttleOverlay);
+              // Hide status text while throttle overlay is visible
+              try {
+                const statusEl = spinner?.querySelector('.tm-inline-status');
+                if (statusEl) statusEl.style.display = "none";
+              } catch (_) {}
             }
           } catch (e) {
             console.error('[TabMail InlineEdit] Error showing throttle message:', e);
@@ -95,6 +132,11 @@ Object.assign(TabMail, {
               throttleOverlay.remove();
               throttleOverlay = null;
               throttleMessageEl = null;
+              // Restore status text if it has content
+              try {
+                const statusEl = spinner?.querySelector('.tm-inline-status');
+                if (statusEl && statusEl.textContent) statusEl.style.display = "block";
+              } catch (_) {}
             }
           } catch (e) {
             console.error('[TabMail InlineEdit] Error removing throttle message:', e);
@@ -538,9 +580,12 @@ Object.assign(TabMail, {
     } catch (err) {
       console.error("[TabMail Edit] Inline edit error:", err);
     } finally {
-      // Clean up message listener
+      // Clean up message listeners
       try {
         browser.runtime.onMessage.removeListener(handleThrottleMessage);
+      } catch (_) {}
+      try {
+        browser.runtime.onMessage.removeListener(handleStatusMessage);
       } catch (_) {}
       // Clean up throttle message overlay if it exists
       try {
@@ -779,17 +824,23 @@ Object.assign(TabMail, {
         `caret-color: ${TabMail.config.inlineEdit.caretColor}`,
       ].join(";");
 
+      // Theme-aware spinner overlay, circle, and status text
+      const isDarkMode = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const borderR = TabMail.config.inlineEdit.borderRadiusPx || 8;
+
       const spinner = document.createElement("div");
       spinner.className = "tm-inline-overlay";
       spinner.style.cssText = [
         "position:absolute",
         "inset:0",
         "display:none",
+        "flex-direction: column",
         "align-items:center",
         "justify-content:center",
+        "gap: 4px",
         "backdrop-filter: blur(1px)",
-        "background: rgba(0,0,0,0.25)",
-        "border-radius: inherit",
+        `background: ${isDarkMode ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.7)"}`,
+        `border-radius: ${borderR}px`,
         "z-index: 2",
       ].join(";");
       const spinnerInner = document.createElement("div");
@@ -798,11 +849,30 @@ Object.assign(TabMail, {
         "width: 28px",
         "height: 28px",
         "border-radius: 50%",
-        "border: 3px solid rgba(255,255,255,0.2)",
-        "border-top-color: rgba(255,255,255,0.9)",
+        `border: 3px solid ${isDarkMode ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)"}`,
+        `border-top-color: ${isDarkMode ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.85)"}`,
         "animation: tmspin 1s linear infinite",
       ].join(";");
       spinner.appendChild(spinnerInner);
+
+      // Status text below the spinner (shows AI activity like "Thinking...")
+      const statusText = document.createElement("div");
+      statusText.className = "tm-inline-status";
+      statusText.textContent = "";
+      statusText.style.cssText = [
+        "font-size: 11px",
+        "font-weight: 400",
+        "letter-spacing: 0.3px",
+        "user-select: none",
+        "text-align: center",
+        "white-space: nowrap",
+        "overflow: hidden",
+        "text-overflow: ellipsis",
+        "max-width: 90%",
+        `color: ${isDarkMode ? "rgba(255,255,255,0.8)" : "rgba(0,0,0,0.85)"}`,
+        "display: none",
+      ].join(";");
+      spinner.appendChild(statusText);
 
       // Create a placeholder label overlayed above the input when empty.
       const placeholderLabel = document.createElement("div");
