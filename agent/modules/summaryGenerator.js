@@ -152,7 +152,7 @@ export async function getSummary(
   try {
     const cachedEntry = (await idb.get(cacheKey))[cacheKey];
     if (cachedEntry) {
-      log(`[Summary] Cache HIT for message ${messageHeader.id} (${uniqueKey})`);
+      log(`[Summary] Cache HIT for message ${messageHeader.id} (${uniqueKey})`, 'debug');
       // Touch the cache entry by updating its timestamp.
       // IMPORTANT: Do not await here; cache-hit should be as fast as possible for UI snappiness.
       // If this write fails, we still return the cached summary.
@@ -219,7 +219,7 @@ export async function generateSummary(messageHeader, highPriority = false) {
   try {
     const cachedEntry = (await idb.get(cacheKey))[cacheKey];
     if (cachedEntry) {
-      log(`[Summary] Cache HIT in generateSummary for message ${messageHeader.id} (${uniqueKey})`);
+      log(`[Summary] Cache HIT in generateSummary for message ${messageHeader.id} (${uniqueKey})`, 'debug');
       // Touch the cache entry by updating its timestamp
       await idb.set({ [metaKey]: { ts: Date.now() } });
       return {

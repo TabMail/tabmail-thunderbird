@@ -41,7 +41,7 @@ export async function loadTurns() {
     const result = await browser.storage.local.get(TURNS_KEY);
     const turns = result[TURNS_KEY];
     if (Array.isArray(turns)) {
-      log(`[PersistentChat] Loaded ${turns.length} turns from storage`);
+      log(`[PersistentChat] Loaded ${turns.length} turns from storage`, 'debug');
       return turns;
     }
   } catch (e) {
@@ -60,7 +60,7 @@ export function saveTurns(turns) {
     _saveTurnsTimer = null;
     try {
       await browser.storage.local.set({ [TURNS_KEY]: turns });
-      log(`[PersistentChat] Saved ${turns.length} turns (${JSON.stringify(turns).length} bytes)`);
+      log(`[PersistentChat] Saved ${turns.length} turns (${JSON.stringify(turns).length} bytes)`, 'debug');
     } catch (e) {
       log(`[PersistentChat] Failed to save turns: ${e}`, "error");
     }
@@ -78,7 +78,7 @@ export async function saveTurnsImmediate(turns) {
   }
   try {
     await browser.storage.local.set({ [TURNS_KEY]: turns });
-    log(`[PersistentChat] Force-saved ${turns.length} turns`);
+    log(`[PersistentChat] Force-saved ${turns.length} turns`, 'debug');
   } catch (e) {
     log(`[PersistentChat] Failed to force-save turns: ${e}`, "error");
   }
@@ -141,7 +141,7 @@ export function enforceBudget(turns, meta) {
   }
 
   if (evictedList.length > 0) {
-    log(`[PersistentChat] Evicted ${evictedList.length} turns (maxExchanges=${MAX_EXCHANGES}, maxChars=${maxChars}, remaining=${turns.length}, chars=${meta.totalChars})`);
+    log(`[PersistentChat] Evicted ${evictedList.length} turns (maxExchanges=${MAX_EXCHANGES}, maxChars=${maxChars}, remaining=${turns.length}, chars=${meta.totalChars})`, 'debug');
   }
 
   return evictedList;
@@ -174,7 +174,7 @@ export async function loadMeta() {
     const result = await browser.storage.local.get(META_KEY);
     const meta = result[META_KEY];
     if (meta && typeof meta === "object") {
-      log(`[PersistentChat] Loaded meta: lastActivity=${meta.lastActivityTs}, chars=${meta.totalChars}, cursor=${meta.kbCursorId || "null"}`);
+      log(`[PersistentChat] Loaded meta: lastActivity=${meta.lastActivityTs}, chars=${meta.totalChars}, cursor=${meta.kbCursorId || "null"}`, 'debug');
       return meta;
     }
   } catch (e) {
@@ -222,7 +222,7 @@ export async function loadIdMap() {
     const result = await browser.storage.local.get(IDMAP_KEY);
     const data = result[IDMAP_KEY];
     if (data && typeof data === "object") {
-      log(`[PersistentChat] Loaded idMap: ${(data.entries || []).length} entries, nextId=${data.nextNumericId}, freeIds=${(data.freeIds || []).length}, refCounts=${(data.refCounts || []).length}`);
+      log(`[PersistentChat] Loaded idMap: ${(data.entries || []).length} entries, nextId=${data.nextNumericId}, freeIds=${(data.freeIds || []).length}, refCounts=${(data.refCounts || []).length}`, 'debug');
       return {
         entries: Array.isArray(data.entries) ? data.entries : [],
         nextNumericId: data.nextNumericId || 1,
@@ -255,7 +255,7 @@ export function saveIdMap(idMap, nextNumericId, freeIds, refCounts) {
         refCounts: refCounts instanceof Map ? Array.from(refCounts.entries()) : [],
       };
       await browser.storage.local.set({ [IDMAP_KEY]: data });
-      log(`[PersistentChat] Saved idMap: ${data.entries.length} entries, nextId=${nextNumericId}, freeIds=${data.freeIds.length}, refCounts=${data.refCounts.length}`);
+      log(`[PersistentChat] Saved idMap: ${data.entries.length} entries, nextId=${nextNumericId}, freeIds=${data.freeIds.length}, refCounts=${data.refCounts.length}`, 'debug');
     } catch (e) {
       log(`[PersistentChat] Failed to save idMap: ${e}`, "error");
     }
@@ -282,7 +282,7 @@ export async function saveIdMapImmediate(idMap, nextNumericId, freeIds, refCount
       refCounts: refCounts instanceof Map ? Array.from(refCounts.entries()) : [],
     };
     await browser.storage.local.set({ [IDMAP_KEY]: data });
-    log(`[PersistentChat] Force-saved idMap: ${data.entries.length} entries, refCounts=${data.refCounts.length}`);
+    log(`[PersistentChat] Force-saved idMap: ${data.entries.length} entries, refCounts=${data.refCounts.length}`, 'debug');
   } catch (e) {
     log(`[PersistentChat] Failed to force-save idMap: ${e}`, "error");
   }
@@ -342,7 +342,7 @@ export async function filterAndConvertTurns(persistedTurns) {
   }
 
   const kept = persistedTurns.slice(cutIdx + 1);
-  log(`[PersistentChat] KB filter: dropped ${cutIdx + 1} summarized turns, keeping ${kept.length}`);
+  log(`[PersistentChat] KB filter: dropped ${cutIdx + 1} summarized turns, keeping ${kept.length}`, 'debug');
   return turnsToLLMMessages(kept);
 }
 
@@ -382,7 +382,7 @@ export async function indexTurnToFTS(userTurn, assistantTurn) {
 
     const { indexChatTurn } = await import("../../fts/memoryIndexer.js");
     await indexChatTurn(cleanUserText, cleanAssistantText, assistantTurn._id, assistantTurn._ts);
-    log(`[PersistentChat] Indexed turn ${assistantTurn._id} to FTS`);
+    log(`[PersistentChat] Indexed turn ${assistantTurn._id} to FTS`, 'debug');
   } catch (e) {
     log(`[PersistentChat] FTS indexing failed (non-fatal): ${e}`, "warn");
   }
@@ -402,12 +402,12 @@ export function getTurnsAfterCursor(turns, meta) {
   const cursorIdx = turns.findIndex(t => t._id === meta.kbCursorId);
   if (cursorIdx < 0) {
     // Cursor turn was evicted — all remaining turns are after it
-    log(`[PersistentChat] KB cursor ${meta.kbCursorId} not found (evicted), returning all ${turns.length} turns`);
+    log(`[PersistentChat] KB cursor ${meta.kbCursorId} not found (evicted), returning all ${turns.length} turns`, 'debug');
     return [...turns];
   }
 
   const after = turns.slice(cursorIdx + 1);
-  log(`[PersistentChat] Turns after cursor: ${after.length} (cursor at index ${cursorIdx})`);
+  log(`[PersistentChat] Turns after cursor: ${after.length} (cursor at index ${cursorIdx})`, 'debug');
   return after;
 }
 
@@ -417,7 +417,7 @@ export function getTurnsAfterCursor(turns, meta) {
 export function advanceCursor(meta, lastProcessedTurnId) {
   meta.kbCursorId = lastProcessedTurnId;
   saveMeta(meta);
-  log(`[PersistentChat] KB cursor advanced to ${lastProcessedTurnId}`);
+  log(`[PersistentChat] KB cursor advanced to ${lastProcessedTurnId}`, 'debug');
 }
 
 // ---------------------------------------------------------------------------
@@ -438,23 +438,23 @@ export async function migrateFromSessions() {
 
     // v1: Delete old session-based storage keys
     if (!flags[MIGRATION_V1_FLAG]) {
-      log(`[PersistentChat] Migration v1: clearing old session-based chat history`);
+      log(`[PersistentChat] Migration v1: clearing old session-based chat history`, 'debug');
       await browser.storage.local.remove(["chat_history_queue", "chat_history_queue_config"]);
       await browser.storage.local.set({ [MIGRATION_V1_FLAG]: Date.now() });
-      log(`[PersistentChat] Migration v1 complete`);
+      log(`[PersistentChat] Migration v1 complete`, 'debug');
     }
 
     // v2: Clear old session-based FTS entries
     if (!flags[MIGRATION_V2_FLAG]) {
-      log(`[PersistentChat] Migration v2: clearing old session-based FTS entries`);
+      log(`[PersistentChat] Migration v2: clearing old session-based FTS entries`, 'debug');
       try {
         await browser.runtime.sendMessage({ type: "fts", cmd: "memoryClear" });
-        log(`[PersistentChat] Migration v2: FTS cleared`);
+        log(`[PersistentChat] Migration v2: FTS cleared`, 'debug');
       } catch (e) {
         log(`[PersistentChat] Migration v2: FTS clear failed (non-fatal): ${e}`, "warn");
       }
       await browser.storage.local.set({ [MIGRATION_V2_FLAG]: Date.now() });
-      log(`[PersistentChat] Migration v2 complete`);
+      log(`[PersistentChat] Migration v2 complete`, 'debug');
     }
   } catch (e) {
     log(`[PersistentChat] Migration failed: ${e}`, "error");

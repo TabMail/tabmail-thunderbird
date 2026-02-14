@@ -20,7 +20,7 @@ export { setEnabled } from "./reminderStateStore.js";
  */
 async function collectMessageReminders() {
   try {
-    log(`[ReminderBuilder] Collecting message reminders from inbox...`);
+    log(`[ReminderBuilder] Collecting message reminders from inbox...`, 'debug');
 
     // Get inbox context (JSON string with array of message summaries)
     const inboxContextJson = await buildInboxContext();
@@ -43,7 +43,7 @@ async function collectMessageReminders() {
       return [];
     }
 
-    log(`[ReminderBuilder] Found ${inboxItems.length} messages in inbox context`);
+    log(`[ReminderBuilder] Found ${inboxItems.length} messages in inbox context`, 'debug');
 
     // Collect reminders from each message
     const messageReminders = [];
@@ -53,7 +53,7 @@ async function collectMessageReminders() {
       try {
         // Skip messages that have already been replied to
         if (item.replied === true) {
-          log(`[ReminderBuilder] Skipping message (already replied): "${item.subject?.slice(0, 60)}..."`);
+          log(`[ReminderBuilder] Skipping message (already replied): "${item.subject?.slice(0, 60)}..."`, 'debug');
           skippedReplied++;
           continue;
         }
@@ -65,12 +65,12 @@ async function collectMessageReminders() {
 
         const summaryData = await getSummaryWithHeaderId(uniqueId);
         if (!summaryData) {
-          log(`[ReminderBuilder] No summary data for message ${uniqueId} (${item.subject?.slice(0, 40)}...)`);
+          log(`[ReminderBuilder] No summary data for message ${uniqueId} (${item.subject?.slice(0, 40)}...)`, 'debug');
           continue;
         }
         
         if (!summaryData.reminder) {
-          log(`[ReminderBuilder] No reminder field in summary for message ${uniqueId} (${item.subject?.slice(0, 40)}...)`);
+          log(`[ReminderBuilder] No reminder field in summary for message ${uniqueId} (${item.subject?.slice(0, 40)}...)`, 'debug');
           continue;
         }
 
@@ -97,14 +97,14 @@ async function collectMessageReminders() {
         };
 
         messageReminders.push(reminder);
-        log(`[ReminderBuilder] Added message reminder: "${reminder.content.slice(0, 80)}..." (dueDate: ${reminder.dueDate || "none"})`);
+        log(`[ReminderBuilder] Added message reminder: "${reminder.content.slice(0, 80)}..." (dueDate: ${reminder.dueDate || "none"})`, 'debug');
       } catch (e) {
         log(`[ReminderBuilder] Error processing reminder for message ${item.uniqueId || item.internalId}: ${e}`, "warn");
         continue;
       }
     }
 
-    log(`[ReminderBuilder] Collected ${messageReminders.length} message reminders from ${inboxItems.length} messages (${skippedReplied} already replied)`);
+    log(`[ReminderBuilder] Collected ${messageReminders.length} message reminders from ${inboxItems.length} messages (${skippedReplied} already replied)`, 'debug');
     return messageReminders;
   } catch (e) {
     log(`[ReminderBuilder] Error collecting message reminders: ${e}`, "error");
@@ -121,7 +121,7 @@ async function collectMessageReminders() {
  */
 export async function buildReminderList({ includeDisabled = false } = {}) {
   try {
-    log(`[ReminderBuilder] Building complete reminder list (includeDisabled=${includeDisabled})...`);
+    log(`[ReminderBuilder] Building complete reminder list (includeDisabled=${includeDisabled})...`, 'debug');
 
     // Collect reminders from both sources in parallel
     const [messageReminders, kbReminders, disabledHashes] = await Promise.all([
@@ -130,7 +130,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       getDisabledHashes(),
     ]);
 
-    log(`[ReminderBuilder] Collected ${messageReminders.length} message reminders and ${kbReminders.length} KB reminders`);
+    log(`[ReminderBuilder] Collected ${messageReminders.length} message reminders and ${kbReminders.length} KB reminders`, 'debug');
 
     // Add source tag to KB reminders if not present
     const taggedKBReminders = kbReminders.map((r) => ({
@@ -159,7 +159,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
     
     if (!includeDisabled && disabledCount > 0) {
       allReminders = allRemindersRaw.filter((r) => r.enabled);
-      log(`[ReminderBuilder] Filtered out ${disabledCount} disabled reminders`);
+      log(`[ReminderBuilder] Filtered out ${disabledCount} disabled reminders`, 'debug');
     }
 
     // Sort by due date+time (items with dates first, then null dates)
@@ -186,7 +186,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
     const messageCount = allReminders.filter((r) => r.source === "message").length;
     const kbCount = allReminders.filter((r) => r.source === "kb").length;
 
-    log(`[ReminderBuilder] Built reminder list with ${allReminders.length} total reminders (${messageCount} message + ${kbCount} KB, ${disabledCount} disabled)`);
+    log(`[ReminderBuilder] Built reminder list with ${allReminders.length} total reminders (${messageCount} message + ${kbCount} KB, ${disabledCount} disabled)`, 'debug');
 
     return {
       reminders: allReminders,
@@ -236,7 +236,7 @@ export async function getFilteredReminders({ maxCount = null, urgentOnly = false
       filtered = filtered.slice(0, maxCount);
     }
 
-    log(`[ReminderBuilder] Filtered reminders: ${filtered.length} of ${reminderData.reminders.length} (maxCount=${maxCount}, urgentOnly=${urgentOnly}, source=${source})`);
+    log(`[ReminderBuilder] Filtered reminders: ${filtered.length} of ${reminderData.reminders.length} (maxCount=${maxCount}, urgentOnly=${urgentOnly}, source=${source})`, 'debug');
 
     return filtered;
   } catch (e) {
@@ -252,13 +252,13 @@ export async function getFilteredReminders({ maxCount = null, urgentOnly = false
  */
 export async function getRandomReminders(count = 2) {
   try {
-    log(`[ReminderBuilder] Getting ${count} random reminders...`);
+    log(`[ReminderBuilder] Getting ${count} random reminders...`, 'debug');
 
     const reminderData = await buildReminderList();
     const allReminders = reminderData.reminders;
 
     if (allReminders.length === 0) {
-      log(`[ReminderBuilder] No reminders available`);
+      log(`[ReminderBuilder] No reminders available`, 'debug');
       return {
         reminders: [],
         urgentCount: 0,
@@ -310,7 +310,7 @@ export async function getRandomReminders(count = 2) {
             urgentReminders.push(reminder);
             const status = dueDateTimestamp < todayTimestamp ? "overdue" : 
                           dueDateTimestamp === todayTimestamp ? "today" : "tomorrow";
-            log(`[ReminderBuilder] Urgent reminder found (${status}): "${reminder.content.slice(0, 60)}..." due ${reminder.dueDate}`);
+            log(`[ReminderBuilder] Urgent reminder found (${status}): "${reminder.content.slice(0, 60)}..." due ${reminder.dueDate}`, 'debug');
             continue;
           }
         } catch (e) {
@@ -324,7 +324,8 @@ export async function getRandomReminders(count = 2) {
     }
 
     log(
-      `[ReminderBuilder] Found ${urgentReminders.length} urgent (overdue/today/tomorrow), ${otherReminders.length} other reminders`
+      `[ReminderBuilder] Found ${urgentReminders.length} urgent (overdue/today/tomorrow), ${otherReminders.length} other reminders`,
+      'debug'
     );
 
     // Start with all urgent reminders
@@ -349,7 +350,8 @@ export async function getRandomReminders(count = 2) {
         urgentReminders.length
       } urgent + ${
         selectedReminders.length - urgentReminders.length
-      } random) from ${allReminders.length} total`
+      } random) from ${allReminders.length} total`,
+      'debug'
     );
 
     return {

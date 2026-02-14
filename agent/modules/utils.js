@@ -548,11 +548,24 @@ export function log(message, level = 'info') {
     return;
   }
 
-  if (!SETTINGS.verboseLogging) {
-    return; // Suppress info/debug when not verbose.
+  // Auto-downgrade [TMDBG prefixed info-level messages to debug.
+  // The TMDBG prefix already marks these as diagnostic — no need to change call sites.
+  const effectiveLevel = (level === 'info' && typeof message === 'string' && message.startsWith('[TMDBG'))
+    ? 'debug' : level;
+
+  // Debug/trace-level logs require both verboseLogging AND debugLogging.
+  if (effectiveLevel === 'debug' || effectiveLevel === 'trace') {
+    if (SETTINGS.verboseLogging && SETTINGS.debugLogging) {
+      console.log(prefix);
+    }
+    return;
   }
 
-  if (level === 'warn') {
+  if (!SETTINGS.verboseLogging) {
+    return; // Suppress info/warn when not verbose.
+  }
+
+  if (effectiveLevel === 'warn') {
     console.warn(prefix);
   } else {
     console.log(prefix);

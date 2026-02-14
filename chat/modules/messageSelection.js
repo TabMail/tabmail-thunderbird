@@ -2,6 +2,7 @@
 // Handles messageSelection experiment integration and generates unique IDs using centralized getUniqueMessageKey
 
 import { resolveWeFolderFromXulUri } from "../../agent/modules/folderResolver.js";
+import { SETTINGS } from "../../agent/modules/config.js";
 import { log } from "../../agent/modules/utils.js";
 
 // Store listener references for cleanup
@@ -44,10 +45,10 @@ async function generateUniqueId(msg) {
  * @param {Object} selectionData - Raw selection data from experiment
  */
 async function handleSelectionChange(selectionData) {
-  console.log(`[MessageSelection-DEBUG] handleSelectionChange called with:`, selectionData);
-  
+  if (SETTINGS.debugLogging) console.log(`[MessageSelection-DEBUG] handleSelectionChange called with:`, selectionData);
+
   const selectedMessages = selectionData.selectedMessages || [];
-  console.log(`[MessageSelection-DEBUG] selectedMessages count: ${selectedMessages.length}`);
+  if (SETTINGS.debugLogging) console.log(`[MessageSelection-DEBUG] selectedMessages count: ${selectedMessages.length}`);
   
   const uniqueIds = [];
   
@@ -63,14 +64,14 @@ async function handleSelectionChange(selectionData) {
   }
   
   // Forward unique IDs to all chat windows via runtime messaging
-  console.log(`[MessageSelection] Forwarding ${selectedMessages.length} -> ${uniqueIds.length} unique IDs`);
+  if (SETTINGS.debugLogging) console.log(`[MessageSelection] Forwarding ${selectedMessages.length} -> ${uniqueIds.length} unique IDs`);
   browser.runtime.sendMessage({
     command: "selection-changed",
     selectedMessageIds: uniqueIds,
     selectionCount: uniqueIds.length
   }).catch((e) => {
     // Ignore errors - chat window might not be open
-    console.log(`[MessageSelection] Failed to forward to chat windows: ${e}`);
+    if (SETTINGS.debugLogging) console.log(`[MessageSelection] Failed to forward to chat windows: ${e}`);
   });
 }
 
@@ -80,10 +81,10 @@ async function handleSelectionChange(selectionData) {
  */
 async function handleCurrentSelectionRequest() {
   try {
-    console.log(`[MessageSelection-DEBUG] handleCurrentSelectionRequest called`);
+    if (SETTINGS.debugLogging) console.log(`[MessageSelection-DEBUG] handleCurrentSelectionRequest called`);
     // API readiness guard
     if (!browser.messageSelection?.getSelectedMessages) {
-      console.log(`[MessageSelection-DEBUG] Experiment not ready`);
+      if (SETTINGS.debugLogging) console.log(`[MessageSelection-DEBUG] Experiment not ready`);
       return { ok: false, error: 'experiment not ready' };
     }
     
@@ -113,7 +114,7 @@ async function handleCurrentSelectionRequest() {
       }
     }
     
-    console.log(`[MessageSelection] Current selection: ${selectedMessages.length} -> ${uniqueIds.length} unique IDs`);
+    if (SETTINGS.debugLogging) console.log(`[MessageSelection] Current selection: ${selectedMessages.length} -> ${uniqueIds.length} unique IDs`);
     
     // Send current selection to all chat windows
     browser.runtime.sendMessage({

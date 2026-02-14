@@ -42,7 +42,7 @@ export async function getTotalInboxCount() {
     log(`[InboxContext] Error getting total inbox count: ${e}`, "error");
   }
   
-  log(`[InboxContext] Total inbox count: ${totalCount}`);
+  log(`[InboxContext] Total inbox count: ${totalCount}`, 'debug');
   return totalCount;
 }
 
@@ -55,7 +55,7 @@ export async function getInboxForAccount(accountId) {
     const account = accounts.find(acc => acc.id === accountId);
     
     if (!account?.rootFolder) {
-      log(`[InboxLookup] No root folder for account ${accountId}`);
+      log(`[InboxLookup] No root folder for account ${accountId}`, 'debug');
       return null;
     }
     
@@ -66,7 +66,7 @@ export async function getInboxForAccount(accountId) {
     const inbox = allFolders.find(f => isInboxFolder(f));
     
     if (inbox) {
-      log(`[InboxLookup] Found inbox for account ${accountId}: '${inbox.name}' (path='${inbox.path}')`);
+      log(`[InboxLookup] Found inbox for account ${accountId}: '${inbox.name}' (path='${inbox.path}')`, 'debug');
     } else {
       log(`[InboxLookup] No inbox found for account ${accountId}`, "warn");
     }
@@ -134,7 +134,7 @@ export async function buildInboxContext() {
       }
     }
 
-    log(`[InboxContext] Collected ${allMessages.length} total inbox messages`);
+    log(`[InboxContext] Collected ${allMessages.length} total inbox messages`, 'debug');
 
     // Sort all messages by date descending (most recent first)
     allMessages.sort((a, b) => {
@@ -147,7 +147,7 @@ export async function buildInboxContext() {
     const messagesToProcess = allMessages.slice(0, maxEmails);
     
     if (allMessages.length > maxEmails) {
-      log(`[InboxContext] Inbox has ${allMessages.length} messages, limiting context to most recent ${maxEmails}`);
+      log(`[InboxContext] Inbox has ${allMessages.length} messages, limiting context to most recent ${maxEmails}`, 'debug');
     }
 
     // Process only the limited set of messages
@@ -175,7 +175,7 @@ export async function buildInboxContext() {
         contextArray[i].replied = repliedStatuses[i] || false;
       }
       
-      log(`[InboxContext] Successfully fetched replied status for ${contextArray.length} messages`);
+      log(`[InboxContext] Successfully fetched replied status for ${contextArray.length} messages`, 'debug');
     } catch (e) {
       log(`[InboxContext] Failed to fetch replied status: ${e}`, "error");
       // Set all to false if bulk fetch fails
@@ -269,27 +269,27 @@ async function _getRepliedStatusBulk(messages) {
       
       // Log first few items for debugging
       if (idx < 3) {
-        log(`[InboxContext] Sample item ${idx}: folderURI="${item.folderURI}", key=${item.key}, pathStr="${item.pathStr}", messageId="${item.messageId}"`);
+        log(`[InboxContext] Sample item ${idx}: folderURI="${item.folderURI}", key=${item.key}, pathStr="${item.pathStr}", messageId="${item.messageId}"`, 'debug');
       }
       
       return item;
     });
 
-    log(`[InboxContext] Calling tmHdr.getRepliedBulk for ${items.length} messages`);
+    log(`[InboxContext] Calling tmHdr.getRepliedBulk for ${items.length} messages`, 'debug');
     
     // Call the bulk API
     const results = await browser.tmHdr.getRepliedBulk(items);
     
-    log(`[InboxContext] tmHdr.getRepliedBulk returned ${results.length} results`);
+    log(`[InboxContext] tmHdr.getRepliedBulk returned ${results.length} results`, 'debug');
     
     // Log summary of results
     const trueCount = results.filter(r => r === true).length;
     const falseCount = results.filter(r => r === false).length;
-    log(`[InboxContext] Replied status: ${trueCount} true, ${falseCount} false out of ${results.length} total`);
+    log(`[InboxContext] Replied status: ${trueCount} true, ${falseCount} false out of ${results.length} total`, 'debug');
     
     // Log first few results for debugging
     for (let i = 0; i < Math.min(5, results.length); i++) {
-      log(`[InboxContext] Result[${i}]: ${results[i]} (subject: "${messages[i]?.subject}")`);
+      log(`[InboxContext] Result[${i}]: ${results[i]} (subject: "${messages[i]?.subject}")`, 'debug');
     }
     
     return results;

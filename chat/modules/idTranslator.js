@@ -91,7 +91,7 @@ export function toNumericId(realId, overrideCtx) {
   // Check if we already have this real ID mapped
   for (const [numericId, mappedRealId] of idTranslation.idMap.entries()) {
     if (mappedRealId === realId) {
-      log(`[Translate] Real->Numeric: ${realId} -> ${numericId}`);
+      log(`[Translate] Real->Numeric: ${realId} -> ${numericId}`, 'debug');
       return numericId;
     }
   }
@@ -101,13 +101,13 @@ export function toNumericId(realId, overrideCtx) {
   const freeIds = idTranslation.freeIds || [];
   if (freeIds.length > 0) {
     numericId = freeIds.pop();
-    log(`[Translate] Reused free ID ${numericId} for: ${realId}`);
+    log(`[Translate] Reused free ID ${numericId} for: ${realId}`, 'debug');
   } else {
     numericId = idTranslation.nextNumericId++;
   }
   idTranslation.idMap.set(numericId, realId);
   idTranslation.lastAccessed = Date.now();
-  log(`[Translate] Real->Numeric: ${realId} -> ${numericId}`);
+  log(`[Translate] Real->Numeric: ${realId} -> ${numericId}`, 'debug');
 
   // Persist idMap (debounced) — only for the main chat context, not overrides
   if (!overrideCtx) {
@@ -142,7 +142,7 @@ export function toRealId(numericId, overrideCtx) {
   }
 
   idTranslation.lastAccessed = Date.now();
-  log(`[Translate] Numeric->Real: ${numericId} -> ${realId}`);
+  log(`[Translate] Numeric->Real: ${numericId} -> ${realId}`, 'debug');
   return realId;
 }
 

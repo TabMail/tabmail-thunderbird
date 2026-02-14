@@ -43,7 +43,7 @@ export async function focusChatWindow() {
         );
         if (hasChat) {
           await browser.windows.update(w.id, { focused: true });
-          log(`[ChatWindow] Focused existing chat window id=${w.id}`);
+          log(`[ChatWindow] Focused existing chat window id=${w.id}`, 'debug');
           return true;
         }
       }
@@ -75,7 +75,7 @@ export async function openOrFocusChatWindow() {
       width: defaultWidth,
       height: defaultHeight,
     });
-    log("[ChatWindow] Chat window opened.");
+    log("[ChatWindow] Chat window opened.", 'debug');
   } catch (e) {
     log(`[ChatWindow] Failed to open chat window: ${e}`, "error");
   }

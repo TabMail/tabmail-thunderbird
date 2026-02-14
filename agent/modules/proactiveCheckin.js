@@ -786,12 +786,12 @@ export async function consumePendingProactiveMessage() {
     const stored = await browser.storage.local.get(STORAGE.PENDING_MSG);
     const data = stored?.[STORAGE.PENDING_MSG];
     if (!data?.message) {
-      log(`[ProActReach] consumePending: no pending message found`);
+      log(`[ProActReach] consumePending: no pending message found`, 'debug');
       return null;
     }
 
     const age = Date.now() - (data.timestamp || 0);
-    log(`[ProActReach] consumePending: found message (${data.message.length} chars, age=${Math.round(age / 1000)}s)`);
+    log(`[ProActReach] consumePending: found message (${data.message.length} chars, age=${Math.round(age / 1000)}s)`, 'debug');
 
     // Clear it immediately
     await browser.storage.local.remove(STORAGE.PENDING_MSG);
@@ -799,7 +799,7 @@ export async function consumePendingProactiveMessage() {
     // Stale threshold: 5 minutes
     const staleMs = 5 * 60_000;
     if (age > staleMs) {
-      log(`[ProActReach] consumePending: DISCARDING stale message (age=${Math.round(age / 1000)}s)`);
+      log(`[ProActReach] consumePending: DISCARDING stale message (age=${Math.round(age / 1000)}s)`, 'debug');
       return null;
     }
 

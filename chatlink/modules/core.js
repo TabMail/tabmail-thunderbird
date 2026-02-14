@@ -46,7 +46,7 @@ async function getDeviceId() {
     // Persist for future sessions
     await browser.storage.local.set({ chatlink_device_id: deviceId });
 
-    log(`[ChatLink] Generated new device ID: ${deviceId.substring(0, 8)}...`);
+    log(`[ChatLink] Generated new device ID: ${deviceId.substring(0, 8)}...`, 'debug');
     return deviceId;
   } catch (e) {
     log(`[ChatLink] Failed to get device ID: ${e}`, "warn");
@@ -63,7 +63,7 @@ export async function initChatLink() {
   try {
     // Always set up listener first (before async storage check) to avoid race conditions
     browser.runtime.onMessage.addListener(handleBackgroundMessage);
-    log(`[ChatLink] Message listener registered`);
+    log(`[ChatLink] Message listener registered`, 'debug');
 
     // Check if ChatLink is enabled
     const stored = await browser.storage.local.get([
@@ -74,16 +74,16 @@ export async function initChatLink() {
     linkedPlatform = stored.chatlink_platform || null;
 
     if (!chatLinkEnabled || !linkedPlatform) {
-      log(`[ChatLink] Not enabled or no platform linked`);
+      log(`[ChatLink] Not enabled or no platform linked`, 'debug');
       return;
     }
 
-    log(`[ChatLink] Initializing chat window integration for ${linkedPlatform}`);
+    log(`[ChatLink] Initializing chat window integration for ${linkedPlatform}`, 'debug');
 
     // Check for pending message (set by background when chat window was closed)
     await processPendingMessage();
 
-    log(`[ChatLink] Chat window integration ready`);
+    log(`[ChatLink] Chat window integration ready`, 'debug');
   } catch (e) {
     log(`[ChatLink] Init failed: ${e}`, "error");
   }
@@ -94,7 +94,7 @@ export async function initChatLink() {
  */
 function handleBackgroundMessage(message, sender, sendResponse) {
   if (message.type === "chatlink_inbound") {
-    log(`[ChatLink] Received inbound message from background`);
+    log(`[ChatLink] Received inbound message from background`, 'debug');
     // Process the inbound WhatsApp message
     handleInboundMessage(message.message).catch(e => {
       log(`[ChatLink] Failed to handle inbound message: ${e}`, "error");
@@ -113,7 +113,7 @@ async function processPendingMessage() {
     const pending = stored.chatlink_pending_message;
 
     if (pending && pending.text) {
-      log(`[ChatLink] Found pending message: ${pending.text.substring(0, 50)}...`);
+      log(`[ChatLink] Found pending message: ${pending.text.substring(0, 50)}...`, 'debug');
 
       // Clear the pending message
       await browser.storage.local.remove(["chatlink_pending_message"]);
@@ -131,7 +131,7 @@ async function processPendingMessage() {
  */
 async function handleInboundMessage(message) {
   try {
-    log(`[ChatLink] handleInboundMessage received: ${JSON.stringify(message)}`);
+    log(`[ChatLink] handleInboundMessage received: ${JSON.stringify(message)}`, 'debug');
 
     // Handle both camelCase (from runtime.sendMessage) and snake_case (from pending storage)
     const id = message.id;
@@ -141,13 +141,13 @@ async function handleInboundMessage(message) {
     const timestamp = message.timestamp;
     const callbackData = message.callbackData || message.callback_data;
 
-    log(`[ChatLink] Processing message from ${platform}: ${text?.substring(0, 50)}...`);
-    log(`[ChatLink] Extracted: id=${id}, platform=${platform}, platformChatId=${platformChatId}`);
+    log(`[ChatLink] Processing message from ${platform}: ${text?.substring(0, 50)}...`, 'debug');
+    log(`[ChatLink] Extracted: id=${id}, platform=${platform}, platformChatId=${platformChatId}`, 'debug');
 
     // Check if agent is currently processing (in "stop" mode)
     // If so, interrupt and process this new message instead
     if (window.getChatMode && window.getChatMode() === "stop") {
-      log(`[ChatLink] Interrupt detected - agent is processing, stopping current execution`);
+      log(`[ChatLink] Interrupt detected - agent is processing, stopping current execution`, 'debug');
       if (window.stopExecution) {
         await window.stopExecution();
       }
@@ -163,7 +163,7 @@ async function handleInboundMessage(message) {
       timestamp,
     };
 
-    log(`[ChatLink] Set chatLinkSource: ${JSON.stringify(ctx.chatLinkSource)}`);
+    log(`[ChatLink] Set chatLinkSource: ${JSON.stringify(ctx.chatLinkSource)}`, 'debug');
 
     // Clear any pending suggestion (from FSM confirmation prompts)
     try {
@@ -218,23 +218,23 @@ async function handleInboundMessage(message) {
  * @returns {Promise<boolean>} True if relay succeeded, false otherwise
  */
 export async function relayResponse(assistantText, options = {}) {
-  log(`[ChatLink] relayResponse called, chatLinkSource=${JSON.stringify(ctx.chatLinkSource)}`);
+  log(`[ChatLink] relayResponse called, chatLinkSource=${JSON.stringify(ctx.chatLinkSource)}`, 'debug');
 
   if (!ctx.chatLinkSource) {
-    log(`[ChatLink] No chatLinkSource, skipping relay`);
+    log(`[ChatLink] No chatLinkSource, skipping relay`, 'debug');
     return true; // Not a ChatLink message - considered success (nothing to relay)
   }
 
   const { replyTo, platform, platformChatId } = ctx.chatLinkSource;
   const { buttons, fsmPid, isIntermediate } = options;
 
-  log(`[ChatLink] Relay params: replyTo=${replyTo}, platform=${platform}, platformChatId=${platformChatId}`);
+  log(`[ChatLink] Relay params: replyTo=${replyTo}, platform=${platform}, platformChatId=${platformChatId}`, 'debug');
 
   try {
     // Render markdown and resolve entity references (reuses FTS chat history rendering)
     const resolvedText = await renderToPlainText(assistantText);
 
-    log(`[ChatLink] Resolved text length: ${resolvedText?.length || 0}, first 100 chars: ${(resolvedText || "").substring(0, 100)}`);
+    log(`[ChatLink] Resolved text length: ${resolvedText?.length || 0}, first 100 chars: ${(resolvedText || "").substring(0, 100)}`, 'debug');
 
     // Validate required fields before sending
     if (!resolvedText) {
@@ -255,7 +255,7 @@ export async function relayResponse(assistantText, options = {}) {
     const accessToken = await getAccessToken();
 
     if (!accessToken) {
-      log(`[ChatLink] No access token, cannot relay response`);
+      log(`[ChatLink] No access token, cannot relay response`, 'debug');
       return false;
     }
 
@@ -269,7 +269,7 @@ export async function relayResponse(assistantText, options = {}) {
       is_intermediate: isIntermediate || false,
     };
 
-    log(`[ChatLink] Sending to worker: ${JSON.stringify(requestBody).substring(0, 500)}`);
+    log(`[ChatLink] Sending to worker: ${JSON.stringify(requestBody).substring(0, 500)}`, 'debug');
 
     const workerUrl = await getChatLinkUrl();
     const response = await fetch(`${workerUrl}/chatlink/respond`, {
@@ -286,7 +286,7 @@ export async function relayResponse(assistantText, options = {}) {
       throw new Error(`HTTP ${response.status}: ${errorBody}`);
     }
 
-    log(`[ChatLink] Response relayed to ${platform}`);
+    log(`[ChatLink] Response relayed to ${platform}`, 'debug');
 
     // Clear source after final response (not intermediate)
     if (!isIntermediate) {
@@ -331,7 +331,7 @@ export async function relayStatusMessage(statusText) {
     // Use isIntermediate: true so it doesn't clear the source
     await relayResponse(formattedText, { isIntermediate: true });
 
-    log(`[ChatLink] Status relayed: ${statusText}`);
+    log(`[ChatLink] Status relayed: ${statusText}`, 'debug');
   } catch (e) {
     // Non-fatal - don't block UI for status relay failures
     log(`[ChatLink] Status relay failed (non-fatal): ${e}`, "warn");
@@ -357,13 +357,13 @@ export async function relayProactiveMessage(text) {
     const isEnabled = stored.chatlink_enabled === true && stored.chatlink_platform === "whatsapp";
 
     if (!isEnabled) {
-      log(`[ChatLink] Proactive relay skipped - not enabled (storage check)`);
+      log(`[ChatLink] Proactive relay skipped - not enabled (storage check)`, 'debug');
       return false;
     }
 
     // Check if relay for proactive messages is enabled (default: true)
     if (stored.chatlink_relay_proactive === false) {
-      log(`[ChatLink] Proactive relay skipped - relay setting disabled`);
+      log(`[ChatLink] Proactive relay skipped - relay setting disabled`, 'debug');
       return false;
     }
 
@@ -371,7 +371,7 @@ export async function relayProactiveMessage(text) {
     const accessToken = await getAccessToken();
 
     if (!accessToken) {
-      log(`[ChatLink] Proactive relay skipped - no access token`);
+      log(`[ChatLink] Proactive relay skipped - no access token`, 'debug');
       return false;
     }
 
@@ -380,7 +380,7 @@ export async function relayProactiveMessage(text) {
     const resolvedText = await renderToPlainText(text);
 
     if (!resolvedText) {
-      log(`[ChatLink] Proactive relay skipped - empty text after render`);
+      log(`[ChatLink] Proactive relay skipped - empty text after render`, 'debug');
       return false;
     }
 
@@ -405,7 +405,7 @@ export async function relayProactiveMessage(text) {
       return false;
     }
 
-    log(`[ChatLink] Proactive message relayed to WhatsApp`);
+    log(`[ChatLink] Proactive message relayed to WhatsApp`, "debug");
     return true;
   } catch (e) {
     log(`[ChatLink] Proactive relay error: ${e}`, "warn");
@@ -420,7 +420,7 @@ export async function disconnectChatLink() {
   try {
     browser.runtime.onMessage.removeListener(handleBackgroundMessage);
     ctx.chatLinkSource = null;
-    log(`[ChatLink] Chat window integration disconnected`);
+    log(`[ChatLink] Chat window integration disconnected`, "debug");
   } catch (e) {
     log(`[ChatLink] Disconnect error: ${e}`, "warn");
   }
@@ -500,7 +500,7 @@ export async function generateLinkingCode() {
       return { ok: false, error: data.error || data.message || "Failed to generate code" };
     }
 
-    log(`[ChatLink] Generated linking code: ${data.code}`);
+    log(`[ChatLink] Generated linking code: ${data.code}`, "debug");
     return {
       ok: true,
       code: data.code,
@@ -532,7 +532,7 @@ export async function enableChatLink(platform) {
     linkedPlatform = platform;
 
     // Background script will automatically connect when it sees storage change
-    log(`[ChatLink] Enabled for ${platform}`);
+    log(`[ChatLink] Enabled for ${platform}`, "debug");
   } catch (e) {
     log(`[ChatLink] Failed to enable: ${e}`, "error");
   }
@@ -554,7 +554,7 @@ export async function disableChatLink() {
     linkedPlatform = null;
 
     // Background script will automatically disconnect when it sees storage change
-    log(`[ChatLink] Disabled`);
+    log(`[ChatLink] Disabled`, "debug");
   } catch (e) {
     log(`[ChatLink] Failed to disable: ${e}`, "error");
   }

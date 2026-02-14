@@ -1,4 +1,5 @@
 import { getUiFontSizeConfig } from "./uiFontSize.js";
+import { SETTINGS } from "../../agent/modules/config.js";
 
 function isPositiveNumber(n) {
   return typeof n === "number" && Number.isFinite(n) && n > 0;
@@ -11,13 +12,13 @@ async function readUiFontSizePx() {
 
   try {
     if (!browser?.tmPrefs?.getIntSafe) {
-      console.warn("[TMDBG Font] tmPrefs.getIntSafe not available (ui)");
+      if (SETTINGS.debugLogging) console.warn("[TMDBG Font] tmPrefs.getIntSafe not available (ui)");
       return null;
     }
     const v = await browser.tmPrefs.getIntSafe(pref, 0);
     return isPositiveNumber(v) ? v : null;
   } catch (e) {
-    console.warn(`[TMDBG Font] readUiFontSizePx failed for ${pref}:`, e);
+    if (SETTINGS.debugLogging) console.warn(`[TMDBG Font] readUiFontSizePx failed for ${pref}:`, e);
     return null;
   }
 }
@@ -26,7 +27,7 @@ async function readMessageFontSizePx() {
   // Prefer x-unicode; then x-western. No computed fallback to keep debugging clear.
   try {
     if (!browser?.tmPrefs?.getInt) {
-      console.warn("[TMDBG Font] tmPrefs.getInt not available (message)");
+      if (SETTINGS.debugLogging) console.warn("[TMDBG Font] tmPrefs.getInt not available (message)");
       return null;
     }
 
@@ -36,13 +37,13 @@ async function readMessageFontSizePx() {
     const westernPref = await browser.tmPrefs.getInt("font.size.variable.x-western");
     if (isPositiveNumber(westernPref)) return westernPref;
 
-    console.warn("[TMDBG Font] Message font prefs returned non-positive values", {
+    if (SETTINGS.debugLogging) console.warn("[TMDBG Font] Message font prefs returned non-positive values", {
       unicodePref,
       westernPref,
     });
     return null;
   } catch (e) {
-    console.warn("[TMDBG Font] readMessageFontSizePx failed:", e);
+    if (SETTINGS.debugLogging) console.warn("[TMDBG Font] readMessageFontSizePx failed:", e);
     return null;
   }
 }
@@ -51,7 +52,7 @@ function setCssVarPx(doc, name, px) {
   try {
     doc?.documentElement?.style?.setProperty(name, `${px}px`);
   } catch (e) {
-    console.warn(`[TMDBG Font] Failed to set CSS var ${name}=${px}px:`, e);
+    if (SETTINGS.debugLogging) console.warn(`[TMDBG Font] Failed to set CSS var ${name}=${px}px:`, e);
   }
 }
 
@@ -74,14 +75,14 @@ function applyScaledVars(doc, prefix, sizes, scale) {
  */
 export async function applyUiFontVarsToDocument({ document, source }) {
   const cfg = getUiFontSizeConfig();
-  console.log("[TMDBG Font] applyUiFontVarsToDocument START", { source });
+  if (SETTINGS.debugLogging) console.log("[TMDBG Font] applyUiFontVarsToDocument START", { source });
 
   if (typeof browser === "undefined") {
-    console.error("[TMDBG Font] browser is undefined");
+    if (SETTINGS.debugLogging) console.error("[TMDBG Font] browser is undefined");
     return { ok: false, reason: "browser_undefined" };
   }
   if (!browser.tmPrefs) {
-    console.warn("[TMDBG Font] tmPrefs not available");
+    if (SETTINGS.debugLogging) console.warn("[TMDBG Font] tmPrefs not available");
     return { ok: false, reason: "tmPrefs_unavailable" };
   }
 
@@ -89,7 +90,7 @@ export async function applyUiFontVarsToDocument({ document, source }) {
   const msgPx = await readMessageFontSizePx();
 
   if (!isPositiveNumber(uiPx) || !isPositiveNumber(msgPx)) {
-    console.warn("[TMDBG Font] Pref read failed; not applying document font vars", {
+    if (SETTINGS.debugLogging) console.warn("[TMDBG Font] Pref read failed; not applying document font vars", {
       source,
       uiPx,
       msgPx,
@@ -124,7 +125,7 @@ export async function applyUiFontVarsToDocument({ document, source }) {
       : null;
 
   if (!isPositiveNumber(uiScalePopup) || !isPositiveNumber(uiScaleChat) || !isPositiveNumber(msgScaleChat)) {
-    console.warn("[TMDBG Font] Missing design bases; not applying scaled vars", {
+    if (SETTINGS.debugLogging) console.warn("[TMDBG Font] Missing design bases; not applying scaled vars", {
       source,
       popupBase,
       chatUiBase,
@@ -145,7 +146,7 @@ export async function applyUiFontVarsToDocument({ document, source }) {
   applyScaledVars(document, "--tm-chat-font-ui-", cfg?.chat?.uiSizesPx || {}, uiScaleChat);
   applyScaledVars(document, "--tm-chat-font-msg-", cfg?.chat?.messageSizesPx || {}, msgScaleChat);
 
-  console.log("[TMDBG Font] applyUiFontVarsToDocument OK", {
+  if (SETTINGS.debugLogging) console.log("[TMDBG Font] applyUiFontVarsToDocument OK", {
     source,
     uiPx,
     msgPx,

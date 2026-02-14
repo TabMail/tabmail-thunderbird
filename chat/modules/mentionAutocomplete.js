@@ -63,7 +63,7 @@ export async function updateEmailCacheForMentions(emails) {
       emailCache = emailCache.slice(0, maxSize);
     }
 
-    log(`[MentionAutocomplete] Updated email cache: ${emailCache.length} emails`);
+    log(`[MentionAutocomplete] Updated email cache: ${emailCache.length} emails`, 'debug');
   } catch (e) {
     log(`[MentionAutocomplete] Failed to update email cache: ${e}`, "error");
   }
@@ -81,20 +81,20 @@ export async function refreshEntityCache() {
     
     if (!entityMap || entityMap.size === 0) {
       entityCache = [];
-      log(`[MentionAutocomplete] entityMap is empty, cleared entityCache`);
+      log(`[MentionAutocomplete] entityMap is empty, cleared entityCache`, 'debug');
       return;
     }
     
-    log(`[MentionAutocomplete] Scanning entityMap with ${entityMap.size} entries`);
+    log(`[MentionAutocomplete] Scanning entityMap with ${entityMap.size} entries`, 'debug');
     
     for (const [compoundNumericId, entity] of entityMap.entries()) {
-      log(`[MentionAutocomplete] Processing entity: ${compoundNumericId}, type=${entity.type}`);
+      log(`[MentionAutocomplete] Processing entity: ${compoundNumericId}, type=${entity.type}`, 'debug');
       
       if (entity.type === 'contact') {
         // Resolve contact details using the real contact ID
         const contactDetails = await resolveContactDetails(entity.realContactId);
         if (contactDetails) {
-          log(`[MentionAutocomplete] Contact resolved: name="${contactDetails.name}", compoundId="${compoundNumericId}"`);
+          log(`[MentionAutocomplete] Contact resolved: name="${contactDetails.name}", compoundId="${compoundNumericId}"`, 'debug');
           items.push({
             type: "contact",
             compoundId: compoundNumericId,
@@ -104,13 +104,13 @@ export async function refreshEntityCache() {
             searchFields: [contactDetails.name, contactDetails.email, ...contactDetails.emails].filter(Boolean),
           });
         } else {
-          log(`[MentionAutocomplete] Failed to resolve contact: ${entity.realContactId}`);
+          log(`[MentionAutocomplete] Failed to resolve contact: ${entity.realContactId}`, 'debug');
         }
       } else if (entity.type === 'event') {
         // Resolve event details using the real event ID
         const eventDetails = await resolveEventDetails(entity.realEventId);
         if (eventDetails) {
-          log(`[MentionAutocomplete] Event resolved: title="${eventDetails.title}", compoundId="${compoundNumericId}"`);
+          log(`[MentionAutocomplete] Event resolved: title="${eventDetails.title}", compoundId="${compoundNumericId}"`, 'debug');
           items.push({
             type: "event",
             compoundId: compoundNumericId,
@@ -120,13 +120,13 @@ export async function refreshEntityCache() {
             searchFields: [eventDetails.title, eventDetails.startDate, eventDetails.location].filter(Boolean),
           });
         } else {
-          log(`[MentionAutocomplete] Failed to resolve event: ${entity.realEventId}`);
+          log(`[MentionAutocomplete] Failed to resolve event: ${entity.realEventId}`, 'debug');
         }
       }
     }
     
     entityCache = items;
-    log(`[MentionAutocomplete] Refreshed entityCache: ${items.length} items (contacts/events)`);
+    log(`[MentionAutocomplete] Refreshed entityCache: ${items.length} items (contacts/events)`, 'debug');
   } catch (e) {
     log(`[MentionAutocomplete] Failed to refresh entityCache: ${e}`, "error");
     entityCache = [];
@@ -266,7 +266,7 @@ export function initMentionAutocomplete(contenteditable) {
   // Prevent dropdown from stealing focus from contenteditable
   dropdown.addEventListener("mousedown", (e) => {
     e.preventDefault(); // Prevents focus loss
-    log(`[MentionAutocomplete] Dropdown mousedown prevented default`, "info");
+    log(`[MentionAutocomplete] Dropdown mousedown prevented default`, 'debug');
   });
   
   document.body.appendChild(dropdown);
@@ -288,7 +288,7 @@ export function initMentionAutocomplete(contenteditable) {
     }
   });
 
-  log(`[MentionAutocomplete] Initialized on contenteditable`);
+  log(`[MentionAutocomplete] Initialized on contenteditable`, 'debug');
 }
 
 /**
@@ -352,7 +352,7 @@ async function handleInput(contenteditable, dropdown) {
   
   // If @ was just detected (not active yet), log it
   if (!autocompleteState.isActive) {
-    log(`[MentionAutocomplete] @ detected at position ${atPos}, query: "${query}"`);
+    log(`[MentionAutocomplete] @ detected at position ${atPos}, query: "${query}"`, 'debug');
   }
   
   // Update state and show autocomplete
@@ -363,7 +363,7 @@ async function handleInput(contenteditable, dropdown) {
   
   // Notify chat that autocomplete is active
   window.mentionAutocompleteActive = true;
-  log(`[MentionAutocomplete] Set mentionAutocompleteActive = true`, "info");
+  log(`[MentionAutocomplete] Set mentionAutocompleteActive = true`, 'debug');
 
   // Get matches (async now)
   await updateMatches(query);
@@ -447,7 +447,7 @@ async function updateMatches(query) {
   }
 
   autocompleteState.matches = matches;
-  log(`[MentionAutocomplete] Found ${matches.length} matches for query "${query}"`);
+  log(`[MentionAutocomplete] Found ${matches.length} matches for query "${query}"`, 'debug');
 }
 
 /**
@@ -523,10 +523,10 @@ function showAutocomplete(contenteditable, dropdown, atPos) {
 
     // Click handler
     item.addEventListener("click", (e) => {
-      log(`[MentionAutocomplete] Dropdown item clicked: index=${index}, label="${match.label}"`, "info");
+      log(`[MentionAutocomplete] Dropdown item clicked: index=${index}, label="${match.label}"`, 'debug');
       e.preventDefault();
       e.stopPropagation();
-      log(`[MentionAutocomplete] Prevented default and stopped propagation`, "info");
+      log(`[MentionAutocomplete] Prevented default and stopped propagation`, 'debug');
       selectMatch(index, contenteditable, dropdown);
     });
 
@@ -592,7 +592,7 @@ function handleKeydown(e, contenteditable, dropdown) {
   } else if (e.key === "Tab" || e.key === "Enter") {
     // Select current match (both Tab and Enter)
     if (matches.length > 0) {
-      log(`[MentionAutocomplete] ${e.key} pressed in autocomplete, selecting match and blocking propagation`, "info");
+      log(`[MentionAutocomplete] ${e.key} pressed in autocomplete, selecting match and blocking propagation`, 'debug');
       e.preventDefault();
       e.stopImmediatePropagation(); // Prevent chat's Enter/Tab handler from firing
       selectMatch(autocompleteState.selectedIndex, contenteditable, dropdown);
@@ -626,14 +626,14 @@ function updateDropdownSelection(dropdown) {
  * Select a match and insert chip into contenteditable
  */
 async function selectMatch(index, contenteditable, dropdown) {
-  log(`[MentionAutocomplete] selectMatch called: index=${index}`, "info");
+  log(`[MentionAutocomplete] selectMatch called: index=${index}`, 'debug');
   const match = autocompleteState.matches[index];
   if (!match) {
     log(`[MentionAutocomplete] No match found at index ${index}`, "warn");
     return;
   }
   
-  log(`[MentionAutocomplete] Match found: type="${match.type}", label="${match.label}"`, "info");
+  log(`[MentionAutocomplete] Match found: type="${match.type}", label="${match.label}"`, 'debug');
   
   // Determine numeric ID, label, and chip display based on match type
   let numericId = null;
@@ -653,11 +653,11 @@ async function selectMatch(index, contenteditable, dropdown) {
     if (match.type === "contact") {
       chipEmoji = "👤";
       markdownType = "Contact";
-      log(`[MentionAutocomplete] Using contact compound ID for chip: ${numericId}`);
+      log(`[MentionAutocomplete] Using contact compound ID for chip: ${numericId}`, 'debug');
     } else {
       chipEmoji = "📅";
       markdownType = "Event";
-      log(`[MentionAutocomplete] Using event compound ID for chip: ${numericId}`);
+      log(`[MentionAutocomplete] Using event compound ID for chip: ${numericId}`, 'debug');
     }
   } else {
     // Email (selected, recent, or fuzzy match)
@@ -689,7 +689,7 @@ async function selectMatch(index, contenteditable, dropdown) {
   // Restore saved selection range (important for click events where focus is lost)
   const selection = window.getSelection();
   if (autocompleteState.savedRange) {
-    log(`[MentionAutocomplete] Restoring saved selection range`, "info");
+    log(`[MentionAutocomplete] Restoring saved selection range`, 'debug');
     selection.removeAllRanges();
     selection.addRange(autocompleteState.savedRange.cloneRange());
     contenteditable.focus();
@@ -734,7 +734,7 @@ async function selectMatch(index, contenteditable, dropdown) {
       charCount += nodeLength;
     }
     
-    log(`[MentionAutocomplete] Deleting range from @ to end of query`, "info");
+    log(`[MentionAutocomplete] Deleting range from @ to end of query`, 'debug');
     deleteRange.deleteContents();
     
     // Create chip element
@@ -780,20 +780,20 @@ async function selectMatch(index, contenteditable, dropdown) {
   }
 
   // Close autocomplete
-  log(`[MentionAutocomplete] Closing autocomplete dropdown`, "info");
+  log(`[MentionAutocomplete] Closing autocomplete dropdown`, 'debug');
   closeAutocomplete(dropdown);
 
   // Debug: log contenteditable state
-  log(`[MentionAutocomplete] Contenteditable innerHTML: "${contenteditable.innerHTML}"`, "info");
-  log(`[MentionAutocomplete] Contenteditable textContent: "${contenteditable.textContent}"`, "info");
-  log(`[MentionAutocomplete] Contenteditable isEmpty: ${contenteditable.childNodes.length === 0}`, "info");
-  log(`[MentionAutocomplete] Contenteditable data-placeholder: "${contenteditable.getAttribute('data-placeholder')}"`, "info");
+  log(`[MentionAutocomplete] Contenteditable innerHTML: "${contenteditable.innerHTML}"`, 'debug');
+  log(`[MentionAutocomplete] Contenteditable textContent: "${contenteditable.textContent}"`, 'debug');
+  log(`[MentionAutocomplete] Contenteditable isEmpty: ${contenteditable.childNodes.length === 0}`, 'debug');
+  log(`[MentionAutocomplete] Contenteditable data-placeholder: "${contenteditable.getAttribute('data-placeholder')}"`, 'debug');
 
   // Trigger input event
-  log(`[MentionAutocomplete] Triggering input event`, "info");
+  log(`[MentionAutocomplete] Triggering input event`, 'debug');
   contenteditable.dispatchEvent(new Event("input", { bubbles: true }));
 
-  log(`[MentionAutocomplete] Inserted chip for ${markdownType} ${numericId}`, "info");
+  log(`[MentionAutocomplete] Inserted chip for ${markdownType} ${numericId}`, 'debug');
 }
 
 /**
@@ -979,7 +979,7 @@ function deleteMention(textarea, startIndex, endIndex) {
     // Trigger input event
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     
-    log(`[MentionAutocomplete] Deleted mention at ${startIndex}-${endIndex}`);
+    log(`[MentionAutocomplete] Deleted mention at ${startIndex}-${endIndex}`, 'debug');
   } catch (e) {
     log(`[MentionAutocomplete] Failed to delete mention: ${e}`, "error");
   }
@@ -1004,7 +1004,7 @@ export function cleanupMentionAutocomplete() {
       ctx.entityMap.clear();
     }
     
-    log(`[MentionAutocomplete] Cleaned up`);
+    log(`[MentionAutocomplete] Cleaned up`, 'debug');
   } catch (e) {
     log(`[MentionAutocomplete] Failed to clean up: ${e}`, "error");
   }

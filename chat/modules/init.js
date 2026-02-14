@@ -452,7 +452,7 @@ async function _buildSystemMessage(userName) {
   let userKBContent = "";
   try {
     userKBContent = (await getUserKBPrompt()) || "";
-    log(`[TabMail KB] Loaded user KB content (${userKBContent.length} chars) for conversation.`);
+    log(`[TabMail KB] Loaded user KB content (${userKBContent.length} chars) for conversation.`, 'debug');
   } catch (e) {
     log(`[TabMail KB] Failed to load user KB content: ${e}`, "warn");
   }
@@ -465,12 +465,12 @@ async function _buildSystemMessage(userName) {
       try {
         const { processToolResultTBtoLLM } = await import("./idTranslator.js");
         translatedReminders = processToolResultTBtoLLM(reminders);
-        log(`[TabMail Reminders] Applied ID translation to ${reminders.length} reminders`);
+        log(`[TabMail Reminders] Applied ID translation to ${reminders.length} reminders`, 'debug');
       } catch (e) {
         log(`[TabMail Reminders] ID translation failed, using original reminders: ${e}`, "warn");
       }
       remindersJson = JSON.stringify(translatedReminders);
-      log(`[TabMail Reminders] Loaded ${reminders.length} reminders for agent context.`);
+      log(`[TabMail Reminders] Loaded ${reminders.length} reminders for agent context.`, 'debug');
     }
   } catch (e) {
     log(`[TabMail Reminders] Failed to load reminders: ${e}`, "warn");

@@ -22,7 +22,7 @@ let _onCreatedListener = null;
  */
 export function trackComposeWindow(tabId) {
     composeWindowIds.add(tabId);
-    log(`[ComposeTracker] trackComposeWindow(${tabId}): now tracking ${composeWindowIds.size} windows`);
+    log(`[ComposeTracker] trackComposeWindow(${tabId}): now tracking ${composeWindowIds.size} windows`, 'debug');
 }
 
 /**
@@ -30,9 +30,9 @@ export function trackComposeWindow(tabId) {
  */
 export function isAnyComposeOpen() {
     const isOpen = composeWindowIds.size > 0;
-    log(`[ComposeTracker] isAnyComposeOpen(): ${isOpen} (${composeWindowIds.size} windows tracked)`);
+    log(`[ComposeTracker] isAnyComposeOpen(): ${isOpen} (${composeWindowIds.size} windows tracked)`, 'debug');
     if (isOpen) {
-        log(`[ComposeTracker] Tracked compose window IDs: [${Array.from(composeWindowIds).join(', ')}]`);
+        log(`[ComposeTracker] Tracked compose window IDs: [${Array.from(composeWindowIds).join(', ')}]`, 'debug');
     }
     return isOpen;
 }
@@ -57,9 +57,9 @@ export function consumeSendInitiated(tabId) {
 		const had = _sentTabIds.has(tabId);
 		if (had) {
 			_sentTabIds.delete(tabId);
-			if (log) { log(`[ComposeTracker] consumeSendInitiated: cleared send flag for tab ${tabId}. remaining=${_sentTabIds.size}`); }
+			if (log) { log(`[ComposeTracker] consumeSendInitiated: cleared send flag for tab ${tabId}. remaining=${_sentTabIds.size}`, 'debug'); }
 		} else {
-			if (log) { log(`[ComposeTracker] consumeSendInitiated: no send flag for tab ${tabId}`); }
+			if (log) { log(`[ComposeTracker] consumeSendInitiated: no send flag for tab ${tabId}`, 'debug'); }
 		}
 		return had;
 	} catch (e) {
@@ -71,16 +71,16 @@ export function consumeSendInitiated(tabId) {
 // Auto-untrack compose windows when the tab is closed.
 if (!_onRemovedListener) {
     _onRemovedListener = async (tabId) => {
-        log(`[ComposeTracker] tabs.onRemoved event for tab ${tabId}`);
+        log(`[ComposeTracker] tabs.onRemoved event for tab ${tabId}`, 'debug');
         if (composeWindowIds.has(tabId)) {
             composeWindowIds.delete(tabId);
-            log(`[ComposeTracker] Removed compose window ${tabId}. Remaining compose windows: ${composeWindowIds.size}`);
+            log(`[ComposeTracker] Removed compose window ${tabId}. Remaining compose windows: ${composeWindowIds.size}`, 'debug');
             
             // Clear any cached reply associated with this compose tab to avoid mis-association
             try {
                 const key = "activePrecompose:" + tabId;
                 await idb.remove(key);
-                log(`[ComposeTracker] Cleared cached reply key ${key} on compose window close.`);
+                log(`[ComposeTracker] Cleared cached reply key ${key} on compose window close.`, 'debug');
             } catch (e) {
                 console.warn(`[ComposeTracker] Failed to clear activeReply for tab ${tabId}:`, e);
             }
@@ -88,10 +88,10 @@ if (!_onRemovedListener) {
             // Clear any cached send context
             try { 
                 sendCtxByTabId.delete(tabId); 
-                log(`[ComposeTracker] Cleared send context for tab ${tabId}`);
+                log(`[ComposeTracker] Cleared send context for tab ${tabId}`, 'debug');
             } catch (_) {}
         } else {
-            log(`[ComposeTracker] Tab ${tabId} was not tracked as compose window`);
+            log(`[ComposeTracker] Tab ${tabId} was not tracked as compose window`, 'debug');
         }
     };
     browser.tabs.onRemoved.addListener(_onRemovedListener);
@@ -160,7 +160,7 @@ try {
                             const accountId = ident?.accountId || null;
                             if (accountId) {
                                 sendCtxByTabId.set(tab.id, { accountId, ts: Date.now() });
-                                if (log) { log(`[ComposeTracker] Cached sendCtx (mem) for tab ${tab.id} account=${accountId}`); }
+                                if (log) { log(`[ComposeTracker] Cached sendCtx (mem) for tab ${tab.id} account=${accountId}`, 'debug'); }
                             }
                         }
                     } catch (e) {
@@ -171,14 +171,14 @@ try {
                         try {
                             const header = await browser.messages.get(details.relatedMessageId);
                             const currentTags = Array.isArray(header?.tags) ? header.tags : [];
-                            if (log) { log(`[TMDBG ComposeTracker] onBeforeSend pre-check relatedMessageId=${details.relatedMessageId} tags=[${currentTags.join(",")}]`); }
+                            if (log) { log(`[TMDBG ComposeTracker] onBeforeSend pre-check relatedMessageId=${details.relatedMessageId} tags=[${currentTags.join(",")}]`, 'debug'); }
                             const hasReplyTag = currentTags.includes(ACTION_TAG_IDS.reply);
                             if (hasReplyTag) {
                                 // Only for replies (not forwards): clear the reply tag by switching to "none" when the reply is sent.
                                 await applyPriorityTag(details.relatedMessageId, "none");
-                                if (log) { log(`[TMDBG ComposeTracker] Cleared reply tag for message ${details.relatedMessageId} on reply send.`); }
+                                if (log) { log(`[TMDBG ComposeTracker] Cleared reply tag for message ${details.relatedMessageId} on reply send.`, 'debug'); }
                             } else {
-                                if (log) { log(`[TMDBG ComposeTracker] Skipped clearing tag for message ${details.relatedMessageId} (no reply tag present).`); }
+                                if (log) { log(`[TMDBG ComposeTracker] Skipped clearing tag for message ${details.relatedMessageId} (no reply tag present).`, 'debug'); }
                             }
                         } catch (eTag) {
                             console.warn("[ComposeTracker] Failed to read related message tags:", eTag);
@@ -216,7 +216,7 @@ try {
                     } catch (_) {}
 
                     if (!accountId) {
-                        if (log) { log(`[ComposeTracker] onAfterSend: no cached accountId for tab ${tab.id}`); }
+                        if (log) { log(`[ComposeTracker] onAfterSend: no cached accountId for tab ${tab.id}`, 'debug'); }
                         return;
                     }
 
@@ -228,7 +228,7 @@ try {
                     } catch (_) {}
 
                     if (!Array.isArray(sentFolderIds) || sentFolderIds.length === 0) {
-                        if (log) { log(`[ComposeTracker] onAfterSend: no Sent folders for account ${accountId}`); }
+                        if (log) { log(`[ComposeTracker] onAfterSend: no Sent folders for account ${accountId}`, 'debug'); }
                         return;
                     }
 
@@ -239,11 +239,11 @@ try {
                             found = res.messages[0];
                         }
                     } catch (qErr) {
-                        if (log) { log(`[ComposeTracker] onAfterSend: messages.query failed: ${qErr}`); }
+                        if (log) { log(`[ComposeTracker] onAfterSend: messages.query failed: ${qErr}`, 'debug'); }
                     }
 
                     if (!found) {
-                        if (log) { log(`[ComposeTracker] onAfterSend: no Sent copy found for headerMessageId in scoped folders`); }
+                        if (log) { log(`[ComposeTracker] onAfterSend: no Sent copy found for headerMessageId in scoped folders`, 'debug'); }
                         return;
                     }
 
@@ -251,9 +251,9 @@ try {
                         const { onNewMailReceived } = await import("../../fts/incrementalIndexer.js");
                         const folder = found.folder || found.folderId || { name: found?.folder?.name || "Sent" };
                         await onNewMailReceived(folder, [found]);
-                        if (log) { log(`[ComposeTracker] onAfterSend: indexed sent message id=${found.id} folder=${found.folder?.name || "<unknown>"}`); }
+                        if (log) { log(`[ComposeTracker] onAfterSend: indexed sent message id=${found.id} folder=${found.folder?.name || "<unknown>"}`, 'debug'); }
                     } catch (e) {
-                        if (log) { log(`[ComposeTracker] onAfterSend: FTS handoff failed: ${e}`); }
+                        if (log) { log(`[ComposeTracker] onAfterSend: FTS handoff failed: ${e}`, 'debug'); }
                     } finally {
                         try { sendCtxByTabId.delete(tab.id); } catch (_) {}
                     }

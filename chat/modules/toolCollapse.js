@@ -76,7 +76,7 @@ export function getOrCreateToolGroup(container, groupId = null) {
     // Check if there's an active (unclosed) tool group
     const existingGroup = container.querySelector(".tool-group:not(.finalized)");
     if (existingGroup) {
-      log(`[ToolCollapse] Using existing tool group`);
+      log(`[ToolCollapse] Using existing tool group`, 'debug');
       return existingGroup;
     }
     
@@ -104,7 +104,7 @@ export function getOrCreateToolGroup(container, groupId = null) {
     group.appendChild(content);
     container.appendChild(group);
     
-    log(`[ToolCollapse] Created new tool group${groupId ? ` with id=${groupId}` : ""}`);
+    log(`[ToolCollapse] Created new tool group${groupId ? ` with id=${groupId}` : ""}`, 'debug');
     return group;
   } catch (e) {
     log(`[ToolCollapse] Failed to get/create tool group: ${e}`, "error");
@@ -129,7 +129,7 @@ export function addToolBubbleToGroup(bubble, container, activityLabel = null) {
   try {
     const group = getOrCreateToolGroup(container);
     if (!group) {
-      log(`[ToolCollapse] No tool group available, bubble added directly`);
+      log(`[ToolCollapse] No tool group available, bubble added directly`, 'debug');
       return;
     }
     
@@ -173,7 +173,7 @@ export function addToolBubbleToGroup(bubble, container, activityLabel = null) {
       setTimeout(() => bubble.classList.remove("fading-in"), TOOL_FADE_DURATION_MS);
     }
     
-    log(`[ToolCollapse] Added bubble to group, total bubbles: ${allBubbles.length}, unique tool calls: ${uniquePids.size}`);
+    log(`[ToolCollapse] Added bubble to group, total bubbles: ${allBubbles.length}, unique tool calls: ${uniquePids.size}`, 'debug');
   } catch (e) {
     log(`[ToolCollapse] Failed to add bubble to group: ${e}`, "error");
   }
@@ -209,7 +209,7 @@ function collapseOlderBubbles(group) {
     
     // If only one pid, nothing to collapse - but ensure all bubbles are visible
     if (pidOrder.length < 2) {
-      log(`[ToolCollapse] Only one tool call, ensuring all bubbles visible`);
+      log(`[ToolCollapse] Only one tool call, ensuring all bubbles visible`, 'debug');
       bubbles.forEach(bubble => {
         bubble.classList.remove("collapsed", "fading-out");
       });
@@ -255,7 +255,7 @@ function collapseOlderBubbles(group) {
       }
     }
     
-    log(`[ToolCollapse] Collapse: ${collapsedCount} hidden, showing ${shownCount} from pid=${mostRecentPid}`);
+    log(`[ToolCollapse] Collapse: ${collapsedCount} hidden, showing ${shownCount} from pid=${mostRecentPid}`, 'debug');
   } catch (e) {
     log(`[ToolCollapse] Failed to collapse older bubbles: ${e}`, "error");
   }
@@ -285,7 +285,7 @@ function toggleToolGroup(group) {
       
       // Use the same logic as collapseOlderBubbles to show all from most recent tool call
       collapseOlderBubbles(group);
-      log(`[ToolCollapse] Tool group collapsed to most recent tool call`);
+      log(`[ToolCollapse] Tool group collapsed to most recent tool call`, 'debug');
     } else {
       // Expand - show all bubbles (CSS handles the display via .expanded class)
       group.classList.add("expanded");
@@ -296,7 +296,7 @@ function toggleToolGroup(group) {
       bubbles.forEach(bubble => {
         bubble.classList.remove("collapsed", "fading-out", "fading-in");
       });
-      log(`[ToolCollapse] Tool group expanded, showing ${bubbles.length} bubble(s)`);
+      log(`[ToolCollapse] Tool group expanded, showing ${bubbles.length} bubble(s)`, 'debug');
     }
   } catch (e) {
     log(`[ToolCollapse] Failed to toggle tool group: ${e}`, "error");
@@ -318,7 +318,7 @@ export async function finalizeToolGroup(container) {
   try {
     const activeGroup = container.querySelector(".tool-group:not(.finalized)");
     if (!activeGroup) {
-      log(`[ToolCollapse] No active tool group to finalize`);
+      log(`[ToolCollapse] No active tool group to finalize`, 'debug');
       return;
     }
     
@@ -329,13 +329,13 @@ export async function finalizeToolGroup(container) {
     const fadeMs = Number(CHAT_SETTINGS?.toolBubbleFadeMs) || 250;
     
     activeGroup.classList.add("tm-fade-out");
-    log(`[ToolCollapse] Fading out tool group for ${fadeMs}ms`);
+    log(`[ToolCollapse] Fading out tool group for ${fadeMs}ms`, 'debug');
     
     await new Promise(resolve => setTimeout(resolve, fadeMs));
     
     try {
       activeGroup.remove();
-      log(`[ToolCollapse] Removed tool group`);
+      log(`[ToolCollapse] Removed tool group`, 'debug');
     } catch (e) {
       log(`[ToolCollapse] Failed to remove tool group: ${e}`, "warn");
     }
@@ -370,7 +370,7 @@ export function cleanupToolGroups(container) {
         header.parentNode.replaceChild(newHeader, header);
       }
     });
-    log(`[ToolCollapse] Cleaned up ${groups.length} tool group(s)`);
+    log(`[ToolCollapse] Cleaned up ${groups.length} tool group(s)`, 'debug');
   } catch (e) {
     log(`[ToolCollapse] Cleanup failed: ${e}`, "warn");
   }

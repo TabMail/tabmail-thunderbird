@@ -96,7 +96,8 @@ export const SETTINGS = {
     threadHistoryApiConcurrency: 1, // Max concurrent API calls when building a thread to avoid UI lag.
     useSingleMessageHistory: true, // For performance, treat the body of the last email as the full thread history.
     maxAgeDays: 60, // How many days back to look for emails during a full index.
-    verboseLogging: true, // Set to true to enable full debug/trace logs.
+    verboseLogging: true, // Set to true to enable info/warn logs.
+    debugLogging: false, // Set to true to enable granular debug/trace logs (very noisy).
     // Thread tooltip master toggle (default disabled). When enabled, tooltips
     // will show cached summary/todo on hover; may not function after suspend.
     threadTooltipEnabled: false,
@@ -493,15 +494,17 @@ export async function getBackendUrl(endpointType = null) {
         const baseUrl = `https://${baseEnv}.${domain}`;
         
         // Log for debugging (endpoint type is now ignored, kept for API compatibility)
-        if (endpointType) {
-            console.log(`[Config] getBackendUrl: endpoint=${endpointType} (ignored), url=${baseUrl}`);
-        } else {
-            console.log(`[Config] getBackendUrl: no endpoint type, returning base ${baseUrl}`);
+        if (SETTINGS.debugLogging) {
+            if (endpointType) {
+                console.log(`[Config] getBackendUrl: endpoint=${endpointType} (ignored), url=${baseUrl}`);
+            } else {
+                console.log(`[Config] getBackendUrl: no endpoint type, returning base ${baseUrl}`);
+            }
         }
         
         return baseUrl;
     } catch (e) {
-        console.warn("[Config] Failed to load debugMode from storage, using default:", e);
+        if (SETTINGS.debugLogging) console.warn("[Config] Failed to load debugMode from storage, using default:", e);
         const baseEnv = SETTINGS.backendBaseProd;
         const domain = SETTINGS.backendDomain;
         return `https://${baseEnv}.${domain}`;
@@ -521,10 +524,10 @@ export async function getTemplateWorkerUrl() {
         const subdomain = stored.debugMode ? "templates-dev" : "templates";
         const templateUrl = `https://${subdomain}.${domain}`;
         
-        console.log(`[Config] getTemplateWorkerUrl: url=${templateUrl}`);
+        if (SETTINGS.debugLogging) console.log(`[Config] getTemplateWorkerUrl: url=${templateUrl}`);
         return templateUrl;
     } catch (e) {
-        console.warn("[Config] Failed to load debugMode from storage, using default:", e);
+        if (SETTINGS.debugLogging) console.warn("[Config] Failed to load debugMode from storage, using default:", e);
         const domain = SETTINGS.backendDomain;
         return `https://templates.${domain}`;
     }
@@ -539,9 +542,9 @@ export function cleanupConfigListeners() {
         try {
             browser.storage.onChanged.removeListener(_storageChangeListener);
             _storageChangeListener = null;
-            console.log("[TMDBG Config] Storage change listener cleaned up");
+            if (SETTINGS.debugLogging) console.log("[TMDBG Config] Storage change listener cleaned up");
         } catch (e) {
-            console.error(`[TMDBG Config] Failed to remove storage change listener: ${e}`);
+            if (SETTINGS.debugLogging) console.error(`[TMDBG Config] Failed to remove storage change listener: ${e}`);
         }
     }
 }
@@ -552,7 +555,7 @@ if (!_storageChangeListener) {
         if (area === "local" && changes.debugMode) {
             SETTINGS.debugMode = changes.debugMode.newValue;
             const baseEnv = SETTINGS.debugMode ? SETTINGS.backendBaseDev : SETTINGS.backendBaseProd;
-            console.log(`[TMDBG Config] debugMode updated to: ${SETTINGS.debugMode}, baseEnv: ${baseEnv}`);
+            if (SETTINGS.debugLogging) console.log(`[TMDBG Config] debugMode updated to: ${SETTINGS.debugMode}, baseEnv: ${baseEnv}`);
         }
     };
     browser.storage.onChanged.addListener(_storageChangeListener);
@@ -565,8 +568,8 @@ if (!_storageChangeListener) {
         const stored = await browser.storage.local.get({ debugMode: false });
         SETTINGS.debugMode = stored.debugMode;
         const baseEnv = SETTINGS.debugMode ? SETTINGS.backendBaseDev : SETTINGS.backendBaseProd;
-        console.log(`[TMDBG Config] debugMode initialized: ${SETTINGS.debugMode}, baseEnv: ${baseEnv}`);
+        if (SETTINGS.debugLogging) console.log(`[TMDBG Config] debugMode initialized: ${SETTINGS.debugMode}, baseEnv: ${baseEnv}`);
     } catch (e) {
-        console.warn("[TMDBG Config] Failed to load debugMode from storage, using default:", e);
+        if (SETTINGS.debugLogging) console.warn("[TMDBG Config] Failed to load debugMode from storage, using default:", e);
     }
 })(); 

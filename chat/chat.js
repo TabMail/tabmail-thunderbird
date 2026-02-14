@@ -339,7 +339,7 @@ function initContextUsageTracking() {
       progressBar.title = "Shorter context provides better answers. Agent won't answer beyond limit.";
     }
 
-    log("[ContextUsage] Initialized context usage tracking");
+    log("[ContextUsage] Initialized context usage tracking", 'debug');
   } catch (e) {
     log(`[ContextUsage] Failed to initialize: ${e}`, "error");
   }
@@ -376,7 +376,7 @@ function updateContextUsageDisplay(tokenUsage) {
     progressBar.title = tooltipText;
 
     log(
-      `[ContextUsage] Updated progress bar: ${percentage}% (${tokensUsed}/${contextLimit} tokens)`
+      `[ContextUsage] Updated progress bar: ${percentage}% (${tokensUsed}/${contextLimit} tokens)`, 'debug'
     );
   } catch (e) {
     log(`[ContextUsage] Failed to update display: ${e}`, "error");
@@ -402,7 +402,7 @@ function cleanupMessageSelectionListener() {
     try {
       browser.runtime.onMessage.removeListener(messageSelectionListener);
       messageSelectionListener = null;
-      log("[MessageSelection] Runtime message listener cleaned up");
+      log("[MessageSelection] Runtime message listener cleaned up", 'debug');
     } catch (e) {
       log(
         `[MessageSelection] Failed to remove runtime message listener: ${e}`,
@@ -490,7 +490,7 @@ function cleanupChatDOMListeners() {
       log(`[Chat] Failed to clean up tool groups: ${e}`, "warn");
     }
 
-    log("[Chat] DOM event listeners cleaned up");
+    log("[Chat] DOM event listeners cleaned up", 'debug');
   } catch (e) {
     log(`[Chat] Failed to clean up DOM listeners: ${e}`, "error");
   }
@@ -507,7 +507,7 @@ async function initMessageSelectionTracking() {
         updateSelectionFromMessage(message);
       } else if (message.command === "current-selection") {
         updateSelectionFromMessage(message);
-        log("[MessageSelection] Received current selection from background");
+        log("[MessageSelection] Received current selection from background", 'debug');
       }
     };
 
@@ -516,7 +516,7 @@ async function initMessageSelectionTracking() {
     // Request current selection from background script
     try {
       browser.runtime.sendMessage({ command: "get-current-selection" });
-      log("[MessageSelection] Requested current selection from background");
+      log("[MessageSelection] Requested current selection from background", 'debug');
     } catch (e) {
       log(
         `[MessageSelection] Failed to request current selection: ${e}`,
@@ -528,7 +528,7 @@ async function initMessageSelectionTracking() {
       }, 500);
     }
 
-    log("[MessageSelection] Initialized message selection tracking");
+    log("[MessageSelection] Initialized message selection tracking", 'debug');
   } catch (e) {
     log(`[MessageSelection] Failed to initialize: ${e}`, "error");
   }
@@ -538,12 +538,12 @@ async function initMessageSelectionTracking() {
 // DISABLED: We now use @ mention UI instead of selection indicator
 function updateSelectionFromMessage(message) {
   try {
-    log(`[MessageSelection] updateSelectionFromMessage received (tracking for @ mentions):`, message);
+    log(`[MessageSelection] updateSelectionFromMessage received (tracking for @ mentions):`, 'debug');
     const selectionCount = message.selectionCount || 0;
     const selectedMessageIds = message.selectedMessageIds || [];
 
     log(
-      `[MessageSelection] Selection count: ${selectionCount} (for @ mention autocomplete only)`
+      `[MessageSelection] Selection count: ${selectionCount} (for @ mention autocomplete only)`, 'debug'
     );
     currentSelectionCount = selectionCount;
     // Track selected IDs for @ mention "selected email(s)" feature
@@ -553,7 +553,7 @@ function updateSelectionFromMessage(message) {
     log(
       `[MessageSelection] Event-driven update - ${selectionCount} messages selected, IDs: ${selectedMessageIds.join(
         ", "
-      )}`
+      )}`, 'debug'
     );
   } catch (e) {
     log(`[MessageSelection] Failed to update from message: ${e}`, "error");
@@ -689,7 +689,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       const rand = Math.random().toString(36).slice(2, 10);
       ctx.sessionId = `chat_${Date.now()}_${rand}`;
     }
-    log(`[Chat] Prepared session_id=${ctx.sessionId} (WS will open per request)`);
+    log(`[Chat] Prepared session_id=${ctx.sessionId} (WS will open per request)`, 'debug');
   } catch (e) {
     log(`[Chat] Failed to prepare session id: ${e}`, "error");
   }
