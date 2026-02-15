@@ -1,4 +1,4 @@
-// reminder_del.js – delete a reminder from user_kb.md by text match (TB 145, MV3)
+// reminder_del.js – delete a KB reminder or snooze an email-reminder by text match (TB 145, MV3)
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { applyKBPatch } from "../../agent/modules/patchApplier.js";
@@ -19,8 +19,7 @@ export async function run(args = {}, options = {}) {
     // Load current KB
     const current = (await getUserKBPrompt()) || "";
     if (!current) {
-      log(`[TMDBG Tools] reminder_del: knowledge base is empty`, "warn");
-      return { error: "no reminders found (knowledge base is empty)" };
+      log(`[TMDBG Tools] reminder_del: knowledge base is empty, will check email-reminders`, "debug");
     }
 
     // Find lines matching reminders that contain the search text
@@ -43,6 +42,30 @@ export async function run(args = {}, options = {}) {
     }
 
     if (matches.length === 0) {
+      // No KB match — search email-reminders (message-based) and snooze if found
+      log(`[TMDBG Tools] reminder_del: no KB match, searching email-reminders...`);
+      try {
+        const { buildReminderList } = await import("../../agent/modules/reminderBuilder.js");
+        const { reminders } = await buildReminderList({ includeDisabled: false });
+
+        const messageMatches = reminders.filter(
+          r => r.source === "message" && (r.content || "").toLowerCase().includes(textLower)
+        );
+
+        if (messageMatches.length === 1) {
+          return await snoozeEmailReminder(messageMatches[0]);
+        }
+        if (messageMatches.length > 1) {
+          log(`[TMDBG Tools] reminder_del: ${messageMatches.length} matching email-reminders found`);
+          return {
+            error: `Multiple email reminders match '${text}'. Please be more specific.`,
+            matches: messageMatches.map(m => m.content),
+          };
+        }
+      } catch (e) {
+        log(`[TMDBG Tools] reminder_del: error searching email-reminders: ${e}`, "warn");
+      }
+
       log(`[TMDBG Tools] reminder_del: no matching reminder found for '${text}'`, "warn");
       return { error: `No reminder found matching '${text}'.` };
     }
@@ -128,4 +151,23 @@ export async function run(args = {}, options = {}) {
     log(`[TMDBG Tools] reminder_del failed: ${e}`, "error");
     return { error: String(e || "unknown error in reminder_del") };
   }
+}
+
+/**
+ * Snooze (disable) an email-reminder via the reminder state store.
+ * Same mechanism as the GUI "don't show again" button.
+ */
+async function snoozeEmailReminder(reminder) {
+  log(`[TMDBG Tools] reminder_del: found email-reminder, snoozing: '${reminder.content.slice(0, 140)}'`);
+
+  try {
+    const { setEnabled } = await import("../../agent/modules/reminderStateStore.js");
+    await setEnabled(reminder.hash, false);
+  } catch (e) {
+    log(`[TMDBG Tools] reminder_del: failed to disable email-reminder: ${e}`, "error");
+    return { error: "failed to disable email reminder" };
+  }
+
+  log(`[TMDBG Tools] reminder_del: success (email-reminder snoozed)`);
+  return { ok: true, snoozed: reminder.content, source: "email" };
 }
