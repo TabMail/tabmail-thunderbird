@@ -23,7 +23,7 @@ import {
   hasNonTabMailTags,
   isDebugTagRaceEnabled,
 } from "./tagDefs.js";
-import { syncGmailTagFolder } from "./gmailLabelSync.js";
+import { syncGmailTagFolder, resolveGmailAction } from "./gmailLabelSync.js";
 import {
   getTagByThreadEnabled,
   computeAndStoreThreadTagList,
@@ -86,7 +86,10 @@ export async function importActionFromImapTag(msgOrId) {
       ? await browser.messages.get(msgOrId)
       : msgOrId;
     if (!header) return null;
-    const action = actionFromLiveTagIds(header.tags);
+    let action = actionFromLiveTagIds(header.tags);
+    // For Gmail accounts, always check Gmail labels (authoritative for cross-instance sync)
+    // and sync IMAP keyword to match if they differ
+    action = await resolveGmailAction(header, action);
     if (!action) return null;
     const uniqueKey = await getUniqueMessageKey(header.id);
     if (!uniqueKey) return null;

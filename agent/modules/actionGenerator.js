@@ -7,6 +7,7 @@ import { getUserActionPrompt } from "./promptGenerator.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary } from "./summaryGenerator.js";
 import { actionFromLiveTagIds, isMessageInInboxByUniqueKey } from "./tagHelper.js";
+import { resolveGmailAction } from "./gmailLabelSync.js";
 import {
   extractBodyFromParts,
   getUniqueMessageKey,
@@ -241,9 +242,12 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
     if (!forceRecompute) {
       try {
         const freshHeader = await browser.messages.get(messageHeader.id);
-        const imapAction = actionFromLiveTagIds(freshHeader?.tags);
+        let imapAction = actionFromLiveTagIds(freshHeader?.tags);
+        // For Gmail accounts, always check Gmail labels (authoritative for cross-instance sync)
+        // and sync IMAP keyword to match if they differ
+        imapAction = await resolveGmailAction(freshHeader, imapAction);
         if (imapAction) {
-          log(`${PFX}IMAP tag HIT for ${messageHeader.id} (${uniqueKey}): adopting action="${imapAction}" from IMAP (no LLM)`);
+          log(`${PFX}IMAP/folder tag HIT for ${messageHeader.id} (${uniqueKey}): adopting action="${imapAction}" (no LLM)`);
           await idb.set({ [cacheKey]: imapAction, [metaKey]: { ts: Date.now() } });
           await recordOriginalActionOnce(uniqueKey, imapAction);
           return imapAction;

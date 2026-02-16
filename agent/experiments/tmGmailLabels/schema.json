@@ -1,0 +1,31 @@
+[
+  {
+    "namespace": "tmGmailLabels",
+    "description": "Gmail REST API access for label management. Provides OAuth2 token retrieval and authenticated HTTP fetching.",
+    "functions": [
+      {
+        "name": "getAccessToken",
+        "type": "function",
+        "description": "Get a Gmail OAuth2 access token for the given account. Returns empty string if not Gmail or unavailable.",
+        "async": true,
+        "parameters": [
+          { "name": "accountId", "type": "string" }
+        ],
+        "returns": { "type": "string" }
+      },
+      {
+        "name": "gmailFetch",
+        "type": "function",
+        "description": "Authenticated Gmail API request from privileged context (bypasses CORS). Returns JSON response body as string, or empty string on error.",
+        "async": true,
+        "parameters": [
+          { "name": "accountId", "type": "string" },
+          { "name": "path", "type": "string" },
+          { "name": "method", "type": "string" },
+          { "name": "bodyJson", "type": "string" }
+        ],
+        "returns": { "type": "string" }
+      }
+    ]
+  }
+]
