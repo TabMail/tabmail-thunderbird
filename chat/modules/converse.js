@@ -865,6 +865,25 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
     updateConversationTokenUsage(resp.token_usage);
   }
 
+  // Check for empty-response retry BEFORE removing loading spinner,
+  // so the spinner stays visible during silent retries
+  if (!assistantText && !resp?.err && retryCount < maxRetries) {
+    const nextRetry = retryCount + 1;
+    log(`[CONVERSE] Empty response without error; silent retry (${nextRetry}/${maxRetries})`);
+
+    // Save chat log for this failed attempt (with retry count in key)
+    const timestamp = Date.now();
+    saveChatLog(
+      "tabmail_agent_converse_response",
+      `${timestamp}_retry${retryCount}`,
+      messages,
+      `[EMPTY_RESPONSE_RETRY_${retryCount}]`
+    );
+
+    // Immediately retry, passing the existing bubble to reuse (loading spinner still active)
+    return getAgentResponse(messages, nextRetry, agentBubble);
+  }
+
   try {
     agentBubble.classList.remove("loading");
   } catch (_) {}
@@ -878,24 +897,6 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
       log(`[CONVERSE] streamText failed: ${e}`, "warn");
     }
   } else {
-    // Empty response with no error typically indicates an LLM error
-    // Retry silently up to maxRetries times before giving up
-    if (!resp?.err && retryCount < maxRetries) {
-      const nextRetry = retryCount + 1;
-      log(`[CONVERSE] Empty response without error; silent retry (${nextRetry}/${maxRetries})`);
-      
-      // Save chat log for this failed attempt (with retry count in key)
-      const timestamp = Date.now();
-      saveChatLog(
-        "tabmail_agent_converse_response",
-        `${timestamp}_retry${retryCount}`,
-        messages,
-        `[EMPTY_RESPONSE_RETRY_${retryCount}]`
-      );
-      
-      // Immediately retry, passing the existing bubble to reuse
-      return getAgentResponse(messages, nextRetry, agentBubble);
-    }
     
     // Remove bubble only when we're done (exhausted retries or there's an error)
     try {
