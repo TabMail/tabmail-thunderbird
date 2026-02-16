@@ -13,6 +13,7 @@ Before starting any task in this project, read these files and update them when 
 - **`../DECISIONS.md`** — Cross-cutting architectural decisions.
 
 **This project:**
+- **`PROJECT_STRUCTURE.md`** — Directory tree, entry points, sub-component map.
 - **`PROJECT_MEMORY.md`** — Thunderbird add-on specific knowledge, patterns, quirks.
 - **`DECISIONS.md`** — Thunderbird add-on specific architectural decisions.
 
