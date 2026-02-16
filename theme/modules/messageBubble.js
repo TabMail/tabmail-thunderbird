@@ -94,6 +94,90 @@
   // -------------------------------------------------
   
   /**
+   * Collapse only the trailing quoted section when inline replies are detected.
+   * Walks backwards from the last top-level blockquote to find one with no
+   * non-trivial text after it — that trailing section gets collapsed.
+   * If ALL blockquotes have reply text after them, nothing is collapsed.
+   */
+  function collapseTrailingQuote(wrapper) {
+    try {
+      const allBQs = wrapper.querySelectorAll('blockquote');
+      const topLevelBQs = [];
+      for (const bq of allBQs) {
+        if (!bq.parentElement || !bq.parentElement.closest('blockquote')) {
+          topLevelBQs.push(bq);
+        }
+      }
+
+      if (topLevelBQs.length < 2) {
+        console.log('[TabMail MsgBubble] Trailing quote: fewer than 2 top-level blockquotes, skipping');
+        return;
+      }
+
+      const minLen = QuoteDetect?.config?.inlineAnswerMinLineLength ?? 2;
+
+      // Walk backwards to find the last blockquote with no non-trivial text after it
+      let trailingBQ = null;
+      for (let i = topLevelBQs.length - 1; i >= 0; i--) {
+        let afterNode = topLevelBQs[i].nextSibling;
+        let hasTextAfter = false;
+        while (afterNode) {
+          const txt = (afterNode.textContent || '').trim();
+          if (txt.length >= minLen) { hasTextAfter = true; break; }
+          afterNode = afterNode.nextSibling;
+        }
+        if (!hasTextAfter) { trailingBQ = topLevelBQs[i]; break; }
+      }
+
+      if (!trailingBQ) {
+        console.log('[TabMail MsgBubble] Trailing quote: all blockquotes have replies after them, skipping');
+        return;
+      }
+
+      // Do NOT walk up to a wrapper child — the trailing BQ may be nested deep
+      // inside containers (e.g. div.gmail_quote) that also hold the inline reply
+      // text. Walking up would collapse the entire email. Instead, collapse from
+      // the trailing blockquote directly and grab its remaining siblings.
+      const quoteStart = trailingBQ;
+
+      const toggleLabelShow = 'Show quoted text';
+      const toggleLabelHide = 'Hide quoted text';
+
+      const quoteWrapper = document.createElement('div');
+      quoteWrapper.className = `${QUOTE_WRAPPER_CLASS} ${QUOTE_COLLAPSED_CLASS}`;
+
+      const toggle = document.createElement('div');
+      toggle.className = QUOTE_TOGGLE_CLASS;
+      toggle.innerHTML = `<span class="tm-toggle-text">${toggleLabelShow}</span>`;
+      toggle.title = 'Click to expand';
+      toggle.addEventListener('click', () => {
+        quoteWrapper.classList.toggle(QUOTE_COLLAPSED_CLASS);
+        const isCollapsed = quoteWrapper.classList.contains(QUOTE_COLLAPSED_CLASS);
+        toggle.innerHTML = `<span class="tm-toggle-text">${isCollapsed ? toggleLabelShow : toggleLabelHide}</span>`;
+        toggle.title = isCollapsed ? 'Click to expand' : 'Click to collapse';
+        console.log(`[TabMail MsgBubble] Trailing quote toggled, collapsed: ${isCollapsed}`);
+      });
+
+      const content = document.createElement('div');
+      content.className = QUOTE_CONTENT_CLASS;
+
+      quoteStart.parentNode.insertBefore(quoteWrapper, quoteStart);
+      quoteWrapper.appendChild(toggle);
+      quoteWrapper.appendChild(content);
+
+      // Move trailing BQ and everything after it (at the same level) into content
+      while (quoteStart.nextSibling) {
+        content.appendChild(quoteStart.nextSibling);
+      }
+      content.insertBefore(quoteStart, content.firstChild);
+
+      console.log('[TabMail MsgBubble] ✓ Trailing quote collapsed (inline reply mode)');
+    } catch (e) {
+      console.error('[TabMail MsgBubble] collapseTrailingQuote error:', e);
+    }
+  }
+
+  /**
    * Find the quote region and make it collapsible.
    * Uses PURE TEXT-BASED detection from the shared quoteAndSignature module.
    */
@@ -124,10 +208,13 @@
       return;
     }
 
-    // Skip collapsing if inline answers are detected — the user's content is
-    // interleaved with quoted text and should remain fully visible.
+    // Inline reply + trailing quote collapse: when inline answers are detected,
+    // the user's content is interleaved with quoted blocks. Instead of collapsing
+    // from the first boundary, find the last blockquote that has no non-trivial
+    // text after it (the trailing quoted section) and collapse only that.
     if (quoteMatch.hasInlineAnswers) {
-      console.log('[TabMail MsgBubble] Inline answers detected — skipping quote collapse');
+      console.log('[TabMail MsgBubble] Inline answers detected — looking for trailing quote to collapse');
+      collapseTrailingQuote(wrapper);
       return;
     }
 
