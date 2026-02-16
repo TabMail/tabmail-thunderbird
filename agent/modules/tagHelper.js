@@ -214,7 +214,7 @@ function _maxPriorityAction(actions) {
   }
 }
 
-function _actionFromLiveTagIds(tags) {
+export function actionFromLiveTagIds(tags) {
   try {
     const list = Array.isArray(tags) ? tags : [];
     // Reverse lookup: tm_* tag id -> action name
@@ -225,6 +225,38 @@ function _actionFromLiveTagIds(tags) {
     if (candidates.length === 0) return null;
     return _maxPriorityAction(candidates);
   } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Import an action from an existing IMAP tag into IDB cache.
+ * Used for cross-instance sync: if another TM instance (e.g. iOS) already tagged
+ * the message, adopt the tag without LLM computation.
+ * Idempotent — only writes if IDB cache is empty for this message.
+ *
+ * @param {browser.messages.MessageHeader|number} msgOrId - Message header or WE message ID
+ * @returns {Promise<string|null>} The imported action, or null if none found / already cached
+ */
+export async function importActionFromImapTag(msgOrId) {
+  try {
+    const header = typeof msgOrId === "number"
+      ? await browser.messages.get(msgOrId)
+      : msgOrId;
+    if (!header) return null;
+    const action = actionFromLiveTagIds(header.tags);
+    if (!action) return null;
+    const uniqueKey = await getUniqueMessageKey(header.id);
+    if (!uniqueKey) return null;
+    const cacheKey = `action:${uniqueKey}`;
+    const metaKey = `action:ts:${uniqueKey}`;
+    const existing = await idb.get(cacheKey);
+    if (existing[cacheKey]) return existing[cacheKey]; // already cached
+    await idb.set({ [cacheKey]: action, [metaKey]: { ts: Date.now() } });
+    console.log(`[TMDBG Tag] importActionFromImapTag: imported action="${action}" for weId=${header.id} uniqueKey=${uniqueKey}`);
+    return action;
+  } catch (e) {
+    console.log(`[TMDBG Tag] importActionFromImapTag failed: ${e}`);
     return null;
   }
 }
@@ -587,7 +619,7 @@ async function _syncActionCacheFromMessageTagsToInboxCopies(liveHeader) {
     const headerMessageId = liveHeader?.headerMessageId || "";
     if (!accountId || !headerMessageId) return;
 
-    const action = _actionFromLiveTagIds(liveHeader?.tags);
+    const action = actionFromLiveTagIds(liveHeader?.tags);
     const inboxWeIds = await _getInboxWeIdsForHeaderMessageId(accountId, headerMessageId);
     if (!inboxWeIds || inboxWeIds.length === 0) return;
 
@@ -599,15 +631,24 @@ async function _syncActionCacheFromMessageTagsToInboxCopies(liveHeader) {
         const cacheKey = `action:${uniqueKey}`;
         const metaKey = `action:ts:${uniqueKey}`;
 
-        // Check if there's already a cached action - don't overwrite if so.
-        // This preserves the original agent-assigned action when effective tags are applied.
-        // Only sync from TB tags for messages that DON'T have a cached action yet (e.g., IMAP sync).
+        // Check if there's already a cached action.
+        // - If cached action matches the IMAP tag: skip (idempotent, preserves original action
+        //   when effective thread tags are applied by this instance).
+        // - If cached action differs from the IMAP tag: an external source (e.g., another TM
+        //   instance or user manual override on iOS) changed it — update cache to stay in sync.
+        // - If no cached action: import from IMAP tag (first sync / cross-instance adoption).
         const existingCache = await idb.get(cacheKey);
         if (existingCache && existingCache[cacheKey]) {
-          if (_isDebugTagRaceEnabled()) {
-            console.log(`[TMDBG TagRace] _syncActionCacheFromMessageTagsToInboxCopies skip (already cached): weId=${weId} existing=${existingCache[cacheKey]} tbTag=${action || "(none)"}`);
+          if (existingCache[cacheKey] === action) {
+            if (_isDebugTagRaceEnabled()) {
+              console.log(`[TMDBG TagRace] _syncActionCacheFromMessageTagsToInboxCopies skip (already cached, matches): weId=${weId} existing=${existingCache[cacheKey]}`);
+            }
+            continue;
           }
-          continue;
+          // IMAP tag differs from cached action — external change, update cache
+          if (action) {
+            console.log(`[TMDBG Tag] External tag change detected: updating cache "${existingCache[cacheKey]}" -> "${action}" for weId=${weId} uniqueKey=${uniqueKey}`);
+          }
         }
 
         if (action) {

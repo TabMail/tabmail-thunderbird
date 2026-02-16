@@ -90,6 +90,16 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ---
 
+## Cross-Instance IMAP Tagging
+
+- **"First compute wins"**: Before LLM action computation, `getAction()` checks for existing `tm_*` IMAP tags (from another TM instance). If found, adopts the tag without LLM.
+- IDB cache import: `importActionFromImapTag()` in `tagHelper.js` — idempotently writes IMAP tag action into IDB cache for thread aggregation.
+- Entry points that check: `getAction()` (semaphore path), `processCandidatesInFolder()` (startup scan), `onNewMailReceived` (new mail).
+- Override: context menu manual tagging always wins. Debug "Recompute Action" passes `forceRecompute: true` flag through `processMessage` → `getAction()` to bypass IMAP tag check.
+- Tag watcher (`_syncActionCacheFromMessageTagsToInboxCopies`): updates IDB cache when IMAP tag *differs* from cached action (external change from another instance); skips when they match (idempotent/self-tag).
+
+---
+
 ## Knowledge Gaps
 
 - [ ] Full inventory of experiment APIs currently in use

@@ -6,7 +6,7 @@ import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
 import { getUserActionPrompt } from "./promptGenerator.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary } from "./summaryGenerator.js";
-import { isMessageInInboxByUniqueKey } from "./tagHelper.js";
+import { actionFromLiveTagIds, isMessageInInboxByUniqueKey } from "./tagHelper.js";
 import {
   extractBodyFromParts,
   getUniqueMessageKey,
@@ -190,9 +190,9 @@ export async function purgeExpiredActionEntries() {
 }
 
 
-export async function getAction(messageHeader) {
-  log(`${PFX}>>> getAction CALLED for message ${messageHeader.id} subject="${messageHeader.subject}"`);
-  
+export async function getAction(messageHeader, { forceRecompute = false } = {}) {
+  log(`${PFX}>>> getAction CALLED for message ${messageHeader.id} subject="${messageHeader.subject}" forceRecompute=${forceRecompute}`);
+
   // Internal/self-sent messages should never have an action cache entry.
   // We still allow summaries, but skip action generation and skip cache touch/write.
   try {
@@ -208,14 +208,16 @@ export async function getAction(messageHeader) {
 
   const cacheKey = ACTION_PREFIX + uniqueKey;
   const metaKey = ACTION_TS_PREFIX + uniqueKey;
-  
-  // Check cache - if it exists, touch it and return
-  const existing = await idb.get(cacheKey);
-  if (existing[cacheKey]) {
-    log(`${PFX}>>> Cache HIT for message ${messageHeader.id} (${uniqueKey}): returning cached action="${existing[cacheKey]}" (LLM will NOT run)`);
-    // Touch the cache entry by updating its timestamp
-    await idb.set({ [metaKey]: { ts: Date.now() } });
-    return existing[cacheKey];
+
+  // Check cache - if it exists, touch it and return (skip when forced recompute)
+  if (!forceRecompute) {
+    const existing = await idb.get(cacheKey);
+    if (existing[cacheKey]) {
+      log(`${PFX}>>> Cache HIT for message ${messageHeader.id} (${uniqueKey}): returning cached action="${existing[cacheKey]}" (LLM will NOT run)`);
+      // Touch the cache entry by updating its timestamp
+      await idb.set({ [metaKey]: { ts: Date.now() } });
+      return existing[cacheKey];
+    }
   }
 
   log(`${PFX}Cache MISS for message ${messageHeader.id} (${uniqueKey}) - generating via LLM...`);
@@ -223,12 +225,32 @@ export async function getAction(messageHeader) {
   await _acquireActionSemaphore(uniqueKey);
   try {
     // Check cache again after acquiring semaphore (in case another call populated it)
-    const existingAfterSemaphore = await idb.get(cacheKey);
-    if (existingAfterSemaphore[cacheKey]) {
-      log(`${PFX}Cache HIT after semaphore for message ${messageHeader.id} (${uniqueKey}): ${existingAfterSemaphore[cacheKey]}`);
-      // Touch the cache entry by updating its timestamp
-      await idb.set({ [metaKey]: { ts: Date.now() } });
-      return existingAfterSemaphore[cacheKey];
+    if (!forceRecompute) {
+      const existingAfterSemaphore = await idb.get(cacheKey);
+      if (existingAfterSemaphore[cacheKey]) {
+        log(`${PFX}Cache HIT after semaphore for message ${messageHeader.id} (${uniqueKey}): ${existingAfterSemaphore[cacheKey]}`);
+        // Touch the cache entry by updating its timestamp
+        await idb.set({ [metaKey]: { ts: Date.now() } });
+        return existingAfterSemaphore[cacheKey];
+      }
+    }
+
+    // "First compute wins": check if another TM instance (e.g. iOS) already
+    // tagged this message via IMAP. If so, adopt the tag without LLM computation.
+    // Skip when forceRecompute is set (user explicitly requested fresh LLM computation).
+    if (!forceRecompute) {
+      try {
+        const freshHeader = await browser.messages.get(messageHeader.id);
+        const imapAction = actionFromLiveTagIds(freshHeader?.tags);
+        if (imapAction) {
+          log(`${PFX}IMAP tag HIT for ${messageHeader.id} (${uniqueKey}): adopting action="${imapAction}" from IMAP (no LLM)`);
+          await idb.set({ [cacheKey]: imapAction, [metaKey]: { ts: Date.now() } });
+          await recordOriginalActionOnce(uniqueKey, imapAction);
+          return imapAction;
+        }
+      } catch (eImapCheck) {
+        log(`${PFX}IMAP tag check failed for ${messageHeader.id}: ${eImapCheck}`, "warn");
+      }
     }
 
     // Get the body from the full message to send to the LLM

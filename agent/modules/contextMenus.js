@@ -305,16 +305,17 @@ async function recomputeSummary(messages) {
 
 async function recomputeAction(messages) {
     try { log(`[TMDBG ContextMenus] recomputeAction start count=${messages?.length ?? 0}`); } catch(_) {}
-    // Clear cache first
+    // Clear IDB cache first
     await clearActionCache(messages);
-    // Then recompute - use processMessage to ensure summary is available if needed
+    // Then recompute - forceRecompute bypasses the "first compute wins" IMAP tag check
+    // in getAction() so we get a fresh LLM computation even if the tag still exists.
     const { enqueueProcessMessage } = await import("./messageProcessorQueue.js");
     for (const msg of messages) {
         if (!msg || msg.id === undefined) continue;
         try {
             try { log(`[TMDBG ContextMenus] recomputeAction: recomputing for message ${msg.id}`); } catch(_) {}
             // Use persistent queue so offline/disruptions are retried.
-            await enqueueProcessMessage(msg, { isPriority: true, source: "contextMenu:recomputeAction" });
+            await enqueueProcessMessage(msg, { isPriority: true, forceRecompute: true, source: "contextMenu:recomputeAction" });
         } catch (e) {
             try { log(`[TMDBG ContextMenus] recomputeAction: exception id=${msg?.id}: ${e}`, "warn"); } catch (_) {}
         }

@@ -6,7 +6,7 @@ import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
 import { purgeExpiredReplyEntries } from "./replyGenerator.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary, purgeExpiredSummaryEntries } from "./summaryGenerator.js";
-import { ACTION_TAG_IDS, applyActionTags, applyPriorityTag } from "./tagHelper.js";
+import { ACTION_TAG_IDS, applyActionTags, applyPriorityTag, importActionFromImapTag } from "./tagHelper.js";
 import { log } from "./utils.js";
 
 /**
@@ -20,10 +20,11 @@ import { log } from "./utils.js";
  * @param {browser.messages.MessageHeader} messageHeader
  * @param {object} opts
  *   @property {boolean} [isPriority=false] – set true for user-driven flows (e.g. compose-reply) to bypass semaphore limits
+ *   @property {boolean} [forceRecompute=false] – set true to bypass "first compute wins" IMAP tag check (e.g. debug recompute)
  */
 export async function processMessage(
   messageHeader,
-  { isPriority = false } = {}
+  { isPriority = false, forceRecompute = false } = {}
 ) {
   if (!messageHeader) {
     log("processMessage called without a valid messageHeader — skipping.");
@@ -82,7 +83,7 @@ export async function processMessage(
     let actionOk = false;
     try {
       log(`[ProcessMessage] >>> Calling getAction for message ${messageHeader.id}`);
-      action = await getAction(messageHeader);
+      action = await getAction(messageHeader, { forceRecompute });
       log(`[ProcessMessage] <<< Action result for ${messageHeader.id}: ${action || 'FAILED/NULL'}`);
       actionOk = !!action;
       
@@ -247,6 +248,27 @@ export async function processCandidatesInFolder(folder) {
     const skippedCount = candidates.length - untaggedCandidates.length;
     if (skippedCount > 0) {
       log(`[FolderScan] Skipped ${skippedCount} already-tagged message(s) in folder '${folder.name}'`);
+    }
+
+    // 3b. Import IMAP tags into IDB cache for already-tagged messages.
+    // Ensures thread aggregation works for messages tagged by other TM instances (e.g. iOS).
+    if (skippedCount > 0) {
+      const taggedCandidates = candidates.filter((msg) => {
+        const tags = Array.isArray(msg.tags) ? msg.tags : [];
+        return tags.some((t) => tabMailTagIds.has(t));
+      });
+      let importedCount = 0;
+      for (const msg of taggedCandidates) {
+        try {
+          const imported = await importActionFromImapTag(msg);
+          if (imported) importedCount++;
+        } catch (e) {
+          log(`[FolderScan] Failed to import IMAP tag for message ${msg.id}: ${e}`, "warn");
+        }
+      }
+      if (importedCount > 0) {
+        log(`[FolderScan] Imported ${importedCount} IMAP tag(s) into IDB cache for thread aggregation`);
+      }
     }
 
     if (untaggedCandidates.length === 0) {

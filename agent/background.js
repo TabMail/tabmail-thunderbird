@@ -33,6 +33,7 @@ import {
   attachThreadTagWatchers,
   cleanupTagByThreadListener,
   cleanupThreadTagWatchers,
+  importActionFromImapTag,
 } from "./modules/tagHelper.js";
 import { attachThreadTooltipHandlers } from "./modules/threadTooltip.js";
 import { log } from "./modules/utils.js";
@@ -901,12 +902,20 @@ if (!_onNewMailReceivedListener) {
       return;
     }
 
-    // Enqueue all messages for processing
+    // Enqueue messages for processing (skip already-tagged — "first compute wins")
     // processMessage handles internal/external distinction internally
     log(`[InboxActivity] Enqueueing ${notification.messages.length} new message(s) for processing`);
-    
+
     let enqueuedCount = 0;
+    let skippedTaggedCount = 0;
     for (const msg of notification.messages) {
+      // Skip if already has TabMail tag (tagged by another instance, e.g. iOS)
+      if (hasTabMailTag(msg.tags)) {
+        skippedTaggedCount++;
+        // Import IMAP tag into IDB cache for thread aggregation
+        try { await importActionFromImapTag(msg); } catch (_) {}
+        continue;
+      }
       try {
         await enqueueProcessMessage(msg, { isPriority: false, source: "onNewMailReceived" });
         enqueuedCount++;
@@ -914,7 +923,10 @@ if (!_onNewMailReceivedListener) {
         log(`[InboxActivity] Failed to enqueue message ${msg.id}: ${e}`, "error");
       }
     }
-    
+    if (skippedTaggedCount > 0) {
+      log(`[InboxActivity] Skipped ${skippedTaggedCount} already-tagged message(s) in onNewMailReceived (first compute wins)`);
+    }
+
     log(`[InboxActivity] Enqueued ${enqueuedCount}/${notification.messages.length} new message(s)`);
     
     // Schedule debounced cache cleanup after processing (only if we enqueued something)
