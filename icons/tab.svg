@@ -12,7 +12,46 @@
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
   <defs
-     id="defs1" />
+     id="defs1">
+    <filter
+       style="color-interpolation-filters:sRGB;"
+       inkscape:label="Drop Shadow"
+       id="filter10"
+       x="-0.046533363"
+       y="-0.075264871"
+       width="1.1783804"
+       height="1.1818901">
+      <feFlood
+         result="flood"
+         in="SourceGraphic"
+         flood-opacity="0.478431"
+         flood-color="rgb(0,0,0)"
+         id="feFlood9" />
+      <feGaussianBlur
+         result="blur"
+         in="SourceGraphic"
+         stdDeviation="0.500000"
+         id="feGaussianBlur9" />
+      <feOffset
+         result="offset"
+         in="blur"
+         dx="0.500000"
+         dy="0.500000"
+         id="feOffset9" />
+      <feComposite
+         result="comp1"
+         operator="in"
+         in="flood"
+         in2="offset"
+         id="feComposite9" />
+      <feComposite
+         result="comp2"
+         operator="over"
+         in="SourceGraphic"
+         in2="comp1"
+         id="feComposite10" />
+    </filter>
+  </defs>
   <sodipodi:namedview
      id="namedview1"
      pagecolor="#ffffff"
@@ -31,13 +70,27 @@
      inkscape:window-y="99"
      inkscape:window-maximized="0"
      inkscape:current-layer="svg1" />
-  <path
-     id="rect1"
-     style="fill:#ffffff;stroke:#000000;stroke-width:1.96923"
-     d="M 12.799999,0.98461497 H 51.2 c 6.545723,0 11.815384,5.26966123 11.815384,11.81538403 v 38.399998 c 0,6.545722 -5.269661,11.815384 -11.815384,11.815384 H 12.799999 c -6.5457228,0 -11.81538403,-5.269662 -11.81538403,-11.815384 V 12.799999 c 0,-6.5457228 5.26966123,-11.81538403 11.81538403,-11.81538403 z" />
-  <path
-     style="font-size:40px;font-family:Inter;-inkscape-font-specification:'Inter, Normal';text-anchor:middle"
-     d="M 33.730468,32.070312 42.265625,23.535156 33.730468,15 v 6.914062 H 15 v 3.203125 h 18.730468 z m 11.386719,-0.03906 h 3.203125 v -17.03125 h -3.203125 z"
-     id="text1"
-     aria-label="⇥" />
+  <g transform="translate(32,32) scale(1.3333) translate(-32,-32)">
+    <path
+       id="rect1"
+       style="fill:#fafafa;stroke:#081a2f;stroke-width:2;stroke-opacity:0.95145631;stroke-dasharray:none;stroke-miterlimit:8;stroke-linecap:square;paint-order:normal;fill-opacity:1"
+       d="m 16,8 h 32 c 4.432,0 8,3.568 8,8 v 32 c 0,4.432 -3.568,8 -8,8 H 16 C 11.568,56 8,52.432 8,48 V 16 c 0,-4.432 3.568,-8 8,-8 z" />
+    <g
+       id="g3"
+       style="stroke:#2a2a36;stroke-opacity:1;stroke-linecap:butt;paint-order:normal;filter:url(#filter10)"
+       transform="translate(-0.4102564)">
+      <path
+         id="arrow-shaft"
+         d="M 18.5,26 H 40.3"
+         style="fill:none;stroke:#2a2a36;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+      <path
+         id="arrowhead"
+         d="M 33.73,19.58 40.31,26 33.73,32.42"
+         style="fill:none;stroke:#2a2a36;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+      <path
+         id="vertical-bar"
+         d="M 44.287949,17.961538 V 33.905231"
+         style="fill:none;stroke:#2a2a36;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+    </g>
+  </g>
 </svg>

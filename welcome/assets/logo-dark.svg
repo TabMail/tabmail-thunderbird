@@ -12,7 +12,193 @@
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
   <defs
-     id="defs2" />
+     id="defs2">
+    <filter
+       id="shadow"
+       x="-0.22083333"
+       y="-0.22083333"
+       width="1.4520833"
+       height="1.4833333">
+      <feGaussianBlur
+         in="SourceAlpha"
+         stdDeviation="2"
+         result="blur"
+         id="feGaussianBlur1" />
+      <feOffset
+         dx="0"
+         dy="1.5"
+         result="offsetBlur"
+         id="feOffset1" />
+      <feFlood
+         flood-color="#000000"
+         flood-opacity="0.35"
+         result="color"
+         id="feFlood1" />
+      <feComposite
+         in="color"
+         in2="offsetBlur"
+         operator="in"
+         result="shadow"
+         id="feComposite1" />
+      <feMerge
+         id="feMerge2">
+        <feMergeNode
+           in="shadow"
+           id="feMergeNode1" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode2" />
+      </feMerge>
+    </filter>
+    <filter
+       style="color-interpolation-filters:sRGB;"
+       inkscape:label="Drop Shadow"
+       id="filter18"
+       x="-0.17083333"
+       y="-0.17083333"
+       width="1.3624999"
+       height="1.3624999">
+      <feFlood
+         result="flood"
+         in="SourceGraphic"
+         flood-opacity="0.498039"
+         flood-color="rgb(0,0,0)"
+         id="feFlood17" />
+      <feGaussianBlur
+         result="blur"
+         in="SourceGraphic"
+         stdDeviation="2.000000"
+         id="feGaussianBlur17" />
+      <feOffset
+         result="offset"
+         in="blur"
+         dx="0.500000"
+         dy="0.500000"
+         id="feOffset17" />
+      <feComposite
+         result="comp1"
+         operator="in"
+         in="flood"
+         in2="offset"
+         id="feComposite17" />
+      <feComposite
+         result="comp2"
+         operator="over"
+         in="SourceGraphic"
+         in2="comp1"
+         id="feComposite18" />
+    </filter>
+    <filter
+       style="color-interpolation-filters:sRGB;"
+       inkscape:label="Drop Shadow"
+       id="filter51"
+       x="-0.18613345"
+       y="-0.30105948"
+       width="1.449825"
+       height="1.6272073">
+      <feFlood
+         result="flood"
+         in="SourceGraphic"
+         flood-opacity="0.498039"
+         flood-color="rgb(0,0,0)"
+         id="feFlood50" />
+      <feGaussianBlur
+         result="blur"
+         in="SourceGraphic"
+         stdDeviation="1.000000"
+         id="feGaussianBlur50" />
+      <feOffset
+         result="offset"
+         in="blur"
+         dx="0.200000"
+         dy="0.200000"
+         id="feOffset50" />
+      <feComposite
+         result="comp1"
+         operator="in"
+         in="flood"
+         in2="offset"
+         id="feComposite50" />
+      <feComposite
+         result="fbSourceGraphic"
+         operator="over"
+         in="SourceGraphic"
+         in2="comp1"
+         id="feComposite51" />
+      <feColorMatrix
+         result="fbSourceGraphicAlpha"
+         in="fbSourceGraphic"
+         values="0 0 0 -1 0 0 0 0 -1 0 0 0 0 -1 0 0 0 0 1 0"
+         id="feColorMatrix36" />
+      <feFlood
+         id="feFlood36"
+         result="flood"
+         in="fbSourceGraphic"
+         flood-opacity="0.250980"
+         flood-color="rgb(255,255,255)" />
+      <feGaussianBlur
+         id="feGaussianBlur36"
+         result="blur"
+         in="fbSourceGraphic"
+         stdDeviation="1.000000" />
+      <feOffset
+         id="feOffset36"
+         result="offset"
+         in="blur"
+         dx="0.100000"
+         dy="0.200000" />
+      <feComposite
+         id="feComposite36"
+         result="comp1"
+         operator="in"
+         in="flood"
+         in2="offset" />
+      <feComposite
+         id="feComposite37"
+         result="comp2"
+         operator="over"
+         in="fbSourceGraphic"
+         in2="comp1" />
+    </filter>
+    <filter
+       style="color-interpolation-filters:sRGB;"
+       inkscape:label="Drop Shadow"
+       id="filter54"
+       x="-0.070833333"
+       y="-0.070833333"
+       width="1.1520833"
+       height="1.1520833">
+      <feFlood
+         result="flood"
+         in="SourceGraphic"
+         flood-opacity="0.505882"
+         flood-color="rgb(255,255,255)"
+         id="feFlood53" />
+      <feGaussianBlur
+         result="blur"
+         in="SourceGraphic"
+         stdDeviation="1.000000"
+         id="feGaussianBlur53" />
+      <feOffset
+         result="offset"
+         in="blur"
+         dx="0.500000"
+         dy="0.500000"
+         id="feOffset53" />
+      <feComposite
+         result="comp1"
+         operator="in"
+         in="flood"
+         in2="offset"
+         id="feComposite53" />
+      <feComposite
+         result="comp2"
+         operator="over"
+         in="SourceGraphic"
+         in2="comp1"
+         id="feComposite54" />
+    </filter>
+  </defs>
   <sodipodi:namedview
      id="namedview2"
      pagecolor="#4d4d4d"
@@ -32,20 +218,35 @@
      inkscape:window-maximized="0"
      inkscape:current-layer="svg2" />
   <!-- Tab icon -->
-  <path
-     id="rect1"
-     style="fill:#4d4d4d;stroke:#ffffff;stroke-width:2"
-     d="m 14,8 h 32 c 4.432,0 8,3.568 8,8 v 32 c 0,4.432 -3.568,8 -8,8 H 14 C 9.568,56 6,52.432 6,48 V 16 C 6,11.568 9.568,8 14,8 Z" />
-  <path
-     style="font-size:32px;font-family:Inter;-inkscape-font-specification:'Inter, Normal';text-anchor:middle;fill:#ffffff"
-     d="M 31.984375,32.65625 38.8125,25.828125 31.984375,19 v 5.53125 H 17 v 2.5625 H 31.984375 Z M 41.09375,32.625 h 2.5625 V 19 h -2.5625 z"
-     id="text1"
-     aria-label="⇥" />
+  <g filter="url(#shadow)">
+    <g style="filter:url(#filter18)">
+      <path
+         id="rect1"
+         style="fill:#1d1d20;stroke:#f1f1ef;stroke-width:2;stroke-opacity:0.95145631;stroke-dasharray:none;stroke-miterlimit:8;stroke-linecap:square;paint-order:normal;fill-opacity:1;filter:url(#filter54)"
+         d="m 14,8 h 32 c 4.432,0 8,3.568 8,8 v 32 c 0,4.432 -3.568,8 -8,8 H 14 C 9.568,56 6,52.432 6,48 V 16 C 6,11.568 9.568,8 14,8 Z" />
+      <g
+         id="g3"
+         style="stroke:#e8e8e2;stroke-opacity:1;filter:url(#filter51);stroke-linecap:butt;paint-order:normal"
+         transform="translate(-2.4102564)">
+        <path
+           id="arrow-shaft"
+           d="M 18.5,26 H 40.3"
+           style="fill:none;stroke:#e8e8e2;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+        <path
+           id="arrowhead"
+           d="M 33.73,19.58 40.31,26 33.73,32.42"
+           style="fill:none;stroke:#e8e8e2;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+        <path
+           id="vertical-bar"
+           d="M 44.287949,17.961538 V 33.905231"
+           style="fill:none;stroke:#e8e8e2;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+      </g>
+    </g>
+  </g>
   <!-- TabMail text -->
   <path
-     style="font-weight:600;font-size:37.3333px;font-family:Inter;-inkscape-font-specification:'Inter, Semi-Bold';dominant-baseline:middle;fill:#ffffff"
+     style="font-weight:600;font-size:37.3333px;font-family:Inter;-inkscape-font-specification:'Inter, Semi-Bold';dominant-baseline:middle;fill:#e8e8e2"
      d="m 62,23.395829 h 8.38541 v 23.059877 h 4.867183 V 23.395829 h 8.36718 V 19.29427 H 62 Z m 28.601538,23.479147 c 3.171873,0 5.104163,-1.476561 5.997391,-3.22656 h 0.182292 v 2.80729 h 4.539059 V 32.83853 c 0,-5.432287 -4.484372,-7.018223 -8.312494,-7.018223 -4.08333,0 -7.437493,1.731769 -8.640617,5.322912 l 4.393225,0.893228 c 0.492187,-1.348957 1.895832,-2.57031 4.265621,-2.57031 2.315103,0 3.554685,1.166665 3.554685,3.153643 v 0.09115 c 0,1.403644 -1.49479,1.458332 -5.031246,1.841144 -3.937496,0.41927 -7.765618,1.585936 -7.765618,6.179682 0,4.010413 2.934893,6.143224 6.817702,6.143224 z m 1.221353,-3.518226 c -2.005206,0 -3.445309,-0.911458 -3.445309,-2.679685 0,-1.859374 1.604165,-2.643227 3.736976,-2.934894 1.221353,-0.164062 3.86458,-0.492187 4.5026,-1.002603 v 2.406248 c 0,2.260415 -1.877602,4.210934 -4.794267,4.210934 z m 25.283839,3.463539 c 4.83072,0 8.42186,-3.828122 8.42186,-10.518221 0,-6.781244 -3.70051,-10.481761 -8.40364,-10.481761 -3.6276,0 -5.12239,2.187498 -5.83332,3.627601 h -0.20052 V 19.29427 h -4.73958 v 27.161436 h 4.6302 v -3.22656 h 0.3099 c 0.72916,1.476561 2.3151,3.591143 5.8151,3.591143 z m -1.27605,-3.901039 c -3.09895,0 -4.83072,-2.661456 -4.83072,-6.635411 0,-3.973955 1.69531,-6.562494 4.83072,-6.562494 3.20834,0 4.83073,2.770831 4.83073,6.562494 0,3.828122 -1.65885,6.635411 -4.83073,6.635411 z m 14.03645,3.536456 h 4.77604 V 32.747384 c 0,-2.059894 -0.10938,-5.815099 -0.1823,-8.895826 1.00261,3.499997 2.09636,7.127598 2.73438,8.895826 l 5.08593,13.708322 h 4.13802 l 5.01301,-13.708322 c 0.63802,-1.822915 1.78646,-5.559891 2.71615,-9.041659 -0.0547,3.22656 -0.16407,7.018223 -0.16407,9.041659 v 13.708322 h 4.84896 V 19.29427 h -7.34635 l -5.10416,14.018218 c -0.52865,1.622394 -1.36719,4.976558 -2.00521,7.656243 -0.61979,-2.716143 -1.47656,-6.052078 -2.02343,-7.656243 L 137.19525,19.29427 h -7.32812 z m 39.90361,0.41927 c 3.17187,0 5.10416,-1.476561 5.99739,-3.22656 h 0.18229 v 2.80729 h 4.53906 V 32.83853 c 0,-5.432287 -4.48437,-7.018223 -8.31249,-7.018223 -4.08333,0 -7.43749,1.731769 -8.64062,5.322912 l 4.39323,0.893228 c 0.49218,-1.348957 1.89583,-2.57031 4.26562,-2.57031 2.3151,0 3.55468,1.166665 3.55468,3.153643 v 0.09115 c 0,1.403644 -1.49479,1.458332 -5.03124,1.841144 -3.9375,0.41927 -7.76562,1.585936 -7.76562,6.179682 0,4.010413 2.93489,6.143224 6.8177,6.143224 z m 1.22135,-3.518226 c -2.0052,0 -3.44531,-0.911458 -3.44531,-2.679685 0,-1.859374 1.60417,-2.643227 3.73698,-2.934894 1.22135,-0.164062 3.86458,-0.492187 4.5026,-1.002603 v 2.406248 c 0,2.260415 -1.8776,4.210934 -4.79427,4.210934 z m 14.52864,3.098956 h 4.73958 V 26.075515 h -4.73958 z m 2.36979,-23.260397 c 1.51302,0 2.77083,-1.166666 2.77083,-2.606769 0,-1.440103 -1.25781,-2.588539 -2.77083,-2.588539 -1.51302,0 -2.7526,1.148436 -2.7526,2.588539 0,1.440103 1.23958,2.606769 2.7526,2.606769 z m 12.14062,-3.901039 h -4.73958 v 27.161436 h 4.73958 z"
      id="text2"
      aria-label="TabMail" />
 </svg>
-
