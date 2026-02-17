@@ -14,6 +14,16 @@
         "returns": { "type": "string" }
       },
       {
+        "name": "unsubscribeTmFolders",
+        "type": "function",
+        "description": "Unsubscribe tm_* IMAP folders so Gmail doesn't waste push/pull on them. Idempotent.",
+        "async": true,
+        "parameters": [
+          { "name": "accountId", "type": "string" },
+          { "name": "folderNames", "type": "array", "items": { "type": "string" } }
+        ]
+      },
+      {
         "name": "gmailFetch",
         "type": "function",
         "description": "Authenticated Gmail API request from privileged context (bypasses CORS). Returns JSON response body as string, or empty string on error.",

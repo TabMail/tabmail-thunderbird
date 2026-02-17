@@ -138,6 +138,35 @@ var tmGmailLabels = class extends ExtensionCommonGmailLabels.ExtensionAPI {
          * @param {string} bodyJson - JSON body string, or empty string for no body
          * @returns {string} JSON response body, or empty string on error
          */
+        /**
+         * Unsubscribe tm_* IMAP folders so Gmail doesn't waste push/pull on them.
+         * Idempotent — safe to call every time; no-op if already unsubscribed.
+         */
+        async unsubscribeTmFolders(accountId, folderNames) {
+          try {
+            const server = _getGmailServer(accountId);
+            if (!server) return;
+            const imapServer = server.QueryInterface(Ci.nsIImapIncomingServer);
+            const rootFolder = server.rootFolder;
+            for (const name of folderNames) {
+              try {
+                // Send IMAP UNSUBSCRIBE to server
+                imapServer.subscribeToFolder(name, false);
+                // Also clear local subscription flag so TB stops polling
+                if (rootFolder.containsChildNamed(name)) {
+                  const folder = rootFolder.getChildNamed(name);
+                  folder.clearFlag(Ci.nsMsgFolderFlags.Subscribed);
+                }
+                console.log(`[tmGmailLabels] Unsubscribed IMAP folder: ${name}`);
+              } catch (e) {
+                console.log(`[tmGmailLabels] Unsubscribe ${name}: ${e}`);
+              }
+            }
+          } catch (e) {
+            console.log(`[tmGmailLabels] unsubscribeTmFolders ERROR: ${e}`);
+          }
+        },
+
         async gmailFetch(accountId, path, method, bodyJson) {
           try {
             const server = _getGmailServer(accountId);

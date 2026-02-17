@@ -93,6 +93,12 @@ async function _ensureGmailTagLabels(accountId) {
       }
     }
 
+    // Always unsubscribe tm_* IMAP folders — Gmail exposes labels as IMAP
+    // folders but we use REST API for all tm_* operations, so they're waste.
+    browser.tmGmailLabels.unsubscribeTmFolders(accountId, Object.values(ACTION_TAG_IDS)).catch(e => {
+      console.log(`[GMailTag] unsubscribeTmFolders fire-and-forget error: ${e}`);
+    });
+
     _gmailTagLabelCache.set(accountId, tagLabelMap);
     return tagLabelMap;
   } catch (e) {
