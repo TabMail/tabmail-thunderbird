@@ -87,9 +87,11 @@ export async function importActionFromImapTag(msgOrId) {
       : msgOrId;
     if (!header) return null;
     let action = actionFromLiveTagIds(header.tags);
-    // For Gmail accounts, always check Gmail labels (authoritative for cross-instance sync)
-    // and sync IMAP keyword to match if they differ
-    action = await resolveGmailAction(header, action);
+    // If IMAP tags give us an action, use it directly — skip Gmail REST API.
+    // Only fall back to Gmail label check when IMAP keywords are missing.
+    if (!action) {
+      action = await resolveGmailAction(header, action);
+    }
     if (!action) return null;
     const uniqueKey = await getUniqueMessageKey(header.id);
     if (!uniqueKey) return null;
@@ -430,8 +432,12 @@ export async function syncActionCacheFromMessageTagsToInboxCopies(liveHeader) {
           await idb.set({ [cacheKey]: action, [metaKey]: { ts: tsNow } }, { kind: "action-sync" });
           console.log(`[TMDBG Tag] Synced action cache from tags: inboxWeId=${weId} action=${action} uniqueKey=${uniqueKey}`);
         } else {
-          await idb.remove([cacheKey, metaKey]);
-          console.log(`[TMDBG Tag] Cleared action cache from tags: inboxWeId=${weId} (no tm_* tag) uniqueKey=${uniqueKey}`);
+          // Do NOT clear the cache when tags are absent — this can happen
+          // transiently during tag update races (e.g. cross-folder sync,
+          // thread effective tag rewrite) and would wipe a valid cached
+          // action, forcing an unnecessary LLM recompute.  The cache entry
+          // will expire naturally via TTL or the inbox-based purge.
+          console.log(`[TMDBG Tag] Skipping cache clear (no tm_* tag, preserving existing cache): inboxWeId=${weId} uniqueKey=${uniqueKey}`);
         }
       } catch (eOne) {
         console.log(`[TMDBG Tag] Failed syncing action cache for inboxWeId=${weId}: ${eOne}`);

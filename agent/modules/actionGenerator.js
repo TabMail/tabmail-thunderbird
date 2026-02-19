@@ -243,9 +243,14 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
       try {
         const freshHeader = await browser.messages.get(messageHeader.id);
         let imapAction = actionFromLiveTagIds(freshHeader?.tags);
-        // For Gmail accounts, always check Gmail labels (authoritative for cross-instance sync)
-        // and sync IMAP keyword to match if they differ
-        imapAction = await resolveGmailAction(freshHeader, imapAction);
+        // If IMAP tags already give us an action, use it directly — no need
+        // to call the Gmail REST API (avoids latency and potential failures
+        // on non-Gmail accounts).  Only fall back to Gmail label check when
+        // IMAP keywords are missing (e.g. Gmail labels set via REST API by
+        // iOS won't appear as IMAP keywords).
+        if (!imapAction) {
+          imapAction = await resolveGmailAction(freshHeader, imapAction);
+        }
         if (imapAction) {
           log(`${PFX}IMAP/folder tag HIT for ${messageHeader.id} (${uniqueKey}): adopting action="${imapAction}" (no LLM)`);
           await idb.set({ [cacheKey]: imapAction, [metaKey]: { ts: Date.now() } });
