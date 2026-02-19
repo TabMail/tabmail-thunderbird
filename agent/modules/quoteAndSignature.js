@@ -434,8 +434,17 @@
     chosenList.sort((a, b) => a.lineIndex - b.lineIndex);
     const chosen = chosenList[0];
 
-    // Detect inline answers after the boundary
-    chosen.hasInlineAnswers = detectInlineAnswersInPlainText(src, chosen.lineIndex);
+    // Detect inline answers after the boundary.
+    // Skip for structured reply boundaries (dash-separator, outlook-headers, original-message,
+    // localized-sender, forwarded-message) — these always introduce a complete original email
+    // chain below the separator; inline answering only makes sense after attribution ("On … wrote:")
+    // or raw quoted (">") boundaries.
+    const STRUCTURED_BOUNDARY_TYPES = new Set(["dash-separator", "outlook-headers", "original-message", "localized-sender", "forwarded-message"]);
+    if (STRUCTURED_BOUNDARY_TYPES.has(chosen.type)) {
+      chosen.hasInlineAnswers = false;
+    } else {
+      chosen.hasInlineAnswers = detectInlineAnswersInPlainText(src, chosen.lineIndex);
+    }
     if (chosen.hasInlineAnswers) {
       try {
         console.log(`[TabMailQuoteDetection] findBoundaryInPlainText: inline answers detected after "${chosen.type}" boundary at line ${chosen.lineIndex}`);
@@ -996,9 +1005,14 @@
       // This covers HTML emails where blockquote content doesn't have ">" markers
       // in the detection text. Falls back to the plain text ">" detection from
       // findBoundaryInPlainText if segments don't have quoted metadata.
-      let hasInlineAnswers = !!boundary.hasInlineAnswers;
-      if (!hasInlineAnswers) {
-        hasInlineAnswers = _detectInlineAnswersFromSegments(detectionText, segments, boundary.lineIndex);
+      // Skip for structured boundary types (same guard as findBoundaryInPlainText).
+      const STRUCTURED_DOM_BOUNDARY_TYPES = new Set(["dash-separator", "outlook-headers", "original-message", "localized-sender", "forwarded-message"]);
+      let hasInlineAnswers = false;
+      if (!STRUCTURED_DOM_BOUNDARY_TYPES.has(boundary.type)) {
+        hasInlineAnswers = !!boundary.hasInlineAnswers;
+        if (!hasInlineAnswers) {
+          hasInlineAnswers = _detectInlineAnswersFromSegments(detectionText, segments, boundary.lineIndex);
+        }
       }
       if (hasInlineAnswers) {
         try {
