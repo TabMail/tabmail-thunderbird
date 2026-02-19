@@ -46,6 +46,10 @@ function _maxResolveAttempts() {
   return Math.max(1, Math.ceil(_num(_cfg().maxResolveAttempts, 5)));
 }
 
+function _itemTimeoutMs() {
+  return _num(_cfg().itemTimeoutMs, 120000); // 2 minutes per item
+}
+
 function _clearTimer(refName) {
   try {
     if (refName === "persist" && _persistTimer) {
@@ -377,8 +381,22 @@ export async function drainProcessMessageQueue() {
 
     log(`[TMDBG PMQ] Draining processMessage queue IN PARALLEL: pending=${_pending.size} batchSize=${items.length}`);
 
-    // Process all items in parallel
-    const results = await Promise.all(items.map((it) => _processOneItem(it)));
+    // Process all items in parallel, with per-item timeout to prevent drain deadlock.
+    // If any single item hangs (e.g. stalled fetch), the timeout ensures the drain
+    // cycle completes and _isProcessing is released.
+    const timeoutMs = _itemTimeoutMs();
+    const results = await Promise.all(items.map((it) => {
+      const key = String(it?.uniqueKey || "");
+      return Promise.race([
+        _processOneItem(it),
+        new Promise((resolve) =>
+          setTimeout(() => {
+            log(`[TMDBG PMQ] Item timeout (${timeoutMs}ms) for key=${key} — treating as retry`, "warn");
+            resolve({ status: "retry" });
+          }, timeoutMs)
+        ),
+      ]);
+    }));
 
     // Aggregate results
     let processed = 0;

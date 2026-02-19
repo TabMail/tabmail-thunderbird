@@ -517,17 +517,37 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
       "X-Client-Version": clientVersion
     };
     
+    // Connection timeout: abort if we can't reach the server within 15 seconds.
+    // This only covers DNS/TCP/TLS/response-headers. Once the SSE stream starts,
+    // readSSEStream's STREAM_TIMEOUT_MS (60s) + backend keepalives handle liveness.
+    const CONNECT_TIMEOUT_MS = 15000;
+    let connectTimer = null;
+    let internalAbortController = null;
+    let effectiveSignal = abortSignal;
+    if (!abortSignal) {
+      internalAbortController = new AbortController();
+      effectiveSignal = internalAbortController.signal;
+      connectTimer = setTimeout(() => {
+        log(`[COMPLETIONS] Connection timeout (${CONNECT_TIMEOUT_MS}ms) — aborting fetch`, "warn");
+        internalAbortController.abort();
+      }, CONNECT_TIMEOUT_MS);
+    }
+
     const fetchOptions = {
       method: "POST",
       headers: headers,
       body: JSON.stringify(payloadWithOptions),
+      signal: effectiveSignal,
     };
-    
-    if (abortSignal) {
-      fetchOptions.signal = abortSignal;
-    }
-    
+
     response = await fetch(url, fetchOptions);
+
+    // Connection established — clear the connect timeout.
+    // From here, SSE stream timeout (STREAM_TIMEOUT_MS) + keepalives take over.
+    if (connectTimer) {
+      clearTimeout(connectTimer);
+      connectTimer = null;
+    }
     
     // Handle throttling (429) - retry indefinitely with exponential backoff (capped at 5s)
     let throttleRetryCount = 0;
@@ -579,7 +599,15 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
         if (!retryAccessToken) {
           throw new Error("Lost authentication during throttle retry");
         }
-        
+
+        // Re-arm connect timeout for the retry fetch
+        if (internalAbortController && !internalAbortController.signal.aborted) {
+          connectTimer = setTimeout(() => {
+            log(`[COMPLETIONS] [THROTTLE] Connection timeout on retry — aborting`, "warn");
+            internalAbortController.abort();
+          }, CONNECT_TIMEOUT_MS);
+        }
+
         response = await fetch(url, {
           method: "POST",
           headers: {
@@ -588,8 +616,14 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
             "X-Client-Version": clientVersion
           },
           body: JSON.stringify(payloadWithOptions),
-          signal: abortSignal,
+          signal: effectiveSignal,
         });
+
+        // Clear connect timeout on successful connection
+        if (connectTimer) {
+          clearTimeout(connectTimer);
+          connectTimer = null;
+        }
       } catch (jsonError) {
         log(`[COMPLETIONS] [THROTTLE] Failed to parse 429 response (${jsonError}) - may indicate server issue`, "warn");
         // If we can't parse the 429 response, break to avoid infinite loop

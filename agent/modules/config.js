@@ -427,6 +427,9 @@ export const SETTINGS = {
             // Max attempts to resolve a message (headerIDToWeID / messages.get) before dropping.
             // Transient IMAP/Gmail sync can cause temporary resolve failures; retry a few times.
             maxResolveAttempts: 5,
+            // Per-item timeout for processMessage. If a single item (fetch, LLM, etc.) hangs
+            // longer than this, the drain cycle treats it as retry, preventing _isProcessing deadlock.
+            itemTimeoutMs: 120000, // 2 minutes
         },
         // FTS incremental indexer retry policy.
         // This does NOT change the normal batchDelay used after new events; it only affects retry cadence on errors.
