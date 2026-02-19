@@ -339,7 +339,7 @@ export function resetFsmChainTracking() {
 /**
  * Execute tool calls without UI (headless mode).
  * For use in non-conversational flows like compose, precache, batch processing.
- * Returns results in the format expected by sendChatWithTools callback.
+ * Returns results in the format expected by sendChat's onToolExecution callback.
  * 
  * Note: FSM tools are blocked in headless mode as they require UI interaction.
  * 

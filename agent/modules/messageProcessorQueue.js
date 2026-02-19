@@ -5,6 +5,12 @@ import { getUniqueMessageKey, headerIDToWeID, log, parseUniqueId } from "./utils
 
 const QUEUE_STORAGE_KEY = "agent_processmessage_pending";
 
+// EVICTION POLICY: Items are ONLY removed from the queue when:
+//   1. processMessage succeeds (ok=true)
+//   2. The message is confirmed no longer in the inbox (moved/archived/deleted)
+//   3. The uniqueKey is malformed (data integrity issue)
+// We NEVER drop items due to resolve failures or processing retries.
+// Transient issues (offline, IMAP sync lag, LLM timeouts) must not cause data loss.
 let _pending = new Map(); // Map<uniqueKey, { uniqueKey, timestamp, opts, metadata, attempts, lastErrorAtMs }>
 let _persistTimer = null;
 let _watchTimer = null;
@@ -42,10 +48,6 @@ function _retryDelayMs() {
   return _num(_cfg().retryDelayMs, _watchIntervalMs());
 }
 
-function _maxResolveAttempts() {
-  return Math.max(1, Math.ceil(_num(_cfg().maxResolveAttempts, 5)));
-}
-
 function _itemTimeoutMs() {
   return _num(_cfg().itemTimeoutMs, 120000); // 2 minutes per item
 }
@@ -79,7 +81,6 @@ async function _persistNow() {
       opts: it.opts || {},
       metadata: it.metadata || {},
       attempts: it.attempts || 0,
-      resolveAttempts: it.resolveAttempts || 0,
       lastErrorAtMs: it.lastErrorAtMs || 0,
     }));
     await browser.storage.local.set({ [QUEUE_STORAGE_KEY]: arr });
@@ -127,7 +128,6 @@ async function _restoreFromStorage() {
         opts: it?.opts || {},
         metadata: it?.metadata || {},
         attempts: Number(it?.attempts) || 0,
-        resolveAttempts: Number(it?.resolveAttempts) || 0,
         lastErrorAtMs: Number(it?.lastErrorAtMs) || 0,
       });
       restored++;
@@ -271,10 +271,9 @@ async function _processOneItem(it) {
     return { status: "dropped" };
   }
 
-  // Track resolve attempts (separate from processing attempts)
-  const resolveAttemptNo = (Number(it?.resolveAttempts) || 0) + 1;
-  const maxResolve = _maxResolveAttempts();
-
+  // Resolve uniqueKey -> weID -> MessageHeader
+  // Never drop on resolve failure — could be transient IMAP/Gmail sync.
+  // Only the inbox check below should evict items.
   let weId = null;
   try {
     weId = await headerIDToWeID(parsed.headerID, parsed.weFolder, false, true);
@@ -283,16 +282,9 @@ async function _processOneItem(it) {
   }
 
   if (!weId) {
-    // Message not queryable - could be transient IMAP/Gmail sync or truly deleted.
-    if (resolveAttemptNo >= maxResolve) {
-      log(`[TMDBG PMQ] Could not resolve message for key=${key} after ${resolveAttemptNo} attempts - dropping`, "warn");
-      _pending.delete(key);
-      return { status: "dropped" };
-    } else {
-      log(`[TMDBG PMQ] Could not resolve message for key=${key} (attempt ${resolveAttemptNo}/${maxResolve}) - will retry`, "warn");
-      _pending.set(key, { ...it, resolveAttempts: resolveAttemptNo, lastErrorAtMs: Date.now() });
-      return { status: "retry" };
-    }
+    log(`[TMDBG PMQ] Could not resolve message for key=${key} - will retry`, "warn");
+    _pending.set(key, { ...it, lastErrorAtMs: Date.now() });
+    return { status: "retry" };
   }
 
   let header = null;
@@ -303,20 +295,9 @@ async function _processOneItem(it) {
   }
 
   if (!header) {
-    if (resolveAttemptNo >= maxResolve) {
-      log(`[TMDBG PMQ] Missing header for weId=${weId} key=${key} after ${resolveAttemptNo} attempts - dropping`, "warn");
-      _pending.delete(key);
-      return { status: "dropped" };
-    } else {
-      log(`[TMDBG PMQ] Missing header for weId=${weId} key=${key} (attempt ${resolveAttemptNo}/${maxResolve}) - will retry`, "warn");
-      _pending.set(key, { ...it, resolveAttempts: resolveAttemptNo, lastErrorAtMs: Date.now() });
-      return { status: "retry" };
-    }
-  }
-
-  // Reset resolve attempts on successful resolve
-  if (it?.resolveAttempts) {
-    _pending.set(key, { ...it, resolveAttempts: 0 });
+    log(`[TMDBG PMQ] Missing header for weId=${weId} key=${key} - will retry`, "warn");
+    _pending.set(key, { ...it, lastErrorAtMs: Date.now() });
+    return { status: "retry" };
   }
 
   // Check if message is still in inbox BEFORE processing
@@ -509,7 +490,6 @@ export function getProcessMessageQueueStatus() {
       persistDebounceMs: _persistDebounceMs(),
       retryDelayMs: _retryDelayMs(),
       batchSize: _batchSize(),
-      maxResolveAttempts: _maxResolveAttempts(),
     },
   };
 }

@@ -420,6 +420,7 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000, abortSigna
         e.name === "TypeError" || // Network errors are typically TypeErrors
         e.message.includes("network") ||
         e.message.includes("Connection lost") ||
+        e.message.includes("Connection timeout") ||
         e.message.includes("Failed to fetch") ||
         statusCode === 408 ||
         statusCode === 429
@@ -502,6 +503,15 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
   
   // Make request
   let response;
+
+  // Connection timeout: abort if we can't reach the server within 15 seconds.
+  // This only covers DNS/TCP/TLS/response-headers. Once the SSE stream starts,
+  // readSSEStream's STREAM_TIMEOUT_MS (60s) + backend keepalives handle liveness.
+  const CONNECT_TIMEOUT_MS = 15000;
+  let connectTimer = null;
+  let internalAbortController = null;
+  let effectiveSignal = abortSignal;
+
   try {
     // Get client version from manifest
     let clientVersion = "1.0.9"; // Default fallback
@@ -516,14 +526,6 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
       "Authorization": `Bearer ${accessToken}`,
       "X-Client-Version": clientVersion
     };
-    
-    // Connection timeout: abort if we can't reach the server within 15 seconds.
-    // This only covers DNS/TCP/TLS/response-headers. Once the SSE stream starts,
-    // readSSEStream's STREAM_TIMEOUT_MS (60s) + backend keepalives handle liveness.
-    const CONNECT_TIMEOUT_MS = 15000;
-    let connectTimer = null;
-    let internalAbortController = null;
-    let effectiveSignal = abortSignal;
     if (!abortSignal) {
       internalAbortController = new AbortController();
       effectiveSignal = internalAbortController.signal;
@@ -699,11 +701,18 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
       e.message.includes("Rate limit active") ||
       e.message.includes("retry parameters")
     );
-    
+
     if (isThrottleError) {
       log(`[COMPLETIONS] [THROTTLE] ${e.message}`, "warn");
     } else {
       log(`[COMPLETIONS] Request failed: ${e}`, "error");
+    }
+
+    // Convert internal connection-timeout AbortError to a regular Error
+    // so retryWithBackoff treats it as a retriable network error instead
+    // of a user-initiated cancel.
+    if (e.name === "AbortError" && internalAbortController?.signal.aborted) {
+      throw new Error(`Connection timeout (${CONNECT_TIMEOUT_MS}ms)`);
     }
     throw e;
   }
@@ -1158,16 +1167,25 @@ function _release() {
 }
 
 /**
- * Send a chat request without tools.
- * 
+ * Send a chat completion request.
+ * Unified API for all LLM interactions: simple completions, tool execution, etc.
+ *
  * @param {Array} messages - Chat messages
  * @param {Object} options - Options
  * @param {boolean} options.ignoreSemaphore - Bypass concurrency guard
- * @returns {Promise<string|null>} - Assistant text or null
+ * @param {boolean} options.disableTools - Disable server-side tools (default: true)
+ * @param {AbortController} options.abortController - Abort controller for cancellation
+ * @param {Function} options.onToolExecution - Callback for client-side tool execution
+ * @returns {Promise<Object|null>} - { assistant, token_usage, refined_kb, ... } or null on network error
  */
 export async function sendChat(
   messages,
-  { ignoreSemaphore = false, enableServerTools = false } = {}
+  {
+    ignoreSemaphore = false,
+    disableTools = true,
+    abortController = null,
+    onToolExecution = null,
+  } = {}
 ) {
   if (!Array.isArray(messages) || messages.length === 0) {
     log("sendChat called with empty messages", "error");
@@ -1177,149 +1195,8 @@ export async function sendChat(
   const payload = {
     messages,
     client_timestamp_ms: Date.now(),
-    disable_tools: !enableServerTools,
-    ...(enableServerTools && { client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
-  };
-  
-  let acquired = false;
-  try {
-    if (!ignoreSemaphore) {
-      await _acquire();
-      acquired = true;
-    }
-    
-    const json = await sendChatCompletions(payload, null);
-    
-    if (json.err) {
-      log(`sendChat error: ${json.err}`, "error");
-      return null;
-    }
-    
-    // Log token usage including reasoning tokens
-    if (json.token_usage) {
-      const usage = json.token_usage;
-      const reasoningTokens = usage.reasoning_tokens || 0;
-      const outputTokens = usage.output_tokens || 0;
-      const inputTokens = usage.input_tokens || 0;
-      const totalTokens = usage.total_tokens || 0;
-      const contextLimit = usage.context_limit || 0;
-      const usagePercentage = usage.usage_percentage || 0;
-      
-      log(
-        `[sendChat Token Usage] Total: ${totalTokens}/${contextLimit} (${usagePercentage}%) | Input: ${inputTokens} | Output: ${outputTokens} (Reasoning: ${reasoningTokens}, Content: ${outputTokens - reasoningTokens})`
-      );
-      
-      // Store thinking/reasoning if present
-      if (json.thinking) {
-        log(`[sendChat Thinking] Captured ${json.thinking.length} chars of reasoning`);
-      }
-    }
-    
-    const assistantText = json?.assistant || "";
-    const wasThrottled = json?.wasThrottled || false;
-    
-    // If throttled, return full object for caller to handle
-    // Otherwise return just the string for backward compatibility
-    if (wasThrottled) {
-      return {
-        assistant: normalizeUnicode(assistantText.trim()),
-        wasThrottled: true,
-        token_usage: json.token_usage,
-      };
-    }
-    
-    return normalizeUnicode(assistantText.trim());
-  } catch (e) {
-    log(`sendChat network error: ${e}`, "error");
-    return null;
-  } finally {
-    if (acquired) _release();
-  }
-}
-
-/**
- * Send a chat request and return the full response object.
- * Use this when you need access to all response fields (e.g., refined_kb, token_usage).
- * Tools are disabled by default.
- * 
- * @param {Array} messages - Chat messages
- * @param {Object} options - Options
- * @param {boolean} options.ignoreSemaphore - Bypass concurrency guard
- * @returns {Promise<Object>} - Full response object { assistant, token_usage, refined_kb, etc. }
- */
-export async function sendChatRaw(
-  messages,
-  { ignoreSemaphore = false } = {}
-) {
-  if (!Array.isArray(messages) || messages.length === 0) {
-    log("sendChatRaw called with empty messages", "error");
-    return { err: "Invalid request: empty messages" };
-  }
-  
-  const payload = {
-    messages,
-    client_timestamp_ms: Date.now(),
-    disable_tools: true,
-  };
-  
-  let acquired = false;
-  try {
-    if (!ignoreSemaphore) {
-      await _acquire();
-      acquired = true;
-    }
-    
-    const json = await sendChatCompletions(payload, null);
-    
-    if (json.err) {
-      log(`sendChatRaw error: ${json.err}`, "error");
-      return json;
-    }
-    
-    // Normalize assistant text if present
-    if (json && typeof json.assistant === "string") {
-      json.assistant = normalizeUnicode(json.assistant.trim());
-    }
-    
-    return json || { err: "Empty response from server" };
-  } catch (e) {
-    log(`sendChatRaw network error: ${e}`, "error");
-    return { err: e instanceof Error ? e.message : String(e) };
-  } finally {
-    if (acquired) _release();
-  }
-}
-
-/**
- * Send a chat request with tool support.
- * Executes tools automatically via callback.
- * Backend loads tool definitions from its own /tools/*.json files.
- * 
- * @param {Array} messages - Chat messages
- * @param {Object} options - Options
- * @param {boolean} options.ignoreSemaphore - Bypass concurrency guard
- * @param {AbortController} options.abortController - Abort controller
- * @param {Function} options.onToolExecution - Callback for tool execution
- * @returns {Promise<Object>} - Response with assistant, token_usage, etc.
- */
-export async function sendChatWithTools(
-  messages,
-  {
-    ignoreSemaphore = false,
-    abortController = null,
-    onToolExecution = null,
-  } = {}
-) {
-  if (!Array.isArray(messages) || messages.length === 0) {
-    log("sendChatWithTools called with empty messages", "error");
-    return { err: "Invalid request: empty messages" };
-  }
-  
-  const payload = {
-    messages,
-    client_timestamp_ms: Date.now(),
-    disable_tools: false,
-    client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    disable_tools: disableTools,
+    ...(!disableTools && { client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
   };
 
   let acquired = false;
@@ -1334,45 +1211,46 @@ export async function sendChatWithTools(
       abortController?.signal || null,
       onToolExecution
     );
-    
+
     if (json.err) {
+      log(`sendChat error: ${json.err}`, "error");
       return json;
     }
-    
-    // Normalize assistant text
-    if (json && typeof json.assistant === "string") {
-      json.assistant = normalizeUnicode(json.assistant);
+
+    // Log token usage including reasoning tokens
+    if (json.token_usage) {
+      const usage = json.token_usage;
+      const reasoningTokens = usage.reasoning_tokens || 0;
+      const outputTokens = usage.output_tokens || 0;
+      const inputTokens = usage.input_tokens || 0;
+      const totalTokens = usage.total_tokens || 0;
+      const contextLimit = usage.context_limit || 0;
+      const usagePercentage = usage.usage_percentage || 0;
+
+      log(
+        `[sendChat Token Usage] Total: ${totalTokens}/${contextLimit} (${usagePercentage}%) | Input: ${inputTokens} | Output: ${outputTokens} (Reasoning: ${reasoningTokens}, Content: ${outputTokens - reasoningTokens})`
+      );
+
+      if (json.thinking) {
+        log(`[sendChat Thinking] Captured ${json.thinking.length} chars of reasoning`);
+      }
     }
-    
+
+    // Normalize assistant text if present
+    if (json && typeof json.assistant === "string") {
+      json.assistant = normalizeUnicode(json.assistant.trim());
+    }
+
     return json || { err: "Empty response from server" };
   } catch (e) {
     if (e.name === "AbortError") {
-      log("[COMPLETIONS] sendChatWithTools cancelled via AbortController", "info");
+      log(`sendChat aborted`, "info");
       return { err: "User cancelled response." };
     }
-    log(`sendChatWithTools network error: ${e}`, "error");
-    const errorMsg = e instanceof Error ? e.message : String(e);
-    return { err: errorMsg };
+    log(`sendChat network error: ${e}`, "error");
+    return null;
   } finally {
     if (acquired) _release();
   }
-}
-
-/**
- * Send chat without mutating history.
- * 
- * @param {Array} chatHistory - Chat history
- * @param {string} userContent - User message
- * @param {Object} options - Options
- * @returns {Promise<string|null>} - Assistant reply or null
- */
-export async function sendChatWithoutHistoryMutation(
-  chatHistory,
-  userContent,
-  options = {}
-) {
-  if (!userContent) return null;
-  const messages = chatHistory.concat({ role: "user", content: userContent });
-  return sendChat(messages, options);
 }
 

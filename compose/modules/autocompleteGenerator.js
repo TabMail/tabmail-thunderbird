@@ -51,7 +51,8 @@ export async function generateCorrection(context) {
     cursor_position: typeof cursorPosition === "number" ? cursorPosition : 0,
   };
 
-  const assistantText = await sendChat([systemMsg], { ignoreSemaphore: true });
+  const resp = await sendChat([systemMsg], { ignoreSemaphore: true });
+  const assistantText = resp?.assistant;
   if (!assistantText) {
     log(`${PFX}Empty assistant response`, "error");
     return null;

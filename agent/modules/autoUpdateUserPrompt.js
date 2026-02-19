@@ -115,14 +115,14 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
         };
 
         const messages = [systemMsg];
-        const assistantResp = await sendChat(messages);
-        if (!assistantResp) {
+        const resp = await sendChat(messages);
+        if (!resp?.assistant) {
             log(`[TMDBG AutoPrompt] LLM returned empty patch for ${uniqueKey}`, "warn");
             return;
         }
 
         // Parse strict JSON: { patch: "..." }
-        const parsed = processJSONResponse(assistantResp) || {};
+        const parsed = processJSONResponse(resp.assistant) || {};
         const patchText = typeof parsed.patch === "string" ? parsed.patch.trim() : "";
         if (!patchText) {
             log(`[TMDBG AutoPrompt] No patch provided for ${uniqueKey}; skipping.`);

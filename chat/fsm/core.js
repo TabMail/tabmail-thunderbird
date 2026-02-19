@@ -153,7 +153,8 @@ export async function runStatePlanNextAction() {
   let parsedResp = null;
   try {
     // We are now FSM-only, so we use sendChat without tools and also no session_id
-    assistantResp = (await sendChat([systemMsg])) || "(No response)";
+    const chatResp = await sendChat([systemMsg]);
+    assistantResp = chatResp?.assistant || "(No response)";
     saveChatLog(
       "tabmail_chatwindow_plannextaction",
       Date.now(),

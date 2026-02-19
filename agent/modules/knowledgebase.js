@@ -1,7 +1,7 @@
 import { formatTimestampForAgent, renderToPlainText } from "../../chat/modules/helpers.js";
 import { addChatToQueue, getUnrememberedSessions, markSessionsAsRemembered } from "./chatHistoryQueue.js";
 import { SETTINGS } from "./config.js";
-import { sendChatRaw } from "./llm.js";
+import { sendChat } from "./llm.js";
 import { getUserKBPrompt } from "./promptGenerator.js";
 import {
     log,
@@ -159,7 +159,7 @@ async function _kbUpdateImpl(conversationHistory = []) {
                 setTimeout(() => reject(new Error('KB update LLM request timeout')), KB_CONFIG.llmTimeoutMs)
             );
 
-            const sendChatPromise = sendChatRaw([systemMsg], { ignoreSemaphore: true });
+            const sendChatPromise = sendChat([systemMsg], { ignoreSemaphore: true });
 
             response = await Promise.race([sendChatPromise, timeoutPromise]);
         } catch (error) {
@@ -295,7 +295,7 @@ export async function kbCompress() {
             log(`-- KB -- Starting manual KB compress (${currentUserKBMd.split('\n').filter(l => l.trim()).length} entries)`);
 
             const response = await Promise.race([
-                sendChatRaw([systemMsg], { ignoreSemaphore: true }),
+                sendChat([systemMsg], { ignoreSemaphore: true }),
                 new Promise((_, reject) => setTimeout(() => reject(new Error("KB compress timeout")), KB_CONFIG.llmTimeoutMs)),
             ]);
 
@@ -504,7 +504,7 @@ async function _periodicKbUpdateImpl(options = {}) {
                 const timeoutPromise = new Promise((_, reject) =>
                     setTimeout(() => reject(new Error("KB periodic chunk timeout")), KB_CONFIG.llmTimeoutMs)
                 );
-                const sendChatPromise = sendChatRaw([systemMsg], { ignoreSemaphore: true });
+                const sendChatPromise = sendChat([systemMsg], { ignoreSemaphore: true });
                 const response = await Promise.race([sendChatPromise, timeoutPromise]);
 
                 const requestDuration = Date.now() - requestStartTime;

@@ -1,4 +1,4 @@
-import { processEditResponse, sendChatWithTools } from "../../agent/modules/llm.js";
+import { processEditResponse, sendChat } from "../../agent/modules/llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
 import { extractBodyFromParts, safeGetFull, stripHtml } from "../../agent/modules/utils.js";
 import { getUserName } from "../../chat/modules/helpers.js";
@@ -155,9 +155,10 @@ export async function runComposeEdit({
       );
     } catch (_) {}
 
-    // Use sendChatWithTools with headless tool executor for compose flow
+    // Use sendChat with headless tool executor for compose flow
     // Backend will filter tools based on system_prompt_compose config
-    const response = await sendChatWithTools([systemMsg], { 
+    const response = await sendChat([systemMsg], {
+      disableTools: false,
       ignoreSemaphore,
       onToolExecution: executeToolsHeadless,
     });
@@ -178,7 +179,7 @@ export async function runComposeEdit({
         `[Compose/edit] runComposeEdit COMPLETED in ${duration.toFixed(1)}ms: mode=${mode} responseLen=${(assistantResp||"").length} throttled=${wasThrottled}`
       );
       console.log(
-        `[Compose/edit] ⚠️ NOTE: Token usage (including thinking tokens) is logged above by sendChatWithTools`
+        `[Compose/edit] ⚠️ NOTE: Token usage (including thinking tokens) is logged above by sendChat`
       );
     } catch (_) {}
     

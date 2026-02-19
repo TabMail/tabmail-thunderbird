@@ -296,13 +296,13 @@ export async function generateSummary(messageHeader, highPriority = false) {
     has_unsubscribe_link: emailFilter.hasUnsubscribe,
   };
 
-  const assistantResp = await sendChat([systemMsg], { ignoreSemaphore: highPriority, enableServerTools: true });
-  if (!assistantResp) {
+  const resp = await sendChat([systemMsg], { ignoreSemaphore: highPriority, disableTools: false });
+  if (!resp?.assistant) {
     log(`${PFX}LLM returned empty summary for ${uniqueKey}`, "error");
     return null;
   }
 
-  const result = processSummaryResponse(assistantResp);
+  const result = processSummaryResponse(resp.assistant);
   
   // Note: Date validation/correction is now handled by the backend post-processor
   // The backend converts relative dates (e.g., "next Thursday") to absolute YYYY-MM-DD

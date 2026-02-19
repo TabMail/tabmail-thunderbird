@@ -2,7 +2,7 @@ import { formatTimestampForAgent, getUserName } from "../../chat/modules/helpers
 import { executeToolsHeadless } from "../../chat/tools/core.js";
 import { SETTINGS } from "./config.js";
 import * as idb from "./idbStorage.js";
-import { processEditResponse, sendChatWithTools } from "./llm.js";
+import { processEditResponse, sendChat } from "./llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "./promptGenerator.js";
 import { extractBodyFromParts, formatForLog, getUniqueMessageKey, log, safeGetFull, saveChatLog, stripHtml } from "./utils.js";
 
@@ -165,10 +165,11 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
         log(`${PFX}Failed to create isolated idContext: ${e}`, "warn");
     }
 
-    // Use sendChatWithTools with headless tool executor for reply generation
+    // Use sendChat with headless tool executor for reply generation
     // Backend will filter tools based on system_prompt_compose config
     const scopedExecutor = (toolCalls, tokenUsage) => executeToolsHeadless(toolCalls, tokenUsage, idContext);
-    const response = await sendChatWithTools([systemMsg], {
+    const response = await sendChat([systemMsg], {
+        disableTools: false,
         ignoreSemaphore,
         onToolExecution: scopedExecutor,
     });

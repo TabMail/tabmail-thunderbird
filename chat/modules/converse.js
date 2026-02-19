@@ -1,7 +1,7 @@
 // converse.js – handle user interaction that are related to user input
 // Thunderbird 142 MV3
 
-import { sendChatWithTools } from "../../agent/modules/llm.js";
+import { sendChat } from "../../agent/modules/llm.js";
 import { log, saveChatLog, saveToolCallLog } from "../../agent/modules/utils.js";
 import { appendSystemBubble, createNewAgentBubble } from "../chat.js";
 import { executeToolByName, getToolActivityLabel, isServerSideTool, resetFsmChainTracking, resetToolPaginationSessions } from "../tools/core.js";
@@ -758,23 +758,24 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
   let resp = null;
   const relayStart = Date.now();
   try {
-    log(`[CONVERSE] Calling sendChatWithTools with turn-based approach`);
+    log(`[CONVERSE] Calling sendChat with turn-based approach`);
 
     const privacyOptOutEnabled = await getPrivacyOptOutAllAiEnabled();
     if (privacyOptOutEnabled) {
-      log(`[CONVERSE] Privacy opt-out enabled; blocking sendChatWithTools`, "warn");
+      log(`[CONVERSE] Privacy opt-out enabled; blocking sendChat`, "warn");
       resp = { err: PRIVACY_OPT_OUT_ERROR_MESSAGE };
     } else {
-      resp = await sendChatWithTools(messages, {
+      resp = await sendChat(messages, {
+        disableTools: false,
         abortController: chatAbortController,
         onToolExecution: onToolExecution,
       });
     }
     
-    log(`[CONVERSE] sendChatWithTools returned`);
+    log(`[CONVERSE] sendChat returned`);
   } finally {
     const relayMs = Date.now() - relayStart;
-    log(`[CONVERSE] sendChatWithTools completed in ${relayMs}ms`);
+    log(`[CONVERSE] sendChat completed in ${relayMs}ms`);
     
     // Clear the global references and handlers
     window.currentChatAbortController = null;

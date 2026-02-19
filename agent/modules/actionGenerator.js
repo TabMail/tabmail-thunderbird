@@ -326,11 +326,11 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
     
     const promises = Array(parallelCalls).fill().map(() => sendChat([systemMsg]));
     const responses = await Promise.all(promises);
-    
+
     // Filter out empty responses and parse them
     const validResponses = responses
-      .filter(resp => resp)
-      .map(resp => processJSONResponse(resp))
+      .filter(resp => resp?.assistant)
+      .map(resp => processJSONResponse(resp.assistant))
       .filter(parsed => parsed.action);
     
     if (validResponses.length === 0) {
