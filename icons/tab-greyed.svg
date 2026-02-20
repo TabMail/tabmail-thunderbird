@@ -5,53 +5,60 @@
    viewBox="0 0 64 64"
    version="1.1"
    id="svg1"
-   sodipodi:docname="tab-greyed.svg"
-   inkscape:version="1.4.2 (ebf0e940, 2025-05-08)"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
-  <defs
-     id="defs1" />
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="0"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="13"
-     inkscape:cx="32"
-     inkscape:cy="32"
-     inkscape:window-width="1496"
-     inkscape:window-height="1171"
-     inkscape:window-x="725"
-     inkscape:window-y="300"
-     inkscape:window-maximized="0"
-     inkscape:current-layer="svg1" />
-  <g transform="translate(32,32) scale(1.3333) translate(-32,-32)">
+  <defs id="defs1" />
+  <g transform="translate(32,32) scale(1.1) translate(-34,-34)">
+    <!-- Geometric drop shadow -->
     <path
-       id="rect1"
-       style="fill:#8a8a8e;stroke:#081a2f;stroke-width:2;stroke-opacity:0.4;stroke-dasharray:none;stroke-miterlimit:8;stroke-linecap:square;paint-order:normal;fill-opacity:1"
-       d="m 16,8 h 32 c 4.432,0 8,3.568 8,8 v 32 c 0,4.432 -3.568,8 -8,8 H 16 C 11.568,56 8,52.432 8,48 V 16 c 0,-4.432 3.568,-8 8,-8 z" />
+       id="shadow"
+       style="fill:#c8c8cc;fill-opacity:1;stroke:none;stroke-width:1.04133;stroke-dasharray:none"
+       d="m 20.882149,10.882149 h 30 c 5.523,0 10,4.477 10,10 v 30 c 0,5.523 -4.477,10 -10,10 h -30 c -5.523,0 -10,-4.477 -10,-10 v -30 c 0,-5.523 4.477,-10 10,-10 z" />
     <g
-       id="g3"
-       style="stroke:#9a9aa0;stroke-opacity:1;stroke-linecap:butt;paint-order:normal"
-       transform="translate(-0.4102564)">
+       id="g4"
+       style="display:inline">
       <path
-         id="arrow-shaft"
-         d="M 18.5,26 H 40.3"
-         style="fill:none;stroke:#9a9aa0;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
-      <path
-         id="arrowhead"
-         d="M 33.73,19.58 40.31,26 33.73,32.42"
-         style="fill:none;stroke:#9a9aa0;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
-      <path
-         id="vertical-bar"
-         d="M 44.287949,17.961538 V 33.905231"
-         style="fill:none;stroke:#9a9aa0;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+         id="rect1"
+         style="fill:#8a8a8e;fill-opacity:1;stroke:#081a2f;stroke-width:2;stroke-linecap:square;stroke-miterlimit:8;stroke-dasharray:none;stroke-opacity:0.4;paint-order:normal"
+         d="m 16,8 h 32 c 4.432,0 8,3.568 8,8 v 32 c 0,4.432 -3.568,8 -8,8 H 16 C 11.568,56 8,52.432 8,48 V 16 c 0,-4.432 3.568,-8 8,-8 z"
+         />
+      <!-- Geometric drop shadow for arrow+bar -->
+      <g
+         id="g3-shadow"
+         style="stroke:#c8c8cc;stroke-linecap:butt;stroke-opacity:1;paint-order:normal"
+         transform="translate(1.4119033,2.0167315)"
+        >
+        <path
+           d="M 18.5,26 H 40.3"
+           style="fill:none;stroke:#c8c8cc;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+           id="path1" />
+        <path
+           d="M 33.73,19.58 40.31,26 33.73,32.42"
+           style="fill:none;stroke:#c8c8cc;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+           id="path2" />
+        <path
+           d="M 44.287949,17.961538 V 33.905231"
+           style="fill:none;stroke:#c8c8cc;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+           id="path3" />
+      </g>
+      <g
+         id="g3"
+         style="display:inline;stroke:#9a9aa0;stroke-linecap:butt;stroke-opacity:1;paint-order:normal"
+         transform="translate(-0.4102564)"
+        >
+        <path
+           id="arrow-shaft"
+           d="M 18.5,26 H 40.3"
+           style="fill:none;stroke:#9a9aa0;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+        <path
+           id="arrowhead"
+           d="M 33.73,19.58 40.31,26 33.73,32.42"
+           style="fill:none;stroke:#9a9aa0;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+        <path
+           id="vertical-bar"
+           d="M 44.287949,17.961538 V 33.905231"
+           style="fill:none;stroke:#9a9aa0;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+      </g>
     </g>
   </g>
 </svg>

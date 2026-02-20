@@ -5,92 +5,60 @@
    viewBox="0 0 64 64"
    version="1.1"
    id="svg1"
-   sodipodi:docname="tab.svg"
-   inkscape:version="1.4.2 (ebf0e940, 2025-05-08)"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
-  <defs
-     id="defs1">
-    <filter
-       style="color-interpolation-filters:sRGB;"
-       inkscape:label="Drop Shadow"
-       id="filter10"
-       x="-0.046533363"
-       y="-0.075264871"
-       width="1.1783804"
-       height="1.1818901">
-      <feFlood
-         result="flood"
-         in="SourceGraphic"
-         flood-opacity="0.478431"
-         flood-color="rgb(0,0,0)"
-         id="feFlood9" />
-      <feGaussianBlur
-         result="blur"
-         in="SourceGraphic"
-         stdDeviation="0.500000"
-         id="feGaussianBlur9" />
-      <feOffset
-         result="offset"
-         in="blur"
-         dx="0.500000"
-         dy="0.500000"
-         id="feOffset9" />
-      <feComposite
-         result="comp1"
-         operator="in"
-         in="flood"
-         in2="offset"
-         id="feComposite9" />
-      <feComposite
-         result="comp2"
-         operator="over"
-         in="SourceGraphic"
-         in2="comp1"
-         id="feComposite10" />
-    </filter>
-  </defs>
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="0"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="13"
-     inkscape:cx="32"
-     inkscape:cy="31.961538"
-     inkscape:window-width="1648"
-     inkscape:window-height="1058"
-     inkscape:window-x="436"
-     inkscape:window-y="99"
-     inkscape:window-maximized="0"
-     inkscape:current-layer="svg1" />
-  <g transform="translate(32,32) scale(1.3333) translate(-32,-32)">
+  <defs id="defs1" />
+  <g transform="translate(32,32) scale(1.1) translate(-34,-34)">
+    <!-- Geometric drop shadow -->
     <path
-       id="rect1"
-       style="fill:#fafafa;stroke:#081a2f;stroke-width:2;stroke-opacity:0.95145631;stroke-dasharray:none;stroke-miterlimit:8;stroke-linecap:square;paint-order:normal;fill-opacity:1"
-       d="m 16,8 h 32 c 4.432,0 8,3.568 8,8 v 32 c 0,4.432 -3.568,8 -8,8 H 16 C 11.568,56 8,52.432 8,48 V 16 c 0,-4.432 3.568,-8 8,-8 z" />
+       id="shadow"
+       style="fill:#dde4ee;fill-opacity:1;stroke:none;stroke-width:1.04133;stroke-dasharray:none"
+       d="m 20.882149,10.882149 h 30 c 5.523,0 10,4.477 10,10 v 30 c 0,5.523 -4.477,10 -10,10 h -30 c -5.523,0 -10,-4.477 -10,-10 v -30 c 0,-5.523 4.477,-10 10,-10 z" />
     <g
-       id="g3"
-       style="stroke:#2a2a36;stroke-opacity:1;stroke-linecap:butt;paint-order:normal;filter:url(#filter10)"
-       transform="translate(-0.4102564)">
+       id="g4"
+       style="display:inline">
       <path
-         id="arrow-shaft"
-         d="M 18.5,26 H 40.3"
-         style="fill:none;stroke:#2a2a36;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
-      <path
-         id="arrowhead"
-         d="M 33.73,19.58 40.31,26 33.73,32.42"
-         style="fill:none;stroke:#2a2a36;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
-      <path
-         id="vertical-bar"
-         d="M 44.287949,17.961538 V 33.905231"
-         style="fill:none;stroke:#2a2a36;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+         id="rect1"
+         style="fill:#fafafa;fill-opacity:1;stroke:#081a2f;stroke-width:2;stroke-linecap:square;stroke-miterlimit:8;stroke-dasharray:none;stroke-opacity:0.951456;paint-order:normal"
+         d="m 16,8 h 32 c 4.432,0 8,3.568 8,8 v 32 c 0,4.432 -3.568,8 -8,8 H 16 C 11.568,56 8,52.432 8,48 V 16 c 0,-4.432 3.568,-8 8,-8 z"
+         />
+      <!-- Geometric drop shadow for arrow+bar -->
+      <g
+         id="g3-shadow"
+         style="stroke:#dde4ee;stroke-linecap:butt;stroke-opacity:1;paint-order:normal"
+         transform="translate(1.4119033,2.0167315)"
+        >
+        <path
+           d="M 18.5,26 H 40.3"
+           style="fill:none;stroke:#dde4ee;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+           id="path1" />
+        <path
+           d="M 33.73,19.58 40.31,26 33.73,32.42"
+           style="fill:none;stroke:#dde4ee;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+           id="path2" />
+        <path
+           d="M 44.287949,17.961538 V 33.905231"
+           style="fill:none;stroke:#dde4ee;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+           id="path3" />
+      </g>
+      <g
+         id="g3"
+         style="display:inline;stroke:#2a2a36;stroke-linecap:butt;stroke-opacity:1;paint-order:normal"
+         transform="translate(-0.4102564)"
+        >
+        <path
+           id="arrow-shaft"
+           d="M 18.5,26 H 40.3"
+           style="fill:none;stroke:#2a2a36;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+        <path
+           id="arrowhead"
+           d="M 33.73,19.58 40.31,26 33.73,32.42"
+           style="fill:none;stroke:#2a2a36;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+        <path
+           id="vertical-bar"
+           d="M 44.287949,17.961538 V 33.905231"
+           style="fill:none;stroke:#2a2a36;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+      </g>
     </g>
   </g>
 </svg>
