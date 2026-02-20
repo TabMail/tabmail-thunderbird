@@ -106,7 +106,6 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
             subject: header?.subject || summary?.subject || "Not Available",
             from_sender: header?.author || summary?.fromSender || "Unknown",
             summary_blurb: summary?.blurb || "",
-            summary_detailed: summary?.detailed || "",
             todos: summary?.todos || "",
             original_agent_action: originalAgentAction,
             original_user_action_prompt: originalUserActionPrompt,
