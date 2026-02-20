@@ -4,7 +4,7 @@
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { ACTION_TAG_IDS } from "../../agent/modules/tagHelper.js";
-import { getIdentityForMessage } from "../../agent/modules/utils.js";
+import { getIdentityForMessage, stripHtml } from "../../agent/modules/utils.js";
 
 // Cache identity email -> display name (for "Identity:email:..." author strings)
 let _identityEmailToNameCache = null;
@@ -212,34 +212,6 @@ export async function handleThreadDownloadAttachment(messageId, partName, filena
 }
 
 /**
- * Extract plain text from HTML content
- */
-function htmlToPlainText(html) {
-    try {
-        if (!html) return "";
-        return html
-            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-            .replace(/<br\s*\/?>/gi, '\n')
-            .replace(/<\/p>/gi, '\n\n')
-            .replace(/<\/div>/gi, '\n')
-            .replace(/<\/li>/gi, '\n')
-            .replace(/<li[^>]*>/gi, '• ')
-            .replace(/<[^>]+>/g, '')
-            .replace(/&nbsp;/gi, ' ')
-            .replace(/&amp;/gi, '&')
-            .replace(/&lt;/gi, '<')
-            .replace(/&gt;/gi, '>')
-            .replace(/&quot;/gi, '"')
-            .replace(/&#39;/gi, "'")
-            .replace(/\n\s*\n\s*\n/g, '\n\n')
-            .trim();
-    } catch (e) {
-        return html || "";
-    }
-}
-
-/**
  * Extract body text from message parts (MIME structure)
  */
 function extractBodyFromParts(parts, maxLength) {
@@ -268,7 +240,7 @@ function extractBodyFromParts(parts, maxLength) {
     
     traverse(parts);
     
-    let body = plainBody.trim() || htmlToPlainText(htmlBody);
+    let body = plainBody.trim() || stripHtml(htmlBody);
     
     if (maxLength > 0 && body.length > maxLength) {
         body = body.substring(0, maxLength) + "…";

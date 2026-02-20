@@ -7,30 +7,7 @@
  * Thunderbird 145 MV3 WebExtension
  */
 
-import { log } from "../../agent/modules/utils.js";
-
-/**
- * Extract plain text from HTML content for preview relay.
- */
-function htmlToPlainText(html) {
-  if (!html) return "";
-  try {
-    return html
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/p>/gi, "\n\n")
-      .replace(/<\/div>/gi, "\n")
-      .replace(/<[^>]+>/g, "")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-  } catch (e) {
-    return String(html);
-  }
-}
+import { log, stripHtml } from "../../agent/modules/utils.js";
 
 /**
  * Wait for compose window to be ready.
@@ -216,7 +193,7 @@ export async function getComposePreview(tabId) {
     if (details.isPlainText && details.plainTextBody) {
       bodyText = details.plainTextBody;
     } else if (details.body) {
-      bodyText = htmlToPlainText(details.body);
+      bodyText = stripHtml(details.body);
     }
 
     // Determine if this is a reply or forward
