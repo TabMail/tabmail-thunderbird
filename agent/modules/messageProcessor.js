@@ -70,7 +70,7 @@ export async function processMessage(
     // We do a quick check first without fetching full message (only checking author)
     // Full check will happen later if we need to generate summary/action
     const quickFilter = await analyzeEmailForReplyFilter(messageHeader);
-    log(`[ProcessMessage] Quick filter for ${messageHeader.id}: isNoReply=${quickFilter.isNoReply}, hasUnsubscribe=${quickFilter.hasUnsubscribe}, skipCachedReply=${quickFilter.skipCachedReply}`);
+    log(`[ProcessMessage] Quick filter for ${messageHeader.id}: isNoReply=${quickFilter.isNoReply}, skipCachedReply=${quickFilter.skipCachedReply}`);
     
     // 2. Summary (cached inside summary.js)
     // NOTE: We continue even if summary fails to ensure all cache timestamps get touched
@@ -132,10 +132,10 @@ export async function processMessage(
     }
 
     // 3. Pre-cache reply (dynamic import to avoid static cycle)
-    // NOTE: We skip reply caching for no-reply addresses and emails with unsubscribe links
+    // NOTE: We skip reply caching for no-reply addresses
     let replySuccess = false;
     if (quickFilter.skipCachedReply) {
-      log(`[ProcessMessage] Skipping cached reply for ${messageHeader.id} - isNoReply=${quickFilter.isNoReply}, hasUnsubscribe=${quickFilter.hasUnsubscribe}`);
+      log(`[ProcessMessage] Skipping cached reply for ${messageHeader.id} - isNoReply=${quickFilter.isNoReply}`);
       replySuccess = false; // Mark as not generated (intentionally skipped)
     } else {
       try {

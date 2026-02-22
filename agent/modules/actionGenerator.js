@@ -298,10 +298,9 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
       log(`${PFX}Failed to get summary data for ${uniqueKey}: ${e}`, "warn");
     }
 
-    // Analyze email for no-reply and unsubscribe filters
-    // This comprehensive check includes full message analysis
-    const emailFilter = await analyzeEmailForReplyFilter(messageHeader, full, plainBody);
-    log(`${PFX}Filter status for ${uniqueKey}: isNoReply=${emailFilter.isNoReply}, hasUnsubscribe=${emailFilter.hasUnsubscribe}`);
+    // Analyze email for no-reply filter
+    const emailFilter = await analyzeEmailForReplyFilter(messageHeader);
+    log(`${PFX}Filter status for ${uniqueKey}: isNoReply=${emailFilter.isNoReply}`);
 
     // Build single consolidated message that backend will process
     const systemMsg = {
@@ -315,7 +314,6 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
       todo: summaryData?.todos || "Not Available",
       summary: summaryData?.blurb || "Not Available",
       is_noreply_address: emailFilter.isNoReply,
-      has_unsubscribe_link: emailFilter.hasUnsubscribe,
     };
 
     log(`${PFX}Preparing LLM call for ${uniqueKey}. summaryData=${summaryData ? 'EXISTS' : 'NULL'}, blurb="${summaryData?.blurb?.substring(0, 50) || 'N/A'}..."`);

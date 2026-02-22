@@ -270,16 +270,15 @@ export async function generateSummary(messageHeader, highPriority = false) {
     log(`${PFX}Failed to load KB for summary: ${e}`, "warn");
   }
 
-  // Analyze email for no-reply and unsubscribe filters
-  // This comprehensive check includes full message analysis
-  const emailFilter = await analyzeEmailForReplyFilter(messageHeader, full, plainBody);
-  log(`[Summary] Filter status for ${uniqueKey}: isNoReply=${emailFilter.isNoReply}, hasUnsubscribe=${emailFilter.hasUnsubscribe}`);
+  // Analyze email for no-reply filter
+  const emailFilter = await analyzeEmailForReplyFilter(messageHeader);
+  log(`[Summary] Filter status for ${uniqueKey}: isNoReply=${emailFilter.isNoReply}`);
 
   // Format email date with day of week for LLM context
   const emailDateObj = messageHeader.date ? new Date(messageHeader.date) : new Date();
   const emailDateFormatted = formatTimestampForAgent(emailDateObj);
   const emailDayOfWeek = emailDateObj.toLocaleDateString("en-US", { weekday: "long" });
-  
+
   // Build single consolidated message that backend will process
   // Note: We send email_date (not current_time) so LLM reasons relative to the email
   const systemMsg = {
@@ -293,7 +292,6 @@ export async function generateSummary(messageHeader, highPriority = false) {
     email_day_of_week: emailDayOfWeek,
     body: plainBody,
     is_noreply_address: emailFilter.isNoReply,
-    has_unsubscribe_link: emailFilter.hasUnsubscribe,
   };
 
   const resp = await sendChat([systemMsg], { ignoreSemaphore: highPriority, disableTools: false });
