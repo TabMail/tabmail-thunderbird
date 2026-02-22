@@ -121,7 +121,7 @@ export async function buildComposeEditChat({
  * @param {string} [params.relatedEmailId]
  * @param {string} [params.mode]
  * @param {boolean} [params.ignoreSemaphore=false]
- * @param {Array<{role:string,content:string}>} [params.chatHistory=[]] Previous edit turns for continuous editing
+ * @param {Array<{userRequest:string,bodyAtRequest:string,subjectAtRequest:string,assistantResponse:string}>} [params.chatHistory=[]] Previous edit turns with draft state
  * @returns {Promise<{subject?:string, body?:string, raw:string, messages:Array, chatHistory:Array}>}
  */
 export async function runComposeEdit({
@@ -158,13 +158,29 @@ export async function runComposeEdit({
       );
     } catch (_) {}
 
-    // Build messages: system message + chat history turns + current instruction.
-    // The system message expands into ~14 messages ending with "Now please edit...".
-    // Chat history turns follow, then the current user instruction is the FINAL
-    // user message so the LLM sees it as what to respond to.
-    const allMessages = chatHistory.length > 0
-      ? [systemMsg, ...chatHistory, { role: "user", content: request }]
-      : [systemMsg];
+    // Each call is atomic — no real chat turns. Past edits are embedded as
+    // formatted text context in the system message. Each history entry stores
+    // the body/subject state at the time of the request so the LLM can see
+    // the full evolution (including any manual user edits between turns).
+    if (chatHistory.length > 0) {
+      const lines = [];
+      chatHistory.forEach((turn, idx) => {
+        lines.push(`--- Edit Turn ${idx + 1} ---`);
+        lines.push(`Draft at time of request:`);
+        lines.push(`Subject: ${turn.subjectAtRequest}`);
+        lines.push(`Body:\n${turn.bodyAtRequest}`);
+        lines.push(``);
+        lines.push(`User request: ${turn.userRequest}`);
+        lines.push(``);
+        lines.push(`Assistant response:\n${turn.assistantResponse}`);
+        lines.push(``);
+      });
+      systemMsg.edit_conversation_history = lines.join("\n");
+    } else {
+      systemMsg.edit_conversation_history = "";
+    }
+
+    const allMessages = [systemMsg];
 
     // Use sendChat with headless tool executor for compose flow
     // Backend will filter tools based on system_prompt_compose config
@@ -202,11 +218,16 @@ export async function runComposeEdit({
       assistantResp
     );
 
-    // Build updated chat history with this turn appended
+    // Build updated chat history with this turn appended.
+    // Each entry stores the draft state at the time of the request.
     const updatedHistory = [
       ...chatHistory,
-      { role: "user", content: request },
-      { role: "assistant", content: assistantResp },
+      {
+        userRequest: request,
+        bodyAtRequest: body,
+        subjectAtRequest: subject,
+        assistantResponse: assistantResp,
+      },
     ];
 
     return {
