@@ -580,6 +580,18 @@
     signalReady: signalSummaryBubbleReady,
   };
   console.log('[TabMail Bubble] Exported TabMailSummaryBubble to globalThis');
+
+  // Signal ready immediately so the display gate can reveal without waiting
+  // for the agent's async pipeline (privacy checks, cache lookup, message
+  // passing) to send summaryProcessing/displaySummary. We don't render
+  // "Analyzing…" here because the bubble is also injected for non-inbox
+  // messages where no content will ever arrive — the agent handles rendering.
+  try {
+    signalSummaryBubbleReady("auto-init");
+    console.log('[TabMail Bubble] Auto-signaled ready for fast gate reveal');
+  } catch (e) {
+    console.log(`[TabMail Bubble] Auto-init signal failed: ${e}`);
+  }
 })();
 
 // Note: Cleanup is handled automatically by the proactive removal logic above
