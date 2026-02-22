@@ -126,7 +126,7 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
         if (!patchText) {
             log(`[TMDBG AutoPrompt] No patch provided for ${uniqueKey}; skipping.`);
             // Still persist chat for debugging
-            saveChatLog("tabmail_action_update", uniqueKey, messages, assistantResp);
+            saveChatLog("tabmail_action_update", uniqueKey, messages, resp.assistant);
             return;
         }
 
@@ -134,12 +134,12 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
         const updated = applyActionPatch(currentUserActionMd, patchText);
         if (updated == null) {
             log(`[TMDBG AutoPrompt] Failed to apply action patch for ${uniqueKey}; leaving guideline unchanged.`, "warn");
-            saveChatLog("tabmail_action_update", uniqueKey, messages, assistantResp);
+            saveChatLog("tabmail_action_update", uniqueKey, messages, resp.assistant);
             return;
         }
         if (updated === currentUserActionMd) {
             log(`[TMDBG AutoPrompt] Action patch applied produced no change for ${uniqueKey}.`);
-            saveChatLog("tabmail_action_update", uniqueKey, messages, assistantResp);
+            saveChatLog("tabmail_action_update", uniqueKey, messages, resp.assistant);
             return;
         }
 
@@ -161,7 +161,7 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
         }
 
         // Save full chat log for auditing
-        saveChatLog("tabmail_action_update", uniqueKey, messages, assistantResp);
+        saveChatLog("tabmail_action_update", uniqueKey, messages, resp.assistant);
     } catch (e) {
         log(`[TMDBG AutoPrompt] Error in autoUpdateUserPromptOnTag for message ${messageId}: ${e}`, "error");
     }
