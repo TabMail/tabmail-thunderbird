@@ -1,6 +1,6 @@
 import { processEditResponse, sendChat } from "../../agent/modules/llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
-import { extractBodyFromParts, safeGetFull, stripHtml } from "../../agent/modules/utils.js";
+import { extractBodyFromParts, safeGetFull, saveChatLog, stripHtml } from "../../agent/modules/utils.js";
 import { getUserName } from "../../chat/modules/helpers.js";
 import { executeToolsHeadless } from "../../chat/tools/core.js";
 
@@ -83,7 +83,7 @@ export async function buildComposeEditChat({
 
   // Build single consolidated message that backend will process
   const useSelection = !!(selectedText && selectedText.trim());
-  
+
   const message = {
     role: "system",
     content: "system_prompt_compose",
@@ -111,6 +111,7 @@ export async function buildComposeEditChat({
 /**
  * Run the compose edit flow and parse the result.
  * Returns parsed subject/body and raw assistant text, plus the messages used.
+ * Supports chat history for continuous inline editing across turns.
  * @param {Object} params
  * @param {Array<{name:string,email:string}>} [params.recipients]
  * @param {string} [params.subject]
@@ -120,7 +121,8 @@ export async function buildComposeEditChat({
  * @param {string} [params.relatedEmailId]
  * @param {string} [params.mode]
  * @param {boolean} [params.ignoreSemaphore=false]
- * @returns {Promise<{subject?:string, body?:string, raw:string, messages:Array}>}
+ * @param {Array<{role:string,content:string}>} [params.chatHistory=[]] Previous edit turns for continuous editing
+ * @returns {Promise<{subject?:string, body?:string, raw:string, messages:Array, chatHistory:Array}>}
  */
 export async function runComposeEdit({
   recipients = [],
@@ -131,48 +133,57 @@ export async function runComposeEdit({
   relatedEmailId = "",
   mode = "new",
   ignoreSemaphore = false,
+  chatHistory = [],
 } = {}) {
   const startTime = performance.now();
   try {
     // Get user composition prompt
     const userCompPrompt = await getUserCompositionPrompt();
-    
+
     // Build single consolidated message that backend will process
-    const systemMsg = await buildComposeEditChat({ 
-      recipients, 
-      subject, 
-      body, 
-      request, 
-      selectedText, 
-      relatedEmailId, 
+    const systemMsg = await buildComposeEditChat({
+      recipients,
+      subject,
+      body,
+      request,
+      selectedText,
+      relatedEmailId,
       mode,
       userCompositionPrompt: userCompPrompt || ""
     });
 
     try {
       console.log(
-        `[Compose/edit] runComposeEdit STARTED: mode=${mode} recipients=${(recipients || []).length} subjectLen=${(subject||"").length} bodyLen=${(body||"").length} reqLen=${(request||"").length} selLen=${(selectedText||"").length}`
+        `[Compose/edit] runComposeEdit STARTED: mode=${mode} recipients=${(recipients || []).length} subjectLen=${(subject||"").length} bodyLen=${(body||"").length} reqLen=${(request||"").length} selLen=${(selectedText||"").length} historyTurns=${chatHistory.length}`
       );
     } catch (_) {}
 
+    // Build messages: system message + chat history turns + current instruction.
+    // The system message expands into ~14 messages ending with "Now please edit...".
+    // Chat history turns follow, then the current user instruction is the FINAL
+    // user message so the LLM sees it as what to respond to.
+    const allMessages = chatHistory.length > 0
+      ? [systemMsg, ...chatHistory, { role: "user", content: request }]
+      : [systemMsg];
+
     // Use sendChat with headless tool executor for compose flow
     // Backend will filter tools based on system_prompt_compose config
-    const response = await sendChat([systemMsg], {
+    const response = await sendChat(allMessages, {
       disableTools: false,
       ignoreSemaphore,
       onToolExecution: executeToolsHeadless,
     });
-    
+
     // Handle error response
     if (response?.err) {
       console.log(`[Compose/edit] LLM error: ${response.err}`, "error");
-      return { subject: undefined, body: "", raw: "", messages: [systemMsg], error: response.err };
+      return { subject: undefined, body: "", raw: "", messages: [systemMsg], chatHistory, error: response.err };
     }
-    
+
     const assistantResp = response?.assistant || "";
     const wasThrottled = response?.wasThrottled || false;
     const parsed = processEditResponse(assistantResp);
-    
+
     const duration = performance.now() - startTime;
     try {
       console.log(
@@ -182,18 +193,34 @@ export async function runComposeEdit({
         `[Compose/edit] ⚠️ NOTE: Token usage (including thinking tokens) is logged above by sendChat`
       );
     } catch (_) {}
-    
+
+    // Save chat log for debugging (gated by debugMode)
+    saveChatLog(
+      "tabmail_inline_edit",
+      `${mode}_${Date.now()}`,
+      allMessages,
+      assistantResp
+    );
+
+    // Build updated chat history with this turn appended
+    const updatedHistory = [
+      ...chatHistory,
+      { role: "user", content: request },
+      { role: "assistant", content: assistantResp },
+    ];
+
     return {
       subject: parsed.subject,
       body: parsed.body || parsed.message || "",
       raw: assistantResp,
       messages: [systemMsg],
+      chatHistory: updatedHistory,
       wasThrottled, // Pass throttle status to caller
     };
   } catch (e) {
     const duration = performance.now() - startTime;
     console.log(`[Compose/edit] runComposeEdit error after ${duration.toFixed(1)}ms: ${e}`, "error");
-    return { subject: undefined, body: "", raw: "", messages: [] };
+    return { subject: undefined, body: "", raw: "", messages: [], chatHistory };
   }
 }
 

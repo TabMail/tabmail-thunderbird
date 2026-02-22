@@ -179,12 +179,20 @@ Object.assign(TabMail, {
         );
       } catch (_) {}
       
+      // Include edit chat history for continuous editing across turns
+      const editHistory = TabMail.state.editChatHistory || [];
       const result = await browser.runtime.sendMessage({
         type: "runInlineComposeEdit",
         body: beforeText,
         request: instruction.trim(),
         selectedText,
+        chatHistory: editHistory,
       });
+
+      // Update stored chat history with this turn (persists while compose window is open)
+      if (result && result.chatHistory) {
+        TabMail.state.editChatHistory = result.chatHistory;
+      }
 
       const inlineRequestDuration = performance.now() - inlineRequestStartTime;
       

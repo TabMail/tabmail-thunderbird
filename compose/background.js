@@ -264,6 +264,9 @@ async function handleRuntimeMessage(message, sender) {
         `[TabMail BG] ───────────────────────────────────────────────────────────────────`
       );
       
+      // Pass chat history from the inline editor for continuous editing
+      const chatHistory = message.chatHistory || [];
+
       const result = await runComposeEdit({
         recipients,
         subject,
@@ -273,6 +276,7 @@ async function handleRuntimeMessage(message, sender) {
         relatedEmailId,
         mode,
         ignoreSemaphore: true,
+        chatHistory,
       });
       
       const inlineEditDuration = performance.now() - inlineEditStartTime;
