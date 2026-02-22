@@ -270,9 +270,10 @@ export async function generateSummary(messageHeader, highPriority = false) {
     log(`${PFX}Failed to load KB for summary: ${e}`, "warn");
   }
 
-  // Analyze email for no-reply filter
-  const emailFilter = await analyzeEmailForReplyFilter(messageHeader);
-  log(`[Summary] Filter status for ${uniqueKey}: isNoReply=${emailFilter.isNoReply}`);
+  // Analyze email for no-reply and unsubscribe filters
+  // This comprehensive check includes full message analysis
+  const emailFilter = await analyzeEmailForReplyFilter(messageHeader, full, plainBody);
+  log(`[Summary] Filter status for ${uniqueKey}: isNoReply=${emailFilter.isNoReply}, hasUnsubscribe=${emailFilter.hasUnsubscribe}`);
 
   // Format email date with day of week for LLM context
   const emailDateObj = messageHeader.date ? new Date(messageHeader.date) : new Date();
@@ -292,6 +293,7 @@ export async function generateSummary(messageHeader, highPriority = false) {
     email_day_of_week: emailDayOfWeek,
     body: plainBody,
     is_noreply_address: emailFilter.isNoReply,
+    has_unsubscribe_link: emailFilter.hasUnsubscribe,
   };
 
   const resp = await sendChat([systemMsg], { ignoreSemaphore: highPriority, disableTools: false });
