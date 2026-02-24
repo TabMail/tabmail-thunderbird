@@ -3,12 +3,21 @@ import { isInboxFolder } from "./folderUtils.js";
 import { processMessage } from "./messageProcessor.js";
 import { getUniqueMessageKey, headerIDToWeID, log, parseUniqueId } from "./utils.js";
 
+// Lazy-loaded to avoid circular imports — only needed for tagCleanup operation type.
+let _performLeaveInboxTagCleanup = null;
+
 const QUEUE_STORAGE_KEY = "agent_processmessage_pending";
 
 // EVICTION POLICY: Items are ONLY removed from the queue when:
-//   1. processMessage succeeds (ok=true)
-//   2. The message is confirmed no longer in the inbox (moved/archived/deleted)
-//   3. The uniqueKey is malformed (data integrity issue)
+//   For processMessage (AI pipeline):
+//     1. processMessage succeeds (ok=true)
+//     2. The message is confirmed no longer in the inbox (moved/archived/deleted)
+//     3. The uniqueKey is malformed (data integrity issue)
+//   For tagCleanupOnLeaveInbox:
+//     1. performLeaveInboxTagCleanup succeeds (ok=true, tags stripped)
+//     2. The message is back in inbox (user undid the move, cleanup unnecessary)
+//     3. The message is confirmed deleted via broad headerMessageId query (after N resolve failures)
+//     4. The uniqueKey is malformed (data integrity issue)
 // We NEVER drop items due to resolve failures or processing retries.
 // Transient issues (offline, IMAP sync lag, LLM timeouts) must not cause data loss.
 let _pending = new Map(); // Map<uniqueKey, { uniqueKey, timestamp, opts, metadata, attempts, lastErrorAtMs }>
@@ -258,22 +267,24 @@ export async function enqueueProcessMessage(messageHeader, opts = {}) {
 
 /**
  * Process a single queued item. Returns result for aggregation.
+ * The result includes `operationType` so the drain loop can gate post-processing hooks.
  */
 async function _processOneItem(it) {
   const key = String(it?.uniqueKey || "");
   if (!key) return { status: "skip" };
+
+  const operationType = it?.opts?.operationType || "processMessage";
 
   // Resolve uniqueKey -> weID -> MessageHeader
   const parsed = parseUniqueId(key);
   if (!parsed?.headerID) {
     log(`[TMDBG PMQ] Invalid uniqueKey (cannot parse) - dropping: ${key}`, "warn");
     _pending.delete(key);
-    return { status: "dropped" };
+    return { status: "dropped", operationType };
   }
 
   // Resolve uniqueKey -> weID -> MessageHeader
   // Never drop on resolve failure — could be transient IMAP/Gmail sync.
-  // Only the inbox check below should evict items.
   let weId = null;
   try {
     weId = await headerIDToWeID(parsed.headerID, parsed.weFolder, false, true);
@@ -281,23 +292,90 @@ async function _processOneItem(it) {
     log(`[TMDBG PMQ] headerIDToWeID threw for key=${key}: ${eResolve}`, "warn");
   }
 
+  let header = null;
+  if (weId) {
+    try {
+      header = await browser.messages.get(weId);
+    } catch (eGet) {
+      log(`[TMDBG PMQ] browser.messages.get failed for weId=${weId} key=${key}: ${eGet}`, "warn");
+    }
+  }
+
+  // ── tagCleanupOnLeaveInbox path ──────────────────────────────────
+  if (operationType === "tagCleanupOnLeaveInbox") {
+    const attempts = (Number(it?.attempts) || 0) + 1;
+
+    // Verify-then-drop: when resolve keeps failing, do a broad headerMessageId query
+    // to confirm whether the message still exists anywhere in the account.
+    if (!header) {
+      const verifyAfter = _num(_cfg().cleanupVerifyAfterAttempts, 3);
+      if (attempts >= verifyAfter) {
+        try {
+          const headerMessageId = parsed.headerID;
+          const queryResult = await browser.messages.query({ headerMessageId });
+          const found = queryResult?.messages?.[0] || null;
+          if (found) {
+            header = found;
+            log(`[TMDBG PMQ] tagCleanup: resolved via broad query key=${key} foundId=${found.id}`);
+          } else {
+            log(`[TMDBG PMQ] tagCleanup: message confirmed deleted (broad query empty) - dropping: key=${key}`);
+            _pending.delete(key);
+            return { status: "dropped", operationType };
+          }
+        } catch (eQuery) {
+          log(`[TMDBG PMQ] tagCleanup: broad verify query failed key=${key}: ${eQuery}`, "warn");
+        }
+      }
+      if (!header) {
+        log(`[TMDBG PMQ] tagCleanup: resolve failed key=${key} attempt=${attempts} - will retry`, "warn");
+        _pending.set(key, { ...it, attempts, lastErrorAtMs: Date.now() });
+        return { status: "retry", operationType };
+      }
+    }
+
+    // INVERSE inbox check: drop if message is back in inbox (user undid the move)
+    const folder = header?.folder;
+    if (folder && isInboxFolder(folder)) {
+      log(`[TMDBG PMQ] tagCleanup: back in inbox - dropping: weId=${header.id} key=${key}`);
+      _pending.delete(key);
+      return { status: "dropped", operationType };
+    }
+
+    // Execute cleanup
+    _pending.set(key, { ...it, attempts });
+    try {
+      if (!_performLeaveInboxTagCleanup) {
+        const mod = await import("./onMoved.js");
+        _performLeaveInboxTagCleanup = mod.performLeaveInboxTagCleanup;
+      }
+      log(`[TMDBG PMQ] tagCleanup: executing weId=${header.id} key=${key} attempt=${attempts}`);
+      const res = await _performLeaveInboxTagCleanup(header);
+      if (res?.ok) {
+        _pending.delete(key);
+        log(`[TMDBG PMQ] tagCleanup OK: weId=${header.id} key=${key}`);
+        return { status: "processed", operationType };
+      }
+      _pending.set(key, { ..._pending.get(key), lastErrorAtMs: Date.now() });
+      log(`[TMDBG PMQ] tagCleanup incomplete: weId=${header.id} key=${key} attempt=${attempts} reason=${res?.reason || "unknown"}`, "warn");
+      return { status: "retry", operationType };
+    } catch (eCleanup) {
+      _pending.set(key, { ..._pending.get(key), lastErrorAtMs: Date.now() });
+      log(`[TMDBG PMQ] tagCleanup threw: weId=${header.id} key=${key} err=${eCleanup}`, "warn");
+      return { status: "retry", operationType };
+    }
+  }
+
+  // ── Default: processMessage path (AI pipeline) ──────────────────
   if (!weId) {
     log(`[TMDBG PMQ] Could not resolve message for key=${key} - will retry`, "warn");
     _pending.set(key, { ...it, lastErrorAtMs: Date.now() });
-    return { status: "retry" };
-  }
-
-  let header = null;
-  try {
-    header = await browser.messages.get(weId);
-  } catch (eGet) {
-    log(`[TMDBG PMQ] browser.messages.get failed for weId=${weId} key=${key}: ${eGet}`, "warn");
+    return { status: "retry", operationType };
   }
 
   if (!header) {
     log(`[TMDBG PMQ] Missing header for weId=${weId} key=${key} - will retry`, "warn");
     _pending.set(key, { ...it, lastErrorAtMs: Date.now() });
-    return { status: "retry" };
+    return { status: "retry", operationType };
   }
 
   // Check if message is still in inbox BEFORE processing
@@ -309,7 +387,7 @@ async function _processOneItem(it) {
       "warn"
     );
     _pending.delete(key);
-    return { status: "dropped" };
+    return { status: "dropped", operationType };
   }
 
   // Attempt processing; only remove from queue when processMessage reports ok=true.
@@ -322,7 +400,7 @@ async function _processOneItem(it) {
     if (ok) {
       _pending.delete(key);
       log(`[TMDBG PMQ] processMessage OK: weId=${header.id} key=${key} removedFromQueue=true`);
-      return { status: "processed" };
+      return { status: "processed", operationType };
     } else {
       _pending.set(key, {
         ..._pending.get(key),
@@ -332,7 +410,7 @@ async function _processOneItem(it) {
         `[TMDBG PMQ] processMessage incomplete: weId=${header.id} key=${key} attempt=${attemptNo} res=${JSON.stringify(res || {})}`,
         "warn"
       );
-      return { status: "retry" };
+      return { status: "retry", operationType };
     }
   } catch (eProc) {
     _pending.set(key, {
@@ -340,7 +418,7 @@ async function _processOneItem(it) {
       lastErrorAtMs: Date.now(),
     });
     log(`[TMDBG PMQ] processMessage threw: weId=${header.id} key=${key} attempt=${attemptNo} err=${eProc}`, "warn");
-    return { status: "retry" };
+    return { status: "retry", operationType };
   }
 }
 
@@ -397,18 +475,20 @@ export async function drainProcessMessageQueue() {
 
     log(`[TMDBG PMQ] Drain cycle complete: processed=${processed} dropped=${dropped} remaining=${_pending.size}`);
 
-    // Trigger tagSort refresh if any messages were processed (tags were computed)
+    // Trigger tagSort refresh if any AI processing items were completed (tags were computed).
+    // Tag cleanup items don't need tagSort refresh or proactive checkin — they only remove tags.
     // IMPORTANT DESIGN CHOICE: Use debounced refresh() NOT refreshImmediate()!
     // - refreshImmediate() would cause emails to visually jump around while user is watching
     // - refresh() uses a 30-second delayed sort from the last change, so sorting only
     //   happens when the user isn't actively looking (reduces jarring UI experience)
     // - The 30s timer resets on each call, ensuring we wait for activity to settle
     // - When user switches views/tabs, immediate sort is triggered by TabSelect/folderURIChanged
-    if (processed > 0) {
+    const processedAI = results.filter(r => r.status === "processed" && r.operationType !== "tagCleanupOnLeaveInbox").length;
+    if (processedAI > 0) {
       try {
         if (browser.tagSort?.refresh) {
           browser.tagSort.refresh();
-          log(`[TMDBG PMQ] Triggered tagSort.refresh() after processing ${processed} message(s)`);
+          log(`[TMDBG PMQ] Triggered tagSort.refresh() after processing ${processedAI} AI message(s)`);
         }
       } catch (eRefresh) {
         log(`[TMDBG PMQ] Failed to trigger tagSort.refresh(): ${eRefresh}`, "warn");

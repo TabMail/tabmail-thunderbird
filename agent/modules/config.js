@@ -430,6 +430,10 @@ export const SETTINGS = {
             // Per-item timeout for processMessage. If a single item (fetch, LLM, etc.) hangs
             // longer than this, the drain cycle treats it as retry, preventing _isProcessing deadlock.
             itemTimeoutMs: 120000, // 2 minutes
+            // For tagCleanupOnLeaveInbox items: after this many consecutive resolve failures,
+            // do a broad headerMessageId query to verify whether the message still exists
+            // anywhere in the account. Only drop if confirmed not found.
+            cleanupVerifyAfterAttempts: 3,
         },
         // FTS incremental indexer retry policy.
         // This does NOT change the normal batchDelay used after new events; it only affects retry cadence on errors.

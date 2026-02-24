@@ -275,6 +275,75 @@ async function _clearActionTagsAcrossSpecialUseFoldersByHeaderMessageId(seedHead
   }
 }
 
+/**
+ * Leave-inbox tag cleanup for a single message.
+ * Called by messageProcessorQueue when operationType === "tagCleanupOnLeaveInbox".
+ * Single-attempt — the queue handles retries.
+ *
+ * @param {Object} liveHeader - Live message header (already resolved by queue)
+ * @returns {Promise<{ok: boolean, reason?: string}>}
+ */
+export async function performLeaveInboxTagCleanup(liveHeader) {
+  try {
+    if (!liveHeader?.id) return { ok: false, reason: "no-header" };
+
+    const actionTagIds = Object.values(ACTION_TAG_IDS);
+    const messageId = liveHeader.id;
+
+    // 1. Set watchdog self-update ignore window to prevent feedback loops
+    const selfIgnoreMs = Number(SETTINGS?.onMoved?.tagReassertWatchdog?.selfUpdateIgnoreMs);
+    if (Number.isFinite(selfIgnoreMs) && selfIgnoreMs > 0) {
+      _watchdogSelfUpdateUntil.set(messageId, Date.now() + selfIgnoreMs);
+    }
+
+    // 2. Strip action tags on the live header
+    await _stripActionTagsByIdBestEffort(messageId, "queue:tagCleanupOnLeaveInbox");
+
+    // 3. Cross-folder cleanup by headerMessageId (Gmail label semantics)
+    try {
+      await _clearActionTagsAcrossSpecialUseFoldersByHeaderMessageId(liveHeader, "queue:tagCleanupOnLeaveInbox");
+    } catch (eCross) {
+      log(`[TMDBG onMoved] tagCleanup cross-folder cleanup failed: ${eCross}`, "warn");
+    }
+
+    // 4. Clear destination-scoped IDB action cache
+    try {
+      const uniqueKey = await getUniqueMessageKey(liveHeader);
+      if (uniqueKey) {
+        const keysToClear = [`action:${uniqueKey}`, `action:ts:${uniqueKey}`];
+        await idb.remove(keysToClear);
+        log(`[TMDBG onMoved] tagCleanup cleared IDB action cache: [${keysToClear.join(", ")}]`);
+      }
+    } catch (eCache) {
+      log(`[TMDBG onMoved] tagCleanup IDB cache clear failed: ${eCache}`, "warn");
+    }
+
+    // 5. Verify tags were actually removed
+    let stillHas = false;
+    try {
+      const verify = await browser.messages.get(messageId);
+      const liveTags = Array.isArray(verify?.tags) ? verify.tags : [];
+      stillHas = liveTags.some((t) => actionTagIds.includes(t));
+      log(`[TMDBG onMoved] tagCleanup verify id=${messageId} stillHasActionTag=${stillHas} tags=[${liveTags.join(",")}]`);
+    } catch (eVerify) {
+      log(`[TMDBG onMoved] tagCleanup verify failed id=${messageId}: ${eVerify}`, "warn");
+    }
+
+    // 6. Schedule reassert guard timers for longer-term protection
+    _scheduleReassertGuard(messageId, "queue:tagCleanupOnLeaveInbox");
+
+    // If tags are still present after our strip attempt, report not-ok so queue retries
+    if (stillHas) {
+      return { ok: false, reason: "tags-still-present" };
+    }
+
+    return { ok: true };
+  } catch (e) {
+    log(`[TMDBG onMoved] performLeaveInboxTagCleanup failed: ${e}`, "warn");
+    return { ok: false, reason: String(e) };
+  }
+}
+
 function _clearReassertGuardTimers() {
   try {
     for (const timers of _reassertGuardTimers.values()) {
@@ -379,295 +448,6 @@ function _warmIndex(headers, label) {
     for (const h of list) { try { indexHeader(h); } catch (_) {} }
     log(`[TMDBG MessageActions] ${label} index warmed count=${list.length}`);
   } catch (_) {}
-}
-
-/**
- * Clear TabMail action tags from a message when it leaves inbox.
- * Tags are inbox-scoped for triage purposes only.
- * @param {Object} beforeHeader - Message header BEFORE the move (in inbox)
- * @param {Object} afterHeader - Message header AFTER the move (destination)
- */
-async function _clearTabMailTagsOnLeaveInbox(beforeHeader, afterHeader) {
-  try {
-    const actionTagIds = Object.values(ACTION_TAG_IDS);
-
-    const cfg = SETTINGS?.onMoved?.tagClearOnLeaveInbox || null;
-    const maxAttempts = Number(cfg?.maxAttempts);
-    const baseDelayMs = Number(cfg?.baseDelayMs);
-    if (!cfg || !Number.isFinite(maxAttempts) || maxAttempts < 1 || !Number.isFinite(baseDelayMs) || baseDelayMs < 1) {
-      log(
-        `[TMDBG onMoved] tagClearOnLeaveInbox config missing/invalid: maxAttempts=${cfg?.maxAttempts} baseDelayMs=${cfg?.baseDelayMs}`,
-        "warn"
-      );
-      return;
-    }
-
-    const ids = [];
-    if (beforeHeader?.id) ids.push(beforeHeader.id);
-    if (afterHeader?.id && afterHeader.id !== beforeHeader?.id) ids.push(afterHeader.id);
-    if (ids.length === 0) return;
-
-    const beforeId = beforeHeader?.id || null;
-    const skippedNotFoundIds = new Set();
-
-    async function _stripActionTags(messageId) {
-      let h = null;
-      try {
-        h = await browser.messages.get(messageId);
-      } catch (eGet) {
-        // Expected: the "before" id can disappear quickly during IMAP/Gmail move semantics.
-        if (messageId === beforeId && _isMessageNotFoundError(eGet)) {
-          skippedNotFoundIds.add(messageId);
-          return { changed: false, removed: [], skippedNotFound: true };
-        }
-        throw eGet;
-      }
-      const currentTags = Array.isArray(h?.tags) ? h.tags : [];
-      const newTags = currentTags.filter((t) => !actionTagIds.includes(t));
-      const removed = currentTags.filter((t) => actionTagIds.includes(t));
-      if (removed.length === 0) {
-        return { changed: false, removed: [] };
-      }
-      await browser.messages.update(messageId, { tags: newTags });
-      return { changed: true, removed };
-    }
-
-    async function _maybeClearOtherCopiesByHeaderMessageId() {
-      try {
-        const subCfg = cfg?.clearByHeaderMessageId || null;
-        if (!subCfg || subCfg.enabled !== true) return { attempted: false, ids: [] };
-
-        const headerMessageIdRaw =
-          afterHeader?.headerMessageId || beforeHeader?.headerMessageId || null;
-        const headerMessageId = headerMessageIdRaw
-          ? String(headerMessageIdRaw).replace(/[<>]/g, "")
-          : null;
-        if (!headerMessageId) return { attempted: false, ids: [] };
-
-        const accountId =
-          afterHeader?.folder?.accountId || beforeHeader?.folder?.accountId || null;
-        if (!accountId) return { attempted: false, ids: [] };
-
-        // Only do this for IMAP accounts (Gmail label semantics lives here).
-        let accountType = null;
-        try {
-          const accounts = await browser.accounts.list();
-          const acc = accounts.find((a) => a?.id === accountId) || null;
-          accountType = acc?.type || null;
-        } catch (_) {
-          accountType = null;
-        }
-        if (accountType && String(accountType).toLowerCase() !== "imap") {
-          return { attempted: false, ids: [] };
-        }
-
-        const allowListRaw = Array.isArray(subCfg.specialUseAllowList)
-          ? subCfg.specialUseAllowList
-          : [];
-        const allowList = allowListRaw
-          .map((s) => String(s || "").toLowerCase().trim())
-          .filter((s) => !!s);
-
-        const maxFolders = Number(subCfg.maxFolders);
-        if (!Number.isFinite(maxFolders) || maxFolders < 1) {
-          log(
-            `[TMDBG onMoved] clearByHeaderMessageId invalid maxFolders=${subCfg.maxFolders}`,
-            "warn"
-          );
-          return { attempted: false, ids: [] };
-        }
-
-        let folders = [];
-        try {
-          const accounts = await browser.accounts.list();
-          const acc = accounts.find((a) => a?.id === accountId) || null;
-          if (!acc?.rootFolder?.id) return { attempted: false, ids: [] };
-          const subs = await browser.folders.getSubFolders(acc.rootFolder.id, true);
-          folders = [acc.rootFolder, ...(Array.isArray(subs) ? subs : [])];
-        } catch (eFolders) {
-          log(`[TMDBG onMoved] clearByHeaderMessageId folder enumeration failed: ${eFolders}`, "warn");
-          return { attempted: false, ids: [] };
-        }
-
-        // Scope to specialUse folders so we catch Gmail's "All Mail"/Trash/Inbox without scanning everything.
-        const folderIds = [];
-        for (const f of folders) {
-          try {
-            if (!f?.id) continue;
-            const su = Array.isArray(f.specialUse)
-              ? f.specialUse.map((x) => String(x).toLowerCase())
-              : [];
-            const match = allowList.length === 0
-              ? su.length > 0
-              : su.some((x) => allowList.includes(x));
-            if (!match) continue;
-            folderIds.push(f.id);
-            if (folderIds.length >= maxFolders) break;
-          } catch (_) {}
-        }
-
-        if (folderIds.length === 0) {
-          log(`[TMDBG onMoved] clearByHeaderMessageId no specialUse folders found accountId=${accountId}`, "info");
-          return { attempted: true, ids: [] };
-        }
-
-        let queryResult = null;
-        try {
-          queryResult = await browser.messages.query({ folderId: folderIds, headerMessageId });
-        } catch (eQ) {
-          log(`[TMDBG onMoved] clearByHeaderMessageId messages.query failed: ${eQ}`, "warn");
-          return { attempted: true, ids: [] };
-        }
-
-        const found = [];
-        if (queryResult?.messages && Array.isArray(queryResult.messages)) {
-          found.push(...queryResult.messages);
-        }
-
-        // If there are more pages, continue.
-        try {
-          let contId = queryResult?.id || null;
-          while (contId) {
-            const page = await browser.messages.continueList(contId);
-            if (page?.messages && Array.isArray(page.messages)) {
-              found.push(...page.messages);
-            }
-            contId = page?.id || null;
-          }
-        } catch (eCont) {
-          log(`[TMDBG onMoved] clearByHeaderMessageId continueList failed: ${eCont}`, "warn");
-        }
-
-        const uniqueFoundIds = Array.from(
-          new Set(found.map((m) => Number(m?.id || 0)).filter((n) => !!n))
-        );
-
-        log(
-          `[TMDBG onMoved] clearByHeaderMessageId headerMessageId=${headerMessageId} folders=${folderIds.length} matches=${uniqueFoundIds.length}`
-        );
-
-        for (const mid of uniqueFoundIds) {
-          try {
-            const res = await _stripActionTags(mid);
-            if (res.changed) {
-              log(`[TMDBG onMoved] clearByHeaderMessageId stripped id=${mid} removed=[${res.removed.join(",")}]`);
-            }
-          } catch (eOne) {
-            // Not scary: some ids might disappear during IMAP churn.
-            log(`[TMDBG onMoved] clearByHeaderMessageId strip failed id=${mid}: ${eOne}`, "info");
-          }
-        }
-
-        return { attempted: true, ids: uniqueFoundIds };
-      } catch (e) {
-        log(`[TMDBG onMoved] clearByHeaderMessageId unexpected error: ${e}`, "warn");
-        return { attempted: false, ids: [] };
-      }
-    }
-
-    function _sleep(ms) {
-      return new Promise((resolve) => setTimeout(resolve, ms));
-    }
-
-    // IMAP/Gmail move can be copy+delete or keyword reassert right after move.
-    // Strip on BOTH IDs and verify on the destination id.
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      let changedAny = false;
-
-      for (const id of ids) {
-        if (skippedNotFoundIds.has(id)) {
-          continue;
-        }
-        try {
-          const res = await _stripActionTags(id);
-          if (res.changed) {
-            changedAny = true;
-            log(
-              `[TMDBG onMoved] tag strip attempt=${attempt} id=${id} removed=[${res.removed.join(",")}]`
-            );
-          } else if (res.skippedNotFound) {
-            // Not scary: expected for "before" id in IMAP/Gmail move semantics.
-            log(`[TMDBG onMoved] tag strip skip (message not found) attempt=${attempt} id=${id}`);
-          }
-        } catch (eOne) {
-          log(`[TMDBG onMoved] tag strip failed attempt=${attempt} id=${id}: ${eOne}`, "warn");
-        }
-      }
-
-      // Verify on the destination id (the one user will see)
-      const checkId = afterHeader?.id || beforeHeader?.id || null;
-      let stillHas = false;
-      let liveTags = [];
-      try {
-        const live = checkId ? await browser.messages.get(checkId) : null;
-        liveTags = Array.isArray(live?.tags) ? live.tags : [];
-        stillHas = liveTags.some((t) => actionTagIds.includes(t));
-        log(
-          `[TMDBG onMoved] tag clear verify attempt=${attempt} id=${checkId} stillHasActionTag=${stillHas} live=[${liveTags.join(",")}]`
-        );
-      } catch (eV) {
-        log(`[TMDBG onMoved] tag clear verify failed attempt=${attempt} id=${checkId}: ${eV}`, "warn");
-      }
-
-      if (!stillHas) break;
-
-      // If the destination still has action tags, try clearing other folder copies by headerMessageId.
-      // This targets Gmail label semantics where "All Mail" can reassert keywords after a move.
-      try {
-        const seed = checkId ? await browser.messages.get(checkId) : null;
-        if (seed) {
-          const res = await _clearActionTagsAcrossSpecialUseFoldersByHeaderMessageId(seed, "verify-still-has");
-          if (res?.attempted) {
-            log(`[TMDBG onMoved] clearByHeaderMessageId attempted ids=[${(res.ids || []).join(",")}]`);
-          }
-        }
-      } catch (_) {}
-
-      if (attempt < maxAttempts) {
-        const delayMs = baseDelayMs * attempt;
-        log(`[TMDBG onMoved] tag clear retry sleeping attempt=${attempt} delayMs=${delayMs}`);
-        await _sleep(delayMs);
-      }
-
-      // If we didn't change anything and we still see action tags, keep looping for visibility,
-      // but logs above will show if update threw / verify couldn't run.
-      if (!changedAny && attempt >= maxAttempts) {
-        break;
-      }
-    }
-
-    // Also clear the action cache for this message.
-    // IMPORTANT: our cache keys include folderPath (accountId:folderPath:headerMessageId).
-    // When a message leaves inbox, we must clear BOTH:
-    // - the inbox-scoped key (beforeHeader.folder.path likely "/INBOX")
-    // - the destination-scoped key (afterHeader.folder.path e.g. "/[Gmail]/All Mail")
-    // Otherwise, when the message re-enters Inbox later, it can instantly regain its old action tag.
-    try {
-      const keysToClear = [];
-
-      let beforeKey = null;
-      let afterKey = null;
-      try { beforeKey = beforeHeader ? await getUniqueMessageKey(beforeHeader) : null; } catch (_) { beforeKey = null; }
-      try { afterKey = afterHeader ? await getUniqueMessageKey(afterHeader) : null; } catch (_) { afterKey = null; }
-
-      if (beforeKey) {
-        keysToClear.push(`action:${beforeKey}`, `action:ts:${beforeKey}`);
-      }
-      if (afterKey && afterKey !== beforeKey) {
-        keysToClear.push(`action:${afterKey}`, `action:ts:${afterKey}`);
-      }
-
-      if (keysToClear.length > 0) {
-        await idb.remove(keysToClear);
-        log(`[TMDBG onMoved] Cleared action cache keys: [${keysToClear.join(", ")}]`);
-      }
-    } catch (eClear) {
-      log(`[TMDBG onMoved] Failed to clear action cache: ${eClear}`, "warn");
-    }
-    
-  } catch (e) {
-    log(`[TMDBG onMoved] Failed to clear TabMail tags: ${e}`, "warn");
-  }
 }
 
 // -----------------------------------
@@ -955,21 +735,30 @@ export function attachOnMovedListeners() {
                   nowInInbox = isInboxFolder(afterFolder);
                   
                   if (wasInInbox && !nowInInbox) {
-                    log(`[TMDBG onMoved] Message left inbox, clearing tags: id=${afterList[i]?.id}`);
-                    await _clearTabMailTagsOnLeaveInbox(beforeList[i], afterList[i]);
-                    // IMPORTANT: onMoved event headers can be stale after update().
-                    // Re-fetch live destination header to confirm if tags are actually removed.
+                    log(`[TMDBG onMoved] Message left inbox, enqueuing tag cleanup: id=${afterList[i]?.id}`);
+
+                    // Eagerly clear inbox-scoped IDB action cache (the before-key uses
+                    // the inbox folder path which won't be derivable at queue drain time).
                     try {
-                      const movedId = afterList[i]?.id;
-                      const liveAfter = movedId ? await browser.messages.get(movedId) : null;
-                      const liveTags = Array.isArray(liveAfter?.tags) ? liveAfter.tags : [];
-                      log(
-                        `[TMDBG onMoved] post-clear live tags id=${movedId} tags=[${liveTags.join(",")}]`
-                      );
-                      // Guard for IMAP keyword reassert that may happen later without onUpdated.
-                      _scheduleReassertGuard(movedId, "leave-inbox");
-                    } catch (eLive) {
-                      log(`[TMDBG onMoved] post-clear live get failed: ${eLive}`, "warn");
+                      const beforeKey = await getUniqueMessageKey(beforeList[i]);
+                      if (beforeKey) {
+                        await idb.remove([`action:${beforeKey}`, `action:ts:${beforeKey}`]);
+                        log(`[TMDBG onMoved] Eagerly cleared inbox action cache: action:${beforeKey}`);
+                      }
+                    } catch (eCacheEager) {
+                      log(`[TMDBG onMoved] Eager cache clear failed (non-critical): ${eCacheEager}`, "info");
+                    }
+
+                    // Enqueue for persistent, retryable tag cleanup via the queue.
+                    // Replaces the heavy synchronous _clearTabMailTagsOnLeaveInbox call.
+                    try {
+                      const { enqueueProcessMessage } = await import("./messageProcessorQueue.js");
+                      await enqueueProcessMessage(afterList[i], {
+                        operationType: "tagCleanupOnLeaveInbox",
+                        source: "onMoved:leaveInbox",
+                      });
+                    } catch (eEnqueue) {
+                      log(`[TMDBG onMoved] Failed to enqueue tag cleanup: ${eEnqueue}`, "warn");
                     }
 
                     // Thread tags: after leaving Inbox, recompute aggregate/effective tag for the remaining thread in Inbox.
