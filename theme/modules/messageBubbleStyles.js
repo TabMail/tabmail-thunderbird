@@ -581,6 +581,16 @@ body {
   color: VisitedText !important;
 }
 
+/* Constrain email layout to wrapper width */
+#${WRAPPER_ID} table,
+#${WRAPPER_ID} td,
+#${WRAPPER_ID} th,
+#${WRAPPER_ID} div:not([class*="tm-"]):not([id*="tm-"]),
+#${WRAPPER_ID} p {
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
 @media (prefers-color-scheme: dark) {
   #${WRAPPER_ID} {
     background: var(--tm-preview-pane-bg) !important;
@@ -642,6 +652,19 @@ body {
   #${WRAPPER_ID} th[style*="background-color"] {
     background-color: Canvas !important;
     background: Canvas !important;
+  }
+
+  /* Strip backgrounds set via CSS classes (not just inline styles) */
+  #${WRAPPER_ID} table,
+  #${WRAPPER_ID} td,
+  #${WRAPPER_ID} th,
+  #${WRAPPER_ID} tr,
+  #${WRAPPER_ID} tbody,
+  #${WRAPPER_ID} thead,
+  #${WRAPPER_ID} tfoot,
+  #${WRAPPER_ID} div:not([class*="tm-"]):not([id*="tm-"]) {
+    background-color: transparent !important;
+    background: transparent !important;
   }
 }
 `;

@@ -547,6 +547,24 @@
         document.documentElement.insertBefore(style, document.body);
       }
       
+      // Strip hardcoded widths from email elements wider than the wrapper.
+      // CSS max-width doesn't work on table cells (spec: undefined),
+      // so we must use JS to override explicit pixel widths.
+      try {
+        const ww = wrapper.getBoundingClientRect().width;
+        if (ww > 100) {
+          const toFix = wrapper.querySelectorAll('table,td,th,div:not([class*="tm-"]):not([id*="tm-"]),p');
+          for (let j = 0; j < toFix.length; j++) {
+            if (toFix[j].getBoundingClientRect().width > ww + 1) {
+              toFix[j].style.setProperty('width', 'auto', 'important');
+              toFix[j].style.setProperty('min-width', '0', 'important');
+            }
+          }
+        }
+      } catch (widthErr) {
+        console.error('[TabMail MsgBubble] Width constraining failed:', widthErr);
+      }
+
       // Diagnostics: confirm CSS + selector actually hits monospace nodes.
       logMonospaceScaleDiagnostics("after-style-injected");
       markMonospaceRuns("after-style-injected");
