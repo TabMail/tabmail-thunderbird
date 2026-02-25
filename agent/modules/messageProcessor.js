@@ -160,6 +160,30 @@ export async function processMessage(
     const ok = summaryOk && actionOk && replyOk;
 
     if (!ok) {
+      // Check if the message still exists — if not, mark as gone so queue can evict
+      let messageGone = false;
+      try {
+        await browser.messages.get(messageHeader.id);
+      } catch {
+        messageGone = true;
+      }
+
+      if (messageGone) {
+        log(
+          `[ProcessMessage] Message ${messageHeader.id} no longer exists - marking as gone`,
+          "warn"
+        );
+        return {
+          ok: false,
+          summaryOk,
+          actionOk,
+          replyOk,
+          replySkipped,
+          action: action || null,
+          reason: "message-not-found",
+        };
+      }
+
       log(
         `[ProcessMessage] Processing incomplete for ${messageHeader.id} - will need retry. summaryOk=${summaryOk} actionOk=${actionOk} replyOk=${replyOk} replySkipped=${replySkipped}`,
         "warn"

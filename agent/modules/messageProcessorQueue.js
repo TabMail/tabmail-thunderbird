@@ -401,6 +401,10 @@ async function _processOneItem(it) {
       _pending.delete(key);
       log(`[TMDBG PMQ] processMessage OK: weId=${header.id} key=${key} removedFromQueue=true`);
       return { status: "processed", operationType };
+    } else if (res?.reason === "message-not-found") {
+      _pending.delete(key);
+      log(`[TMDBG PMQ] Message gone during processing - dropping: weId=${header.id} key=${key}`);
+      return { status: "dropped", operationType };
     } else {
       _pending.set(key, {
         ..._pending.get(key),

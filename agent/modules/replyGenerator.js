@@ -234,7 +234,7 @@ export async function createReply(messageId, isPriority = false) {
         const preSessionKey = await getUniqueMessageKey(messageId);
         if (!preSessionKey) {
             log(`- WARN: Could not create reply key for message ${messageId}. Aborting reply creation.`);
-            return;
+            throw new Error(`Could not create reply key for message ${messageId}`);
         }
         const replyKey = STORAGE_PREFIX + preSessionKey;
         try {
