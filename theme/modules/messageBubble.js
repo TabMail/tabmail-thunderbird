@@ -531,22 +531,63 @@
         console.log('[TabMail MsgBubble] Repositioned summary bubble before bubble');
       }
       
+      // Detect near-white backgrounds BEFORE style injection overrides them.
+      // We track white vs off-white separately so we can:
+      // - white (#fff) → Canvas (matches dark page bg)
+      // - off-white (#f2f2f2) → subtle tint (preserves frame effect)
+      // Both applied via inline !important to avoid CSS specificity issues.
+      const offWhiteEls = [];
+      const whiteEls = [];
+      try {
+        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (isDark) {
+          const bgEls = wrapper.querySelectorAll('table,td,th,tr,tbody,thead,tfoot,div:not([class*="tm-"]):not([id*="tm-"])');
+          for (let k = 0; k < bgEls.length; k++) {
+            const cs = window.getComputedStyle(bgEls[k]);
+            const m = (cs.backgroundColor || '').match(/rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+            if (!m) continue;
+            const r = +m[1], g = +m[2], b = +m[3], a = m[4] != null ? +m[4] : 1;
+            if (a < 0.1) continue;
+            const L = (r * 299 + g * 587 + b * 114) / 1000;
+            const S = Math.max(r, g, b) - Math.min(r, g, b);
+            if (L > 220 && S < 10) {
+              if (L >= 250) {
+                whiteEls.push(bgEls[k]);
+              } else {
+                offWhiteEls.push(bgEls[k]);
+              }
+            }
+          }
+        }
+      } catch (_) {}
+
       // Inject styles from pre-generated CSS (loaded via messageBubbleStyles.js)
       const STYLES = globalThis.TabMailMessageBubbleStyles || {};
       const style = document.createElement('style');
       style.id = STYLES.STYLE_ID || STYLE_ID;
       style.textContent = STYLES.css || '';
-      
+
       if (!STYLES.css) {
         console.error('[TabMail MsgBubble] Missing TabMailMessageBubbleStyles.css - styles file not loaded?');
       }
-      
+
       if (document.head) {
         document.head.appendChild(style);
       } else {
         document.documentElement.insertBefore(style, document.body);
       }
-      
+
+      // Apply dark-mode background overrides via inline !important (strongest override).
+      // White → Canvas (dark page bg), off-white → subtle tint (frame effect).
+      for (let k = 0; k < whiteEls.length; k++) {
+        whiteEls[k].style.setProperty('background-color', 'Canvas', 'important');
+        whiteEls[k].style.setProperty('background', 'Canvas', 'important');
+      }
+      for (let k = 0; k < offWhiteEls.length; k++) {
+        offWhiteEls[k].style.setProperty('background-color', 'color-mix(in srgb, CanvasText 6%, Canvas 94%)', 'important');
+        offWhiteEls[k].style.setProperty('background', 'color-mix(in srgb, CanvasText 6%, Canvas 94%)', 'important');
+      }
+
       // Strip hardcoded widths from email elements wider than the wrapper.
       // CSS max-width doesn't work on table cells (spec: undefined),
       // so we must use JS to override explicit pixel widths.

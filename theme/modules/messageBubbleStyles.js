@@ -654,18 +654,11 @@ body {
     background: Canvas !important;
   }
 
-  /* Strip backgrounds set via CSS classes (not just inline styles) */
-  #${WRAPPER_ID} table,
-  #${WRAPPER_ID} td,
-  #${WRAPPER_ID} th,
-  #${WRAPPER_ID} tr,
-  #${WRAPPER_ID} tbody,
-  #${WRAPPER_ID} thead,
-  #${WRAPPER_ID} tfoot,
-  #${WRAPPER_ID} div:not([class*="tm-"]):not([id*="tm-"]) {
-    background-color: transparent !important;
-    background: transparent !important;
-  }
+  /* Near-white background overrides (CSS-class and inherited) are handled
+     entirely by JS in messageBubble.js — it detects actual computed colors
+     and only overrides elements that genuinely had near-white backgrounds.
+     A blanket CSS rule here would also override elements with NO background
+     (transparent), making them opaque Canvas and hiding parent tints. */
 }
 `;
 
