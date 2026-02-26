@@ -4,7 +4,7 @@
 import { getAllFoldersForAccount } from "../agent/modules/folderUtils.js";
 import { getInboxForAccount } from "../agent/modules/inboxContext.js";
 import { sanitizeMessageTags } from "../agent/modules/onMoved.js";
-import { log } from "../agent/modules/utils.js";
+import { log, safeGetFull } from "../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../chat/modules/icsParser.js";
 import { extractPlainText } from "./bodyExtract.js";
 
@@ -161,14 +161,21 @@ export async function populateBatchBody(rows) {
   for (const row of rows) {
     try {
       // Extract body text for all messages in the batch (they all need indexing)
-      const full = await browser.messages.getFull(row._originalMessage.id);
-      const body = await extractPlainText(full, row._originalMessage.id);
-      row.body = body || "";
+      // Use safeGetFull to benefit from in-memory cache + FTS lookup before expensive IMAP fetch
+      const full = await safeGetFull(row._originalMessage.id);
+      if (full?.__tmSynthetic) {
+        // FTS already has this body as plain text — use directly, skip MIME extraction
+        row.body = full.body || "";
+        row.parsedIcsAttachments = "";
+      } else {
+        const body = await extractPlainText(full, row._originalMessage.id);
+        row.body = body || "";
 
-      // Extract and parse ICS attachments for needed messages
-      const icsAttachments = await extractIcsFromParts(full, row._originalMessage.id);
-      const parsedIcsAttachments = formatIcsAttachmentsAsString(icsAttachments);
-      row.parsedIcsAttachments = parsedIcsAttachments || "";
+        // Extract and parse ICS attachments for needed messages
+        const icsAttachments = await extractIcsFromParts(full, row._originalMessage.id);
+        const parsedIcsAttachments = formatIcsAttachmentsAsString(icsAttachments);
+        row.parsedIcsAttachments = parsedIcsAttachments || "";
+      }
 
       // Clean up reference to original message
       delete row._originalMessage;

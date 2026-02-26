@@ -1,6 +1,6 @@
 import * as idb from "./idbStorage.js";
 import { ACTION_TAG_IDS } from "./tagHelper.js";
-import { getUniqueMessageKey, log } from "./utils.js";
+import { getUniqueMessageKey, log, safeGetFull } from "./utils.js";
 
 function _safeJson(v) {
   try {
@@ -69,12 +69,12 @@ async function _dumpOneMessageById(weId, headerHint = null, source = "") {
   }
 
   try {
-    full = await browser.messages.getFull(id);
+    full = await safeGetFull(id);
   } catch (eFull) {
     const notFound = _isMessageNotFoundError(eFull);
     try {
       log(
-        `[TMDBG DebugDump] messages.getFull failed id=${id} notFound=${notFound} source=${source || ""} err=${eFull}`,
+        `[TMDBG DebugDump] safeGetFull failed id=${id} notFound=${notFound} source=${source || ""} err=${eFull}`,
         notFound ? "info" : "warn"
       );
     } catch (_) {}

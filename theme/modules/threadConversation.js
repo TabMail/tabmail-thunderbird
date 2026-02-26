@@ -4,7 +4,7 @@
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { ACTION_TAG_IDS } from "../../agent/modules/tagHelper.js";
-import { getIdentityForMessage, stripHtml } from "../../agent/modules/utils.js";
+import { getIdentityForMessage, safeGetFull, stripHtml } from "../../agent/modules/utils.js";
 
 // Cache identity email -> display name (for "Identity:email:..." author strings)
 let _identityEmailToNameCache = null;
@@ -542,8 +542,15 @@ export async function fetchAndSendThreadConversation(tabId, weMsgId) {
             
             if (includeBody && msg.weId) {
                 try {
-                    const fullMsg = await browser.messages.getFull(msg.weId);
-                    if (fullMsg && fullMsg.parts) {
+                    const fullMsg = await safeGetFull(msg.weId);
+                    if (fullMsg?.__tmSynthetic) {
+                        // FTS cache hit — body is already plain text
+                        let body = fullMsg.body || "";
+                        if (bodyMaxLength > 0 && body.length > bodyMaxLength) {
+                            body = body.substring(0, bodyMaxLength) + "…";
+                        }
+                        enrichedMsg.body = body;
+                    } else if (fullMsg && fullMsg.parts) {
                         enrichedMsg.body = extractBodyFromParts(fullMsg.parts, bodyMaxLength);
                     }
                 } catch (bodyErr) {

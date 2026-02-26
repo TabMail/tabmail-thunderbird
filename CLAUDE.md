@@ -36,6 +36,16 @@ Before starting any task in this project, read these files and update them when 
 
 ---
 
+## Message Body Fetching
+
+- **NEVER call `browser.messages.getFull()` directly** — always use `safeGetFull()` from `agent/modules/utils.js`.
+- `safeGetFull()` provides: in-memory cache, native FTS lookup before IMAP, and concurrency control (`MAX_CONCURRENT_GETFULL`).
+- Direct `getFull()` bypasses all of this and can starve the main thread when multiple callers compete for IMAP.
+- The only place `browser.messages.getFull()` should appear is inside `safeGetFull()` itself (the final fallback).
+- When `safeGetFull()` returns a synthetic result (`full.__tmSynthetic === true`), the body is already plain text in `full.body` — no MIME part traversal needed.
+
+---
+
 ## Chat Agent Tools (Client-Side)
 
 When creating a new client-side chat tool:
