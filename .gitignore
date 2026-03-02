@@ -7,3 +7,4 @@ secrets/
 config.local.json
 dist/
 .DS_Store
+*.log

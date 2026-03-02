@@ -7,7 +7,7 @@
     "gecko": {
       "id": "thunderbird@tabmail.ai",
       "strict_min_version": "140.0",
-      "strict_max_version": "149.*",
+      "strict_max_version": "150.*",
       "update_url": "https://cdn.tabmail.ai/releases/thunderbird/updates.json"
     }
   },

@@ -26,6 +26,7 @@ let _watchTimer = null;
 let _retryTimer = null;
 let _kickTimer = null;
 let _isProcessing = false;
+const _inFlight = new Map(); // uniqueKey -> startedAtMs — items with _processOneItem still running
 let _inited = false;
 
 function _cfg() {
@@ -437,24 +438,45 @@ export async function drainProcessMessageQueue() {
 
   _isProcessing = true;
   try {
+    // Safety valve: clear in-flight entries stuck impossibly long (leaked promises).
+    // This does NOT remove from _pending — it just allows a fresh _processOneItem attempt.
+    const maxInFlightMs = _itemTimeoutMs() * 5;
+    const now = Date.now();
+    for (const [key, since] of _inFlight) {
+      if (now - since > maxInFlightMs) {
+        log(`[TMDBG PMQ] Clearing stale in-flight entry (NOT removing from queue): key=${key} (stuck ${Math.round((now - since) / 1000)}s)`, "warn");
+        _inFlight.delete(key);
+      }
+    }
+
     const batchSize = _batchSize();
     const items = Array.from(_pending.values())
+      .filter(it => !_inFlight.has(it.uniqueKey))
       .sort((a, b) => (Number(a?.timestamp) || 0) - (Number(b?.timestamp) || 0))
       .slice(0, batchSize);
 
-    log(`[TMDBG PMQ] Draining processMessage queue IN PARALLEL: pending=${_pending.size} batchSize=${items.length}`);
+    if (items.length === 0) {
+      log(`[TMDBG PMQ] All pending items are in-flight (${_inFlight.size}), skipping drain cycle`);
+      return;
+    }
+
+    log(`[TMDBG PMQ] Draining processMessage queue IN PARALLEL: pending=${_pending.size} inFlight=${_inFlight.size} batchSize=${items.length}`);
 
     // Process all items in parallel, with per-item timeout to prevent drain deadlock.
     // If any single item hangs (e.g. stalled fetch), the timeout ensures the drain
     // cycle completes and _isProcessing is released.
+    // The .finally() on _processOneItem clears the in-flight flag whether it resolves or rejects,
+    // preventing duplicate calls from future drain cycles (fixes cascading semaphore deadlock).
     const timeoutMs = _itemTimeoutMs();
     const results = await Promise.all(items.map((it) => {
       const key = String(it?.uniqueKey || "");
+      _inFlight.set(key, Date.now());
+      const itemPromise = _processOneItem(it).finally(() => _inFlight.delete(key));
       return Promise.race([
-        _processOneItem(it),
+        itemPromise,
         new Promise((resolve) =>
           setTimeout(() => {
-            log(`[TMDBG PMQ] Item timeout (${timeoutMs}ms) for key=${key} — treating as retry`, "warn");
+            log(`[TMDBG PMQ] Item timeout (${timeoutMs}ms) for key=${key} — treating as retry (original still running)`, "warn");
             resolve({ status: "retry" });
           }, timeoutMs)
         ),
@@ -555,6 +577,7 @@ export async function cleanupProcessMessageQueue() {
     }
   } catch (_) {}
 
+  _inFlight.clear();
   _isProcessing = false;
   _inited = false;
 }
@@ -563,6 +586,7 @@ export function getProcessMessageQueueStatus() {
   return {
     inited: _inited,
     pending: _pending.size,
+    inFlight: _inFlight.size,
     isProcessing: _isProcessing,
     hasWatchTimer: !!_watchTimer,
     hasRetryTimer: !!_retryTimer,
