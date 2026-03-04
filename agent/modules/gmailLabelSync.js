@@ -12,6 +12,12 @@ import { ACTION_TAG_IDS } from "./tagDefs.js";
 const _gmailAccountCache = new Map(); // accountId -> boolean
 const _gmailTagLabelCache = new Map(); // accountId -> { tm_reply: "Label_123", ... }
 
+// Track messages with in-flight Gmail label syncs (headerMessageId -> timestamp).
+// While a sync is in flight, resolveGmailAction must trust the IMAP keyword
+// instead of reading the (stale) Gmail label — otherwise it reverts the tag.
+const _pendingGmailSync = new Map();
+const _PENDING_SYNC_TTL_MS = 30_000; // safety net: treat entries >30s as stale
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -172,6 +178,15 @@ export async function resolveGmailAction(header, imapAction) {
     const headerMsgId = (header.headerMessageId || "").replace(/[<>]/g, "");
     if (!headerMsgId || !header.folder?.accountId) return imapAction;
 
+    // If a Gmail label sync is in flight for this message, trust the IMAP keyword.
+    // Reading the Gmail label now would return stale data and revert the user's tag.
+    const pendingTs = _pendingGmailSync.get(headerMsgId);
+    if (pendingTs && (Date.now() - pendingTs) < _PENDING_SYNC_TTL_MS) {
+      console.log(`[GMailTag] resolveGmailAction: skipping (pending Gmail sync in flight) headerMsgId=${headerMsgId}`);
+      return imapAction;
+    }
+    if (pendingTs) _pendingGmailSync.delete(headerMsgId); // stale entry
+
     const gmailAction = await readActionFromGmailFolders(header.folder.accountId, headerMsgId);
     if (!gmailAction) return imapAction;
 
@@ -202,17 +217,28 @@ export async function resolveGmailAction(header, imapAction) {
  * @param {number} msgId - WebExtension message ID
  * @param {string} accountId - Account ID
  * @param {string|null} targetTagId - e.g. "tm_reply", or null to clear all
+ * @param {string} [headerMessageId] - If available, pass to set the pending-sync
+ *   guard immediately (before any await). Prevents resolveGmailAction from reading
+ *   the stale Gmail label while this sync is in flight.
  */
-export async function syncGmailTagFolder(msgId, accountId, targetTagId) {
+export async function syncGmailTagFolder(msgId, accountId, targetTagId, headerMessageId = "") {
+  // Set pending flag BEFORE any await so resolveGmailAction can detect in-flight syncs.
+  let headerMsgId = headerMessageId ? headerMessageId.replace(/[<>]/g, "") : "";
+  if (headerMsgId) _pendingGmailSync.set(headerMsgId, Date.now());
+
   try {
     if (!await _isGmailAccount(accountId)) return;
 
     const tagLabels = await _ensureGmailTagLabels(accountId);
     if (!tagLabels || Object.keys(tagLabels).length === 0) return;
 
-    const header = await browser.messages.get(msgId);
-    const headerMsgId = (header?.headerMessageId || "").replace(/[<>]/g, "");
-    if (!headerMsgId) return;
+    // Resolve headerMsgId if caller didn't provide it
+    if (!headerMsgId) {
+      const header = await browser.messages.get(msgId);
+      headerMsgId = (header?.headerMessageId || "").replace(/[<>]/g, "");
+      if (!headerMsgId) return;
+      _pendingGmailSync.set(headerMsgId, Date.now());
+    }
 
     const gmailMsgId = await _resolveGmailMessageId(accountId, headerMsgId);
     if (!gmailMsgId) {
@@ -235,5 +261,7 @@ export async function syncGmailTagFolder(msgId, accountId, targetTagId) {
     }
   } catch (e) {
     console.log(`[GMailTag] syncGmailTagFolder FAILED: ${e}`);
+  } finally {
+    if (headerMsgId) _pendingGmailSync.delete(headerMsgId);
   }
 }

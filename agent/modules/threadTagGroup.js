@@ -656,7 +656,7 @@ async function _applyEffectiveActionToWeIds(weIds, effectiveAction) {
 
     // Gmail folder-based label sync (fire-and-forget)
     if (tagApplied && hdr?.folder?.accountId) {
-      syncGmailTagFolder(hdr.id, hdr.folder.accountId, targetTag).catch((e) => {
+      syncGmailTagFolder(hdr.id, hdr.folder.accountId, targetTag, hdr.headerMessageId).catch((e) => {
         console.log(`[GMailTag] fire-and-forget failed (applyEffective): ${e}`);
       });
     }
@@ -776,7 +776,7 @@ async function _retagThreadForGroupingDisabled(weMsgId) {
 
         // Gmail folder-based label sync (fire-and-forget)
         if (accountId) {
-          syncGmailTagFolder(hdr.id, accountId, targetTag).catch((e) => {
+          syncGmailTagFolder(hdr.id, accountId, targetTag, hdr.headerMessageId).catch((e) => {
             console.log(`[GMailTag] fire-and-forget failed (retagDisabled): ${e}`);
           });
         }

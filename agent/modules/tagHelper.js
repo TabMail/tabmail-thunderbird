@@ -584,7 +584,7 @@ export async function applyActionTags(messages, actionMap) {
 
       // Gmail folder-based label sync (fire-and-forget)
       if (tagApplied && msg.folder?.accountId) {
-        syncGmailTagFolder(msg.id, msg.folder.accountId, targetTag).catch((e) => {
+        syncGmailTagFolder(msg.id, msg.folder.accountId, targetTag, msg.headerMessageId).catch((e) => {
           console.log(`[GMailTag] fire-and-forget failed (applyActionTags): ${e}`);
         });
       }
