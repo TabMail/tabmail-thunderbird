@@ -1,6 +1,6 @@
 // theme/modules/cardSnippetProvider.js
 // MV3-side card snippet provider:
-// - Tiered cache: memory → IDB (persistent) → native FTS → getFull
+// - Tiered cache: IDB (persistent) → safeGetFull (cache → FTS → IMAP getFull)
 // - Bounded to near-viewport rows only (tmMessageList.getCardSnippetNeeds)
 //
 // TB 145 / MV3 note: do not use async runtime.onMessage handlers; this module doesn't register listeners.
@@ -9,30 +9,6 @@ import { getUniqueMessageKey, safeGetFull } from "../../agent/modules/utils.js";
 import { extractPlainText } from "../../fts/bodyExtract.js";
 import * as snippetCache from "./snippetCache.js";
 
-// Lazy-loaded FTS search reference for direct API access (avoids runtime.sendMessage issues)
-let _ftsSearchRef = null;
-let _ftsSearchLoadAttempted = false;
-
-/**
- * Get the FTS search API directly (for use in background script context).
- * Returns null if FTS is not available or not yet initialized.
- */
-async function _getFtsSearch() {
-  if (_ftsSearchRef) return _ftsSearchRef;
-  if (_ftsSearchLoadAttempted) return null;
-  _ftsSearchLoadAttempted = true;
-  try {
-    const { ftsSearch } = await import("../../fts/engine.js");
-    if (ftsSearch) {
-      _ftsSearchRef = ftsSearch;
-      return ftsSearch;
-    }
-  } catch (e) {
-    // FTS engine not available - this is expected if FTS is disabled or not initialized
-    console.log(`[CardSnippetProvider] FTS engine import failed (expected if FTS disabled): ${e}`);
-  }
-  return null;
-}
 
 const CARD_SNIPPET_PROVIDER_CONFIG = {
   logPrefix: "[TabMail Theme][CardSnippetProvider]",
@@ -99,22 +75,6 @@ function _normalizeSnippet(text) {
 
 // Cache pruning is now handled by snippetCache.js
 
-async function _fetchSnippetViaFts(ftsKey) {
-  try {
-    if (!ftsKey) return "";
-    // Use direct FTS API call instead of runtime.sendMessage
-    // (runtime.sendMessage doesn't work within the same background script context)
-    const ftsSearchApi = await _getFtsSearch();
-    if (!ftsSearchApi) return "";
-    const res = await ftsSearchApi.getMessageByMsgId(ftsKey);
-    // Native FTS returns an object (or null) with `body`.
-    const body = res?.body || res?.message?.body || "";
-    return _normalizeSnippet(body);
-  } catch (e) {
-    _perr("FTS getMessageByMsgId failed", { msgId: String(ftsKey).slice(0, 80), error: String(e) });
-    return "";
-  }
-}
 
 async function _fetchSnippetViaGetFull(weId) {
   try {
@@ -239,25 +199,14 @@ export function createCardSnippetProvider({ getNeeds, provideSnippets }) {
             let snippet = "";
             let source = "";
             let getFullSnippet = "";
-            let ftsSnippet = "";
 
-            // Prefer safeGetFull when we have weId
+            // safeGetFull already tries: in-memory cache → FTS → IMAP getFull
+            // No separate FTS fallback needed — safeGetFull handles the full cascade.
             if (weId) {
               getFullSnippet = await _fetchSnippetViaGetFull(weId);
               if (getFullSnippet) {
                 snippet = getFullSnippet;
                 source = "safeGetFull";
-              }
-            }
-            // Fallback to native FTS by msgId
-            if (!snippet) {
-              const ftsKey = cacheKeyType === "uniqueKey" ? cacheKey : msgId;
-              if (ftsKey) {
-                ftsSnippet = await _fetchSnippetViaFts(ftsKey);
-                if (ftsSnippet) {
-                  snippet = ftsSnippet;
-                  source = "nativeFts";
-                }
               }
             }
 
@@ -298,7 +247,6 @@ export function createCardSnippetProvider({ getNeeds, provideSnippets }) {
                     cacheKey: String(cacheKey).slice(0, 80),
                     source,
                     getFullLen: getFullSnippet.length,
-                    ftsLen: ftsSnippet.length,
                   });
                 }
               } catch (_) {}

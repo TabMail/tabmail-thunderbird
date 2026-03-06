@@ -28,7 +28,11 @@ async function _getFtsSearch() {
 }
 
 let activeGetFullCount = 0;
-const MAX_CONCURRENT_GETFULL = 1;
+const MAX_CONCURRENT_GETFULL = 16;
+// Proper waiter queue to avoid spin-wait polling that starves the event loop
+const getFullWaiters = [];
+// Fast lookup: WebExtension message ID → uniqueKey (avoids browser.messages.get() on cache hits)
+const weIdToUniqueKey = new Map();
 
 // safeGetFull strategy config (avoid scattering magic numbers in logic)
 const SAFE_GETFULL_CONFIG = {
@@ -273,32 +277,47 @@ export function stopGetFullCacheCleanup() {
 export function clearGetFullCache() {
   const size = getFullCache.size;
   getFullCache.clear();
+  weIdToUniqueKey.clear();
   if (size > 0) {
     log(`getFull cache cleared: removed ${size} entries`);
   }
 }
 
-export async function safeGetFull(id) {
+export async function safeGetFull(id, preHeader = null) {
   // Start cleanup timer on first cache usage
   startGetFullCacheCleanup();
 
-  // Fetch header once so we can:
-  // - Derive the unique cache key without double-fetching
-  // - Use headerMessageId to query native FTS before doing expensive getFull
-  let header = null;
-  try {
-    header = await browser.messages.get(id);
-  } catch (eHeader) {
-    log(`${SAFE_GETFULL_CONFIG.logPrefix} Failed to fetch header for ${id}: ${eHeader}`, "warn");
+  // ── FAST PATH: id→key→cache with ZERO API calls ──
+  let uniqueKey = weIdToUniqueKey.get(id);
+  if (uniqueKey) {
+    const fastCached = getFullCache.get(uniqueKey);
+    if (fastCached) {
+      fastCached.timestamp = Date.now();
+      return fastCached.data;
+    }
   }
 
-  // Get unique key for cache lookup
-  const uniqueKey = header ? await getUniqueMessageKey(header) : await getUniqueMessageKey(id);
+  // ── Need header for key computation / FTS lookup ──
+  let header = preHeader;
+  if (!header) {
+    try {
+      header = await browser.messages.get(id);
+    } catch (eHeader) {
+      log(`${SAFE_GETFULL_CONFIG.logPrefix} Failed to fetch header for ${id}: ${eHeader}`, "warn");
+    }
+  }
+
+  // Compute uniqueKey if not already in mapping cache
+  if (!uniqueKey) {
+    uniqueKey = header ? await getUniqueMessageKey(header) : null;
+    if (uniqueKey) weIdToUniqueKey.set(id, uniqueKey);
+  }
+
   if (!uniqueKey) {
     log(`Unable to generate unique key for message ${id}, skipping cache`, "warn");
     // Fallback to non-cached version
     while (activeGetFullCount >= MAX_CONCURRENT_GETFULL) {
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise(resolve => getFullWaiters.push(resolve));
     }
     activeGetFullCount++;
     try {
@@ -306,16 +325,14 @@ export async function safeGetFull(id) {
       return await browser.messages.getFull(id);
     } finally {
       activeGetFullCount--;
+      if (getFullWaiters.length > 0) getFullWaiters.shift()();
     }
   }
 
-  // Check cache first
+  // Check data cache (covers case where key was just computed but data was already cached under it)
   const cachedEntry = getFullCache.get(uniqueKey);
   if (cachedEntry) {
-    // Cache hit - always use it and refresh the timestamp
-    // Expiration only happens during periodic cleanup, not on access
     cachedEntry.timestamp = Date.now();
-    log(`getFull cache hit for ${uniqueKey}, TTL refreshed`);
     return cachedEntry.data;
   }
 
@@ -515,13 +532,13 @@ export async function safeGetFull(id) {
 
   // Cache miss or expired, fetch fresh data
   while (activeGetFullCount >= MAX_CONCURRENT_GETFULL) {
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise(resolve => getFullWaiters.push(resolve));
   }
   activeGetFullCount++;
   try {
     log(`getFull cache miss for ${uniqueKey}, fetching fresh data`, "warn");
     const data = await browser.messages.getFull(id);
-    
+
     // Cache the result
     getFullCache.set(uniqueKey, {
       data: data,
@@ -529,10 +546,11 @@ export async function safeGetFull(id) {
     });
     enforceGetFullCacheMaxEntries("getFull");
     log(`getFull cached for ${uniqueKey}, cache size: ${getFullCache.size}`);
-    
+
     return data;
   } finally {
     activeGetFullCount--;
+    if (getFullWaiters.length > 0) getFullWaiters.shift()();
   }
 }
 
@@ -725,6 +743,9 @@ export async function getUniqueMessageKey(input, weFolder = null) {
 
         // Handle different input types
         if (typeof input === 'number') {
+            // Fast path: check mapping cache before API call
+            const cachedKey = weIdToUniqueKey.get(input);
+            if (cachedKey) return cachedKey;
             // Case 1: WebExtension message ID - fetch header
             messageHeader = await browser.messages.get(input);
             cleanHeaderMessageId = messageHeader.headerMessageId.replace(/[<>]/g, "");
@@ -753,7 +774,10 @@ export async function getUniqueMessageKey(input, weFolder = null) {
         }
 
         // Return in consistent format: accountId:folderPath:headerMessageId
-        return `${accountId}:${folderPath}:${cleanHeaderMessageId}`;
+        const key = `${accountId}:${folderPath}:${cleanHeaderMessageId}`;
+        // Populate mapping cache for number inputs (WE message IDs)
+        if (typeof input === 'number') weIdToUniqueKey.set(input, key);
+        return key;
     } catch (error) {
         log(`ERROR: Could not generate unique message key. ${error}`, "error");
         return null;

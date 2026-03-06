@@ -263,7 +263,7 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
     }
 
     // Get the body from the full message to send to the LLM
-    const full = await safeGetFull(messageHeader.id);
+    const full = await safeGetFull(messageHeader.id, messageHeader);
     const bodyHtml = await extractBodyFromParts(full, messageHeader.id);
     const plainBody = stripHtml(bodyHtml || "");
 

@@ -144,7 +144,7 @@ export async function analyzeEmailForReplyFilter(messageHeader, fullMessage = nu
         if (!full || !body) {
             try {
                 log(`[EmailFilter] Message ${messageHeader.id}: Fetching full message for unsubscribe check (using cached safeGetFull)`);
-                full = full || await safeGetFull(messageHeader.id);
+                full = full || await safeGetFull(messageHeader.id, messageHeader);
                 if (!body) {
                     const bodyHtml = await extractBodyFromParts(full, messageHeader.id);
                     body = stripHtml(bodyHtml || "");

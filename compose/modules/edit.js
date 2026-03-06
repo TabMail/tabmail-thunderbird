@@ -63,7 +63,7 @@ export async function buildComposeEditChat({
       const header = await browser.messages.get(Number(relatedEmailId));
       if (header) {
         // Get plaintext body
-        const full = await safeGetFull(header.id);
+        const full = await safeGetFull(header.id, header);
         let bodyHtml = await extractBodyFromParts(full, header.id);
         const plainBody = stripHtml(bodyHtml || "");
         relatedEmailInfo = {

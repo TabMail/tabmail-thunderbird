@@ -119,7 +119,7 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
     const userName = await getUserName({ fullname: true });
 
     // Get the body from the full message to send to the LLM
-    const full = await safeGetFull(messageHeader.id);
+    const full = await safeGetFull(messageHeader.id, messageHeader);
     let bodyHtml = await extractBodyFromParts(full, messageHeader.id);
     const plainBody = stripHtml(bodyHtml || "");
 

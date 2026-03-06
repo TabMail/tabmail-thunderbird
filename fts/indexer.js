@@ -162,7 +162,7 @@ export async function populateBatchBody(rows) {
     try {
       // Extract body text for all messages in the batch (they all need indexing)
       // Use safeGetFull to benefit from in-memory cache + FTS lookup before expensive IMAP fetch
-      const full = await safeGetFull(row._originalMessage.id);
+      const full = await safeGetFull(row._originalMessage.id, row._originalMessage);
       if (full?.__tmSynthetic) {
         // FTS already has this body as plain text — use directly, skip MIME extraction
         row.body = full.body || "";
