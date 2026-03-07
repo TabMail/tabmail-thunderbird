@@ -69,6 +69,32 @@ const SAFE_GETFULL_DIAG_STATE = {
   ftsNoResponseLastMs: 0,
 };
 
+/**
+ * Rate-limited diagnostic logger for safeGetFull FTS paths.
+ * Short-circuits on count check BEFORE Date.now() or JSON.stringify.
+ * @param {string} category - e.g. "ftsNoResponse", "ftsHit", "ftsEmpty", "ftsStats", "ftsMiss"
+ * @param {string} level - "warn" or default
+ * @param {object|function} detailsOrFn - details object, or lazy fn returning details (for expensive paths)
+ */
+function _diagLog(category, level, detailsOrFn) {
+  try {
+    const maxKey = `${category}LogMax`;
+    const intervalKey = `${category}LogMinIntervalMs`;
+    const countKey = `${category}Logs`;
+    const lastKey = `${category}LastMs`;
+    const max = Number(SAFE_GETFULL_CONFIG.diag?.[maxKey]) || 0;
+    if (SAFE_GETFULL_DIAG_STATE[countKey] >= max) return false;
+    const now = Date.now();
+    const minInterval = Number(SAFE_GETFULL_CONFIG.diag?.[intervalKey]) || 0;
+    if ((now - SAFE_GETFULL_DIAG_STATE[lastKey]) < minInterval) return false;
+    SAFE_GETFULL_DIAG_STATE[countKey]++;
+    SAFE_GETFULL_DIAG_STATE[lastKey] = now;
+    const details = typeof detailsOrFn === "function" ? detailsOrFn() : detailsOrFn;
+    log(`[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} ${category} ${JSON.stringify(details)}`, level || "warn");
+    return true;
+  } catch (_) { return false; }
+}
+
 // ----------------------------------------------------------
 // Request ID generation for SSE tool orchestration
 // ----------------------------------------------------------
@@ -351,30 +377,12 @@ export async function safeGetFull(id, preHeader = null) {
       const ftsRes = ftsSearchApi ? await ftsSearchApi.getMessageByMsgId(ftsKey) : null;
       const body = ftsRes?.body || "";
       if (typeof ftsRes === "undefined") {
-        try {
-          const now = Date.now();
-          const maxLogs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsNoResponseLogMax) || 0;
-          const minIntervalMs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsNoResponseLogMinIntervalMs) || 0;
-          if (
-            SAFE_GETFULL_DIAG_STATE.ftsNoResponseLogs < maxLogs &&
-            (now - SAFE_GETFULL_DIAG_STATE.ftsNoResponseLastMs) >= minIntervalMs
-          ) {
-            SAFE_GETFULL_DIAG_STATE.ftsNoResponseLogs += 1;
-            SAFE_GETFULL_DIAG_STATE.ftsNoResponseLastMs = now;
-            const details = {
-              uniqueKey,
-              ftsKey,
-              weId: id,
-              headerMessageId: header?.headerMessageId || "",
-              accountId: header?.folder?.accountId || "",
-              folderPath: header?.folder?.path || "",
-            };
-            log(
-              `[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} native FTS no response ${JSON.stringify(details)}`,
-              "warn"
-            );
-          }
-        } catch (_) {}
+        _diagLog("ftsNoResponse", "warn", () => ({
+          uniqueKey, ftsKey, weId: id,
+          headerMessageId: header?.headerMessageId || "",
+          accountId: header?.folder?.accountId || "",
+          folderPath: header?.folder?.path || "",
+        }));
       }
       if (typeof body === "string" && body.trim()) {
         const syntheticFull = {
@@ -398,133 +406,52 @@ export async function safeGetFull(id, preHeader = null) {
         getFullCache.set(uniqueKey, { data: syntheticFull, timestamp: Date.now() });
         enforceGetFullCacheMaxEntries("ftsHit");
         log(`${SAFE_GETFULL_CONFIG.logPrefix} native FTS hit for ${uniqueKey} (cached synthetic full)`);
-        try {
-          const now = Date.now();
-          const maxLogs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsHitLogMax) || 0;
-          const minIntervalMs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsHitLogMinIntervalMs) || 0;
-          if (
-            SAFE_GETFULL_DIAG_STATE.ftsHitLogs < maxLogs &&
-            (now - SAFE_GETFULL_DIAG_STATE.ftsHitLastMs) >= minIntervalMs
-          ) {
-            SAFE_GETFULL_DIAG_STATE.ftsHitLogs += 1;
-            SAFE_GETFULL_DIAG_STATE.ftsHitLastMs = now;
-            const details = {
-              uniqueKey,
-              ftsKey,
-              weId: id,
-              headerMessageId: header?.headerMessageId || "",
-              accountId: header?.folder?.accountId || "",
-              folderPath: header?.folder?.path || "",
-              bodyLen: typeof body === "string" ? body.length : 0,
-            };
-            log(
-              `[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} native FTS hit ${JSON.stringify(details)}`
-            );
-          }
-        } catch (_) {}
+        _diagLog("ftsHit", null, () => ({
+          uniqueKey, ftsKey, weId: id,
+          headerMessageId: header?.headerMessageId || "",
+          accountId: header?.folder?.accountId || "",
+          folderPath: header?.folder?.path || "",
+          bodyLen: typeof body === "string" ? body.length : 0,
+        }));
         return syntheticFull;
       }
       if (ftsRes && typeof ftsRes === "object") {
-        try {
-          const now = Date.now();
-          const maxLogs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsEmptyLogMax) || 0;
-          const minIntervalMs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsEmptyLogMinIntervalMs) || 0;
-          if (
-            SAFE_GETFULL_DIAG_STATE.ftsEmptyLogs < maxLogs &&
-            (now - SAFE_GETFULL_DIAG_STATE.ftsEmptyLastMs) >= minIntervalMs
-          ) {
-            SAFE_GETFULL_DIAG_STATE.ftsEmptyLogs += 1;
-            SAFE_GETFULL_DIAG_STATE.ftsEmptyLastMs = now;
-            const details = {
-              uniqueKey,
-              ftsKey,
-              weId: id,
-              headerMessageId: header?.headerMessageId || "",
-              accountId: header?.folder?.accountId || "",
-              folderPath: header?.folder?.path || "",
-              ftsKeys: Object.keys(ftsRes || {}),
-              bodyLen: typeof body === "string" ? body.length : 0,
-            };
-            log(
-              `[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} native FTS empty body ${JSON.stringify(details)}`,
-              "warn"
-            );
-          }
-        } catch (_) {}
+        _diagLog("ftsEmpty", "warn", () => ({
+          uniqueKey, ftsKey, weId: id,
+          headerMessageId: header?.headerMessageId || "",
+          accountId: header?.folder?.accountId || "",
+          folderPath: header?.folder?.path || "",
+          ftsKeys: Object.keys(ftsRes || {}),
+          bodyLen: typeof body === "string" ? body.length : 0,
+        }));
       } else {
         log(`[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} native FTS miss for ${uniqueKey}`, "warn");
       }
-      try {
-        const now = Date.now();
-        const maxLogs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsStatsLogMax) || 0;
-        const minIntervalMs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsStatsLogMinIntervalMs) || 0;
-        if (
-          SAFE_GETFULL_DIAG_STATE.ftsStatsLogs < maxLogs &&
-          (now - SAFE_GETFULL_DIAG_STATE.ftsStatsLastMs) >= minIntervalMs
-        ) {
-          SAFE_GETFULL_DIAG_STATE.ftsStatsLogs += 1;
-          SAFE_GETFULL_DIAG_STATE.ftsStatsLastMs = now;
-          // Use direct FTS API call instead of runtime.sendMessage
+      // FTS stats: rate-limited, with expensive async calls only when the counter allows
+      if (_diagLog("ftsStats", "warn", { note: "fetching stats..." })) {
+        try {
           const ftsApi = await _getFtsSearch();
           const stats = ftsApi ? await ftsApi.stats() : null;
-          log(
-            `[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} FTS stats at miss ${JSON.stringify(stats || {})}`,
-            "warn"
-          );
-          const statsKeys = stats && typeof stats === "object" ? Object.keys(stats) : [];
-          if (!stats || statsKeys.length === 0) {
+          log(`[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} FTS stats at miss ${JSON.stringify(stats || {})}`, "warn");
+          if (!stats || (typeof stats === "object" && Object.keys(stats).length === 0)) {
             try {
-              // Use browser.storage.local directly instead of runtime.sendMessage
               const stored = await browser.storage.local.get(["fts_initial_scan_complete", "fts_scan_status"]);
-              const scanStatus = {
-                initialComplete: stored.fts_initial_scan_complete || false,
-                scanStatus: stored.fts_scan_status || { isScanning: false, scanType: "none" }
-              };
-              log(
-                `[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} FTS scan status at miss ${JSON.stringify(scanStatus || {})}`,
-                "warn"
-              );
+              log(`[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} FTS scan status at miss ${JSON.stringify(stored || {})}`, "warn");
             } catch (_) {}
             try {
-              // Import nativeEngine to get host info directly
               const { nativeFtsSearch } = await import("../../fts/nativeEngine.js");
               const hostInfoRaw = nativeFtsSearch?.getHostInfo?.() || null;
-              const hostInfo = {
-                connected: !!hostInfoRaw,
-                hostInfo: hostInfoRaw,
-              };
-              log(
-                `[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} FTS host info at miss ${JSON.stringify(hostInfo || {})}`,
-                "warn"
-              );
+              log(`[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} FTS host info at miss ${JSON.stringify({ connected: !!hostInfoRaw, hostInfo: hostInfoRaw })}`, "warn");
             } catch (_) {}
           }
-        }
-      } catch (_) {}
-      try {
-        const now = Date.now();
-        const maxLogs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsMissLogMax) || 0;
-        const minIntervalMs = Number(SAFE_GETFULL_CONFIG?.diag?.ftsMissLogMinIntervalMs) || 0;
-        if (
-          SAFE_GETFULL_DIAG_STATE.ftsMissLogs < maxLogs &&
-          (now - SAFE_GETFULL_DIAG_STATE.ftsMissLastMs) >= minIntervalMs
-        ) {
-          SAFE_GETFULL_DIAG_STATE.ftsMissLogs += 1;
-          SAFE_GETFULL_DIAG_STATE.ftsMissLastMs = now;
-          const details = {
-            uniqueKey,
-            ftsKey,
-            weId: id,
-            headerMessageId: header?.headerMessageId || "",
-            accountId: header?.folder?.accountId || "",
-            folderPath: header?.folder?.path || "",
-          };
-          log(
-            `[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} native FTS miss details ${JSON.stringify(details)}`,
-            "warn"
-          );
-        }
-      } catch (_) {}
+        } catch (_) {}
+      }
+      _diagLog("ftsMiss", "warn", () => ({
+        uniqueKey, ftsKey, weId: id,
+        headerMessageId: header?.headerMessageId || "",
+        accountId: header?.folder?.accountId || "",
+        folderPath: header?.folder?.path || "",
+      }));
     }
   } catch (eFts) {
     log(`${SAFE_GETFULL_CONFIG.logPrefix} native FTS lookup failed for ${uniqueKey}: ${eFts}`, "warn");

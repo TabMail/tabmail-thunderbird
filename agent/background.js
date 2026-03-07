@@ -848,10 +848,7 @@ function cleanupInboxActivityListeners() {
  */
 if (!_onNewMailReceivedListener) {
   _onNewMailReceivedListener = async (folder, notification) => {
-    console.log("[InboxActivity] ★★★ onNewMailReceived FIRED ★★★");
-    console.log("[InboxActivity] onNewMailReceived fired. Full notification object:", notification);
-    console.log("[InboxActivity] Folder object:", folder);
-    log(`[InboxActivity] ★★★ onNewMailReceived: folder='${folder?.name}' (type=${folder?.type}, path=${folder?.path}), messages=${notification?.messages?.length || 0}`);
+    log(`[InboxActivity] onNewMailReceived: folder='${folder?.name}' (type=${folder?.type}, path=${folder?.path}), messages=${notification?.messages?.length || 0}`);
 
     // IMMEDIATELY log to persistent storage for debugging race conditions
     if (notification?.messages && notification.messages.length > 0) {
@@ -906,23 +903,23 @@ if (!_onNewMailReceivedListener) {
     // processMessage handles internal/external distinction internally
     log(`[InboxActivity] Enqueueing ${notification.messages.length} new message(s) for processing`);
 
-    let enqueuedCount = 0;
-    let skippedTaggedCount = 0;
-    for (const msg of notification.messages) {
-      // Skip if already has TabMail tag (tagged by another instance, e.g. iOS)
+    // Process all messages in parallel — enqueueProcessMessage with object headers
+    // is pure computation (no TB API calls), safe to parallelize.
+    const results = await Promise.all(notification.messages.map(async (msg) => {
       if (hasTabMailTag(msg.tags)) {
-        skippedTaggedCount++;
-        // Import IMAP tag into IDB cache for thread aggregation
         try { await importActionFromImapTag(msg); } catch (_) {}
-        continue;
+        return "tagged";
       }
       try {
         await enqueueProcessMessage(msg, { isPriority: false, source: "onNewMailReceived" });
-        enqueuedCount++;
+        return "enqueued";
       } catch (e) {
         log(`[InboxActivity] Failed to enqueue message ${msg.id}: ${e}`, "error");
+        return "error";
       }
-    }
+    }));
+    const enqueuedCount = results.filter(r => r === "enqueued").length;
+    const skippedTaggedCount = results.filter(r => r === "tagged").length;
     if (skippedTaggedCount > 0) {
       log(`[InboxActivity] Skipped ${skippedTaggedCount} already-tagged message(s) in onNewMailReceived (first compute wins)`);
     }
@@ -944,8 +941,7 @@ if (!_onNewMailReceivedListener) {
  */
 if (!_onMovedInboxListener) {
   _onMovedInboxListener = async (originalFolder, movedMessages) => {
-    console.log("[InboxActivity] ★★★ onMoved FIRED ★★★");
-    console.log("[InboxActivity] originalFolder:", originalFolder, "movedMessages:", movedMessages);
+    log("[InboxActivity] onMoved fired");
     
     // IMMEDIATELY log to persistent storage for debugging race conditions
     if (movedMessages?.messages && movedMessages.messages.length > 0) {
@@ -969,28 +965,22 @@ if (!_onMovedInboxListener) {
 
     // Enqueue messages that were moved TO an inbox (skip already-tagged)
     // processMessage handles internal/external distinction internally
-    let enqueuedCount = 0;
-    let skippedCount = 0;
-    for (const msg of movedMessages.messages) {
-      if (msg.folder && isInboxFolder(msg.folder)) {
-        // Skip if already has TabMail tag (avoid redundant processing)
-        if (hasTabMailTag(msg.tags)) {
-          skippedCount++;
-          continue;
-        }
-        try {
-          log(`[InboxActivity] Enqueueing moved message ${msg.id} (now in inbox "${msg.folder.name}")`);
-          await enqueueProcessMessage(msg, { isPriority: false, source: "onMoved" });
-          enqueuedCount++;
-        } catch (e) {
-          log(`[InboxActivity] Failed to enqueue moved message ${msg.id}: ${e}`, "error");
-        }
+    const movedResults = await Promise.all(movedMessages.messages.map(async (msg) => {
+      if (!msg.folder || !isInboxFolder(msg.folder)) return "not-inbox";
+      if (hasTabMailTag(msg.tags)) return "tagged";
+      try {
+        await enqueueProcessMessage(msg, { isPriority: false, source: "onMoved" });
+        return "enqueued";
+      } catch (e) {
+        log(`[InboxActivity] Failed to enqueue moved message ${msg.id}: ${e}`, "error");
+        return "error";
       }
-    }
+    }));
+    const enqueuedCount = movedResults.filter(r => r === "enqueued").length;
+    const skippedCount = movedResults.filter(r => r === "tagged").length;
     if (skippedCount > 0) {
       log(`[InboxActivity] Skipped ${skippedCount} already-tagged message(s) in onMoved`);
     }
-    // Schedule debounced cache cleanup after processing (only if we enqueued something)
     if (enqueuedCount > 0) {
       scheduleCacheCleanup();
     }
@@ -1006,8 +996,7 @@ if (!_onMovedInboxListener) {
  */
 if (!_onCopiedInboxListener) {
   _onCopiedInboxListener = async (originalFolder, copiedMessages) => {
-    console.log("[InboxActivity] ★★★ onCopied FIRED ★★★");
-    console.log("[InboxActivity] originalFolder:", originalFolder, "copiedMessages:", copiedMessages);
+    log("[InboxActivity] onCopied fired");
     
     // IMMEDIATELY log to persistent storage for debugging race conditions
     if (copiedMessages?.messages && copiedMessages.messages.length > 0) {
@@ -1031,28 +1020,22 @@ if (!_onCopiedInboxListener) {
 
     // Enqueue messages that were copied TO an inbox (skip already-tagged)
     // processMessage handles internal/external distinction internally
-    let enqueuedCount = 0;
-    let skippedCount = 0;
-    for (const msg of copiedMessages.messages) {
-      if (msg.folder && isInboxFolder(msg.folder)) {
-        // Skip if already has TabMail tag (avoid redundant processing)
-        if (hasTabMailTag(msg.tags)) {
-          skippedCount++;
-          continue;
-        }
-        try {
-          log(`[InboxActivity] Enqueueing copied message ${msg.id} (now in inbox "${msg.folder.name}")`);
-          await enqueueProcessMessage(msg, { isPriority: false, source: "onCopied" });
-          enqueuedCount++;
-        } catch (e) {
-          log(`[InboxActivity] Failed to enqueue copied message ${msg.id}: ${e}`, "error");
-        }
+    const copiedResults = await Promise.all(copiedMessages.messages.map(async (msg) => {
+      if (!msg.folder || !isInboxFolder(msg.folder)) return "not-inbox";
+      if (hasTabMailTag(msg.tags)) return "tagged";
+      try {
+        await enqueueProcessMessage(msg, { isPriority: false, source: "onCopied" });
+        return "enqueued";
+      } catch (e) {
+        log(`[InboxActivity] Failed to enqueue copied message ${msg.id}: ${e}`, "error");
+        return "error";
       }
-    }
+    }));
+    const enqueuedCount = copiedResults.filter(r => r === "enqueued").length;
+    const skippedCount = copiedResults.filter(r => r === "tagged").length;
     if (skippedCount > 0) {
       log(`[InboxActivity] Skipped ${skippedCount} already-tagged message(s) in onCopied`);
     }
-    // Schedule debounced cache cleanup after processing (only if we enqueued something)
     if (enqueuedCount > 0) {
       scheduleCacheCleanup();
     }
@@ -1080,7 +1063,6 @@ function attachTmMsgNotifyListeners() {
   }
   
   _tmMsgNotifyAddedListener = async (messageInfo) => {
-    console.log("[tmMsgNotify] ★★★ onMessageAdded FIRED ★★★", messageInfo.eventType);
     log(`[tmMsgNotify] onMessageAdded: eventType=${messageInfo.eventType}, folder=${messageInfo.folderPath}, subject="${messageInfo.subject?.substring(0, 50)}"`);
     
     // IMMEDIATELY log to persistent storage for debugging race conditions
@@ -1285,7 +1267,7 @@ attachUntaggedCoverageListener();
  */
 browser.runtime.onStartup.addListener(async () => {
     log("Addon startup: Indexing is disabled; skipping smart index.");
-    console.log("[TMDBG Prefs] onStartup: calling enforceMailSyncPrefs");
+    log("[TMDBG Prefs] onStartup: calling enforceMailSyncPrefs");
     await enforceMailSyncPrefs();
     
     // Check and show welcome wizard on startup if not completed

@@ -20,24 +20,30 @@ const { NetUtil: NetUtilTMPreviewGate } = ChromeUtils.importESModule(
 
 var ServicesTMPreviewGate = globalThis.Services;
 
-console.log(
+// Gate all diagnostic logging behind a single flag to avoid synchronous console
+// writes in the chrome process on every message selection / attribute mutation.
+const PREVIEW_GATE_DEBUG = false;
+function pgLog(...args) { if (PREVIEW_GATE_DEBUG) console.log(...args); }
+function pgErr(...args) { console.error(...args); } // errors always log
+
+pgLog(
   "[TabMail PreviewGate] experiment parent script loaded. Services present?",
   typeof ServicesTMPreviewGate !== "undefined"
 );
 
 var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
   onShutdown(isAppShutdown) {
-    console.log(
+    pgLog(
       "[TabMail PreviewGate] onShutdown() called by Thunderbird, isAppShutdown:",
       isAppShutdown
     );
     try {
       if (this._tmCleanup) {
         this._tmCleanup();
-        console.log("[TabMail PreviewGate] ✓ Cleanup completed via onShutdown");
+        pgLog("[TabMail PreviewGate] ✓ Cleanup completed via onShutdown");
       }
     } catch (e) {
-      console.error("[TabMail PreviewGate] onShutdown cleanup failed:", e);
+      pgErr("[TabMail PreviewGate] onShutdown cleanup failed:", e);
     }
   }
 
@@ -68,12 +74,12 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           .catch(() => {})
           .then(() => fn())
           .catch((e) => {
-            console.error(`[TabMail PreviewGate] AGENT_SHEET op failed (${label || "unknown"}):`, e);
+            pgErr(`[TabMail PreviewGate] AGENT_SHEET op failed (${label || "unknown"}):`, e);
           });
         ctx.__tmPreviewGate._agentSheetLock = next;
         return next;
       } catch (e) {
-        console.error("[TabMail PreviewGate] withAgentSheetLock failed:", e);
+        pgErr("[TabMail PreviewGate] withAgentSheetLock failed:", e);
         return Promise.resolve();
       }
     }
@@ -136,15 +142,15 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       try {
         sss.loadAndRegisterSheet(uri, sss.AGENT_SHEET);
       } catch (e) {
-        console.error("[TabMail PreviewGate] loadAndRegisterSheet failed:", e);
+        pgErr("[TabMail PreviewGate] loadAndRegisterSheet failed:", e);
         throw e;
       }
-      console.log(
+      pgLog(
         `[TabMail PreviewGate] ✓ Registered AGENT_SHEET (cache-buster: ${cacheBuster})`
       );
       try {
         const ok = sss.sheetRegistered(uri, sss.AGENT_SHEET);
-        console.log(
+        pgLog(
           `[TabMail PreviewGate] AGENT_SHEET post-check registeredNow=${ok} (cache-buster: ${cacheBuster})`
         );
       } catch (_) {}
@@ -155,10 +161,10 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
         try {
           if (sss.sheetRegistered(oldUri, sss.AGENT_SHEET)) {
             sss.unregisterSheet(oldUri, sss.AGENT_SHEET);
-            console.log("[TabMail PreviewGate] ✓ Unregistered old AGENT_SHEET after successful swap");
+            pgLog("[TabMail PreviewGate] ✓ Unregistered old AGENT_SHEET after successful swap");
           }
         } catch (e) {
-          console.log("[TabMail PreviewGate] Could not unregister old AGENT_SHEET after swap:", e);
+          pgLog("[TabMail PreviewGate] Could not unregister old AGENT_SHEET after swap:", e);
         }
       }
     }
@@ -173,7 +179,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
         if (uri) stillRegistered = sss.sheetRegistered(uri, sss.AGENT_SHEET);
       } catch (_) {}
 
-      console.log(
+      pgLog(
         `[TabMail PreviewGate] AGENT_SHEET ensure (why=${String(why || "")}) storedURI=${!!uri} stillRegistered=${stillRegistered}`
       );
       if (uri && stillRegistered) return;
@@ -187,9 +193,23 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       const uri = context?.__tmPreviewGate?.agentSheetURI;
       if (uri && sss.sheetRegistered(uri, sss.AGENT_SHEET)) {
         sss.unregisterSheet(uri, sss.AGENT_SHEET);
-        console.log("[TabMail PreviewGate] ✓ Unregistered AGENT_SHEET");
+        pgLog("[TabMail PreviewGate] ✓ Unregistered AGENT_SHEET");
         delete context.__tmPreviewGate.agentSheetURI;
       }
+    }
+
+    // Cache enumerated docs per window to avoid repeated DOM traversal on every
+    // select / gate cycle.  WeakMap keyed by window; auto-collected when window closes.
+    const _docCacheByWin = new WeakMap();
+    const DOC_CACHE_TTL_MS = 2000;
+
+    function enumerateContentDocsCached(win) {
+      const cached = _docCacheByWin.get(win);
+      const now = Date.now();
+      if (cached && (now - cached.ts) < DOC_CACHE_TTL_MS) return cached.docs;
+      const docs = enumerateContentDocs(win);
+      _docCacheByWin.set(win, { docs, ts: now });
+      return docs;
     }
 
     function enumerateContentDocs(win) {
@@ -233,7 +253,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           }
         } catch (_) {}
       } catch (e) {
-        console.error("[TabMail PreviewGate] enumerateContentDocs failed:", e);
+        pgErr("[TabMail PreviewGate] enumerateContentDocs failed:", e);
       }
       return docs;
     }
@@ -247,7 +267,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
         try {
           const href = String(doc.location?.href || "");
           if (href.includes("about:3pane") && gated) {
-            console.log(
+            pgLog(
               `[TabMail PreviewGate] AutoGate applied gated=${gated} why=${why || ""} href="${href}"`
             );
           }
@@ -297,7 +317,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
                   if (m.type === "attributes") {
                     try {
                       const an = String(m.attributeName || "");
-                      console.log(
+                      pgLog(
                         `[TabMail PreviewGate] AutoGate: messagepane attr changed "${an}"`
                       );
                     } catch (_) {}
@@ -320,7 +340,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             });
             shared.paneMO = mo;
           } catch (e) {
-            console.log(
+            pgLog(
               `[TabMail PreviewGate] AutoGate: Failed to observe messagepane attributes: ${e}`
             );
           }
@@ -338,11 +358,11 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             );
           } catch (_) {}
 
-          console.log(
+          pgLog(
             `[TabMail PreviewGate] AutoGate watcher installed (doc="${docHref || "?"}")`
           );
         } else {
-          console.log(
+          pgLog(
             `[TabMail PreviewGate] AutoGate: messagepane not found (doc="${docHref || "?"}") (will rely on later ensure pass)`
           );
 
@@ -358,8 +378,12 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
                 } catch (_) {}
                 try {
                   shared.paneFinderMO = null;
+                  if (shared.paneFinderTimeout) {
+                    doc.defaultView.clearTimeout(shared.paneFinderTimeout);
+                    shared.paneFinderTimeout = null;
+                  }
                 } catch (_) {}
-                console.log(
+                pgLog(
                   `[TabMail PreviewGate] AutoGate: messagepane appeared; attaching watcher now (doc="${docHref || "?"}")`
                 );
                 // If auto-gate is enabled, gate immediately when the pane appears.
@@ -377,15 +401,25 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             });
             shared.paneFinderMO = finderMO;
             finderMO.observe(doc.documentElement || doc, { childList: true, subtree: true });
-            console.log(
+            // Auto-disconnect subtree observer after 10s to prevent indefinite DOM watching
+            shared.paneFinderTimeout = doc.defaultView.setTimeout(() => {
+              try {
+                if (shared.paneFinderMO) {
+                  shared.paneFinderMO.disconnect();
+                  shared.paneFinderMO = null;
+                  pgLog(`[TabMail PreviewGate] AutoGate: messagepane finder timed out (doc="${docHref || "?"}")`);
+                }
+              } catch (_) {}
+            }, 10000);
+            pgLog(
               `[TabMail PreviewGate] AutoGate: watching for messagepane insertion (doc="${docHref || "?"}")`
             );
           } catch (eMO) {
-            console.log(`[TabMail PreviewGate] AutoGate: failed to watch for messagepane insertion: ${eMO}`);
+            pgLog(`[TabMail PreviewGate] AutoGate: failed to watch for messagepane insertion: ${eMO}`);
           }
         }
       } catch (e) {
-        console.log(`[TabMail PreviewGate] AutoGate install failed: ${e}`);
+        pgLog(`[TabMail PreviewGate] AutoGate install failed: ${e}`);
       }
     }
 
@@ -403,7 +437,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             _setDocPreviewGated(win?.document, gated, why);
           } catch (_) {}
           try {
-            const docs = enumerateContentDocs(win);
+            const docs = enumerateContentDocsCached(win);
             for (const d of docs) {
               try {
                 _setDocPreviewGated(d, gated, why);
@@ -427,7 +461,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
 
                 const tree = doc.getElementById && doc.getElementById("threadTree");
             if (!tree) {
-              console.log(
+              pgLog(
                 `[TabMail PreviewGate] PreGate: threadTree not found; cannot attach selection listener (doc="${getDocHref() || "?"}")`
               );
                     return;
@@ -448,14 +482,14 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             tree.addEventListener("select", shared.onSelect, true);
 
             try {
-              console.log(
+              pgLog(
                 `[TabMail PreviewGate] PreGate installed (doc="${getDocHref() || "?"}")`
               );
             } catch (_) {}
           } catch (_) {}
         }
 
-        const contentDocs = enumerateContentDocs(win);
+        const contentDocs = enumerateContentDocsCached(win);
         for (const cdoc of contentDocs) {
           try {
             const href = String(cdoc.location?.href || "");
@@ -466,15 +500,15 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           } catch (_) {}
         }
       } catch (e) {
-        console.error("[TabMail PreviewGate] ensurePreviewGateWatchers failed:", e);
+        pgErr("[TabMail PreviewGate] ensurePreviewGateWatchers failed:", e);
       }
     }
 
     async function init(_opts = {}) {
-      console.log("[TabMail PreviewGate] ═══ init() called ═══");
+      pgLog("[TabMail PreviewGate] ═══ init() called ═══");
 
       if (!ServicesTMPreviewGate || !ServicesTMPreviewGate.wm) {
-        console.error("[TabMail PreviewGate] Services.wm not available!");
+        pgErr("[TabMail PreviewGate] Services.wm not available!");
         return;
       }
 
@@ -484,7 +518,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       } catch (_) {}
 
       if (isInitialized) {
-        console.log("[TabMail PreviewGate] Already initialized; ensuring AGENT_SHEET + watchers exist");
+        pgLog("[TabMail PreviewGate] Already initialized; ensuring AGENT_SHEET + watchers exist");
         try {
           await withAgentSheetLock(context, () => ensureAgentSheetRegistered(context, "init:alreadyInitialized"), "init:alreadyInitialized");
         } catch (_) {}
@@ -495,7 +529,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             ensurePreviewGateWatchers(win);
           }
         } catch (e) {
-          console.error("[TabMail PreviewGate] watcher ensure pass failed:", e);
+          pgErr("[TabMail PreviewGate] watcher ensure pass failed:", e);
         }
         return;
       }
@@ -504,7 +538,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       try {
         await withAgentSheetLock(context, () => ensureAgentSheetRegistered(context, "init:first"), "init:first");
       } catch (e) {
-        console.error("[TabMail PreviewGate] Failed to register AGENT_SHEET:", e);
+        pgErr("[TabMail PreviewGate] Failed to register AGENT_SHEET:", e);
       }
 
       try {
@@ -520,7 +554,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           }
         }
       } catch (e) {
-        console.error("[TabMail PreviewGate] init existing windows failed:", e);
+        pgErr("[TabMail PreviewGate] init existing windows failed:", e);
       }
 
       try {
@@ -530,7 +564,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           onLoadWindow: (win) => ensurePreviewGateWatchers(win),
         });
       } catch (e) {
-        console.error("[TabMail PreviewGate] Failed to register window listener:", e);
+        pgErr("[TabMail PreviewGate] Failed to register window listener:", e);
       }
     }
 
@@ -541,7 +575,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
         const cycleId = opts?.cycleId;
 
         if (!ServicesTMPreviewGate || !ServicesTMPreviewGate.wm) {
-          console.log(
+          pgLog(
             "[TabMail PreviewGate] setMessagePreviewGated: Services.wm not available"
           );
           return;
@@ -561,7 +595,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           } catch (_) {}
 
           try {
-            const docs = enumerateContentDocs(win);
+            const docs = enumerateContentDocsCached(win);
             for (const d of docs) {
               try {
                 const dEl = d?.documentElement;
@@ -577,7 +611,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
                     !!d.getElementById("multiMessageBrowser") ||
                     !!d.getElementById("messagepane");
                   if (hasMsgBrowser) {
-                    console.log(
+                    pgLog(
                       `[TabMail PreviewGate] setMessagePreviewGated: targetDoc has message browser href="${href}" gated=${gated}`
                     );
                   }
@@ -587,11 +621,11 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           } catch (_) {}
         }
 
-        console.log(
+        pgLog(
           `[TabMail PreviewGate] setMessagePreviewGated gated=${gated} reason="${reason}" cycle=${cycleId} windowsUpdated=${winCount} docsUpdated=${docCount}`
         );
       } catch (e) {
-        console.error("[TabMail PreviewGate] setMessagePreviewGated failed:", e);
+        pgErr("[TabMail PreviewGate] setMessagePreviewGated failed:", e);
       }
     }
 
@@ -600,7 +634,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
         const enabled = !!opts?.enabled;
         const reason = String(opts?.reason || "");
         previewAutoGateEnabled = enabled;
-        console.log(
+        pgLog(
           `[TabMail PreviewGate] setPreviewAutoGateEnabled enabled=${enabled} reason="${reason}"`
         );
 
@@ -612,25 +646,25 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
               ensurePreviewGateWatchers(win);
             }
           } catch (e2) {
-            console.log(
+            pgLog(
               `[TabMail PreviewGate] setPreviewAutoGateEnabled install pass failed: ${e2}`
             );
           }
         }
       } catch (e) {
-        console.error("[TabMail PreviewGate] setPreviewAutoGateEnabled failed:", e);
+        pgErr("[TabMail PreviewGate] setPreviewAutoGateEnabled failed:", e);
       }
     }
 
     function cleanup() {
-      console.log(
+      pgLog(
         "[TabMail PreviewGate] cleanup() called - cleaning up all resources."
       );
 
       try {
         unregisterAgentSheet(context);
       } catch (e) {
-        console.error("[TabMail PreviewGate] Failed to unregister AGENT_SHEET:", e);
+        pgErr("[TabMail PreviewGate] Failed to unregister AGENT_SHEET:", e);
       }
 
       try {
@@ -641,7 +675,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           } catch (_) {}
         }
       } catch (e) {
-        console.error("[TabMail PreviewGate] Error unregistering window listener:", e);
+        pgErr("[TabMail PreviewGate] Error unregistering window listener:", e);
       }
 
       try {
@@ -752,17 +786,17 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           }
         }
       } catch (e) {
-        console.error("[TabMail PreviewGate] Error during cleanup:", e);
+        pgErr("[TabMail PreviewGate] Error during cleanup:", e);
       }
 
       isInitialized = false;
-      console.log("[TabMail PreviewGate] cleanup() complete");
+      pgLog("[TabMail PreviewGate] cleanup() complete");
     }
 
     this._tmCleanup = cleanup;
 
     async function shutdown() {
-      console.log("[TabMail PreviewGate] shutdown() called from WebExtension API");
+      pgLog("[TabMail PreviewGate] shutdown() called from WebExtension API");
       cleanup();
     }
 
