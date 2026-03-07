@@ -12,7 +12,7 @@
     <!-- Geometric drop shadow -->
     <path
        id="shadow"
-       style="fill:#c8c8cc;fill-opacity:1;stroke:none;stroke-width:1.04133;stroke-dasharray:none"
+       style="fill:#c8c8cc;fill-opacity:0.1;stroke:none;stroke-width:1.04133;stroke-dasharray:none"
        d="m 20.882149,10.882149 h 30 c 5.523,0 10,4.477 10,10 v 30 c 0,5.523 -4.477,10 -10,10 h -30 c -5.523,0 -10,-4.477 -10,-10 v -30 c 0,-5.523 4.477,-10 10,-10 z" />
     <g
        id="g4"
@@ -25,20 +25,20 @@
       <!-- Geometric drop shadow for arrow+bar -->
       <g
          id="g3-shadow"
-         style="stroke:#c8c8cc;stroke-linecap:butt;stroke-opacity:1;paint-order:normal"
+         style="stroke:#dde4ee;stroke-linecap:butt;stroke-opacity:1;paint-order:normal"
          transform="translate(1.4119033,2.0167315)"
         >
         <path
            d="M 18.5,26 H 40.3"
-           style="fill:none;stroke:#c8c8cc;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+           style="fill:none;stroke:#dde4ee;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
            id="path1" />
         <path
            d="M 33.73,19.58 40.31,26 33.73,32.42"
-           style="fill:none;stroke:#c8c8cc;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+           style="fill:none;stroke:#dde4ee;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
            id="path2" />
         <path
            d="M 44.287949,17.961538 V 33.905231"
-           style="fill:none;stroke:#c8c8cc;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+           style="fill:none;stroke:#dde4ee;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
            id="path3" />
       </g>
       <g

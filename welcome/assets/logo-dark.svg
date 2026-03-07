@@ -13,7 +13,7 @@
     <!-- Geometric drop shadow -->
     <path
        id="shadow"
-       style="fill:#3b3b41;fill-opacity:1;stroke:none;stroke-width:1.04133;stroke-dasharray:none"
+       style="fill:#e3e3f2;fill-opacity:0.15000001;stroke:none;stroke-width:1.04133;stroke-dasharray:none"
        d="m 20.882149,10.882149 h 30 c 5.523,0 10,4.477 10,10 v 30 c 0,5.523 -4.477,10 -10,10 h -30 c -5.523,0 -10,-4.477 -10,-10 v -30 c 0,-5.523 4.477,-10 10,-10 z" />
     <g
        id="g4"
