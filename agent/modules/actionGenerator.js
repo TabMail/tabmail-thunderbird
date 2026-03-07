@@ -1,5 +1,6 @@
 import { getUserName } from "../../chat/modules/helpers.js";
 import { SETTINGS } from "./config.js";
+import { resolveGmailAction } from "./gmailLabelSync.js";
 import * as idb from "./idbStorage.js";
 import { processJSONResponse, sendChat } from "./llm.js";
 import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
@@ -7,7 +8,6 @@ import { getUserActionPrompt } from "./promptGenerator.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary } from "./summaryGenerator.js";
 import { actionFromLiveTagIds, isMessageInInboxByUniqueKey } from "./tagHelper.js";
-import { resolveGmailAction } from "./gmailLabelSync.js";
 import {
   extractBodyFromParts,
   getUniqueMessageKey,
@@ -204,7 +204,7 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
     }
   } catch (_) {}
 
-  const uniqueKey = await getUniqueMessageKey(messageHeader.id);
+  const uniqueKey = await getUniqueMessageKey(messageHeader);
   log(`${PFX}UniqueKey for ${messageHeader.id}: ${uniqueKey}`);
 
   const cacheKey = ACTION_PREFIX + uniqueKey;
@@ -378,8 +378,7 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
 
     // Store the action
     const action = selectedAction;
-    await idb.set({ [cacheKey]: action });
-    await idb.set({ [metaKey]: { ts: Date.now() } });
+    await idb.set({ [cacheKey]: action, [metaKey]: { ts: Date.now() } });
     await recordOriginalActionOnce(uniqueKey, action);
 
     // Store the original user action prompt that was used during generation

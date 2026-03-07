@@ -217,7 +217,7 @@ async function clearSummaryCache(messages) {
     for (const msg of messages) {
         if (!msg || msg.id === undefined) continue;
         try {
-            const uKey = await getUniqueMessageKey(msg.id);
+            const uKey = await getUniqueMessageKey(msg);
             if (uKey) keys.push(`summary:${uKey}`);
         } catch (e) {}
     }
@@ -233,8 +233,7 @@ async function clearActionCache(messages) {
     for (const msg of messages) {
         if (!msg || msg.id === undefined) continue;
         try {
-            // Use numeric message id path so key generation matches actionGenerator usage exactly.
-            const uKey = await getUniqueMessageKey(msg.id);
+            const uKey = await getUniqueMessageKey(msg);
             if (!uKey) {
                 try {
                     log(
@@ -271,7 +270,7 @@ async function clearReplyEntries(messages) {
     for (const msg of messages) {
         if (!msg || msg.id === undefined) continue;
         try {
-            const k = await getUniqueMessageKey(msg.id);
+            const k = await getUniqueMessageKey(msg);
             if (k) {
                 keys.push(`reply:${k}`);
             }

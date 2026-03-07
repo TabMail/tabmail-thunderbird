@@ -93,7 +93,7 @@ export async function importActionFromImapTag(msgOrId) {
       action = await resolveGmailAction(header, action);
     }
     if (!action) return null;
-    const uniqueKey = await getUniqueMessageKey(header.id);
+    const uniqueKey = await getUniqueMessageKey(header);
     if (!uniqueKey) return null;
     const cacheKey = `action:${uniqueKey}`;
     const metaKey = `action:ts:${uniqueKey}`;
@@ -518,7 +518,7 @@ export async function applyActionTags(messages, actionMap) {
 
       // Keep WE id cache warm to avoid future expensive lookups.
       try { indexHeader(msg); } catch(_) {}
-      const key = await getUniqueMessageKey(msg.id);
+      const key = await getUniqueMessageKey(msg);
       const action = actionMap[key];
       // Original tags (clone to avoid mutation side-effects)
       const originalTags = msg.tags ? [...msg.tags] : [];

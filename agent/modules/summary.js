@@ -9,33 +9,40 @@ import { applyActionTags } from "./tagHelper.js";
 import { getUniqueMessageKey, log } from "./utils.js";
 
 /**
- * Get the user's configured base font size from TB prefs
- * Checks both x-unicode (other writing systems) and x-western (latin)
- * since TB may use either for message display
- * Falls back to default if prefs are unavailable
- * @returns {Promise<number>} Font size in pixels
+ * Get the user's configured base font size from TB prefs (cached).
+ * Font size is unlikely to change during a session, so cache for 60s
+ * to avoid repeated chrome IPC roundtrips on every message display.
  */
+let _cachedFontSize = null;
+let _cachedFontSizeTs = 0;
+const FONT_SIZE_CACHE_TTL_MS = 60000;
+
 async function getBaseFontSizePx() {
-  // Fallback is 50 - if you see 50px fonts, wiring is broken!
+  const now = Date.now();
+  if (_cachedFontSize !== null && (now - _cachedFontSizeTs) < FONT_SIZE_CACHE_TTL_MS) {
+    return _cachedFontSize;
+  }
   const defaultFontSize = SETTINGS.summaryBubble?.defaultBaseFontSizePx || 50;
   try {
     if (browser.tmPrefs && browser.tmPrefs.getInt) {
-      // Try x-unicode first as TB often uses this for message body
       const unicodePref = await browser.tmPrefs.getInt("font.size.variable.x-unicode");
       if (unicodePref && unicodePref > 0) {
-        log(`[TMDBG Banner] Read baseFontSizePx from x-unicode: ${unicodePref}`);
+        _cachedFontSize = unicodePref;
+        _cachedFontSizeTs = now;
         return unicodePref;
       }
-      // Fallback to x-western
       const westernPref = await browser.tmPrefs.getInt("font.size.variable.x-western");
       if (westernPref && westernPref > 0) {
-        log(`[TMDBG Banner] Read baseFontSizePx from x-western: ${westernPref}`);
+        _cachedFontSize = westernPref;
+        _cachedFontSizeTs = now;
         return westernPref;
       }
     }
   } catch (e) {
     log(`[TMDBG Banner] Failed to read font size pref: ${e}`);
   }
+  _cachedFontSize = defaultFontSize;
+  _cachedFontSizeTs = now;
   return defaultFontSize;
 }
 
@@ -261,7 +268,7 @@ async function processVisibleMessages(tab, messages) {
     // Determine internal/self-sent messages (we still want summaries for them, but we do NOT want to apply action tags).
     const internalById = new Map(); // Map<number, boolean>
     try {
-      for (const msg of messages) {
+      await Promise.all(messages.map(async (msg) => {
         try {
           const internal = await isInternalSender(msg);
           internalById.set(msg.id, internal);
@@ -275,7 +282,7 @@ async function processVisibleMessages(tab, messages) {
         } catch (_) {
           internalById.set(msg.id, false);
         }
-      }
+      }));
     } catch (_) {}
 
     // No tag/action-cache cleanup for internal/self-sent messages.
@@ -303,8 +310,40 @@ async function processVisibleMessages(tab, messages) {
 
     log(`Fetched ${summaries.length} summaries. Now fetching batch actions.`);
 
-    // Step 3: Fetch actions for the summaries we successfully retrieved.
-    // Build payload for the batch actions endpoint and log it for debugging.
+    // Step 3: Update the bubble immediately with summary content (don't wait for actions).
+    // This ensures the spinner → content transition happens as soon as summary data is available.
+    if (shouldShowBanner) {
+      const firstMessage = messages[0];
+      const firstMessageKey = await getUniqueMessageKey(firstMessage);
+      const summaryForBanner = summaries.find((s) => s.id === firstMessageKey);
+
+      if (summaryForBanner) {
+        if (_bannerDisplayedFromCache) {
+          log(`[TMDBG Banner] Cache-first banner already displayed; sending displaySummary again for consistency`);
+        }
+        await sendBannerMessageWithRetry(
+          tab.id,
+          {
+            command: "displaySummary",
+            blurb: summaryForBanner.blurb,
+            todos: summaryForBanner.todos || "",
+          },
+          "summary:displaySummary"
+        );
+      } else {
+        log(`Could not find summary for the first message to display in banner.`);
+        browser.tabs
+          .sendMessage(tab.id, {
+            command: "summaryError",
+            message: "Could not determine summary.",
+          })
+          .catch(() => {
+            // Expected to fail - banner doesn't handle summaryError
+          });
+      }
+    }
+
+    // Step 4: Fetch actions (does not block bubble — summary already displayed above).
     const actions = {};
     const externalMessages = messages.filter((m) => !internalById.get(m.id));
     if (externalMessages.length === 0) {
@@ -313,7 +352,7 @@ async function processVisibleMessages(tab, messages) {
       await Promise.all(
         externalMessages.map(async (msg) => {
           const action = await getAction(msg);
-          if (action) actions[await getUniqueMessageKey(msg.id)] = action;
+          if (action) actions[await getUniqueMessageKey(msg)] = action;
         })
       );
     }
@@ -388,6 +427,25 @@ async function processVisibleMessages(tab, messages) {
         });
     }
   }
+}
+
+// Short-lived cache for privacy/P2P checks — avoids 2 storage.local reads per message display.
+let _privacyP2PCache = null;
+let _privacyP2PCacheTs = 0;
+const PRIVACY_P2P_CACHE_TTL_MS = 10000; // 10s
+
+async function _getCachedPrivacyP2P() {
+  const now = Date.now();
+  if (_privacyP2PCache && (now - _privacyP2PCacheTs) < PRIVACY_P2P_CACHE_TTL_MS) {
+    return _privacyP2PCache;
+  }
+  const [optOut, p2pEnabled] = await Promise.all([
+    getPrivacyOptOutAllAiEnabled(),
+    isAutoEnabled(),
+  ]);
+  _privacyP2PCache = { optOut, p2pEnabled };
+  _privacyP2PCacheTs = now;
+  return _privacyP2PCache;
 }
 
 async function onMessagesDisplayed(tab, messageList) {

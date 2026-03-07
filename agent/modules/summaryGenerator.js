@@ -142,7 +142,8 @@ export async function getSummary(
   highPriority = false,
   cacheOnly = false
 ) {
-  const uniqueKey = await getUniqueMessageKey(messageHeader.id);
+  // Pass the full header object (not .id) to avoid an unnecessary browser.messages.get() IPC call.
+  const uniqueKey = await getUniqueMessageKey(messageHeader);
   if (!uniqueKey) return null;
 
   const cacheKey = SUMMARY_PREFIX + uniqueKey;
@@ -211,7 +212,7 @@ export async function getSummary(
 }
 
 export async function generateSummary(messageHeader, highPriority = false) {
-  const uniqueKey = await getUniqueMessageKey(messageHeader.id);
+  const uniqueKey = await getUniqueMessageKey(messageHeader);
   const cacheKey = SUMMARY_PREFIX + uniqueKey;
   const metaKey = SUMMARY_TS_PREFIX + uniqueKey;
 
@@ -313,12 +314,11 @@ export async function generateSummary(messageHeader, highPriority = false) {
     log(`${PFX}Reminder details: dueDate=${result.reminder.dueDate}, content="${result.reminder.content?.slice(0, 40)}..."`);
   }
 
-  // Cache
-  await idb.set({ [cacheKey]: result });
-  await idb.set({ [metaKey]: { ts: Date.now() } });
+  // Cache (single write for both payload and timestamp)
+  await idb.set({ [cacheKey]: result, [metaKey]: { ts: Date.now() } });
 
   // Persist full chat exchange for debugging/auditing.
-  saveChatLog("tabmail_summary", uniqueKey, [systemMsg], assistantResp);
+  saveChatLog("tabmail_summary", uniqueKey, [systemMsg], resp.assistant);
 
   // Add more things to output for compatibility with old code
   result.id = uniqueKey;

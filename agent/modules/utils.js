@@ -1041,7 +1041,7 @@ export function indexHeader(header) {
             }
 
             // Delegate key generation to shared helper to avoid drift.
-            const uniqueKey = await getUniqueMessageKey(header.id);
+            const uniqueKey = await getUniqueMessageKey(header);
             if (!uniqueKey) {
                 console.warn("Agent: Unable to derive unique key via getUniqueMessageKey for header", header);
                 return;

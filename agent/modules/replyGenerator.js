@@ -82,8 +82,7 @@ async function _persistReply(key, replyText) {
             reply: replyText,
             ts: Date.now(),
         };
-        await idb.set({ [payloadKey]: payload });
-        await idb.set({ [metaKey]: { ts: Date.now() } });
+        await idb.set({ [payloadKey]: payload, [metaKey]: { ts: Date.now() } });
         log(`${PFX}Cached reply stored under ${payloadKey}`);
     } catch (e) {
         log(`${PFX}Failed to persist reply for ${key}: ${e}`, "error");
@@ -101,6 +100,16 @@ async function _persistReply(key, replyText) {
  * @param {object} details – Additional fields: { subject, from, to, cc }
  */
 export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, ignoreSemaphore = false) {
+
+    // P2P probe: fire non-blocking early, race with body fetch + setup.
+    // Don't block on the 2s WebSocket timeout — overlap P2P latency with body I/O.
+    let p2pProbePromise = null;
+    try {
+        const { probeAICache } = await import("./p2pSync.js");
+        p2pProbePromise = probeAICache(messageHeader.headerMessageId, "reply");
+    } catch (probeErr) {
+        log(`${PFX}P2P probe init failed for ${uniqueMessageKey}: ${probeErr}`, "warn");
+    }
 
     // Load user composition instructions
     const userCompositionPrompt = await getUserCompositionPrompt();
@@ -122,6 +131,23 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
     const full = await safeGetFull(messageHeader.id, messageHeader);
     let bodyHtml = await extractBodyFromParts(full, messageHeader.id);
     const plainBody = stripHtml(bodyHtml || "");
+
+    // Check if P2P resolved during body fetch + setup (natural ~50-500ms window).
+    if (p2pProbePromise) {
+        try {
+            const peerReply = await Promise.race([
+                p2pProbePromise,
+                new Promise((r) => setTimeout(() => r(null), 0)),
+            ]);
+            if (peerReply) {
+                log(`${PFX}P2P cache HIT for ${uniqueMessageKey} — using peer reply (LLM skipped)`);
+                await _persistReply(uniqueMessageKey, peerReply);
+                return;
+            }
+        } catch (probeErr) {
+            log(`${PFX}P2P probe failed for ${uniqueMessageKey}: ${probeErr}`, "warn");
+        }
+    }
 
     // Format recipients for the reply we're writing (who we're sending to)
     const replyTo = details.to || "";
@@ -154,7 +180,7 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
         related_to: details.related_to || "",
         related_cc: details.related_cc || "",
     };
-    
+
     // Create an isolated ID translation context so concurrent reply generations
     // don't contaminate each other's or the proactive check-in's idMap.
     let idContext;
