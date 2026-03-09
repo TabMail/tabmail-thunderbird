@@ -746,8 +746,9 @@ export async function onInboxUpdated() {
     // KB reminders (user-created) should ONLY notify via "due_approaching" (near time).
     const newReminderCandidates = allCandidates.filter(r => r.source !== "kb");
 
-    // Prune orphaned reached_out entries (using all candidates)
-    await _pruneReachedOutIds(allCandidates);
+    // Prune orphaned reached_out entries (using full reminder list, not filtered candidates,
+    // so that reached_out entries persist as long as the reminder exists regardless of action)
+    await _pruneReachedOutIds(reminders);
 
     // Debounce - only process message reminders for "new_reminder" nudge
     if (newReminderCandidates.length > 0) {

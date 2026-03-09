@@ -3,6 +3,7 @@
 import { SETTINGS } from "../../agent/modules/config.js";
 import { applyKBPatch } from "../../agent/modules/patchApplier.js";
 import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { hashReminder } from "../../agent/modules/reminderStateStore.js";
 import { log, normalizeUnicode } from "../../agent/modules/utils.js";
 
 export async function run(args = {}, options = {}) {
@@ -117,21 +118,25 @@ export async function run(args = {}, options = {}) {
       log(`[TMDBG Tools] reminder_del: failed to import/trigger KB reminder update: ${e}`, "warn");
     }
 
-    // Clear reached_out flag for this reminder (if tracked)
+    // Clear reached_out flag for this specific reminder only.
+    // Parse the statement the same way kbReminderGenerator does to extract
+    // the plain content (without [Reminder]/Due prefix), then hash that.
     try {
-      const stored = await browser.storage.local.get({ "notifications.reached_out_ids": {} });
-      const reachedOutIds = stored["notifications.reached_out_ids"] || {};
-      // Check all keys for a content match (KB reminders use k: prefix with content hash)
-      let cleared = false;
-      for (const key of Object.keys(reachedOutIds)) {
-        if (key.startsWith("k:")) {
-          delete reachedOutIds[key];
-          cleared = true;
+      const withDateRegex = /^(?:\[Reminder\]|Reminder:)\s*Due\s+\d{4}\/\d{2}\/\d{2}(?:\s+\d{2}:\d{2})?(?:\s+\[[^\]]+\])?,\s*(.+)$/i;
+      const noDueRegex = /^(?:\[Reminder\]|Reminder:)\s*(?!Due\s)(.+)$/i;
+      const dateMatch = statement.match(withDateRegex);
+      const noDueMatch = statement.match(noDueRegex);
+      const reminderContent = (dateMatch?.[1] || noDueMatch?.[1] || "").trim();
+
+      if (reminderContent) {
+        const deletedHash = hashReminder({ source: "kb", content: reminderContent });
+        const stored = await browser.storage.local.get({ "notifications.reached_out_ids": {} });
+        const reachedOutIds = stored["notifications.reached_out_ids"] || {};
+        if (reachedOutIds[deletedHash]) {
+          delete reachedOutIds[deletedHash];
+          await browser.storage.local.set({ "notifications.reached_out_ids": reachedOutIds });
+          log(`[TMDBG Tools] reminder_del: cleared reached_out flag for ${deletedHash}`);
         }
-      }
-      if (cleared) {
-        await browser.storage.local.set({ "notifications.reached_out_ids": reachedOutIds });
-        log(`[TMDBG Tools] reminder_del: cleared reached_out flags for KB reminders`);
       }
     } catch (e) {
       log(`[TMDBG Tools] reminder_del: failed to clear reached_out flags: ${e}`, "warn");
