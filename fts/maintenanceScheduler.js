@@ -631,7 +631,7 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
             removedDetails.push({
               action: "removedMissing",
               msgId: entry.msgId,
-              folderPath: String(weFolder || ""),
+              folderPath: String(weFolder?.path || ""),
               headerID: String(headerID || ""),
               subject: String(entry?.subject || ""),
               dateMs: Number(entry?.dateMs || 0),
