@@ -5,7 +5,6 @@ import { SETTINGS } from "../agent/modules/config.js";
 import { logFtsBatchOperation, logFtsOperation, logMessageEventBatch, logMoveEvent } from "../agent/modules/eventLogger.js";
 import { log } from "../agent/modules/utils.js";
 import { buildBatchHeader, populateBatchBody } from "./indexer.js";
-import { getAllFoldersForAccount } from "../agent/modules/folderUtils.js";
 
 // Incremental indexing state
 let _isEnabled = false;
@@ -1303,142 +1302,103 @@ export async function removeExperimentListeners() {
 // Covers the startup timing gap: TB may sync folders before the experiment
 // listener is registered, so messages arriving during that window are missed
 // by the incremental indexer.  After listeners are up, we reconcile by
-// querying TB for all messages since the last known FTS timestamp and
-// indexing any that are missing.
+// enqueuing recent messages into the existing persistent queue — the drain
+// loop handles FTS flakiness, retry, body extraction, and dedup via
+// filterNewMessages (messages already in FTS are skipped automatically).
 // =====================================================================
 
-// Fallback window when FTS is empty (first run before any indexing)
+// Fallback window when FTS is empty or unreachable (first run / flaky startup)
 const RECONCILE_FALLBACK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 // 1-day overlap to handle timezone / rounding edge cases
 const RECONCILE_OVERLAP_MS = 24 * 60 * 60 * 1000;
-// Batch size for filterNewMessages calls
-const RECONCILE_BATCH_SIZE = 50;
+// Retry config for determining the reconcile window (FTS may be flaky at startup)
+const RECONCILE_MAX_RETRIES = 10;
+const RECONCILE_INITIAL_DELAY_MS = 2000;
+const RECONCILE_MAX_DELAY_MS = 30000;
+// Storage key for persisting reconcile-needed state across restarts
+const RECONCILE_STORAGE_KEY = "fts_reconcile_pending";
 
 /**
- * Run a lightweight reconciliation after the incremental indexer is fully
- * initialised (experiment listeners registered).
+ * Determine the reconcile lower-bound by querying FTS for the newest message.
+ * Retries with exponential backoff since native FTS can be flaky at startup.
+ * Returns the timestamp to reconcile from, or null if all retries exhausted
+ * (in which case a fallback window is used).
+ */
+async function _getReconcileFrom(ftsSearch) {
+  let delay = RECONCILE_INITIAL_DELAY_MS;
+  for (let attempt = 1; attempt <= RECONCILE_MAX_RETRIES; attempt++) {
+    try {
+      const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+      const recent = await ftsSearch.queryByDateRange(oneYearAgo, Date.now(), 1);
+      const maxDateMs = recent?.[0]?.dateMs || 0;
+      if (maxDateMs > 0) {
+        const from = maxDateMs - RECONCILE_OVERLAP_MS;
+        log(`[FTS Reconcile] Window from ${new Date(from).toISOString()} (newest FTS: ${new Date(maxDateMs).toISOString()})`);
+        return from;
+      }
+      // FTS is empty — use fallback window
+      log(`[FTS Reconcile] FTS empty, using 7-day fallback window`);
+      return Date.now() - RECONCILE_FALLBACK_WINDOW_MS;
+    } catch (e) {
+      if (attempt < RECONCILE_MAX_RETRIES) {
+        log(`[TMDBG FTS] Reconcile: FTS query attempt ${attempt}/${RECONCILE_MAX_RETRIES} failed, retrying in ${delay}ms: ${e}`, "warn");
+        await new Promise(r => setTimeout(r, delay));
+        delay = Math.min(delay * 2, RECONCILE_MAX_DELAY_MS);
+      } else {
+        log(`[TMDBG FTS] Reconcile: FTS query failed after ${RECONCILE_MAX_RETRIES} attempts, using fallback window: ${e}`, "warn");
+        return Date.now() - RECONCILE_FALLBACK_WINDOW_MS;
+      }
+    }
+  }
+}
+
+/**
+ * Run post-init reconciliation: discover recent messages across all folders
+ * and enqueue any that might be missing into the existing persistent queue.
  *
- * Uses the most recent message date in FTS (queryByDateRange, limit=1 DESC)
- * as the lower bound — everything before that is already covered.  While FTS
- * was running, the incremental indexer catches everything, so that date is a
- * reliable measure of where coverage ends.
- *
- * Algorithm:
- * 1. Query FTS for the newest indexed message date.
- * 2. Subtract 1-day overlap → reconcileFrom.
- * 3. Iterate every folder in every account.
- * 4. List messages, filter to date >= reconcileFrom.
- * 5. Build header rows via buildBatchHeader, run filterNewMessages.
- * 6. For any genuinely new messages, extract body + indexBatch.
+ * This function only uses TB WebExtension APIs (accounts.list, messages.list)
+ * to discover messages — no direct FTS calls for indexing. The persistent
+ * drain loop (processPendingUpdates) handles all FTS interaction, including
+ * filterNewMessages dedup, body extraction via safeGetFull, and retry.
  */
 async function runPostInitReconcile(ftsSearch) {
   if (!_isEnabled) return;
 
   const reconcileStart = Date.now();
 
-  // Determine the lower bound from the most recent FTS entry.
-  // queryByDateRange returns results ORDER BY dateMs DESC, so limit=1 gives the newest.
-  // Use a 1-year lookback so we only hit recent shards, not all of them.
-  let reconcileFrom;
-  try {
-    const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
-    const recent = await ftsSearch.queryByDateRange(oneYearAgo, Date.now(), 1);
-    const maxDateMs = recent?.[0]?.dateMs || 0;
-    if (maxDateMs > 0) {
-      reconcileFrom = maxDateMs - RECONCILE_OVERLAP_MS;
-      log(`[TMDBG FTS] Reconcile: FTS newest message ${new Date(maxDateMs).toISOString()}, window from ${new Date(reconcileFrom).toISOString()}`);
-    } else {
-      reconcileFrom = Date.now() - RECONCILE_FALLBACK_WINDOW_MS;
-      log(`[TMDBG FTS] Reconcile: FTS empty, using fallback window from ${new Date(reconcileFrom).toISOString()}`);
-    }
-  } catch (e) {
-    reconcileFrom = Date.now() - RECONCILE_FALLBACK_WINDOW_MS;
-    log(`[TMDBG FTS] Reconcile: failed to query FTS, using fallback: ${e}`, "warn");
-  }
+  // Determine the lower bound — retries internally with exponential backoff
+  const reconcileFrom = await _getReconcileFrom(ftsSearch);
 
   let totalScanned = 0;
-  let totalIndexed = 0;
-  let foldersChecked = 0;
+  let totalEnqueued = 0;
 
   try {
-    const accounts = await browser.accounts.list();
+    // Single cross-account query by date — much faster than folder-by-folder walking.
+    // messages.query with fromDate only uses the local header DB (no IMAP, no body fetch).
+    let page = await browser.messages.query({ fromDate: new Date(reconcileFrom) });
 
-    for (const acct of accounts) {
-      if (!acct.rootFolder) continue;
-
-      let allFolders;
-      try {
-        allFolders = await getAllFoldersForAccount(acct.id);
-      } catch (e) {
-        log(`[TMDBG FTS] Reconcile: failed to get folders for account ${acct.name}: ${e}`, "warn");
-        continue;
-      }
-
-      for (const folder of allFolders) {
-        // Skip root folder
-        if (!folder.path || folder.path === "/" || folder.name === "Root") continue;
-
-        foldersChecked++;
-
+    while (page && page.messages && page.messages.length > 0) {
+      for (const msg of page.messages) {
+        totalScanned++;
         try {
-          // List messages and filter by date client-side.
-          // messages.list is fast (local DB headers); messages.query is slow.
-          let page = await browser.messages.list(folder.id);
-          let recentMessages = [];
-
-          while (page && page.messages && page.messages.length > 0) {
-            for (const msg of page.messages) {
-              const msgDate = msg.date ? +new Date(msg.date) : 0;
-              if (msgDate >= reconcileFrom) {
-                recentMessages.push(msg);
-              }
-            }
-            if (page.id) {
-              page = await browser.messages.continueList(page.id);
-            } else {
-              break;
-            }
-          }
-
-          if (recentMessages.length === 0) continue;
-
-          totalScanned += recentMessages.length;
-
-          // Process in batches
-          for (let i = 0; i < recentMessages.length; i += RECONCILE_BATCH_SIZE) {
-            const batch = recentMessages.slice(i, i + RECONCILE_BATCH_SIZE);
-
-            // Build header rows
-            const headerBatch = await buildBatchHeader(batch);
-            if (headerBatch.length === 0) continue;
-
-            // Check which ones are missing from FTS
-            const filterResult = await ftsSearch.filterNewMessages(headerBatch);
-            const newMsgIds = filterResult.newMsgIds || [];
-
-            if (newMsgIds.length === 0) continue;
-
-            // Filter to only the new ones
-            const newBatch = headerBatch.filter(row => newMsgIds.includes(row.msgId));
-
-            // Extract body and index
-            const { successfulRows } = await populateBatchBody(newBatch);
-
-            if (successfulRows.length > 0) {
-              const result = await ftsSearch.indexBatch(successfulRows);
-              const batchIndexed = result?.indexed || successfulRows.length;
-              totalIndexed += batchIndexed;
-              log(`[TMDBG FTS] Reconcile: indexed ${batchIndexed} messages in ${folder.name}`);
-            }
-          }
-        } catch (e) {
-          log(`[TMDBG FTS] Reconcile: error processing folder ${folder.name}: ${e}`, "warn");
+          await queueMessageUpdate('new', msg);
+          totalEnqueued++;
+        } catch (queueErr) {
+          log(`[TMDBG FTS] Reconcile: failed to enqueue msg ${msg.headerMessageId}: ${queueErr}`, "warn");
         }
+      }
+      if (page.id) {
+        page = await browser.messages.continueList(page.id);
+      } else {
+        break;
       }
     }
 
+    // Clear the persisted reconcile-needed flag on success
+    await browser.storage.local.remove(RECONCILE_STORAGE_KEY);
+
     const elapsed = Date.now() - reconcileStart;
-    log(`[TMDBG FTS] Reconcile complete: ${foldersChecked} folders, ${totalScanned} scanned, ${totalIndexed} indexed, ${elapsed}ms`);
+    log(`[FTS Reconcile] Complete: ${totalScanned} scanned, ${totalEnqueued} enqueued, ${elapsed}ms`);
   } catch (e) {
     log(`[TMDBG FTS] Reconcile failed: ${e}`, "error");
   }
@@ -1474,8 +1434,15 @@ export async function initIncrementalIndexer(ftsSearch) {
     log("[TMDBG FTS] NOTE: Integrate with existing agent listeners for WebExtension events");
   }
 
+  // Persist that reconcile is needed — cleared on successful completion.
+  // If the extension restarts before reconcile finishes, restorePendingUpdates
+  // picks up any messages that were already enqueued, and the next init
+  // will re-run reconcile for the rest.
+  await browser.storage.local.set({ [RECONCILE_STORAGE_KEY]: Date.now() });
+
   // Run post-init reconciliation to cover the startup timing gap.
-  // This runs asynchronously — does not block the rest of init.
+  // FTS flakiness is handled internally (exponential backoff for window query)
+  // and by the persistent drain loop (retry for indexing).
   runPostInitReconcile(ftsSearch).catch(e => {
     log(`[TMDBG FTS] Post-init reconcile error: ${e}`, "error");
   });
