@@ -96,7 +96,7 @@ export const SETTINGS = {
     threadHistoryApiConcurrency: 1, // Max concurrent API calls when building a thread to avoid UI lag.
     useSingleMessageHistory: true, // For performance, treat the body of the last email as the full thread history.
     maxAgeDays: 60, // How many days back to look for emails during a full index.
-    verboseLogging: true, // Set to true to enable info/warn logs.
+    verboseLogging: false, // Set to true to enable info/warn logs.
     debugLogging: false, // Set to true to enable granular debug/trace logs (very noisy).
     // Thread tooltip master toggle (default disabled). When enabled, tooltips
     // will show cached summary/todo on hover; may not function after suspend.
