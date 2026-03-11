@@ -109,38 +109,59 @@ export async function getAccessToken() {
  */
 async function performTokenRefreshWithRetry(refreshToken) {
   const maxRetries = SETTINGS.authTokenRefreshRetries;
-  
+  let allTransient = true; // track whether every failure was transient (network/5xx)
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     log(`[SupabaseAuth] Refresh attempt ${attempt}/${maxRetries}`);
     const refreshed = await refreshAccessToken(refreshToken);
-    
-    if (refreshed) {
+
+    if (refreshed && refreshed !== REFRESH_NETWORK_ERROR) {
       log("[SupabaseAuth] Token refreshed successfully");
       return refreshed.access_token;
     }
-    
+
+    if (refreshed !== REFRESH_NETWORK_ERROR) {
+      // Definitive auth failure (4xx) — token is revoked/invalid
+      allTransient = false;
+    }
+
     // If this was the last attempt, give up
     if (attempt === maxRetries) {
-      log("[SupabaseAuth] All refresh attempts exhausted, clearing session", "error");
-      await clearSession();
+      if (allTransient) {
+        // All failures were network/5xx — token is likely still valid,
+        // just can't reach the server right now. Keep the session so the
+        // next getAccessToken() call can retry later.
+        log("[SupabaseAuth] All refresh attempts failed due to network errors — keeping session for later retry", "warn");
+      } else {
+        // At least one attempt got a definitive 4xx — token is revoked.
+        log("[SupabaseAuth] Token refresh rejected by server (4xx), clearing session", "error");
+        await clearSession();
+      }
       return null;
     }
-    
+
     // Wait before retrying (exponential backoff: 1s, 2s, 4s)
     const backoffMs = 1000 * Math.pow(2, attempt - 1);
     log(`[SupabaseAuth] Refresh failed, retrying in ${backoffMs}ms...`, "warn");
     await sleep(backoffMs);
   }
-  
+
   // Shouldn't reach here, but return null for safety
   return null;
 }
 
+// Sentinel returned by refreshAccessToken when the failure is a network/transient
+// error (as opposed to a definitive auth rejection like 400/401/403).
+const REFRESH_NETWORK_ERROR = Symbol("REFRESH_NETWORK_ERROR");
+
 /**
  * Refreshes the access token using the refresh token.
- * 
+ *
  * @param {string} refreshToken
- * @returns {Promise<{access_token: string, refresh_token: string, expires_at: number}|null>}
+ * @returns {Promise<{access_token: string, refresh_token: string, expires_at: number}|null|Symbol>}
+ *   - session object on success
+ *   - null on definitive auth failure (4xx — token revoked/invalid)
+ *   - REFRESH_NETWORK_ERROR on transient failure (network error, 5xx)
  */
 async function refreshAccessToken(refreshToken) {
   try {
@@ -169,6 +190,11 @@ async function refreshAccessToken(refreshToken) {
       } catch (_) {
         log(`[SupabaseAuth] Token refresh failed: ${errorDetails}`, "error");
       }
+      // 4xx = definitive auth failure (token revoked/invalid) → null
+      // 5xx = server-side transient error → REFRESH_NETWORK_ERROR
+      if (response.status >= 500) {
+        return REFRESH_NETWORK_ERROR;
+      }
       return null;
     }
 
@@ -184,7 +210,7 @@ async function refreshAccessToken(refreshToken) {
     return newSession;
   } catch (e) {
     log(`[SupabaseAuth] Token refresh network error: ${e.message || e}`, "error");
-    return null;
+    return REFRESH_NETWORK_ERROR;
   }
 }
 
