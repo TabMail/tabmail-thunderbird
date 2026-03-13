@@ -8,6 +8,41 @@ import { SETTINGS, getBackendUrl } from "./config.js";
 import { setThink } from "./thinkBuffer.js";
 import { log, normalizeUnicode } from "./utils.js";
 
+// 403 exponential backoff state — shared across all completions requests.
+// When the backend returns 403 (unauthorized/dev-access-denied), we back off
+// exponentially (1s → 2s → 4s → ... → 5min cap) to avoid hammering the server.
+const FORBIDDEN_INITIAL_DELAY_MS = 1000;
+const FORBIDDEN_MAX_DELAY_MS = 300_000; // 5 minutes
+let _forbiddenBackoffUntil = 0; // timestamp (ms)
+let _forbiddenBackoffDelay = 0; // current delay (ms)
+
+function checkForbiddenBackoff() {
+  const now = Date.now();
+  if (now < _forbiddenBackoffUntil) {
+    const remaining = Math.round((_forbiddenBackoffUntil - now) / 1000);
+    log(`[COMPLETIONS] 403 backoff active — ${remaining}s remaining, skipping request`, "warn");
+    throw new Error("Forbidden (403) — backing off");
+  }
+}
+
+function recordForbidden() {
+  if (_forbiddenBackoffDelay === 0) {
+    _forbiddenBackoffDelay = FORBIDDEN_INITIAL_DELAY_MS;
+  } else {
+    _forbiddenBackoffDelay = Math.min(_forbiddenBackoffDelay * 2, FORBIDDEN_MAX_DELAY_MS);
+  }
+  _forbiddenBackoffUntil = Date.now() + _forbiddenBackoffDelay;
+  log(`[COMPLETIONS] 403 received — backing off for ${_forbiddenBackoffDelay / 1000}s`, "warn");
+}
+
+function resetForbiddenBackoff() {
+  if (_forbiddenBackoffDelay > 0) {
+    log(`[COMPLETIONS] Resetting 403 backoff after successful response`);
+    _forbiddenBackoffDelay = 0;
+    _forbiddenBackoffUntil = 0;
+  }
+}
+
 /**
  * Determines the appropriate endpoint type based on the system prompt.
  * 
@@ -467,6 +502,9 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
     );
   }
   
+  // Check 403 backoff before doing any work
+  checkForbiddenBackoff();
+
   const endpointType = getEndpointType(payload.messages);
 
   // Privacy: allow users to opt out from sending any email data to TabMail backend.
@@ -657,21 +695,24 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
         const authResult = await handleAuthError(response);
         if (authResult === "consent_required") {
           log(`[COMPLETIONS] Consent required`);
+          recordForbidden();
           throw new Error(
             `Consent required before you can use TabMail features.\n\n` +
             `Please complete consent here: https://tabmail.ai/consent.html?client=thunderbird`
           );
         } else if (authResult === null) {
           log(`[COMPLETIONS] Feature disabled`);
+          recordForbidden();
           throw new Error(`Feature disabled. This endpoint requires a different authentication tier.`);
         } else if (authResult === true) {
-          // Retry after re-auth
+          // Retry after re-auth — token was refreshed, so reset backoff
           log(`[COMPLETIONS] Re-authentication successful, retrying`);
+          resetForbiddenBackoff();
           const newAccessToken = await getAccessToken();
           if (!newAccessToken) {
             throw new Error("Failed to get access token after re-auth");
           }
-          
+
           response = await fetch(url, {
             method: "POST",
             headers: {
@@ -682,12 +723,14 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
             body: JSON.stringify(payloadWithOptions),
             signal: abortSignal,
           });
-          
+
           if (!response.ok) {
+            recordForbidden();
             const txt = await response.text();
             throw new Error(`Request failed after re-auth: ${response.status} ${txt}`);
           }
         } else {
+          recordForbidden();
           throw new Error(`Authentication required. Please sign in and try again.`);
         }
       } else {
@@ -695,6 +738,9 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
         throw new Error(`Request failed: ${response.status} ${txt}`);
       }
     }
+
+    // Success — reset 403 backoff
+    resetForbiddenBackoff();
   } catch (e) {
     // Check if this is a throttling-related error (normal behavior, not an error)
     const isThrottleError = e && e.message && (
