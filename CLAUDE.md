@@ -57,3 +57,14 @@ When creating a new client-side chat tool:
 5. Register in `chat/tools/core.js`: import, add to `TOOL_IMPL`, add activity label in `getToolActivityLabel`
 
 > **CRITICAL:** The version in the schema filename IS the minimum client version. Clients with version < that version won't see the tool.
+
+---
+
+## Testing
+
+- **Run `npm test` after every change.** All tests must pass before the task is complete.
+- Tests are in `test/` using Vitest with ESM (plain JavaScript, no TypeScript).
+- Run: `cd tabmail-thunderbird && npm install && npm test`
+- When adding or modifying pure logic modules (bulletMerge, kbReminderGenerator, patchApplier, utils), add corresponding tests.
+- Browser API-dependent code requires `globalThis.browser` mocking — see existing test patterns.
+- See `TESTS.md` for comprehensive test case references and coverage targets.

@@ -8,3 +8,6 @@ config.local.json
 dist/
 .DS_Store
 *.log
+
+# Node (test infrastructure)
+node_modules/
