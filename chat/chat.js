@@ -15,7 +15,6 @@ import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromCo
 import { saveMetaImmediate, saveTurnsImmediate } from "./modules/persistentChatStore.js";
 import { initChatLink, disconnectChatLink } from "../chatlink/modules/core.js";
 import { addToolBubbleToGroup, cleanupToolGroups, isToolCollapseEnabled } from "./modules/toolCollapse.js";
-import { shutdownToolWebSocket } from "./modules/wsTools.js";
 
 let chatMode = "send"; // "send", "stop", or "retry"
 
@@ -107,16 +106,7 @@ async function stopExecution() {
 
     // Clean up all pending operations
     try {
-      // 1. Stop SSE tool listener if active
-      try {
-        const { stopToolListener } = await import("./modules/sseTools.js");
-        stopToolListener();
-        log(`[TMDBG Chat] Stopped SSE tool listener`);
-      } catch (e) {
-        log(`[TMDBG Chat] Failed to stop SSE tool listener: ${e}`, "warn");
-      }
-
-      // 2. Clean up all FSM waiters (resolve them with cancelled status)
+      // 1. Clean up all FSM waiters (resolve them with cancelled status)
       if (ctx && ctx.fsmWaiters && typeof ctx.fsmWaiters === "object") {
         const pids = Object.keys(ctx.fsmWaiters);
         log(`[TMDBG Chat] Cleaning up ${pids.length} pending FSM waiter(s)`);
@@ -723,12 +713,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       disconnectChatLink();
     } catch (_) {}
 
-    // Clean up any active tool websocket
-    try {
-      shutdownToolWebSocket();
-    } catch (_) {}
-
-    // Clean up SSE connections - abort any active requests and stop tool listener
+    // Clean up active SSE request on window close
     try {
       if (window.currentChatAbortController) {
         log(`[TMDBG Chat] Aborting active SSE request on window close`);
@@ -737,17 +722,6 @@ window.addEventListener("DOMContentLoaded", async () => {
       }
     } catch (e) {
       log(`[TMDBG Chat] Failed to abort SSE request: ${e}`, "warn");
-    }
-
-    try {
-      import("./modules/sseTools.js").then(({ stopToolListener }) => {
-        stopToolListener();
-        log(`[TMDBG Chat] Stopped SSE tool listener on window close`);
-      }).catch((e) => {
-        log(`[TMDBG Chat] Failed to stop SSE tool listener: ${e}`, "warn");
-      });
-    } catch (e) {
-      log(`[TMDBG Chat] Failed to import SSE tools cleanup: ${e}`, "warn");
     }
 
     // Trigger KB update for pending turns via background script

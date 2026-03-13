@@ -199,7 +199,7 @@ async function _runCreateCalendarEvent(args = {}, options = {}) {
   ctx.rawUserTexts.push(fakeUserText);
   log(`[TMDBG Tools] calendar_event_create: Established FSM marker in chat history`);
 
-  // Use the agent bubble from wsTools
+  // Use the agent bubble from tool orchestration
   let agentBubble = options.agentBubble;
   if (!agentBubble) {
     log(`[TMDBG Tools] calendar_event_create: No agent bubble provided, creating fallback`, "warn");

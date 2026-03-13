@@ -187,7 +187,7 @@ async function _runDeleteContact(args = {}, options = {}) {
   // Diagnose matching by logging exact candidates from the default book
   // Email matching disabled; require exact contact_id from search results
 
-  // Use the agent bubble from wsTools
+  // Use the agent bubble from tool orchestration
   let agentBubble = options.agentBubble;
   if (!agentBubble) {
     log(

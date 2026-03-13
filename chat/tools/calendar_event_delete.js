@@ -122,7 +122,7 @@ async function _runDeleteCalendarEvent(args = {}, options = {}) {
     log(`[TMDBG Tools] calendar_event_delete: failed to prefetch details: ${e}`, "warn");
   }
 
-  // Use the agent bubble from wsTools
+  // Use the agent bubble from tool orchestration
   let agentBubble = options.agentBubble;
   if (!agentBubble) {
     log(`[TMDBG Tools] calendar_event_delete: No agent bubble provided, creating fallback`, "warn");

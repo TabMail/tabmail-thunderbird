@@ -165,7 +165,7 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     log(`[TMDBG Tools] calendar_event_edit: failed to prefetch details: ${e}`, "warn");
   }
 
-  // Use the agent bubble from wsTools
+  // Use the agent bubble from tool orchestration
   let agentBubble = options.agentBubble;
   if (!agentBubble) {
     log(`[TMDBG Tools] calendar_event_edit: No agent bubble provided, creating fallback`, "warn");

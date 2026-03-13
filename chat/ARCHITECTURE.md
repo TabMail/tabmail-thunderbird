@@ -65,8 +65,6 @@ chat/
     ├── contacts.js         # Contact integration
     ├── markdown.js         # Markdown rendering
     ├── mentionAutocomplete.js # @mention autocomplete
-    ├── wsTools.js          # WebSocket tool communication
-    ├── sseTools.js         # Server-sent events handling
     └── [15+ more modules]
 ```
 

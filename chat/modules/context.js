@@ -25,7 +25,7 @@ export const ctx = {
   // Map pid (tool_call_id) -> { fsmPrevState: string, fsmUserInput: string, toolName, startedAt }
   fsmSessions: Object.create(null),
   // Map pid (tool_call_id) -> { resolve: Function }
-  // Used by wsTools to await exec_success/exec_fail notifications
+  // Used by converse to await exec_success/exec_fail notifications
   fsmWaiters: Object.create(null),
   // ID Translation mapping for this chat session
   idTranslation: {

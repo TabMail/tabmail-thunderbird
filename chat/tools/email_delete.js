@@ -176,7 +176,7 @@ async function _runDeleteEmails(args = {}, options = {}) {
     }
   } catch (_) {}
 
-  // Use the agent bubble from wsTools
+  // Use the agent bubble from tool orchestration
   let agentBubble = options.agentBubble;
   if (!agentBubble) {
     log(
