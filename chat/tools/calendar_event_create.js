@@ -4,7 +4,7 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { ctx, initFsmSession } from "../modules/context.js";
-import { toNaiveIso } from "../modules/helpers.js";
+import { toNaiveIso, toIsoNoMs } from "../modules/helpers.js";
 
 function normalizeArgs(args = {}) {
   const a = args || {};
@@ -53,12 +53,12 @@ function ensureTimes(details) {
   try {
     if (!start_iso) {
       const now = new Date();
-      start_iso = now.toISOString();
+      start_iso = toIsoNoMs(now);
     }
     if (!end_iso && !all_day) {
       const minutes = Number(CHAT_SETTINGS.createEventDefaultDurationMinutes) || 60;
       const end = new Date(new Date(start_iso).getTime() + minutes * 60 * 1000);
-      end_iso = end.toISOString();
+      end_iso = toIsoNoMs(end);
     }
   } catch (_) {}
   return { ...details, start_iso, end_iso };

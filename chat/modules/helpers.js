@@ -6,6 +6,16 @@ import { CHAT_SETTINGS } from "./chatConfig.js";
 import { ctx } from "./context.js";
 import { attachSpecialLinkListeners, renderMarkdown } from "./markdown.js";
 
+/**
+ * ISO-8601 timestamp without fractional seconds (saves LLM tokens).
+ * "2026-03-14T10:30:00.000Z" → "2026-03-14T10:30:00Z"
+ * @param {Date} [d] - Date object, defaults to now.
+ * @returns {string}
+ */
+export function toIsoNoMs(d = new Date()) {
+  return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
 // Controller used to manage streaming timers per element so we can cancel old streams
 const STREAM_CTRL = Symbol.for("tm_stream_control");
 
@@ -826,7 +836,7 @@ export function formatTimestampForAgent(dateObj = new Date()) {
     return out;
   } catch (e) {
     log(`[TMDBG ChatHelpers] formatTimestampForAgent failed: ${e}`, "warn");
-    return new Date().toISOString();
+    return toIsoNoMs();
   }
 }
 

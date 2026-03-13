@@ -3,6 +3,7 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
+import { toIsoNoMs } from "../modules/helpers.js";
 
 // Maintain per-argument search sessions during a single user turn (mirrors email_search)
 let searchSessions = {};
@@ -84,8 +85,8 @@ export async function run(args = {}, options = {}) {
       let hits = [];
       try {
         const ignoreDate = !fromDate && !toDate;
-        const fromIso = ignoreDate ? "" : fromDate ? fromDate.toISOString() : "";
-        const toIso = ignoreDate ? "" : toDate ? toDate.toISOString() : "";
+        const fromIso = ignoreDate ? "" : fromDate ? toIsoNoMs(fromDate) : "";
+        const toIso = ignoreDate ? "" : toDate ? toIsoNoMs(toDate) : "";
         const t0 = Date.now();
 
         log(

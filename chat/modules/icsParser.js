@@ -2,7 +2,7 @@
 // Thunderbird 141+, MV3. No external deps. Best-effort parsing with warnings.
 
 import { log } from "../../agent/modules/utils.js";
-import { formatTimestampForAgent } from "./helpers.js";
+import { formatTimestampForAgent, toIsoNoMs } from "./helpers.js";
 
 export const ICS_PARSER_SETTINGS = {
   attendeeDisplayLimit: 5,
@@ -337,11 +337,11 @@ export function parseIcsToEvents(icsText, icsFilename = "") {
         tzid_raw: tzidRaw || "",
         tzid_mapped: tzidMapped || null,
         start_local: startUtcMs !== null ? formatTimestampForAgent(new Date(startUtcMs)) : "",
-        start_utc: startUtcMs !== null ? new Date(startUtcMs).toISOString() : "",
+        start_utc: startUtcMs !== null ? toIsoNoMs(new Date(startUtcMs)) : "",
       },
       end: {
         end_local: endUtcMs !== null ? formatTimestampForAgent(new Date(endUtcMs)) : "",
-        end_utc: endUtcMs !== null ? new Date(endUtcMs).toISOString() : "",
+        end_utc: endUtcMs !== null ? toIsoNoMs(new Date(endUtcMs)) : "",
       },
       duration_minutes: durationMinutes,
       user_local: {

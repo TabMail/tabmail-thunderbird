@@ -2,6 +2,7 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
+import { toIsoNoMs } from "../modules/helpers.js";
 
 // ====================================================================
 // UNIFIED TIME NORMALIZATION SYSTEM
@@ -485,15 +486,15 @@ function resolveDateRange(args) {
         // Date-only format: parse year-month-day directly to create local date
         const [year, month, day] = args.from_date.split("-").map(x => parseInt(x, 10));
         const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
-        fromIso = startOfDay.toISOString();
+        fromIso = toIsoNoMs(startOfDay);
         log(`[TMDBG DateRange] from_date date-only detected: '${args.from_date}' -> parsed as y=${year} m=${month} d=${day} -> ${fromIso}`);
       } else {
         const fromDate = new Date(args.from_date);
-        fromIso = fromDate.toISOString();
+        fromIso = toIsoNoMs(fromDate);
         log(`[TMDBG DateRange] from_date with time: ${fromIso}`);
       }
     } else {
-      fromIso = new Date().toISOString();
+      fromIso = toIsoNoMs();
     }
     
     // Handle to_date
@@ -503,16 +504,16 @@ function resolveDateRange(args) {
         // Date-only format: parse year-month-day directly to create local date at end of day
         const [year, month, day] = args.to_date.split("-").map(x => parseInt(x, 10));
         const endOfDay = new Date(year, month - 1, day, 23, 59, 59, 999);
-        toIso = endOfDay.toISOString();
+        toIso = toIsoNoMs(endOfDay);
         log(`[TMDBG DateRange] to_date date-only detected: '${args.to_date}' -> parsed as y=${year} m=${month} d=${day} -> ${toIso}`);
       } else {
         const toDate = new Date(args.to_date);
-        toIso = toDate.toISOString();
+        toIso = toIsoNoMs(toDate);
         log(`[TMDBG DateRange] to_date with time: ${toIso}`);
       }
     } else {
       const step = Number(CHAT_SETTINGS.msPerDay) || 86400000;
-      const fallbackEnd = new Date(new Date(fromIso).getTime() + step).toISOString();
+      const fallbackEnd = toIsoNoMs(new Date(new Date(fromIso).getTime() + step));
       toIso = fallbackEnd;
     }
   } else {
@@ -522,8 +523,8 @@ function resolveDateRange(args) {
     start.setHours(0, 0, 0, 0);
     const step = Number(CHAT_SETTINGS.msPerDay) || 86400000;
     const end = new Date(start.getTime() + step);
-    fromIso = start.toISOString();
-    toIso = end.toISOString();
+    fromIso = toIsoNoMs(start);
+    toIso = toIsoNoMs(end);
   }
   
   log(`[TMDBG DateRange] resolved range: ${fromIso} to ${toIso}`);

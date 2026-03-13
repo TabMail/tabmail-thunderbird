@@ -2,7 +2,7 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
-import { formatMailList } from "../modules/helpers.js";
+import { formatMailList, toIsoNoMs } from "../modules/helpers.js";
 
 // Maintain per-argument search sessions during a single user turn
 let searchSessions = {};
@@ -84,8 +84,8 @@ export async function run(args = {}, options = {}) {
       let hits = [];
       try {
         const ignoreDate = (!fromDate && !toDate); // Ignore date filtering when no dates provided
-        const fromIso = ignoreDate ? "" : fromDate ? fromDate.toISOString() : "";
-        const toIso = ignoreDate ? "" : toDate ? toDate.toISOString() : "";
+        const fromIso = ignoreDate ? "" : fromDate ? toIsoNoMs(fromDate) : "";
+        const toIso = ignoreDate ? "" : toDate ? toIsoNoMs(toDate) : "";
         const t0 = Date.now();
         
         log(
@@ -195,7 +195,7 @@ export async function run(args = {}, options = {}) {
       const formatted = formatMailList(
         slice.map((hit) => ({
           uniqueId: hit.uniqueId || "", // Use uniqueId directly from FTS (msgId = folderUri:headerID)
-          date: hit.dateMs ? new Date(hit.dateMs).toISOString() : "",
+          date: hit.dateMs ? toIsoNoMs(new Date(hit.dateMs)) : "",
           from: hit.author || "",
           subject: hit.subject || "(No subject)",
           hasAttachments: Boolean(hit.hasAttachments),
