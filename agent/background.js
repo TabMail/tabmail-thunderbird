@@ -1813,10 +1813,13 @@ async function init() {
             const wantReply = !fields || fields.includes("reply");
             const allIdbKeys = await idb.getAllKeys();
             for (const probeKey of probeKeys) {
-                // Find matching IDB keys by headerMessageId suffix
-                const summaryMatch = wantSummary ? allIdbKeys.find(k => k.startsWith("summary:") && k.endsWith(`:${probeKey}`)) : null;
-                const actionMatch = wantAction ? allIdbKeys.find(k => k.startsWith("action:") && k.endsWith(`:${probeKey}`)) : null;
-                const replyMatch = wantReply ? allIdbKeys.find(k => k.startsWith("reply:") && !k.startsWith("reply:ts:") && k.endsWith(`:${probeKey}`)) : null;
+                // Find matching IDB keys by headerMessageId suffix.
+                // Exclude metadata keys (ts:, orig:, userprompt:, justification:) that share
+                // the same prefix — matching them returns timestamps/metadata instead of data.
+                const suffix = `:${probeKey}`;
+                const summaryMatch = wantSummary ? allIdbKeys.find(k => k.startsWith("summary:") && !k.startsWith("summary:ts:") && k.endsWith(suffix)) : null;
+                const actionMatch = wantAction ? allIdbKeys.find(k => k.startsWith("action:") && !k.startsWith("action:ts:") && !k.startsWith("action:orig:") && !k.startsWith("action:userprompt:") && !k.startsWith("action:justification:") && k.endsWith(suffix)) : null;
+                const replyMatch = wantReply ? allIdbKeys.find(k => k.startsWith("reply:") && !k.startsWith("reply:ts:") && k.endsWith(suffix)) : null;
                 if (!summaryMatch && !actionMatch && !replyMatch) continue;
 
                 const fetches = await idb.get([summaryMatch, actionMatch, replyMatch].filter(Boolean));

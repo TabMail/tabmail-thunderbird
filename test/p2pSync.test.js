@@ -1763,6 +1763,278 @@ describe('P2P Sync', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // AI Cache Probe — IDB Key Filtering (background.js handler logic)
+  // ═══════════════════════════════════════════════════════════════════════════
+  describe('AI Cache Probe — IDB key filtering', () => {
+    // These tests verify that the probe handler (as registered in background.js)
+    // correctly excludes metadata keys (ts:, orig:, userprompt:, justification:)
+    // that share the same prefix. Matching a metadata key returns a timestamp or
+    // metadata value instead of the actual cached data.
+
+    /**
+     * Helper: creates a handler that mimics background.js's setAICacheProbeHandler
+     * callback, using the provided allIdbKeys and idbData for lookups.
+     */
+    function createProbeHandler(allIdbKeys, idbData) {
+      return async (probeKeys, fields) => {
+        const results = {};
+        const wantSummary = !fields || fields.includes("summary");
+        const wantAction = !fields || fields.includes("action");
+        const wantReply = !fields || fields.includes("reply");
+        for (const probeKey of probeKeys) {
+          const suffix = `:${probeKey}`;
+          const summaryMatch = wantSummary ? allIdbKeys.find(k => k.startsWith("summary:") && !k.startsWith("summary:ts:") && k.endsWith(suffix)) : null;
+          const actionMatch = wantAction ? allIdbKeys.find(k => k.startsWith("action:") && !k.startsWith("action:ts:") && !k.startsWith("action:orig:") && !k.startsWith("action:userprompt:") && !k.startsWith("action:justification:") && k.endsWith(suffix)) : null;
+          const replyMatch = wantReply ? allIdbKeys.find(k => k.startsWith("reply:") && !k.startsWith("reply:ts:") && k.endsWith(suffix)) : null;
+          if (!summaryMatch && !actionMatch && !replyMatch) continue;
+
+          const matchKeys = [summaryMatch, actionMatch, replyMatch].filter(Boolean);
+          const fetches = {};
+          for (const mk of matchKeys) {
+            if (idbData[mk] !== undefined) fetches[mk] = idbData[mk];
+          }
+          const summary = summaryMatch ? fetches[summaryMatch] : null;
+          const action = actionMatch ? fetches[actionMatch] : null;
+          const replyEntry = replyMatch ? fetches[replyMatch] : null;
+          if (summary || action || replyEntry) {
+            results[probeKey] = {};
+            if (summary) {
+              results[probeKey].summary = {
+                blurb: summary.blurb || "",
+                todos: summary.todos || "",
+                reminderDate: summary.reminder?.date || null,
+                reminderTime: summary.reminder?.time || null,
+                reminderContent: summary.reminder?.content || null,
+              };
+            }
+            if (action) {
+              results[probeKey].action = action;
+            }
+            if (replyEntry?.reply) {
+              results[probeKey].reply = replyEntry.reply;
+            }
+          }
+        }
+        return results;
+      };
+    }
+
+    it('returns summary data and skips summary:ts: metadata key', async () => {
+      const msgId = 'msg123@example.com';
+      // IDB keys sorted ascending — summary:ts: sorts before summary:zzaccount: but after summary:account1:
+      const allIdbKeys = [
+        `summary:account1:INBOX:${msgId}`,
+        `summary:ts:account1:INBOX:${msgId}`,
+      ].sort();
+
+      const idbData = {
+        [`summary:account1:INBOX:${msgId}`]: { blurb: 'Hello world', todos: 'Do stuff', reminder: { date: '2026-03-15' } },
+        [`summary:ts:account1:INBOX:${msgId}`]: 1709654321000,
+      };
+
+      const handler = createProbeHandler(allIdbKeys, idbData);
+      const results = await handler([msgId]);
+
+      expect(results[msgId]).toBeDefined();
+      expect(results[msgId].summary.blurb).toBe('Hello world');
+      expect(results[msgId].summary.todos).toBe('Do stuff');
+      expect(results[msgId].summary.reminderDate).toBe('2026-03-15');
+    });
+
+    it('returns summary data when account ID sorts after "ts:" alphabetically', async () => {
+      const msgId = 'test@example.com';
+      // Account "zz-uuid" sorts after "ts:", so without the fix summary:ts: would match first
+      const allIdbKeys = [
+        `summary:ts:zz-uuid:INBOX:${msgId}`,
+        `summary:zz-uuid:INBOX:${msgId}`,
+      ].sort();
+
+      // Verify sort order: ts: key comes first (the bug scenario)
+      expect(allIdbKeys[0]).toContain('summary:ts:');
+
+      const idbData = {
+        [`summary:zz-uuid:INBOX:${msgId}`]: { blurb: 'Real summary', todos: '' },
+        [`summary:ts:zz-uuid:INBOX:${msgId}`]: 1709654321000,
+      };
+
+      const handler = createProbeHandler(allIdbKeys, idbData);
+      const results = await handler([msgId]);
+
+      expect(results[msgId]).toBeDefined();
+      expect(results[msgId].summary.blurb).toBe('Real summary');
+    });
+
+    it('returns action data and skips action:ts:, action:orig:, action:userprompt:, action:justification:', async () => {
+      const msgId = 'act@example.com';
+      const allIdbKeys = [
+        `action:account1:INBOX:${msgId}`,
+        `action:justification:account1:INBOX:${msgId}`,
+        `action:orig:account1:INBOX:${msgId}`,
+        `action:ts:account1:INBOX:${msgId}`,
+        `action:userprompt:account1:INBOX:${msgId}`,
+      ].sort();
+
+      const idbData = {
+        [`action:account1:INBOX:${msgId}`]: 'archive',
+        [`action:ts:account1:INBOX:${msgId}`]: 1709654321000,
+        [`action:orig:account1:INBOX:${msgId}`]: 'none',
+        [`action:userprompt:account1:INBOX:${msgId}`]: 'custom prompt text',
+        [`action:justification:account1:INBOX:${msgId}`]: 'because reasons',
+      };
+
+      const handler = createProbeHandler(allIdbKeys, idbData);
+      const results = await handler([msgId]);
+
+      expect(results[msgId]).toBeDefined();
+      expect(results[msgId].action).toBe('archive');
+    });
+
+    it('returns action data when account ID sorts after metadata prefixes', async () => {
+      const msgId = 'meta@example.com';
+      // Account "xyz" sorts after "ts:", "orig:", "userprompt:", "justification:"
+      const allIdbKeys = [
+        `action:justification:xyz:INBOX:${msgId}`,
+        `action:orig:xyz:INBOX:${msgId}`,
+        `action:ts:xyz:INBOX:${msgId}`,
+        `action:userprompt:xyz:INBOX:${msgId}`,
+        `action:xyz:INBOX:${msgId}`,
+      ].sort();
+
+      // Verify all metadata keys sort before the data key
+      expect(allIdbKeys.indexOf(`action:xyz:INBOX:${msgId}`)).toBeGreaterThan(
+        allIdbKeys.indexOf(`action:ts:xyz:INBOX:${msgId}`)
+      );
+
+      const idbData = {
+        [`action:xyz:INBOX:${msgId}`]: 'reply',
+        [`action:ts:xyz:INBOX:${msgId}`]: 1709654321000,
+        [`action:justification:xyz:INBOX:${msgId}`]: 'some justification',
+        [`action:orig:xyz:INBOX:${msgId}`]: 'delete',
+        [`action:userprompt:xyz:INBOX:${msgId}`]: 'prompt text',
+      };
+
+      const handler = createProbeHandler(allIdbKeys, idbData);
+      const results = await handler([msgId]);
+
+      expect(results[msgId]).toBeDefined();
+      expect(results[msgId].action).toBe('reply');
+    });
+
+    it('returns reply data and skips reply:ts: key', async () => {
+      const msgId = 'reply@example.com';
+      const allIdbKeys = [
+        `reply:account1:INBOX:${msgId}`,
+        `reply:ts:account1:INBOX:${msgId}`,
+      ].sort();
+
+      const idbData = {
+        [`reply:account1:INBOX:${msgId}`]: { reply: 'Thanks for your email' },
+        [`reply:ts:account1:INBOX:${msgId}`]: 1709654321000,
+      };
+
+      const handler = createProbeHandler(allIdbKeys, idbData);
+      const results = await handler([msgId]);
+
+      expect(results[msgId]).toBeDefined();
+      expect(results[msgId].reply).toBe('Thanks for your email');
+    });
+
+    it('returns all three fields simultaneously with metadata keys present', async () => {
+      const msgId = 'all@example.com';
+      const allIdbKeys = [
+        `action:account1:INBOX:${msgId}`,
+        `action:ts:account1:INBOX:${msgId}`,
+        `reply:account1:INBOX:${msgId}`,
+        `reply:ts:account1:INBOX:${msgId}`,
+        `summary:account1:INBOX:${msgId}`,
+        `summary:ts:account1:INBOX:${msgId}`,
+      ].sort();
+
+      const idbData = {
+        [`summary:account1:INBOX:${msgId}`]: { blurb: 'Test blurb', todos: 'Test todos' },
+        [`summary:ts:account1:INBOX:${msgId}`]: 1709654321000,
+        [`action:account1:INBOX:${msgId}`]: 'delete',
+        [`action:ts:account1:INBOX:${msgId}`]: 1709654321000,
+        [`reply:account1:INBOX:${msgId}`]: { reply: 'Got it' },
+        [`reply:ts:account1:INBOX:${msgId}`]: 1709654321000,
+      };
+
+      const handler = createProbeHandler(allIdbKeys, idbData);
+      const results = await handler([msgId]);
+
+      expect(results[msgId].summary.blurb).toBe('Test blurb');
+      expect(results[msgId].action).toBe('delete');
+      expect(results[msgId].reply).toBe('Got it');
+    });
+
+    it('returns empty results when only metadata keys exist (no data keys)', async () => {
+      const msgId = 'nodata@example.com';
+      const allIdbKeys = [
+        `summary:ts:account1:INBOX:${msgId}`,
+        `action:ts:account1:INBOX:${msgId}`,
+        `reply:ts:account1:INBOX:${msgId}`,
+      ].sort();
+
+      const idbData = {
+        [`summary:ts:account1:INBOX:${msgId}`]: 1709654321000,
+        [`action:ts:account1:INBOX:${msgId}`]: 1709654321000,
+        [`reply:ts:account1:INBOX:${msgId}`]: 1709654321000,
+      };
+
+      const handler = createProbeHandler(allIdbKeys, idbData);
+      const results = await handler([msgId]);
+
+      expect(results[msgId]).toBeUndefined();
+    });
+
+    it('handles multiple probe keys in single request', async () => {
+      const msg1 = 'first@example.com';
+      const msg2 = 'second@example.com';
+      const allIdbKeys = [
+        `summary:account1:INBOX:${msg1}`,
+        `summary:ts:account1:INBOX:${msg1}`,
+        `action:account1:Sent:${msg2}`,
+        `action:ts:account1:Sent:${msg2}`,
+      ].sort();
+
+      const idbData = {
+        [`summary:account1:INBOX:${msg1}`]: { blurb: 'First' },
+        [`summary:ts:account1:INBOX:${msg1}`]: 1709654321000,
+        [`action:account1:Sent:${msg2}`]: 'none',
+        [`action:ts:account1:Sent:${msg2}`]: 1709654321000,
+      };
+
+      const handler = createProbeHandler(allIdbKeys, idbData);
+      const results = await handler([msg1, msg2]);
+
+      expect(results[msg1].summary.blurb).toBe('First');
+      expect(results[msg2].action).toBe('none');
+    });
+
+    it('respects field filter to only return requested fields', async () => {
+      const msgId = 'filter@example.com';
+      const allIdbKeys = [
+        `summary:account1:INBOX:${msgId}`,
+        `action:account1:INBOX:${msgId}`,
+        `reply:account1:INBOX:${msgId}`,
+      ];
+
+      const idbData = {
+        [`summary:account1:INBOX:${msgId}`]: { blurb: 'Blurb' },
+        [`action:account1:INBOX:${msgId}`]: 'archive',
+        [`reply:account1:INBOX:${msgId}`]: { reply: 'Reply text' },
+      };
+
+      const handler = createProbeHandler(allIdbKeys, idbData);
+      const results = await handler([msgId], ['action']);
+
+      expect(results[msgId].action).toBe('archive');
+      expect(results[msgId].summary).toBeUndefined();
+      expect(results[msgId].reply).toBeUndefined();
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Connect / Disconnect
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Connect / Disconnect', () => {
