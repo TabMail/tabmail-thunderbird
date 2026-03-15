@@ -137,7 +137,7 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
         try {
             const peerReply = await Promise.race([
                 p2pProbePromise,
-                new Promise((r) => setTimeout(() => r(null), 0)),
+                new Promise((r) => setTimeout(() => r(null), 500)),
             ]);
             if (peerReply) {
                 log(`${PFX}P2P cache HIT for ${uniqueMessageKey} — using peer reply (LLM skipped)`);

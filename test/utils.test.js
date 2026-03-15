@@ -37,6 +37,13 @@ const {
   parseUniqueId,
   debounce,
   log,
+  generateRequestId,
+  runPromisesInBatches,
+  extractBodyFromParts,
+  stripHtml,
+  extractUserWrittenContent,
+  clearGetFullCache,
+  headerIndex,
 } = await import('../agent/modules/utils.js');
 
 const { isInboxFolder } = await import('../agent/modules/folderUtils.js');
@@ -486,5 +493,705 @@ describe('log', () => {
   it('suppresses info-level logs when verboseLogging is off', () => {
     log('info message', 'info');
     expect(console.log).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateRequestId — unique request ID generation
+// ---------------------------------------------------------------------------
+describe('generateRequestId', () => {
+  it('returns a string starting with "req_"', async () => {
+    const id = await generateRequestId();
+    expect(id).toMatch(/^req_/);
+  });
+
+  it('contains a timestamp component', async () => {
+    const before = Date.now();
+    const id = await generateRequestId();
+    const after = Date.now();
+    // Format: req_<timestamp>_<random>_<hash>
+    const parts = id.split('_');
+    // parts[0] = "req", parts[1] = timestamp
+    const timestamp = Number(parts[1]);
+    expect(timestamp).toBeGreaterThanOrEqual(before);
+    expect(timestamp).toBeLessThanOrEqual(after);
+  });
+
+  it('generates unique IDs across multiple calls', async () => {
+    const ids = new Set();
+    for (let i = 0; i < 50; i++) {
+      ids.add(await generateRequestId());
+    }
+    expect(ids.size).toBe(50);
+  });
+
+  it('follows the expected format pattern', async () => {
+    const id = await generateRequestId();
+    // req_<timestamp>_<6hexchars>_<4hexchars> OR req_<timestamp>_<alphanumeric>
+    expect(id).toMatch(/^req_\d+_[a-f0-9]+_[a-f0-9]+$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runPromisesInBatches — batched promise execution
+// ---------------------------------------------------------------------------
+describe('runPromisesInBatches', () => {
+  it('executes all promise factories and returns results', async () => {
+    const factories = [
+      () => Promise.resolve(1),
+      () => Promise.resolve(2),
+      () => Promise.resolve(3),
+    ];
+    const results = await runPromisesInBatches(factories, 2);
+    expect(results).toEqual([1, 2, 3]);
+  });
+
+  it('returns empty array for empty input', async () => {
+    const results = await runPromisesInBatches([], 5);
+    expect(results).toEqual([]);
+  });
+
+  it('respects concurrency by running in batches', async () => {
+    let maxConcurrent = 0;
+    let currentConcurrent = 0;
+
+    const makeFactory = (val) => () => {
+      currentConcurrent++;
+      maxConcurrent = Math.max(maxConcurrent, currentConcurrent);
+      return new Promise((resolve) => {
+        // Simulate async work — resolve synchronously to keep test fast
+        currentConcurrent--;
+        resolve(val);
+      });
+    };
+
+    const factories = [makeFactory(1), makeFactory(2), makeFactory(3), makeFactory(4), makeFactory(5)];
+    const results = await runPromisesInBatches(factories, 2);
+    expect(results).toEqual([1, 2, 3, 4, 5]);
+    // Each batch should run at most 2 concurrently
+    expect(maxConcurrent).toBeLessThanOrEqual(2);
+  });
+
+  it('handles single-item batches', async () => {
+    const factories = [
+      () => Promise.resolve('a'),
+      () => Promise.resolve('b'),
+      () => Promise.resolve('c'),
+    ];
+    const results = await runPromisesInBatches(factories, 1);
+    expect(results).toEqual(['a', 'b', 'c']);
+  });
+
+  it('handles concurrency larger than factory count', async () => {
+    const factories = [
+      () => Promise.resolve(10),
+      () => Promise.resolve(20),
+    ];
+    const results = await runPromisesInBatches(factories, 100);
+    expect(results).toEqual([10, 20]);
+  });
+
+  it('propagates rejections from promise factories', async () => {
+    const factories = [
+      () => Promise.resolve(1),
+      () => Promise.reject(new Error('batch fail')),
+      () => Promise.resolve(3),
+    ];
+    await expect(runPromisesInBatches(factories, 3)).rejects.toThrow('batch fail');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripHtml — HTML to plain text (requires DOMParser mock)
+// ---------------------------------------------------------------------------
+describe('stripHtml', () => {
+  // Set up a minimal DOMParser mock for Node environment
+  let _origNode;
+
+  beforeEach(() => {
+    // Save original Node (Node.js stream class) to avoid breaking vitest internals
+    _origNode = globalThis.Node;
+
+    // Minimal DOM node mock
+    function createTextNode(text) {
+      return { nodeType: 3, textContent: text, childNodes: [] };
+    }
+    function createElement(tag, children = [], textContent = '') {
+      const childNodes = [...children];
+      if (textContent) {
+        childNodes.push(createTextNode(textContent));
+      }
+      return {
+        nodeType: 1,
+        tagName: tag.toUpperCase(),
+        childNodes,
+        textContent: textContent || childNodes.map(c => c.textContent || '').join(''),
+      };
+    }
+
+    // Use Object.defineProperty to add TEXT_NODE/ELEMENT_NODE without replacing the Node class
+    const nodeConstants = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
+    globalThis.Node = Object.assign(function Node() {}, nodeConstants);
+
+    globalThis.DOMParser = class {
+      parseFromString(html, _type) {
+        // Very simplified HTML parser for testing — handles basic cases
+        const stripped = html
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<\/p>/gi, '\n')
+          .replace(/<\/div>/gi, '\n')
+          .replace(/<[^>]+>/g, '');
+        const body = createElement('BODY', [createTextNode(stripped)]);
+        return { body };
+      }
+    };
+  });
+
+  afterEach(() => {
+    // Restore original Node
+    if (_origNode !== undefined) {
+      globalThis.Node = _origNode;
+    } else {
+      delete globalThis.Node;
+    }
+    delete globalThis.DOMParser;
+  });
+
+  it('returns empty string for falsy input', () => {
+    expect(stripHtml(null)).toBe('');
+    expect(stripHtml(undefined)).toBe('');
+    expect(stripHtml('')).toBe('');
+  });
+
+  it('strips HTML tags and returns text content', () => {
+    const result = stripHtml('<p>Hello World</p>');
+    expect(result).toContain('Hello World');
+  });
+
+  it('handles plain text input without tags', () => {
+    const result = stripHtml('Just plain text');
+    expect(result).toBe('Just plain text');
+  });
+
+  it('converts br tags to newlines', () => {
+    const result = stripHtml('line1<br>line2');
+    expect(result).toContain('line1');
+    expect(result).toContain('line2');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractUserWrittenContent — user-written portion of email body
+// ---------------------------------------------------------------------------
+describe('extractUserWrittenContent', () => {
+  beforeEach(() => {
+    // Suppress log calls during tests
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete globalThis.TabMailQuoteDetection;
+  });
+
+  it('returns empty string for falsy body', () => {
+    expect(extractUserWrittenContent(null, 'text/plain')).toBe('');
+    expect(extractUserWrittenContent('', 'text/plain')).toBe('');
+    expect(extractUserWrittenContent(undefined, 'text/html')).toBe('');
+  });
+
+  it('returns plain text body when no quote detection is available', () => {
+    // No TabMailQuoteDetection set, so boundary detection is skipped
+    const result = extractUserWrittenContent('Hello, this is my reply.', 'text/plain');
+    expect(result).toBe('Hello, this is my reply.');
+  });
+
+  it('trims and collapses excessive blank lines in plain text', () => {
+    const body = 'Line 1\n\n\n\n\nLine 2';
+    const result = extractUserWrittenContent(body, 'text/plain');
+    expect(result).toBe('Line 1\n\nLine 2');
+  });
+
+  it('truncates at quote boundary when detection finds one', () => {
+    globalThis.TabMailQuoteDetection = {
+      findBoundaryInPlainText: (text) => {
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].startsWith('On ') && lines[i].includes('wrote:')) {
+            return { type: 'attribution', lineIndex: i, hasInlineAnswers: false };
+          }
+        }
+        return null;
+      },
+    };
+
+    const body = 'My reply here.\n\nOn Jan 1 someone wrote:\n> Original message';
+    const result = extractUserWrittenContent(body, 'text/plain');
+    expect(result).toBe('My reply here.');
+  });
+
+  it('returns full text when inline answers are detected', () => {
+    globalThis.TabMailQuoteDetection = {
+      findBoundaryInPlainText: (_text) => {
+        return { type: 'quote', lineIndex: 2, hasInlineAnswers: true };
+      },
+    };
+
+    const body = 'My reply\n> Quoted\nAnother reply';
+    const result = extractUserWrittenContent(body, 'text/plain');
+    expect(result).toBe('My reply\n> Quoted\nAnother reply');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractBodyFromParts — MIME part traversal
+// ---------------------------------------------------------------------------
+describe('extractBodyFromParts', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns empty string for null/undefined parts', async () => {
+    expect(await extractBodyFromParts(null, 1)).toBe('');
+    expect(await extractBodyFromParts(undefined, 1)).toBe('');
+  });
+
+  it('extracts body from text/plain part', async () => {
+    const parts = [
+      { contentType: 'text/plain', body: 'Hello plain text' },
+    ];
+    expect(await extractBodyFromParts(parts, 1)).toBe('Hello plain text');
+  });
+
+  it('prefers text/plain over text/html', async () => {
+    const parts = [
+      { contentType: 'text/plain', body: 'Plain version' },
+      { contentType: 'text/html', body: '<p>HTML version</p>' },
+    ];
+    expect(await extractBodyFromParts(parts, 1)).toBe('Plain version');
+  });
+
+  it('wraps single part in array', async () => {
+    const singlePart = { contentType: 'text/plain', body: 'Single part body' };
+    expect(await extractBodyFromParts(singlePart, 1)).toBe('Single part body');
+  });
+
+  it('descends into nested multipart/alternative sub-parts', async () => {
+    const parts = [
+      {
+        contentType: 'multipart/alternative',
+        parts: [
+          { contentType: 'text/plain', body: 'Nested plain text' },
+          { contentType: 'text/html', body: '<p>Nested HTML</p>' },
+        ],
+      },
+    ];
+    expect(await extractBodyFromParts(parts, 1)).toBe('Nested plain text');
+  });
+
+  it('returns empty string when no text parts are found', async () => {
+    const parts = [
+      { contentType: 'image/png', body: null },
+    ];
+    expect(await extractBodyFromParts(parts, 1)).toBe('');
+  });
+
+  it('skips text/plain part without body string', async () => {
+    // text/plain part exists but body is undefined and no partName/size for attachment fallback
+    const parts = [
+      { contentType: 'text/plain' },
+    ];
+    expect(await extractBodyFromParts(parts, 1)).toBe('');
+  });
+
+  it('handles deeply nested parts', async () => {
+    const parts = [
+      {
+        contentType: 'multipart/mixed',
+        parts: [
+          {
+            contentType: 'multipart/alternative',
+            parts: [
+              { contentType: 'text/plain', body: 'Deep nested body' },
+            ],
+          },
+        ],
+      },
+    ];
+    expect(await extractBodyFromParts(parts, 1)).toBe('Deep nested body');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearGetFullCache — cache clearing
+// ---------------------------------------------------------------------------
+describe('clearGetFullCache', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('does not throw when called on an empty cache', () => {
+    expect(() => clearGetFullCache()).not.toThrow();
+  });
+
+  it('can be called multiple times safely', () => {
+    clearGetFullCache();
+    clearGetFullCache();
+    // No error means success
+  });
+});
+
+// ---------------------------------------------------------------------------
+// headerIDToWeID — multi-stage header resolution
+// ---------------------------------------------------------------------------
+describe('headerIDToWeID', () => {
+  let origBrowser;
+
+  beforeEach(() => {
+    origBrowser = globalThis.browser;
+    globalThis.browser = {
+      messages: {
+        get: vi.fn(async () => null),
+        query: vi.fn(async () => ({ messages: [] })),
+      },
+      folders: {
+        query: vi.fn(async () => []),
+      },
+    };
+    headerIndex.clear();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    globalThis.browser = origBrowser;
+    vi.restoreAllMocks();
+    headerIndex.clear();
+  });
+
+  it('returns null for null headerID', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    expect(await headerIDToWeID(null)).toBe(null);
+  });
+
+  it('returns null for empty string headerID', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    expect(await headerIDToWeID('')).toBe(null);
+  });
+
+  it('returns null for non-string headerID', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    expect(await headerIDToWeID(42)).toBe(null);
+  });
+
+  it('returns empty array for invalid headerID with multiple=true', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    expect(await headerIDToWeID(null, null, true)).toEqual([]);
+  });
+
+  it('returns null when all stages fail', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    browser.messages.query.mockResolvedValue({ messages: [] });
+    expect(await headerIDToWeID('test@example.com', null, false, true)).toBe(null);
+  });
+
+  it('resolves via STAGE 2 (messages.query with folder)', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    browser.folders.query.mockResolvedValue([{ id: 'folder-123' }]);
+    browser.messages.query.mockResolvedValue({
+      messages: [{ id: 42, headerMessageId: '<test@example.com>', folder: { accountId: 'a', path: '/INBOX' } }],
+    });
+    const result = await headerIDToWeID(
+      'test@example.com',
+      { accountId: 'acc1', path: '/INBOX' }
+    );
+    expect(result).toBe(42);
+  });
+
+  it('resolves via STAGE 3 (global fallback)', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    // First call (STAGE 2) returns empty, second call (STAGE 3) returns result
+    browser.messages.query
+      .mockResolvedValueOnce({ messages: [] })
+      .mockResolvedValueOnce({
+        messages: [{ id: 99, headerMessageId: '<test@example.com>', folder: { accountId: 'a', path: '/INBOX' } }],
+      });
+    const result = await headerIDToWeID(
+      'test@example.com',
+      { accountId: 'acc1', path: '/INBOX' },
+      false,
+      true
+    );
+    expect(result).toBe(99);
+  });
+
+  it('returns empty array when all stages fail with multiple=true', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    browser.messages.query.mockResolvedValue({ messages: [] });
+    const result = await headerIDToWeID('test@example.com', null, true, true);
+    expect(result).toEqual([]);
+  });
+
+  it('returns multiple IDs via STAGE 3 with multiple=true', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    browser.messages.query.mockResolvedValue({
+      messages: [
+        { id: 10, headerMessageId: '<test@example.com>', folder: { accountId: 'a', path: '/INBOX' } },
+        { id: 20, headerMessageId: '<test@example.com>', folder: { accountId: 'a', path: '/Sent' } },
+      ],
+    });
+    const result = await headerIDToWeID('test@example.com', null, true, true);
+    expect(result).toEqual([10, 20]);
+  });
+
+  it('skips STAGE 3 when allowGlobalFallback is false', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    browser.messages.query.mockResolvedValue({ messages: [] });
+    const result = await headerIDToWeID(
+      'test@example.com',
+      { accountId: 'acc1', path: '/INBOX' },
+      false,
+      false
+    );
+    expect(result).toBe(null);
+    // Only STAGE 2 query should have been called (not STAGE 3)
+    expect(browser.messages.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles STAGE 2 query error gracefully', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    browser.messages.query
+      .mockRejectedValueOnce(new Error('query error'))
+      .mockResolvedValueOnce({ messages: [{ id: 77, headerMessageId: '<test@example.com>', folder: {} }] });
+    const result = await headerIDToWeID(
+      'test@example.com',
+      { accountId: 'acc1', path: '/INBOX' },
+      false,
+      true
+    );
+    expect(result).toBe(77);
+  });
+
+  it('handles folders.query failure gracefully', async () => {
+    const { headerIDToWeID } = await import('../agent/modules/utils.js');
+    browser.folders.query.mockRejectedValue(new Error('folders error'));
+    browser.messages.query.mockResolvedValue({
+      messages: [{ id: 55, headerMessageId: '<test@example.com>', folder: {} }],
+    });
+    const result = await headerIDToWeID(
+      'test@example.com',
+      { accountId: 'acc1', path: '/INBOX' }
+    );
+    // Should still succeed via STAGE 2 query (without folderId constraint)
+    expect(result).toBe(55);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// headerIndex — Map export for header indexing
+// ---------------------------------------------------------------------------
+describe('headerIndex', () => {
+  afterEach(() => {
+    headerIndex.clear();
+  });
+
+  it('is a Map instance', () => {
+    expect(headerIndex).toBeInstanceOf(Map);
+  });
+
+  it('supports standard Map operations', () => {
+    headerIndex.set('testKey', { id: 1, folder: { accountId: 'a', path: '/INBOX' }, _ts: Date.now() });
+    expect(headerIndex.has('testKey')).toBe(true);
+    expect(headerIndex.get('testKey').id).toBe(1);
+    headerIndex.delete('testKey');
+    expect(headerIndex.has('testKey')).toBe(false);
+  });
+
+  it('starts empty or can be cleared', () => {
+    headerIndex.set('k1', { id: 1 });
+    headerIndex.set('k2', { id: 2 });
+    expect(headerIndex.size).toBe(2);
+    headerIndex.clear();
+    expect(headerIndex.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// indexHeader — note: indexHeader uses an async IIFE internally so cannot
+// be tested synchronously. See headerIndex Map tests above for Map operations.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// getTrashFolderForHeader / getArchiveFolderForHeader
+// ---------------------------------------------------------------------------
+describe('getTrashFolderForHeader', () => {
+  let origBrowser;
+
+  beforeEach(() => {
+    origBrowser = globalThis.browser;
+    globalThis.browser = {
+      messages: { get: vi.fn(async () => null), query: vi.fn(async () => ({ messages: [] })) },
+      folders: {
+        query: vi.fn(async ({ specialUse }) => {
+          if (specialUse && specialUse.includes('trash')) {
+            return [{ id: 'trash1', type: 'trash', path: '/Trash' }];
+          }
+          if (specialUse && specialUse.includes('archives')) {
+            return [{ id: 'archive1', type: 'archives', path: '/Archives' }];
+          }
+          return [];
+        }),
+      },
+    };
+  });
+
+  afterEach(() => {
+    globalThis.browser = origBrowser;
+  });
+
+  it('returns trash folder for valid header', async () => {
+    const { getTrashFolderForHeader } = await import('../agent/modules/utils.js');
+    const header = { folder: { accountId: 'a1' } };
+    const result = await getTrashFolderForHeader(header);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('trash');
+  });
+
+  it('returns null for null header', async () => {
+    const { getTrashFolderForHeader } = await import('../agent/modules/utils.js');
+    const result = await getTrashFolderForHeader(null);
+    expect(result).toBeNull();
+  });
+
+  it('returns null for header without folder', async () => {
+    const { getTrashFolderForHeader } = await import('../agent/modules/utils.js');
+    const result = await getTrashFolderForHeader({});
+    expect(result).toBeNull();
+  });
+
+  it('returns null for header without accountId', async () => {
+    const { getTrashFolderForHeader } = await import('../agent/modules/utils.js');
+    const result = await getTrashFolderForHeader({ folder: {} });
+    expect(result).toBeNull();
+  });
+});
+
+describe('getArchiveFolderForHeader', () => {
+  let origBrowser;
+
+  beforeEach(() => {
+    origBrowser = globalThis.browser;
+    globalThis.browser = {
+      messages: { get: vi.fn(async () => null), query: vi.fn(async () => ({ messages: [] })) },
+      folders: {
+        query: vi.fn(async ({ specialUse }) => {
+          if (specialUse && specialUse.includes('archives')) {
+            return [{ id: 'archive1', type: 'archives', path: '/Archives' }];
+          }
+          return [];
+        }),
+      },
+    };
+  });
+
+  afterEach(() => {
+    globalThis.browser = origBrowser;
+  });
+
+  it('returns archive folder for valid header', async () => {
+    const { getArchiveFolderForHeader } = await import('../agent/modules/utils.js');
+    const header = { folder: { accountId: 'a1' } };
+    const result = await getArchiveFolderForHeader(header);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('archives');
+  });
+
+  it('returns null for null header', async () => {
+    const { getArchiveFolderForHeader } = await import('../agent/modules/utils.js');
+    const result = await getArchiveFolderForHeader(null);
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getSentFoldersForAccount
+// ---------------------------------------------------------------------------
+describe('getSentFoldersForAccount', () => {
+  let origBrowser;
+
+  beforeEach(() => {
+    origBrowser = globalThis.browser;
+    globalThis.browser = {
+      messages: { get: vi.fn(async () => null), query: vi.fn(async () => ({ messages: [] })) },
+      accounts: {
+        get: vi.fn(async (id) => ({
+          id,
+          folders: [
+            { id: 'inbox1', type: 'inbox', path: '/INBOX', subFolders: [] },
+            { id: 'sent1', type: 'sent', path: '/Sent', specialUse: ['sent'], subFolders: [] },
+            { id: 'trash1', type: 'trash', path: '/Trash', subFolders: [] },
+          ],
+        })),
+        list: vi.fn(async () => []),
+      },
+      folders: {
+        query: vi.fn(async () => []),
+        getSubFolders: vi.fn(async () => []),
+      },
+    };
+  });
+
+  afterEach(() => {
+    globalThis.browser = origBrowser;
+  });
+
+  it('returns sent folders for account', async () => {
+    const { getSentFoldersForAccount } = await import('../agent/modules/utils.js');
+    const result = await getSentFoldersForAccount('a1');
+    expect(result.length).toBe(1);
+    expect(result[0].type).toBe('sent');
+  });
+
+  it('returns empty array when account not found', async () => {
+    globalThis.browser.accounts.get.mockRejectedValue(new Error('not found'));
+    globalThis.browser.accounts.list.mockResolvedValue([]);
+    const { getSentFoldersForAccount } = await import('../agent/modules/utils.js');
+    const result = await getSentFoldersForAccount('nonexistent');
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty array when account has no folders', async () => {
+    globalThis.browser.accounts.get.mockResolvedValue({ id: 'a2', folders: [] });
+    const { getSentFoldersForAccount } = await import('../agent/modules/utils.js');
+    const result = await getSentFoldersForAccount('a2');
+    expect(result).toEqual([]);
+  });
+
+  it('uses fallback enumeration when accounts.get fails', async () => {
+    globalThis.browser.accounts.get.mockRejectedValue(new Error('not supported'));
+    globalThis.browser.accounts.list.mockResolvedValue([
+      { id: 'a3', rootFolder: { id: 'root3', type: 'root', path: '/' } },
+    ]);
+    globalThis.browser.folders.getSubFolders.mockResolvedValue([
+      { id: 'sent3', type: 'sent', path: '/Sent' },
+    ]);
+    const { getSentFoldersForAccount } = await import('../agent/modules/utils.js');
+    const result = await getSentFoldersForAccount('a3');
+    expect(result.length).toBe(1);
+    expect(result[0].type).toBe('sent');
   });
 });

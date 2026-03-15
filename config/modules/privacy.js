@@ -1,9 +1,17 @@
 import { $ } from "./dom.js";
+import { isAutoEnabled, setAutoEnabled } from "../../agent/modules/p2pSync.js";
 
 export function updatePrivacyOptOutUI(enabled) {
   const warning = $("privacy-opt-out-warning");
   if (warning) {
     warning.style.display = enabled ? "block" : "none";
+  }
+}
+
+function updateDeviceSyncUI(enabled) {
+  const warning = $("privacy-device-sync-warning");
+  if (warning) {
+    warning.style.display = enabled ? "none" : "block";
   }
 }
 
@@ -13,7 +21,13 @@ export async function loadPrivacySettings(getPrivacyOptOutAllAiEnabled, log) {
     const cb = $("privacy-opt-out-all-ai");
     if (cb) cb.checked = enabled;
     updatePrivacyOptOutUI(enabled);
-    log(`[TMDBG Config] Privacy settings loaded: optOutAllAi=${enabled}`);
+
+    const syncEnabled = await isAutoEnabled();
+    const syncCb = $("privacy-device-sync");
+    if (syncCb) syncCb.checked = syncEnabled;
+    updateDeviceSyncUI(syncEnabled);
+
+    log(`[TMDBG Config] Privacy settings loaded: optOutAllAi=${enabled}, deviceSync=${syncEnabled}`);
   } catch (e) {
     log(`[TMDBG Config] loadPrivacySettings failed: ${e}`, "error");
   }
@@ -35,5 +49,14 @@ export async function handlePrivacyChange(e, setPrivacyOptOutAllAiEnabled) {
       $("status").textContent = "Error saving privacy setting";
     }
   }
-}
 
+  if (e.target.id === "privacy-device-sync") {
+    const enabled = e.target.checked === true;
+    updateDeviceSyncUI(enabled);
+    await setAutoEnabled(enabled);
+    console.log(`[TMDBG Config] Device sync ${enabled ? "enabled" : "disabled"}`);
+    $("status").textContent = enabled
+      ? "Device sync enabled."
+      : "Device sync disabled: AI results will not sync between devices.";
+  }
+}

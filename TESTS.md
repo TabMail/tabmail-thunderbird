@@ -299,3 +299,20 @@ test/
 | Native FTS messaging | Mock `sendNativeMessage` |
 | IndexedDB | `fake-indexeddb` npm package |
 | Large modules (1000+ LOC) | Extract pure functions first |
+
+### Remaining Uncovered (Not Worth Testing — 2026-03-14)
+
+The following modules remain at 0% or very low coverage due to heavy browser/XPCOM dependencies. Testing them would require building a full Thunderbird API mock harness with diminishing returns:
+
+| Module | Reason |
+|--------|--------|
+| `background.js` | Extension lifecycle, event listeners, experiment API init |
+| `onMoved.js` | Deep `browser.messages` + folder API dependency |
+| `supabaseAuth.js` | Full Supabase auth flow with browser storage |
+| `messageProcessorQueue.js` | Depends on 8+ modules with browser APIs |
+| `tagHelper.js` | Heavy `browser.messages.tags` API usage |
+| `threadTagGroup.js` | DOM + browser API combined |
+| `knowledgebase.js` | Supabase + storage + runtime messaging |
+| Experiment `.sys.mjs` files | Require XPCOM/Thunderbird runtime context |
+
+Pure logic modules (utils, parsers, config, CRDT) are well-tested at 15.24% overall. The testable ~50% of the codebase has significantly higher effective coverage.

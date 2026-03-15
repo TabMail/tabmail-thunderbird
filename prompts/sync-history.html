@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TabMail Sync History</title>
+  <link rel="stylesheet" href="prompts.css" />
+</head>
+<body>
+  <div id="page">
+    <header>
+      <div class="header-row">
+        <div>
+          <h2>Sync History</h2>
+          <p class="header-description">Browse and restore previous prompt states</p>
+        </div>
+        <div class="sync-buttons">
+          <button id="sync-now-btn" class="sync-now-btn" title="Sync prompts with other devices now">Sync Now</button>
+          <button id="sync-toggle" class="sync-toggle" title="Toggle auto-sync with other devices">
+            <span id="sync-toggle-dot" class="sync-toggle-dot"></span>
+            <span id="sync-toggle-label">Sync</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="section-container" style="margin-top: 0;">
+      <div class="section-header">
+        <h3>History</h3>
+        <div class="section-header-actions">
+          <button id="refresh-sync-history" class="reload-section-btn">Refresh</button>
+        </div>
+      </div>
+      <div class="section-content">
+        <div id="sync-history-list" class="sync-history-list">
+          <div class="history-loading">Loading sync history...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="sync-history.js"></script>
+</body>
+</html>

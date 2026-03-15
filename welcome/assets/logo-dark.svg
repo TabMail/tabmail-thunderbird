@@ -19,9 +19,10 @@
        id="g4"
        style="display:inline">
       <path
-         id="rect1"
+         id="path1"
          style="fill:#1d1d20;fill-opacity:1;stroke:#f1f1ef;stroke-width:2;stroke-linecap:square;stroke-miterlimit:8;stroke-dasharray:none;stroke-opacity:0.951456;paint-order:normal"
          d="m 16,8 h 32 c 4.432,0 8,3.568 8,8 v 32 c 0,4.432 -3.568,8 -8,8 H 16 C 11.568,56 8,52.432 8,48 V 16 c 0,-4.432 3.568,-8 8,-8 z"
+        
          />
       <!-- Geometric drop shadow for arrow+bar -->
       <g
@@ -32,15 +33,15 @@
         <path
            d="M 18.5,26 H 40.3"
            style="fill:none;stroke:#3b3b41;stroke-width:3.06667;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
-           id="path1" />
+           id="path2" />
         <path
            d="M 33.73,19.58 40.31,26 33.73,32.42"
            style="fill:none;stroke:#3b3b41;stroke-width:3.06667;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
-           id="path2" />
+           id="path3" />
         <path
            d="M 44.287949,17.961538 V 33.905231"
            style="fill:none;stroke:#3b3b41;stroke-width:3.40013;stroke-linecap:butt;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
-           id="path3" />
+           id="path4" />
       </g>
       <g
          id="g3"

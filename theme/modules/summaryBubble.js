@@ -291,6 +291,24 @@
           overflow-wrap: anywhere;
           word-break: break-word;
         }
+        .tm-processing {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .tm-spinner {
+          display: inline-block;
+          width: 0.9em;
+          height: 0.9em;
+          border: 2px solid color-mix(in srgb, CanvasText 25%, transparent);
+          border-top-color: AccentColor;
+          border-radius: 50%;
+          animation: tm-spin 0.8s linear infinite;
+          flex-shrink: 0;
+        }
+        @keyframes tm-spin {
+          to { transform: rotate(360deg); }
+        }
         .tm-warning {
           display: flex;
           align-items: flex-start;
@@ -542,7 +560,7 @@
       _pendingRender = { kind: "processing" };
       return;
     }
-    scaffold.contentEl.textContent = 'Analyzing email…';
+    scaffold.contentEl.innerHTML = '<div class="tm-processing"><span class="tm-spinner"></span>Analyzing email…</div>';
     // console.log('[TMDBG Bubble] setProcessing called');
     showBubbleIfNeeded("summaryProcessing");
     syncBubbleToViewport();
@@ -581,17 +599,12 @@
   };
   console.log('[TabMail Bubble] Exported TabMailSummaryBubble to globalThis');
 
-  // Signal ready immediately so the display gate can reveal without waiting
-  // for the agent's async pipeline (privacy checks, cache lookup, message
-  // passing) to send summaryProcessing/displaySummary. We don't render
-  // "Analyzing…" here because the bubble is also injected for non-inbox
-  // messages where no content will ever arrive — the agent handles rendering.
-  try {
-    signalSummaryBubbleReady("auto-init");
-    console.log('[TabMail Bubble] Auto-signaled ready for fast gate reveal');
-  } catch (e) {
-    console.log(`[TabMail Bubble] Auto-init signal failed: ${e}`);
-  }
+  // DO NOT signal ready here. The gate should stay closed until the agent
+  // pipeline sends summaryProcessing (spinner) or displaySummary (content).
+  // Those functions call signalSummaryBubbleReady() after rendering, so the
+  // gate opens WITH visible bubble content — no empty flash.
+  // Non-inbox, privacy-disabled, and multi-select cases are handled by the
+  // background sending tm-gate-summary-disabled directly.
 })();
 
 // Note: Cleanup is handled automatically by the proactive removal logic above

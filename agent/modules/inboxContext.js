@@ -231,6 +231,7 @@ async function _createContextEntry(msgHeader) {
     return {
       uniqueId: uniqueId || "",
       internalId: msgHeader.id,
+      headerMessageId: msgHeader.headerMessageId || "",
       subject: msgHeader.subject || "",
       from: msgHeader.author || "",
       detailed,

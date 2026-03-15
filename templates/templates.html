@@ -8,8 +8,20 @@
 <body>
   <div id="page">
     <header>
-      <h2>TabMail Templates</h2>
-      <p class="header-description">Manage your email reply templates</p>
+      <div class="header-row">
+        <div>
+          <h2>TabMail Templates</h2>
+          <p class="header-description">Manage your email reply templates</p>
+        </div>
+        <div class="sync-buttons">
+          <button id="sync-history-btn" class="sync-now-btn" title="Browse and restore previous prompt states">Sync History</button>
+          <button id="sync-now-btn" class="sync-now-btn" title="Sync templates with other devices now">Sync Now</button>
+          <button id="sync-toggle" class="sync-toggle" title="Toggle auto-sync with other devices">
+            <span id="sync-toggle-dot" class="sync-toggle-dot"></span>
+            <span id="sync-toggle-label">Sync</span>
+          </button>
+        </div>
+      </div>
     </header>
 
     <div id="template-container">

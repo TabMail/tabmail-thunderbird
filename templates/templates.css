@@ -29,10 +29,96 @@ header {
   flex-shrink: 0;
 }
 
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
 .header-description {
   margin: 8px 0 0 0;
   opacity: 0.7;
   font-size: 14px;
+}
+
+/* Sync buttons container */
+.sync-buttons {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+/* Sync Now button (header) */
+.sync-now-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--in-content-page-color);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.sync-now-btn:hover {
+  background: var(--in-content-button-background-hover, rgba(128,128,128,0.15));
+}
+
+.sync-now-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Sync toggle button (header) */
+.sync-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--in-content-page-color);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.sync-toggle:hover {
+  background: var(--in-content-button-background-hover, rgba(128,128,128,0.15));
+}
+
+.sync-toggle.active {
+  border-color: #30d158;
+}
+
+.sync-toggle-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #888;
+  transition: background 0.3s ease;
+}
+
+.sync-toggle.active .sync-toggle-dot {
+  background: #30d158;
+}
+
+.sync-toggle.connecting .sync-toggle-dot {
+  background: #ff9f0a;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 /* Main Container - Two Panel Layout */
@@ -956,6 +1042,78 @@ button:focus-visible {
 
 .flash-error {
   animation: flashError 0.5s ease;
+}
+
+/* Template Sync Buttons */
+.template-sync {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sync-dot.disconnected {
+  background: #888;
+}
+
+.sync-dot.connected {
+  background: #22c55e;
+}
+
+.sync-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  background: var(--in-content-button-background);
+  color: var(--in-content-page-color);
+  cursor: pointer;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.sync-btn svg {
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.sync-btn-small {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.sync-btn:hover:not(:disabled) {
+  background: var(--in-content-button-background-hover);
+}
+
+.sync-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Sync button spinner (inline, sized for small buttons) */
+.sync-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--in-content-page-color) 25%, transparent);
+  border-top-color: var(--in-content-accent-color);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+
+.sync-btn .sync-success {
+  color: #22c55e;
+  font-weight: bold;
 }
 
 /* Responsive adjustments */

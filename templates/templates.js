@@ -1472,5 +1472,101 @@ function showStatus(message, isError = false) {
     }, 3000);
 }
 
+// --- Auto-Sync Toggle (header button) ---
+const SYNC_AUTO_KEY = "p2p_sync_auto_enabled";
+
+function updateSyncToggleUI(autoEnabled, connected) {
+    const btn = document.getElementById("sync-toggle");
+    const label = document.getElementById("sync-toggle-label");
+    if (!btn) return;
+    btn.classList.remove("active", "connecting");
+    if (autoEnabled && connected) {
+        btn.classList.add("active");
+        label.textContent = "Syncing";
+    } else if (autoEnabled) {
+        btn.classList.add("connecting");
+        label.textContent = "Sync";
+    } else {
+        label.textContent = "Sync Off";
+    }
+}
+
+async function initSyncToggle() {
+    const syncAutoStored = await browser.storage.local.get({ [SYNC_AUTO_KEY]: true });
+    let syncAutoEnabled = syncAutoStored[SYNC_AUTO_KEY] !== false;
+    const syncStatus = await browser.runtime.sendMessage({ command: "p2p-sync-status" }).catch(() => null);
+    updateSyncToggleUI(syncAutoEnabled, syncStatus?.connected || false);
+
+    browser.storage.onChanged.addListener((changes, area) => {
+        if (area === "local" && changes._p2pSyncConnected !== undefined) {
+            updateSyncToggleUI(syncAutoEnabled, !!changes._p2pSyncConnected.newValue);
+        }
+        if (area === "local" && changes[SYNC_AUTO_KEY] !== undefined) {
+            syncAutoEnabled = changes[SYNC_AUTO_KEY].newValue !== false;
+            updateSyncToggleUI(syncAutoEnabled, false);
+        }
+    });
+
+    browser.runtime.sendMessage({ command: "p2p-sync-add-listener" }).then((res) => {
+        if (res?.ok) updateSyncToggleUI(syncAutoEnabled, res.connected);
+    }).catch(() => {});
+
+    // Sync History button (opens standalone page)
+    document.getElementById("sync-history-btn")?.addEventListener("click", async () => {
+        const url = browser.runtime.getURL("prompts/sync-history.html");
+        const existing = await browser.tabs.query({ url }).catch(() => []);
+        if (existing.length > 0) {
+            await browser.tabs.update(existing[0].id, { active: true });
+            await browser.windows.update(existing[0].windowId, { focused: true });
+        } else {
+            await browser.tabs.create({ url });
+        }
+    });
+
+    // Sync Now button
+    document.getElementById("sync-now-btn")?.addEventListener("click", async () => {
+        const btn = document.getElementById("sync-now-btn");
+        btn.disabled = true;
+        btn.textContent = "Syncing...";
+        try {
+            await browser.runtime.sendMessage({ command: "p2p-sync-now" });
+            btn.textContent = "Synced!";
+            // Reload templates in case peers sent updates
+            await loadTemplates();
+            setTimeout(() => { btn.textContent = "Sync Now"; btn.disabled = false; }, 1500);
+        } catch (e) {
+            console.error("[Templates] Sync Now failed:", e);
+            btn.textContent = "Sync Now";
+            btn.disabled = false;
+        }
+    });
+
+    document.getElementById("sync-toggle").addEventListener("click", async () => {
+        syncAutoEnabled = !syncAutoEnabled;
+        await browser.storage.local.set({ [SYNC_AUTO_KEY]: syncAutoEnabled });
+        updateSyncToggleUI(syncAutoEnabled, false);
+
+        if (syncAutoEnabled) {
+            await browser.runtime.sendMessage({ command: "p2p-sync-enable" }).catch(() => {});
+            let attempts = 0;
+            const poll = setInterval(async () => {
+                attempts++;
+                const status = await browser.runtime.sendMessage({ command: "p2p-sync-status" }).catch(() => null);
+                if (status?.connected) {
+                    updateSyncToggleUI(true, true);
+                    clearInterval(poll);
+                } else if (attempts >= 10) {
+                    clearInterval(poll);
+                }
+            }, 500);
+        } else {
+            await browser.runtime.sendMessage({ command: "p2p-sync-disable" }).catch(() => {});
+        }
+    });
+}
+
 // Initialize when DOM is ready
-document.addEventListener("DOMContentLoaded", initialize);
+document.addEventListener("DOMContentLoaded", () => {
+    initialize();
+    initSyncToggle();
+});

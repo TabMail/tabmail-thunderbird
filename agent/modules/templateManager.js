@@ -59,6 +59,8 @@ export function createTemplate(partial = {}) {
         enabled: partial.enabled !== undefined ? partial.enabled : true,
         instructions: partial.instructions || [],
         exampleReply: partial.exampleReply || "",
+        deleted: partial.deleted || false,
+        deletedAt: partial.deletedAt || null,
         createdAt: partial.createdAt || now,
         updatedAt: partial.updatedAt || now,
     };
@@ -93,6 +95,7 @@ export async function loadTemplates() {
  */
 export async function saveTemplates(templates) {
     try {
+        // p2pSync storage listener handles per-field timestamp (p2p_sync_ts:templates)
         await browser.storage.local.set({ [STORAGE_KEY]: templates });
         log(`${PFX}Saved ${templates.length} templates to storage`);
         return true;
@@ -166,7 +169,7 @@ export async function updateTemplate(id, updates) {
 }
 
 /**
- * Delete a template
+ * Delete a template (soft-delete: sets deleted=true for P2P sync propagation).
  * @param {string} id - Template ID
  * @returns {Promise<boolean>}
  */
@@ -180,9 +183,15 @@ export async function deleteTemplate(id) {
             return false;
         }
 
-        const removed = templates.splice(index, 1)[0];
+        const now = getTimestamp();
+        templates[index] = {
+            ...templates[index],
+            deleted: true,
+            deletedAt: now,
+            updatedAt: now,
+        };
         await saveTemplates(templates);
-        log(`${PFX}Deleted template: ${removed.name} (${id})`);
+        log(`${PFX}Soft-deleted template: ${templates[index].name} (${id})`);
         return true;
     } catch (e) {
         log(`${PFX}Error deleting template: ${e}`, "error");
@@ -206,12 +215,92 @@ export async function toggleTemplate(id) {
 }
 
 /**
- * Get only enabled templates
+ * Get only enabled (and non-deleted) templates
  * @returns {Promise<Template[]>}
  */
 export async function getEnabledTemplates() {
     const templates = await loadTemplates();
-    return templates.filter((t) => t.enabled);
+    return templates.filter((t) => t.enabled && !t.deleted);
+}
+
+/**
+ * Get visible (non-deleted) templates for UI display.
+ * @returns {Promise<Template[]>}
+ */
+export async function getVisibleTemplates() {
+    const templates = await loadTemplates();
+    return templates.filter((t) => !t.deleted);
+}
+
+/**
+ * Per-template CRDT merge: index by id, newer updatedAt wins.
+ * @param {Template[]} incoming - Incoming templates from P2P sync
+ * @returns {Promise<void>}
+ */
+export async function mergeTemplates(incoming) {
+    if (!Array.isArray(incoming) || incoming.length === 0) return;
+
+    const local = await loadTemplates();
+    const merged = new Map();
+
+    // Index local templates by id
+    for (const t of local) {
+        if (t.id) merged.set(t.id, t);
+    }
+
+    // Merge incoming: newer updatedAt wins per id
+    let adopted = 0;
+    for (const inc of incoming) {
+        if (!inc.id) continue;
+        // Ensure defaults for any missing fields (e.g., deleted, createdAt from old peers)
+        const normalized = createTemplate(inc);
+        const existing = merged.get(inc.id);
+        if (!existing) {
+            // New from peer
+            merged.set(inc.id, normalized);
+            adopted++;
+        } else {
+            const incTs = normalized.updatedAt || "";
+            const localTs = existing.updatedAt || "";
+            if (incTs > localTs) {
+                merged.set(inc.id, normalized);
+                adopted++;
+            }
+        }
+    }
+
+    if (adopted > 0) {
+        await saveTemplates(Array.from(merged.values()));
+        log(`${PFX}CRDT merge: ${adopted} templates adopted from ${incoming.length} incoming (local total: ${merged.size})`);
+    } else {
+        log(`${PFX}CRDT merge: 0 templates adopted from ${incoming.length} incoming`);
+    }
+}
+
+/**
+ * GC deleted template tombstones older than 90 days.
+ */
+export async function gcDeletedTemplates() {
+    const templates = await loadTemplates();
+    const now = Date.now();
+    const maxAge = 90 * 86400 * 1000;
+    let removed = 0;
+
+    const filtered = templates.filter((t) => {
+        if (t.deleted && t.deletedAt) {
+            const deletedTime = new Date(t.deletedAt).getTime();
+            if (now - deletedTime > maxAge) {
+                removed++;
+                return false;
+            }
+        }
+        return true;
+    });
+
+    if (removed > 0) {
+        await saveTemplates(filtered);
+        log(`${PFX}GC removed ${removed} deleted template tombstones older than 90 days`);
+    }
 }
 
 /**
@@ -463,23 +552,19 @@ export async function ensureMigration() {
 export async function resetToDefaultTemplates() {
     try {
         // Clear the migration flag so defaults will be reloaded
-        await browser.storage.local.remove(["templates_migrated", STORAGE_KEY]);
-        log(`${PFX}Cleared templates storage`);
+        await browser.storage.local.remove(["templates_migrated"]);
+        log(`${PFX}Cleared templates migration flag`);
 
         // Reload defaults
         const defaultTemplates = await loadDefaultTemplates();
 
-        if (defaultTemplates.length === 0) {
-            log(`${PFX}No default templates found`);
-            await markTemplatesMigrated();
-            return 0;
-        }
-
-        // Save default templates
-        await saveTemplates(defaultTemplates);
+        // Use epoch-zero timestamp so defaults never overwrite customized
+        // templates on other devices via P2P sync
+        const { resetFieldToDefault } = await import("./p2pSync.js");
+        await resetFieldToDefault("templates", defaultTemplates.length > 0 ? defaultTemplates : []);
         await markTemplatesMigrated();
 
-        log(`${PFX}Reset to ${defaultTemplates.length} default templates`);
+        log(`${PFX}Reset to ${defaultTemplates.length} default templates (epoch-zero timestamp)`);
         return defaultTemplates.length;
     } catch (e) {
         log(`${PFX}Reset to defaults failed: ${e}`, "error");

@@ -515,6 +515,25 @@
 
       <div class="field" style="margin-top: 16px;">
         <label class="checkbox-option">
+          <input type="checkbox" id="privacy-device-sync" />
+          <span>Allow TabMail devices to talk to each other (P2P sync)</span>
+        </label>
+      </div>
+      <div id="privacy-device-sync-warning" style="display: none; margin-top: 8px; padding: 12px; background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent); border-left: 4px solid var(--tag-tm-archive); border-radius: 4px;">
+        <strong style="color: var(--tag-tm-archive);">Device sync disabled</strong>
+        <p style="margin: 8px 0 0 0; font-size: 0.9em;">
+          AI summaries and settings will <strong>not</strong> sync between your devices. Each device will process emails independently.
+        </p>
+      </div>
+      <div class="field">
+        <small>
+          When enabled, TabMail syncs AI results and prompt settings between your devices so emails only need to be processed once.
+          Device communication goes through the TabMail sync server. No email content is stored on the server.
+        </small>
+      </div>
+
+      <div class="field" style="margin-top: 16px;">
+        <label class="checkbox-option">
           <input type="checkbox" id="web-search-enabled" />
           <span>Enable web search</span>
         </label>

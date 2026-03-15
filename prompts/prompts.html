@@ -8,8 +8,20 @@
 <body>
   <div id="page">
     <header>
-      <h2>TabMail Prompts</h2>
-      <p class="header-description">Manage your email composition settings and action classification rules</p>
+      <div class="header-row">
+        <div>
+          <h2>TabMail Prompts</h2>
+          <p class="header-description">Manage your email composition settings and action classification rules</p>
+        </div>
+        <div class="sync-buttons">
+          <button id="sync-history-btn" class="sync-now-btn" title="Browse and restore previous prompt states">Sync History</button>
+          <button id="sync-now-btn" class="sync-now-btn" title="Sync prompts with other devices now">Sync Now</button>
+          <button id="sync-toggle" class="sync-toggle" title="Toggle auto-sync with other devices">
+            <span id="sync-toggle-dot" class="sync-toggle-dot"></span>
+            <span id="sync-toggle-label">Sync</span>
+          </button>
+        </div>
+      </div>
     </header>
 
     <section id="prompt-selector">
@@ -71,8 +83,8 @@
         <div class="kb-section-note">
           <p>Stores <strong>behavioral directives</strong> (how the agent should act) and <strong>preemptive knowledge</strong> (facts needed before being asked). Searchable content is retrieved on demand via Chat History Search. Prefix with <code>[Pinned]</code> to protect from automatic cleanup.</p>
         </div>
-        <div class="simple-content">
-          <textarea id="kb-content" placeholder="Add behavioral directives (e.g., 'Always CC my assistant on replies to the VP') and preemptive knowledge (e.g., Zoom links, PTO schedules)..."></textarea>
+        <div class="simple-content" id="kb-content-container">
+          <!-- Bullet list editor injected by JS -->
         </div>
       </div>
     </div>
