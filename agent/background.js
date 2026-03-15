@@ -290,14 +290,12 @@ function setupRuntimeMessageListener() {
                     }
                     return resp.text();
                 }
+                const { resetFieldToDefault } = await import("./modules/p2pSync.js");
                 const ua = await _fetchBundled("user_action.md");
                 const uc = await _fetchBundled("user_composition.md");
-                const kv = {
-                    ["user_prompts:user_action.md"]: ua,
-                    ["user_prompts:user_composition.md"]: uc,
-                };
-                await browser.storage.local.set(kv);
-                log("Reset user prompts completed successfully (storage.local updated).");
+                await resetFieldToDefault("action", ua);
+                await resetFieldToDefault("composition", uc);
+                log("Reset user prompts completed successfully (epoch-zero timestamps).");
             } catch (e) {
                 log(`Reset user prompts failed: ${e}`, "error");
             }
@@ -313,15 +311,9 @@ function setupRuntimeMessageListener() {
                 const resp = await fetch(url);
                 if (!resp.ok) throw new Error(`Fetch bundled user_action.md failed (${resp.status})`);
                 const text = await resp.text();
-                await browser.storage.local.set({ ["user_prompts:user_action.md"]: text });
-                // Verify write for diagnostics
-                try {
-                    const kv = await browser.storage.local.get(["user_prompts:user_action.md"]);
-                    const len = (kv?.["user_prompts:user_action.md"] || "").length;
-                    log(`Action prompt reset complete (storedLen=${len}). Sending response ok.`);
-                } catch (vErr) {
-                    log(`Action prompt post-set verification failed: ${vErr}`, "warn");
-                }
+                const { resetFieldToDefault } = await import("./modules/p2pSync.js");
+                await resetFieldToDefault("action", text);
+                log(`Action prompt reset complete (epoch-zero timestamp). Sending response ok.`);
                 sendResponse({ ok: true });
             } catch (e) {
                 log(`reset-action-prompt failed: ${e}`, "error");
@@ -339,15 +331,9 @@ function setupRuntimeMessageListener() {
                 const resp = await fetch(url);
                 if (!resp.ok) throw new Error(`Fetch bundled user_composition.md failed (${resp.status})`);
                 const text = await resp.text();
-                await browser.storage.local.set({ ["user_prompts:user_composition.md"]: text });
-                // Verify write for diagnostics
-                try {
-                    const kv = await browser.storage.local.get(["user_prompts:user_composition.md"]);
-                    const len = (kv?.["user_prompts:user_composition.md"] || "").length;
-                    log(`Composition prompt reset complete (storedLen=${len}). Sending response ok.`);
-                } catch (vErr) {
-                    log(`Composition prompt post-set verification failed: ${vErr}`, "warn");
-                }
+                const { resetFieldToDefault } = await import("./modules/p2pSync.js");
+                await resetFieldToDefault("composition", text);
+                log(`Composition prompt reset complete (epoch-zero timestamp). Sending response ok.`);
                 sendResponse({ ok: true });
             } catch (e) {
                 log(`reset-composition-prompt failed: ${e}`, "error");
@@ -365,15 +351,9 @@ function setupRuntimeMessageListener() {
                 const resp = await fetch(url);
                 if (!resp.ok) throw new Error(`Fetch bundled user_kb.md failed (${resp.status})`);
                 const text = await resp.text();
-                await browser.storage.local.set({ ["user_prompts:user_kb.md"]: text });
-                // Verify write for diagnostics
-                try {
-                    const kv = await browser.storage.local.get(["user_prompts:user_kb.md"]);
-                    const len = (kv?.["user_prompts:user_kb.md"] || "").length;
-                    log(`KB prompt reset complete (storedLen=${len}). Sending response ok.`);
-                } catch (vErr) {
-                    log(`KB prompt post-set verification failed: ${vErr}`, "warn");
-                }
+                const { resetFieldToDefault } = await import("./modules/p2pSync.js");
+                await resetFieldToDefault("kb", text);
+                log(`KB prompt reset complete (epoch-zero timestamp). Sending response ok.`);
                 sendResponse({ ok: true });
             } catch (e) {
                 log(`reset-kb-prompt failed: ${e}`, "error");
@@ -503,7 +483,9 @@ function setupRuntimeMessageListener() {
         (async () => {
             try {
                 const storageKey = `user_prompts:${message.filename}`;
-                await browser.storage.local.set({ [storageKey]: message.content });
+                // Stamp new sync timestamp on local edit (last-write-wins)
+                const updatedAt = new Date().toISOString();
+                await browser.storage.local.set({ [storageKey]: message.content, p2p_sync_updated_at: updatedAt });
                 log(`Successfully wrote ${message.filename} to storage`);
                 sendResponse({ ok: true });
             } catch (e) {
@@ -524,9 +506,18 @@ function setupRuntimeMessageListener() {
                     throw new Error(`Failed to fetch bundled ${message.filename} (${resp.status})`);
                 }
                 const text = await resp.text();
-                const storageKey = `user_prompts:${message.filename}`;
-                await browser.storage.local.set({ [storageKey]: text });
-                log(`Successfully reset ${message.filename} to default`);
+                // Map filename → sync field name
+                const fieldMap = { "user_action.md": "action", "user_composition.md": "composition", "user_kb.md": "kb" };
+                const field = fieldMap[message.filename];
+                if (field) {
+                    const { resetFieldToDefault } = await import("./modules/p2pSync.js");
+                    await resetFieldToDefault(field, text);
+                } else {
+                    // Unknown file — write directly (no sync field to reset)
+                    const storageKey = `user_prompts:${message.filename}`;
+                    await browser.storage.local.set({ [storageKey]: text });
+                }
+                log(`Successfully reset ${message.filename} to default (epoch-zero timestamp)`);
                 sendResponse({ ok: true });
             } catch (e) {
                 log(`reset-prompt-file failed: ${e}`, "error");
@@ -541,8 +532,8 @@ function setupRuntimeMessageListener() {
         log("Received templates-load command");
         (async () => {
             try {
-                const { loadTemplates } = await import("./modules/templateManager.js");
-                const templates = await loadTemplates();
+                const { getVisibleTemplates } = await import("./modules/templateManager.js");
+                const templates = await getVisibleTemplates();
                 sendResponse({ ok: true, templates });
             } catch (e) {
                 log(`templates-load failed: ${e}`, "error");
@@ -650,6 +641,36 @@ function setupRuntimeMessageListener() {
         return true;
     }
 
+    // --- Prompt History Commands ---
+    if (message.command === "prompt-history-load") {
+        (async () => {
+            try {
+                const { loadHistory } = await import("./modules/p2pSync.js");
+                const entries = await loadHistory();
+                sendResponse({ ok: true, entries });
+            } catch (e) {
+                log(`prompt-history-load failed: ${e}`, "error");
+                sendResponse({ ok: false, error: String(e) });
+            }
+        })();
+        return true;
+    }
+
+    if (message.command === "prompt-history-restore") {
+        log(`Received prompt-history-restore for entry ${message.entry?.id?.substring(0, 8)}`);
+        (async () => {
+            try {
+                const { restoreFromHistory } = await import("./modules/p2pSync.js");
+                await restoreFromHistory(message.entry);
+                sendResponse({ ok: true });
+            } catch (e) {
+                log(`prompt-history-restore failed: ${e}`, "error");
+                sendResponse({ ok: false, error: String(e) });
+            }
+        })();
+        return true;
+    }
+
     if (message.command === "templates-reorder") {
         log("Received templates-reorder command");
         (async () => {
@@ -669,12 +690,91 @@ function setupRuntimeMessageListener() {
         log("Received templates-save-all command");
         (async () => {
             try {
-                const { saveTemplates } = await import("./modules/templateManager.js");
-                const success = await saveTemplates(message.templates || []);
+                const { loadTemplates, saveTemplates } = await import("./modules/templateManager.js");
+                // Preserve deleted tombstones (UI only has visible templates)
+                const existing = await loadTemplates();
+                const tombstones = existing.filter((t) => t.deleted);
+                const combined = [...(message.templates || []), ...tombstones];
+                const success = await saveTemplates(combined);
                 sendResponse({ ok: success, error: success ? null : "Failed to save templates" });
             } catch (e) {
                 log(`templates-save-all failed: ${e}`, "error");
                 sendResponse({ ok: false, error: String(e) });
+            }
+        })();
+        return true;
+    }
+
+    // --- P2P Sync (auto-sync — status, enable/disable toggle) ---
+    if (message.command === "p2p-sync-enable") {
+        (async () => {
+            try {
+                const { setAutoEnabled } = await import("./modules/p2pSync.js");
+                await setAutoEnabled(true);
+                sendResponse({ ok: true });
+            } catch (e) {
+                log(`p2p-sync-enable failed: ${e}`, "error");
+                sendResponse({ ok: false, error: String(e) });
+            }
+        })();
+        return true;
+    }
+
+    if (message.command === "p2p-sync-disable") {
+        (async () => {
+            try {
+                const { setAutoEnabled } = await import("./modules/p2pSync.js");
+                await setAutoEnabled(false);
+                sendResponse({ ok: true });
+            } catch (e) {
+                log(`p2p-sync-disable failed: ${e}`, "error");
+                sendResponse({ ok: false, error: String(e) });
+            }
+        })();
+        return true;
+    }
+
+    if (message.command === "p2p-sync-status") {
+        (async () => {
+            try {
+                const { isConnected } = await import("./modules/p2pSync.js");
+                sendResponse({ ok: true, connected: isConnected() });
+            } catch (e) {
+                sendResponse({ ok: true, connected: false });
+            }
+        })();
+        return true;
+    }
+
+    if (message.command === "p2p-sync-now") {
+        (async () => {
+            try {
+                const { syncNow } = await import("./modules/p2pSync.js");
+                await syncNow();
+                sendResponse({ ok: true });
+            } catch (e) {
+                log(`p2p-sync-now failed: ${e}`, "error");
+                sendResponse({ ok: false, error: String(e) });
+            }
+        })();
+        return true;
+    }
+
+    // Status listener registration — pages get notified of connection changes via storage events
+    if (message.command === "p2p-sync-add-listener") {
+        (async () => {
+            try {
+                const { addStatusListener, isConnected } = await import("./modules/p2pSync.js");
+                if (!globalThis._p2pSyncStorageListenerAdded) {
+                    globalThis._p2pSyncStorageListenerAdded = true;
+                    addStatusListener((isConn) => {
+                        browser.storage.local.set({ _p2pSyncConnected: isConn }).catch(() => {});
+                    });
+                    log("Registered p2p-sync storage broadcast listener");
+                }
+                sendResponse({ ok: true, connected: isConnected() });
+            } catch (e) {
+                sendResponse({ ok: true, connected: false });
             }
         })();
         return true;
@@ -1698,7 +1798,67 @@ async function init() {
     // 9. Auto-detect default calendar based on user's email accounts (if not already set)
     await autoDetectDefaultCalendar();
 
-    // 10. Start periodic inbox scan (DISABLED - replaced by tagSort row coloring coverage)
+    // 10. P2P sync — auto-connect and start storage listener for always-on P2P sync.
+    try {
+        const { connect: connectP2PSync, setupStorageListener, isAutoEnabled, setAICacheProbeHandler } = await import("./modules/p2pSync.js");
+
+        // Register AI cache probe handler — responds to peer probes with local IDB cache.
+        // Probe keys are headerMessageIds (cross-device stable), but IDB keys use
+        // full uniqueKey format: "summary:<accountId>:<folderPath>:<headerMessageId>".
+        // We search all IDB keys for suffix matches.
+        setAICacheProbeHandler(async (probeKeys, fields) => {
+            const results = {};
+            const wantSummary = !fields || fields.includes("summary");
+            const wantAction = !fields || fields.includes("action");
+            const wantReply = !fields || fields.includes("reply");
+            const allIdbKeys = await idb.getAllKeys();
+            for (const probeKey of probeKeys) {
+                // Find matching IDB keys by headerMessageId suffix
+                const summaryMatch = wantSummary ? allIdbKeys.find(k => k.startsWith("summary:") && k.endsWith(`:${probeKey}`)) : null;
+                const actionMatch = wantAction ? allIdbKeys.find(k => k.startsWith("action:") && k.endsWith(`:${probeKey}`)) : null;
+                const replyMatch = wantReply ? allIdbKeys.find(k => k.startsWith("reply:") && !k.startsWith("reply:ts:") && k.endsWith(`:${probeKey}`)) : null;
+                if (!summaryMatch && !actionMatch && !replyMatch) continue;
+
+                const fetches = await idb.get([summaryMatch, actionMatch, replyMatch].filter(Boolean));
+                const summary = summaryMatch ? fetches[summaryMatch] : null;
+                const action = actionMatch ? fetches[actionMatch] : null;
+                const replyEntry = replyMatch ? fetches[replyMatch] : null;
+                if (summary || action || replyEntry) {
+                    results[probeKey] = {};
+                    if (summary) {
+                        results[probeKey].summary = {
+                            blurb: summary.blurb || "",
+                            todos: summary.todos || "",
+                            detailed: summary.detailed || "",
+                            reminderDate: summary.reminder?.date || null,
+                            reminderTime: summary.reminder?.time || null,
+                            reminderContent: summary.reminder?.content || null,
+                        };
+                    }
+                    if (action) {
+                        results[probeKey].action = action;
+                    }
+                    if (replyEntry?.reply) {
+                        results[probeKey].reply = replyEntry.reply;
+                    }
+                }
+            }
+            return results;
+        });
+
+        const autoSyncEnabled = await isAutoEnabled();
+        if (autoSyncEnabled) {
+            setupStorageListener();
+            await connectP2PSync();
+            log("[P2PSync] Auto-connected and storage listener started");
+        } else {
+            log("[P2PSync] Auto-sync disabled by user, skipping connect");
+        }
+    } catch (e) {
+        log(`[P2PSync] Auto-connect failed (will retry on reconnect): ${e}`, "warn");
+    }
+
+    // 11. Start periodic inbox scan (DISABLED - replaced by tagSort row coloring coverage)
     // The tagSort experiment now detects untagged inbox messages during the row coloring pass
     // and fires an event to MV3 which enqueues them for processing. This provides complete
     // coverage without periodic polling overhead.
@@ -1917,6 +2077,19 @@ if (typeof browser !== 'undefined' && browser.runtime) {
           log("[ProactiveCheckin] Proactive check-in cleaned up on suspend");
         } catch (e) {
           log(`[ProactiveCheckin] Error cleaning up proactive check-in: ${e}`, "warn");
+        }
+      })();
+    } catch (_) {}
+
+    // Cleanup P2P sync (storage listener, debounce timer, WebSocket)
+    try {
+      (async () => {
+        try {
+          const { cleanupP2PSync } = await import("./modules/p2pSync.js");
+          cleanupP2PSync();
+          log("[P2PSync] P2P sync cleaned up on suspend");
+        } catch (e) {
+          log(`[P2PSync] Error cleaning up P2P sync: ${e}`, "warn");
         }
       })();
     } catch (_) {}

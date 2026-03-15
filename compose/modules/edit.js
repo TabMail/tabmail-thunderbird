@@ -86,7 +86,7 @@ export async function buildComposeEditChat({
 
   const message = {
     role: "system",
-    content: "system_prompt_compose",
+    content: "system_prompt_compose_interactive",
     mode: `edit_${mode}`,
     use_selection: useSelection,
     user_name: userName,
@@ -183,7 +183,7 @@ export async function runComposeEdit({
     const allMessages = [systemMsg];
 
     // Use sendChat with headless tool executor for compose flow
-    // Backend will filter tools based on system_prompt_compose config
+    // Backend will filter tools based on system_prompt_compose_interactive config
     const response = await sendChat(allMessages, {
       disableTools: false,
       ignoreSemaphore,

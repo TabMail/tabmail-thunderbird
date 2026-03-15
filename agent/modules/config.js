@@ -280,6 +280,11 @@ export const SETTINGS = {
         initialDelayMs: 150,
         maxDelayMs: 1000,
     },
+    // P2P sync (always-on sync via WebSocket relay)
+    p2pSync: {
+        broadcastDebounceMs: 500, // Debounce auto-broadcast after local edits (ms)
+        maxBackups: 10,           // Max backup snapshots in ring buffer before applying incoming sync
+    },
     // Proactive reachout / notification settings
     notifications: {
         proactiveEnabled: false,             // Default disabled — opt-in feature
@@ -515,6 +520,27 @@ export async function getBackendUrl(endpointType = null) {
         const baseEnv = SETTINGS.backendBaseProd;
         const domain = SETTINGS.backendDomain;
         return `https://${baseEnv}.${domain}`;
+    }
+}
+
+// Helper function to get the P2P sync worker URL based on debugMode
+//   - Production: https://sync.tabmail.ai
+//   - Dev: https://sync-dev.tabmail.ai
+export async function getP2PSyncUrl() {
+    try {
+        const stored = await browser.storage.local.get({ debugMode: false });
+        SETTINGS.debugMode = stored.debugMode;
+
+        const domain = SETTINGS.backendDomain;
+        const subdomain = stored.debugMode ? "sync-dev" : "sync";
+        const url = `https://${subdomain}.${domain}`;
+
+        if (SETTINGS.debugLogging) console.log(`[Config] getP2PSyncUrl: url=${url}`);
+        return url;
+    } catch (e) {
+        if (SETTINGS.debugLogging) console.warn("[Config] Failed to load debugMode for P2P sync URL, using default:", e);
+        const domain = SETTINGS.backendDomain;
+        return `https://sync.${domain}`;
     }
 }
 

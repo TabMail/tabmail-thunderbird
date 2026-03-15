@@ -213,10 +213,12 @@ async function injectThemeScriptsForMessageDisplayTab(tabId, contextLabel) {
             await injectMessageDisplayGateIntoTab(tabId);
         }
 
-        // Inject all bubble scripts to ensure they're ready.
+        // Inject bubble scripts. Theming scripts always inject; summary scripts may be
+        // skipped when AI opt-out is ON and P2P is OFF.
         const bubbleRes = await injectBubblesIntoTab(tabId);
-        if (bubbleRes && bubbleRes.skipped && bubbleRes.reason === "privacyOptOut") {
-            // Tell the gate not to wait for summary bubble (otherwise message pane stays hidden).
+        if (bubbleRes && bubbleRes.summarySkipped) {
+            // Summary bubble was not injected — tell the gate not to wait for it.
+            // Message bubble IS injected so it will signal ready on its own.
             try {
                 await browser.tabs.sendMessage(tabId, { command: "tm-gate-summary-disabled" });
                 console.log(`[TabMail Theme] Sent tm-gate-summary-disabled to tab ${tabId} (${contextLabel})`);

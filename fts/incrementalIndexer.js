@@ -3,7 +3,7 @@
 
 import { SETTINGS } from "../agent/modules/config.js";
 import { logFtsBatchOperation, logFtsOperation, logMessageEventBatch, logMoveEvent } from "../agent/modules/eventLogger.js";
-import { log } from "../agent/modules/utils.js";
+import { headerIDToWeID, log, parseUniqueId } from "../agent/modules/utils.js";
 import { buildBatchHeader, populateBatchBody } from "./indexer.js";
 
 // Incremental indexing state
@@ -1356,10 +1356,12 @@ async function _getReconcileFrom(ftsSearch) {
  * Run post-init reconciliation: discover recent messages across all folders
  * and enqueue any that might be missing into the existing persistent queue.
  *
- * This function only uses TB WebExtension APIs (accounts.list, messages.list)
- * to discover messages — no direct FTS calls for indexing. The persistent
- * drain loop (processPendingUpdates) handles all FTS interaction, including
- * filterNewMessages dedup, body extraction via safeGetFull, and retry.
+ * Phase 1: Enqueue current TB messages as 'new' — the drain loop handles
+ *          FTS dedup via filterNewMessages (already-indexed messages are skipped).
+ *
+ * Phase 2: Query FTS entries in the same window and remove any whose messages
+ *          no longer exist in TB at their indexed folder. This cleans up stale
+ *          entries left by moves/deletes that happened during the boot gap.
  */
 async function runPostInitReconcile(ftsSearch) {
   if (!_isEnabled) return;
@@ -1372,7 +1374,14 @@ async function runPostInitReconcile(ftsSearch) {
   let totalScanned = 0;
   let totalEnqueued = 0;
 
+  logFtsBatchOperation("reconcile", "start", {
+    reconcileFrom: new Date(reconcileFrom).toISOString(),
+  });
+
   try {
+    // =========================================================================
+    // PHASE 1: Enqueue current TB messages as 'new'
+    // =========================================================================
     // Single cross-account query by date — much faster than folder-by-folder walking.
     // messages.query with fromDate only uses the local header DB (no IMAP, no body fetch).
     let page = await browser.messages.query({ fromDate: new Date(reconcileFrom) });
@@ -1394,14 +1403,152 @@ async function runPostInitReconcile(ftsSearch) {
       }
     }
 
+    logFtsBatchOperation("reconcile_phase1", "complete", {
+      totalScanned,
+      totalEnqueued,
+    });
+
+    log(`[FTS Reconcile] Phase 1 complete: ${totalScanned} scanned, ${totalEnqueued} enqueued`);
+
+    // =========================================================================
+    // PHASE 2: Remove stale FTS entries for moved/deleted messages
+    // =========================================================================
+    // Query FTS entries in the same date window and validate each against TB.
+    // If the message no longer exists at its indexed folder, remove from FTS.
+    const cleanupResult = await _reconcileCleanupStaleEntries(ftsSearch, reconcileFrom);
+
     // Clear the persisted reconcile-needed flag on success
     await browser.storage.local.remove(RECONCILE_STORAGE_KEY);
 
     const elapsed = Date.now() - reconcileStart;
-    log(`[FTS Reconcile] Complete: ${totalScanned} scanned, ${totalEnqueued} enqueued, ${elapsed}ms`);
+    log(`[FTS Reconcile] Complete: ${totalScanned} scanned, ${totalEnqueued} enqueued, ${cleanupResult.removed} stale removed (${cleanupResult.checked} checked), ${elapsed}ms`);
+
+    logFtsBatchOperation("reconcile", "complete", {
+      totalScanned,
+      totalEnqueued,
+      staleChecked: cleanupResult.checked,
+      staleRemoved: cleanupResult.removed,
+      elapsedMs: elapsed,
+    });
   } catch (e) {
     log(`[TMDBG FTS] Reconcile failed: ${e}`, "error");
+    logFtsBatchOperation("reconcile", "error", {
+      error: String(e),
+      totalScanned,
+      totalEnqueued,
+    });
   }
+}
+
+// FTS query chunk size for reconcile cleanup (smaller than maintenance to be lighter)
+const RECONCILE_QUERY_CHUNK_SIZE = 200;
+// Delay between validation entries to avoid overwhelming TB APIs
+const RECONCILE_ENTRY_DELAY_MS = 10;
+
+/**
+ * Phase 2 of reconciliation: query FTS entries in the reconcile window and
+ * remove any that no longer exist in TB at their indexed folder path.
+ *
+ * Uses the same parseUniqueId + headerIDToWeID approach as maintenanceScheduler's
+ * cleanupMissingEntries, but with lighter chunking since the reconcile window
+ * is typically small.
+ */
+async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
+  const startDate = new Date(reconcileFromMs);
+  const endDate = new Date();
+  let checked = 0;
+  let removed = 0;
+  const entriesToRemove = [];
+
+  logFtsBatchOperation("reconcile_phase2", "start", {
+    startDate: startDate.toISOString(),
+    endDate: endDate.toISOString(),
+  });
+
+  try {
+    // Cursor-based pagination through FTS entries in the reconcile window
+    let cursorEndMs = endDate.getTime();
+    const startMs = startDate.getTime();
+
+    while (cursorEndMs > startMs) {
+      const chunk = await ftsSearch.queryByDateRange(startDate, new Date(cursorEndMs), RECONCILE_QUERY_CHUNK_SIZE);
+
+      if (!chunk || chunk.length === 0) break;
+
+      for (const entry of chunk) {
+        const parsed = parseUniqueId(entry.msgId);
+        if (!parsed) {
+          checked++;
+          continue;
+        }
+
+        const { weFolder, headerID } = parsed;
+
+        try {
+          // Check if message still exists at its indexed folder (no global fallback)
+          const weID = await headerIDToWeID(headerID, weFolder, false, false);
+
+          if (!weID) {
+            // Message no longer exists at this folder — stale entry
+            entriesToRemove.push(entry.msgId);
+            logFtsOperation("reconcile_stale", "found", {
+              msgId: entry.msgId,
+              folderPath: weFolder?.path || "",
+              headerID,
+              subject: entry.subject || "",
+            });
+          }
+        } catch (e) {
+          // On error checking existence, skip (don't remove on uncertainty)
+          log(`[TMDBG FTS] Reconcile cleanup: error checking ${entry.msgId}: ${e}`, "info");
+        }
+
+        checked++;
+
+        // Small yield between entries
+        if (RECONCILE_ENTRY_DELAY_MS > 0) {
+          await new Promise(r => setTimeout(r, RECONCILE_ENTRY_DELAY_MS));
+        }
+      }
+
+      // Move cursor backwards (entries are dateMs DESC)
+      if (chunk.length < RECONCILE_QUERY_CHUNK_SIZE) break;
+      const oldestMs = chunk[chunk.length - 1]?.dateMs;
+      if (typeof oldestMs !== 'number' || oldestMs <= startMs) break;
+      const nextCursor = oldestMs - 1;
+      if (nextCursor >= cursorEndMs) break; // safety: cursor didn't advance
+      cursorEndMs = nextCursor;
+    }
+
+    // Remove stale entries in a single batch
+    if (entriesToRemove.length > 0) {
+      log(`[FTS Reconcile] Phase 2: removing ${entriesToRemove.length} stale entries`);
+      try {
+        const removeResult = await ftsSearch.removeBatch(entriesToRemove);
+        removed = removeResult.count || 0;
+        log(`[FTS Reconcile] Phase 2: removed ${removed} stale entries`);
+      } catch (removeErr) {
+        log(`[TMDBG FTS] Reconcile cleanup: removeBatch failed: ${removeErr}`, "warn");
+      }
+    }
+
+    logFtsBatchOperation("reconcile_phase2", "complete", {
+      checked,
+      staleFound: entriesToRemove.length,
+      removed,
+    });
+
+    log(`[FTS Reconcile] Phase 2 complete: ${checked} checked, ${entriesToRemove.length} stale found, ${removed} removed`);
+  } catch (e) {
+    log(`[TMDBG FTS] Reconcile phase 2 failed: ${e}`, "error");
+    logFtsBatchOperation("reconcile_phase2", "error", {
+      error: String(e),
+      checked,
+      removed,
+    });
+  }
+
+  return { checked, removed };
 }
 
 // Public API - DO NOT add duplicate listeners, integrate with existing ones
@@ -1583,3 +1730,6 @@ export async function clearPendingUpdates() {
   log("[TMDBG FTS] Pending updates cleared");
   return { ok: true };
 }
+
+// Exported for testing
+export { _reconcileCleanupStaleEntries };

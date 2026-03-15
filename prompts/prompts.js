@@ -20,6 +20,133 @@ injectPaletteIntoDocument(document).then(() => {
 // Supports both new format "[Reminder]" and legacy format "Reminder:"
 const REMINDER_LINE_REGEX = /^-\s*(?:Reminder:|\[Reminder\])\s*/i;
 
+/**
+ * Create a structured bullet list editor (add/remove items).
+ * Replaces textarea-based editing for composition, action, and KB sections.
+ * @param {string} content - Raw text with "- " prefixed bullets
+ * @param {function} onChange - Called with new content string when items change
+ * @param {string} [placeholder] - Placeholder for the add input
+ * @returns {HTMLElement} The bullet list editor DOM element
+ */
+function createBulletListEditor(content, onChange, placeholder = "Add item...") {
+  const container = document.createElement("div");
+  container.className = "bullet-list-editor";
+
+  function parseBullets(text) {
+    if (!text) return [];
+    return text.split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("- "))
+      .map((l) => l.slice(2));
+  }
+
+  function serializeBullets(items) {
+    return items.map((b) => `- ${b}`).join("\n");
+  }
+
+  let items = parseBullets(content);
+
+  function render() {
+    container.innerHTML = "";
+
+    for (let i = 0; i < items.length; i++) {
+      const itemDiv = document.createElement("div");
+      itemDiv.className = "bullet-item";
+
+      const textSpan = document.createElement("span");
+      textSpan.className = "bullet-text";
+      textSpan.textContent = items[i];
+      itemDiv.appendChild(textSpan);
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "bullet-delete-btn";
+      deleteBtn.textContent = "\u00D7"; // ×
+      deleteBtn.title = "Remove this item";
+      deleteBtn.addEventListener("click", () => {
+        items.splice(i, 1);
+        onChange(serializeBullets(items));
+        render();
+      });
+      itemDiv.appendChild(deleteBtn);
+
+      container.appendChild(itemDiv);
+    }
+
+    // Add row
+    const addRow = document.createElement("div");
+    addRow.className = "bullet-add-row";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "bullet-add-input";
+    input.placeholder = placeholder;
+
+    const addBtn = document.createElement("button");
+    addBtn.className = "bullet-add-btn";
+    addBtn.textContent = "Add";
+    addBtn.disabled = true;
+
+    input.addEventListener("input", () => {
+      addBtn.disabled = input.value.trim() === "";
+    });
+
+    function addItem() {
+      const text = input.value.trim();
+      if (!text) return;
+      items.push(text);
+      onChange(serializeBullets(items));
+      input.value = "";
+      addBtn.disabled = true;
+      render();
+      // Re-focus the input after render
+      requestAnimationFrame(() => {
+        const newInput = container.querySelector(".bullet-add-input");
+        if (newInput) newInput.focus();
+      });
+    }
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addItem();
+      }
+    });
+    addBtn.addEventListener("click", addItem);
+
+    addRow.appendChild(input);
+    addRow.appendChild(addBtn);
+    container.appendChild(addRow);
+  }
+
+  // Allow external update (e.g., reload from disk)
+  container.updateContent = (newContent) => {
+    items = parseBullets(newContent);
+    render();
+  };
+
+  render();
+  return container;
+}
+
+// Sync toggle state
+const SYNC_AUTO_KEY = "p2p_sync_auto_enabled";
+
+function updateSyncToggleUI(autoEnabled, connected) {
+  const btn = document.getElementById("sync-toggle");
+  const label = document.getElementById("sync-toggle-label");
+  if (!btn) return;
+  btn.classList.remove("active", "connecting");
+  if (autoEnabled && connected) {
+    btn.classList.add("active");
+    label.textContent = "Syncing";
+  } else if (autoEnabled) {
+    btn.classList.add("connecting");
+    label.textContent = "Sync";
+  } else {
+    label.textContent = "Sync Off";
+  }
+}
+
 // Current state
 let currentPrompt = "composition";
 let compositionData = null;
@@ -124,16 +251,14 @@ function renderCompositionTemplates() {
     if (section.templates.length === 0) {
       const simpleDiv = document.createElement("div");
       simpleDiv.className = "simple-content";
-      
-      const textarea = document.createElement("textarea");
-      textarea.value = section.content || "";
-      textarea.placeholder = "Enter content...";
-      textarea.addEventListener("input", () => {
-        section.content = textarea.value;
-        autoGrowTextarea(textarea);
-      });
-      textarea.setAttribute("data-section", section.title); // For debugging
-      simpleDiv.appendChild(textarea);
+
+      const bulletEditor = createBulletListEditor(
+        section.content || "",
+        (newContent) => { section.content = newContent; },
+        "Add rule..."
+      );
+      bulletEditor.setAttribute("data-section", section.title);
+      simpleDiv.appendChild(bulletEditor);
       contentDiv.appendChild(simpleDiv);
     } else {
       // Render templates
@@ -416,16 +541,14 @@ function renderActionSections() {
     
     const simpleDiv = document.createElement("div");
     simpleDiv.className = "simple-content";
-    
-    const textarea = document.createElement("textarea");
-    textarea.value = section.content || "";
-    textarea.placeholder = "Enter rules (one per line as bullet points)";
-    textarea.addEventListener("input", () => {
-      section.content = textarea.value;
-      autoGrowTextarea(textarea);
-    });
-    textarea.setAttribute("data-section", section.title); // For debugging
-    simpleDiv.appendChild(textarea);
+
+    const bulletEditor = createBulletListEditor(
+      section.content || "",
+      (newContent) => { section.content = newContent; },
+      "Add rule..."
+    );
+    bulletEditor.setAttribute("data-section", section.title);
+    simpleDiv.appendChild(bulletEditor);
     contentDiv.appendChild(simpleDiv);
     sectionDiv.appendChild(contentDiv);
     container.appendChild(sectionDiv);
@@ -438,7 +561,7 @@ function renderActionSections() {
 // Tab switching
 function switchTab(promptType) {
   currentPrompt = promptType;
-  
+
   // Update tab buttons
   document.querySelectorAll(".prompt-tab").forEach(tab => {
     if (tab.dataset.prompt === promptType) {
@@ -472,7 +595,7 @@ function switchTab(promptType) {
     // Reload raw content when switching to developer tab
     loadRawContent();
   }
-  
+
   // Re-calculate textarea heights after tab is visible (except for developer, reminders, history tabs)
   if (promptType !== "developer" && promptType !== "reminders" && promptType !== "history") {
     requestAnimationFrame(() => {
@@ -496,16 +619,20 @@ async function loadKbContent() {
     const content = await loadPromptFile("user_kb.md");
     kbData = content;
     originalKbData = content; // Store backup for reload
-    
-    // Update the textarea
-    const kbTextarea = document.getElementById("kb-content");
-    if (kbTextarea) {
-      kbTextarea.value = content;
-      requestAnimationFrame(() => {
-        autoGrowTextarea(kbTextarea);
-      });
+
+    // Replace textarea with bullet list editor
+    const kbContainer = document.getElementById("kb-content-container");
+    if (kbContainer) {
+      kbContainer.innerHTML = "";
+      const bulletEditor = createBulletListEditor(
+        content,
+        (newContent) => { kbData = newContent; updateKbEntryCount(); },
+        "Add knowledge base entry..."
+      );
+      bulletEditor.id = "kb-bullet-editor";
+      kbContainer.appendChild(bulletEditor);
     }
-    
+
     updateKbEntryCount();
     log(`[Prompts] KB content loaded`);
   } catch (e) {
@@ -516,12 +643,11 @@ async function loadKbContent() {
 
 // Update KB entry count display
 function updateKbEntryCount() {
-  const kbTextarea = document.getElementById("kb-content");
   const countSpan = document.getElementById("kb-entry-count");
   const maxBulletsSlider = document.getElementById("kb-max-bullets");
   if (!countSpan) return;
 
-  const content = kbTextarea ? kbTextarea.value : "";
+  const content = kbData || "";
   const lines = content.split("\n").filter(l => l.trim());
   // Exclude reminder lines (consistent with backend counting)
   const entryCount = lines.filter(l => !REMINDER_LINE_REGEX.test(l.trim())).length;
@@ -533,14 +659,10 @@ function updateKbEntryCount() {
 // Save KB content
 async function saveKbContent() {
   try {
-    const kbTextarea = document.getElementById("kb-content");
-    if (!kbTextarea) return;
-    
-    const content = kbTextarea.value;
+    const content = kbData || "";
     await savePromptFile("user_kb.md", content);
-    kbData = content;
     originalKbData = content;
-    
+
     showStatus("KB saved successfully!");
     log(`[Prompts] KB saved`);
   } catch (e) {
@@ -555,13 +677,12 @@ async function reloadKbContent() {
     const content = await loadPromptFile("user_kb.md");
     kbData = content;
     originalKbData = content;
-    
-    const kbTextarea = document.getElementById("kb-content");
-    if (kbTextarea) {
-      kbTextarea.value = content;
-      autoGrowTextarea(kbTextarea);
+
+    const bulletEditor = document.getElementById("kb-bullet-editor");
+    if (bulletEditor && bulletEditor.updateContent) {
+      bulletEditor.updateContent(content);
     }
-    
+
     updateKbEntryCount();
     showStatus("KB reloaded from disk!");
     log(`[Prompts] KB reloaded`);
@@ -574,15 +695,14 @@ async function reloadKbContent() {
 // Reset KB to default
 async function resetKbContent() {
   try {
-    const content = await loadDefaultPromptFile("user_kb.md");
-    await savePromptFile("user_kb.md", content);
+    await resetPromptFile("user_kb.md");
+    const content = await loadPromptFile("user_kb.md");
     kbData = content;
     originalKbData = content;
 
-    const kbTextarea = document.getElementById("kb-content");
-    if (kbTextarea) {
-      kbTextarea.value = content;
-      autoGrowTextarea(kbTextarea);
+    const bulletEditor = document.getElementById("kb-bullet-editor");
+    if (bulletEditor && bulletEditor.updateContent) {
+      bulletEditor.updateContent(content);
     }
 
     updateKbEntryCount();
@@ -671,20 +791,18 @@ async function reloadSectionBlock(section, promptType) {
       section.content = matchingSection.content;
       section.templates = matchingSection.templates;
       
-      // Update the textarea value directly instead of re-rendering everything
+      // Update the bullet editor directly instead of re-rendering everything
       const data = promptType === "composition" ? compositionData : actionData;
       const sectionIndex = data.sections.findIndex(s => s.title === section.title);
       if (sectionIndex >= 0) {
-        // Find the textarea for this section
-        const container = promptType === "composition" 
+        const container = promptType === "composition"
           ? document.getElementById("composition-sections")
           : document.getElementById("action-sections");
         const sectionDivs = container.querySelectorAll(".section-container");
         if (sectionDivs[sectionIndex]) {
-          const textarea = sectionDivs[sectionIndex].querySelector("textarea");
-          if (textarea) {
-            textarea.value = matchingSection.content || "";
-            autoGrowTextarea(textarea);
+          const bulletEditor = sectionDivs[sectionIndex].querySelector(".bullet-list-editor");
+          if (bulletEditor && bulletEditor.updateContent) {
+            bulletEditor.updateContent(matchingSection.content || "");
           }
         }
       }
@@ -897,9 +1015,9 @@ function findFocusedBlock() {
     parent = focusedElement.closest(".simple-content");
     if (parent) {
       // Check if it's the KB textarea
-      if (focusedElement.id === "kb-content") {
-        log(`[Prompts] Focused on KB textarea`);
-        return { 
+      if (focusedElement.closest("#kb-content-container")) {
+        log(`[Prompts] Focused on KB bullet editor`);
+        return {
           type: "kb"
         };
       }
@@ -986,9 +1104,9 @@ document.addEventListener("DOMContentLoaded", () => {
           }
           saveSectionBlock(focused.section, focused.promptType);
         } else if (focused.type === "kb") {
-          // Flash KB textarea
-          const kbTextarea = document.getElementById("kb-content");
-          if (kbTextarea) flashBorder(kbTextarea, "blue");
+          // Flash KB container
+          const kbContainer = document.getElementById("kb-content-container");
+          if (kbContainer) flashBorder(kbContainer, "blue");
           saveKbContent();
         }
       } else {
@@ -1131,39 +1249,33 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   
-  // KB textarea input — update entry count live
-  const kbContentTextarea = document.getElementById("kb-content");
-  if (kbContentTextarea) {
-    kbContentTextarea.addEventListener("input", () => {
-      updateKbEntryCount();
-    });
-  }
+  // KB entry count is updated via bullet editor's onChange callback (see loadKbContent)
 
   // KB-specific buttons
   document.getElementById("save-kb").addEventListener("click", async () => {
     const saveBtn = document.getElementById("save-kb");
     flashButton(saveBtn, "blue");
-    const kbTextarea = document.getElementById("kb-content");
-    if (kbTextarea) flashBorder(kbTextarea, "blue");
+    const kbContainer = document.getElementById("kb-content-container");
+    if (kbContainer) flashBorder(kbContainer, "blue");
     await saveKbContent();
   });
-  
+
   document.getElementById("reload-kb").addEventListener("click", async () => {
     const reloadBtn = document.getElementById("reload-kb");
     flashButton(reloadBtn, "blue");
-    const kbTextarea = document.getElementById("kb-content");
-    if (kbTextarea) flashBorder(kbTextarea, "blue");
+    const kbContainer = document.getElementById("kb-content-container");
+    if (kbContainer) flashBorder(kbContainer, "blue");
     await reloadKbContent();
   });
-  
+
   document.getElementById("reset-kb").addEventListener("click", async () => {
     if (!confirm("Are you sure you want to reset the Knowledge Base to default? This cannot be undone.")) {
       return;
     }
     const resetBtn = document.getElementById("reset-kb");
     flashButton(resetBtn, "red");
-    const kbTextarea = document.getElementById("kb-content");
-    if (kbTextarea) flashBorder(kbTextarea, "red");
+    const kbContainer = document.getElementById("kb-content-container");
+    if (kbContainer) flashBorder(kbContainer, "red");
     await resetKbContent();
   });
 
@@ -1178,10 +1290,13 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const result = await browser.runtime.sendMessage({ command: "kb-compress" });
       if (result && result.ok) {
-        // Update textarea with refined KB
-        const kbTextarea = document.getElementById("kb-content");
-        if (kbTextarea && typeof result.refined_kb === "string") {
-          kbTextarea.value = result.refined_kb;
+        // Update bullet editor with refined KB
+        if (typeof result.refined_kb === "string") {
+          kbData = result.refined_kb;
+          const bulletEditor = document.getElementById("kb-bullet-editor");
+          if (bulletEditor && bulletEditor.updateContent) {
+            bulletEditor.updateContent(result.refined_kb);
+          }
           updateKbEntryCount();
         }
         flashButton(compressBtn, "blue");
@@ -1330,12 +1445,12 @@ document.addEventListener("DOMContentLoaded", () => {
       // Reload KB data
       kbData = content;
       originalKbData = content;
-      const kbTextarea = document.getElementById("kb-content");
-      if (kbTextarea) {
-        kbTextarea.value = content;
-        autoGrowTextarea(kbTextarea);
+      const bulletEditor1 = document.getElementById("kb-bullet-editor");
+      if (bulletEditor1 && bulletEditor1.updateContent) {
+        bulletEditor1.updateContent(content);
       }
-      
+      updateKbEntryCount();
+
       showStatus("Saved user_kb.md");
     } catch (e) {
       showStatus("Failed to save: " + e.message, true);
@@ -1364,12 +1479,12 @@ document.addEventListener("DOMContentLoaded", () => {
       // Reload KB data
       kbData = content;
       originalKbData = content;
-      const kbTextarea = document.getElementById("kb-content");
-      if (kbTextarea) {
-        kbTextarea.value = content;
-        autoGrowTextarea(kbTextarea);
+      const bulletEditor2 = document.getElementById("kb-bullet-editor");
+      if (bulletEditor2 && bulletEditor2.updateContent) {
+        bulletEditor2.updateContent(content);
       }
-      
+      updateKbEntryCount();
+
       showStatus("Reset user_kb.md");
     } catch (e) {
       showStatus("Failed to reset: " + e.message, true);
@@ -1437,14 +1552,15 @@ document.addEventListener("DOMContentLoaded", () => {
     // KB content changed (e.g., background KB refinement, kb_add/kb_del tools)
     if (changes["user_prompts:user_kb.md"]) {
       const newValue = changes["user_prompts:user_kb.md"].newValue;
-      const kbTextarea = document.getElementById("kb-content");
       // Skip if this page already has the same content (self-save)
-      if (kbTextarea && newValue !== undefined && kbTextarea.value !== newValue) {
+      if (newValue !== undefined && kbData !== newValue) {
         log("[Prompts] KB content changed externally, reloading");
         kbData = newValue;
         originalKbData = newValue;
-        kbTextarea.value = newValue;
-        autoGrowTextarea(kbTextarea);
+        const bulletEditor = document.getElementById("kb-bullet-editor");
+        if (bulletEditor && bulletEditor.updateContent) {
+          bulletEditor.updateContent(newValue);
+        }
         updateKbEntryCount();
       }
     }
@@ -1484,5 +1600,123 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Initialize
   initialize();
+
+  // --- Auto-Sync Toggle (header button) ---
+  (async () => {
+    const syncAutoStored = await browser.storage.local.get({ [SYNC_AUTO_KEY]: true });
+    let syncAutoEnabled = syncAutoStored[SYNC_AUTO_KEY] !== false;
+    const syncStatus = await browser.runtime.sendMessage({ command: "p2p-sync-status" }).catch(() => null);
+    updateSyncToggleUI(syncAutoEnabled, syncStatus?.connected || false);
+
+    browser.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes._p2pSyncConnected !== undefined) {
+        updateSyncToggleUI(syncAutoEnabled, !!changes._p2pSyncConnected.newValue);
+      }
+      if (area === "local" && changes[SYNC_AUTO_KEY] !== undefined) {
+        syncAutoEnabled = changes[SYNC_AUTO_KEY].newValue !== false;
+        updateSyncToggleUI(syncAutoEnabled, false);
+      }
+    });
+
+    browser.runtime.sendMessage({ command: "p2p-sync-add-listener" }).then((res) => {
+      if (res?.ok) updateSyncToggleUI(syncAutoEnabled, res.connected);
+    }).catch(() => {});
+
+    let syncPollTimer = null;
+    document.getElementById("sync-toggle").addEventListener("click", async () => {
+      // Cancel any stale poll from a previous enable toggle
+      if (syncPollTimer) {
+        clearInterval(syncPollTimer);
+        syncPollTimer = null;
+      }
+
+      syncAutoEnabled = !syncAutoEnabled;
+      await browser.storage.local.set({ [SYNC_AUTO_KEY]: syncAutoEnabled });
+      updateSyncToggleUI(syncAutoEnabled, false);
+
+      if (syncAutoEnabled) {
+        await browser.runtime.sendMessage({ command: "p2p-sync-enable" }).catch(() => {});
+        let attempts = 0;
+        syncPollTimer = setInterval(async () => {
+          attempts++;
+          // Re-check current state — user may have toggled again while polling
+          if (!syncAutoEnabled) {
+            clearInterval(syncPollTimer);
+            syncPollTimer = null;
+            return;
+          }
+          const status = await browser.runtime.sendMessage({ command: "p2p-sync-status" }).catch(() => null);
+          if (status?.connected) {
+            updateSyncToggleUI(syncAutoEnabled, true);
+            clearInterval(syncPollTimer);
+            syncPollTimer = null;
+          } else if (attempts >= 10) {
+            clearInterval(syncPollTimer);
+            syncPollTimer = null;
+          }
+        }, 500);
+      } else {
+        await browser.runtime.sendMessage({ command: "p2p-sync-disable" }).catch(() => {});
+      }
+    });
+  })();
+
+  // ─── Sync History Button (opens standalone page) ────────────────────
+  document.getElementById("sync-history-btn")?.addEventListener("click", async () => {
+    const url = browser.runtime.getURL("prompts/sync-history.html");
+    const existing = await browser.tabs.query({ url }).catch(() => []);
+    if (existing.length > 0) {
+      await browser.tabs.update(existing[0].id, { active: true });
+      await browser.windows.update(existing[0].windowId, { focused: true });
+    } else {
+      await browser.tabs.create({ url });
+    }
+  });
+
+  // ─── Sync Now Button ────────────────────────────────────────────────
+  document.getElementById("sync-now-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("sync-now-btn");
+    btn.disabled = true;
+    btn.textContent = "Syncing...";
+    try {
+      await browser.runtime.sendMessage({ command: "p2p-sync-now" });
+      btn.textContent = "Synced!";
+      // Reload prompts in case peers sent updates
+      await reloadAllPromptData();
+      setTimeout(() => { btn.textContent = "Sync Now"; btn.disabled = false; }, 1500);
+    } catch (e) {
+      log(`[Prompts] Sync Now failed: ${e}`, "error");
+      btn.textContent = "Sync Now";
+      btn.disabled = false;
+    }
+  });
 });
 
+// ─── Reload All Prompt Data (after restore) ─────────────────────────────
+
+async function reloadAllPromptData() {
+  try {
+    // Reload composition
+    const compositionContent = await loadPromptFile("user_composition.md");
+    lastKnownCompositionMd = compositionContent;
+    compositionData = parseMarkdown(compositionContent, true);
+    originalCompositionData = deepClone(compositionData);
+    if (currentPrompt === "composition") renderCompositionTemplates();
+
+    // Reload action
+    const actionContent = await loadPromptFile("user_action.md");
+    lastKnownActionMd = actionContent;
+    actionData = parseMarkdown(actionContent, false);
+    originalActionData = deepClone(actionData);
+    if (currentPrompt === "action") renderActionSections();
+
+    // Reload KB
+    await loadKbContent();
+
+    log("[Prompts] Reloaded all prompt data after restore");
+  } catch (e) {
+    log(`[Prompts] Error reloading prompt data: ${e}`, "error");
+  }
+}
+
+// (Sync history functions moved to standalone sync-history.js page)

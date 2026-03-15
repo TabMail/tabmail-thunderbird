@@ -13,6 +13,7 @@
 //   9. bubblesRenderer.js - unified message listener
 
 import { getPrivacyOptOutAllAiEnabled } from "../../chat/modules/privacySettings.js";
+import { isAutoEnabled } from "../../agent/modules/p2pSync.js";
 
 let _bubblesScriptRegistered = false;
 
@@ -28,6 +29,13 @@ const BUBBLE_SCRIPT_FILES = [
   "theme/modules/messageBubble.js",
   "theme/modules/bubblesRenderer.js",
 ];
+
+// Summary-specific scripts that should be skipped when AI opt-out is enabled and P2P is off.
+// All other scripts (theming, quote collapsing, thread bubbles, message wrapper) always inject.
+const SUMMARY_ONLY_FILES = new Set([
+  "theme/modules/summaryBubbleConfig.js",
+  "theme/modules/summaryBubble.js",
+]);
 
 export async function registerBubblesScripts() {
   if (_bubblesScriptRegistered) {
@@ -56,35 +64,46 @@ export async function registerBubblesScripts() {
 
 export async function injectBubblesIntoTab(tabId) {
   try {
-    // Check privacy opt-out
+    // Privacy gate: when AI opt-out is ON and P2P is OFF, skip summary-specific scripts
+    // but still inject all theming scripts (message bubble, quote collapsing, thread bubbles, styles).
+    let skipSummary = false;
     try {
       const optOut = await getPrivacyOptOutAllAiEnabled();
       if (optOut) {
-        console.log(`[TabMail Bubbles] Privacy opt-out enabled; skipping injection for tab ${tabId}`);
-        return { injected: false, skipped: true, reason: "privacyOptOut" };
+        const p2pEnabled = await isAutoEnabled();
+        if (!p2pEnabled) {
+          skipSummary = true;
+          console.log(`[TabMail Bubbles] Both AI opt-out and P2P disabled; skipping summary scripts for tab ${tabId}`);
+        } else {
+          console.log(`[TabMail Bubbles] AI opt-out but P2P enabled; injecting all scripts for tab ${tabId}`);
+        }
       }
     } catch (e) {
-      console.log(`[TabMail Bubbles] Privacy opt-out check failed; proceeding (err=${e})`);
+      console.log(`[TabMail Bubbles] Privacy/P2P check failed; proceeding with all scripts (err=${e})`);
     }
+
+    const filesToInject = skipSummary
+      ? BUBBLE_SCRIPT_FILES.filter(f => !SUMMARY_ONLY_FILES.has(f))
+      : BUBBLE_SCRIPT_FILES;
 
     if (browser.scripting && browser.scripting.executeScript) {
       await browser.scripting.executeScript({
         target: { tabId, allFrames: true },
-        files: BUBBLE_SCRIPT_FILES,
+        files: filesToInject,
       });
-      console.log(`[TabMail Bubbles] ✓ Injected all bubble scripts into tab ${tabId}`);
-      return { injected: true, skipped: false };
+      console.log(`[TabMail Bubbles] ✓ Injected ${filesToInject.length}/${BUBBLE_SCRIPT_FILES.length} bubble scripts into tab ${tabId}${skipSummary ? " (summary skipped)" : ""}`);
+      return { injected: true, skipped: false, summarySkipped: skipSummary };
     } else if (browser.tabs && browser.tabs.executeScript) {
       // tabs.executeScript only supports a single file per call; preserve order.
-      for (const file of BUBBLE_SCRIPT_FILES) {
+      for (const file of filesToInject) {
         await browser.tabs.executeScript(tabId, {
           file,
           allFrames: true,
           runAt: "document_end",
         });
       }
-      console.log(`[TabMail Bubbles] ✓ Injected all bubble scripts into tab ${tabId} (fallback)`);
-      return { injected: true, skipped: false };
+      console.log(`[TabMail Bubbles] ✓ Injected ${filesToInject.length}/${BUBBLE_SCRIPT_FILES.length} bubble scripts into tab ${tabId} (fallback)${skipSummary ? " (summary skipped)" : ""}`);
+      return { injected: true, skipped: false, summarySkipped: skipSummary };
     } else {
       console.error("[TabMail Bubbles] No script injection API available");
       return { injected: false, skipped: false, reason: "noInjectionApi" };

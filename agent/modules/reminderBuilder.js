@@ -6,7 +6,7 @@
 
 import { buildInboxContext } from "./inboxContext.js";
 import { getKBReminders } from "./kbReminderGenerator.js";
-import { getDisabledHashes, hashReminder, syncState } from "./reminderStateStore.js";
+import { gcStaleEntries, getDisabledHashes, getDisabledMap, hashReminder, mergeIncoming } from "./reminderStateStore.js";
 import { getSummaryWithHeaderId } from "./summaryGenerator.js";
 import { log } from "./utils.js";
 
@@ -92,6 +92,7 @@ async function collectMessageReminders() {
           action: item.action || "", // Action classification (reply/archive/delete/"")
           messageId: item.internalId, // Keep internalId for reference
           uniqueId: uniqueId, // Also keep uniqueId
+          rfc822MessageId: (item.headerMessageId || "").replace(/[<>]/g, ""), // Cross-platform hash key
           subject: item.subject || "Unknown",
           from: item.from || "Unknown",
         };
@@ -139,8 +140,24 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
     }));
 
     // Combine all reminders and add hash + enabled status
+    // Also migrate old platform-specific hashes to new shared hashes
+    const disabledMap = await getDisabledMap();
+    const migrationEntries = {}; // Accumulated migrations to write in one batch
     const allRemindersRaw = [...messageReminders, ...taggedKBReminders].map((r) => {
       const hash = hashReminder(r);
+
+      // Migrate old platform-specific hash → new shared hash
+      if (r.source === "message" && r.rfc822MessageId && r.uniqueId) {
+        const oldHash = `m:${r.uniqueId}`;
+        if (oldHash !== hash && disabledHashes.has(oldHash)) {
+          const oldEntry = disabledMap[oldHash];
+          const isDisabled = oldEntry ? !oldEntry.enabled : true;
+          migrationEntries[hash] = { enabled: !isDisabled, ts: new Date().toISOString() };
+          if (isDisabled) disabledHashes.add(hash);
+          log(`[ReminderBuilder] Migrated disabled hash: ${oldHash} → ${hash}`, 'debug');
+        }
+      }
+
       return {
         ...r,
         hash,
@@ -148,9 +165,17 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       };
     });
 
-    // Sync state to remove orphaned disabled entries (async, non-blocking)
-    syncState(allRemindersRaw).catch((e) => {
-      log(`[ReminderBuilder] State sync error (non-fatal): ${e}`, "warn");
+    // Write all migrations in one atomic batch (avoids async race from calling setEnabled per-item)
+    if (Object.keys(migrationEntries).length > 0) {
+      mergeIncoming(migrationEntries).catch((e) => {
+        log(`[ReminderBuilder] Migration merge error (non-fatal): ${e}`, "warn");
+      });
+    }
+
+    // Time-based GC of stale disabled entries (async, non-blocking)
+    const freshHashes = new Set(allRemindersRaw.map((r) => r.hash));
+    gcStaleEntries(freshHashes).catch((e) => {
+      log(`[ReminderBuilder] GC error (non-fatal): ${e}`, "warn");
     });
 
     // Filter out disabled reminders unless includeDisabled is true

@@ -238,7 +238,57 @@ export async function generateSummary(messageHeader, highPriority = false) {
     // Continue with generation if cache check fails
   }
 
-  const full = await safeGetFull(messageHeader.id);
+  // P2P probe: fire non-blocking, race with local body fetch.
+  // Don't block on the 2s WebSocket timeout — overlap P2P latency with body I/O.
+  let p2pProbePromise = null;
+  try {
+    const { probeAICache } = await import("./p2pSync.js");
+    p2pProbePromise = probeAICache(messageHeader.headerMessageId, "summary");
+  } catch (probeErr) {
+    log(`${PFX}P2P probe init failed for ${uniqueKey}: ${probeErr}`, "warn");
+  }
+
+  // Start local body fetch in parallel with the P2P probe.
+  const full = await safeGetFull(messageHeader.id, messageHeader);
+
+  // Check if P2P resolved during body fetch (natural ~50-500ms window).
+  if (p2pProbePromise) {
+    try {
+      // Wait up to 500ms for P2P probe — covers WebSocket RTT (~100-200ms)
+      // without blocking too long if no peer is connected.
+      const peerSummary = await Promise.race([
+        p2pProbePromise,
+        new Promise((r) => setTimeout(() => r(null), 500)),
+      ]);
+      if (peerSummary) {
+        log(`${PFX}P2P cache HIT for ${uniqueKey} — using peer summary (LLM skipped)`);
+        const cachePayload = {
+          blurb: peerSummary.blurb || "",
+          detailed: peerSummary.detailed || "",
+          todos: peerSummary.todos || "",
+          reminder: (peerSummary.reminderDate || peerSummary.reminderContent) ? {
+            date: peerSummary.reminderDate || null,
+            time: peerSummary.reminderTime || null,
+            content: peerSummary.reminderContent || null,
+          } : null,
+        };
+        await idb.set({ [cacheKey]: cachePayload, [metaKey]: { ts: Date.now() } });
+        return {
+          id: uniqueKey,
+          blurb: cachePayload.blurb,
+          detailed: cachePayload.detailed,
+          todos: cachePayload.todos,
+          reminder: cachePayload.reminder,
+          body: "",
+          subject: messageHeader.subject,
+          fromSender: messageHeader.author,
+        };
+      }
+    } catch (probeErr) {
+      log(`${PFX}P2P probe failed for ${uniqueKey}: ${probeErr}`, "warn");
+    }
+  }
+
   const bodyHtml = await extractBodyFromParts(full, messageHeader.id);
   const plainBody = stripHtml(bodyHtml || "");
 

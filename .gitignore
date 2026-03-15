@@ -11,3 +11,6 @@ dist/
 
 # Node (test infrastructure)
 node_modules/
+
+# Test coverage reports
+coverage/

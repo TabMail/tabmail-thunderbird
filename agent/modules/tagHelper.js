@@ -87,18 +87,25 @@ export async function importActionFromImapTag(msgOrId) {
       : msgOrId;
     if (!header) return null;
     let action = actionFromLiveTagIds(header.tags);
-    // If IMAP tags give us an action, use it directly — skip Gmail REST API.
-    // Only fall back to Gmail label check when IMAP keywords are missing.
-    if (!action) {
-      action = await resolveGmailAction(header, action);
-    }
+    // For Gmail accounts, REST API labels are the primary source of truth —
+    // both iOS and TB write them. IMAP keywords are secondary (iOS doesn't
+    // write them, and TB's local copy may lag behind remote changes).
+    // resolveGmailAction returns the IMAP action for non-Gmail accounts.
+    action = await resolveGmailAction(header, action);
     if (!action) return null;
     const uniqueKey = await getUniqueMessageKey(header);
     if (!uniqueKey) return null;
     const cacheKey = `action:${uniqueKey}`;
     const metaKey = `action:ts:${uniqueKey}`;
     const existing = await idb.get(cacheKey);
-    if (existing[cacheKey]) return existing[cacheKey]; // already cached
+    if (existing[cacheKey]) {
+      // If cache differs from IMAP tag, a remote client changed the tag — update cache.
+      if (existing[cacheKey] !== action) {
+        console.log(`[TMDBG Tag] importActionFromImapTag: remote tag change detected, updating cache "${existing[cacheKey]}" -> "${action}" for weId=${header.id} uniqueKey=${uniqueKey}`);
+        await idb.set({ [cacheKey]: action, [metaKey]: { ts: Date.now() } });
+      }
+      return action; // Return IMAP-derived action (source of truth)
+    }
     await idb.set({ [cacheKey]: action, [metaKey]: { ts: Date.now() } });
     console.log(`[TMDBG Tag] importActionFromImapTag: imported action="${action}" for weId=${header.id} uniqueKey=${uniqueKey}`);
     return action;

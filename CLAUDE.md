@@ -50,8 +50,8 @@ Before starting any task in this project, read these files and update them when 
 
 When creating a new client-side chat tool:
 
-1. Create JSON schema: `../tabmail-backend/src/toolsThunderbird/<name>-v<version>.json`
-2. Register in backend: update `../tabmail-backend/src/toolsThunderbird/index.ts`
+1. Create JSON schema: `../tabmail-backend/src/tools/thunderbird/<name>-v<version>.json`
+2. Run `node scripts/gen-registries.mjs` in `tabmail-backend/` to regenerate the registry
 3. Add to `allowed_tools` in `../tabmail-backend/src/config/systemPromptTiers.json`
 4. Implement in `chat/tools/<name>.js` (export `run(args, options)`)
 5. Register in `chat/tools/core.js`: import, add to `TOOL_IMPL`, add activity label in `getToolActivityLabel`
@@ -68,3 +68,4 @@ When creating a new client-side chat tool:
 - When adding or modifying pure logic modules (bulletMerge, kbReminderGenerator, patchApplier, utils), add corresponding tests.
 - Browser API-dependent code requires `globalThis.browser` mocking — see existing test patterns.
 - See `TESTS.md` for comprehensive test case references and coverage targets.
+6. **Refactoring test-first rule** — Before any refactoring (extracting, consolidating, moving code), first write tests covering the existing behavior of the code being changed. Verify those tests pass against the current implementation. Then perform the refactoring. Then verify the same tests still pass. This ensures refactoring doesn't silently change behavior.

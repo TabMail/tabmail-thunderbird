@@ -1,6 +1,5 @@
 import { getUserName } from "../../chat/modules/helpers.js";
 import { SETTINGS } from "./config.js";
-import { resolveGmailAction } from "./gmailLabelSync.js";
 import * as idb from "./idbStorage.js";
 import { processJSONResponse, sendChat } from "./llm.js";
 import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
@@ -8,6 +7,7 @@ import { getUserActionPrompt } from "./promptGenerator.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary } from "./summaryGenerator.js";
 import { actionFromLiveTagIds, isMessageInInboxByUniqueKey } from "./tagHelper.js";
+import { resolveGmailAction } from "./gmailLabelSync.js";
 import {
   extractBodyFromParts,
   getUniqueMessageKey,
@@ -210,10 +210,27 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
   const cacheKey = ACTION_PREFIX + uniqueKey;
   const metaKey = ACTION_TS_PREFIX + uniqueKey;
 
-  // Check cache - if it exists, touch it and return (skip when forced recompute)
+  // Check cache - if it exists, verify against live IMAP tags before returning.
+  // A remote client (iOS, another TB) may have changed the tag since we cached it.
   if (!forceRecompute) {
     const existing = await idb.get(cacheKey);
     if (existing[cacheKey]) {
+      // Verify IMAP tag still matches cache — prevents race where a remote client
+      // changed the tag but our cache still holds the old action.
+      try {
+        const freshHeader = await browser.messages.get(messageHeader.id);
+        let imapAction = actionFromLiveTagIds(freshHeader?.tags);
+        // For Gmail accounts, REST API labels are the primary source —
+        // both iOS and TB write them. IMAP keywords are secondary.
+        imapAction = await resolveGmailAction(freshHeader, imapAction);
+        if (imapAction && imapAction !== existing[cacheKey]) {
+          log(`${PFX}Cache-IMAP mismatch for ${messageHeader.id} (${uniqueKey}): cache="${existing[cacheKey]}" vs IMAP="${imapAction}" — adopting remote tag`);
+          await idb.set({ [cacheKey]: imapAction, [metaKey]: { ts: Date.now() } });
+          return imapAction;
+        }
+      } catch (eVerify) {
+        log(`${PFX}IMAP verification on cache HIT failed for ${messageHeader.id}: ${eVerify}`, "warn");
+      }
       log(`${PFX}>>> Cache HIT for message ${messageHeader.id} (${uniqueKey}): returning cached action="${existing[cacheKey]}" (LLM will NOT run)`);
       // Touch the cache entry by updating its timestamp
       await idb.set({ [metaKey]: { ts: Date.now() } });
@@ -243,14 +260,10 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
       try {
         const freshHeader = await browser.messages.get(messageHeader.id);
         let imapAction = actionFromLiveTagIds(freshHeader?.tags);
-        // If IMAP tags already give us an action, use it directly — no need
-        // to call the Gmail REST API (avoids latency and potential failures
-        // on non-Gmail accounts).  Only fall back to Gmail label check when
-        // IMAP keywords are missing (e.g. Gmail labels set via REST API by
-        // iOS won't appear as IMAP keywords).
-        if (!imapAction) {
-          imapAction = await resolveGmailAction(freshHeader, imapAction);
-        }
+        // For Gmail accounts, REST API labels are the primary source —
+        // both iOS and TB write them. IMAP keywords are secondary (iOS
+        // doesn't write them). No-op for non-Gmail accounts.
+        imapAction = await resolveGmailAction(freshHeader, imapAction);
         if (imapAction) {
           log(`${PFX}IMAP/folder tag HIT for ${messageHeader.id} (${uniqueKey}): adopting action="${imapAction}" (no LLM)`);
           await idb.set({ [cacheKey]: imapAction, [metaKey]: { ts: Date.now() } });
@@ -262,8 +275,39 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
       }
     }
 
+    // P2P probe: fire non-blocking, race with local body fetch.
+    // Don't block on the 2s WebSocket timeout — overlap P2P latency with body I/O.
+    let p2pProbePromise = null;
+    if (!forceRecompute) {
+      try {
+        const { probeAICache } = await import("./p2pSync.js");
+        p2pProbePromise = probeAICache(messageHeader.headerMessageId, "action");
+      } catch (probeErr) {
+        log(`${PFX}P2P probe init failed for ${uniqueKey}: ${probeErr}`, "warn");
+      }
+    }
+
     // Get the body from the full message to send to the LLM
     const full = await safeGetFull(messageHeader.id, messageHeader);
+
+    // Check if P2P resolved during body fetch (natural ~50-500ms window).
+    if (p2pProbePromise) {
+      try {
+        const peerAction = await Promise.race([
+          p2pProbePromise,
+          new Promise((r) => setTimeout(() => r(null), 500)),
+        ]);
+        if (peerAction) {
+          log(`${PFX}P2P cache HIT for ${uniqueKey} — using peer action="${peerAction}" (LLM skipped)`);
+          await idb.set({ [cacheKey]: peerAction, [metaKey]: { ts: Date.now() } });
+          await recordOriginalActionOnce(uniqueKey, peerAction);
+          return peerAction;
+        }
+      } catch (probeErr) {
+        log(`${PFX}P2P probe failed for ${uniqueKey}: ${probeErr}`, "warn");
+      }
+    }
+
     const bodyHtml = await extractBodyFromParts(full, messageHeader.id);
     const plainBody = stripHtml(bodyHtml || "");
 

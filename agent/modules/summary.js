@@ -2,6 +2,7 @@ import { getPrivacyOptOutAllAiEnabled } from "../../chat/modules/privacySettings
 import { getAction } from "./actionGenerator.js";
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
+import { isAutoEnabled } from "./p2pSync.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary } from "./summaryGenerator.js";
 import { getAccessToken } from "./supabaseAuth.js";
@@ -193,8 +194,9 @@ async function processVisibleMessages(tab, messages) {
     }
   }
 
-  // Step 1: Wait for theme scripts to be ready, then tell the banner we're working (only for single message).
-  // This provides instant feedback to the user.
+  // Step 1: Wait for theme scripts to be ready, check cache (fast local IDB),
+  // then open the gate with either cached content or the "Analyzing…" spinner.
+  // Auth check runs AFTER the gate is open so it never blocks the preview.
   // Note: Banner injection is handled by theme/background.js
   if (shouldShowBanner) {
     // Wait for the summary bubble content script to signal it's ready to receive messages.
@@ -205,20 +207,9 @@ async function processVisibleMessages(tab, messages) {
     await waitForBubbleReady(tab.id, bubbleReadyTimeoutMs);
     log(`[TMDBG Banner] Bubble ready wait done tab=${tab.id} dt=${Date.now() - tWaitStart}ms`);
 
-    // Check signin status before proceeding with summary generation
-    const accessToken = await getAccessToken();
-    if (!accessToken) {
-      log(`[TMDBG Banner] User not logged in, showing signin prompt in bubble for tab ${tab.id}`);
-      const notLoggedInMessage = SETTINGS?.summaryBanner?.notLoggedInMessage || "Not logged in, please signin from the toolbar menu on the top-right";
-      await sendBannerMessageWithRetry(
-        tab.id,
-        { command: "displaySummary", blurb: notLoggedInMessage, todos: "", isWarning: true },
-        "notLoggedIn:displaySummary"
-      );
-      return; // Skip further processing when not logged in
-    }
-
-    // Cache-first UX: if summary is already cached, skip the "Analyzing…" flash and show immediately.
+    // Cache check first (fast local IDB, no auth needed).
+    // Cache HIT → displaySummary (gate opens with content, no spinner flash).
+    // Cache MISS → summaryProcessing (gate opens with spinner, LLM updates later).
     try {
       const tCacheStart = Date.now();
       const firstMessage = messages[0];
@@ -232,35 +223,48 @@ async function processVisibleMessages(tab, messages) {
 
       if (hasCachedContent) {
         log(
-          `[TMDBG Banner] Cache-first: sending displaySummary immediately for tab ${tab.id} (skipping summaryProcessing)`
+          `[TMDBG Banner] Cache HIT: sending displaySummary immediately for tab ${tab.id}`
         );
         _bannerDisplayedFromCache = true;
-      await sendBannerMessageWithRetry(
-        tab.id,
-        {
-          command: "displaySummary",
-          blurb: cached.blurb || "",
-          todos: cached.todos || "",
-        },
-        "cacheFirst:displaySummary"
-      );
-      } else {
-        // Cache MISS: send displaySummary with empty content to show "Analyzing..." and signal ready.
-        // The gate will reveal immediately, then we fire-and-forget the LLM call which updates later.
-        log(`[TMDBG Banner] Cache MISS: sending displaySummary with empty content for tab ${tab.id}`);
         await sendBannerMessageWithRetry(
           tab.id,
-          { command: "displaySummary", blurb: "", todos: "" },
-          "cacheFirst:displaySummary:analyzing"
+          {
+            command: "displaySummary",
+            blurb: cached.blurb || "",
+            todos: cached.todos || "",
+          },
+          "cacheFirst:displaySummary"
+        );
+      } else {
+        // Cache MISS: show spinner immediately so the gate opens.
+        // LLM/P2P call will replace it with actual content later.
+        log(`[TMDBG Banner] Cache MISS: sending summaryProcessing for tab ${tab.id}`);
+        await sendBannerMessageWithRetry(
+          tab.id,
+          { command: "summaryProcessing" },
+          "cacheMiss:summaryProcessing"
         );
       }
     } catch (e) {
-      log(`[TMDBG Banner] Cache-first check failed; sending empty displaySummary: ${e}`, "warn");
+      log(`[TMDBG Banner] Cache check failed; sending summaryProcessing: ${e}`, "warn");
       await sendBannerMessageWithRetry(
         tab.id,
-        { command: "displaySummary", blurb: "", todos: "" },
-        "cacheFirst:displaySummary:catch"
+        { command: "summaryProcessing" },
+        "cacheCheck:summaryProcessing:catch"
       );
+    }
+
+    // Auth check AFTER the gate is open — never blocks the preview.
+    const accessToken = await getAccessToken();
+    if (!accessToken) {
+      log(`[TMDBG Banner] User not logged in, showing signin prompt in bubble for tab ${tab.id}`);
+      const notLoggedInMessage = SETTINGS?.summaryBanner?.notLoggedInMessage || "Not logged in, please signin from the toolbar menu on the top-right";
+      await sendBannerMessageWithRetry(
+        tab.id,
+        { command: "displaySummary", blurb: notLoggedInMessage, todos: "", isWarning: true },
+        "notLoggedIn:displaySummary"
+      );
+      return; // Skip further processing when not logged in
     }
   }
 
@@ -308,7 +312,7 @@ async function processVisibleMessages(tab, messages) {
       return;
     }
 
-    log(`Fetched ${summaries.length} summaries. Now fetching batch actions.`);
+    log(`Fetched ${summaries.length} summaries. Updating bubble immediately, then fetching actions.`);
 
     // Step 3: Update the bubble immediately with summary content (don't wait for actions).
     // This ensures the spinner → content transition happens as soon as summary data is available.
@@ -357,40 +361,6 @@ async function processVisibleMessages(tab, messages) {
       );
     }
     log(`[TMDBG Actions] Local actions computed: ${JSON.stringify(actions)}`);
-
-    // Step 4: Display the summary and action for the primary message in the banner (only for single message).
-    if (shouldShowBanner) {
-      const firstMessage = messages[0];
-      const firstMessageKey = await getUniqueMessageKey(firstMessage.id);
-      const summaryForBanner = summaries.find((s) => s.id === firstMessageKey);
-
-      if (summaryForBanner) {
-        if (_bannerDisplayedFromCache) {
-          log(`[TMDBG Banner] Cache-first banner already displayed; sending displaySummary again for consistency`);
-        }
-        // log(`Sending displaySummary to banner for message ${firstMessage.id}`);
-        await sendBannerMessageWithRetry(
-          tab.id,
-          {
-            command: "displaySummary",
-            blurb: summaryForBanner.blurb,
-            todos: summaryForBanner.todos || "",
-          },
-          "final:displaySummary"
-        );
-      } else {
-        log(`Could not find summary for the first message to display in banner.`);
-        // Note: summaryError is not handled by banner script, so this will fail silently
-        browser.tabs
-          .sendMessage(tab.id, {
-            command: "summaryError",
-            message: "Could not determine summary.",
-          })
-          .catch(() => {
-            // Expected to fail - banner doesn't handle summaryError
-          });
-      }
-    }
 
     // Only apply action tags to external messages. For internal/self-sent, we intentionally apply NO action tag
     // (not even tm_none) so "no tag applied" is preserved.
@@ -451,28 +421,29 @@ async function _getCachedPrivacyP2P() {
 async function onMessagesDisplayed(tab, messageList) {
   log(`[Summary] onMessagesDisplayed fired for tab ${tab.id}`);
 
-  // Privacy opt-out: do not attempt to show/inject summary banner UI or run summary pipeline.
+  // Privacy gate: skip summary pipeline when both LLM backend (opt-out) AND P2P sync are off.
+  // If P2P is enabled, we still run the pipeline so P2P cache hits can populate the bubble.
   try {
-    const optOut = await getPrivacyOptOutAllAiEnabled();
-    if (optOut) {
+    const { optOut, p2pEnabled } = await _getCachedPrivacyP2P();
+    if (optOut && !p2pEnabled) {
       log(
-        `[Summary] Privacy opt-out enabled; skipping summary pipeline and banner messaging for tab ${tab.id}`,
+        `[Summary] Both AI opt-out and P2P disabled; skipping summary pipeline and banner for tab ${tab.id}`,
         "warn"
       );
-      // Also tell the display gate not to wait for summary UI, otherwise preview may remain hidden.
+      // Tell the display gate not to wait for summary UI, otherwise preview may remain hidden.
       try {
         browser.tabs
           .sendMessage(tab.id, { command: "tm-gate-summary-disabled" })
           .catch((e) =>
-            log(`[Summary] Failed to send tm-gate-summary-disabled (privacy opt-out) to tab ${tab.id}: ${e}`, "warn")
+            log(`[Summary] Failed to send tm-gate-summary-disabled (all-off) to tab ${tab.id}: ${e}`, "warn")
           );
       } catch (e) {
-        log(`[Summary] tm-gate-summary-disabled (privacy opt-out) threw: ${e}`, "warn");
+        log(`[Summary] tm-gate-summary-disabled (all-off) threw: ${e}`, "warn");
       }
       return;
     }
   } catch (e) {
-    log(`[Summary] Privacy opt-out check failed in onMessagesDisplayed: ${e}`, "warn");
+    log(`[Summary] Privacy/P2P check failed in onMessagesDisplayed: ${e}`, "warn");
   }
   
   let messageArray;

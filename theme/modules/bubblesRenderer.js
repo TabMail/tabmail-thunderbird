@@ -114,9 +114,11 @@
 
   browser.runtime.onMessage.addListener(window.__tabmailBubblesRendererListener);
 
-  // Signal to background that the listener is ready
+  // Signal to background that the listener is ready.
+  // Must match the command agent/background.js listens for ("tm-summary-bubble-ready")
+  // so that waitForBubbleReady() in summary.js resolves immediately instead of timing out.
   try {
-    browser.runtime.sendMessage({ command: "tm-bubbles-renderer-ready" }).catch(() => {});
+    browser.runtime.sendMessage({ command: "tm-summary-bubble-ready" }).catch(() => {});
     console.log('[TabMail BubblesRenderer] Sent ready signal');
   } catch (_) {}
 })();

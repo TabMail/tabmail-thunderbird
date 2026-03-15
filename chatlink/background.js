@@ -229,7 +229,9 @@ async function connect() {
     // Decode JWT to get user ID (for logging)
     const session = await getSession();
     if (session?.access_token) {
-      const payload = JSON.parse(atob(session.access_token.split(".")[1]));
+      const b64url = session.access_token.split(".")[1];
+      const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/") + "==".slice(0, (4 - (b64url.length % 4)) % 4);
+      const payload = JSON.parse(atob(b64));
       userId = payload.sub;
     }
   } catch (e) {
