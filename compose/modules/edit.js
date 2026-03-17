@@ -1,5 +1,6 @@
 import { processEditResponse, sendChat } from "../../agent/modules/llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { splitPlainTextForQuote } from "../../agent/modules/quoteAndSignature.js";
 import { extractBodyFromParts, safeGetFull, saveChatLog, stripHtml } from "../../agent/modules/utils.js";
 import { getUserName } from "../../chat/modules/helpers.js";
 import { executeToolsHeadless } from "../../chat/tools/core.js";
@@ -66,8 +67,10 @@ export async function buildComposeEditChat({
         const full = await safeGetFull(header.id, header);
         let bodyHtml = await extractBodyFromParts(full, header.id);
         const plainBody = stripHtml(bodyHtml || "");
+        const splitBody = splitPlainTextForQuote(plainBody);
         relatedEmailInfo = {
-          body: plainBody,
+          message: splitBody.main,
+          quotes_section: splitBody.quote,
           current_time: formatTimestampForAgent(),
           related_subject: header.subject || "",
           related_from: header.author || "",

@@ -320,3 +320,22 @@ describe('Korean attribution pattern', () => {
     expect(result.type).toBe('attribution');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Chinese attribution pattern
+// ---------------------------------------------------------------------------
+describe('Chinese attribution pattern', () => {
+  it('detects Chinese Gmail attribution with full-width colon', () => {
+    const text = 'My reply\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053\uFF1A\n> text';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+  });
+
+  it('detects Chinese Gmail attribution with half-width colon', () => {
+    const text = 'My reply\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053:\n> text';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+  });
+});

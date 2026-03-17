@@ -252,6 +252,12 @@
       comment: "Korean Gmail attribution: '2026년 1월 22일 (목) AM 4:23, Name <email>님이 작성:'",
       eatBlankLinesBefore: 1,
     },
+    {
+      pattern: /^.+\u4E8E.+\u5199\u9053[：:]\s*$/,
+      type: "attribution",
+      comment: "Chinese Gmail attribution: 'Name <email> 于2026年3月17日周二 01:16写道：'",
+      eatBlankLinesBefore: 1,
+    },
 
     // =========================================================================
     // QUOTED LINES (lines starting with ">")

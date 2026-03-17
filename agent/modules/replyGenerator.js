@@ -4,6 +4,7 @@ import { SETTINGS } from "./config.js";
 import * as idb from "./idbStorage.js";
 import { processEditResponse, sendChat } from "./llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "./promptGenerator.js";
+import { splitPlainTextForQuote } from "./quoteAndSignature.js";
 import { extractBodyFromParts, formatForLog, getUniqueMessageKey, log, safeGetFull, saveChatLog, stripHtml } from "./utils.js";
 
 export const STORAGE_PREFIX = "reply:";
@@ -157,6 +158,9 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
     if (replyCc) recipientLines.push(`Cc: ${replyCc}`);
     const recipientsFormatted = recipientLines.join("\n");
 
+    // Split original email body into message + quotes on client side
+    const splitBody = splitPlainTextForQuote(plainBody);
+
     // Build single consolidated message that backend will process
     // Uses the same flow as edit_reply for consistency
     const systemMsg = {
@@ -173,7 +177,9 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
         user_kb_content: userKBContent,
         current_time: formatTimestampForAgent(),
         // Variables for email_edit_reply.md (original email metadata)
-        body: plainBody, // Gets split into message/quotes_section by backend
+        // Client-side split: send message + quotes separately (no backend heuristic needed)
+        message: splitBody.main,
+        quotes_section: splitBody.quote,
         related_date: details.related_date || "",
         related_subject: details.related_subject || "",
         related_from: details.related_from || "",
