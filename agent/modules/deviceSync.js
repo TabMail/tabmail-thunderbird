@@ -1,11 +1,11 @@
 /**
- * Peer-to-Peer Sync Module - Always-On WebSocket P2P Sync
+ * Device Sync Module - Always-On WebSocket Device Sync
  *
- * Maintains persistent WebSocket connection to P2P sync worker for
+ * Maintains persistent WebSocket connection to sync relay worker for
  * auto-syncing prompt settings between TabMail instances (TB ↔ iOS).
  *
  * Protocol:
- * 1. Connect to P2P sync worker via WebSocket (wss://sync[-dev].tabmail.ai/ws)
+ * 1. Connect to sync relay worker via WebSocket (wss://sync[-dev].tabmail.ai/ws)
  * 2. Authenticate with Supabase JWT token
  * 3. On connect: auto-broadcast full state with per-field timestamps
  * 4. On local edit: debounced auto-broadcast changed fields (500ms)
@@ -13,15 +13,15 @@
  * 6. On receive ai_cache_probe: respond with local AI cache hits
  * 7. On receive ai_cache_response: resolve pending probe promises
  *
- * No data is persisted on the server — pure P2P relay.
+ * No data is persisted on the server — pure sync relay.
  *
  * Thunderbird 145 MV3 WebExtension
  */
 
 import { log } from "./utils.js";
-import { getP2PSyncUrl, SETTINGS } from "./config.js";
+import { getDeviceSyncUrl, SETTINGS } from "./config.js";
 
-const PFX = "[P2PSync] ";
+const PFX = "[DeviceSync] ";
 
 // Valid field names for sync
 const VALID_FIELDS = ["composition", "action", "kb", "templates", "disabledReminders"];
@@ -37,22 +37,22 @@ const FIELD_KEYS = {
 
 // Field → per-field timestamp key mapping
 const TIMESTAMP_KEYS = {
-  composition: "p2p_sync_ts:composition",
-  action: "p2p_sync_ts:action",
-  kb: "p2p_sync_ts:kb",
-  templates: "p2p_sync_ts:templates",
-  disabledReminders: "p2p_sync_ts:disabledReminders",
+  composition: "device_sync_ts:composition",
+  action: "device_sync_ts:action",
+  kb: "device_sync_ts:kb",
+  templates: "device_sync_ts:templates",
+  disabledReminders: "device_sync_ts:disabledReminders",
 };
 
 // Epoch 0 for new devices — prevents overwriting existing prompts
 const EPOCH_ZERO = "1970-01-01T00:00:00.000Z";
 
 // Auto-enabled storage key (default: true — user can disable in settings)
-const AUTO_ENABLED_KEY = "p2p_sync_auto_enabled";
+const AUTO_ENABLED_KEY = "device_sync_auto_enabled";
 
 // Backup storage (legacy — migrated to prompt_history)
-const BACKUP_KEY = "p2p_sync_backups";
-const BROADCAST_DEBOUNCE_MS = SETTINGS.p2pSync?.broadcastDebounceMs ?? 500;
+const BACKUP_KEY = "device_sync_backups";
+const BROADCAST_DEBOUNCE_MS = SETTINGS.deviceSync?.broadcastDebounceMs ?? 500;
 
 // Prompt history
 const HISTORY_KEY = "prompt_history";
@@ -63,21 +63,21 @@ const MAX_HISTORY_ENTRIES = 100;
 // This is the correct "common ancestor" for 3-way merge (NOT the merged result).
 // CRITICAL: peer_base is ALWAYS set to `incoming`, NEVER to the merged result.
 const PEER_BASE_KEYS = {
-  composition: "p2p_peer_base:composition",
-  action: "p2p_peer_base:action",
-  kb: "p2p_peer_base:kb",
+  composition: "device_peer_base:composition",
+  action: "device_peer_base:action",
+  kb: "device_peer_base:kb",
 };
 const PEER_BASE_TS_KEYS = {
-  composition: "p2p_peer_base_ts:composition",
-  action: "p2p_peer_base_ts:action",
-  kb: "p2p_peer_base_ts:kb",
+  composition: "device_peer_base_ts:composition",
+  action: "device_peer_base_ts:action",
+  kb: "device_peer_base_ts:kb",
 };
 
 // Legacy sync base keys (migrated to peer base)
 const LEGACY_BASE_KEYS = [
-  "p2p_sync_base:composition",
-  "p2p_sync_base:action",
-  "p2p_sync_base:kb",
+  "device_sync_base:composition",
+  "device_sync_base:action",
+  "device_sync_base:kb",
 ];
 
 // Config
@@ -165,7 +165,7 @@ async function initTimestampsIfNeeded() {
   const peerBaseStored = await browser.storage.local.get(Object.values(PEER_BASE_KEYS));
   const migrateUpdates = {};
   for (const field of ["composition", "action", "kb"]) {
-    const oldKey = `p2p_sync_base:${field}`;
+    const oldKey = `device_sync_base:${field}`;
     if (legacyStored[oldKey] && !peerBaseStored[PEER_BASE_KEYS[field]]) {
       migrateUpdates[PEER_BASE_KEYS[field]] = legacyStored[oldKey];
     }
@@ -271,7 +271,7 @@ export async function restoreFromHistory(entry) {
 }
 
 /**
- * One-time migration of existing p2p_sync_backups into prompt_history.
+ * One-time migration of existing device_sync_backups into prompt_history.
  */
 async function migrateBackupsToHistoryIfNeeded() {
   const migrated = await browser.storage.local.get(HISTORY_MIGRATED_KEY);
@@ -795,7 +795,7 @@ async function handlePromptState(data) {
   }
 }
 
-// ─── AI Cache Probe (P2P LLM Result Sharing) ────────────────────────────
+// ─── AI Cache Probe (Device Sync LLM Result Sharing) ─────────────────────
 
 /**
  * Low-level probe: send probe request and wait for response.
@@ -977,7 +977,7 @@ async function handleMessage(rawData) {
 // ─── Connect / Disconnect ───────────────────────────────────────────────
 
 /**
- * Connect to P2P sync worker via WebSocket.
+ * Connect to device sync worker via WebSocket.
  * Called automatically on startup (always-on sync).
  */
 export async function connect() {
@@ -1035,7 +1035,7 @@ export async function connect() {
   log(`${PFX}Connecting to WebSocket for user ${userId?.substring(0, 8)}...`);
 
   // Build WebSocket URL with token for auth
-  const workerUrl = await getP2PSyncUrl();
+  const workerUrl = await getDeviceSyncUrl();
   const wsUrl = `${workerUrl.replace("https://", "wss://")}/ws?token=${encodeURIComponent(accessToken)}`;
 
   try {
@@ -1132,7 +1132,7 @@ export function disconnect() {
  * Full cleanup — removes storage listener, clears timers, disconnects.
  * Called on extension suspend.
  */
-export function cleanupP2PSync() {
+export function cleanupDeviceSync() {
   if (_storageChangeListener) {
     browser.storage.onChanged.removeListener(_storageChangeListener);
     _storageChangeListener = null;
@@ -1151,11 +1151,11 @@ export function cleanupP2PSync() {
   _pendingProbes.clear();
 
   disconnect();
-  log(`${PFX}P2P sync cleaned up`);
+  log(`${PFX}Device sync cleaned up`);
 }
 
 /**
- * Check if P2P sync is currently connected
+ * Check if device sync is currently connected
  */
 export function isConnected() {
   return connected;

@@ -1,9 +1,9 @@
-// p2pSync.test.js — P2P sync merge logic tests (Tier 3 — mock-dependent)
+// deviceSync.test.js — Device sync merge logic tests (Tier 3 — mock-dependent)
 //
 // Tests the per-field timestamp merge, echo prevention, virgin device detection,
 // 3-way merge with bulletMerge, template CRDT merge, and disabled reminders merge.
 //
-// Strategy: mock browser.storage.local and dynamic imports, then import p2pSync
+// Strategy: mock browser.storage.local and dynamic imports, then import deviceSync
 // and invoke handleMessage (via the module's internal socket.onmessage pathway)
 // or test exported functions that exercise the merge logic.
 
@@ -84,8 +84,8 @@ vi.mock('../agent/modules/utils.js', () => ({
 
 // Mock config.js
 vi.mock('../agent/modules/config.js', () => ({
-  getP2PSyncUrl: vi.fn(async () => 'https://sync.tabmail.ai'),
-  SETTINGS: { p2pSync: { broadcastDebounceMs: 500 } },
+  getDeviceSyncUrl: vi.fn(async () => 'https://sync.tabmail.ai'),
+  SETTINGS: { deviceSync: { broadcastDebounceMs: 500 } },
 }));
 
 // Mock supabaseAuth.js (dynamic import in connect())
@@ -165,7 +165,7 @@ vi.mock('../agent/modules/bulletMerge.js', () => ({
   ACTION_SECTIONS: ['delete', 'archive', 'reply', 'none'],
 }));
 
-// ─── Constants (mirrored from p2pSync.js) ────────────────────────────────────
+// ─── Constants (mirrored from deviceSync.js) ────────────────────────────────────
 
 const FIELD_KEYS = {
   composition: 'user_prompts:user_composition.md',
@@ -176,23 +176,23 @@ const FIELD_KEYS = {
 };
 
 const TIMESTAMP_KEYS = {
-  composition: 'p2p_sync_ts:composition',
-  action: 'p2p_sync_ts:action',
-  kb: 'p2p_sync_ts:kb',
-  templates: 'p2p_sync_ts:templates',
-  disabledReminders: 'p2p_sync_ts:disabledReminders',
+  composition: 'device_sync_ts:composition',
+  action: 'device_sync_ts:action',
+  kb: 'device_sync_ts:kb',
+  templates: 'device_sync_ts:templates',
+  disabledReminders: 'device_sync_ts:disabledReminders',
 };
 
 const PEER_BASE_KEYS = {
-  composition: 'p2p_peer_base:composition',
-  action: 'p2p_peer_base:action',
-  kb: 'p2p_peer_base:kb',
+  composition: 'device_peer_base:composition',
+  action: 'device_peer_base:action',
+  kb: 'device_peer_base:kb',
 };
 
 const PEER_BASE_TS_KEYS = {
-  composition: 'p2p_peer_base_ts:composition',
-  action: 'p2p_peer_base_ts:action',
-  kb: 'p2p_peer_base_ts:kb',
+  composition: 'device_peer_base_ts:composition',
+  action: 'device_peer_base_ts:action',
+  kb: 'device_peer_base_ts:kb',
 };
 
 const EPOCH_ZERO = '1970-01-01T00:00:00.000Z';
@@ -225,7 +225,7 @@ function resetMockCalls() {
 async function establishConnection() {
   // Set auto-enabled and pre-seed timestamps so it's not a virgin device
   setStorage({
-    'p2p_sync_auto_enabled': true,
+    'device_sync_auto_enabled': true,
     [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
     [TIMESTAMP_KEYS.action]: '2026-03-10T00:00:00Z',
     [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
@@ -234,7 +234,7 @@ async function establishConnection() {
   });
 
   const beforeCount = mockWebSocketInstances.length;
-  await p2pSync.connect();
+  await deviceSync.connect();
   const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
 
   // Trigger onopen to complete the connection
@@ -261,11 +261,11 @@ async function sendSocketMessage(ws, msg) {
 // ─── Import the module under test ────────────────────────────────────────────
 
 // We import after mocks are set up
-const p2pSync = await import('../agent/modules/p2pSync.js');
+const deviceSync = await import('../agent/modules/deviceSync.js');
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe('P2P Sync', () => {
+describe('Device Sync', () => {
   beforeEach(() => {
     clearStorage();
     resetMockCalls();
@@ -274,7 +274,7 @@ describe('P2P Sync', () => {
 
   afterEach(() => {
     // Ensure we disconnect after each test to reset module state
-    p2pSync.disconnect();
+    deviceSync.disconnect();
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -297,7 +297,7 @@ describe('P2P Sync', () => {
 
       // broadcastState won't send if no socket is connected, but we can verify
       // it reads state correctly by checking storage.local.get was called
-      await p2pSync.broadcastState();
+      await deviceSync.broadcastState();
       // Since not connected, broadcastState returns early — but let's verify
       // the function doesn't throw
     });
@@ -341,14 +341,14 @@ describe('P2P Sync', () => {
   // ═══════════════════════════════════════════════════════════════════════════
   describe('TB-091: Echo prevention (suppressBroadcast flag)', () => {
     it('broadcastState returns early when not connected (no echo)', async () => {
-      // p2pSync is not connected (no socket), broadcastState should silently return
+      // deviceSync is not connected (no socket), broadcastState should silently return
       setStorage({
         [FIELD_KEYS.composition]: 'Some content',
         [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
       });
 
       // Should not throw and should not attempt to send
-      await p2pSync.broadcastState();
+      await deviceSync.broadcastState();
       // No socket, so no send attempt — verified by no error
     });
 
@@ -375,7 +375,7 @@ describe('P2P Sync', () => {
 
       // restoreFromHistory sets suppressBroadcast=true during write,
       // then calls broadcastState after
-      await p2pSync.restoreFromHistory(entry);
+      await deviceSync.restoreFromHistory(entry);
 
       // Verify restored state was written
       expect(storageData[FIELD_KEYS.composition]).toBe('Restored comp');
@@ -389,7 +389,7 @@ describe('P2P Sync', () => {
         [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
       });
 
-      await p2pSync.resetFieldToDefault('composition', 'Default rules');
+      await deviceSync.resetFieldToDefault('composition', 'Default rules');
 
       // Should have written default value with epoch-zero timestamp
       expect(storageData[FIELD_KEYS.composition]).toBe('Default rules');
@@ -441,21 +441,21 @@ describe('P2P Sync', () => {
         [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
       });
 
-      await p2pSync.resetFieldToDefault('kb', 'Default KB');
+      await deviceSync.resetFieldToDefault('kb', 'Default KB');
 
       expect(storageData[TIMESTAMP_KEYS.kb]).toBe(EPOCH_ZERO);
     });
 
     it('resetFieldToDefault rejects invalid field names', async () => {
       // Should not throw, just warn and return
-      await p2pSync.resetFieldToDefault('invalidField', 'value');
+      await deviceSync.resetFieldToDefault('invalidField', 'value');
       // No storage write should have happened for an invalid field
     });
 
     it('virgin device on connect probes peers instead of broadcasting', async () => {
       // Set all timestamps to epoch-zero (virgin device)
       setStorage({
-        'p2p_sync_auto_enabled': true,
+        'device_sync_auto_enabled': true,
         [TIMESTAMP_KEYS.composition]: EPOCH_ZERO,
         [TIMESTAMP_KEYS.action]: EPOCH_ZERO,
         [TIMESTAMP_KEYS.kb]: EPOCH_ZERO,
@@ -463,7 +463,7 @@ describe('P2P Sync', () => {
         [TIMESTAMP_KEYS.disabledReminders]: EPOCH_ZERO,
       });
 
-      await p2pSync.connect();
+      await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
 
       // Trigger onopen
@@ -481,7 +481,7 @@ describe('P2P Sync', () => {
     it('non-virgin device on connect broadcasts state', async () => {
       // Set non-epoch timestamps (established device)
       setStorage({
-        'p2p_sync_auto_enabled': true,
+        'device_sync_auto_enabled': true,
         [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
         [TIMESTAMP_KEYS.action]: '2026-03-10T00:00:00Z',
         [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
@@ -490,7 +490,7 @@ describe('P2P Sync', () => {
         [FIELD_KEYS.composition]: 'My rules',
       });
 
-      await p2pSync.connect();
+      await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
       if (ws && ws.onopen) ws.onopen();
 
@@ -525,9 +525,9 @@ describe('P2P Sync', () => {
     it('peer base stores the raw incoming value (not merged result)', () => {
       // This is a design invariant: peer_base = incoming, NOT the merged result
       // We verify the keys exist and are structured correctly
-      expect(PEER_BASE_KEYS.composition).toBe('p2p_peer_base:composition');
-      expect(PEER_BASE_KEYS.action).toBe('p2p_peer_base:action');
-      expect(PEER_BASE_KEYS.kb).toBe('p2p_peer_base:kb');
+      expect(PEER_BASE_KEYS.composition).toBe('device_peer_base:composition');
+      expect(PEER_BASE_KEYS.action).toBe('device_peer_base:action');
+      expect(PEER_BASE_KEYS.kb).toBe('device_peer_base:kb');
     });
 
     it('3-way merge scenario: local changed, remote changed, base known', async () => {
@@ -769,52 +769,52 @@ describe('P2P Sync', () => {
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Connection state management', () => {
     it('isConnected returns false when not connected', () => {
-      expect(p2pSync.isConnected()).toBe(false);
+      expect(deviceSync.isConnected()).toBe(false);
     });
 
     it('status listeners are notified', () => {
       const listener = vi.fn();
-      p2pSync.addStatusListener(listener);
+      deviceSync.addStatusListener(listener);
       // listener should be called immediately with current status
       expect(listener).toHaveBeenCalledWith(false);
 
-      p2pSync.removeStatusListener(listener);
+      deviceSync.removeStatusListener(listener);
     });
 
     it('isAutoEnabled defaults to true', async () => {
-      const enabled = await p2pSync.isAutoEnabled();
+      const enabled = await deviceSync.isAutoEnabled();
       expect(enabled).toBe(true);
     });
 
     it('setAutoEnabled persists setting', async () => {
-      await p2pSync.setAutoEnabled(false);
-      expect(storageData['p2p_sync_auto_enabled']).toBe(false);
+      await deviceSync.setAutoEnabled(false);
+      expect(storageData['device_sync_auto_enabled']).toBe(false);
     });
 
     it('removeStatusListener stops notifications', () => {
       const listener = vi.fn();
-      p2pSync.addStatusListener(listener);
+      deviceSync.addStatusListener(listener);
       listener.mockClear();
 
-      p2pSync.removeStatusListener(listener);
+      deviceSync.removeStatusListener(listener);
 
       // Disconnecting should not notify removed listener
-      p2pSync.disconnect();
+      deviceSync.disconnect();
       expect(listener).not.toHaveBeenCalled();
     });
 
     it('multiple status listeners all get notified', () => {
       const listener1 = vi.fn();
       const listener2 = vi.fn();
-      p2pSync.addStatusListener(listener1);
-      p2pSync.addStatusListener(listener2);
+      deviceSync.addStatusListener(listener1);
+      deviceSync.addStatusListener(listener2);
 
       // Both should be called immediately with current status
       expect(listener1).toHaveBeenCalledWith(false);
       expect(listener2).toHaveBeenCalledWith(false);
 
-      p2pSync.removeStatusListener(listener1);
-      p2pSync.removeStatusListener(listener2);
+      deviceSync.removeStatusListener(listener1);
+      deviceSync.removeStatusListener(listener2);
     });
   });
 
@@ -823,7 +823,7 @@ describe('P2P Sync', () => {
   // ═══════════════════════════════════════════════════════════════════════════
   describe('History management', () => {
     it('loadHistory returns empty array when no history', async () => {
-      const history = await p2pSync.loadHistory();
+      const history = await deviceSync.loadHistory();
       expect(history).toEqual([]);
     });
 
@@ -837,7 +837,7 @@ describe('P2P Sync', () => {
         prompt_history_migrated: true,
       });
 
-      const history = await p2pSync.loadHistory();
+      const history = await deviceSync.loadHistory();
       expect(history).toHaveLength(2);
       expect(history[0].source).toBe('local_edit');
       expect(history[1].source).toBe('sync_receive');
@@ -864,7 +864,7 @@ describe('P2P Sync', () => {
         templatesJSON: JSON.stringify([]),
       };
 
-      await p2pSync.restoreFromHistory(entry);
+      await deviceSync.restoreFromHistory(entry);
 
       // Check that history was recorded (pre-restore snapshot)
       const history = storageData['prompt_history'];
@@ -891,7 +891,7 @@ describe('P2P Sync', () => {
 
       const beforeRestore = new Date().toISOString();
 
-      await p2pSync.restoreFromHistory({
+      await deviceSync.restoreFromHistory({
         id: 'r1',
         composition: 'New',
         action: 'New',
@@ -907,7 +907,7 @@ describe('P2P Sync', () => {
     it('loadHistory migrates legacy backups on first call', async () => {
       // Set up legacy backups (not yet migrated)
       setStorage({
-        'p2p_sync_backups': [
+        'device_sync_backups': [
           {
             backedUpAt: '2026-03-05T00:00:00Z',
             source: 'sync_receive',
@@ -921,7 +921,7 @@ describe('P2P Sync', () => {
         ],
       });
 
-      const history = await p2pSync.loadHistory();
+      const history = await deviceSync.loadHistory();
 
       // Legacy backup should have been migrated to history
       expect(history.length).toBeGreaterThanOrEqual(1);
@@ -935,7 +935,7 @@ describe('P2P Sync', () => {
       setStorage({
         prompt_history_migrated: true,
         prompt_history: [{ id: '1', source: 'local_edit', fields: ['kb'] }],
-        'p2p_sync_backups': [
+        'device_sync_backups': [
           {
             backedUpAt: '2026-03-05T00:00:00Z',
             state: { composition: 'Should not appear', action: '', kb: '', templates: [] },
@@ -943,7 +943,7 @@ describe('P2P Sync', () => {
         ],
       });
 
-      const history = await p2pSync.loadHistory();
+      const history = await deviceSync.loadHistory();
       // Should only have the existing entry, not re-migrate backups
       expect(history).toHaveLength(1);
       expect(history[0].id).toBe('1');
@@ -954,27 +954,27 @@ describe('P2P Sync', () => {
   // Additional: Cleanup
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Cleanup', () => {
-    it('cleanupP2PSync disconnects and clears listeners', () => {
+    it('cleanupDeviceSync disconnects and clears listeners', () => {
       const listener = vi.fn();
-      p2pSync.addStatusListener(listener);
+      deviceSync.addStatusListener(listener);
 
-      p2pSync.cleanupP2PSync();
+      deviceSync.cleanupDeviceSync();
 
-      expect(p2pSync.isConnected()).toBe(false);
+      expect(deviceSync.isConnected()).toBe(false);
     });
 
     it('disconnect resets connection state', () => {
-      p2pSync.disconnect();
-      expect(p2pSync.isConnected()).toBe(false);
+      deviceSync.disconnect();
+      expect(deviceSync.isConnected()).toBe(false);
     });
 
-    it('cleanupP2PSync removes storage change listener', () => {
+    it('cleanupDeviceSync removes storage change listener', () => {
       // Set up a storage listener first
-      p2pSync.setupStorageListener();
+      deviceSync.setupStorageListener();
 
       const removeListenerCallCount = browserMock.storage.onChanged.removeListener.mock.calls.length;
 
-      p2pSync.cleanupP2PSync();
+      deviceSync.cleanupDeviceSync();
 
       // removeListener should have been called
       expect(browserMock.storage.onChanged.removeListener.mock.calls.length).toBeGreaterThan(removeListenerCallCount);
@@ -1537,7 +1537,7 @@ describe('P2P Sync', () => {
   describe('AI Cache Probe', () => {
     it('probeAndWait returns null when not connected', async () => {
       // Not connected — should resolve null immediately
-      const result = await p2pSync.probeAndWait(['key1', 'key2']);
+      const result = await deviceSync.probeAndWait(['key1', 'key2']);
       expect(result).toBeNull();
     });
 
@@ -1545,7 +1545,7 @@ describe('P2P Sync', () => {
       const ws = await establishConnection();
 
       // Start a probe
-      const probePromise = p2pSync.probeAndWait(['msg-id-1'], 5000);
+      const probePromise = deviceSync.probeAndWait(['msg-id-1'], 5000);
 
       // Find the sent probe message
       await new Promise((r) => setTimeout(r, 10));
@@ -1570,7 +1570,7 @@ describe('P2P Sync', () => {
       const ws = await establishConnection();
 
       // Start a probe with very short timeout
-      const result = await p2pSync.probeAndWait(['msg-id-1'], 50);
+      const result = await deviceSync.probeAndWait(['msg-id-1'], 50);
 
       // No response sent, so it should timeout
       expect(result).toBeNull();
@@ -1579,7 +1579,7 @@ describe('P2P Sync', () => {
     it('probeAndWait with optional fields parameter', async () => {
       const ws = await establishConnection();
 
-      const probePromise = p2pSync.probeAndWait(['msg-id-1'], 5000, ['summary']);
+      const probePromise = deviceSync.probeAndWait(['msg-id-1'], 5000, ['summary']);
 
       await new Promise((r) => setTimeout(r, 10));
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
@@ -1599,7 +1599,7 @@ describe('P2P Sync', () => {
     it('probeAICache strips angle brackets and returns field value', async () => {
       const ws = await establishConnection();
 
-      const probePromise = p2pSync.probeAICache('<msg@example.com>', 'summary');
+      const probePromise = deviceSync.probeAICache('<msg@example.com>', 'summary');
 
       await new Promise((r) => setTimeout(r, 10));
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
@@ -1623,7 +1623,7 @@ describe('P2P Sync', () => {
     it('probeAICache returns null when no result for key', async () => {
       const ws = await establishConnection();
 
-      const probePromise = p2pSync.probeAICache('nonexistent@example.com', 'summary');
+      const probePromise = deviceSync.probeAICache('nonexistent@example.com', 'summary');
 
       await new Promise((r) => setTimeout(r, 10));
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
@@ -1647,7 +1647,7 @@ describe('P2P Sync', () => {
         return { 'msg-1': { summary: { subject: 'Cached' }, action: 'archive' } };
       });
 
-      p2pSync.setAICacheProbeHandler(handler);
+      deviceSync.setAICacheProbeHandler(handler);
 
       ws.sent = [];
       await sendSocketMessage(ws, {
@@ -1666,12 +1666,12 @@ describe('P2P Sync', () => {
       expect(response.results['msg-1'].summary.subject).toBe('Cached');
 
       // Clean up handler
-      p2pSync.setAICacheProbeHandler(null);
+      deviceSync.setAICacheProbeHandler(null);
     });
 
     it('ai_cache_probe with no handler does nothing', async () => {
       const ws = await establishConnection();
-      p2pSync.setAICacheProbeHandler(null);
+      deviceSync.setAICacheProbeHandler(null);
 
       ws.sent = [];
       await sendSocketMessage(ws, {
@@ -1689,7 +1689,7 @@ describe('P2P Sync', () => {
     it('ai_cache_probe with empty keys does nothing', async () => {
       const ws = await establishConnection();
       const handler = vi.fn(async () => ({}));
-      p2pSync.setAICacheProbeHandler(handler);
+      deviceSync.setAICacheProbeHandler(handler);
 
       ws.sent = [];
       await sendSocketMessage(ws, {
@@ -1699,14 +1699,14 @@ describe('P2P Sync', () => {
       });
 
       expect(handler).not.toHaveBeenCalled();
-      p2pSync.setAICacheProbeHandler(null);
+      deviceSync.setAICacheProbeHandler(null);
     });
 
     it('ai_cache_response without probeId falls back to key matching', async () => {
       const ws = await establishConnection();
 
       // Start a probe
-      const probePromise = p2pSync.probeAndWait(['msg-fallback'], 5000);
+      const probePromise = deviceSync.probeAndWait(['msg-fallback'], 5000);
 
       await new Promise((r) => setTimeout(r, 10));
 
@@ -1746,16 +1746,16 @@ describe('P2P Sync', () => {
       // Should not throw
     });
 
-    it('cleanupP2PSync resolves pending probes with null', async () => {
+    it('cleanupDeviceSync resolves pending probes with null', async () => {
       const ws = await establishConnection();
 
       // Start a probe that won't be resolved
-      const probePromise = p2pSync.probeAndWait(['msg-cleanup'], 60000);
+      const probePromise = deviceSync.probeAndWait(['msg-cleanup'], 60000);
 
       await new Promise((r) => setTimeout(r, 10));
 
       // Cleanup should resolve all pending probes with null
-      p2pSync.cleanupP2PSync();
+      deviceSync.cleanupDeviceSync();
 
       const result = await probePromise;
       expect(result).toBeNull();
@@ -2039,10 +2039,10 @@ describe('P2P Sync', () => {
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Connect / Disconnect', () => {
     it('connect skips when auto-sync is disabled', async () => {
-      setStorage({ 'p2p_sync_auto_enabled': false });
+      setStorage({ 'device_sync_auto_enabled': false });
       const beforeCount = mockWebSocketInstances.length;
 
-      await p2pSync.connect();
+      await deviceSync.connect();
 
       // No new WebSocket should have been created
       expect(mockWebSocketInstances.length).toBe(beforeCount);
@@ -2053,7 +2053,7 @@ describe('P2P Sync', () => {
       const countBefore = mockWebSocketInstances.length;
 
       // Try connecting again while already connected
-      await p2pSync.connect();
+      await deviceSync.connect();
 
       // Should not create a new WebSocket
       expect(mockWebSocketInstances.length).toBe(countBefore);
@@ -2063,24 +2063,24 @@ describe('P2P Sync', () => {
       const ws = await establishConnection();
 
       // Disconnect
-      p2pSync.disconnect();
+      deviceSync.disconnect();
 
-      expect(p2pSync.isConnected()).toBe(false);
+      expect(deviceSync.isConnected()).toBe(false);
     });
 
     it('setAutoEnabled(false) disconnects', async () => {
       const ws = await establishConnection();
-      expect(p2pSync.isConnected()).toBe(true);
+      expect(deviceSync.isConnected()).toBe(true);
 
-      await p2pSync.setAutoEnabled(false);
+      await deviceSync.setAutoEnabled(false);
 
-      expect(p2pSync.isConnected()).toBe(false);
-      expect(storageData['p2p_sync_auto_enabled']).toBe(false);
+      expect(deviceSync.isConnected()).toBe(false);
+      expect(storageData['device_sync_auto_enabled']).toBe(false);
     });
 
     it('setAutoEnabled(true) triggers connect', async () => {
-      setStorage({ 'p2p_sync_auto_enabled': false });
-      p2pSync.disconnect();
+      setStorage({ 'device_sync_auto_enabled': false });
+      deviceSync.disconnect();
       const beforeCount = mockWebSocketInstances.length;
 
       // Set some timestamps so connect succeeds
@@ -2089,7 +2089,7 @@ describe('P2P Sync', () => {
         [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
       });
 
-      await p2pSync.setAutoEnabled(true);
+      await deviceSync.setAutoEnabled(true);
 
       // Should have created a new WebSocket
       expect(mockWebSocketInstances.length).toBeGreaterThan(beforeCount);
@@ -2104,7 +2104,7 @@ describe('P2P Sync', () => {
       const ws = await establishConnection();
       ws.sent = [];
 
-      await p2pSync.syncNow();
+      await deviceSync.syncNow();
 
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
       // Should have broadcast prompt_state
@@ -2114,14 +2114,14 @@ describe('P2P Sync', () => {
     });
 
     it('syncNow attempts connect when not connected', async () => {
-      p2pSync.disconnect();
+      deviceSync.disconnect();
       setStorage({
-        'p2p_sync_auto_enabled': true,
+        'device_sync_auto_enabled': true,
         [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
       });
 
       const beforeCount = mockWebSocketInstances.length;
-      await p2pSync.syncNow();
+      await deviceSync.syncNow();
 
       // Should have attempted to connect
       expect(mockWebSocketInstances.length).toBeGreaterThan(beforeCount);
@@ -2135,7 +2135,7 @@ describe('P2P Sync', () => {
     it('registers a storage change listener', () => {
       browserMock.storage.onChanged.addListener.mockClear();
 
-      p2pSync.setupStorageListener();
+      deviceSync.setupStorageListener();
 
       expect(browserMock.storage.onChanged.addListener).toHaveBeenCalled();
     });
@@ -2144,13 +2144,13 @@ describe('P2P Sync', () => {
       // First call already happened above, call again
       const callCount = browserMock.storage.onChanged.addListener.mock.calls.length;
 
-      p2pSync.setupStorageListener();
+      deviceSync.setupStorageListener();
 
       // Should not have added another listener
       expect(browserMock.storage.onChanged.addListener.mock.calls.length).toBe(callCount);
 
       // Clean up so future tests start fresh
-      p2pSync.cleanupP2PSync();
+      deviceSync.cleanupDeviceSync();
     });
   });
 
@@ -2168,7 +2168,7 @@ describe('P2P Sync', () => {
       });
       ws.sent = [];
 
-      await p2pSync.resetFieldToDefault('action', 'Default action');
+      await deviceSync.resetFieldToDefault('action', 'Default action');
 
       // Should have sent request_state for the reset field
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
@@ -2183,7 +2183,7 @@ describe('P2P Sync', () => {
         [TIMESTAMP_KEYS.templates]: '2026-03-10T00:00:00Z',
       });
 
-      await p2pSync.resetFieldToDefault('templates', []);
+      await deviceSync.resetFieldToDefault('templates', []);
 
       expect(storageData[FIELD_KEYS.templates]).toEqual([]);
       expect(storageData[TIMESTAMP_KEYS.templates]).toBe(EPOCH_ZERO);
@@ -2195,7 +2195,7 @@ describe('P2P Sync', () => {
         [TIMESTAMP_KEYS.disabledReminders]: '2026-03-10T00:00:00Z',
       });
 
-      await p2pSync.resetFieldToDefault('disabledReminders', {});
+      await deviceSync.resetFieldToDefault('disabledReminders', {});
 
       expect(storageData[FIELD_KEYS.disabledReminders]).toEqual({});
       expect(storageData[TIMESTAMP_KEYS.disabledReminders]).toBe(EPOCH_ZERO);
@@ -2219,7 +2219,7 @@ describe('P2P Sync', () => {
       });
       ws.sent = [];
 
-      await p2pSync.broadcastState();
+      await deviceSync.broadcastState();
 
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
       const promptState = sentMessages.find((m) => m.type === 'prompt_state');
@@ -2242,7 +2242,7 @@ describe('P2P Sync', () => {
       });
       ws.sent = [];
 
-      await p2pSync.broadcastState(['kb']);
+      await deviceSync.broadcastState(['kb']);
 
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
       const promptState = sentMessages.find((m) => m.type === 'prompt_state');
@@ -2260,11 +2260,11 @@ describe('P2P Sync', () => {
   describe('initTimestampsIfNeeded via connect', () => {
     it('migrates legacy sync base keys to peer base on connect', async () => {
       setStorage({
-        'p2p_sync_auto_enabled': true,
+        'device_sync_auto_enabled': true,
         // Legacy base keys
-        'p2p_sync_base:composition': 'legacy comp base',
-        'p2p_sync_base:action': 'legacy action base',
-        'p2p_sync_base:kb': 'legacy kb base',
+        'device_sync_base:composition': 'legacy comp base',
+        'device_sync_base:action': 'legacy action base',
+        'device_sync_base:kb': 'legacy kb base',
         // Some timestamps so device is not virgin
         [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
         [TIMESTAMP_KEYS.action]: '2026-03-10T00:00:00Z',
@@ -2273,7 +2273,7 @@ describe('P2P Sync', () => {
         [TIMESTAMP_KEYS.disabledReminders]: '2026-03-10T00:00:00Z',
       });
 
-      await p2pSync.connect();
+      await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
       if (ws && ws.onopen) ws.onopen();
 
@@ -2283,18 +2283,18 @@ describe('P2P Sync', () => {
       expect(storageData[PEER_BASE_KEYS.kb]).toBe('legacy kb base');
 
       // Legacy keys should be removed
-      expect(storageData['p2p_sync_base:composition']).toBeUndefined();
-      expect(storageData['p2p_sync_base:action']).toBeUndefined();
-      expect(storageData['p2p_sync_base:kb']).toBeUndefined();
+      expect(storageData['device_sync_base:composition']).toBeUndefined();
+      expect(storageData['device_sync_base:action']).toBeUndefined();
+      expect(storageData['device_sync_base:kb']).toBeUndefined();
     });
 
     it('initializes timestamps to epoch-zero for new device', async () => {
       setStorage({
-        'p2p_sync_auto_enabled': true,
+        'device_sync_auto_enabled': true,
         // No timestamps at all
       });
 
-      await p2pSync.connect();
+      await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
       if (ws && ws.onopen) ws.onopen();
 
@@ -2353,7 +2353,7 @@ describe('P2P Sync', () => {
       browserMock.storage.local.get = vi.fn(async () => { throw new Error('Storage error'); });
 
       // Should not throw
-      await p2pSync.broadcastState();
+      await deviceSync.broadcastState();
 
       // Restore
       browserMock.storage.local.get = originalGet;

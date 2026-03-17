@@ -275,36 +275,36 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
       }
     }
 
-    // P2P probe: fire non-blocking, race with local body fetch.
-    // Don't block on the 2s WebSocket timeout — overlap P2P latency with body I/O.
-    let p2pProbePromise = null;
+    // Device sync probe: fire non-blocking, race with local body fetch.
+    // Don't block on the 2s WebSocket timeout — overlap device sync latency with body I/O.
+    let deviceSyncProbePromise = null;
     if (!forceRecompute) {
       try {
-        const { probeAICache } = await import("./p2pSync.js");
-        p2pProbePromise = probeAICache(messageHeader.headerMessageId, "action");
+        const { probeAICache } = await import("./deviceSync.js");
+        deviceSyncProbePromise = probeAICache(messageHeader.headerMessageId, "action");
       } catch (probeErr) {
-        log(`${PFX}P2P probe init failed for ${uniqueKey}: ${probeErr}`, "warn");
+        log(`${PFX}Device sync probe init failed for ${uniqueKey}: ${probeErr}`, "warn");
       }
     }
 
     // Get the body from the full message to send to the LLM
     const full = await safeGetFull(messageHeader.id, messageHeader);
 
-    // Check if P2P resolved during body fetch (natural ~50-500ms window).
-    if (p2pProbePromise) {
+    // Check if device sync resolved during body fetch (natural ~50-500ms window).
+    if (deviceSyncProbePromise) {
       try {
         const peerAction = await Promise.race([
-          p2pProbePromise,
+          deviceSyncProbePromise,
           new Promise((r) => setTimeout(() => r(null), 500)),
         ]);
         if (peerAction) {
-          log(`${PFX}P2P cache HIT for ${uniqueKey} — using peer action="${peerAction}" (LLM skipped)`);
+          log(`${PFX}Device sync cache HIT for ${uniqueKey} — using peer action="${peerAction}" (LLM skipped)`);
           await idb.set({ [cacheKey]: peerAction, [metaKey]: { ts: Date.now() } });
           await recordOriginalActionOnce(uniqueKey, peerAction);
           return peerAction;
         }
       } catch (probeErr) {
-        log(`${PFX}P2P probe failed for ${uniqueKey}: ${probeErr}`, "warn");
+        log(`${PFX}Device sync probe failed for ${uniqueKey}: ${probeErr}`, "warn");
       }
     }
 

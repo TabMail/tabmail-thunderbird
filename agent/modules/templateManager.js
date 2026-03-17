@@ -95,7 +95,7 @@ export async function loadTemplates() {
  */
 export async function saveTemplates(templates) {
     try {
-        // p2pSync storage listener handles per-field timestamp (p2p_sync_ts:templates)
+        // deviceSync storage listener handles per-field timestamp (device_sync_ts:templates)
         await browser.storage.local.set({ [STORAGE_KEY]: templates });
         log(`${PFX}Saved ${templates.length} templates to storage`);
         return true;
@@ -169,7 +169,7 @@ export async function updateTemplate(id, updates) {
 }
 
 /**
- * Delete a template (soft-delete: sets deleted=true for P2P sync propagation).
+ * Delete a template (soft-delete: sets deleted=true for device sync propagation).
  * @param {string} id - Template ID
  * @returns {Promise<boolean>}
  */
@@ -234,7 +234,7 @@ export async function getVisibleTemplates() {
 
 /**
  * Per-template CRDT merge: index by id, newer updatedAt wins.
- * @param {Template[]} incoming - Incoming templates from P2P sync
+ * @param {Template[]} incoming - Incoming templates from device sync
  * @returns {Promise<void>}
  */
 export async function mergeTemplates(incoming) {
@@ -559,8 +559,8 @@ export async function resetToDefaultTemplates() {
         const defaultTemplates = await loadDefaultTemplates();
 
         // Use epoch-zero timestamp so defaults never overwrite customized
-        // templates on other devices via P2P sync
-        const { resetFieldToDefault } = await import("./p2pSync.js");
+        // templates on other devices via device sync
+        const { resetFieldToDefault } = await import("./deviceSync.js");
         await resetFieldToDefault("templates", defaultTemplates.length > 0 ? defaultTemplates : []);
         await markTemplatesMigrated();
 

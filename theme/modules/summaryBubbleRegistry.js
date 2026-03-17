@@ -4,7 +4,7 @@
 let _bubbleScriptRegistered = false;
 
 import { getPrivacyOptOutAllAiEnabled } from "../../chat/modules/privacySettings.js";
-import { isAutoEnabled } from "../../agent/modules/p2pSync.js";
+import { isAutoEnabled } from "../../agent/modules/deviceSync.js";
 
 export async function registerBubbleContentScript() {
   if (_bubbleScriptRegistered) {
@@ -49,17 +49,17 @@ export async function ensureBubbleScriptInjected(tabId) {
         const p2pEnabled = await isAutoEnabled();
         if (!p2pEnabled) {
           console.log(
-            `[TabMail Bubble] Both AI opt-out and P2P disabled; skipping summaryBubble.js injection for tab ${tabId}`
+            `[TabMail Bubble] Both AI opt-out and device sync disabled; skipping summaryBubble.js injection for tab ${tabId}`
           );
           return { injected: false, skipped: true, reason: "privacyOptOut" };
         }
         console.log(
-          `[TabMail Bubble] AI opt-out but P2P enabled; proceeding with injection for tab ${tabId}`
+          `[TabMail Bubble] AI opt-out but device sync enabled; proceeding with injection for tab ${tabId}`
         );
       }
     } catch (e) {
       console.log(
-        `[TabMail Bubble] Privacy/P2P check failed; proceeding with injection (err=${e})`,
+        `[TabMail Bubble] Privacy/device sync check failed; proceeding with injection (err=${e})`,
         "warn"
       );
     }

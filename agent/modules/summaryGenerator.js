@@ -238,30 +238,30 @@ export async function generateSummary(messageHeader, highPriority = false) {
     // Continue with generation if cache check fails
   }
 
-  // P2P probe: fire non-blocking, race with local body fetch.
-  // Don't block on the 2s WebSocket timeout — overlap P2P latency with body I/O.
-  let p2pProbePromise = null;
+  // Device sync probe: fire non-blocking, race with local body fetch.
+  // Don't block on the 2s WebSocket timeout — overlap device sync latency with body I/O.
+  let deviceSyncProbePromise = null;
   try {
-    const { probeAICache } = await import("./p2pSync.js");
-    p2pProbePromise = probeAICache(messageHeader.headerMessageId, "summary");
+    const { probeAICache } = await import("./deviceSync.js");
+    deviceSyncProbePromise = probeAICache(messageHeader.headerMessageId, "summary");
   } catch (probeErr) {
-    log(`${PFX}P2P probe init failed for ${uniqueKey}: ${probeErr}`, "warn");
+    log(`${PFX}Device sync probe init failed for ${uniqueKey}: ${probeErr}`, "warn");
   }
 
-  // Start local body fetch in parallel with the P2P probe.
+  // Start local body fetch in parallel with the device sync probe.
   const full = await safeGetFull(messageHeader.id, messageHeader);
 
-  // Check if P2P resolved during body fetch (natural ~50-500ms window).
-  if (p2pProbePromise) {
+  // Check if device sync resolved during body fetch (natural ~50-500ms window).
+  if (deviceSyncProbePromise) {
     try {
-      // Wait up to 500ms for P2P probe — covers WebSocket RTT (~100-200ms)
+      // Wait up to 500ms for device sync probe — covers WebSocket RTT (~100-200ms)
       // without blocking too long if no peer is connected.
       const peerSummary = await Promise.race([
-        p2pProbePromise,
+        deviceSyncProbePromise,
         new Promise((r) => setTimeout(() => r(null), 500)),
       ]);
       if (peerSummary) {
-        log(`${PFX}P2P cache HIT for ${uniqueKey} — using peer summary (LLM skipped)`);
+        log(`${PFX}Device sync cache HIT for ${uniqueKey} — using peer summary (LLM skipped)`);
         const cachePayload = {
           blurb: peerSummary.blurb || "",
           detailed: peerSummary.detailed || "",
@@ -285,7 +285,7 @@ export async function generateSummary(messageHeader, highPriority = false) {
         };
       }
     } catch (probeErr) {
-      log(`${PFX}P2P probe failed for ${uniqueKey}: ${probeErr}`, "warn");
+      log(`${PFX}Device sync probe failed for ${uniqueKey}: ${probeErr}`, "warn");
     }
   }
 

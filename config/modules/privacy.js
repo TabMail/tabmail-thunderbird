@@ -1,5 +1,5 @@
 import { $ } from "./dom.js";
-import { isAutoEnabled, setAutoEnabled } from "../../agent/modules/p2pSync.js";
+import { isAutoEnabled, setAutoEnabled } from "../../agent/modules/deviceSync.js";
 
 export function updatePrivacyOptOutUI(enabled) {
   const warning = $("privacy-opt-out-warning");

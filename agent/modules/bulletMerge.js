@@ -1,4 +1,4 @@
-// bulletMerge.js – 3-way bullet merge for P2P sync text fields
+// bulletMerge.js – 3-way bullet merge for device sync text fields
 //
 // Merges independent bullet additions/removals from two peers using a shared base.
 // Algorithm: set-based merge preserving local ordering.
@@ -6,7 +6,7 @@
 //   - Remote additions are appended to local
 //   - Duplicate bullets are deduplicated
 //
-// Used by p2pSync.js for composition, action, and kb fields.
+// Used by deviceSync.js for composition, action, and kb fields.
 
 import { log } from "./utils.js";
 

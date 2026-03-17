@@ -214,7 +214,7 @@ async function injectThemeScriptsForMessageDisplayTab(tabId, contextLabel) {
         }
 
         // Inject bubble scripts. Theming scripts always inject; summary scripts may be
-        // skipped when AI opt-out is ON and P2P is OFF.
+        // skipped when AI opt-out is ON and device sync is OFF.
         const bubbleRes = await injectBubblesIntoTab(tabId);
         if (bubbleRes && bubbleRes.summarySkipped) {
             // Summary bubble was not injected — tell the gate not to wait for it.

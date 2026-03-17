@@ -101,14 +101,14 @@ async function _persistReply(key, replyText) {
  */
 export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, ignoreSemaphore = false) {
 
-    // P2P probe: fire non-blocking early, race with body fetch + setup.
-    // Don't block on the 2s WebSocket timeout — overlap P2P latency with body I/O.
-    let p2pProbePromise = null;
+    // Device sync probe: fire non-blocking early, race with body fetch + setup.
+    // Don't block on the 2s WebSocket timeout — overlap device sync latency with body I/O.
+    let deviceSyncProbePromise = null;
     try {
-        const { probeAICache } = await import("./p2pSync.js");
-        p2pProbePromise = probeAICache(messageHeader.headerMessageId, "reply");
+        const { probeAICache } = await import("./deviceSync.js");
+        deviceSyncProbePromise = probeAICache(messageHeader.headerMessageId, "reply");
     } catch (probeErr) {
-        log(`${PFX}P2P probe init failed for ${uniqueMessageKey}: ${probeErr}`, "warn");
+        log(`${PFX}Device sync probe init failed for ${uniqueMessageKey}: ${probeErr}`, "warn");
     }
 
     // Load user composition instructions
@@ -132,20 +132,20 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
     let bodyHtml = await extractBodyFromParts(full, messageHeader.id);
     const plainBody = stripHtml(bodyHtml || "");
 
-    // Check if P2P resolved during body fetch + setup (natural ~50-500ms window).
-    if (p2pProbePromise) {
+    // Check if device sync resolved during body fetch + setup (natural ~50-500ms window).
+    if (deviceSyncProbePromise) {
         try {
             const peerReply = await Promise.race([
-                p2pProbePromise,
+                deviceSyncProbePromise,
                 new Promise((r) => setTimeout(() => r(null), 500)),
             ]);
             if (peerReply) {
-                log(`${PFX}P2P cache HIT for ${uniqueMessageKey} — using peer reply (LLM skipped)`);
+                log(`${PFX}Device sync cache HIT for ${uniqueMessageKey} — using peer reply (LLM skipped)`);
                 await _persistReply(uniqueMessageKey, peerReply);
                 return;
             }
         } catch (probeErr) {
-            log(`${PFX}P2P probe failed for ${uniqueMessageKey}: ${probeErr}`, "warn");
+            log(`${PFX}Device sync probe failed for ${uniqueMessageKey}: ${probeErr}`, "warn");
         }
     }
 

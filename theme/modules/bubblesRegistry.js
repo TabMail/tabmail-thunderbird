@@ -13,7 +13,7 @@
 //   9. bubblesRenderer.js - unified message listener
 
 import { getPrivacyOptOutAllAiEnabled } from "../../chat/modules/privacySettings.js";
-import { isAutoEnabled } from "../../agent/modules/p2pSync.js";
+import { isAutoEnabled } from "../../agent/modules/deviceSync.js";
 
 let _bubblesScriptRegistered = false;
 
@@ -30,7 +30,7 @@ const BUBBLE_SCRIPT_FILES = [
   "theme/modules/bubblesRenderer.js",
 ];
 
-// Summary-specific scripts that should be skipped when AI opt-out is enabled and P2P is off.
+// Summary-specific scripts that should be skipped when AI opt-out is enabled and device sync is off.
 // All other scripts (theming, quote collapsing, thread bubbles, message wrapper) always inject.
 const SUMMARY_ONLY_FILES = new Set([
   "theme/modules/summaryBubbleConfig.js",
@@ -64,7 +64,7 @@ export async function registerBubblesScripts() {
 
 export async function injectBubblesIntoTab(tabId) {
   try {
-    // Privacy gate: when AI opt-out is ON and P2P is OFF, skip summary-specific scripts
+    // Privacy gate: when AI opt-out is ON and device sync is OFF, skip summary-specific scripts
     // but still inject all theming scripts (message bubble, quote collapsing, thread bubbles, styles).
     let skipSummary = false;
     try {
@@ -73,13 +73,13 @@ export async function injectBubblesIntoTab(tabId) {
         const p2pEnabled = await isAutoEnabled();
         if (!p2pEnabled) {
           skipSummary = true;
-          console.log(`[TabMail Bubbles] Both AI opt-out and P2P disabled; skipping summary scripts for tab ${tabId}`);
+          console.log(`[TabMail Bubbles] Both AI opt-out and device sync disabled; skipping summary scripts for tab ${tabId}`);
         } else {
-          console.log(`[TabMail Bubbles] AI opt-out but P2P enabled; injecting all scripts for tab ${tabId}`);
+          console.log(`[TabMail Bubbles] AI opt-out but device sync enabled; injecting all scripts for tab ${tabId}`);
         }
       }
     } catch (e) {
-      console.log(`[TabMail Bubbles] Privacy/P2P check failed; proceeding with all scripts (err=${e})`);
+      console.log(`[TabMail Bubbles] Privacy/device sync check failed; proceeding with all scripts (err=${e})`);
     }
 
     const filesToInject = skipSummary

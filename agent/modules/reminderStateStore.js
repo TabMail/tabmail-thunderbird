@@ -127,7 +127,7 @@ export async function getDisabledHashes() {
 /**
  * Set enabled status for a reminder hash (idempotent).
  * Writes a CRDT entry with current timestamp.
- * Broadcasts change to P2P peers (local user action).
+ * Broadcasts change to device sync peers (local user action).
  * @param {string} hash - Reminder hash
  * @param {boolean} enabled - Whether enabled (true = re-enabled tombstone, false = disabled)
  */
@@ -139,9 +139,9 @@ export async function setEnabled(hash, enabled) {
   const disabledCount = Object.values(map).filter((e) => !e.enabled).length;
   log(`[ReminderState] Set ${hash} enabled=${enabled} (disabled count: ${disabledCount})`);
 
-  // Broadcast to P2P peers
+  // Broadcast to device sync peers
   try {
-    const { broadcastState } = await import("./p2pSync.js");
+    const { broadcastState } = await import("./deviceSync.js");
     await broadcastState(["disabledReminders"]);
   } catch (e) {
     log(`[ReminderState] Failed to broadcast after setEnabled: ${e}`, "warn");
@@ -150,7 +150,7 @@ export async function setEnabled(hash, enabled) {
 
 /**
  * CRDT merge: per-hash, newer timestamp wins.
- * Does NOT trigger a broadcast (used for incoming P2P sync).
+ * Does NOT trigger a broadcast (used for incoming device sync).
  * @param {Object} incomingMap - Map of {hash: {enabled, ts}}
  */
 export async function mergeIncoming(incomingMap) {

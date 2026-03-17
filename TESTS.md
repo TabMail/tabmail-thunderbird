@@ -13,7 +13,7 @@
 | `test/patchApplier.test.js` | 13 | Markdown patch application (add/remove lines) |
 | `test/utils.test.js` | 59 | normalizeUnicode, date formatting, isInboxFolder, email extraction, escapeHtml |
 | `test/chatTools.test.js` | 46 | Chat tool interface, validation, specific tool behavior |
-| `test/p2pSync.test.js` | 31 | State merge, CRDT, echo prevention, virgin device detection |
+| `test/deviceSync.test.js` | 31 | State merge, CRDT, echo prevention, virgin device detection |
 | `test/llmClient.test.js` | 29 | JSON/SSE response parsing, tool call parsing, conversation state |
 
 ---
@@ -131,7 +131,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-083 | Timeout handling | Error after timeout | Timeout |
 | TB-084 | Conversation state management | Round-trip preserves state | State |
 
-### 3.3 P2P Sync (agent/modules/p2pSync.js) ✅
+### 3.3 Device Sync (agent/modules/deviceSync.js) ✅
 
 | # | Test | Expected | Category |
 |---|------|----------|----------|
@@ -140,7 +140,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-092 | Virgin device detection (all epoch-zero) | Skip broadcast, probe | Detection |
 | TB-093 | Peer-base merge (3-way with bulletMerge) | Correct merge result | Algorithm |
 | TB-094 | Template CRDT merge (by ID, newer updatedAt wins) | Correct per-template | CRDT |
-| TB-095 | DisabledReminders merge (per-hash, newer ts wins) | Correct per-hash | CRDT |
+| TB-095 | DisabledReminders merge (per-hash, newer ts wins) | Correct per-hash | CRDT  |
 
 ---
 
@@ -275,7 +275,7 @@ test/
   patchApplier.test.js        # Markdown patch application
   utils.test.js               # Utility functions, normalization, folder detection
   chatTools.test.js            # Chat tool interface + specific tool tests
-  p2pSync.test.js              # P2P sync CRDT, state merge, echo prevention
+  deviceSync.test.js            # Device sync CRDT, state merge, echo prevention
   llmClient.test.js            # LLM response parsing, tool calls, conversation state
 ```
 

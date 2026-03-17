@@ -29,8 +29,8 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({
 
 vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
 
-// Mock p2pSync to prevent real broadcast calls
-vi.mock('../agent/modules/p2pSync.js', () => ({
+// Mock deviceSync to prevent real broadcast calls
+vi.mock('../agent/modules/deviceSync.js', () => ({
   broadcastState: vi.fn(async () => {}),
 }));
 
@@ -192,8 +192,8 @@ describe('setEnabled', () => {
     expect(map['k:test'].ts).not.toBe('2020-01-01T00:00:00Z');
   });
 
-  it('broadcasts to P2P peers after setting', async () => {
-    const { broadcastState } = await import('../agent/modules/p2pSync.js');
+  it('broadcasts to device sync peers after setting', async () => {
+    const { broadcastState } = await import('../agent/modules/deviceSync.js');
     await setEnabled('k:test', false);
     expect(broadcastState).toHaveBeenCalledWith(['disabledReminders']);
   });

@@ -290,7 +290,7 @@ function setupRuntimeMessageListener() {
                     }
                     return resp.text();
                 }
-                const { resetFieldToDefault } = await import("./modules/p2pSync.js");
+                const { resetFieldToDefault } = await import("./modules/deviceSync.js");
                 const ua = await _fetchBundled("user_action.md");
                 const uc = await _fetchBundled("user_composition.md");
                 await resetFieldToDefault("action", ua);
@@ -311,7 +311,7 @@ function setupRuntimeMessageListener() {
                 const resp = await fetch(url);
                 if (!resp.ok) throw new Error(`Fetch bundled user_action.md failed (${resp.status})`);
                 const text = await resp.text();
-                const { resetFieldToDefault } = await import("./modules/p2pSync.js");
+                const { resetFieldToDefault } = await import("./modules/deviceSync.js");
                 await resetFieldToDefault("action", text);
                 log(`Action prompt reset complete (epoch-zero timestamp). Sending response ok.`);
                 sendResponse({ ok: true });
@@ -331,7 +331,7 @@ function setupRuntimeMessageListener() {
                 const resp = await fetch(url);
                 if (!resp.ok) throw new Error(`Fetch bundled user_composition.md failed (${resp.status})`);
                 const text = await resp.text();
-                const { resetFieldToDefault } = await import("./modules/p2pSync.js");
+                const { resetFieldToDefault } = await import("./modules/deviceSync.js");
                 await resetFieldToDefault("composition", text);
                 log(`Composition prompt reset complete (epoch-zero timestamp). Sending response ok.`);
                 sendResponse({ ok: true });
@@ -351,7 +351,7 @@ function setupRuntimeMessageListener() {
                 const resp = await fetch(url);
                 if (!resp.ok) throw new Error(`Fetch bundled user_kb.md failed (${resp.status})`);
                 const text = await resp.text();
-                const { resetFieldToDefault } = await import("./modules/p2pSync.js");
+                const { resetFieldToDefault } = await import("./modules/deviceSync.js");
                 await resetFieldToDefault("kb", text);
                 log(`KB prompt reset complete (epoch-zero timestamp). Sending response ok.`);
                 sendResponse({ ok: true });
@@ -485,7 +485,7 @@ function setupRuntimeMessageListener() {
                 const storageKey = `user_prompts:${message.filename}`;
                 // Stamp new sync timestamp on local edit (last-write-wins)
                 const updatedAt = new Date().toISOString();
-                await browser.storage.local.set({ [storageKey]: message.content, p2p_sync_updated_at: updatedAt });
+                await browser.storage.local.set({ [storageKey]: message.content, device_sync_updated_at: updatedAt });
                 log(`Successfully wrote ${message.filename} to storage`);
                 sendResponse({ ok: true });
             } catch (e) {
@@ -510,7 +510,7 @@ function setupRuntimeMessageListener() {
                 const fieldMap = { "user_action.md": "action", "user_composition.md": "composition", "user_kb.md": "kb" };
                 const field = fieldMap[message.filename];
                 if (field) {
-                    const { resetFieldToDefault } = await import("./modules/p2pSync.js");
+                    const { resetFieldToDefault } = await import("./modules/deviceSync.js");
                     await resetFieldToDefault(field, text);
                 } else {
                     // Unknown file — write directly (no sync field to reset)
@@ -645,7 +645,7 @@ function setupRuntimeMessageListener() {
     if (message.command === "prompt-history-load") {
         (async () => {
             try {
-                const { loadHistory } = await import("./modules/p2pSync.js");
+                const { loadHistory } = await import("./modules/deviceSync.js");
                 const entries = await loadHistory();
                 sendResponse({ ok: true, entries });
             } catch (e) {
@@ -660,7 +660,7 @@ function setupRuntimeMessageListener() {
         log(`Received prompt-history-restore for entry ${message.entry?.id?.substring(0, 8)}`);
         (async () => {
             try {
-                const { restoreFromHistory } = await import("./modules/p2pSync.js");
+                const { restoreFromHistory } = await import("./modules/deviceSync.js");
                 await restoreFromHistory(message.entry);
                 sendResponse({ ok: true });
             } catch (e) {
@@ -705,39 +705,39 @@ function setupRuntimeMessageListener() {
         return true;
     }
 
-    // --- P2P Sync (auto-sync — status, enable/disable toggle) ---
-    if (message.command === "p2p-sync-enable") {
+    // --- Device Sync (auto-sync — status, enable/disable toggle) ---
+    if (message.command === "device-sync-enable") {
         (async () => {
             try {
-                const { setAutoEnabled } = await import("./modules/p2pSync.js");
+                const { setAutoEnabled } = await import("./modules/deviceSync.js");
                 await setAutoEnabled(true);
                 sendResponse({ ok: true });
             } catch (e) {
-                log(`p2p-sync-enable failed: ${e}`, "error");
+                log(`device-sync-enable failed: ${e}`, "error");
                 sendResponse({ ok: false, error: String(e) });
             }
         })();
         return true;
     }
 
-    if (message.command === "p2p-sync-disable") {
+    if (message.command === "device-sync-disable") {
         (async () => {
             try {
-                const { setAutoEnabled } = await import("./modules/p2pSync.js");
+                const { setAutoEnabled } = await import("./modules/deviceSync.js");
                 await setAutoEnabled(false);
                 sendResponse({ ok: true });
             } catch (e) {
-                log(`p2p-sync-disable failed: ${e}`, "error");
+                log(`device-sync-disable failed: ${e}`, "error");
                 sendResponse({ ok: false, error: String(e) });
             }
         })();
         return true;
     }
 
-    if (message.command === "p2p-sync-status") {
+    if (message.command === "device-sync-status") {
         (async () => {
             try {
-                const { isConnected } = await import("./modules/p2pSync.js");
+                const { isConnected } = await import("./modules/deviceSync.js");
                 sendResponse({ ok: true, connected: isConnected() });
             } catch (e) {
                 sendResponse({ ok: true, connected: false });
@@ -746,14 +746,14 @@ function setupRuntimeMessageListener() {
         return true;
     }
 
-    if (message.command === "p2p-sync-now") {
+    if (message.command === "device-sync-now") {
         (async () => {
             try {
-                const { syncNow } = await import("./modules/p2pSync.js");
+                const { syncNow } = await import("./modules/deviceSync.js");
                 await syncNow();
                 sendResponse({ ok: true });
             } catch (e) {
-                log(`p2p-sync-now failed: ${e}`, "error");
+                log(`device-sync-now failed: ${e}`, "error");
                 sendResponse({ ok: false, error: String(e) });
             }
         })();
@@ -761,16 +761,16 @@ function setupRuntimeMessageListener() {
     }
 
     // Status listener registration — pages get notified of connection changes via storage events
-    if (message.command === "p2p-sync-add-listener") {
+    if (message.command === "device-sync-add-listener") {
         (async () => {
             try {
-                const { addStatusListener, isConnected } = await import("./modules/p2pSync.js");
-                if (!globalThis._p2pSyncStorageListenerAdded) {
-                    globalThis._p2pSyncStorageListenerAdded = true;
+                const { addStatusListener, isConnected } = await import("./modules/deviceSync.js");
+                if (!globalThis._deviceSyncStorageListenerAdded) {
+                    globalThis._deviceSyncStorageListenerAdded = true;
                     addStatusListener((isConn) => {
-                        browser.storage.local.set({ _p2pSyncConnected: isConn }).catch(() => {});
+                        browser.storage.local.set({ _deviceSyncConnected: isConn }).catch(() => {});
                     });
-                    log("Registered p2p-sync storage broadcast listener");
+                    log("Registered device-sync storage broadcast listener");
                 }
                 sendResponse({ ok: true, connected: isConnected() });
             } catch (e) {
@@ -1798,9 +1798,9 @@ async function init() {
     // 9. Auto-detect default calendar based on user's email accounts (if not already set)
     await autoDetectDefaultCalendar();
 
-    // 10. P2P sync — auto-connect and start storage listener for always-on P2P sync.
+    // 10. Device sync — auto-connect and start storage listener for always-on Device sync.
     try {
-        const { connect: connectP2PSync, setupStorageListener, isAutoEnabled, setAICacheProbeHandler } = await import("./modules/p2pSync.js");
+        const { connect: connectDeviceSync, setupStorageListener, isAutoEnabled, setAICacheProbeHandler } = await import("./modules/deviceSync.js");
 
         // Register AI cache probe handler — responds to peer probes with local IDB cache.
         // Probe keys are headerMessageIds (cross-device stable), but IDB keys use
@@ -1852,13 +1852,13 @@ async function init() {
         const autoSyncEnabled = await isAutoEnabled();
         if (autoSyncEnabled) {
             setupStorageListener();
-            await connectP2PSync();
-            log("[P2PSync] Auto-connected and storage listener started");
+            await connectDeviceSync();
+            log("[DeviceSync] Auto-connected and storage listener started");
         } else {
-            log("[P2PSync] Auto-sync disabled by user, skipping connect");
+            log("[DeviceSync] Auto-sync disabled by user, skipping connect");
         }
     } catch (e) {
-        log(`[P2PSync] Auto-connect failed (will retry on reconnect): ${e}`, "warn");
+        log(`[DeviceSync] Auto-connect failed (will retry on reconnect): ${e}`, "warn");
     }
 
     // 11. Start periodic inbox scan (DISABLED - replaced by tagSort row coloring coverage)
@@ -2084,15 +2084,15 @@ if (typeof browser !== 'undefined' && browser.runtime) {
       })();
     } catch (_) {}
 
-    // Cleanup P2P sync (storage listener, debounce timer, WebSocket)
+    // Cleanup Device sync (storage listener, debounce timer, WebSocket)
     try {
       (async () => {
         try {
-          const { cleanupP2PSync } = await import("./modules/p2pSync.js");
-          cleanupP2PSync();
-          log("[P2PSync] P2P sync cleaned up on suspend");
+          const { cleanupDeviceSync } = await import("./modules/deviceSync.js");
+          cleanupDeviceSync();
+          log("[DeviceSync] Device sync cleaned up on suspend");
         } catch (e) {
-          log(`[P2PSync] Error cleaning up P2P sync: ${e}`, "warn");
+          log(`[DeviceSync] Error cleaning up Device sync: ${e}`, "warn");
         }
       })();
     } catch (_) {}

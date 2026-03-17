@@ -129,7 +129,7 @@ function createBulletListEditor(content, onChange, placeholder = "Add item...") 
 }
 
 // Sync toggle state
-const SYNC_AUTO_KEY = "p2p_sync_auto_enabled";
+const SYNC_AUTO_KEY = "device_sync_auto_enabled";
 
 function updateSyncToggleUI(autoEnabled, connected) {
   const btn = document.getElementById("sync-toggle");
@@ -1605,12 +1605,12 @@ document.addEventListener("DOMContentLoaded", () => {
   (async () => {
     const syncAutoStored = await browser.storage.local.get({ [SYNC_AUTO_KEY]: true });
     let syncAutoEnabled = syncAutoStored[SYNC_AUTO_KEY] !== false;
-    const syncStatus = await browser.runtime.sendMessage({ command: "p2p-sync-status" }).catch(() => null);
+    const syncStatus = await browser.runtime.sendMessage({ command: "device-sync-status" }).catch(() => null);
     updateSyncToggleUI(syncAutoEnabled, syncStatus?.connected || false);
 
     browser.storage.onChanged.addListener((changes, area) => {
-      if (area === "local" && changes._p2pSyncConnected !== undefined) {
-        updateSyncToggleUI(syncAutoEnabled, !!changes._p2pSyncConnected.newValue);
+      if (area === "local" && changes._deviceSyncConnected !== undefined) {
+        updateSyncToggleUI(syncAutoEnabled, !!changes._deviceSyncConnected.newValue);
       }
       if (area === "local" && changes[SYNC_AUTO_KEY] !== undefined) {
         syncAutoEnabled = changes[SYNC_AUTO_KEY].newValue !== false;
@@ -1618,7 +1618,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    browser.runtime.sendMessage({ command: "p2p-sync-add-listener" }).then((res) => {
+    browser.runtime.sendMessage({ command: "device-sync-add-listener" }).then((res) => {
       if (res?.ok) updateSyncToggleUI(syncAutoEnabled, res.connected);
     }).catch(() => {});
 
@@ -1635,7 +1635,7 @@ document.addEventListener("DOMContentLoaded", () => {
       updateSyncToggleUI(syncAutoEnabled, false);
 
       if (syncAutoEnabled) {
-        await browser.runtime.sendMessage({ command: "p2p-sync-enable" }).catch(() => {});
+        await browser.runtime.sendMessage({ command: "device-sync-enable" }).catch(() => {});
         let attempts = 0;
         syncPollTimer = setInterval(async () => {
           attempts++;
@@ -1645,7 +1645,7 @@ document.addEventListener("DOMContentLoaded", () => {
             syncPollTimer = null;
             return;
           }
-          const status = await browser.runtime.sendMessage({ command: "p2p-sync-status" }).catch(() => null);
+          const status = await browser.runtime.sendMessage({ command: "device-sync-status" }).catch(() => null);
           if (status?.connected) {
             updateSyncToggleUI(syncAutoEnabled, true);
             clearInterval(syncPollTimer);
@@ -1656,7 +1656,7 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }, 500);
       } else {
-        await browser.runtime.sendMessage({ command: "p2p-sync-disable" }).catch(() => {});
+        await browser.runtime.sendMessage({ command: "device-sync-disable" }).catch(() => {});
       }
     });
   })();
@@ -1679,7 +1679,7 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.disabled = true;
     btn.textContent = "Syncing...";
     try {
-      await browser.runtime.sendMessage({ command: "p2p-sync-now" });
+      await browser.runtime.sendMessage({ command: "device-sync-now" });
       btn.textContent = "Synced!";
       // Reload prompts in case peers sent updates
       await reloadAllPromptData();

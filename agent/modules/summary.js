@@ -2,7 +2,7 @@ import { getPrivacyOptOutAllAiEnabled } from "../../chat/modules/privacySettings
 import { getAction } from "./actionGenerator.js";
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
-import { isAutoEnabled } from "./p2pSync.js";
+import { isAutoEnabled } from "./deviceSync.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary } from "./summaryGenerator.js";
 import { getAccessToken } from "./supabaseAuth.js";
@@ -237,7 +237,7 @@ async function processVisibleMessages(tab, messages) {
         );
       } else {
         // Cache MISS: show spinner immediately so the gate opens.
-        // LLM/P2P call will replace it with actual content later.
+        // LLM/device sync call will replace it with actual content later.
         log(`[TMDBG Banner] Cache MISS: sending summaryProcessing for tab ${tab.id}`);
         await sendBannerMessageWithRetry(
           tab.id,
@@ -399,35 +399,35 @@ async function processVisibleMessages(tab, messages) {
   }
 }
 
-// Short-lived cache for privacy/P2P checks — avoids 2 storage.local reads per message display.
-let _privacyP2PCache = null;
-let _privacyP2PCacheTs = 0;
-const PRIVACY_P2P_CACHE_TTL_MS = 10000; // 10s
+// Short-lived cache for privacy/device sync checks — avoids 2 storage.local reads per message display.
+let _privacyDeviceSyncCache = null;
+let _privacyDeviceSyncCacheTs = 0;
+const PRIVACY_DEVICE_SYNC_CACHE_TTL_MS = 10000; // 10s
 
-async function _getCachedPrivacyP2P() {
+async function _getCachedPrivacyDeviceSync() {
   const now = Date.now();
-  if (_privacyP2PCache && (now - _privacyP2PCacheTs) < PRIVACY_P2P_CACHE_TTL_MS) {
-    return _privacyP2PCache;
+  if (_privacyDeviceSyncCache && (now - _privacyDeviceSyncCacheTs) < PRIVACY_DEVICE_SYNC_CACHE_TTL_MS) {
+    return _privacyDeviceSyncCache;
   }
-  const [optOut, p2pEnabled] = await Promise.all([
+  const [optOut, deviceSyncEnabled] = await Promise.all([
     getPrivacyOptOutAllAiEnabled(),
     isAutoEnabled(),
   ]);
-  _privacyP2PCache = { optOut, p2pEnabled };
-  _privacyP2PCacheTs = now;
-  return _privacyP2PCache;
+  _privacyDeviceSyncCache = { optOut, deviceSyncEnabled };
+  _privacyDeviceSyncCacheTs = now;
+  return _privacyDeviceSyncCache;
 }
 
 async function onMessagesDisplayed(tab, messageList) {
   log(`[Summary] onMessagesDisplayed fired for tab ${tab.id}`);
 
-  // Privacy gate: skip summary pipeline when both LLM backend (opt-out) AND P2P sync are off.
-  // If P2P is enabled, we still run the pipeline so P2P cache hits can populate the bubble.
+  // Privacy gate: skip summary pipeline when both LLM backend (opt-out) AND device sync are off.
+  // If device sync is enabled, we still run the pipeline so device sync cache hits can populate the bubble.
   try {
-    const { optOut, p2pEnabled } = await _getCachedPrivacyP2P();
-    if (optOut && !p2pEnabled) {
+    const { optOut, deviceSyncEnabled } = await _getCachedPrivacyDeviceSync();
+    if (optOut && !deviceSyncEnabled) {
       log(
-        `[Summary] Both AI opt-out and P2P disabled; skipping summary pipeline and banner for tab ${tab.id}`,
+        `[Summary] Both AI opt-out and device sync disabled; skipping summary pipeline and banner for tab ${tab.id}`,
         "warn"
       );
       // Tell the display gate not to wait for summary UI, otherwise preview may remain hidden.
@@ -443,7 +443,7 @@ async function onMessagesDisplayed(tab, messageList) {
       return;
     }
   } catch (e) {
-    log(`[Summary] Privacy/P2P check failed in onMessagesDisplayed: ${e}`, "warn");
+    log(`[Summary] Privacy/device sync check failed in onMessagesDisplayed: ${e}`, "warn");
   }
   
   let messageArray;

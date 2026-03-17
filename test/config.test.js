@@ -47,7 +47,7 @@ globalThis.browser = {
 // Import module under test
 // ---------------------------------------------------------------------------
 
-const { SETTINGS, getBackendUrl, getP2PSyncUrl, getTemplateWorkerUrl, cleanupConfigListeners } = await import('../agent/modules/config.js');
+const { SETTINGS, getBackendUrl, getDeviceSyncUrl, getTemplateWorkerUrl, cleanupConfigListeners } = await import('../agent/modules/config.js');
 
 // ---------------------------------------------------------------------------
 // Tests for SETTINGS
@@ -159,10 +159,10 @@ describe('SETTINGS', () => {
     expect(typeof SETTINGS.agentQueues.processMessage.batchSize).toBe('number');
   });
 
-  it('has P2P sync configuration', () => {
-    expect(SETTINGS.p2pSync).toBeDefined();
-    expect(typeof SETTINGS.p2pSync.broadcastDebounceMs).toBe('number');
-    expect(typeof SETTINGS.p2pSync.maxBackups).toBe('number');
+  it('has device sync configuration', () => {
+    expect(SETTINGS.deviceSync).toBeDefined();
+    expect(typeof SETTINGS.deviceSync.broadcastDebounceMs).toBe('number');
+    expect(typeof SETTINGS.deviceSync.maxBackups).toBe('number');
   });
 
   it('has notifications configuration', () => {
@@ -320,10 +320,10 @@ describe('getBackendUrl', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests for getP2PSyncUrl
+// Tests for getDeviceSyncUrl
 // ---------------------------------------------------------------------------
 
-describe('getP2PSyncUrl', () => {
+describe('getDeviceSyncUrl', () => {
   beforeEach(() => {
     for (const key of Object.keys(storageData)) delete storageData[key];
     vi.clearAllMocks();
@@ -331,24 +331,24 @@ describe('getP2PSyncUrl', () => {
 
   it('returns production sync URL when debugMode is false', async () => {
     storageData.debugMode = false;
-    const url = await getP2PSyncUrl();
+    const url = await getDeviceSyncUrl();
     expect(url).toBe('https://sync.tabmail.ai');
   });
 
   it('returns dev sync URL when debugMode is true', async () => {
     storageData.debugMode = true;
-    const url = await getP2PSyncUrl();
+    const url = await getDeviceSyncUrl();
     expect(url).toBe('https://sync-dev.tabmail.ai');
   });
 
   it('returns production sync URL when debugMode is not set', async () => {
-    const url = await getP2PSyncUrl();
+    const url = await getDeviceSyncUrl();
     expect(url).toBe('https://sync.tabmail.ai');
   });
 
   it('handles storage.local.get failure gracefully', async () => {
     browser.storage.local.get.mockRejectedValueOnce(new Error('storage error'));
-    const url = await getP2PSyncUrl();
+    const url = await getDeviceSyncUrl();
     expect(url).toBe('https://sync.tabmail.ai');
   });
 });

@@ -96,8 +96,8 @@ export const SETTINGS = {
     threadHistoryApiConcurrency: 1, // Max concurrent API calls when building a thread to avoid UI lag.
     useSingleMessageHistory: true, // For performance, treat the body of the last email as the full thread history.
     maxAgeDays: 60, // How many days back to look for emails during a full index.
-    verboseLogging: false, // Set to true to enable info/warn logs.
-    debugLogging: false, // Set to true to enable granular debug/trace logs (very noisy).
+    verboseLogging: true, // Set to true to enable info/warn logs.
+    debugLogging: true, // Set to true to enable granular debug/trace logs (very noisy).
     // Thread tooltip master toggle (default disabled). When enabled, tooltips
     // will show cached summary/todo on hover; may not function after suspend.
     threadTooltipEnabled: false,
@@ -280,8 +280,8 @@ export const SETTINGS = {
         initialDelayMs: 150,
         maxDelayMs: 1000,
     },
-    // P2P sync (always-on sync via WebSocket relay)
-    p2pSync: {
+    // Device sync (always-on sync via WebSocket relay)
+    deviceSync: {
         broadcastDebounceMs: 500, // Debounce auto-broadcast after local edits (ms)
         maxBackups: 10,           // Max backup snapshots in ring buffer before applying incoming sync
     },
@@ -523,10 +523,10 @@ export async function getBackendUrl(endpointType = null) {
     }
 }
 
-// Helper function to get the P2P sync worker URL based on debugMode
+// Helper function to get the device sync worker URL based on debugMode
 //   - Production: https://sync.tabmail.ai
 //   - Dev: https://sync-dev.tabmail.ai
-export async function getP2PSyncUrl() {
+export async function getDeviceSyncUrl() {
     try {
         const stored = await browser.storage.local.get({ debugMode: false });
         SETTINGS.debugMode = stored.debugMode;
@@ -535,10 +535,10 @@ export async function getP2PSyncUrl() {
         const subdomain = stored.debugMode ? "sync-dev" : "sync";
         const url = `https://${subdomain}.${domain}`;
 
-        if (SETTINGS.debugLogging) console.log(`[Config] getP2PSyncUrl: url=${url}`);
+        if (SETTINGS.debugLogging) console.log(`[Config] getDeviceSyncUrl: url=${url}`);
         return url;
     } catch (e) {
-        if (SETTINGS.debugLogging) console.warn("[Config] Failed to load debugMode for P2P sync URL, using default:", e);
+        if (SETTINGS.debugLogging) console.warn("[Config] Failed to load debugMode for device sync URL, using default:", e);
         const domain = SETTINGS.backendDomain;
         return `https://sync.${domain}`;
     }
