@@ -4,7 +4,6 @@ import { SETTINGS } from "./config.js";
 import * as idb from "./idbStorage.js";
 import { processEditResponse, sendChat } from "./llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "./promptGenerator.js";
-import { splitPlainTextForQuote } from "./quoteAndSignature.js";
 import { extractBodyFromParts, formatForLog, getUniqueMessageKey, log, safeGetFull, saveChatLog, stripHtml } from "./utils.js";
 
 export const STORAGE_PREFIX = "reply:";
@@ -159,7 +158,7 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
     const recipientsFormatted = recipientLines.join("\n");
 
     // Split original email body into message + quotes on client side
-    const splitBody = splitPlainTextForQuote(plainBody);
+    const splitBody = globalThis.TabMailQuoteDetection.splitPlainTextForQuote(plainBody);
 
     // Build single consolidated message that backend will process
     // Uses the same flow as edit_reply for consistency
