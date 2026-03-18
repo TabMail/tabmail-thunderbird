@@ -339,3 +339,45 @@ describe('Chinese attribution pattern', () => {
     expect(result.type).toBe('attribution');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Multi-line attribution fallback (line wrapping on narrow screens)
+// ---------------------------------------------------------------------------
+describe('Multi-line attribution fallback', () => {
+  it('detects Chinese attribution split across two lines', () => {
+    // Simulates narrow screen wrapping: "于" on line 1, "2026年...写道：" on line 2
+    const text = 'My reply\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E\n2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053\uFF1A\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+  });
+
+  it('detects Korean attribution split across two lines', () => {
+    // "님이" on line 1, "작성:" on line 2
+    const text = 'My reply\n\nUser <user@test.com>\uB2D8\uC774\n\uC791\uC131:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+  });
+
+  it('detects English "wrote:" split across two lines', () => {
+    const text = 'My reply\n\nOn Mon, Mar 17, 2026 at 10:00 AM John Smith\n<john@example.com> wrote:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+  });
+
+  it('detects German attribution split across two lines', () => {
+    const text = 'My reply\n\nAm 17. M\u00E4rz 2026 schrieb\nMax Mustermann:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+  });
+
+  it('single-line patterns still work (no regression)', () => {
+    const text = 'My reply\n\nOn Mon, Mar 17, 2026 at 10:00 AM John Smith <john@example.com> wrote:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+  });
+});

@@ -258,6 +258,44 @@
       comment: "Chinese Gmail attribution: 'Name <email> 于2026年3月17日周二 01:16写道：'",
       eatBlankLinesBefore: 1,
     },
+    // Multi-line attribution fallback: when a long attribution line wraps
+    // (narrow window, sidebar panel, or mobile), join adjacent lines and
+    // re-test the Chinese, Korean, German, French, Spanish, Portuguese,
+    // and generic "wrote:" patterns. Zero-cost when single-line matches.
+    {
+      pattern: /^.+$/,
+      type: "attribution",
+      comment: "Multi-line attribution fallback (joined adjacent lines)",
+      eatBlankLinesBefore: 1,
+      multiLineCheck: function (lines, i) {
+        try {
+          const firstLine = _stripQuotePrefix(String((lines[i] || "")).trim());
+          if (!firstLine) return false;
+          // Only try joining if next line exists
+          if (i + 1 >= lines.length) return false;
+          const nextLine = _stripQuotePrefix(String((lines[i + 1] || "")).trim());
+          if (!nextLine) return false;
+          const joined = firstLine + " " + nextLine;
+          // Chinese: 于...写道：
+          if (/^.+\u4E8E.+\u5199\u9053[：:]\s*$/.test(joined)) return true;
+          // Korean: 님이 작성:
+          if (/^.+님이\s*작성\s*:\s*$/.test(joined)) return true;
+          // English: wrote:
+          if (/^.+\s+wrote:\s*$/i.test(joined)) return true;
+          // German: schrieb
+          if (/^Am\s+.+\s+schrieb\s+.+:\s*$/i.test(joined)) return true;
+          // French: a écrit
+          if (/^Le\s+.+\s+a\s+écrit\s*:\s*$/i.test(joined)) return true;
+          // Spanish: escribió
+          if (/^El\s+.+\s+escribió\s*:\s*$/i.test(joined)) return true;
+          // Portuguese: escreveu
+          if (/^Em\s+.+\s+escreveu\s*:\s*$/i.test(joined)) return true;
+          return false;
+        } catch (_) {
+          return false;
+        }
+      },
+    },
 
     // =========================================================================
     // QUOTED LINES (lines starting with ">")
