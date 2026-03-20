@@ -102,8 +102,10 @@ vi.mock('../chat/fsm/core.js', () => ({
 // ---------------------------------------------------------------------------
 // Import after mocks
 // ---------------------------------------------------------------------------
-import { run as deleteRun, completeExecution as deleteComplete } from '../chat/tools/email_delete.js';
-import { run as archiveRun, completeExecution as archiveComplete } from '../chat/tools/email_archive.js';
+import { run as deleteRun, completeExecution as deleteComplete, _testExports as deleteTestExports } from '../chat/tools/email_delete.js';
+import { run as archiveRun, completeExecution as archiveComplete, _testExports as archiveTestExports } from '../chat/tools/email_archive.js';
+const { normalizeArgs: deleteNormalizeArgs } = deleteTestExports;
+const { normalizeArgs: archiveNormalizeArgs } = archiveTestExports;
 
 describe('email_delete', () => {
   beforeEach(() => {
@@ -187,5 +189,130 @@ describe('email_archive', () => {
       const result = await archiveComplete('done', 'other');
       expect(result).toContain('completed');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// email_delete normalizeArgs
+// ---------------------------------------------------------------------------
+describe('email_delete normalizeArgs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns default confirm=false for empty args', async () => {
+    const result = await deleteNormalizeArgs();
+    expect(result).toEqual({ confirm: false });
+  });
+
+  it('returns default confirm=false for null args', async () => {
+    const result = await deleteNormalizeArgs(null);
+    expect(result).toEqual({ confirm: false });
+  });
+
+  it('passes through confirm=true', async () => {
+    const result = await deleteNormalizeArgs({ confirm: true });
+    expect(result.confirm).toBe(true);
+  });
+
+  it('defaults confirm to false for non-boolean confirm', async () => {
+    const result = await deleteNormalizeArgs({ confirm: 'yes' });
+    expect(result.confirm).toBe(false);
+  });
+
+  it('resolves valid unique_ids to internal_ids', async () => {
+    const result = await deleteNormalizeArgs({ unique_ids: ['valid-header'] });
+    expect(result.internal_ids).toEqual([42]);
+  });
+
+  it('skips non-string unique_ids entries', async () => {
+    const result = await deleteNormalizeArgs({ unique_ids: [123, null, undefined] });
+    expect(result.internal_ids).toBeUndefined();
+    expect(result.confirm).toBe(false);
+  });
+
+  it('skips unique_ids that fail to resolve', async () => {
+    const result = await deleteNormalizeArgs({ unique_ids: ['unknown-header'] });
+    // headerIDToWeID returns null for unknown headers
+    expect(result.internal_ids).toBeUndefined();
+  });
+
+  it('handles mixed valid and invalid unique_ids', async () => {
+    const result = await deleteNormalizeArgs({
+      unique_ids: ['valid-header', 'unknown-header', null],
+    });
+    expect(result.internal_ids).toEqual([42]);
+  });
+
+  it('does not set internal_ids when unique_ids is not an array', async () => {
+    const result = await deleteNormalizeArgs({ unique_ids: 'not-an-array' });
+    expect(result.internal_ids).toBeUndefined();
+  });
+
+  it('handles empty unique_ids array', async () => {
+    const result = await deleteNormalizeArgs({ unique_ids: [] });
+    expect(result.internal_ids).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// email_archive normalizeArgs
+// ---------------------------------------------------------------------------
+describe('email_archive normalizeArgs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns default confirm=false for empty args', async () => {
+    const result = await archiveNormalizeArgs();
+    expect(result).toEqual({ confirm: false });
+  });
+
+  it('returns default confirm=false for null args', async () => {
+    const result = await archiveNormalizeArgs(null);
+    expect(result).toEqual({ confirm: false });
+  });
+
+  it('passes through confirm=true', async () => {
+    const result = await archiveNormalizeArgs({ confirm: true });
+    expect(result.confirm).toBe(true);
+  });
+
+  it('defaults confirm to false for non-boolean confirm', async () => {
+    const result = await archiveNormalizeArgs({ confirm: 'yes' });
+    expect(result.confirm).toBe(false);
+  });
+
+  it('resolves valid unique_ids to internal_ids', async () => {
+    const result = await archiveNormalizeArgs({ unique_ids: ['valid-header'] });
+    expect(result.internal_ids).toEqual([42]);
+  });
+
+  it('skips non-string unique_ids entries', async () => {
+    const result = await archiveNormalizeArgs({ unique_ids: [123, null, undefined] });
+    expect(result.internal_ids).toBeUndefined();
+    expect(result.confirm).toBe(false);
+  });
+
+  it('skips unique_ids that fail to resolve', async () => {
+    const result = await archiveNormalizeArgs({ unique_ids: ['unknown-header'] });
+    expect(result.internal_ids).toBeUndefined();
+  });
+
+  it('handles mixed valid and invalid unique_ids', async () => {
+    const result = await archiveNormalizeArgs({
+      unique_ids: ['valid-header', 'unknown-header', null],
+    });
+    expect(result.internal_ids).toEqual([42]);
+  });
+
+  it('does not set internal_ids when unique_ids is not an array', async () => {
+    const result = await archiveNormalizeArgs({ unique_ids: 'not-an-array' });
+    expect(result.internal_ids).toBeUndefined();
+  });
+
+  it('handles empty unique_ids array', async () => {
+    const result = await archiveNormalizeArgs({ unique_ids: [] });
+    expect(result.internal_ids).toBeUndefined();
   });
 });

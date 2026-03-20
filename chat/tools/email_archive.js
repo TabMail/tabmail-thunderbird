@@ -54,6 +54,8 @@ async function normalizeArgs(args = {}) {
   return out;
 }
 
+export const _testExports = { normalizeArgs };
+
 export async function run(args = {}, options = {}) {
   try {
     log(`[TMDBG Tools] email_archive: Tool called with args: ${JSON.stringify(args)}`);

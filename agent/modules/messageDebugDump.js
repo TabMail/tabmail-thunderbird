@@ -170,6 +170,8 @@ async function _dumpOneMessageById(weId, headerHint = null, source = "") {
  * @param {Array<browser.messages.MessageHeader>} messageHeaders
  * @param {{source?: string}} [opts]
  */
+export const _testExports = { _safeJson, _isMessageNotFoundError, _pickHeaderFields };
+
 export async function debugDumpSelectedMessages(messageHeaders, opts = {}) {
   const list = Array.isArray(messageHeaders) ? messageHeaders : [];
   const source = opts?.source || "";

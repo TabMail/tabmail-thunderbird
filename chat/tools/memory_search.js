@@ -38,6 +38,8 @@ function resolvePageSize() {
   return size;
 }
 
+export { normalizeArgs as _testNormalizeArgs, sessionKey as _testSessionKey, resolvePageSize as _testResolvePageSize };
+
 export async function run(args = {}, options = {}) {
   try {
     const norm = normalizeArgs(args);

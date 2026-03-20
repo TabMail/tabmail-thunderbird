@@ -313,4 +313,4 @@ function formatFromDetails(details) {
   return lines.join("\n");
 }
 
-
+export const _testExports = { safeGetCalendarName, isWithinTolerance, buildAttendeeLines, formatFromDetails, normalizeDate };

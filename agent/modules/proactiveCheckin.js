@@ -892,3 +892,18 @@ export async function sendTestProactiveNudge() {
     return false;
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+// Test-only exports (pure-logic helpers for unit testing)
+// ─────────────────────────────────────────────────────────────
+
+export const _testExports = {
+  _hashReminderList,
+  _formatDueLabel,
+  _resolveDueDateTime,
+  _getDateMidnightsInTimezone,
+  _getTimezoneOffsetMs,
+  _buildNewReminderMessage,
+  _buildNewRemindersMessage,
+  _buildDueApproachingMessage,
+};

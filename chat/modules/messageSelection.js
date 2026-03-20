@@ -183,3 +183,5 @@ export function handleMessageSelectionRequest(message) {
   // Return undefined for non-selection messages so other listeners can handle them
   return undefined;
 }
+
+export const _testExports = { generateUniqueId };

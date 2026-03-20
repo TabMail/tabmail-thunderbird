@@ -14,3 +14,4 @@ node_modules/
 
 # Test coverage reports
 coverage/
+cov_out/

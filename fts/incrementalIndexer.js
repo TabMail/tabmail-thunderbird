@@ -1733,3 +1733,15 @@ export async function clearPendingUpdates() {
 
 // Exported for testing
 export { _reconcileCleanupStaleEntries };
+
+export const _testExports = {
+  _getRetryConfig,
+  _shouldDropFailedUpdates,
+  _markResolveFailed,
+  _resetNoProgressCounter,
+  _incrementNoProgressCounter,
+  // State accessors for test setup/teardown
+  _getConsecutiveNoProgressCycles: () => _consecutiveNoProgressCycles,
+  _setConsecutiveNoProgressCycles: (v) => { _consecutiveNoProgressCycles = v; },
+  _getPendingUpdates: () => _pendingUpdates,
+};

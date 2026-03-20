@@ -1430,4 +1430,11 @@ export function normalizeUnicode(text) {
         .replace(/[\u00A0\u202F\u2007\u2008\u2009\u200A\u200B\u2028\u2029\u205F\u3000]/g, ' ')
         // Replace ellipsis character with three dots
         .replace(/\u2026/g, '...');
-} 
+}
+
+// Test-only exports for internal functions
+export const _testCacheInternals = {
+  getFullCache,
+  enforceGetFullCacheMaxEntries,
+  cleanupGetFullCache,
+};

@@ -1291,3 +1291,4 @@ export function cleanupOnMovedListeners() {
   }
 }
 
+export const _testHelpers = { _isMessageNotFoundError, _hasTabMailActionTags, _stripTabMailActionTagsFromList, _extractListsFromArgs };

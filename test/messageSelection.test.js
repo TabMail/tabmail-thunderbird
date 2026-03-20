@@ -54,7 +54,9 @@ import {
   initMessageSelectionListener,
   cleanupMessageSelectionListener,
   handleMessageSelectionRequest,
+  _testExports,
 } from '../chat/modules/messageSelection.js';
+const { generateUniqueId } = _testExports;
 
 describe('messageSelection', () => {
   beforeEach(() => {
@@ -150,6 +152,62 @@ describe('messageSelection', () => {
           selectionCount: 1,
         })
       );
+    });
+  });
+
+  // --- generateUniqueId ---
+  describe('generateUniqueId', () => {
+    it('resolves using weMsgId when available', async () => {
+      const result = await generateUniqueId({ weMsgId: 99 });
+      expect(result).toBe('unique-99');
+    });
+
+    it('falls back to messageId + folderUri when weMsgId is absent', async () => {
+      const result = await generateUniqueId({ messageId: 'msg-abc', folderUri: 'imap://folder' });
+      expect(result).toBe('unique-msg-abc');
+    });
+
+    it('returns null when neither weMsgId nor messageId is available', async () => {
+      const result = await generateUniqueId({});
+      expect(result).toBeNull();
+    });
+
+    it('falls back to messageId when weMsgId lookup returns null', async () => {
+      const { getUniqueMessageKey } = await import('../agent/modules/utils.js');
+      // First call (weMsgId path) returns null, second call (messageId path) returns a value
+      getUniqueMessageKey
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce('fallback-key');
+      const result = await generateUniqueId({ weMsgId: 1, messageId: 'msg-x', folderUri: 'uri' });
+      expect(result).toBe('fallback-key');
+    });
+
+    it('returns null when weMsgId lookup throws and no messageId', async () => {
+      const { getUniqueMessageKey } = await import('../agent/modules/utils.js');
+      getUniqueMessageKey.mockRejectedValueOnce(new Error('lookup failed'));
+      const result = await generateUniqueId({ weMsgId: 1 });
+      expect(result).toBeNull();
+    });
+
+    it('returns null when both weMsgId and messageId lookups fail', async () => {
+      const { getUniqueMessageKey } = await import('../agent/modules/utils.js');
+      getUniqueMessageKey
+        .mockRejectedValueOnce(new Error('fail1'))
+        .mockRejectedValueOnce(new Error('fail2'));
+      const result = await generateUniqueId({ weMsgId: 1, messageId: 'msg-y', folderUri: 'u' });
+      expect(result).toBeNull();
+    });
+
+    it('returns null when messageId is present but folderUri is missing entirely', async () => {
+      // folderUri must not be undefined for the fallback path — check the source
+      // msg.folderUri !== undefined is the condition
+      const result = await generateUniqueId({ messageId: 'msg-z' });
+      expect(result).toBeNull();
+    });
+
+    it('handles folderUri being empty string (still defined)', async () => {
+      const result = await generateUniqueId({ messageId: 'msg-w', folderUri: '' });
+      expect(result).toBe('unique-msg-w');
     });
   });
 });

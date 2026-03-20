@@ -531,6 +531,16 @@ function resolveDateRange(args) {
   return { fromIso, toIso };
 }
 
+export const _testExports = {
+  normalizeTimeInput,
+  makeDayKeyFromNormalized,
+  formatDayHeader,
+  insertLine,
+  formatHour,
+  resolveDateRange,
+  normalizeArgs,
+};
+
 async function resolveTargetCalendars(args) {
   let calendars = [];
   try {

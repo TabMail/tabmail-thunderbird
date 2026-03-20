@@ -31,6 +31,8 @@ function formatReminderEntry(text, dueDate, dueTime) {
   return `[Reminder] ${text}`;
 }
 
+export { formatReminderEntry as _testFormatReminderEntry };
+
 export async function run(args = {}, options = {}) {
   try {
     const rawText = typeof args?.text === "string" ? args.text : "";

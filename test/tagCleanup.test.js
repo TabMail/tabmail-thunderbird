@@ -40,7 +40,8 @@ globalThis.browser = {
   },
 };
 
-const { clearTabMailActionTags } = await import('../agent/modules/tagCleanup.js');
+const { clearTabMailActionTags, _testExports } = await import('../agent/modules/tagCleanup.js');
+const { _arrayEqualAsSet } = _testExports;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -109,5 +110,53 @@ describe('clearTabMailActionTags', () => {
     expect(result.cleared).toBe(true);
     expect(result.removed).toHaveLength(4);
     expect(browser.messages.update).toHaveBeenCalledWith(202, { tags: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// _arrayEqualAsSet — set equality comparison
+// ---------------------------------------------------------------------------
+describe('_arrayEqualAsSet', () => {
+  it('returns true for two empty arrays', () => {
+    expect(_arrayEqualAsSet([], [])).toBe(true);
+  });
+
+  it('returns true for identical arrays', () => {
+    expect(_arrayEqualAsSet(['a', 'b'], ['a', 'b'])).toBe(true);
+  });
+
+  it('returns true for same elements in different order', () => {
+    expect(_arrayEqualAsSet(['b', 'a'], ['a', 'b'])).toBe(true);
+  });
+
+  it('returns false for different lengths', () => {
+    expect(_arrayEqualAsSet(['a'], ['a', 'b'])).toBe(false);
+  });
+
+  it('returns false when element in first is not in second', () => {
+    expect(_arrayEqualAsSet(['a', 'c'], ['a', 'b'])).toBe(false);
+  });
+
+  it('treats non-array first argument as empty array', () => {
+    expect(_arrayEqualAsSet(null, [])).toBe(true);
+    expect(_arrayEqualAsSet(null, ['a'])).toBe(false);
+  });
+
+  it('treats non-array second argument as empty array', () => {
+    expect(_arrayEqualAsSet([], null)).toBe(true);
+    expect(_arrayEqualAsSet(['a'], null)).toBe(false);
+  });
+
+  it('treats both non-array arguments as empty arrays (equal)', () => {
+    expect(_arrayEqualAsSet(undefined, null)).toBe(true);
+  });
+
+  it('returns false for string input vs array', () => {
+    expect(_arrayEqualAsSet('abc', ['a', 'b', 'c'])).toBe(false);
+  });
+
+  it('handles numeric values', () => {
+    expect(_arrayEqualAsSet([1, 2, 3], [3, 2, 1])).toBe(true);
+    expect(_arrayEqualAsSet([1, 2], [1, 3])).toBe(false);
   });
 });

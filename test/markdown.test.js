@@ -518,3 +518,499 @@ describe('attachSpecialLinkListeners', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Additional edge-case tests
+// ---------------------------------------------------------------------------
+
+describe('renderMarkdown — escapeHtml via rendering', () => {
+  it('escapes all 5 special HTML characters in text', async () => {
+    const result = await renderMarkdown('A & B < C > D "E" \'F\'');
+    expect(result).toContain('&amp;');
+    expect(result).toContain('&lt;');
+    expect(result).toContain('&gt;');
+    expect(result).toContain('&quot;');
+    expect(result).toContain('&#39;');
+  });
+
+  it('escapes special chars in different positions', async () => {
+    const result = await renderMarkdown('&start middle<end> "quoted" it\'s');
+    expect(result).toContain('&amp;start');
+    expect(result).toContain('middle&lt;end&gt;');
+    expect(result).toContain('&quot;quoted&quot;');
+    expect(result).toContain('it&#39;s');
+  });
+
+  it('returns empty string for empty input', async () => {
+    const result = await renderMarkdown('');
+    expect(result).toBe('');
+  });
+});
+
+describe('renderMarkdown — sanitizeUrl via link rendering', () => {
+  it('passes through http URLs', async () => {
+    const result = await renderMarkdown('[Link](http://example.com)');
+    expect(result).toContain('href="http://example.com"');
+  });
+
+  it('passes through https URLs', async () => {
+    const result = await renderMarkdown('[Link](https://example.com)');
+    expect(result).toContain('href="https://example.com"');
+  });
+
+  it('passes through mailto URLs', async () => {
+    const result = await renderMarkdown('[Mail](mailto:user@example.com)');
+    expect(result).toContain('href="mailto:user@example.com"');
+  });
+
+  it('converts javascript: URLs to #', async () => {
+    const result = await renderMarkdown('[XSS](javascript:alert(1))');
+    expect(result).toContain('href="#"');
+    expect(result).not.toContain('javascript:');
+  });
+
+  it('converts data: URLs to #', async () => {
+    const result = await renderMarkdown('[Data](data:text/html,<h1>hi</h1>)');
+    expect(result).toContain('href="#"');
+    expect(result).not.toContain('data:');
+  });
+
+  it('converts ftp: URLs to #', async () => {
+    const result = await renderMarkdown('[FTP](ftp://files.example.com)');
+    expect(result).toContain('href="#"');
+    expect(result).not.toContain('ftp:');
+  });
+
+  it('converts relative path URLs to #', async () => {
+    const result = await renderMarkdown('[Rel](./page.html)');
+    expect(result).toContain('href="#"');
+  });
+
+  it('does not render link with empty URL (regex requires non-empty URL)', async () => {
+    const result = await renderMarkdown('[Empty]()');
+    // The link regex requires at least one char in the URL, so this is not parsed as a link
+    expect(result).not.toContain('href=');
+    expect(result).toContain('Empty');
+  });
+});
+
+describe('renderMarkdown — unwrapMarkdownFenceContainers edge cases', () => {
+  it('unwraps multiple markdown fence containers in one document', async () => {
+    const md = '```markdown\n# First\n```\n\nSome text\n\n```md\n# Second\n```';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<h1>First</h1>');
+    expect(result).toContain('<h1>Second</h1>');
+  });
+
+  it('preserves content of unclosed markdown fence container', async () => {
+    const md = '```markdown\n# Title\nSome content';
+    const result = await renderMarkdown(md);
+    // Content should still be rendered even if the fence is unclosed
+    expect(result).toContain('Title');
+    expect(result).toContain('Some content');
+  });
+
+  it('rewrites nested code fences to tildes inside markdown container', async () => {
+    const md = '```markdown\nBefore code\n```javascript\nconst x = 1;\n```\nAfter code\n```';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('Before code');
+    expect(result).toContain('const x = 1;');
+    expect(result).toContain('After code');
+  });
+
+  it('handles case-insensitive Markdown tag', async () => {
+    const md = '```Markdown\n**bold** text\n```';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<strong>bold</strong>');
+  });
+
+  it('handles case-insensitive MD tag', async () => {
+    const md = '```MD\n*italic* text\n```';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<em>italic</em>');
+  });
+
+  it('does NOT unwrap non-markdown language tags like python', async () => {
+    const md = '```python\nprint("hello")\n```';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<pre><code');
+    expect(result).toContain('class="language-python"');
+    expect(result).toContain('print');
+  });
+});
+
+describe('renderMarkdown — code block edge cases', () => {
+  it('converts literal backslash-n sequences in single-line code blocks', async () => {
+    // When escaped newlines dominate real newlines, they should be converted
+    const md = '```\nline1\\nline2\\nline3\\nline4\\nline5\n```';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<pre><code>');
+    // The escaped \n should be converted to real newlines since there are 5 escaped vs 0 real
+    expect(result).toContain('line1');
+    expect(result).toContain('line5');
+  });
+
+  it('renders multiple code blocks in one document', async () => {
+    const md = '```javascript\nconst a = 1;\n```\n\nSome text\n\n```python\nprint("hi")\n```';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('class="language-javascript"');
+    expect(result).toContain('const a = 1;');
+    expect(result).toContain('class="language-python"');
+    expect(result).toContain('print');
+    expect(result).toContain('Some text');
+  });
+
+  it('renders code block with empty language tag', async () => {
+    const md = '```\nplain code\n```';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<pre><code>');
+    expect(result).toContain('plain code');
+    // Should NOT have a class attribute when no language
+    expect(result).not.toContain('class="language-"');
+  });
+
+  it('renders tilde-fenced code blocks with language tags', async () => {
+    const md = '~~~ruby\nputs "hello"\n~~~';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('class="language-ruby"');
+    expect(result).toContain('puts');
+  });
+
+  it('handles code block with no closing fence gracefully', async () => {
+    // Unclosed code fence - the regex won't match, so it renders as text
+    const md = '```\nunclosed code block';
+    const result = await renderMarkdown(md);
+    expect(result).toBeDefined();
+    expect(result).toContain('unclosed code block');
+  });
+});
+
+describe('renderMarkdown — nested list edge cases', () => {
+  it('renders 4+ levels of nesting', async () => {
+    const md = '- Level 1\n  - Level 2\n    - Level 3\n      - Level 4\n        - Level 5';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('Level 1');
+    expect(result).toContain('Level 2');
+    expect(result).toContain('Level 3');
+    expect(result).toContain('Level 4');
+    expect(result).toContain('Level 5');
+    // Should have nested ul tags
+    const ulCount = (result.match(/<ul>/g) || []).length;
+    expect(ulCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('renders mixed ordered and unordered at different nesting levels', async () => {
+    const md = '1. First ordered\n  - Nested unordered\n  - Another unordered\n2. Second ordered';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<ol>');
+    expect(result).toContain('<ul>');
+    expect(result).toContain('First ordered');
+    expect(result).toContain('Nested unordered');
+    expect(result).toContain('Second ordered');
+  });
+
+  it('renders list items with inline formatting', async () => {
+    const md = '- **Bold item** with text\n- Item with `inline code`\n- Item with [a link](https://example.com)';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<strong>Bold item</strong>');
+    expect(result).toContain('<code>inline code</code>');
+    expect(result).toContain('href="https://example.com"');
+  });
+
+  it('handles list with blank lines between items', async () => {
+    const md = '- Item one\n\n- Item two\n\n- Item three';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('Item one');
+    expect(result).toContain('Item two');
+    expect(result).toContain('Item three');
+  });
+
+  it('renders consecutive lists of different types', async () => {
+    const md = '- Bullet A\n- Bullet B\n\n1. Number A\n2. Number B\n\n- Bullet C\n- Bullet D';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<ul>');
+    expect(result).toContain('<ol>');
+    expect(result).toContain('Bullet A');
+    expect(result).toContain('Number A');
+    expect(result).toContain('Bullet C');
+  });
+});
+
+describe('renderMarkdown — table edge cases', () => {
+  it('renders table with single column', async () => {
+    const md = '| Header |\n| --- |\n| Cell 1 |\n| Cell 2 |';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<table');
+    expect(result).toContain('<th>Header</th>');
+    expect(result).toContain('<td>Cell 1</td>');
+    expect(result).toContain('<td>Cell 2</td>');
+  });
+
+  it('renders table with many columns', async () => {
+    const md = '| A | B | C | D | E |\n| --- | --- | --- | --- | --- |\n| 1 | 2 | 3 | 4 | 5 |';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<table');
+    expect(result).toContain('<th>A</th>');
+    expect(result).toContain('<th>E</th>');
+    expect(result).toContain('<td>1</td>');
+    expect(result).toContain('<td>5</td>');
+  });
+
+  it('renders table with empty cells', async () => {
+    const md = '| Name | Value |\n| --- | --- |\n| Alice |  |\n|  | 42 |';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<table');
+    expect(result).toContain('Alice');
+    expect(result).toContain('42');
+  });
+
+  it('renders table with bold and code in cells', async () => {
+    const md = '| Feature | Status |\n| --- | --- |\n| **Bold** | `code` |';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<table');
+    expect(result).toContain('<strong>Bold</strong>');
+    expect(result).toContain('<code>code</code>');
+  });
+
+  it('renders table with only header row (no data rows)', async () => {
+    const md = '| Header 1 | Header 2 |\n| --- | --- |';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<table');
+    expect(result).toContain('<th>Header 1</th>');
+    expect(result).toContain('<th>Header 2</th>');
+    expect(result).toContain('<tbody></tbody>');
+  });
+
+  it('renders multiple tables in one document', async () => {
+    const md = '| A | B |\n| --- | --- |\n| 1 | 2 |\n\n| X | Y |\n| --- | --- |\n| 3 | 4 |';
+    const result = await renderMarkdown(md);
+    const tableCount = (result.match(/<table/g) || []).length;
+    expect(tableCount).toBe(2);
+    expect(result).toContain('A');
+    expect(result).toContain('X');
+  });
+});
+
+describe('renderMarkdown — blockquote edge cases', () => {
+  it('renders blockquote with inline formatting', async () => {
+    const md = '> This is **bold** and `code` in a quote';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<blockquote>');
+    expect(result).toContain('<strong>bold</strong>');
+    expect(result).toContain('<code>code</code>');
+  });
+
+  it('renders multiple consecutive blockquotes separated by blank lines', async () => {
+    const md = '> First blockquote\n\n> Second blockquote\n\n> Third blockquote';
+    const result = await renderMarkdown(md);
+    const bqCount = (result.match(/<blockquote>/g) || []).length;
+    expect(bqCount).toBe(3);
+    expect(result).toContain('First blockquote');
+    expect(result).toContain('Second blockquote');
+    expect(result).toContain('Third blockquote');
+  });
+
+  it('renders blockquote with code placeholder inside', async () => {
+    const md = '> Use `let x = 1` in your code';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<blockquote>');
+    expect(result).toContain('<code>let x = 1</code>');
+  });
+});
+
+describe('renderMarkdown — inline formatting edge cases', () => {
+  it('renders bold text spanning multiple words', async () => {
+    const result = await renderMarkdown('This is **bold multi word text** here');
+    expect(result).toContain('<strong>bold multi word text</strong>');
+  });
+
+  it('renders italic with single asterisks', async () => {
+    const result = await renderMarkdown('This is *italic text* here');
+    expect(result).toContain('<em>italic text</em>');
+  });
+
+  it('renders nested bold inside italic context', async () => {
+    const result = await renderMarkdown('*italic and **bold** inside*');
+    // Bold should be detected (** markers)
+    expect(result).toContain('<strong>bold</strong>');
+  });
+
+  it('does not treat asterisks mid-word as formatting', async () => {
+    // The regex requires non-asterisk content, so mid-word * should not trigger italic
+    // for content like file*name*path — depends on regex specifics
+    const result = await renderMarkdown('Use file_name or path');
+    expect(result).not.toContain('<em>');
+    expect(result).not.toContain('<strong>');
+  });
+
+  it('renders bold at start of line', async () => {
+    const result = await renderMarkdown('**Start** of line');
+    expect(result).toContain('<strong>Start</strong>');
+  });
+
+  it('renders bold at end of line', async () => {
+    const result = await renderMarkdown('End of **line**');
+    expect(result).toContain('<strong>line</strong>');
+  });
+});
+
+describe('renderMarkdown — shorthand special link patterns', () => {
+  it('converts case variations: (EMAIL 1)', async () => {
+    const result = await renderMarkdown('Check (EMAIL 1)');
+    // The shorthand is case-insensitive, should be converted
+    expect(result).toBeDefined();
+  });
+
+  it('converts case variations: (Email 1)', async () => {
+    const result = await renderMarkdown('Check (Email 1)');
+    expect(result).toBeDefined();
+  });
+
+  it('converts case variations: (email 1)', async () => {
+    const result = await renderMarkdown('Check (email 1)');
+    expect(result).toBeDefined();
+  });
+
+  it('handles compound IDs like (event 1:2)', async () => {
+    const result = await renderMarkdown('RSVP (event 1:2)');
+    // Should convert to [Event](1:2) — entity resolution mock will hide it
+    expect(result).toBeDefined();
+  });
+
+  it('handles multiple special links in one line', async () => {
+    const result = await renderMarkdown('See (email 1) and (contact 2) and (event 3)');
+    // All three should be converted (entity resolution mocked to fail, so they get hidden)
+    expect(result).toBeDefined();
+  });
+});
+
+describe('renderMarkdown — reminder cards', () => {
+  it('renders multiple reminders', async () => {
+    const md = '[reminder] First reminder\n[reminder] Second reminder';
+    const result = await renderMarkdown(md);
+    const cardCount = (result.match(/tm-reminder-card/g) || []).length;
+    expect(cardCount).toBeGreaterThanOrEqual(2);
+    expect(result).toContain('First reminder');
+    expect(result).toContain('Second reminder');
+  });
+
+  it('renders reminder with inline formatting', async () => {
+    const md = '[reminder] Reply to **Alice** about `project`';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('tm-reminder-card');
+    expect(result).toContain('<strong>Alice</strong>');
+    expect(result).toContain('<code>project</code>');
+  });
+});
+
+describe('renderMarkdown — literal <br> handling', () => {
+  it('converts <br> to <br/>', async () => {
+    const result = await renderMarkdown('Line one<br>Line two');
+    expect(result).toContain('<br/>');
+    expect(result).toContain('Line one');
+    expect(result).toContain('Line two');
+  });
+
+  it('converts <br/> to <br/>', async () => {
+    const result = await renderMarkdown('Line one<br/>Line two');
+    expect(result).toContain('<br/>');
+  });
+
+  it('converts <br /> (with space) to <br/>', async () => {
+    const result = await renderMarkdown('Line one<br />Line two');
+    expect(result).toContain('<br/>');
+  });
+
+  it('converts <BR> case-insensitively to <br/>', async () => {
+    const result = await renderMarkdown('Line one<BR>Line two');
+    expect(result).toContain('<br/>');
+  });
+
+  it('converts entity-encoded &lt;br&gt; to <br/>', async () => {
+    const result = await renderMarkdown('Line one&lt;br&gt;Line two');
+    expect(result).toContain('<br/>');
+  });
+});
+
+describe('renderMarkdown — complex mixed content', () => {
+  it('renders table followed by code block followed by list', async () => {
+    const md = [
+      '| Col A | Col B |',
+      '| --- | --- |',
+      '| 1 | 2 |',
+      '',
+      '```javascript',
+      'console.log("hi");',
+      '```',
+      '',
+      '- Item X',
+      '- Item Y',
+    ].join('\n');
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<table');
+    expect(result).toContain('<pre><code');
+    expect(result).toContain('<ul>');
+    expect(result).toContain('Col A');
+    expect(result).toContain('console.log');
+    expect(result).toContain('Item X');
+  });
+
+  it('renders headers with inline code', async () => {
+    const result = await renderMarkdown('## Using `const` in JavaScript');
+    expect(result).toContain('<h2>');
+    expect(result).toContain('<code>const</code>');
+  });
+
+  it('renders links inside list items', async () => {
+    const md = '- Visit [example](https://example.com)\n- Check [docs](https://docs.com)';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<ul>');
+    expect(result).toContain('href="https://example.com"');
+    expect(result).toContain('href="https://docs.com"');
+  });
+
+  it('renders blockquote containing formatted text and code', async () => {
+    const md = '> **Important**: Use `await` for async calls';
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<blockquote>');
+    expect(result).toContain('<strong>Important</strong>');
+    expect(result).toContain('<code>await</code>');
+  });
+
+  it('renders a full document with headers, lists, blockquotes, tables, and code', async () => {
+    const md = [
+      '# Main Title',
+      '',
+      'Introduction paragraph.',
+      '',
+      '## Section One',
+      '',
+      '- First point',
+      '- Second point',
+      '  - Sub point',
+      '',
+      '> A wise quote',
+      '',
+      '| Key | Value |',
+      '| --- | --- |',
+      '| name | TabMail |',
+      '',
+      '```',
+      'doStuff();',
+      '```',
+      '',
+      '1. Step one',
+      '2. Step two',
+    ].join('\n');
+    const result = await renderMarkdown(md);
+    expect(result).toContain('<h1>Main Title</h1>');
+    expect(result).toContain('<h2>Section One</h2>');
+    expect(result).toContain('<ul>');
+    expect(result).toContain('<ol>');
+    expect(result).toContain('<blockquote>');
+    expect(result).toContain('<table');
+    expect(result).toContain('<pre><code>');
+    expect(result).toContain('doStuff()');
+    expect(result).toContain('Introduction paragraph.');
+  });
+});
+

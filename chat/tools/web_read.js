@@ -159,6 +159,8 @@ function extractTextFromHTML(html) {
  * @param {string} args.url - The URL to read
  * @returns {Promise<string|object>} - Content string or error object
  */
+export { isPathAllowedByRobots as _testIsPathAllowedByRobots };
+
 export async function run(args = {}, options = {}) {
   try {
     const url = args?.url;

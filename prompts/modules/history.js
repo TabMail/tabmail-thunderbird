@@ -494,6 +494,9 @@ export async function clearChatHistory() {
     }
 }
 
+// Test-only exports for pure functions
+export const _testExports = { formatSessionTime, escapeHtml, highlightSearchTerms };
+
 /**
  * Initialize history tab event handlers
  */

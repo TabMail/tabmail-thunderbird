@@ -90,6 +90,15 @@ function formatTimestampWithTimezone(timestamp) {
   };
 }
 
+export { formatTimestampWithTimezone as _testFormatTimestampWithTimezone };
+
+// Test-only exports for pure internal functions
+export const _testExports = {
+  calculateDateRange,
+  isWithinWeeklyScheduleWindow,
+  pickDueMaintenanceType,
+};
+
 // Maintenance schedule configuration
 const MAINTENANCE_SCHEDULES = {
   hourly: {

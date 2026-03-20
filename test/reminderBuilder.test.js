@@ -70,7 +70,12 @@ globalThis.browser = {
 // Import
 // ---------------------------------------------------------------------------
 
-const { formatRemindersForDisplay, getDisplayedReminderHashes } = await import('../agent/modules/reminderBuilder.js');
+const { formatRemindersForDisplay, getDisplayedReminderHashes, buildReminderList, getFilteredReminders, getRandomReminders } = await import('../agent/modules/reminderBuilder.js');
+
+// Get mocked modules for controlling behavior in async tests
+const { buildInboxContext } = await import('../agent/modules/inboxContext.js');
+const { getKBReminders } = await import('../agent/modules/kbReminderGenerator.js');
+const { getSummaryWithHeaderId } = await import('../agent/modules/summaryGenerator.js');
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -260,5 +265,295 @@ describe('getDisplayedReminderHashes', () => {
 
     formatRemindersForDisplay([{ content: 'Second', hash: 'second' }]);
     expect(getDisplayedReminderHashes()).toEqual(['second']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildReminderList — combines message and KB reminders
+// ---------------------------------------------------------------------------
+describe('buildReminderList', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default: empty inbox, no KB reminders
+    buildInboxContext.mockResolvedValue(null);
+    getKBReminders.mockResolvedValue([]);
+  });
+
+  it('returns empty reminders when both sources are empty', async () => {
+    buildInboxContext.mockResolvedValue('[]');
+    const result = await buildReminderList();
+    expect(result.reminders).toEqual([]);
+    expect(result.counts.total).toBe(0);
+    expect(result.counts.message).toBe(0);
+    expect(result.counts.kb).toBe(0);
+  });
+
+  it('includes KB reminders with source tag', async () => {
+    buildInboxContext.mockResolvedValue('[]');
+    getKBReminders.mockResolvedValue([
+      { content: 'Follow up on project', dueDate: null },
+    ]);
+    const result = await buildReminderList();
+    expect(result.reminders.length).toBe(1);
+    expect(result.reminders[0].source).toBe('kb');
+    expect(result.reminders[0].content).toBe('Follow up on project');
+    expect(result.counts.kb).toBe(1);
+  });
+
+  it('includes message reminders when summaries have reminders', async () => {
+    buildInboxContext.mockResolvedValue(JSON.stringify([
+      { uniqueId: 'u1', internalId: 'm1', subject: 'Test', from: 'alice@test.com', headerMessageId: '<abc@test>' },
+    ]));
+    getSummaryWithHeaderId.mockResolvedValue({
+      reminder: { content: 'Reply to Alice', dueDate: null },
+    });
+
+    const result = await buildReminderList();
+    expect(result.reminders.length).toBe(1);
+    expect(result.reminders[0].source).toBe('message');
+    expect(result.reminders[0].content).toBe('Reply to Alice');
+    expect(result.counts.message).toBe(1);
+  });
+
+  it('skips messages that have been replied to', async () => {
+    buildInboxContext.mockResolvedValue(JSON.stringify([
+      { uniqueId: 'u1', internalId: 'm1', subject: 'Test', replied: true },
+    ]));
+
+    const result = await buildReminderList();
+    expect(result.reminders.length).toBe(0);
+  });
+
+  it('skips messages with no summary data', async () => {
+    buildInboxContext.mockResolvedValue(JSON.stringify([
+      { uniqueId: 'u1', internalId: 'm1', subject: 'Test' },
+    ]));
+    getSummaryWithHeaderId.mockResolvedValue(null);
+
+    const result = await buildReminderList();
+    expect(result.reminders.length).toBe(0);
+  });
+
+  it('skips messages with empty reminder content', async () => {
+    buildInboxContext.mockResolvedValue(JSON.stringify([
+      { uniqueId: 'u1', internalId: 'm1', subject: 'Test' },
+    ]));
+    getSummaryWithHeaderId.mockResolvedValue({
+      reminder: { content: '   ' },
+    });
+
+    const result = await buildReminderList();
+    expect(result.reminders.length).toBe(0);
+  });
+
+  it('sorts reminders by due date (dates before nulls)', async () => {
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const future = new Date();
+    future.setDate(future.getDate() + 5);
+    const futureStr = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, '0')}-${String(future.getDate()).padStart(2, '0')}`;
+
+    buildInboxContext.mockResolvedValue('[]');
+    getKBReminders.mockResolvedValue([
+      { content: 'No date', dueDate: null },
+      { content: 'Future', dueDate: futureStr },
+      { content: 'Today', dueDate: todayStr },
+    ]);
+
+    const result = await buildReminderList();
+    expect(result.reminders.length).toBe(3);
+    expect(result.reminders[0].content).toBe('Today');
+    expect(result.reminders[1].content).toBe('Future');
+    expect(result.reminders[2].content).toBe('No date');
+  });
+
+  it('has generatedAt timestamp', async () => {
+    buildInboxContext.mockResolvedValue('[]');
+    const before = Date.now();
+    const result = await buildReminderList();
+    const after = Date.now();
+    expect(result.generatedAt).toBeGreaterThanOrEqual(before);
+    expect(result.generatedAt).toBeLessThanOrEqual(after);
+  });
+
+  it('returns error shape on unexpected failure', async () => {
+    buildInboxContext.mockRejectedValue(new Error('network error'));
+    getKBReminders.mockRejectedValue(new Error('network error'));
+
+    const result = await buildReminderList();
+    expect(result.reminders).toEqual([]);
+    expect(result.counts.total).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFilteredReminders — filters from buildReminderList results
+// ---------------------------------------------------------------------------
+describe('getFilteredReminders', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    buildInboxContext.mockResolvedValue('[]');
+  });
+
+  it('returns all reminders when no filters specified', async () => {
+    getKBReminders.mockResolvedValue([
+      { content: 'A', dueDate: null },
+      { content: 'B', dueDate: null },
+    ]);
+
+    const result = await getFilteredReminders();
+    expect(result.length).toBe(2);
+  });
+
+  it('filters by source', async () => {
+    buildInboxContext.mockResolvedValue(JSON.stringify([
+      { uniqueId: 'u1', internalId: 'm1', subject: 'Test', headerMessageId: '<x@y>' },
+    ]));
+    getSummaryWithHeaderId.mockResolvedValue({
+      reminder: { content: 'Message reminder' },
+    });
+    getKBReminders.mockResolvedValue([
+      { content: 'KB reminder' },
+    ]);
+
+    const kbOnly = await getFilteredReminders({ source: 'kb' });
+    expect(kbOnly.every(r => r.source === 'kb')).toBe(true);
+
+    const msgOnly = await getFilteredReminders({ source: 'message' });
+    expect(msgOnly.every(r => r.source === 'message')).toBe(true);
+  });
+
+  it('filters by urgentOnly (only reminders with due dates)', async () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+
+    getKBReminders.mockResolvedValue([
+      { content: 'Has date', dueDate: tomorrowStr },
+      { content: 'No date', dueDate: null },
+    ]);
+
+    const result = await getFilteredReminders({ urgentOnly: true });
+    expect(result.length).toBe(1);
+    expect(result[0].content).toBe('Has date');
+  });
+
+  it('limits results by maxCount', async () => {
+    getKBReminders.mockResolvedValue([
+      { content: 'A' },
+      { content: 'B' },
+      { content: 'C' },
+    ]);
+
+    const result = await getFilteredReminders({ maxCount: 2 });
+    expect(result.length).toBe(2);
+  });
+
+  it('returns empty array on error', async () => {
+    buildInboxContext.mockRejectedValue(new Error('fail'));
+    getKBReminders.mockRejectedValue(new Error('fail'));
+
+    const result = await getFilteredReminders();
+    expect(result).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getRandomReminders — prioritizes urgent, fills with random
+// ---------------------------------------------------------------------------
+describe('getRandomReminders', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    buildInboxContext.mockResolvedValue('[]');
+  });
+
+  it('returns empty result when no reminders exist', async () => {
+    getKBReminders.mockResolvedValue([]);
+
+    const result = await getRandomReminders(2);
+    expect(result.reminders).toEqual([]);
+    expect(result.urgentCount).toBe(0);
+    expect(result.totalCount).toBe(0);
+  });
+
+  it('includes all urgent reminders (overdue/today/tomorrow)', async () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+
+    getKBReminders.mockResolvedValue([
+      { content: 'Overdue', dueDate: yesterdayStr },
+      { content: 'Today', dueDate: todayStr },
+      { content: 'Tomorrow', dueDate: tomorrowStr },
+    ]);
+
+    const result = await getRandomReminders(5);
+    expect(result.urgentCount).toBe(3);
+    expect(result.reminders.length).toBe(3);
+  });
+
+  it('fills remaining slots with non-urgent reminders', async () => {
+    const future = new Date();
+    future.setDate(future.getDate() + 30);
+    const futureStr = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, '0')}-${String(future.getDate()).padStart(2, '0')}`;
+
+    getKBReminders.mockResolvedValue([
+      { content: 'Far future A', dueDate: futureStr },
+      { content: 'Far future B', dueDate: futureStr },
+      { content: 'No date', dueDate: null },
+    ]);
+
+    const result = await getRandomReminders(2);
+    expect(result.reminders.length).toBe(2);
+    expect(result.urgentCount).toBe(0);
+    expect(result.totalCount).toBe(3);
+  });
+
+  it('returns urgent reminders even when count is smaller', async () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+    getKBReminders.mockResolvedValue([
+      { content: 'Urgent 1', dueDate: yesterdayStr },
+      { content: 'Urgent 2', dueDate: todayStr },
+    ]);
+
+    // Requesting 1, but there are 2 urgent — all urgent should still be included
+    const result = await getRandomReminders(1);
+    expect(result.urgentCount).toBe(2);
+    expect(result.reminders.length).toBe(2);
+  });
+
+  it('handles invalid date formats gracefully', async () => {
+    getKBReminders.mockResolvedValue([
+      { content: 'Bad date', dueDate: 'not-valid' },
+      { content: 'Good', dueDate: null },
+    ]);
+
+    const result = await getRandomReminders(5);
+    // Should not crash, both should be in the result
+    expect(result.reminders.length).toBe(2);
+    expect(result.totalCount).toBe(2);
+  });
+
+  it('returns error shape on failure', async () => {
+    buildInboxContext.mockRejectedValue(new Error('fail'));
+    getKBReminders.mockRejectedValue(new Error('fail'));
+
+    const result = await getRandomReminders(2);
+    expect(result.reminders).toEqual([]);
+    expect(result.urgentCount).toBe(0);
+    expect(result.totalCount).toBe(0);
   });
 });

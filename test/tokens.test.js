@@ -105,4 +105,66 @@ describe('getTokenParts', () => {
     const result = TabMail.getTokenParts('e.g.');
     expect(result).toEqual(['e', '.', 'g', '.']);
   });
+
+  it('handles text with only spaces', () => {
+    const result = TabMail.getTokenParts('   ');
+    expect(result).toEqual([' ', ' ', ' ']);
+  });
+
+  it('handles text with only newlines', () => {
+    const result = TabMail.getTokenParts('\n\n');
+    expect(result).toEqual(['\n', '\n']);
+  });
+
+  it('handles text with mixed whitespace (spaces and tabs)', () => {
+    const result = TabMail.getTokenParts(' \t ');
+    expect(result).toEqual([' ', '\t', ' ']);
+  });
+
+  it('handles unicode accented characters as word tokens', () => {
+    // Accented chars have code > 127, treated as word characters
+    const result = TabMail.getTokenParts('cafe\u0301');
+    expect(result).toEqual(['cafe\u0301']);
+  });
+
+  it('handles emoji characters as word tokens (code > 127)', () => {
+    const result = TabMail.getTokenParts('hi there');
+    // Emoji codepoints are > 127 so treated as word chars
+    // "hi" = word, " " = space, "" = word (single codepoint > 127), " " = space, "there" = word
+    expect(result.join('')).toBe('hi there');
+    expect(result[0]).toBe('hi');
+    expect(result[2]).toContain('');
+  });
+
+  it('handles hyphens as punctuation tokens', () => {
+    const result = TabMail.getTokenParts('well-known');
+    expect(result).toEqual(['well', '-', 'known']);
+  });
+
+  it('handles colons and semicolons', () => {
+    const result = TabMail.getTokenParts('a:b;c');
+    expect(result).toEqual(['a', ':', 'b', ';', 'c']);
+  });
+
+  it('handles at-sign and hash', () => {
+    const result = TabMail.getTokenParts('@user #tag');
+    expect(result).toEqual(['@', 'user', ' ', '#', 'tag']);
+  });
+
+  it('handles quotes', () => {
+    const result = TabMail.getTokenParts('"hi"');
+    expect(result).toEqual(['"', 'hi', '"']);
+  });
+
+  it('handles single character input', () => {
+    expect(TabMail.getTokenParts('a')).toEqual(['a']);
+    expect(TabMail.getTokenParts('.')).toEqual(['.']);
+    expect(TabMail.getTokenParts('\n')).toEqual(['\n']);
+  });
+
+  it('concatenation reproduces original for complex text', () => {
+    const text = 'Dear Mr. Smith,\n\nPlease see attached (v2.1).\n\nThanks!';
+    const tokens = TabMail.getTokenParts(text);
+    expect(tokens.join('')).toBe(text);
+  });
 });

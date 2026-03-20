@@ -79,6 +79,8 @@ async function normalizeArgs(args = {}) {
   return out;
 }
 
+export const _testExports = { normalizeArgs };
+
 export async function run(args = {}, options = {}) {
   try {
     log(

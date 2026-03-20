@@ -25,6 +25,8 @@ function _arrayEqualAsSet(a, b) {
  * @param {browser.messages.MessageHeader|null} [headerHint=null] - optional already-fetched header
  * @returns {Promise<{cleared: boolean, removed: string[]}>}
  */
+export const _testExports = { _arrayEqualAsSet };
+
 export async function clearTabMailActionTags(weId, reason = "", headerHint = null) {
   try {
     const id = Number(weId || 0);

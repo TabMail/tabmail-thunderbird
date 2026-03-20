@@ -14,7 +14,7 @@ export function resetPaginationSessions() {
   } catch (_) {}
 }
 
-function normalizeArgs(args = {}) {
+export function normalizeArgs(args = {}) {
   const norm = {
     query: (args?.query || "").trim(),
     from_date: args?.from_date || "",
@@ -26,12 +26,12 @@ function normalizeArgs(args = {}) {
   return norm;
 }
 
-function sessionKey(args) {
+export function sessionKey(args) {
   const norm = normalizeArgs(args);
   return JSON.stringify(norm);
 }
 
-function resolvePageSize() {
+export function resolvePageSize() {
   const defSize = Number(CHAT_SETTINGS.searchPageSizeDefault) || 5;
   const maxSize = Number(CHAT_SETTINGS.searchPageSizeMax) || 50;
   let size = defSize;
