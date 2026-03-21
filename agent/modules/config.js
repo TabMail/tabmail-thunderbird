@@ -460,8 +460,8 @@ export const SETTINGS = {
     // Event logger configuration for debugging race conditions
     // Captures ALL message events immediately for later inspection
     eventLogger: {
-        // Enable/disable event logging (default: true)
-        enabled: true,
+        // Enable/disable event logging (default: false — re-enable if debugging race conditions)
+        enabled: false,
         // Debounce persistence to avoid storage thrashing (ms)
         persistDebounceMs: 1000,
         // Max in-memory events between persist cycles (prevents burst-induced bloat)
