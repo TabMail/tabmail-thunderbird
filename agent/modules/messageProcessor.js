@@ -12,7 +12,10 @@ import { log } from "./utils.js";
 /**
  * Unified pipeline for a single message:
  *   - Internal/self-sent: summary + tm_none tag (no action generation, no reply)
- *   - External: summary ⇒ action ⇒ reply
+ *   - External: SA (summary→action) ∥ R (reply) in parallel
+ *
+ * SA and R are independent — reply does not use summary/action output.
+ * Within SA, action depends on summary (uses blurb/todos as prompt vars).
  *
  * This module is intentionally separate to avoid circular static imports.
  * It dynamically imports replyGenerator.js when it needs to trigger reply.
@@ -46,14 +49,14 @@ export async function processMessage(
     const isInternal = await isInternalSender(messageHeader);
     if (isInternal) {
       log(`[ProcessMessage] Internal/self-sent message ${messageHeader.id}: applying tm_none (skip action/reply)`);
-      
+
       // Get summary for internal messages (useful for search/context)
       const summaryObj = await getSummary(messageHeader, isPriority);
       const summaryOk = !!summaryObj;
-      
+
       // Apply tm_none tag to mark as processed
       await applyPriorityTag(messageHeader.id, "none");
-      
+
       log(`[ProcessMessage] Completed internal message ${messageHeader.id} - Summary: ${summaryOk}, Tag: tm_none`);
       return {
         ok: true,
@@ -65,99 +68,34 @@ export async function processMessage(
         isInternal: true,
       };
     }
-    
+
     // 1. Pre-filter: Check if this email should skip cached reply generation
-    // We do a quick check first without fetching full message (only checking author)
-    // Full check will happen later if we need to generate summary/action
     const quickFilter = await analyzeEmailForReplyFilter(messageHeader);
     log(`[ProcessMessage] Quick filter for ${messageHeader.id}: isNoReply=${quickFilter.isNoReply}, hasUnsubscribe=${quickFilter.hasUnsubscribe}, skipCachedReply=${quickFilter.skipCachedReply}`);
-    
-    // 2. Summary (cached inside summary.js)
-    // NOTE: We continue even if summary fails to ensure all cache timestamps get touched
-    const summaryObj = await getSummary(messageHeader, isPriority);
-    log(`[ProcessMessage] Summary result for ${messageHeader.id}: ${summaryObj ? 'SUCCESS' : 'FAILED/NULL'}`);
-    
-    // 2. Action suggestion + tag application
-    // NOTE: We process actions even if summary failed to ensure cache timestamps are touched
-    let action = null;
-    let actionOk = false;
-    try {
-      log(`[ProcessMessage] >>> Calling getAction for message ${messageHeader.id}`);
-      action = await getAction(messageHeader, { forceRecompute });
-      log(`[ProcessMessage] <<< Action result for ${messageHeader.id}: ${action || 'FAILED/NULL'}`);
-      actionOk = !!action;
-      
-      // Only apply tags if we have both a valid summary and action
-      if (summaryObj && action) {
-        // If action is `reply` but already replied, we set it to `none`
-        // Use tmHdr experiment to read native nsIMsgDBHdr Replied flag (TB 142 MV3)
-        try {
-          const nativeArgs = { folderURI: messageHeader.folder?.id, key: messageHeader.id };
-          try {
-            const pathStr = messageHeader.folder?.path;
-            let nativeMsgKey = -1;
-            try {
-              const weId = nativeArgs.key;
-              const mk = await browser.tmHdr.getMsgKey(nativeArgs.folderURI, weId, pathStr);
-              if (typeof mk === "number" && mk >= 0) nativeMsgKey = mk;
-            } catch (e) {
-              console.log(`[ReplyDetect] getMsgKey failed for ${messageHeader.id}: ${e}`);
-            }
-            const alreadyReplied = await browser.tmHdr.getReplied(nativeArgs.folderURI, nativeMsgKey, pathStr, messageHeader.headerMessageId || "");
-            if (action === "reply" && alreadyReplied) {
-              action = "none";
-              await applyPriorityTag(messageHeader.id, "none");
-              console.log(
-                `[ReplyDetect] native replied=${alreadyReplied}, action set to "none" for message ${messageHeader.id} ('${messageHeader.subject}') because it was already replied (native)`
-              );
-            }
-          } catch (rdErr) {
-            console.log(`[ReplyDetect] Error checking native replied flag for ${messageHeader.id}: ${rdErr}`);
-          }
-        } catch (rdErr) {
-          console.log(`[ReplyDetect] Error checking native replied flag for ${messageHeader.id}: ${rdErr}`);
-        }
-        // Now apply the action tag
-        log(`[ProcessMessage] Calling applyActionTags for ${messageHeader.id} with action=${action} summaryId=${summaryObj.id}`);
-        await applyActionTags([messageHeader], { [summaryObj.id]: action });
-        log(`[ProcessMessage] applyActionTags completed for ${messageHeader.id}`);
-      } else {
-        log(`processMessage: skipping tag application for message ${messageHeader.id} - summaryObj=${!!summaryObj}, action=${action}`);
-      }
-    } catch (actErr) {
-      log(
-        `processMessage: action generation/tag application failed for message ${messageHeader.id}: ${actErr}`
-      );
-      actionOk = false;
-    }
 
-    // 3. Pre-cache reply (dynamic import to avoid static cycle)
-    // NOTE: We skip reply caching for no-reply addresses
-    let replySuccess = false;
+    // Launch SA (summary→action) and R (reply) in parallel.
+    // R does NOT depend on summary/action output — only needs body text.
+    const saPromise = _processSA(messageHeader, { isPriority, forceRecompute });
+
+    let replyPromise;
     if (quickFilter.skipCachedReply) {
       log(`[ProcessMessage] Skipping cached reply for ${messageHeader.id} - isNoReply=${quickFilter.isNoReply}`);
-      replySuccess = false; // Mark as not generated (intentionally skipped)
+      replyPromise = Promise.resolve(false);
     } else {
-      try {
-        const { createReply } = await import("./replyGenerator.js");
-        await createReply(messageHeader.id, isPriority);
-        replySuccess = true;
-        log(`[ProcessMessage] Reply result for ${messageHeader.id}: SUCCESS`);
-      } catch (repErr) {
-        log(
-          `[ProcessMessage] Reply result for ${messageHeader.id}: FAILED - ${repErr}`
-        );
-        replySuccess = false;
-      }
+      replyPromise = _processR(messageHeader, { isPriority });
     }
-    
-    // Final summary log
-    log(`[ProcessMessage] Completed processing for ${messageHeader.id} - Summary: ${!!summaryObj}, Action: ${action || 'null'}, Reply: ${replySuccess}, Filtered: ${quickFilter.skipCachedReply}`);
 
-    const summaryOk = !!summaryObj;
+    const [saResult, replySuccess] = await Promise.all([saPromise, replyPromise]);
+
+    const summaryOk = saResult.summaryOk;
+    const actionOk = saResult.actionOk;
+    const action = saResult.action;
     const replySkipped = !!quickFilter?.skipCachedReply;
     const replyOk = replySkipped ? true : !!replySuccess;
     const ok = summaryOk && actionOk && replyOk;
+
+    // Final summary log
+    log(`[ProcessMessage] Completed processing for ${messageHeader.id} - Summary: ${summaryOk}, Action: ${action || 'null'}, Reply: ${replySuccess}, Filtered: ${quickFilter.skipCachedReply}`);
 
     if (!ok) {
       // Check if the message still exists — if not, mark as gone so queue can evict
@@ -212,6 +150,92 @@ export async function processMessage(
       reason: "unexpected-error",
       error: String(err),
     };
+  }
+}
+
+/**
+ * SA job: summary generation → action classification (sequential).
+ * Action depends on summary output (uses blurb/todos as prompt vars).
+ * @returns {{ summaryOk: boolean, actionOk: boolean, action: string|null }}
+ */
+async function _processSA(messageHeader, { isPriority, forceRecompute }) {
+  let summaryOk = false;
+  let actionOk = false;
+  let action = null;
+
+  // Summary (cached inside summary.js)
+  const summaryObj = await getSummary(messageHeader, isPriority);
+  summaryOk = !!summaryObj;
+  log(`[ProcessMessage] Summary result for ${messageHeader.id}: ${summaryObj ? 'SUCCESS' : 'FAILED/NULL'}`);
+
+  // Action suggestion + tag application
+  try {
+    log(`[ProcessMessage] >>> Calling getAction for message ${messageHeader.id}`);
+    action = await getAction(messageHeader, { forceRecompute });
+    log(`[ProcessMessage] <<< Action result for ${messageHeader.id}: ${action || 'FAILED/NULL'}`);
+    actionOk = !!action;
+
+    // Only apply tags if we have both a valid summary and action
+    if (summaryObj && action) {
+      // If action is `reply` but already replied, we set it to `none`
+      try {
+        const nativeArgs = { folderURI: messageHeader.folder?.id, key: messageHeader.id };
+        try {
+          const pathStr = messageHeader.folder?.path;
+          let nativeMsgKey = -1;
+          try {
+            const weId = nativeArgs.key;
+            const mk = await browser.tmHdr.getMsgKey(nativeArgs.folderURI, weId, pathStr);
+            if (typeof mk === "number" && mk >= 0) nativeMsgKey = mk;
+          } catch (e) {
+            console.log(`[ReplyDetect] getMsgKey failed for ${messageHeader.id}: ${e}`);
+          }
+          const alreadyReplied = await browser.tmHdr.getReplied(nativeArgs.folderURI, nativeMsgKey, pathStr, messageHeader.headerMessageId || "");
+          if (action === "reply" && alreadyReplied) {
+            action = "none";
+            await applyPriorityTag(messageHeader.id, "none");
+            console.log(
+              `[ReplyDetect] native replied=${alreadyReplied}, action set to "none" for message ${messageHeader.id} ('${messageHeader.subject}') because it was already replied (native)`
+            );
+          }
+        } catch (rdErr) {
+          console.log(`[ReplyDetect] Error checking native replied flag for ${messageHeader.id}: ${rdErr}`);
+        }
+      } catch (rdErr) {
+        console.log(`[ReplyDetect] Error checking native replied flag for ${messageHeader.id}: ${rdErr}`);
+      }
+      // Now apply the action tag
+      log(`[ProcessMessage] Calling applyActionTags for ${messageHeader.id} with action=${action} summaryId=${summaryObj.id}`);
+      await applyActionTags([messageHeader], { [summaryObj.id]: action });
+      log(`[ProcessMessage] applyActionTags completed for ${messageHeader.id}`);
+    } else {
+      log(`processMessage: skipping tag application for message ${messageHeader.id} - summaryObj=${!!summaryObj}, action=${action}`);
+    }
+  } catch (actErr) {
+    log(
+      `processMessage: action generation/tag application failed for message ${messageHeader.id}: ${actErr}`
+    );
+    actionOk = false;
+  }
+
+  return { summaryOk, actionOk, action };
+}
+
+/**
+ * R job: reply precompute. Independent of summary/action — uses body text only.
+ * @returns {boolean} true if reply was generated successfully
+ */
+async function _processR(messageHeader, { isPriority }) {
+  try {
+    const { createReply } = await import("./replyGenerator.js");
+    await createReply(messageHeader.id, isPriority);
+    log(`[ProcessMessage] Reply result for ${messageHeader.id}: SUCCESS`);
+    return true;
+  } catch (repErr) {
+    log(
+      `[ProcessMessage] Reply result for ${messageHeader.id}: FAILED - ${repErr}`
+    );
+    return false;
   }
 }
 
