@@ -8,12 +8,53 @@
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg"
    xmlns:xlink="http://www.w3.org/1999/xlink">
-  <defs id="defs1" />
+  <defs id="defs1">
+    <clipPath id="tb-icon-mask">
+      <rect x="6.4" y="9.6" width="51.2" height="44.8" rx="8" ry="8" />
+    </clipPath>
+  </defs>
   <g transform="translate(32,32) scale(1.3) translate(-32,-32)">
+    <g clip-path="url(#tb-icon-mask)">
   
   <!-- TabMail v2 - Icon only (no background) -->
   <defs
      id="defs1">
+    <linearGradient
+       id="linearGradient30"
+      >
+      <stop
+         style="stop-color:#fffdf5;stop-opacity:1;"
+         offset="0.59786952"
+         id="stop30" />
+      <stop
+         style="stop-color:#fffdf5;stop-opacity:0;"
+         offset="1"
+         id="stop31" />
+    </linearGradient>
+    <linearGradient
+       id="linearGradient26"
+      >
+      <stop
+         style="stop-color:#80b9ff;stop-opacity:0;"
+         offset="0"
+         id="stop26" />
+      <stop
+         style="stop-color:#e5efff;stop-opacity:1;"
+         offset="0.15978697"
+         id="stop27" />
+    </linearGradient>
+    <linearGradient
+       id="linearGradient24"
+      >
+      <stop
+         style="stop-color:#7b00ff;stop-opacity:1;"
+         offset="0"
+         id="stop24" />
+      <stop
+         style="stop-color:#0091ff;stop-opacity:1;"
+         offset="1"
+         id="stop25" />
+    </linearGradient>
     <linearGradient
        id="linearGradient2"
       >
@@ -73,16 +114,6 @@
          d="M 0,64 V 26.6 L 32,43.5 64,26.6 V 64 Z"
          id="path-below-v-screen-4" />
     </clipPath>
-    <linearGradient
-      
-       xlink:href="#linearGradient2"
-       id="linearGradient3"
-       x1="42.896652"
-       y1="61.970154"
-       x2="21.103355"
-       y2="8.0298529"
-       gradientUnits="userSpaceOnUse"
-       gradientTransform="matrix(0.91362743,0,0,0.85,3.0270861,5.6407519)" />
     <clipPath
        clipPathUnits="userSpaceOnUse"
        id="clipPath4">
@@ -107,6 +138,49 @@
        y1="61.970154"
        x2="21.103355"
        y2="8.0298529" />
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath6">
+      <rect
+         style="opacity:0.29199;fill:#ff0f0f;fill-opacity:1;stroke:#ff0f0f;stroke-width:0.372916;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:0;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+         id="rect6"
+         width="59.670677"
+         height="41.062321"
+         x="-31.682486"
+         y="5.6869011"
+         rx="2.6358037"
+         ry="9.8556185"
+         transform="matrix(0.87804356,-0.47858072,0.69995924,0.71418279,0,0)" />
+    </clipPath>
+    <linearGradient
+      
+       xlink:href="#linearGradient24"
+       id="linearGradient25"
+       x1="63.026161"
+       y1="59.164543"
+       x2="0.56407583"
+       y2="10.363812"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="translate(0,-0.15839114)" />
+    <linearGradient
+      
+       xlink:href="#linearGradient26"
+       id="linearGradient27"
+       x1="60.120936"
+       y1="17.58165"
+       x2="83.76739"
+       y2="17.58165"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(0.89022558,0,0,0.86660817,6.5280414,1.9894777)" />
+    <linearGradient
+      
+       xlink:href="#linearGradient30"
+       id="linearGradient31"
+       x1="46.726906"
+       y1="20.015524"
+       x2="46.726906"
+       y2="48.54158"
+       gradientUnits="userSpaceOnUse" />
   </defs>
   <!-- No background rect — icon only -->
   <g
@@ -116,42 +190,89 @@
      transform="matrix(0.80650175,0,0,1.0015064,6.4797026,-2.6147139)"
      style="stroke-width:2.22536101;stroke-dasharray:none">
     <rect
-       id="envelope-body-32"
-       x="14.284281"
-       y="25.576185"
-       width="50.586334"
-       height="30.763567"
-       rx="5.0739603"
-       ry="4.334568"
-       style="display:none;opacity:0.3;fill:#8a8a8e;fill-opacity:1;stroke:none;stroke-width:2.22536;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:0.2"
-       />
-    <rect
-       id="envelope-body"
-       x="6.224782"
-       y="20.515753"
-       width="52.076763"
-       height="29.75"
-       rx="3.6545098"
-       ry="3.4000001"
-       style="fill:url(#linearGradient3);fill-opacity:1;stroke:none;stroke-width:2.30715;stroke-linejoin:round;stroke-dasharray:none" />
-    <path
-       style="fill:#ffa30f;fill-opacity:1;stroke:#9a9aa0;stroke-width:11.1268;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:0;stroke-dasharray:none;stroke-opacity:1;paint-order:stroke markers fill"
-       d="M 10.7364,16.517699 32.630651,34.2884 53.336419,16.224569 Z"
-       id="path3"
+       style="opacity:1;fill:url(#linearGradient25);stroke:none;stroke-width:0.376521;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:0;stroke-dasharray:none;stroke-opacity:1;paint-order:normal"
+       id="rect7"
+       width="79.265526"
+       height="63.673233"
+       x="-7.8376422"
+       y="2.7691715"
+       rx="5.4064717"
+       ry="5.1181536" />
+    <g
       
+       id="layer11"
       
-       clip-path="url(#clipPath4)"
-       transform="translate(0,0.93054096)" />
-    <rect
-       id="envelope-body-1"
-       x="6.224782"
-       y="20.515808"
-       width="52.076763"
-       height="29.75"
-       rx="3.6545098"
-       ry="3.4000001"
-       style="display:none;fill:none;fill-opacity:1;stroke:#d58e00;stroke-width:0.55634;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-       />
+       transform="matrix(0.70753881,0,0,0.56977297,6.1114743,18.560509)">
+      <text
+         xml:space="preserve"
+         style="font-size:32.3986px;line-height:0;font-family:'Playwrite DE Grund';-inkscape-font-specification:'Playwrite DE Grund';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#f5faff;fill-opacity:1;stroke:#f5faff;stroke-width:1.80842;stroke-linejoin:round;stroke-miterlimit:0;stroke-dasharray:none;stroke-opacity:1"
+         x="2.154228"
+         y="40.00901"
+         id="text1"
+        ><tspan
+          
+           id="tspan1"
+           style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:32.3986px;font-family:Roboto;-inkscape-font-specification:Roboto;fill:#f5faff;fill-opacity:1;stroke:#f5faff;stroke-width:1.80842;stroke-opacity:1"
+           x="2.154228"
+           y="40.00901">M</tspan></text>
+      <text
+         xml:space="preserve"
+         style="font-size:34.5594px;font-family:Inter;-inkscape-font-specification:'Inter, Normal';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;opacity:1;fill:#f5faff;fill-opacity:1;stroke:#f5faff;stroke-width:0.879321;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:0;stroke-dasharray:none;stroke-opacity:1"
+         x="31.698639"
+         y="43.167328"
+         id="text25"
+        
+         transform="scale(0.98408169,1.0161758)"><tspan
+          
+           id="tspan25"
+           style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-family:'Source Code Pro';-inkscape-font-specification:'Source Code Pro';fill:#f5faff;fill-opacity:1;stroke:#f5faff;stroke-width:0.879321;stroke-dasharray:none;stroke-opacity:1"
+           x="31.698639"
+           y="43.167328">@</tspan></text>
+      <text
+         xml:space="preserve"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:22.3586px;line-height:0;font-family:Roboto;-inkscape-font-specification:Roboto;text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#f5faff;fill-opacity:1;stroke:#f5faff;stroke-width:2.09612;stroke-linejoin:round;stroke-miterlimit:0;stroke-dasharray:none;stroke-opacity:1"
+         x="47.507225"
+         y="45.793358"
+         id="text2-5"
+         transform="scale(1.1366356,0.87978944)"
+        ><tspan
+          
+           id="tspan2-4"
+           style="fill:#f5faff;fill-opacity:1;stroke:#f5faff;stroke-width:2.09612;stroke-opacity:1"
+           x="47.507225"
+           y="45.793358">l</tspan></text>
+      <text
+         xml:space="preserve"
+         style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:28.8702px;line-height:0;font-family:Roboto;-inkscape-font-specification:Roboto;text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#f5faff;fill-opacity:1;stroke:#f5faff;stroke-width:2.70658;stroke-linejoin:round;stroke-miterlimit:0;stroke-dasharray:none;stroke-opacity:1"
+         x="72.205261"
+         y="35.1297"
+         id="text2"
+         transform="scale(0.87912691,1.1374922)"
+        ><tspan
+          
+           id="tspan2"
+           style="fill:#f5faff;fill-opacity:1;stroke:#f5faff;stroke-width:2.70658;stroke-opacity:1"
+           x="72.205261"
+           y="35.1297">l</tspan></text>
+      <g
+        
+         id="layer10"
+        
+         transform="matrix(1.2213958,0,0,1.2213958,-40.945327,-3.4462883)"
+         style="stroke-width:2.22536;stroke-dasharray:none">
+        <path
+           id="arrow-shaft"
+           d="M 60.049234,17.22588 H 81.099911"
+           style="display:inline;fill:none;stroke:url(#linearGradient27);stroke-width:2.42948;stroke-linecap:butt;stroke-dasharray:none;paint-order:normal" />
+        <path
+           id="arrowhead"
+           d="m 77.793333,13.053161 4.276711,4.172719 -4.276711,4.172718"
+           style="display:inline;fill:none;stroke:#fffcf5;stroke-width:1.9932;stroke-linecap:butt;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1;paint-order:normal" />
+      </g>
+    </g>
   </g>
+    </g>
   </g>
+  <!-- White overlay to grey out the icon -->
+  <rect width="64" height="64" fill="white" opacity="0.8" />
 </svg>
