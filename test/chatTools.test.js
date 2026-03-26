@@ -1258,6 +1258,40 @@ describe('Additional tool edge cases', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('change_setting privacy.web_search_enabled stores under webSearchEnabled key', async () => {
+    clearStorage();
+    const result = await changeSetting.run({ setting: 'privacy.web_search_enabled', value: true });
+    expect(result).not.toHaveProperty('error');
+    expect(result.ok).toBe(true);
+    expect(result.setting).toBe('privacy.web_search_enabled');
+    expect(result.value).toBe(true);
+    // Must use the storageKey override, not the setting key
+    expect(storageData['webSearchEnabled']).toBe(true);
+    expect(storageData['privacy.web_search_enabled']).toBeUndefined();
+  });
+
+  it('change_setting privacy.web_search_enabled reads previous value from correct key', async () => {
+    clearStorage();
+    storageData['webSearchEnabled'] = true;
+    const result = await changeSetting.run({ setting: 'privacy.web_search_enabled', value: false });
+    expect(result.ok).toBe(true);
+    expect(result.previous_value).toBe(true);
+    expect(result.value).toBe(false);
+    expect(storageData['webSearchEnabled']).toBe(false);
+  });
+
+  it('change_setting privacy.web_search_enabled with string value returns error', async () => {
+    const result = await changeSetting.run({ setting: 'privacy.web_search_enabled', value: 'yes' });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('boolean');
+  });
+
+  it('change_setting with unknown setting key returns error', async () => {
+    const result = await changeSetting.run({ setting: 'privacy.nonexistent', value: true });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('Unknown setting');
+  });
+
   it('reminder_add with time but no date returns error', async () => {
     const result = await reminderAdd.run({ text: 'Test', due_time: '14:30' });
     // due_time without due_date should be accepted (reminder without date but with time)

@@ -8,6 +8,17 @@ import { log } from "../../agent/modules/utils.js";
 // Setting definitions: key → { type, min, max, default, kbTemplate }
 // KB entries are prefixed with [Pinned] to protect from automatic cleanup
 const SETTING_DEFS = {
+  "privacy.web_search_enabled": {
+    type: "boolean",
+    default: false,
+    storageKey: "webSearchEnabled", // matches WEB_SEARCH_STORAGE_KEY in config/modules/webSearch.js
+    kbEntryOn: "[Pinned] Web search is enabled — the agent can search the web for current information.",
+    kbEntryOff: "[Pinned] Web search is disabled.",
+    legacyKbEntries: [
+      "Web search is enabled — the agent can search the web for current information.",
+      "Web search is disabled.",
+    ],
+  },
   "notifications.proactive_enabled": {
     type: "boolean",
     default: false,
@@ -79,13 +90,14 @@ export async function run(args = {}) {
       }
     }
 
-    // Read previous value
-    const stored = await browser.storage.local.get({ [settingKey]: def.default });
-    const previousValue = stored[settingKey];
+    // Read previous value (some settings use a different storage key)
+    const storeKey = def.storageKey || settingKey;
+    const stored = await browser.storage.local.get({ [storeKey]: def.default });
+    const previousValue = stored[storeKey];
 
     // Persist new value
     const effectiveValue = def.type === "number" ? Number(value) : value;
-    await browser.storage.local.set({ [settingKey]: effectiveValue });
+    await browser.storage.local.set({ [storeKey]: effectiveValue });
     log(`[TMDBG Tools] change_setting: set ${settingKey}=${effectiveValue} (was ${previousValue})`);
 
     // Sync KB
