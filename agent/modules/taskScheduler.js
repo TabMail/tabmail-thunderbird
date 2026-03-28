@@ -118,9 +118,14 @@ export async function shouldFire(task, taskHash, isEnabled, executionState) {
 		return { shouldFire: false, isPrefire: false, reason: "disabled" };
 	}
 
-	// Stop retrying after 3 consecutive errors (prevents infinite timeout retries)
+	// Stop retrying after 3 consecutive errors within the CURRENT fire window.
+	// If the errors are from a past window (lastFiredTs beyond grace), they're stale — ignore them.
 	if (executionState && executionState.consecutiveErrors >= 3) {
-		return { shouldFire: false, isPrefire: false, reason: `too many consecutive errors (${executionState.consecutiveErrors})` };
+		const errorAge = executionState.lastFiredTs ? Date.now() - executionState.lastFiredTs : Infinity;
+		if (errorAge < GRACE_WINDOW_MS) {
+			return { shouldFire: false, isPrefire: false, reason: `too many consecutive errors (${executionState.consecutiveErrors})` };
+		}
+		// Errors are stale (from a past window) — clear them and allow retry
 	}
 
 	const timezone = task.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
