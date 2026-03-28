@@ -738,18 +738,25 @@ async function processPendingUpdates() {
             // Step 4: Extract body text for the filtered messages
             const { successfulRows, failedMsgIds } = await populateBatchBody(newFilteredBatch);
             
-            // Step 5: Clean up any failed messages from the FTS index
+            // Step 5: Mark failed body-extraction messages for retry (NOT dequeue)
+            // Body extraction can fail transiently (IMAP timeout, network blip, server busy).
+            // Dequeuing on failure would silently drop messages from the index permanently.
+            // Instead, mark as failed — the queue-stuck detection will drop them after
+            // enough no-progress cycles if they're truly unrecoverable.
             if (failedMsgIds.length > 0) {
-              try {
-                log(`[TMDBG FTS] Cleaning up ${failedMsgIds.length} failed incremental messages from FTS index`);
-                await _ftsSearch.removeBatch(failedMsgIds);
-                log(`[TMDBG FTS] Successfully cleaned up failed incremental messages from FTS index`);
-              } catch (e) {
-                log(`[TMDBG FTS] Failed to cleanup failed incremental messages from FTS index: ${e}`, "warn");
-              }
-              // Use queued key for deletion from _pendingUpdates
+              log(`[TMDBG FTS] Body extraction failed for ${failedMsgIds.length} messages - marking for retry`);
               for (const key of failedMsgIds) {
-                processedKeys.add(msgIdToQueuedKey.get(key) || key);
+                const queuedKey = msgIdToQueuedKey.get(key) || key;
+                const existing = _pendingUpdates.get(queuedKey);
+                if (existing) {
+                  _markResolveFailed(existing);
+                }
+                logFtsOperation("body_extract", "failure", {
+                  uniqueKey: queuedKey,
+                  msgId: key,
+                  reason: "body_extraction_failed",
+                  hasFailed: true,
+                });
               }
             }
             
