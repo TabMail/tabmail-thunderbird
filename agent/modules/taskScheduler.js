@@ -118,6 +118,11 @@ export async function shouldFire(task, taskHash, isEnabled, executionState) {
 		return { shouldFire: false, isPrefire: false, reason: "disabled" };
 	}
 
+	// Stop retrying after 3 consecutive errors (prevents infinite timeout retries)
+	if (executionState && executionState.consecutiveErrors >= 3) {
+		return { shouldFire: false, isPrefire: false, reason: `too many consecutive errors (${executionState.consecutiveErrors})` };
+	}
+
 	const timezone = task.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 	const nowTz = getNowInTimezone(timezone);
 	const schedTime = parseScheduleTime(task.scheduleTime);
