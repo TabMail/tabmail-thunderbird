@@ -237,6 +237,18 @@ export function processToolCallLLMtoTB(toolName, args, overrideCtx) {
       }
     }
 
+    // Template tools (template_read, template_edit, template_delete, template_share, template_download)
+    if (toolName.startsWith('template_')) {
+      const templateId = processedArgs.template_id;
+      if (templateId && (typeof templateId === 'number' || typeof templateId === 'string')) {
+        const realId = toRealId(templateId, overrideCtx);
+        log(`[TMDBG IDTranslator] Template tool - translated template_id: ${templateId} -> ${realId}`);
+        if (realId) {
+          processedArgs.template_id = realId;
+        }
+      }
+    }
+
     // Calendar tools (calendar_read, calendar_search - but not calendar_event_*)
     if (toolName.startsWith('calendar_') && !toolName.startsWith('calendar_event_')) {
       const calendarId = processedArgs.calendar_id || processedArgs.CalendarID;
@@ -433,7 +445,7 @@ function processStringTBtoLLM(str, overrideCtx) {
   // Parse until newline since IDs are now single-line
   // Handle folder paths with spaces by matching until newline or end of string
   // Use greedy match to capture full folder paths with spaces
-  processed = processed.replace(/(unique_id|contact_id|event_id|calendar_id|addressbook_id):\s+([^\n]+?)(?=\n|$)/g, (match, fieldName, realId) => {
+  processed = processed.replace(/(unique_id|contact_id|event_id|calendar_id|addressbook_id|template_id):\s+([^\n]+?)(?=\n|$)/g, (match, fieldName, realId) => {
     log(`[TMDBG IDTranslator] Found pattern: ${match} -> fieldName: ${fieldName}, realId: ${realId}`);
     const numericId = toNumericId(realId, overrideCtx);
     const result = numericId ? `${fieldName}: ${numericId}` : match;
@@ -654,7 +666,8 @@ function processObjectTBtoLLM(obj, overrideCtx) {
          key === 'event_id' || key === 'EventID' || key === 'eventId' ||
          key === 'contact_id' || key === 'ContactID' || key === 'contactId' ||
          key === 'calendar_id' || key === 'CalendarID' || key === 'calendarId' ||
-         key === 'addressbook_id' || key === 'AddressbookID' || key === 'addressbookId') &&
+         key === 'addressbook_id' || key === 'AddressbookID' || key === 'addressbookId' ||
+         key === 'template_id' || key === 'templateId') &&
         typeof value === 'string') {
       log(`[TMDBG IDTranslator] Processing object field: ${key} = ${value}`);
       const numericId = toNumericId(value, overrideCtx);

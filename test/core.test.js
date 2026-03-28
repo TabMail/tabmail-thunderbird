@@ -52,28 +52,51 @@ vi.mock('../chat/chat.js', () => ({
 const mockToolRun = vi.fn(async () => ({ ok: true }));
 const mockResetPagination = vi.fn();
 
+// Non-FSM tool mock (no completeExecution)
 const toolModuleMock = {
   run: mockToolRun,
   resetPaginationSessions: mockResetPagination,
 };
 
-vi.mock('../chat/tools/calendar_event_create.js', () => toolModuleMock);
-vi.mock('../chat/tools/calendar_event_delete.js', () => toolModuleMock);
-vi.mock('../chat/tools/calendar_event_edit.js', () => toolModuleMock);
+// FSM tool mock (export const fsm = true — detected by isFsmTool)
+const mockFsmToolRun = vi.fn(async (args, options) => ({
+  fsm: true,
+  tool: 'mock_fsm',
+  pid: options?.callId || null,
+  startedAt: Date.now(),
+}));
+const fsmToolModuleMock = {
+  fsm: true,
+  run: mockFsmToolRun,
+  resetPaginationSessions: mockResetPagination,
+  completeExecution: vi.fn(async () => ({ result: 'done' })),
+};
+
+// FSM tools (have completeExecution)
+vi.mock('../chat/tools/calendar_event_create.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/calendar_event_delete.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/calendar_event_edit.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/contacts_delete.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/email_archive.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/email_compose.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/email_delete.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/email_forward.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/email_reply.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/template_create.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/template_edit.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/template_delete.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/template_share.js', () => fsmToolModuleMock);
+vi.mock('../chat/tools/template_download.js', () => fsmToolModuleMock);
+
+// Non-FSM tools (no completeExecution)
 vi.mock('../chat/tools/calendar_event_read.js', () => toolModuleMock);
 vi.mock('../chat/tools/calendar_read.js', () => toolModuleMock);
 vi.mock('../chat/tools/calendar_search.js', () => toolModuleMock);
 vi.mock('../chat/tools/contacts_add.js', () => toolModuleMock);
-vi.mock('../chat/tools/contacts_delete.js', () => toolModuleMock);
 vi.mock('../chat/tools/contacts_edit.js', () => toolModuleMock);
 vi.mock('../chat/tools/contacts_search.js', () => toolModuleMock);
-vi.mock('../chat/tools/email_archive.js', () => toolModuleMock);
-vi.mock('../chat/tools/email_compose.js', () => toolModuleMock);
-vi.mock('../chat/tools/email_delete.js', () => toolModuleMock);
-vi.mock('../chat/tools/email_forward.js', () => toolModuleMock);
 vi.mock('../chat/tools/email_move_to_inbox.js', () => toolModuleMock);
 vi.mock('../chat/tools/email_read.js', () => toolModuleMock);
-vi.mock('../chat/tools/email_reply.js', () => toolModuleMock);
 vi.mock('../chat/tools/email_search.js', () => toolModuleMock);
 vi.mock('../chat/tools/inbox_read.js', () => toolModuleMock);
 vi.mock('../chat/tools/kb_add.js', () => toolModuleMock);
@@ -84,6 +107,8 @@ vi.mock('../chat/tools/web_read.js', () => toolModuleMock);
 vi.mock('../chat/tools/reminder_add.js', () => toolModuleMock);
 vi.mock('../chat/tools/reminder_del.js', () => toolModuleMock);
 vi.mock('../chat/tools/change_setting.js', () => toolModuleMock);
+vi.mock('../chat/tools/template_read.js', () => toolModuleMock);
+vi.mock('../chat/tools/template_search.js', () => toolModuleMock);
 
 // Mock inboxContext (imported by some tool modules)
 vi.mock('../agent/modules/inboxContext.js', () => ({
@@ -118,9 +143,7 @@ vi.mock('../agent/modules/kbReminderGenerator.js', () => ({
 }));
 
 // Mock knowledgebase
-vi.mock('../agent/modules/knowledgebase.js', () => ({
-  debouncedKbUpdate: vi.fn(),
-}));
+vi.mock('../agent/modules/knowledgebase.js', () => ({}));
 
 // Mock reminderBuilder
 vi.mock('../agent/modules/reminderBuilder.js', () => ({
@@ -176,21 +199,29 @@ const {
 // isFsmTool
 // ---------------------------------------------------------------------------
 describe('isFsmTool', () => {
-  it('returns true for known FSM tools', () => {
+  it('returns true for tools with fsm = true export', () => {
     expect(isFsmTool('email_compose')).toBe(true);
     expect(isFsmTool('email_forward')).toBe(true);
     expect(isFsmTool('email_reply')).toBe(true);
-    expect(isFsmTool('calendar_event_delete')).toBe(true);
-    expect(isFsmTool('contacts_delete')).toBe(true);
     expect(isFsmTool('email_delete')).toBe(true);
     expect(isFsmTool('email_archive')).toBe(true);
+    expect(isFsmTool('calendar_event_create')).toBe(true);
+    expect(isFsmTool('calendar_event_edit')).toBe(true);
+    expect(isFsmTool('calendar_event_delete')).toBe(true);
+    expect(isFsmTool('contacts_delete')).toBe(true);
+    expect(isFsmTool('template_create')).toBe(true);
+    expect(isFsmTool('template_edit')).toBe(true);
+    expect(isFsmTool('template_delete')).toBe(true);
+    expect(isFsmTool('template_share')).toBe(true);
+    expect(isFsmTool('template_download')).toBe(true);
   });
 
-  it('returns false for non-FSM tools', () => {
+  it('returns false for tools without fsm export', () => {
     expect(isFsmTool('inbox_read')).toBe(false);
     expect(isFsmTool('email_read')).toBe(false);
     expect(isFsmTool('email_search')).toBe(false);
     expect(isFsmTool('calendar_search')).toBe(false);
+    expect(isFsmTool('calendar_read')).toBe(false);
     expect(isFsmTool('contacts_search')).toBe(false);
     expect(isFsmTool('kb_add')).toBe(false);
     expect(isFsmTool('kb_del')).toBe(false);
@@ -200,6 +231,8 @@ describe('isFsmTool', () => {
     expect(isFsmTool('reminder_add')).toBe(false);
     expect(isFsmTool('reminder_del')).toBe(false);
     expect(isFsmTool('change_setting')).toBe(false);
+    expect(isFsmTool('template_read')).toBe(false);
+    expect(isFsmTool('template_search')).toBe(false);
   });
 
   it('returns false for unknown tool names', () => {
@@ -349,16 +382,13 @@ describe('executeToolByName', () => {
   });
 
   it('returns FSM marker for FSM tool', async () => {
-    mockToolRun.mockResolvedValueOnce(undefined);
     const result = await executeToolByName('email_compose', {}, { callId: 'call_1' });
     expect(result).toHaveProperty('fsm', true);
-    expect(result).toHaveProperty('tool', 'email_compose');
     expect(result).toHaveProperty('pid', 'call_1');
   });
 
   it('blocks consecutive FSM tools in same chain', async () => {
     // First FSM tool succeeds
-    mockToolRun.mockResolvedValueOnce(undefined);
     await executeToolByName('email_compose', { recipients: ['a@b.com'] }, { callId: 'call_1' });
 
     // Second FSM tool should be blocked
@@ -369,6 +399,21 @@ describe('executeToolByName', () => {
     expect(result.blockedFsmTool).toBe('email_reply');
   });
 
+  it('blocks consecutive FSM tools across tool types (e.g. email then template)', async () => {
+    await executeToolByName('email_compose', {}, { callId: 'call_a' });
+    const result = await executeToolByName('template_create', { name: 'Test' }, { callId: 'call_b' });
+    expect(result).toHaveProperty('consecutiveFsmBlocked', true);
+    expect(result.previousFsmTool).toBe('email_compose');
+    expect(result.blockedFsmTool).toBe('template_create');
+  });
+
+  it('does not block non-FSM tool after FSM tool', async () => {
+    await executeToolByName('email_compose', {}, { callId: 'call_c' });
+    const result = await executeToolByName('inbox_read', {});
+    expect(result.consecutiveFsmBlocked).not.toBe(true);
+    expect(result).toEqual({ ok: true });
+  });
+
   it('catches thrown errors from tool run', async () => {
     mockToolRun.mockRejectedValueOnce(new Error('tool exploded'));
     const result = await executeToolByName('inbox_read', {});
@@ -377,12 +422,11 @@ describe('executeToolByName', () => {
   });
 
   it('reverts FSM chain tracking on synchronous FSM tool failure', async () => {
-    mockToolRun.mockRejectedValueOnce(new Error('validation failed'));
+    mockFsmToolRun.mockRejectedValueOnce(new Error('validation failed'));
     const result = await executeToolByName('email_compose', {}, { callId: 'call_x' });
     expect(result).toHaveProperty('error');
 
     // After revert, a second FSM call should NOT be blocked
-    mockToolRun.mockResolvedValueOnce(undefined);
     const result2 = await executeToolByName('email_reply', {}, { callId: 'call_y' });
     expect(result2.consecutiveFsmBlocked).not.toBe(true);
   });
@@ -398,14 +442,12 @@ describe('resetFsmChainTracking', () => {
 
   it('allows FSM tool after reset', async () => {
     // Run first FSM tool
-    mockToolRun.mockResolvedValueOnce(undefined);
     await executeToolByName('email_compose', {}, { callId: 'call_1' });
 
-    // Reset chain tracking
+    // Reset chain tracking (simulates new user turn)
     resetFsmChainTracking();
 
-    // Now another FSM tool should work
-    mockToolRun.mockResolvedValueOnce(undefined);
+    // Now another FSM tool should work (not blocked)
     const result = await executeToolByName('email_reply', {}, { callId: 'call_2' });
     expect(result.consecutiveFsmBlocked).not.toBe(true);
     expect(result).toHaveProperty('fsm', true);

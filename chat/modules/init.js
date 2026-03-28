@@ -275,13 +275,23 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
     log(`[TMDBG Init] Failed to check proactive message: ${e}`, "warn");
   }
 
-  // Always insert session_break on page load — a reload/restart is a session boundary.
-  // The duplicate guard inside _insertSessionBreak prevents back-to-back duplicates
-  // (e.g. if trailing strip already preserved one from the prior load).
-  await _insertSessionBreak(meta);
+  // Check if the last turn is a task_result BEFORE inserting session_break.
+  // If it is, skip both session_break and welcome-back — the task result should
+  // be the last visible thing the user sees on chat open.
+  const lastTurn = ctx.persistedTurns?.length > 0 ? ctx.persistedTurns[ctx.persistedTurns.length - 1] : null;
+  const lastTurnIsTask = lastTurn?._type === "task_result";
+
+  if (!lastTurnIsTask) {
+    // Normal flow: insert session_break on page load (reload/restart = session boundary).
+    // Duplicate guard inside _insertSessionBreak prevents back-to-back duplicates.
+    await _insertSessionBreak(meta);
+  }
 
   // Always insert nudge on page load — proactive takes priority over welcome-back
-  if (proactiveText) {
+  // But skip if the last turn is a task_result (let the user see the result)
+  if (lastTurnIsTask) {
+    log(`[TMDBG Init] Skipping welcome-back — last turn is task_result`);
+  } else if (proactiveText) {
     await _insertNudge(meta, proactiveText, "proactive");
   } else {
     // Build welcome-back text with reminders
@@ -690,6 +700,37 @@ async function _insertNudge(meta, text, type) {
  * replaces any existing welcome-back greeting.
  * @param {string} text - The proactive message text
  */
+/**
+ * Insert a task result bubble into the chat. Unlike nudges, task result bubbles
+ * are PERMANENT — they are NOT replaced by subsequent welcome-back or proactive
+ * messages. The turn is already persisted via appendTurn in proactiveCheckin.js;
+ * this just renders the live bubble in the open chat window.
+ */
+export async function insertTaskResultBubble(text) {
+  if (!ctx.chatMeta) {
+    log(`[TMDBG Init] Cannot insert task result: no chatMeta`, "warn");
+    return;
+  }
+
+  log(`[TMDBG Init] Inserting task result bubble`);
+
+  // Add to agentConverseMessages (so the LLM has context if user replies)
+  ctx.agentConverseMessages.push({
+    role: "assistant",
+    content: text,
+  });
+
+  // Render the bubble with task-result styling (NOT set as _currentNudgeDOMRow — not replaceable).
+  // Uses statically imported createNewAgentBubble and streamText — dynamic imports fail
+  // in TB's sidebar module context.
+  const agentBubble = await createNewAgentBubble("");
+  agentBubble.classList.remove("loading");
+  agentBubble.classList.add("task-result");
+  streamText(agentBubble, text);
+
+  log(`[TMDBG Init] Task result bubble inserted (${text.length} chars)`);
+}
+
 export async function insertProactiveNudge(text) {
   const meta = ctx.chatMeta;
   if (!meta) {
@@ -762,6 +803,7 @@ function _renderTurnSync(turn, container, beforeNode) {
       bubble.className = "message agent-message";
       if (turn._type === "proactive") bubble.classList.add("proactive-message");
       if (turn._type === "welcome_back") bubble.classList.add("welcome-back");
+      if (turn._type === "task_result") bubble.classList.add("task-result");
 
       if (turn._rendered) {
         // Fast path: pre-rendered snapshot — non-clickable, no async, instant

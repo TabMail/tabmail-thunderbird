@@ -511,11 +511,20 @@ async function _periodicKbUpdateImpl(options = {}) {
                 log(`-- KB Periodic -- Chunk ${chunkIndex} completed in ${requestDuration}ms`);
 
                 if (response && typeof response.refined_kb === "string") {
-                    const updatedKb = response.refined_kb;
-                    if (updatedKb !== currentUserKBMd) {
+                    const refinedKb = response.refined_kb;
+
+                    // 3-way merge: treat refinement as a "remote" change.
+                    // base = KB snapshot before backend call (currentUserKBMd)
+                    // local = current KB (may have changed via sync/tools during the flight)
+                    // remote = refined KB from backend
+                    const { mergeFlatField } = await import("./bulletMerge.js");
+                    const currentKBNow = (await getUserKBPrompt()) || "";
+                    const mergedKb = mergeFlatField(currentUserKBMd, currentKBNow, refinedKb);
+
+                    if (mergedKb !== currentKBNow) {
                         const key = "user_prompts:user_kb.md";
-                        await browser.storage.local.set({ [key]: updatedKb });
-                        log(`-- KB Periodic -- Chunk ${chunkIndex}: KB updated (${updatedKb.length} chars)`);
+                        await browser.storage.local.set({ [key]: mergedKb });
+                        log(`-- KB Periodic -- Chunk ${chunkIndex}: KB updated via 3-way merge (${mergedKb.length} chars)`);
 
                         // Notify listeners
                         try {
@@ -529,7 +538,7 @@ async function _periodicKbUpdateImpl(options = {}) {
                             generateKBReminders(false).catch(() => {});
                         } catch (_) {}
                     } else {
-                        log(`-- KB Periodic -- Chunk ${chunkIndex}: no KB changes`);
+                        log(`-- KB Periodic -- Chunk ${chunkIndex}: no KB changes after 3-way merge`);
                     }
                 } else {
                     log(`-- KB Periodic -- Chunk ${chunkIndex}: no refined_kb in response`, "warn");
@@ -568,18 +577,3 @@ async function _periodicKbUpdateImpl(options = {}) {
     }
 }
 
-// ----------------------------------------------------------
-// Debounced KB update (triggered by kb_add / kb_del tools)
-// ----------------------------------------------------------
-let _kbUpdateDebounceTimer = null;
-const KB_TOOL_DEBOUNCE_MS = 30000; // 30 seconds after last kb_add/kb_del call
-
-export function debouncedKbUpdate() {
-    if (_kbUpdateDebounceTimer) clearTimeout(_kbUpdateDebounceTimer);
-    _kbUpdateDebounceTimer = setTimeout(() => {
-        _kbUpdateDebounceTimer = null;
-        periodicKbUpdate({ skipTimeGuard: true }).catch(e => {
-            log(`-- KB -- Debounced KB update failed: ${e}`, "warn");
-        });
-    }, KB_TOOL_DEBOUNCE_MS);
-}

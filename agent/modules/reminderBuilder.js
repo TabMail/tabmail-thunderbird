@@ -1,11 +1,21 @@
-// reminderBuilder.js – Build reminder list on-demand from message reminders + KB reminders
+// reminderBuilder.js – Unified ScheduledItem builder (reminders + tasks)
 // Thunderbird 145 MV3
-// This module combines reminders from two sources:
-// 1. Message-based reminders: From summary cache (per-message reminders)
-// 2. KB-based reminders: From knowledge base (generated when KB updates)
+//
+// ScheduledItem architecture: reminders and tasks are two types flowing through
+// one unified system. This module is the single builder that combines all sources:
+//   1. Message-based reminders: From summary cache (type: "reminder")
+//   2. KB-based reminders: From knowledge base [Reminder] entries (type: "reminder")
+//   3. KB-based tasks: From knowledge base [Task] entries (type: "task")
+//
+// Tasks are a subclass of reminders — they share the same hash scheme
+// (DisabledRemindersStore), the same settings UI, and the same Device Sync fields.
+// The key difference is resolveContent(): reminders return static text, tasks
+// invoke the agent to produce a dynamic response.
 
 import { buildInboxContext } from "./inboxContext.js";
+import { parseTasksFromKB, getTaskHash } from "./kbTaskParser.js";
 import { getKBReminders } from "./kbReminderGenerator.js";
+import { getUserKBPrompt } from "./promptGenerator.js";
 import { gcStaleEntries, getDisabledHashes, getDisabledMap, hashReminder, mergeIncoming } from "./reminderStateStore.js";
 import { getSummaryWithHeaderId } from "./summaryGenerator.js";
 import { log } from "./utils.js";
@@ -125,25 +135,48 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
     log(`[ReminderBuilder] Building complete reminder list (includeDisabled=${includeDisabled})...`, 'debug');
 
     // Collect reminders from both sources in parallel
-    const [messageReminders, kbReminders, disabledHashes] = await Promise.all([
+    const [messageReminders, kbReminders, disabledHashes, kbText] = await Promise.all([
       collectMessageReminders(),
       getKBReminders(),
       getDisabledHashes(),
+      getUserKBPrompt(),
     ]);
 
-    log(`[ReminderBuilder] Collected ${messageReminders.length} message reminders and ${kbReminders.length} KB reminders`, 'debug');
+    // Parse task entries from KB text
+    const taskEntries = parseTasksFromKB(kbText || "");
 
-    // Add source tag to KB reminders if not present
+    log(`[ReminderBuilder] Collected ${messageReminders.length} message reminders, ${kbReminders.length} KB reminders, ${taskEntries.length} task entries`, 'debug');
+
+    // Add source and type tags to KB reminders
     const taggedKBReminders = kbReminders.map((r) => ({
       ...r,
+      type: "reminder",
       source: "kb",
+    }));
+
+    // Build task items in the unified shape
+    const taskItems = taskEntries.map((task) => ({
+      type: "task",
+      kind: task.kind,
+      content: task.instruction,
+      instruction: task.instruction,
+      scheduleDays: task.scheduleDays,
+      scheduleDate: task.scheduleDate,
+      scheduleTime: task.scheduleTime,
+      timezone: task.timezone,
+      dueDate: null,
+      dueTime: null,
+      source: "kb",
+      hash: getTaskHash(task),
+      enabled: !disabledHashes.has(getTaskHash(task)),
+      rawLine: task.rawLine,
     }));
 
     // Combine all reminders and add hash + enabled status
     // Also migrate old platform-specific hashes to new shared hashes
     const disabledMap = await getDisabledMap();
     const migrationEntries = {}; // Accumulated migrations to write in one batch
-    const allRemindersRaw = [...messageReminders, ...taggedKBReminders].map((r) => {
+    const allRemindersRaw = [...messageReminders.map((r) => ({ ...r, type: "reminder" })), ...taggedKBReminders].map((r) => {
       const hash = hashReminder(r);
 
       // Migrate old platform-specific hash → new shared hash
@@ -172,6 +205,9 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       });
     }
 
+    // Append task items (already have hash + enabled set above)
+    allRemindersRaw.push(...taskItems);
+
     // Time-based GC of stale disabled entries (async, non-blocking)
     const freshHashes = new Set(allRemindersRaw.map((r) => r.hash));
     gcStaleEntries(freshHashes).catch((e) => {
@@ -187,8 +223,12 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       log(`[ReminderBuilder] Filtered out ${disabledCount} disabled reminders`, 'debug');
     }
 
-    // Sort by due date+time (items with dates first, then null dates)
+    // Sort: reminders by due date+time (dates first, then null dates), tasks after all reminders
     allReminders.sort((a, b) => {
+      // Tasks always sort after reminders
+      if (a.type === "task" && b.type !== "task") return 1;
+      if (a.type !== "task" && b.type === "task") return -1;
+
       // Items with due dates come first
       if (a.dueDate && !b.dueDate) return -1;
       if (!a.dueDate && b.dueDate) return 1;
@@ -209,9 +249,10 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
     });
 
     const messageCount = allReminders.filter((r) => r.source === "message").length;
-    const kbCount = allReminders.filter((r) => r.source === "kb").length;
+    const kbCount = allReminders.filter((r) => r.source === "kb" && r.type !== "task").length;
+    const taskCount = allReminders.filter((r) => r.type === "task").length;
 
-    log(`[ReminderBuilder] Built reminder list with ${allReminders.length} total reminders (${messageCount} message + ${kbCount} KB, ${disabledCount} disabled)`, 'debug');
+    log(`[ReminderBuilder] Built reminder list with ${allReminders.length} total items (${messageCount} message + ${kbCount} KB + ${taskCount} task, ${disabledCount} disabled)`, 'debug');
 
     return {
       reminders: allReminders,
@@ -219,6 +260,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
         total: allReminders.length,
         message: messageCount,
         kb: kbCount,
+        task: taskCount,
         disabled: disabledCount,
       },
       generatedAt: Date.now(),
@@ -227,7 +269,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
     log(`[ReminderBuilder] Error building reminder list: ${e}`, "error");
     return {
       reminders: [],
-      counts: { total: 0, message: 0, kb: 0, disabled: 0 },
+      counts: { total: 0, message: 0, kb: 0, task: 0, disabled: 0 },
       generatedAt: Date.now(),
     };
   }
@@ -280,10 +322,11 @@ export async function getRandomReminders(count = 2) {
     log(`[ReminderBuilder] Getting ${count} random reminders...`, 'debug');
 
     const reminderData = await buildReminderList();
-    const allReminders = reminderData.reminders;
+    // Filter out task entries — they're background tasks, not chat-display reminders
+    const allReminders = reminderData.reminders.filter((r) => r.type !== "task");
 
     if (allReminders.length === 0) {
-      log(`[ReminderBuilder] No reminders available`, 'debug');
+      log(`[ReminderBuilder] No reminders available (excluding ${reminderData.counts.task} tasks)`, 'debug');
       return {
         reminders: [],
         urgentCount: 0,
@@ -395,6 +438,28 @@ export async function getRandomReminders(count = 2) {
 }
 
 /**
+ * Format task schedule for display (e.g., "Weekdays at 09:00").
+ * @param {string} scheduleDays - Raw days string: "daily", "weekdays", "weekends", or "mon,wed,fri"
+ * @param {string} scheduleTime - "HH:MM"
+ * @returns {string} Human-readable schedule label
+ */
+function formatTaskSchedule(scheduleDays, scheduleTime) {
+  const time = scheduleTime || "??:??";
+  const days = (scheduleDays || "").toLowerCase().trim();
+
+  // Handle preset keywords directly
+  if (days === "daily") return `Daily at ${time}`;
+  if (days === "weekdays") return `Weekdays at ${time}`;
+  if (days === "weekends") return `Weekends at ${time}`;
+
+  // Comma-separated day abbreviations — capitalize each
+  const parts = days.split(",").map((d) => d.trim()).filter(Boolean);
+  if (parts.length === 0) return `At ${time}`;
+  const dayLabels = parts.map((d) => d.charAt(0).toUpperCase() + d.slice(1));
+  return `${dayLabels.join(", ")} at ${time}`;
+}
+
+/**
  * Format reminders for display in chat
  * Includes a "don't show again" button for each reminder
  * @param {Array} reminders - Array of reminder objects (must have matchKey for disable functionality)
@@ -503,11 +568,16 @@ export function formatRemindersForDisplay(reminders) {
   // The markdown renderer detects this and creates a styled card with dismiss button
   // Hashes are stored separately and linked post-hoc by index
   sortedReminders.forEach((reminder) => {
-    const dueDateLabel = formatDueDate(reminder.dueDate, reminder.dueTime);
-    const prefix = dueDateLabel ? `${dueDateLabel}: ` : "";
-    
-    // [reminder] prefix tells the renderer to create a reminder card
-    lines.push(`[reminder] ${prefix}${reminder.content}\n\n`);
+    if (reminder.type === "task") {
+      // Format task schedule description (e.g., "Weekdays at 09:00")
+      const scheduleDesc = formatTaskSchedule(reminder.scheduleDays, reminder.scheduleTime);
+      lines.push(`[repeated] ${scheduleDesc}: ${reminder.content}\n\n`);
+    } else {
+      const dueDateLabel = formatDueDate(reminder.dueDate, reminder.dueTime);
+      const prefix = dueDateLabel ? `${dueDateLabel}: ` : "";
+      // [reminder] prefix tells the renderer to create a reminder card
+      lines.push(`[reminder] ${prefix}${reminder.content}\n\n`);
+    }
   });
 
   // Store the hashes in order for post-hoc linking by the markdown renderer

@@ -68,4 +68,5 @@ When creating a new client-side chat tool:
 - When adding or modifying pure logic modules (bulletMerge, kbReminderGenerator, patchApplier, utils), add corresponding tests.
 - Browser API-dependent code requires `globalThis.browser` mocking — see existing test patterns.
 - See `TESTS.md` for comprehensive test case references and coverage targets.
-6. **Refactoring test-first rule** — Before any refactoring (extracting, consolidating, moving code), first write tests covering the existing behavior of the code being changed. Verify those tests pass against the current implementation. Then perform the refactoring. Then verify the same tests still pass. This ensures refactoring doesn't silently change behavior.
+6. **Use coverage tools** — After adding tests, verify coverage with `npx vitest run <test-file> --coverage` and check that new code paths are exercised. Focus on statement and branch coverage for the files you touched.
+7. **Refactoring test-first rule** — Before any refactoring (extracting, consolidating, moving code), first write tests covering the existing behavior of the code being changed. Verify those tests pass against the current implementation. Then perform the refactoring. Then verify the same tests still pass. This ensures refactoring doesn't silently change behavior.

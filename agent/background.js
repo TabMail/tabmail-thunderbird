@@ -197,6 +197,28 @@ function setupRuntimeMessageListener() {
         })();
     }
 
+    if (message.command === "delete-kb-reminder") {
+        const { hash, content, type } = message;
+        log(`Received delete-kb-reminder command for: ${hash} (type=${type})`);
+        return (async () => {
+            try {
+                const toolModule = type === "task"
+                    ? await import("../chat/tools/task_del.js")
+                    : await import("../chat/tools/reminder_del.js");
+                const result = await toolModule.run({ text: content });
+                if (result.ok) {
+                    log(`Successfully deleted KB ${type || "reminder"}: ${hash}`);
+                    return { ok: true };
+                }
+                log(`Failed to delete KB ${type || "reminder"}: ${result.error}`, "error");
+                return { ok: false, error: result.error };
+            } catch (e) {
+                log(`Error deleting KB ${type || "reminder"}: ${e}`, "error");
+                return { ok: false, error: String(e) };
+            }
+        })();
+    }
+
     if (message.command === "get-all-reminders") {
         log("Received get-all-reminders command");
         // Return a promise for async handling - gets all reminders including disabled ones

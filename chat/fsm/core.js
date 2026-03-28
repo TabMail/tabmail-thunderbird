@@ -11,6 +11,11 @@ import { runStateArchiveExecute, runStateArchiveListEmails } from "./emailArchiv
 import { runStateSendEmail, runStateSendEmailPreview, runStateSendEmailHeadless } from "./emailCompose.js";
 import { runStateDeleteExecute, runStateDeleteListEmails } from "./emailDelete.js";
 import { runStateExecFail, runStateExecSuccess } from "./fsmExec.js";
+import { runStateCreateTemplateList, runStateCreateTemplateExec } from "./templateCreate.js";
+import { runStateEditTemplateList, runStateEditTemplateExec } from "./templateEdit.js";
+import { runStateDeleteTemplateList, runStateDeleteTemplateExec } from "./templateDelete.js";
+import { runStateShareTemplateList, runStateShareTemplateExec } from "./templateShare.js";
+import { runStateDownloadTemplateList, runStateDownloadTemplateExec } from "./templateDownload.js";
 
 import { processJSONResponse, sendChat } from "../../agent/modules/llm.js";
 import { log, saveChatLog } from "../../agent/modules/utils.js";
@@ -99,6 +104,41 @@ export async function executeAgentAction() {
       break;
     case "send_email_headless":
       await runStateSendEmailHeadless();
+      break;
+    // -------- Template create workflow states --------
+    case "template_create_list":
+      await runStateCreateTemplateList();
+      break;
+    case "template_create_exec":
+      await runStateCreateTemplateExec();
+      break;
+    // -------- Template edit workflow states --------
+    case "template_edit_list":
+      await runStateEditTemplateList();
+      break;
+    case "template_edit_exec":
+      await runStateEditTemplateExec();
+      break;
+    // -------- Template delete workflow states --------
+    case "template_delete_list":
+      await runStateDeleteTemplateList();
+      break;
+    case "template_delete_exec":
+      await runStateDeleteTemplateExec();
+      break;
+    // -------- Template share workflow states --------
+    case "template_share_list":
+      await runStateShareTemplateList();
+      break;
+    case "template_share_exec":
+      await runStateShareTemplateExec();
+      break;
+    // -------- Template download workflow states --------
+    case "template_download_list":
+      await runStateDownloadTemplateList();
+      break;
+    case "template_download_exec":
+      await runStateDownloadTemplateExec();
       break;
     // -------- FSM terminal states --------
     case "exec_success":

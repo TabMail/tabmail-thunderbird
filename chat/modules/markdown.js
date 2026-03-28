@@ -470,7 +470,7 @@ export async function renderMarkdown(mdText) {
     const specialLinkMatches = [];
     
     // First, find all special links (even if wrapped in backticks)
-    src = src.replace(/`?\[(Email|Contact|Event)\]\(([^\)]+?)\)`?/g, (match, type, id) => {
+    src = src.replace(/`?\[(Email|Contact|Event|Template)\]\(([^\)]+?)\)`?/g, (match, type, id) => {
       const idx = specialLinkMatches.length;
       specialLinkMatches.push({ type, id, idx });
       log(`[TMDBG Markdown] Found special link (possibly backtick-wrapped): ${match} -> [${type}](${id})`);
@@ -624,6 +624,32 @@ export async function renderMarkdown(mdText) {
             // Hide failed resolutions - LLM mistake we cannot recover from
             specialLinkHtml[idx] = "";
             continue;
+          }
+        } else if (type === "Template") {
+          className += " tm-template-link";
+          dataType = "template";
+          dataId = safeId;
+          icon = "📝"; // Template emoji
+
+          // Resolve template details from local store
+          try {
+            const { getTemplate } = await import("../../agent/modules/templateManager.js");
+            const template = await getTemplate(id);
+            if (template && !template.deleted) {
+              displayText = template.name || "Untitled template";
+              tooltipData = {
+                title: displayText,
+                instructions: template.instructions || [],
+                exampleReply: template.exampleReply || "",
+                enabled: template.enabled,
+              };
+            }
+          } catch (e) {
+            log(`[TMDBG Markdown] Failed to resolve template: ${id}, error: ${e}`, "warn");
+          }
+
+          if (!displayText) {
+            displayText = "Template";
           }
         }
       } catch (e) {
@@ -1157,6 +1183,32 @@ export function attachSpecialLinkListeners(container) {
     }
   });
   
+  // Handle template link clicks — show template details tooltip
+  const templateLinks = container.querySelectorAll('.tm-template-link');
+  log(`[TMDBG Markdown] Found ${templateLinks.length} template links`);
+  templateLinks.forEach((link) => {
+    link.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const existingTimeout = link._tooltipTimeout;
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+        link._tooltipTimeout = null;
+      }
+      const tooltipDataAttr = link.getAttribute('data-tm-tooltip');
+      if (tooltipDataAttr) {
+        try {
+          const tooltipData = JSON.parse(tooltipDataAttr);
+          showTooltip(link, tooltipData, 'template', true);
+        } catch (e) {
+          log(`[TMDBG Markdown] Tooltip data parse failed on click: ${e}`, "warn");
+        }
+      }
+    });
+    const templateId = link.getAttribute('data-tm-id');
+    attachTooltipHandler(link, 'template', templateId);
+  });
+
   // Handle regular external links (non-TabMail links) to open in default browser
   const externalLinks = container.querySelectorAll('a[href^="http"]:not(.tm-link)');
   log(`[TMDBG Markdown] Found ${externalLinks.length} external links`);
@@ -1429,8 +1481,29 @@ function showTooltip(link, data, type, isClickTooltip = false) {
       ${data.organizer ? `<div class="tm-tooltip-field"><strong>Organizer:</strong> ${escapeHtml(data.organizer)}</div>` : ''}
       ${attendeeContent}
     `;
+  } else if (type === 'template') {
+    let instrContent = '';
+    if (data.instructions && data.instructions.length > 0) {
+      const instrList = data.instructions.slice(0, 5).map((inst) =>
+        `• ${escapeHtml(inst)}`
+      ).join('<br/>');
+      instrContent = `<div class="tm-tooltip-field"><strong>Instructions:</strong><br/>${instrList}${data.instructions.length > 5 ? `<br/>... and ${data.instructions.length - 5} more` : ''}</div>`;
+    }
+    let exampleContent = '';
+    if (data.exampleReply) {
+      const preview = data.exampleReply.length > 150
+        ? data.exampleReply.slice(0, 150) + '...'
+        : data.exampleReply;
+      exampleContent = `<div class="tm-tooltip-field"><strong>Example:</strong> ${escapeHtml(preview)}</div>`;
+    }
+    content = `
+      <div class="tm-tooltip-title">📝 ${escapeHtml(data.title)}</div>
+      <div class="tm-tooltip-field"><strong>Status:</strong> ${data.enabled ? 'Enabled' : 'Disabled'}</div>
+      ${instrContent}
+      ${exampleContent}
+    `;
   }
-  
+
   globalTooltip.innerHTML = content;
   document.body.appendChild(globalTooltip);
   

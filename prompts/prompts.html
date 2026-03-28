@@ -29,6 +29,7 @@
         <button class="prompt-tab active" data-prompt="composition">Email Composition</button>
         <button class="prompt-tab" data-prompt="action">Action Classification</button>
         <button class="prompt-tab" data-prompt="kb">Knowledge Base</button>
+        <button class="prompt-tab" data-prompt="tasks">Tasks</button>
         <button class="prompt-tab" data-prompt="reminders">Reminders</button>
         <button class="prompt-tab" data-prompt="history">Chat History</button>
         <button class="prompt-tab dev-only" data-prompt="developer" style="display: none;">Developer (Raw)</button>
@@ -148,6 +149,28 @@
       </div>
     </div>
 
+    <div id="tasks-editor" class="prompt-content">
+      <div class="section-container">
+        <div class="section-header">
+          <h3>Scheduled Tasks</h3>
+          <div class="section-header-actions">
+            <button id="refresh-tasks" class="reload-section-btn">Refresh</button>
+          </div>
+        </div>
+        <div class="reminders-content">
+          <p class="reminders-description">
+            Scheduled tasks run automatically at their scheduled time. The agent reads your inbox, calendar, etc. and produces a dynamic response. Toggle to enable or disable.
+          </p>
+          <div id="tasks-list">
+            <div class="reminders-loading">Loading tasks...</div>
+          </div>
+          <p id="tasks-empty" class="reminders-empty" style="display: none;">
+            No scheduled tasks found. Use the chat agent to add tasks (e.g., "Schedule a daily inbox summary at 9am").
+          </p>
+        </div>
+      </div>
+    </div>
+
     <div id="reminders-editor" class="prompt-content">
       <div class="section-container">
         <div class="section-header">
@@ -159,6 +182,9 @@
         <div class="reminders-content">
           <p class="reminders-description">
             Manage which reminders appear in your chat window. Disabled reminders won't be shown when you open the chat.
+          </p>
+          <p class="reminders-description reminders-note">
+            Email reminders can only be snoozed. To permanently remove one, move or archive the message out of your inbox.
           </p>
           <div id="reminders-list">
             <div class="reminders-loading">Loading reminders...</div>

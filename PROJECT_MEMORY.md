@@ -39,7 +39,9 @@ manifest.json   # MV3 manifest (version source of truth)
 |------|---------|
 | `reminder_add` | Create a reminder (structured params: text, due_date, due_time) |
 | `reminder_del` | Delete a reminder by text match |
-| `change_setting` | Change notification settings (proactive toggle, window, advance, grace) |
+| `task_add` | Create a scheduled task (recurring via schedule_days, or one-off via schedule_date) |
+| `task_del` | Delete a scheduled task by text match |
+| `change_setting` | Change notification settings (proactive toggle, window, advance, grace, task.enabled, task.advance_minutes) |
 
 ---
 

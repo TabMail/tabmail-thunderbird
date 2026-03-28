@@ -1099,6 +1099,13 @@ button:focus-visible {
   font-size: 14px;
 }
 
+.reminders-note {
+  margin-top: -8px;
+  font-size: 12px;
+  opacity: 0.6;
+  font-style: italic;
+}
+
 .reminders-loading {
   text-align: center;
   padding: 24px;
@@ -1205,6 +1212,29 @@ button:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.reminder-delete-btn {
+  flex-shrink: 0;
+  align-self: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  opacity: 0.6;
+  transition: opacity 0.2s ease, background-color 0.2s ease;
+}
+
+.reminder-delete-btn:hover:not(.disabled) {
+  opacity: 1;
+  background: color-mix(in srgb, var(--tm-danger-text-bright) 15%, transparent);
+}
+
+.reminder-delete-btn.disabled {
+  cursor: default;
+  opacity: 0.2;
 }
 
 /* Chat History section styles */

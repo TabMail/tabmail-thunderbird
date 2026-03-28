@@ -1,4 +1,8 @@
 // email_compose.js – tool to start compose workflow for creating a new email
+
+// FSM tool — requires user confirmation before executing.
+// Used by core.js to detect and block consecutive FSM calls (see BLOCK_CONSECUTIVE_FSM_CALLS).
+export const fsm = true;
 // Thunderbird 140 MV3
 
 import { log } from "../../agent/modules/utils.js";

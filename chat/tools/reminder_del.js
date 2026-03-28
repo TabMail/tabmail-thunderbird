@@ -142,14 +142,6 @@ export async function run(args = {}, options = {}) {
       log(`[TMDBG Tools] reminder_del: failed to clear reached_out flags: ${e}`, "warn");
     }
 
-    // Trigger debounced periodic KB update
-    try {
-      const { debouncedKbUpdate } = await import("../../agent/modules/knowledgebase.js");
-      debouncedKbUpdate();
-    } catch (e2) {
-      log(`[TMDBG Tools] reminder_del: failed to trigger debounced KB update: ${e2}`, "warn");
-    }
-
     log(`[TMDBG Tools] reminder_del: success`);
     return { ok: true, removed: statement };
   } catch (e) {

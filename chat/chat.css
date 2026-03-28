@@ -84,6 +84,13 @@ select {
     padding: 8px 12px;
 }
 
+.agent-message.task-result {
+    background: color-mix(in srgb, var(--in-content-accent-color) 10%, transparent);
+    border-left: 3px solid var(--in-content-accent-color);
+    border-radius: 0 8px 8px 0;
+    padding: 8px 12px;
+}
+
 /* Retry link in system error messages */
 .system-message .retry-link {
     color: var(--in-content-accent-color);
@@ -271,7 +278,9 @@ select {
 .agent-message a.tm-contact-link,
 .user-message a.tm-contact-link,
 .agent-message a.tm-event-link,
-.user-message a.tm-event-link {
+.user-message a.tm-event-link,
+.agent-message a.tm-template-link,
+.user-message a.tm-template-link {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -291,7 +300,9 @@ select {
 .agent-message a.tm-contact-link:hover,
 .user-message a.tm-contact-link:hover,
 .agent-message a.tm-event-link:hover,
-.user-message a.tm-event-link:hover {
+.user-message a.tm-event-link:hover,
+.agent-message a.tm-template-link:hover,
+.user-message a.tm-template-link:hover {
     background: color-mix(in srgb, var(--in-content-accent-color) 20%, var(--in-content-box-background));
     border-color: color-mix(in srgb, var(--in-content-accent-color) 130%, transparent);
     border-bottom: 1.5px solid var(--in-content-accent-color);
@@ -1387,7 +1398,8 @@ select {
 /* Past turns: rendered snapshot — entity links displayed but non-clickable */
 .history-static .tm-email-link,
 .history-static .tm-contact-link,
-.history-static .tm-event-link {
+.history-static .tm-event-link,
+.history-static .tm-template-link {
     pointer-events: none;
     cursor: default;
     text-decoration: none;

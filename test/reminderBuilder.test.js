@@ -31,8 +31,17 @@ vi.mock('../agent/modules/inboxContext.js', () => ({
   buildInboxContext: vi.fn(async () => ({ messages: [] })),
 }));
 
+vi.mock('../agent/modules/kbTaskParser.js', () => ({
+  parseTasksFromKB: vi.fn(() => []),
+  getTaskHash: vi.fn((task) => `t:${task.instruction || ''}`),
+}));
+
 vi.mock('../agent/modules/kbReminderGenerator.js', () => ({
   getKBReminders: vi.fn(async () => []),
+}));
+
+vi.mock('../agent/modules/promptGenerator.js', () => ({
+  getUserKBPrompt: vi.fn(async () => ''),
 }));
 
 vi.mock('../agent/modules/summaryGenerator.js', () => ({

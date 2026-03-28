@@ -28,7 +28,18 @@ import * as memorySearchTool from "./memory_search.js";
 import * as webReadTool from "./web_read.js";
 import * as reminderAddTool from "./reminder_add.js";
 import * as reminderDelTool from "./reminder_del.js";
+import * as taskAddTool from "./task_add.js";
+import * as taskDelTool from "./task_del.js";
+import * as taskEditTool from "./task_edit.js";
 import * as changeSettingTool from "./change_setting.js";
+import * as templateReadTool from "./template_read.js";
+import * as templateCreateTool from "./template_create.js";
+import * as templateEditTool from "./template_edit.js";
+import * as templateDeleteTool from "./template_delete.js";
+import * as templateShareTool from "./template_share.js";
+import * as templateSearchTool from "./template_search.js";
+import * as templateDownloadTool from "./template_download.js";
+import * as templateToggleTool from "./template_toggle.js";
 
 // --- FSM Chain Tracking ---
 // Track the last FSM tool executed in the current tool-call-chain to detect
@@ -64,17 +75,38 @@ const TOOL_IMPL = {
   web_read: webReadTool,
   reminder_add: reminderAddTool,
   reminder_del: reminderDelTool,
+  task_add: taskAddTool,
+  task_del: taskDelTool,
+  task_edit: taskEditTool,
   change_setting: changeSettingTool,
+  template_read: templateReadTool,
+  template_create: templateCreateTool,
+  template_edit: templateEditTool,
+  template_delete: templateDeleteTool,
+  template_share: templateShareTool,
+  template_search: templateSearchTool,
+  template_download: templateDownloadTool,
+  template_toggle: templateToggleTool,
 };
 
 // Generic marker for server-side tools (backend sends this name)
 const SERVER_SIDE_TOOL_NAME = "server_side_tool";
 
-// FSM tools that require special handling (context switching)
-const FSM_TOOLS = new Set(["email_compose", "email_forward", "email_reply", "calendar_event_delete", "contacts_delete", "email_delete", "email_archive"]);
+// ADR: Block consecutive FSM tool calls.
+// LLMs sometimes chain multiple FSM (confirmation-required) tool calls in a single turn
+// without waiting for user feedback between them. This leads to confusing UX where the user
+// is asked to confirm action B before knowing if action A succeeded. We block consecutive
+// FSM calls and force the LLM to report the first result before attempting the next.
+// An FSM tool is any tool that exports `completeExecution` (multi-step with user confirmation).
+const BLOCK_CONSECUTIVE_FSM_CALLS = true;
 
 export function isFsmTool(toolName) {
-  return FSM_TOOLS.has(toolName);
+  try {
+    const impl = TOOL_IMPL[toolName];
+    return !!(impl && impl.fsm === true);
+  } catch (_) {
+    return false;
+  }
 }
 
 export function isServerSideTool(toolName) {
@@ -198,8 +230,35 @@ export async function getToolActivityLabel(name, args = {}) {
       return "Adding reminder…";
     case "reminder_del":
       return "Removing reminder…";
+    case "task_add":
+      return "Scheduling task…";
+    case "task_del":
+      return "Removing scheduled task…";
+    case "task_edit":
+      return "Updating scheduled task…";
     case "change_setting":
       return "Updating setting…";
+    case "template_read":
+      return "Reading template…";
+    case "template_create":
+      return "Creating template…";
+    case "template_edit":
+      return "Editing template…";
+    case "template_delete":
+      return "Deleting template…";
+    case "template_share":
+      return "Sharing template…";
+    case "template_download":
+      return "Downloading template…";
+    case "template_toggle":
+      return "Toggling template…";
+    case "template_search": {
+      const query = args?.query || "";
+      if (query) {
+        return `Searching templates: ${query}`;
+      }
+      return "Searching templates…";
+    }
     default:
       log(`[TMDBG Tools] Missing activity label for tool '${name}'`);
       return "Thinking…";
@@ -214,88 +273,67 @@ export async function executeToolByName(name, args = {}, options = {}) {
   }
 
   try {
-    // FSM tools: fire-and-forget execution. Return metadata so caller can wait.
-    if (isFsmTool(name)) {
-      // --- Consecutive FSM Tool Detection ---
-      // Check if we're trying to run an FSM tool when the previous tool in this chain
-      // was also an FSM tool. This is often an error pattern and requires user confirmation.
-      // Reset happens ONLY at the start of a new user turn (via resetFsmChainTracking).
-      
-      if (_lastFsmToolInChain !== null) {
-        const prevTool = _lastFsmToolInChain;
-        const prevArgs = _lastFsmToolArgs;
-        log(`[TMDBG Tools] Consecutive FSM tool detected: previous='${prevTool}', current='${name}'`, "warn");
-        
-        // Format args for inclusion in error message
-        let prevArgsStr = "";
-        let currentArgsStr = "";
-        try {
-          prevArgsStr = JSON.stringify(prevArgs, null, 2);
-        } catch (e) {
-          prevArgsStr = String(prevArgs);
-        }
-        try {
-          currentArgsStr = JSON.stringify(args, null, 2);
-        } catch (e) {
-          currentArgsStr = String(args);
-        }
-        
-        // Build descriptive error message for the LLM
-        const errorMessage = `ERROR: Consecutive FSM tool calls are not allowed.\n\n` +
-          `PREVIOUS FSM tool '${prevTool}' was just executed with arguments:\n${prevArgsStr}\n\n` +
-          `CURRENT FSM tool '${name}' was requested with arguments:\n${currentArgsStr}\n\n` +
-          `This is often an error pattern. ` +
-          `Verify first that this new FSM tool call is correct and necessary. ` +
-          `If correct, you MUST first confirm with the user before proceeding. ` +
-          `Ask the user for clarifications or confirmation before calling ${name} again. ` +
-          `For example, something like, "Okay, I sent the first email successfully, should I move on to the next email?" ` +
-          `You MUST pay attention to the first execution outcome -- if it was successful, you MUST respond to the user ` +
-          `with a message that confirms the success, so that in the subsequent conversation you will NOT be confused ` +
-          `and move onto the next tool call.`;
-        
-        return { 
-          error: errorMessage,
-          ok: false,
-          consecutiveFsmBlocked: true,
-          previousFsmTool: prevTool,
-          previousFsmArgs: prevArgs,
-          blockedFsmTool: name,
-          blockedArgs: args
-        };
-      }
-      
-      // Update chain tracking BEFORE running the FSM tool
-      // This ensures that even if the FSM fails (user closes window, says no, etc.),
-      // we still block subsequent FSM tool calls in the same chain.
-      // Only synchronous validation/malformed errors should allow retry.
-      const previousFsmTool = _lastFsmToolInChain;
-      const previousFsmArgs = _lastFsmToolArgs;
-      _lastFsmToolInChain = name;
-      _lastFsmToolArgs = args;
-      log(`[TMDBG Tools] FSM chain tracking updated BEFORE execution: lastFsmTool='${name}'`);
-      
-      const startedAt = Date.now();
-      try {
-        await impl.run(args, options);
-      } catch (e) {
-        // Synchronous failure (validation, malformed args, etc.)
-        // REVERT chain tracking to allow retry for genuine errors
-        log(`[TMDBG Tools] FSM tool '${name}' synchronous failure: ${e}`, "error");
-        log(`[TMDBG Tools] Reverting FSM chain tracking due to synchronous error`);
-        _lastFsmToolInChain = previousFsmTool;
-        _lastFsmToolArgs = previousFsmArgs;
-        return { error: String(e || "fsm tool error") };
-      }
-      
-      // FSM tool started successfully (compose window opened, waiting for user, etc.)
-      // Chain tracking already set above - leave it in place
-      
-      const pid = options && typeof options.callId === "string" ? options.callId : options.callId || null;
-      return { fsm: true, tool: name, pid, startedAt };
+    const fsm = isFsmTool(name);
+
+    // --- Consecutive FSM Tool Detection (see BLOCK_CONSECUTIVE_FSM_CALLS ADR) ---
+    // Block if: (1) flag is on, (2) this tool is FSM, (3) previous tool was also FSM.
+    // Reset happens ONLY at the start of a new user turn (via resetFsmChainTracking).
+    if (BLOCK_CONSECUTIVE_FSM_CALLS && fsm && _lastFsmToolInChain !== null) {
+      const prevTool = _lastFsmToolInChain;
+      const prevArgs = _lastFsmToolArgs;
+      log(`[TMDBG Tools] Consecutive FSM tool detected: previous='${prevTool}', current='${name}'`, "warn");
+
+      let prevArgsStr = "";
+      let currentArgsStr = "";
+      try { prevArgsStr = JSON.stringify(prevArgs, null, 2); } catch (e) { prevArgsStr = String(prevArgs); }
+      try { currentArgsStr = JSON.stringify(args, null, 2); } catch (e) { currentArgsStr = String(args); }
+
+      const errorMessage = `ERROR: Consecutive FSM tool calls are not allowed.\n\n` +
+        `PREVIOUS FSM tool '${prevTool}' was just executed with arguments:\n${prevArgsStr}\n\n` +
+        `CURRENT FSM tool '${name}' was requested with arguments:\n${currentArgsStr}\n\n` +
+        `This is often an error pattern. ` +
+        `Verify first that this new FSM tool call is correct and necessary. ` +
+        `If correct, you MUST first confirm with the user before proceeding. ` +
+        `Ask the user for clarifications or confirmation before calling ${name} again. ` +
+        `For example, something like, "Okay, I sent the first email successfully, should I move on to the next email?" ` +
+        `You MUST pay attention to the first execution outcome -- if it was successful, you MUST respond to the user ` +
+        `with a message that confirms the success, so that in the subsequent conversation you will NOT be confused ` +
+        `and move onto the next tool call.`;
+
+      return {
+        error: errorMessage,
+        ok: false,
+        consecutiveFsmBlocked: true,
+        previousFsmTool: prevTool,
+        previousFsmArgs: prevArgs,
+        blockedFsmTool: name,
+        blockedArgs: args
+      };
     }
 
-    // Non-FSM tools run synchronously and return their result
-    const result = await impl.run(args, options);
+    // Track FSM chain BEFORE execution so failures still block the next call
+    const previousFsmTool = _lastFsmToolInChain;
+    const previousFsmArgs = _lastFsmToolArgs;
+    if (fsm) {
+      _lastFsmToolInChain = name;
+      _lastFsmToolArgs = args;
+      log(`[TMDBG Tools] FSM chain tracking: lastFsmTool='${name}'`);
+    }
+
+    // Run the tool (FSM and non-FSM use the same call)
+    let result;
+    try {
+      result = await impl.run(args, options);
+    } catch (e) {
+      // Synchronous failure — revert FSM chain tracking to allow retry
+      if (fsm) {
+        log(`[TMDBG Tools] FSM tool '${name}' synchronous failure, reverting chain tracking: ${e}`, "error");
+        _lastFsmToolInChain = previousFsmTool;
+        _lastFsmToolArgs = previousFsmArgs;
+      }
+      return { error: String(e || "tool error") };
+    }
+
     return result;
   } catch (e) {
     log(`[TMDBG Tools] Tool '${name}' threw: ${e}`, "error");

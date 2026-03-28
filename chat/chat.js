@@ -10,7 +10,7 @@ import { ctx } from "./modules/context.js";
 import { awaitUserInput } from "./modules/converse.js";
 import { cleanupScrollObservers, initAggressiveScrollStick, isAtBottom, scrollToBottom, setBubbleText, setStickToBottom } from "./modules/helpers.js";
 import { mergeIdMapFromHeadless, persistIdMapImmediate, remapUniqueId } from "./modules/idTranslator.js";
-import { checkAndInsertWelcomeBack, initAndGreetUser, insertProactiveNudge } from "./modules/init.js";
+import { checkAndInsertWelcomeBack, initAndGreetUser, insertProactiveNudge, insertTaskResultBubble } from "./modules/init.js";
 import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromContentEditable, initMentionAutocomplete } from "./modules/mentionAutocomplete.js";
 import { saveMetaImmediate, saveTurnsImmediate } from "./modules/persistentChatStore.js";
 import { initChatLink, disconnectChatLink } from "../chatlink/modules/core.js";
@@ -600,8 +600,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
       log(`[TMDBG Chat] Received proactive check-in message (${proactiveText.length} chars, ${(idMapEntries || []).length} idMap entries)`);
 
-      // Fire-and-forget async — use _insertNudge via exported wrapper so proactive
-      // messages properly replace any existing welcome-back greeting
+      // Determine if this is a task result or a regular proactive nudge
+      const isTaskResult = message.isTaskResult === true;
+
+      // Fire-and-forget async
       (async () => {
         try {
           // Merge headless idMap into the active chat's map and remap message references
@@ -611,11 +613,17 @@ window.addEventListener("DOMContentLoaded", async () => {
             log(`[TMDBG Chat] Merged idMap from proactive session`);
           }
 
-          // Insert via the nudge system — replaces welcome-back if present,
-          // handles agentConverseMessages, grey-out, and ephemeral persistence
-          await insertProactiveNudge(displayMessage);
-
-          log(`[TMDBG Chat] Injected proactive check-in bubble into open chat`);
+          if (isTaskResult) {
+            // Task results are PERMANENT — not replaced by welcome-back.
+            // Already persisted via appendTurn; this just renders the live bubble.
+            // insertTaskResultBubble imported statically at top (dynamic import fails in TB sidebar)
+            await insertTaskResultBubble(displayMessage);
+            log(`[TMDBG Chat] Injected task result bubble into open chat`);
+          } else {
+            // Regular proactive nudge — replaces welcome-back if present
+            await insertProactiveNudge(displayMessage);
+            log(`[TMDBG Chat] Injected proactive check-in bubble into open chat`);
+          }
         } catch (e) {
           log(`[TMDBG Chat] Failed to handle proactive-checkin-message: ${e}`, "warn");
         }

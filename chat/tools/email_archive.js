@@ -1,5 +1,9 @@
 // email_archive.js – FSM tool to list + archive emails, with optional override IDs
 
+// FSM tool — requires user confirmation before executing.
+// Used by core.js to detect and block consecutive FSM calls (see BLOCK_CONSECUTIVE_FSM_CALLS).
+export const fsm = true;
+
 import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";

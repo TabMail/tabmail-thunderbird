@@ -43,22 +43,25 @@ export async function loadReminders() {
 function renderReminders() {
     const container = document.getElementById("reminders-list");
     const emptyMessage = document.getElementById("reminders-empty");
-    
-    if (!remindersData || remindersData.length === 0) {
+
+    // Filter out tasks — they now have their own tab
+    const reminderItems = remindersData.filter(r => r.type !== "task");
+
+    if (!reminderItems || reminderItems.length === 0) {
         container.innerHTML = "";
         emptyMessage.style.display = "block";
         return;
     }
-    
+
     emptyMessage.style.display = "none";
     container.innerHTML = "";
-    
+
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    
-    remindersData.forEach((reminder) => {
+
+    reminderItems.forEach((reminder) => {
         const item = document.createElement("div");
         item.className = "reminder-item" + (reminder.enabled === false ? " disabled" : "");
         item.setAttribute("data-hash", reminder.hash);
@@ -148,13 +151,27 @@ function renderReminders() {
         }
         
         details.appendChild(meta);
-        
+
         item.appendChild(checkbox);
         item.appendChild(details);
+
+        // Delete button — functional for KB, greyed out for message
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "reminder-delete-btn";
+        deleteBtn.title = reminder.source === "kb" ? "Delete this reminder" : "Email reminders cannot be deleted";
+        deleteBtn.innerHTML = "&#128465;"; // 🗑 wastebasket
+        if (reminder.source !== "kb") {
+            deleteBtn.disabled = true;
+            deleteBtn.classList.add("disabled");
+        } else {
+            deleteBtn.addEventListener("click", () => handleReminderDelete(reminder));
+        }
+        item.appendChild(deleteBtn);
+
         container.appendChild(item);
     });
     
-    log(`[Prompts] Rendered ${remindersData.length} reminders`);
+    log(`[Prompts] Rendered ${reminderItems.length} reminders`);
 }
 
 /**
@@ -197,6 +214,36 @@ async function handleReminderToggle(hash, enabled) {
         showStatus("Failed to update reminder", true);
         // Reload to get correct state
         loadReminders();
+    }
+}
+
+/**
+ * Handle KB reminder deletion
+ */
+async function handleReminderDelete(reminder) {
+    try {
+        log(`[Prompts] Deleting KB reminder ${reminder.hash}`);
+
+        const response = await browser.runtime.sendMessage({
+            command: "delete-kb-reminder",
+            hash: reminder.hash,
+            content: reminder.content,
+            type: reminder.type,
+        });
+
+        if (!response || !response.ok) {
+            throw new Error(response?.error || "Failed to delete reminder");
+        }
+
+        // Remove from local data and re-render
+        remindersData = remindersData.filter(r => r.hash !== reminder.hash);
+        renderReminders();
+
+        showStatus("Reminder deleted");
+        log(`[Prompts] Reminder ${reminder.hash} deleted`);
+    } catch (e) {
+        log(`[Prompts] Error deleting reminder: ${e}`, "error");
+        showStatus("Failed to delete reminder", true);
     }
 }
 

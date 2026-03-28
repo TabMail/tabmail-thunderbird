@@ -107,14 +107,6 @@ export async function run(args = {}, options = {}) {
       log(`[TMDBG Tools] reminder_add: failed to import/trigger KB reminder update: ${e}`, "warn");
     }
 
-    // Trigger debounced periodic KB update
-    try {
-      const { debouncedKbUpdate } = await import("../../agent/modules/knowledgebase.js");
-      debouncedKbUpdate();
-    } catch (e2) {
-      log(`[TMDBG Tools] reminder_add: failed to trigger debounced KB update: ${e2}`, "warn");
-    }
-
     log(`[TMDBG Tools] reminder_add: success`);
     return { ok: true, reminder: entry };
   } catch (e) {

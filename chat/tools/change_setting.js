@@ -58,6 +58,26 @@ const SETTING_DEFS = {
     default: 5,
     // No KB entry for grace minutes — too low-level for the LLM to need
   },
+  "task.enabled": {
+    type: "boolean",
+    default: true,
+    storageKey: "task.enabled",
+    kbEntryOn: "[Pinned] Scheduled tasks are enabled.",
+    kbEntryOff: "[Pinned] Scheduled tasks are disabled.",
+    legacyKbEntries: [
+      "[Pinned] Repeated scheduled tasks are enabled.",
+      "[Pinned] Repeated scheduled tasks are disabled.",
+    ],
+  },
+  "task.advance_minutes": {
+    type: "number",
+    min: 1,
+    max: 30,
+    default: 5,
+    storageKey: "task.advance_minutes",
+    kbTemplate: (v) => `[Pinned] TabMail executes scheduled tasks ${v} minutes before their scheduled time.`,
+    kbPattern: /^(\[Pinned\] )?TabMail executes (?:repeated |scheduled )?tasks \d+ minutes before their scheduled time/,
+  },
 };
 
 export async function run(args = {}) {

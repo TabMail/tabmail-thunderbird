@@ -26,6 +26,9 @@ let emailCache = [];
 // These are items that have been mentioned in the chat conversation
 let entityCache = [];
 
+// Store local templates for fuzzy matching — populated from templateManager
+let templateCache = [];
+
 // Current autocomplete state
 let autocompleteState = {
   isActive: false,
@@ -131,6 +134,71 @@ export async function refreshEntityCache() {
     log(`[MentionAutocomplete] Failed to refresh entityCache: ${e}`, "error");
     entityCache = [];
   }
+}
+
+/**
+ * Refresh the template cache from local templateManager.
+ * Templates are local-only and always available (no async resolution needed).
+ */
+export async function refreshTemplateCache() {
+  try {
+    const { getVisibleTemplates } = await import("../../agent/modules/templateManager.js");
+    const templates = await getVisibleTemplates();
+    templateCache = templates.map((t) => ({
+      type: "template",
+      realId: t.id,
+      label: t.name || "Untitled template",
+      description: `Template • ${t.instructions.length} instruction${t.instructions.length === 1 ? "" : "s"}`,
+      searchFields: [t.name, ...(t.instructions || []), t.exampleReply || ""].filter(Boolean),
+    }));
+    log(`[MentionAutocomplete] Refreshed templateCache: ${templateCache.length} templates`, 'debug');
+  } catch (e) {
+    log(`[MentionAutocomplete] Failed to refresh templateCache: ${e}`, "error");
+    templateCache = [];
+  }
+}
+
+/**
+ * Fuzzy match templates by name and instructions.
+ * Splits query into words and scores by total hits (OR matching).
+ * Name matches are weighted 2x.
+ */
+function fuzzyMatchTemplates(query, maxResults = 10) {
+  const words = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const matches = [];
+  for (const item of templateCache) {
+    // For single-word queries, use the existing field-level scoring
+    if (words.length === 1) {
+      let bestScore = null;
+      for (const field of item.searchFields) {
+        const score = getMatchScore(query, field);
+        if (score !== null && (bestScore === null || score < bestScore)) {
+          bestScore = score;
+        }
+      }
+      if (bestScore !== null) {
+        matches.push({ item, score: bestScore });
+      }
+      continue;
+    }
+
+    // Multi-word: OR matching with weighted hits
+    const allText = item.searchFields.join(" ").toLowerCase();
+    const nameLower = (item.label || "").toLowerCase();
+    let hits = 0;
+    for (const word of words) {
+      if (nameLower.includes(word)) hits += 2;
+      else if (allText.includes(word)) hits += 1;
+    }
+    if (hits > 0) {
+      // Lower score = better (to match getMatchScore convention). Invert hits.
+      matches.push({ item, score: 100 - hits * 10 });
+    }
+  }
+  matches.sort((a, b) => a.score - b.score);
+  return matches.slice(0, maxResults);
 }
 
 /**
@@ -380,6 +448,8 @@ async function updateMatches(query) {
   
   // Refresh idMap items cache to catch any new contacts/events mentioned in chat
   await refreshEntityCache();
+  // Refresh local template cache
+  await refreshTemplateCache();
 
   // If query is empty, show only selected emails (quick reference to current selection)
   if (!query.trim()) {
@@ -412,6 +482,16 @@ async function updateMatches(query) {
         });
       });
     }
+
+    // Always show templates in empty-query dropdown (after selected/recent emails)
+    for (const t of templateCache) {
+      matches.push({
+        type: "template",
+        templateItem: t,
+        label: t.label,
+        description: t.description,
+      });
+    }
   } else {
     // Query is not empty - show fuzzy matches from emails AND idMap items
     const emailFuzzyMatches = fuzzyMatchEmails(query, 30); // Up to 30 email matches
@@ -438,7 +518,19 @@ async function updateMatches(query) {
         score: match.score,
       });
     });
-    
+
+    // Add template matches
+    const templateFuzzyMatches = fuzzyMatchTemplates(query, 10);
+    templateFuzzyMatches.forEach((match) => {
+      matches.push({
+        type: "template",
+        templateItem: match.item,
+        label: match.item.label,
+        description: match.item.description,
+        score: match.score,
+      });
+    });
+
     // Sort combined matches by score
     matches.sort((a, b) => (a.score || 0) - (b.score || 0));
     
@@ -642,14 +734,32 @@ async function selectMatch(index, contenteditable, dropdown) {
   let chipTitle = "";
   let markdownType = "";
   
-  if (match.type === "contact" || match.type === "event") {
+  if (match.type === "template") {
+    // Template item from local templateManager
+    const item = match.templateItem;
+    try {
+      numericId = toNumericId(item.realId);
+      if (!numericId && numericId !== 0) {
+        log(`[MentionAutocomplete] Failed to convert template ID to numeric: ${item.realId}`, "error");
+        return;
+      }
+    } catch (e) {
+      log(`[MentionAutocomplete] Exception during template ID conversion: ${e}`, "error");
+      return;
+    }
+    chipLabel = item.label;
+    chipTitle = item.label;
+    chipEmoji = "📝";
+    markdownType = "Template";
+    log(`[MentionAutocomplete] Using template numeric ID for chip: ${numericId}`, 'debug');
+  } else if (match.type === "contact" || match.type === "event") {
     // Entity item (contact or calendar event) from entityMap
     const item = match.idMapItem;
     // Use compound ID directly - this is the full "parent:child" format
     numericId = item.compoundId;
     chipLabel = item.label;
     chipTitle = item.label;
-    
+
     if (match.type === "contact") {
       chipEmoji = "👤";
       markdownType = "Contact";
@@ -742,7 +852,7 @@ async function selectMatch(index, contenteditable, dropdown) {
     chip.className = "email-mention-chip";
     chip.contentEditable = "false"; // Make chip non-editable
     chip.dataset.numericId = numericId;
-    chip.dataset.markdownType = markdownType; // "Email", "Contact", or "Event"
+    chip.dataset.markdownType = markdownType; // "Email", "Contact", "Event", or "Template"
     chip.textContent = `${chipEmoji} ${chipLabel}`;
     chip.title = chipTitle;
     

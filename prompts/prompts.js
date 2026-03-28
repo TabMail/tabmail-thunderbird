@@ -6,6 +6,7 @@ import { clearTestOutput, runKbRefineTest } from "./modules/developer.js";
 import { initHistoryHandlers, loadChatHistory, showClearAllConfirmation } from "./modules/history.js";
 import { parseMarkdown, reconstructMarkdown } from "./modules/markdown.js";
 import { loadReminders } from "./modules/reminders.js";
+import { loadTasks } from "./modules/tasks.js";
 import { loadKbConfig, loadPromptFile, resetPromptFile, saveKbConfig, savePromptFile } from "./modules/storage.js";
 import { autoGrowTextarea, deepClone, flashBorder, flashButton, showStatus } from "./modules/utils.js";
 
@@ -582,6 +583,10 @@ function switchTab(promptType) {
     document.getElementById("action-editor").classList.add("active");
   } else if (promptType === "kb") {
     document.getElementById("kb-editor").classList.add("active");
+  } else if (promptType === "tasks") {
+    document.getElementById("tasks-editor").classList.add("active");
+    // Load tasks when switching to tasks tab
+    loadTasks();
   } else if (promptType === "reminders") {
     document.getElementById("reminders-editor").classList.add("active");
     // Load reminders when switching to reminders tab
@@ -597,7 +602,7 @@ function switchTab(promptType) {
   }
 
   // Re-calculate textarea heights after tab is visible (except for developer, reminders, history tabs)
-  if (promptType !== "developer" && promptType !== "reminders" && promptType !== "history") {
+  if (promptType !== "developer" && promptType !== "tasks" && promptType !== "reminders" && promptType !== "history") {
     requestAnimationFrame(() => {
       const activeContent = document.querySelector(".prompt-content.active");
       if (activeContent) {
@@ -1522,6 +1527,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   
+  // Refresh tasks button
+  document.getElementById("refresh-tasks").addEventListener("click", async () => {
+    const refreshBtn = document.getElementById("refresh-tasks");
+    flashButton(refreshBtn, "blue");
+    await loadTasks();
+    showStatus("Tasks refreshed");
+  });
+
   // Refresh reminders button
   document.getElementById("refresh-reminders").addEventListener("click", async () => {
     const refreshBtn = document.getElementById("refresh-reminders");

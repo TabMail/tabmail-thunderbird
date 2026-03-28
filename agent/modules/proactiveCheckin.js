@@ -27,6 +27,8 @@ const STORAGE = {
 };
 
 const ALARM_NAME = "tabmail-proactive-reachout";
+const TASK_ALARM_NAME = "tabmail-task-eval";
+const TASK_EVAL_INTERVAL_MINUTES = 5; // Evaluate tasks every 5 minutes
 
 // Legacy keys for one-time migration
 const LEGACY_KEYS = {
@@ -533,6 +535,339 @@ async function _handleAlarmFired() {
   await _scheduleNextAlarm();
 }
 
+// ─────────────────────────────────────────────────────────────
+// Task evaluation (periodic, every 5 min)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Evaluate all task entries and fire any that are due.
+ * Called by the periodic TASK_ALARM_NAME alarm.
+ * Tasks fire serially (one at a time) for simplicity.
+ */
+async function _handleTaskEvaluation() {
+  try {
+    // Check task.enabled setting
+    const taskEnabledStored = await browser.storage.local.get({ "task.enabled": true });
+    const taskEnabled = taskEnabledStored["task.enabled"];
+    if (taskEnabled === false) {
+      log(`[ProActReach] Task evaluation skipped (task.enabled=false)`);
+      return;
+    }
+
+    // Parse tasks from KB
+    const { getUserKBPrompt } = await import("./promptGenerator.js");
+    const kbText = (await getUserKBPrompt()) || "";
+    const { parseTasksFromKB, getTaskHash } = await import("./kbTaskParser.js");
+    const tasks = parseTasksFromKB(kbText);
+
+    if (tasks.length === 0) return;
+
+    const { shouldFire, detectMiss, getExecutionState, markFired, markMissed, gcOrphanedStates } = await import("./taskScheduler.js");
+    const { getDisabledHashes } = await import("./reminderStateStore.js");
+    const { getCachedResult, setCachedResult, gcOrphanedEntries } = await import("./taskExecutionCache.js");
+
+    const disabledHashes = await getDisabledHashes();
+    const activeTaskHashes = tasks.map(t => getTaskHash(t));
+
+    // Evaluate each task
+    for (const task of tasks) {
+      const hash = getTaskHash(task);
+      const isEnabled = !disabledHashes.has(hash);
+      const execState = await getExecutionState(hash);
+
+      // Check for missed fires
+      const missResult = detectMiss(task, hash, execState);
+      if (missResult.missed) {
+        await markMissed(hash, missResult.missedDate);
+        log(`[ProActReach] Task missed: ${hash} on ${missResult.missedDate}`);
+      }
+
+      // Check if should fire
+      const fireResult = await shouldFire(task, hash, isEnabled, execState);
+      if (!fireResult.shouldFire) continue;
+
+      log(`[ProActReach] Task firing: ${hash} (prefire=${fireResult.isPrefire})`);
+
+      // Check cache first (another device may have already executed)
+      // Use timezone-aware date for consistent cache key
+      const { getNowInTimezone } = await import("./taskScheduler.js");
+      const taskTz = task.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const today = getNowInTimezone(taskTz).dateStr;
+      const cached = await getCachedResult(hash, today);
+      if (cached) {
+        log(`[ProActReach] Task ${hash} has cached result, delivering`);
+        await _deliverTaskResult(task, hash, cached.content, cached.sessionId);
+        await markFired(hash, true, task.timezone);
+        continue;
+      }
+
+      // Execute the task (agent invocation)
+      try {
+        const result = await _executeTask(task, hash);
+        if (result) {
+          await setCachedResult(hash, today, result.content, result.sessionId);
+          await _deliverTaskResult(task, hash, result.content, result.sessionId);
+          await markFired(hash, true, task.timezone);
+
+          // Broadcast cache via Device Sync
+          try {
+            const { broadcastState } = await import("./deviceSync.js");
+            broadcastState(["taskCache"]);
+          } catch (e) {
+            log(`[ProActReach] Failed to broadcast task cache: ${e}`, "warn");
+          }
+        } else {
+          await markFired(hash, false, task.timezone);
+        }
+      } catch (e) {
+        log(`[ProActReach] Task execution failed for ${hash}: ${e}`, "error");
+        // Don't mark as fired on quota errors (402) — try next time
+        if (e?.status === 402 || String(e).includes("402")) {
+          log(`[ProActReach] Quota exhausted, will retry at next scheduled time`);
+        } else {
+          await markFired(hash, false, task.timezone);
+        }
+      }
+    }
+
+    // GC orphaned execution states and cache entries
+    const activeTaskHashSet = new Set(activeTaskHashes);
+    gcOrphanedStates(activeTaskHashes).catch(e => {
+      log(`[ProActReach] Task state GC failed: ${e}`, "warn");
+    });
+    gcOrphanedEntries(activeTaskHashSet).catch(e => {
+      log(`[ProActReach] Task cache GC failed: ${e}`, "warn");
+    });
+  } catch (e) {
+    log(`[ProActReach] Task evaluation failed: ${e}`, "error");
+  }
+}
+
+/**
+ * Execute a task by sending the instruction as a user message in an isolated agent session.
+ * Returns { content, sessionId } on success, null on failure.
+ */
+async function _executeTask(task, taskHash) {
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: task.timezone || undefined,
+  });
+  const dateStr = now.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: task.timezone || undefined,
+  });
+
+  const userMessage = `It is now ${timeStr}, ${dateStr}. I previously scheduled this task to run at this time: "${task.instruction}" Execute and respond.`;
+
+  // Check for missed fires to include in the message
+  const { getExecutionState, consumeMissed } = await import("./taskScheduler.js");
+  const execState = await getExecutionState(taskHash);
+  let messageWithMissed = userMessage;
+  if (execState?.lastMissed) {
+    const missed = execState.lastMissed;
+    messageWithMissed += `\nNote: A previous run was missed on ${missed} (device was not available). Please include anything that would have been covered.`;
+    await consumeMissed(taskHash);
+  }
+
+  const sessionId = `task:${taskHash}`;
+
+  log(`[ProActReach] Executing task ${taskHash}: "${task.instruction.slice(0, 80)}..."`);
+
+  try {
+    const { sendChat } = await import("./llm.js");
+    const { executeToolsHeadless } = await import("../../chat/tools/core.js");
+    const { getUserKBPrompt } = await import("./promptGenerator.js");
+    const { buildReminderList } = await import("./reminderBuilder.js");
+
+    // Build the agent system prompt (same as normal chat init).
+    // The backend expands "system_prompt_agent" into the full agent system prompt
+    // with tools, KB context, reminders, and timezone.
+    let userName = "";
+    try {
+      const stored = await browser.storage.local.get("userName");
+      userName = stored?.userName || "";
+    } catch { /* ignore */ }
+    const userKBContent = (await getUserKBPrompt()) || "";
+    let remindersJson = "[]";
+    try {
+      const result = await buildReminderList();
+      const { formatRemindersForSystem } = await import("./reminderBuilder.js");
+      if (typeof formatRemindersForSystem === "function") {
+        remindersJson = formatRemindersForSystem(result?.reminders || []);
+      } else {
+        remindersJson = JSON.stringify((result?.reminders || []).map(r => ({
+          content: r.content, dueDate: r.dueDate, source: r.source, type: r.type,
+        })));
+      }
+    } catch (e) {
+      log(`[ProActReach] Failed to build reminders for task system prompt: ${e}`, "warn");
+    }
+
+    const systemMessage = {
+      role: "system",
+      content: "system_prompt_agent",
+      user_name: userName,
+      user_kb_content: userKBContent,
+      user_reminders_json: remindersJson,
+      recent_chat_history: "",
+    };
+
+    // Multi-turn agent loop: send message, handle tool calls, repeat until done
+    let messages = [systemMessage, { role: "user", content: messageWithMissed }];
+    let finalResponse = null;
+    const maxTurns = 10; // Safety limit
+
+    for (let turn = 0; turn < maxTurns; turn++) {
+      const response = await sendChat(messages, {
+        disableTools: false,
+        onToolExecution: null,
+      });
+
+      if (!response) {
+        log(`[ProActReach] Task ${taskHash} sendChat returned null on turn ${turn}`, "warn");
+        break;
+      }
+
+      // If there are tool calls, execute them headlessly and feed results back
+      if (response.tool_calls && response.tool_calls.length > 0) {
+        log(`[ProActReach] Task ${taskHash} turn ${turn}: ${response.tool_calls.length} tool call(s)`);
+        messages.push({ role: "assistant", content: response.assistant || "", tool_calls: response.tool_calls });
+
+        const toolResults = await executeToolsHeadless(response.tool_calls, response.token_usage);
+        for (const tr of toolResults) {
+          messages.push({ role: "tool", tool_call_id: tr.call_id, content: tr.output });
+        }
+        continue;
+      }
+
+      // No tool calls = final response
+      finalResponse = response.assistant;
+      break;
+    }
+
+    if (finalResponse) {
+      log(`[ProActReach] Task ${taskHash} executed successfully (${finalResponse.length} chars)`);
+      return { content: finalResponse, sessionId };
+    }
+
+    log(`[ProActReach] Task ${taskHash} returned no assistant response`, "warn");
+    return null;
+  } catch (e) {
+    log(`[ProActReach] Task ${taskHash} execution error: ${e}`, "error");
+    throw e; // Re-throw for quota handling in caller
+  }
+}
+
+/**
+ * Deliver a task result to the user.
+ * If chat window is open and user is not mid-conversation, inject directly.
+ * Otherwise, store as pending and/or show as system notification.
+ */
+/**
+ * Deliver a task result by persisting as proper chat turns (NOT ephemeral nudges).
+ * Task results must survive across window opens/closes and not be evicted by new nudges.
+ * If chat window is open, also renders inline. Always persisted regardless.
+ */
+async function _deliverTaskResult(task, taskHash, content, sessionId) {
+  let scheduleLabel;
+  if (task.kind === "once" && task.scheduleDate) {
+    scheduleLabel = `${task.scheduleDate} at ${task.scheduleTime}`;
+  } else {
+    scheduleLabel = `${task.scheduleDays} at ${task.scheduleTime}`;
+  }
+  const message = `**Scheduled Task** _(${scheduleLabel})_\n\n${content}`;
+
+  log(`[ProActReach] Delivering task result for ${taskHash} (${content.length} chars)`);
+
+  // Persist as proper chat turns (not ephemeral nudge) — survives window close
+  try {
+    const { appendTurn, loadTurns, loadMeta, generateTurnId } = await import("../../chat/modules/persistentChatStore.js");
+
+    const turns = await loadTurns();
+    const meta = await loadMeta();
+
+    if (turns && meta) {
+      // Insert a session break before the task result (skip if last turn is already one)
+      const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+      if (!lastTurn || lastTurn._type !== "session_break") {
+        const breakTurn = {
+          role: "assistant",
+          content: "Scheduled task executed in the background",
+          _id: generateTurnId(),
+          _ts: Date.now(),
+          _type: "session_break",
+          _chars: 0,
+        };
+        await appendTurn(breakTurn, turns, meta);
+      }
+
+      // Persist the task result as a proper assistant turn
+      const taskTurn = {
+        role: "assistant",
+        content: message,
+        _id: generateTurnId(),
+        _ts: Date.now() + 1,
+        _type: "task_result",
+        _chars: message.length,
+        _taskHash: taskHash,
+        _sessionId: sessionId,
+      };
+
+      try {
+        const { renderMarkdown } = await import("../../chat/modules/markdown.js");
+        taskTurn._rendered = await renderMarkdown(message);
+      } catch (e) {
+        log(`[ProActReach] Failed to render task result markdown: ${e}`, "warn");
+      }
+
+      await appendTurn(taskTurn, turns, meta);
+      log(`[ProActReach] Persisted task result as chat turn (${message.length} chars)`);
+    }
+  } catch (e) {
+    log(`[ProActReach] Failed to persist task result: ${e}`, "warn");
+  }
+
+  // Inject live into open chat via insertTaskResultBubble (permanent — NOT replaced
+  // by welcome-back/nudges). If chat is closed, open it — the persisted turn
+  // renders on init from persistedTurns. Do NOT use _storePendingMessage
+  // (that feeds into the nudge system which replaces the message).
+  try {
+    const chatOpen = await isChatWindowOpen();
+    if (chatOpen) {
+      await browser.runtime.sendMessage({
+        command: "proactive-checkin-message",
+        message,
+        idMapEntries: [],
+        isTaskResult: true,
+      });
+      log(`[ProActReach] Injected task result bubble into open chat`);
+    } else {
+      await _openChatWindow();
+      log(`[ProActReach] Opened chat window (task turn loads from persistence)`);
+    }
+  } catch (e) {
+    log(`[ProActReach] Failed to deliver task result to chat: ${e}`, "warn");
+  }
+
+  // Show system notification (for visibility in taskbar/notification center)
+  try {
+    await browser.notifications.create(`task-${taskHash}-${Date.now()}`, {
+      type: "basic",
+      title: "Scheduled Task",
+      message: content.replace(/\*\*/g, "").replace(/_([^_]+)_/g, "$1").slice(0, 200),
+      iconUrl: "icons/icon-48.png",
+    });
+  } catch (e) {
+    log(`[ProActReach] Failed to show task notification: ${e}`, "warn");
+  }
+}
+
 /**
  * Resolve a reminder's due date + optional time to epoch ms.
  * If no time, defaults to start of day (00:00).
@@ -836,6 +1171,11 @@ export async function initProactiveCheckin() {
         _handleAlarmFired().catch(e => {
           log(`[ProActReach] Alarm handler failed: ${e}`, "warn");
         });
+      } else if (alarm.name === TASK_ALARM_NAME) {
+        log(`[ProActReach] Task eval alarm fired`);
+        _handleTaskEvaluation().catch(e => {
+          log(`[ProActReach] Task eval handler failed: ${e}`, "warn");
+        });
       }
     };
     browser.alarms.onAlarm.addListener(_alarmListener);
@@ -845,6 +1185,15 @@ export async function initProactiveCheckin() {
   // Schedule initial alarm if enabled
   if (enabledAtInit) {
     await _scheduleNextAlarm();
+  }
+
+  // Schedule periodic task evaluation alarm (runs regardless of proactive enabled,
+  // since tasks have their own task.enabled setting)
+  try {
+    await browser.alarms.create(TASK_ALARM_NAME, { periodInMinutes: TASK_EVAL_INTERVAL_MINUTES });
+    log(`[ProActReach] Task eval alarm scheduled (every ${TASK_EVAL_INTERVAL_MINUTES} min)`);
+  } catch (e) {
+    log(`[ProActReach] Failed to schedule task eval alarm: ${e}`, "warn");
   }
 }
 
@@ -863,6 +1212,13 @@ export function cleanupProactiveCheckin() {
       log(`[ProActReach] Failed to remove alarm listener: ${e}`, "warn");
     }
     _alarmListener = null;
+  }
+
+  // Clear task eval alarm
+  try {
+    browser.alarms.clear(TASK_ALARM_NAME);
+  } catch (e) {
+    log(`[ProActReach] Failed to clear task eval alarm: ${e}`, "warn");
   }
 
   _isInitialized = false;

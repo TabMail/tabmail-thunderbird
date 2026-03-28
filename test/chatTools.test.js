@@ -145,9 +145,7 @@ vi.mock('../agent/modules/kbReminderGenerator.js', () => ({
 }));
 
 // Mock knowledgebase.js
-vi.mock('../agent/modules/knowledgebase.js', () => ({
-  debouncedKbUpdate: vi.fn(),
-}));
+vi.mock('../agent/modules/knowledgebase.js', () => ({}));
 
 // Mock reminderBuilder.js
 vi.mock('../agent/modules/reminderBuilder.js', () => ({

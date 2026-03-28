@@ -1,5 +1,9 @@
 // calendar_event_create.js – creates a calendar event (FSM tool)
 
+// FSM tool — requires user confirmation before executing.
+// Used by core.js to detect and block consecutive FSM calls (see BLOCK_CONSECUTIVE_FSM_CALLS).
+export const fsm = true;
+
 import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";

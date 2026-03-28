@@ -1,6 +1,13 @@
 // kbReminderGenerator.js – Extract KB-based reminders directly from KB content
 // Thunderbird 145 MV3
-// These reminders are parsed directly from the user's knowledge base
+//
+// Parses [Reminder] entries from the user's knowledge base.
+// NOTE: In the ScheduledItem architecture, tasks ([Task] entries) are a subclass
+// of reminders. This module handles the [Reminder] parsing; [Task] parsing is in
+// kbTaskParser.js. Both are consumed by reminderBuilder.js (the unified builder).
+// generateKBReminders() is called by both reminder and task tools after KB changes
+// to trigger a re-parse of the full KB text.
+//
 // Formats (new): "- [Reminder] Due YYYY/MM/DD [HH:MM] [TZ], text" or "- [Reminder] text"
 // Formats (legacy): "- Reminder: Due YYYY/MM/DD [HH:MM] [TZ], text" or "- Reminder: text"
 

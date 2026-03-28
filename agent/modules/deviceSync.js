@@ -24,7 +24,7 @@ import { getDeviceSyncUrl, SETTINGS } from "./config.js";
 const PFX = "[DeviceSync] ";
 
 // Valid field names for sync
-const VALID_FIELDS = ["composition", "action", "kb", "templates", "disabledReminders"];
+const VALID_FIELDS = ["composition", "action", "kb", "templates", "disabledReminders", "taskCache"];
 
 // Field → storage key mapping
 const FIELD_KEYS = {
@@ -33,6 +33,7 @@ const FIELD_KEYS = {
   kb: "user_prompts:user_kb.md",
   templates: "user_templates",
   disabledReminders: "disabled_reminders_v2",
+  taskCache: "task_execution_cache",
 };
 
 // Field → per-field timestamp key mapping
@@ -42,6 +43,7 @@ const TIMESTAMP_KEYS = {
   kb: "device_sync_ts:kb",
   templates: "device_sync_ts:templates",
   disabledReminders: "device_sync_ts:disabledReminders",
+  taskCache: "device_sync_ts:taskCache",
 };
 
 // Epoch 0 for new devices — prevents overwriting existing prompts
@@ -351,7 +353,11 @@ async function readLocalState(fields = null) {
     for (const field of VALID_FIELDS) {
       if (fields && !fields.includes(field)) continue;
 
-      if (field === "disabledReminders") {
+      if (field === "taskCache") {
+        // Send full cache map (per-key CRDT merge on receive)
+        const { getAllCachedResults } = await import("./taskExecutionCache.js");
+        state[field] = await getAllCachedResults();
+      } else if (field === "disabledReminders") {
         // Send CRDT map (per-hash timestamps handle conflicts)
         state[field] = stored[FIELD_KEYS[field]] || {};
       } else if (field === "templates") {
@@ -662,9 +668,12 @@ async function handlePromptState(data) {
     const willMergeReminders = data.disabledReminders !== undefined
       && resolveIncomingTimestamp(data, "disabledReminders") !== EPOCH_ZERO
       && (Array.isArray(data.disabledReminders) || (typeof data.disabledReminders === "object" && data.disabledReminders !== null));
+    const willMergeTaskCache = data.taskCache !== undefined
+      && resolveIncomingTimestamp(data, "taskCache") !== EPOCH_ZERO
+      && typeof data.taskCache === "object" && data.taskCache !== null;
 
     // Capture pre-merge snapshot for history (before templates/reminders are applied)
-    const preMergeSnapshot = (textFieldNames.length > 0 || willMergeTemplates || willMergeReminders)
+    const preMergeSnapshot = (textFieldNames.length > 0 || willMergeTemplates || willMergeReminders || willMergeTaskCache)
       ? await readLocalState() : null;
 
     // ─── Templates: per-template CRDT merge — skip if epoch-zero ─────
@@ -723,13 +732,30 @@ async function handlePromptState(data) {
       }
     }
 
+    // ─── TaskCache: per-key CRDT merge — skip if epoch-zero ────────
+    let taskCacheMerged = false;
+    if (willMergeTaskCache) {
+      try {
+        if (Object.keys(data.taskCache).length > 0) {
+          const { mergeIncomingCache } = await import("./taskExecutionCache.js");
+          suppressBroadcast = true;
+          await mergeIncomingCache(data.taskCache);
+          taskCacheMerged = true;
+          suppressBroadcast = false;
+        }
+      } catch (e) {
+        log(`${PFX}TaskCache CRDT merge failed: ${e}`, "warn");
+        suppressBroadcast = false;
+      }
+    }
+
     // ─── Apply text field updates + peer base ─────────────────────────
     // Always save peer base updates (even if no text fields were applied)
     if (Object.keys(peerBaseUpdates).length > 0) {
       await browser.storage.local.set(peerBaseUpdates);
     }
 
-    if (textFieldNames.length === 0 && !templatesMerged && !remindersMerged) {
+    if (textFieldNames.length === 0 && !templatesMerged && !remindersMerged && !taskCacheMerged) {
       log(`${PFX}No fields to apply`);
       return;
     }
@@ -739,6 +765,7 @@ async function handlePromptState(data) {
       ...textFieldNames,
       ...(templatesMerged ? ["templates"] : []),
       ...(remindersMerged ? ["disabledReminders"] : []),
+      ...(taskCacheMerged ? ["taskCache"] : []),
     ];
     if (actuallyChanged.length > 0 && preMergeSnapshot) {
       try {
