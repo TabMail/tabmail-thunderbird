@@ -24,6 +24,11 @@ console.log(`${LOG_PREFIX_MLCV} experiment parent script loaded. Services presen
 // CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Card row height override (TB default is 46px, not enough for snippet line).
+// The card container fills this height and vertically centers its content,
+// so padding is derived naturally — no mismatch with scroll math.
+const CARD_ROW_HEIGHT_MLCV = 80;
+
 // Card snippet configuration
 const CARD_SNIPPET_CONFIG_MLCV = {
   logPrefix: `${LOG_PREFIX_MLCV}[CardSnippet]`,
@@ -689,8 +694,29 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           return true; // Already patched
         }
 
+        // Monkeypatch ROW_HEIGHT to accommodate snippet line + increased padding.
+        // TB's virtual list reads this dynamically (never cached), so changing it
+        // takes immediate effect. reset() is called below to re-layout existing rows.
+        const origRowHeight = ThreadCard.ROW_HEIGHT;
+        if (CARD_ROW_HEIGHT_MLCV && ThreadCard.ROW_HEIGHT !== CARD_ROW_HEIGHT_MLCV) {
+          ThreadCard.__tmOrigRowHeight = origRowHeight;
+          ThreadCard.ROW_HEIGHT = CARD_ROW_HEIGHT_MLCV;
+          console.log(`${LOG_PREFIX_MLCV} Patched ThreadCard.ROW_HEIGHT: ${origRowHeight} → ${CARD_ROW_HEIGHT_MLCV}`);
+          // Force re-layout so existing rows adopt the new height
+          try {
+            const threadTree = doc.getElementById("threadTree") ||
+                              doc.querySelector("tree-view#threadTree, tree-view");
+            if (threadTree?.reset) {
+              threadTree.reset();
+              console.log(`${LOG_PREFIX_MLCV} threadTree.reset() called after ROW_HEIGHT patch`);
+            }
+          } catch (eReset) {
+            console.error(`${LOG_PREFIX_MLCV} threadTree.reset() failed:`, eReset);
+          }
+        }
+
         const proto = ThreadCard.prototype;
-        
+
         // Check for fillRow method (this is what TB uses to populate cards)
         if (typeof proto.fillRow !== "function") {
           console.log(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard.fillRow not found`);
@@ -742,6 +768,17 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           if (existingCard) ThreadCard = existingCard.constructor;
         }
         if (!ThreadCard || !ThreadCard.__tmPatched) return;
+        // Restore original ROW_HEIGHT
+        if (ThreadCard.__tmOrigRowHeight != null) {
+          ThreadCard.ROW_HEIGHT = ThreadCard.__tmOrigRowHeight;
+          delete ThreadCard.__tmOrigRowHeight;
+          console.log(`${LOG_PREFIX_MLCV} Restored ThreadCard.ROW_HEIGHT to ${ThreadCard.ROW_HEIGHT}`);
+          try {
+            const threadTree = doc.getElementById("threadTree") ||
+                              doc.querySelector("tree-view#threadTree, tree-view");
+            if (threadTree?.reset) threadTree.reset();
+          } catch (_) {}
+        }
         delete ThreadCard.__tmPatched;
         console.log(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard prototype unpatch marker removed`);
       } catch (e) {

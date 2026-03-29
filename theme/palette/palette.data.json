@@ -76,8 +76,8 @@
     }
   },
   "SPACING": {
-    "CARD_PADDING_TOP_PX": 6,
-    "CARD_PADDING_BOTTOM_PX": 12,
+    "CARD_PADDING_TOP_PX": 0,
+    "CARD_PADDING_BOTTOM_PX": 0,
     "READ_STATUS_SIZE_PX": 8
   },
   "TYPOGRAPHY": {

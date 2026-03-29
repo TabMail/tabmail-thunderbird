@@ -157,8 +157,7 @@ tr[is="thread-card"] > td {
   /* Card View separator styling (no layout impact) */
   --tm-card-separator-width: 95%;
   --tm-card-separator-height: 1px;
-  --tm-card-padding-top: var(--tm-spacing-card-padding-top);
-  --tm-card-padding-bottom: var(--tm-spacing-card-padding-bottom);
+  /* Card padding is no longer used — cards fill ROW_HEIGHT and vertically center content */
 
   /* IMPORTANT: avoid late layout shifts before palette injection.
      The 1.1 fallback matches TYPOGRAPHY.CARD_SENDER_SCALE in palette.data.json. */
@@ -176,12 +175,13 @@ tr[is="thread-card"] > td {
   background-repeat: no-repeat;
   background-size: var(--tm-card-separator-width) var(--tm-card-separator-height);
   background-position: center bottom;
-  padding-block-start: var(--tm-card-padding-top) !important;
-  padding-block-end: var(--tm-card-padding-bottom) !important;
-  /* Allow card to grow when padding is increased (avoid clipping) */
+  /* Card fills the row height set by ROW_HEIGHT monkeypatch.
+     Content is vertically centered — padding is derived naturally. */
   box-sizing: border-box !important;
-  max-height: none !important;
-  height: auto !important;
+  height: 100% !important;
+  align-content: center !important;
+  padding-block-start: 0 !important;
+  padding-block-end: 4px !important; /* Shift content 2px upward from center */
   overflow: visible !important;
 }
 
