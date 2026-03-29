@@ -73,7 +73,7 @@ async function _isEnabled() {
   try {
     const stored = await browser.storage.local.get({ [STORAGE.ENABLED]: null });
     const val = stored[STORAGE.ENABLED];
-    if (val !== null && val !== undefined) return val === true;
+    if (val !== null && val !== undefined) return val === true || val === "true";
     return !!(_cfg().proactiveEnabled ?? DEFAULTS.enabled);
   } catch (e) {
     log(`[ProActReach] _isEnabled storage read failed: ${e}`, "warn");
@@ -548,8 +548,9 @@ async function _handleTaskEvaluation() {
   try {
     // Check task.enabled setting
     const taskEnabledStored = await browser.storage.local.get({ "task.enabled": true });
-    const taskEnabled = taskEnabledStored["task.enabled"];
-    if (taskEnabled === false) {
+    const taskEnabledRaw = taskEnabledStored["task.enabled"];
+    const taskEnabled = taskEnabledRaw === true || taskEnabledRaw === "true";
+    if (!taskEnabled) {
       log(`[ProActReach] Task evaluation skipped (task.enabled=false)`);
       return;
     }
@@ -1011,7 +1012,8 @@ async function _migrateLegacyKeys() {
     let migrated = false;
 
     if (stored[LEGACY_KEYS.ENABLED] !== undefined) {
-      await browser.storage.local.set({ [STORAGE.ENABLED]: stored[LEGACY_KEYS.ENABLED] === true });
+      const legacyVal = stored[LEGACY_KEYS.ENABLED];
+      await browser.storage.local.set({ [STORAGE.ENABLED]: legacyVal === true || legacyVal === "true" });
       migrated = true;
     }
 

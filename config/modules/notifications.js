@@ -31,7 +31,9 @@ export async function loadNotificationSettings(log) {
       [STORAGE.GRACE_MINUTES]: DEFAULTS.graceMinutes,
     });
 
-    const enabled = stored[STORAGE.ENABLED] === true;
+    // Accept both boolean true and string "true" (agent tool may have stored string)
+    const rawEnabled = stored[STORAGE.ENABLED];
+    const enabled = rawEnabled === true || rawEnabled === "true";
     const interval = Number(stored[STORAGE.INTERVAL]) || DEFAULTS.interval;
     const windowDays = Number(stored[STORAGE.WINDOW_DAYS]) || DEFAULTS.windowDays;
     const advanceMinutes = Number(stored[STORAGE.ADVANCE_MINUTES]) || DEFAULTS.advanceMinutes;

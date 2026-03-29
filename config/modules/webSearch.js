@@ -16,13 +16,24 @@ export const WEB_SEARCH_DEFAULT = false;
 export async function loadWebSearchSettings(log) {
   try {
     const stored = await browser.storage.local.get({ [WEB_SEARCH_STORAGE_KEY]: WEB_SEARCH_DEFAULT });
-    const enabled = stored[WEB_SEARCH_STORAGE_KEY] === true;
-    
+    // Accept both boolean true and string "true" (agent tool may have stored string)
+    const raw = stored[WEB_SEARCH_STORAGE_KEY];
+    const enabled = raw === true || raw === "true";
+
+    log(`[Config] loadWebSearchSettings: key="${WEB_SEARCH_STORAGE_KEY}" raw=${JSON.stringify(raw)} (type=${typeof raw}) → enabled=${enabled}`);
+
+    // Also dump all storage keys containing "webSearch" or "web_search" for diagnosis
+    try {
+      const allStorage = await browser.storage.local.get(null);
+      const relevantKeys = Object.keys(allStorage).filter(k => k.toLowerCase().includes("websearch") || k.toLowerCase().includes("web_search"));
+      log(`[Config] loadWebSearchSettings: relevant storage keys: ${JSON.stringify(relevantKeys.map(k => `${k}=${JSON.stringify(allStorage[k])} (${typeof allStorage[k]})`))}`)
+    } catch (_) {}
+
     const cb = $("web-search-enabled");
     if (cb) {
       cb.checked = enabled;
     }
-    
+
     log(`[Config] Web search settings loaded: enabled=${enabled}`);
   } catch (e) {
     log(`[Config] loadWebSearchSettings failed: ${e}`, "error");
@@ -58,7 +69,9 @@ export async function handleWebSearchChange(e) {
 export async function getWebSearchEnabled() {
   try {
     const stored = await browser.storage.local.get({ [WEB_SEARCH_STORAGE_KEY]: WEB_SEARCH_DEFAULT });
-    return stored[WEB_SEARCH_STORAGE_KEY] === true;
+    const raw = stored[WEB_SEARCH_STORAGE_KEY];
+    console.log(`[WebSearch] getWebSearchEnabled: key="${WEB_SEARCH_STORAGE_KEY}" raw=${JSON.stringify(raw)} (type=${typeof raw}) → ${raw === true || raw === "true"}`);
+    return raw === true || raw === "true";
   } catch (e) {
     console.error("[WebSearch] Failed to get web search setting:", e);
     return WEB_SEARCH_DEFAULT;

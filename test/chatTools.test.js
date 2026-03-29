@@ -372,8 +372,14 @@ describe('TB-053: Invalid arg types produce error', () => {
     expect(result.error).toContain('timestamp');
   });
 
-  it('change_setting with string value for boolean setting returns error', async () => {
+  it('change_setting coerces string "true"/"false" to boolean', async () => {
     const result = await changeSetting.run({ setting: 'notifications.proactive_enabled', value: 'true' });
+    expect(result).toHaveProperty('ok', true);
+    expect(result.value).toBe(true);
+  });
+
+  it('change_setting with non-boolean string for boolean setting returns error', async () => {
+    const result = await changeSetting.run({ setting: 'notifications.proactive_enabled', value: 'yes' });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('boolean');
   });
@@ -1288,6 +1294,62 @@ describe('Additional tool edge cases', () => {
     const result = await changeSetting.run({ setting: 'privacy.nonexistent', value: true });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('Unknown setting');
+  });
+
+  it('change_setting number out of range (below min) returns error', async () => {
+    const result = await changeSetting.run({ setting: 'notifications.new_reminder_window_days', value: 0 });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('between');
+  });
+
+  it('change_setting number out of range (above max) returns error', async () => {
+    const result = await changeSetting.run({ setting: 'notifications.due_reminder_advance_minutes', value: 999 });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('between');
+  });
+
+  it('change_setting sends setting-changed runtime message', async () => {
+    globalThis.browser.runtime.sendMessage.mockClear();
+    await changeSetting.run({ setting: 'privacy.web_search_enabled', value: true });
+    const settingChangedCalls = globalThis.browser.runtime.sendMessage.mock.calls.filter(
+      c => c[0]?.command === 'setting-changed'
+    );
+    expect(settingChangedCalls.length).toBe(1);
+    expect(settingChangedCalls[0][0].key).toBe('webSearchEnabled');
+    expect(settingChangedCalls[0][0].value).toBe(true);
+  });
+
+  it('change_setting verify read-back after write', async () => {
+    clearStorage();
+    const result = await changeSetting.run({ setting: 'task.enabled', value: false });
+    expect(result.ok).toBe(true);
+    expect(storageData['task.enabled']).toBe(false);
+  });
+
+  it('change_setting task.advance_minutes stores correct value', async () => {
+    clearStorage();
+    const result = await changeSetting.run({ setting: 'task.advance_minutes', value: 15 });
+    expect(result.ok).toBe(true);
+    expect(result.value).toBe(15);
+    expect(storageData['task.advance_minutes']).toBe(15);
+  });
+
+  it('change_setting accepts string-encoded number', async () => {
+    const result = await changeSetting.run({ setting: 'notifications.new_reminder_window_days', value: '10' });
+    expect(result.ok).toBe(true);
+    expect(result.value).toBe(10);
+  });
+
+  it('change_setting returns error when storage throws', async () => {
+    const origSet = globalThis.browser.storage.local.set;
+    globalThis.browser.storage.local.set = vi.fn().mockRejectedValue(new Error('disk full'));
+    try {
+      const result = await changeSetting.run({ setting: 'privacy.web_search_enabled', value: true });
+      expect(result).toHaveProperty('error');
+      expect(result.error).toContain('disk full');
+    } finally {
+      globalThis.browser.storage.local.set = origSet;
+    }
   });
 
   it('reminder_add with time but no date returns error', async () => {

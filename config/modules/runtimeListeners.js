@@ -4,7 +4,7 @@
 //
 // NOTE: Prompts are now managed in the dedicated prompts page (prompts/prompts.html).
 // This listener just logs the event for debugging purposes - no action needed on config page.
-export function createPromptsUpdatedRuntimeListener(SETTINGS, log) {
+export function createPromptsUpdatedRuntimeListener(SETTINGS, log, _onSettingChanged = null) {
   const actionEvt =
     (SETTINGS && SETTINGS.events && SETTINGS.events.userActionPromptUpdated) ||
     "user-action-prompt-updated";
@@ -23,6 +23,12 @@ export function createPromptsUpdatedRuntimeListener(SETTINGS, log) {
 
       if (msg.command === kbEvt && msg.key === "user_prompts:user_kb.md") {
         log(`[TMDBG Config] Received ${kbEvt} (prompts managed on prompts page)`);
+      }
+
+      // Refresh settings UI when change_setting tool modifies a value
+      if (msg.command === "setting-changed") {
+        log(`[TMDBG Config] Received setting-changed: key=${msg.key} value=${msg.value}`);
+        if (typeof _onSettingChanged === "function") _onSettingChanged(log);
       }
     } catch (e) {
       console.warn(`[TMDBG Config] onMessage handler error:`, e);

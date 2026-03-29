@@ -153,7 +153,10 @@ export async function initConfigPage({
 
   // Listen for runtime message indicating prompts were updated elsewhere
   try {
-    configRuntimeMessageListener = createPromptsUpdatedRuntimeListener(SETTINGS, log);
+    configRuntimeMessageListener = createPromptsUpdatedRuntimeListener(SETTINGS, log, async (logFn) => {
+      await loadWebSearchSettings(logFn);
+      await loadNotificationSettings(logFn);
+    });
     browser.runtime.onMessage.addListener(configRuntimeMessageListener);
   } catch (e) {
     console.warn("[TMDBG Config] Failed to attach onMessage listener", e);
