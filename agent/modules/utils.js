@@ -553,6 +553,11 @@ function recursiveHtmlToText(node) {
             return '\n';
         }
 
+        // Skip non-content elements whose text children are not visible prose
+        if (tagName === 'STYLE' || tagName === 'SCRIPT' || tagName === 'NOSCRIPT') {
+            return '';
+        }
+
         // Recursively process child nodes
         let innerText = "";
         for (const child of Array.from(node.childNodes)) {

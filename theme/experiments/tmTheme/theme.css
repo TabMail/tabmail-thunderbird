@@ -230,21 +230,20 @@ tr[is="thread-card"] > td {
 }
 
 /* Snippet is injected inside .thread-card-dynamic-row, before .thread-card-icon-info.
-   
-   Grid structure (inferred from DOM order):
-   - Column 1: sort-header-details (auto)
-   - Column 2: thread-card-button (auto)  
-   - Column 3: thread-card-subject-container (1fr)
-   - Column 4: thread-card-icon-info (auto)
-   
-   Row 1: subject line with all elements
-   Row 2: button content (col 2) + snippet (col 2-3), icons should NOT be on row 2
-   
-   Solution: snippet spans columns 2-3 on row 2, with right padding for icon space */
+
+   TB's grid-template for .thread-card-dynamic-row:
+     "subject subject" max-content
+     "button  info"    minmax(auto, 1fr)
+     / auto 1fr
+
+   Row 1: subject (spans both cols)
+   Row 2: button (col 1, auto) + icon-info (col 2, 1fr)
+
+   Snippet shares row 2 with icon-info. Right padding reserves space for icons. */
 #threadTree .thread-card-dynamic-row > .tm-card-snippet,
 tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet {
   grid-row: 2;
-  grid-column: 2 / 4; /* Span button + subject columns, stop before icons */
+  grid-column: 1 / -1;
   display: block !important;
   font-size: x-small !important;
   line-height: 1.35 !important;
@@ -254,7 +253,7 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet {
   margin: 0 !important;
   padding: 0 !important;
   padding-inline-start: 0.25em !important; /* Align with subject text */
-  padding-inline-end: 3em !important; /* Leave room for icons - scales with font size */
+  padding-inline-end: 4.5em !important; /* Reserve space for icons (attachment, tags, star) */
   min-width: 0;
 }
 

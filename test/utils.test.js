@@ -1437,6 +1437,119 @@ describe('stripHtml — additional coverage', () => {
 });
 
 // ---------------------------------------------------------------------------
+// stripHtml — style/script/noscript stripping (tree-aware DOMParser mock)
+// ---------------------------------------------------------------------------
+describe('stripHtml — non-content element stripping', () => {
+  let _origNode;
+
+  function createTextNode(text) {
+    return { nodeType: 3, textContent: text, childNodes: [] };
+  }
+  function createElement(tag, children = []) {
+    return {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      childNodes: children,
+    };
+  }
+
+  beforeEach(() => {
+    _origNode = globalThis.Node;
+    globalThis.Node = Object.assign(function Node() {}, { TEXT_NODE: 3, ELEMENT_NODE: 1 });
+
+    // This mock builds a real element tree so recursiveHtmlToText actually traverses it
+    globalThis.DOMParser = class {
+      parseFromString(html, _type) {
+        const children = [];
+        // Parse <style>...</style> blocks into STYLE elements
+        html.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_m, content) => {
+          children.push(createElement('STYLE', [createTextNode(content)]));
+        });
+        // Parse <script>...</script> blocks into SCRIPT elements
+        html.replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, (_m, content) => {
+          children.push(createElement('SCRIPT', [createTextNode(content)]));
+        });
+        // Parse <noscript>...</noscript> blocks into NOSCRIPT elements
+        html.replace(/<noscript[^>]*>([\s\S]*?)<\/noscript>/gi, (_m, content) => {
+          children.push(createElement('NOSCRIPT', [createTextNode(content)]));
+        });
+        // Extract visible text (strip all remaining tags)
+        const visibleText = html
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '')
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<\/p>/gi, '\n')
+          .replace(/<\/div>/gi, '\n')
+          .replace(/<[^>]+>/g, '');
+        if (visibleText.trim()) {
+          children.push(createTextNode(visibleText));
+        }
+        return { body: createElement('BODY', children) };
+      }
+    };
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    if (_origNode !== undefined) {
+      globalThis.Node = _origNode;
+    } else {
+      delete globalThis.Node;
+    }
+    delete globalThis.DOMParser;
+    vi.restoreAllMocks();
+  });
+
+  it('strips <style> tag content from output', () => {
+    const result = stripHtml('<style>@import url("https://fonts.googleapis.com/css"); body { color: red; }</style><p>Hello</p>');
+    expect(result).toContain('Hello');
+    expect(result).not.toContain('@import');
+    expect(result).not.toContain('font');
+    expect(result).not.toContain('color: red');
+  });
+
+  it('strips <style> with @font-face declarations', () => {
+    const result = stripHtml('<style>@font-face { font-family: "SF Pro Display Bold"; src: url(...); }</style><p>Content</p>');
+    expect(result).toContain('Content');
+    expect(result).not.toContain('@font-face');
+    expect(result).not.toContain('SF Pro Display');
+  });
+
+  it('strips <script> tag content from output', () => {
+    const result = stripHtml('<script>alert("xss")</script><p>Safe text</p>');
+    expect(result).toContain('Safe text');
+    expect(result).not.toContain('alert');
+    expect(result).not.toContain('xss');
+  });
+
+  it('strips <noscript> tag content from output', () => {
+    const result = stripHtml('<noscript>Enable JavaScript</noscript><p>Main content</p>');
+    expect(result).toContain('Main content');
+    expect(result).not.toContain('Enable JavaScript');
+  });
+
+  it('strips multiple non-content elements', () => {
+    const result = stripHtml('<style>.cls{}</style><script>var x=1;</script><noscript>no js</noscript><p>Visible</p>');
+    expect(result).toContain('Visible');
+    expect(result).not.toContain('.cls');
+    expect(result).not.toContain('var x');
+    expect(result).not.toContain('no js');
+  });
+
+  it('returns only visible text when email has inline CSS', () => {
+    const html = '<html><head><style>@import url("https://fonts.googleapis.com/c"); .header { font-size: 14px; }</style></head><body><p>영문 내용</p></body></html>';
+    const result = stripHtml(html);
+    expect(result).toContain('영문 내용');
+    expect(result).not.toContain('@import');
+    expect(result).not.toContain('font-size');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parseUniqueId — additional coverage
 // ---------------------------------------------------------------------------
 describe('parseUniqueId — additional coverage', () => {
