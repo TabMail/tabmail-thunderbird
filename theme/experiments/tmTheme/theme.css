@@ -157,10 +157,8 @@ tr[is="thread-card"] > td {
   /* Card View separator styling (no layout impact) */
   --tm-card-separator-width: 95%;
   --tm-card-separator-height: 1px;
-  /* IMPORTANT: use fallback values so card padding is stable even before palette CSS is injected.
-     The fallbacks match SPACING.CARD_PADDING_TOP_PX and CARD_PADDING_BOTTOM_PX in palette.data.json. */
-  --tm-card-padding-top: var(--tm-spacing-card-padding-top, 6px);
-  --tm-card-padding-bottom: var(--tm-spacing-card-padding-bottom, 8px);
+  --tm-card-padding-top: var(--tm-spacing-card-padding-top);
+  --tm-card-padding-bottom: var(--tm-spacing-card-padding-bottom);
 
   /* IMPORTANT: avoid late layout shifts before palette injection.
      The 1.1 fallback matches TYPOGRAPHY.CARD_SENDER_SCALE in palette.data.json. */

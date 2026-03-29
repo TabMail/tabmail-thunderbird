@@ -118,14 +118,16 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
       if (!row) return false;
       try {
         const subjectCell = row.querySelector('[data-column-name="subjectcol"]');
-        const subjectTitle = subjectCell?.getAttribute("title") || "";
-        
+        // Cards view has no column cells — bail out (not a stale row, just different DOM)
+        if (!subjectCell) return false;
+        const subjectTitle = subjectCell.getAttribute("title") || "";
+
         const correspondentCell = row.querySelector('[data-column-name="correspondentcol"]');
         const correspondentTitle = correspondentCell?.getAttribute("title") || "";
-        
+
         const senderCell = row.querySelector('[data-column-name="sendercol"]');
         const senderTitle = senderCell?.getAttribute("title") || "";
-        
+
         return subjectTitle === "" && correspondentTitle === "" && senderTitle === "";
       } catch (_) {
         return false;
