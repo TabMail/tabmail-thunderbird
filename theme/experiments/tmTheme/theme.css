@@ -199,16 +199,22 @@ tr[is="thread-card"] > td {
 [is="thread-card"]:not([data-properties~="read"]) td > div.card-container,
 [is="thread-card"]:not([data-properties~="read"]) div.card-container,
 .card-container[isunread="true"] {
-  font-weight: 500 !important;
+  font-weight: 450 !important;
   color: var(--tm-message-unread-color) !important;
+}
+
+/* Unread sender — stronger weight to stand out */
+[is="thread-card"]:not([data-properties~="read"]) .sender,
+.card-container[isunread="true"] .sender {
+  font-weight: 600 !important;
 }
 
 /* Read messages */
 [is="thread-card"][data-properties~="read"] td > div.card-container,
 [is="thread-card"][data-properties~="read"] div.card-container,
 .card-container[isunread="false"] {
-  font-weight: 400 !important;
-  color: var(--tm-message-read-color) !important;
+  font-weight: 350 !important;
+  color: var(--tm-message-unread-color) !important;
 }
 
 /* Flagged items */
@@ -217,16 +223,12 @@ tr[is="thread-card"] > td {
 }
 
 /* ===== Card View - Subject Snippet (TabMail) ===== */
-/* A readable preview line under the subject (single-line for now). */
 .card-container .tm-card-snippet {
   font-size: x-small !important;
   line-height: 1.35;
-  /* Snippet text: same color and weight as subject (inherits from card container). */
-  color: inherit;
-  font-weight: inherit !important;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  /* Snippet always uses unread color/weight for readability regardless of read state */
+  color: var(--tm-message-read-color) !important;
+  font-weight: 400 !important;
 }
 
 /* Snippet + icon-info are wrapped in a container (.tm-card-snippet-wrapper)
@@ -238,19 +240,36 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet-wrapper {
   grid-column: 1 / -1;
   display: block !important;
   overflow: hidden;
+  white-space: normal !important; /* Override inherited nowrap from <td> */
+  font-size: x-small !important; /* Match snippet font so em-based max-height works */
+  line-height: 1.35 !important;
+  max-height: 2.7em; /* 2 lines × 1.35 line-height */
   min-width: 0;
+}
+
+/* Spacer float: zero-width column on the right, one line tall.
+   The real icon float clears it, landing on line 2. */
+.tm-card-snippet-wrapper::before {
+  content: "";
+  float: inline-end;
+  width: 0;
+  height: 1.35em; /* One line height */
 }
 
 .tm-card-snippet-wrapper > .thread-card-icon-info {
   float: inline-end;
+  clear: inline-end; /* Clear the spacer — forces icons to line 2 */
 }
 
 .tm-card-snippet-wrapper > .tm-card-snippet {
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   font-size: x-small !important;
   line-height: 1.35 !important;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal !important; /* Override inherited nowrap from <td> */
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
   margin: 0 !important;
   padding: 0 !important;
 }
@@ -555,7 +574,7 @@ tree-view#threadTree [id^="threadTree-row"] [data-column-name="subjectCol"] .sub
   font-weight: inherit !important;
 }
 
-/* Sender - slightly bolder for emphasis (both card and table view) */
+/* Sender - weight varies by read state */
 [is="thread-card"] .sender,
 [is="thread-card"] .tm-card-sender,
 #threadTree [is="thread-card"] .sender,
@@ -566,6 +585,12 @@ tree-view#threadTree [id^="threadTree-row"] [data-column-name="senderCol"],
 tree-view#threadTree [id^="threadTree-row"] [data-column-name="correspondentCol"] {
   color: inherit !important;
   font-weight: 500 !important;
+}
+
+/* Unread sender — stronger weight */
+#threadTree [is="thread-card"]:not([data-properties~="read"]) .sender,
+tree-view#threadTree [is="thread-card"]:not([data-properties~="read"]) .sender {
+  font-weight: 600 !important;
 }
 
 /* ===== Folder Pane - Remove Unread Styling =====

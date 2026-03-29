@@ -27,7 +27,7 @@ console.log(`${LOG_PREFIX_MLCV} experiment parent script loaded. Services presen
 // Card row height override (TB default is 46px, not enough for snippet line).
 // The card container fills this height and vertically centers its content,
 // so padding is derived naturally — no mismatch with scroll math.
-const CARD_ROW_HEIGHT_MLCV = 80;
+const CARD_ROW_HEIGHT_MLCV = 108;
 
 // Card snippet configuration
 const CARD_SNIPPET_CONFIG_MLCV = {
@@ -690,29 +690,19 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           return false;
         }
 
-        if (ThreadCard.__tmPatched) {
-          return true; // Already patched
-        }
-
-        // Monkeypatch ROW_HEIGHT to accommodate snippet line + increased padding.
-        // TB's virtual list reads this dynamically (never cached), so changing it
-        // takes immediate effect. reset() is called below to re-layout existing rows.
-        const origRowHeight = ThreadCard.ROW_HEIGHT;
+        // Ensure ROW_HEIGHT is patched every time (TB may reset it on view switches)
         if (CARD_ROW_HEIGHT_MLCV && ThreadCard.ROW_HEIGHT !== CARD_ROW_HEIGHT_MLCV) {
-          ThreadCard.__tmOrigRowHeight = origRowHeight;
+          if (!ThreadCard.__tmOrigRowHeight) ThreadCard.__tmOrigRowHeight = ThreadCard.ROW_HEIGHT;
           ThreadCard.ROW_HEIGHT = CARD_ROW_HEIGHT_MLCV;
-          console.log(`${LOG_PREFIX_MLCV} Patched ThreadCard.ROW_HEIGHT: ${origRowHeight} → ${CARD_ROW_HEIGHT_MLCV}`);
-          // Force re-layout so existing rows adopt the new height
           try {
             const threadTree = doc.getElementById("threadTree") ||
                               doc.querySelector("tree-view#threadTree, tree-view");
-            if (threadTree?.reset) {
-              threadTree.reset();
-              console.log(`${LOG_PREFIX_MLCV} threadTree.reset() called after ROW_HEIGHT patch`);
-            }
-          } catch (eReset) {
-            console.error(`${LOG_PREFIX_MLCV} threadTree.reset() failed:`, eReset);
-          }
+            if (threadTree?.reset) threadTree.reset();
+          } catch (_) {}
+        }
+
+        if (ThreadCard.__tmPatched) {
+          return true; // Already patched
         }
 
         const proto = ThreadCard.prototype;
@@ -804,6 +794,27 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         if (!win) return;
         const tabmail = win.document.getElementById("tabmail");
         const contentWin = getCurrentContentWin(win);
+
+        // Watch for "rows" attribute changes on threadTree (triage/card view button).
+        // TB sets rows="thread-card" which triggers attributeChangedCallback → reset()
+        // BEFORE any of our other event handlers fire. We must re-apply ROW_HEIGHT here.
+        if (contentWin && !contentWin.__tmCardSnippetsRowsMO) {
+          const innerDoc = contentWin.document;
+          const threadTree = innerDoc?.getElementById?.("threadTree") ||
+                            innerDoc?.querySelector?.("tree-view#threadTree, tree-view");
+          if (threadTree) {
+            const mo = new contentWin.MutationObserver((mutations) => {
+              for (const m of mutations) {
+                if (m.attributeName === "rows") {
+                  ensureCardSnippetEnhancements(win);
+                }
+              }
+            });
+            mo.observe(threadTree, { attributes: true, attributeFilter: ["rows"] });
+            contentWin.__tmCardSnippetsRowsMO = mo;
+          }
+        }
+
         if (contentWin && !contentWin.__tmCardSnippetsFolderURIHandler) {
           contentWin.__tmCardSnippetsFolderURIHandler = () => {
             ensureCardSnippetEnhancements(win);
@@ -842,6 +853,10 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           for (const cdoc of contentDocs) {
             const cw = cdoc?.defaultView;
             if (!cw) continue;
+            if (cw.__tmCardSnippetsRowsMO) {
+              try { cw.__tmCardSnippetsRowsMO.disconnect(); } catch (_) {}
+              delete cw.__tmCardSnippetsRowsMO;
+            }
             if (cw.__tmCardSnippetsFolderURIHandler) {
               try { cw.removeEventListener("folderURIChanged", cw.__tmCardSnippetsFolderURIHandler); } catch (_) {}
               delete cw.__tmCardSnippetsFolderURIHandler;
@@ -899,11 +914,29 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         return;
       }
       isInitialized = true;
-      
-      // Snippets are now enabled dynamically based on DOM state (.cards-row-compact class)
-      // No need to track pref - we check the actual tree state when needed
+
+      // Patch ROW_HEIGHT on all existing windows immediately.
+      // Must happen before any view switch, since TB reads ROW_HEIGHT in
+      // attributeChangedCallback when the "rows" attribute changes.
+      {
+        const earlyEnum = ServicesCS.wm.getEnumerator("mail:3pane");
+        while (earlyEnum.hasMoreElements()) {
+          const w = earlyEnum.getNext();
+          try {
+            const cw = w.document?.getElementById?.("tabmail")?.currentAbout3Pane ||
+                       w.document?.getElementById?.("tabmail")?.currentTabInfo?.chromeBrowser?.contentWindow;
+            const reg = (cw || w)?.customElements;
+            const TC = reg?.get?.("thread-card");
+            if (TC && TC.ROW_HEIGHT !== CARD_ROW_HEIGHT_MLCV) {
+              if (!TC.__tmOrigRowHeight) TC.__tmOrigRowHeight = TC.ROW_HEIGHT;
+              TC.ROW_HEIGHT = CARD_ROW_HEIGHT_MLCV;
+            }
+          } catch (_) {}
+        }
+      }
+
       console.log(`${LOG_PREFIX_MLCV} Snippets use DOM-based detection (3-row mode = no .cards-row-compact)`);
-      
+
       const enumWin = ServicesCS.wm.getEnumerator("mail:3pane");
       while (enumWin.hasMoreElements()) {
         const win = enumWin.getNext();
