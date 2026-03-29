@@ -609,7 +609,18 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
                 try {
                   const iconInfo = host.querySelector?.(".thread-card-icon-info") || null;
                   if (iconInfo) {
-                    host.insertBefore(el, iconInfo);
+                    // Wrap snippet + icon-info in a flex container so the snippet
+                    // fills remaining space and icons stay at the bottom-right
+                    let wrapper = host.querySelector?.(".tm-card-snippet-wrapper") || null;
+                    if (!wrapper) {
+                      wrapper = doc.createElement("div");
+                      wrapper.className = "tm-card-snippet-wrapper";
+                      host.insertBefore(wrapper, iconInfo);
+                      wrapper.appendChild(iconInfo); // Float target must precede text
+                      wrapper.appendChild(el);
+                    } else {
+                      wrapper.appendChild(el); // Append after floated icon-info
+                    }
                   } else {
                     host.appendChild(el);
                   }
@@ -1235,7 +1246,16 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
                 try {
                   const iconInfo = host.querySelector?.(".thread-card-icon-info") || null;
                   if (iconInfo) {
-                    host.insertBefore(el, iconInfo);
+                    let wrapper = host.querySelector?.(".tm-card-snippet-wrapper") || null;
+                    if (!wrapper) {
+                      wrapper = doc.createElement("div");
+                      wrapper.className = "tm-card-snippet-wrapper";
+                      host.insertBefore(wrapper, iconInfo);
+                      wrapper.appendChild(iconInfo); // Float target must precede text
+                      wrapper.appendChild(el);
+                    } else {
+                      wrapper.appendChild(el); // Append after floated icon-info
+                    }
                   } else {
                     host.appendChild(el);
                   }

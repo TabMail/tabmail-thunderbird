@@ -10,7 +10,8 @@ import { SETTINGS } from "../../agent/modules/config.js";
 import * as idb from "../../agent/modules/idbStorage.js";
 
 // IDB key prefix for snippet cache entries
-const SNIPPET_PREFIX = "snippet:";
+// Bump version suffix when snippet extraction logic changes to invalidate stale entries
+const SNIPPET_PREFIX = "snippet_v3:";
 
 // MV3 memory cache removed - experiment has in-memory cache for instant fillRow access
 // Keeping this empty for potential future use or debugging

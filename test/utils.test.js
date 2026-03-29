@@ -1445,11 +1445,12 @@ describe('stripHtml — non-content element stripping', () => {
   function createTextNode(text) {
     return { nodeType: 3, textContent: text, childNodes: [] };
   }
-  function createElement(tag, children = []) {
+  function createElement(tag, children = [], attrs = {}) {
     return {
       nodeType: 1,
       tagName: tag.toUpperCase(),
       childNodes: children,
+      getAttribute(name) { return attrs[name] ?? null; },
     };
   }
 
@@ -1458,26 +1459,33 @@ describe('stripHtml — non-content element stripping', () => {
     globalThis.Node = Object.assign(function Node() {}, { TEXT_NODE: 3, ELEMENT_NODE: 1 });
 
     // This mock builds a real element tree so recursiveHtmlToText actually traverses it
+    const NON_CONTENT_TAGS = ['style', 'script', 'noscript', 'title', 'head'];
     globalThis.DOMParser = class {
       parseFromString(html, _type) {
         const children = [];
-        // Parse <style>...</style> blocks into STYLE elements
-        html.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_m, content) => {
-          children.push(createElement('STYLE', [createTextNode(content)]));
-        });
-        // Parse <script>...</script> blocks into SCRIPT elements
-        html.replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, (_m, content) => {
-          children.push(createElement('SCRIPT', [createTextNode(content)]));
-        });
-        // Parse <noscript>...</noscript> blocks into NOSCRIPT elements
-        html.replace(/<noscript[^>]*>([\s\S]*?)<\/noscript>/gi, (_m, content) => {
-          children.push(createElement('NOSCRIPT', [createTextNode(content)]));
-        });
-        // Extract visible text (strip all remaining tags)
-        const visibleText = html
-          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-          .replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '')
+        // Parse non-content elements into proper element nodes
+        for (const tag of NON_CONTENT_TAGS) {
+          const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
+          html.replace(re, (_m, content) => {
+            children.push(createElement(tag.toUpperCase(), [createTextNode(content)]));
+          });
+        }
+        // Parse display:none elements
+        const displayNoneRe = /<(\w+)\s[^>]*display\s*:\s*none[^>]*>([\s\S]*?)<\/\1>/gi;
+        let match;
+        const displayNoneContent = [];
+        while ((match = displayNoneRe.exec(html)) !== null) {
+          displayNoneContent.push(match[2]);
+          children.push(createElement(match[1].toUpperCase(), [createTextNode(match[2])], { style: 'display: none' }));
+        }
+        // Extract visible text (strip all non-content, display:none, and remaining tags)
+        let visibleText = html;
+        for (const tag of NON_CONTENT_TAGS) {
+          visibleText = visibleText.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*?</${tag}>`, 'gi'), '');
+        }
+        // Remove display:none elements from visible text
+        visibleText = visibleText.replace(/<\w+\s[^>]*display\s*:\s*none[^>]*>[\s\S]*?<\/\w+>/gi, '');
+        visibleText = visibleText
           .replace(/<br\s*\/?>/gi, '\n')
           .replace(/<\/p>/gi, '\n')
           .replace(/<\/div>/gi, '\n')
@@ -1538,6 +1546,32 @@ describe('stripHtml — non-content element stripping', () => {
     expect(result).not.toContain('.cls');
     expect(result).not.toContain('var x');
     expect(result).not.toContain('no js');
+  });
+
+  it('strips <title> tag content from output', () => {
+    const result = stripHtml('<title>영문</title><p>Body content</p>');
+    expect(result).toContain('Body content');
+    expect(result).not.toContain('영문');
+  });
+
+  it('strips <head> tag and all its children from output', () => {
+    const result = stripHtml('<head><title>Page Title</title><style>.x{}</style></head><body><p>Visible</p></body>');
+    expect(result).toContain('Visible');
+    expect(result).not.toContain('Page Title');
+    expect(result).not.toContain('.x');
+  });
+
+  it('strips elements with display:none inline style', () => {
+    const result = stripHtml('<div style="display: none; max-height: 0px;">&nbsp;preheader&nbsp;</div><p>Visible body</p>');
+    expect(result).toContain('Visible body');
+    expect(result).not.toContain('preheader');
+  });
+
+  it('strips invisible Unicode characters (zero-width joiners etc)', () => {
+    const result = stripHtml('<p>Hello\u200D\u200B\u2060\uFEFF World</p>');
+    expect(result).toContain('Hello World');
+    expect(result).not.toContain('\u200D');
+    expect(result).not.toContain('\u200B');
   });
 
   it('returns only visible text when email has inline CSS', () => {

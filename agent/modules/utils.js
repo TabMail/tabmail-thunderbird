@@ -554,9 +554,15 @@ function recursiveHtmlToText(node) {
         }
 
         // Skip non-content elements whose text children are not visible prose
-        if (tagName === 'STYLE' || tagName === 'SCRIPT' || tagName === 'NOSCRIPT') {
+        if (tagName === 'STYLE' || tagName === 'SCRIPT' || tagName === 'NOSCRIPT' || tagName === 'TITLE' || tagName === 'HEAD') {
             return '';
         }
+
+        // Skip elements hidden via inline style (email preheader tricks)
+        try {
+            const style = node.getAttribute?.("style") || "";
+            if (/display\s*:\s*none/i.test(style)) return '';
+        } catch (_) {}
 
         // Recursively process child nodes
         let innerText = "";
@@ -590,6 +596,8 @@ export function stripHtml(html) {
         const doc = new DOMParser().parseFromString(html, "text/html");
         // We start traversal from the body, and clean up at the end.
         let text = recursiveHtmlToText(doc.body);
+        // Strip invisible Unicode characters (zero-width joiners/spaces, soft hyphens, etc.)
+        text = text.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD\u034F\u061C\u180E]/g, '');
         // Consolidate multiple blank lines into one or two.
         return text.replace(/(\n\s*){3,}/g, '\n\n').trim();
     } catch (e) {
