@@ -219,15 +219,10 @@
     }
 
     const { textNode: quoteTextNode, elementNode: quoteElementNode, charOffset: quoteCharOffset, patternType, isForward } = quoteMatch;
-    
-    // IMPORTANT: use the detector's coordinate space (it inserts \n for <br>/blocks).
-    const quoteDetectionCharIndex = typeof quoteMatch.detectionCharIndex === 'number'
-      ? quoteMatch.detectionCharIndex
-      : 0;
-    
-    console.log(`[TabMail MsgBubble] Quote boundary: pattern="${patternType}" detectionChar=${quoteDetectionCharIndex} (nodeOffset=${quoteCharOffset})`);
 
-    // Debug: verify whether we're starting on "> " or after it (text boundary only)
+    console.log(`[TabMail MsgBubble] Quote boundary: pattern="${patternType}" (nodeOffset=${quoteCharOffset})`);
+
+    // Debug: log what the boundary points at
     try {
       if (quoteTextNode) {
         const t = quoteTextNode?.textContent || '';
@@ -237,64 +232,81 @@
         console.log(`[TabMail MsgBubble] Quote boundary is element node <${quoteElementNode.tagName?.toLowerCase() || 'unknown'}> (no text preview)`);
       }
     } catch (_) {}
-    
-    // NOTE: We no longer attempt signature detection for bubble collapse.
-    // Per UX feedback, we collapse from the first reply boundary all the way to the end of the email.
-    
-    // If the detector maps the boundary to an element break (e.g., <hr>),
-    // collapse starting at that element so the horizontal rule is inside the quote.
-    let quoteMarker = null;
-    let rangeStartNode = null;
-    if (quoteElementNode) {
-      rangeStartNode = quoteElementNode;
-      try {
-        // Optional marker for debugging/consistency (kept OUTSIDE the collapsed quote).
-        quoteMarker = document.createElement('span');
-        quoteMarker.className = 'tm-quote-boundary-marker';
-        quoteMarker.setAttribute('data-pattern', patternType);
-        quoteElementNode.parentNode.insertBefore(quoteMarker, quoteElementNode);
-      } catch (_) {}
-      console.log('[TabMail MsgBubble] Using element boundary for quote collapse');
-    } else {
-      // Split the quote text node at the match point
-      let quoteStartNode = quoteTextNode;
-      if (quoteCharOffset > 0) {
-        quoteStartNode = quoteTextNode.splitText(quoteCharOffset);
-        console.log('[TabMail MsgBubble] Split text node at quote start');
-      }
 
-      // Insert a marker span at the quote start
+    // --- Block-level ancestor walk (ported from iOS HTMLMessageView.collapseQuotesJS) ---
+    // Instead of Range.extractContents() (which splits/clones partially-selected ancestor
+    // nodes and produces broken DOM structure), we:
+    //   1. Find the target text/element node from the detector
+    //   2. Walk up to the closest block-level ancestor
+    //   3. Walk further up, stopping when prior siblings have real text content
+    //   4. Insert wrapper before that element and move siblings into it
+
+    // Step 1: Determine the target node (the DOM node the boundary points at)
+    let targetNode = quoteElementNode || quoteTextNode;
+    if (!targetNode) {
+      console.log('[TabMail MsgBubble] No target node for quote boundary');
+      return;
+    }
+
+    // Step 2: Walk up to the closest block-level ancestor
+    const BLOCK_TAGS = new Set(['DIV', 'P', 'BLOCKQUOTE', 'TABLE', 'PRE', 'UL', 'OL', 'LI', 'HR', 'BR', 'TR', 'TD', 'TH', 'TBODY', 'THEAD', 'TFOOT']);
+    let quoteStart = targetNode.nodeType === Node.ELEMENT_NODE ? targetNode : targetNode.parentElement;
+    while (quoteStart && quoteStart !== wrapper) {
+      if (BLOCK_TAGS.has(quoteStart.tagName)) break;
+      try {
+        const display = window.getComputedStyle(quoteStart).display;
+        if (display === 'block' || display === 'flex' || display === 'table') break;
+      } catch (_) {}
+      quoteStart = quoteStart.parentElement;
+    }
+    console.log(`[TabMail MsgBubble] quoteStart after block walk: ${quoteStart ? quoteStart.tagName + '.' + (quoteStart.className || '') : 'NULL/wrapper'}`);
+    if (!quoteStart || quoteStart === wrapper) return;
+
+    // If inside a blockquote, use the blockquote as collapse point
+    try {
+      const bq = quoteStart.closest ? quoteStart.closest('blockquote') : null;
+      if (bq && wrapper.contains(bq)) {
+        console.log('[TabMail MsgBubble] Using closest blockquote instead');
+        quoteStart = bq;
+      }
+    } catch (_) {}
+
+    // Step 3: Walk quoteStart up toward a direct child of wrapper, but stop when
+    // the parent has preceding siblings with real text content. This prevents
+    // collapsing wrapper divs (e.g. moz-text-html) that contain BOTH the
+    // user's reply and the quoted text.
+    if (quoteStart.tagName !== 'BLOCKQUOTE') {
+      while (quoteStart.parentNode && quoteStart.parentNode !== wrapper) {
+        let hasPriorContent = false;
+        for (let sib = quoteStart.previousSibling; sib; sib = sib.previousSibling) {
+          if ((sib.textContent || '').trim().length >= 2) { hasPriorContent = true; break; }
+        }
+        if (hasPriorContent) {
+          console.log(`[TabMail MsgBubble] Walk-up stopped: prior content found at ${quoteStart.tagName}.${quoteStart.className || ''}`);
+          break;
+        }
+        quoteStart = quoteStart.parentNode;
+      }
+    }
+    console.log(`[TabMail MsgBubble] Final quoteStart: ${quoteStart.tagName}.${quoteStart.className || ''}, parent=${quoteStart.parentNode ? quoteStart.parentNode.tagName : 'null'}`);
+
+    // Insert a marker span just before quoteStart for debugging/consistency
+    let quoteMarker = null;
+    try {
       quoteMarker = document.createElement('span');
       quoteMarker.className = 'tm-quote-boundary-marker';
       quoteMarker.setAttribute('data-pattern', patternType);
-      quoteStartNode.parentNode.insertBefore(quoteMarker, quoteStartNode);
-      rangeStartNode = quoteMarker;
-    }
-    
-    // No signature marker/end marker — collapse to end
-    
-    // IMPORTANT: Use a DOM Range extraction (from quote start to end of wrapper)
-    // so we never stop early at nested quote boundaries and we always collapse the entire remainder.
-    //
-    // If the boundary is inside a quoted indentation container (quotelevel),
-    // start at the outer container (e.g. <blockquote>) so the toggle pill isn't indented.
-    // rangeStartNode initialized above (marker or element boundary)
-    try {
-      const bq = quoteMarker?.closest ? quoteMarker.closest('blockquote') : null;
-      if (bq && wrapper.contains(bq)) {
-        rangeStartNode = bq;
-        console.log('[TabMail MsgBubble] Quote marker is inside <blockquote>; collapsing from the blockquote element to avoid indented toggle');
-      }
+      quoteStart.parentNode.insertBefore(quoteMarker, quoteStart);
     } catch (_) {}
-    
+
     // Determine toggle label
     const toggleLabelShow = isForward ? 'Show forwarded message' : 'Show quoted text';
     const toggleLabelHide = isForward ? 'Hide forwarded message' : 'Hide quoted text';
-    
+
     // Create wrapper for the quote content
     const quoteWrapper = document.createElement('div');
     quoteWrapper.className = `${QUOTE_WRAPPER_CLASS} ${QUOTE_COLLAPSED_CLASS}`;
-    
+
     // Create toggle button
     const toggle = document.createElement('div');
     toggle.className = QUOTE_TOGGLE_CLASS;
@@ -307,39 +319,32 @@
       toggle.title = isCollapsed ? 'Click to expand' : 'Click to collapse';
       console.log(`[TabMail MsgBubble] Quote toggled, collapsed: ${isCollapsed}`);
     });
-    
+
     // Create content container
     const content = document.createElement('div');
     content.className = QUOTE_CONTENT_CLASS;
-    
-    // Insert wrapper immediately before the chosen rangeStartNode
-    const startParent = rangeStartNode.parentNode;
-    if (!startParent) {
-      console.log('[TabMail MsgBubble] Range start node has no parent');
+
+    // Step 4: Insert wrapper before quoteStart, then move quoteStart + all
+    // following siblings into the content container (same approach as iOS).
+    const quoteParent = quoteStart.parentNode;
+    if (!quoteParent) {
+      console.log('[TabMail MsgBubble] quoteStart has no parent');
       return;
     }
-    startParent.insertBefore(quoteWrapper, rangeStartNode);
-    
-    // Move toggle and content into wrapper
+    quoteParent.insertBefore(quoteWrapper, quoteStart);
     quoteWrapper.appendChild(toggle);
     quoteWrapper.appendChild(content);
-    
-    // Extract and move the quote region (to end of email)
-    try {
-      const range = document.createRange();
-      range.selectNodeContents(wrapper);
-      range.setStartBefore(rangeStartNode);
-      const frag = range.extractContents();
-      content.appendChild(frag);
-      console.log('[TabMail MsgBubble] Extracted quote region into wrapper');
-    } catch (e) {
-      console.log(`[TabMail MsgBubble] Failed to extract quote region via Range: ${e}`);
-      return;
+
+    // Move quoteStart and everything after it into content
+    content.appendChild(quoteStart);
+    while (quoteWrapper.nextSibling) {
+      content.appendChild(quoteWrapper.nextSibling);
     }
-    
+    console.log('[TabMail MsgBubble] Moved quote region into wrapper');
+
     // Mark as processed
-    quoteMarker.classList.add('tm-quote-processed');
-    
+    if (quoteMarker) quoteMarker.classList.add('tm-quote-processed');
+
     console.log(`[TabMail MsgBubble] ✓ Collapsible quotes setup complete`);
   }
   
