@@ -276,20 +276,27 @@
           const nextLine = _stripQuotePrefix(String((lines[i + 1] || "")).trim());
           if (!nextLine) return false;
           const joined = firstLine + " " + nextLine;
-          // Chinese: 于...写道：
-          if (/^.+\u4E8E.+\u5199\u9053[：:]\s*$/.test(joined)) return true;
-          // Korean: 님이 작성:
-          if (/^.+님이\s*작성\s*:\s*$/.test(joined)) return true;
-          // English: wrote:
-          if (/^.+\s+wrote:\s*$/i.test(joined)) return true;
-          // German: schrieb
-          if (/^Am\s+.+\s+schrieb\s+.+:\s*$/i.test(joined)) return true;
-          // French: a écrit
-          if (/^Le\s+.+\s+a\s+écrit\s*:\s*$/i.test(joined)) return true;
-          // Spanish: escribió
-          if (/^El\s+.+\s+escribió\s*:\s*$/i.test(joined)) return true;
-          // Portuguese: escreveu
-          if (/^Em\s+.+\s+escreveu\s*:\s*$/i.test(joined)) return true;
+          // All single-line attribution patterns to test against the joined string.
+          // IMPORTANT: If line i+1 alone matches any pattern, skip this multi-line
+          // match — the single-line pattern will correctly fire on line i+1 with the
+          // right lineIndex. Without this guard, "Thanks!" + "Name 于...写道："
+          // would match here and set the boundary to the "Thanks!" line.
+          const _cnRe  = /^.+\u4E8E.+\u5199\u9053[：:]\s*$/;
+          const _krRe  = /^.+님이\s*작성\s*:\s*$/;
+          const _enRe  = /^.+\s+wrote:\s*$/i;
+          const _deRe  = /^Am\s+.+\s+schrieb\s+.+:\s*$/i;
+          const _frRe  = /^Le\s+.+\s+a\s+écrit\s*:\s*$/i;
+          const _esRe  = /^El\s+.+\s+escribió\s*:\s*$/i;
+          const _ptRe  = /^Em\s+.+\s+escreveu\s*:\s*$/i;
+          const allRe = [_cnRe, _krRe, _enRe, _deRe, _frRe, _esRe, _ptRe];
+          // Check if line i+1 alone matches — if so, don't steal the match
+          for (const re of allRe) {
+            if (re.test(nextLine)) return false;
+          }
+          // Check if the joined string matches any pattern
+          for (const re of allRe) {
+            if (re.test(joined)) return true;
+          }
           return false;
         } catch (_) {
           return false;

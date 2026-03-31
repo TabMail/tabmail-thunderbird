@@ -380,4 +380,103 @@ describe('Multi-line attribution fallback', () => {
     expect(result).toBeDefined();
     expect(result.type).toBe('attribution');
   });
+
+  // -------------------------------------------------------------------------
+  // Regression: multi-line fallback must NOT steal boundary from the next
+  // line when that line alone matches a single-line attribution pattern.
+  // Bug: "Thanks!" + "Name 于...写道：" joined matched Chinese pattern,
+  // setting boundary to the "Thanks!" line instead of the attribution line.
+  // -------------------------------------------------------------------------
+
+  it('does NOT steal boundary from Chinese attribution on next line', () => {
+    const text = 'Thanks!\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E2026\u5E743\u670830\u65E5\u5468\u4E00 17:38\u5199\u9053\uFF1A\nHello Alex,';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('does NOT steal boundary from Chinese attribution (half-width colon)', () => {
+    const text = 'Got it.\nUser <u@test.com> \u4E8E2026\u5E741\u670810\u65E5\u5468\u4E09 09:00\u5199\u9053:\nHi,';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('does NOT steal boundary from English wrote: on next line', () => {
+    const text = 'Thanks!\nOn Mon, Mar 17, 2026 at 10:00 AM John Smith <john@example.com> wrote:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('does NOT steal boundary from Korean attribution on next line', () => {
+    const text = '\uAC10\uC0AC\uD569\uB2C8\uB2E4!\nUser <u@test.com>\uB2D8\uC774 \uC791\uC131:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('does NOT steal boundary from German attribution on next line', () => {
+    const text = 'Danke!\nAm 17. M\u00E4rz 2026 schrieb Max Mustermann:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('does NOT steal boundary from French attribution on next line', () => {
+    const text = 'Merci!\nLe 17 mars 2026, Jean Dupont a \u00E9crit :\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('does NOT steal boundary from Spanish attribution on next line', () => {
+    const text = 'Gracias!\nEl 17 de marzo de 2026, Juan escribi\u00F3:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('does NOT steal boundary from Portuguese attribution on next line', () => {
+    const text = 'Obrigado!\nEm 17 de mar\u00E7o de 2026, Jo\u00E3o escreveu:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('does NOT steal boundary with blank line before attribution', () => {
+    // Common case: reply text, blank line, then attribution
+    const text = 'Thanks!\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E2026\u5E743\u670830\u65E5\u5468\u4E00 17:38\u5199\u9053\uFF1A\nHello,';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    // Must be line 2 (the attribution), not line 0 ("Thanks!")
+    expect(result.lineIndex).toBe(2);
+  });
+
+  it('still detects genuinely split attribution across two lines', () => {
+    // "于" on line i, rest on line i+1 — neither line alone matches, only joined
+    const text = 'My reply\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E\n2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053\uFF1A\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    // Should match on the first part of the split (line 2)
+    expect(result.lineIndex).toBe(2);
+  });
+
+  it('still detects genuinely split English wrote: across two lines', () => {
+    const text = 'My reply\n\nOn Mon, Mar 17, 2026 at 10:00 AM John Smith\n<john@example.com> wrote:\n> quoted';
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(2);
+  });
 });
