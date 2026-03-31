@@ -378,9 +378,17 @@ Object.assign(TabMail, {
   _renderWithExistingDiffs: function(advanceCursorBy = 0) {
     const editor = TabMail.state.editorRef;
     if (!editor) return;
-    
+
     const lastRendered = TabMail.state.lastRenderedText;
     if (!lastRendered || !lastRendered.diffs) return;
+
+    // DEBUG: trace entry
+    TabMail.log.debug('autohideDiff', "_renderWithExistingDiffs ENTER", {
+      advanceCursorBy,
+      isDiffActive: TabMail.state.isDiffActive,
+      autoHideDiff: TabMail.state.autoHideDiff,
+      lastRenderedOrigLen: lastRendered.original ? lastRendered.original.length : 0,
+    });
     
     // Update the original text to match current editor content
     const { originalUserMessage, quoteBoundaryNode } = TabMail.extractUserAndQuoteTexts(editor);
@@ -493,6 +501,20 @@ Object.assign(TabMail, {
     
     // Not adhering - clear the flag
     TabMail.state.lastKeystrokeAdheredToSuggestion = false;
+
+    // If there are no active diffs and no corrected text, there is nothing to
+    // hide.  Bail out early to avoid a pointless renderText that wipes the user
+    // region DOM (the render happens during keydown — before the character is
+    // inserted — so an empty-text render deletes whatever the user just typed).
+    if (!TabMail.state.isDiffActive && !TabMail.state.correctedText) {
+      TabMail.log.debug('autohideDiff', "handleAutohideDiff: early bail — no diffs/correctedText to hide");
+      return false;
+    }
+    TabMail.log.debug('autohideDiff', "handleAutohideDiff: proceeding to hide diffs", {
+      isDiffActive: TabMail.state.isDiffActive,
+      hasCorrectedText: !!TabMail.state.correctedText,
+      autoHideDiff: TabMail.state.autoHideDiff,
+    });
 
     // If it is an insert we hide the diffs.
     if (!TabMail.state.autoHideDiff) {

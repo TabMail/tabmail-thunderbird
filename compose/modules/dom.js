@@ -493,12 +493,15 @@ Object.assign(TabMail, {
           const tagName = node.tagName.toUpperCase();
 
           // Skip TabMail UI elements (caret, arrow, newline markers, etc.)
+          // The cursor must NEVER land inside these — user input would end up
+          // in non-editable / hidden regions and be silently lost.
           if (node.classList && (
             node.classList.contains("tm-fake-caret") ||
             node.classList.contains("tm-cursor-arrow") ||
             node.classList.contains("tm-nl") ||
             node.classList.contains("tm-inline-overlay") ||
-            node.classList.contains("tm-inline-spinner")
+            node.classList.contains("tm-inline-spinner") ||
+            node.classList.contains("tm-quote-separator")
           )) {
             return;
           }
@@ -1821,6 +1824,26 @@ Object.assign(TabMail, {
     // Extract user-written text.
     const tmpUserDiv = document.createElement("div");
     tmpUserDiv.appendChild(userContentRange.cloneContents());
+
+    // DEBUG: dump what the range and clone actually contain
+    const _dbgRangeStr = userContentRange.toString();
+    const _dbgCloneHTML = tmpUserDiv.innerHTML;
+    const _dbgCloneText = tmpUserDiv.textContent;
+    const _dbgChildCount = tmpUserDiv.childNodes.length;
+    const _dbgChildTypes = Array.from(tmpUserDiv.childNodes).map(n =>
+      n.nodeType === Node.TEXT_NODE
+        ? `TEXT:"${n.textContent.substring(0, 30)}"`
+        : `EL:<${n.tagName}${n.className ? '.' + n.className : ''}>`
+    );
+    TabMail.log.debug('dom', "extractUserAndQuoteTexts DOM dump", {
+      rangeText: JSON.stringify(_dbgRangeStr.substring(0, 80)),
+      rangeLen: _dbgRangeStr.length,
+      cloneHTML: _dbgCloneHTML.substring(0, 200),
+      cloneTextContent: JSON.stringify(_dbgCloneText.substring(0, 80)),
+      cloneChildCount: _dbgChildCount,
+      childTypes: _dbgChildTypes,
+    });
+
     let originalUserMessage = TabMail.getCleanedEditorTextWithOptions(
       tmpUserDiv,
       { skipInserts: true }

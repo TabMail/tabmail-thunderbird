@@ -182,8 +182,9 @@ TabMail.config = {
    * 
    * Set to INFO for production, DEBUG for development, TRACE for deep debugging.
    */
-  // LOG_LEVEL: 4, // DEBUG
-  LOG_LEVEL: 5, // INFO
+  // LOG_LEVEL: 5, // TRACE — for deep debugging
+  // LOG_LEVEL: 4, // DEBUG — for development
+  LOG_LEVEL: 3, // INFO — production default
 
   /**
    * Individual logging categories - can override global LOG_LEVEL for specific areas.

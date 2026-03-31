@@ -648,6 +648,17 @@ Object.assign(TabMail, {
 
     // Input (typing)
     TabMail._eventListeners.inputHandler = (e) => {
+      // DEBUG: detect if this input event came from a programmatic render
+      const _dbgEditable = editor.contentEditable;
+      const _dbgMuteDepth = TabMail.state.selectionMuteDepth || 0;
+      TabMail.log.debug('events', "inputHandler fired", {
+        inputType: e.inputType,
+        data: e.data,
+        editorContentEditable: _dbgEditable,
+        selectionMuteDepth: _dbgMuteDepth,
+        isDiffActive: TabMail.state.isDiffActive,
+        autoHideDiff: TabMail.state.autoHideDiff,
+      });
       // Defer the trigger if an IME composition is in progress.
       // The `compositionend` event will schedule the trigger instead.
       if (TabMail.state.isIMEComposing) {
@@ -1119,26 +1130,36 @@ Object.assign(TabMail, {
 
     TabMail.log.trace('autohideDiff', "handleCursorInInsertSpan: Insert detected, handling cursor relocation.");
 
-    // If the caret is currently INSIDE an <span data-tabmail-diff="insert">,
-    // move it *before* that span so that the cursor doesn't disappear once
-    // inserts are hidden. We intentionally exclude "touching" neighbor spans
-    // here – we only care about the span that actually contains the caret.
+    // If the caret is currently INSIDE a non-editable / ephemeral region,
+    // move it *before* that region so that user input doesn't land inside
+    // elements that will be skipped during text extraction or hidden later.
+    // Covers: diff INSERT spans and the quote separator.
     try {
       const sel = window.getSelection();
-      if (sel && sel.isCollapsed) {
-        // Only run when no active selection
-        const spansAtCursorStrict = TabMail.findSpansAtCursor(false); // exclude neighbors
-        if (spansAtCursorStrict.length === 1) {
-          const span = spansAtCursorStrict[0];
-          if (span && span.dataset.tabmailDiff === "insert") {
-            TabMail.log.debug('events', "Cursor inside INSERT span – relocating to span start."
-            );
-            TabMail.setCursorBeforeNode(span);
+      if (sel && sel.isCollapsed && sel.anchorNode) {
+        // Walk up from the cursor's anchor node to find any forbidden ancestor.
+        let node = sel.anchorNode;
+        const editor = TabMail.state.editorRef;
+        while (node && node !== editor) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            // Eject from INSERT span
+            if (node.dataset && node.dataset.tabmailDiff === "insert") {
+              TabMail.log.debug('events', "Cursor inside INSERT span – relocating before span.");
+              TabMail.setCursorBeforeNode(node);
+              break;
+            }
+            // Eject from quote separator
+            if (node.classList && node.classList.contains("tm-quote-separator")) {
+              TabMail.log.debug('events', "Cursor inside quote separator – relocating before separator.");
+              TabMail.setCursorBeforeNode(node);
+              break;
+            }
           }
+          node = node.parentNode;
         }
       }
     } catch (cursorRelocateErr) {
-      TabMail.log.error('events', "Failed to relocate cursor before hiding inserts:",
+      TabMail.log.error('events', "Failed to relocate cursor before hidden region:",
         cursorRelocateErr
       );
     }

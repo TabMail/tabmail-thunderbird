@@ -541,3 +541,131 @@ describe('_applyAdherenceToDiffs', () => {
     expect(diffs[1][1]).toBe('rld');
   });
 });
+
+
+describe('handleAutohideDiff', () => {
+  let renderTextCalls;
+  let originalIsInputEvent;
+  let originalIsKeystrokeAdhering;
+  let originalRenderText;
+
+  beforeEach(() => {
+    TM.state = createState();
+    renderTextCalls = [];
+    originalIsInputEvent = TM.isInputEvent;
+    originalIsKeystrokeAdhering = TM._isKeystrokeAdheringToSuggestion;
+    originalRenderText = TM.renderText;
+
+    // Default stubs: treat key as insert, non-adhering
+    TM.isInputEvent = () => true;
+    TM._isKeystrokeAdheringToSuggestion = () => false;
+    TM.renderText = (...args) => renderTextCalls.push(args);
+  });
+
+  afterEach(() => {
+    TM.isInputEvent = originalIsInputEvent;
+    TM._isKeystrokeAdheringToSuggestion = originalIsKeystrokeAdhering;
+    TM.renderText = originalRenderText;
+    if (TM.state.diffRestoreTimer) {
+      clearTimeout(TM.state.diffRestoreTimer);
+      TM.state.diffRestoreTimer = null;
+    }
+  });
+
+  const fakeKeyEvent = (key = 'a') => ({ type: 'keydown', key });
+
+  it('returns false for non-insert events', () => {
+    TM.isInputEvent = () => false;
+    const result = TM.handleAutohideDiff(fakeKeyEvent());
+    expect(result).toBe(false);
+    expect(renderTextCalls.length).toBe(0);
+  });
+
+  it('bails out early when no active diffs and no correctedText', () => {
+    TM.state.isDiffActive = false;
+    TM.state.correctedText = null;
+
+    const result = TM.handleAutohideDiff(fakeKeyEvent());
+    expect(result).toBe(false);
+    expect(renderTextCalls.length).toBe(0);
+    // autoHideDiff should NOT have been set
+    expect(TM.state.autoHideDiff).toBe(false);
+  });
+
+  it('proceeds when isDiffActive is true even if correctedText is null', () => {
+    TM.state.isDiffActive = true;
+    TM.state.correctedText = null;
+
+    const result = TM.handleAutohideDiff(fakeKeyEvent());
+    expect(result).toBe(true);
+    expect(renderTextCalls.length).toBe(1);
+    expect(TM.state.autoHideDiff).toBe(true);
+    expect(TM.state.correctedText).toBeNull();
+  });
+
+  it('proceeds when correctedText exists even if isDiffActive is false', () => {
+    TM.state.isDiffActive = false;
+    TM.state.correctedText = 'some suggestion';
+
+    const result = TM.handleAutohideDiff(fakeKeyEvent());
+    expect(result).toBe(true);
+    expect(renderTextCalls.length).toBe(1);
+    expect(TM.state.autoHideDiff).toBe(true);
+    // correctedText should be nulled by the hide logic
+    expect(TM.state.correctedText).toBeNull();
+  });
+
+  it('nulls correctedText and sets autoHideDiff when hiding diffs', () => {
+    TM.state.isDiffActive = true;
+    TM.state.correctedText = 'corrected';
+    TM.state.autoHideDiff = false;
+
+    TM.handleAutohideDiff(fakeKeyEvent());
+
+    expect(TM.state.autoHideDiff).toBe(true);
+    expect(TM.state.correctedText).toBeNull();
+  });
+
+  it('calls renderText with show_diffs=false when autoHideDiff is set', () => {
+    TM.state.isDiffActive = true;
+    TM.state.showDiff = true;
+
+    TM.handleAutohideDiff(fakeKeyEvent());
+
+    // show_diffs = showDiff && !autoHideDiff = true && !true = false
+    expect(renderTextCalls.length).toBe(1);
+    expect(renderTextCalls[0][0]).toBe(false); // show_diffs
+  });
+
+  it('schedules a diffRestoreTimer', () => {
+    TM.state.isDiffActive = true;
+
+    TM.handleAutohideDiff(fakeKeyEvent());
+
+    expect(TM.state.diffRestoreTimer).not.toBeNull();
+  });
+
+  it('clears previous diffRestoreTimer before scheduling new one', () => {
+    TM.state.isDiffActive = true;
+    const oldTimer = setTimeout(() => {}, 99999);
+    TM.state.diffRestoreTimer = oldTimer;
+
+    TM.handleAutohideDiff(fakeKeyEvent());
+
+    expect(TM.state.diffRestoreTimer).not.toBe(oldTimer);
+    clearTimeout(oldTimer);
+  });
+
+  it('returns true for adhering keystroke and sets flag', () => {
+    TM.state.isDiffActive = true;
+    TM._isKeystrokeAdheringToSuggestion = () => true;
+
+    const result = TM.handleAutohideDiff(fakeKeyEvent());
+
+    expect(result).toBe(true);
+    expect(TM.state.lastKeystrokeAdheredToSuggestion).toBe(true);
+    // Should NOT have called renderText or set autoHideDiff
+    expect(renderTextCalls.length).toBe(0);
+    expect(TM.state.autoHideDiff).toBe(false);
+  });
+});

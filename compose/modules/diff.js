@@ -503,6 +503,19 @@ Object.assign(TabMail, {
    * @param {number} advanceCursorBy - Optional: advance cursor by this many chars (for special cases)
    */
   _applyFragmentToEditor: function(fragment, rangeToReplace, editor, quoteBoundaryNode, diffs, originalCursorOffset, show_diffs, advanceCursorBy = 0) {
+    // DEBUG: log what we're about to delete and insert
+    const _dbgDeletedText = rangeToReplace.toString();
+    const _dbgFragText = fragment.textContent;
+    const _dbgDiffSummary = diffs ? diffs.map(d => `[${d[0]}]"${(d[1]||'').substring(0,30)}"`) : '(null)';
+    TabMail.log.debug('diff', "_applyFragmentToEditor", {
+      deletingLen: _dbgDeletedText.length,
+      deletingText: JSON.stringify(_dbgDeletedText.substring(0, 80)),
+      insertingLen: _dbgFragText.length,
+      insertingText: JSON.stringify(_dbgFragText.substring(0, 80)),
+      show_diffs,
+      cursorOffset: originalCursorOffset,
+      diffs: _dbgDiffSummary,
+    });
     // Insert the fragment into the editor as a replacement for the original text.
     rangeToReplace.deleteContents();
 
@@ -546,6 +559,13 @@ Object.assign(TabMail, {
         sep.appendChild(document.createElement("br"));
       }
 
+      // Ensure there is always a text node before the separator so that Gecko
+      // has a valid editable insertion point for the cursor.  Without this, the
+      // cursor may land inside the contentEditable=false separator and user
+      // keystrokes silently go into the non-editable span.
+      if (!fragment.hasChildNodes() || (fragment.lastChild && fragment.lastChild.nodeType !== Node.TEXT_NODE)) {
+        fragment.appendChild(document.createTextNode(""));
+      }
       fragment.appendChild(sep);
     }
 
@@ -777,6 +797,17 @@ Object.assign(TabMail, {
     show_newlines = true,
     force = false
   ) {
+    // DEBUG: trace who called renderText and key state at entry
+    TabMail.log.debug('diff', "renderText ENTER", {
+      show_diffs,
+      force,
+      isDiffActive: TabMail.state && TabMail.state.isDiffActive,
+      autoHideDiff: TabMail.state && TabMail.state.autoHideDiff,
+      hasCorrectedText: !!(TabMail.state && TabMail.state.correctedText),
+      correctedTextLen: TabMail.state && TabMail.state.correctedText ? TabMail.state.correctedText.length : 0,
+      originalTextLen: TabMail.state && TabMail.state.originalText ? TabMail.state.originalText.length : 0,
+      caller: new Error().stack.split('\n').slice(1, 4).map(l => l.trim()).join(' << '),
+    });
     if (TabMail.state && TabMail.state.inlineEditActive && !force) {
       TabMail.log.debug('diff', "renderText suppressed (inlineEditActive)");
       return;

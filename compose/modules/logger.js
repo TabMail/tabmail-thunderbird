@@ -36,7 +36,7 @@ TabMail.log = (function() {
    */
   function getLogLevel(category) {
     const config = TabMail.config;
-    if (!config) return LOG_LEVELS.DEBUG; // Default if config not loaded yet
+    if (!config) return LOG_LEVELS.INFO; // Default if config not loaded yet
     
     // Check if category has a specific override
     if (config.logCategories && config.logCategories[category] !== null && config.logCategories[category] !== undefined) {
@@ -44,7 +44,7 @@ TabMail.log = (function() {
     }
     
     // Fall back to global LOG_LEVEL
-    return config.LOG_LEVEL !== undefined ? config.LOG_LEVEL : LOG_LEVELS.DEBUG;
+    return config.LOG_LEVEL !== undefined ? config.LOG_LEVEL : LOG_LEVELS.INFO;
   }
 
   /**
