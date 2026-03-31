@@ -60,7 +60,10 @@ function normalizeArgs(args = {}) {
   if (Array.isArray(a.exdates_add)) {
     out.exdates_add = a.exdates_add.filter(Boolean).map((v) => String(v));
   }
-  
+
+  // Timezone override (IANA identifier)
+  if (typeof a.timezone === "string" && a.timezone) out.timezone = a.timezone;
+
   return out;
 }
 

@@ -5,6 +5,7 @@ import { createNewAgentBubble } from "../chat.js";
 import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
 import {
+  formatNaiveIsoInTimezone,
   formatTimestampForAgent,
   streamText
 } from "../modules/helpers.js";
@@ -81,7 +82,7 @@ function formatChangesForDisplay(editArgs, currentDetails) {
       const oldStart = d.start
         ? formatTimestampForAgent(new Date(d.start))
         : "(not set)";
-      const newStart = formatTimestampForAgent(new Date(a.start_iso));
+      const newStart = formatNaiveIsoInTimezone(a.start_iso, a.timezone);
       if (oldStart !== newStart) {
         lines.push(`**Start time:**`);
         lines.push(`  ${oldStart} → **${newStart}**`);
@@ -91,7 +92,7 @@ function formatChangesForDisplay(editArgs, currentDetails) {
       const oldEnd = d.end
         ? formatTimestampForAgent(new Date(d.end))
         : "(not set)";
-      const newEnd = formatTimestampForAgent(new Date(a.end_iso));
+      const newEnd = formatNaiveIsoInTimezone(a.end_iso, a.timezone);
       if (oldEnd !== newEnd) {
         lines.push(`**End time:**`);
         lines.push(`  ${oldEnd} → **${newEnd}**`);
@@ -155,6 +156,10 @@ function formatChangesForDisplay(editArgs, currentDetails) {
     }
     if (a.recurrence) {
       lines.push(`**Recurrence:** *(updated)*`);
+    }
+    if (a.timezone) {
+      lines.push(`**Timezone:**`);
+      lines.push(`  ${a.timezone}`);
     }
     if (Array.isArray(a.exdates_add) && a.exdates_add.length > 0) {
       lines.push(`**Excluded dates:** *(+${a.exdates_add.length} dates)*`);

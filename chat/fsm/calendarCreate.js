@@ -5,6 +5,7 @@ import { createNewAgentBubble } from "../chat.js";
 import { ctx } from "../modules/context.js";
 import { awaitUserInput } from "../modules/converse.js";
 import {
+  formatNaiveIsoInTimezone,
   formatTimestampForAgent,
   streamText
 } from "../modules/helpers.js";
@@ -37,9 +38,9 @@ async function formatEventArgsForDisplay(args) {
 
     if (a.title) lines.push(`Title: ${a.title}`);
     if (a.start_iso)
-      lines.push(`Start: ${formatTimestampForAgent(new Date(a.start_iso))}`);
+      lines.push(`Start: ${formatNaiveIsoInTimezone(a.start_iso, a.timezone)}`);
     if (a.end_iso)
-      lines.push(`End: ${formatTimestampForAgent(new Date(a.end_iso))}`);
+      lines.push(`End: ${formatNaiveIsoInTimezone(a.end_iso, a.timezone)}`);
     if (typeof a.all_day !== "undefined")
       lines.push(`All-day: ${a.all_day ? "yes" : "no"}`);
     if (a.location) lines.push(`Location: ${a.location}`);
@@ -75,6 +76,7 @@ async function formatEventArgsForDisplay(args) {
     if (a.recurrence) {
       lines.push(`Recurrence: ${JSON.stringify(a.recurrence)}`);
     }
+    if (a.timezone) lines.push(`Timezone: ${a.timezone}`);
     return lines.join("\n");
   } catch (e) {
     return "(Failed to format event details)";

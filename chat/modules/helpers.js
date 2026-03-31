@@ -840,6 +840,50 @@ export function formatTimestampForAgent(dateObj = new Date()) {
   }
 }
 
+/**
+ * Format a naive ISO datetime string for display in a specific timezone.
+ * Used by FSM confirmation dialogs when a timezone override is present.
+ * Falls back to formatTimestampForAgent() when no timezone override.
+ */
+export function formatNaiveIsoInTimezone(naiveIso, timezoneId) {
+  try {
+    if (!timezoneId) return formatTimestampForAgent(new Date(naiveIso));
+    // Treat naive ISO as UTC so the digits are preserved as-is when formatted in UTC.
+    // Then derive the timezone abbreviation from the target timezone.
+    const dateAsUtc = new Date(naiveIso + "Z");
+    const utcOpts = {
+      weekday: 'long',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+      timeZone: 'UTC',
+    };
+    const parts = new Intl.DateTimeFormat('en-US', utcOpts).formatToParts(dateAsUtc);
+    const get = (type) => (parts.find(p => p.type === type) || {}).value || '';
+    const dayOfWeek = get('weekday');
+    const year = get('year');
+    const month = get('month');
+    const day = get('day');
+    const hour = get('hour');
+    const minute = get('minute');
+    const second = get('second');
+
+    // Get short timezone name from the target timezone for labeling
+    const tzName = new Intl.DateTimeFormat('en-US', { timeZone: timezoneId, timeZoneName: 'short' })
+      .formatToParts(dateAsUtc)
+      .find(p => p.type === 'timeZoneName')?.value || timezoneId;
+
+    return `${dayOfWeek} ${year}/${month}/${day} ${hour}:${minute}:${second} ${tzName}`;
+  } catch (e) {
+    log(`[TMDBG ChatHelpers] formatNaiveIsoInTimezone failed: ${e}`, "warn");
+    return formatTimestampForAgent(new Date(naiveIso));
+  }
+}
+
 // Ensures an internal container for bubble content, so we can prepend inline icons without
 // interfering with markdown rendering and streaming.
 function _ensureBubbleContentElement(element) {

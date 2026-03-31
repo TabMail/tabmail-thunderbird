@@ -191,7 +191,7 @@ export async function run(args = {}, options = {}) {
 
 async function buildCalendarSummary(args) {
   // Step 1: Get user timezone for consistent normalization
-  const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const userTz = (typeof args?.timezone === "string" && args.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   log(`[TMDBG CalendarSummary] Using user timezone: ${userTz}`);
   
   // Step 2: Normalize date range inputs
