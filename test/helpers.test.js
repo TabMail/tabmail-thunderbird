@@ -50,6 +50,7 @@ const {
   formatMailList,
   buildToolResponse,
   renderToPlainText,
+  formatNaiveIsoInTimezone,
 } = await import('../chat/modules/helpers.js');
 
 // ---------------------------------------------------------------------------
@@ -657,5 +658,54 @@ describe('renderToPlainText', () => {
     renderMarkdown.mockRejectedValueOnce(new Error('render failed'));
     const result = await renderToPlainText('fallback content here');
     expect(result).toBe('fallback content here');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatNaiveIsoInTimezone
+// ---------------------------------------------------------------------------
+
+describe('formatNaiveIsoInTimezone', () => {
+  it('returns formatTimestampForAgent output when no timezone', () => {
+    const result = formatNaiveIsoInTimezone('2025-01-15T15:00:00', null);
+    // Should contain the time from the naive ISO (15:00) since it's parsed as local
+    expect(result).toContain('15:00');
+  });
+
+  it('returns formatTimestampForAgent output when timezone is empty', () => {
+    const result = formatNaiveIsoInTimezone('2025-01-15T15:00:00', '');
+    expect(result).toContain('15:00');
+  });
+
+  it('preserves naive ISO digits when timezone override is specified', () => {
+    // The key test: "2025-01-15T15:00:00" with timezone "Asia/Tokyo"
+    // should display 15:00, NOT convert from local to Tokyo
+    const result = formatNaiveIsoInTimezone('2025-01-15T15:00:00', 'Asia/Tokyo');
+    expect(result).toContain('15:00');
+    // Should contain JST or similar timezone label (may render as GMT+9 in some environments)
+    expect(result).toMatch(/JST|Japan|Asia\/Tokyo|GMT\+9/);
+    // Should contain the date
+    expect(result).toContain('2025');
+    expect(result).toContain('01');
+    expect(result).toContain('15');
+  });
+
+  it('preserves digits for different timezone', () => {
+    const result = formatNaiveIsoInTimezone('2025-06-20T09:30:00', 'America/New_York');
+    expect(result).toContain('09:30');
+    // Should contain EDT or EST or similar
+    expect(result).toMatch(/EDT|EST|ET|America\/New_York/);
+  });
+
+  it('handles invalid timezone gracefully', () => {
+    const result = formatNaiveIsoInTimezone('2025-01-15T15:00:00', 'Not/A/Timezone');
+    // Should fallback to formatTimestampForAgent
+    expect(result).toContain('15:00');
+  });
+
+  it('includes day of week', () => {
+    // 2025-01-15 is a Wednesday
+    const result = formatNaiveIsoInTimezone('2025-01-15T15:00:00', 'UTC');
+    expect(result).toContain('Wednesday');
   });
 });

@@ -24,7 +24,8 @@ export async function run(args = {}, options = {}) {
     const calendarId = String(args?.calendar_id || "").trim();
     const startIso = String(args?.start_iso || "").trim();
     const titleFilter = typeof args?.title === "string" ? args.title.trim() : "";
-    
+    const timezoneOverride = typeof args?.timezone === "string" ? args.timezone.trim() : "";
+
     // Direct lookup path: when event_id is provided
     if (eventId) {
       log(`[TMDBG Tools] calendar_event_read: direct lookup for event_id=${eventId}, calendar_id=${calendarId || "(all)"}`);
@@ -49,7 +50,7 @@ export async function run(args = {}, options = {}) {
     // Fallback: search by start_iso (original behavior)
     if (!startIso) return { ok: false, error: "missing required argument: provide either 'event_id' or 'start_iso'" };
 
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const tz = timezoneOverride || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
     // Get all calendars
     let allCalendars = [];

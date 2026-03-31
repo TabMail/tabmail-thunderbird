@@ -48,7 +48,10 @@ function normalizeArgs(args = {}) {
   if (a && typeof a.recurrence === "object" && a.recurrence) {
     out.recurrence = a.recurrence;
   }
-  
+
+  // Timezone override (IANA identifier)
+  if (typeof a.timezone === "string" && a.timezone) out.timezone = a.timezone;
+
   return out;
 }
 
