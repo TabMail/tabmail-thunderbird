@@ -5,6 +5,7 @@
 // FTS holds rendered text for search; evicted turns remain in FTS forever.
 
 import { log } from "../../agent/modules/utils.js";
+import { get as idbGet, set as idbSet, remove as idbRemove, getAllKeys as idbGetAllKeys } from "../../agent/modules/idbStorage.js";
 
 // ---------------------------------------------------------------------------
 // Storage keys
@@ -289,6 +290,42 @@ export async function saveIdMapImmediate(idMap, nextNumericId, freeIds, refCount
 }
 
 // ---------------------------------------------------------------------------
+// Thinking token storage (IDB)
+// ---------------------------------------------------------------------------
+
+const THINKING_PREFIX = "thinking:";
+
+export async function saveThinking(turnId, thinkingText) {
+  if (!thinkingText) return;
+  await idbSet({ [`${THINKING_PREFIX}${turnId}`]: thinkingText }, { kind: "thinking" });
+}
+
+export async function loadThinkingBatch(turnIds) {
+  if (!turnIds.length) return {};
+  const keys = turnIds.map(id => `${THINKING_PREFIX}${id}`);
+  const result = await idbGet(keys);
+  const map = {};
+  for (const id of turnIds) {
+    map[id] = result[`${THINKING_PREFIX}${id}`] ?? null;
+  }
+  return map;
+}
+
+export async function removeThinking(turnIds) {
+  if (!turnIds.length) return;
+  await idbRemove(turnIds.map(id => `${THINKING_PREFIX}${id}`));
+}
+
+export async function clearAllThinking() {
+  const allKeys = await idbGetAllKeys();
+  const thinkingKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith(THINKING_PREFIX));
+  if (thinkingKeys.length) {
+    await idbRemove(thinkingKeys);
+    log(`[PersistentChat] Cleared ${thinkingKeys.length} thinking entries from IDB`, 'debug');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Turn <-> LLM message conversion
 // ---------------------------------------------------------------------------
 
@@ -307,9 +344,24 @@ export function turnToLLMMessage(turn) {
 
 /**
  * Convert all turns to LLM messages.
+ * Async: loads thinking tokens from IDB for assistant turns.
  */
-export function turnsToLLMMessages(turns) {
-  return turns.map(turnToLLMMessage);
+export async function turnsToLLMMessages(turns) {
+  const assistantIds = turns.filter(t => t.role === "assistant" && t._id).map(t => t._id);
+  const thinkingMap = assistantIds.length > 0 ? await loadThinkingBatch(assistantIds) : {};
+
+  return turns.map(turn => {
+    const msg = {};
+    for (const key of Object.keys(turn)) {
+      if (!key.startsWith("_")) {
+        msg[key] = turn[key];
+      }
+    }
+    if (turn.role === "assistant" && turn._id && thinkingMap[turn._id]) {
+      msg.thinking = thinkingMap[turn._id];
+    }
+    return msg;
+  });
 }
 
 /**
@@ -325,7 +377,7 @@ export async function filterAndConvertTurns(persistedTurns) {
   const { kb_last_summarized_ts } = await browser.storage.local.get("kb_last_summarized_ts");
 
   if (!kb_last_summarized_ts) {
-    return turnsToLLMMessages(persistedTurns);
+    return await turnsToLLMMessages(persistedTurns);
   }
 
   // Walk backward: find the latest session_break whose _ts <= marker
@@ -338,12 +390,12 @@ export async function filterAndConvertTurns(persistedTurns) {
   }
 
   if (cutIdx < 0) {
-    return turnsToLLMMessages(persistedTurns);
+    return await turnsToLLMMessages(persistedTurns);
   }
 
   const kept = persistedTurns.slice(cutIdx + 1);
   log(`[PersistentChat] KB filter: dropped ${cutIdx + 1} summarized turns, keeping ${kept.length}`, 'debug');
-  return turnsToLLMMessages(kept);
+  return await turnsToLLMMessages(kept);
 }
 
 // ---------------------------------------------------------------------------

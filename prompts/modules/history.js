@@ -6,6 +6,7 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { showStatus } from "./utils.js";
+import { clearAllThinking } from "../../chat/modules/persistentChatStore.js";
 
 const CHAT_TURNS_KEY = "chat_turns";
 const CHAT_META_KEY = "chat_meta";
@@ -460,6 +461,13 @@ export async function clearChatHistory() {
         // Clear persistent chat turns, metadata, idMap
         await browser.storage.local.remove([CHAT_TURNS_KEY, CHAT_META_KEY, CHAT_ID_MAP_KEY]);
         log("[Prompts] Cleared chat_turns, chat_meta, chat_id_map");
+
+        // Clear thinking tokens from IDB
+        try {
+            await clearAllThinking();
+        } catch (e) {
+            log(`[Prompts] Failed to clear thinking from IDB: ${e}`, "warn");
+        }
 
         // Clear Memory FTS database
         try {

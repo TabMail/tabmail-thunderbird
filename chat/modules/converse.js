@@ -16,6 +16,8 @@ import {
   filterAndConvertTurns,
   generateTurnId,
   indexTurnToFTS,
+  saveThinking,
+  removeThinking,
   saveTurns,
   saveMeta,
 } from "./persistentChatStore.js";
@@ -266,6 +268,12 @@ export async function agentConverse(userText) {
         registerTurnRefs(pendingNudge);
         const { evictedTurns: nudgeEvicted } = await appendTurn(pendingNudge, ctx.persistedTurns, ctx.chatMeta);
         if (nudgeEvicted?.length) {
+          const evictedAssistantIds = nudgeEvicted.filter(t => t.role === "assistant" && t._id).map(t => t._id);
+          if (evictedAssistantIds.length) {
+            removeThinking(evictedAssistantIds).catch(e =>
+              log(`[CONVERSE] Thinking cleanup failed: ${e}`, "warn")
+            );
+          }
           cleanupEvictedIds(nudgeEvicted);
           log(`[CONVERSE] Evicted ${nudgeEvicted.length} turns after nudge persist`);
         }
@@ -388,6 +396,12 @@ export async function agentConverse(userText) {
       if (ctx.persistedTurns && ctx.chatMeta) {
         const { evictedTurns } = await appendTurn(userTurn, ctx.persistedTurns, ctx.chatMeta);
         if (evictedTurns?.length) {
+          const evictedAssistantIds = evictedTurns.filter(t => t.role === "assistant" && t._id).map(t => t._id);
+          if (evictedAssistantIds.length) {
+            removeThinking(evictedAssistantIds).catch(e =>
+              log(`[CONVERSE] Thinking cleanup failed: ${e}`, "warn")
+            );
+          }
           cleanupEvictedIds(evictedTurns);
           log(`[CONVERSE] Evicted ${evictedTurns.length} turns after user message`);
         }
@@ -1080,7 +1094,9 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
     }
 
     // Append assistant to history only when there's no error (and ChatLink relay succeeded if applicable)
-    messages.push({ role: "assistant", content: assistantText });
+    const assistantLLMMsg = { role: "assistant", content: assistantText };
+    if (resp?.thinking) assistantLLMMsg.thinking = resp.thinking;
+    messages.push(assistantLLMMsg);
 
     // Persist assistant turn to storage (with rendered HTML snapshot for instant replay)
     // NOTE: Cannot use agentBubble.innerHTML — streamText() uses setInterval internally
@@ -1104,10 +1120,21 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
     };
     assistantTurn._refs = collectTurnRefs(assistantTurn);
     registerTurnRefs(assistantTurn);
+    if (resp?.thinking) {
+      saveThinking(assistantTurn._id, resp.thinking).catch(e =>
+        log(`[CONVERSE] Failed to save thinking to IDB: ${e}`, "warn")
+      );
+    }
     try {
       if (ctx.persistedTurns && ctx.chatMeta) {
         const { evictedTurns } = await appendTurn(assistantTurn, ctx.persistedTurns, ctx.chatMeta);
         if (evictedTurns?.length) {
+          const evictedAssistantIds = evictedTurns.filter(t => t.role === "assistant" && t._id).map(t => t._id);
+          if (evictedAssistantIds.length) {
+            removeThinking(evictedAssistantIds).catch(e =>
+              log(`[CONVERSE] Thinking cleanup failed: ${e}`, "warn")
+            );
+          }
           cleanupEvictedIds(evictedTurns);
           // Show truncation indicator in DOM
           const indicator = document.getElementById("history-truncated-indicator");

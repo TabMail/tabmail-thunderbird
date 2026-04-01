@@ -51,6 +51,47 @@ globalThis.browser = {
 };
 
 // ---------------------------------------------------------------------------
+// IDB mock for thinking storage
+// ---------------------------------------------------------------------------
+const idbData = {};
+
+vi.mock('../agent/modules/idbStorage.js', () => ({
+  get: vi.fn(async (keys) => {
+    if (keys === null) {
+      return { ...idbData };
+    }
+    let defaults = null;
+    if (typeof keys === 'object' && !Array.isArray(keys)) {
+      defaults = keys;
+      keys = Object.keys(keys);
+    }
+    const keyArr = Array.isArray(keys) ? keys : [keys];
+    const out = {};
+    for (const k of keyArr) {
+      if (idbData[k] !== undefined) out[k] = idbData[k];
+    }
+    if (defaults) {
+      for (const [k, defVal] of Object.entries(defaults)) {
+        if (!(k in out)) out[k] = defVal;
+      }
+    }
+    return out;
+  }),
+  set: vi.fn(async (obj) => {
+    for (const [k, v] of Object.entries(obj)) {
+      idbData[k] = v;
+    }
+  }),
+  remove: vi.fn(async (keys) => {
+    const keyList = Array.isArray(keys) ? keys : [keys];
+    for (const k of keyList) {
+      delete idbData[k];
+    }
+  }),
+  getAllKeys: vi.fn(async () => Object.keys(idbData)),
+}));
+
+// ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
 vi.mock('../agent/modules/utils.js', () => ({
@@ -87,12 +128,19 @@ import {
   migrateFromSessions,
   appendTurn,
   indexTurnToFTS,
+  saveThinking,
+  loadThinkingBatch,
+  removeThinking,
+  clearAllThinking,
 } from '../chat/modules/persistentChatStore.js';
 
 describe('persistentChatStore', () => {
   beforeEach(() => {
     for (const key of Object.keys(storageData)) {
       delete storageData[key];
+    }
+    for (const key of Object.keys(idbData)) {
+      delete idbData[key];
     }
     removedKeys.length = 0;
     vi.clearAllMocks();
@@ -313,20 +361,27 @@ describe('persistentChatStore', () => {
 
   // --- turnsToLLMMessages ---
   describe('turnsToLLMMessages', () => {
-    it('should convert array of turns', () => {
+    it('should convert array of turns', async () => {
       const turns = [
         { _id: '1', role: 'user', content: 'hello' },
         { _id: '2', role: 'assistant', content: 'hi' },
       ];
-      const msgs = turnsToLLMMessages(turns);
+      const msgs = await turnsToLLMMessages(turns);
       expect(msgs).toEqual([
         { role: 'user', content: 'hello' },
         { role: 'assistant', content: 'hi' },
       ]);
     });
 
-    it('should return empty array for empty input', () => {
-      expect(turnsToLLMMessages([])).toEqual([]);
+    it('should return empty array for empty input', async () => {
+      expect(await turnsToLLMMessages([])).toEqual([]);
+    });
+
+    it('turnsToLLMMessages output for assistant turns has no thinking field', async () => {
+      const turns = [{ _id: '1', role: 'assistant', content: 'Hi' }];
+      const msgs = await turnsToLLMMessages(turns);
+      expect(msgs).toEqual([{ role: 'assistant', content: 'Hi' }]);
+      expect(msgs[0].thinking).toBeUndefined();
     });
   });
 
@@ -513,6 +568,124 @@ describe('persistentChatStore', () => {
       const userTurn = { content: 'hello' };
       const assistantTurn = { _id: 'a4', _ts: 400, content: 'hi' };
       await expect(indexTurnToFTS(userTurn, assistantTurn)).resolves.toBeUndefined();
+    });
+  });
+
+  // --- thinking token storage ---
+  describe('thinking token storage', () => {
+    it('saveThinking stores to IDB and loadThinkingBatch retrieves', async () => {
+      await saveThinking('turn-1', 'I am thinking...');
+      const map = await loadThinkingBatch(['turn-1']);
+      expect(map['turn-1']).toBe('I am thinking...');
+    });
+
+    it('saveThinking with null/empty does nothing', async () => {
+      await saveThinking('turn-2', null);
+      await saveThinking('turn-3', '');
+      const map = await loadThinkingBatch(['turn-2', 'turn-3']);
+      expect(map['turn-2']).toBeNull();
+      expect(map['turn-3']).toBeNull();
+    });
+
+    it('removeThinking deletes IDB entries', async () => {
+      await saveThinking('turn-4', 'thought');
+      await removeThinking(['turn-4']);
+      const map = await loadThinkingBatch(['turn-4']);
+      expect(map['turn-4']).toBeNull();
+    });
+
+    it('turnsToLLMMessages includes thinking from IDB for assistant turns', async () => {
+      await saveThinking('a1', 'deep thought');
+      const turns = [
+        { _id: 'u1', role: 'user', content: 'hello' },
+        { _id: 'a1', role: 'assistant', content: 'hi' },
+      ];
+      const msgs = await turnsToLLMMessages(turns);
+      expect(msgs[0].thinking).toBeUndefined(); // user turn
+      expect(msgs[1].thinking).toBe('deep thought'); // assistant turn with IDB entry
+    });
+
+    it('turnsToLLMMessages omits thinking when not in IDB (backward compat)', async () => {
+      const turns = [
+        { _id: 'a2', role: 'assistant', content: 'hi' },
+      ];
+      const msgs = await turnsToLLMMessages(turns);
+      expect(msgs[0].thinking).toBeUndefined();
+      expect(msgs[0]).toEqual({ role: 'assistant', content: 'hi' });
+    });
+
+    it('turnsToLLMMessages handles mix of turns with and without thinking', async () => {
+      await saveThinking('a3', 'thought A');
+      // a4 has no thinking
+      const turns = [
+        { _id: 'a3', role: 'assistant', content: 'first' },
+        { _id: 'a4', role: 'assistant', content: 'second' },
+      ];
+      const msgs = await turnsToLLMMessages(turns);
+      expect(msgs[0].thinking).toBe('thought A');
+      expect(msgs[1].thinking).toBeUndefined();
+    });
+
+    it('eviction pattern: removeThinking cleans up evicted assistant thinking', async () => {
+      // Save thinking for assistant turns that will be evicted
+      await saveThinking('evict-a1', 'thought for a1');
+      await saveThinking('evict-a2', 'thought for a2');
+      // Simulate the eviction cleanup pattern used in converse.js
+      const evictedTurns = [
+        { _id: 'evict-u1', role: 'user', content: 'msg' },
+        { _id: 'evict-a1', role: 'assistant', content: 'resp1' },
+        { _id: 'evict-a2', role: 'assistant', content: 'resp2' },
+      ];
+      const evictedAssistantIds = evictedTurns
+        .filter(t => t.role === 'assistant' && t._id)
+        .map(t => t._id);
+      await removeThinking(evictedAssistantIds);
+      // Verify thinking is gone for evicted turns
+      const after = await loadThinkingBatch(['evict-a1', 'evict-a2']);
+      expect(after['evict-a1']).toBeNull();
+      expect(after['evict-a2']).toBeNull();
+    });
+
+    it('eviction pattern: user-only evictions do not call removeThinking', async () => {
+      await saveThinking('keep-a1', 'should survive');
+      // Simulate evicting only user turns
+      const evictedTurns = [
+        { _id: 'evict-u1', role: 'user', content: 'msg' },
+      ];
+      const evictedAssistantIds = evictedTurns
+        .filter(t => t.role === 'assistant' && t._id)
+        .map(t => t._id);
+      // Empty array — removeThinking is a no-op
+      await removeThinking(evictedAssistantIds);
+      // Verify unrelated thinking survives
+      const after = await loadThinkingBatch(['keep-a1']);
+      expect(after['keep-a1']).toBe('should survive');
+    });
+
+    it('clearAllThinking removes all thinking entries from IDB', async () => {
+      await saveThinking('t1', 'thought 1');
+      await saveThinking('t2', 'thought 2');
+      // Verify they exist
+      const before = await loadThinkingBatch(['t1', 't2']);
+      expect(before['t1']).toBe('thought 1');
+      expect(before['t2']).toBe('thought 2');
+      // Clear all
+      await clearAllThinking();
+      // Verify they're gone
+      const after = await loadThinkingBatch(['t1', 't2']);
+      expect(after['t1']).toBeNull();
+      expect(after['t2']).toBeNull();
+    });
+
+    it('clearAllThinking does not affect non-thinking IDB entries', async () => {
+      await saveThinking('t3', 'thought');
+      // Simulate a non-thinking IDB entry
+      const { set } = await import('../agent/modules/idbStorage.js');
+      await set({ 'other_key': 'other_value' });
+      await clearAllThinking();
+      const { get } = await import('../agent/modules/idbStorage.js');
+      const result = await get('other_key');
+      expect(result['other_key']).toBe('other_value');
     });
   });
 });

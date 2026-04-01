@@ -13,6 +13,12 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({
   getAndClearThink: vi.fn(() => null),
 }));
 vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
+vi.mock('../agent/modules/idbStorage.js', () => ({
+  get: vi.fn(async () => ({})),
+  set: vi.fn(async () => {}),
+  remove: vi.fn(async () => {}),
+  getAllKeys: vi.fn(async () => []),
+}));
 
 globalThis.browser = {
   storage: { local: { get: vi.fn(async () => ({})), set: vi.fn(async () => {}), remove: vi.fn(async () => {}) } },
