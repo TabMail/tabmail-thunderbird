@@ -326,14 +326,14 @@ describe('Korean attribution pattern', () => {
 // ---------------------------------------------------------------------------
 describe('Chinese attribution pattern', () => {
   it('detects Chinese Gmail attribution with full-width colon', () => {
-    const text = 'My reply\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053\uFF1A\n> text';
+    const text = 'My reply\n\nJane Doe <jane@example.com> \u4E8E2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053\uFF1A\n> text';
     const result = QD.findBoundaryInPlainText(text);
     expect(result).toBeDefined();
     expect(result.type).toBe('attribution');
   });
 
   it('detects Chinese Gmail attribution with half-width colon', () => {
-    const text = 'My reply\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053:\n> text';
+    const text = 'My reply\n\nJane Doe <jane@example.com> \u4E8E2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053:\n> text';
     const result = QD.findBoundaryInPlainText(text);
     expect(result).toBeDefined();
     expect(result.type).toBe('attribution');
@@ -346,7 +346,7 @@ describe('Chinese attribution pattern', () => {
 describe('Multi-line attribution fallback', () => {
   it('detects Chinese attribution split across two lines', () => {
     // Simulates narrow screen wrapping: "于" on line 1, "2026年...写道：" on line 2
-    const text = 'My reply\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E\n2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053\uFF1A\n> quoted';
+    const text = 'My reply\n\nJane Doe <jane@example.com> \u4E8E\n2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053\uFF1A\n> quoted';
     const result = QD.findBoundaryInPlainText(text);
     expect(result).toBeDefined();
     expect(result.type).toBe('attribution');
@@ -389,7 +389,7 @@ describe('Multi-line attribution fallback', () => {
   // -------------------------------------------------------------------------
 
   it('does NOT steal boundary from Chinese attribution on next line', () => {
-    const text = 'Thanks!\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E2026\u5E743\u670830\u65E5\u5468\u4E00 17:38\u5199\u9053\uFF1A\nHello Alex,';
+    const text = 'Thanks!\nJane Doe <jane@example.com> \u4E8E2026\u5E743\u670830\u65E5\u5468\u4E00 17:38\u5199\u9053\uFF1A\nHello Alex,';
     const result = QD.findBoundaryInPlainText(text);
     expect(result).toBeDefined();
     expect(result.type).toBe('attribution');
@@ -454,7 +454,7 @@ describe('Multi-line attribution fallback', () => {
 
   it('does NOT steal boundary with blank line before attribution', () => {
     // Common case: reply text, blank line, then attribution
-    const text = 'Thanks!\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E2026\u5E743\u670830\u65E5\u5468\u4E00 17:38\u5199\u9053\uFF1A\nHello,';
+    const text = 'Thanks!\n\nJane Doe <jane@example.com> \u4E8E2026\u5E743\u670830\u65E5\u5468\u4E00 17:38\u5199\u9053\uFF1A\nHello,';
     const result = QD.findBoundaryInPlainText(text);
     expect(result).toBeDefined();
     expect(result.type).toBe('attribution');
@@ -464,7 +464,7 @@ describe('Multi-line attribution fallback', () => {
 
   it('still detects genuinely split attribution across two lines', () => {
     // "于" on line i, rest on line i+1 — neither line alone matches, only joined
-    const text = 'My reply\n\nKwang Moo Yi <kmyi@cs.ubc.ca> \u4E8E\n2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053\uFF1A\n> quoted';
+    const text = 'My reply\n\nJane Doe <jane@example.com> \u4E8E\n2026\u5E743\u670817\u65E5\u5468\u4E8C 01:16\u5199\u9053\uFF1A\n> quoted';
     const result = QD.findBoundaryInPlainText(text);
     expect(result).toBeDefined();
     expect(result.type).toBe('attribution');

@@ -262,6 +262,50 @@
     console.log(`[TabMail MsgBubble] quoteStart after block walk: ${quoteStart ? quoteStart.tagName + '.' + (quoteStart.className || '') : 'NULL/wrapper'}`);
     if (!quoteStart || quoteStart === wrapper) return;
 
+    // Step 2b: If the block-level ancestor contains BOTH the user's reply
+    // and the quoted text, narrow quoteStart so only the quote collapses.
+    // - PRE with mid-node boundary: split the <pre> into two.
+    // - Other blocks (div.moz-text-flowed, etc.) with preceding sibling
+    //   content: use the boundary text node itself as quoteStart.
+    if (quoteTextNode && quoteStart.contains(quoteTextNode)) {
+      const textBeforeInNode = quoteCharOffset > 0
+        ? (quoteTextNode.textContent || '').substring(0, quoteCharOffset).trim()
+        : '';
+      let precedingSibText = '';
+      for (let sib = quoteTextNode.previousSibling; sib; sib = sib.previousSibling) {
+        precedingSibText += (sib.textContent || '');
+      }
+      const hasInNodeContent = textBeforeInNode.length >= 10;
+      const hasPrecedingSibContent = precedingSibText.trim().length >= 10;
+
+      if (quoteStart.tagName === 'PRE' && (hasInNodeContent || hasPrecedingSibContent)) {
+        // PRE case: split the text node and create a new <pre> to preserve formatting
+        try {
+          const splitNode = quoteCharOffset > 0 ? quoteTextNode.splitText(quoteCharOffset) : quoteTextNode;
+          const newPre = quoteStart.cloneNode(false);
+          let node = splitNode;
+          while (node) {
+            const next = node.nextSibling;
+            newPre.appendChild(node);
+            node = next;
+          }
+          quoteStart.parentNode.insertBefore(newPre, quoteStart.nextSibling);
+          quoteStart = newPre;
+          console.log('[TabMail MsgBubble] Split <pre> at boundary — quoteStart is now the second <pre>');
+        } catch (e) {
+          console.log(`[TabMail MsgBubble] <pre> split failed: ${e.message}`);
+        }
+      } else if (hasPrecedingSibContent || hasInNodeContent) {
+        // Non-PRE case: narrow quoteStart to the boundary text node
+        if (quoteCharOffset > 0 && hasInNodeContent) {
+          quoteStart = quoteTextNode.splitText(quoteCharOffset);
+        } else {
+          quoteStart = quoteTextNode;
+        }
+        console.log('[TabMail MsgBubble] Narrowed quoteStart to text node within block element');
+      }
+    }
+
     // If inside a blockquote, use the blockquote as collapse point
     try {
       const bq = quoteStart.closest ? quoteStart.closest('blockquote') : null;
@@ -282,13 +326,13 @@
           if ((sib.textContent || '').trim().length >= 2) { hasPriorContent = true; break; }
         }
         if (hasPriorContent) {
-          console.log(`[TabMail MsgBubble] Walk-up stopped: prior content found at ${quoteStart.tagName}.${quoteStart.className || ''}`);
+          console.log(`[TabMail MsgBubble] Walk-up stopped: prior content found at ${quoteStart.tagName || '#text'}.${quoteStart.className || ''}`);
           break;
         }
         quoteStart = quoteStart.parentNode;
       }
     }
-    console.log(`[TabMail MsgBubble] Final quoteStart: ${quoteStart.tagName}.${quoteStart.className || ''}, parent=${quoteStart.parentNode ? quoteStart.parentNode.tagName : 'null'}`);
+    console.log(`[TabMail MsgBubble] Final quoteStart: ${quoteStart.tagName || '#text'}.${quoteStart.className || ''}, parent=${quoteStart.parentNode ? quoteStart.parentNode.tagName : 'null'}`);
 
     // Insert a marker span just before quoteStart for debugging/consistency
     let quoteMarker = null;
