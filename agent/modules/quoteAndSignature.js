@@ -81,6 +81,13 @@
       forwardOnly: true,
       eatBlankLinesBefore: 1,
     },
+    {
+      pattern: /^Begin forwarded message:\s*$/i,
+      type: "forwarded-message",
+      comment: "Apple Mail / iOS: 'Begin forwarded message:'",
+      forwardOnly: true,
+      eatBlankLinesBefore: 0,
+    },
 
     // =========================================================================
     // ORIGINAL MESSAGE DELIMITERS (reply headers)

@@ -111,7 +111,7 @@
 
       if (topLevelBQs.length < 2) {
         console.log('[TabMail MsgBubble] Trailing quote: fewer than 2 top-level blockquotes, skipping');
-        return;
+        return false;
       }
 
       const minLen = QuoteDetect?.config?.inlineAnswerMinLineLength ?? 2;
@@ -131,7 +131,7 @@
 
       if (!trailingBQ) {
         console.log('[TabMail MsgBubble] Trailing quote: all blockquotes have replies after them, skipping');
-        return;
+        return false;
       }
 
       // Do NOT walk up to a wrapper child — the trailing BQ may be nested deep
@@ -172,8 +172,10 @@
       content.insertBefore(quoteStart, content.firstChild);
 
       console.log('[TabMail MsgBubble] ✓ Trailing quote collapsed (inline reply mode)');
+      return true;
     } catch (e) {
       console.error('[TabMail MsgBubble] collapseTrailingQuote error:', e);
+      return false;
     }
   }
 
@@ -202,7 +204,7 @@
     // "detection text" coordinate space and returns detectionCharIndex for consistency.
     
     // Find the first quote pattern in the text (excludes forward for collapse)
-    const quoteMatch = QuoteDetect.findQuoteBoundaryByText(wrapper, { includeForward: false });
+    const quoteMatch = QuoteDetect.findQuoteBoundaryByText(wrapper, { includeForward: true });
     if (!quoteMatch) {
       console.log('[TabMail MsgBubble] No quote boundary found');
       return;
@@ -214,8 +216,10 @@
     // text after it (the trailing quoted section) and collapse only that.
     if (quoteMatch.hasInlineAnswers) {
       console.log('[TabMail MsgBubble] Inline answers detected — looking for trailing quote to collapse');
-      collapseTrailingQuote(wrapper);
-      return;
+      if (collapseTrailingQuote(wrapper)) {
+        return;
+      }
+      console.log('[TabMail MsgBubble] Trailing quote collapse failed — falling back to normal collapse');
     }
 
     const { textNode: quoteTextNode, elementNode: quoteElementNode, charOffset: quoteCharOffset, patternType, isForward } = quoteMatch;
@@ -384,6 +388,19 @@
     while (quoteWrapper.nextSibling) {
       content.appendChild(quoteWrapper.nextSibling);
     }
+
+    // Sweep trailing siblings of ancestor elements up to wrapper into the
+    // collapse content. This catches attachment fieldsets, empty blockquote
+    // wrappers, etc. that Thunderbird renders as siblings of the main
+    // moz-text-html div (outside the div that contains the collapsed quote).
+    let ancestor = quoteParent;
+    while (ancestor && ancestor !== wrapper) {
+      while (ancestor.nextSibling) {
+        content.appendChild(ancestor.nextSibling);
+      }
+      ancestor = ancestor.parentNode;
+    }
+
     console.log('[TabMail MsgBubble] Moved quote region into wrapper');
 
     // Mark as processed

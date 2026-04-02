@@ -480,3 +480,49 @@ describe('Multi-line attribution fallback', () => {
     expect(result.lineIndex).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Apple Mail / iOS "Begin forwarded message:" pattern
+// ---------------------------------------------------------------------------
+describe('Apple Mail forward pattern', () => {
+  it('detects "Begin forwarded message:" when includeForward is true', () => {
+    const text = 'FYI see below\n\nBegin forwarded message:\n\nFrom: Alice <alice@example.com>\nDate: March 15, 2026\nTo: Bob <bob@example.com>\nSubject: Project update\n\nHere is the update.';
+    const result = QD.findBoundaryInPlainText(text, { includeForward: true });
+    expect(result).toBeDefined();
+    expect(result.type).toBe('forwarded-message');
+  });
+
+  it('skips "Begin forwarded message:" when includeForward is false', () => {
+    const text = 'FYI see below\n\nBegin forwarded message:\n\nFrom: Alice <alice@example.com>\nDate: March 15, 2026\nTo: Bob <bob@example.com>\nSubject: Project update\n\nHere is the update.';
+    const result = QD.findBoundaryInPlainText(text, { includeForward: false });
+    // Should fall through to outlook-headers (From/Date/To/Subject), not forwarded-message
+    if (result) {
+      expect(result.type).not.toBe('forwarded-message');
+    }
+  });
+
+  it('detects "Begin forwarded message:" with trailing whitespace', () => {
+    const text = 'Please review\n\nBegin forwarded message:  \n\nFrom: Carol <carol@example.com>';
+    const result = QD.findBoundaryInPlainText(text, { includeForward: true });
+    expect(result).toBeDefined();
+    expect(result.type).toBe('forwarded-message');
+  });
+
+  it('is case-insensitive for "begin forwarded message:"', () => {
+    const text = 'Note\n\nbegin forwarded message:\n\nFrom: Dave <dave@example.com>';
+    const result = QD.findBoundaryInPlainText(text, { includeForward: true });
+    expect(result).toBeDefined();
+    expect(result.type).toBe('forwarded-message');
+  });
+
+  it('prefers Apple forward over Outlook headers when includeForward is true', () => {
+    // "Begin forwarded message:" appears before the From/Date/To/Subject block
+    const text = 'Passing this along\n\nBegin forwarded message:\n\nFrom: Eve <eve@example.com>\nDate: April 1, 2026\nTo: Frank <frank@example.com>\nSubject: Budget review\n\nPlease see attached.';
+    const result = QD.findBoundaryInPlainText(text, { includeForward: true });
+    expect(result).toBeDefined();
+    expect(result.type).toBe('forwarded-message');
+    // The forward line should be the earliest boundary
+    const lines = text.split('\n');
+    expect(lines[result.lineIndex]).toMatch(/Begin forwarded message/i);
+  });
+});

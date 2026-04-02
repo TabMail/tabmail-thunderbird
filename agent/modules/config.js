@@ -461,7 +461,7 @@ export const SETTINGS = {
     // Captures ALL message events immediately for later inspection
     eventLogger: {
         // Enable/disable event logging (still gated behind debugMode in browser.storage.local)
-        enabled: true,
+        enabled: false,
         // Debounce persistence to avoid storage thrashing (ms)
         persistDebounceMs: 1000,
         // Max in-memory events between persist cycles (prevents burst-induced bloat)

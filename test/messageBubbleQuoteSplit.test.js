@@ -473,4 +473,189 @@ describe('messageBubble <pre> split for plain-text quote collapse', () => {
     expect(collapsedText).not.toContain('Please find the signed acceptance letter');
     expect(collapsedText).not.toContain('Cheers');
   });
+
+  it('falls back to normal collapse when inline answer detection is false positive with single blockquote', () => {
+    // Scenario: moz-text-flowed reply with one blockquote containing deep "> " quoted
+    // content. The inline answer detector may see quoted→non-quoted→quoted in the text
+    // but there's only 1 top-level blockquote, so collapseTrailingQuote can't handle it.
+    // The normal collapse path should take over.
+    const wrapper = new DOMElement('div');
+    wrapper.id = 'tm-message-bubble-wrapper';
+
+    const mozTextFlowed = new DOMElement('div');
+    mozTextFlowed.className = 'moz-text-flowed';
+
+    // User's reply
+    mozTextFlowed.appendChild(new DOMTextNode('Thanks for the update.'));
+    mozTextFlowed.appendChild(new DOMElement('br'));
+    mozTextFlowed.appendChild(new DOMElement('br'));
+    mozTextFlowed.appendChild(new DOMTextNode('Best,'));
+    mozTextFlowed.appendChild(new DOMElement('br'));
+    mozTextFlowed.appendChild(new DOMTextNode('Alice'));
+    mozTextFlowed.appendChild(new DOMElement('br'));
+    mozTextFlowed.appendChild(new DOMElement('br'));
+
+    // Attribution
+    mozTextFlowed.appendChild(new DOMTextNode('On 3/15/26 10:30, Bob Smith wrote:'));
+    mozTextFlowed.appendChild(new DOMElement('br'));
+
+    // Single blockquote containing a deep quote chain with ">" prefixes
+    const bq = new DOMElement('blockquote');
+    bq.appendChild(new DOMTextNode('Here is my report.'));
+    bq.appendChild(new DOMElement('br'));
+    bq.appendChild(new DOMElement('br'));
+    bq.appendChild(new DOMTextNode('On 3/14/26, Carol wrote:'));
+    bq.appendChild(new DOMElement('br'));
+    // Deep quote with ">" prefix — triggers inline answer false positive
+    bq.appendChild(new DOMTextNode('> Please send the report.'));
+    bq.appendChild(new DOMElement('br'));
+    bq.appendChild(new DOMElement('br'));
+    // Signature after the deep quote (non-">" text after ">" text)
+    bq.appendChild(new DOMTextNode('-- '));
+    bq.appendChild(new DOMElement('br'));
+    bq.appendChild(new DOMTextNode('Bob Smith'));
+    mozTextFlowed.appendChild(bq);
+
+    wrapper.appendChild(mozTextFlowed);
+
+    const sandbox = buildSandbox([wrapper]);
+    const MB = loadModules(sandbox);
+
+    MB.setupCollapsibleQuotes();
+
+    // Quote wrapper must exist — the fallback should have kicked in
+    const quoteWrapper = wrapper.querySelector('.tm-quote-wrapper');
+    expect(quoteWrapper).not.toBeNull();
+
+    const quoteContent = quoteWrapper.querySelector('.tm-quote-content');
+    const collapsedText = quoteContent.textContent;
+
+    // The attribution and blockquote content should be collapsed
+    expect(collapsedText).toContain('On 3/15/26 10:30, Bob Smith wrote:');
+    expect(collapsedText).toContain('Here is my report');
+
+    // The user's reply should NOT be collapsed
+    expect(collapsedText).not.toContain('Thanks for the update');
+    expect(collapsedText).not.toContain('Best,');
+  });
+
+  it('collapses Apple Mail "Begin forwarded message:" with includeForward enabled', () => {
+    // Simulates an iPhone forwarded email: short intro text + "Begin forwarded message:"
+    // followed by headers and content, all rendered in a moz-text-html div.
+    const wrapper = new DOMElement('div');
+    wrapper.id = 'tm-message-bubble-wrapper';
+
+    const mozTextHtml = new DOMElement('div');
+    mozTextHtml.className = 'moz-text-html';
+
+    // Intro from sender
+    const introDiv = new DOMElement('div');
+    introDiv.appendChild(new DOMTextNode('Please see attached'));
+    mozTextHtml.appendChild(introDiv);
+
+    // Forward line in a separate div
+    const fwdDiv = new DOMElement('div');
+    fwdDiv.appendChild(new DOMTextNode('\nBegin forwarded message:\n\n'));
+    mozTextHtml.appendChild(fwdDiv);
+
+    // Forwarded content in a blockquote
+    const bq = new DOMElement('blockquote');
+    const headerDiv = new DOMElement('div');
+    headerDiv.appendChild(new DOMTextNode('From: Carol Davis <carol@example.com>\nDate: March 20, 2026\nTo: Dave Wilson <dave@example.com>\nSubject: Invoice #4521'));
+    bq.appendChild(headerDiv);
+    const bodyDiv = new DOMElement('div');
+    bodyDiv.appendChild(new DOMTextNode('Hi Dave, please find the invoice attached. Let me know if you have questions.'));
+    bq.appendChild(bodyDiv);
+    mozTextHtml.appendChild(bq);
+
+    wrapper.appendChild(mozTextHtml);
+
+    const sandbox = buildSandbox([wrapper]);
+    const MB = loadModules(sandbox);
+
+    MB.setupCollapsibleQuotes();
+
+    const quoteWrapper = wrapper.querySelector('.tm-quote-wrapper');
+    expect(quoteWrapper).not.toBeNull();
+
+    const quoteContent = quoteWrapper.querySelector('.tm-quote-content');
+    const collapsedText = quoteContent.textContent;
+
+    // "Begin forwarded message:" and all forwarded content should be inside the collapse
+    expect(collapsedText).toContain('Begin forwarded message');
+    expect(collapsedText).toContain('Carol Davis');
+    expect(collapsedText).toContain('Invoice #4521');
+    expect(collapsedText).toContain('please find the invoice');
+
+    // The intro text should NOT be collapsed
+    expect(collapsedText).not.toContain('Please see attached');
+
+    // Check the toggle label uses "forwarded message"
+    const toggle = quoteWrapper.querySelector('.tm-quote-toggle');
+    expect(toggle).not.toBeNull();
+    expect(toggle.innerHTML).toContain('forwarded message');
+  });
+
+  it('sweeps trailing siblings of ancestor into collapse (attachment fieldsets)', () => {
+    // Simulates forwarded email where TB renders attachment fieldsets as siblings
+    // of the moz-text-html div, outside the collapsed content's parent.
+    const wrapper = new DOMElement('div');
+    wrapper.id = 'tm-message-bubble-wrapper';
+
+    const mozTextHtml = new DOMElement('div');
+    mozTextHtml.className = 'moz-text-html';
+
+    const introDiv = new DOMElement('div');
+    introDiv.appendChild(new DOMTextNode('FYI'));
+    mozTextHtml.appendChild(introDiv);
+
+    const fwdDiv = new DOMElement('div');
+    fwdDiv.appendChild(new DOMTextNode('\nBegin forwarded message:\n\n'));
+    mozTextHtml.appendChild(fwdDiv);
+
+    const bq = new DOMElement('blockquote');
+    bq.appendChild(new DOMTextNode('From: Test <test@example.com>\nDate: Jan 1\nTo: User <user@example.com>\nSubject: Report\n\nSee report.'));
+    mozTextHtml.appendChild(bq);
+
+    wrapper.appendChild(mozTextHtml);
+
+    // Trailing fieldset (attachment) — sibling of moz-text-html, NOT inside it
+    const fieldset = new DOMElement('fieldset');
+    fieldset.className = 'moz-mime-attachment-header';
+    fieldset.appendChild(new DOMTextNode('report.pdf'));
+    wrapper.appendChild(fieldset);
+
+    // Empty blockquote wrapper — another trailing sibling
+    const emptyDiv = new DOMElement('div');
+    const emptyBq = new DOMElement('blockquote');
+    emptyDiv.appendChild(emptyBq);
+    wrapper.appendChild(emptyDiv);
+
+    const sandbox = buildSandbox([wrapper]);
+    const MB = loadModules(sandbox);
+
+    MB.setupCollapsibleQuotes();
+
+    const quoteWrapper = wrapper.querySelector('.tm-quote-wrapper');
+    expect(quoteWrapper).not.toBeNull();
+
+    const quoteContent = quoteWrapper.querySelector('.tm-quote-content');
+
+    // The attachment fieldset and empty div should be swept into the collapse
+    expect(quoteContent.textContent).toContain('report.pdf');
+
+    // The intro should NOT be collapsed
+    expect(quoteContent.textContent).not.toContain('FYI');
+
+    // No content should remain outside the collapse (after the wrapper)
+    // The quoteWrapper's parent should only have the intro div and the quoteWrapper
+    const parentChildren = mozTextHtml._children;
+    const afterQuoteWrapper = [];
+    let foundQW = false;
+    for (const child of parentChildren) {
+      if (foundQW) afterQuoteWrapper.push(child);
+      if (child === quoteWrapper) foundQW = true;
+    }
+    expect(afterQuoteWrapper.length).toBe(0);
+  });
 });
