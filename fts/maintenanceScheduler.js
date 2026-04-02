@@ -21,6 +21,7 @@
  */
 
 import { SETTINGS } from "../agent/modules/config.js";
+import { logFtsOperation } from "../agent/modules/eventLogger.js";
 import { headerIDToWeID, log, parseUniqueId } from "../agent/modules/utils.js";
 
 /**
@@ -602,7 +603,51 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
     }
     
     log(`[TMDBG FTS] Phase 1 complete: ${allEntries.length} entries to validate (${queryChunkCount} chunks)`);
-    
+
+    // =========================================================================
+    // PHASE 1.5: Account liveness check — abort cleanup if any account is not queryable.
+    // After MV3 resume, TB may not have loaded all accounts' message databases yet.
+    // If messages.query returns empty for a valid account, headerIDToWeID returns null,
+    // causing mass false-stale removals. We verify each account has at least one
+    // queryable message before trusting null results.
+    // =========================================================================
+    const accountIds = new Set();
+    for (const entry of allEntries) {
+      const parsed = parseUniqueId(entry.msgId);
+      if (parsed?.weFolder?.accountId) {
+        accountIds.add(parsed.weFolder.accountId);
+      }
+    }
+
+    const unavailableAccounts = new Set();
+    for (const accountId of accountIds) {
+      try {
+        const acct = await browser.accounts.get(accountId);
+        if (!acct) {
+          log(`[TMDBG FTS] Cleanup: account ${accountId} not found — skipping its entries`, "warn");
+          unavailableAccounts.add(accountId);
+          continue;
+        }
+        // Verify we can actually query messages in this account
+        const folders = await browser.folders.query({ accountId, limit: 1 });
+        if (!folders || folders.length === 0) {
+          log(`[TMDBG FTS] Cleanup: account ${accountId} has no queryable folders — skipping its entries`, "warn");
+          unavailableAccounts.add(accountId);
+        }
+      } catch (e) {
+        log(`[TMDBG FTS] Cleanup: account ${accountId} check failed (${e.message}) — skipping its entries`, "warn");
+        unavailableAccounts.add(accountId);
+      }
+    }
+
+    if (unavailableAccounts.size > 0) {
+      log(`[TMDBG FTS] Cleanup: ${unavailableAccounts.size}/${accountIds.size} accounts unavailable — filtering entries`);
+      logFtsOperation("maintenance_stale", "accounts_unavailable", {
+        unavailable: Array.from(unavailableAccounts),
+        total: accountIds.size,
+      });
+    }
+
     // =========================================================================
     // PHASE 2: Chunked Validation - process in batches with keepalive pings
     // =========================================================================
@@ -629,7 +674,13 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
           }
           
           const { weFolder, headerID } = parsed;
-          
+
+          // Skip entries for accounts that aren't queryable (prevents mass false-stale removals)
+          if (unavailableAccounts.has(weFolder?.accountId)) {
+            processed++;
+            continue;
+          }
+
           // Use headerIDToWeID with folder constraint to check if message still exists
           // Disable global fallback to ensure we only find messages in their original folders
           const weID = await headerIDToWeID(headerID, weFolder, false, false);
@@ -645,6 +696,12 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
               subject: String(entry?.subject || ""),
               dateMs: Number(entry?.dateMs || 0),
             });
+            logFtsOperation("maintenance_stale", "found", {
+              msgId: entry.msgId,
+              folderPath: weFolder?.path || "",
+              headerID,
+              subject: entry.subject || "",
+            });
           }
           
           processed++;
@@ -656,8 +713,13 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
           
         } catch (error) {
           log(`[TMDBG FTS] Error checking entry ${entry.msgId}: ${error.message}`, "warn");
-          // On error, assume the entry should be removed (safer approach)
-          entriesToRemove.push(entry.msgId);
+          // On error, skip — do NOT remove on uncertainty. Only confirmed-stale entries
+          // should be removed. Transient errors (folder not synced, TB API timeout after
+          // MV3 restart) would otherwise cause permanent data loss.
+          logFtsOperation("maintenance_stale", "error_skipped", {
+            msgId: entry.msgId,
+            error: String(error.message || error),
+          });
           processed++;
         }
       }
@@ -687,7 +749,11 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
     
     if (entriesToRemove.length > 0) {
       log(`[TMDBG FTS] Phase 3: Removing ${entriesToRemove.length} entries in batches of ${removeBatchSize}`);
-      
+      // Log each entry being removed for debugging
+      for (const msgId of entriesToRemove) {
+        logFtsOperation("maintenance_remove", "removing", { msgId });
+      }
+
       for (let removeStart = 0; removeStart < entriesToRemove.length; removeStart += removeBatchSize) {
         const removeChunk = entriesToRemove.slice(removeStart, removeStart + removeBatchSize);
         const removeChunkNum = Math.floor(removeStart / removeBatchSize) + 1;

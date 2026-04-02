@@ -96,8 +96,8 @@ export const SETTINGS = {
     threadHistoryApiConcurrency: 1, // Max concurrent API calls when building a thread to avoid UI lag.
     useSingleMessageHistory: true, // For performance, treat the body of the last email as the full thread history.
     maxAgeDays: 60, // How many days back to look for emails during a full index.
-    verboseLogging: true, // Set to true to enable info/warn logs.
-    debugLogging: true, // Set to true to enable granular debug/trace logs (very noisy).
+    verboseLogging: false, // Set to true to enable info/warn logs.
+    debugLogging: false, // Set to true to enable granular debug/trace logs (very noisy).
     // Thread tooltip master toggle (default disabled). When enabled, tooltips
     // will show cached summary/todo on hover; may not function after suspend.
     threadTooltipEnabled: false,
@@ -460,8 +460,8 @@ export const SETTINGS = {
     // Event logger configuration for debugging race conditions
     // Captures ALL message events immediately for later inspection
     eventLogger: {
-        // Enable/disable event logging (default: false — re-enable if debugging race conditions)
-        enabled: false,
+        // Enable/disable event logging (still gated behind debugMode in browser.storage.local)
+        enabled: true,
         // Debounce persistence to avoid storage thrashing (ms)
         persistDebounceMs: 1000,
         // Max in-memory events between persist cycles (prevents burst-induced bloat)

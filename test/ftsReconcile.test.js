@@ -73,10 +73,13 @@ globalThis.browser = {
     continueList: vi.fn(),
   },
   folders: {
-    query: vi.fn(),
+    query: vi.fn(async () => [{ id: 1, path: '/INBOX' }]),  // Default: folders available
     getSubFolders: vi.fn(),
   },
-  accounts: { list: vi.fn(async () => []) },
+  accounts: {
+    list: vi.fn(async () => []),
+    get: vi.fn(async (id) => ({ id })),  // Default: account exists
+  },
 };
 
 const { logFtsBatchOperation, logFtsOperation } = await import('../agent/modules/eventLogger.js');
@@ -90,17 +93,22 @@ function makeFtsSearch({
   queryByDateRangeResults = [],
   removeBatchResult = { count: 0 },
 } = {}) {
-  // Support multiple calls returning different results
+  // Support multiple calls returning different results.
+  // Note: _reconcileCleanupStaleEntries calls queryByDateRange once for
+  // the account liveness pre-check, then again for the main cursor loop.
   const queryFn = vi.fn();
   if (Array.isArray(queryByDateRangeResults[0])) {
     // Array of arrays — each call returns the next array
+    // Add pre-check call: return first array for pre-check too
+    queryFn.mockResolvedValueOnce(queryByDateRangeResults[0]);
     for (const result of queryByDateRangeResults) {
       queryFn.mockResolvedValueOnce(result);
     }
   } else {
-    // Single array — return it on first call, then empty
-    queryFn.mockResolvedValueOnce(queryByDateRangeResults);
-    queryFn.mockResolvedValueOnce([]);
+    // Single array — return for pre-check, then main loop, then empty
+    queryFn.mockResolvedValueOnce(queryByDateRangeResults); // pre-check
+    queryFn.mockResolvedValueOnce(queryByDateRangeResults); // main loop
+    queryFn.mockResolvedValueOnce([]);                       // end of cursor
   }
 
   return {
@@ -292,8 +300,8 @@ describe('_reconcileCleanupStaleEntries', () => {
 
     expect(result.checked).toBe(201);
     expect(result.removed).toBe(0);
-    // queryByDateRange should have been called twice (pagination)
-    expect(ftsSearch.queryByDateRange).toHaveBeenCalledTimes(2);
+    // queryByDateRange: 1 pre-check + 2 pagination = 3 calls
+    expect(ftsSearch.queryByDateRange).toHaveBeenCalledTimes(3);
   });
 
   it('logs reconcile_stale events for each stale entry found', async () => {

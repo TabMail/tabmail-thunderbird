@@ -1473,6 +1473,42 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
   });
 
   try {
+    // Account liveness check — collect all accounts from the first chunk and verify
+    // they're queryable. After MV3 resume, TB may not have loaded all accounts'
+    // message databases yet, causing headerIDToWeID to return null for valid messages.
+    const unavailableAccounts = new Set();
+    {
+      // Quick pre-scan: collect unique accounts from FTS entries in the window
+      const preCheck = await ftsSearch.queryByDateRange(startDate, endDate, RECONCILE_QUERY_CHUNK_SIZE);
+      const accountIds = new Set();
+      for (const entry of (preCheck || [])) {
+        const parsed = parseUniqueId(entry.msgId);
+        if (parsed?.weFolder?.accountId) accountIds.add(parsed.weFolder.accountId);
+      }
+      for (const accountId of accountIds) {
+        try {
+          const acct = await browser.accounts.get(accountId);
+          if (!acct) {
+            unavailableAccounts.add(accountId);
+            continue;
+          }
+          const folders = await browser.folders.query({ accountId, limit: 1 });
+          if (!folders || folders.length === 0) {
+            unavailableAccounts.add(accountId);
+          }
+        } catch (e) {
+          unavailableAccounts.add(accountId);
+        }
+      }
+      if (unavailableAccounts.size > 0) {
+        log(`[FTS Reconcile] Phase 2: ${unavailableAccounts.size}/${accountIds.size} accounts unavailable — skipping their entries`, "warn");
+        logFtsOperation("reconcile_stale", "accounts_unavailable", {
+          unavailable: Array.from(unavailableAccounts),
+          total: accountIds.size,
+        });
+      }
+    }
+
     // Cursor-based pagination through FTS entries in the reconcile window
     let cursorEndMs = endDate.getTime();
     const startMs = startDate.getTime();
@@ -1491,6 +1527,12 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
 
         const { weFolder, headerID } = parsed;
 
+        // Skip entries for accounts that aren't queryable
+        if (unavailableAccounts.has(weFolder?.accountId)) {
+          checked++;
+          continue;
+        }
+
         try {
           // Check if message still exists at its indexed folder (no global fallback)
           const weID = await headerIDToWeID(headerID, weFolder, false, false);
@@ -1508,6 +1550,12 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
         } catch (e) {
           // On error checking existence, skip (don't remove on uncertainty)
           log(`[TMDBG FTS] Reconcile cleanup: error checking ${entry.msgId}: ${e}`, "info");
+          logFtsOperation("reconcile_stale", "error_skipped", {
+            msgId: entry.msgId,
+            folderPath: weFolder?.path || "",
+            headerID,
+            error: String(e),
+          });
         }
 
         checked++;
@@ -1530,6 +1578,12 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
     // Remove stale entries in a single batch
     if (entriesToRemove.length > 0) {
       log(`[FTS Reconcile] Phase 2: removing ${entriesToRemove.length} stale entries`);
+      // Log each entry being removed for debugging
+      for (const msgId of entriesToRemove) {
+        logFtsOperation("reconcile_remove", "removing", {
+          msgId,
+        });
+      }
       try {
         const removeResult = await ftsSearch.removeBatch(entriesToRemove);
         removed = removeResult.count || 0;
