@@ -371,11 +371,21 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
     const promises = Array(parallelCalls).fill().map(() => sendChat([systemMsg]));
     const responses = await Promise.all(promises);
 
-    // Filter out empty responses and parse them
+    // Extract action value directly via regex — resilient to truncated JSON
+    // from provider output limits (reasoning tokens can exhaust the budget).
+    // The "action" field is always emitted first, so even truncated responses have it.
     const validResponses = responses
       .filter(resp => resp?.assistant)
-      .map(resp => processJSONResponse(resp.assistant))
-      .filter(parsed => parsed.action);
+      .map(resp => {
+        // Try JSON parse first, fall back to regex extraction
+        const parsed = processJSONResponse(resp.assistant);
+        if (parsed?.action) return parsed;
+        // Regex fallback for truncated JSON
+        const match = resp.assistant.match(/"action"\s*:\s*"(\w+)"/);
+        if (match) return { action: match[1] };
+        return null;
+      })
+      .filter(parsed => parsed?.action);
     
     if (validResponses.length === 0) {
       log(`${PFX}No valid LLM responses for ${uniqueKey}`, "warn");
