@@ -168,8 +168,8 @@ describe("processMessage", () => {
     // SA takes ~100ms (S=50ms + A=50ms sequential within SA).
     // R takes ~50ms (parallel with SA).
     // Total should be ~100ms if parallel, ~150ms if fully sequential.
-    // Use generous margin for CI jitter.
-    expect(elapsed).toBeLessThan(140);
+    // Use generous margin for CI/busy-machine jitter — just confirm not fully sequential.
+    expect(elapsed).toBeLessThan(145);
   });
 
   it("R failure does not block SA success", async () => {

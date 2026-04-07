@@ -393,3 +393,111 @@ describe('TB-084: Response processing round-trip', () => {
     expect(result.response.choices[0].message.content).toBe('Nested response');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TB-085: Resilient action parsing — regex fallback for truncated JSON
+// Replicates the inline parsing logic from actionGenerator.js getAction()
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Mirrors the exact map callback from actionGenerator.js — processJSONResponse
+ * first, then regex fallback for truncated responses.
+ */
+function parseActionResponse(assistantText) {
+  const parsed = processJSONResponse(assistantText);
+  if (parsed?.action) return parsed;
+  // Regex fallback for truncated JSON
+  const match = assistantText.match(/"action"\s*:\s*"(\w+)"/);
+  if (match) return { action: match[1] };
+  return null;
+}
+
+describe('TB-085: Resilient action parsing (regex fallback)', () => {
+  it('TB-085a: valid JSON is parsed normally', () => {
+    const result = parseActionResponse('{"action": "reply", "confidence": 0.95}');
+    expect(result).toEqual({ action: 'reply', confidence: 0.95 });
+  });
+
+  it('TB-085b: truncated JSON with only action field is recovered via regex', () => {
+    // Reasoning tokens exhausted the budget — JSON was cut mid-stream
+    const truncated = '{"action": "archive", "confide';
+    const result = parseActionResponse(truncated);
+    expect(result).toEqual({ action: 'archive' });
+  });
+
+  it('TB-085c: truncated JSON cut after action value closing quote', () => {
+    const truncated = '{"action": "delete",';
+    const result = parseActionResponse(truncated);
+    expect(result).toEqual({ action: 'delete' });
+  });
+
+  it('TB-085d: truncated JSON with no closing brace', () => {
+    const truncated = '{"action": "none"';
+    const result = parseActionResponse(truncated);
+    expect(result).toEqual({ action: 'none' });
+  });
+
+  it('TB-085e: totally non-JSON text returns null', () => {
+    const result = parseActionResponse('I think this email should be archived.');
+    expect(result).toBeNull();
+  });
+
+  it('TB-085f: empty string returns null', () => {
+    const result = parseActionResponse('');
+    expect(result).toBeNull();
+  });
+
+  it('TB-085g: JSON with action inside markdown fences is parsed normally', () => {
+    const fenced = '```json\n{"action": "reply"}\n```';
+    const result = parseActionResponse(fenced);
+    expect(result).toEqual({ action: 'reply' });
+  });
+
+  it('TB-085h: truncated JSON inside incomplete markdown fence falls back to regex', () => {
+    // Fence opened but never closed, JSON also truncated
+    const input = '```json\n{"action": "archive", "rea';
+    const result = parseActionResponse(input);
+    expect(result).toEqual({ action: 'archive' });
+  });
+
+  it('TB-085i: regex handles extra whitespace around colon', () => {
+    const truncated = '{"action"  :  "delete"  ,  "co';
+    const result = parseActionResponse(truncated);
+    expect(result).toEqual({ action: 'delete' });
+  });
+
+  it('TB-085j: regex does not match empty action value', () => {
+    const truncated = '{"action": ""';
+    const result = parseActionResponse(truncated);
+    // processJSONResponse fails (invalid JSON), regex \w+ requires 1+ chars
+    expect(result).toBeNull();
+  });
+
+  it('TB-085k: valid JSON with action=null is not matched', () => {
+    const input = '{"action": null}';
+    const result = parseActionResponse(input);
+    // parsed.action is null (falsy) → regex fallback → no match (null is not quoted)
+    expect(result).toBeNull();
+  });
+
+  it('TB-085l: action field is not first — regex still finds it', () => {
+    const truncated = '{"confidence": 0.8, "action": "reply", "reas';
+    const result = parseActionResponse(truncated);
+    expect(result).toEqual({ action: 'reply' });
+  });
+
+  it('TB-085m: multiple action fields — regex picks first occurrence', () => {
+    // Pathological: two action keys. .match() returns first.
+    const input = '{"action": "archive", "nested": {"action": "reply"';
+    const result = parseActionResponse(input);
+    expect(result).toEqual({ action: 'archive' });
+  });
+
+  it('TB-085n: all four valid action values work via regex fallback', () => {
+    for (const action of ['reply', 'archive', 'delete', 'none']) {
+      const truncated = `{"action": "${action}", "conf`;
+      const result = parseActionResponse(truncated);
+      expect(result).toEqual({ action });
+    }
+  });
+});
