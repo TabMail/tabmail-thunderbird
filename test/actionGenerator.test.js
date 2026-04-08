@@ -78,8 +78,10 @@ vi.mock('../agent/modules/utils.js', () => ({
   stripHtml: (...args) => mockStripHtml(...args),
   safeGetFull: (...args) => mockSafeGetFull(...args),
   saveChatLog: (...args) => mockSaveChatLog(...args),
-  getRealSubject: vi.fn(async (header) => header?.subject || ""),
+  getRealSubject: (...args) => mockGetRealSubject(...args),
 }));
+
+const mockGetRealSubject = vi.fn(async (header) => header?.subject || "");
 
 const mockGetUserName = vi.fn().mockResolvedValue('Test User');
 vi.mock('../chat/modules/helpers.js', () => ({
@@ -186,6 +188,7 @@ beforeEach(() => {
   mockActionFromLiveTagIds.mockReturnValue(null);
   mockResolveGmailAction.mockResolvedValue(null);
   mockIsMessageInInboxByUniqueKey.mockResolvedValue(true);
+  mockGetRealSubject.mockImplementation(async (header) => header?.subject || "");
   browser.messages.get.mockResolvedValue({ tags: [] });
 });
 
@@ -512,6 +515,20 @@ describe('getAction', () => {
     expect(sysMsg.summary).toBe('A meeting invite');
     expect(sysMsg.is_noreply_address).toBe(true);
     expect(sysMsg.has_unsubscribe_link).toBe(true);
+  });
+
+  it('uses getRealSubject to restore Re: prefix in LLM system message', async () => {
+    // Simulate getRealSubject restoring "Re:" that TB stripped
+    mockGetRealSubject.mockResolvedValue('Re: Donation - Feb 2026');
+    mockSendChat.mockResolvedValue({ assistant: '{"action": "reply"}' });
+    mockProcessJSONResponse.mockReturnValue({ action: 'reply' });
+    browser.messages.get.mockResolvedValue({ tags: [] });
+
+    const header = makeHeader(1, { subject: 'Donation - Feb 2026' });
+    await getAction(header);
+
+    const sysMsg = mockSendChat.mock.calls[0][0][0];
+    expect(sysMsg.subject).toBe('Re: Donation - Feb 2026');
   });
 
   it('uses "Not Available" for missing subject and summary', async () => {

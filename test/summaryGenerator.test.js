@@ -54,8 +54,10 @@ vi.mock("../agent/modules/utils.js", () => ({
   safeGetFull: vi.fn(async () => ({ parts: [] })),
   indexHeader: vi.fn(),
   saveChatLog: vi.fn(),
-  getRealSubject: vi.fn(async (header) => header?.subject || ""),
+  getRealSubject: (...args) => mockGetRealSubject(...args),
 }));
+
+const mockGetRealSubject = vi.fn(async (header) => header?.subject || "");
 
 // ─── Mock llm.js ────────────────────────────────────────────────────────────
 vi.mock("../agent/modules/llm.js", () => ({
@@ -145,6 +147,7 @@ function makeHeader(overrides = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   idbStore = {};
+  mockGetRealSubject.mockImplementation(async (header) => header?.subject || "");
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -472,6 +475,18 @@ describe("generateSummary", () => {
     expect(typeof sysMsg.body).toBe("string");
     expect(typeof sysMsg.is_noreply_address).toBe("boolean");
     expect(typeof sysMsg.has_unsubscribe_link).toBe("boolean");
+  });
+
+  it("uses getRealSubject to restore Re: prefix in LLM system message", async () => {
+    mockGetRealSubject.mockResolvedValue("Re: Important Meeting");
+    const header = makeHeader({
+      subject: "Important Meeting",
+      author: "Bob <bob@example.com>",
+    });
+    await generateSummary(header);
+
+    const sysMsg = sendChat.mock.calls[0][0][0];
+    expect(sysMsg.subject).toBe("Re: Important Meeting");
   });
 
   it("uses device sync peer summary when available (skips LLM)", async () => {
