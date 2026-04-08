@@ -1151,6 +1151,7 @@ export function disconnect() {
   }
   connected = false;
   reconnectAttempts = 0;
+  userId = null; // SECURITY: clear userId to prevent stale identity on reconnect
   notifyStatusListeners();
   log(`${PFX}Disconnected from WebSocket`);
 }

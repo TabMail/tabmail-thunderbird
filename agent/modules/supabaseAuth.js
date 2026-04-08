@@ -619,7 +619,67 @@ export async function signOut() {
     // This allows other sessions (e.g., web dashboard) to remain logged in
     // The token will naturally expire, or user can sign out globally from web
     await clearSession();
-    log("[SupabaseAuth] Sign-out complete");
+
+    // --- SECURITY: Clear all user-specific data to prevent leaking to next user ---
+
+    // 1. Disconnect Device Sync (closes WebSocket, clears userId)
+    try {
+      const { cleanupDeviceSync } = await import("./deviceSync.js");
+      cleanupDeviceSync();
+      log("[SupabaseAuth] Device sync disconnected");
+    } catch (e) {
+      log(`[SupabaseAuth] Device sync cleanup failed (non-fatal): ${e}`, "error");
+    }
+
+    // 2. Clear all user-specific storage keys
+    const userStorageKeys = [
+      // User prompts
+      "user_prompts:user_composition.md",
+      "user_prompts:user_action.md",
+      "user_prompts:user_kb.md",
+      "user_templates",
+      "disabled_reminders_v2",
+      "task_execution_cache",
+      // Device sync state
+      "device_sync_auto_enabled",
+      "device_sync_backups",
+      "device_sync_ts:composition",
+      "device_sync_ts:action",
+      "device_sync_ts:kb",
+      "device_sync_ts:templates",
+      "device_sync_ts:disabledReminders",
+      "device_sync_ts:taskCache",
+      // Peer base state
+      "device_peer_base:composition",
+      "device_peer_base:action",
+      "device_peer_base:kb",
+      "device_peer_base_ts:composition",
+      "device_peer_base_ts:action",
+      "device_peer_base_ts:kb",
+      // Prompt history
+      "prompt_history",
+      "prompt_history_migrated",
+      // Consent & calendar
+      "tabmailConsentRequired",
+      "defaultCalendarId",
+    ];
+    try {
+      await browser.storage.local.remove(userStorageKeys);
+      log("[SupabaseAuth] Cleared user-specific storage keys");
+    } catch (e) {
+      log(`[SupabaseAuth] Storage cleanup failed (non-fatal): ${e}`, "error");
+    }
+
+    // 3. Clear IndexedDB AI cache (summaries, actions, replies)
+    try {
+      const idb = await import("./idbStorage.js");
+      await idb.clear();
+      log("[SupabaseAuth] Cleared IndexedDB AI cache");
+    } catch (e) {
+      log(`[SupabaseAuth] IndexedDB cleanup failed (non-fatal): ${e}`, "error");
+    }
+
+    log("[SupabaseAuth] Sign-out complete with full data cleanup");
 
     // NOTE: Icon update is handled by background.js after signOut() returns.
     // Do NOT sendMessage here - we're already in the background context.
