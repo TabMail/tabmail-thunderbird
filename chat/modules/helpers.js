@@ -147,7 +147,7 @@ function _cancelExistingStream(element) {
   try {
     const ctrl = element && element[STREAM_CTRL];
     if (ctrl && ctrl.timer) {
-      clearInterval(ctrl.timer);
+      clearTimeout(ctrl.timer);
       ctrl.active = false;
       element[STREAM_CTRL] = null;
       try { log(`[TMDBG ChatHelpers] Canceled existing stream for element`); } catch (_) {}
@@ -461,21 +461,37 @@ export async function setBubbleText(element, text, options = {}) {
       let i = 0;
       const ctrl = { timer: null, active: true };
       element[STREAM_CTRL] = ctrl;
-      ctrl.timer = setInterval(() => {
-        if (!ctrl.active) { clearInterval(ctrl.timer); return; }
-        if (i < steps.length) {
-          try { steps[i++](); } catch (e) { log(`[TMDBG ChatHelpers] step ${i} failed: ${e}`, 'warn'); i += 1; }
-          try {
-            const container = document.getElementById("chat-container");
-            if (container) scrollToBottom(container, CHAT_SETTINGS?.scrollFramesOnMutation || 1);
-          } catch(_) {}
-        } else {
-          clearInterval(ctrl.timer);
-          element[STREAM_CTRL] = null;
-          // Attach event listeners for special TabMail links after streaming completes
-          attachSpecialLinkListeners(contentEl);
-        }
-      }, delay);
+      // Use setTimeout+rAF instead of setInterval so each step yields to pending
+      // input events (prevents jank when user is typing or navigating @ dropdown).
+      function scheduleStep() {
+        ctrl.timer = setTimeout(() => {
+          if (!ctrl.active) return;
+          requestAnimationFrame(() => {
+            if (!ctrl.active) return;
+            if (i < steps.length) {
+              try { steps[i++](); } catch (e) { log(`[TMDBG ChatHelpers] step ${i} failed: ${e}`, 'warn'); i += 1; }
+              try {
+                // Skip per-step scroll when mention autocomplete is active to avoid layout thrashing
+                if (!window.mentionAutocompleteActive) {
+                  const container = document.getElementById("chat-container");
+                  if (container) scrollToBottom(container, CHAT_SETTINGS?.scrollFramesOnMutation || 1);
+                }
+              } catch(_) {}
+              scheduleStep();
+            } else {
+              element[STREAM_CTRL] = null;
+              // Attach event listeners for special TabMail links after streaming completes
+              attachSpecialLinkListeners(contentEl);
+              // Final scroll after streaming completes (in case we skipped during autocomplete)
+              try {
+                const container = document.getElementById("chat-container");
+                if (container) scrollToBottom(container, CHAT_SETTINGS?.scrollFramesOnMutation || 1);
+              } catch(_) {}
+            }
+          });
+        }, delay);
+      }
+      scheduleStep();
       log(`[TMDBG ChatHelpers] setBubbleText (stream-block) steps=${steps.length} delay=${delay}`);
     }
   } catch (e) {
@@ -535,7 +551,7 @@ export function scrollToBottom(container, frames = (CHAT_SETTINGS?.scrollFramesO
   try {
     const c = container || document.getElementById("chat-container");
     if (!c) return;
-    
+
     // Gate on stickiness; only auto-scroll if we were already at bottom
     if (!getStickToBottom(c)) {
       try {

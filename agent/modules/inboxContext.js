@@ -166,15 +166,32 @@ export async function buildInboxContext() {
       }
     }
 
-    // Bulk fetch replied status for processed messages only
+    // Bulk fetch replied status and HasRe flag for processed messages only
     try {
-      const repliedStatuses = await _getRepliedStatusBulk(messagesToProcess);
-      
-      // Update contextArray with replied status (now order is guaranteed)
+      const bulkItems = messagesToProcess.map(msg => ({
+        folderURI: msg.folder?.id || "",
+        key: msg.id,
+        pathStr: msg.folder?.path || "",
+        messageId: msg.headerMessageId || "",
+      }));
+
+      const [repliedStatuses, hasReStatuses] = await Promise.all([
+        _getRepliedStatusBulk(messagesToProcess),
+        browser.tmHdr.getHasReBulk(bulkItems).catch(e => {
+          log(`[InboxContext] getHasReBulk failed: ${e}`, "warn");
+          return [];
+        }),
+      ]);
+
+      // Update contextArray with replied status and restore "Re:" prefix
       for (let i = 0; i < contextArray.length; i++) {
         contextArray[i].replied = repliedStatuses[i] || false;
+        // TB strips "Re:" from MessageHeader.subject — restore it using HasRe flag
+        if (hasReStatuses[i] && contextArray[i].subject && !contextArray[i].subject.startsWith("Re: ")) {
+          contextArray[i].subject = "Re: " + contextArray[i].subject;
+        }
       }
-      
+
       log(`[InboxContext] Successfully fetched replied status for ${contextArray.length} messages`, 'debug');
     } catch (e) {
       log(`[InboxContext] Failed to fetch replied status: ${e}`, "error");

@@ -18,6 +18,15 @@ import { addToolBubbleToGroup, cleanupToolGroups, isToolCollapseEnabled } from "
 
 let chatMode = "send"; // "send", "stop", or "retry"
 
+// Throttled signal to background script to pause getFull during typing
+let _lastTypingSignal = 0;
+function signalTypingToBackground() {
+  const now = Date.now();
+  if (now - _lastTypingSignal < 300) return; // throttle: at most once per 300ms
+  _lastTypingSignal = now;
+  try { browser.runtime.sendMessage({ command: "chat-typing" }).catch(() => {}); } catch (_) {}
+}
+
 function setChatMode(mode) {
   chatMode = mode;
   const btn = document.getElementById("send-btn");
@@ -46,11 +55,11 @@ function setChatMode(mode) {
  * - canRetry is true (there was an error)
  * - chatMode is "send" (not in stop mode)
  */
-function updateRetryVisibility() {
+function updateRetryVisibility(cachedVal) {
   try {
     const textarea = document.getElementById("user-input");
     const hintEl = document.getElementById("input-suggestion-hint");
-    const val = (textarea?.textContent || "").trim();
+    const val = cachedVal !== undefined ? cachedVal : (textarea?.textContent || "").trim();
     const canRetry = ctx.canRetry || false;
     const defaultPlaceholder = textarea?.getAttribute("data-default-placeholder") || 
                                "Type a message or @ to mention anything in inbox or the chat...";
@@ -770,9 +779,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     textarea.setAttribute("data-default-placeholder", defaultPlaceholder);
   }
 
-  function updateSuggestionVisibility() {
+  function updateSuggestionVisibility(cachedVal) {
     try {
-      const val = (textarea?.textContent || "").trim();
+      const val = cachedVal !== undefined ? cachedVal : (textarea?.textContent || "").trim();
       const suggestion = (ctx.pendingSuggestion || "").trim();
       const canRetry = ctx.canRetry || false;
       
@@ -830,13 +839,14 @@ window.addEventListener("DOMContentLoaded", async () => {
       // No-op for contenteditable
     };
 
-    // Setup textarea input handler
+    // Setup textarea input handler — read textContent once and share across handlers
     chatDOMListeners.textareaInputHandler = () => {
-      // log(`[TMDBG Chat] Input event fired, innerHTML: "${textarea?.innerHTML}"`, "info");
-      // log(`[TMDBG Chat] Input event fired, textContent: "${textarea?.textContent}"`, "info");
+      const cachedVal = (textarea?.textContent || "").trim();
       adjustHeight();
-      updateSuggestionVisibility();
-      updateRetryVisibility();
+      updateSuggestionVisibility(cachedVal);
+      updateRetryVisibility(cachedVal);
+      // Signal background to pause getFull while user is typing
+      signalTypingToBackground();
     };
     textarea.addEventListener("input", chatDOMListeners.textareaInputHandler);
 

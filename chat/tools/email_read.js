@@ -1,6 +1,6 @@
 // email_read.js – returns a full email content with summaries
 
-import { extractBodyFromParts, getUniqueMessageKey, headerIDToWeID, log, parseUniqueId, safeGetFull } from "../../agent/modules/utils.js";
+import { extractBodyFromParts, getRealSubject, getUniqueMessageKey, headerIDToWeID, log, parseUniqueId, safeGetFull } from "../../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../modules/icsParser.js";
 
 
@@ -138,7 +138,7 @@ export async function run(args = {}, options = {}) {
     lines.push(`from: ${header.author || ""}`);
     lines.push(`to: ${header.recipients ? header.recipients.join(", ") : ""}`);
     lines.push(`cc: ${header.ccList ? header.ccList.join(", ") : ""}`);
-    lines.push(`subject: ${header.subject || "(No subject)"}`);
+    lines.push(`subject: ${(await getRealSubject(header)) || "(No subject)"}`);
     lines.push(`has_attachments: ${hasAttachmentsFlag ? "yes" : "no"}`);
     lines.push(`replied: ${repliedStatus ? "yes" : "no"}`);
     lines.push("body:");

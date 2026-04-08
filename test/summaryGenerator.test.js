@@ -54,6 +54,7 @@ vi.mock("../agent/modules/utils.js", () => ({
   safeGetFull: vi.fn(async () => ({ parts: [] })),
   indexHeader: vi.fn(),
   saveChatLog: vi.fn(),
+  getRealSubject: vi.fn(async (header) => header?.subject || ""),
 }));
 
 // ─── Mock llm.js ────────────────────────────────────────────────────────────
@@ -95,6 +96,9 @@ vi.mock("../agent/modules/deviceSync.js", () => ({
 
 // ─── Browser mock ───────────────────────────────────────────────────────────
 globalThis.browser = {
+  tmHdr: {
+    getFlags: vi.fn().mockResolvedValue({ exists: false }),
+  },
   storage: {
     local: {
       get: vi.fn(async () => ({})),

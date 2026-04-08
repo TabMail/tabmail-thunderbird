@@ -39,6 +39,12 @@ let autocompleteState = {
   savedRange: null, // Save the selection range when @ is detected
 };
 
+// Debounce timer for handleInput — prevents expensive work on every keystroke
+let _inputDebounceTimer = null;
+
+// Generation counter — stale async handleInput calls discard their results
+let _inputGeneration = 0;
+
 /**
  * Update the email cache from inbox data
  * Should be called when inbox data is refreshed
@@ -339,9 +345,39 @@ export function initMentionAutocomplete(contenteditable) {
   
   document.body.appendChild(dropdown);
 
-  // Handle @ detection and query updates
+  // Handle @ detection and query updates (debounced to avoid per-keystroke overhead)
   contenteditable.addEventListener("input", (e) => {
-    handleInput(contenteditable, dropdown);
+    // Immediately check for @ exit (cheap) so dropdown closes without delay
+    const text = contenteditable.textContent || "";
+    const selection = window.getSelection();
+    let cursorPos = 0;
+    if (selection.rangeCount > 0) {
+      const range = selection.getRangeAt(0);
+      const preCaretRange = range.cloneRange();
+      preCaretRange.selectNodeContents(contenteditable);
+      preCaretRange.setEnd(range.endContainer, range.endOffset);
+      cursorPos = preCaretRange.toString().length;
+    }
+    // Quick backward scan for @
+    let atPos = -1;
+    for (let i = cursorPos - 1; i >= 0; i--) {
+      if (text[i] === "@") {
+        if (i === 0 || /\s/.test(text[i - 1])) { atPos = i; }
+        break;
+      }
+    }
+    if (atPos === -1) {
+      // No @ — close immediately (no debounce needed)
+      if (_inputDebounceTimer) { clearTimeout(_inputDebounceTimer); _inputDebounceTimer = null; }
+      closeAutocomplete(dropdown);
+      return;
+    }
+    // @ found — debounce the expensive async work
+    if (_inputDebounceTimer) clearTimeout(_inputDebounceTimer);
+    _inputDebounceTimer = setTimeout(() => {
+      _inputDebounceTimer = null;
+      handleInput(contenteditable, dropdown);
+    }, 120);
   });
 
   // Handle keyboard navigation
@@ -382,8 +418,9 @@ function getContentEditableState(contenteditable) {
  * Handle input event on contenteditable
  */
 async function handleInput(contenteditable, dropdown) {
+  const myGen = ++_inputGeneration;
   const { text, cursorPos } = getContentEditableState(contenteditable);
-  
+
   // Find @ symbol before cursor
   let atPos = -1;
   for (let i = cursorPos - 1; i >= 0; i--) {
@@ -405,37 +442,45 @@ async function handleInput(contenteditable, dropdown) {
 
   // Extract query from @ to cursor
   const query = text.substring(atPos + 1, cursorPos);
-  
+
   // Cancel @ mode if query starts with space (@ followed immediately by space)
   if (query.startsWith(" ")) {
     closeAutocomplete(dropdown);
     return;
   }
-  
+
   // Save current selection range for later restoration (update on every input)
   const selection = window.getSelection();
   if (selection.rangeCount > 0) {
     autocompleteState.savedRange = selection.getRangeAt(0).cloneRange();
   }
-  
-  // If @ was just detected (not active yet), log it
-  if (!autocompleteState.isActive) {
+
+  // Refresh caches only when first entering @ mode (not on every keystroke)
+  const justActivated = !autocompleteState.isActive;
+  if (justActivated) {
     log(`[MentionAutocomplete] @ detected at position ${atPos}, query: "${query}"`, 'debug');
+    await refreshEntityCache();
+    await refreshTemplateCache();
+    // Stale check after async work
+    if (myGen !== _inputGeneration) return;
   }
-  
+
   // Update state and show autocomplete
   autocompleteState.isActive = true;
   autocompleteState.query = query;
   autocompleteState.cursorPosition = atPos;
   autocompleteState.selectedIndex = 0;
-  
+
   // Notify chat that autocomplete is active
   window.mentionAutocompleteActive = true;
   log(`[MentionAutocomplete] Set mentionAutocompleteActive = true`, 'debug');
 
   // Get matches (async now)
   await updateMatches(query);
-  
+
+  // Stale check — a newer keystroke already superseded this result
+  if (myGen !== _inputGeneration) return;
+
   // Show dropdown
   showAutocomplete(contenteditable, dropdown, atPos);
 }
@@ -445,11 +490,6 @@ async function handleInput(contenteditable, dropdown) {
  */
 async function updateMatches(query) {
   const matches = [];
-  
-  // Refresh idMap items cache to catch any new contacts/events mentioned in chat
-  await refreshEntityCache();
-  // Refresh local template cache
-  await refreshTemplateCache();
 
   // If query is empty, show only selected emails (quick reference to current selection)
   if (!query.trim()) {
@@ -1100,11 +1140,14 @@ function deleteMention(textarea, startIndex, endIndex) {
  */
 export function cleanupMentionAutocomplete() {
   try {
+    // Clear debounce timer
+    if (_inputDebounceTimer) { clearTimeout(_inputDebounceTimer); _inputDebounceTimer = null; }
+
     const dropdown = document.getElementById("mention-autocomplete-dropdown");
     if (dropdown) {
       dropdown.remove();
     }
-    
+
     // Clear local caches
     emailCache = [];
     entityCache = [];

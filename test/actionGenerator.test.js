@@ -78,6 +78,7 @@ vi.mock('../agent/modules/utils.js', () => ({
   stripHtml: (...args) => mockStripHtml(...args),
   safeGetFull: (...args) => mockSafeGetFull(...args),
   saveChatLog: (...args) => mockSaveChatLog(...args),
+  getRealSubject: vi.fn(async (header) => header?.subject || ""),
 }));
 
 const mockGetUserName = vi.fn().mockResolvedValue('Test User');
@@ -130,6 +131,9 @@ vi.mock('../agent/modules/deviceSync.js', () => ({
 globalThis.browser = {
   messages: {
     get: vi.fn().mockResolvedValue({ tags: [] }),
+  },
+  tmHdr: {
+    getFlags: vi.fn().mockResolvedValue({ exists: false }),
   },
   storage: {
     local: {

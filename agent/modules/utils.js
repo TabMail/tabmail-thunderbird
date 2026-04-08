@@ -31,6 +31,30 @@ let activeGetFullCount = 0;
 const MAX_CONCURRENT_GETFULL = 16;
 // Proper waiter queue to avoid spin-wait polling that starves the event loop
 const getFullWaiters = [];
+
+// Chat typing gate — pauses IMAP getFull calls while user is actively typing in chat.
+// Set by runtime message from chat window, auto-clears after cooldown.
+let _chatTypingUntil = 0;
+const _chatTypingWaiters = [];
+const CHAT_TYPING_COOLDOWN_MS = 400;
+
+/**
+ * Signal that the user is typing in the chat window.
+ * Called from runtime.onMessage handler.
+ */
+export function signalChatTyping() {
+  _chatTypingUntil = Date.now() + CHAT_TYPING_COOLDOWN_MS;
+}
+
+/**
+ * Wait if the user is actively typing in chat.
+ * Resolves immediately if not typing, otherwise waits until cooldown expires.
+ */
+async function _waitForChatTypingCooldown() {
+  const remaining = _chatTypingUntil - Date.now();
+  if (remaining <= 0) return;
+  await new Promise(resolve => setTimeout(resolve, remaining));
+}
 // Fast lookup: WebExtension message ID → uniqueKey (avoids browser.messages.get() on cache hits)
 const weIdToUniqueKey = new Map();
 
@@ -458,6 +482,8 @@ export async function safeGetFull(id, preHeader = null) {
   }
 
   // Cache miss or expired, fetch fresh data
+  // Yield to chat typing — pause IMAP fetch while user is actively typing
+  await _waitForChatTypingCooldown();
   while (activeGetFullCount >= MAX_CONCURRENT_GETFULL) {
     await new Promise(resolve => getFullWaiters.push(resolve));
   }
@@ -479,6 +505,31 @@ export async function safeGetFull(id, preHeader = null) {
     activeGetFullCount--;
     if (getFullWaiters.length > 0) getFullWaiters.shift()();
   }
+}
+
+
+/**
+ * Return the real subject for a MessageHeader, restoring "Re:" if TB stripped it.
+ * TB's WebExtension API strips "Re:" internally (RFC 5256 normalization).
+ * Uses tmHdr.getFlags to check nsMsgMessageFlags.HasRe (0x0010).
+ * @param {object} header - TB MessageHeader (needs .id, .folder, .headerMessageId, .subject)
+ * @returns {Promise<string>} subject with "Re:" restored if applicable
+ */
+export async function getRealSubject(header) {
+  const subject = header?.subject || "";
+  if (!header) return subject;
+  try {
+    const flags = await browser.tmHdr.getFlags(
+      header.folder?.id || "",
+      header.id,
+      header.folder?.path || "",
+      header.headerMessageId || ""
+    );
+    if (flags?.exists && (flags.raw & 0x0010) && !subject.startsWith("Re: ")) {
+      return "Re: " + subject;
+    }
+  } catch (_) {}
+  return subject;
 }
 
 /**

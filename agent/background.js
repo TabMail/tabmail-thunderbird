@@ -36,7 +36,7 @@ import {
   importActionFromImapTag,
 } from "./modules/tagHelper.js";
 import { attachThreadTooltipHandlers } from "./modules/threadTooltip.js";
-import { log } from "./modules/utils.js";
+import { log, signalChatTyping } from "./modules/utils.js";
 
 log("TabMail Agent background script loaded.");
 // log('[TMDBG Summary] agent.js debug build reloaded – timestamp ' + (new Date()).toISOString());
@@ -97,6 +97,12 @@ function setupRuntimeMessageListener() {
 
     if (message.command === "tmHdr-log" && typeof message.text === "string") {
         try { console.log(message.text); } catch(_) {}
+        return; // no response needed
+    }
+
+    // Chat typing signal — pauses background getFull calls to reduce main-thread contention
+    if (message.command === "chat-typing") {
+        try { signalChatTyping(); } catch(_) {}
         return; // no response needed
     }
 

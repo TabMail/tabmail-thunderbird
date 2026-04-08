@@ -6,6 +6,7 @@ import { SETTINGS } from "./config.js";
 import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
 import {
   extractBodyFromParts,
+  getRealSubject,
   getUniqueMessageKey,
   indexHeader,
   log,
@@ -338,7 +339,7 @@ export async function generateSummary(messageHeader, highPriority = false) {
     content: "system_prompt_summary",
     user_name: userName,
     user_kb_content: userKBContent,
-    subject: messageHeader.subject || "Not Available",
+    subject: (await getRealSubject(messageHeader)) || "Not Available",
     from_sender: messageHeader.author || "Unknown",
     email_date: emailDateFormatted,
     email_day_of_week: emailDayOfWeek,

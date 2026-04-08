@@ -256,6 +256,26 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
             return [];
           }
         },
+        async getHasReBulk(items) {
+          try {
+            if (!Array.isArray(items)) return [];
+            const NS = CiTM.nsMsgMessageFlags;
+            return items.map((it) => {
+              try {
+                let hdr = tmGetHdrByKey(it.folderURI, it.key, it.pathStr);
+                if (!hdr && it.messageId) {
+                  hdr = tmGetHdrByMessageId(it.folderURI, it.messageId, it.pathStr);
+                }
+                return !!(hdr && (hdr.flags & NS.HasRe));
+              } catch (e) {
+                return false;
+              }
+            });
+          } catch (e) {
+            console.error("[ReplyDetect] tmHdr.getHasReBulk error", e);
+            return [];
+          }
+        },
       },
     };
   }

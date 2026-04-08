@@ -73,6 +73,28 @@
         "returns": { "type": "array", "items": { "type": "boolean" } }
       },
       {
+        "name": "getHasReBulk",
+        "type": "function",
+        "description": "Bulk check for nsMsgMessageFlags.HasRe — true if the original subject had 'Re:' prefix.",
+        "async": true,
+        "parameters": [
+          {
+            "name": "items",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "folderURI": { "type": "string" },
+                "key": { "type": "integer" },
+                "pathStr": { "type": "string", "optional": true },
+                "messageId": { "type": "string", "optional": true }
+              }
+            }
+          }
+        ],
+        "returns": { "type": "array", "items": { "type": "boolean" } }
+      },
+      {
         "name": "getRepliedByMessageId",
         "type": "function",
         "description": "Return true if Replied flag is set, resolving header by RFC Message-ID string.",

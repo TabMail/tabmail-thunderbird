@@ -4,6 +4,7 @@ import { processJSONResponse, sendChat } from "./llm.js";
 import { applyActionPatch } from "./patchApplier.js";
 import { getUserActionPrompt } from "./promptGenerator.js";
 import {
+    getRealSubject,
     getUniqueMessageKey,
     log,
     saveChatLog
@@ -103,7 +104,7 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
         const systemMsg = {
             role: "system",
             content: "system_prompt_action_refine",
-            subject: header?.subject || summary?.subject || "Not Available",
+            subject: (header ? await getRealSubject(header) : null) || summary?.subject || "Not Available",
             from_sender: header?.author || summary?.fromSender || "Unknown",
             summary_blurb: summary?.blurb || "",
             todos: summary?.todos || "",

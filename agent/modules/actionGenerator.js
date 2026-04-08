@@ -10,6 +10,7 @@ import { actionFromLiveTagIds, isMessageInInboxByUniqueKey } from "./tagHelper.j
 import { resolveGmailAction } from "./gmailLabelSync.js";
 import {
   extractBodyFromParts,
+  getRealSubject,
   getUniqueMessageKey,
   log,
   safeGetFull,
@@ -354,7 +355,7 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
       user_name: userName,
       user_action_prompt: userActionPrompt || "",
       body: plainBody,
-      subject: messageHeader.subject || "Not Available",
+      subject: (await getRealSubject(messageHeader)) || "Not Available",
       from_sender: messageHeader.author || "Unknown",
       todo: summaryData?.todos || "Not Available",
       summary: summaryData?.blurb || "Not Available",

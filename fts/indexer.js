@@ -4,7 +4,7 @@
 import { getAllFoldersForAccount } from "../agent/modules/folderUtils.js";
 import { getInboxForAccount } from "../agent/modules/inboxContext.js";
 import { sanitizeMessageTags } from "../agent/modules/onMoved.js";
-import { log, safeGetFull } from "../agent/modules/utils.js";
+import { getRealSubject, log, safeGetFull } from "../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../chat/modules/icsParser.js";
 import { extractPlainText } from "./bodyExtract.js";
 
@@ -128,7 +128,7 @@ export async function buildBatchHeader(messages) {
     // 2) Build lightweight header row
     const row = {
       msgId,                              // accountId:folderPath:headerID
-      subject: m.subject || "",
+      subject: (await getRealSubject(m)) || "",
       from_: (m.author || ""),
       to_: (m.recipients || []).join(", "),
       cc: (m.ccList || []).join(", "),
@@ -398,8 +398,22 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
       // Step 3: Filter to find messages that need indexing
       const filterResult = await ftsSearch.filterNewMessages(filteredBatch);
       const newMsgIds = filterResult.newMsgIds || [];
-      
+
       log(`[TMDBG FTS] Filtered ${newMsgIds.length} new messages out of ${filteredBatch.length} total in ${folder.name}`);
+
+      // DIAGNOSTIC: Cross-check filterNewMessages results against getMessageByMsgId.
+      // If filterNewMessages says "new" but getMessageByMsgId finds the entry,
+      // there's a key mismatch or filterNewMessages false negative.
+      if (isDateRange && newMsgIds.length > 0 && newMsgIds.length <= 50) {
+        for (const newId of newMsgIds) {
+          try {
+            const existing = await ftsSearch.getMessageByMsgId(newId);
+            if (existing && existing.msgId === newId) {
+              log(`[TMDBG FTS] DIAGNOSTIC: filterNewMessages false negative — "${newId}" reported as new but getMessageByMsgId found it!`, "warn");
+            }
+          } catch (_) {}
+        }
+      }
       
       if (newMsgIds.length === 0) {
         // All messages already indexed, just update progress

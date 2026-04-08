@@ -4,7 +4,7 @@ import { SETTINGS } from "./config.js";
 import * as idb from "./idbStorage.js";
 import { processEditResponse, sendChat } from "./llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "./promptGenerator.js";
-import { extractBodyFromParts, formatForLog, getUniqueMessageKey, log, safeGetFull, saveChatLog, stripHtml } from "./utils.js";
+import { extractBodyFromParts, formatForLog, getRealSubject, getUniqueMessageKey, log, safeGetFull, saveChatLog, stripHtml } from "./utils.js";
 
 export const STORAGE_PREFIX = "reply:";
 export const TS_PREFIX = "reply:ts:";
@@ -372,14 +372,15 @@ async function sendReplyRequest(messageId, messageHeader, isPriority = false) {
         fromAddress = (lastMessage.recipients || []).join(', ');
     }
 
+    const realSubject = await getRealSubject(lastMessage);
     const details = {
-        subject: lastMessage.subject.startsWith("Re: ") ? lastMessage.subject : `Re: ${lastMessage.subject}`,
+        subject: realSubject.startsWith("Re: ") ? realSubject : `Re: ${realSubject}`,
         from: fromAddress,
         to: lastMessage.author || lastMessage.from || "",
         cc: (lastMessage.recipients || []).join(', '),
         // Original email metadata for context
         related_date: lastMessage.date ? formatTimestampForAgent(new Date(lastMessage.date)) : "",
-        related_subject: lastMessage.subject || "",
+        related_subject: realSubject || "",
         related_from: lastMessage.author || lastMessage.from || "",
         related_to: (lastMessage.recipients || []).join(', '),
         related_cc: (lastMessage.ccList || []).join(', '),
