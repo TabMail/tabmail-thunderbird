@@ -1145,9 +1145,12 @@ export function onMessageUpdated(message, changedProperties) {
  */
 export async function onExperimentMessageAdded(messageInfo) {
   if (!_isEnabled) return;
-  
+
+  // Track sync event for reconcile quiet-period detection
+  _lastSyncEventMs = Date.now();
+
   const { headerMessageId, weFolderId, folderPath, accountId, subject, eventType } = messageInfo;
-  
+
   log(`[TMDBG FTS] Experiment msgAdded: type=${eventType}, folder=${folderPath}, subject="${subject?.substring(0, 50)}"`);
   
   // Build unique key from the info we have
@@ -1204,9 +1207,12 @@ export async function onExperimentMessageAdded(messageInfo) {
  */
 export async function onExperimentMessageRemoved(messageInfo) {
   if (!_isEnabled) return;
-  
+
+  // Track sync event for reconcile quiet-period detection
+  _lastSyncEventMs = Date.now();
+
   const { headerMessageId, weFolderId, folderPath, accountId, eventType } = messageInfo;
-  
+
   log(`[TMDBG FTS] Experiment msgRemoved: type=${eventType}, folder=${folderPath}, headerMessageId=${headerMessageId?.substring(0, 30)}`);
   
   // Build unique key from the info we have
@@ -1324,6 +1330,23 @@ const RECONCILE_INITIAL_DELAY_MS = 2000;
 const RECONCILE_MAX_DELAY_MS = 30000;
 // Storage key for persisting reconcile-needed state across restarts
 const RECONCILE_STORAGE_KEY = "fts_reconcile_pending";
+
+// Quiet period before running reconcile — prevents races with TB's startup sync.
+// During sync, messages.query can return inconsistent snapshots, causing Phase 2
+// to mark valid entries as stale and remove them. We wait for no sync events
+// for this duration before running reconcile.
+const RECONCILE_QUIET_PERIOD_MS = 60 * 1000; // 60 seconds
+// Check interval for quiet-period polling
+const RECONCILE_QUIET_CHECK_INTERVAL_MS = 10 * 1000; // 10 seconds
+// Hard cap on how long to wait before running reconcile even if events keep firing.
+// Busy inboxes may never reach the quiet period, so we force reconcile after this.
+const RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000; // 10 minutes
+
+// Tracks the most recent sync-related message event timestamp.
+// Reset on every onExperimentMessageAdded/Removed call.
+let _lastSyncEventMs = Date.now();
+// Handle to the quiet-period check timer (for cleanup)
+let _reconcileQuietTimer = null;
 
 /**
  * Determine the reconcile lower-bound by querying FTS for the newest message.
@@ -1648,12 +1671,58 @@ export async function initIncrementalIndexer(ftsSearch) {
   // will re-run reconcile for the rest.
   await browser.storage.local.set({ [RECONCILE_STORAGE_KEY]: Date.now() });
 
-  // Run post-init reconciliation to cover the startup timing gap.
-  // FTS flakiness is handled internally (exponential backoff for window query)
-  // and by the persistent drain loop (retry for indexing).
-  runPostInitReconcile(ftsSearch).catch(e => {
-    log(`[TMDBG FTS] Post-init reconcile error: ${e}`, "error");
-  });
+  // Schedule post-init reconciliation to run after TB's startup sync settles.
+  // During active sync, messages.query can return inconsistent snapshots,
+  // causing Phase 2 to mark valid entries as stale and remove them. We wait
+  // for a quiet period (no msgAdded/msgRemoved events for RECONCILE_QUIET_PERIOD_MS)
+  // before running reconcile. Listeners are already active, so any new events
+  // during the wait are caught by the incremental indexer normally.
+  _scheduleReconcileWhenQuiet(ftsSearch);
+}
+
+/**
+ * Schedule runPostInitReconcile to run after sync events have quieted down.
+ * Polls _lastSyncEventMs on an interval; runs reconcile once the quiet period
+ * has elapsed. Has a hard cap (RECONCILE_MAX_WAIT_MS) to ensure reconcile
+ * eventually runs even if events keep firing.
+ *
+ * @param {Object} ftsSearch - FTS search interface
+ * @param {Function} [runner] - Optional runner (defaults to runPostInitReconcile).
+ *                              Injectable for testing.
+ */
+function _scheduleReconcileWhenQuiet(ftsSearch, runner = runPostInitReconcile) {
+  const scheduledAt = Date.now();
+  // Initialize to "now" so we require a fresh quiet period after scheduling
+  _lastSyncEventMs = scheduledAt;
+
+  log(`[TMDBG FTS] Reconcile scheduled — waiting for ${RECONCILE_QUIET_PERIOD_MS / 1000}s quiet period (max wait ${RECONCILE_MAX_WAIT_MS / 1000}s)`);
+
+  if (_reconcileQuietTimer) {
+    clearInterval(_reconcileQuietTimer);
+    _reconcileQuietTimer = null;
+  }
+
+  _reconcileQuietTimer = setInterval(() => {
+    const now = Date.now();
+    const quietFor = now - _lastSyncEventMs;
+    const waitedFor = now - scheduledAt;
+
+    if (quietFor >= RECONCILE_QUIET_PERIOD_MS || waitedFor >= RECONCILE_MAX_WAIT_MS) {
+      const reason = quietFor >= RECONCILE_QUIET_PERIOD_MS ? "quiet period reached" : "max wait exceeded";
+      log(`[TMDBG FTS] Reconcile starting — ${reason} (quietFor=${Math.round(quietFor / 1000)}s, waitedFor=${Math.round(waitedFor / 1000)}s)`);
+
+      if (_reconcileQuietTimer) {
+        clearInterval(_reconcileQuietTimer);
+        _reconcileQuietTimer = null;
+      }
+
+      Promise.resolve(runner(ftsSearch)).catch(e => {
+        log(`[TMDBG FTS] Post-init reconcile error: ${e}`, "error");
+      });
+    } else {
+      log(`[TMDBG FTS] Reconcile waiting — quietFor=${Math.round(quietFor / 1000)}s/${RECONCILE_QUIET_PERIOD_MS / 1000}s (waited=${Math.round(waitedFor / 1000)}s)`);
+    }
+  }, RECONCILE_QUIET_CHECK_INTERVAL_MS);
 }
 
 export async function disposeIncrementalIndexer() {
@@ -1691,12 +1760,17 @@ export async function disposeIncrementalIndexer() {
     clearTimeout(_batchTimer);
     _batchTimer = null;
   }
-  
+
   if (_persistTimer) {
     clearTimeout(_persistTimer);
     _persistTimer = null;
   }
-  
+
+  if (_reconcileQuietTimer) {
+    clearInterval(_reconcileQuietTimer);
+    _reconcileQuietTimer = null;
+  }
+
   // Reset processing flag
   _isProcessing = false;
   
@@ -1776,12 +1850,17 @@ export async function clearPendingUpdates() {
     clearTimeout(_batchTimer);
     _batchTimer = null;
   }
-  
+
   if (_persistTimer) {
     clearTimeout(_persistTimer);
     _persistTimer = null;
   }
-  
+
+  if (_reconcileQuietTimer) {
+    clearInterval(_reconcileQuietTimer);
+    _reconcileQuietTimer = null;
+  }
+
   // Reset processing flag
   _isProcessing = false;
   
@@ -1805,4 +1884,18 @@ export const _testExports = {
   _getConsecutiveNoProgressCycles: () => _consecutiveNoProgressCycles,
   _setConsecutiveNoProgressCycles: (v) => { _consecutiveNoProgressCycles = v; },
   _getPendingUpdates: () => _pendingUpdates,
+  // Quiet-period reconcile scheduler
+  _scheduleReconcileWhenQuiet,
+  _getLastSyncEventMs: () => _lastSyncEventMs,
+  _setLastSyncEventMs: (v) => { _lastSyncEventMs = v; },
+  _hasReconcileQuietTimer: () => _reconcileQuietTimer !== null,
+  _clearReconcileQuietTimer: () => {
+    if (_reconcileQuietTimer) {
+      clearInterval(_reconcileQuietTimer);
+      _reconcileQuietTimer = null;
+    }
+  },
+  RECONCILE_QUIET_PERIOD_MS,
+  RECONCILE_QUIET_CHECK_INTERVAL_MS,
+  RECONCILE_MAX_WAIT_MS,
 };
