@@ -93,8 +93,9 @@ async function readSSEStream(response, abortSignal = null, onToolExecution = nul
   let currentEvent = null;
   let currentData = [];
   
-  // Timeout for stream reads to detect stalled connections
-  const STREAM_TIMEOUT_MS = 60000; // 60 seconds without data = timeout
+  // Timeout for stream reads to detect stalled connections.
+  // Backend sends heartbeat every 3s — 10s allows 3 missed heartbeats before declaring stall.
+  const STREAM_TIMEOUT_MS = 10000; // 10 seconds without data = timeout
   
   try {
   while (true) {
