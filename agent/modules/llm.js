@@ -998,7 +998,7 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
   return data;
 }
 
-export const _testExports = { checkForbiddenBackoff, recordForbidden, resetForbiddenBackoff, getEndpointType };
+export const _testExports = { checkForbiddenBackoff, recordForbidden, resetForbiddenBackoff, getEndpointType, readSSEStream };
 
 /**
  * Process JSON response from LLM - strips markdown code fences and parses JSON.
