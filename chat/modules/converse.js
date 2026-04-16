@@ -1152,14 +1152,5 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
         log(`[CONVERSE] FTS indexing failed (non-fatal): ${e}`, "warn")
       );
     }
-
-    // Trigger periodic KB refinement (fire-and-forget, guards internally)
-    try {
-      import("../../agent/modules/knowledgebase.js").then(({ periodicKbUpdate }) => {
-        periodicKbUpdate().catch(e => {
-          log(`[CONVERSE] Periodic KB update failed (non-fatal): ${e}`, "warn");
-        });
-      }).catch(() => {});
-    } catch (_) {}
   }
 }

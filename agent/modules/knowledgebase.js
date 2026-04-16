@@ -184,23 +184,30 @@ async function _kbUpdateImpl(conversationHistory = []) {
             log(`-- KB -- No refined_kb in response (keys: ${Object.keys(response).join(', ')})`);
             return;
         }
-        const updatedKb = response.refined_kb;
-        log(`-- KB -- Received refined KB from backend (${updatedKb.length} chars)`);
+        const refinedKb = response.refined_kb;
+        log(`-- KB -- Received refined KB from backend (${refinedKb.length} chars)`);
 
-        // Track if KB actually changed
-        const kbChanged = updatedKb !== currentUserKBMd;
+        // 3-way merge: treat refinement as a "remote" change.
+        //   base   = KB snapshot before the backend call (currentUserKBMd)
+        //   local  = current KB (may have drifted via sync/config edits during flight)
+        //   remote = refined KB from backend
+        // Prevents clobbering concurrent local edits. Matches _periodicKbUpdateImpl.
+        const { mergeFlatField } = await import("./bulletMerge.js");
+        const currentKBNow = (await getUserKBPrompt()) || "";
+        const mergedKb = mergeFlatField(currentUserKBMd, currentKBNow, refinedKb);
+        const kbChanged = mergedKb !== currentKBNow;
 
         // Skip save if no change, but still mark session as remembered
         if (!kbChanged) {
-            log(`-- KB -- No changes to KB after update`);
+            log(`-- KB -- No changes to KB after 3-way merge`);
         } else {
-            // Persist updated KB back to storage.local
+            // Persist merged KB back to storage.local
             try {
                 const key = "user_prompts:user_kb.md";
-                await browser.storage.local.set({ [key]: updatedKb });
-                log(`-- KB -- KB saved to disk successfully`);
+                await browser.storage.local.set({ [key]: mergedKb });
+                log(`-- KB -- KB saved via 3-way merge (${mergedKb.length} chars)`);
             } catch (e) {
-                log(`-- KB -- Failed to persist updated user_kb.md: ${e}`, "error");
+                log(`-- KB -- Failed to persist merged user_kb.md: ${e}`, "error");
                 // Still mark session as remembered even if save fails
                 // to prevent infinite reprocessing
             }

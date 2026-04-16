@@ -541,6 +541,18 @@ async function _insertSessionBreak(meta) {
   saveMeta(meta);
 
   log(`[TMDBG Init] Inserted session_break turn (persisted immediately)`);
+
+  // Session boundary is the correct trigger for KB refinement — matches iOS's
+  // idle-expiry model. Fire-and-forget; periodicKbUpdate guards internally
+  // (min exchanges, cooldown). Only reached when a new break was actually
+  // inserted (duplicate guard above early-returns on back-to-back calls).
+  try {
+    import("../../agent/modules/knowledgebase.js").then(({ periodicKbUpdate }) => {
+      periodicKbUpdate().catch(e => {
+        log(`[TMDBG Init] Session-end KB refinement failed (non-fatal): ${e}`, "warn");
+      });
+    }).catch(() => {});
+  } catch (_) {}
 }
 
 // ---------------------------------------------------------------------------

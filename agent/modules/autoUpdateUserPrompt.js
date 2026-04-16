@@ -131,6 +131,17 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
             return;
         }
 
+        // Re-read user_action.md — a concurrent mutation (device sync, config-page
+        // edit, another flow) may have occurred during the backend call. If the base
+        // has drifted, skip to avoid overwriting the concurrent update.
+        const latestActionMd = (await getUserActionPrompt()) || "";
+        if (latestActionMd !== currentUserActionMd) {
+            log(`[TMDBG AutoPrompt] SKIP — user_action.md changed concurrently during backend call ` +
+                `(base len ${currentUserActionMd.length}, latest len ${latestActionMd.length}) for ${uniqueKey}.`);
+            saveChatLog("tabmail_action_update", uniqueKey, messages, resp.assistant);
+            return;
+        }
+
         // Apply action patch
         const updated = applyActionPatch(currentUserActionMd, patchText);
         if (updated == null) {
