@@ -53,8 +53,15 @@ globalThis.browser = {
 
 // ─── Import tested functions ─────────────────────────────────────────────────
 
-const { processJSONResponse, processEditResponse, processSummaryResponse } =
-  await import('../agent/modules/llm.js');
+const {
+  processJSONResponse,
+  processEditResponse,
+  processSummaryResponse,
+  parseDeltaForField,
+  extractLabelLine,
+  splitCommaRespectingQuotes,
+  splitNameAndEmail,
+} = await import('../agent/modules/llm.js');
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -206,6 +213,161 @@ describe('processEditResponse', () => {
   it('handles null input', () => {
     const result = processEditResponse(null);
     expect(result.message).toBe(null);
+  });
+
+  // v1.5.16+ — recipient DELTAS expressed as +To:/-To:/+Cc:/-Cc:/+Bcc:/-Bcc:
+  it('parses +/- delta lines into toDelta/ccDelta/bccDelta', () => {
+    const input = [
+      'Response: Swapped Bob for Alice and added Carol to cc.',
+      '+To: Alice Anderson <alice@example.com>',
+      '-To: bob@example.com',
+      '+Cc: Carol <carol@example.com>',
+      'Subject: Re: Budget',
+      'Body: Hi all',
+    ].join('\n');
+    const r = processEditResponse(input);
+    expect(r.toDelta).toEqual({
+      adds: [{ name: 'Alice Anderson', email: 'alice@example.com' }],
+      removes: ['bob@example.com'],
+    });
+    expect(r.ccDelta).toEqual({
+      adds: [{ name: 'Carol', email: 'carol@example.com' }],
+      removes: [],
+    });
+    // Bcc line never appeared → no-change signal
+    expect(r.bccDelta).toBeUndefined();
+  });
+
+  it('absent delta lines leave the field untouched (undefined)', () => {
+    const input = 'Subject: Re: Budget\nBody: Hi team';
+    const r = processEditResponse(input);
+    expect(r.toDelta).toBeUndefined();
+    expect(r.ccDelta).toBeUndefined();
+    expect(r.bccDelta).toBeUndefined();
+  });
+
+  it('-Cc: * is a clear-all sentinel', () => {
+    const input = '-Cc: *\nSubject: x\nBody: y';
+    const r = processEditResponse(input);
+    expect(r.ccDelta).toEqual({ adds: [], removes: ['*'] });
+  });
+
+  it('multiple emails on one -To: line are each added to removes', () => {
+    const input = '-To: bob@example.com, dave@example.com\nSubject: x\nBody: y';
+    const r = processEditResponse(input);
+    expect(r.toDelta).toEqual({
+      adds: [],
+      removes: ['bob@example.com', 'dave@example.com'],
+    });
+  });
+
+  it('quoted display names with commas in +To: are not split', () => {
+    const input = '+To: "Doe, John" <john@example.com>, "Smith, Jane" <jane@example.com>\nSubject: x\nBody: y';
+    const r = processEditResponse(input);
+    expect(r.toDelta).toEqual({
+      adds: [
+        { name: 'Doe, John', email: 'john@example.com' },
+        { name: 'Smith, Jane', email: 'jane@example.com' },
+      ],
+      removes: [],
+    });
+  });
+
+  it('bare emails in +To: are accepted with empty name', () => {
+    const input = '+To: alice@example.com, bob@example.com\nSubject: x\nBody: y';
+    const r = processEditResponse(input);
+    expect(r.toDelta).toEqual({
+      adds: [
+        { name: '', email: 'alice@example.com' },
+        { name: '', email: 'bob@example.com' },
+      ],
+      removes: [],
+    });
+  });
+
+  it('both +Cc: and -Cc: in the same response produce one delta with both sides', () => {
+    const input = '+Cc: new@example.com\n-Cc: old@example.com\nSubject: x\nBody: y';
+    const r = processEditResponse(input);
+    expect(r.ccDelta).toEqual({
+      adds: [{ name: '', email: 'new@example.com' }],
+      removes: ['old@example.com'],
+    });
+  });
+
+  it('-To: lowercases emails for comparison consistency', () => {
+    const input = '-To: Bob@Example.COM\nSubject: x\nBody: y';
+    const r = processEditResponse(input);
+    expect(r.toDelta.removes).toEqual(['bob@example.com']);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TB-082b: delta helper functions
+// ═══════════════════════════════════════════════════════════════════════════
+describe('parseDeltaForField', () => {
+  it('returns undefined when neither +X: nor -X: line is present', () => {
+    expect(parseDeltaForField('Subject: x\nBody: y', 'To')).toBeUndefined();
+  });
+  it('returns non-undefined delta even when both lines are empty', () => {
+    // `+To:` with nothing after is an explicit empty add-list. Parser returns
+    // a delta object rather than undefined to capture that the LLM touched the field.
+    const r = parseDeltaForField('+To:\nSubject: x', 'To');
+    expect(r).toEqual({ adds: [], removes: [] });
+  });
+  it('is case-insensitive on the label part (but not the sign)', () => {
+    expect(parseDeltaForField('+to: a@b.com', 'To')).toEqual({
+      adds: [{ name: '', email: 'a@b.com' }],
+      removes: [],
+    });
+  });
+});
+
+describe('extractLabelLine', () => {
+  it('returns undefined when the line is missing', () => {
+    expect(extractLabelLine('Subject: x', '+', 'To')).toBeUndefined();
+  });
+  it('returns trimmed content after the colon', () => {
+    expect(extractLabelLine('+To:   alice@x, bob@y  \nSubject: x', '+', 'To')).toBe(
+      'alice@x, bob@y'
+    );
+  });
+  it('escapes both prefix and label for regex use', () => {
+    // `+` is a regex metacharacter; must be escaped. Same applies if someone
+    // ever adds a label with a regex-special char.
+    expect(extractLabelLine('+Cc: alice@x', '+', 'Cc')).toBe('alice@x');
+  });
+});
+
+describe('splitCommaRespectingQuotes', () => {
+  it('splits a simple comma-separated list', () => {
+    expect(splitCommaRespectingQuotes('a@x, b@y')).toEqual(['a@x', 'b@y']);
+  });
+  it('does not split inside quoted display names', () => {
+    expect(splitCommaRespectingQuotes('"Doe, John" <j@x>, b@y'))
+      .toEqual(['"Doe, John" <j@x>', 'b@y']);
+  });
+  it('does not split inside angle-bracket email parts', () => {
+    // Pathological but harmless: a comma inside <...> stays with the entry.
+    expect(splitCommaRespectingQuotes('Alice <a,x@y>')).toEqual(['Alice <a,x@y>']);
+  });
+  it('returns [] for empty input', () => {
+    expect(splitCommaRespectingQuotes('')).toEqual([]);
+    expect(splitCommaRespectingQuotes('   ')).toEqual([]);
+  });
+});
+
+describe('splitNameAndEmail', () => {
+  it('splits Name <email>', () => {
+    expect(splitNameAndEmail('Alice <a@b.com>')).toEqual({ name: 'Alice', email: 'a@b.com' });
+  });
+  it('strips surrounding quotes from the name', () => {
+    expect(splitNameAndEmail('"Doe, John" <j@x.com>')).toEqual({ name: 'Doe, John', email: 'j@x.com' });
+  });
+  it('returns bare email with empty name when no angle brackets', () => {
+    expect(splitNameAndEmail('bare@example.com')).toEqual({ name: '', email: 'bare@example.com' });
+  });
+  it('handles <email> alone', () => {
+    expect(splitNameAndEmail('<a@b.com>')).toEqual({ name: '', email: 'a@b.com' });
   });
 });
 

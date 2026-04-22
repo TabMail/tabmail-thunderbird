@@ -21,6 +21,8 @@ import { executeToolsHeadless } from "../../chat/tools/core.js";
  */
 export async function buildComposeEditChat({
   recipients = [],
+  cc = [],
+  bcc = [],
   subject = "",
   body = "",
   request = "",
@@ -30,6 +32,27 @@ export async function buildComposeEditChat({
   userCompositionPrompt = "",
 } = {}) {
   const recipsJson = JSON.stringify(Array.isArray(recipients) ? recipients : []);
+
+  // Format current To/Cc/Bcc as one-recipient-per-line blocks for the v1.5.16+
+  // edit prompt. `recipients` in this function is the To list; `cc`/`bcc` are
+  // the other two fields if known. Each entry is `{name, email}` or bare email string.
+  const formatRecipientBlock = (list) => {
+    if (!Array.isArray(list)) return "";
+    return list
+      .map((r) => {
+        if (!r) return "";
+        if (typeof r === "string") return r.trim() ? `<${r.trim()}>` : "";
+        const name = String(r.name || "").trim();
+        const email = String(r.email || "").trim();
+        if (!email) return "";
+        return name ? `${name} <${email}>` : `<${email}>`;
+      })
+      .filter(Boolean)
+      .join("\n");
+  };
+  const originalTo = formatRecipientBlock(recipients);
+  const originalCc = formatRecipientBlock(cc);
+  const originalBcc = formatRecipientBlock(bcc);
 
   // Load user knowledge base content
   let userKBContent = "";
@@ -99,6 +122,9 @@ export async function buildComposeEditChat({
     user_request: request,
     user_kb_content: userKBContent,
     selected_text: selectedText || "",
+    original_to: originalTo,
+    original_cc: originalCc,
+    original_bcc: originalBcc,
     ...relatedEmailInfo,
   };
 
@@ -128,6 +154,8 @@ export async function buildComposeEditChat({
  */
 export async function runComposeEdit({
   recipients = [],
+  cc = [],
+  bcc = [],
   subject = "",
   body = "",
   request = "",
@@ -145,6 +173,8 @@ export async function runComposeEdit({
     // Build single consolidated message that backend will process
     const systemMsg = await buildComposeEditChat({
       recipients,
+      cc,
+      bcc,
       subject,
       body,
       request,
@@ -235,6 +265,12 @@ export async function runComposeEdit({
     return {
       subject: parsed.subject,
       body: parsed.body || parsed.message || "",
+      // Recipient deltas from the LLM response (v1.5.16+). `undefined` = field
+      // was not touched → client keeps current recipients. Otherwise a
+      // `{ adds: [{name,email}], removes: [email|"*"] }` object.
+      toDelta: parsed.toDelta,
+      ccDelta: parsed.ccDelta,
+      bccDelta: parsed.bccDelta,
       raw: assistantResp,
       messages: [systemMsg],
       chatHistory: updatedHistory,

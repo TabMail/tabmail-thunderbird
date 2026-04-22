@@ -188,6 +188,68 @@ describe('email_reply.completeExecution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// run() — FSM waiter bridge
+//
+// Regression pin: email_reply / email_compose / email_forward MUST return
+// { fsm: true, pid, tool, ... } from run() so converse.js registers a waiter
+// on ctx.fsmWaiters[pid]. Without this, runStateSendEmail's
+// notifyFsmCompleteInternal → completeExecution pipeline runs but its output
+// ("Email sent successfully." / "Failed: ...") is dropped on the floor —
+// the LLM sees the tool return as "" and thinks every reply succeeded, even
+// when the window was closed without sending or setup failed.
+// ---------------------------------------------------------------------------
+
+describe('email_reply.run — FSM marker', () => {
+  beforeEach(resetCtx);
+
+  it('returns { fsm: true, tool: "email_reply", pid, startedAt }', async () => {
+    const result = await emailReply.run({ unique_id: '1:INBOX:abc' }, { callId: 'call-xyz' });
+    expect(result).toEqual(expect.objectContaining({
+      fsm: true,
+      tool: 'email_reply',
+      pid: 'call-xyz',
+    }));
+    expect(typeof result.startedAt).toBe('number');
+  });
+
+  it('publishes pid from options.callId so converse.js waiter lines up with runStateSendEmail', async () => {
+    const result = await emailReply.run({ unique_id: 'x' }, { callId: 'abc-123' });
+    expect(result.pid).toBe('abc-123');
+  });
+});
+
+describe('email_compose.run — FSM marker', () => {
+  beforeEach(resetCtx);
+
+  it('returns { fsm: true, tool: "email_compose", pid, startedAt }', async () => {
+    const result = await emailCompose.run({ recipients: [{ email: 'a@b.com' }] }, { callId: 'call-1' });
+    expect(result).toEqual(expect.objectContaining({
+      fsm: true,
+      tool: 'email_compose',
+      pid: 'call-1',
+    }));
+    expect(typeof result.startedAt).toBe('number');
+  });
+});
+
+describe('email_forward.run — FSM marker', () => {
+  beforeEach(resetCtx);
+
+  it('returns { fsm: true, tool: "email_forward", pid, startedAt }', async () => {
+    const result = await emailForward.run(
+      { unique_id: 'x', recipients: [{ email: 'a@b.com' }], request: 'fyi' },
+      { callId: 'call-2' }
+    );
+    expect(result).toEqual(expect.objectContaining({
+      fsm: true,
+      tool: 'email_forward',
+      pid: 'call-2',
+    }));
+    expect(typeof result.startedAt).toBe('number');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // email_forward completeExecution
 // ---------------------------------------------------------------------------
 
@@ -299,53 +361,10 @@ describe('contacts_delete.run', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// email_compose.run returns empty string (FSM tool)
-// ---------------------------------------------------------------------------
-
-describe('email_compose.run', () => {
-  beforeEach(resetCtx);
-
-  it('returns empty string (FSM tool)', async () => {
-    const result = await emailCompose.run(
-      { recipients: [{ email: 'test@example.com' }], request: 'Hello' },
-      { callId: 'call-3' }
-    );
-    expect(result).toBe('');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// email_reply.run returns empty string (FSM tool)
-// ---------------------------------------------------------------------------
-
-describe('email_reply.run', () => {
-  beforeEach(resetCtx);
-
-  it('returns empty string (FSM tool)', async () => {
-    const result = await emailReply.run(
-      { unique_id: 'acc1:INBOX:hdr123', request: 'Thanks!' },
-      { callId: 'call-4' }
-    );
-    expect(result).toBe('');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// email_forward.run returns empty string (FSM tool)
-// ---------------------------------------------------------------------------
-
-describe('email_forward.run', () => {
-  beforeEach(resetCtx);
-
-  it('returns empty string (FSM tool)', async () => {
-    const result = await emailForward.run(
-      { unique_id: 'acc1:INBOX:hdr123', recipients: [{ email: 'fwd@example.com' }], request: 'FYI' },
-      { callId: 'call-5' }
-    );
-    expect(result).toBe('');
-  });
-});
+// (Removed: three `returns empty string (FSM tool)` describe blocks that
+// codified the bug where email_reply/compose/forward dropped their FSM
+// completion on the floor. The new `run — FSM marker` suites above assert
+// the correct { fsm: true, pid, tool } shape.)
 
 // ---------------------------------------------------------------------------
 // calendar_read delegation

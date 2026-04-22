@@ -214,7 +214,23 @@ async function handleRuntimeMessage(message, sender) {
       callbackInstalled = true;
       
       const details = await messenger.compose.getComposeDetails(senderTabId);
-      const recipients = (details.to || []).map((e) => ({ name: "", email: e }));
+      // details.to/cc/bcc items are strings — either bare emails or `Name <email>`.
+      const toRecipient = (s) => {
+        const str = String(s || "").trim();
+        if (!str) return null;
+        const m = str.match(/^(.*?)\s*<([^<>]+)>\s*$/);
+        if (m) {
+          let name = (m[1] || "").trim();
+          if (name.startsWith('"') && name.endsWith('"') && name.length >= 2) {
+            name = name.slice(1, -1);
+          }
+          return { name, email: (m[2] || "").trim() };
+        }
+        return { name: "", email: str };
+      };
+      const recipients = (details.to || []).map(toRecipient).filter(Boolean);
+      const cc = (details.cc || []).map(toRecipient).filter(Boolean);
+      const bcc = (details.bcc || []).map(toRecipient).filter(Boolean);
       const subject = details.subject || "";
       const body = message.body || "";
       const request = (message.request || "").trim();
@@ -269,6 +285,8 @@ async function handleRuntimeMessage(message, sender) {
 
       const result = await runComposeEdit({
         recipients,
+        cc,
+        bcc,
         subject,
         body,
         request,
@@ -279,6 +297,84 @@ async function handleRuntimeMessage(message, sender) {
         chatHistory,
       });
       
+      // Apply any recipient deltas the LLM emitted (v1.5.16+). Each delta is
+      // { adds: [{name,email}], removes: [email|"*"] }. `undefined` for a field
+      // means "keep current". We read the current compose details, apply
+      // removes (including `*` = clear-all) then adds (deduped), and write back
+      // via setComposeDetails. Body/subject are handled by the inline editor
+      // itself via DOM animation; recipients just update without animation.
+      try {
+        const parseComposeEntry = (s) => {
+          const str = String(s || "").trim();
+          if (!str) return null;
+          const m = str.match(/^(.*?)\s*<([^<>]+)>\s*$/);
+          if (m) {
+            let name = (m[1] || "").trim();
+            if (name.startsWith('"') && name.endsWith('"') && name.length >= 2) {
+              name = name.slice(1, -1);
+            }
+            return { name, email: (m[2] || "").trim() };
+          }
+          return { name: "", email: str };
+        };
+        const formatForCompose = (r) => {
+          if (!r || !r.email) return null;
+          const name = String(r.name || "").trim();
+          const email = String(r.email).trim();
+          return name ? `${name} <${email}>` : email;
+        };
+        const applyDelta = (currentList, delta) => {
+          const current = (currentList || []).map(parseComposeEntry).filter(Boolean);
+          const clearAll = (delta.removes || []).some((e) => e === "*");
+          const removeSet = new Set(
+            (delta.removes || []).filter((e) => e !== "*").map((e) => String(e).toLowerCase())
+          );
+          const kept = clearAll
+            ? []
+            : current.filter((r) => !removeSet.has(r.email.toLowerCase()));
+          const seen = new Set(kept.map((r) => r.email.toLowerCase()));
+          for (const add of delta.adds || []) {
+            const email = String(add?.email || "").trim();
+            if (!email || email === "*") continue;
+            const key = email.toLowerCase();
+            if (!seen.has(key)) {
+              kept.push({ name: String(add?.name || "").trim(), email });
+              seen.add(key);
+            }
+          }
+          return kept.map(formatForCompose).filter(Boolean);
+        };
+
+        const recipientPatch = {};
+        const deltaFor = {
+          to: result?.toDelta,
+          cc: result?.ccDelta,
+          bcc: result?.bccDelta,
+        };
+        const currentFor = {
+          to: details.to,
+          cc: details.cc,
+          bcc: details.bcc,
+        };
+        for (const field of ["to", "cc", "bcc"]) {
+          const delta = deltaFor[field];
+          if (delta === undefined) continue;
+          recipientPatch[field] = applyDelta(currentFor[field], delta);
+        }
+        if (Object.keys(recipientPatch).length > 0) {
+          const summary = (f) => {
+            const d = deltaFor[f];
+            return d ? `+${(d.adds || []).length}/-${(d.removes || []).length}` : "-";
+          };
+          console.log(
+            `[TabMail BG]   Applying recipient deltas: to=${summary("to")} cc=${summary("cc")} bcc=${summary("bcc")}`
+          );
+          await messenger.compose.setComposeDetails(senderTabId, recipientPatch);
+        }
+      } catch (recipErr) {
+        console.warn(`[TabMail BG] Failed to apply recipient deltas: ${recipErr}`);
+      }
+
       const inlineEditDuration = performance.now() - inlineEditStartTime;
       console.log(
         `[TabMail BG] ───────────────────────────────────────────────────────────────────`
@@ -292,7 +388,7 @@ async function handleRuntimeMessage(message, sender) {
       console.log(
         `[TabMail BG] ═══════════════════════════════════════════════════════════════════`
       );
-      
+
       return result || { subject: undefined, body: "", raw: "", messages: [] };
     } catch (error) {
       const inlineEditDuration = performance.now() - inlineEditStartTime;

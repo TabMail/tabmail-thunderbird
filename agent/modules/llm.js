@@ -1041,10 +1041,23 @@ export function processJSONResponse(rawText) {
 }
 
 /**
- * Helper – parse assistant response for email_edit workflow
- * 
+ * Helper – parse assistant response for email_edit workflow (v1.5.16+).
+ *
+ * Recognises the delta format:
+ *   Response: ...
+ *   +To: Name <email>, Name <email>        // recipients to ADD to To
+ *   -To: email, email                      // recipients to REMOVE from To (or `*` = clear)
+ *   +Cc: ... / -Cc: ... / +Bcc: ... / -Bcc: ... (analogous)
+ *   Subject: ...
+ *   Body: ...
+ *
+ * The six delta lines are optional. When NEITHER `+X:` nor `-X:` is present for
+ * a field, its delta comes back as `undefined` — client keeps the existing
+ * recipients untouched. When either is present, the field's delta is
+ * `{ adds: [{name,email}], removes: [email|"*"] }`.
+ *
  * @param {string} rawText - Raw response text
- * @returns {Object} - Parsed edit response with subject/body
+ * @returns {Object} - { subject?, body?, toDelta?, ccDelta?, bccDelta?, message? }
  */
 export function processEditResponse(rawText) {
   let txt = (rawText || "").trim();
@@ -1053,14 +1066,109 @@ export function processEditResponse(rawText) {
   const subjectMatch = txt.match(/^Subject:\s*(.*)$/im);
   const bodyMatch = txt.match(/^Body:\s*([\s\S]*)$/im);
 
-  if (subjectMatch || bodyMatch) {
+  const toDelta = parseDeltaForField(txt, "To");
+  const ccDelta = parseDeltaForField(txt, "Cc");
+  const bccDelta = parseDeltaForField(txt, "Bcc");
+
+  if (subjectMatch || bodyMatch || toDelta !== undefined || ccDelta !== undefined || bccDelta !== undefined) {
     return {
       subject: subjectMatch ? subjectMatch[1].trim() : undefined,
       body: bodyMatch ? bodyMatch[1].trim() : undefined,
+      toDelta,
+      ccDelta,
+      bccDelta,
     };
   }
 
   return { message: rawText };
+}
+
+/**
+ * Build a delta object for one recipient field by looking for both `+<field>:`
+ * and `-<field>:` lines in the response. Returns `undefined` when neither line
+ * is present (meaning: field should be untouched). Otherwise returns
+ * `{ adds, removes }` where `adds` is `[{name,email}]` and `removes` is a list
+ * of lowercased emails (with `"*"` preserved as a literal clear-all sentinel).
+ */
+export function parseDeltaForField(rawText, field) {
+  const addRaw = extractLabelLine(rawText, "+", field);
+  const removeRaw = extractLabelLine(rawText, "-", field);
+  if (addRaw === undefined && removeRaw === undefined) return undefined;
+
+  const adds = [];
+  if (addRaw !== undefined) {
+    for (const entry of splitCommaRespectingQuotes(addRaw)) {
+      const parsed = splitNameAndEmail(entry);
+      if (parsed.email) adds.push(parsed);
+    }
+  }
+  const removes = [];
+  if (removeRaw !== undefined) {
+    for (const entry of splitCommaRespectingQuotes(removeRaw)) {
+      const trimmed = entry.trim();
+      if (trimmed === "*") {
+        removes.push("*");
+      } else {
+        const parsed = splitNameAndEmail(trimmed);
+        if (parsed.email) removes.push(parsed.email.toLowerCase());
+      }
+    }
+  }
+  return { adds, removes };
+}
+
+/**
+ * Extract the raw content after a `{prefix}{label}:` line (e.g. `+To:` or `-Cc:`).
+ * Returns `undefined` if that line is absent, otherwise a trimmed string (possibly empty).
+ */
+export function extractLabelLine(rawText, prefix, label) {
+  const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp("^" + escapeRe(prefix) + escapeRe(label) + ":[ \\t]*(.*)$", "im");
+  const m = (rawText || "").match(re);
+  if (!m) return undefined;
+  return (m[1] || "").trim();
+}
+
+/**
+ * Split a comma-separated recipient list into entries, ignoring commas that
+ * appear inside quoted display names or inside angle-bracket email parts.
+ */
+export function splitCommaRespectingQuotes(raw) {
+  const s = String(raw || "");
+  if (!s) return [];
+  const items = [];
+  let current = "";
+  let inQuotes = false;
+  let inAngles = false;
+  for (const ch of s) {
+    if (ch === '"') { inQuotes = !inQuotes; current += ch; continue; }
+    if (ch === "<") { inAngles = true; current += ch; continue; }
+    if (ch === ">") { inAngles = false; current += ch; continue; }
+    if (ch === "," && !inQuotes && !inAngles) {
+      const t = current.trim();
+      if (t) items.push(t);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  const tail = current.trim();
+  if (tail) items.push(tail);
+  return items;
+}
+
+/** Split `Name <email>` / `<email>` / `email` into `{ name, email }`. */
+export function splitNameAndEmail(entry) {
+  const trimmed = String(entry || "").trim();
+  const m = trimmed.match(/^(.*?)\s*<([^<>]+)>\s*$/);
+  if (m) {
+    let name = (m[1] || "").trim();
+    if (name.startsWith('"') && name.endsWith('"') && name.length >= 2) {
+      name = name.slice(1, -1);
+    }
+    return { name, email: (m[2] || "").trim() };
+  }
+  return { name: "", email: trimmed };
 }
 
 /**

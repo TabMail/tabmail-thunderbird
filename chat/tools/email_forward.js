@@ -30,7 +30,11 @@ export async function run(args = {}, options = {}) {
         "error"
       );
     }
-    return "";
+    // Publish FSM marker so converse.js registers a waiter. runStateSendEmail
+    // tracks the compose window and resolves the waiter via completeExecution
+    // after the user sends or cancels. Returning "" drops the result on the floor.
+    const pid = options?.callId || ctx.activeToolCallId || 0;
+    return { fsm: true, tool: "email_forward", pid, startedAt: Date.now() };
   } catch (e) {
     log(`[TMDBG Tools] email_forward failed: ${e}`, "error");
     // For FSM tools, handle errors by setting fail state, not returning error objects
