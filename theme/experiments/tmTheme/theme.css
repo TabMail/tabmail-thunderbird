@@ -401,56 +401,101 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet-wrapper {
  * a card still lights it up in its action color.
  */
 
-/* iOS-style chip pill on each card. Color is driven by the parent's
- * `.tm-action-<name>` class — keeps the per-action color in one place. */
+/* iOS-style embossed action chip — replicates `ActionTagButtonStyle` from
+ * tabmail-ios/TabMail/Views/Inbox/TagBadge.swift:
+ *   - Layer 1 (top): white 28% → clear → black 14% diagonal shine overlay
+ *   - Layer 2 (mid): solid action color
+ *   - Layer 3 (bottom, revealed at the transparent border via padding-box /
+ *     border-box clip trick): white 70% → white 20% → black 40% top-down
+ *     gradient border
+ *   - Drop shadow: action color @ 35% alpha, 1.5px blur, 1px y offset
+ * Click + keyboard activation run the same pathway as the Tab key for the
+ * chip's specific message. */
 .tm-action-chip {
   display: inline-flex;
   align-items: center;
   margin-inline-start: 0.4em;
-  padding: 1px 7px;
-  border-radius: 9px;
-  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
   font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: 0.02em;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
   flex-shrink: 0;
   align-self: center;
   vertical-align: middle;
   white-space: nowrap;
+  color: white !important;
+  text-shadow: 0 0.5px 0.5px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  user-select: none;
+  border: 0.75px solid transparent;
+  background-origin: border-box;
+  background-clip: padding-box, padding-box, border-box;
+  transition: filter 120ms ease, transform 80ms ease;
 }
+.tm-action-chip:hover { filter: brightness(1.06); }
+.tm-action-chip:active { transform: translateY(0.5px); filter: brightness(0.94); }
+.tm-action-chip:focus-visible {
+  outline: 2px solid var(--tag-color, currentColor);
+  outline-offset: 1px;
+}
+
+/* Per-action layered backgrounds. Top layer is the shine, middle is the
+ * solid color (rendered as a same-color gradient so it composes with the
+ * other layers), bottom is the gradient border revealed by the transparent
+ * border + border-box clip on this layer. */
 tr[is="thread-card"].tm-action-reply .tm-action-chip {
-  background-color: color-mix(in srgb, var(--tag-tm-reply) 20%, transparent);
-  color: var(--tag-tm-reply);
+  background-image:
+    linear-gradient(135deg,
+      rgba(255, 255, 255, 0.28) 0%,
+      rgba(255, 255, 255, 0)   50%,
+      rgba(0, 0, 0, 0.14)     100%),
+    linear-gradient(0deg, var(--tag-tm-reply), var(--tag-tm-reply)),
+    linear-gradient(to bottom,
+      rgba(255, 255, 255, 0.70) 0%,
+      rgba(255, 255, 255, 0.20) 50%,
+      rgba(0, 0, 0, 0.40)      100%);
+  box-shadow: 0 1px 1.5px color-mix(in srgb, var(--tag-tm-reply) 35%, transparent);
 }
 tr[is="thread-card"].tm-action-archive .tm-action-chip {
-  background-color: color-mix(in srgb, var(--tag-tm-archive) 20%, transparent);
-  color: var(--tag-tm-archive);
+  background-image:
+    linear-gradient(135deg,
+      rgba(255, 255, 255, 0.28) 0%,
+      rgba(255, 255, 255, 0)   50%,
+      rgba(0, 0, 0, 0.14)     100%),
+    linear-gradient(0deg, var(--tag-tm-archive), var(--tag-tm-archive)),
+    linear-gradient(to bottom,
+      rgba(255, 255, 255, 0.70) 0%,
+      rgba(255, 255, 255, 0.20) 50%,
+      rgba(0, 0, 0, 0.40)      100%);
+  box-shadow: 0 1px 1.5px color-mix(in srgb, var(--tag-tm-archive) 35%, transparent);
 }
 tr[is="thread-card"].tm-action-delete .tm-action-chip {
-  background-color: color-mix(in srgb, var(--tag-tm-delete) 20%, transparent);
-  color: var(--tag-tm-delete);
+  background-image:
+    linear-gradient(135deg,
+      rgba(255, 255, 255, 0.28) 0%,
+      rgba(255, 255, 255, 0)   50%,
+      rgba(0, 0, 0, 0.14)     100%),
+    linear-gradient(0deg, var(--tag-tm-delete), var(--tag-tm-delete)),
+    linear-gradient(to bottom,
+      rgba(255, 255, 255, 0.70) 0%,
+      rgba(255, 255, 255, 0.20) 50%,
+      rgba(0, 0, 0, 0.40)      100%);
+  box-shadow: 0 1px 1.5px color-mix(in srgb, var(--tag-tm-delete) 35%, transparent);
 }
 tr[is="thread-card"].tm-action-none .tm-action-chip {
-  background-color: color-mix(in srgb, var(--tag-tm-none) 20%, transparent);
-  color: var(--tag-tm-none);
-}
-@media (prefers-color-scheme: dark) {
-  tr[is="thread-card"].tm-action-reply .tm-action-chip {
-    background-color: color-mix(in srgb, var(--tag-tm-reply) 30%, transparent);
-    color: color-mix(in srgb, var(--tag-tm-reply) 70%, white);
-  }
-  tr[is="thread-card"].tm-action-archive .tm-action-chip {
-    background-color: color-mix(in srgb, var(--tag-tm-archive) 30%, transparent);
-    color: color-mix(in srgb, var(--tag-tm-archive) 70%, white);
-  }
-  tr[is="thread-card"].tm-action-delete .tm-action-chip {
-    background-color: color-mix(in srgb, var(--tag-tm-delete) 30%, transparent);
-    color: color-mix(in srgb, var(--tag-tm-delete) 70%, white);
-  }
-  tr[is="thread-card"].tm-action-none .tm-action-chip {
-    background-color: color-mix(in srgb, var(--tag-tm-none) 30%, transparent);
-    color: color-mix(in srgb, var(--tag-tm-none) 70%, white);
-  }
+  background-image:
+    linear-gradient(135deg,
+      rgba(255, 255, 255, 0.28) 0%,
+      rgba(255, 255, 255, 0)   50%,
+      rgba(0, 0, 0, 0.14)     100%),
+    linear-gradient(0deg, var(--tag-tm-none), var(--tag-tm-none)),
+    linear-gradient(to bottom,
+      rgba(255, 255, 255, 0.70) 0%,
+      rgba(255, 255, 255, 0.20) 50%,
+      rgba(0, 0, 0, 0.40)      100%);
+  box-shadow: 0 1px 1.5px color-mix(in srgb, var(--tag-tm-none) 35%, transparent);
 }
 
 /* ===== Table View - Typography ===== */

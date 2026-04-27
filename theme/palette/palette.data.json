@@ -36,8 +36,8 @@
   "BRIGHTNESS": {
     "SUBTLE_LIGHT":   1.0,
     "SUBTLE_DARK":    1.0,
-    "SELECTED_LIGHT": 0.7,
-    "SELECTED_DARK":  1.2
+    "SELECTED_LIGHT": 0.85,
+    "SELECTED_DARK":  1.15
   },
   "THEME": {
     "LIGHT": {

@@ -4,6 +4,7 @@ console.log("[TabMail Theme] ═════════════════
 
 import { SETTINGS } from "../agent/modules/config.js";
 import { isInboxFolder } from "../agent/modules/folderUtils.js";
+import { triggerTagActionKey } from "../agent/modules/tagActionKey.js";
 import { injectBubblesIntoTab, registerBubblesScripts } from "./modules/bubblesRegistry.js";
 import { createCardSnippetProvider } from "./modules/cardSnippetProvider.js";
 import { injectMessageDisplayGateIntoTab } from "./modules/messageDisplayGateRegistry.js";
@@ -16,6 +17,47 @@ import {
 } from "./modules/threadConversation.js";
 
 let _tmCardSnippetProvider = null;
+let _tmActionChipClickListener = null;
+
+async function _onActionChipClick(info) {
+    try {
+        // Literally invoke the Tab-key path. The experiment's chip click
+        // handler already called `tree.view.selection.select(rowIndex)` on
+        // the chip's row, so `mailTabs.getSelectedMessages` (called inside
+        // triggerTagActionKey) will return that row's message.
+        console.log(`[TabMail Theme] onActionChipClick (${info?.source || "?"}) → triggerTagActionKey`);
+        await triggerTagActionKey();
+    } catch (e) {
+        console.error("[TabMail Theme] onActionChipClick handler failed:", e);
+    }
+}
+
+function _ensureActionChipClickListener(reason) {
+    try {
+        if (!browser.tmMessageListCardView?.onActionChipClick) {
+            console.log(`[TabMail Theme] onActionChipClick API not available (${reason})`);
+            return;
+        }
+        if (_tmActionChipClickListener) return; // already registered
+        _tmActionChipClickListener = (info) => { _onActionChipClick(info); };
+        browser.tmMessageListCardView.onActionChipClick.addListener(_tmActionChipClickListener);
+        console.log(`[TabMail Theme] onActionChipClick listener registered (${reason})`);
+    } catch (e) {
+        console.error(`[TabMail Theme] Failed to register onActionChipClick listener (${reason}):`, e);
+    }
+}
+
+function _stopActionChipClickListener(reason) {
+    try {
+        if (_tmActionChipClickListener && browser.tmMessageListCardView?.onActionChipClick) {
+            try {
+                browser.tmMessageListCardView.onActionChipClick.removeListener(_tmActionChipClickListener);
+            } catch (_) {}
+        }
+        _tmActionChipClickListener = null;
+        console.log(`[TabMail Theme] onActionChipClick listener removed (${reason})`);
+    } catch (_) {}
+}
 
 function _ensureCardSnippetProvider(reason) {
     // CardSnippetProvider always runs; the EXP side checks the pref to decide if snippets are enabled.
@@ -139,6 +181,7 @@ async function initTheme() {
             await browser.tmMessageListCardView.init({});
             console.log("[TabMail Theme] ✓ tmMessageListCardView initialised");
             _ensureCardSnippetProvider("initTheme");
+            _ensureActionChipClickListener("initTheme");
         } else {
             console.warn("[TabMail Theme] tmMessageListCardView experiment NOT available – card view enhancements disabled.");
         }
@@ -527,6 +570,7 @@ browser.runtime.onSuspend?.addListener(async () => {
     console.log("[TabMail Theme] Extension suspending");
 
     try { _stopCardSnippetProvider("onSuspend"); } catch (_) {}
+    try { _stopActionChipClickListener("onSuspend"); } catch (_) {}
     
     // Call experiment shutdown to clean up listeners and observers
     // This is a safety net in case Thunderbird doesn't call onShutdown during hot reload

@@ -149,6 +149,17 @@ function _getSnippetMemoryCacheStats() {
 const _pendingSnippetNeeds = new Set();
 let _pendingNeedsDebounceTimer = null;
 let _snippetsNeededEventFire = null; // Set by getAPI to fire the event
+
+// Action-chip click event (fires when user clicks the chip on a card row).
+// Set by getAPI; mirrors the snippets-needed event wiring.
+let _actionChipClickEventFire = null;
+function _fireActionChipClick(info) {
+  try {
+    if (typeof _actionChipClickEventFire === "function") {
+      _actionChipClickEventFire(info);
+    }
+  } catch (_) {}
+}
 let _snippetsNeededEventLogCount = 0;
 const _snippetsNeededEventLogMax = 20;
 const _pendingSnippetNeedsMax = 500; // Cap to avoid memory bloat
@@ -279,6 +290,14 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
     _snippetsNeededEventFire = (info) => {
       try {
         context.extension.emit("onSnippetsNeeded", info);
+      } catch (_) {}
+    };
+
+    // Set up event firing for onActionChipClick
+    // Triggered when the user clicks the iOS-style action chip on a card row.
+    _actionChipClickEventFire = (info) => {
+      try {
+        context.extension.emit("onActionChipClick", info);
       } catch (_) {}
     };
 
@@ -579,6 +598,92 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
       return _actionFromKeywords_MLCV(hdr);
     }
 
+    /**
+     * For a card row, return the action + source hdr to paint on it.
+     *
+     * - Non-container rows or expanded thread parents: parent's own action +
+     *   parent hdr (children paint themselves when expanded).
+     * - Collapsed thread parents: walk all children of the parent's
+     *   nsIMsgThread, pick the one whose action has the highest priority
+     *   per `TM_ACTION_PRIORITY_MLCV`. The source hdr is the message that
+     *   actually owns the action — passed to the chip painter so a click on
+     *   the parent's aggregated chip applies the action to that specific
+     *   child message, not to the thread root.
+     *
+     * If no child has an action, fall back to the parent's own action.
+     */
+    function _aggregateActionForThread_MLCV(tree, rowIndex, parentHdr) {
+      const fallback = {
+        action: _lookupActionForCard_MLCV(parentHdr),
+        sourceHdr: parentHdr,
+      };
+      try {
+        const dbView = tree?.view?.dbView;
+        if (!dbView) return fallback;
+        const isContainer = typeof dbView.isContainer === "function"
+          ? dbView.isContainer(rowIndex)
+          : false;
+        if (!isContainer) return fallback;
+        const isOpen = typeof dbView.isContainerOpen === "function"
+          ? dbView.isContainerOpen(rowIndex)
+          : false;
+        if (isOpen) return fallback; // children paint themselves
+        if (typeof dbView.getThreadContainingIndex !== "function") return fallback;
+        const thread = dbView.getThreadContainingIndex(rowIndex);
+        const numChildren = thread?.numChildren | 0;
+        if (numChildren <= 1) return fallback;
+
+        let best = null;
+        let bestRank = TM_ACTION_PRIORITY_MLCV.length;
+        let bestHdr = null;
+        for (let i = 0; i < numChildren; i++) {
+          let childHdr = null;
+          try { childHdr = thread.getChildHdrAt(i); } catch (_) {}
+          if (!childHdr) continue;
+          const a = _lookupActionForCard_MLCV(childHdr);
+          if (!a) continue;
+          const rank = TM_ACTION_PRIORITY_MLCV.indexOf(a);
+          if (rank < 0) continue;
+          // `<=` so when multiple children share the top priority, the LATER
+          // one wins (children are stored oldest-first in nsIMsgThread, so
+          // this picks the most recent message — the right reply target).
+          if (rank <= bestRank) {
+            best = a;
+            bestRank = rank;
+            bestHdr = childHdr;
+          }
+        }
+        if (best && bestHdr) {
+          return { action: best, sourceHdr: bestHdr };
+        }
+        return fallback;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    /**
+     * Return the total number of messages in the thread containing `rowIndex`
+     * (1 for non-thread rows, `numChildren` for thread parents — includes the
+     * head message itself, matching iOS's `threadInfo.memberCount`).
+     */
+    function _getThreadTotalCount_MLCV(tree, rowIndex) {
+      try {
+        const dbView = tree?.view?.dbView;
+        if (!dbView) return 1;
+        const isContainer = typeof dbView.isContainer === "function"
+          ? dbView.isContainer(rowIndex)
+          : false;
+        if (!isContainer) return 1;
+        if (typeof dbView.getThreadContainingIndex !== "function") return 1;
+        const thread = dbView.getThreadContainingIndex(rowIndex);
+        const n = thread?.numChildren | 0;
+        return n > 0 ? n : 1;
+      } catch (_) {
+        return 1;
+      }
+    }
+
     function _colorForAction_MLCV(action) {
       // MailServices.tags.getColorForKey reads the registered tag def color
       // (set by ensureActionTags with palette values). Single source of truth
@@ -600,8 +705,14 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
      * leave it alone. Re-inserting on every fillRow caused a layout blink
      * on selection (fillRow fires on state changes → chip briefly absent
      * → content height shifts → chip re-appears → shifts back).
+     *
+     * Click behavior: the click handler explicitly selects the chip's row
+     * via `tree.view.selection.select(rowIndex)` (TB's mousedown selection
+     * doesn't fire reliably for spans inside a card), then emits
+     * `onActionChipClick`. MV3 then runs the *exact* Tab-key pathway:
+     * `mailTabs.getSelectedMessages` → `performTaggedAction` for each.
      */
-    function _paintChipOnCard_MLCV(cardRow, action, doc) {
+    function _paintChipOnCard_MLCV(cardRow, action, doc, hdr) {
       try {
         if (!cardRow || !doc) return;
         const existing = cardRow.querySelector?.(`.${CHIP_CLASS_MLCV}`);
@@ -627,6 +738,15 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         const chip = doc.createElement("span");
         chip.className = expectedCls;
         chip.textContent = label;
+        try { chip.setAttribute("role", "button"); } catch (_) {}
+        try { chip.setAttribute("tabindex", "0"); } catch (_) {}
+        try { chip.setAttribute("title", `${label} — click to apply`); } catch (_) {}
+        // No per-chip click listeners — clicks are dispatched by the
+        // document-level delegated handler installed via
+        // `attachChipDelegation_MLCV` (see init/cleanup wiring). Per-chip
+        // listeners would otherwise become stale on hot-reload because
+        // they close over the OLD module's `_actionChipClickEventFire`,
+        // which can no longer reach MV3 once the OLD context is shut down.
 
         const star = cardRow.querySelector?.(".button-star");
         if (star && star.parentNode) {
@@ -643,7 +763,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
       } catch (_) {}
     }
 
-    function _paintCardForAction_MLCV(cardRow, action, doc) {
+    function _paintCardForAction_MLCV(cardRow, action, doc, hdr) {
       if (!cardRow) return;
       try {
         // Idempotent class update: only touch classList if the action changed.
@@ -668,8 +788,108 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           cardRow.style.removeProperty("--tag-color");
         }
 
-        _paintChipOnCard_MLCV(cardRow, action, doc);
+        _paintChipOnCard_MLCV(cardRow, action, doc, hdr);
       } catch (_) {}
+    }
+
+    // ───── Chip click delegation ─────
+    // One handler at the document level (capture phase, with stopPropagation)
+    // catches every chip click regardless of when the chip was painted. This
+    // survives hot-reload: an OLD module's stale per-chip listener cannot
+    // reach the NEW context, but the NEW capture-phase delegated handler
+    // fires first and short-circuits the event before any stale listener
+    // gets a turn.
+    //
+    // Stored on the doc itself (not in a module-scoped Map) so the NEW
+    // module can find and detach the OLD module's listener after a hot
+    // reload — the OLD module's WeakMap is gone but the doc property is
+    // a primitive function reference that survives.
+    const CHIP_DELEGATION_PROP_CLICK = "__tmActionChipDelegationClick";
+    const CHIP_DELEGATION_PROP_KEYDOWN = "__tmActionChipDelegationKeydown";
+    const CHIP_DELEGATION_PROP_MOUSEDOWN = "__tmActionChipDelegationMousedown";
+
+    function _activateChipFromEvent_MLCV(e, source) {
+      try {
+        const chip = e.target?.closest?.(`.${CHIP_CLASS_MLCV}`);
+        if (!chip) return false;
+        try { e.stopPropagation(); } catch (_) {}
+        try { e.preventDefault(); } catch (_) {}
+        // Resolve the chip's row, programmatically select it (TB's row
+        // mousedown selection isn't reliably triggered by clicks on a
+        // child span), then fire the event MV3 listens to.
+        try {
+          const ownerDoc = chip.ownerDocument;
+          const rowEl = chip.closest?.('[is="thread-card"]');
+          const rowIndex = _rowIndexFromRowId(rowEl?.id || "");
+          if (rowIndex >= 0) {
+            const tree = ownerDoc?.getElementById?.("threadTree")
+              || ownerDoc?.querySelector?.("tree-view#threadTree, tree-view");
+            const sel = tree?.view?.selection;
+            if (sel?.select) {
+              try { sel.select(rowIndex); } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        _fireActionChipClick({ source });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function attachChipDelegation_MLCV(doc) {
+      try {
+        if (!doc) return;
+        // Detach any existing delegation (e.g. from a previous module
+        // instance after hot reload) so we don't double-fire.
+        detachChipDelegation_MLCV(doc);
+
+        const onMousedown = (e) => {
+          // Stop mousedown from reaching TB's row handler so it doesn't
+          // race with our explicit selection in the click activate path.
+          try {
+            const chip = e.target?.closest?.(`.${CHIP_CLASS_MLCV}`);
+            if (chip) e.stopPropagation();
+          } catch (_) {}
+        };
+        const onClick = (e) => { _activateChipFromEvent_MLCV(e, "click"); };
+        const onKeydown = (e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          _activateChipFromEvent_MLCV(e, "keydown");
+        };
+
+        doc.addEventListener("mousedown", onMousedown, true);
+        doc.addEventListener("click", onClick, true);
+        doc.addEventListener("keydown", onKeydown, true);
+        doc[CHIP_DELEGATION_PROP_MOUSEDOWN] = onMousedown;
+        doc[CHIP_DELEGATION_PROP_CLICK] = onClick;
+        doc[CHIP_DELEGATION_PROP_KEYDOWN] = onKeydown;
+      } catch (e) {
+        console.error(`${LOG_PREFIX_MLCV} attachChipDelegation failed:`, e);
+      }
+    }
+
+    function detachChipDelegation_MLCV(doc) {
+      try {
+        if (!doc) return;
+        const prevMousedown = doc[CHIP_DELEGATION_PROP_MOUSEDOWN];
+        const prevClick = doc[CHIP_DELEGATION_PROP_CLICK];
+        const prevKeydown = doc[CHIP_DELEGATION_PROP_KEYDOWN];
+        if (prevMousedown) {
+          try { doc.removeEventListener("mousedown", prevMousedown, true); } catch (_) {}
+        }
+        if (prevClick) {
+          try { doc.removeEventListener("click", prevClick, true); } catch (_) {}
+        }
+        if (prevKeydown) {
+          try { doc.removeEventListener("keydown", prevKeydown, true); } catch (_) {}
+        }
+        try { delete doc[CHIP_DELEGATION_PROP_MOUSEDOWN]; } catch (_) {}
+        try { delete doc[CHIP_DELEGATION_PROP_CLICK]; } catch (_) {}
+        try { delete doc[CHIP_DELEGATION_PROP_KEYDOWN]; } catch (_) {}
+      } catch (e) {
+        console.error(`${LOG_PREFIX_MLCV} detachChipDelegation failed:`, e);
+      }
     }
 
     /**
@@ -726,11 +946,15 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
 
         // 0. Paint from TabMail action: class + `--tag-color` + iOS chip.
         //    Reads `tm-action` hdr string property (written by actionCache
-        //    via tmHdr.setAction). Runs on every row render so it's always
-        //    up to date — no external sync needed.
+        //    via tmHdr.setAction). For collapsed thread parents the action
+        //    is aggregated across the thread's children (highest priority
+        //    wins) so the head row inherits the strongest hint — mirrors
+        //    iOS `threadInfo.threadTag`. The chip's click target is the
+        //    SOURCE child hdr so applying e.g. "Reply" replies to the
+        //    actual message that earned the tag, not the thread root.
         try {
-          const action = _lookupActionForCard_MLCV(hdr);
-          _paintCardForAction_MLCV(row, action, doc);
+          const { action, sourceHdr } = _aggregateActionForThread_MLCV(tree, rowIndex, hdr);
+          _paintCardForAction_MLCV(row, action, doc, sourceHdr);
         } catch (_) {}
 
         // 1. Strip email from sender (zero-flicker)
@@ -754,6 +978,41 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
             try { sender.setAttribute("data-tm-hdr-key", hdrKey || ""); } catch (_) {}
           }
         }
+
+        // 1b. Inject inline thread-member count next to sender — e.g.
+        //     "John (3)" for a 3-message thread. Counts the head message
+        //     itself, matching iOS `threadInfo.memberCount`. Single-message
+        //     rows get no count. Idempotent: reuse the existing element if
+        //     present (rows are recycled across scroll).
+        try {
+          const senderForCount = row.querySelector?.(".sender");
+          if (senderForCount && senderForCount.parentNode) {
+            const total = _getThreadTotalCount_MLCV(tree, rowIndex);
+            const parent = senderForCount.parentNode;
+            let countEl = parent.querySelector?.(":scope > .tm-thread-count")
+              || row.querySelector?.(".tm-thread-count");
+            if (total > 1) {
+              const text = `(${total})`;
+              if (!countEl || !countEl.isConnected) {
+                countEl = doc.createElement("span");
+                countEl.className = "tm-thread-count";
+                countEl.textContent = text;
+                parent.insertBefore(countEl, senderForCount.nextSibling);
+              } else {
+                if (countEl.textContent !== text) {
+                  countEl.textContent = text;
+                }
+                // If row was recycled with a different parent layout, move it
+                // back to right after the sender.
+                if (countEl.previousSibling !== senderForCount) {
+                  parent.insertBefore(countEl, senderForCount.nextSibling);
+                }
+              }
+            } else if (countEl && countEl.parentNode) {
+              countEl.parentNode.removeChild(countEl);
+            }
+          }
+        } catch (_) {}
 
         // 2. Inject snippet if cached in experiment memory (zero-flicker, instant)
         const ZERO_FLICKER_SNIPPETS_ENABLED = true;
@@ -808,10 +1067,47 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
               }
             }
           } else {
-            // Cache miss - add to pending needs queue and fire event to MV3
+            // Cache miss - if the row was recycled from a different message,
+            // clear the stale snippet text so the previous message's preview
+            // doesn't bleed onto this card while we wait for the async fetch.
+            try {
+              const host = findSnippetHost(row, hdr);
+              const el = host?.querySelector?.(`.${CARD_SNIPPET_CONFIG_MLCV.className}`) || null;
+              if (el && el.isConnected) {
+                const oldKey = el.getAttribute?.("data-tm-hdr-key") || "";
+                if (oldKey !== hdrKey) {
+                  try { el.setAttribute("data-tm-hdr-key", hdrKey || ""); } catch (_) {}
+                  try { el.textContent = ""; } catch (_) {}
+                }
+              }
+            } catch (_) {}
             _addPendingSnippetNeed(hdrKey);
           }
         }
+
+        // 3. Relocate the thread-expand twisty (.thread-card-button) from the
+        //    second-row .thread-card-dynamic-row (where TB places it next to
+        //    .sort-header-details and the subject/icon-info — the same grid row
+        //    our snippet wrapper occupies, causing visual overlap of "1 reply ⌄"
+        //    on top of the snippet text) into the first-row .thread-card-row,
+        //    immediately after the kebab `.tree-button-more`. Click delegation
+        //    in tree-view.mjs uses `event.target.closest(".twisty")` and the
+        //    nearest ancestor `<tr>`, so the button stays functional after the
+        //    move. Idempotent: skips if already in the top row.
+        try {
+          const button = row.querySelector?.(".thread-card-button");
+          const topRow = row.querySelector?.(".thread-card-row");
+          if (button && topRow && button.parentElement !== topRow) {
+            const moreButton = topRow.querySelector?.(".tree-button-more");
+            if (moreButton && moreButton.nextSibling) {
+              topRow.insertBefore(button, moreButton.nextSibling);
+            } else if (moreButton) {
+              topRow.appendChild(button);
+            } else {
+              topRow.appendChild(button);
+            }
+          }
+        } catch (_) {}
       } catch (e) {
         // Silent fail to avoid breaking TB rendering
       }
@@ -1043,6 +1339,8 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         for (const cdoc of contentDocs) {
           // Patch ThreadCard prototype for zero-flicker sender/snippet rendering
           patchThreadCardPrototype(cdoc);
+          // Document-level chip click delegation (survives hot-reload)
+          attachChipDelegation_MLCV(cdoc);
           // applySnippetsToDoc and attachCardSnippetObserver removed - fillRow patch handles all
         }
       } catch (e) {
@@ -1057,6 +1355,8 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         for (const cdoc of contentDocs) {
           // Unpatch ThreadCard prototype marker (for hot-reload)
           try { unpatchThreadCardPrototype(cdoc); } catch (_) {}
+          // Detach chip click delegation
+          try { detachChipDelegation_MLCV(cdoc); } catch (_) {}
           // Legacy observer/timer cleanup removed - no longer created
         }
       } catch (e) {
@@ -1464,6 +1764,22 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
               if (!hdr) { diagNoHdr++; continue; }
               const rowHdrKey = getHdrKey(hdr);
               if (!rowHdrKey) { diagNoHdrKey++; continue; }
+              // For rows whose key was just cleared (empty fetch), wipe any
+              // stale snippet text left over from a recycled previous message
+              // so the wrong preview doesn't linger until a retry succeeds.
+              if (clearPendingSet.has(rowHdrKey)) {
+                try {
+                  const host = findSnippetHost(row, hdr);
+                  const stale = host?.querySelector?.(`.${CARD_SNIPPET_CONFIG_MLCV.className}`) || null;
+                  if (stale && stale.isConnected) {
+                    const oldKey = stale.getAttribute?.("data-tm-hdr-key") || "";
+                    if (oldKey && oldKey !== rowHdrKey) {
+                      try { stale.setAttribute("data-tm-hdr-key", rowHdrKey); } catch (_) {}
+                      try { stale.textContent = ""; } catch (_) {}
+                    }
+                  }
+                } catch (_) {}
+              }
               const it = itemsByKey.get(rowHdrKey);
               if (!it) { diagNoMatch++; continue; }
               const snippet = it.snippet;
@@ -1555,6 +1871,22 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
             context.extension.on("onSnippetsNeeded", listener);
             return () => {
               context.extension.off("onSnippetsNeeded", listener);
+            };
+          },
+        }).api(),
+        // Event: onActionChipClick - fired when the user clicks an action chip on a card row.
+        // MV3 should resolve the message via headerMessageId and run the same pathway
+        // as the Tab key (performTaggedAction).
+        onActionChipClick: new ExtensionCommon_MLCV.EventManager({
+          context,
+          name: "tmMessageListCardView.onActionChipClick",
+          register: (fire) => {
+            const listener = (info) => {
+              fire.async(info);
+            };
+            context.extension.on("onActionChipClick", listener);
+            return () => {
+              context.extension.off("onActionChipClick", listener);
             };
           },
         }).api(),

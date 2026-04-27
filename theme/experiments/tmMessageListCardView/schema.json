@@ -117,6 +117,23 @@
             }
           }
         ]
+      },
+      {
+        "name": "onActionChipClick",
+        "type": "function",
+        "description": "Fired when the user clicks (or activates via keyboard) the action chip on a card row. MV3 should run the same pathway as the Tab key (performTaggedAction on the active mail tab's selection). The chip's preceding mousedown updates row selection, so by the time this fires the chip's row is the active selection.",
+        "parameters": [
+          {
+            "name": "info",
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "Activation source — 'click' or 'keydown'. Diagnostic only."
+              }
+            }
+          }
+        ]
       }
     ]
   }
