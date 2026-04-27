@@ -318,6 +318,173 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet-wrapper {
   display: none !important;
 }
 
+/* ===== Card View - Thread-expand twisty relocated to top row =====
+ * tmMessageListCardView.sys.mjs moves .thread-card-button from
+ * .thread-card-dynamic-row (where it overlapped the snippet at grid row 2)
+ * into .thread-card-row, right after the kebab .tree-button-more.
+ *
+ * Visual mirrors the iOS row chevron pattern in MessageRowView.swift:
+ *   - Thread parent (tr.children): inline `(N)` count next to sender +
+ *     accent-colored circle holding a white chevron (down when expanded,
+ *     right when collapsed — rotation provided by TB's own
+ *     `tr.children.collapsed .twisty-icon { rotate(-90deg) }` rule).
+ *   - Non-thread row (tr:not(.children)): plain greyed chevron-right,
+ *     no circle, no count, not interactive.
+ *
+ * The chevron-circle uses TabMail's theme accent (`--in-content-accent-color`,
+ * the same blue used for buttons / links across the UI). The aggregated
+ * action chip + unread dot bubble up from children to the collapsed parent
+ * via `_aggregateActionForThread_MLCV` (JS) and the `[data-properties~="hasUnread"]`
+ * rules below, matching iOS `threadInfo.threadTag` / `threadInfo.hasUnread`. */
+
+/* Always render the relocated button — override TB's
+   `tr:not(.children) .twisty { display: none }` from threadPane.css so the
+   non-thread rows still show a (greyed) chevron affordance. */
+[is="thread-card"] .thread-card-row > .thread-card-button {
+  display: inline-flex !important;
+  align-items: center !important;
+  margin-inline-start: 4px !important;
+  padding: 0 !important;
+  background-color: transparent !important;
+  border: none !important;
+  min-block-size: auto !important;
+  min-inline-size: auto !important;
+  opacity: 1 !important;
+  flex-shrink: 0;
+}
+
+/* Drop TB's "hasUnread" decorations on the relocated button — the green
+   dot pseudo-element and tinted background fight our circle styling
+   (we still use [data-properties~="hasUnread"] elsewhere to bubble unread
+   to the row's read-status indicator and weight). */
+[is="thread-card"] .thread-card-row > .thread-card-button::before {
+  display: none !important;
+  content: none !important;
+}
+
+/* Always hide the envelope replies-icon and the inline "N reply/replies"
+   text — the count is shown next to the sender as `.tm-thread-count`. */
+[is="thread-card"] .thread-card-row > .thread-card-button .replies-icon,
+[is="thread-card"] .thread-card-row > .thread-card-button .thread-replies {
+  display: none !important;
+}
+
+/* ───── Thread member count badge inside .sender ─────
+   Injected by tmMessageListCardView.sys.mjs as the last child of `.sender`
+   ONLY when the row is a collapsed thread parent (`.children.collapsed`).
+   Lives inside `.sender` so it flows inline with the name text — sits
+   right against the sender, not pushed to the right edge by
+   `.sender { flex: 1 1 0 }`. Round for single digits, pill for 2+. */
+[is="thread-card"] .sender .tm-thread-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-inline-size: 16px;
+  block-size: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  margin-inline-start: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  vertical-align: middle;
+  /* Subtle: tint of the theme accent over the card background. */
+  color: var(--in-content-accent-color);
+  background-color: color-mix(in srgb, var(--in-content-accent-color) 18%, var(--tm-preview-pane-bg));
+}
+
+/* When the row visually represents unread (own unread OR has unread
+   descendants in a collapsed thread), promote the badge to a saturated
+   accent fill so it reads as a "new replies" hint. */
+[is="thread-card"]:not([data-properties~="read"]) .sender .tm-thread-count,
+[is="thread-card"][data-properties~="hasUnread"] .sender .tm-thread-count {
+  color: white;
+  background-color: var(--in-content-accent-color);
+  font-weight: 700;
+}
+
+/* ───── Thread parent rows: chevron-circle ─────
+   Mixed against the CARD BACKGROUND (`--tm-preview-pane-bg`), not against
+   a hardcoded grey — keeps the circle visually flush with whatever
+   background TabMail is using. 25% accent + 75% bg gives a barely-tinted
+   pale-accent puck. Chevron itself uses the full accent color so it
+   stands out against the pale puck (white-on-pale-blue would have no
+   contrast in light mode). Hover restores full accent fill. */
+[is="thread-card"].children .thread-card-row > .thread-card-button .twisty-icon {
+  box-sizing: border-box !important;
+  inline-size: 16px !important;
+  block-size: 16px !important;
+  padding: 3px !important;
+  margin: 0 !important;
+  border-radius: 50% !important;
+  background-color: color-mix(in srgb, var(--in-content-accent-color) 25%, var(--tm-preview-pane-bg)) !important;
+  -moz-context-properties: fill, stroke !important;
+  fill: var(--in-content-accent-color) !important;
+  stroke: var(--in-content-accent-color) !important;
+}
+
+[is="thread-card"].children .thread-card-row > .thread-card-button:hover .twisty-icon {
+  background-color: var(--in-content-accent-color) !important;
+  fill: white !important;
+  stroke: white !important;
+}
+
+/* ───── Non-thread rows: plain greyed chevron, not interactive ───── */
+
+[is="thread-card"]:not(.children) .thread-card-row > .thread-card-button {
+  pointer-events: none;
+  cursor: default;
+}
+
+[is="thread-card"]:not(.children) .thread-card-row > .thread-card-button .twisty-icon {
+  inline-size: 12px !important;
+  block-size: 12px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background-color: transparent !important;
+  border-radius: 0 !important;
+  opacity: 0.45;
+  -moz-context-properties: fill, stroke !important;
+  fill: currentColor !important;
+  stroke: currentColor !important;
+  transform: rotate(-90deg);   /* chevron-right for non-thread rows */
+}
+
+[is="thread-card"]:not(.children) .thread-card-row > .thread-card-button .twisty-icon:dir(rtl) {
+  transform: rotate(90deg);
+}
+
+/* ===== Unread bubble-up =====
+ * TB sets `[data-properties~="hasUnread"]` on a thread parent row when ANY
+ * descendant is unread. Our existing read/unread styling above only matches
+ * `:not([data-properties~="read"])`, which misses parents that are read
+ * themselves but have unread children. Re-apply the unread visual
+ * treatment when `hasUnread` is present so the collapsed thread head
+ * inherits the unread hint — matches iOS `threadInfo.hasUnread`. */
+
+/* Bold weight on the card */
+[is="thread-card"][data-properties~="hasUnread"] td > div.card-container,
+[is="thread-card"][data-properties~="hasUnread"] div.card-container {
+  font-weight: 450 !important;
+  color: var(--tm-message-unread-color) !important;
+}
+
+/* Stronger sender weight */
+[is="thread-card"][data-properties~="hasUnread"] .sender {
+  font-weight: 600 !important;
+}
+
+/* Activate TB's read-status dot icon (the small filled circle on the left
+   of the card) by setting the same fill/stroke variables TB uses for the
+   `[data-properties~="unread"]` case. */
+[is="thread-card"][data-properties~="hasUnread"] {
+  --read-status-fill: var(--color-green-40, #54ffbd);
+  --read-status-stroke: var(--color-green-60, #009f4d);
+}
+
 /* ===== Card View - Hover ===== */
 
 [is="thread-card"]:hover:not([data-properties~="selected"]):not(.selected) td > div.card-container,

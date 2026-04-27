@@ -666,19 +666,54 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
      * Return the total number of messages in the thread containing `rowIndex`
      * (1 for non-thread rows, `numChildren` for thread parents — includes the
      * head message itself, matching iOS's `threadInfo.memberCount`).
+     *
+     * DOM-first: the row's `.children` class is the authoritative
+     * "is-a-thread-parent" signal (TB's tree-view.mjs sets it from
+     * `view.isContainer(index)`). Once we know it's a thread, we try
+     * multiple APIs to read the count, falling back to parsing TB's
+     * `.thread-replies` l10n text — and finally to `2` so at minimum we
+     * always show a badge on confirmed-thread rows.
      */
-    function _getThreadTotalCount_MLCV(tree, rowIndex) {
+    function _getThreadTotalCount_MLCV(tree, rowIndex, row) {
       try {
+        const isThreadParent = row?.classList?.contains?.("children");
+        if (!isThreadParent) return 1;
+
+        // 1) nsIMsgDBView path (preferred — exact thread count).
         const dbView = tree?.view?.dbView;
-        if (!dbView) return 1;
-        const isContainer = typeof dbView.isContainer === "function"
-          ? dbView.isContainer(rowIndex)
-          : false;
-        if (!isContainer) return 1;
-        if (typeof dbView.getThreadContainingIndex !== "function") return 1;
-        const thread = dbView.getThreadContainingIndex(rowIndex);
-        const n = thread?.numChildren | 0;
-        return n > 0 ? n : 1;
+        if (dbView && typeof dbView.getThreadContainingIndex === "function") {
+          try {
+            const thread = dbView.getThreadContainingIndex(rowIndex);
+            const n = thread?.numChildren | 0;
+            if (n > 1) return n;
+          } catch (_) {}
+        }
+
+        // 2) Wrapper view fallback (some TB views proxy these methods at
+        //    the JS wrapper level).
+        const view = tree?.view;
+        if (view && typeof view.getThreadContainingIndex === "function") {
+          try {
+            const thread = view.getThreadContainingIndex(rowIndex);
+            const n = thread?.numChildren | 0;
+            if (n > 1) return n;
+          } catch (_) {}
+        }
+
+        // 3) Read TB's own .thread-replies element. TB l10n's it with
+        //    `data-l10n-args='{"count":N}'` where N is replies (total - 1).
+        try {
+          const repliesEl = row.querySelector?.(".thread-replies");
+          const args = repliesEl?.getAttribute?.("data-l10n-args") || "";
+          const m = args.match(/"count"\s*:\s*(\d+)/);
+          if (m) return parseInt(m[1], 10) + 1;
+          const text = (repliesEl?.textContent || "").trim();
+          const m2 = text.match(/(\d+)/);
+          if (m2) return parseInt(m2[1], 10) + 1;
+        } catch (_) {}
+
+        // Confirmed-thread fallback — at least 2 messages.
+        return 2;
       } catch (_) {
         return 1;
       }
@@ -979,34 +1014,39 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           }
         }
 
-        // 1b. Inject inline thread-member count next to sender — e.g.
-        //     "John (3)" for a 3-message thread. Counts the head message
-        //     itself, matching iOS `threadInfo.memberCount`. Single-message
-        //     rows get no count. Idempotent: reuse the existing element if
-        //     present (rows are recycled across scroll).
+        // 1b. Inject the thread-member count badge as the LAST child of
+        //     `.sender`, so it flows inline with the sender's text — sits
+        //     right against the name with a small gap, instead of being
+        //     pushed to the right edge of `.sender`'s flex:1 box (where it
+        //     would land near the date/kebab and visually disconnect from
+        //     the name). Shown ONLY when the row is a thread parent that
+        //     is currently COLLAPSED — when expanded, the children are
+        //     visible as their own rows and the badge would be redundant.
+        //     Counts the head message itself, matching iOS
+        //     `threadInfo.memberCount`. Idempotent: TB's fillRow assigns
+        //     `.sender.textContent`, which wipes children — we re-append
+        //     here on every render.
         try {
           const senderForCount = row.querySelector?.(".sender");
-          if (senderForCount && senderForCount.parentNode) {
-            const total = _getThreadTotalCount_MLCV(tree, rowIndex);
-            const parent = senderForCount.parentNode;
-            let countEl = parent.querySelector?.(":scope > .tm-thread-count")
-              || row.querySelector?.(".tm-thread-count");
-            if (total > 1) {
-              const text = `(${total})`;
-              if (!countEl || !countEl.isConnected) {
-                countEl = doc.createElement("span");
-                countEl.className = "tm-thread-count";
-                countEl.textContent = text;
-                parent.insertBefore(countEl, senderForCount.nextSibling);
-              } else {
-                if (countEl.textContent !== text) {
+          if (senderForCount) {
+            const isThreadParent = row.classList?.contains?.("children");
+            const isCollapsed = row.classList?.contains?.("collapsed");
+            const showBadge = isThreadParent && isCollapsed;
+            let countEl = senderForCount.querySelector?.(".tm-thread-count");
+            if (showBadge) {
+              const total = _getThreadTotalCount_MLCV(tree, rowIndex, row);
+              if (total > 1) {
+                const text = String(total);
+                if (!countEl || !countEl.isConnected) {
+                  countEl = doc.createElement("span");
+                  countEl.className = "tm-thread-count";
+                  countEl.textContent = text;
+                  senderForCount.appendChild(countEl);
+                } else if (countEl.textContent !== text) {
                   countEl.textContent = text;
                 }
-                // If row was recycled with a different parent layout, move it
-                // back to right after the sender.
-                if (countEl.previousSibling !== senderForCount) {
-                  parent.insertBefore(countEl, senderForCount.nextSibling);
-                }
+              } else if (countEl && countEl.parentNode) {
+                countEl.parentNode.removeChild(countEl);
               }
             } else if (countEl && countEl.parentNode) {
               countEl.parentNode.removeChild(countEl);
