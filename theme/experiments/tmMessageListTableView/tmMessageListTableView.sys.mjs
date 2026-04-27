@@ -1,10 +1,17 @@
 /*
  * TabMail Message List Table View Experiment
- * 
- * Strips email addresses from sender/correspondent columns in table view.
- * Shows only the display name (e.g., "John Doe" instead of "John Doe <john@example.com>").
- * 
- * Uses unique variable names with _MLTV suffix to avoid collisions with other experiments.
+ *
+ * Owns table-view DOM painting:
+ *   - Sender/correspondent email stripping (shows only display name).
+ *   - Row `--tag-color` painting based on `tm_*` keywords (Phase 1: reads
+ *     native keywords; Phase 2 will repoint to an IDB-backed action map
+ *     pushed by MV3).
+ *   - `onUntaggedInboxMessages` event — fires during the recolor pass when
+ *     inbox rows have no `tm_*` keyword, so MV3 can enqueue them for
+ *     classification (coverage detection).
+ *
+ * Uses unique variable names with _MLTV suffix to avoid collisions with
+ * other experiments.
  */
 
 const { ExtensionSupport: ExtensionSupport_MLTV } = ChromeUtils.importESModule(
@@ -12,6 +19,9 @@ const { ExtensionSupport: ExtensionSupport_MLTV } = ChromeUtils.importESModule(
 );
 const { ExtensionCommon: ExtensionCommon_MLTV } = ChromeUtils.importESModule(
   "resource://gre/modules/ExtensionCommon.sys.mjs"
+);
+const { MailServices: MailServices_MLTV } = ChromeUtils.importESModule(
+  "resource:///modules/MailServices.sys.mjs"
 );
 
 var Services_MLTV = globalThis.Services;
@@ -37,11 +47,29 @@ const CONFIG_MLTV = {
   ],
 };
 
+// TabMail action tag keys (order = paint priority — earliest wins on conflict).
+// Mirrors tagSort's sort priority. Phase 2 will replace keyword lookup with an
+// IDB-backed action map.
+const TM_ACTION_TAG_KEY_PRIORITY_MLTV = ["tm_reply", "tm_none", "tm_archive", "tm_delete"];
+
+// Coverage detection rate limits.
+const UNTAGGED_COVERAGE_CONFIG_MLTV = {
+  enabled: true,
+  logMax: 20,
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN CLASS
 // ═══════════════════════════════════════════════════════════════════════════
 
 var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
+  constructor(extension) {
+    super(extension);
+    this._tmCleanup_MLTV = null;
+    this._onUntaggedFire_MLTV = null; // EventManager fire for onUntaggedInboxMessages
+    this._messageManager_MLTV = null; // Convert native hdr → WE message ID
+  }
+
   onShutdown(isAppShutdown) {
     console.log(`${LOG_PREFIX_MLTV} onShutdown() called, isAppShutdown:`, isAppShutdown);
     try {
@@ -49,14 +77,19 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
         this._tmCleanup_MLTV();
         console.log(`${LOG_PREFIX_MLTV} ✓ Cleanup completed via onShutdown`);
       }
+      this._onUntaggedFire_MLTV = null;
     } catch (e) {
       console.error(`${LOG_PREFIX_MLTV} onShutdown cleanup failed:`, e);
     }
   }
 
   getAPI(context) {
+    const self = this;
     let windowListenerId_MLTV = null;
     let isInitialized_MLTV = false;
+    let _untaggedCoverageLogCount_MLTV = 0;
+
+    self._messageManager_MLTV = context.extension.messageManager;
 
     /**
      * Strip email address from sender text, leaving only the name.
@@ -205,16 +238,41 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
 
         const origFillRow = proto.fillRow;
 
-        proto.fillRow = function(index, row, dataset, view) {
-          // Call original fillRow first
-          origFillRow.call(this, index, row, dataset, view);
-          
-          // Strip email from sender/correspondent columns
+        proto.fillRow = function(...origArgs) {
+          origFillRow.apply(this, origArgs);
+
           if (CONFIG_MLTV.stripEmail) {
             try {
               processTableRow_MLTV(this);
             } catch (_) {}
           }
+
+          // Paint from cache. Uses own-properties `this.view` and `this._index`
+          // which TB 145's ThreadRow sets before/during fillRow.
+          try {
+            const view = this.view || null;
+            const rowIndex = Number.isInteger(this._index) ? this._index : -1;
+            let hdr = null;
+            if (view && rowIndex >= 0) {
+              try { hdr = view.getMsgHdrAt?.(rowIndex); } catch (_) {}
+              if (!hdr) try { hdr = view.getMessageHdrAt?.(rowIndex); } catch (_) {}
+            }
+            if (hdr) {
+              const action = _lookupActionForRow_MLTV(hdr);
+              _paintRowForAction_MLTV(this, action);
+
+              // Coverage detection: if this is an inbox row with no action,
+              // fire the event so MV3 can enqueue it for classification.
+              if (!action && UNTAGGED_COVERAGE_CONFIG_MLTV.enabled && self._onUntaggedFire_MLTV) {
+                try {
+                  const folder = hdr.folder;
+                  if (folder && _isInboxOrUnifiedInboxFolder_MLTV(folder)) {
+                    _fireUntaggedMessage_MLTV(hdr, rowIndex, folder.URI || "");
+                  }
+                } catch (_) {}
+              }
+            }
+          } catch (_) {}
         };
 
         ThreadRow.__tmTableSenderPatched = true;
@@ -294,6 +352,188 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
         }
       } catch (_) {}
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ACTION LOOKUP — reads the `tm-action` string property stored on the
+    // native msg hdr (written by MV3's actionCache → tmHdr.setAction path).
+    // Local mork property, not touched by IMAP sync, synchronously readable.
+    // Legacy `tm_*` keyword lookup is kept as a fallback for pre-backfill
+    // rows and gets removed with the rest of the legacy machinery in Phase 4.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    const TM_ACTION_PROP_NAME_MLTV = "tm-action";
+
+    const _KEYWORD_TO_ACTION_MLTV = {
+      tm_reply: "reply",
+      tm_none: "none",
+      tm_archive: "archive",
+      tm_delete: "delete",
+    };
+
+    function _actionFromKeywords_MLTV(hdr) {
+      try {
+        const kw = hdr?.getStringProperty?.("keywords") || "";
+        if (!kw) return null;
+        const keys = kw.split(/\s+/).filter(Boolean);
+        for (const k of TM_ACTION_TAG_KEY_PRIORITY_MLTV) {
+          if (keys.includes(k)) return _KEYWORD_TO_ACTION_MLTV[k] || null;
+        }
+        return null;
+      } catch (_) { return null; }
+    }
+
+    /**
+     * Primary: `tm-action` hdr property. Fallback: legacy `tm_*` keywords
+     * (for messages not yet backfilled by the MV3 startup pass).
+     */
+    function _lookupActionForRow_MLTV(hdr) {
+      try {
+        const prop = hdr?.getStringProperty?.(TM_ACTION_PROP_NAME_MLTV) || "";
+        if (prop) return String(prop);
+      } catch (_) {}
+      return _actionFromKeywords_MLTV(hdr);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ROW PAINTING
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function _isInboxOrUnifiedInboxFolder_MLTV(folder) {
+      try {
+        const Ci = globalThis.Ci;
+        if (!Ci?.nsMsgFolderFlags) return false;
+        const flags = folder?.flags ?? 0;
+        const isInbox = folder?.isSpecialFolder
+          ? folder.isSpecialFolder(Ci.nsMsgFolderFlags.Inbox, true)
+          : (flags & Ci.nsMsgFolderFlags.Inbox);
+        const isVirtual = !!(flags & Ci.nsMsgFolderFlags.Virtual);
+        const isUnifiedInbox = isVirtual && /inbox/i.test(folder?.prettyName || folder?.name || "");
+        return !!(isInbox || isUnifiedInbox);
+      } catch (_) { return false; }
+    }
+
+    function _findDBView_MLTV(win) {
+      if (win.gDBView) return win.gDBView;
+      if (win.gFolderDisplay?.view?.dbView) return win.gFolderDisplay.view.dbView;
+
+      let contentWin = null;
+      try {
+        const tabmail = win.document.getElementById("tabmail");
+        contentWin = tabmail?.currentAbout3Pane
+          || tabmail?.currentTabInfo?.chromeBrowser?.contentWindow
+          || tabmail?.currentTabInfo?.browser?.contentWindow;
+      } catch (_) {}
+
+      if (contentWin) {
+        if (contentWin.gDBView) return contentWin.gDBView;
+        if (contentWin.gFolderDisplay?.view?.dbView) return contentWin.gFolderDisplay.view.dbView;
+      }
+
+      const tree = win.document.getElementById("threadTree")
+        || contentWin?.document?.getElementById("threadTree")
+        || win.document.querySelector("mail-message-list")?.shadowRoot?.getElementById("threadTree")
+        || contentWin?.document?.querySelector("mail-message-list")?.shadowRoot?.getElementById("threadTree");
+      return tree?.view?.dbView || null;
+    }
+
+    function _fireUntaggedMessage_MLTV(hdr, rowIndex, folderUri) {
+      try {
+        if (!UNTAGGED_COVERAGE_CONFIG_MLTV.enabled) return;
+        if (!self._onUntaggedFire_MLTV) return;
+
+        const messageId = hdr?.messageId || "";
+        if (!messageId) return;
+
+        // Try to get WebExtension message ID using messageManager.convert()
+        let weMsgId = null;
+        try {
+          if (self._messageManager_MLTV) {
+            const weMsg = self._messageManager_MLTV.convert(hdr);
+            weMsgId = weMsg?.id || null;
+          }
+        } catch (_) {}
+
+        const info = {
+          messageKey: hdr?.messageKey ?? -1,
+          messageId,
+          weMsgId,
+          folderUri: folderUri || "",
+          rowIndex,
+        };
+
+        if (_untaggedCoverageLogCount_MLTV < UNTAGGED_COVERAGE_CONFIG_MLTV.logMax) {
+          _untaggedCoverageLogCount_MLTV++;
+          console.log(`${LOG_PREFIX_MLTV} Firing onUntaggedInboxMessages for:`, messageId.substring(0, 50), "weMsgId:", weMsgId);
+        }
+
+        try {
+          self._onUntaggedFire_MLTV.async([info]);
+        } catch (eFire) {
+          console.log(`${LOG_PREFIX_MLTV} Failed to fire onUntaggedInboxMessages event:`, eFire);
+        }
+      } catch (e) {
+        console.log(`${LOG_PREFIX_MLTV} _fireUntaggedMessage error:`, e);
+      }
+    }
+
+    // Reverse of _KEYWORD_TO_ACTION_MLTV. Used to ask MailServices for the
+    // color registered on the native `tm_*` tag def — still used for the
+    // `--tag-color` inline var (card view's selected-state CSS reads it).
+    const _ACTION_TO_KEYWORD_MLTV = {
+      reply: "tm_reply",
+      none: "tm_none",
+      archive: "tm_archive",
+      delete: "tm_delete",
+    };
+
+    function _colorForAction_MLTV(action) {
+      const key = _ACTION_TO_KEYWORD_MLTV[action];
+      if (!key) return null;
+      return MailServices_MLTV?.tags?.getColorForKey?.(key) || null;
+    }
+
+    const _ACTION_CLASSES_MLTV = [
+      "tm-action-reply",
+      "tm-action-archive",
+      "tm-action-delete",
+      "tm-action-none",
+    ];
+
+    /**
+     * Apply the paint signals to a row element:
+     *   (1) Authoritative: inline `background-color` set to a tinted color-mix
+     *       of the action's palette color — inline style beats any stylesheet.
+     *   (2) Add `tm-action-<name>` class so the accent-stripe CSS rule (left
+     *       border on first `<td>`) picks it up, and so card-view CSS can
+     *       pattern-match in Phase 3.
+     *   (3) Set `--tag-color` inline var — kept for card-view selected-state
+     *       CSS that already reads it.
+     */
+    function _paintRowForAction_MLTV(row, action) {
+      if (!row) return;
+      try {
+        for (const cls of _ACTION_CLASSES_MLTV) {
+          if (row.classList?.contains(cls)) row.classList.remove(cls);
+        }
+        const color = action ? _colorForAction_MLTV(action) : null;
+        if (action) {
+          const cls = `tm-action-${action}`;
+          if (_ACTION_CLASSES_MLTV.includes(cls)) row.classList.add(cls);
+        }
+        if (color) {
+          row.style.setProperty("background-color", `color-mix(in srgb, ${color} 30%, transparent)`, "important");
+          row.style.setProperty("--tag-color", color);
+        } else {
+          row.style.removeProperty("background-color");
+          row.style.removeProperty("--tag-color");
+        }
+      } catch (_) {}
+    }
+
+    // No manual recolor pass is needed in Phase 2b — the fillRow patch reads
+    // `hdr.getStringProperty("tm-action")` on every row render, and
+    // `browser.tmHdr.setAction` fires `view.NoteChange(rowIndex, 1, CHANGED)`
+    // after writing the property, which re-invokes our fillRow for the row.
 
     function ensureTableEnhancements_MLTV(win) {
       try {
@@ -380,7 +620,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
         return;
       }
       isInitialized_MLTV = true;
-      
+
       const enumWin = Services_MLTV.wm.getEnumerator("mail:3pane");
       while (enumWin.hasMoreElements()) {
         const win = enumWin.getNext();
@@ -394,7 +634,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
           }, { once: true });
         }
       }
-      
+
       windowListenerId_MLTV = context.extension.id + "-tmMessageListTableView";
       ExtensionSupport_MLTV.registerWindowListener(windowListenerId_MLTV, {
         chromeURLs: ["chrome://messenger/content/messenger.xhtml"],
@@ -403,7 +643,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
           attachEventHooks_MLTV(win);
         },
       });
-      
+
       console.log(`${LOG_PREFIX_MLTV} ✓ Initialization complete`);
     }
 
@@ -442,6 +682,21 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
       tmMessageListTableView: {
         init: init_MLTV,
         shutdown: shutdown_MLTV,
+
+        // Fires when the recolor pass detects inbox rows with no cached
+        // action — signals MV3 to enqueue for classification.
+        onUntaggedInboxMessages: new ExtensionCommon_MLTV.EventManager({
+          context,
+          name: "tmMessageListTableView.onUntaggedInboxMessages",
+          register: (fire) => {
+            console.log(`${LOG_PREFIX_MLTV} onUntaggedInboxMessages listener registered`);
+            self._onUntaggedFire_MLTV = fire;
+            return () => {
+              console.log(`${LOG_PREFIX_MLTV} onUntaggedInboxMessages listener unregistered`);
+              self._onUntaggedFire_MLTV = null;
+            };
+          },
+        }).api(),
       },
     };
   }

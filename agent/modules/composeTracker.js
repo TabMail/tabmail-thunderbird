@@ -1,6 +1,7 @@
+import { ACTIONS, getActionForWeId } from "./actionCache.js";
 import * as idb from "./idbStorage.js";
 import { createReply, STORAGE_PREFIX } from "./replyGenerator.js";
-import { ACTION_TAG_IDS, applyPriorityTag } from "./tagHelper.js";
+import { applyPriorityTag } from "./tagHelper.js";
 import { formatForLog, getSentFoldersForAccount, getUniqueMessageKey, log } from "./utils.js";
 
 // Internal sets for compose state tracking.
@@ -167,21 +168,19 @@ try {
                         console.warn("[ComposeTracker] Failed to cache accountId in-memory for onAfterSend:", e);
                     }
                     if (details && details.type === "reply" && details.relatedMessageId) {
-                        // Check if the related message is tagged as "reply" and only clear the tag if it is.
+                        // Check if the related message's cached AI action is "reply" and clear it to "none" if so.
                         try {
-                            const header = await browser.messages.get(details.relatedMessageId);
-                            const currentTags = Array.isArray(header?.tags) ? header.tags : [];
-                            if (log) { log(`[TMDBG ComposeTracker] onBeforeSend pre-check relatedMessageId=${details.relatedMessageId} tags=[${currentTags.join(",")}]`, 'debug'); }
-                            const hasReplyTag = currentTags.includes(ACTION_TAG_IDS.reply);
-                            if (hasReplyTag) {
-                                // Only for replies (not forwards): clear the reply tag by switching to "none" when the reply is sent.
+                            const currentAction = await getActionForWeId(details.relatedMessageId);
+                            if (log) { log(`[TMDBG ComposeTracker] onBeforeSend pre-check relatedMessageId=${details.relatedMessageId} action=${currentAction || ""}`, 'debug'); }
+                            if (currentAction === ACTIONS.REPLY) {
+                                // Only for replies (not forwards): clear the reply action by switching to "none" when the reply is sent.
                                 await applyPriorityTag(details.relatedMessageId, "none");
-                                if (log) { log(`[TMDBG ComposeTracker] Cleared reply tag for message ${details.relatedMessageId} on reply send.`, 'debug'); }
+                                if (log) { log(`[TMDBG ComposeTracker] Cleared reply action for message ${details.relatedMessageId} on reply send.`, 'debug'); }
                             } else {
-                                if (log) { log(`[TMDBG ComposeTracker] Skipped clearing tag for message ${details.relatedMessageId} (no reply tag present).`, 'debug'); }
+                                if (log) { log(`[TMDBG ComposeTracker] Skipped clearing action for message ${details.relatedMessageId} (no reply action).`, 'debug'); }
                             }
                         } catch (eTag) {
-                            console.warn("[ComposeTracker] Failed to read related message tags:", eTag);
+                            console.warn("[ComposeTracker] Failed to read related message action:", eTag);
                         }
                     }
                 } catch (e) {

@@ -1,7 +1,7 @@
 [
   {
     "namespace": "tagSort",
-    "description": "Expose init() to apply Date→Tags sorting to the thread pane and refresh() to reapply it after tag changes.",
+    "description": "Sort the thread pane by TabMail action priority (reply > none > archive > delete), secondary by date. Sort-only — row painting lives in tmMessageListTableView. Action state is read from each message's `tm-action` mork string property (written by actionCache → tmHdr.setAction).",
     "functions": [
       {
         "name": "init",
@@ -30,30 +30,6 @@
         "description": "Clean up sorting listeners and unregister window listeners.",
         "parameters": [],
         "async": false
-      }
-    ],
-    "events": [
-      {
-        "name": "onUntaggedInboxMessages",
-        "type": "function",
-        "description": "Fired when the row coloring pass detects untagged inbox messages that need processing.",
-        "parameters": [
-          {
-            "name": "messages",
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "messageKey": {"type": "integer", "description": "Native message key in folder"},
-                "messageId": {"type": "string", "description": "Header Message-ID"},
-                "weMsgId": {"type": "integer", "description": "WebExtension message ID (may be null if not convertible)"},
-                "folderUri": {"type": "string", "description": "Folder URI"},
-                "rowIndex": {"type": "integer", "description": "Row index in thread tree"}
-              }
-            },
-            "description": "Array of untagged inbox messages"
-          }
-        ]
       }
     ]
   }

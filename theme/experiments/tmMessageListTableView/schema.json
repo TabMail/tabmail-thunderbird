@@ -1,13 +1,13 @@
 [
   {
     "namespace": "tmMessageListTableView",
-    "description": "TabMail Message List Table View experiment API - handles sender stripping for table view",
+    "description": "TabMail Message List Table View experiment API - handles sender stripping and row `--tag-color` painting for the table view, plus an onUntaggedInboxMessages coverage event.",
     "functions": [
       {
         "name": "init",
         "type": "function",
         "async": true,
-        "description": "Initialize table view sender stripping",
+        "description": "Initialize table view enhancements (sender stripping + row painting + coverage detection).",
         "parameters": []
       },
       {
@@ -16,6 +16,30 @@
         "async": true,
         "description": "Shutdown and cleanup",
         "parameters": []
+      }
+    ],
+    "events": [
+      {
+        "name": "onUntaggedInboxMessages",
+        "type": "function",
+        "description": "Fired when the table-view row painter detects untagged inbox messages that need classification.",
+        "parameters": [
+          {
+            "name": "messages",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "messageKey": {"type": "integer", "description": "Native message key in folder"},
+                "messageId": {"type": "string", "description": "Header Message-ID"},
+                "weMsgId": {"type": "integer", "description": "WebExtension message ID (may be null if not convertible)"},
+                "folderUri": {"type": "string", "description": "Folder URI"},
+                "rowIndex": {"type": "integer", "description": "Row index in thread tree"}
+              }
+            },
+            "description": "Array of untagged inbox messages"
+          }
+        ]
       }
     ]
   }

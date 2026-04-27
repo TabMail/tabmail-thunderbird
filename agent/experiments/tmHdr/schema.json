@@ -1,8 +1,59 @@
 [
   {
     "namespace": "tmHdr",
-    "description": "Access nsIMsgDBHdr flags including Replied, Forwarded, Read, via a tiny experiment.",
+    "description": "Access nsIMsgDBHdr flags (Replied/Forwarded/Read) and the local `tm-action` string property which drives per-message AI action tinting/sorting.",
     "functions": [
+      {
+        "name": "setAction",
+        "type": "function",
+        "async": true,
+        "description": "Set the AI action ('reply'/'archive'/'delete'/'none') as a local mork string property on the message header, and invalidate the row so it re-renders. Pass null/empty action to clear.",
+        "parameters": [
+          { "name": "weMsgId", "type": "integer" },
+          { "name": "action", "type": "string", "optional": true }
+        ],
+        "returns": { "type": "boolean" }
+      },
+      {
+        "name": "clearAction",
+        "type": "function",
+        "async": true,
+        "description": "Clear the AI action string property on the message header.",
+        "parameters": [
+          { "name": "weMsgId", "type": "integer" }
+        ],
+        "returns": { "type": "boolean" }
+      },
+      {
+        "name": "setActionsBulk",
+        "type": "function",
+        "async": true,
+        "description": "Bulk-set AI actions on many headers in one call. Used by the startup backfill to populate mork properties from IDB.",
+        "parameters": [
+          {
+            "name": "entries",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "weMsgId": { "type": "integer" },
+                "action": { "type": "string" }
+              }
+            }
+          }
+        ],
+        "returns": { "type": "integer" }
+      },
+      {
+        "name": "getAction",
+        "type": "function",
+        "async": true,
+        "description": "Read the AI action string property from a message header (for debugging / tests; the painter reads it synchronously).",
+        "parameters": [
+          { "name": "weMsgId", "type": "integer" }
+        ],
+        "returns": { "type": "string" }
+      },
       {
         "name": "getReplied",
         "type": "function",

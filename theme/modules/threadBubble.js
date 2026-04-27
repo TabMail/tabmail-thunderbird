@@ -34,12 +34,12 @@
   // Helper Functions
   // ─────────────────────────────────────────────────────────────────────────────
 
-  function getThreadTagCssVarName(actionTagId) {
-    const t = String(actionTagId || '');
-    if (t === 'tm_reply') return '--tag-tm-reply';
-    if (t === 'tm_archive') return '--tag-tm-archive';
-    if (t === 'tm_delete') return '--tag-tm-delete';
-    if (t === 'tm_none') return '--tag-tm-none';
+  function getThreadTagCssVarName(action) {
+    const a = String(action || '');
+    if (a === 'reply') return '--tag-tm-reply';
+    if (a === 'archive') return '--tag-tm-archive';
+    if (a === 'delete') return '--tag-tm-delete';
+    if (a === 'none') return '--tag-tm-none';
     return '--tag-tm-untagged';
   }
 
@@ -222,11 +222,11 @@
 
         // Action tag color -> per-bubble CSS variable (palette-driven)
         try {
-          const actionTagId = msg?.actionTagId || null;
-          const cssVarName = getThreadTagCssVarName(actionTagId);
+          const action = msg?.action || null;
+          const cssVarName = getThreadTagCssVarName(action);
           bubble.style.setProperty('--tm-thread-tag-color', `var(${cssVarName})`);
           console.log(
-            `[TabMail ThreadBubble] Tag color: weId=${msg?.weId} actionTagId=${actionTagId || "(none)"} cssVar=${cssVarName}`
+            `[TabMail ThreadBubble] Tag color: weId=${msg?.weId} action=${action || "(none)"} cssVar=${cssVarName}`
           );
         } catch (eTag) {
           console.log(`[TabMail ThreadBubble] Failed setting tag color var: ${eTag}`);

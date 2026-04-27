@@ -1,22 +1,28 @@
 /**
- * gmailLabelSync.js — Gmail REST API label sync.
- * Uses tmGmailLabels experiment for authenticated Gmail API calls
- * (OAuth2 + XPCOM HTTP from privileged parent process, bypassing CORS).
+ * gmailLabelSync.js — Gmail REST API label REMOVE-only sync.
  *
- * Labels are created hidden (labelListVisibility: "labelHide") so they
- * don't clutter the Gmail web UI.
+ * Post Phase 0 scope: this module exists solely to REMOVE `tm_*` Gmail labels
+ * from a message when it leaves inbox (passive decay per PLAN_TB_LABEL_V2 §Phase 4).
+ *
+ * What's gone:
+ *   - No Gmail label CREATE (we never add `tm_*` anymore).
+ *   - No readActionFromGmailFolders / resolveGmailAction (first-compute-wins
+ *     removed from actionGenerator.js — Device Sync probe is the cross-instance path).
+ *   - No syncGmailTagFolder ADD branch.
+ *
+ * What remains:
+ *   - Lookup of EXISTING `tm_*` Gmail label IDs (no create, only list + match).
+ *   - `removeTmLabelsFromGmailMessage(msgId, accountId, headerMessageId)` —
+ *     removes all `tm_*` labels from a Gmail message. Called by onMoved's
+ *     leave-inbox cleanup.
+ *
+ * Uses the tmGmailLabels experiment for OAuth2 + CORS-bypassing fetch.
  */
 
 import { ACTION_TAG_IDS } from "./tagDefs.js";
 
 const _gmailAccountCache = new Map(); // accountId -> boolean
-const _gmailTagLabelCache = new Map(); // accountId -> { tm_reply: "Label_123", ... }
-
-// Track messages with in-flight Gmail label syncs (headerMessageId -> timestamp).
-// While a sync is in flight, resolveGmailAction must trust the IMAP keyword
-// instead of reading the (stale) Gmail label — otherwise it reverts the tag.
-const _pendingGmailSync = new Map();
-const _PENDING_SYNC_TTL_MS = 30_000; // safety net: treat entries >30s as stale
+const _gmailTagLabelCache = new Map(); // accountId -> { tm_reply: "Label_123", ... } (EXISTING labels only)
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -36,11 +42,6 @@ async function _isGmailAccount(accountId) {
   }
 }
 
-/**
- * Authenticated Gmail API call via the tmGmailLabels experiment.
- * The experiment handles OAuth2 tokens and fetch from parent process (bypasses CORS).
- * Returns parsed JSON or null.
- */
 async function _gmailFetch(accountId, path, method = "GET", body = null) {
   const bodyJson = body ? JSON.stringify(body) : "";
   const responseStr = await browser.tmGmailLabels.gmailFetch(accountId, path, method, bodyJson);
@@ -49,74 +50,28 @@ async function _gmailFetch(accountId, path, method = "GET", body = null) {
 }
 
 /**
- * Ensure all tm_* Gmail labels exist (created hidden) and return a map of
- * tagId -> Gmail label ID.  Cached per account after first call.
+ * Look up EXISTING `tm_*` Gmail label IDs for this account. Does NOT create
+ * any missing labels — we're in REMOVE-only mode. Returns a map of
+ * tagId -> Gmail label ID (only entries for labels that actually exist).
  */
-async function _ensureGmailTagLabels(accountId) {
+async function _lookupExistingGmailTmLabels(accountId) {
   if (_gmailTagLabelCache.has(accountId)) return _gmailTagLabelCache.get(accountId);
   try {
     const data = await _gmailFetch(accountId, "/labels");
     const labels = data?.labels || [];
-    const tagLabelMap = {}; // tagId -> Gmail label ID
-
+    const tagLabelMap = {};
     for (const tagId of Object.values(ACTION_TAG_IDS)) {
       const existing = labels.find(l => l.name === tagId);
-      if (existing) {
-        tagLabelMap[tagId] = existing.id;
-        // Ensure label is hidden (may have been created visible by old folder approach)
-        if (existing.labelListVisibility !== "labelHide" || existing.messageListVisibility !== "hide") {
-          try {
-            await _gmailFetch(accountId, `/labels/${existing.id}`, "PATCH", {
-              labelListVisibility: "labelHide",
-              messageListVisibility: "hide",
-            });
-            console.log(`[GMailTag] Hidden label: ${tagId}`);
-          } catch (_) {}
-        }
-      } else {
-        try {
-          const created = await _gmailFetch(accountId, "/labels", "POST", {
-            name: tagId,
-            labelListVisibility: "labelHide",
-            messageListVisibility: "hide",
-          });
-          if (created?.id) {
-            tagLabelMap[tagId] = created.id;
-            console.log(`[GMailTag] Created label: ${tagId} id=${created.id}`);
-          } else {
-            // 409 conflict — label exists but wasn't in initial list; re-fetch to find it
-            console.log(`[GMailTag] Label ${tagId} create returned null (likely 409 conflict), re-fetching labels`);
-            const refreshed = await _gmailFetch(accountId, "/labels");
-            const match = (refreshed?.labels || []).find(l => l.name === tagId);
-            if (match) {
-              tagLabelMap[tagId] = match.id;
-              console.log(`[GMailTag] Found label on retry: ${tagId} id=${match.id}`);
-            }
-          }
-        } catch (eCreate) {
-          console.log(`[GMailTag] FAILED to create label ${tagId}: ${eCreate}`);
-        }
-      }
+      if (existing) tagLabelMap[tagId] = existing.id;
     }
-
-    // Always unsubscribe tm_* IMAP folders — Gmail exposes labels as IMAP
-    // folders but we use REST API for all tm_* operations, so they're waste.
-    browser.tmGmailLabels.unsubscribeTmFolders(accountId, Object.values(ACTION_TAG_IDS)).catch(e => {
-      console.log(`[GMailTag] unsubscribeTmFolders fire-and-forget error: ${e}`);
-    });
-
     _gmailTagLabelCache.set(accountId, tagLabelMap);
     return tagLabelMap;
   } catch (e) {
-    console.log(`[GMailTag] _ensureGmailTagLabels ERROR: ${e}`);
+    console.log(`[GMailTag] _lookupExistingGmailTmLabels ERROR: ${e}`);
     return null;
   }
 }
 
-/**
- * Resolve a headerMessageId to a Gmail message ID via search.
- * @returns {Promise<string|null>} Gmail message ID or null
- */
 async function _resolveGmailMessageId(accountId, headerMessageId) {
   const result = await _gmailFetch(
     accountId,
@@ -126,142 +81,54 @@ async function _resolveGmailMessageId(accountId, headerMessageId) {
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// Public API (REMOVE-only)
 // ---------------------------------------------------------------------------
 
 /**
- * Read action tag from Gmail label membership via REST API.
- * Returns the action name (e.g. "reply") or null if no tm_* label found.
+ * Remove all `tm_*` Gmail labels from a message (fire-and-forget safe).
  *
- * @param {string} accountId - Account ID
- * @param {string} headerMessageId - Message-ID header value (without angle brackets)
- * @returns {Promise<string|null>} Action name or null
- */
-export async function readActionFromGmailFolders(accountId, headerMessageId) {
-  try {
-    if (!await _isGmailAccount(accountId)) return null;
-    const tagLabels = await _ensureGmailTagLabels(accountId);
-    if (!tagLabels || Object.keys(tagLabels).length === 0) return null;
-
-    const gmailMsgId = await _resolveGmailMessageId(accountId, headerMessageId);
-    if (!gmailMsgId) return null;
-
-    const msg = await _gmailFetch(accountId, `/messages/${gmailMsgId}?format=minimal`);
-    const labelIds = msg?.labelIds || [];
-
-    // Reverse lookup: ACTION_TAG_IDS maps action → tagId (e.g. "reply" → "tm_reply")
-    for (const [action, tagId] of Object.entries(ACTION_TAG_IDS)) {
-      const labelId = tagLabels[tagId];
-      if (labelId && labelIds.includes(labelId)) {
-        console.log(`[GMailTag] readAction: found action="${action}" for headerMessageId=${headerMessageId}`);
-        return action;
-      }
-    }
-    return null;
-  } catch (e) {
-    console.log(`[GMailTag] readActionFromGmailFolders ERROR: ${e}`);
-    return null;
-  }
-}
-
-/**
- * For Gmail accounts, read the authoritative Gmail label and sync IMAP keyword
- * to match if they differ. Gmail labels are the source of truth for cross-instance
- * sync (iOS sets labels via REST API that don't appear as IMAP keywords).
+ * Called from `onMoved.js` leave-inbox cleanup. No-op on non-Gmail accounts,
+ * no-op if the message doesn't exist in Gmail, no-op if no `tm_*` labels
+ * exist on this account.
  *
- * @param {object} header - Message header (.tags, .headerMessageId, .folder.accountId, .id)
- * @param {string|null} imapAction - Action already resolved from IMAP keywords
- * @returns {Promise<string|null>} Resolved action (Gmail overrides IMAP for Gmail accounts)
+ * @param {number} msgId - WebExtension message ID (used only to resolve
+ *   headerMessageId if not supplied by caller).
+ * @param {string} accountId - Account ID.
+ * @param {string} [headerMessageId] - If available, pass to skip the
+ *   `browser.messages.get(msgId)` round-trip (useful after move where msgId
+ *   may be stale).
  */
-export async function resolveGmailAction(header, imapAction) {
-  try {
-    const headerMsgId = (header.headerMessageId || "").replace(/[<>]/g, "");
-    if (!headerMsgId || !header.folder?.accountId) return imapAction;
-
-    // If a Gmail label sync is in flight for this message, trust the IMAP keyword.
-    // Reading the Gmail label now would return stale data and revert the user's tag.
-    const pendingTs = _pendingGmailSync.get(headerMsgId);
-    if (pendingTs && (Date.now() - pendingTs) < _PENDING_SYNC_TTL_MS) {
-      console.log(`[GMailTag] resolveGmailAction: skipping (pending Gmail sync in flight) headerMsgId=${headerMsgId}`);
-      return imapAction;
-    }
-    if (pendingTs) _pendingGmailSync.delete(headerMsgId); // stale entry
-
-    const gmailAction = await readActionFromGmailFolders(header.folder.accountId, headerMsgId);
-    if (!gmailAction) return imapAction;
-
-    if (gmailAction !== imapAction) {
-      // Gmail label is authoritative — sync IMAP keyword to match
-      const targetTagId = ACTION_TAG_IDS[gmailAction];
-      if (targetTagId) {
-        const tmTagIds = new Set(Object.values(ACTION_TAG_IDS));
-        const currentTags = Array.isArray(header.tags) ? header.tags : [];
-        const nonTmTags = currentTags.filter(t => !tmTagIds.has(t));
-        browser.messages.update(header.id, { tags: [targetTagId, ...nonTmTags] }).catch(e => {
-          console.log(`[GMailTag] IMAP sync-on-read failed: ${e}`);
-        });
-        console.log(`[GMailTag] Synced IMAP keyword to match Gmail label: ${gmailAction} (was: ${imapAction || "none"})`);
-      }
-    }
-    return gmailAction;
-  } catch (e) {
-    console.log(`[GMailTag] resolveGmailAction ERROR: ${e}`);
-    return imapAction;
-  }
-}
-
-/**
- * Sync a tag change via Gmail REST API (fire-and-forget).
- * Removes all tm_* labels, then adds the target label if specified.
- *
- * @param {number} msgId - WebExtension message ID
- * @param {string} accountId - Account ID
- * @param {string|null} targetTagId - e.g. "tm_reply", or null to clear all
- * @param {string} [headerMessageId] - If available, pass to set the pending-sync
- *   guard immediately (before any await). Prevents resolveGmailAction from reading
- *   the stale Gmail label while this sync is in flight.
- */
-export async function syncGmailTagFolder(msgId, accountId, targetTagId, headerMessageId = "") {
-  // Set pending flag BEFORE any await so resolveGmailAction can detect in-flight syncs.
-  let headerMsgId = headerMessageId ? headerMessageId.replace(/[<>]/g, "") : "";
-  if (headerMsgId) _pendingGmailSync.set(headerMsgId, Date.now());
-
+export async function removeTmLabelsFromGmailMessage(msgId, accountId, headerMessageId = "") {
   try {
     if (!await _isGmailAccount(accountId)) return;
 
-    const tagLabels = await _ensureGmailTagLabels(accountId);
+    const tagLabels = await _lookupExistingGmailTmLabels(accountId);
     if (!tagLabels || Object.keys(tagLabels).length === 0) return;
 
-    // Resolve headerMsgId if caller didn't provide it
+    let headerMsgId = headerMessageId ? headerMessageId.replace(/[<>]/g, "") : "";
     if (!headerMsgId) {
-      const header = await browser.messages.get(msgId);
-      headerMsgId = (header?.headerMessageId || "").replace(/[<>]/g, "");
-      if (!headerMsgId) return;
-      _pendingGmailSync.set(headerMsgId, Date.now());
+      try {
+        const header = await browser.messages.get(msgId);
+        headerMsgId = (header?.headerMessageId || "").replace(/[<>]/g, "");
+      } catch (_) {
+        // msgId may be stale after move — without headerMessageId we can't continue
+      }
     }
+    if (!headerMsgId) return;
 
     const gmailMsgId = await _resolveGmailMessageId(accountId, headerMsgId);
-    if (!gmailMsgId) {
-      console.log(`[GMailTag] syncGmailTagFolder: message not found in Gmail for headerMsgId=${headerMsgId}`);
-      return;
-    }
+    if (!gmailMsgId) return;
 
-    const addLabelIds = targetTagId && tagLabels[targetTagId] ? [tagLabels[targetTagId]] : [];
-    const removeLabelIds = Object.values(tagLabels).filter(id => !addLabelIds.includes(id));
+    const removeLabelIds = Object.values(tagLabels);
+    if (removeLabelIds.length === 0) return;
 
     await _gmailFetch(accountId, `/messages/${gmailMsgId}/modify`, "POST", {
-      addLabelIds,
+      addLabelIds: [],
       removeLabelIds,
     });
 
-    if (targetTagId) {
-      console.log(`[GMailTag] Set label ${targetTagId} on gmailMsgId=${gmailMsgId}`);
-    } else {
-      console.log(`[GMailTag] Cleared all tm_* labels on gmailMsgId=${gmailMsgId}`);
-    }
+    console.log(`[GMailTag] Removed all tm_* labels on gmailMsgId=${gmailMsgId} (leave-inbox passive decay)`);
   } catch (e) {
-    console.log(`[GMailTag] syncGmailTagFolder FAILED: ${e}`);
-  } finally {
-    if (headerMsgId) _pendingGmailSync.delete(headerMsgId);
+    console.log(`[GMailTag] removeTmLabelsFromGmailMessage FAILED: ${e}`);
   }
 }

@@ -1,7 +1,9 @@
+import { clearActionByUniqueKey } from "./actionCache.js";
 import { autoUpdateUserPromptOnMove } from "./autoUpdateUserPrompt.js";
 import { SETTINGS } from "./config.js";
 import { logMessageEvent, logMoveEvent } from "./eventLogger.js";
 import { getAllFoldersForAccount, isInboxFolder } from "./folderUtils.js";
+import { removeTmLabelsFromGmailMessage } from "./gmailLabelSync.js";
 import * as idb from "./idbStorage.js";
 import { getInboxForAccount } from "./inboxContext.js";
 import { ACTION_TAG_IDS, recomputeThreadForInboxMessage } from "./tagHelper.js";
@@ -91,35 +93,6 @@ let _onDeletedHandler = null;
 let _onCopiedHandler = null;
 let _onAfterSendHandler = null;
 let _onMessageUpdatedHandler = null;
-let _watchdogLastHandledAt = new Map(); // messageId -> ts
-let _watchdogSelfUpdateUntil = new Map(); // messageId -> ts
-let _reassertGuardTimers = new Map(); // messageId -> [timeoutId...]
-let _watchdogPruneTimer = null;
-
-/**
- * Prune stale entries from watchdog maps. Entries older than 5 minutes
- * are no longer useful — the ignore/debounce windows are typically < 30s.
- */
-function _scheduleWatchdogPrune() {
-  if (_watchdogPruneTimer) return;
-  _watchdogPruneTimer = setTimeout(() => {
-    _watchdogPruneTimer = null;
-    try {
-      const now = Date.now();
-      const STALE_MS = SETTINGS?.memoryManagement?.watchdogStaleMs || 5 * 60_000;
-      for (const [id, ts] of _watchdogLastHandledAt) {
-        if (now - ts > STALE_MS) _watchdogLastHandledAt.delete(id);
-      }
-      for (const [id, ts] of _watchdogSelfUpdateUntil) {
-        if (ts <= now) _watchdogSelfUpdateUntil.delete(id);
-      }
-    } catch (_) {}
-    // Re-schedule if entries remain
-    if (_watchdogLastHandledAt.size > 0 || _watchdogSelfUpdateUntil.size > 0) {
-      _scheduleWatchdogPrune();
-    }
-  }, SETTINGS?.memoryManagement?.watchdogPruneIntervalMs || 5 * 60_000);
-}
 
 function _isMessageNotFoundError(e) {
   try {
@@ -258,13 +231,7 @@ async function _clearActionTagsAcrossSpecialUseFoldersByHeaderMessageId(seedHead
       `[TMDBG onMoved] clearByHeaderMessageId headerMessageId=${headerMessageId} folders=${folderIds.length} matches=${ids.length} reason=${reason || ""}`
     );
 
-    const selfIgnoreMs = Number(SETTINGS?.onMoved?.tagReassertWatchdog?.selfUpdateIgnoreMs);
     for (const mid of ids) {
-      try {
-        if (Number.isFinite(selfIgnoreMs) && selfIgnoreMs > 0) {
-          _watchdogSelfUpdateUntil.set(mid, Date.now() + selfIgnoreMs);
-        }
-      } catch (_) {}
       await _stripActionTagsByIdBestEffort(mid, `clearByHeaderMessageId:${reason || ""}`);
     }
 
@@ -276,9 +243,16 @@ async function _clearActionTagsAcrossSpecialUseFoldersByHeaderMessageId(seedHead
 }
 
 /**
- * Leave-inbox tag cleanup for a single message.
+ * Leave-inbox cleanup for a single message (passive-decay of legacy `tm_*`).
  * Called by messageProcessorQueue when operationType === "tagCleanupOnLeaveInbox".
- * Single-attempt — the queue handles retries.
+ *
+ * Post Phase 0:
+ *   - Strips native `tm_*` keywords (best effort; for passive decay of legacy data).
+ *   - Removes `tm_*` Gmail labels on Gmail accounts.
+ *   - Clears the IDB action cache entry so the painter stops rendering an action.
+ *   - No reassert guard / watchdog: we never ADD `tm_*` anymore, so any remote
+ *     re-assert is a stale signal that will be caught on the next leave-inbox
+ *     event or by runStaleTagSweep.
  *
  * @param {Object} liveHeader - Live message header (already resolved by queue)
  * @returns {Promise<{ok: boolean, reason?: string}>}
@@ -286,55 +260,36 @@ async function _clearActionTagsAcrossSpecialUseFoldersByHeaderMessageId(seedHead
 export async function performLeaveInboxTagCleanup(liveHeader) {
   try {
     if (!liveHeader?.id) return { ok: false, reason: "no-header" };
-
-    const actionTagIds = Object.values(ACTION_TAG_IDS);
     const messageId = liveHeader.id;
 
-    // 1. Set watchdog self-update ignore window to prevent feedback loops
-    const selfIgnoreMs = Number(SETTINGS?.onMoved?.tagReassertWatchdog?.selfUpdateIgnoreMs);
-    if (Number.isFinite(selfIgnoreMs) && selfIgnoreMs > 0) {
-      _watchdogSelfUpdateUntil.set(messageId, Date.now() + selfIgnoreMs);
-    }
-
-    // 2. Strip action tags on the live header
+    // 1. Strip native action tags on the live header (IMAP keyword remove).
     await _stripActionTagsByIdBestEffort(messageId, "queue:tagCleanupOnLeaveInbox");
 
-    // 3. Cross-folder cleanup by headerMessageId (Gmail label semantics)
+    // 2. Cross-folder cleanup (IMAP) + Gmail label remove (REST).
     try {
       await _clearActionTagsAcrossSpecialUseFoldersByHeaderMessageId(liveHeader, "queue:tagCleanupOnLeaveInbox");
     } catch (eCross) {
       log(`[TMDBG onMoved] tagCleanup cross-folder cleanup failed: ${eCross}`, "warn");
     }
+    try {
+      const accountId = liveHeader?.folder?.accountId || "";
+      const headerMessageId = liveHeader?.headerMessageId || "";
+      if (accountId) {
+        await removeTmLabelsFromGmailMessage(messageId, accountId, headerMessageId);
+      }
+    } catch (eGmail) {
+      log(`[TMDBG onMoved] tagCleanup Gmail label remove failed: ${eGmail}`, "warn");
+    }
 
-    // 4. Clear destination-scoped IDB action cache
+    // 3. Clear IDB action cache entry (canonical source of truth).
     try {
       const uniqueKey = await getUniqueMessageKey(liveHeader);
       if (uniqueKey) {
-        const keysToClear = [`action:${uniqueKey}`, `action:ts:${uniqueKey}`];
-        await idb.remove(keysToClear);
-        log(`[TMDBG onMoved] tagCleanup cleared IDB action cache: [${keysToClear.join(", ")}]`);
+        await clearActionByUniqueKey(uniqueKey);
+        log(`[TMDBG onMoved] tagCleanup cleared IDB action for uniqueKey=${uniqueKey}`);
       }
     } catch (eCache) {
       log(`[TMDBG onMoved] tagCleanup IDB cache clear failed: ${eCache}`, "warn");
-    }
-
-    // 5. Verify tags were actually removed
-    let stillHas = false;
-    try {
-      const verify = await browser.messages.get(messageId);
-      const liveTags = Array.isArray(verify?.tags) ? verify.tags : [];
-      stillHas = liveTags.some((t) => actionTagIds.includes(t));
-      log(`[TMDBG onMoved] tagCleanup verify id=${messageId} stillHasActionTag=${stillHas} tags=[${liveTags.join(",")}]`);
-    } catch (eVerify) {
-      log(`[TMDBG onMoved] tagCleanup verify failed id=${messageId}: ${eVerify}`, "warn");
-    }
-
-    // 6. Schedule reassert guard timers for longer-term protection
-    _scheduleReassertGuard(messageId, "queue:tagCleanupOnLeaveInbox");
-
-    // If tags are still present after our strip attempt, report not-ok so queue retries
-    if (stillHas) {
-      return { ok: false, reason: "tags-still-present" };
     }
 
     return { ok: true };
@@ -342,86 +297,6 @@ export async function performLeaveInboxTagCleanup(liveHeader) {
     log(`[TMDBG onMoved] performLeaveInboxTagCleanup failed: ${e}`, "warn");
     return { ok: false, reason: String(e) };
   }
-}
-
-function _clearReassertGuardTimers() {
-  try {
-    for (const timers of _reassertGuardTimers.values()) {
-      try {
-        for (const t of timers) {
-          try { clearTimeout(t); } catch (_) {}
-        }
-      } catch (_) {}
-    }
-    _reassertGuardTimers = new Map();
-  } catch (_) {}
-}
-
-function _scheduleReassertGuard(messageId, label = "") {
-  try {
-    const id = Number(messageId || 0);
-    if (!id) return;
-
-    const cfg = SETTINGS?.onMoved?.tagReassertGuard || null;
-    if (!cfg || cfg.enabled !== true) return;
-
-    const delaysRaw = Array.isArray(cfg.delaysMs) ? cfg.delaysMs : [];
-    const delaysMs = delaysRaw.map((d) => Number(d)).filter((d) => Number.isFinite(d) && d > 0);
-    if (delaysMs.length === 0) return;
-
-    // Cancel any existing schedule for this id.
-    try {
-      const existing = _reassertGuardTimers.get(id);
-      if (existing) {
-        for (const t of existing) {
-          try { clearTimeout(t); } catch (_) {}
-        }
-      }
-    } catch (_) {}
-
-    const timers = [];
-    for (const delayMs of delaysMs) {
-      const t = setTimeout(() => {
-        // IMPORTANT: do not use async handler directly.
-        (async () => {
-          try {
-            const live = await browser.messages.get(id);
-            if (!live?.folder) return;
-            if (isInboxFolder(live.folder)) return;
-
-            const liveTags = Array.isArray(live.tags) ? live.tags : [];
-            if (!_hasTabMailActionTags(liveTags)) return;
-
-            // Mark ignore window for our own updates to avoid watchdog loops.
-            try {
-              const selfIgnoreMs = Number(SETTINGS?.onMoved?.tagReassertWatchdog?.selfUpdateIgnoreMs);
-              if (Number.isFinite(selfIgnoreMs) && selfIgnoreMs > 0) {
-                _watchdogSelfUpdateUntil.set(id, Date.now() + selfIgnoreMs);
-              }
-            } catch (_) {}
-
-            await _stripActionTagsByIdBestEffort(id, `reassert-guard:${label || ""}:delayMs=${delayMs}`);
-            try {
-              await _clearActionTagsAcrossSpecialUseFoldersByHeaderMessageId(live, `reassert-guard:${label || ""}:delayMs=${delayMs}`);
-            } catch (_) {}
-
-            log(
-              `[TMDBG onMoved] reassert-guard stripped tags delayMs=${delayMs} id=${id} folderPath=${live.folder?.path || ""} folderName=${live.folder?.name || ""}`
-            );
-          } catch (e) {
-            const notFound = _isMessageNotFoundError(e);
-            log(
-              `[TMDBG onMoved] reassert-guard check failed delayMs=${delayMs} id=${id} notFound=${notFound} err=${e} ${label ? `label=${label}` : ""}`,
-              notFound ? "info" : "warn"
-            );
-          }
-        })();
-      }, delayMs);
-      timers.push(t);
-    }
-
-    _reassertGuardTimers.set(id, timers);
-  } catch (_) {}
 }
 
 // ------------------------------
@@ -909,131 +784,31 @@ export function attachOnMovedListeners() {
     log(`[TMDBG MessageActions] Failed to attach messages.onMoved: ${e}`);
   }
 
-  // Watchdog: if IMAP sync reasserts tags outside Inbox, strip them again.
+  // FTS incremental indexing on message updates (Gmail label detection etc.).
   try {
-    const cfg = SETTINGS?.onMoved?.tagReassertWatchdog || null;
-    const enabled = cfg?.enabled === true;
-    if (enabled && browser.messages?.onUpdated && !_onMessageUpdatedHandler) {
-      const minHandleIntervalMs = Number(cfg?.minHandleIntervalMs);
-      const selfUpdateIgnoreMs = Number(cfg?.selfUpdateIgnoreMs);
-      if (
-        !Number.isFinite(minHandleIntervalMs) ||
-        minHandleIntervalMs < 1 ||
-        !Number.isFinite(selfUpdateIgnoreMs) ||
-        selfUpdateIgnoreMs < 1
-      ) {
-        log(
-          `[TMDBG onMoved] tagReassertWatchdog config invalid minHandleIntervalMs=${cfg?.minHandleIntervalMs} selfUpdateIgnoreMs=${cfg?.selfUpdateIgnoreMs}`,
-          "warn"
-        );
-      } else {
-        _onMessageUpdatedHandler = (...args) => {
-          // IMPORTANT: do not use async handler directly.
-          (async () => {
-            try {
-              // Expected patterns (TB): (message, changedProps, oldProps) or (id, changedProps, oldProps).
-              const a0 = args?.[0] ?? null;
-              const a1 = args?.[1] ?? null;
-              const changedProps = a1 && typeof a1 === "object" ? a1 : null;
-              
-              // Integrate FTS incremental indexing for Gmail label detection
-              // This catches when Gmail adds labels (Important, Starred) to existing messages
-              try {
-                const { onMessageUpdated: ftsOnUpdated } = await import("../../fts/incrementalIndexer.js");
-                const msgId = typeof a0 === "number" ? a0 : Number(a0?.id || 0);
-                if (msgId) {
-                  const msg = await browser.messages.get(msgId);
-                  if (msg) {
-                    await ftsOnUpdated(msg, changedProps);
-                  }
-                }
-              } catch (eFts) {
-                // FTS update not critical - log and continue
-                log(`[TMDBG onMoved] FTS onUpdated integration failed: ${eFts}`, "info");
-              }
-              
-              if (!changedProps || !("tags" in changedProps)) {
-                return; // Only react to tag changes for watchdog functionality.
-              }
+    if (browser.messages?.onUpdated && !_onMessageUpdatedHandler) {
+      _onMessageUpdatedHandler = (...args) => {
+        (async () => {
+          try {
+            const a0 = args?.[0] ?? null;
+            const a1 = args?.[1] ?? null;
+            const changedProps = a1 && typeof a1 === "object" ? a1 : null;
 
-              const id = typeof a0 === "number" ? a0 : Number(a0?.id || 0);
-              if (!id) return;
-
-              const now = Date.now();
-              const ignoreUntil = Number(_watchdogSelfUpdateUntil.get(id) || 0);
-              if (ignoreUntil && now < ignoreUntil) {
-                return;
-              }
-
-              const last = Number(_watchdogLastHandledAt.get(id) || 0);
-              if (last && now - last < minHandleIntervalMs) {
-                return;
-              }
-              _watchdogLastHandledAt.set(id, now);
-              _scheduleWatchdogPrune();
-
-              let live = null;
-              try {
-                live = await browser.messages.get(id);
-              } catch (eGet) {
-                const notFound = _isMessageNotFoundError(eGet);
-                log(
-                  `[TMDBG onMoved] watchdog messages.get failed id=${id} notFound=${notFound} err=${eGet}`,
-                  notFound ? "info" : "warn"
-                );
-                return;
-              }
-
-              if (!live?.folder || isInboxFolder(live.folder)) {
-                return;
-              }
-
-              const liveTags = Array.isArray(live.tags) ? live.tags : [];
-              if (!_hasTabMailActionTags(liveTags)) {
-                return;
-              }
-
-              // IMPORTANT: Gmail/IMAP label semantics:
-              // A message can appear in "All Mail" (or other specialUse folders) while still being in Inbox.
-              // In that case, we WANT the tags to remain visible/consistent, so do NOT strip.
-              try {
-                const headerMessageId = live?.headerMessageId ? String(live.headerMessageId).replace(/[<>]/g, "") : "";
-                const accountId = live?.folder?.accountId || "";
-                if (headerMessageId && accountId) {
-                  const inbox = await getInboxForAccount(accountId);
-                  if (inbox?.id) {
-                    const inboxQuery = await browser.messages.query({ folderId: [inbox.id], headerMessageId });
-                    if (inboxQuery?.messages?.length > 0) {
-                      log(`[TMDBG onMoved] watchdog skip strip (exists in Inbox) id=${id} headerMessageId=${headerMessageId}`);
-                      return;
-                    }
-                  }
-                }
-              } catch (_) {}
-
-              _watchdogSelfUpdateUntil.set(id, now + selfUpdateIgnoreMs);
-              await _stripActionTagsByIdBestEffort(id, "watchdog-onUpdated");
-              try {
-                await _clearActionTagsAcrossSpecialUseFoldersByHeaderMessageId(live, "watchdog-onUpdated");
-              } catch (_) {}
-
-              log(
-                `[TMDBG onMoved] watchdog stripped reasserted tags id=${id} folderPath=${live.folder?.path || ""} folderName=${live.folder?.name || ""}`
-              );
-            } catch (e) {
-              log(`[TMDBG onMoved] watchdog handler error: ${e}`, "info");
+            const { onMessageUpdated: ftsOnUpdated } = await import("../../fts/incrementalIndexer.js");
+            const msgId = typeof a0 === "number" ? a0 : Number(a0?.id || 0);
+            if (msgId) {
+              const msg = await browser.messages.get(msgId);
+              if (msg) await ftsOnUpdated(msg, changedProps);
             }
-          })();
-        };
-        browser.messages.onUpdated.addListener(_onMessageUpdatedHandler);
-        log("[TMDBG onMoved] messages.onUpdated watchdog attached");
-      }
-    } else if (enabled && !_onMessageUpdatedHandler) {
-      // If the API isn't available, log once so we know.
-      log("[TMDBG onMoved] tagReassertWatchdog enabled but messages.onUpdated not available", "warn");
+          } catch (eFts) {
+            log(`[TMDBG onMoved] FTS onUpdated integration failed: ${eFts}`, "info");
+          }
+        })();
+      };
+      browser.messages.onUpdated.addListener(_onMessageUpdatedHandler);
     }
   } catch (e) {
-    log(`[TMDBG onMoved] Failed attaching tagReassertWatchdog: ${e}`, "warn");
+    log(`[TMDBG onMoved] Failed attaching messages.onUpdated listener: ${e}`, "warn");
   }
 
   try {
@@ -1236,23 +1011,17 @@ export function attachOnMovedListeners() {
  */
 export function cleanupOnMovedListeners() {
   try {
-    _clearReassertGuardTimers();
-  } catch (_) {}
-  try {
     clearAlarm(STALE_TAG_SWEEP_ALARM_NAME).catch(() => {});
   } catch (_) {}
   try {
     if (_onMessageUpdatedHandler && browser.messages?.onUpdated) {
       browser.messages.onUpdated.removeListener(_onMessageUpdatedHandler);
       _onMessageUpdatedHandler = null;
-      log("[TMDBG onMoved] messages.onUpdated watchdog removed");
+      log("[TMDBG onMoved] messages.onUpdated listener removed");
     }
   } catch (e) {
-    log(`[TMDBG onMoved] Failed to remove messages.onUpdated watchdog: ${e}`, "warn");
+    log(`[TMDBG onMoved] Failed to remove messages.onUpdated listener: ${e}`, "warn");
   }
-  try { _watchdogLastHandledAt = new Map(); } catch (_) {}
-  try { _watchdogSelfUpdateUntil = new Map(); } catch (_) {}
-  try { if (_watchdogPruneTimer) { clearTimeout(_watchdogPruneTimer); _watchdogPruneTimer = null; } } catch (_) {}
   try {
     if (_onMovedHandler && browser.messages?.onMoved) {
       browser.messages.onMoved.removeListener(_onMovedHandler);

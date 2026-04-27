@@ -391,6 +391,68 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet-wrapper {
   }
 }
 
+/* ===== Card View - TabMail Action Classes (Phase 3) =====
+ * The painter in tmMessageListCardView.sys.mjs applies one of
+ * `tm-action-reply/archive/delete/none` classes to each thread-card, sets
+ * `--tag-color` on the card, and injects a `.tm-action-chip` pill next to
+ * the star button. The base (unselected, non-hover) state shows ONLY the
+ * chip — no tint. Hover and selected-state tints are applied by the
+ * existing `var(--tag-color)` rules in the sections above, so selecting
+ * a card still lights it up in its action color.
+ */
+
+/* iOS-style chip pill on each card. Color is driven by the parent's
+ * `.tm-action-<name>` class — keeps the per-action color in one place. */
+.tm-action-chip {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 0.4em;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  align-self: center;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+tr[is="thread-card"].tm-action-reply .tm-action-chip {
+  background-color: color-mix(in srgb, var(--tag-tm-reply) 20%, transparent);
+  color: var(--tag-tm-reply);
+}
+tr[is="thread-card"].tm-action-archive .tm-action-chip {
+  background-color: color-mix(in srgb, var(--tag-tm-archive) 20%, transparent);
+  color: var(--tag-tm-archive);
+}
+tr[is="thread-card"].tm-action-delete .tm-action-chip {
+  background-color: color-mix(in srgb, var(--tag-tm-delete) 20%, transparent);
+  color: var(--tag-tm-delete);
+}
+tr[is="thread-card"].tm-action-none .tm-action-chip {
+  background-color: color-mix(in srgb, var(--tag-tm-none) 20%, transparent);
+  color: var(--tag-tm-none);
+}
+@media (prefers-color-scheme: dark) {
+  tr[is="thread-card"].tm-action-reply .tm-action-chip {
+    background-color: color-mix(in srgb, var(--tag-tm-reply) 30%, transparent);
+    color: color-mix(in srgb, var(--tag-tm-reply) 70%, white);
+  }
+  tr[is="thread-card"].tm-action-archive .tm-action-chip {
+    background-color: color-mix(in srgb, var(--tag-tm-archive) 30%, transparent);
+    color: color-mix(in srgb, var(--tag-tm-archive) 70%, white);
+  }
+  tr[is="thread-card"].tm-action-delete .tm-action-chip {
+    background-color: color-mix(in srgb, var(--tag-tm-delete) 30%, transparent);
+    color: color-mix(in srgb, var(--tag-tm-delete) 70%, white);
+  }
+  tr[is="thread-card"].tm-action-none .tm-action-chip {
+    background-color: color-mix(in srgb, var(--tag-tm-none) 30%, transparent);
+    color: color-mix(in srgb, var(--tag-tm-none) 70%, white);
+  }
+}
+
 /* ===== Table View - Typography ===== */
 /* Use absolute CSS keyword so sizing respects TB's font prefs.
    Padding uses em units so vertical space scales with font size. */
@@ -402,7 +464,7 @@ tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]) {
 }
 
 /* ===== Table View - Tag Tint ===== */
-/* Use :not([is="thread-card"]) to exclude Card View rows from Table View styling 
+/* Use :not([is="thread-card"]) to exclude Card View rows from Table View styling
  * Fallback to --tag-tm-untagged so untagged rows get the untagged color automatically */
 
 #threadTree [id^="threadTree-row"]:not([is="thread-card"]),
@@ -414,6 +476,88 @@ tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]) {
   #threadTree [id^="threadTree-row"]:not([is="thread-card"]),
   tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]) {
     background-color: color-mix(in srgb, var(--tag-color, var(--tag-tm-untagged)) var(--tm-tag-tint-base-dark), transparent) !important;
+  }
+}
+
+/* ===== Table View - TabMail Action Classes =====
+ * The painter in tmMessageListTableView.sys.mjs applies one of
+ * `tm-action-reply/archive/delete/none` classes to each row based on
+ * the IDB-backed action cache. Rows have id="threadTree-rowN" and live
+ * inside a `tree-view#threadTree` ancestor (though the direct parent is
+ * a `<table is="tree-view-table">`). To OVERRIDE the generic line-568
+ * base rule that uses `var(--tag-color, --tag-tm-untagged)`, we must
+ * replicate its selector structure and add `.tm-action-*` — that gives
+ * specificity (1,4,0) vs the base's (1,3,0), so we win deterministically.
+ */
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-reply,
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-reply {
+  background-color: color-mix(in srgb, var(--tag-tm-reply) var(--tm-tag-tint-base-light), transparent) !important;
+}
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-archive,
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-archive {
+  background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-tag-tint-base-light), transparent) !important;
+}
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-delete,
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-delete {
+  background-color: color-mix(in srgb, var(--tag-tm-delete) var(--tm-tag-tint-base-light), transparent) !important;
+}
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-none,
+tree-view#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-none {
+  background-color: color-mix(in srgb, var(--tag-tm-none) var(--tm-tag-tint-base-light), transparent) !important;
+}
+
+/* (A left-border accent stripe on the first `<td>` was tried here but TB's
+ * `tr:is(.table-layout, .card-layout) { contain: strict }` clips the border
+ * to the cell's content box — it never renders. The row-background tint
+ * above is the sole visible indicator.)
+ */
+
+/* Selected state: stronger tint via palette's selected-light opacity. */
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-reply[data-properties~="selected"],
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-reply.selected {
+  background-color: color-mix(in srgb, var(--tag-tm-reply) var(--tm-tag-tint-sel-light), transparent) !important;
+}
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-archive[data-properties~="selected"],
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-archive.selected {
+  background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-tag-tint-sel-light), transparent) !important;
+}
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-delete[data-properties~="selected"],
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-delete.selected {
+  background-color: color-mix(in srgb, var(--tag-tm-delete) var(--tm-tag-tint-sel-light), transparent) !important;
+}
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-none[data-properties~="selected"],
+#threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-none.selected {
+  background-color: color-mix(in srgb, var(--tag-tm-none) var(--tm-tag-tint-sel-light), transparent) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-reply {
+    background-color: color-mix(in srgb, var(--tag-tm-reply) var(--tm-tag-tint-base-dark), transparent) !important;
+  }
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-archive {
+    background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-tag-tint-base-dark), transparent) !important;
+  }
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-delete {
+    background-color: color-mix(in srgb, var(--tag-tm-delete) var(--tm-tag-tint-base-dark), transparent) !important;
+  }
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-none {
+    background-color: color-mix(in srgb, var(--tag-tm-none) var(--tm-tag-tint-base-dark), transparent) !important;
+  }
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-reply[data-properties~="selected"],
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-reply.selected {
+    background-color: color-mix(in srgb, var(--tag-tm-reply) var(--tm-tag-tint-sel-dark), transparent) !important;
+  }
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-archive[data-properties~="selected"],
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-archive.selected {
+    background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-tag-tint-sel-dark), transparent) !important;
+  }
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-delete[data-properties~="selected"],
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-delete.selected {
+    background-color: color-mix(in srgb, var(--tag-tm-delete) var(--tm-tag-tint-sel-dark), transparent) !important;
+  }
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-none[data-properties~="selected"],
+  #threadTree [id^="threadTree-row"]:not([is="thread-card"]).tm-action-none.selected {
+    background-color: color-mix(in srgb, var(--tag-tm-none) var(--tm-tag-tint-sel-dark), transparent) !important;
   }
 }
 

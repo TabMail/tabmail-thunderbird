@@ -106,16 +106,9 @@ vi.mock('../agent/modules/messagePrefilter.js', () => ({
   analyzeEmailForReplyFilter: (...args) => mockAnalyzeEmailForReplyFilter(...args),
 }));
 
-const mockActionFromLiveTagIds = vi.fn().mockReturnValue(null);
 const mockIsMessageInInboxByUniqueKey = vi.fn().mockResolvedValue(true);
 vi.mock('../agent/modules/tagHelper.js', () => ({
-  actionFromLiveTagIds: (...args) => mockActionFromLiveTagIds(...args),
   isMessageInInboxByUniqueKey: (...args) => mockIsMessageInInboxByUniqueKey(...args),
-}));
-
-const mockResolveGmailAction = vi.fn().mockResolvedValue(null);
-vi.mock('../agent/modules/gmailLabelSync.js', () => ({
-  resolveGmailAction: (...args) => mockResolveGmailAction(...args),
 }));
 
 const mockSendChat = vi.fn();
@@ -185,8 +178,6 @@ beforeEach(() => {
   mockGetUserActionPrompt.mockResolvedValue('');
   mockGetSummary.mockResolvedValue({ blurb: 'Test summary', todos: '' });
   mockAnalyzeEmailForReplyFilter.mockResolvedValue({ isNoReply: false, hasUnsubscribe: false });
-  mockActionFromLiveTagIds.mockReturnValue(null);
-  mockResolveGmailAction.mockResolvedValue(null);
   mockIsMessageInInboxByUniqueKey.mockResolvedValue(true);
   mockGetRealSubject.mockImplementation(async (header) => header?.subject || "");
   browser.messages.get.mockResolvedValue({ tags: [] });
@@ -241,48 +232,43 @@ describe('getAction', () => {
     expect(mockSendChat).toHaveBeenCalled();
   });
 
-  // ── Cache-IMAP mismatch detection ────────────────────────────────────
+  // ── IDB-only cache path (first-compute-wins via IMAP/Gmail was removed in Phase 0) ──
 
-  it('adopts remote IMAP tag when it differs from cache', async () => {
+  it('returns IDB-cached action even if live header has a different tm_* keyword', async () => {
+    // Post-Phase-0: the IDB cache is authoritative. We no longer consult
+    // `actionFromLiveTagIds` / `resolveGmailAction` to second-guess it.
     idbStore['action:test-unique-key'] = 'archive';
     idbStore['action:ts:test-unique-key'] = { ts: Date.now() };
 
-    // Remote tag says "reply" but cache says "archive"
     browser.messages.get.mockResolvedValue({ tags: ['tm_reply'] });
-    mockActionFromLiveTagIds.mockReturnValue('reply');
-    mockResolveGmailAction.mockResolvedValue('reply');
 
     const result = await getAction(makeHeader());
-    expect(result).toBe('reply');
-    // Cache should be updated
-    expect(idbStore['action:test-unique-key']).toBe('reply');
+    expect(result).toBe('archive');
+    expect(idbStore['action:test-unique-key']).toBe('archive');
   });
 
-  it('returns cached action when IMAP tag matches cache', async () => {
+  it('returns cached action regardless of live tags', async () => {
     idbStore['action:test-unique-key'] = 'archive';
     idbStore['action:ts:test-unique-key'] = { ts: Date.now() };
 
     browser.messages.get.mockResolvedValue({ tags: ['tm_archive'] });
-    mockActionFromLiveTagIds.mockReturnValue('archive');
-    mockResolveGmailAction.mockResolvedValue('archive');
 
     const result = await getAction(makeHeader());
     expect(result).toBe('archive');
   });
 
-  // ── IMAP "first compute wins" ────────────────────────────────────────
-
-  it('adopts IMAP tag without LLM call when no cache exists', async () => {
-    // No cache, but IMAP already has a tag from another instance
+  it('falls through to LLM on cache miss even when live header has a tm_* keyword', async () => {
+    // Post-Phase-0: no "first compute wins" short-circuit from IMAP/Gmail tags.
+    // Cache miss → Device Sync probe (below) or LLM. Here, probe returns null, LLM wins.
     browser.messages.get.mockResolvedValue({ tags: ['tm_delete'] });
-    mockActionFromLiveTagIds.mockReturnValue('delete');
-    mockResolveGmailAction.mockResolvedValue('delete');
+
+    mockSendChat.mockResolvedValue({ assistant: '{"action": "reply"}' });
+    mockProcessJSONResponse.mockReturnValue({ action: 'reply' });
 
     const result = await getAction(makeHeader());
-    expect(result).toBe('delete');
-    expect(mockSendChat).not.toHaveBeenCalled();
-    // Should be cached
-    expect(idbStore['action:test-unique-key']).toBe('delete');
+    expect(result).toBe('reply');
+    expect(mockSendChat).toHaveBeenCalled();
+    expect(idbStore['action:test-unique-key']).toBe('reply');
   });
 
   // ── LLM voting logic (parallel calls + mode selection) ───────────────
@@ -297,10 +283,7 @@ describe('getAction', () => {
       .mockReturnValueOnce({ action: 'archive' })
       .mockReturnValueOnce({ action: 'reply' });
 
-    // No IMAP tag on first check (pre-semaphore) or second check (post-semaphore)
     browser.messages.get.mockResolvedValue({ tags: [] });
-    mockActionFromLiveTagIds.mockReturnValue(null);
-    mockResolveGmailAction.mockResolvedValue(null);
 
     const result = await getAction(makeHeader());
     expect(result).toBe('reply');

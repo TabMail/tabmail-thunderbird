@@ -1,6 +1,6 @@
-// Main helper for message-level actions triggered by tags.
+// Main helper for message-level actions triggered by the cached AI action.
+import { ACTIONS, getActionForWeId } from "./actionCache.js";
 import { trackComposeWindow } from "./composeTracker.js";
-import { ACTION_TAG_IDS } from "./tagHelper.js";
 import {
   getArchiveFolderForHeader,
   getIdentityForMessage,
@@ -10,7 +10,7 @@ import {
 } from "./utils.js";
 
 /**
- * Perform the appropriate action for a single message based on its action tag.
+ * Perform the appropriate action for a single message based on its cached AI action.
  * Returns a string describing the outcome (e.g. "deleted", "archived", "no_action", "error").
  *
  * @param {object} msg - A minimal message object (must contain an `id` field).
@@ -20,9 +20,9 @@ export async function performTaggedAction(msg, header = null) {
   try {
     // Ensure we have the full header when folder info is required.
     const hdr = header || (await browser.messages.get(msg.id));
-    const tags = hdr.tags || [];
+    const action = await getActionForWeId(hdr);
 
-    if (tags.includes(ACTION_TAG_IDS.delete)) {
+    if (action === ACTIONS.DELETE) {
       // Obtain the trash folder for the account of the message.
       try {
         const trashFolder = await getTrashFolderForHeader(hdr);
@@ -75,7 +75,7 @@ export async function performTaggedAction(msg, header = null) {
       return "trash_not_found";
     }
 
-    if (tags.includes(ACTION_TAG_IDS.archive)) {
+    if (action === ACTIONS.ARCHIVE) {
       // log(`[TMDBG MessageActions] Archiving (via move) message ${msg.id} due to tm_archive tag.`);
       try {
         const archiveFolder = await getArchiveFolderForHeader(hdr);
@@ -128,7 +128,7 @@ export async function performTaggedAction(msg, header = null) {
       }
     }
 
-    if (tags.includes(ACTION_TAG_IDS.reply)) {
+    if (action === ACTIONS.REPLY) {
       // Open a reply compose window for the message
       // Tag clearing is handled by composeTracker when the message is actually sent
       try {

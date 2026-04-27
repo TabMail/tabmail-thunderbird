@@ -6,8 +6,7 @@ import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
 import { getUserActionPrompt } from "./promptGenerator.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary } from "./summaryGenerator.js";
-import { actionFromLiveTagIds, isMessageInInboxByUniqueKey } from "./tagHelper.js";
-import { resolveGmailAction } from "./gmailLabelSync.js";
+import { isMessageInInboxByUniqueKey } from "./tagHelper.js";
 import {
   extractBodyFromParts,
   getRealSubject,
@@ -211,27 +210,11 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
   const cacheKey = ACTION_PREFIX + uniqueKey;
   const metaKey = ACTION_TS_PREFIX + uniqueKey;
 
-  // Check cache - if it exists, verify against live IMAP tags before returning.
-  // A remote client (iOS, another TB) may have changed the tag since we cached it.
+  // Check cache. No IMAP/Gmail "verify remote tag" branch anymore —
+  // cross-instance sync is covered by the Device Sync probe below.
   if (!forceRecompute) {
     const existing = await idb.get(cacheKey);
     if (existing[cacheKey]) {
-      // Verify IMAP tag still matches cache — prevents race where a remote client
-      // changed the tag but our cache still holds the old action.
-      try {
-        const freshHeader = await browser.messages.get(messageHeader.id);
-        let imapAction = actionFromLiveTagIds(freshHeader?.tags);
-        // For Gmail accounts, REST API labels are the primary source —
-        // both iOS and TB write them. IMAP keywords are secondary.
-        imapAction = await resolveGmailAction(freshHeader, imapAction);
-        if (imapAction && imapAction !== existing[cacheKey]) {
-          log(`${PFX}Cache-IMAP mismatch for ${messageHeader.id} (${uniqueKey}): cache="${existing[cacheKey]}" vs IMAP="${imapAction}" — adopting remote tag`);
-          await idb.set({ [cacheKey]: imapAction, [metaKey]: { ts: Date.now() } });
-          return imapAction;
-        }
-      } catch (eVerify) {
-        log(`${PFX}IMAP verification on cache HIT failed for ${messageHeader.id}: ${eVerify}`, "warn");
-      }
       log(`${PFX}>>> Cache HIT for message ${messageHeader.id} (${uniqueKey}): returning cached action="${existing[cacheKey]}" (LLM will NOT run)`);
       // Touch the cache entry by updating its timestamp
       await idb.set({ [metaKey]: { ts: Date.now() } });
@@ -251,28 +234,6 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
         // Touch the cache entry by updating its timestamp
         await idb.set({ [metaKey]: { ts: Date.now() } });
         return existingAfterSemaphore[cacheKey];
-      }
-    }
-
-    // "First compute wins": check if another TM instance (e.g. iOS) already
-    // tagged this message via IMAP. If so, adopt the tag without LLM computation.
-    // Skip when forceRecompute is set (user explicitly requested fresh LLM computation).
-    if (!forceRecompute) {
-      try {
-        const freshHeader = await browser.messages.get(messageHeader.id);
-        let imapAction = actionFromLiveTagIds(freshHeader?.tags);
-        // For Gmail accounts, REST API labels are the primary source —
-        // both iOS and TB write them. IMAP keywords are secondary (iOS
-        // doesn't write them). No-op for non-Gmail accounts.
-        imapAction = await resolveGmailAction(freshHeader, imapAction);
-        if (imapAction) {
-          log(`${PFX}IMAP/folder tag HIT for ${messageHeader.id} (${uniqueKey}): adopting action="${imapAction}" (no LLM)`);
-          await idb.set({ [cacheKey]: imapAction, [metaKey]: { ts: Date.now() } });
-          await recordOriginalActionOnce(uniqueKey, imapAction);
-          return imapAction;
-        }
-      } catch (eImapCheck) {
-        log(`${PFX}IMAP tag check failed for ${messageHeader.id}: ${eImapCheck}`, "warn");
       }
     }
 

@@ -213,8 +213,6 @@ describe('SETTINGS', () => {
     expect(SETTINGS.onMoved).toBeDefined();
     expect(SETTINGS.onMoved.tagClearOnLeaveInbox).toBeDefined();
     expect(typeof SETTINGS.onMoved.tagClearOnLeaveInbox.maxAttempts).toBe('number');
-    expect(SETTINGS.onMoved.tagReassertWatchdog).toBeDefined();
-    expect(SETTINGS.onMoved.tagReassertGuard).toBeDefined();
     expect(SETTINGS.onMoved.staleTagSweep).toBeDefined();
   });
 

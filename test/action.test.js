@@ -1,6 +1,7 @@
 // action.test.js — Tests for agent/modules/action.js
 //
-// Tests performTaggedAction which executes message actions based on tags.
+// Tests performTaggedAction which executes message actions based on the
+// cached AI action (read from actionCache → IDB).
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -18,13 +19,12 @@ vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
 vi.mock('../agent/modules/composeTracker.js', () => ({
   trackComposeWindow: vi.fn(),
 }));
-vi.mock('../agent/modules/tagHelper.js', () => ({
-  ACTION_TAG_IDS: {
-    reply: 'tm_reply',
-    archive: 'tm_archive',
-    delete: 'tm_delete',
-    none: 'tm_none',
-  },
+
+const mockGetActionForWeId = vi.fn();
+
+vi.mock('../agent/modules/actionCache.js', () => ({
+  ACTIONS: { REPLY: 'reply', ARCHIVE: 'archive', DELETE: 'delete', NONE: 'none' },
+  getActionForWeId: (...args) => mockGetActionForWeId(...args),
 }));
 
 const mockGetTrashFolder = vi.fn();
@@ -62,17 +62,19 @@ beforeEach(() => {
 });
 
 describe('performTaggedAction', () => {
-  it('returns "no_action" when message has no action tags', async () => {
-    browser.messages.get.mockResolvedValue({ tags: ['unrelated'] });
+  it('returns "no_action" when message has no cached action', async () => {
+    browser.messages.get.mockResolvedValue({ tags: [] });
+    mockGetActionForWeId.mockResolvedValue(null);
     const result = await performTaggedAction({ id: 1 });
     expect(result).toBe('no_action');
   });
 
-  it('returns "deleted" when tm_delete tag is present and trash folder found', async () => {
-    const hdr = { tags: ['tm_delete'], folder: { accountId: 'acc1' } };
+  it('returns "deleted" when action is "delete" and trash folder found', async () => {
+    const hdr = { tags: [], folder: { accountId: 'acc1' } };
     browser.messages.get.mockResolvedValue(hdr);
     browser.messages.update.mockResolvedValue(undefined);
     browser.messages.move.mockResolvedValue(undefined);
+    mockGetActionForWeId.mockResolvedValue('delete');
     mockGetTrashFolder.mockResolvedValue({ id: 'trash-id', path: '/Trash' });
 
     const result = await performTaggedAction({ id: 1 });
@@ -82,19 +84,21 @@ describe('performTaggedAction', () => {
   });
 
   it('returns "trash_not_found" when trash folder not found', async () => {
-    const hdr = { tags: ['tm_delete'], folder: { accountId: 'acc1' } };
+    const hdr = { tags: [], folder: { accountId: 'acc1' } };
     browser.messages.get.mockResolvedValue(hdr);
+    mockGetActionForWeId.mockResolvedValue('delete');
     mockGetTrashFolder.mockResolvedValue(null);
 
     const result = await performTaggedAction({ id: 1 });
     expect(result).toBe('trash_not_found');
   });
 
-  it('returns "archived" when tm_archive tag is present', async () => {
-    const hdr = { tags: ['tm_archive'], folder: { accountId: 'acc1' } };
+  it('returns "archived" when action is "archive"', async () => {
+    const hdr = { tags: [], folder: { accountId: 'acc1' } };
     browser.messages.get.mockResolvedValue(hdr);
     browser.messages.update.mockResolvedValue(undefined);
     browser.messages.move.mockResolvedValue(undefined);
+    mockGetActionForWeId.mockResolvedValue('archive');
     mockGetArchiveFolder.mockResolvedValue({ id: 'archive-id', path: '/Archive' });
 
     const result = await performTaggedAction({ id: 2 });
@@ -104,17 +108,19 @@ describe('performTaggedAction', () => {
   });
 
   it('returns "archive_folder_missing" when archive folder not found', async () => {
-    const hdr = { tags: ['tm_archive'], folder: { accountId: 'acc1' } };
+    const hdr = { tags: [], folder: { accountId: 'acc1' } };
     browser.messages.get.mockResolvedValue(hdr);
+    mockGetActionForWeId.mockResolvedValue('archive');
     mockGetArchiveFolder.mockResolvedValue(null);
 
     const result = await performTaggedAction({ id: 3 });
     expect(result).toBe('archive_folder_missing');
   });
 
-  it('returns "reply_opened" when tm_reply tag is present', async () => {
-    const hdr = { tags: ['tm_reply'] };
+  it('returns "reply_opened" when action is "reply"', async () => {
+    const hdr = { tags: [] };
     browser.messages.get.mockResolvedValue(hdr);
+    mockGetActionForWeId.mockResolvedValue('reply');
     mockGetIdentityForMessage.mockResolvedValue({ identityId: 'id1' });
     browser.compose.beginReply.mockResolvedValue({ id: 42 });
 
@@ -124,8 +130,9 @@ describe('performTaggedAction', () => {
   });
 
   it('returns "reply_opened" even without identity', async () => {
-    const hdr = { tags: ['tm_reply'] };
+    const hdr = { tags: [] };
     browser.messages.get.mockResolvedValue(hdr);
+    mockGetActionForWeId.mockResolvedValue('reply');
     mockGetIdentityForMessage.mockResolvedValue(null);
     browser.compose.beginReply.mockResolvedValue({ id: 43 });
 
@@ -135,7 +142,8 @@ describe('performTaggedAction', () => {
   });
 
   it('uses provided header instead of fetching', async () => {
-    const hdr = { tags: ['tm_none'] };
+    const hdr = { tags: [] };
+    mockGetActionForWeId.mockResolvedValue('none');
     const result = await performTaggedAction({ id: 6 }, hdr);
     expect(result).toBe('no_action');
     expect(browser.messages.get).not.toHaveBeenCalled();
@@ -151,6 +159,7 @@ describe('performTaggedAction', () => {
 describe('performTaggedActions', () => {
   it('processes multiple messages', async () => {
     browser.messages.get.mockResolvedValue({ tags: [] });
+    mockGetActionForWeId.mockResolvedValue(null);
     const results = await performTaggedActions([{ id: 1 }, { id: 2 }]);
     expect(results).toEqual(['no_action', 'no_action']);
   });

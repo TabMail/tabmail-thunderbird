@@ -10,6 +10,9 @@
 const { ExtensionSupport: ExtensionSupport_MLCV } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
+const { MailServices: MailServices_MLCV } = ChromeUtils.importESModule(
+  "resource:///modules/MailServices.sys.mjs"
+);
 const { ExtensionCommon: ExtensionCommon_MLCV } = ChromeUtils.importESModule(
   "resource://gre/modules/ExtensionCommon.sys.mjs"
 );
@@ -516,6 +519,159 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
 
     // _applySenderScaleToRow removed - replaced by _applyZeroFlickerEnhancements in fillRow patch
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // TabMail action paint (Phase 3)
+    //
+    // Reads `tm-action` mork string property from the hdr (written by
+    // actionCache → tmHdr.setAction). Applies a tm-action-<name> class on
+    // the card row, sets `--tag-color` inline var, and injects/updates
+    // a chip element. Legacy tm_* keyword fallback for pre-backfill data.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    const TM_ACTION_PROP_NAME_MLCV = "tm-action";
+    const TM_ACTION_CLASSES_MLCV = [
+      "tm-action-reply",
+      "tm-action-archive",
+      "tm-action-delete",
+      "tm-action-none",
+    ];
+    const _ACTION_TO_KEYWORD_MLCV = {
+      reply: "tm_reply",
+      archive: "tm_archive",
+      delete: "tm_delete",
+      none: "tm_none",
+    };
+    const _KEYWORD_TO_ACTION_MLCV = {
+      tm_reply: "reply",
+      tm_archive: "archive",
+      tm_delete: "delete",
+      tm_none: "none",
+    };
+    const _ACTION_LABELS_MLCV = {
+      reply: "Reply",
+      archive: "Archive",
+      delete: "Delete",
+      none: "None",
+    };
+    // Keep priority order consistent with tagSort / tmMessageListTableView.
+    const TM_ACTION_PRIORITY_MLCV = ["reply", "none", "archive", "delete"];
+
+    function _actionFromKeywords_MLCV(hdr) {
+      try {
+        const kw = hdr?.getStringProperty?.("keywords") || "";
+        if (!kw) return null;
+        const keys = kw.split(/\s+/).filter(Boolean);
+        for (const a of TM_ACTION_PRIORITY_MLCV) {
+          const k = _ACTION_TO_KEYWORD_MLCV[a];
+          if (k && keys.includes(k)) return a;
+        }
+        return null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function _lookupActionForCard_MLCV(hdr) {
+      try {
+        const prop = hdr?.getStringProperty?.(TM_ACTION_PROP_NAME_MLCV) || "";
+        if (prop) return String(prop);
+      } catch (_) {}
+      return _actionFromKeywords_MLCV(hdr);
+    }
+
+    function _colorForAction_MLCV(action) {
+      // MailServices.tags.getColorForKey reads the registered tag def color
+      // (set by ensureActionTags with palette values). Single source of truth
+      // for visible action color across table + card views.
+      const key = _ACTION_TO_KEYWORD_MLCV[action];
+      if (!key) return null;
+      try { return MailServices_MLCV?.tags?.getColorForKey?.(key) || null; }
+      catch (_) { return null; }
+    }
+
+    const CHIP_CLASS_MLCV = "tm-action-chip";
+
+    /**
+     * Inject or update the iOS-style action chip inside the card.
+     * Placed just after `.button-star` so it sits in the bottom-right
+     * of the card, mirroring the iOS app's layout.
+     *
+     * Idempotent: if the chip already exists with the correct class/text,
+     * leave it alone. Re-inserting on every fillRow caused a layout blink
+     * on selection (fillRow fires on state changes → chip briefly absent
+     * → content height shifts → chip re-appears → shifts back).
+     */
+    function _paintChipOnCard_MLCV(cardRow, action, doc) {
+      try {
+        if (!cardRow || !doc) return;
+        const existing = cardRow.querySelector?.(`.${CHIP_CLASS_MLCV}`);
+
+        if (!action) {
+          if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+          return;
+        }
+
+        const label = _ACTION_LABELS_MLCV[action];
+        if (!label) {
+          if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+          return;
+        }
+        const expectedCls = `${CHIP_CLASS_MLCV} tm-action-${action}`;
+
+        if (existing) {
+          if (existing.className !== expectedCls) existing.className = expectedCls;
+          if (existing.textContent !== label) existing.textContent = label;
+          return;
+        }
+
+        const chip = doc.createElement("span");
+        chip.className = expectedCls;
+        chip.textContent = label;
+
+        const star = cardRow.querySelector?.(".button-star");
+        if (star && star.parentNode) {
+          if (star.nextSibling) star.parentNode.insertBefore(chip, star.nextSibling);
+          else star.parentNode.appendChild(chip);
+          return;
+        }
+        const host = cardRow.querySelector?.(".thread-card-icon-info")
+          || cardRow.querySelector?.(".thread-card-subject-container")
+          || cardRow.querySelector?.(".thread-card-dynamic-row")
+          || cardRow.querySelector?.(".card-container")
+          || cardRow;
+        if (host) host.appendChild(chip);
+      } catch (_) {}
+    }
+
+    function _paintCardForAction_MLCV(cardRow, action, doc) {
+      if (!cardRow) return;
+      try {
+        // Idempotent class update: only touch classList if the action changed.
+        const expectedCls = action ? `tm-action-${action}` : "";
+        let currentCls = "";
+        for (const cls of TM_ACTION_CLASSES_MLCV) {
+          if (cardRow.classList?.contains(cls)) { currentCls = cls; break; }
+        }
+        if (currentCls !== expectedCls) {
+          if (currentCls) cardRow.classList.remove(currentCls);
+          if (expectedCls && TM_ACTION_CLASSES_MLCV.includes(expectedCls)) {
+            cardRow.classList.add(expectedCls);
+          }
+        }
+
+        // Idempotent --tag-color update.
+        const color = action ? _colorForAction_MLCV(action) : null;
+        const currentColor = cardRow.style?.getPropertyValue?.("--tag-color") || "";
+        if (color) {
+          if (currentColor !== color) cardRow.style.setProperty("--tag-color", color);
+        } else if (currentColor) {
+          cardRow.style.removeProperty("--tag-color");
+        }
+
+        _paintChipOnCard_MLCV(cardRow, action, doc);
+      } catch (_) {}
+    }
+
     /**
      * Strip email address from sender text, leaving only the name.
      * "Siddharth Haldar <email@example.com>" -> "Siddharth Haldar"
@@ -567,6 +723,15 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
             stripEmailEnabled: CARD_SENDER_CONFIG_MLCV.stripEmail,
           });
         }
+
+        // 0. Paint from TabMail action: class + `--tag-color` + iOS chip.
+        //    Reads `tm-action` hdr string property (written by actionCache
+        //    via tmHdr.setAction). Runs on every row render so it's always
+        //    up to date — no external sync needed.
+        try {
+          const action = _lookupActionForCard_MLCV(hdr);
+          _paintCardForAction_MLCV(row, action, doc);
+        } catch (_) {}
 
         // 1. Strip email from sender (zero-flicker)
         const ZERO_FLICKER_SENDER_ENABLED = true;

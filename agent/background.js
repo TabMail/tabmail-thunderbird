@@ -27,13 +27,13 @@ import {
 } from "./modules/eventLogger.js";
 import { enforceMailSyncPrefs } from "./modules/startupPrefs.js";
 import { initSummaryFeatures, refreshCurrentMessageSummary, signalBubbleReady } from "./modules/summary.js";
+import { getActionForUniqueKey, pushAllActionsToExperimentsOnStartup } from "./modules/actionCache.js";
 import { registerTabKeyHandlers } from "./modules/tagActionKey.js";
 import {
   attachTagByThreadListener,
   attachThreadTagWatchers,
   cleanupTagByThreadListener,
   cleanupThreadTagWatchers,
-  importActionFromImapTag,
 } from "./modules/tagHelper.js";
 import { attachThreadTooltipHandlers } from "./modules/threadTooltip.js";
 import { log, signalChatTyping } from "./modules/utils.js";
@@ -1027,16 +1027,15 @@ if (!_onNewMailReceivedListener) {
       return;
     }
 
-    // Enqueue messages for processing (skip already-tagged — "first compute wins")
-    // processMessage handles internal/external distinction internally
+    // Enqueue messages for processing (skip messages that already have a cached AI action).
+    // processMessage handles internal/external distinction internally.
     log(`[InboxActivity] Enqueueing ${notification.messages.length} new message(s) for processing`);
 
     // Process all messages in parallel — enqueueProcessMessage with object headers
     // is pure computation (no TB API calls), safe to parallelize.
     const results = await Promise.all(notification.messages.map(async (msg) => {
-      if (hasTabMailTag(msg.tags)) {
-        try { await importActionFromImapTag(msg); } catch (_) {}
-        return "tagged";
+      if (await hasCachedAction(msg)) {
+        return "cached";
       }
       try {
         await enqueueProcessMessage(msg, { isPriority: false, source: "onNewMailReceived" });
@@ -1047,9 +1046,9 @@ if (!_onNewMailReceivedListener) {
       }
     }));
     const enqueuedCount = results.filter(r => r === "enqueued").length;
-    const skippedTaggedCount = results.filter(r => r === "tagged").length;
-    if (skippedTaggedCount > 0) {
-      log(`[InboxActivity] Skipped ${skippedTaggedCount} already-tagged message(s) in onNewMailReceived (first compute wins)`);
+    const skippedCachedCount = results.filter(r => r === "cached").length;
+    if (skippedCachedCount > 0) {
+      log(`[InboxActivity] Skipped ${skippedCachedCount} already-classified message(s) in onNewMailReceived`);
     }
 
     log(`[InboxActivity] Enqueued ${enqueuedCount}/${notification.messages.length} new message(s)`);
@@ -1095,7 +1094,7 @@ if (!_onMovedInboxListener) {
     // processMessage handles internal/external distinction internally
     const movedResults = await Promise.all(movedMessages.messages.map(async (msg) => {
       if (!msg.folder || !isInboxFolder(msg.folder)) return "not-inbox";
-      if (hasTabMailTag(msg.tags)) return "tagged";
+      if (await hasCachedAction(msg)) return "cached";
       try {
         await enqueueProcessMessage(msg, { isPriority: false, source: "onMoved" });
         return "enqueued";
@@ -1150,7 +1149,7 @@ if (!_onCopiedInboxListener) {
     // processMessage handles internal/external distinction internally
     const copiedResults = await Promise.all(copiedMessages.messages.map(async (msg) => {
       if (!msg.folder || !isInboxFolder(msg.folder)) return "not-inbox";
-      if (hasTabMailTag(msg.tags)) return "tagged";
+      if (await hasCachedAction(msg)) return "cached";
       try {
         await enqueueProcessMessage(msg, { isPriority: false, source: "onCopied" });
         return "enqueued";
@@ -1243,9 +1242,9 @@ function attachTmMsgNotifyListeners() {
       return;
     }
     
-    // Skip if already has TabMail tag (avoid redundant processing)
-    if (hasTabMailTag(msgHeader.tags)) {
-      log(`[tmMsgNotify] Skipping message ${msgHeader.id} - already has TabMail tag: [${msgHeader.tags?.join(",")}]`);
+    // Skip if already has a cached AI action (avoid redundant processing)
+    if (await hasCachedAction(msgHeader)) {
+      log(`[tmMsgNotify] Skipping message ${msgHeader.id} - already classified`);
       return;
     }
     
@@ -1294,13 +1293,19 @@ attachTmMsgNotifyListeners();
 
 let _untaggedCoverageListener = null;
 
-// TabMail action tag IDs - used to check if a message already has a TabMail tag
-// (avoids importing from tagHelper.js to prevent circular dependencies)
-const TABMAIL_ACTION_TAG_IDS = new Set(["tm_delete", "tm_archive", "tm_reply", "tm_none"]);
-
-function hasTabMailTag(tags) {
-  if (!Array.isArray(tags)) return false;
-  return tags.some((t) => TABMAIL_ACTION_TAG_IDS.has(t));
+/**
+ * Check whether a message already has a cached AI action in IDB.
+ * Replaces the old `hasTabMailTag(msg.tags)` that inspected IMAP keywords.
+ */
+async function hasCachedAction(msg) {
+  try {
+    const { getUniqueMessageKey } = await import("./modules/utils.js");
+    const uniqueKey = await getUniqueMessageKey(msg);
+    if (!uniqueKey) return false;
+    return !!(await getActionForUniqueKey(uniqueKey));
+  } catch (_) {
+    return false;
+  }
 }
 
 async function handleUntaggedInboxMessages(messages) {
@@ -1342,11 +1347,9 @@ async function handleUntaggedInboxMessages(messages) {
         continue;
       }
 
-      // IMPORTANT: Check if message already has a TabMail tag via WE API
-      // The experiment uses native keywords which may be stale, but WE API should be current
-      // Skip enqueueing if already tagged to avoid redundant processing cycles
-      if (hasTabMailTag(msgHeader.tags)) {
-        log(`[Coverage] Skipping message ${msgHeader.id} - already has TabMail tag: [${msgHeader.tags?.join(",")}]`);
+      // Skip if already classified (cached action in IDB).
+      if (await hasCachedAction(msgHeader)) {
+        log(`[Coverage] Skipping message ${msgHeader.id} - already classified`);
         continue;
       }
 
@@ -1363,12 +1366,12 @@ function attachUntaggedCoverageListener() {
   if (_untaggedCoverageListener) return;
 
   try {
-    if (browser.tagSort?.onUntaggedInboxMessages) {
+    if (browser.tmMessageListTableView?.onUntaggedInboxMessages) {
       _untaggedCoverageListener = handleUntaggedInboxMessages;
-      browser.tagSort.onUntaggedInboxMessages.addListener(_untaggedCoverageListener);
-      log("[TMDBG Agent] tagSort.onUntaggedInboxMessages listener attached");
+      browser.tmMessageListTableView.onUntaggedInboxMessages.addListener(_untaggedCoverageListener);
+      log("[TMDBG Agent] tmMessageListTableView.onUntaggedInboxMessages listener attached");
     } else {
-      log("[Coverage] tagSort.onUntaggedInboxMessages not available - coverage listener not attached", "warn");
+      log("[Coverage] tmMessageListTableView.onUntaggedInboxMessages not available - coverage listener not attached", "warn");
     }
   } catch (e) {
     log(`[Coverage] Failed to attach onUntaggedInboxMessages listener: ${e}`, "error");
@@ -1376,11 +1379,11 @@ function attachUntaggedCoverageListener() {
 }
 
 function cleanupUntaggedCoverageListener() {
-  if (_untaggedCoverageListener && browser.tagSort?.onUntaggedInboxMessages) {
+  if (_untaggedCoverageListener && browser.tmMessageListTableView?.onUntaggedInboxMessages) {
     try {
-      browser.tagSort.onUntaggedInboxMessages.removeListener(_untaggedCoverageListener);
+      browser.tmMessageListTableView.onUntaggedInboxMessages.removeListener(_untaggedCoverageListener);
       _untaggedCoverageListener = null;
-      log("[TMDBG Agent] tagSort.onUntaggedInboxMessages listener removed");
+      log("[TMDBG Agent] tmMessageListTableView.onUntaggedInboxMessages listener removed");
     } catch (e) {
       log(`[Coverage] Error removing listener: ${e}`, "error");
     }
@@ -1826,6 +1829,18 @@ async function init() {
     // 9. Auto-detect default calendar based on user's email accounts (if not already set)
     await autoDetectDefaultCalendar();
 
+    // 10a. Populate view-experiment action maps from IDB ASAP (fire-and-forget).
+    //      Runs concurrently with everything that follows — the view
+    //      experiments fall back to legacy keywords + fillRow paints until this
+    //      lands, but landing earlier means rows get colored faster after reload.
+    try {
+        pushAllActionsToExperimentsOnStartup().catch((e) => {
+            log(`[actionCache] Startup bulk-push failed: ${e}`, "warn");
+        });
+    } catch (e) {
+        log(`[actionCache] Startup bulk-push init failed: ${e}`, "warn");
+    }
+
     // 10. Device sync — auto-connect and start storage listener for always-on Device sync.
     try {
         const { connect: connectDeviceSync, setupStorageListener, isAutoEnabled, setAICacheProbeHandler } = await import("./modules/deviceSync.js");
@@ -1889,11 +1904,10 @@ async function init() {
         log(`[DeviceSync] Auto-connect failed (will retry on reconnect): ${e}`, "warn");
     }
 
-    // 11. Start periodic inbox scan (DISABLED - replaced by tagSort row coloring coverage)
-    // The tagSort experiment now detects untagged inbox messages during the row coloring pass
-    // and fires an event to MV3 which enqueues them for processing. This provides complete
-    // coverage without periodic polling overhead.
-    startPeriodicInboxScan(); // Will no-op when intervalMs <= 0
+    // 11. Start periodic inbox scan (coverage fallback — noop when intervalMs <= 0).
+    //     The tmMessageListTableView experiment detects untagged inbox messages
+    //     during the row coloring pass and fires onUntaggedInboxMessages events.
+    startPeriodicInboxScan();
 
 }
 

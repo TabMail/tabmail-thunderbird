@@ -1,3 +1,4 @@
+import { getActionForUniqueKey } from "./actionCache.js";
 import { getAction, purgeExpiredActionEntries } from "./actionGenerator.js";
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
@@ -6,8 +7,8 @@ import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
 import { purgeExpiredReplyEntries } from "./replyGenerator.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary, purgeExpiredSummaryEntries } from "./summaryGenerator.js";
-import { ACTION_TAG_IDS, applyActionTags, applyPriorityTag, importActionFromImapTag } from "./tagHelper.js";
-import { log } from "./utils.js";
+import { applyActionTags, applyPriorityTag } from "./tagHelper.js";
+import { getUniqueMessageKey, log } from "./utils.js";
 
 /**
  * Unified pipeline for a single message:
@@ -284,43 +285,27 @@ export async function processCandidatesInFolder(folder) {
       return;
     }
 
-    // 3. Filter out messages that already have TabMail tags (already processed)
-    // This avoids redundant processing cycles
-    const tabMailTagIds = new Set(Object.values(ACTION_TAG_IDS));
-    const untaggedCandidates = candidates.filter((msg) => {
-      const tags = Array.isArray(msg.tags) ? msg.tags : [];
-      const hasTabMailTag = tags.some((t) => tabMailTagIds.has(t));
-      return !hasTabMailTag;
-    });
-    
-    const skippedCount = candidates.length - untaggedCandidates.length;
-    if (skippedCount > 0) {
-      log(`[FolderScan] Skipped ${skippedCount} already-tagged message(s) in folder '${folder.name}'`);
+    // 3. Filter out messages that already have a cached AI action (already processed).
+    //    Reads actionCache (IDB) — previously scanned for tm_* IMAP keywords on the header.
+    const untaggedCandidates = [];
+    for (const msg of candidates) {
+      try {
+        const uniqueKey = await getUniqueMessageKey(msg);
+        const cached = uniqueKey ? await getActionForUniqueKey(uniqueKey) : null;
+        if (!cached) untaggedCandidates.push(msg);
+      } catch (_) {
+        // On any resolution error, err on the side of re-processing.
+        untaggedCandidates.push(msg);
+      }
     }
 
-    // 3b. Import IMAP tags into IDB cache for already-tagged messages.
-    // Ensures thread aggregation works for messages tagged by other TM instances (e.g. iOS).
+    const skippedCount = candidates.length - untaggedCandidates.length;
     if (skippedCount > 0) {
-      const taggedCandidates = candidates.filter((msg) => {
-        const tags = Array.isArray(msg.tags) ? msg.tags : [];
-        return tags.some((t) => tabMailTagIds.has(t));
-      });
-      let importedCount = 0;
-      for (const msg of taggedCandidates) {
-        try {
-          const imported = await importActionFromImapTag(msg);
-          if (imported) importedCount++;
-        } catch (e) {
-          log(`[FolderScan] Failed to import IMAP tag for message ${msg.id}: ${e}`, "warn");
-        }
-      }
-      if (importedCount > 0) {
-        log(`[FolderScan] Imported ${importedCount} IMAP tag(s) into IDB cache for thread aggregation`);
-      }
+      log(`[FolderScan] Skipped ${skippedCount} already-classified message(s) in folder '${folder.name}'`);
     }
 
     if (untaggedCandidates.length === 0) {
-      log(`[FolderScan] All ${candidates.length} candidates already have TabMail tags - nothing to enqueue`);
+      log(`[FolderScan] All ${candidates.length} candidates already have cached actions - nothing to enqueue`);
       return;
     }
 

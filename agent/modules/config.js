@@ -232,39 +232,6 @@ export const SETTINGS = {
             updateConcurrency: 8,
         },
 
-        // Loop guard: when TabMail updates tags, ignore those `messages.onUpdated` events
-        // for a short window to avoid self-triggered recompute loops.
-        // Kept in config (not hardcoded in code) for easier debugging/tuning.
-        selfTagUpdateIgnoreMs: 3000,
-
-        // Tag update retry settings: when browser.messages.update fails or verification fails,
-        // retry up to this many times with a delay between attempts.
-        tagUpdateRetries: 2,
-        tagUpdateRetryDelayMs: 200,
-
-        // Debug: cross-folder tag probe for Gmail/IMAP label semantics.
-        // When enabled, TabMail will log the state of other folder copies (All Mail/Archives/Trash)
-        // for the same headerMessageId when we observe tag changes or apply effective tags.
-        debugCrossFolderProbe: {
-            enabled: false,
-            // Which folder specialUse values to include in the probe (lowercased compare).
-            specialUseAllowList: ["inbox", "all", "archives", "trash"],
-            // Hard cap on folders included to avoid expensive wide queries.
-            maxFolders: 32,
-            // Hard cap on log entries per probe.
-            maxMatchesToLog: 20,
-        },
-
-        // When enabled, TabMail will also apply the same tm_* tags to special-use folder
-        // copies (e.g., Gmail "All Mail") *as long as that message still exists in Inbox*.
-        // This makes tags visually consistent when viewing All Mail/Archive while the
-        // message is still in Inbox.
-        crossFolderTagSync: {
-            enabled: true,
-            specialUseAllowList: ["all", "archives"],
-            maxFolders: 32,
-            maxMatchesToUpdate: 200,
-        },
         // Debug: when enabled, emit extra logs that help diagnose tag “ping-pong”
         // between per-message tagging and thread-level effective tagging.
         debugTagRace: {
@@ -330,25 +297,6 @@ export const SETTINGS = {
                 // Hard cap on folders included to avoid expensive wide queries.
                 maxFolders: 32,
             },
-        },
-        // Watchdog to enforce invariant: messages outside Inbox should not have TabMail action tags.
-        // This handles IMAP sync reassert (e.g., Gmail) by stripping tags again when TB reports updates.
-        tagReassertWatchdog: {
-            enabled: true,
-            // Minimum time between handling the same message id to avoid loops/spam.
-            minHandleIntervalMs: 2000,
-            // When we strip tags ourselves, ignore onUpdated events for a short window.
-            selfUpdateIgnoreMs: 3000,
-        },
-        // Bounded reassert guard: some IMAP servers (notably Gmail) can reassert keywords
-        // without reliably triggering messages.onUpdated. For messages that just left Inbox,
-        // we schedule a small number of delayed checks and re-strip if needed.
-        //
-        // This is NOT global polling: it only runs for recently moved messages and ends after the delay list.
-        tagReassertGuard: {
-            enabled: true,
-            // Delay schedule (ms) after leaving Inbox to check for tag reappearance.
-            delaysMs: [8000, 30000, 120000],
         },
         // Safety-net sweep: periodic low-frequency scan of non-inbox folders for stray TabMail action tags.
         // Catches anything the bounded guard missed (e.g., very late IMAP reasserts).

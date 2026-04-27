@@ -1,8 +1,8 @@
 import { formatTimestampForAgent } from "../../chat/modules/helpers.js";
+import { ACTIONS, getActionForWeId } from "./actionCache.js";
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
 import { getSummary } from "./summaryGenerator.js";
-import { ACTION_TAG_IDS } from "./tagHelper.js";
 import { getUniqueMessageKey, log } from "./utils.js";
 
 // NOTE: isInboxFolder moved to folderUtils.js to avoid circular dependencies.
@@ -209,12 +209,12 @@ export async function buildInboxContext() {
 
 async function _createContextEntry(msgHeader) {
   try {
-    // Determine current action via tags
-    let action = "";
-    const tags = msgHeader.tags || [];
-    if (tags.includes(ACTION_TAG_IDS.delete)) action = "delete";
-    else if (tags.includes(ACTION_TAG_IDS.archive)) action = "archive";
-    else if (tags.includes(ACTION_TAG_IDS.reply)) action = "reply";
+    // Determine current action from the IDB action cache.
+    const cached = await getActionForWeId(msgHeader);
+    const action =
+      cached === ACTIONS.DELETE || cached === ACTIONS.ARCHIVE || cached === ACTIONS.REPLY
+        ? cached
+        : "";
 
     // Fetch (or generate) summary blurb and todos
     let detailed = "";

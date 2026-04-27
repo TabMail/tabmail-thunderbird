@@ -21,9 +21,6 @@ function tlog(...args) {
   } catch (_) {}
 }
 
-// TabMail action tag keys (used to ignore non-TabMail tags during BY_TAGS sorting)
-const TABMAIL_ACTION_TAG_KEYS = new Set(["tm_reply", "tm_archive", "tm_delete", "tm_none"]);
-
 // Preference keys and defaults
 const SORT_ORDER_PREF = "mailnews.default_sort_order";
 const SORT_TYPE_PREF = "mailnews.default_sort_type";
@@ -37,6 +34,7 @@ const TAG_SORT_ENABLED_DEFAULT = 1;
 // Notification topic for sort order changes from TabMail button
 const TAGSORT_ORDER_NOTIFY_TOPIC = "tabmail-sort-order-changed";
 
+
 // In-memory desired sort order (set by TabMail button, NOT by Date header)
 // This is the source of truth - Date header changes are ignored
 let _tabMailDesiredSortOrder = null; // null = not yet initialized
@@ -45,8 +43,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
   constructor(extension) {
     super(extension);
     this._cleanup = null;
-    this._onUntaggedFire = null; // Fire reference for onUntaggedInboxMessages event
-    this._messageManager = null; // For converting native headers to WebExtension message IDs
   }
 
   onShutdown(isAppShutdown) {
@@ -55,39 +51,23 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
       if (this._cleanup) {
         this._cleanup();
       }
-      this._onUntaggedFire = null;
     } catch (e) {
       console.error("[TagSort] onShutdown cleanup failed:", e);
     }
   }
 
   getAPI(context) {
-    const self = this;
     let isInitialized = false;
     let _didCleanup = false;
     let _windowListenerRegistered = false;
     let _sortOrderNotifyObserver = null;
     let _tagSortEnabledPrefObserver = null;
 
-    // Store messageManager for converting native headers to WebExtension IDs
-    self._messageManager = context.extension.messageManager;
-
     // Per-window state constants
     const SORT_DEBOUNCE_MS = 100;
     const RESORT_COALESCE_MS = 250;
     const DELAYED_SORT_MS = 30000;
     const VISIBILITY_RESTORE_FALLBACK_MS = 2000;
-
-    // Coverage/untagged message detection settings
-    // maxRowsToCheck matches SETTINGS.inboxManagement.maxRecentEmails (100)
-    // No debounce needed - the MV3 queue already handles deduplication and batching
-    const UNTAGGED_COVERAGE_CONFIG = {
-      enabled: true,
-      maxRowsToCheck: 100,        // Only check first N rows (matches maxRecentEmails)
-      maxMessagesPerEvent: 50,    // Max messages to report per event
-      logMax: 20,                 // Max log entries for debugging
-    };
-    let _untaggedCoverageLogCount = 0;
 
     // Per-window state helpers
     function getWinSortTimestamp(win) { return win?.__tmTagSortLastSortTs || 0; }
@@ -108,34 +88,63 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
       } catch (_) { return ""; }
     }
 
-    // Custom column sort (TB 145): stable TabMail action priority sort
+    // Custom column sort (TB 145): stable TabMail action priority sort.
     const TM_CUSTOM_SORT_COLUMN_ID = "tmActionSort";
-    const TM_ACTION_TAG_KEY_PRIORITY = ["tm_reply", "tm_none", "tm_archive", "tm_delete"];
+    // Priority ordered highest → lowest. Mirrors TM_ACTION_TAG_KEY_PRIORITY_MLTV.
+    const TM_ACTION_PRIORITY = ["reply", "none", "archive", "delete"];
+    const _ACTION_TO_KEYWORD = {
+      reply: "tm_reply",
+      none: "tm_none",
+      archive: "tm_archive",
+      delete: "tm_delete",
+    };
+    const _KEYWORD_TO_ACTION = {
+      tm_reply: "reply",
+      tm_none: "none",
+      tm_archive: "archive",
+      tm_delete: "delete",
+    };
     let _customColumnRegistered = false;
 
-    function _scoreForKeywordsString(keywordsStr) {
+    // Primary: `tm-action` hdr string property (synchronously readable, local
+    // mork, not touched by IMAP sync). Fallback: legacy `tm_*` keywords for
+    // pre-backfill rows. No in-memory map needed — hdr is the shared state.
+
+    const TM_ACTION_PROP_NAME = "tm-action";
+
+    function _actionFromKeywords(hdr) {
       try {
-        const kw = String(keywordsStr || "");
-        if (!kw) return 0;
+        const kw = hdr?.getStringProperty?.("keywords") || "";
+        if (!kw) return null;
         const keys = kw.split(/\s+/).filter(Boolean);
-        if (!keys.length) return 0;
-        for (let i = 0; i < TM_ACTION_TAG_KEY_PRIORITY.length; i++) {
-          if (keys.includes(TM_ACTION_TAG_KEY_PRIORITY[i])) {
-            return TM_ACTION_TAG_KEY_PRIORITY.length - i;
-          }
+        for (const a of TM_ACTION_PRIORITY) {
+          const k = _ACTION_TO_KEYWORD[a];
+          if (k && keys.includes(k)) return a;
         }
-        return 0;
-      } catch (_) { return 0; }
+        return null;
+      } catch (_) {
+        return null;
+      }
     }
 
-    function _labelForScore(score) {
-      if (!score || score <= 0) return "";
-      const max = TM_ACTION_TAG_KEY_PRIORITY.length;
-      if (score === max) return "Reply";
-      if (score === max - 1) return "None";
-      if (score === max - 2) return "Archive";
-      if (score === max - 3) return "Delete";
-      return "";
+    function _lookupAction(hdr) {
+      try {
+        const prop = hdr?.getStringProperty?.(TM_ACTION_PROP_NAME) || "";
+        if (prop) return String(prop);
+      } catch (_) {}
+      return _actionFromKeywords(hdr);
+    }
+
+    function _scoreForAction(action) {
+      if (!action) return 0;
+      const idx = TM_ACTION_PRIORITY.indexOf(action);
+      if (idx < 0) return 0;
+      return TM_ACTION_PRIORITY.length - idx;
+    }
+
+    function _labelForAction(action) {
+      if (!action) return "";
+      return action.charAt(0).toUpperCase() + action.slice(1);
     }
 
     function ensureCustomColumnRegistered() {
@@ -149,14 +158,8 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
             hidden: true,
             resizable: false,
             sortable: true,
-            textCallback(hdr) {
-              const kw = hdr?.getStringProperty?.("keywords") || hdr?.keywords || "";
-              return _labelForScore(_scoreForKeywordsString(kw));
-            },
-            sortCallback(hdr) {
-              const kw = hdr?.getStringProperty?.("keywords") || hdr?.keywords || "";
-              return _scoreForKeywordsString(kw);
-            },
+            textCallback(hdr) { return _labelForAction(_lookupAction(hdr)); },
+            sortCallback(hdr) { return _scoreForAction(_lookupAction(hdr)); },
           });
         } catch (eAdd) {
           if (!String(eAdd).includes("already used")) throw eAdd;
@@ -180,14 +183,10 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
         const handler = {
           QueryInterface: ChromeUtils.generateQI(["nsIMsgCustomColumnHandler"]),
           getRowProperties() { return ""; },
-          getCellText(hdr) {
-            const kw = hdr?.getStringProperty?.("keywords") || hdr?.keywords || "";
-            return _labelForScore(_scoreForKeywordsString(kw));
-          },
+          getCellText(hdr) { return _labelForAction(_lookupAction(hdr)); },
           getSortStringForRow(hdr) { return this.getCellText(hdr); },
           getSortLongForRow(hdr) {
-            const kw = hdr?.getStringProperty?.("keywords") || hdr?.keywords || "";
-            return _scoreForKeywordsString(kw);
+            return _scoreForAction(_lookupAction(hdr));
           },
           isString() { return false; },
         };
@@ -221,56 +220,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
       try {
         return ServicesTS?.prefs?.getIntPref?.(TAG_SORT_ENABLED_PREF, TAG_SORT_ENABLED_DEFAULT) === 1;
       } catch (_) { return true; }
-    }
-
-    // ========================================================================
-    // Untagged message coverage: detect untagged inbox messages and report
-    // them to MV3 for processing. This provides "complete" inbox coverage
-    // without needing periodic scans.
-    // ========================================================================
-
-    function _fireUntaggedMessage(hdr, rowIndex, folderUri) {
-      try {
-        if (!UNTAGGED_COVERAGE_CONFIG.enabled) return;
-        if (!self._onUntaggedFire) return; // No listener registered
-
-        const messageId = hdr?.messageId || "";
-        if (!messageId) return;
-
-        // Try to get WebExtension message ID using messageManager.convert()
-        // This avoids needing browser.messages.query on the MV3 side
-        let weMsgId = null;
-        try {
-          if (self._messageManager) {
-            const weMsg = self._messageManager.convert(hdr);
-            weMsgId = weMsg?.id || null;
-          }
-        } catch (_) {
-          // Message may not be convertible - MV3 will fall back to query
-        }
-
-        const info = {
-          messageKey: hdr?.messageKey ?? -1,
-          messageId: messageId,
-          weMsgId: weMsgId,
-          folderUri: folderUri || "",
-          rowIndex: rowIndex,
-        };
-
-        if (_untaggedCoverageLogCount < UNTAGGED_COVERAGE_CONFIG.logMax) {
-          _untaggedCoverageLogCount++;
-          tlog("Firing onUntaggedInboxMessages event for:", messageId.substring(0, 50), "weMsgId:", weMsgId);
-        }
-
-        // Fire immediately - the MV3 queue handles deduplication and batching
-        try {
-          self._onUntaggedFire.async([info]);
-        } catch (eFire) {
-          tlog("Failed to fire onUntaggedInboxMessages event:", eFire);
-        }
-      } catch (e) {
-        tlog("_fireUntaggedMessage error:", e);
-      }
     }
 
     function _isInboxOrUnifiedInboxFolder(folder) {
@@ -343,89 +292,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
         applySort(win, true);
       }, DELAYED_SORT_MS);
       setWinDelayedSortTimer(win, timer);
-    }
-
-    function recolorTableRows(innerDoc, view, isCardView) {
-      if (isCardView) return 0;
-      const rowCountNow = view?.rowCount || 0;
-      const rows = innerDoc.querySelectorAll('[id^="threadTree-row"]');
-      let applied = 0;
-
-      // Check if current folder is inbox for coverage detection
-      let isInbox = false;
-      let folderUri = "";
-      try {
-        const folder = view?.msgFolder || view?.displayedFolder;
-        isInbox = folder ? _isInboxOrUnifiedInboxFolder(folder) : false;
-        folderUri = folder?.URI || "";
-      } catch (_) {}
-
-      // Large inbox constraint: only check first N rows
-      const maxRowsForCoverage = UNTAGGED_COVERAGE_CONFIG.maxRowsToCheck;
-      const isLargeInbox = rowCountNow > maxRowsForCoverage;
-
-      for (const row of rows) {
-        try {
-          const m = /threadTree-row(\d+)/.exec(row.id || "");
-          const rowIndex = m ? parseInt(m[1], 10) : null;
-          if (rowIndex == null || rowIndex >= rowCountNow) continue;
-
-          let hdr = null;
-          try { hdr = view?.getMsgHdrAt?.(rowIndex); } catch (_) {}
-          if (!hdr) try { hdr = view?.getMessageHdrAt?.(rowIndex); } catch (_) {}
-          if (!hdr) try { hdr = view?.dbView?.hdrForRow?.(rowIndex); } catch (_) {}
-          if (!hdr) continue;
-
-          const keywords = hdr.getStringProperty?.("keywords") || "";
-          const keys = keywords ? keywords.split(/\s+/).filter(Boolean) : [];
-          let color = null;
-          let hasTabMailTag = false;
-
-          for (const k of TM_ACTION_TAG_KEY_PRIORITY) {
-            if (keys.includes(k)) {
-              hasTabMailTag = true;
-              color = MailServicesTagSort?.tags?.getColorForKey?.(k) || null;
-              if (color) break;
-            }
-          }
-
-          if (color) {
-            if (row.style.getPropertyValue("--tag-color") !== color) {
-              row.style.setProperty("--tag-color", color);
-              applied++;
-            }
-          } else if (row.style.getPropertyValue("--tag-color")) {
-            row.style.removeProperty("--tag-color");
-            applied++;
-          }
-
-          // Coverage: detect untagged inbox messages
-          // Skip if: not inbox, message already has TabMail tag, or large inbox and row is beyond limit
-          if (isInbox && !hasTabMailTag && UNTAGGED_COVERAGE_CONFIG.enabled) {
-            // Large inbox constraint: only process recent messages (first N rows based on sort)
-            if (!isLargeInbox || rowIndex < maxRowsForCoverage) {
-              _fireUntaggedMessage(hdr, rowIndex, folderUri);
-            }
-          }
-        } catch (_) {}
-      }
-      return applied;
-    }
-
-    function immediateRecolorForWindow(win) {
-      try {
-        if (!win) return;
-        const tabmail = win.document.getElementById("tabmail");
-        const contentWin = tabmail?.currentAbout3Pane ||
-                          tabmail?.currentTabInfo?.chromeBrowser?.contentWindow ||
-                          tabmail?.currentTabInfo?.browser?.contentWindow;
-        const innerDoc = contentWin?.document || win.document;
-        const mailList = innerDoc.querySelector("mail-message-list");
-        if (mailList?.shadowRoot) return; // Skip Card View
-
-        const view = findDBView(win);
-        if (view) recolorTableRows(innerDoc, view, false);
-      } catch (_) {}
     }
 
     function findDBView(win) {
@@ -592,11 +458,15 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
           tbo?.endUpdateBatch?.();
         }
 
-        // Recolor and reveal
-        if (!isCardView) recolorTableRows(innerDoc, view, false);
+        // Request tmMessageListTableView to repaint rows after the sort re-render.
+        // Table-view row paint happens via the fillRow patch in
+        // tmMessageListTableView — runs automatically as TB re-renders rows
+        // after view.sort(...). No explicit notify needed.
 
         win.requestAnimationFrame(() => {
-          if (!isCardView) recolorTableRows(innerDoc, view, false);
+          // Table-view row paint happens via the fillRow patch in
+        // tmMessageListTableView — runs automatically as TB re-renders rows
+        // after view.sort(...). No explicit notify needed.
           win.requestAnimationFrame(() => {
             if (threadTree && !isCardView && visibilityWasHidden) {
               tlog("applySort: restoring visibility via requestAnimationFrame");
@@ -783,19 +653,17 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
                       const Flags = Ci.nsIMsgFolderNotificationService;
                       const mask = Flags.msgPropertyChanged | Flags.msgsDeleted | Flags.msgsMoveCopyCompleted | Flags.msgsClassified;
 
+                      // Sort-only listener post Phase 1. Row paint side
+                      // lives in tmMessageListTableView's own MFN listener.
                       win.__tmTagSortFolderListener = {
-                        msgPropertyChanged(hdr, prop) {
-                          if (prop === "keywords") { immediateRecolorForWindow(win); scheduleResort(win); }
-                        },
-                        onMsgPropertyChanged(hdr, prop) {
-                          if (prop === "keywords") { immediateRecolorForWindow(win); scheduleResort(win); }
-                        },
-                        msgsClassified() { immediateRecolorForWindow(win); scheduleResort(win); },
-                        onMsgsClassified() { immediateRecolorForWindow(win); scheduleResort(win); },
+                        msgPropertyChanged(hdr, prop) { if (prop === "keywords") scheduleResort(win); },
+                        onMsgPropertyChanged(hdr, prop) { if (prop === "keywords") scheduleResort(win); },
+                        msgsClassified() { scheduleResort(win); },
+                        onMsgsClassified() { scheduleResort(win); },
                         msgsMoveCopyCompleted() { scheduleResort(win); },
                         onMsgsMoveCopyCompleted() { scheduleResort(win); },
                         msgsDeleted() { scheduleResort(win); },
-                        onMsgsDeleted() { scheduleResort(win); }
+                        onMsgsDeleted() { scheduleResort(win); },
                       };
                       MFN.addListener(win.__tmTagSortFolderListener, mask);
                     } catch (_) {}
@@ -886,21 +754,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
         shutdown() {
           cleanup();
         },
-
-        // Event: Fired when the row coloring pass detects untagged inbox messages
-        onUntaggedInboxMessages: new ExtensionCommonTS.EventManager({
-          context,
-          name: "tagSort.onUntaggedInboxMessages",
-          register: (fire) => {
-            tlog("onUntaggedInboxMessages listener registered");
-            self._onUntaggedFire = fire;
-            
-            return () => {
-              tlog("onUntaggedInboxMessages listener unregistered");
-              self._onUntaggedFire = null;
-            };
-          },
-        }).api(),
       },
     };
   }

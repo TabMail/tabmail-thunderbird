@@ -2,8 +2,8 @@
 // Handles fetching, enriching, and sending thread conversation data to content scripts
 // Also handles thread bubble actions (mark read, compose, download attachment)
 
+import { getActionForWeId } from "../../agent/modules/actionCache.js";
 import { SETTINGS } from "../../agent/modules/config.js";
-import { ACTION_TAG_IDS } from "../../agent/modules/tagHelper.js";
 import { getIdentityForMessage, safeGetFull, stripHtml } from "../../agent/modules/utils.js";
 
 // Cache identity email -> display name (for "Identity:email:..." author strings)
@@ -72,15 +72,12 @@ function formatSenderDisplayName(rawAuthor, identityEmailToName) {
     return s;
 }
 
-function getFirstActionTagId(tags) {
+async function getActionForHeader(weMsgId) {
     try {
-        const arr = Array.isArray(tags) ? tags : [];
-        if (arr.includes(ACTION_TAG_IDS.reply)) return ACTION_TAG_IDS.reply;
-        if (arr.includes(ACTION_TAG_IDS.archive)) return ACTION_TAG_IDS.archive;
-        if (arr.includes(ACTION_TAG_IDS.delete)) return ACTION_TAG_IDS.delete;
-        if (arr.includes(ACTION_TAG_IDS.none)) return ACTION_TAG_IDS.none;
-    } catch (_) {}
-    return null;
+        return (await getActionForWeId(weMsgId)) || null;
+    } catch (_) {
+        return null;
+    }
 }
 
 /**
@@ -496,7 +493,7 @@ export async function fetchAndSendThreadConversation(tabId, weMsgId) {
                 // Thread bubble styling/behavior fields.
                 enrichedMsg.read = !!header?.read;
                 enrichedMsg.tags = Array.isArray(header?.tags) ? header.tags : [];
-                enrichedMsg.actionTagId = getFirstActionTagId(enrichedMsg.tags);
+                enrichedMsg.action = await getActionForHeader(msg.weId);
 
                 // Fetch attachment metadata for display in thread bubbles
                 try {
@@ -519,7 +516,7 @@ export async function fetchAndSendThreadConversation(tabId, weMsgId) {
 
                 try {
                     console.log(
-                        `[TabMail ThreadConv] Thread bubble enrich weId=${msg.weId} read=${enrichedMsg.read} actionTagId=${enrichedMsg.actionTagId || "(none)"} tagsCount=${enrichedMsg.tags.length} attachments=${enrichedMsg.attachments?.length || 0}`
+                        `[TabMail ThreadConv] Thread bubble enrich weId=${msg.weId} read=${enrichedMsg.read} action=${enrichedMsg.action || "(none)"} tagsCount=${enrichedMsg.tags.length} attachments=${enrichedMsg.attachments?.length || 0}`
                     );
                 } catch (_) {}
             } catch (hdrErr) {
@@ -529,7 +526,7 @@ export async function fetchAndSendThreadConversation(tabId, weMsgId) {
                 enrichedMsg.ccList = [];
                 enrichedMsg.read = false;
                 enrichedMsg.tags = [];
-                enrichedMsg.actionTagId = null;
+                enrichedMsg.action = null;
                 enrichedMsg.attachments = [];
                 // Also normalize Identity format if it slipped through.
                 try {
