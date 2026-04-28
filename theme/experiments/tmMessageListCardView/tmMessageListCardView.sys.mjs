@@ -456,16 +456,6 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
       }
     }
 
-    function normalizePreviewText(text) {
-      if (!text) return "";
-      let t = String(text).replace(/\0/g, "");
-      t = t.replace(/\s+/g, " ").trim();
-      if (t.length > CARD_SNIPPET_CONFIG_MLCV.maxChars) {
-        t = t.slice(0, CARD_SNIPPET_CONFIG_MLCV.maxChars).trim();
-      }
-      return t;
-    }
-
     function _safeText(s) {
       try {
         return String(s || "").replace(/\s+/g, " ").trim();
@@ -474,33 +464,10 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
       }
     }
 
-    function getSnippetText(hdr) {
-      if (!hdr) return "";
-      if (!_snippetsContentEnabled()) return "";
-      const props = ["preview", "snippet", "summary"];
-      for (const prop of props) {
-        try {
-          const val = hdr.getStringProperty?.(prop);
-          if (val && val.trim()) return normalizePreviewText(val);
-        } catch (_) {}
-      }
-      return "";
-    }
-
-    function getSnippetTextWithSource(hdr) {
-      if (!hdr) return { text: "", source: "" };
-      if (!_snippetsContentEnabled()) return { text: "", source: "" };
-      const props = ["preview", "snippet", "summary"];
-      for (const prop of props) {
-        try {
-          const val = hdr.getStringProperty?.(prop);
-          if (val && val.trim()) {
-            return { text: normalizePreviewText(val), source: prop };
-          }
-        } catch (_) {}
-      }
-      return { text: "", source: "" };
-    }
+    // Snippets are always sourced from our own provider (cardSnippetProvider).
+    // TB's native preview/snippet/summary mork properties are never trusted —
+    // TB's preview generator can leave Content-Transfer-Encoding: base64 parts
+    // undecoded, causing the card row to display raw base64 instead of text.
 
     // _extractAuthorNeedles and _elementDepthWithin removed - only used by removed _applySenderScaleToRow
 
@@ -1057,12 +1024,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         // 2. Inject snippet if cached in experiment memory (zero-flicker, instant)
         const ZERO_FLICKER_SNIPPETS_ENABLED = true;
         if (ZERO_FLICKER_SNIPPETS_ENABLED && _snippetsEnabledForDoc(doc)) {
-          // First check experiment's in-memory cache (instant, no async hop)
-          let snippet = _getSnippetFromMemoryCache(hdrKey);
-          // Fallback to TB header property (in case it was set externally)
-          if (!snippet) {
-            snippet = getSnippetText(hdr);
-          }
+          const snippet = _getSnippetFromMemoryCache(hdrKey);
           if (snippet) {
             const host = findSnippetHost(row, hdr);
             if (host) {
@@ -1547,7 +1509,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         }
         
         // Diagnostics for pending processing
-        let _pendingDiag = { notInMap: 0, alreadySeen: 0, hasContent: 0, rateLimited: 0, hasTbPreview: 0, added: 0 };
+        let _pendingDiag = { notInMap: 0, alreadySeen: 0, hasContent: 0, rateLimited: 0, added: 0 };
         
         // Process pending hdrKeys
         for (const hdrKey of pendingHdrKeys) {
@@ -1588,11 +1550,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
               }
             }
           } catch (_) {}
-          
-          // Skip if TB already has preview (message already loaded)
-          const existingInfo = getSnippetTextWithSource(hdr);
-          if (existingInfo.text) { _pendingDiag.hasTbPreview++; continue; }
-          
+
           // Mark as pending
           try {
             if (_pendingTtlMs > 0) {
@@ -1700,8 +1658,6 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
                   }
                 }
               } catch (_) {}
-              const existingInfo = getSnippetTextWithSource(hdr);
-              if (existingInfo.text) continue;
               let weId = null;
               try {
                 const msgMgr = context.extension.messageManager;
