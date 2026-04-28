@@ -236,6 +236,29 @@ function _invalidateRowForHdrInAllWindows(hdr) {
             }
           } catch (_) {}
         }
+        // Thread-collapsed fallback: if `hdr` is a child of a collapsed
+        // thread, it has no visible row of its own — `findIndexOfMsgHdr`
+        // returns -1. The card painter aggregates child actions onto the
+        // thread head row, so we must invalidate the head's row index, not
+        // the child's. Walk the thread's children and pick the one whose
+        // findIndexOfMsgHdr resolves — that's the visible head.
+        if (rowIndex < 0) {
+          try {
+            const db = hdr?.folder?.msgDatabase;
+            const thread = db?.GetThreadContainingMsgHdr?.(hdr) || null;
+            const n = thread?.numChildren | 0;
+            for (let i = 0; i < n; i++) {
+              let childHdr = null;
+              try { childHdr = thread.getChildHdrAt(i); } catch (_) {}
+              if (!childHdr) continue;
+              const r3 = view.findIndexOfMsgHdr?.(childHdr, false);
+              if (typeof r3 === "number" && r3 >= 0 && r3 < 0x7fffffff) {
+                rowIndex = r3;
+                break;
+              }
+            }
+          } catch (_) {}
+        }
         if (rowIndex >= 0) {
           try { view.NoteChange?.(rowIndex, 1, NOTIFY_CHANGED); diagNoted++; } catch (_) {}
         }
