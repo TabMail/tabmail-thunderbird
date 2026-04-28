@@ -33,6 +33,13 @@
         "async": false,
         "description": "Recolor visible rows/cards now after flag changes (no full re-init).",
         "parameters": [{"name":"reason","type":"string","optional": true}]
+      },
+      {
+        "name": "refreshOpenFolders",
+        "type": "function",
+        "async": false,
+        "description": "Force each open mail:3pane window's current folder to rebuild its threadTree row pool, so patched fillRow and theme classes are reapplied to visible rows.",
+        "parameters": [{"name":"reason","type":"string","optional": true}]
       }
     ]
   }

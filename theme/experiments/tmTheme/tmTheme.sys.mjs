@@ -250,6 +250,40 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
     // STYLE RECALC (force @media query re-evaluation)
     // ═══════════════════════════════════════════════════════════════════════
 
+    // Force every open mail:3pane window's currently-displayed folder to
+    // rebuild its threadTree row pool. `<tree-view>.reset()` wipes
+    // `table.body` and re-creates the visible rows via `_addRowAtIndex`,
+    // which re-runs the (now-patched) `ThreadCard.fillRow` on fresh DOM
+    // nodes. Used after extension init so already-painted rows pick up the
+    // experiments' patches (sender stripping, snippets, action chips,
+    // class-based theming) without the user having to scroll/reselect.
+    function refreshOpenFolders(reason) {
+      let resetCount = 0;
+      try {
+        const enumWin = ServicesTM.wm.getEnumerator("mail:3pane");
+        while (enumWin.hasMoreElements()) {
+          const win = enumWin.getNext();
+          try {
+            const tabmail = win.document.getElementById("tabmail");
+            const about3Pane = tabmail?.currentAbout3Pane || null;
+            const doc = about3Pane?.document || null;
+            if (!doc) continue;
+            const threadTree = doc.getElementById("threadTree") ||
+                              doc.querySelector("tree-view#threadTree, tree-view");
+            if (threadTree?.reset) {
+              threadTree.reset();
+              resetCount++;
+            }
+          } catch (eWin) {
+            console.log(`[TabMail Theme] refreshOpenFolders per-window failed: ${eWin}`);
+          }
+        }
+      } catch (e) {
+        console.error("[TabMail Theme] refreshOpenFolders failed:", e);
+      }
+      console.log(`[TabMail Theme] ✓ refreshOpenFolders (reason: ${reason}) reset ${resetCount} threadTree(s)`);
+    }
+
     function forceStyleRecalc(win, reason) {
       console.log(`[TabMail Theme] Forcing style recalc (reason: ${reason})...`);
       
@@ -563,6 +597,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
         shutdown,
         setFlag,
         recolorNow,
+        refreshOpenFolders: (reason) => refreshOpenFolders(reason || "api"),
       },
     };
   }

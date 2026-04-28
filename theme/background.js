@@ -337,6 +337,20 @@ async function initTheme() {
         console.error("[TabMail Theme] staleRowFilter.init failed:", eStaleRow);
     }
 
+    // (5) Refresh the current folder in every open 3-pane so already-painted
+    // rows pick up the just-applied AGENT_SHEET CSS and the experiments'
+    // fillRow patches (sender stripping, snippets, action chips). Without
+    // this, the user has to scroll/reselect to see the theme apply on
+    // first load and on every hot-reload.
+    try {
+        if (browser.tmTheme?.refreshOpenFolders) {
+            browser.tmTheme.refreshOpenFolders("initTheme");
+            console.log("[TabMail Theme] ✓ refreshOpenFolders triggered after init");
+        }
+    } catch (eRefresh) {
+        console.log(`[TabMail Theme] refreshOpenFolders failed: ${eRefresh}`);
+    }
+
     console.log(`[TabMail Theme] initTheme() complete after ${Date.now() - t0}ms`);
 }
 
