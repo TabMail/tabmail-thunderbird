@@ -220,25 +220,40 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
           return false;
         }
 
-        if (ThreadRow.__tmTableSenderPatched) {
-          return true; // Already patched
-        }
-
         const proto = ThreadRow.prototype;
-        
+
         // Check for fillRow method
         if (typeof proto.fillRow !== "function") {
           if (logCount_MLTV < CONFIG_MLTV.maxLogs) {
             logCount_MLTV++;
-            console.log(`${LOG_PREFIX_MLTV} ThreadRow.fillRow not found, listing properties:`, 
+            console.log(`${LOG_PREFIX_MLTV} ThreadRow.fillRow not found, listing properties:`,
               Object.getOwnPropertyNames(proto).slice(0, 15));
           }
           return false;
         }
 
-        const origFillRow = proto.fillRow;
+        // Stash the PRISTINE TB fillRow exactly once. On hot-reload the OLD
+        // module's wrapper is still installed at proto.fillRow; capturing
+        // from there builds a stack of wrappers, each closed over a dead
+        // module's state. Snapshot the pristine on first patch so all
+        // subsequent patches re-wrap the same baseline.
+        if (typeof ThreadRow.__tmTableSenderOrigFillRow !== "function") {
+          ThreadRow.__tmTableSenderOrigFillRow = proto.fillRow;
+        }
+        const origFillRow = ThreadRow.__tmTableSenderOrigFillRow;
 
-        proto.fillRow = function(...origArgs) {
+        // Identity check: is the wrapper currently on the prototype OUR
+        // wrapper from THIS module run? Tag with a closure-unique reference
+        // (`processTableRow_MLTV` is defined inside getAPI(), so each module
+        // instance has a distinct value). If the current wrapper is from a
+        // previous module (e.g., onShutdown didn't restore the prototype
+        // before reload), replace it — that wrapper would close over a dead
+        // module's state and emit events into a dead extension context.
+        if (proto.fillRow?.__tmTableOwner === processTableRow_MLTV) {
+          return true; // already our exact wrapper
+        }
+
+        const newFillRow = function(...origArgs) {
           origFillRow.apply(this, origArgs);
 
           if (CONFIG_MLTV.stripEmail) {
@@ -274,6 +289,8 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
             }
           } catch (_) {}
         };
+        newFillRow.__tmTableOwner = processTableRow_MLTV;
+        proto.fillRow = newFillRow;
 
         ThreadRow.__tmTableSenderPatched = true;
         console.log(`${LOG_PREFIX_MLTV} ✓ ThreadRow.fillRow patched for sender stripping`);
@@ -293,9 +310,18 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
           const existingRow = doc.querySelector?.('[is="thread-row"]');
           if (existingRow) ThreadRow = existingRow.constructor;
         }
-        if (!ThreadRow || !ThreadRow.__tmTableSenderPatched) return;
+        if (!ThreadRow) return;
+        // Restore pristine fillRow so a future patch re-wraps the same
+        // baseline rather than stacking on this module's wrapper. The
+        // origFillRow stash stays on the constructor (class-static) so the
+        // next module instance can still find it.
+        if (typeof ThreadRow.__tmTableSenderOrigFillRow === "function") {
+          try {
+            ThreadRow.prototype.fillRow = ThreadRow.__tmTableSenderOrigFillRow;
+          } catch (_) {}
+        }
         delete ThreadRow.__tmTableSenderPatched;
-        console.log(`${LOG_PREFIX_MLTV} ThreadRow prototype unpatch marker removed`);
+        console.log(`${LOG_PREFIX_MLTV} ThreadRow prototype unpatched (fillRow restored)`);
       } catch (e) {
         console.error(`${LOG_PREFIX_MLTV} unpatchThreadRowPrototype failed:`, e);
       }

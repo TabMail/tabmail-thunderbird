@@ -1164,10 +1164,6 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           } catch (_) {}
         }
 
-        if (ThreadCard.__tmPatched) {
-          return true; // Already patched
-        }
-
         const proto = ThreadCard.prototype;
 
         // Check for fillRow method (this is what TB uses to populate cards)
@@ -1176,17 +1172,38 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           return false;
         }
 
-        const origFillRow = proto.fillRow;
+        // Stash the PRISTINE TB fillRow exactly once. On hot-reload the OLD
+        // module's wrapper is still installed at proto.fillRow; if we captured
+        // from there we'd build a stack of wrappers, each closed over a dead
+        // module's caches. Snapshot the pristine on first patch so all
+        // subsequent patches re-wrap the same baseline.
+        if (typeof ThreadCard.__tmOrigFillRow !== "function") {
+          ThreadCard.__tmOrigFillRow = proto.fillRow;
+        }
+        const origFillRow = ThreadCard.__tmOrigFillRow;
 
-        proto.fillRow = function(index, row, dataset, view) {
+        // Identity check: is the wrapper currently on the prototype OUR
+        // wrapper from THIS module run? We tag each wrapper with a closure-
+        // unique reference (`_applyZeroFlickerEnhancements` is defined inside
+        // getAPI(), so each module instance has a distinct value). If the
+        // current wrapper is from a previous module (e.g., onShutdown didn't
+        // restore the prototype before reload), we must replace it — that
+        // wrapper closes over a dead module's caches and emits events into a
+        // dead extension context, so children of newly-expanded threads
+        // never reach the live cardSnippetProvider.
+        if (proto.fillRow?.__tmCardOwner === _applyZeroFlickerEnhancements) {
+          return true; // already our exact wrapper
+        }
+
+        const newFillRow = function(index, row, dataset, view) {
           // Call original fillRow first (populates the card)
           origFillRow.call(this, index, row, dataset, view);
-          
+
           // Apply zero-flicker enhancements
           try {
             const cardRow = this;
             const ownerDoc = cardRow.ownerDocument;
-            const tree = ownerDoc?.getElementById?.("threadTree") || 
+            const tree = ownerDoc?.getElementById?.("threadTree") ||
                         ownerDoc?.querySelector?.("tree-view#threadTree, tree-view");
             if (tree) {
               _applyZeroFlickerEnhancements(cardRow, tree, ownerDoc);
@@ -1195,6 +1212,8 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
             // Silent fail to avoid breaking TB rendering
           }
         };
+        newFillRow.__tmCardOwner = _applyZeroFlickerEnhancements;
+        proto.fillRow = newFillRow;
 
         ThreadCard.__tmPatched = true;
         console.log(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ✓ ThreadCard.fillRow patched for zero-flicker`);
@@ -1207,9 +1226,11 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
 
     /**
      * Unpatch the ThreadCard prototype (for hot-reload cleanup).
-     * Note: We can't easily restore the original fillRow, but removing the patch marker
-     * allows future inits to detect unpatched state. The patched fillRow is harmless 
-     * when the extension is disabled since it just calls the original.
+     * Restores the pristine TB fillRow so the next patch (e.g., from a
+     * fresh module after reload) re-wraps the same baseline rather than
+     * stacking on top of our previous wrapper. `__tmOrigFillRow` is kept
+     * on the constructor so a future patch can find it again — the
+     * stash is class-static and outlives the module.
      */
     function unpatchThreadCardPrototype(doc) {
       try {
@@ -1220,7 +1241,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           const existingCard = doc.querySelector?.('[is="thread-card"]');
           if (existingCard) ThreadCard = existingCard.constructor;
         }
-        if (!ThreadCard || !ThreadCard.__tmPatched) return;
+        if (!ThreadCard) return;
         // Restore original ROW_HEIGHT
         if (ThreadCard.__tmOrigRowHeight != null) {
           ThreadCard.ROW_HEIGHT = ThreadCard.__tmOrigRowHeight;
@@ -1232,8 +1253,16 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
             if (threadTree?.reset) threadTree.reset();
           } catch (_) {}
         }
+        // Restore pristine fillRow. Without this, the wrapper stays on the
+        // prototype, holds a closure over this module's caches, and the
+        // next patch from a fresh module wraps it again — building a stack.
+        if (typeof ThreadCard.__tmOrigFillRow === "function") {
+          try {
+            ThreadCard.prototype.fillRow = ThreadCard.__tmOrigFillRow;
+          } catch (_) {}
+        }
         delete ThreadCard.__tmPatched;
-        console.log(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard prototype unpatch marker removed`);
+        console.log(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard prototype unpatched (fillRow restored)`);
       } catch (e) {
         console.error(`${CARD_SENDER_CONFIG_MLCV.logPrefix} unpatchThreadCardPrototype failed:`, e);
       }
@@ -1436,6 +1465,40 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           ExtensionSupport_MLCV.unregisterWindowListener(windowListenerId);
           windowListenerId = null;
           context.__tmCardSnippetsWindowListenerRegistered = false;
+        }
+      } catch (_) {}
+      // Cancel any pending debounce timer; on hot-reload the next module
+      // cannot rely on a fresh timer slot otherwise.
+      try {
+        if (_pendingNeedsDebounceTimer) {
+          try { _pendingNeedsDebounceTimer.cancel?.(); } catch (_) {}
+          _pendingNeedsDebounceTimer = null;
+        }
+      } catch (_) {}
+      // Reset module-level snippet caches so a hot-reload starts from a
+      // clean slate. If the module unloads cleanly these are already gone;
+      // if it doesn't (closures pin it alive), the stale entries would
+      // otherwise mask cache-miss recovery for rows that recycle in after
+      // an archive/move.
+      try { _clearSnippetMemoryCache(); } catch (_) {}
+      try { _clearPendingSnippetNeeds(); } catch (_) {}
+      // Clear per-document pending Maps. These live on the doc object
+      // (which survives extension reload) and would otherwise rate-limit
+      // fresh post-reload requests by their stale timestamps.
+      try {
+        if (ServicesCS?.wm) {
+          const enumPendingWin = ServicesCS.wm.getEnumerator("mail:3pane");
+          while (enumPendingWin.hasMoreElements()) {
+            try {
+              const w = enumPendingWin.getNext();
+              const docs = enumerateContentDocs(w);
+              for (const d of docs) {
+                if (d?.__tmMsgList?.__tmCardSnippetPending?.clear) {
+                  d.__tmMsgList.__tmCardSnippetPending.clear();
+                }
+              }
+            } catch (_) {}
+          }
         }
       } catch (_) {}
       try {
