@@ -36,19 +36,33 @@ async function _writeActionToHdr(weMsgId, action) {
 }
 
 /**
- * Repaint the message-header action chip on every preview pane / standalone
- * message-display window. Fire-and-forget; no-op when the experiment is
+ * Repaint the action chip on every painter surface (preview-pane header,
+ * multi-message-view rows). Fire-and-forget; per-experiment no-op when
  * unavailable. Callers MUST `await _writeActionToHdr(...)` BEFORE invoking
  * this when they're updating the mork prop, otherwise the painter may
  * read the OLD prop value (parent-process IPC race — see
  * tabmail-thunderbird/PLAN_HEADER_CHIP.md §6 "Action-change broadcast race").
+ *
+ * Both surface refreshes run in parallel (Promise.all) since neither
+ * depends on the other.
  */
-async function _refreshHeaderChip() {
-  try {
-    if (browser?.tmMessageHeaderChip?.refreshAll) {
-      await browser.tmMessageHeaderChip.refreshAll();
-    }
-  } catch (_) {}
+async function _refreshChips() {
+  await Promise.all([
+    (async () => {
+      try {
+        if (browser?.tmMessageHeaderChip?.refreshAll) {
+          await browser.tmMessageHeaderChip.refreshAll();
+        }
+      } catch (_) {}
+    })(),
+    (async () => {
+      try {
+        if (browser?.tmMultiMessageChip?.refreshAll) {
+          await browser.tmMultiMessageChip.refreshAll();
+        }
+      } catch (_) {}
+    })(),
+  ]);
 }
 
 /**
@@ -174,7 +188,7 @@ export async function setAction(headerOrWeIdOrUniqueKey, action) {
       // Sequential: prop write must complete before chip refresh reads from it.
       await _writeActionToHdr(weMsgId, action).catch(() => {});
     }
-    _refreshHeaderChip().catch(() => {});
+    _refreshChips().catch(() => {});
 
     return uniqueKey;
   } catch (_) {
@@ -196,7 +210,7 @@ export async function clearAction(headerOrWeIdOrUniqueKey) {
     // Sequential: prop write must complete before chip refresh reads from it.
     await _writeActionToHdr(weMsgId, null).catch(() => {});
   }
-  _refreshHeaderChip().catch(() => {});
+  _refreshChips().catch(() => {});
   return ok;
 }
 
@@ -214,7 +228,7 @@ export async function clearActionByUniqueKey(uniqueKey) {
     // clear the mork prop. For onMoved.js's post-move case, the chip
     // actually clears via onMessagesDisplayed firing on the new-folder
     // hdr (which has no mork prop). See PLAN_HEADER_CHIP.md §4.7 site #3.
-    _refreshHeaderChip().catch(() => {});
+    _refreshChips().catch(() => {});
     return true;
   } catch (_) {
     return false;
@@ -240,9 +254,10 @@ const _BULK_PUSH_BATCH_SIZE = 100;
  *
  * Fire-and-forget — callers should not await.
  *
- * NOTE: this function does NOT call `_refreshHeaderChip()`. Startup runs
- * before any message-display, so there's no chip to refresh; the first
- * `messageDisplay.onMessagesDisplayed` event will paint the chip with the
+ * NOTE: this function does NOT call `_refreshChips()`. Startup runs
+ * before any message-display, so there's no chip to refresh on either
+ * surface (header chip or multi-message-view chips); the first
+ * `messageDisplay.onMessagesDisplayed` event will paint chips with the
  * just-written mork prop. See PLAN_HEADER_CHIP.md §4.7.
  */
 export async function pushAllActionsToExperimentsOnStartup() {

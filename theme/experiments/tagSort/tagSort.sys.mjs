@@ -112,6 +112,11 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
 
     const TM_ACTION_PROP_NAME = "tm-action";
 
+    // @deprecated The IMAP-keyword (`tm_*`) representation of action state
+    // is no longer written by TabMail (Phase 0; see
+    // agent/modules/tagHelper.js header). New surfaces (tmMultiMessageChip)
+    // skip this fallback. It survives here for legacy messages tagged
+    // before Phase 0; remove once those have decayed out of users' inboxes.
     function _actionFromKeywords(hdr) {
       try {
         const kw = hdr?.getStringProperty?.("keywords") || "";
@@ -127,6 +132,11 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
       }
     }
 
+    /**
+     * Primary: `tm-action` hdr property. Falls back to the deprecated
+     * `_actionFromKeywords` legacy reader for messages tagged before
+     * Phase 0 (see that function's @deprecated note).
+     */
     function _lookupAction(hdr) {
       try {
         const prop = hdr?.getStringProperty?.(TM_ACTION_PROP_NAME) || "";

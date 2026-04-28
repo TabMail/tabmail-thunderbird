@@ -672,6 +672,19 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet-wrapper {
   box-shadow: 0 1px 1.5px color-mix(in srgb, var(--tag-tm-none) 35%, transparent);
 }
 
+/* ===== Hide legacy `tm_*` IMAP-keyword tag pills in multimessageview =====
+ * TB's `multimessageview.js:_addTagNodes` renders any registered tag whose
+ * key is in the message's `keywords` mork prop as a `<span class="tag"
+ * data-tag="TabMail Reply">…</span>` pill (mmv.js:386-391). For messages
+ * tagged before TabMail Phase 0 stopped writing IMAP keywords (see
+ * agent/modules/tagHelper.js:1-13 header), those pills still appear and
+ * duplicate the new `tm-multi-action-chip` we paint into `.item-header`.
+ * Hide them — the chip is the canonical surface now. The selector
+ * uses the data-tag prefix so non-TabMail user tags remain visible. */
+#messageList .tag[data-tag^="TabMail "] {
+  display: none !important;
+}
+
 /* ===== Table View - Typography ===== */
 /* Use absolute CSS keyword so sizing respects TB's font prefs.
    Padding uses em units so vertical space scales with font size. */

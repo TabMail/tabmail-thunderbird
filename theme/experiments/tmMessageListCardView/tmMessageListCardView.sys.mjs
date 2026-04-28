@@ -542,6 +542,11 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
     // Keep priority order consistent with tagSort / tmMessageListTableView.
     const TM_ACTION_PRIORITY_MLCV = ["reply", "none", "archive", "delete"];
 
+    // @deprecated The IMAP-keyword (`tm_*`) representation of action state
+    // is no longer written by TabMail (Phase 0; see
+    // agent/modules/tagHelper.js header). New surfaces (tmMultiMessageChip)
+    // skip this fallback. It survives here for legacy messages tagged
+    // before Phase 0; remove once those have decayed out of users' inboxes.
     function _actionFromKeywords_MLCV(hdr) {
       try {
         const kw = hdr?.getStringProperty?.("keywords") || "";

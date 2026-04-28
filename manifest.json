@@ -230,6 +230,14 @@
         "paths": [["tmMessageHeaderChip"]]
       }
     },
+    "tmMultiMessageChip": {
+      "schema": "theme/experiments/tmMultiMessageChip/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/tmMultiMessageChip/tmMultiMessageChip.sys.mjs",
+        "paths": [["tmMultiMessageChip"]]
+      }
+    },
     "tmMessageListTableView": {
       "schema": "theme/experiments/tmMessageListTableView/schema.json",
       "parent": {

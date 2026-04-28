@@ -1,0 +1,54 @@
+[
+  {
+    "namespace": "tmMultiMessageChip",
+    "description": "TabMail Multi-Message Chip experiment API — paints the iOS-style action chip on each row of multimessageview.xhtml (collapsed-thread / multi-select summary) and emits an event when a chip is clicked. Passive painter: never writes action state.",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "async": true,
+        "description": "Register window listeners and paint chips into all currently-displayed multimessageview surfaces. Idempotent.",
+        "parameters": [
+          {
+            "name": "opts",
+            "type": "object",
+            "optional": true,
+            "properties": {},
+            "additionalProperties": true
+          }
+        ]
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "async": true,
+        "description": "Detach all delegations/observers, remove all chips, unregister window listener.",
+        "parameters": []
+      },
+      {
+        "name": "refreshAll",
+        "type": "function",
+        "async": true,
+        "description": "Repaint chips on every multimessageview surface. Idempotent. Triggered from MV3 by messageDisplay.onMessagesDisplayed and by actionCache write/clear paths. The experiment also self-triggers on #messageList rebuilds via an internal MutationObserver.",
+        "parameters": []
+      }
+    ],
+    "events": [
+      {
+        "name": "onActionChipClick",
+        "type": "function",
+        "description": "Fired when the user clicks/activates a multi-message-view chip. The payload identifies the message whose chip was clicked — MV3 should act on that exact message regardless of any selection state.",
+        "parameters": [
+          {
+            "name": "info",
+            "type": "object",
+            "properties": {
+              "source":  { "type": "string",  "description": "'click' or 'keydown' (diagnostic only)" },
+              "weMsgId": { "type": "integer", "description": "WebExtension message id of the chip's message" }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

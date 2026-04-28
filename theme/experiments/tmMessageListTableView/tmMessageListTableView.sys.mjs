@@ -396,6 +396,11 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
       tm_delete: "delete",
     };
 
+    // @deprecated The IMAP-keyword (`tm_*`) representation of action state
+    // is no longer written by TabMail (Phase 0; see
+    // agent/modules/tagHelper.js header). New surfaces (tmMultiMessageChip)
+    // skip this fallback. It survives here for legacy messages tagged
+    // before Phase 0; remove once those have decayed out of users' inboxes.
     function _actionFromKeywords_MLTV(hdr) {
       try {
         const kw = hdr?.getStringProperty?.("keywords") || "";
@@ -409,8 +414,9 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
     }
 
     /**
-     * Primary: `tm-action` hdr property. Fallback: legacy `tm_*` keywords
-     * (for messages not yet backfilled by the MV3 startup pass).
+     * Primary: `tm-action` hdr property. Falls back to the deprecated
+     * `_actionFromKeywords_MLTV` legacy reader for messages tagged before
+     * Phase 0 (see that function's @deprecated note).
      */
     function _lookupActionForRow_MLTV(hdr) {
       try {

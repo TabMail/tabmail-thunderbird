@@ -20,6 +20,7 @@ import {
 let _tmCardSnippetProvider = null;
 let _tmActionChipClickListener = null;
 let _tmHeaderChipClickListener = null;
+let _tmMultiMessageChipClickListener = null;
 
 async function _onActionChipClick(info) {
     try {
@@ -104,6 +105,50 @@ function _stopHeaderChipClickListener(reason) {
         }
         _tmHeaderChipClickListener = null;
         console.log(`[TabMail Theme] header chip click listener removed (${reason})`);
+    } catch (_) {}
+}
+
+// ─── Multi-message-view chip (collapsed-thread / multi-select) click handling ───
+// Same shape as the header chip handler — chip carries `data-tm-we-msg-id` and
+// click event passes weMsgId through directly so we act on the chip's own
+// message, NOT on any selection state. See PLAN_MULTI_MESSAGE_CHIP.md §1 + §4.7.
+async function _onMultiMessageChipClick(info) {
+    try {
+        const weMsgId = Number.isInteger(info?.weMsgId) ? info.weMsgId : 0;
+        console.log(`[TabMail Theme] multi-msg chip click (${info?.source || "?"}) weMsgId=${weMsgId}`);
+        if (!weMsgId) return;
+        const msg = await browser.messages.get(weMsgId);
+        if (!msg) return;
+        await performTaggedAction(msg);
+    } catch (e) {
+        console.error("[TabMail Theme] multi-msg chip click handler failed:", e);
+    }
+}
+
+function _ensureMultiMessageChipClickListener(reason) {
+    try {
+        if (!browser.tmMultiMessageChip?.onActionChipClick) {
+            console.log(`[TabMail Theme] tmMultiMessageChip.onActionChipClick API not available (${reason})`);
+            return;
+        }
+        if (_tmMultiMessageChipClickListener) return; // already registered
+        _tmMultiMessageChipClickListener = (info) => { _onMultiMessageChipClick(info); };
+        browser.tmMultiMessageChip.onActionChipClick.addListener(_tmMultiMessageChipClickListener);
+        console.log(`[TabMail Theme] multi-msg chip click listener registered (${reason})`);
+    } catch (e) {
+        console.error(`[TabMail Theme] failed to register multi-msg chip click listener (${reason}):`, e);
+    }
+}
+
+function _stopMultiMessageChipClickListener(reason) {
+    try {
+        if (_tmMultiMessageChipClickListener && browser.tmMultiMessageChip?.onActionChipClick) {
+            try {
+                browser.tmMultiMessageChip.onActionChipClick.removeListener(_tmMultiMessageChipClickListener);
+            } catch (_) {}
+        }
+        _tmMultiMessageChipClickListener = null;
+        console.log(`[TabMail Theme] multi-msg chip click listener removed (${reason})`);
     } catch (_) {}
 }
 
@@ -249,6 +294,21 @@ async function initTheme() {
         }
     } catch (eHeaderChip) {
         console.error("[TabMail Theme] tmMessageHeaderChip.init failed:", eHeaderChip);
+    }
+
+    // (4b-3) Multi-message-view chip experiment (chip on each row of
+    // multimessageview.xhtml — collapsed thread / multi-select summary)
+    try {
+        if (browser.tmMultiMessageChip?.init) {
+            console.log("[TabMail Theme] → Calling browser.tmMultiMessageChip.init()...");
+            await browser.tmMultiMessageChip.init({});
+            console.log("[TabMail Theme] ✓ tmMultiMessageChip initialised");
+            _ensureMultiMessageChipClickListener("initTheme");
+        } else {
+            console.warn("[TabMail Theme] tmMultiMessageChip experiment NOT available – multi-message chips disabled.");
+        }
+    } catch (eMMC) {
+        console.error("[TabMail Theme] tmMultiMessageChip.init failed:", eMMC);
     }
 
     // (4c) Message list table view experiment (sender stripping)
@@ -523,6 +583,19 @@ browser.messageDisplay.onMessagesDisplayed.addListener(async (tab, messages) => 
         console.log(`[TabMail Theme] tmMessageHeaderChip.refreshAll on display failed: ${eHC}`);
     }
 
+    // Multi-message-view chips: refresh on every display change. The
+    // experiment idempotently attaches delegation+MO+paints — required
+    // because the multimessageview doc is transient (only loaded when the
+    // user clicks a collapsed thread / multi-selects). See
+    // PLAN_MULTI_MESSAGE_CHIP.md §4.4 trigger 1.
+    try {
+        if (browser.tmMultiMessageChip?.refreshAll) {
+            await browser.tmMultiMessageChip.refreshAll();
+        }
+    } catch (eMMC) {
+        console.log(`[TabMail Theme] tmMultiMessageChip.refreshAll on display failed: ${eMMC}`);
+    }
+
     // Mark this tab as ready and broadcast to other modules
     scriptsReadyTabs.add(tab.id);
     console.log(`[TabMail Theme] Theme scripts ready in tab ${tab.id}`);
@@ -646,6 +719,7 @@ browser.runtime.onSuspend?.addListener(async () => {
     try { _stopCardSnippetProvider("onSuspend"); } catch (_) {}
     try { _stopActionChipClickListener("onSuspend"); } catch (_) {}
     try { _stopHeaderChipClickListener("onSuspend"); } catch (_) {}
+    try { _stopMultiMessageChipClickListener("onSuspend"); } catch (_) {}
 
     // Call experiment shutdown to clean up listeners and observers
     // This is a safety net in case Thunderbird doesn't call onShutdown during hot reload
@@ -665,6 +739,10 @@ browser.runtime.onSuspend?.addListener(async () => {
         if (browser.tmMessageHeaderChip?.shutdown) {
             await browser.tmMessageHeaderChip.shutdown();
             console.log("[TabMail HeaderChip] ✓ tmMessageHeaderChip.shutdown() called on suspend");
+        }
+        if (browser.tmMultiMessageChip?.shutdown) {
+            await browser.tmMultiMessageChip.shutdown();
+            console.log("[TabMail MultiMsgChip] ✓ tmMultiMessageChip.shutdown() called on suspend");
         }
     } catch (e) {
         console.error("[TabMail Theme] experiment shutdown on suspend failed:", e);
