@@ -612,7 +612,14 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet-wrapper {
  * solid color (rendered as a same-color gradient so it composes with the
  * other layers), bottom is the gradient border revealed by the transparent
  * border + border-box clip on this layer. */
-tr[is="thread-card"].tm-action-reply .tm-action-chip {
+/* Per-action chip backgrounds — chip-local (no row-class ancestor required)
+ * so the same rules paint both the card-row chip (which carries
+ * `tm-action-chip tm-action-X`) AND the message-header chip (which carries
+ * `tm-action-chip tm-header-action-chip tm-action-X`). The card row's own
+ * `tm-action-X` class still drives row-level tinting via separate rules
+ * further down — those are unaffected by this change. See
+ * tabmail-thunderbird/PLAN_HEADER_CHIP.md §5.1. */
+.tm-action-chip.tm-action-reply {
   background-image:
     linear-gradient(135deg,
       rgba(255, 255, 255, 0.28) 0%,
@@ -625,7 +632,7 @@ tr[is="thread-card"].tm-action-reply .tm-action-chip {
       rgba(0, 0, 0, 0.40)      100%);
   box-shadow: 0 1px 1.5px color-mix(in srgb, var(--tag-tm-reply) 35%, transparent);
 }
-tr[is="thread-card"].tm-action-archive .tm-action-chip {
+.tm-action-chip.tm-action-archive {
   background-image:
     linear-gradient(135deg,
       rgba(255, 255, 255, 0.28) 0%,
@@ -638,7 +645,7 @@ tr[is="thread-card"].tm-action-archive .tm-action-chip {
       rgba(0, 0, 0, 0.40)      100%);
   box-shadow: 0 1px 1.5px color-mix(in srgb, var(--tag-tm-archive) 35%, transparent);
 }
-tr[is="thread-card"].tm-action-delete .tm-action-chip {
+.tm-action-chip.tm-action-delete {
   background-image:
     linear-gradient(135deg,
       rgba(255, 255, 255, 0.28) 0%,
@@ -651,7 +658,7 @@ tr[is="thread-card"].tm-action-delete .tm-action-chip {
       rgba(0, 0, 0, 0.40)      100%);
   box-shadow: 0 1px 1.5px color-mix(in srgb, var(--tag-tm-delete) 35%, transparent);
 }
-tr[is="thread-card"].tm-action-none .tm-action-chip {
+.tm-action-chip.tm-action-none {
   background-image:
     linear-gradient(135deg,
       rgba(255, 255, 255, 0.28) 0%,

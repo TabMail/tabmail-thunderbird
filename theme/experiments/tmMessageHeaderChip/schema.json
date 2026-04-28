@@ -1,0 +1,54 @@
+[
+  {
+    "namespace": "tmMessageHeaderChip",
+    "description": "TabMail Message Header Chip experiment API — paints the iOS-style action chip into the message preview header (#expandedButtonsBox) and (Phase 2) emits an event when the chip is clicked. Passive painter: never writes action state.",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "async": true,
+        "description": "Register window listeners and paint chips into all currently-displayed surfaces. Idempotent.",
+        "parameters": [
+          {
+            "name": "opts",
+            "type": "object",
+            "optional": true,
+            "properties": {},
+            "additionalProperties": true
+          }
+        ]
+      },
+      {
+        "name": "shutdown",
+        "type": "function",
+        "async": true,
+        "description": "Detach all delegations/observers, remove all chips, unregister window listener.",
+        "parameters": []
+      },
+      {
+        "name": "refreshAll",
+        "type": "function",
+        "async": true,
+        "description": "Repaint the chip on every preview pane / message-display tab / standalone message window. Idempotent. Triggered from MV3 by messageDisplay.onMessagesDisplayed and by actionCache write/clear paths. The experiment also self-triggers on header DOM re-renders via an internal MutationObserver (no MV3 call needed for that).",
+        "parameters": []
+      }
+    ],
+    "events": [
+      {
+        "name": "onActionChipClick",
+        "type": "function",
+        "description": "Fired when the user clicks/activates the header chip. The payload identifies the message whose chip was clicked — MV3 should act on that exact message regardless of the current 3-pane selection (which can drift between paint and click, and is empty in standalone message windows).",
+        "parameters": [
+          {
+            "name": "info",
+            "type": "object",
+            "properties": {
+              "source":  { "type": "string",  "description": "'click' or 'keydown' (diagnostic only)" },
+              "weMsgId": { "type": "integer", "description": "WebExtension message id of the chip's message" }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

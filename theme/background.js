@@ -2,6 +2,7 @@ console.log("[TabMail Theme] ═════════════════
 console.log("[TabMail Theme] Background script loaded at:", new Date().toISOString());
 console.log("[TabMail Theme] ═══════════════════════════════════════");
 
+import { performTaggedAction } from "../agent/modules/action.js";
 import { SETTINGS } from "../agent/modules/config.js";
 import { isInboxFolder } from "../agent/modules/folderUtils.js";
 import { triggerTagActionKey } from "../agent/modules/tagActionKey.js";
@@ -18,6 +19,7 @@ import {
 
 let _tmCardSnippetProvider = null;
 let _tmActionChipClickListener = null;
+let _tmHeaderChipClickListener = null;
 
 async function _onActionChipClick(info) {
     try {
@@ -56,6 +58,52 @@ function _stopActionChipClickListener(reason) {
         }
         _tmActionChipClickListener = null;
         console.log(`[TabMail Theme] onActionChipClick listener removed (${reason})`);
+    } catch (_) {}
+}
+
+// ─── Header chip (preview pane) click handling ───
+// The header chip carries `data-tm-we-msg-id`. Click event passes that
+// `weMsgId` through directly so we act on the chip's own message — NOT on
+// the current 3-pane selection (which can drift between paint and click,
+// and is empty in standalone message windows). Bypasses the selection-based
+// `triggerTagActionKey()` path. See PLAN_HEADER_CHIP.md §1 + §4.7.
+async function _onHeaderChipClick(info) {
+    try {
+        const weMsgId = Number.isInteger(info?.weMsgId) ? info.weMsgId : 0;
+        console.log(`[TabMail Theme] header chip click (${info?.source || "?"}) weMsgId=${weMsgId}`);
+        if (!weMsgId) return;
+        const msg = await browser.messages.get(weMsgId);
+        if (!msg) return;
+        await performTaggedAction(msg);
+    } catch (e) {
+        console.error("[TabMail Theme] header chip click handler failed:", e);
+    }
+}
+
+function _ensureHeaderChipClickListener(reason) {
+    try {
+        if (!browser.tmMessageHeaderChip?.onActionChipClick) {
+            console.log(`[TabMail Theme] tmMessageHeaderChip.onActionChipClick API not available (${reason})`);
+            return;
+        }
+        if (_tmHeaderChipClickListener) return; // already registered
+        _tmHeaderChipClickListener = (info) => { _onHeaderChipClick(info); };
+        browser.tmMessageHeaderChip.onActionChipClick.addListener(_tmHeaderChipClickListener);
+        console.log(`[TabMail Theme] header chip click listener registered (${reason})`);
+    } catch (e) {
+        console.error(`[TabMail Theme] failed to register header chip click listener (${reason}):`, e);
+    }
+}
+
+function _stopHeaderChipClickListener(reason) {
+    try {
+        if (_tmHeaderChipClickListener && browser.tmMessageHeaderChip?.onActionChipClick) {
+            try {
+                browser.tmMessageHeaderChip.onActionChipClick.removeListener(_tmHeaderChipClickListener);
+            } catch (_) {}
+        }
+        _tmHeaderChipClickListener = null;
+        console.log(`[TabMail Theme] header chip click listener removed (${reason})`);
     } catch (_) {}
 }
 
@@ -187,6 +235,20 @@ async function initTheme() {
         }
     } catch (eCardView) {
         console.error("[TabMail Theme] tmMessageListCardView.init failed:", eCardView);
+    }
+
+    // (4b-2) Message header chip experiment (paints action chip into preview pane header)
+    try {
+        if (browser.tmMessageHeaderChip?.init) {
+            console.log("[TabMail Theme] → Calling browser.tmMessageHeaderChip.init()...");
+            await browser.tmMessageHeaderChip.init({});
+            console.log("[TabMail Theme] ✓ tmMessageHeaderChip initialised");
+            _ensureHeaderChipClickListener("initTheme");  // Phase 2 — click handler wiring
+        } else {
+            console.warn("[TabMail Theme] tmMessageHeaderChip experiment NOT available – header chip disabled.");
+        }
+    } catch (eHeaderChip) {
+        console.error("[TabMail Theme] tmMessageHeaderChip.init failed:", eHeaderChip);
     }
 
     // (4c) Message list table view experiment (sender stripping)
@@ -448,7 +510,19 @@ browser.messageDisplay.onMessagesDisplayed.addListener(async (tab, messages) => 
     console.log(`[TabMail Theme] Messages displayed in tab ${tab.id}, injecting theme scripts`);
 
     await injectThemeScriptsForMessageDisplayTab(tab.id, "onMessagesDisplayed");
-    
+
+    // Header chip: refresh on every message-display change. The experiment
+    // reads `gMessage` from each surface itself, so no tab→doc plumbing is
+    // needed. Cheap (idempotent paint per surface). See PLAN_HEADER_CHIP.md
+    // §4.4 trigger 1.
+    try {
+        if (browser.tmMessageHeaderChip?.refreshAll) {
+            await browser.tmMessageHeaderChip.refreshAll();
+        }
+    } catch (eHC) {
+        console.log(`[TabMail Theme] tmMessageHeaderChip.refreshAll on display failed: ${eHC}`);
+    }
+
     // Mark this tab as ready and broadcast to other modules
     scriptsReadyTabs.add(tab.id);
     console.log(`[TabMail Theme] Theme scripts ready in tab ${tab.id}`);
@@ -571,7 +645,8 @@ browser.runtime.onSuspend?.addListener(async () => {
 
     try { _stopCardSnippetProvider("onSuspend"); } catch (_) {}
     try { _stopActionChipClickListener("onSuspend"); } catch (_) {}
-    
+    try { _stopHeaderChipClickListener("onSuspend"); } catch (_) {}
+
     // Call experiment shutdown to clean up listeners and observers
     // This is a safety net in case Thunderbird doesn't call onShutdown during hot reload
     try {
@@ -586,6 +661,10 @@ browser.runtime.onSuspend?.addListener(async () => {
         if (browser.staleRowFilter?.shutdown) {
             await browser.staleRowFilter.shutdown();
             console.log("[TabMail StaleRowFilter] ✓ staleRowFilter.shutdown() called on suspend");
+        }
+        if (browser.tmMessageHeaderChip?.shutdown) {
+            await browser.tmMessageHeaderChip.shutdown();
+            console.log("[TabMail HeaderChip] ✓ tmMessageHeaderChip.shutdown() called on suspend");
         }
     } catch (e) {
         console.error("[TabMail Theme] experiment shutdown on suspend failed:", e);

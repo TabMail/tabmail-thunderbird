@@ -222,6 +222,14 @@
         "paths": [["tmMessageListCardView"]]
       }
     },
+    "tmMessageHeaderChip": {
+      "schema": "theme/experiments/tmMessageHeaderChip/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "theme/experiments/tmMessageHeaderChip/tmMessageHeaderChip.sys.mjs",
+        "paths": [["tmMessageHeaderChip"]]
+      }
+    },
     "tmMessageListTableView": {
       "schema": "theme/experiments/tmMessageListTableView/schema.json",
       "parent": {

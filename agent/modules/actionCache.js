@@ -36,6 +36,22 @@ async function _writeActionToHdr(weMsgId, action) {
 }
 
 /**
+ * Repaint the message-header action chip on every preview pane / standalone
+ * message-display window. Fire-and-forget; no-op when the experiment is
+ * unavailable. Callers MUST `await _writeActionToHdr(...)` BEFORE invoking
+ * this when they're updating the mork prop, otherwise the painter may
+ * read the OLD prop value (parent-process IPC race — see
+ * tabmail-thunderbird/PLAN_HEADER_CHIP.md §6 "Action-change broadcast race").
+ */
+async function _refreshHeaderChip() {
+  try {
+    if (browser?.tmMessageHeaderChip?.refreshAll) {
+      await browser.tmMessageHeaderChip.refreshAll();
+    }
+  } catch (_) {}
+}
+
+/**
  * Display enum for the four AI actions. Plain names (no `tm_` prefix) —
  * the transport-layer `tm_*` naming exists only at IMAP/Gmail boundaries.
  */
@@ -154,7 +170,11 @@ export async function setAction(headerOrWeIdOrUniqueKey, action) {
 
     // Push to view experiments so paint+sort stay in sync with IDB.
     const weMsgId = _resolveWeMsgId(headerOrWeIdOrUniqueKey);
-    if (weMsgId) _writeActionToHdr(weMsgId, action).catch(() => {});
+    if (weMsgId) {
+      // Sequential: prop write must complete before chip refresh reads from it.
+      await _writeActionToHdr(weMsgId, action).catch(() => {});
+    }
+    _refreshHeaderChip().catch(() => {});
 
     return uniqueKey;
   } catch (_) {
@@ -172,7 +192,11 @@ export async function clearAction(headerOrWeIdOrUniqueKey) {
   if (!uniqueKey) return false;
   const ok = await clearActionByUniqueKey(uniqueKey);
   const weMsgId = _resolveWeMsgId(headerOrWeIdOrUniqueKey);
-  if (weMsgId) _writeActionToHdr(weMsgId, null).catch(() => {});
+  if (weMsgId) {
+    // Sequential: prop write must complete before chip refresh reads from it.
+    await _writeActionToHdr(weMsgId, null).catch(() => {});
+  }
+  _refreshHeaderChip().catch(() => {});
   return ok;
 }
 
@@ -186,6 +210,11 @@ export async function clearActionByUniqueKey(uniqueKey) {
   if (!uniqueKey) return false;
   try {
     await idb.remove([ACTION_PREFIX + uniqueKey, ACTION_TS_PREFIX + uniqueKey]);
+    // Symmetric coverage only — this site has no weMsgId so it cannot
+    // clear the mork prop. For onMoved.js's post-move case, the chip
+    // actually clears via onMessagesDisplayed firing on the new-folder
+    // hdr (which has no mork prop). See PLAN_HEADER_CHIP.md §4.7 site #3.
+    _refreshHeaderChip().catch(() => {});
     return true;
   } catch (_) {
     return false;
@@ -210,6 +239,11 @@ const _BULK_PUSH_BATCH_SIZE = 100;
  * `browser.tmHdr.setActionsBulk` in batches.
  *
  * Fire-and-forget — callers should not await.
+ *
+ * NOTE: this function does NOT call `_refreshHeaderChip()`. Startup runs
+ * before any message-display, so there's no chip to refresh; the first
+ * `messageDisplay.onMessagesDisplayed` event will paint the chip with the
+ * just-written mork prop. See PLAN_HEADER_CHIP.md §4.7.
  */
 export async function pushAllActionsToExperimentsOnStartup() {
   const t0 = Date.now();

@@ -104,6 +104,22 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ---
 
+## Header chip (preview pane)
+
+- **Experiment**: `theme/experiments/tmMessageHeaderChip/` — passive painter for the iOS-style action chip in `#expandedButtonsBox` of the message preview header. Plan: `PLAN_HEADER_CHIP.md`. Decision: ADR-014.
+- Reads `tm-action` mork prop on the displayed `gMessage`; never writes action state. `_actionFromKeywords_MHC` is the legacy fallback for pre-Phase-2b messages.
+- Chip carries `tm-action-chip tm-header-action-chip tm-action-X` plus inline `--tag-color` (for `:focus-visible` outline) and `data-tm-we-msg-id`. The marker class `tm-header-action-chip` lets the doc-level click delegation scope to header chips and never accidentally fire on a card chip.
+- Click → `tmMessageHeaderChip.onActionChipClick` event → MV3 `_onHeaderChipClick` (in `theme/background.js`) → `performTaggedAction({id: weMsgId})`. **Bypasses `triggerTagActionKey`** so the action targets the chip's own message regardless of selection drift; works in standalone `messageWindow.xhtml` (no `mailTabs` selection).
+- Refresh triggers (all → `tmMessageHeaderChip.refreshAll()`):
+  1. `messageDisplay.onMessagesDisplayed` (MV3, `theme/background.js`).
+  2. `actionCache.setAction` / `clearAction` (await `_writeActionToHdr` first to avoid the parent-process IPC race that would otherwise let the painter read the OLD prop value — see `PLAN_HEADER_CHIP.md` §6).
+  3. `actionCache.clearActionByUniqueKey` — symmetric coverage only; today's caller (`onMoved.js:288`) is actually covered by trigger 1 because the new-folder hdr has no mork prop.
+  4. Internal MutationObserver on `#headerSubjectSecurityContainer` (50 ms debounced) → recovers after charset/view-source/body-as toggles wipe the header subtree.
+- **Known limitation:** `agent/modules/contextMenus.js:230` `clearActionCache` removes IDB keys directly via `idb.remove`, bypassing `actionCache.js` entirely AND not clearing the mork prop. As a result the right-click "Remove TabMail tags" path leaves a stale `tm-action` mork prop and the chip will keep painting after `refreshAll` until the message is re-classified or moved. Pre-existing inconsistency; not addressed by the chip plan.
+- **CSS refactor in tmTheme/theme.css** (one-time, landed with chip plan): the four `tr[is="thread-card"].tm-action-{reply,archive,delete,none} .tm-action-chip` rules were relaxed to `.tm-action-chip.tm-action-X` so they paint both the card-row chip and the header chip. The chip carries both classes already; row-level tinting is unaffected (separate rules at `theme.css:704-771`).
+
+---
+
 ## Knowledge Gaps
 
 - [ ] Full inventory of experiment APIs currently in use
