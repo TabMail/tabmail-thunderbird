@@ -55,7 +55,27 @@ function normalizeArgs(args = {}) {
   return out;
 }
 
-function ensureTimes(details) {
+/**
+ * Resolve the user's preferred default event duration (Options →
+ * Calendar Settings). Falls back to the compile-time setting when the user
+ * hasn't customized it. Range-clamped so a stray storage value can't yield
+ * zero-length or absurdly long events.
+ */
+async function getDefaultEventDurationMinutes() {
+  const fallback = Number(CHAT_SETTINGS.createEventDefaultDurationMinutes) || 45;
+  try {
+    const { defaultEventDurationMinutes } = await browser.storage.local.get({
+      defaultEventDurationMinutes: null,
+    });
+    const n = Number(defaultEventDurationMinutes);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.min(Math.max(Math.round(n), 5), 12 * 60);
+  } catch (_) {
+    return fallback;
+  }
+}
+
+async function ensureTimes(details) {
   let { start_iso, end_iso, all_day } = details;
   try {
     if (!start_iso) {
@@ -63,7 +83,7 @@ function ensureTimes(details) {
       start_iso = toIsoNoMs(now);
     }
     if (!end_iso && !all_day) {
-      const minutes = Number(CHAT_SETTINGS.createEventDefaultDurationMinutes) || 60;
+      const minutes = await getDefaultEventDurationMinutes();
       const end = new Date(new Date(start_iso).getTime() + minutes * 60 * 1000);
       end_iso = toIsoNoMs(end);
     }
@@ -129,7 +149,7 @@ async function _runCreateCalendarEvent(args = {}, options = {}) {
     return;
   }
 
-  const norm = ensureTimes(normalizeArgs(args));
+  const norm = await ensureTimes(normalizeArgs(args));
 
   // If no calendar_id provided, try to use the default calendar
   if (!norm.calendar_id) {

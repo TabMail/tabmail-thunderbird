@@ -315,6 +315,20 @@
       <div class="field">
         <small>Select the default calendar for creating new events when no specific calendar is requested.</small>
       </div>
+      <div class="row has-label">
+        <label for="default-event-duration">Default Event Duration</label>
+        <select id="default-event-duration">
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="45" selected>45 min</option>
+          <option value="60">1 hour</option>
+          <option value="90">1h 30m</option>
+          <option value="120">2 hours</option>
+        </select>
+      </div>
+      <div class="field">
+        <small>Used when the assistant doesn't specify an end time. Applied locally — the assistant never has to compute it.</small>
+      </div>
     </section>
 
     <section id="fts-settings">

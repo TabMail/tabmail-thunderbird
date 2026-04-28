@@ -81,8 +81,11 @@ export const CHAT_SETTINGS = {
   calendarQueryLogPreviewChars: 120,
   calendarQueryLogTermsPreviewCount: 5,
   // --- Calendar creation tool ---
-  // Default duration for new events when end time not provided (minutes)
-  createEventDefaultDurationMinutes: 30,
+  // Default duration for new events when end time not provided (minutes).
+  // This is the static fallback — runtime reads `defaultEventDurationMinutes`
+  // from `browser.storage.local` (set via Options) and only falls back here
+  // when the user hasn't customized it.
+  createEventDefaultDurationMinutes: 45,
   // For email_search: number of pages to prefetch in one backend query
   // This avoids needing offset support and lets repeated calls with the same
   // arguments advance pages locally without re-querying Gloda.

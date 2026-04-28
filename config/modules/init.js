@@ -28,8 +28,10 @@ import {
 import {
     loadAddressBooks,
     loadCalendars,
+    loadDefaultEventDuration,
     saveAddressBookConfig,
     saveCalendarConfig,
+    saveDefaultEventDuration,
 } from "./integrations.js";
 import { forcePlaintextAll, updatePlaintextStatusUI } from "./plaintext.js";
 import { updateQuotaDisplay } from "./planUsage.js";
@@ -205,6 +207,11 @@ export async function initConfigPage({
     // Auto-save calendar selection
     if (e.target.id === "default-calendar") {
       await saveCalendarConfig();
+    }
+
+    // Auto-save default event duration (applied client-side at create time)
+    if (e.target.id === "default-event-duration") {
+      await saveDefaultEventDuration();
     }
 
     // Auto-save address book selection
@@ -470,6 +477,7 @@ export async function initConfigPage({
     loadDebugSettings(),
     loadPrivacySettings(getPrivacyOptOutAllAiEnabled, log),
     loadCalendars(),
+    loadDefaultEventDuration(),
     loadAddressBooks(),
     loadReminderSettings(log),
     loadFtsSettings(),

@@ -45,6 +45,16 @@ const SETTING_DEFS = {
     default: 5,
     storageKey: "task.advance_minutes",
   },
+  // Default duration applied client-side when calendar_event_create is invoked
+  // without `end_iso`. Mirrors the iOS setting; Options page picker also writes
+  // to this same storage key.
+  "calendar.default_event_duration_minutes": {
+    type: "number",
+    min: 5,
+    max: 12 * 60,
+    default: 45,
+    storageKey: "defaultEventDurationMinutes",
+  },
 };
 
 export async function run(args = {}) {

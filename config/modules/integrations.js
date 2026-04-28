@@ -295,3 +295,40 @@ export async function saveCalendarConfig() {
   }
 }
 
+/**
+ * Load the user's preferred default event duration into the picker.
+ * Falls back to 45 min when nothing is stored.
+ */
+export async function loadDefaultEventDuration() {
+  try {
+    const select = $("default-event-duration");
+    if (!select) return;
+    const { defaultEventDurationMinutes } = await browser.storage.local.get({
+      defaultEventDurationMinutes: 45,
+    });
+    const n = Number(defaultEventDurationMinutes);
+    if (Number.isFinite(n) && n > 0) {
+      select.value = String(n);
+    }
+  } catch (e) {
+    console.warn("[TMDBG Config] loadDefaultEventDuration failed", e);
+  }
+}
+
+/**
+ * Persist the picked default event duration. Validated client-side
+ * (applied at calendar_event_create time — the assistant never sees it).
+ */
+export async function saveDefaultEventDuration() {
+  try {
+    const select = $("default-event-duration");
+    const raw = Number(select?.value);
+    if (!Number.isFinite(raw) || raw <= 0) return;
+    const minutes = Math.min(Math.max(Math.round(raw), 5), 12 * 60);
+    await browser.storage.local.set({ defaultEventDurationMinutes: minutes });
+    console.log(`[TMDBG Config] Default event duration saved: ${minutes} min`);
+  } catch (e) {
+    console.warn("[TMDBG Config] saveDefaultEventDuration failed", e);
+  }
+}
+
