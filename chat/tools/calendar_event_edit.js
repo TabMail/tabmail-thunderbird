@@ -93,21 +93,47 @@ export async function run(args = {}, options = {}) {
 }
 
 async function _runEditCalendarEvent(args = {}, options = {}) {
-  // Validation of bridge and arguments first (logs only)
+  // Mark FSM context + init the session BEFORE validation so any early-return
+  // failure path can set failReason and drive `exec_fail` — otherwise the
+  // converse-side waiter at converse.js:655 sits forever (see
+  // CalendarEditStuckBug). Mirrors calendar_event_create's structure.
+  try { ctx.activeToolCallId = options?.callId || ctx.activeToolCallId || null; } catch (_) {}
+  ctx.toolExecutionMode = "calendar_event_edit";
+  const pid = ctx.activeToolCallId || 0;
+  try {
+    if (pid) {
+      initFsmSession(pid, "calendar_event_edit");
+      log(`[TMDBG Tools] calendar_event_edit: Initialized FSM session with system prompt for pid=${pid}`);
+      ctx.activePid = pid;
+      ctx.awaitingPid = pid;
+    }
+  } catch (_) {}
+
+  const failOut = async (reason) => {
+    log(`[TMDBG Tools] calendar_event_edit: ${reason}`, "error");
+    try {
+      if (pid && ctx.fsmSessions[pid]) ctx.fsmSessions[pid].failReason = reason;
+    } catch (_) {}
+    ctx.state = "exec_fail";
+    const core = await import("../fsm/core.js");
+    await core.executeAgentAction();
+  };
+
+  // Validation of bridge and arguments
   if (!browser?.tmCalendar?.modifyCalendarEvent) {
-    log("[TMDBG Tools] calendar_event_edit: calendar bridge not available", "error");
+    await failOut("Calendar bridge not available");
     return;
   }
 
   const norm = normalizeArgs(args);
-  
+
   if (!norm.event_id) {
-    log("[TMDBG Tools] calendar_event_edit: event_id is required", "error");
+    await failOut("event_id is required. Use calendar_search or calendar_read to look up the event_id of the calendar event you want to edit, then retry.");
     return;
   }
-  
+
   if (!norm.calendar_id) {
-    log("[TMDBG Tools] calendar_event_edit: calendar_id is required", "error");
+    await failOut("calendar_id is required. Use calendar_search or calendar_read on the target event to obtain its calendar_id, then retry calendar_event_edit with both event_id and calendar_id.");
     return;
   }
 
@@ -127,21 +153,11 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     }
   }
 
-  // Mark FSM context using MCP tool call id when available and enter FSM state
-  try { ctx.activeToolCallId = options?.callId || ctx.activeToolCallId || null; } catch (_) {}
-  ctx.toolExecutionMode = "calendar_event_edit";
+  // Enter FSM state and stash edit args
   ctx.state = "calendar_event_edit_list";
-
-  // Initialize FSM session
   try {
-    const pid = ctx.activeToolCallId || 0;
-    if (pid) {
-      initFsmSession(pid, "calendar_event_edit");
-      // Store edit args in session
+    if (pid && ctx.fsmSessions[pid]) {
       ctx.fsmSessions[pid].editEventArgs = norm;
-      log(`[TMDBG Tools] calendar_event_edit: Initialized FSM session with system prompt for pid=${pid}`);
-      ctx.activePid = pid;
-      ctx.awaitingPid = pid;
     }
   } catch (_) {}
 

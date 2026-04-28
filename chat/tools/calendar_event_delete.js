@@ -62,40 +62,54 @@ export async function run(args = {}, options = {}) {
 }
 
 async function _runDeleteCalendarEvent(args = {}, options = {}) {
-  // Validation of bridge and arguments first (logs only)
+  // Init FSM session BEFORE validation so any early-return failure path can
+  // set failReason and drive `exec_fail` — otherwise the converse-side waiter
+  // at converse.js:655 sits forever (same bug pattern as calendar_event_edit
+  // had pre-fix). Mirrors calendar_event_create's structure.
+  try { ctx.activeToolCallId = options?.callId || ctx.activeToolCallId || null; } catch (_) {}
+  ctx.toolExecutionMode = "calendar_event_delete";
+  const pid = ctx.activeToolCallId || 0;
+  try {
+    if (pid) {
+      initFsmSession(pid, "calendar_event_delete");
+      log(`[TMDBG Tools] calendar_event_delete: Initialized FSM session with system prompt for pid=${pid}`);
+      ctx.activePid = pid;
+      ctx.awaitingPid = pid;
+    }
+  } catch (_) {}
+
+  const failOut = async (reason) => {
+    log(`[TMDBG Tools] calendar_event_delete: ${reason}`, "error");
+    try {
+      if (pid && ctx.fsmSessions[pid]) ctx.fsmSessions[pid].failReason = reason;
+    } catch (_) {}
+    ctx.state = "exec_fail";
+    const core = await import("../fsm/core.js");
+    await core.executeAgentAction();
+  };
+
+  // Validation of bridge and arguments
   if (!browser?.tmCalendar?.deleteCalendarEvent) {
-    log("[TMDBG Tools] calendar_event_delete: calendar bridge not available", "error");
+    await failOut("Calendar bridge not available");
     return;
   }
 
   const norm = normalizeArgs(args);
   if (!norm.event_id) {
-    const err = "event_id is required to delete calendar event";
-    log("[TMDBG Tools] calendar_event_delete: event_id is required", "error");
+    await failOut("event_id is required. Use calendar_search or calendar_read to look up the event_id of the calendar event you want to delete, then retry.");
     return;
   }
-  
+
   if (!norm.calendar_id) {
-    const err = "calendar_id is required to delete calendar event";
-    log("[TMDBG Tools] calendar_event_delete: calendar_id is required", "error");
+    await failOut("calendar_id is required. Use calendar_search or calendar_read on the target event to obtain its calendar_id, then retry calendar_event_delete with both event_id and calendar_id.");
     return;
   }
 
-  // Mark FSM context using MCP tool call id when available and enter FSM state
-  try { ctx.activeToolCallId = options?.callId || ctx.activeToolCallId || null; } catch (_) {}
-  ctx.toolExecutionMode = "calendar_event_delete";
+  // Enter FSM state and stash delete args
   ctx.state = "calendar_event_delete_list";
-
-  // Initialize FSM session
   try {
-    const pid = ctx.activeToolCallId || 0;
-    if (pid) {
-      initFsmSession(pid, "calendar_event_delete");
-      // Store delete args in session
+    if (pid && ctx.fsmSessions[pid]) {
       ctx.fsmSessions[pid].deleteEventArgs = norm;
-      log(`[TMDBG Tools] calendar_event_delete: Initialized FSM session with system prompt for pid=${pid}`);
-      ctx.activePid = pid;
-      ctx.awaitingPid = pid;
     }
   } catch (_) {}
 

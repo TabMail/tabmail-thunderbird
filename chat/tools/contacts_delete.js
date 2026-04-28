@@ -146,6 +146,36 @@ export async function run(args = {}, options = {}) {
 }
 
 async function _runDeleteContact(args = {}, options = {}) {
+  // Init FSM session BEFORE validation so any early-return failure path can
+  // set failReason and drive `exec_fail` — otherwise the converse-side waiter
+  // hangs forever (same bug pattern as calendar_event_edit / _delete had
+  // pre-fix).
+  try {
+    ctx.activeToolCallId = options?.callId || ctx.activeToolCallId || null;
+  } catch (_) {}
+  ctx.toolExecutionMode = "contacts_delete";
+  const pid = ctx.activeToolCallId || 0;
+  try {
+    if (pid) {
+      initFsmSession(pid, "contacts_delete");
+      log(
+        `[TMDBG Tools] contacts_delete: Initialized FSM session with system prompt for pid=${pid}`
+      );
+      ctx.activePid = pid;
+      ctx.awaitingPid = pid;
+    }
+  } catch (_) {}
+
+  const failOut = async (reason) => {
+    log(`[TMDBG Tools] contacts_delete: ${reason}`, "error");
+    try {
+      if (pid && ctx.fsmSessions[pid]) ctx.fsmSessions[pid].failReason = reason;
+    } catch (_) {}
+    ctx.state = "exec_fail";
+    const core = await import("../fsm/core.js");
+    await core.executeAgentAction();
+  };
+
   const norm = normalizeArgs(args);
 
   // Use provided addressbook_id or fall back to default
@@ -153,31 +183,18 @@ async function _runDeleteContact(args = {}, options = {}) {
   if (!parentId) {
     parentId = await getDefaultAddressBookId();
     if (!parentId) {
-      log(
-        "[TMDBG Tools] contacts_delete: no addressbook_id provided and no default address book configured; aborting",
-        "error"
+      await failOut(
+        "No addressbook_id provided and no default address book is configured. Ask the user to set a default address book in Options, or use contacts_search to identify the correct addressbook_id and pass it explicitly."
       );
       return;
     }
   }
 
-  try {
-    ctx.activeToolCallId = options?.callId || ctx.activeToolCallId || null;
-  } catch (_) {}
-  ctx.toolExecutionMode = "contacts_delete";
   ctx.state = "contacts_delete_list";
 
   try {
-    const pid = ctx.activeToolCallId || 0;
-    if (pid) {
-      initFsmSession(pid, "contacts_delete");
-      // Store delete args in session
+    if (pid && ctx.fsmSessions[pid]) {
       ctx.fsmSessions[pid].deleteArgs = norm;
-      log(
-        `[TMDBG Tools] contacts_delete: Initialized FSM session with system prompt for pid=${pid}`
-      );
-      ctx.activePid = pid;
-      ctx.awaitingPid = pid;
     }
   } catch (_) {}
 

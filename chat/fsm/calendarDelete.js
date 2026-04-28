@@ -88,15 +88,19 @@ export async function runStateDeleteCalendarEventList() {
   } else {
     const errMsg =
       details && details.error ? String(details.error) : "unknown error";
-    const failMsg = `Failed to read event details for id ${eventId}: ${errMsg}`;
+    // Same realId-leak guard as calendarEdit — keep id in internal log only.
     log(
       `[CalendarDelete] details fetch failed for id=${eventId}: ${errMsg}`,
       "error"
     );
-    streamText(agentBubble, failMsg);
+    const userFacing = `Failed to read event details: ${errMsg}.`;
+    streamText(agentBubble, userFacing);
+    const llmFacing =
+      `Failed to read event details: ${errMsg}. The event_id you supplied may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). ` +
+      `Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.`;
     try {
       const pid = ctx.activePid || ctx.activeToolCallId || 0;
-      if (pid) ctx.fsmSessions[pid].failReason = failMsg;
+      if (pid) ctx.fsmSessions[pid].failReason = llmFacing;
     } catch (_) {}
     log(`[CalendarDelete] moving to state = exec_fail`);
     ctx.state = "exec_fail";

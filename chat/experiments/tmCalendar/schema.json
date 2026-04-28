@@ -87,6 +87,7 @@
               "description": { "type": "string", "optional": true },
               "transparency": { "type": "string", "optional": true, "description": "Event availability: 'busy' or 'free' (default 'busy')." },
               "calendar_id": { "type": "string", "optional": true },
+              "timezone": { "type": "string", "optional": true, "description": "Optional IANA timezone identifier (e.g., 'America/Los_Angeles'). When provided, naive start_iso / end_iso strings are interpreted in this zone instead of the user's local TB timezone." },
               "attendees": {
                 "type": "array",
                 "optional": true,
@@ -153,6 +154,7 @@
               "location": { "type": "string", "optional": true },
               "description": { "type": "string", "optional": true },
               "transparency": { "type": "string", "optional": true, "description": "Set availability: 'busy' or 'free'." },
+              "timezone": { "type": "string", "optional": true, "description": "Optional IANA timezone identifier (e.g., 'America/Los_Angeles'). When provided, naive start_iso / end_iso strings are interpreted in this zone instead of the user's local TB timezone." },
               "attendees": {
                 "type": "array",
                 "optional": true,

@@ -395,29 +395,50 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
  * - This ensures events created across DST boundaries are stored correctly.
  * 
  * @param {string} iso - ISO8601 datetime string (preferably without timezone offset)
+ * @param {string} [tzId] - Optional IANA tz id (e.g. "America/Los_Angeles"). When
+ *   set and the ISO is naive, the wall-clock components are anchored in this
+ *   zone instead of the user's TB-default zone. Unknown ids fall back to
+ *   defaultTimezone with a warn.
  * @returns {calIDateTime|null} - Thunderbird calendar datetime object or null if invalid
  */
-function toCalIDateTime(iso) {
+function toCalIDateTime(iso, tzId) {
   try {
     const Ci = globalThis.Ci;
     const Cc = globalThis.Cc;
     const tzService = Cc["@mozilla.org/calendar/timezone-service;1"].getService(Ci.calITimezoneService);
     const dt = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
-    
+
     const d = new Date(iso);
     if (isNaN(d.getTime())) {
       console.warn(`[tmCalendar] toCalIDateTime: Invalid date string '${iso}'`);
       return null;
     }
-    
+
     // Detect timezone format and warn if offset is present (potential DST issue)
     const hasOffset = /[zZ]|[+\-]\d{2}:?\d{2}$/.test(String(iso));
     if (hasOffset && !iso.endsWith('Z') && !/[+\-]00:?00$/.test(iso)) {
       console.warn(`[tmCalendar] toCalIDateTime: WARNING - ISO string '${iso}' has timezone offset. This may cause DST boundary errors. Use naive format without offset instead.`);
     }
-    
+
+    // Resolve the override timezone if the caller passed one. Mozilla's
+    // calITimezoneService.getTimezone returns null/UTC for unknown ids on
+    // some builds — guard via tzid round-trip.
+    let overrideTimezone = null;
+    if (typeof tzId === "string" && tzId) {
+      try {
+        const candidate = tzService.getTimezone(tzId);
+        if (candidate && candidate.tzid && candidate.tzid !== "floating") {
+          overrideTimezone = candidate;
+        } else {
+          console.warn(`[tmCalendar] toCalIDateTime: unknown tzId '${tzId}', falling back to defaultTimezone`);
+        }
+      } catch (e) {
+        console.warn(`[tmCalendar] toCalIDateTime: getTimezone('${tzId}') threw, falling back: ${e}`);
+      }
+    }
+
     let timezone;
-    
+
     if (hasOffset) {
       // If ISO has explicit timezone, preserve it
       if (iso.endsWith('Z') || iso.includes('+00:00') || iso.includes('-00:00')) {
@@ -426,33 +447,47 @@ function toCalIDateTime(iso) {
         console.log(`[tmCalendar] toCalIDateTime: UTC datetime '${iso}' -> ${dt.toString()}`);
       } else {
         // Use local timezone for offset-aware times (user's input with timezone)
-        timezone = tzService.defaultTimezone || tzService.UTC;
+        timezone = overrideTimezone || tzService.defaultTimezone || tzService.UTC;
         dt.resetTo(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), timezone);
         console.log(`[tmCalendar] toCalIDateTime: Offset-aware '${iso}' -> ${dt.toString()} in ${timezone.tzid || 'UTC'}`);
       }
     } else {
-      // For naive times (no timezone), assume user's local timezone
-      // JavaScript's Date correctly applies DST rules for the target date
-      timezone = tzService.defaultTimezone || tzService.UTC;
-      const localDate = new Date(iso + (iso.includes('T') ? '' : 'T00:00:00'));
-      
-      // Extract wall-clock components
-      const year = localDate.getFullYear();
-      const month = localDate.getMonth();
-      const day = localDate.getDate();
-      const hours = localDate.getHours();
-      const minutes = localDate.getMinutes();
-      const seconds = localDate.getSeconds();
-      
-      // Pass to calendar API - it will apply correct DST for this date
-      dt.resetTo(year, month, day, hours, minutes, seconds, timezone);
-      
-      // Log DST info for debugging
-      const offset = localDate.getTimezoneOffset();
-      const isDST = offset < (new Date(year, 0, 1).getTimezoneOffset());
-      console.log(`[tmCalendar] toCalIDateTime: Naive datetime '${iso}' -> ${dt.toString()} in ${timezone.tzid || 'UTC'} (UTC offset: ${-offset/60}hrs, DST: ${isDST})`);
+      // For naive times (no timezone), use the override if present, else the
+      // user's TB-configured zone. We must extract the wall-clock components
+      // without going through `new Date(iso)` (which would re-interpret in the
+      // local zone) when an override is specified — parse the digits directly.
+      timezone = overrideTimezone || tzService.defaultTimezone || tzService.UTC;
+      const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(String(iso));
+      let year, month, day, hours, minutes, seconds;
+      if (m && overrideTimezone) {
+        // Wall-clock parse — bypass JS Date's local-zone reinterpretation so
+        // "2026-04-29T22:00:00" with tzId="Asia/Seoul" lands at 22:00 KST
+        // even when TB is configured to PT.
+        year = Number(m[1]);
+        month = Number(m[2]) - 1;
+        day = Number(m[3]);
+        hours = Number(m[4] || "0");
+        minutes = Number(m[5] || "0");
+        seconds = Number(m[6] || "0");
+        dt.resetTo(year, month, day, hours, minutes, seconds, timezone);
+        console.log(`[tmCalendar] toCalIDateTime: Naive datetime '${iso}' anchored in '${timezone.tzid}' (override) -> ${dt.toString()}`);
+      } else {
+        // Default behaviour: parse via JS Date (uses TB's local zone) and
+        // copy wall-clock components — DST applied by the calendar API.
+        const localDate = new Date(iso + (iso.includes('T') ? '' : 'T00:00:00'));
+        year = localDate.getFullYear();
+        month = localDate.getMonth();
+        day = localDate.getDate();
+        hours = localDate.getHours();
+        minutes = localDate.getMinutes();
+        seconds = localDate.getSeconds();
+        dt.resetTo(year, month, day, hours, minutes, seconds, timezone);
+        const offset = localDate.getTimezoneOffset();
+        const isDST = offset < (new Date(year, 0, 1).getTimezoneOffset());
+        console.log(`[tmCalendar] toCalIDateTime: Naive datetime '${iso}' -> ${dt.toString()} in ${timezone.tzid || 'UTC'} (UTC offset: ${-offset/60}hrs, DST: ${isDST})`);
+      }
     }
-    
+
     dt.isDate = false; // ensure date-time, not all-day date
     return dt;
   } catch (e) {
@@ -1138,8 +1173,9 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             const ev = Cc["@mozilla.org/calendar/event;1"].createInstance(Ci.calIEvent);
             if (details.title) ev.title = String(details.title);
-            const start = toCalIDateTime(String(details.start_iso || ""));
-            const end = toCalIDateTime(String(details.end_iso || ""));
+            const tzOverride = typeof details.timezone === "string" && details.timezone ? details.timezone : null;
+            const start = toCalIDateTime(String(details.start_iso || ""), tzOverride);
+            const end = toCalIDateTime(String(details.end_iso || ""), tzOverride);
             if (start) { if (details.all_day) start.isDate = true; ev.startDate = start; }
             if (end) { if (details.all_day) end.isDate = true; ev.endDate = end; }
             if (details.location) { try { ev.setProperty("LOCATION", String(details.location)); } catch {} }
@@ -1343,13 +1379,18 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             let originalRrule = "";
             try { originalRrule = String(base.getProperty?.("RRULE") || ""); } catch (_) {}
 
+            // Honor an explicit timezone on the modify call so naive ISO
+            // patches land in the requested zone, mirroring createCalendarEvent.
+            const editTzOverride = typeof patch.timezone === "string" && patch.timezone
+              ? patch.timezone
+              : (typeof details.timezone === "string" && details.timezone ? details.timezone : null);
             if (typeof patch.title === "string") clone.title = patch.title;
             if (patch.start_iso) {
-              const s = toCalIDateTime(String(patch.start_iso));
+              const s = toCalIDateTime(String(patch.start_iso), editTzOverride);
               if (s) { if (patch.all_day) s.isDate = true; clone.startDate = s; }
             }
             if (patch.end_iso) {
-              const e = toCalIDateTime(String(patch.end_iso));
+              const e = toCalIDateTime(String(patch.end_iso), editTzOverride);
               if (e) { if (patch.all_day) e.isDate = true; clone.endDate = e; }
             }
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
