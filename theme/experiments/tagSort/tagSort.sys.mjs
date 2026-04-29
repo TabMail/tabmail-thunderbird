@@ -248,8 +248,9 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
 
     function applyDateOnlySort(win) {
       if (!win) return;
+      let tabmail;
       try {
-        const tabmail = win.document.getElementById("tabmail");
+        tabmail = win.document.getElementById("tabmail");
         if (tabmail?.currentTabInfo?.mode?.name !== "mail3PaneTab") return;
       } catch (_) {}
 
@@ -267,7 +268,37 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
         const targetOrder = getSortOrderPref() === SORT_ORDER_ASCENDING ? ASC : DESC;
 
         if (view.curSortType === BY_DATE && view.curSortOrder === targetOrder) return;
-        view.sort?.(BY_DATE, targetOrder);
+
+        // Preserve selection across the sort — same rationale as applySort:
+        // unified-inbox and other XFVirtualFolder threaded views go through
+        // RebuildView which only saves the current key. Use TB's canonical
+        // URI-based threadPane.saveSelection/restoreSelection contract.
+        const contentWin = tabmail?.currentAbout3Pane ||
+                          tabmail?.currentTabInfo?.chromeBrowser?.contentWindow ||
+                          tabmail?.currentTabInfo?.browser?.contentWindow;
+        const threadPane = contentWin?.threadPane ?? null;
+        const hasSelection = !!view.selection?.count;
+        let selectionSaved = false;
+        if (threadPane?.saveSelection && hasSelection) {
+          try {
+            threadPane.saveSelection();
+            selectionSaved = true;
+          } catch (e) {
+            tlog("applyDateOnlySort: threadPane.saveSelection() failed", e);
+          }
+        }
+
+        try {
+          view.sort?.(BY_DATE, targetOrder);
+        } finally {
+          if (selectionSaved && threadPane?.restoreSelection) {
+            try {
+              threadPane.restoreSelection({ notify: false });
+            } catch (e) {
+              tlog("applyDateOnlySort: threadPane.restoreSelection() failed", e);
+            }
+          }
+        }
       } catch (e) {
         console.error("[TagSort] applyDateOnlySort failed:", e);
       }
@@ -431,6 +462,34 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
 
         const tbo = threadTree?.treeBoxObject;
 
+        // Preserve the user's thread-pane selection across the sort.
+        //
+        // Why this is needed even though nsMsgThreadedDBView::Sort already
+        // saves/restores by msgKey: the Unified Inbox / smart "Inbox"
+        // (nsMsgXFVirtualFolderDBView) inherits Sort from nsMsgSearchDBView,
+        // which for threaded views delegates to RebuildView — and that path
+        // only preserves the *current* selected key, not the full ranges.
+        // Cardview-originated selections in this view also drop on resort
+        // when relying purely on the C++-side preservation.
+        //
+        // threadPane.saveSelection()/restoreSelection() (about3Pane.js:5765,
+        // 5814) save by URI under gFolder.URI and restore via
+        // findIndexForMsgURI — this is the same contract TB itself uses
+        // for cmd_expandAllThreads/cmd_collapseAllThreads.
+        // notify:false on restore avoids re-firing the "select" event,
+        // which would needlessly re-render the message pane.
+        const threadPane = contentWin?.threadPane ?? null;
+        const hasSelection = !!view.selection?.count;
+        let selectionSaved = false;
+        if (threadPane?.saveSelection && hasSelection) {
+          try {
+            threadPane.saveSelection();
+            selectionSaved = true;
+          } catch (e) {
+            tlog("applySort: threadPane.saveSelection() failed", e);
+          }
+        }
+
         try {
           tbo?.beginUpdateBatch?.();
 
@@ -466,6 +525,13 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
           view.sort(BY_CUSTOM, targetOrder);
         } finally {
           tbo?.endUpdateBatch?.();
+          if (selectionSaved && threadPane?.restoreSelection) {
+            try {
+              threadPane.restoreSelection({ notify: false });
+            } catch (e) {
+              tlog("applySort: threadPane.restoreSelection() failed", e);
+            }
+          }
         }
 
         // Request tmMessageListTableView to repaint rows after the sort re-render.
