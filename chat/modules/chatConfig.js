@@ -23,6 +23,12 @@ export const CHAT_SETTINGS = {
   searchMaxLimit: 50,
   // Default lookback window in days if no explicit date range provided.
   searchDefaultDaysBack: 365,
+  // For `calendar_search` with a non-empty `query` and no explicit
+  // from_date/to_date: the LLM expects to find the event regardless of when it
+  // occurs. A name-based search should look back 30 days and forward a year by
+  // default so recurring series (and their split successors) all surface.
+  calendarSearchDefaultDaysBack: 30,
+  calendarSearchDefaultDaysForward: 365,
   // Use Gloda experiment for search if available.
   useGlodaSearch: true,
   // Apply date filters via Gloda's query.date unless explicitly disabled.

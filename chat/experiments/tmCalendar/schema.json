@@ -146,7 +146,13 @@
             "properties": {
               "event_id": { "type": "string" },
               "calendar_id": { "type": "string", "optional": true, "description": "Optional calendar ID for faster lookup. If provided, searches this calendar first." },
-              "recurrence_id": { "type": "string", "optional": true, "description": "For recurring events, the recurrence ID to edit a specific occurrence." },
+              "recurrence_id": { "type": "string", "optional": true, "description": "For recurring events, the recurrence ID (start ISO of the target occurrence). Required when edit_scope is 'this_only' or 'this_and_following'." },
+              "edit_scope": {
+                "type": "string",
+                "optional": true,
+                "enum": ["all", "this_only", "this_and_following"],
+                "description": "For recurring events, which occurrences this edit applies to. 'all' (default if no recurrence_id) modifies the series. 'this_only' overrides a single occurrence (requires recurrence_id). 'this_and_following' splits the series at recurrence_id, capping the master and creating a new series with the patch applied (requires recurrence_id). When omitted, behaves as 'this_only' if recurrence_id is set, otherwise 'all'."
+              },
               "title": { "type": "string", "optional": true },
               "start_iso": { "type": "string", "optional": true },
               "end_iso": { "type": "string", "optional": true },
@@ -203,6 +209,76 @@
             "event_id": { "type": "string", "optional": true },
             "title": { "type": "string", "optional": true },
             "invitations": { "type": "object", "optional": true },
+            "error": { "type": "string", "optional": true }
+          }
+        },
+        "async": true
+      },
+      {
+        "name": "splitRecurringEvent",
+        "type": "function",
+        "description": "Split a recurring series at recurrence_id: cap the master with UNTIL = recurrence_id - 1, then create a new series with `patch` applied starting at recurrence_id. Attendee notifications fire only on the new series.",
+        "parameters": [
+          {
+            "name": "details",
+            "type": "object",
+            "properties": {
+              "event_id": { "type": "string", "description": "Master series event id." },
+              "calendar_id": { "type": "string", "optional": true, "description": "Optional calendar ID. If omitted, the bridge scans all calendars to locate the event." },
+              "recurrence_id": { "type": "string", "description": "ISO8601 start datetime of the first occurrence that should belong to the NEW series." },
+              "timezone": { "type": "string", "optional": true, "description": "Optional IANA timezone identifier for interpreting naive ISO timestamps." },
+              "patch": {
+                "type": "object",
+                "optional": true,
+                "description": "Fields to apply to the new series. Inherits the master's values for any field not present in patch.",
+                "properties": {
+                  "title": { "type": "string", "optional": true },
+                  "location": { "type": "string", "optional": true },
+                  "description": { "type": "string", "optional": true },
+                  "transparency": { "type": "string", "optional": true },
+                  "attendees": {
+                    "type": "array",
+                    "optional": true,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "email": { "type": "string" },
+                        "name": { "type": "string" }
+                      }
+                    }
+                  },
+                  "send_invitations": { "type": "boolean", "optional": true },
+                  "organizer_email": { "type": "string", "optional": true },
+                  "recurrence": {
+                    "type": "object",
+                    "optional": true,
+                    "properties": {
+                      "freq": { "type": "string", "optional": true },
+                      "interval": { "type": "integer", "optional": true },
+                      "count": { "type": "integer", "optional": true },
+                      "until": { "type": "string", "optional": true },
+                      "byDay": { "type": "array", "optional": true, "items": { "type": "string" } },
+                      "byMonthDay": { "type": "array", "optional": true, "items": { "type": "integer" } },
+                      "byMonth": { "type": "array", "optional": true, "items": { "type": "integer" } },
+                      "wkst": { "type": "string", "optional": true }
+                    }
+                  }
+                }
+              }
+            },
+            "required": ["event_id", "recurrence_id"]
+          }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "calendar_id": { "type": "string", "optional": true },
+            "event_id": { "type": "string", "optional": true, "description": "Event id of the NEW series." },
+            "old_event_id": { "type": "string", "optional": true, "description": "Event id of the master series (now capped)." },
+            "title": { "type": "string", "optional": true },
+            "invitations": { "type": "object", "optional": true },
+            "split_at": { "type": "string", "optional": true },
             "error": { "type": "string", "optional": true }
           }
         },

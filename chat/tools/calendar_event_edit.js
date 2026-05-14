@@ -1,7 +1,7 @@
 // calendar_event_edit.js – edits an existing calendar event (FSM tool)
 
 // FSM tool — requires user confirmation before executing.
-// Used by core.js to detect and block consecutive FSM calls (see BLOCK_CONSECUTIVE_FSM_CALLS).
+// `fsm = true` lets core.js classify this tool as FSM (multi-step / confirmation-required).
 export const fsm = true;
 
 import { log } from "../../agent/modules/utils.js";
@@ -16,11 +16,22 @@ function normalizeArgs(args = {}) {
   // event_id is required for edit operations
   if (typeof a.event_id === "string" && a.event_id) out.event_id = a.event_id;
   
-  // calendar_id is required for disambiguation
+  // calendar_id is OPTIONAL — provided as a hint for faster lookup. When omitted,
+  // the tmCalendar bridge auto-scans every calendar to find the event_id.
   if (typeof a.calendar_id === "string" && a.calendar_id) out.calendar_id = a.calendar_id;
   
-  // recurrence_id for editing specific occurrences
-  if (typeof a.recurrence_id === "string" && a.recurrence_id) out.recurrence_id = a.recurrence_id;
+  // recurrence_id — the start datetime of a specific occurrence (RECURRENCE-ID).
+  // Required when edit_scope is "this_only" or "this_and_following".
+  if (typeof a.recurrence_id === "string" && a.recurrence_id) out.recurrence_id = toNaiveIso(a.recurrence_id);
+
+  // edit_scope (v1.5.21+) — "all" | "this_only" | "this_and_following".
+  // Normalize to the supported set; default is inferred at exec time (see calendarEdit.js).
+  if (typeof a.edit_scope === "string") {
+    const s = a.edit_scope.toLowerCase().trim();
+    if (s === "all" || s === "this_only" || s === "this_and_following") {
+      out.edit_scope = s;
+    }
+  }
   
   // Only include properties that have meaningful values
   if (typeof a.title === "string" && a.title) out.title = a.title;
@@ -35,12 +46,33 @@ function normalizeArgs(args = {}) {
     if (t === "busy" || t === "free") out.transparency = t;
   }
   
-  // Attendees array (include even if empty since it's a valid state)
-  if (Array.isArray(a.attendees)) {
-    out.attendees = a.attendees.filter(Boolean).map((p) => ({
-      email: typeof p?.email === "string" ? p.email : (typeof p === "string" ? p : ""),
-      name: typeof p?.name === "string" ? p.name : "",
-    }));
+  // Attendees are delta-based (calendar_event_edit-v1.5.21+):
+  //   add_attendees: [{email, name?}] — appended to existing list
+  //   remove_attendees: [{email}]   — dropped from existing list ("*" = clear all)
+  // The FSM exec state resolves these against the event's current attendee list and
+  // produces the flat `attendees` payload that browser.tmCalendar.modifyCalendarEvent
+  // expects. Legacy whole-list `attendees` is intentionally NOT accepted here; the
+  // backend version-pins older clients to the v1.5.7 schema instead.
+  if (Array.isArray(a.add_attendees)) {
+    out.add_attendees = a.add_attendees
+      .filter(Boolean)
+      .map((p) => ({
+        email: typeof p?.email === "string"
+          ? p.email
+          : (typeof p === "string" ? p : ""),
+        name: typeof p?.name === "string" ? p.name : "",
+      }))
+      .filter((p) => p.email && p.email !== "*");
+  }
+  if (Array.isArray(a.remove_attendees)) {
+    out.remove_attendees = a.remove_attendees
+      .filter(Boolean)
+      .map((p) => ({
+        email: typeof p?.email === "string"
+          ? p.email
+          : (typeof p === "string" ? p : ""),
+      }))
+      .filter((p) => p.email);
   }
   
   // Include invitation properties
@@ -132,12 +164,22 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     return;
   }
 
-  if (!norm.calendar_id) {
-    await failOut("calendar_id is required. Use calendar_search or calendar_read on the target event to obtain its calendar_id, then retry calendar_event_edit with both event_id and calendar_id.");
+  // edit_scope="this_only" or "this_and_following" requires the recurrence_id of
+  // the target occurrence. Fail early — before showing a confirmation card — so
+  // the LLM gets actionable feedback to retry with the missing field.
+  if ((norm.edit_scope === "this_only" || norm.edit_scope === "this_and_following") && !norm.recurrence_id) {
+    await failOut(`edit_scope='${norm.edit_scope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.`);
     return;
   }
 
-  // Auto-extract organizer email from calendar if not provided
+  // calendar_id is OPTIONAL — the bridge (tmCalendar.modifyCalendarEvent) auto-scans
+  // every calendar when none is supplied (see tmCalendar.sys.mjs lines 1340-1369).
+  // Don't reject here; the schema description tells the LLM the system will resolve
+  // it, and matching that contract avoids consecutive-FSM-style retry loops where
+  // the LLM has to call calendar_search just to fetch a calendar_id it already
+  // implicitly knows from prior context.
+
+  // Auto-extract organizer email from calendar if a calendar_id was provided.
   if (!norm.organizer_email && norm.calendar_id) {
     try {
       const calendarInfo = await browser.tmCalendar.getCalendars();
@@ -230,13 +272,28 @@ export async function completeExecution(currentState, prevState) {
   }
   
   if (prevState === "calendar_event_edit_exec" && sess?.editResult) {
-    log(`[TMDBG Tools] calendar_event_edit.completeExecution: edited event successfully`);
+    log(`[TMDBG Tools] calendar_event_edit.completeExecution: edited event successfully scope=${sess.editResult.edit_scope}`);
+    // Echo the RESOLVED edit_scope (+ recurrence_id) back to the LLM so it can
+    // accurately tell the user what slice of the series changed — especially
+    // the inferred case (recurrence_id without edit_scope → "this_only").
+    const scope = sess.editResult.edit_scope || "all";
+    const rid = sess.editResult.recurrence_id;
+    let result;
+    if (scope === "this_only") {
+      result = `Calendar event modified successfully — edit_scope: this_only (only the occurrence on ${rid}; other occurrences untouched).`;
+    } else if (scope === "this_and_following") {
+      result = `Calendar event modified successfully — edit_scope: this_and_following (this and all later occurrences from ${rid}; earlier ones untouched).`;
+    } else {
+      result = "Calendar event modified successfully — edit_scope: all (the entire event/series).";
+    }
     return {
       ok: true,
-      result: "Calendar event modified successfully.",
+      result,
       event_id: sess.editResult.event_id,
       event_title: sess.editResult.event_title,
       calendar_id: sess.editResult.calendar_id,
+      edit_scope: scope,
+      recurrence_id: rid,
       invitations: sess.editResult.invitations,
     };
   }

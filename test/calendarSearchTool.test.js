@@ -422,6 +422,35 @@ describe('resolveDateRange', () => {
     expect(diff).toBeLessThan(90000000);    // ~25 hours maximum
   });
 
+  it('widens default range when query is supplied (name search should find events at any date)', () => {
+    // Regression: with query="Weekly sync" and no dates, the old default of
+    // today+1d returned only today's occurrence — the LLM missed the second
+    // half of a split recurring series and falsely told the user the event
+    // had ended. With a query, the range should span ~30 days back to ~1y
+    // forward so future occurrences of recurring events come back too.
+    const result = resolveDateRange({ query: 'Weekly sync' });
+    const fromMs = new Date(result.fromIso).getTime();
+    const toMs = new Date(result.toIso).getTime();
+    const dayMs = 86400000;
+    const diffDays = (toMs - fromMs) / dayMs;
+    // Roughly 30 days back + 365 forward = ~395 days total span.
+    expect(diffDays).toBeGreaterThan(300);
+    expect(diffDays).toBeLessThan(450);
+    // fromIso should be in the past relative to now.
+    expect(fromMs).toBeLessThan(Date.now());
+    // toIso should be roughly a year in the future.
+    expect(toMs).toBeGreaterThan(Date.now() + 300 * dayMs);
+  });
+
+  it('keeps tight default range when no query (overview mode — don\'t flood the LLM)', () => {
+    const result = resolveDateRange({});
+    const fromMs = new Date(result.fromIso).getTime();
+    const toMs = new Date(result.toIso).getTime();
+    const diffDays = (toMs - fromMs) / 86400000;
+    // ~1 day window when no query supplied.
+    expect(diffDays).toBeLessThan(2);
+  });
+
   it('handles ISO string with time component for from_date', () => {
     const now = new Date();
     const isoWithTime = now.toISOString();

@@ -136,23 +136,30 @@ function formatChangesForDisplay(editArgs, currentDetails) {
         lines.push(`  ${oldT} → **${newT}**`);
       }
     }
-    if (Array.isArray(a.attendees)) {
-      const oldCount = Number.isFinite(d.attendees) ? d.attendees : 0;
-      const newCount = a.attendees.length;
-      if (oldCount !== newCount) {
-        lines.push(`**Attendees:**`);
-        lines.push(`  ${oldCount} invitee(s) → **${newCount} invitee(s)**`);
-        // Show first few new attendees
-        if (a.attendees.length > 0) {
-          a.attendees.slice(0, 3).forEach((att) => {
-            const name = att.name || att.email || "(unknown)";
-            lines.push(`    • ${name}`);
-          });
-          if (a.attendees.length > 3) {
-            lines.push(`    • ... and ${a.attendees.length - 3} more`);
-          }
-        }
-      }
+    // Delta-based attendees (v1.5.21+). Compute the projected merged list against
+    // the event's current attendee list (d.attendeeList) and show old → new count
+    // plus the actual people being added/removed.
+    const cardAddsCount = (Array.isArray(a.add_attendees) ? a.add_attendees : []).length;
+    const cardRemovesCount = (Array.isArray(a.remove_attendees) ? a.remove_attendees : []).length;
+    const hasAttendeeDelta = cardAddsCount > 0 || cardRemovesCount > 0;
+    if (hasAttendeeDelta) {
+      const base = Array.isArray(d.attendeeList) ? d.attendeeList : [];
+      const merged = applyAttendeeDelta(base, a.add_attendees || [], a.remove_attendees || []);
+      const oldCount = base.length;
+      const newCount = merged.length;
+      lines.push(`**Attendees:**`);
+      lines.push(`  ${oldCount} invitee(s) → **${newCount} invitee(s)**`);
+      const adds = (a.add_attendees || []).filter((p) => p && p.email && p.email !== "*");
+      const removes = (a.remove_attendees || []).filter((p) => p && p.email);
+      adds.slice(0, 3).forEach((att) => {
+        const label = att.name || att.email;
+        lines.push(`    + ${label}`);
+      });
+      if (adds.length > 3) lines.push(`    + ... and ${adds.length - 3} more`);
+      removes.slice(0, 3).forEach((att) => {
+        lines.push(`    − ${att.email === "*" ? "(all attendees)" : att.email}`);
+      });
+      if (removes.length > 3) lines.push(`    − ... and ${removes.length - 3} more`);
     }
     if (a.recurrence) {
       lines.push(`**Recurrence:** *(updated)*`);
@@ -165,10 +172,71 @@ function formatChangesForDisplay(editArgs, currentDetails) {
       lines.push(`**Excluded dates:** *(+${a.exdates_add.length} dates)*`);
     }
 
+    // Recurring-event scope — surface this prominently so the user sees that
+    // the edit will only apply to part of the series (or just one occurrence).
+    const scope = typeof a.edit_scope === "string" ? a.edit_scope : null;
+    if (scope === "this_only" && a.recurrence_id) {
+      lines.push(`**Scope:** Just this occurrence (${a.recurrence_id})`);
+    } else if (scope === "this_and_following" && a.recurrence_id) {
+      lines.push(`**Scope:** This occurrence and all future occurrences (starting ${a.recurrence_id})`);
+    } else if (scope === "all") {
+      lines.push(`**Scope:** Entire recurring series`);
+    }
+
     return lines.length > 0 ? lines.join("\n") : "*(no changes detected)*";
   } catch (e) {
     return "(Failed to format changes)";
   }
+}
+
+/// Strip an optional `mailto:` URI prefix from an attendee email (case-insensitive).
+/// TB attendee.id frequently arrives in `mailto:foo@bar.com` form via getCalendarEventDetails.
+function stripMailto(raw) {
+  const s = String(raw || "").trim();
+  return /^mailto:/i.test(s) ? s.replace(/^mailto:/i, "") : s;
+}
+
+/// Apply an add/remove delta on top of `base` attendees. Removals are matched
+/// case-insensitively on email (after stripping `mailto:`). A remove list containing
+/// `{email: "*"}` clears every base entry. Adds are appended after removes and de-duped
+/// case-insensitively against whatever's left. When the same email appears in `base`
+/// and `adds` with a different name, the base entry's name is kept.
+/// Mirrors `email_reply.js applyDelta` and iOS `CalendarToolHelpers.applyAttendeeDelta`.
+export function applyAttendeeDelta(base, adds, removes) {
+  const baseList = Array.isArray(base) ? base : [];
+  const addList = Array.isArray(adds) ? adds : [];
+  const removeList = Array.isArray(removes) ? removes : [];
+
+  const clearAll = removeList.some(
+    (r) => String(r?.email || "").trim() === "*"
+  );
+  const removeSet = new Set(
+    removeList
+      .map((r) => stripMailto(r?.email).toLowerCase())
+      .filter((e) => e && e !== "*")
+  );
+
+  const filtered = clearAll
+    ? []
+    : baseList.filter((r) => !removeSet.has(stripMailto(r?.email).toLowerCase()));
+
+  // Carry forward base entries with their stored name; emit {email, name}.
+  const result = filtered.map((r) => ({
+    email: stripMailto(r?.email),
+    name: String(r?.name || ""),
+  }));
+  const seen = new Set(result.map((r) => r.email.toLowerCase()));
+
+  for (const add of addList) {
+    const email = stripMailto(add?.email);
+    if (!email || email === "*") continue;
+    const key = email.toLowerCase();
+    if (!seen.has(key)) {
+      result.push({ email, name: String(add?.name || "") });
+      seen.add(key);
+    }
+  }
+  return result;
 }
 
 async function fetchEventDetails(eventId) {
@@ -222,6 +290,18 @@ export async function runStateEditCalendarEventList() {
   } catch (_) {}
   if (!details) {
     details = await fetchEventDetails(eventId);
+    // Persist the locally-fetched details back to the session so the exec step
+    // can fall back to this snapshot when its own re-fetch fails — without
+    // this, an empty-base resolution could silently wipe existing attendees
+    // for the delta-attendee path (calendar_event_edit-v1.5.21+).
+    if (details && details.ok) {
+      try {
+        const pid = ctx.activePid || ctx.activeToolCallId || 0;
+        if (pid && ctx.fsmSessions[pid]) {
+          ctx.fsmSessions[pid].editEventDetails = details;
+        }
+      } catch (_) {}
+    }
   }
 
   agentBubble.classList.remove("loading");
@@ -285,22 +365,113 @@ export async function runStateEditCalendarEventList() {
 export async function runStateEditCalendarEventExec() {
   const agentBubble = await createNewAgentBubble("Updating calendar event...");
 
-  let editArgs = null;
-  try {
-    const pid = ctx.activePid || ctx.activeToolCallId || 0;
-    const sess = pid ? (ctx.fsmSessions[pid] ||= {}) : {};
-    editArgs = sess?.editEventArgs || null;
-  } catch (_) {}
+  const execPid = ctx.activePid || ctx.activeToolCallId || 0;
+  const execSess = execPid ? (ctx.fsmSessions[execPid] ||= {}) : {};
+  let editArgs = execSess?.editEventArgs || null;
 
   if (!editArgs || !editArgs.event_id) {
     agentBubble.classList.remove("loading");
     const msg = "Edit failed because event details are missing.";
     streamText(agentBubble, msg);
     try {
-      const pid = ctx.activePid || ctx.activeToolCallId || 0;
-      if (pid)
-        ctx.fsmSessions[pid].failReason = "Missing editEventArgs in exec.";
+      if (execPid)
+        ctx.fsmSessions[execPid].failReason = "Missing editEventArgs in exec.";
     } catch (_) {}
+    ctx.state = "exec_fail";
+    const core = await import("./core.js");
+    await core.executeAgentAction();
+    return;
+  }
+
+  // calendar_event_edit-v1.5.21+: attendees arrive as add/remove deltas. Re-fetch
+  // the event right before applying so we merge against the freshest attendee list
+  // (the cached editEventDetails from the confirm step may be seconds-to-minutes stale),
+  // then collapse the delta into a flat `attendees` array — which is what the
+  // tmCalendar.modifyCalendarEvent bridge expects.
+  const addsCount = (Array.isArray(editArgs.add_attendees) ? editArgs.add_attendees : []).length;
+  const removesCount = (Array.isArray(editArgs.remove_attendees) ? editArgs.remove_attendees : []).length;
+  const hasAttendeeDelta = addsCount > 0 || removesCount > 0;
+  if (hasAttendeeDelta) {
+    let base = [];
+    let baseSource = "empty";
+    try {
+      const fresh = await fetchEventDetails(editArgs.event_id);
+      if (fresh && fresh.ok && Array.isArray(fresh.attendeeList)) {
+        base = fresh.attendeeList;
+        baseSource = "fresh";
+      } else if (Array.isArray(execSess?.editEventDetails?.attendeeList)) {
+        // Fallback to the confirm-time snapshot if the re-fetch failed; better than
+        // resolving against an empty list (which would silently drop existing attendees).
+        base = execSess.editEventDetails.attendeeList;
+        baseSource = "cached";
+      }
+    } catch (e) {
+      log(`[CalendarEdit] re-fetch for attendee merge failed (using cached): ${e}`, "warn");
+      if (Array.isArray(execSess?.editEventDetails?.attendeeList)) {
+        base = execSess.editEventDetails.attendeeList;
+        baseSource = "cached";
+      }
+    }
+
+    // Safety net: if we have NO base info, abort UNLESS the delta is an
+    // explicit clear-all (remove "*"). Reason: without knowing the current
+    // attendee list, the merge result would also collapse to an unknown
+    // truth — an adds-only delta would emit `attendees: [adds]` and wipe
+    // anything we didn't know about, and a removes-specific delta would
+    // emit `attendees: []` (the wipe). Clear-all is intentional wipe so
+    // it's safe to apply regardless of base. The user/LLM can retry once
+    // the calendar is reachable.
+    const isClearAll = (Array.isArray(editArgs.remove_attendees) ? editArgs.remove_attendees : []).some(
+      (r) => String(r?.email || "").trim() === "*"
+    );
+    if (baseSource === "empty" && !isClearAll) {
+      agentBubble.classList.remove("loading");
+      const failMsg =
+        "Could not load the current attendee list for this event — refusing to edit attendees blindly, as the merge could overwrite the existing list. Please retry once the calendar is reachable.";
+      streamText(agentBubble, failMsg);
+      try {
+        if (execPid) ctx.fsmSessions[execPid].failReason = failMsg;
+      } catch (_) {}
+      log(`[CalendarEdit] aborted attendee delta — base unknown (+${addsCount}/-${removesCount}, clearAll=${isClearAll})`, "error");
+      ctx.state = "exec_fail";
+      const core = await import("./core.js");
+      await core.executeAgentAction();
+      return;
+    }
+
+    const merged = applyAttendeeDelta(
+      base,
+      editArgs.add_attendees || [],
+      editArgs.remove_attendees || []
+    );
+    editArgs = { ...editArgs, attendees: merged };
+    delete editArgs.add_attendees;
+    delete editArgs.remove_attendees;
+    log(
+      `[CalendarEdit] resolved attendee delta (${baseSource}): base=${base.length} +${addsCount} -${removesCount} → ${merged.length}`
+    );
+  } else {
+    // No actual delta (empty arrays or absent keys) — strip the keys so they
+    // don't reach modifyCalendarEvent (which doesn't read them anyway, but
+    // keeping the editArgs clean avoids surprise downstream).
+    if (Array.isArray(editArgs.add_attendees) || Array.isArray(editArgs.remove_attendees)) {
+      editArgs = { ...editArgs };
+      delete editArgs.add_attendees;
+      delete editArgs.remove_attendees;
+    }
+  }
+
+  // Route by edit_scope (calendar_event_edit-v1.5.21+). Default: "all" when no
+  // recurrence_id, "this_only" when recurrence_id is present (back-compat with
+  // earlier schema where recurrence_id alone meant single-occurrence override).
+  const explicitScope = (typeof editArgs.edit_scope === "string") ? editArgs.edit_scope : null;
+  const editScope = explicitScope
+    || (editArgs.recurrence_id ? "this_only" : "all");
+  if (editScope !== "all" && !editArgs.recurrence_id) {
+    agentBubble.classList.remove("loading");
+    const failMsg = `edit_scope='${editScope}' requires recurrence_id (the start datetime of the target occurrence).`;
+    streamText(agentBubble, failMsg);
+    try { if (execPid) ctx.fsmSessions[execPid].failReason = failMsg; } catch (_) {}
     ctx.state = "exec_fail";
     const core = await import("./core.js");
     await core.executeAgentAction();
@@ -310,6 +481,13 @@ export async function runStateEditCalendarEventExec() {
   let resultMsg = "";
   let editResult = null;
   try {
+    // The bridge's modifyCalendarEvent is the single entry point for all three
+    // scopes — its schema accepts `edit_scope` and routes internally:
+    //   - "all"               → series edit
+    //   - "this_only"         → single-occurrence override (uses recurrence_id)
+    //   - "this_and_following" → delegates to splitRecurringEvent inside the bridge
+    // So we just pass editArgs through; no JS-side routing.
+    log(`[CalendarEdit] modifyCalendarEvent edit_scope=${editScope}`);
     const res = await browser.tmCalendar.modifyCalendarEvent(editArgs);
     const ok = !!(res && (res.ok === true || res === true));
     if (!ok) {
@@ -318,11 +496,16 @@ export async function runStateEditCalendarEventExec() {
       throw new Error(String(err));
     }
 
-    // Store result in session for completeExecution to retrieve
+    // Store result in session for completeExecution to retrieve.
+    // `edit_scope` is the RESOLVED scope (explicit or inferred) — echoed back
+    // so the LLM knows what slice of the series actually changed. Critical for
+    // the inferred case (recurrence_id without edit_scope → "this_only").
     editResult = {
       event_id: res.event_id,
       calendar_id: res.calendar_id,
       event_title: res.title,
+      edit_scope: editScope,
+      recurrence_id: editArgs.recurrence_id || null,
       invitations: res.invitations,
     };
     try {
@@ -333,6 +516,13 @@ export async function runStateEditCalendarEventExec() {
     } catch (_) {}
 
     resultMsg = "Calendar event updated";
+    if (editScope === "this_only") {
+      resultMsg += ` (only the occurrence on ${editArgs.recurrence_id}; other occurrences untouched)`;
+    } else if (editScope === "this_and_following") {
+      resultMsg += ` (this and all later occurrences from ${editArgs.recurrence_id}; earlier ones untouched)`;
+    } else {
+      resultMsg += " (entire event/series)";
+    }
     if (res.invitations) {
       if (res.invitations.ok) {
         if (typeof res.invitations.recipients !== "undefined") {

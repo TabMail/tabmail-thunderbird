@@ -387,7 +387,19 @@ async function buildCalendarSummary(args) {
       const beforeInsert = days[dayKey];
       log(`[TMDBG CalendarSummary] BEFORE INSERT: dayKey='${dayKey}' exists=${!!beforeInsert} type=${typeof beforeInsert}`);
       
-      const recurMark = it.isRecurring ? " (↻)" : "";
+      // Surface the RRULE on recurring entries so the LLM can see UNTIL/COUNT
+      // and reason about edit_scope. Without it, the LLM saw only "(↻)" and
+      // couldn't tell a capped series from an open-ended one — that confusion
+      // produced a real incident (LLM declared an event "ended" when a
+      // successor series existed for later occurrences).
+      let recurMark = "";
+      if (it.isRecurring) {
+        if (it.recurrenceRRule && /\bFREQ=/i.test(it.recurrenceRRule)) {
+          recurMark = ` (↻ ${it.recurrenceRRule})`;
+        } else {
+          recurMark = " (↻)";
+        }
+      }
       const eventId = it.id || "unknown";
       const line = `${formatHour(it.normalizedStart)} - ${formatHour(it.normalizedEnd)}: ${title}${recurMark}\tevent_id: ${eventId}`;
       const result = insertLine(days[dayKey], calId, line);
@@ -517,14 +529,33 @@ function resolveDateRange(args) {
       toIso = fallbackEnd;
     }
   } else {
-    // Default behavior when no dates provided
+    // Default behavior when no dates provided.
+    // When the caller supplied a non-empty `query`, they are searching by name
+    // and almost certainly want to find the event regardless of when it occurs
+    // (e.g. "Weekly sync" — the LLM needs to see future occurrences to make
+    // decisions about edit_scope / recurrence). A 1-day window is wrong here:
+    // it caused the LLM to miss the second half of a split series and tell the
+    // user "this event ends" when in fact a successor series existed for later
+    // occurrences. Widen to past-30d through next-365d for name searches.
+    // The no-query (overview) path keeps the original tight window so an
+    // unsolicited summary doesn't return thousands of entries.
     const now = new Date();
     const start = new Date(now);
     start.setHours(0, 0, 0, 0);
     const step = Number(CHAT_SETTINGS.msPerDay) || 86400000;
-    const end = new Date(start.getTime() + step);
-    fromIso = toIsoNoMs(start);
-    toIso = toIsoNoMs(end);
+    const hasQuery = typeof args?.query === "string" && args.query.trim().length > 0;
+    if (hasQuery) {
+      const back = Number(CHAT_SETTINGS.calendarSearchDefaultDaysBack) || 30;
+      const forward = Number(CHAT_SETTINGS.calendarSearchDefaultDaysForward) || 365;
+      const rangeStart = new Date(start.getTime() - back * step);
+      const rangeEnd = new Date(start.getTime() + forward * step);
+      fromIso = toIsoNoMs(rangeStart);
+      toIso = toIsoNoMs(rangeEnd);
+    } else {
+      const end = new Date(start.getTime() + step);
+      fromIso = toIsoNoMs(start);
+      toIso = toIsoNoMs(end);
+    }
   }
   
   log(`[TMDBG DateRange] resolved range: ${fromIso} to ${toIso}`);

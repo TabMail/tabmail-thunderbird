@@ -1,7 +1,7 @@
 // core.test.js — Tests for chat/tools/core.js
 //
 // Tests for tool registry, FSM detection, activity labels, execution routing,
-// pagination reset, and FSM chain tracking.
+// and pagination reset.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -191,7 +191,6 @@ const {
   getToolActivityLabel,
   executeToolByName,
   resetToolPaginationSessions,
-  resetFsmChainTracking,
   executeToolsHeadless,
 } = await import('../chat/tools/core.js');
 
@@ -365,7 +364,6 @@ describe('getToolActivityLabel', () => {
 describe('executeToolByName', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetFsmChainTracking();
   });
 
   it('returns error for unknown tool', async () => {
@@ -387,31 +385,31 @@ describe('executeToolByName', () => {
     expect(result).toHaveProperty('pid', 'call_1');
   });
 
-  it('blocks consecutive FSM tools in same chain', async () => {
-    // First FSM tool succeeds
-    await executeToolByName('email_compose', { recipients: ['a@b.com'] }, { callId: 'call_1' });
+  it('allows consecutive FSM tools in the same chain', async () => {
+    // The old consecutive-FSM blocker was removed — the LLM now receives the
+    // full prior reasoning + tool-call results in its context, so it can
+    // decide whether a follow-up FSM call is appropriate. Both calls should
+    // return their normal FSM markers without a consecutiveFsmBlocked flag.
+    const first = await executeToolByName('email_compose', { recipients: ['a@b.com'] }, { callId: 'call_1' });
+    expect(first).toHaveProperty('fsm', true);
+    expect(first.consecutiveFsmBlocked).toBeUndefined();
 
-    // Second FSM tool should be blocked
-    const result = await executeToolByName('email_reply', { unique_id: 'uid1' }, { callId: 'call_2' });
-    expect(result).toHaveProperty('consecutiveFsmBlocked', true);
-    expect(result.ok).toBe(false);
-    expect(result.previousFsmTool).toBe('email_compose');
-    expect(result.blockedFsmTool).toBe('email_reply');
+    const second = await executeToolByName('email_reply', { unique_id: 'uid1' }, { callId: 'call_2' });
+    expect(second).toHaveProperty('fsm', true);
+    expect(second.consecutiveFsmBlocked).toBeUndefined();
   });
 
-  it('blocks consecutive FSM tools across tool types (e.g. email then template)', async () => {
-    await executeToolByName('email_compose', {}, { callId: 'call_a' });
-    const result = await executeToolByName('template_create', { name: 'Test' }, { callId: 'call_b' });
-    expect(result).toHaveProperty('consecutiveFsmBlocked', true);
-    expect(result.previousFsmTool).toBe('email_compose');
-    expect(result.blockedFsmTool).toBe('template_create');
-  });
+  it('allows a retry of an FSM tool that just failed (no stale chain block)', async () => {
+    // Regression for the post-removal contract: a failed FSM call (or any
+    // failed call) must not block the next attempt — that was the bug the
+    // consecutive-FSM blocker introduced for legitimate error-recovery flows.
+    mockFsmToolRun.mockRejectedValueOnce(new Error('validation failed'));
+    const failed = await executeToolByName('email_compose', {}, { callId: 'call_x' });
+    expect(failed).toHaveProperty('error');
 
-  it('does not block non-FSM tool after FSM tool', async () => {
-    await executeToolByName('email_compose', {}, { callId: 'call_c' });
-    const result = await executeToolByName('inbox_read', {});
-    expect(result.consecutiveFsmBlocked).not.toBe(true);
-    expect(result).toEqual({ ok: true });
+    const retry = await executeToolByName('email_compose', {}, { callId: 'call_y' });
+    expect(retry).toHaveProperty('fsm', true);
+    expect(retry.consecutiveFsmBlocked).toBeUndefined();
   });
 
   it('catches thrown errors from tool run', async () => {
@@ -419,44 +417,6 @@ describe('executeToolByName', () => {
     const result = await executeToolByName('inbox_read', {});
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('tool exploded');
-  });
-
-  it('reverts FSM chain tracking on synchronous FSM tool failure', async () => {
-    mockFsmToolRun.mockRejectedValueOnce(new Error('validation failed'));
-    const result = await executeToolByName('email_compose', {}, { callId: 'call_x' });
-    expect(result).toHaveProperty('error');
-
-    // After revert, a second FSM call should NOT be blocked
-    const result2 = await executeToolByName('email_reply', {}, { callId: 'call_y' });
-    expect(result2.consecutiveFsmBlocked).not.toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// resetFsmChainTracking
-// ---------------------------------------------------------------------------
-describe('resetFsmChainTracking', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('allows FSM tool after reset', async () => {
-    // Run first FSM tool
-    await executeToolByName('email_compose', {}, { callId: 'call_1' });
-
-    // Reset chain tracking (simulates new user turn)
-    resetFsmChainTracking();
-
-    // Now another FSM tool should work (not blocked)
-    const result = await executeToolByName('email_reply', {}, { callId: 'call_2' });
-    expect(result.consecutiveFsmBlocked).not.toBe(true);
-    expect(result).toHaveProperty('fsm', true);
-  });
-
-  it('does not throw when chain is already empty', () => {
-    resetFsmChainTracking();
-    resetFsmChainTracking();
-    // Should not throw
   });
 });
 
@@ -482,7 +442,6 @@ describe('resetToolPaginationSessions', () => {
 describe('executeToolsHeadless', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetFsmChainTracking();
   });
 
   it('blocks FSM tools in headless mode', async () => {

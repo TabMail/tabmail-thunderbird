@@ -4,7 +4,7 @@
 import { sendChat } from "../../agent/modules/llm.js";
 import { log, saveChatLog, saveToolCallLog } from "../../agent/modules/utils.js";
 import { appendSystemBubble, createNewAgentBubble } from "../chat.js";
-import { executeToolByName, getToolActivityLabel, isServerSideTool, resetFsmChainTracking, resetToolPaginationSessions } from "../tools/core.js";
+import { executeToolByName, getToolActivityLabel, isServerSideTool, resetToolPaginationSessions } from "../tools/core.js";
 import { CHAT_SETTINGS } from "./chatConfig.js";
 import { ctx } from "./context.js";
 import {
@@ -336,15 +336,6 @@ export async function agentConverse(userText) {
       log(`[TMDBG Converse] Reset tool pagination sessions for new user turn.`);
     } catch (e) {
       log(`[TMDBG Converse] Failed to reset pagination sessions: ${e}`, "warn");
-    }
-    
-    // Reset FSM chain tracking at the start of each converse turn
-    // This allows FSM tools to be called again after user interacts
-    try {
-      resetFsmChainTracking();
-      log(`[TMDBG Converse] Reset FSM chain tracking for new user turn.`);
-    } catch (e) {
-      log(`[TMDBG Converse] Failed to reset FSM chain tracking: ${e}`, "warn");
     }
 
     const latestUser = userText;

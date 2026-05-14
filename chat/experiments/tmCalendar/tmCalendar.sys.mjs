@@ -880,9 +880,11 @@ function pickEditTarget(item, details) {
 
 var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
   getAPI(context) {
-    // API exposed
-    return {
-      tmCalendar: {
+    // Lexical self-reference so methods can call sibling methods without
+    // relying on `this` (the WebExtension framework can rebind `this` on
+    // experiment APIs, so `this.splitRecurringEvent` would not be reliable
+    // inside `modifyCalendarEvent`'s edit_scope routing).
+    const tmCalApi = {
         async listCalendars() {
           try {
             const res = listCalendarsInternal();
@@ -997,7 +999,32 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               calendarId: String(targetCalendar?.id || ""),
               calendarName: String(targetCalendar?.name || targetCalendar?.id || ""),
               isRecurring: !!targetEvent.recurrenceInfo,
-              recurrenceRRule: (() => { try { return String(targetEvent.getProperty?.("RRULE") || ""); } catch { return ""; } })(),
+              // RRULE lookup with fallback: events synced from external providers
+              // (Google, Outlook) often expose the rule only via
+              // recurrenceInfo.getRecurrenceItems() and the property is empty.
+              // Without this fallback the LLM would see `recurring: yes` but no
+              // rule — and would not know whether `this_and_following` is
+              // applicable, so it might silently fall back to series-wide edits.
+              // Same probe as splitRecurringEvent uses, kept in sync.
+              recurrenceRRule: (() => {
+                try {
+                  let v = String(targetEvent.getProperty?.("RRULE") || "");
+                  if (!v || !/\bFREQ=/i.test(v)) {
+                    const rinfo = targetEvent.recurrenceInfo;
+                    const items = (rinfo && typeof rinfo.getRecurrenceItems === "function")
+                      ? (rinfo.getRecurrenceItems({}) || [])
+                      : [];
+                    for (const it of items) {
+                      const raw = (() => {
+                        try { return String(it && it.icalProperty && it.icalProperty.value || ""); }
+                        catch { return ""; }
+                      })();
+                      if (raw && /\bFREQ=/i.test(raw)) { v = raw; break; }
+                    }
+                  }
+                  return v;
+                } catch { return ""; }
+              })(),
               transparency: (() => {
                 try {
                   const raw = String(targetEvent.getProperty?.("TRANSP") || "");
@@ -1282,19 +1309,49 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const Ci = globalThis.Ci;
             const mgr = getCalendarManager();
             if (!mgr) return { ok: false, error: "calendar manager unavailable" };
-            
+
             const eventId = String(details.event_id || "");            // master UID
             const recurIdStr = String(details.recurrence_id || "");    // optional occurrence recurrenceId
             const calendar_id = String(details.calendar_id || "");       // optional calendar ID for faster lookup
             if (!eventId) return { ok: false, error: "event_id is required" };
-            
+
+            // edit_scope routing (calendar_event_edit-v1.5.21+):
+            //   - "all"               → series edit (default when no recurrence_id)
+            //   - "this_only"         → single-occurrence override (existing recurrence_id path below)
+            //   - "this_and_following" → delegate to splitRecurringEvent so the master is
+            //                            capped and a new series is created in one bridge call.
+            // We resolve the scope here so the callers don't need a separate JS routing layer.
+            const rawScope = typeof details.edit_scope === "string" ? details.edit_scope.toLowerCase() : null;
+            const editScope = rawScope || (recurIdStr ? "this_only" : "all");
+            if (editScope === "this_and_following") {
+              if (!recurIdStr) {
+                return { ok: false, error: "edit_scope='this_and_following' requires recurrence_id" };
+              }
+              // Re-pack the LLM-style top-level patch fields into the shape splitRecurringEvent expects.
+              const splitPatch = {};
+              for (const k of ["title", "location", "description", "transparency", "attendees",
+                               "send_invitations", "organizer_email", "recurrence"]) {
+                if (details[k] !== undefined) splitPatch[k] = details[k];
+              }
+              return await tmCalApi.splitRecurringEvent({
+                event_id: eventId,
+                calendar_id: calendar_id || undefined,
+                recurrence_id: recurIdStr,
+                timezone: details.timezone,
+                patch: splitPatch,
+              });
+            }
+            if (editScope === "this_only" && !recurIdStr) {
+              return { ok: false, error: "edit_scope='this_only' requires recurrence_id" };
+            }
+
             // Validate attendees when invitations are requested
             const sendInvites = !!details.send_invitations;
             const attendees = Array.isArray(details.attendees) ? details.attendees : [];
             if (sendInvites && attendees.length === 0) {
               return { ok: false, error: "send_invitations=true requires at least one attendee" };
             }
-            
+
             const patch = details.patch || details; // Allow patch to be in details directly
             
             // Resolve the exact item using (id, recurrenceId) pair
@@ -1621,8 +1678,364 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             return { ok: false, error: String(e) };
           }
         },
-      },
+
+        // splitRecurringEvent — atomic-ish "this and following events" split for a
+        // recurring series. The original (master) series gets capped with UNTIL =
+        // recurrence_id - 1s (no invitation fired to attendees about that), and a
+        // NEW series is created with the same RRULE pattern starting at
+        // recurrence_id, with the caller's `patch` applied on top. Invitations
+        // (if send_invitations=true) fire exactly once, on the new series.
+        //
+        // Why a single bridge call: this keeps the "no duplicate notifications"
+        // guarantee in one place. If the new-series creation fails after the
+        // master cap succeeded, we attempt to revert the cap (best-effort).
+        //
+        // details = {
+        //   event_id, calendar_id?, recurrence_id (required ISO of the first
+        //   occurrence that should belong to the NEW series), patch (object with
+        //   fields to apply to the new series: title, location, description,
+        //   transparency, attendees, send_invitations, organizer_email),
+        //   timezone?
+        // }
+        async splitRecurringEvent(details) {
+          try {
+            const Ci = globalThis.Ci; const Cc = globalThis.Cc;
+            const mgr = getCalendarManager();
+            if (!mgr) return { ok: false, error: "calendar manager unavailable" };
+
+            const eventId = String(details.event_id || "");
+            const calendarIdHint = String(details.calendar_id || "");
+            const splitIso = String(details.recurrence_id || "");
+            const patch = (details && details.patch && typeof details.patch === "object") ? details.patch : {};
+            const sendInvites = !!patch.send_invitations;
+            const tzOverride = typeof details.timezone === "string" && details.timezone ? details.timezone : null;
+
+            if (!eventId) return { ok: false, error: "event_id is required" };
+            if (!splitIso) return { ok: false, error: "recurrence_id is required for splitRecurringEvent" };
+
+            // Validate attendees when invitations are requested
+            const patchAttendees = Array.isArray(patch.attendees) ? patch.attendees : [];
+            if (sendInvites && patchAttendees.length === 0) {
+              return { ok: false, error: "send_invitations=true requires at least one attendee on the new series" };
+            }
+
+            // 1. Locate the master event (series parent) — scan all calendars if no hint.
+            const allCals = Array.from(mgr.getCalendars({}));
+            let master = null, cal = null;
+            const visit = async (c) => {
+              try {
+                const item = await c.getItem(eventId);
+                if (item) {
+                  master = item.parentItem || item;
+                  cal = c;
+                  return true;
+                }
+              } catch (e) {
+                console.warn(`[tmCalendar] splitRecurringEvent: getItem failed on ${c.id}:`, e);
+              }
+              return false;
+            };
+            if (calendarIdHint) {
+              const targetCal = allCals.find(c => String(c.id) === calendarIdHint);
+              if (targetCal) await visit(targetCal);
+            }
+            if (!master) {
+              for (const c of allCals) {
+                if (await visit(c)) break;
+              }
+            }
+            if (!master || !cal) return { ok: false, error: "event not found" };
+
+            // 2. The series must be recurring for a split to make sense.
+            if (!master.recurrenceInfo) {
+              return { ok: false, error: "event is not recurring — use modifyCalendarEvent for one-off events" };
+            }
+
+            // 3. Resolve the split-point datetime in the caller's timezone.
+            const splitDt = toCalIDateTime(splitIso, tzOverride);
+            if (!splitDt) return { ok: false, error: "invalid recurrence_id format (expected ISO8601)" };
+            splitDt.isDate = !!master.startDate?.isDate;
+
+            // 4. Compute UNTIL so the master ends BEFORE `splitDt` (the first
+            // occurrence that should belong to the new series).
+            //
+            // RFC 5545 §3.3.10: the UNTIL value type MUST match DTSTART's.
+            //   - All-day master (DTSTART is VALUE=DATE) → UNTIL must be a bare
+            //     DATE `YYYYMMDD`. Use (split − 1 day).
+            //   - Timed master → UNTIL must be a UTC date-time `…THHMMSSZ`.
+            //     Use (split − 1 second).
+            // `toIcsUntil` only emits the date-time form, so the all-day branch
+            // formats the bare DATE itself.
+            const isAllDayMaster = !!master.startDate?.isDate;
+            let untilValue;
+            if (isAllDayMaster) {
+              const dayBefore = new Date(splitDt.nativeTime / 1000 - 86400 * 1000);
+              const yyyy = dayBefore.getUTCFullYear().toString().padStart(4, "0");
+              const mm = (dayBefore.getUTCMonth() + 1).toString().padStart(2, "0");
+              const dd = dayBefore.getUTCDate().toString().padStart(2, "0");
+              untilValue = `${yyyy}${mm}${dd}`;
+            } else {
+              const untilJsDate = new Date(splitDt.nativeTime / 1000 - 1000);
+              untilValue = toIcsUntil(untilJsDate.toISOString());
+            }
+            if (!untilValue) return { ok: false, error: "failed to compute UNTIL value" };
+
+            // 5. Read the current RRULE from the master.
+            // For events synced from external providers (Google, Outlook), the RRULE
+            // often lives inside recurrenceInfo.getRecurrenceItems() as a
+            // calIRecurrenceRule rather than as a string property. So we look in
+            // two places — the property first (cheaper), then the recurrenceInfo's
+            // items if the property was empty.
+            let currentRrule = "";
+            try { currentRrule = String(master.getProperty("RRULE") || ""); } catch (_) {}
+            if (!currentRrule || !/\bFREQ=/i.test(currentRrule)) {
+              try {
+                const rinfo = master.recurrenceInfo;
+                const items = (rinfo && typeof rinfo.getRecurrenceItems === "function")
+                  ? (rinfo.getRecurrenceItems({}) || [])
+                  : [];
+                for (const it of items) {
+                  // We want calIRecurrenceRule (the RRULE), not EXDATE/RDATE items.
+                  // Probe via duck-typing on `.icalProperty.value` — also tolerates
+                  // builds where `instanceof calIRecurrenceRule` isn't accessible.
+                  const v = (() => {
+                    try { return String(it && it.icalProperty && it.icalProperty.value || ""); }
+                    catch { return ""; }
+                  })();
+                  if (v && /\bFREQ=/i.test(v)) { currentRrule = v; break; }
+                }
+              } catch (e) {
+                console.warn("[tmCalendar] splitRecurringEvent: recurrenceInfo probe failed:", e);
+              }
+            }
+            if (!currentRrule || !/\bFREQ=/i.test(currentRrule)) {
+              return { ok: false, error: "master event has no parseable RRULE (neither getProperty('RRULE') nor recurrenceInfo yielded a FREQ=… rule)" };
+            }
+
+            // 6. Cap the master's RRULE: drop any existing UNTIL/COUNT, append our UNTIL.
+            const cappedRrule = currentRrule
+              .split(";")
+              .filter(p => p && !/^(UNTIL|COUNT)=/i.test(p.trim()))
+              .concat(`UNTIL=${untilValue}`)
+              .join(";");
+
+            // 7. Modify master in-place with capped RRULE.
+            // Note: we don't send any "series-ended" notification here — only the
+            // new series triggers an invitation (controlled by patch.send_invitations).
+            const cappedClone = master.clone();
+            try { cappedClone.setProperty("RRULE", cappedRrule); } catch (e) {
+              return { ok: false, error: `failed to set capped RRULE on clone: ${e}` };
+            }
+            // Rebuild recurrenceInfo so providers expand the truncated series
+            // correctly. Validate that at least one rule was attached — a
+            // silent rebuild failure would leave the master uncapped at the
+            // expansion layer (the RRULE property is set, but Lightning would
+            // skip the new rule), and the split would be broken in a way
+            // that's hard to debug at execution time.
+            let rebuildError = null;
+            try {
+              const icsService = Cc["@mozilla.org/calendar/ics-service;1"].getService(Ci.calIICSService);
+              const prop = icsService.createIcalProperty("RRULE");
+              prop.value = cappedRrule;
+              const rule = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
+              rule.icalProperty = prop;
+              const rinfo = Cc["@mozilla.org/calendar/recurrence-info;1"].createInstance(Ci.calIRecurrenceInfo);
+              rinfo.item = cappedClone;
+              if (typeof rinfo.appendRecurrenceItem === "function") rinfo.appendRecurrenceItem(rule);
+              else if (typeof rinfo.addRecurrenceItem === "function") rinfo.addRecurrenceItem(rule);
+              cappedClone.recurrenceInfo = rinfo;
+              // Verify the rule actually attached. getRecurrenceItems returns
+              // the rules currently stored on the recurrenceInfo; if the
+              // capped rule didn't register (malformed RRULE silently dropped
+              // by Lightning), we'd see an empty list here.
+              let items = [];
+              try {
+                if (typeof rinfo.getRecurrenceItems === "function") {
+                  items = rinfo.getRecurrenceItems({}) || [];
+                }
+              } catch (_) {}
+              if (items.length === 0) {
+                rebuildError = `cappedRrule '${cappedRrule}' did not register as a recurrence item — likely malformed`;
+              }
+            } catch (re) {
+              rebuildError = String(re);
+            }
+            if (rebuildError) {
+              console.error("[tmCalendar] splitRecurringEvent: aborting — rebuild recurrenceInfo failed:", rebuildError);
+              return { ok: false, error: `failed to apply capped RRULE: ${rebuildError}` };
+            }
+            let cappedMaster;
+            try {
+              cappedMaster = await cal.modifyItem(cappedClone, master);
+              console.log(`[tmCalendar] splitRecurringEvent: capped master series ${eventId} with UNTIL=${untilValue}`);
+            } catch (e) {
+              return { ok: false, error: `failed to cap master series: ${e}` };
+            }
+
+            // 8. Build the new series.
+            // Strategy: start from a fresh calIEvent and copy/override fields from
+            // master + patch. The new RRULE matches the master's ORIGINAL pattern
+            // (without UNTIL/COUNT cap) so the new series continues indefinitely
+            // unless the patch overrides recurrence.
+            const newEv = Cc["@mozilla.org/calendar/event;1"].createInstance(Ci.calIEvent);
+
+            // Title
+            const newTitle = (typeof patch.title === "string" && patch.title)
+              ? patch.title
+              : (master.title || "");
+            if (newTitle) newEv.title = newTitle;
+
+            // Start = splitDt, End = splitDt + (master.endDate - master.startDate)
+            try {
+              newEv.startDate = splitDt;
+              const dur = master.endDate.subtractDate(master.startDate);
+              const newEnd = splitDt.clone();
+              newEnd.addDuration(dur);
+              newEv.endDate = newEnd;
+            } catch (e) {
+              // Best-effort revert of the master cap before bailing — the new
+              // series creation never happened so the calendar is in a
+              // truncated-but-no-replacement state without recovery.
+              try { await cal.modifyItem(master, cappedMaster); } catch (_) {}
+              return { ok: false, error: `failed to compute new start/end: ${e}` };
+            }
+
+            // Location
+            const newLocation = (typeof patch.location === "string")
+              ? patch.location
+              : (() => { try { return String(master.getProperty("LOCATION") || ""); } catch { return ""; } })();
+            if (newLocation) { try { newEv.setProperty("LOCATION", newLocation); } catch {} }
+
+            // Description (full replace — patch wins, otherwise inherit master's)
+            let newDesc;
+            if (typeof patch.description === "string") {
+              newDesc = patch.description;
+            } else {
+              try { newDesc = String(master.getProperty("DESCRIPTION") || ""); } catch { newDesc = ""; }
+            }
+            if (newDesc) { try { newEv.setProperty("DESCRIPTION", newDesc); } catch {} }
+
+            // Transparency (busy/free) — patch wins, otherwise inherit
+            let newTransp;
+            if (typeof patch.transparency === "string") {
+              newTransp = patch.transparency.toLowerCase() === "free" ? "TRANSPARENT" : "OPAQUE";
+            } else {
+              try { newTransp = String(master.getProperty("TRANSP") || "OPAQUE"); } catch { newTransp = "OPAQUE"; }
+            }
+            try { newEv.setProperty("TRANSP", newTransp); } catch {}
+
+            // Attendees — patch.attendees is the resolved final list (delta already
+            // applied by the JS layer). If patch.attendees is absent, inherit master's.
+            const attendeesToSet = Array.isArray(patch.attendees)
+              ? patch.attendees
+              : (() => {
+                  const list = master.getAttendees ? master.getAttendees() : [];
+                  return list.map(a => ({
+                    email: String(a.id || "").replace(/^mailto:/i, ""),
+                    name: a.commonName || "",
+                  })).filter(a => a.email);
+                })();
+            for (const a of attendeesToSet) {
+              const email = a?.email || a?.id;
+              if (!email) continue;
+              const att = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
+              att.id = String(email).startsWith("mailto:") ? String(email) : `mailto:${String(email)}`;
+              if (a?.name) try { att.commonName = String(a.name); } catch {}
+              try { att.rsvp = "TRUE"; } catch {}
+              try { newEv.addAttendee(att); } catch {}
+            }
+
+            // Organizer — inherit from master unless patch provides one
+            try {
+              const orgEmail = (typeof patch.organizer_email === "string" && patch.organizer_email)
+                ? patch.organizer_email
+                : (master.organizer ? String(master.organizer.id || "").replace(/^mailto:/i, "") : "");
+              if (orgEmail) {
+                const org = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
+                org.id = orgEmail.startsWith("mailto:") ? orgEmail : `mailto:${orgEmail}`;
+                org.commonName = (master.organizer && master.organizer.commonName) || orgEmail;
+                org.isOrganizer = true;
+                newEv.organizer = org;
+              }
+            } catch (e) {
+              console.warn("[tmCalendar] splitRecurringEvent: failed to set organizer:", e);
+            }
+
+            // Recurrence — same RRULE pattern as master but without UNTIL/COUNT cap.
+            // (If patch.recurrence is provided, the caller wants a different rule
+            //  for the new series; respect that.)
+            let newRrule;
+            if (patch.recurrence && typeof patch.recurrence === "object") {
+              newRrule = buildRRuleValueFromDetails(patch.recurrence);
+            } else {
+              newRrule = currentRrule
+                .split(";")
+                .filter(p => p && !/^(UNTIL|COUNT)=/i.test(p.trim()))
+                .join(";");
+            }
+            if (newRrule) {
+              try { newEv.setProperty("RRULE", newRrule); } catch (_) {}
+              try {
+                const icsService2 = Cc["@mozilla.org/calendar/ics-service;1"].getService(Ci.calIICSService);
+                const prop2 = icsService2.createIcalProperty("RRULE");
+                prop2.value = newRrule;
+                const rule2 = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
+                rule2.icalProperty = prop2;
+                const rinfo2 = Cc["@mozilla.org/calendar/recurrence-info;1"].createInstance(Ci.calIRecurrenceInfo);
+                rinfo2.item = newEv;
+                if (typeof rinfo2.appendRecurrenceItem === "function") rinfo2.appendRecurrenceItem(rule2);
+                else if (typeof rinfo2.addRecurrenceItem === "function") rinfo2.addRecurrenceItem(rule2);
+                newEv.recurrenceInfo = rinfo2;
+              } catch (re) {
+                console.warn("[tmCalendar] splitRecurringEvent: rebuild recurrenceInfo for new series failed:", re);
+              }
+            }
+
+            // 9. Persist the new series.
+            let created;
+            try {
+              created = await cal.addItem(newEv);
+              console.log("[tmCalendar] splitRecurringEvent: created new series with id:", created?.id);
+            } catch (e) {
+              // Revert master cap — best-effort recovery so we don't leave the calendar
+              // in a "series ended, no replacement" state.
+              try {
+                await cal.modifyItem(master, cappedMaster);
+                console.log("[tmCalendar] splitRecurringEvent: reverted master cap after new-series creation failure");
+              } catch (revertErr) {
+                console.error("[tmCalendar] splitRecurringEvent: REVERT FAILED — master is capped but new series was not created:", revertErr);
+              }
+              return { ok: false, error: `failed to create new series: ${e}` };
+            }
+
+            // 10. Invitations — fire exactly once, on the new series only.
+            let invitationResult = null;
+            if (sendInvites && attendeesToSet.length > 0) {
+              const policy = getInvitePolicy(cal);
+              console.log(`[tmCalendar] splitRecurringEvent: invite policy=${policy}`);
+              if (policy === "mail") {
+                invitationResult = { ok: false, error: "Email invitations via Thunderbird are not implemented yet." };
+              } else {
+                invitationResult = { ok: true, message: "provider/server notifications assumed (new series only)" };
+              }
+            }
+
+            return {
+              ok: true,
+              calendar_id: cal?.id || null,
+              event_id: created?.id || null,
+              old_event_id: eventId,
+              title: created?.title || null,
+              invitations: invitationResult,
+              split_at: splitIso,
+            };
+          } catch (e) {
+            console.error("[tmCalendar] splitRecurringEvent failed:", e);
+            return { ok: false, error: String(e) };
+          }
+        },
     };
+    return { tmCalendar: tmCalApi };
   }
 };
 
