@@ -79,6 +79,9 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ## Recent Discoveries
 
+### 2026-05-15
+- **Boot reconcile bounded by persistent watermark, not FTS-newest date** (ADR-016, `PLAN_RECONCILE_WATERMARK.md`). `browser.storage.local.fts_reconcile_watermark = { version: 1, fromMs, completedAtMs }`. `_getReconcileFrom` in `fts/incrementalIndexer.js` reads it and returns `completedAtMs - 1 day`, or a 7-day fallback if missing/corrupt/future-dated. Phase 2 writes the watermark only on clean completion (no exception, `accountsSkipped === 0`). A 10-min heartbeat (`_heartbeatBumpWatermark`) advances `completedAtMs` during runtime; never touches `fromMs`; refuses to create a watermark; skipped if drain queue is stalled or `_indexerDisposed` is true. Heartbeat re-checks `_indexerDisposed` AFTER the storage read to prevent stale writes after a `dispose()` mid-read. Diagnosed from `tabmail_event_log_2026-05-15T16-18-13-464Z.json` — 11 stale entries dated 2026-05-04 → 2026-05-11 had been caught by weekly maintenance, not boot reconcile, because the boot reconcile window had collapsed to ~1 day after the listener indexed new mail during the 60s quiet wait. Follow-up: `PLAN_MAINTENANCE_SCAN_SPEEDUP.md` for refactoring the weekly scan to share the streaming validator.
+
 ### 2026-02-03
 - **Session history architecture (v1.2.9)**: Prior-session chat messages are no longer sent as actual conversation turns to the LLM. Instead, `init.js` serializes them into text and injects via `recent_chat_history` field in the system message. Backend expands this into a `chat_converse_history` prompt section (user+ack pair). This ensures the LLM treats prior sessions as background memory, not active conversation.
 

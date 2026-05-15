@@ -1318,18 +1318,25 @@ export async function removeExperimentListeners() {
 // enqueuing recent messages into the existing persistent queue — the drain
 // loop handles FTS flakiness, retry, body extraction, and dedup via
 // filterNewMessages (messages already in FTS are skipped automatically).
+//
+// Reconcile window is bounded by a persistent WATERMARK, not by the
+// newest FTS date. See PLAN_RECONCILE_WATERMARK.md.
 // =====================================================================
 
-// Fallback window when FTS is empty or unreachable (first run / flaky startup)
-const RECONCILE_FALLBACK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-// 1-day overlap to handle timezone / rounding edge cases
-const RECONCILE_OVERLAP_MS = 24 * 60 * 60 * 1000;
-// Retry config for determining the reconcile window (FTS may be flaky at startup)
-const RECONCILE_MAX_RETRIES = 10;
-const RECONCILE_INITIAL_DELAY_MS = 2000;
-const RECONCILE_MAX_DELAY_MS = 30000;
 // Storage key for persisting reconcile-needed state across restarts
 const RECONCILE_STORAGE_KEY = "fts_reconcile_pending";
+
+// Persistent watermark: the lower-bound "as-of" timestamp up to which
+// FTS is known to be consistent with IMAP. Established by a clean boot
+// reconcile, advanced during runtime by the heartbeat. The next boot
+// reconcile uses (watermark.completedAtMs - 1 day) as its window start,
+// so a TB that ran 7d then was off 2d only reconciles ~3 days.
+const WATERMARK_KEY = "fts_reconcile_watermark";
+// 1-day overlap to handle timezone / rounding edge cases at window boundary.
+const RECONCILE_OVERLAP_MS = 24 * 60 * 60 * 1000;
+// First-run / missing-watermark fallback. After the first clean reconcile
+// completes, this is unreachable in steady state.
+const RECONCILE_FALLBACK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Quiet period before running reconcile — prevents races with TB's startup sync.
 // During sync, messages.query can return inconsistent snapshots, causing Phase 2
@@ -1342,43 +1349,169 @@ const RECONCILE_QUIET_CHECK_INTERVAL_MS = 10 * 1000; // 10 seconds
 // Busy inboxes may never reach the quiet period, so we force reconcile after this.
 const RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000; // 10 minutes
 
+// Runtime heartbeat: while the listener is healthy, advance the watermark's
+// completedAtMs forward so the offline gap on next boot is bounded by the
+// heartbeat interval, not the entire uptime.
+const HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+
 // Tracks the most recent sync-related message event timestamp.
 // Reset on every onExperimentMessageAdded/Removed call.
 let _lastSyncEventMs = Date.now();
 // Handle to the quiet-period check timer (for cleanup)
 let _reconcileQuietTimer = null;
+// Handle to the runtime watermark-advance timer (for cleanup)
+let _watermarkHeartbeatTimer = null;
+// Disposal flag — heartbeat re-checks this AFTER its async storage read,
+// before the write, so a dispose() that fires between the read and the
+// write doesn't let a pending heartbeat write stale data into freshly-
+// cleared state. Reset to false in init.
+let _indexerDisposed = false;
 
 /**
- * Determine the reconcile lower-bound by querying FTS for the newest message.
- * Retries with exponential backoff since native FTS can be flaky at startup.
- * Returns the timestamp to reconcile from, or null if all retries exhausted
- * (in which case a fallback window is used).
+ * Determine the reconcile lower-bound from the persistent watermark.
+ *
+ * Reads `fts_reconcile_watermark` from browser.storage.local. Returns
+ * `(completedAtMs - 1 day)` when present, otherwise a 7-day fallback.
+ * Does NOT query FTS — see PLAN_RECONCILE_WATERMARK.md for why the
+ * old FTS-newest-date approach was unsound (the listener could advance
+ * FTS during the quiet wait, shrinking the window before Phase 2 ran).
+ *
+ * Defensive guards (any → 7d fallback):
+ *  - watermark missing
+ *  - completedAtMs / fromMs wrong type
+ *  - completedAtMs ≤ 0 (corrupt)
+ *  - completedAtMs > now + 1 day (clock skew)
  */
-async function _getReconcileFrom(ftsSearch) {
-  let delay = RECONCILE_INITIAL_DELAY_MS;
-  for (let attempt = 1; attempt <= RECONCILE_MAX_RETRIES; attempt++) {
-    try {
-      const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
-      const recent = await ftsSearch.queryByDateRange(oneYearAgo, Date.now(), 1);
-      const maxDateMs = recent?.[0]?.dateMs || 0;
-      if (maxDateMs > 0) {
-        const from = maxDateMs - RECONCILE_OVERLAP_MS;
-        log(`[FTS Reconcile] Window from ${new Date(from).toISOString()} (newest FTS: ${new Date(maxDateMs).toISOString()})`);
-        return from;
-      }
-      // FTS is empty — use fallback window
-      log(`[FTS Reconcile] FTS empty, using 7-day fallback window`);
-      return Date.now() - RECONCILE_FALLBACK_WINDOW_MS;
-    } catch (e) {
-      if (attempt < RECONCILE_MAX_RETRIES) {
-        log(`[TMDBG FTS] Reconcile: FTS query attempt ${attempt}/${RECONCILE_MAX_RETRIES} failed, retrying in ${delay}ms: ${e}`, "warn");
-        await new Promise(r => setTimeout(r, delay));
-        delay = Math.min(delay * 2, RECONCILE_MAX_DELAY_MS);
-      } else {
-        log(`[TMDBG FTS] Reconcile: FTS query failed after ${RECONCILE_MAX_RETRIES} attempts, using fallback window: ${e}`, "warn");
-        return Date.now() - RECONCILE_FALLBACK_WINDOW_MS;
+async function _getReconcileFrom() {
+  const now = Date.now();
+  let wm = null;
+  try {
+    const stored = await browser.storage.local.get(WATERMARK_KEY);
+    wm = stored?.[WATERMARK_KEY] || null;
+  } catch (e) {
+    log(`[FTS Reconcile] Watermark read failed: ${e} — using 7d fallback`, "warn");
+  }
+
+  if (!wm
+      || !Number.isFinite(wm.completedAtMs)        // catches NaN, Infinity, non-number
+      || !Number.isFinite(wm.fromMs)
+      || wm.completedAtMs <= 0                     // corrupt
+      || wm.completedAtMs > now + RECONCILE_OVERLAP_MS) {  // future-dated
+    log(`[FTS Reconcile] No usable watermark; using 7-day fallback window`);
+    return now - RECONCILE_FALLBACK_WINDOW_MS;
+  }
+
+  const from = wm.completedAtMs - RECONCILE_OVERLAP_MS;
+  log(`[FTS Reconcile] Window from ${new Date(from).toISOString()} (watermark completedAt: ${new Date(wm.completedAtMs).toISOString()}, fromMs: ${new Date(wm.fromMs).toISOString()})`);
+  return from;
+}
+
+/**
+ * Write the watermark after a clean reconcile completion. Only called
+ * when Phase 1 + Phase 2 both finished without an exception AND Phase 2
+ * skipped no accounts (accountsSkipped === 0).
+ *
+ * @param {number} fromMs - The reconcileFrom value Phase 2 just verified.
+ */
+async function _writeWatermark(fromMs) {
+  try {
+    await browser.storage.local.set({
+      [WATERMARK_KEY]: {
+        version: 1,
+        fromMs,
+        completedAtMs: Date.now(),
+      },
+    });
+    log(`[FTS Reconcile] Watermark advanced: fromMs=${new Date(fromMs).toISOString()}, completedAtMs=${new Date().toISOString()}`);
+  } catch (e) {
+    // Non-fatal: next boot just reads the older watermark → wider window.
+    log(`[FTS Reconcile] Watermark write failed: ${e}`, "warn");
+  }
+}
+
+/**
+ * Runtime watermark-advance heartbeat. Bumps completedAtMs forward
+ * while the experiment listener is active and the drain queue isn't
+ * stalled. Never advances fromMs — only Phase 2 may do that.
+ *
+ * Refuses to *create* a watermark. If boot reconcile hasn't completed
+ * yet, the heartbeat is a no-op.
+ */
+async function _heartbeatBumpWatermark() {
+  if (!_isEnabled || !_experimentListenersActive || _indexerDisposed) return;
+
+  // Drain-stall guard: if pending updates have been sitting unprocessed
+  // for longer than 2× the heartbeat interval, the listener fired but
+  // the queue isn't draining. Advancing the watermark would falsely
+  // claim "all consistent" while events sit pending.
+  if (_pendingUpdates.size > 0) {
+    let oldestTs = Infinity;
+    for (const u of _pendingUpdates.values()) {
+      if (typeof u.timestamp === "number" && u.timestamp < oldestTs) {
+        oldestTs = u.timestamp;
       }
     }
+    if (oldestTs !== Infinity && Date.now() - oldestTs > HEARTBEAT_INTERVAL_MS * 2) {
+      log(`[FTS Heartbeat] Skipped: drain stalled (oldest pending ${Math.round((Date.now() - oldestTs) / 1000)}s old)`);
+      return;
+    }
+  }
+
+  let wm = null;
+  try {
+    const stored = await browser.storage.local.get(WATERMARK_KEY);
+    wm = stored?.[WATERMARK_KEY] || null;
+  } catch (e) {
+    log(`[FTS Heartbeat] Watermark read failed: ${e}`, "warn");
+    return;
+  }
+
+  // Refuse to create a watermark — only boot reconcile may do that.
+  if (!wm || !Number.isFinite(wm.fromMs)) return;
+
+  // Re-check disposal AFTER the async read but BEFORE the write — a
+  // dispose() that ran during the read should not lose to a stale
+  // heartbeat write.
+  if (_indexerDisposed) return;
+
+  try {
+    await browser.storage.local.set({
+      [WATERMARK_KEY]: {
+        version: 1,
+        fromMs: wm.fromMs,         // unchanged — only Phase 2 advances
+        completedAtMs: Date.now(), // creeps forward
+      },
+    });
+  } catch (e) {
+    log(`[FTS Heartbeat] Watermark write failed: ${e}`, "warn");
+  }
+}
+
+/**
+ * Start the heartbeat timer. Called after a clean boot reconcile.
+ * Idempotent — clears any prior timer first.
+ */
+function _startWatermarkHeartbeat() {
+  if (_watermarkHeartbeatTimer) {
+    clearInterval(_watermarkHeartbeatTimer);
+    _watermarkHeartbeatTimer = null;
+  }
+  _watermarkHeartbeatTimer = setInterval(() => {
+    _heartbeatBumpWatermark().catch(e => {
+      log(`[FTS Heartbeat] Unexpected error: ${e}`, "warn");
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+  log(`[FTS Heartbeat] Started — interval ${HEARTBEAT_INTERVAL_MS / 1000}s`);
+}
+
+/**
+ * Stop the heartbeat timer. Called in disposeIncrementalIndexer.
+ */
+function _stopWatermarkHeartbeat() {
+  if (_watermarkHeartbeatTimer) {
+    clearInterval(_watermarkHeartbeatTimer);
+    _watermarkHeartbeatTimer = null;
+    log(`[FTS Heartbeat] Stopped`);
   }
 }
 
@@ -1398,8 +1531,9 @@ async function runPostInitReconcile(ftsSearch) {
 
   const reconcileStart = Date.now();
 
-  // Determine the lower bound — retries internally with exponential backoff
-  const reconcileFrom = await _getReconcileFrom(ftsSearch);
+  // Determine the lower bound from the persistent watermark (or 7d fallback).
+  // Captured once, used by both phases — no FTS query, no retry loop.
+  const reconcileFrom = await _getReconcileFrom();
 
   let totalScanned = 0;
   let totalEnqueued = 0;
@@ -1450,14 +1584,28 @@ async function runPostInitReconcile(ftsSearch) {
     // Clear the persisted reconcile-needed flag on success
     await browser.storage.local.remove(RECONCILE_STORAGE_KEY);
 
+    // Watermark advance — only on clean completion. accountsSkipped > 0
+    // means some FTS entries weren't actually re-verified (their accounts
+    // were unavailable at scan time), so we don't want to claim coverage.
+    // Next boot recomputes from the older watermark → wider window → retry.
+    const accountsSkipped = cleanupResult.accountsSkipped || 0;
+    if (accountsSkipped === 0) {
+      await _writeWatermark(reconcileFrom);
+      _startWatermarkHeartbeat();
+    } else {
+      log(`[FTS Reconcile] Watermark NOT advanced — ${accountsSkipped} account(s) unavailable during Phase 2`, "warn");
+    }
+
     const elapsed = Date.now() - reconcileStart;
-    log(`[FTS Reconcile] Complete: ${totalScanned} scanned, ${totalEnqueued} enqueued, ${cleanupResult.removed} stale removed (${cleanupResult.checked} checked), ${elapsed}ms`);
+    log(`[FTS Reconcile] Complete: ${totalScanned} scanned, ${totalEnqueued} enqueued, ${cleanupResult.removed} stale removed (${cleanupResult.checked} checked, ${accountsSkipped} accounts skipped), ${elapsed}ms`);
 
     logFtsBatchOperation("reconcile", "complete", {
       totalScanned,
       totalEnqueued,
       staleChecked: cleanupResult.checked,
       staleRemoved: cleanupResult.removed,
+      accountsSkipped,
+      watermarkAdvanced: accountsSkipped === 0,
       elapsedMs: elapsed,
     });
   } catch (e) {
@@ -1467,6 +1615,8 @@ async function runPostInitReconcile(ftsSearch) {
       totalScanned,
       totalEnqueued,
     });
+    // Exception path: do NOT write watermark, do NOT start heartbeat.
+    // Next boot will recompute from the older watermark.
   }
 }
 
@@ -1488,6 +1638,7 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
   const endDate = new Date();
   let checked = 0;
   let removed = 0;
+  let accountsSkipped = 0;
   const entriesToRemove = [];
 
   logFtsBatchOperation("reconcile_phase2", "start", {
@@ -1524,6 +1675,7 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
         }
       }
       if (unavailableAccounts.size > 0) {
+        accountsSkipped = unavailableAccounts.size;
         log(`[FTS Reconcile] Phase 2: ${unavailableAccounts.size}/${accountIds.size} accounts unavailable — skipping their entries`, "warn");
         logFtsOperation("reconcile_stale", "accounts_unavailable", {
           unavailable: Array.from(unavailableAccounts),
@@ -1632,7 +1784,7 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
     });
   }
 
-  return { checked, removed };
+  return { checked, removed, accountsSkipped };
 }
 
 // Public API - DO NOT add duplicate listeners, integrate with existing ones
@@ -1642,6 +1794,9 @@ export async function initIncrementalIndexer(ftsSearch) {
   }
 
   _ftsSearch = ftsSearch;
+  // Reset disposal flag — a previous dispose() may have set it; a fresh
+  // init should let the heartbeat run again.
+  _indexerDisposed = false;
 
   // Load settings
   await updateIncrementalSettings();
@@ -1727,9 +1882,14 @@ function _scheduleReconcileWhenQuiet(ftsSearch, runner = runPostInitReconcile) {
 
 export async function disposeIncrementalIndexer() {
   log("[TMDBG FTS] Disposing incremental indexer");
-  
+
   _isEnabled = false;
-  
+  // Set BEFORE awaiting anything — any in-flight heartbeat that hasn't
+  // yet reached its post-read disposal check should now see this true
+  // and skip its write.
+  _indexerDisposed = true;
+  _stopWatermarkHeartbeat();
+
   // Remove experiment listeners first
   await removeExperimentListeners();
   
@@ -1898,4 +2058,20 @@ export const _testExports = {
   RECONCILE_QUIET_PERIOD_MS,
   RECONCILE_QUIET_CHECK_INTERVAL_MS,
   RECONCILE_MAX_WAIT_MS,
+  // Watermark + heartbeat (PLAN_RECONCILE_WATERMARK.md)
+  _getReconcileFrom,
+  _writeWatermark,
+  _heartbeatBumpWatermark,
+  _startWatermarkHeartbeat,
+  _stopWatermarkHeartbeat,
+  _hasWatermarkHeartbeatTimer: () => _watermarkHeartbeatTimer !== null,
+  _setIndexerDisposed: (v) => { _indexerDisposed = v; },
+  _getIndexerDisposed: () => _indexerDisposed,
+  // Allow tests to set _experimentListenersActive / _isEnabled directly
+  _setExperimentListenersActive: (v) => { _experimentListenersActive = v; },
+  _setIsEnabled: (v) => { _isEnabled = v; },
+  WATERMARK_KEY,
+  HEARTBEAT_INTERVAL_MS,
+  RECONCILE_OVERLAP_MS,
+  RECONCILE_FALLBACK_WINDOW_MS,
 };

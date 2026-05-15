@@ -136,7 +136,7 @@ describe('_reconcileCleanupStaleEntries', () => {
 
     const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
 
-    expect(result).toEqual({ checked: 0, removed: 0 });
+    expect(result).toEqual({ checked: 0, removed: 0, accountsSkipped: 0 });
     expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
   });
 
