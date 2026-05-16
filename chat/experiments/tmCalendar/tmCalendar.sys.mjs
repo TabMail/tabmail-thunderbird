@@ -4,6 +4,94 @@ const { ExtensionCommon: ExtensionCommonTMCal } = ChromeUtils.importESModule(
 
 // tmCalendar experiment API (clean)
 
+// -------- Duration preservation --------
+// Apply start/end updates to `clone` with duration preservation: when only one
+// side of start/end was patched, derive the missing side from the event's
+// existing duration so the length stays the same. Mirrors iOS
+// GoogleCalendarProvider.mergeExistingEventWithPatch — without this, "move it
+// to 3pm" (start_iso only) leaves the old end untouched and silently changes
+// the event's length, or produces a negative duration if start moves past end.
+//
+// IMPORTANT: TB experiment .sys.mjs files are loaded as classic scripts, NOT
+// ESM modules, despite the extension. `export` here would fail at parse time
+// with "export declarations may only appear at top level of a module" and
+// break the entire tmCalendar API. The exported, vitest-loadable mirror lives
+// in ./durationPreservationLogic.js; test/calendarDurationPreservation.test.js
+// pins the function bodies to match (drift guard).
+function applyDurationPreservation({
+  base,
+  clone,
+  patch,
+  toCalIDateTime,
+  editTzOverride,
+  log = () => {},
+}) {
+  // Capture original duration BEFORE we touch clone.startDate/endDate. Once
+  // either side is reassigned the subtractDate result no longer reflects the
+  // event's original length.
+  let origDuration = null;
+  try {
+    if (base && base.startDate && base.endDate) {
+      origDuration = base.endDate.subtractDate(base.startDate);
+      // Skip derivation if duration is zero or negative. Mirrors iOS
+      // GoogleCalendarProvider.mergeExistingEventWithPatch (`d > 0 ? d : nil`).
+      // calIDuration exposes `.inSeconds`; the mock backs it the same way.
+      if (origDuration) {
+        const seconds = typeof origDuration.inSeconds === "number" ? origDuration.inSeconds : null;
+        if (origDuration.isNegative || seconds === 0) origDuration = null;
+      }
+    }
+  } catch (_) {
+    origDuration = null;
+  }
+
+  const hasStartPatch = typeof patch.start_iso === "string" && !!patch.start_iso;
+  const hasEndPatch = typeof patch.end_iso === "string" && !!patch.end_iso;
+
+  if (hasStartPatch) {
+    const s = toCalIDateTime(String(patch.start_iso), editTzOverride);
+    if (s) {
+      if (patch.all_day) s.isDate = true;
+      clone.startDate = s;
+    }
+  }
+  if (hasEndPatch) {
+    const e = toCalIDateTime(String(patch.end_iso), editTzOverride);
+    if (e) {
+      if (patch.all_day) e.isDate = true;
+      clone.endDate = e;
+    }
+  }
+
+  if (hasStartPatch && !hasEndPatch && origDuration) {
+    try {
+      const newEnd = clone.startDate.clone();
+      newEnd.addDuration(origDuration);
+      clone.endDate = newEnd;
+      log("derived endDate from new start + existing duration");
+      return { derived: "end" };
+    } catch (e) {
+      log("failed to derive endDate from duration: " + e);
+      return { derived: null, error: e };
+    }
+  }
+  if (hasEndPatch && !hasStartPatch && origDuration) {
+    try {
+      const negDur = origDuration.clone();
+      negDur.isNegative = !negDur.isNegative;
+      const newStart = clone.endDate.clone();
+      newStart.addDuration(negDur);
+      clone.startDate = newStart;
+      log("derived startDate from new end + existing duration");
+      return { derived: "start" };
+    } catch (e) {
+      log("failed to derive startDate from duration: " + e);
+      return { derived: null, error: e };
+    }
+  }
+  return { derived: null };
+}
+
 function getCalendarManager() {
   try {
     const Ci = globalThis.Ci;
@@ -1442,14 +1530,18 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               ? patch.timezone
               : (typeof details.timezone === "string" && details.timezone ? details.timezone : null);
             if (typeof patch.title === "string") clone.title = patch.title;
-            if (patch.start_iso) {
-              const s = toCalIDateTime(String(patch.start_iso), editTzOverride);
-              if (s) { if (patch.all_day) s.isDate = true; clone.startDate = s; }
-            }
-            if (patch.end_iso) {
-              const e = toCalIDateTime(String(patch.end_iso), editTzOverride);
-              if (e) { if (patch.all_day) e.isDate = true; clone.endDate = e; }
-            }
+
+            // Apply start/end with duration preservation when only one side
+            // moves. Extracted to durationPreservation.js so the math is
+            // unit-testable without a full Mozilla cal runtime.
+            applyDurationPreservation({
+              base,
+              clone,
+              patch,
+              toCalIDateTime,
+              editTzOverride,
+              log: (m) => console.log("[tmCalendar] modifyCalendarEvent: " + m),
+            });
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
             // Transparency (availability): apply only if provided
