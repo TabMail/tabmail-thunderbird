@@ -344,6 +344,9 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet-wrapper {
   display: inline-flex !important;
   align-items: center !important;
   margin-inline-start: 4px !important;
+  /* Right-indent so the chevron doesn't sit flush against the card edge —
+     lines it up with the date gutter on the same row. A few px; tweak here. */
+  margin-inline-end: 4px !important;
   padding: 0 !important;
   background-color: transparent !important;
   border: none !important;
@@ -606,6 +609,17 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet-wrapper {
 .tm-action-chip:focus-visible {
   outline: 2px solid var(--tag-color, currentColor);
   outline-offset: 1px;
+}
+
+/* Right-indent the action chip so its right edge lines up with the date
+ * gutter instead of sitting flush against the edge. Scoped to the two
+ * surfaces requested: the card-view chip ([is="thread-card"] descendant)
+ * and the preview-header chip (.tm-header-action-chip). The
+ * multi-message-view chip is a different layout and is left untouched.
+ * A few px; tweak here. */
+[is="thread-card"] .tm-action-chip,
+.tm-action-chip.tm-header-action-chip {
+  margin-inline-end: 4px;
 }
 
 /* Per-action layered backgrounds. Top layer is the shine, middle is the
