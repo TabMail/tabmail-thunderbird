@@ -696,7 +696,7 @@ describe('Scenario: Empty editor with signature (original bug)', () => {
     expect(sep).not.toBeNull();
   });
 
-  it('empty text anchor exists before separator after render', () => {
+  it('editable <br> anchor (preceded by a text node) exists before separator after render', () => {
     const editor = buildEditor('');
     TM.state.editorRef = editor;
     TM.renderText(false);
@@ -704,11 +704,20 @@ describe('Scenario: Empty editor with signature (original bug)', () => {
     const sep = editor.querySelector('.tm-quote-separator');
     expect(sep).not.toBeNull();
 
-    // The node right before the separator should be a text node
     const idx = editor.childNodes.indexOf(sep);
-    expect(idx).toBeGreaterThan(0);
+    expect(idx).toBeGreaterThan(1);
+
+    // The node right before the separator is the editable <br> anchor: it gives
+    // Gecko a typable boundary so end-of-text keystrokes are not dropped into
+    // the contenteditable=false separator dead-zone.
     const beforeSep = editor.childNodes[idx - 1];
-    expect(beforeSep.nodeType).toBe(NODE_TYPES.TEXT_NODE);
+    expect(beforeSep.nodeType).toBe(NODE_TYPES.ELEMENT_NODE);
+    expect(beforeSep.tagName).toBe('BR');
+    expect(beforeSep.classList.contains('tm-edit-anchor')).toBe(true);
+
+    // ...and a text node precedes that anchor for caret placement.
+    const beforeAnchor = editor.childNodes[idx - 2];
+    expect(beforeAnchor.nodeType).toBe(NODE_TYPES.TEXT_NODE);
   });
 
   it('repeated renders of empty editor do not accumulate separators', () => {

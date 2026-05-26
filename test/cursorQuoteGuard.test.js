@@ -227,6 +227,22 @@ describe('_getCleanedEditorTextWithOptionsRecursive skips tm-quote-separator', (
     expect(TM._getCleanedEditorTextWithOptionsRecursive(root)).toBe('X');
   });
 
+  it('skips tm-edit-anchor <br> (adds no trailing newline)', () => {
+    // The editable <br> anchor injected before the separator must not leak a
+    // newline into the extracted/sent text — it exists only to give Gecko a
+    // typable caret boundary, and lives in the skip-list alongside the
+    // separator. A bare <br> would otherwise contribute "\n".
+    const editAnchor = makeElement('br', { classes: ['tm-edit-anchor'] });
+    const root = buildDiv(makeTextNode('Hello'), editAnchor, makeSeparator());
+    expect(TM._getCleanedEditorTextWithOptionsRecursive(root)).toBe('Hello');
+  });
+
+  it('a bare <br> WITHOUT tm-edit-anchor still contributes a newline (guards the skip is class-scoped)', () => {
+    const plainBr = makeElement('br');
+    const root = buildDiv(makeTextNode('A'), plainBr, makeTextNode('B'));
+    expect(TM._getCleanedEditorTextWithOptionsRecursive(root)).toBe('A\nB');
+  });
+
   it('handles skipInserts option with separator present', () => {
     const insertSpan = makeElement('span', { dataset: { tabmailDiff: 'insert' } });
     insertSpan.appendChild(makeTextNode('added'));
@@ -398,6 +414,41 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
 
     expect(lastRange.startNode).toBe(textNode);
     expect(lastRange.startOffset).toBe(1);
+  });
+
+  it('does not count the tm-edit-anchor <br> as a character (offset lands at end of text)', () => {
+    // Structure mirrors the real injection: [text][<br.tm-edit-anchor>][sep].
+    // Offset 5 (end of "Hello") must land at the end of the text node, NOT be
+    // shifted by counting the anchor <br> as a newline char.
+    const editor = makeElement('body');
+    const textNode = makeTextNode('Hello');
+    const editAnchor = makeElement('br', { classes: ['tm-edit-anchor'] });
+    const sep = makeSeparator();
+
+    editor.appendChild(textNode);
+    editor.appendChild(editAnchor);
+    editor.appendChild(sep);
+
+    TM._setCursorByOffsetInternal(editor, 5);
+
+    expect(lastRange.startNode).toBe(textNode);
+    expect(lastRange.startOffset).toBe(5);
+  });
+
+  it('traverseAndCount does not count the tm-edit-anchor <br> (offset symmetry with setCursorByOffset)', () => {
+    // Inverse direction: computing the offset of a DOM position must skip the
+    // anchor <br> the same way placement does, or get/set offsets would drift.
+    const editor = makeElement('body');
+    const before = makeTextNode('Hello');
+    const editAnchor = makeElement('br', { classes: ['tm-edit-anchor'] });
+    const after = makeTextNode('World');
+    editor.appendChild(before);
+    editor.appendChild(editAnchor);
+    editor.appendChild(after);
+
+    const offset = TM.traverseAndCount(editor, { targetNode: after, targetOffset: 0 });
+    // "Hello" = 5; the anchor <br> is skipped (a counted <br> would give 6).
+    expect(offset).toBe(5);
   });
 });
 
@@ -893,20 +944,29 @@ describe('_applyFragmentToEditor text node anchor', () => {
       0   // advanceCursorBy
     );
 
-    // The fragment should now contain: [empty text node, separator span]
+    // The fragment should now contain:
+    //   [empty text node, <br.tm-edit-anchor>, separator span]
     const inserted = rangeToReplace._inserted;
     expect(inserted).not.toBeNull();
-    expect(inserted.childNodes.length).toBe(2);
+    expect(inserted.childNodes.length).toBe(3);
 
-    // First child: empty text node
+    // First child: empty text node (caret landing anchor)
     const textAnchor = inserted.childNodes[0];
     expect(textAnchor.nodeType).toBe(3); // TEXT_NODE
     expect(textAnchor.textContent).toBe('');
 
-    // Second child: separator span
-    const sep = inserted.childNodes[1];
+    // Second child: editable <br> anchor (Gecko typable boundary)
+    const editAnchor = inserted.childNodes[1];
+    expect(editAnchor.nodeType).toBe(1); // ELEMENT_NODE
+    expect(editAnchor.tagName).toBe('BR');
+    expect(editAnchor.classList.contains('tm-edit-anchor')).toBe(true);
+
+    // Third child: separator span — one <br> moved out to the anchor, so with
+    // BR_COUNT_DEFAULT=2 the separator now holds 1 <br> (total line count = 2).
+    const sep = inserted.childNodes[2];
     expect(sep.nodeType).toBe(1); // ELEMENT_NODE
     expect(sep.classList.contains('tm-quote-separator')).toBe(true);
+    expect(sep.childNodes.length).toBe(1); // brCount(2) - 1
   });
 
   it('does not insert extra text node when fragment already ends with text', () => {
@@ -934,11 +994,14 @@ describe('_applyFragmentToEditor text node anchor', () => {
     );
 
     const inserted = rangeToReplace._inserted;
-    // Should have: [text "Hello", separator] — NO extra empty text node
-    expect(inserted.childNodes.length).toBe(2);
+    // Should have: [text "Hello", <br.tm-edit-anchor>, separator] — NO extra
+    // empty text node (the fragment already ends with a text node).
+    expect(inserted.childNodes.length).toBe(3);
     expect(inserted.childNodes[0].nodeType).toBe(3);
     expect(inserted.childNodes[0].textContent).toBe('Hello');
-    expect(inserted.childNodes[1].classList.contains('tm-quote-separator')).toBe(true);
+    expect(inserted.childNodes[1].tagName).toBe('BR');
+    expect(inserted.childNodes[1].classList.contains('tm-edit-anchor')).toBe(true);
+    expect(inserted.childNodes[2].classList.contains('tm-quote-separator')).toBe(true);
   });
 
   it('inserts text node when fragment ends with element (diff span)', () => {
@@ -968,12 +1031,14 @@ describe('_applyFragmentToEditor text node anchor', () => {
     );
 
     const inserted = rangeToReplace._inserted;
-    // Should have: [diff span, empty text node, separator]
-    expect(inserted.childNodes.length).toBe(3);
+    // Should have: [diff span, empty text node, <br.tm-edit-anchor>, separator]
+    expect(inserted.childNodes.length).toBe(4);
     expect(inserted.childNodes[0]).toBe(diffSpan);
     expect(inserted.childNodes[1].nodeType).toBe(3); // empty text anchor
     expect(inserted.childNodes[1].textContent).toBe('');
-    expect(inserted.childNodes[2].classList.contains('tm-quote-separator')).toBe(true);
+    expect(inserted.childNodes[2].tagName).toBe('BR');
+    expect(inserted.childNodes[2].classList.contains('tm-edit-anchor')).toBe(true);
+    expect(inserted.childNodes[3].classList.contains('tm-quote-separator')).toBe(true);
   });
 
   it('does not insert text node or separator when no quoteBoundaryNode', () => {

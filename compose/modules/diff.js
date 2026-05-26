@@ -555,17 +555,35 @@ Object.assign(TabMail, {
         brCount,
         show_diffs,
       });
-      for (let i = 0; i < brCount; i++) {
+      // Move ONE <br> out of the (contentEditable=false) separator into the
+      // editable trailing anchor added below, so the TOTAL line count — and thus
+      // the sent-email spacing — is unchanged.
+      const sepBrCount = Math.max(0, brCount - 1);
+      for (let i = 0; i < sepBrCount; i++) {
         sep.appendChild(document.createElement("br"));
       }
 
-      // Ensure there is always a text node before the separator so that Gecko
-      // has a valid editable insertion point for the cursor.  Without this, the
-      // cursor may land inside the contentEditable=false separator and user
-      // keystrokes silently go into the non-editable span.
+      // Keep a text node for setCursorByOffset to anchor the caret in (Gecko
+      // cannot place a caret offset inside a <br> or the CE=false separator).
       if (!fragment.hasChildNodes() || (fragment.lastChild && fragment.lastChild.nodeType !== Node.TEXT_NODE)) {
         fragment.appendChild(document.createTextNode(""));
       }
+
+      // A caret at the end of the user's text immediately before the
+      // contentEditable=false separator is a Gecko insertion dead-zone:
+      // `beforeinput` fires but no `input` happens, so keystrokes are silently
+      // dropped (notably right after a Tab-accept at the end of the message).
+      // An EMPTY TEXT NODE before the separator does NOT satisfy Gecko (that was
+      // the prior, insufficient attempt). A real EDITABLE <br> does: the caret
+      // then sits at the end of an ordinary editable line, which is typable.
+      //
+      // The anchor carries `tm-edit-anchor` and is in the extraction +
+      // cursor-traversal skip-lists, so it contributes ZERO to the text model
+      // and offset math — it exists purely to give Gecko a typable boundary.
+      const editAnchor = document.createElement("br");
+      editAnchor.classList.add("tm-edit-anchor");
+      fragment.appendChild(editAnchor);
+
       fragment.appendChild(sep);
     }
 

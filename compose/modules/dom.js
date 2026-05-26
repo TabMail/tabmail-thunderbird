@@ -161,6 +161,7 @@ Object.assign(TabMail, {
           child.classList.contains("tm-fake-caret") ||
           child.classList.contains("tm-cursor-arrow") ||
           child.classList.contains("tm-nl") ||
+          child.classList.contains("tm-edit-anchor") ||
           child.classList.contains("tm-inline-overlay") ||
           child.classList.contains("tm-inline-spinner") ||
           child.classList.contains("tm-quote-separator")
@@ -645,6 +646,7 @@ Object.assign(TabMail, {
             node.classList.contains("tm-fake-caret") ||
             node.classList.contains("tm-cursor-arrow") ||
             node.classList.contains("tm-nl") ||
+            node.classList.contains("tm-edit-anchor") ||
             node.classList.contains("tm-inline-overlay") ||
             node.classList.contains("tm-inline-spinner") ||
             node.classList.contains("tm-quote-separator")
@@ -1592,9 +1594,28 @@ Object.assign(TabMail, {
           hasQuoteAfter,
           brCount,
         });
-        for (let i = 0; i < brCount; i++) {
+        // Mirror diff.js _applyFragmentToEditor: move ONE <br> out of the
+        // CE=false separator into the editable anchor below, so the total line
+        // count (and sent-email spacing) is unchanged.
+        const sepBrCount = Math.max(0, brCount - 1);
+        for (let i = 0; i < sepBrCount; i++) {
           sep.appendChild(document.createElement("br"));
         }
+
+        // Keep a text node for caret landing, then an editable <br> anchor so a
+        // caret at the end of the user text (immediately before the CE=false
+        // separator) is typable. Without it Gecko treats end-of-text-before-a-
+        // contenteditable=false-sibling as an insertion dead-zone and silently
+        // drops keystrokes. tm-edit-anchor is skipped by extraction + cursor
+        // traversal so it never affects the text model or offsets. See diff.js
+        // _applyFragmentToEditor for the full rationale.
+        if (!frag.hasChildNodes() || (frag.lastChild && frag.lastChild.nodeType !== Node.TEXT_NODE)) {
+          frag.appendChild(document.createTextNode(""));
+        }
+        const editAnchor = document.createElement("br");
+        editAnchor.classList.add("tm-edit-anchor");
+        frag.appendChild(editAnchor);
+
         frag.appendChild(sep);
       }
 
@@ -1629,6 +1650,7 @@ Object.assign(TabMail, {
         node.classList.contains("tm-fake-caret") ||
         node.classList.contains("tm-cursor-arrow") ||
         node.classList.contains("tm-nl") ||
+        node.classList.contains("tm-edit-anchor") ||
         node.classList.contains("tm-inline-overlay") ||
         node.classList.contains("tm-inline-spinner") ||
         node.classList.contains("tm-quote-separator")
