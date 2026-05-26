@@ -200,6 +200,10 @@ TabMail.config = {
     inlineEdit: null,     // Inline editor operations (use global LOG_LEVEL)
     dom: null,            // DOM operations (use global LOG_LEVEL)
     undo: null,           // Undo/redo operations (use global LOG_LEVEL)
+    // [TEMP DEBUG — caret-after-accept bug] Forced to DEBUG so _logCaretDiag()
+    // surfaces while the rest of the app stays quiet at INFO. Revert to null
+    // (or remove) once the accept-at-end caret bug is diagnosed + fixed.
+    caret: 4,             // DEBUG — caret location diagnostics
   },
 
   // jsdiff removed; always use diff-match-patch with sentence anchoring

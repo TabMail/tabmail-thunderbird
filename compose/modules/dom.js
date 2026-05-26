@@ -221,6 +221,152 @@ Object.assign(TabMail, {
   },
 
   /**
+   * [TEMP DEBUG — caret-after-accept bug] Describe a DOM node compactly for logs.
+   * Remove once the accept-at-end caret bug is diagnosed + fixed.
+   */
+  _describeNodeForDiag: function (node) {
+    if (!node) return "null";
+    try {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const t = node.textContent || "";
+        return `text[len=${t.length} ${JSON.stringify(t.slice(0, 40))}]`;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const cls = node.className
+          ? "." + String(node.className).trim().replace(/\s+/g, ".")
+          : "";
+        const diff =
+          node.dataset && node.dataset.tabmailDiff
+            ? ` diff=${node.dataset.tabmailDiff}`
+            : "";
+        const ceAttr = node.getAttribute
+          ? node.getAttribute("contenteditable")
+          : null;
+        const ce = ceAttr !== null ? ` ceAttr=${ceAttr}` : "";
+        const ice =
+          typeof node.isContentEditable === "boolean"
+            ? ` isCE=${node.isContentEditable}`
+            : "";
+        const ch = node.childNodes ? node.childNodes.length : 0;
+        return `el<${node.tagName}${cls}${diff}${ce}${ice} #ch=${ch}>`;
+      }
+      return `other[nodeType=${node.nodeType}]`;
+    } catch (e) {
+      return `err[${e}]`;
+    }
+  },
+
+  /**
+   * [TEMP DEBUG — caret-after-accept bug] Dump the exact caret location and the
+   * editable/non-editable nature of its surroundings. Gated behind the 'caret'
+   * log category (DEBUG). Remove once the bug is fixed.
+   * @param {string} label A short tag identifying the call site.
+   */
+  _logCaretDiag: function (label) {
+    try {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) {
+        TabMail.log.debug("caret", `[CARET DIAG] ${label} :: NO SELECTION`);
+        return;
+      }
+      const anchorNode = sel.anchorNode;
+      const anchorOffset = sel.anchorOffset;
+      const editor = TabMail.state.editorRef;
+
+      // DEFINITIVE editability: the element that owns the caret. isContentEditable
+      // reflects computed editability (inheritance + designMode), so it catches
+      // non-editable regions even when there's no explicit contenteditable attr.
+      const caretEl =
+        anchorNode && anchorNode.nodeType === Node.TEXT_NODE
+          ? anchorNode.parentElement
+          : anchorNode;
+      const caretEditable =
+        caretEl && typeof caretEl.isContentEditable === "boolean"
+          ? caretEl.isContentEditable
+          : "?";
+
+      // Nearest ancestor that is NOT editable (computed), if any.
+      let nonEditableAncestor = "none";
+      let w = caretEl;
+      while (w && w !== editor && w.nodeType === Node.ELEMENT_NODE) {
+        if (w.isContentEditable === false) {
+          nonEditableAncestor = TabMail._describeNodeForDiag(w);
+          break;
+        }
+        w = w.parentElement;
+      }
+
+      // Forbidden-region walk (insert span / separator / ce=false attr).
+      let inForbidden = "none";
+      let walk = anchorNode;
+      while (walk && walk !== editor) {
+        if (walk.nodeType === Node.ELEMENT_NODE) {
+          if (walk.dataset && walk.dataset.tabmailDiff === "insert") {
+            inForbidden = "insert-span";
+            break;
+          }
+          if (walk.classList && walk.classList.contains("tm-quote-separator")) {
+            inForbidden = "quote-separator";
+            break;
+          }
+          if (walk.getAttribute && walk.getAttribute("contenteditable") === "false") {
+            inForbidden = "ce-false-attr";
+            break;
+          }
+        }
+        walk = walk.parentNode;
+      }
+
+      const isEndOfTextNode =
+        !!anchorNode &&
+        anchorNode.nodeType === Node.TEXT_NODE &&
+        anchorOffset === (anchorNode.textContent || "").length;
+
+      let childAtOffset = "-";
+      let childBefore = "-";
+      if (
+        anchorNode &&
+        anchorNode.nodeType === Node.ELEMENT_NODE &&
+        anchorNode.childNodes
+      ) {
+        childAtOffset = TabMail._describeNodeForDiag(
+          anchorNode.childNodes[anchorOffset] || null
+        );
+        childBefore = TabMail._describeNodeForDiag(
+          anchorNode.childNodes[anchorOffset - 1] || null
+        );
+      }
+
+      // Full forward sibling chain past the caret — reveals exactly what the
+      // empty text-node anchor leads into (separator? non-editable DIV?).
+      const nextChain = [];
+      let s = anchorNode ? anchorNode.nextSibling : null;
+      for (let i = 0; i < 5 && s; i++) {
+        nextChain.push(TabMail._describeNodeForDiag(s));
+        s = s.nextSibling;
+      }
+
+      // Single FLAT string so the console shows everything without expanding objects.
+      TabMail.log.debug(
+        "caret",
+        `[CARET DIAG] ${label} :: ` +
+          `anchor=${TabMail._describeNodeForDiag(anchorNode)} off=${anchorOffset} ` +
+          `textAnchored=${anchorNode ? anchorNode.nodeType === Node.TEXT_NODE : "?"} ` +
+          `atEndOfNode=${isEndOfTextNode} caretEditable=${caretEditable} ` +
+          `nonEditableAncestor=${nonEditableAncestor} forbidden=${inForbidden} ` +
+          `designMode=${typeof document !== "undefined" ? document.designMode : "?"} | ` +
+          `parent=${anchorNode && anchorNode.nodeType === Node.TEXT_NODE ? TabMail._describeNodeForDiag(anchorNode.parentNode) : "-"} ` +
+          `prev=${anchorNode ? TabMail._describeNodeForDiag(anchorNode.previousSibling) : "-"} ` +
+          `next=${anchorNode ? TabMail._describeNodeForDiag(anchorNode.nextSibling) : "-"} ` +
+          `childBefore=${childBefore} childAtOffset=${childAtOffset} ` +
+          `nextChain=[${nextChain.join(" >> ")}]`
+      );
+    } catch (e) {
+      TabMail.log.debug("caret", `[CARET DIAG] ${label}: ERROR ${e}`);
+    }
+  },
+
+  /**
    * Helper to place the cursor after a given node.
    * @param {Node} node The node to place the cursor after.
    */
@@ -346,10 +492,10 @@ Object.assign(TabMail, {
       const originalRange = sel.getRangeAt(0).cloneRange();
 
       // Materialise a temporary marker at the caret position in order to use
-      // Element.scrollIntoView which isn’t available on Range in Gecko.
+      // Element.scrollIntoView which is not available on Range in Gecko.
       const marker = document.createElement("span");
       // Zero-width space so it has height but no visible glyph.
-      marker.textContent = "\u200B";
+      marker.textContent = String.fromCharCode(0x200b);
       marker.style.cssText =
         "display:inline-block;width:0;height:1em;padding:0;margin:0;border:0;pointer-events:none;";
 
@@ -357,7 +503,7 @@ Object.assign(TabMail, {
       rangeForMarker.collapse(true);
       rangeForMarker.insertNode(marker);
 
-      // Scroll so that the marker is visible – use nearest scrollable ancestor
+      // Scroll so that the marker is visible - use nearest scrollable ancestor
       // but fall back to the window.
       let scrollTarget = marker.parentElement;
       while (
