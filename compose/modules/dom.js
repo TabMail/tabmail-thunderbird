@@ -1568,55 +1568,15 @@ Object.assign(TabMail, {
         }
       });
 
-      // If there's a quote boundary, add the separator (skipped during extraction).
-      // Use span (inline) instead of div (block) so the first <br> terminates
-      // the text line rather than the block element creating an extra line.
+      // If there's a quote boundary, append the separator + editable caret
+      // anchor via the shared helper (same path as _applyFragmentToEditor).
       if (quoteBoundaryNode) {
-        const sep = document.createElement("span");
-        sep.classList.add("tm-quote-separator");
-        sep.contentEditable = "false";
-        sep.style.userSelect = "none";
-        const isSig =
-          quoteBoundaryNode.nodeType === Node.ELEMENT_NODE &&
-          quoteBoundaryNode.classList &&
-          quoteBoundaryNode.classList.contains("moz-signature");
-        const cfg = (TabMail.config && TabMail.config.quoteSeparator) || {};
-        const brCountDefault = typeof cfg.BR_COUNT_DEFAULT === "number" ? cfg.BR_COUNT_DEFAULT : 2;
-        const brCountSigWithQuoteAfter =
-          typeof cfg.BR_COUNT_WHEN_SIGNATURE_BOUNDARY_WITH_QUOTE_AFTER === "number"
-            ? cfg.BR_COUNT_WHEN_SIGNATURE_BOUNDARY_WITH_QUOTE_AFTER
-            : 1;
-        const hasQuoteAfter = isSig ? TabMail._hasQuoteAfterNode(editor, quoteBoundaryNode) : false;
-        const brCount = (isSig && hasQuoteAfter) ? brCountSigWithQuoteAfter : brCountDefault;
-        TabMail.log.debug('dom', "quoteSeparator(setEditorPlainText)", {
-          boundaryType: quoteBoundaryNode.tagName + (quoteBoundaryNode.className ? '.' + quoteBoundaryNode.className : ''),
-          isSignature: isSig,
-          hasQuoteAfter,
-          brCount,
-        });
-        // Mirror diff.js _applyFragmentToEditor: move ONE <br> out of the
-        // CE=false separator into the editable anchor below, so the total line
-        // count (and sent-email spacing) is unchanged.
-        const sepBrCount = Math.max(0, brCount - 1);
-        for (let i = 0; i < sepBrCount; i++) {
-          sep.appendChild(document.createElement("br"));
-        }
-
-        // Keep a text node for caret landing, then an editable <br> anchor so a
-        // caret at the end of the user text (immediately before the CE=false
-        // separator) is typable. Without it Gecko treats end-of-text-before-a-
-        // contenteditable=false-sibling as an insertion dead-zone and silently
-        // drops keystrokes. tm-edit-anchor is skipped by extraction + cursor
-        // traversal so it never affects the text model or offsets. See diff.js
-        // _applyFragmentToEditor for the full rationale.
-        if (!frag.hasChildNodes() || (frag.lastChild && frag.lastChild.nodeType !== Node.TEXT_NODE)) {
-          frag.appendChild(document.createTextNode(""));
-        }
-        const editAnchor = document.createElement("br");
-        editAnchor.classList.add("tm-edit-anchor");
-        frag.appendChild(editAnchor);
-
-        frag.appendChild(sep);
+        TabMail._appendQuoteSeparatorWithAnchor(
+          frag,
+          quoteBoundaryNode,
+          editor,
+          "setEditorPlainText"
+        );
       }
 
       editor.insertBefore(frag, quoteBoundaryNode || null);
