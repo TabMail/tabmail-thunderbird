@@ -492,7 +492,6 @@ Object.assign(TabMail, {
     // Check if the keystroke adheres to the current suggestion
     // If adhering, don't hide diffs and don't invalidate suggestion
     if (TabMail._isKeystrokeAdheringToSuggestion(e)) {
-      TabMail.log.debug('caret', `[CARET DIAG] handleAutohideDiff: ADHERED key=${JSON.stringify(e.key)} (no DOM rebuild here; _renderWithExistingDiffs path)`);
       TabMail.log.info('autohideDiff', "Keystroke adheres to suggestion - keeping diffs visible");
       // Store flag so input handler knows to skip scheduleTrigger
       TabMail.state.lastKeystrokeAdheredToSuggestion = true;
@@ -508,7 +507,6 @@ Object.assign(TabMail, {
     // region DOM (the render happens during keydown — before the character is
     // inserted — so an empty-text render deletes whatever the user just typed).
     if (!TabMail.state.isDiffActive && !TabMail.state.correctedText) {
-      TabMail.log.debug('caret', `[CARET DIAG] handleAutohideDiff: BAILED (no re-render) key=${JSON.stringify(e.key)} isDiffActive=${TabMail.state.isDiffActive} hasCorrected=${!!TabMail.state.correctedText}`);
       TabMail.log.debug('autohideDiff', "handleAutohideDiff: early bail — no diffs/correctedText to hide");
       return false;
     }
@@ -531,13 +529,7 @@ Object.assign(TabMail, {
     const force = e.type === "compositionstart";
     TabMail.log.trace('renderText', "Rendering text without diffs after compositionstart");
     const show_diffs = TabMail.state.showDiff && !TabMail.state.autoHideDiff;
-    // [TEMP DEBUG — caret-after-accept bug] This renderText runs SYNCHRONOUSLY
-    // during keydown, BEFORE the browser inserts the char. Bracket it with caret
-    // diags to confirm it rebuilds the DOM out from under the pending insertion.
-    TabMail.log.debug('caret', `[CARET DIAG] handleAutohideDiff: WILL renderText during ${e.type} key=${JSON.stringify(e.key)} (rebuilds user region)`);
-    TabMail._logCaretDiag?.(`autohide:before-render(${e.type})`);
     TabMail.renderText(show_diffs, (show_newlines = true), force);
-    TabMail._logCaretDiag?.(`autohide:after-render(${e.type})`);
 
     // Clear any pending restore timer and schedule a fresh one.
     if (TabMail.state.diffRestoreTimer) {

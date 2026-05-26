@@ -313,13 +313,6 @@ Object.assign(TabMail, {
    * inline input.
    */
   handleBeforeInput: function (e) {
-    // [TEMP DEBUG — caret-after-accept bug] Does beforeinput fire at all during
-    // the swallowed typing? If we see this but no matching input handler line,
-    // something cancels between beforeinput and input. If we see NEITHER, the
-    // caret is in a non-editable region and the browser never attempts insertion.
-    try {
-      TabMail.log.debug('caret', `[CARET DIAG] beforeinput FIRED inputType=${e.inputType} data=${JSON.stringify(e.data)} isComposing=${!!e.isComposing} defaultPrevented(before handlers)=${e.defaultPrevented}`);
-    } catch (_) {}
     try {
       if (!TabMail.state || !TabMail.state.inlineEditActive) {
         return false;
@@ -655,10 +648,6 @@ Object.assign(TabMail, {
 
     // Input (typing)
     TabMail._eventListeners.inputHandler = (e) => {
-      // [TEMP DEBUG — caret-after-accept bug] Did the keystroke produce an input
-      // event, and where did the caret end up afterward (i.e. where did the char
-      // land)? If a printable keydown is NOT followed by this, it was swallowed.
-      TabMail._logCaretDiag(`input:${e.inputType} data=${JSON.stringify(e.data)}`);
       // DEBUG: detect if this input event came from a programmatic render
       const _dbgEditable = editor.contentEditable;
       const _dbgMuteDepth = TabMail.state.selectionMuteDepth || 0;
@@ -1069,11 +1058,6 @@ Object.assign(TabMail, {
 
       // Move cursor appropriately (the only case we use the node-based logic
       // is the local accept)
-      // [TEMP DEBUG — caret-after-accept bug]
-      TabMail.log.debug('caret', `[CARET DIAG] accept:about-to-place placeCursorAfterNode=${placeCursorAfterNode} newCursorOffset=${newCursorOffset}`, {
-        nodeForCursor: TabMail._describeNodeForDiag(nodeForCursor),
-      });
-      TabMail._logCaretDiag('accept:before-place');
       if (placeCursorAfterNode && nodeForCursor) {
         TabMail.log.debug('events', "handleKeyDown: Setting cursor after node.",
           nodeForCursor
@@ -1085,8 +1069,6 @@ Object.assign(TabMail, {
         );
         TabMail.setCursorByOffset(editor, newCursorOffset);
       }
-      // [TEMP DEBUG — caret-after-accept bug] Where did the caret actually land?
-      TabMail._logCaretDiag(`accept:after-place (via ${placeCursorAfterNode && nodeForCursor ? 'setCursorAfterNode' : 'setCursorByOffset'})`);
 
       // Capture snapshot AFTER mutations and push to undo stack
       if (snapshotBefore) {
@@ -1198,12 +1180,6 @@ Object.assign(TabMail, {
 
     // Cmd/Ctrl+K inline edit entry
     if (TabMail._handleInlineEditShortcut(e)) return;
-
-    // [TEMP DEBUG — caret-after-accept bug] Capture caret location at the moment
-    // the user types a printable character (this is when insertion "fails").
-    if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      TabMail._logCaretDiag(`keydown:printable ${JSON.stringify(e.key)}`);
-    }
 
     // Global Escape now handled inside _handleInlineEditKeyDown to ensure correct ordering
 
