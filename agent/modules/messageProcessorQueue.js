@@ -13,13 +13,20 @@ const QUEUE_STORAGE_KEY = "agent_processmessage_pending";
 //     1. processMessage succeeds (ok=true)
 //     2. The message is confirmed no longer in the inbox (moved/archived/deleted)
 //     3. The uniqueKey is malformed (data integrity issue)
+//     4. The message is confirmed deleted from the whole account via broad
+//        headerMessageId query (after maxResolveAttempts resolve failures). A DELETED
+//        message never resolves to a header, so reason #2 (which needs a header to read
+//        the folder) can never observe it leaving — #4 closes that gap and prevents the
+//        "HeaderResolver ALL STAGES FAILED → will retry" loop from running forever.
 //   For tagCleanupOnLeaveInbox:
 //     1. performLeaveInboxTagCleanup succeeds (ok=true, tags stripped)
 //     2. The message is back in inbox (user undid the move, cleanup unnecessary)
 //     3. The message is confirmed deleted via broad headerMessageId query (after N resolve failures)
 //     4. The uniqueKey is malformed (data integrity issue)
-// We NEVER drop items due to resolve failures or processing retries.
-// Transient issues (offline, IMAP sync lag, LLM timeouts) must not cause data loss.
+// We NEVER drop an item on a resolve failure or processing retry ALONE — a transient miss
+// (offline, IMAP sync lag, LLM timeout) must not cause data loss. We drop only on POSITIVE
+// confirmation: a broad headerMessageId query that SUCCEEDS and returns empty. A thrown/failed
+// query is treated as transient and retried.
 let _pending = new Map(); // Map<uniqueKey, { uniqueKey, timestamp, opts, metadata, attempts, lastErrorAtMs }>
 let _persistTimer = null;
 let _watchTimer = null;
@@ -367,16 +374,44 @@ async function _processOneItem(it) {
   }
 
   // ── Default: processMessage path (AI pipeline) ──────────────────
-  if (!weId) {
-    log(`[TMDBG PMQ] Could not resolve message for key=${key} - will retry`, "warn");
-    _pending.set(key, { ...it, lastErrorAtMs: Date.now() });
-    return { status: "retry", operationType };
-  }
-
+  // Verify-then-drop on resolve failure. A message DELETED from the inbox (not merely
+  // moved/archived) never resolves to a weId/header, so the in-inbox check below can
+  // never observe it leaving — without this it retries forever (the wild-caught
+  // "HeaderResolver ALL STAGES FAILED → will retry" loop). Mirror the
+  // tagCleanupOnLeaveInbox path: after maxResolveAttempts consecutive resolve failures,
+  // do a broad headerMessageId query to confirm the message is gone from the ENTIRE
+  // account. Only drop when the query SUCCEEDS and returns empty (confirmed deleted);
+  // a thrown query is transient → keep retrying. An empty broad query is positive
+  // confirmation of deletion, NOT a transient resolve miss, so this honors the
+  // "never drop on resolve failure alone" guarantee.
   if (!header) {
-    log(`[TMDBG PMQ] Missing header for weId=${weId} key=${key} - will retry`, "warn");
-    _pending.set(key, { ...it, lastErrorAtMs: Date.now() });
-    return { status: "retry", operationType };
+    const attempts = (Number(it?.attempts) || 0) + 1;
+    const verifyAfter = _num(_cfg().maxResolveAttempts, 5);
+
+    if (attempts >= verifyAfter) {
+      try {
+        const queryResult = await browser.messages.query({ headerMessageId: parsed.headerID });
+        const found = queryResult?.messages?.[0] || null;
+        if (found) {
+          // Resolve glitch — the message exists after all. Recover and process it.
+          header = found;
+          weId = found.id;
+          log(`[TMDBG PMQ] Resolved via broad query after ${attempts} resolve failures: key=${key} foundId=${found.id}`);
+        } else {
+          log(`[TMDBG PMQ] Message confirmed deleted (broad query empty after ${attempts} resolve failures) - dropping: key=${key}`);
+          _pending.delete(key);
+          return { status: "dropped", operationType };
+        }
+      } catch (eQuery) {
+        log(`[TMDBG PMQ] Broad verify query threw key=${key}: ${eQuery} - treating as transient, will retry`, "warn");
+      }
+    }
+
+    if (!header) {
+      log(`[TMDBG PMQ] Could not resolve message for key=${key} attempt=${attempts} weId=${weId ?? "none"} - will retry`, "warn");
+      _pending.set(key, { ...it, attempts, lastErrorAtMs: Date.now() });
+      return { status: "retry", operationType };
+    }
   }
 
   // Check if message is still in inbox BEFORE processing
