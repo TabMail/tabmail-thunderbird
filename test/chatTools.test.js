@@ -165,6 +165,8 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
     contactsDefaultLimit: 25,
     contactsMaxLimit: 100,
     contactsQueryTimeoutMs: 5000,
+    ftsReadinessTimeoutMs: 100,
+    ftsReadinessRetryDelayMs: 5,
   },
 }));
 
@@ -514,6 +516,38 @@ describe('TB-062: email_search query construction', () => {
     expect(result).toHaveProperty('page');
     expect(result).toHaveProperty('totalPages');
     expect(result).toHaveProperty('totalItems');
+  });
+
+  it('retries while FTS backend returns undefined, then succeeds', async () => {
+    browser.runtime.sendMessage
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce([
+        { uniqueId: 'uid1', subject: 'Recovered', author: 'a@b.com', dateMs: Date.now(), snippet: 'recovered' },
+      ]);
+    const result = await emailSearch.run({ query: 'late-ready' });
+    expect(result).toHaveProperty('results');
+    expect(result.totalItems).toBe(1);
+    const calls = browser.runtime.sendMessage.mock.calls.filter(
+      (c) => c[0]?.type === 'fts' && c[0]?.cmd === 'search'
+    );
+    expect(calls.length).toBe(3);
+  });
+
+  it('gives up after timeout when FTS backend keeps returning undefined', async () => {
+    const originalImpl = browser.runtime.sendMessage.getMockImplementation();
+    browser.runtime.sendMessage.mockResolvedValue(undefined);
+    try {
+      const result = await emailSearch.run({ query: 'never-ready' });
+      expect(result).toHaveProperty('error');
+      expect(result.error).toContain('invalid response format');
+      const calls = browser.runtime.sendMessage.mock.calls.filter(
+        (c) => c[0]?.type === 'fts' && c[0]?.cmd === 'search'
+      );
+      expect(calls.length).toBeGreaterThan(1);
+    } finally {
+      if (originalImpl) browser.runtime.sendMessage.mockImplementation(originalImpl);
+    }
   });
 });
 
@@ -911,6 +945,39 @@ describe('TB-069: memory_search handler logic', () => {
     const result = await memorySearch.run({ query: 'test' });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('invalid response format');
+  });
+
+  it('retries while backend returns undefined (FTS not ready), then succeeds', async () => {
+    browser.runtime.sendMessage
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce([
+        { dateMs: Date.now(), content: 'recovered', snippet: 'recovered' },
+      ]);
+    const result = await memorySearch.run({ query: 'late-ready' });
+    expect(result.totalItems).toBe(1);
+    const calls = browser.runtime.sendMessage.mock.calls.filter(
+      (c) => c[0]?.type === 'fts' && c[0]?.cmd === 'memorySearch'
+    );
+    expect(calls.length).toBe(3);
+  });
+
+  it('gives up after timeout when backend keeps returning undefined', async () => {
+    // mockResolvedValue (sticky) would leak past `vi.clearAllMocks()` since it
+    // only clears call history, not implementations — save and restore.
+    const originalImpl = browser.runtime.sendMessage.getMockImplementation();
+    browser.runtime.sendMessage.mockResolvedValue(undefined);
+    try {
+      const result = await memorySearch.run({ query: 'never-ready' });
+      expect(result).toHaveProperty('error');
+      expect(result.error).toContain('invalid response format');
+      const calls = browser.runtime.sendMessage.mock.calls.filter(
+        (c) => c[0]?.type === 'fts' && c[0]?.cmd === 'memorySearch'
+      );
+      expect(calls.length).toBeGreaterThan(1);
+    } finally {
+      if (originalImpl) browser.runtime.sendMessage.mockImplementation(originalImpl);
+    }
   });
 
   it('passes date range to FTS backend', async () => {

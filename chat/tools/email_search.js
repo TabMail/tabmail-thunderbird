@@ -95,16 +95,44 @@ export async function run(args = {}, options = {}) {
           `[TMDBG Tools] email_search: effective dates from_date='${norm.from_date}' to_date='${norm.to_date}' → fromIso='${fromIso || "-"}' toIso='${toIso || "-"}' ignoreDate=${ignoreDate} limit=${fetchLimit}`
         );
         
-        // Use FTS search via runtime messaging
-        hits = await browser.runtime.sendMessage({
-          type: "fts",
-          cmd: "search",
-          q: rawQuery,
-          from: fromIso,
-          to: toIso,
-          limit: fetchLimit,
-          ignoreDate
-        });
+        // Use FTS search via runtime messaging. Retry while the response is
+        // `undefined` — that means no listener handled the message (FTS engine
+        // not yet initialized / hot-reload race). A real result, an empty
+        // array, or an `{error}` object all exit the loop immediately.
+        const readyTimeoutMs = Math.max(
+          0,
+          Number(CHAT_SETTINGS.ftsReadinessTimeoutMs) || 0
+        );
+        const readyRetryDelayMs = Math.max(
+          1,
+          Number(CHAT_SETTINGS.ftsReadinessRetryDelayMs) || 250
+        );
+        const readyDeadline = Date.now() + readyTimeoutMs;
+        let readyAttempts = 0;
+        while (true) {
+          readyAttempts += 1;
+          hits = await browser.runtime.sendMessage({
+            type: "fts",
+            cmd: "search",
+            q: rawQuery,
+            from: fromIso,
+            to: toIso,
+            limit: fetchLimit,
+            ignoreDate
+          });
+          if (typeof hits !== "undefined") break;
+          if (Date.now() >= readyDeadline) {
+            log(
+              `[TMDBG Tools] email_search: FTS backend not ready after ${readyAttempts} attempts (${readyTimeoutMs}ms budget) — giving up`,
+              "error"
+            );
+            break;
+          }
+          log(
+            `[TMDBG Tools] email_search: FTS backend not ready (attempt ${readyAttempts}) — retrying in ${readyRetryDelayMs}ms`
+          );
+          await new Promise((r) => setTimeout(r, readyRetryDelayMs));
+        }
         
         // Check if FTS backend returned an error object instead of array
         if (hits && typeof hits === 'object' && hits.error) {

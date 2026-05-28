@@ -98,6 +98,15 @@ export const CHAT_SETTINGS = {
   searchPrefetchPagesDefault: 100,
   // Safety cap on total prefetched results for a single search session
   searchPrefetchMaxResults: 10000,
+  // --- FTS backend readiness retry (chat tools) ---
+  // When `browser.runtime.sendMessage({type:"fts", ...})` resolves to `undefined`,
+  // no listener handled the message — typically because `initFtsEngine()` hasn't
+  // attached the command interface yet (startup race) or it was torn down by a
+  // hot-reload. We poll-retry the send up to this total budget before giving up
+  // and surfacing "invalid response format" to the LLM.
+  ftsReadinessTimeoutMs: 10000,
+  // Delay between readiness retries.
+  ftsReadinessRetryDelayMs: 250,
   // --- Hotkeys ---
   // Enable opening chat via the tabOverride experiment's hotkey
   openChatHotkeyEnabled: true,
