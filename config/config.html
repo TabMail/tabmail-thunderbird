@@ -560,7 +560,70 @@
           These queries are not linked to your TabMail account and are processed anonymously by the search provider.
         </small>
       </div>
-    </section>    
+    </section>
+
+    <section id="byok-settings">
+      <h3>Use your own AI keys</h3>
+      <div class="field">
+        <small>
+          Route your AI to your own OpenAI, Anthropic, or Google (Gemini) account using your own API key.
+          Your key is stored only on this device and relayed to the provider for your requests — never stored on TabMail's servers.
+          Autocomplete always uses TabMail (it's latency-critical).
+        </small>
+      </div>
+
+      <!-- Light tier (wire: background) -->
+      <div class="byok-tier" data-tier="light">
+        <div class="field byok-tier-head">
+          <label for="byok-light-provider"><strong>Light</strong> — background work (summaries, classification, reminders)</label>
+          <select id="byok-light-provider">
+            <option value="tabmail">TabMail</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="google">Google</option>
+          </select>
+        </div>
+        <div id="byok-light-model-row" class="field byok-model-row" style="display: none;">
+          <label for="byok-light-model">Model</label>
+          <select id="byok-light-model"></select>
+        </div>
+        <div class="field"><small id="byok-light-keyhint" class="byok-keyhint" style="display: none;"></small></div>
+      </div>
+
+      <!-- Heavy tier (wire: interactive) -->
+      <div class="byok-tier" data-tier="heavy">
+        <div class="field byok-tier-head">
+          <label for="byok-heavy-provider"><strong>Heavy</strong> — interactive (compose + agent chat)</label>
+          <select id="byok-heavy-provider">
+            <option value="tabmail">TabMail</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="google">Google</option>
+          </select>
+        </div>
+        <div id="byok-heavy-model-row" class="field byok-model-row" style="display: none;">
+          <label for="byok-heavy-model">Model</label>
+          <select id="byok-heavy-model"></select>
+        </div>
+        <div class="field"><small id="byok-heavy-keyhint" class="byok-keyhint" style="display: none;"></small></div>
+      </div>
+
+      <!-- API Keys — one card per provider in use (key is shared per provider across tiers) -->
+      <div id="byok-api-keys" class="byok-api-keys" style="display: none;">
+        <h4>API Keys</h4>
+        <div class="field">
+          <small>One key per provider, shared across the tiers above. Stored only on this device; never synced or sent to TabMail's servers.</small>
+        </div>
+        <div id="byok-keys-list"></div>
+      </div>
+
+      <div id="byok-cost-warning" class="field byok-cost-warning" style="display: none;">
+        <small>
+          Choosing a provider other than TabMail sends requests directly to that provider on your own API key and can incur
+          significant API costs. We strongly recommend TabMail's built-in models unless you have a special pricing agreement with the provider.
+        </small>
+      </div>
+    </section>
 
     <!-- Debug mode toggle - shown in both simple and debug modes, at bottom of simple mode -->
     <section id="debug-settings">

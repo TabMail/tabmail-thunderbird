@@ -54,6 +54,7 @@ import {
 } from "./updateDebug.js";
 import { handleNotificationChange, loadNotificationSettings } from "./notifications.js";
 import { handleWebSearchChange, loadWebSearchSettings } from "./webSearch.js";
+import { handleByokChange, handleByokClick, handleByokInput, loadByokSettings } from "./byokSettings.js";
 import {
     clearWelcomeStatus,
     openWelcomeWizard,
@@ -179,7 +180,12 @@ export async function initConfigPage({
   }
 
   // Prompt editor auto-resize (legacy / removed UI, kept for behavior parity)
-  configDOMListeners.documentInputHandler = createPromptEditorsInputHandler();
+  // + BYOK key field persistence (saves the API key as typed/pasted).
+  const promptEditorsInputHandler = createPromptEditorsInputHandler();
+  configDOMListeners.documentInputHandler = async (e) => {
+    try { promptEditorsInputHandler(e); } catch (_) {}
+    await handleByokInput(e, log);
+  };
   document.addEventListener("input", configDOMListeners.documentInputHandler);
 
   // Setup document change handler
@@ -203,6 +209,7 @@ export async function initConfigPage({
     await handleReminderChange(e, log);
     await handleWebSearchChange(e);
     await handleNotificationChange(e);
+    await handleByokChange(e, log);
 
     // Auto-save calendar selection
     if (e.target.id === "default-calendar") {
@@ -231,6 +238,7 @@ export async function initConfigPage({
   // Setup document click handler
   configDOMListeners.documentClickHandler = async (e) => {
     await handleUiTweaksClick(e);
+    await handleByokClick(e, log);
 
     if (e.target.id === "refresh-usage") {
       await updateQuotaDisplay(getBackendUrl);
@@ -489,6 +497,7 @@ export async function initConfigPage({
     loadWebSearchSettings(log),
     loadNotificationSettings(log),
     loadChatLinkStatus(),
+    loadByokSettings(log),
   ]);
 }
 

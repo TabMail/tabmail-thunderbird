@@ -492,7 +492,7 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000, abortSigna
  * @param {boolean} [_internal_no_retry] - Internal flag to disable retry (for recursive calls)
  * @returns {Promise<Object>} - Final response with assistant, token_usage, etc.
  */
-async function sendChatCompletions(payload, abortSignal = null, onToolExecution = null, _internal_no_retry = false) {
+export async function sendChatCompletions(payload, abortSignal = null, onToolExecution = null, _internal_no_retry = false) {
   // Wrap in retry logic for network errors (unless this is a recursive call from tool execution)
   if (!_internal_no_retry) {
     return retryWithBackoff(
@@ -529,7 +529,24 @@ async function sendChatCompletions(payload, abortSignal = null, onToolExecution 
     ...payload,
     web_search_enabled: webSearchEnabled,
   };
-  
+
+  // BYOK (PLAN_BYOK_SUPPORT.md §6.1): attach the user's per-tier provider keys.
+  // The connectivity smoke passes an explicit `payload.byok` (already spread
+  // above); otherwise read the saved config. The backend resolves which tier
+  // applies from the system prompt and ignores `byok` entirely when nothing is
+  // configured — so a default install sends a byte-identical request.
+  if (!payloadWithOptions.byok) {
+    try {
+      const { buildByokPayload } = await import("./byokStorage.js");
+      const byok = await buildByokPayload();
+      if (byok && Object.keys(byok).length > 0) {
+        payloadWithOptions.byok = byok;
+      }
+    } catch (e) {
+      log(`[COMPLETIONS] BYOK config read failed (continuing on pool): ${e}`, "warn");
+    }
+  }
+
   log(`[COMPLETIONS] Sending request to ${url}`);
   log(`[COMPLETIONS] Payload keys: ${Object.keys(payloadWithOptions).join(', ')}`);
   

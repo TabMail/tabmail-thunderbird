@@ -1446,3 +1446,135 @@ section > div[style*="background-color"] {
   background: var(--in-content-button-background-hover);
 }
 
+/* ---- BYOK (Use your own AI keys) ---- */
+.byok-tier {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--panel-separator-color);
+}
+
+.byok-tier-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.byok-tier-head label {
+  flex: 1;
+}
+
+.byok-model-row {
+  margin-top: 8px;
+  padding-left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.byok-keyhint {
+  display: block;
+  color: var(--tag-tm-archive);
+  padding-left: 12px;
+}
+
+.byok-api-keys {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--panel-separator-color);
+}
+
+.byok-api-keys h4 {
+  margin: 0 0 4px 0;
+}
+
+.byok-key-card {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--in-content-box-background);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 6px;
+}
+
+.byok-key-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.byok-key-status {
+  font-size: 0.85em;
+}
+
+.byok-key-status[data-state="ok"] {
+  color: var(--tag-tm-archive);
+}
+
+.byok-key-status[data-state="missing"] {
+  color: var(--tag-tm-reply);
+}
+
+.byok-key-head .byok-getkey-btn {
+  margin-left: auto;
+}
+
+.byok-key-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.byok-remove-btn {
+  margin-left: auto;
+  color: var(--tag-tm-reply);
+}
+
+.byok-key-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.byok-key-row input {
+  flex: 1;
+  min-width: var(--tm-config-input-min-width);
+}
+
+.byok-getkey-btn {
+  background: none;
+  border: none;
+  color: var(--tag-tm-reply);
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.byok-test-result {
+  margin: 8px 0 0 0;
+  white-space: pre-wrap;
+  font-size: 0.85em;
+  color: var(--in-content-page-color);
+}
+
+.byok-test-result[data-state="ok"] {
+  color: var(--tag-tm-archive);
+}
+
+.byok-test-result[data-state="fail"] {
+  color: var(--tag-tm-reply);
+}
+
+.byok-zdr {
+  display: block;
+  opacity: 0.8;
+}
+
+.byok-cost-warning {
+  margin-top: 16px;
+  padding: 12px;
+  background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent);
+  border-left: 4px solid var(--tag-tm-archive);
+  border-radius: 4px;
+}
+
