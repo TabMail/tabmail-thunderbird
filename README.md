@@ -139,24 +139,27 @@ Backend details (routing, auth, quota/throttle, endpoints) are to be released la
 
 ## License
 
-This project is source-available and licensed under the
-[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
+This project is open source under the
+[Mozilla Public License 2.0](https://www.mozilla.org/MPL/2.0/) (MPL-2.0).
 
-- Free for non-commercial use
-- Commercial use is not permitted without a separate license
+- Free to use, modify, and distribute — including commercially.
+- MPL is a weak-copyleft license at file granularity: modifications to
+  MPL-licensed files must stay open, but you may combine them with
+  proprietary code in larger works.
 
-Commercial licenses are available from Lisem AI Ltd.
+Copyright © Lisem AI Ltd.
 
 See:
 - [LICENSE](./LICENSE)
-- [COMMERCIAL-LICENSE.md](./COMMERCIAL-LICENSE.md)
+- [THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md) — bundled third-party libraries
 
 ---
 
 ## Contributing
 
-We welcome contributions! By submitting a pull request or other contribution,
-you agree to our Contributor License Agreement.
+We welcome contributions! This project uses the
+[Developer Certificate of Origin (DCO)](https://developercertificate.org/) —
+sign off every commit with `git commit -s`.
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
 
