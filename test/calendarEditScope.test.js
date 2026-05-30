@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // calendarEditScope.test.js — Tests for the FSM exec routing layer of
 // calendar_event_edit (edit_scope dispatch + bridge args sanitization).
 //

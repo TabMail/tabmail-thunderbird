@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // Message Display Gate (TB 145 / MV3)
 // Hides message content until both summaryBubble.js and messageBubble.js report ready.
 // Keeps the summary bubble visible as soon as it exists.

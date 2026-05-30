@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // web_read.js – fetch and extract content from a web URL (TB 141+, MV3)
 
 import { log } from "../../agent/modules/utils.js";

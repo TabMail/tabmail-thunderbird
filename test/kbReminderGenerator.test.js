@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // kbReminderGenerator.test.js — KB reminder parsing tests
 //
 // kbReminderGenerator.js imports from ./promptGenerator.js and ./utils.js,

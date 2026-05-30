@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // emailCompose.js – new email composition workflow (compose_new_email, edit_recipient, email_edit, send_email)
 // Thunderbird 140, MV3 compatible.
 // NOTE: This module intentionally focuses on *logging* intermediate steps and

@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // chatConfig.test.js — Tests for chat/modules/chatConfig.js (TB-CFG-*)
 //
 // CHAT_SETTINGS is a pure config object — test that it exports expected keys

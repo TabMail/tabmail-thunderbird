@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // signOut.test.js — Tests for supabaseAuth.signOut() security cleanup
 //
 // Verifies that signing out clears ALL user-specific data:

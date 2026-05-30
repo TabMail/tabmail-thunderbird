@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // TB SSE parser tests
 // Verifies the SSE reader tolerates the backend's primer (large `:` comment
 // line sent first to prime iOS URLSession's 512-byte initial buffer). Comments

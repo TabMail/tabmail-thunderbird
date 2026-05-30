@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // change_setting.js – modify user-facing settings (TB 145, MV3)
 // Settings are persisted to browser.storage.local only — NOT synced to KB.
 // KB sync was removed because settings are per-device and KB syncs across devices.

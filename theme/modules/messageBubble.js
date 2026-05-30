@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // Message Bubble wrapper for TabMail Theme
 // Wraps message body content in a subtle bubble similar to summary banner
 // Quote collapsing logic lives here; thread bubble rendering is in threadBubble.js

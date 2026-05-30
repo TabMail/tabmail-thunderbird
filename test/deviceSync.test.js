@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // deviceSync.test.js — Device sync merge logic tests (Tier 3 — mock-dependent)
 //
 // Tests the per-field timestamp merge, echo prevention, virgin device detection,

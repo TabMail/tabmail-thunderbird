@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // llmClient.test.js — LLM client response parsing tests (Tier 3 — mock-dependent)
 //
 // Tests the pure parsing functions exported by llm.js:

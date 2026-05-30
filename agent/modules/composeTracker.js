@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 import { ACTIONS, getActionForWeId } from "./actionCache.js";
 import * as idb from "./idbStorage.js";
 import { createReply, STORAGE_PREFIX } from "./replyGenerator.js";

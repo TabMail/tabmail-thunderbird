@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // chatTools.test.js — Chat tool tests (TB-050 through TB-066)
 //
 // Tools import from agent/modules/utils.js, agent/modules/config.js,

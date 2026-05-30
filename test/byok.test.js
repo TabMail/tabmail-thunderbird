@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // byok.test.js — BYOK storage payload, model-access, and smoke logic.
 // Covers PLAN_BYOK_SUPPORT.md §6.1 (Thunderbird): wire-shape parity with iOS,
 // autocomplete never carried, snake_case keys, and the connectivity smoke.

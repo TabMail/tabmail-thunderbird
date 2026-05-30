@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // templateTools.test.js — Tests for template_create, template_edit, template_delete,
 // template_share, template_search tools and idTranslator template support.
 

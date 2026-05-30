@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // calendarAttendeeDelta.test.js — Tests for delta-based attendee editing
 // (calendar_event_edit-v1.5.21). The tool schema replaced whole-list `attendees`
 // with `add_attendees` / `remove_attendees`; this file covers the pure-function

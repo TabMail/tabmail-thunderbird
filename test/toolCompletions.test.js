@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // toolCompletions.test.js — Tests for completeExecution functions across FSM tools
 //
 // These are pure functions that determine the result string based on FSM state.

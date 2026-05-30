@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // task_add.js – create a [Task] entry in user_kb.md with automatic formatting (TB 145, MV3)
 
 import { SETTINGS } from "../../agent/modules/config.js";

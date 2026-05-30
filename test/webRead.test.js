@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // webRead.test.js — Tests for chat/tools/web_read.js
 //
 // Tests URL validation, robots.txt parsing, content extraction, and run().

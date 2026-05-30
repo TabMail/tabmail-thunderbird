@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // TabMail Thread Bubble Config (TB 145 / MV3)
 // Loaded BEFORE messageBubbleConfig.js so the rest of the bubble scripts can read a stable
 // thread-bubble config without hardcoding values in multiple places.

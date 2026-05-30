@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // email_read.js – returns a full email content with summaries
 
 import { extractBodyFromParts, getRealSubject, getUniqueMessageKey, headerIDToWeID, log, parseUniqueId, safeGetFull } from "../../agent/modules/utils.js";

@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // autocompleteLifecycle.test.js — Integration tests for the autocomplete render
 // lifecycle.  Exercises the full flow: extractUserAndQuoteTexts → renderText →
 // _applyFragmentToEditor → extract again, verifying that user text is NEVER

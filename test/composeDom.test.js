@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // composeDom.test.js — Tests for compose/modules/dom.js pure-logic functions
 //
 // The module uses `var TabMail = TabMail || {}` pattern and attaches functions

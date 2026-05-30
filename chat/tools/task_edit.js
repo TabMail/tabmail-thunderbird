@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // task_edit.js – edit an existing [Task] entry in user_kb.md (TB 145, MV3)
 // Finds the task by substring match, then replaces with updated values.
 // Only provided fields are changed; omitted fields keep their current values.

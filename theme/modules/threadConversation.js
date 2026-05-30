@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // Thread Conversation Module
 // Handles fetching, enriching, and sending thread conversation data to content scripts
 // Also handles thread bubble actions (mark read, compose, download attachment)

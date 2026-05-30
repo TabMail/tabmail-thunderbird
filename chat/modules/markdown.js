@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // markdown.js – very small Markdown renderer for chat bubbles (TB 140 MV3)
 // Supports: fenced code (```), inline code (`code`), links [t](url), bold **text**, italics *text*,
 // ATX headers (#, ##, ### ...), nested lists (unordered: - item, ordered: 1. item), blockquotes (> text), 

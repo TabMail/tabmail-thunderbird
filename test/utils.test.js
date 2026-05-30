@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // utils.test.js — Pure utility function tests
 //
 // Tests for TB-030 through TB-035 (TESTS.md §1.3) plus additional pure utility functions.

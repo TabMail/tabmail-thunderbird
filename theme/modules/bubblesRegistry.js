@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 // Unified Bubbles Registration and Injection Module (TB 145 / MV3)
 // Handles registration and on-demand injection of all bubble-related content scripts.
 //
