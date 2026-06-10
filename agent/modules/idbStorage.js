@@ -22,22 +22,37 @@ const STORE_NAME = "kv";
 let keyCache = null;
 let keyCacheInitialized = false;
 
-// Lazily open database – reuse the same connection for the lifetime of the worker.
-const dbPromise = new Promise((resolve, reject) => {
-  const req = indexedDB.open(DB_NAME, DB_VERSION);
+// Lazily open database – created on first use, then reused for the lifetime
+// of the worker. Must NOT be opened eagerly at module load: a synchronous
+// throw in the executor (missing indexedDB global in unit tests) or an
+// immediate open failure would reject a promise that has no consumer yet —
+// an unhandled rejection no caller can catch. Deferring creation to the
+// first withStore() call guarantees an awaiter is attached the moment the
+// promise exists, so failures reject into the caller's await chain.
+// NOTE: a failed first open stays memoized for the worker's lifetime —
+// intentional parity with the previous eager-open behavior (no retry).
+let dbPromise = null;
 
-  req.onupgradeneeded = (ev) => {
-    const db = req.result;
-    if (!db.objectStoreNames.contains(STORE_NAME)) {
-      const store = db.createObjectStore(STORE_NAME, { keyPath: "key" });
-      store.createIndex("version", "version", { unique: false });
-      store.createIndex("kind", "kind", { unique: false });
-    }
-  };
+function getDb() {
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
 
-  req.onsuccess = () => resolve(req.result);
-  req.onerror = () => reject(req.error);
-});
+      req.onupgradeneeded = (ev) => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          const store = db.createObjectStore(STORE_NAME, { keyPath: "key" });
+          store.createIndex("version", "version", { unique: false });
+          store.createIndex("kind", "kind", { unique: false });
+        }
+      };
+
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  return dbPromise;
+}
 
 function log(...args) {
   // Logging guard – set globalThis.LOG_IDB = true at runtime to enable.
@@ -55,7 +70,7 @@ function manifestVersion() {
 }
 
 async function withStore(mode, fn) {
-  const db = await dbPromise;
+  const db = await getDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, mode);
     const store = tx.objectStore(STORE_NAME);
