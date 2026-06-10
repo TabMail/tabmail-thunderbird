@@ -35,6 +35,9 @@ function isNoReplyAddress(author) {
     if (!email) return false;
 
     // Check for common no-reply patterns (case insensitive)
+    // Keep in sync with iOS EmailFilter.isNoReply (Shared/Parse/EmailFilter.swift).
+    // When adding patterns, add tests — but NEVER with real-world sender
+    // addresses (real companies/orgs/domains); use generic placeholder domains.
     const emailLower = email.toLowerCase();
     const noReplyPatterns = [
         'noreply',
@@ -43,6 +46,9 @@ function isNoReplyAddress(author) {
         'donotreply',
         'do-not-reply',
         'do_not_reply',
+        'auto-confirm',
+        'auto_confirm',
+        'autoconfirm',
         'notifications',
         'automated',
         'invitations',

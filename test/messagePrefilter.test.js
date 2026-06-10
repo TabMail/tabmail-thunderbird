@@ -89,6 +89,38 @@ describe('TB-142: isNoReplyAddress — donotreply@domain.com', () => {
 });
 
 // ---------------------------------------------------------------------------
+// TB-142b: isNoReplyAddress: auto-confirm@domain.com → true
+//
+// NEVER use real-world sender addresses (real companies/orgs/domains) in
+// tests — generic placeholder domains only (domain.com, example.com).
+// ---------------------------------------------------------------------------
+describe('TB-142b: isNoReplyAddress — auto-confirm senders', () => {
+  it('detects auto-confirm variants as no-reply', async () => {
+    for (const author of ['auto-confirm@domain.com', 'auto_confirm@domain.com', 'autoconfirm@domain.com']) {
+      const result = await analyzeEmailForReplyFilter(
+        makeHeader(author),
+        { headers: {} },
+        '',
+      );
+      expect(result.isNoReply).toBe(true);
+      expect(result.skipCachedReply).toBe(true);
+    }
+  });
+
+  it('detects embedded noreply substrings (prefix/suffix of local part) as no-reply', async () => {
+    for (const author of ['noreply-dmarc-report@domain.com', 'payments-noreply@domain.com']) {
+      const result = await analyzeEmailForReplyFilter(
+        makeHeader(author),
+        { headers: {} },
+        '',
+      );
+      expect(result.isNoReply).toBe(true);
+      expect(result.skipCachedReply).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TB-143: isNoReplyAddress: support@domain.com → false
 // ---------------------------------------------------------------------------
 describe('TB-143: isNoReplyAddress — support@domain.com', () => {
