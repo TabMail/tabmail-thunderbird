@@ -27,6 +27,7 @@ vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
   headerIDToWeID: vi.fn(),
   parseUniqueId: vi.fn(),
+  recheckMessageInFolder: vi.fn(),
 }));
 
 const { _testExports } = await import('../fts/maintenanceScheduler.js');

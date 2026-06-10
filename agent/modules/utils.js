@@ -1451,6 +1451,68 @@ export async function headerIDToWeID(headerID, weFolder = null, multiple = false
     }
 }
 
+/**
+ * Re-check whether a message is present in a specific folder using a fresh
+ * GLOBAL headerMessageId query (no folderId constraint, no headerIndex cache).
+ *
+ * This is the confirmation step of verify-then-remove flows (FTS stale-entry
+ * cleanup in reconcile Phase 2 and maintenance cleanupMissingEntries): a
+ * folder-constrained messages.query can transiently return empty while a
+ * folder's msgDB is mid-sync (TB startup, compaction, IMAP resync), so a
+ * "stale" verdict must be confirmed by a second, SUCCESSFUL query before
+ * anything is removed from the index.
+ *
+ * Pagination: messages.query returns a paged MessageList, and TB's
+ * auto-pagination timeout (~1s) can return a PARTIAL first page (with a
+ * continuation id) while the global scan is still running. An undrained
+ * result is NOT proof of absence — this function drains every continuation
+ * page before concluding "absent", and returns "present" as soon as a match
+ * appears on any page.
+ *
+ * @param {string} headerID - Cleaned Message-ID (no angle brackets).
+ * @param {object} weFolder - { accountId, path } where the message is expected.
+ *                            If path is empty (legacy folder-less keys), a
+ *                            match anywhere in the account counts as present.
+ * @returns {Promise<"present"|"absent"|"error">}
+ *   - "present": found in the expected account+folder → entry is NOT stale
+ *   - "absent":  query SUCCEEDED, all pages drained, and the message is not
+ *                in that folder (it may exist elsewhere — the folder-scoped
+ *                key is still stale)
+ *   - "error":   query threw or args invalid → unknown; caller must NOT treat
+ *                this as confirmation of absence
+ */
+export async function recheckMessageInFolder(headerID, weFolder) {
+    if (!headerID || typeof headerID !== "string" || !weFolder?.accountId) {
+        return "error";
+    }
+    // Legacy keys can carry an empty folder path; the closest meaningful
+    // presence check is "exists anywhere in the key's account".
+    const requirePath = !!weFolder.path;
+    try {
+        let page = await browser.messages.query({ headerMessageId: headerID });
+        while (page) {
+            for (const m of (page.messages || [])) {
+                if (m?.folder?.accountId === weFolder.accountId
+                    && (!requirePath || m?.folder?.path === weFolder.path)) {
+                    return "present";
+                }
+            }
+            if (!page.id) {
+                // Last page reached and fully drained without a match —
+                // the only path allowed to confirm absence.
+                return "absent";
+            }
+            page = await browser.messages.continueList(page.id);
+        }
+        // Nullish page (initial query or mid-drain) is an API contract
+        // violation, not proof of absence — fail closed.
+        return "error";
+    } catch (e) {
+        log(`[TMDBG HeaderResolver] recheckMessageInFolder query failed for '${headerID}': ${e}`, "warn");
+        return "error";
+    }
+}
+
 
 
 /**

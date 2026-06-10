@@ -32,6 +32,7 @@ vi.mock('../agent/modules/utils.js', () => ({
   headerIDToWeID: vi.fn(),
   log: vi.fn(),
   parseUniqueId: vi.fn(),
+  recheckMessageInFolder: vi.fn(),
 }));
 
 vi.mock('../fts/indexer.js', () => ({

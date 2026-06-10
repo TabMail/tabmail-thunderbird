@@ -26,7 +26,7 @@
 
 import { SETTINGS } from "../agent/modules/config.js";
 import { logFtsOperation } from "../agent/modules/eventLogger.js";
-import { headerIDToWeID, log, parseUniqueId } from "../agent/modules/utils.js";
+import { headerIDToWeID, log, parseUniqueId, recheckMessageInFolder } from "../agent/modules/utils.js";
 
 /**
  * Format a timestamp with timezone information
@@ -97,11 +97,29 @@ function formatTimestampWithTimezone(timestamp) {
 
 export { formatTimestampWithTimezone as _testFormatTimestampWithTimezone };
 
+// Startup-tick deferral timing (see the deferral block further down).
+// Values intentionally mirror RECONCILE_QUIET_PERIOD_MS / _CHECK_INTERVAL_MS /
+// _MAX_WAIT_MS in incrementalIndexer.js (kept separate — independently tunable).
+const STARTUP_TICK_QUIET_PERIOD_MS = 60 * 1000;
+const STARTUP_TICK_CHECK_INTERVAL_MS = 10 * 1000;
+const STARTUP_TICK_MAX_WAIT_MS = 10 * 60 * 1000;
+
 // Test-only exports for pure internal functions
 export const _testExports = {
   calculateDateRange,
   isWithinWeeklyScheduleWindow,
   pickDueMaintenanceType,
+  cleanupMissingEntries,
+  // Startup-tick deferral
+  _scheduleStartupTickWhenQuiet,
+  _hasStartupTickTimer: () => _startupTickTimer !== null,
+  _clearStartupTickTimer: () => _clearStartupTickTimer(),
+  // State accessors for test setup/teardown
+  _setInitializedForTest: (v) => { _isInitialized = v; },
+  _setFtsSearchForTest: (v) => { _ftsSearch = v; },
+  STARTUP_TICK_QUIET_PERIOD_MS,
+  STARTUP_TICK_CHECK_INTERVAL_MS,
+  STARTUP_TICK_MAX_WAIT_MS,
 };
 
 // Maintenance schedule configuration
@@ -152,6 +170,108 @@ let _ftsSearch = null;
 let _isInitialized = false;
 let _alarmListener = null;
 
+// ---------------------------------------------------------------------------
+// Startup-tick deferral
+// ---------------------------------------------------------------------------
+// Running a due maintenance scan immediately at TB launch races the startup
+// folder sync: messages.query can return inconsistent snapshots while msgDBs
+// are loading, and cleanupMissingEntries would mark valid entries as stale.
+// Mirror the boot-reconcile quiet wait (fts/incrementalIndexer.js): poll until
+// there have been no sync events for STARTUP_TICK_QUIET_PERIOD_MS AND boot
+// reconcile is no longer pending, with a hard cap. At the cap: if reconcile is
+// DONE (merely never quiet — busy mailbox), the tick runs; if reconcile is
+// STILL pending, the tick is skipped entirely (running would race reconcile)
+// and the hourly alarm is the due-ness backstop. Trade-offs accepted: a due
+// weekly scan whose Wed 9–12 window expires during the deferral slips to the
+// next week (ADR-017), and when no listeners update the quiet signal (either
+// incremental indexing disabled, or the tmMsgNotify experiment unavailable)
+// the deferral degrades to a fixed ~60–70s delay — verify-then-remove remains
+// the real protection there.
+// Timing constants (STARTUP_TICK_*) are declared above _testExports near the
+// top of the file (TDZ: _testExports references them at module evaluation).
+
+let _startupTickTimer = null;
+
+function _clearStartupTickTimer() {
+  if (_startupTickTimer) {
+    clearInterval(_startupTickTimer);
+    _startupTickTimer = null;
+  }
+}
+
+/**
+ * Schedule the startup maintenance tick to run once TB's startup sync has
+ * quieted down and the boot reconcile has completed (bounded by a hard cap).
+ *
+ * @param {Function} [runner] - Optional runner (defaults to
+ *                              runScheduledMaintenanceTick). Injectable for testing.
+ */
+function _scheduleStartupTickWhenQuiet(runner = runScheduledMaintenanceTick) {
+  const scheduledAt = Date.now();
+  // One-shot guard: the interval callback awaits async state reads, so two
+  // slow callbacks could overlap and both reach the run branch. Checked and
+  // set synchronously at the decision point (no await between), so only one
+  // can ever fire the runner per schedule.
+  let fired = false;
+
+  _clearStartupTickTimer();
+
+  log(`[TMDBG FTS] Startup maintenance tick deferred — waiting for ${STARTUP_TICK_QUIET_PERIOD_MS / 1000}s sync quiet period + reconcile completion (max wait ${STARTUP_TICK_MAX_WAIT_MS / 1000}s)`);
+
+  _startupTickTimer = setInterval(async () => {
+    try {
+      if (!_isInitialized || !_ftsSearch) {
+        // Disposed while waiting — stop without running.
+        _clearStartupTickTimer();
+        return;
+      }
+
+      const now = Date.now();
+      const waitedFor = now - scheduledAt;
+
+      let quietFor = Infinity;
+      let reconcilePending = false;
+      try {
+        const indexer = await import("./incrementalIndexer.js");
+        quietFor = now - indexer.getLastSyncEventMs();
+        reconcilePending = await indexer.isReconcilePending();
+      } catch (e) {
+        // Indexer state unavailable — don't block the startup tick on it.
+        log(`[TMDBG FTS] Startup tick: indexer state unavailable (${e?.message || String(e)}) — treating as quiet`, "warn");
+      }
+
+      const ready = quietFor >= STARTUP_TICK_QUIET_PERIOD_MS && !reconcilePending;
+      if (!ready && waitedFor < STARTUP_TICK_MAX_WAIT_MS) {
+        log(`[TMDBG FTS] Startup tick waiting — quietFor=${Math.round(quietFor / 1000)}s/${STARTUP_TICK_QUIET_PERIOD_MS / 1000}s, reconcilePending=${reconcilePending} (waited=${Math.round(waitedFor / 1000)}s)`);
+        return;
+      }
+
+      if (!ready && reconcilePending) {
+        // Hard cap reached while boot reconcile is still pending. Forcing the
+        // scan now would run it concurrently with reconcile during the busy
+        // startup this deferral exists to avoid (reconcile never sets
+        // fts_scan_status, so runScheduledMaintenanceTick can't see it).
+        // Skip the startup tick entirely — the hourly alarm is the backstop.
+        log(`[TMDBG FTS] Startup maintenance tick skipped — max wait exceeded but reconcile still pending; next tick alarm retries when due (a weekly scan whose schedule window has passed slips to its next window)`, "warn");
+        _clearStartupTickTimer();
+        return;
+      }
+
+      if (fired) return; // a parallel slow callback already ran the tick
+      fired = true;
+
+      const reason = ready ? "quiet period reached + reconcile done" : "max wait exceeded";
+      log(`[TMDBG FTS] Startup maintenance tick running — ${reason}`);
+
+      _clearStartupTickTimer();
+      await runner("startup");
+    } catch (e) {
+      log(`[TMDBG FTS] Startup maintenance tick failed: ${e?.message || String(e)}`, "warn");
+      _clearStartupTickTimer();
+    }
+  }, STARTUP_TICK_CHECK_INTERVAL_MS);
+}
+
 /**
  * Initialize the maintenance scheduler
  */
@@ -176,7 +296,7 @@ export async function initMaintenanceScheduler(ftsSearch) {
       log("[TMDBG FTS] Cleared stuck maintenance scan status on startup");
     }
   } catch (e) {
-    console.error("[TMDBG FTS] Failed to check/clear stuck status:", e);
+    log(`[TMDBG FTS] Failed to check/clear stuck status: ${e?.message || String(e)}`, "error");
   }
   
   // Load settings and set up alarms
@@ -187,12 +307,11 @@ export async function initMaintenanceScheduler(ftsSearch) {
     log("[TMDBG FTS] Maintenance scheduler initialized");
     // Per requirement: also check/run on Thunderbird launch (not only on the first hourly alarm).
     // This runs at most ONE maintenance item, applying coverage rules.
-    try {
-      log("[TMDBG FTS] Startup maintenance tick: checking for due maintenance runs");
-      await runScheduledMaintenanceTick("startup");
-    } catch (e) {
-      log(`[TMDBG FTS] Startup maintenance tick failed: ${e?.message || String(e)}`, "warn");
-    }
+    // DEFERRED behind the startup sync quiet period + boot reconcile — running
+    // a due scan immediately at launch races TB's startup folder sync, where
+    // messages.query can return inconsistent snapshots and cleanupMissingEntries
+    // would mark valid entries as stale (observed 2026-06-03, [Gmail]/Bin).
+    _scheduleStartupTickWhenQuiet();
   } else {
     await clearMaintenanceAlarms();
     log("[TMDBG FTS] Maintenance scheduler disabled");
@@ -225,6 +344,7 @@ export async function disposeMaintenanceScheduler(options = {}) {
     browser.alarms.onAlarm.removeListener(_alarmListener);
     _alarmListener = null;
   }
+  _clearStartupTickTimer();
   _isInitialized = false;
   _ftsSearch = null;
   
@@ -522,8 +642,9 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
   const queryChunkSize = cleanupConfig.queryChunkSize || 500;
   const validationBatchSize = cleanupConfig.validationBatchSize || 50;
   const removeBatchSize = cleanupConfig.removeBatchSize || 100;
-  const batchDelayMs = cleanupConfig.batchDelayMs || 100;
-  const entryDelayMs = cleanupConfig.entryDelayMs || 50;
+  // Delays use ?? (not ||): an explicit 0 means "no delay" and must be honored.
+  const batchDelayMs = cleanupConfig.batchDelayMs ?? 100;
+  const entryDelayMs = cleanupConfig.entryDelayMs ?? 50;
   
   // No hard cap - chunked pagination handles large datasets safely
   // Legacy option still accepted for backward compat but defaults to unlimited (0 = no limit)
@@ -578,24 +699,29 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
         break;
       }
       
-      // Move cursor backwards: use oldest entry's dateMs - 1ms as new end
-      // Results are DESC, so last entry in chunk is the oldest
+      // Move cursor backwards. Results are DESC, so last entry in chunk is
+      // the oldest. The step is INCLUSIVE of the oldest dateMs when the chunk
+      // made progress — an exclusive `- 1` step would permanently skip
+      // entries sharing that millisecond beyond a full-chunk boundary (Date
+      // headers have second granularity, so ties are routine in bursts);
+      // seenMsgIds dedups the re-fetched boundary ties. If the ENTIRE chunk
+      // was already seen (a full chunk sharing one ms), step past it.
       const oldestInChunk = chunk[chunk.length - 1];
       const oldestDateMs = oldestInChunk?.dateMs;
-      
+
       if (typeof oldestDateMs !== 'number' || oldestDateMs <= startMs) {
         log(`[TMDBG FTS] Query cursor reached start boundary`);
         break;
       }
-      
-      // Move cursor to 1ms before the oldest entry to avoid re-fetching it
-      cursorEndMs = oldestDateMs - 1;
-      
-      // Safety: prevent infinite loop if cursor doesn't move
-      if (cursorEndMs >= cursorEndDate.getTime()) {
+
+      const nextCursorMs = newInChunk > 0 ? oldestDateMs : oldestDateMs - 1;
+
+      // Safety: the cursor must never move forward
+      if (nextCursorMs > cursorEndMs) {
         log(`[TMDBG FTS] Query cursor stuck, breaking`);
         break;
       }
+      cursorEndMs = nextCursorMs;
       
       // Small yield between query chunks
       await new Promise(resolve => setTimeout(resolve, batchDelayMs));
@@ -655,8 +781,7 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
     // =========================================================================
     // PHASE 2: Chunked Validation - process in batches with keepalive pings
     // =========================================================================
-    const entriesToRemove = [];
-    const removedDetails = [];
+    const staleCandidates = [];
     let processed = 0;
     
     log(`[TMDBG FTS] Phase 2: Validating entries in batches of ${validationBatchSize}`);
@@ -690,13 +815,12 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
           const weID = await headerIDToWeID(headerID, weFolder, false, false);
           
           if (!weID) {
-            // Message no longer exists, mark for removal
-            entriesToRemove.push(entry.msgId);
-            removedDetails.push({
-              action: "removedMissing",
+            // Message not found at its indexed folder — stale CANDIDATE.
+            // Confirmed (or refuted) by the verify-then-remove pass (Phase 2.5).
+            staleCandidates.push({
               msgId: entry.msgId,
-              folderPath: String(weFolder?.path || ""),
-              headerID: String(headerID || ""),
+              headerID,
+              weFolder,
               subject: String(entry?.subject || ""),
               dateMs: Number(entry?.dateMs || 0),
             });
@@ -736,16 +860,78 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
       }
       
       // Report progress
-      log(`[TMDBG FTS] Validation batch ${batchNum}/${totalBatches}: ${processed}/${allEntries.length} processed, ${entriesToRemove.length} marked for removal`);
-      
+      log(`[TMDBG FTS] Validation batch ${batchNum}/${totalBatches}: ${processed}/${allEntries.length} processed, ${staleCandidates.length} stale candidates`);
+
       // Yield between batches
       if (batchDelayMs > 0) {
         await new Promise(resolve => setTimeout(resolve, batchDelayMs));
       }
     }
-    
-    log(`[TMDBG FTS] Phase 2 complete: ${processed} validated, ${entriesToRemove.length} to remove`);
-    
+
+    log(`[TMDBG FTS] Phase 2 complete: ${processed} validated, ${staleCandidates.length} stale candidates`);
+
+    // =========================================================================
+    // PHASE 2.5: Verify-then-remove - re-check every candidate before removal
+    // =========================================================================
+    // A folder-constrained miss can be a transient msgDB state (mid-sync at
+    // startup, compaction, IMAP resync) — observed 2026-06-03: a live message
+    // in [Gmail]/Bin was removed as "missing" and only recovered by the next
+    // weekly scan a week later. Re-check each candidate with a fresh GLOBAL
+    // headerMessageId query and only remove keys whose absence from their
+    // indexed folder is confirmed by a SUCCESSFUL query. Thrown queries keep
+    // the entry (skip on uncertainty); the next scan retries.
+    const entriesToRemove = [];
+    // Keyed by msgId so a failed Phase 3 remove chunk can prune its entries —
+    // details must only report removals that actually happened.
+    const removedDetailsByMsgId = new Map();
+    let recheckKeptPresent = 0;
+    let recheckKeptError = 0;
+    let recheckedCount = 0;
+
+    for (const cand of staleCandidates) {
+      // KEEPALIVE: same cadence as Phase 2 — a mass-deletion scenario can
+      // produce thousands of candidates, and the per-entry delay would
+      // otherwise leave the native FTS connection without RPC for minutes.
+      if (recheckedCount > 0 && recheckedCount % validationBatchSize === 0) {
+        try {
+          await ftsSearch.stats();
+        } catch (keepaliveErr) {
+          log(`[TMDBG FTS] Phase 2.5 keepalive ping failed: ${keepaliveErr.message}`, "warn");
+        }
+      }
+      recheckedCount++;
+
+      const verdict = await recheckMessageInFolder(cand.headerID, cand.weFolder);
+      if (verdict === "absent") {
+        // Only an explicit, successful confirmation of absence may remove —
+        // any other verdict (present, error, unexpected) keeps the entry.
+        entriesToRemove.push(cand.msgId);
+        removedDetailsByMsgId.set(cand.msgId, {
+          action: "removedMissing",
+          msgId: cand.msgId,
+          folderPath: String(cand.weFolder?.path || ""),
+          headerID: String(cand.headerID || ""),
+          subject: cand.subject,
+          dateMs: cand.dateMs,
+        });
+      } else if (verdict === "present") {
+        recheckKeptPresent++;
+        log(`[TMDBG FTS] Phase 2.5: recheck found ${cand.msgId} still present — keeping (transient miss)`);
+        logFtsOperation("maintenance_stale", "recheck_present", { msgId: cand.msgId });
+      } else {
+        recheckKeptError++;
+        log(`[TMDBG FTS] Phase 2.5: recheck errored for ${cand.msgId} — keeping (unconfirmed)`, "warn");
+        logFtsOperation("maintenance_stale", "recheck_error", { msgId: cand.msgId });
+      }
+
+      // Small per-entry delay to avoid overwhelming TB APIs
+      if (entryDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, entryDelayMs));
+      }
+    }
+
+    log(`[TMDBG FTS] Phase 2.5 complete: ${entriesToRemove.length} confirmed for removal, ${recheckKeptPresent} kept (present on recheck), ${recheckKeptError} kept (recheck error)`);
+
     // =========================================================================
     // PHASE 3: Chunked Removal - remove in batches to keep native RPC active
     // =========================================================================
@@ -769,19 +955,24 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
           log(`[TMDBG FTS] Remove batch ${removeChunkNum}/${totalRemoveChunks}: ${removeResult.count || 0} removed (total: ${removedCount})`);
         } catch (removeErr) {
           log(`[TMDBG FTS] Remove batch ${removeChunkNum} failed: ${removeErr.message}`, "warn");
+          // These entries are still in FTS — they must not appear in the
+          // maintenance history as removed. Next scan re-nominates them.
+          for (const msgId of removeChunk) {
+            removedDetailsByMsgId.delete(msgId);
+          }
         }
-        
+
         // Small delay between remove batches
         if (removeStart + removeBatchSize < entriesToRemove.length) {
           await new Promise(resolve => setTimeout(resolve, batchDelayMs));
         }
       }
     }
-    
+
     log(`[TMDBG FTS] Phase 3 complete: ${removedCount} removed`);
     log(`[TMDBG FTS] Cleanup completed: ${processed} processed, ${removedCount} removed`);
-    
-    return { processed, removed: removedCount, removedDetails };
+
+    return { processed, removed: removedCount, removedDetails: Array.from(removedDetailsByMsgId.values()) };
     
   } catch (error) {
     log(`[TMDBG FTS] Cleanup failed: ${error.message}`, "error");

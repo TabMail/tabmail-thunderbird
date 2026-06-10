@@ -7,7 +7,7 @@
 
 import { SETTINGS } from "../agent/modules/config.js";
 import { logFtsBatchOperation, logFtsOperation, logMessageEventBatch, logMoveEvent } from "../agent/modules/eventLogger.js";
-import { headerIDToWeID, log, parseUniqueId } from "../agent/modules/utils.js";
+import { headerIDToWeID, log, parseUniqueId, recheckMessageInFolder } from "../agent/modules/utils.js";
 import { buildBatchHeader, populateBatchBody } from "./indexer.js";
 
 // Incremental indexing state
@@ -1412,8 +1412,11 @@ async function _getReconcileFrom() {
 
 /**
  * Write the watermark after a clean reconcile completion. Only called
- * when Phase 1 + Phase 2 both finished without an exception AND Phase 2
- * skipped no accounts (accountsSkipped === 0).
+ * when Phase 1 + Phase 2 both finished without an exception, every Phase 1
+ * message reached the drain queue (enqueueFailed === 0), Phase 2 skipped
+ * no accounts (accountsSkipped === 0), AND nothing in Phase 2 failed
+ * mid-flight (removeFailed === false — covers both a removeBatch throw and
+ * any internal Phase 2 exception).
  *
  * @param {number} fromMs - The reconcileFrom value Phase 2 just verified.
  */
@@ -1541,6 +1544,14 @@ async function runPostInitReconcile(ftsSearch) {
 
   let totalScanned = 0;
   let totalEnqueued = 0;
+  // Thrown enqueue failures (transient: storage/mutex/key-derivation errors).
+  // Any such message was NOT handed to the persistent drain queue, so the
+  // watermark must not advance past it — next boot's reconcile retries.
+  // (queueMessageUpdate's silent no-unique-key return is deliberately NOT
+  // counted: a message that cannot derive a key can never be stored in the
+  // key-addressed FTS, so blocking the watermark on it would pin the window
+  // forever for an unindexable message.)
+  let enqueueFailed = 0;
 
   logFtsBatchOperation("reconcile", "start", {
     reconcileFrom: new Date(reconcileFrom).toISOString(),
@@ -1554,29 +1565,39 @@ async function runPostInitReconcile(ftsSearch) {
     // messages.query with fromDate only uses the local header DB (no IMAP, no body fetch).
     let page = await browser.messages.query({ fromDate: new Date(reconcileFrom) });
 
-    while (page && page.messages && page.messages.length > 0) {
-      for (const msg of page.messages) {
+    // Drain every continuation page (same pattern as recheckMessageInFolder):
+    // a page's emptiness says nothing about completeness — only a null
+    // continuation id ends the walk. Stopping on an empty page would silently
+    // drop the rest of the boot-gap messages while the watermark advances.
+    while (page) {
+      for (const msg of (page.messages || [])) {
         totalScanned++;
         try {
           await queueMessageUpdate('new', msg);
           totalEnqueued++;
         } catch (queueErr) {
+          enqueueFailed++;
           log(`[TMDBG FTS] Reconcile: failed to enqueue msg ${msg.headerMessageId}: ${queueErr}`, "warn");
         }
       }
-      if (page.id) {
-        page = await browser.messages.continueList(page.id);
-      } else {
-        break;
-      }
+      if (!page.id) break;
+      page = await browser.messages.continueList(page.id);
+    }
+    if (!page) {
+      // Nullish page (initial query or mid-drain) is an API contract
+      // violation — the walk did NOT complete, so coverage must not be
+      // claimed. Throw into the outer catch: watermark withheld, pending
+      // flag stays set (fail closed, same as recheckMessageInFolder).
+      throw new Error("Reconcile Phase 1: message walk returned a nullish page");
     }
 
     logFtsBatchOperation("reconcile_phase1", "complete", {
       totalScanned,
       totalEnqueued,
+      enqueueFailed,
     });
 
-    log(`[FTS Reconcile] Phase 1 complete: ${totalScanned} scanned, ${totalEnqueued} enqueued`);
+    log(`[FTS Reconcile] Phase 1 complete: ${totalScanned} scanned, ${totalEnqueued} enqueued, ${enqueueFailed} enqueue failures`);
 
     // =========================================================================
     // PHASE 2: Remove stale FTS entries for moved/deleted messages
@@ -1590,14 +1611,20 @@ async function runPostInitReconcile(ftsSearch) {
 
     // Watermark advance — only on clean completion. accountsSkipped > 0
     // means some FTS entries weren't actually re-verified (their accounts
-    // were unavailable at scan time), so we don't want to claim coverage.
-    // Next boot recomputes from the older watermark → wider window → retry.
+    // were unavailable at scan time); removeFailed means confirmed-stale
+    // entries are still sitting in FTS; enqueueFailed > 0 means boot-gap
+    // messages never reached the persistent drain queue. In every case we
+    // must not claim coverage — next boot recomputes from the older
+    // watermark → retry. (Once a message IS enqueued, the drain queue's own
+    // persistence + retry guarantees take over; nothing is dropped there.)
     const accountsSkipped = cleanupResult.accountsSkipped || 0;
-    if (accountsSkipped === 0) {
+    const removeFailed = !!cleanupResult.removeFailed;
+    const watermarkAdvanced = accountsSkipped === 0 && !removeFailed && enqueueFailed === 0;
+    if (watermarkAdvanced) {
       await _writeWatermark(reconcileFrom);
       _startWatermarkHeartbeat();
     } else {
-      log(`[FTS Reconcile] Watermark NOT advanced — ${accountsSkipped} account(s) unavailable during Phase 2`, "warn");
+      log(`[FTS Reconcile] Watermark NOT advanced — ${accountsSkipped} account(s) unavailable, removeFailed=${removeFailed}, enqueueFailed=${enqueueFailed}`, "warn");
     }
 
     const elapsed = Date.now() - reconcileStart;
@@ -1606,10 +1633,12 @@ async function runPostInitReconcile(ftsSearch) {
     logFtsBatchOperation("reconcile", "complete", {
       totalScanned,
       totalEnqueued,
+      enqueueFailed,
       staleChecked: cleanupResult.checked,
       staleRemoved: cleanupResult.removed,
       accountsSkipped,
-      watermarkAdvanced: accountsSkipped === 0,
+      removeFailed,
+      watermarkAdvanced,
       elapsedMs: elapsed,
     });
   } catch (e) {
@@ -1628,6 +1657,11 @@ async function runPostInitReconcile(ftsSearch) {
 const RECONCILE_QUERY_CHUNK_SIZE = 200;
 // Delay between validation entries to avoid overwhelming TB APIs
 const RECONCILE_ENTRY_DELAY_MS = 10;
+// Native-FTS keepalive cadence during the verify-then-remove recheck loop
+// (mirrors maintenance Phase 2.5 — a mass-deletion boot can produce thousands
+// of candidates, each recheck a global messages.query that can take seconds;
+// without pings the native connection would see no RPC until removeBatch).
+const RECONCILE_RECHECK_KEEPALIVE_EVERY = 50;
 
 /**
  * Phase 2 of reconciliation: query FTS entries in the reconcile window and
@@ -1643,7 +1677,17 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
   let checked = 0;
   let removed = 0;
   let accountsSkipped = 0;
-  const entriesToRemove = [];
+  let removeFailed = false;
+  const staleCandidates = [];
+  // Account liveness — verified lazily per account as entries are
+  // encountered (NOT sampled from the first chunk only: an account whose
+  // entries appear only in older chunks would otherwise never be checked,
+  // and its unloaded msgDBs would read as mass-stale; the recheck cannot
+  // compensate because a global query can't see unloaded folders either).
+  // After MV3 resume, TB may not have loaded all accounts' message
+  // databases yet, causing headerIDToWeID to return null for valid messages.
+  const checkedAccounts = new Set();
+  const unavailableAccounts = new Set();
 
   logFtsBatchOperation("reconcile_phase2", "start", {
     startDate: startDate.toISOString(),
@@ -1651,53 +1695,50 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
   });
 
   try {
-    // Account liveness check — collect all accounts from the first chunk and verify
-    // they're queryable. After MV3 resume, TB may not have loaded all accounts'
-    // message databases yet, causing headerIDToWeID to return null for valid messages.
-    const unavailableAccounts = new Set();
-    {
-      // Quick pre-scan: collect unique accounts from FTS entries in the window
-      const preCheck = await ftsSearch.queryByDateRange(startDate, endDate, RECONCILE_QUERY_CHUNK_SIZE);
-      const accountIds = new Set();
-      for (const entry of (preCheck || [])) {
-        const parsed = parseUniqueId(entry.msgId);
-        if (parsed?.weFolder?.accountId) accountIds.add(parsed.weFolder.accountId);
-      }
-      for (const accountId of accountIds) {
-        try {
-          const acct = await browser.accounts.get(accountId);
-          if (!acct) {
-            unavailableAccounts.add(accountId);
-            continue;
-          }
+    async function ensureAccountChecked(accountId) {
+      if (!accountId || checkedAccounts.has(accountId)) return;
+      checkedAccounts.add(accountId);
+      try {
+        const acct = await browser.accounts.get(accountId);
+        if (!acct) {
+          unavailableAccounts.add(accountId);
+        } else {
           const folders = await browser.folders.query({ accountId, limit: 1 });
           if (!folders || folders.length === 0) {
             unavailableAccounts.add(accountId);
           }
-        } catch (e) {
-          unavailableAccounts.add(accountId);
         }
+      } catch (e) {
+        unavailableAccounts.add(accountId);
       }
-      if (unavailableAccounts.size > 0) {
-        accountsSkipped = unavailableAccounts.size;
-        log(`[FTS Reconcile] Phase 2: ${unavailableAccounts.size}/${accountIds.size} accounts unavailable — skipping their entries`, "warn");
+      if (unavailableAccounts.has(accountId)) {
+        log(`[FTS Reconcile] Phase 2: account ${accountId} unavailable — skipping its entries`, "warn");
         logFtsOperation("reconcile_stale", "accounts_unavailable", {
-          unavailable: Array.from(unavailableAccounts),
-          total: accountIds.size,
+          unavailable: [accountId],
         });
       }
     }
 
-    // Cursor-based pagination through FTS entries in the reconcile window
+    // Cursor-based pagination through FTS entries in the reconcile window.
+    // The cursor steps INCLUSIVELY to the oldest entry's dateMs (dedup via
+    // seenMsgIds) — an exclusive `oldestMs - 1` step would permanently skip
+    // entries sharing that millisecond beyond a full-chunk boundary (Date
+    // headers have second granularity, so ties are routine in bursts).
     let cursorEndMs = endDate.getTime();
     const startMs = startDate.getTime();
+    const seenMsgIds = new Set();
 
     while (cursorEndMs > startMs) {
       const chunk = await ftsSearch.queryByDateRange(startDate, new Date(cursorEndMs), RECONCILE_QUERY_CHUNK_SIZE);
 
       if (!chunk || chunk.length === 0) break;
 
+      let newInChunk = 0;
       for (const entry of chunk) {
+        if (seenMsgIds.has(entry.msgId)) continue; // re-fetched tie at the boundary
+        seenMsgIds.add(entry.msgId);
+        newInChunk++;
+
         const parsed = parseUniqueId(entry.msgId);
         if (!parsed) {
           checked++;
@@ -1707,6 +1748,7 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
         const { weFolder, headerID } = parsed;
 
         // Skip entries for accounts that aren't queryable
+        await ensureAccountChecked(weFolder?.accountId);
         if (unavailableAccounts.has(weFolder?.accountId)) {
           checked++;
           continue;
@@ -1717,8 +1759,13 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
           const weID = await headerIDToWeID(headerID, weFolder, false, false);
 
           if (!weID) {
-            // Message no longer exists at this folder — stale entry
-            entriesToRemove.push(entry.msgId);
+            // Message not found at its indexed folder — stale CANDIDATE.
+            // Confirmed (or refuted) by the verify-then-remove pass below.
+            staleCandidates.push({
+              msgId: entry.msgId,
+              headerID,
+              weFolder,
+            });
             logFtsOperation("reconcile_stale", "found", {
               msgId: entry.msgId,
               folderPath: weFolder?.path || "",
@@ -1749,9 +1796,56 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
       if (chunk.length < RECONCILE_QUERY_CHUNK_SIZE) break;
       const oldestMs = chunk[chunk.length - 1]?.dateMs;
       if (typeof oldestMs !== 'number' || oldestMs <= startMs) break;
-      const nextCursor = oldestMs - 1;
-      if (nextCursor >= cursorEndMs) break; // safety: cursor didn't advance
+      // Inclusive step when the chunk made progress (ties at the boundary are
+      // re-fetched and deduped next round); if the ENTIRE chunk was already
+      // seen (a full chunk sharing one ms), step past it to escape.
+      const nextCursor = newInChunk > 0 ? oldestMs : oldestMs - 1;
+      if (nextCursor > cursorEndMs) break; // safety: cursor moved forward
       cursorEndMs = nextCursor;
+    }
+
+    // Verify-then-remove: re-check every candidate with a fresh GLOBAL query
+    // before removal. A folder-constrained miss can be a transient msgDB state
+    // (mid-sync, compaction) — observed 2026-06-03: a live [Gmail]/Bin message
+    // was removed as "missing" and only recovered by the next weekly scan.
+    // Only remove keys whose absence from their indexed folder is confirmed by
+    // a SUCCESSFUL query; thrown queries keep the entry (skip on uncertainty).
+    const entriesToRemove = [];
+    let recheckKeptPresent = 0;
+    let recheckKeptError = 0;
+    let recheckedCount = 0;
+    for (const cand of staleCandidates) {
+      // KEEPALIVE: same cadence as maintenance Phase 2.5 — keep the native
+      // FTS connection alive through a potentially long recheck pass.
+      if (recheckedCount > 0 && recheckedCount % RECONCILE_RECHECK_KEEPALIVE_EVERY === 0) {
+        try {
+          await ftsSearch.stats();
+        } catch (keepaliveErr) {
+          log(`[FTS Reconcile] Phase 2 recheck keepalive ping failed: ${keepaliveErr.message}`, "warn");
+        }
+      }
+      recheckedCount++;
+
+      const verdict = await recheckMessageInFolder(cand.headerID, cand.weFolder);
+      if (verdict === "absent") {
+        // Only an explicit, successful confirmation of absence may remove —
+        // any other verdict (present, error, unexpected) keeps the entry.
+        entriesToRemove.push(cand.msgId);
+      } else if (verdict === "present") {
+        recheckKeptPresent++;
+        log(`[FTS Reconcile] Phase 2: recheck found ${cand.msgId} still present — keeping (transient miss)`);
+        logFtsOperation("reconcile_stale", "recheck_present", { msgId: cand.msgId });
+      } else {
+        recheckKeptError++;
+        log(`[FTS Reconcile] Phase 2: recheck errored for ${cand.msgId} — keeping (unconfirmed)`, "warn");
+        logFtsOperation("reconcile_stale", "recheck_error", { msgId: cand.msgId });
+      }
+      if (RECONCILE_ENTRY_DELAY_MS > 0) {
+        await new Promise(r => setTimeout(r, RECONCILE_ENTRY_DELAY_MS));
+      }
+    }
+    if (recheckKeptPresent > 0 || recheckKeptError > 0) {
+      log(`[FTS Reconcile] Phase 2: recheck kept ${recheckKeptPresent} present + ${recheckKeptError} errored of ${staleCandidates.length} candidates`);
     }
 
     // Remove stale entries in a single batch
@@ -1768,18 +1862,30 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
         removed = removeResult.count || 0;
         log(`[FTS Reconcile] Phase 2: removed ${removed} stale entries`);
       } catch (removeErr) {
+        // Confirmed-stale entries are still in FTS — flag it so the caller
+        // does NOT advance the watermark (the entries would otherwise fall
+        // out of every future reconcile window and linger as ghosts).
+        removeFailed = true;
         log(`[TMDBG FTS] Reconcile cleanup: removeBatch failed: ${removeErr}`, "warn");
       }
     }
 
     logFtsBatchOperation("reconcile_phase2", "complete", {
       checked,
-      staleFound: entriesToRemove.length,
+      staleFound: staleCandidates.length,
+      confirmedStale: entriesToRemove.length,
+      recheckKeptPresent,
+      recheckKeptError,
       removed,
     });
 
-    log(`[FTS Reconcile] Phase 2 complete: ${checked} checked, ${entriesToRemove.length} stale found, ${removed} removed`);
+    log(`[FTS Reconcile] Phase 2 complete: ${checked} checked, ${staleCandidates.length} stale candidates, ${entriesToRemove.length} confirmed, ${removed} removed`);
   } catch (e) {
+    // Any Phase 2 failure (FTS scan, recheck pass, anything) means the
+    // window was NOT fully verified — the caller must not advance the
+    // watermark, or every unverified entry falls out of all future
+    // reconcile windows. Same contract as a removeBatch failure.
+    removeFailed = true;
     log(`[TMDBG FTS] Reconcile phase 2 failed: ${e}`, "error");
     logFtsBatchOperation("reconcile_phase2", "error", {
       error: String(e),
@@ -1788,7 +1894,8 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
     });
   }
 
-  return { checked, removed, accountsSkipped };
+  accountsSkipped = unavailableAccounts.size;
+  return { checked, removed, accountsSkipped, removeFailed };
 }
 
 // Public API - DO NOT add duplicate listeners, integrate with existing ones
@@ -1882,6 +1989,40 @@ function _scheduleReconcileWhenQuiet(ftsSearch, runner = runPostInitReconcile) {
       log(`[TMDBG FTS] Reconcile waiting — quietFor=${Math.round(quietFor / 1000)}s/${RECONCILE_QUIET_PERIOD_MS / 1000}s (waited=${Math.round(waitedFor / 1000)}s)`);
     }
   }, RECONCILE_QUIET_CHECK_INTERVAL_MS);
+}
+
+/**
+ * Timestamp of the most recent sync-related message event (experiment
+ * msgAdded/msgRemoved). Exposed for the maintenance scheduler's startup-tick
+ * quiet wait — the same signal the boot-reconcile quiet period polls.
+ */
+export function getLastSyncEventMs() {
+  return _lastSyncEventMs;
+}
+
+/**
+ * Whether boot reconcile is still pending (flag set in initIncrementalIndexer,
+ * cleared when reconcile Phases 1+2 complete without an exception reaching
+ * runPostInitReconcile's catch — including runs that withhold the watermark
+ * via accountsSkipped/removeFailed: the reconcile is over for this session
+ * either way, so the maintenance tick may proceed; the next BOOT retries from
+ * the older watermark. A Phase 1 throw leaves the flag SET, which makes the
+ * startup tick cap-skip — the hourly alarm is the backstop). Exposed for the
+ * maintenance scheduler's startup-tick wait so a due maintenance scan doesn't
+ * run concurrently with (or before) the boot reconcile.
+ *
+ * Returns false when incremental indexing is disabled: no reconcile will ever
+ * run, so a stale `fts_reconcile_pending` flag left by an interrupted earlier
+ * session must not stall the startup tick to its max-wait cap on every boot.
+ */
+export async function isReconcilePending() {
+  if (!_isEnabled) return false;
+  try {
+    const stored = await browser.storage.local.get(RECONCILE_STORAGE_KEY);
+    return !!stored?.[RECONCILE_STORAGE_KEY];
+  } catch (_) {
+    return false;
+  }
 }
 
 export async function disposeIncrementalIndexer() {
@@ -2050,6 +2191,7 @@ export const _testExports = {
   _getPendingUpdates: () => _pendingUpdates,
   // Quiet-period reconcile scheduler
   _scheduleReconcileWhenQuiet,
+  runPostInitReconcile,
   _getLastSyncEventMs: () => _lastSyncEventMs,
   _setLastSyncEventMs: (v) => { _lastSyncEventMs = v; },
   _hasReconcileQuietTimer: () => _reconcileQuietTimer !== null,
@@ -2071,9 +2213,10 @@ export const _testExports = {
   _hasWatermarkHeartbeatTimer: () => _watermarkHeartbeatTimer !== null,
   _setIndexerDisposed: (v) => { _indexerDisposed = v; },
   _getIndexerDisposed: () => _indexerDisposed,
-  // Allow tests to set _experimentListenersActive / _isEnabled directly
+  // Allow tests to set _experimentListenersActive / _isEnabled / _ftsSearch directly
   _setExperimentListenersActive: (v) => { _experimentListenersActive = v; },
   _setIsEnabled: (v) => { _isEnabled = v; },
+  _setFtsSearch: (v) => { _ftsSearch = v; },
   WATERMARK_KEY,
   HEARTBEAT_INTERVAL_MS,
   RECONCILE_OVERLAP_MS,
