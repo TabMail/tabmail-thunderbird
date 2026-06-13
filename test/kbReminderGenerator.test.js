@@ -230,3 +230,27 @@ describe('parseRemindersFromKB', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// filterActiveReminders — overdue retention (no expiry).
+// Replicated from kbReminderGenerator.js (not exported). MUST stay in sync.
+// Dates are deliberately far-past / far-future and irrelevant to the result:
+// the function is date-independent now (overdue reminders are never dropped).
+// ---------------------------------------------------------------------------
+
+function filterActiveReminders(reminders) {
+  return reminders;
+}
+
+describe('filterActiveReminders', () => {
+  it('retains overdue reminders (no expiry)', () => {
+    const reminders = [
+      { dueDate: '2000-01-01', dueTime: null, timezone: null, content: 'Ancient' },
+      { dueDate: null, dueTime: null, timezone: null, content: 'Dateless' },
+      { dueDate: '2999-12-31', dueTime: null, timezone: null, content: 'Future' },
+    ];
+    const result = filterActiveReminders(reminders);
+    expect(result).toHaveLength(3);
+    expect(result.map(r => r.content)).toEqual(['Ancient', 'Dateless', 'Future']);
+  });
+});

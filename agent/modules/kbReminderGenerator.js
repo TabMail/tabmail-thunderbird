@@ -95,30 +95,16 @@ function parseRemindersFromKB(kbContent) {
 }
 
 /**
- * Filter out past-due reminders (more than 1 day old)
+ * Returns all parsed reminders unchanged. Overdue reminders are intentionally
+ * retained — they must stay visible in the reminders menu / chat rather than
+ * silently vanish a day after their due date (changed 2026-06-13; previously
+ * dropped reminders more than 1 day overdue). Over-notification is guarded
+ * independently downstream (proactive-notify dedup + window). Kept as a named
+ * policy seam in lockstep with the iOS port,
+ * KBReminderParser.filterActiveReminders() (ADR-IOS-008 parity).
  */
 function filterActiveReminders(reminders) {
-  const now = new Date();
-  // Set to start of today for comparison
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  // Allow 1 day grace period
-  const cutoffDate = new Date(today.getTime() - 24 * 60 * 60 * 1000);
-
-  return reminders.filter(reminder => {
-    if (!reminder.dueDate) {
-      // No due date = always active
-      return true;
-    }
-
-    try {
-      const dueDate = new Date(reminder.dueDate);
-      // Keep if due date is after cutoff (today - 1 day)
-      return dueDate >= cutoffDate;
-    } catch {
-      // Invalid date = keep it
-      return true;
-    }
-  });
+  return reminders;
 }
 
 /**
