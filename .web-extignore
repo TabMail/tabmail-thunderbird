@@ -5,7 +5,10 @@ README.md
 
 # Usual build/test folders not needed in XPI
 node_modules/
-tests/
+test/
+coverage/
+cov_out/
+*.log
 .git/
 .github/
 .env*
