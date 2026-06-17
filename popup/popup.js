@@ -879,12 +879,68 @@ async function updateAutoReauthCheckbox() {
 
 updateAutoReauthCheckbox();
 
+// =============================================================================
+// NATIVE FTS HELPER INSTALL PROMPT
+// =============================================================================
+// Shown when the native search helper isn't installed. Links to the download
+// page's FTS Helper tab. Declared before updateFtsScanStatus so its poll can
+// read _ftsHelperMissing without a temporal-dead-zone error.
+const FTS_HELPER_DOWNLOAD_URL = "https://tabmail.ai/download#fts-helper";
+
+// Cached so the 2s scan-status poll can suppress the (meaningless) indexing
+// banner while the helper is missing.
+let _ftsHelperMissing = false;
+
+async function updateFtsHelperPrompt() {
+  const warningDiv = document.getElementById("fts-missing-warning");
+  const installBtn = document.getElementById("install-fts-helper-btn");
+  if (!warningDiv) return;
+
+  try {
+    const res = await browser.runtime.sendMessage({ command: "getFtsAvailability" });
+    // Only prompt when we KNOW it's missing. null = unknown (FTS disabled or
+    // init not finished yet) → don't nag.
+    _ftsHelperMissing = res?.available === false;
+
+    warningDiv.style.display = _ftsHelperMissing ? "block" : "none";
+
+    if (_ftsHelperMissing) {
+      if (installBtn) {
+        installBtn.onclick = async (e) => {
+          e.preventDefault();
+          try {
+            await browser.windows.openDefaultBrowser(FTS_HELPER_DOWNLOAD_URL);
+          } catch (err) {
+            console.warn(`[Popup] Failed to open FTS helper download page: ${err}`);
+          }
+        };
+      }
+      // The indexing-status banner is meaningless without the helper.
+      const statusBanner = document.getElementById("fts-status-banner");
+      if (statusBanner) statusBanner.style.display = "none";
+    }
+  } catch (e) {
+    console.error(`[Popup] Failed to check FTS availability: ${e}`);
+    _ftsHelperMissing = false;
+  }
+}
+
+// Check FTS helper availability on popup open
+updateFtsHelperPrompt();
+
 // FTS Status Banner Management
 async function updateFtsScanStatus() {
   const banner = document.getElementById("fts-status-banner");
   const statusText = document.getElementById("fts-status-text");
   const progressText = document.getElementById("fts-status-progress");
-  
+
+  // If the native helper isn't installed, the install prompt covers it — don't
+  // also show a stuck "indexing pending" banner.
+  if (_ftsHelperMissing) {
+    if (banner) banner.style.display = "none";
+    return;
+  }
+
   try {
     const status = await browser.runtime.sendMessage({ command: "getFtsScanStatus" });
     

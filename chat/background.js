@@ -6,7 +6,8 @@
 // Thunderbird 140 MV3 compatible.
 
 import { log } from "../agent/modules/utils.js";
-import { initFtsEngine } from "../fts/engine.js";
+import { initFtsEngine, getFtsHelperAvailable } from "../fts/engine.js";
+import { setFtsHelperBadge } from "../agent/modules/icon.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
 import { openOrFocusChatWindow } from "./modules/chatWindowUtils.js";
 import { handleMessageSelectionRequest, initMessageSelectionListener } from "./modules/messageSelection.js";
@@ -335,8 +336,13 @@ browser.storage.local.get({ chat_useFtsSearch: true }).then(async (stored) => {
       
       // Check if we need to run initial scan
       await checkAndRunInitialFtsScan();
+
+      // Surface a toolbar badge if the native search helper isn't installed.
+      try { await setFtsHelperBadge(getFtsHelperAvailable() === false); } catch (_) {}
     } catch (e) {
       log(`[TMDBG Chat] FTS engine initialization failed: ${e}`, "error");
+      // init threw — likely the helper is missing; flag it on the toolbar.
+      try { await setFtsHelperBadge(getFtsHelperAvailable() === false); } catch (_) {}
     }
   } else {
     log("[TMDBG Chat] FTS disabled by config");
@@ -406,6 +412,17 @@ function setupRuntimeMessageListener() {
       } catch (e) {
         log(`[Chat Background] Failed to get FTS scan status: ${e}`, "error");
         return { ok: false, error: e.message };
+      }
+    }
+
+    // Handle FTS availability requests (is the native search helper installed?).
+    // Returns { available: true | false | null } — null = not yet determined.
+    if (message && message.command === "getFtsAvailability") {
+      try {
+        return Promise.resolve({ available: getFtsHelperAvailable() });
+      } catch (e) {
+        log(`[Chat Background] Failed to get FTS availability: ${e}`, "error");
+        return Promise.resolve({ available: null });
       }
     }
     

@@ -44,4 +44,33 @@ export async function updateIconBasedOnAuthState(authState, forceUpdate = false)
     }
 }
 
+// Toolbar badge shown when the native FTS search helper is not installed.
+// This is a WebExtension browserAction badge color (set via API, not CSS), so
+// it cannot reference the palette CSS variables — keep it a single named literal.
+const FTS_BADGE_TEXT = "!";
+const FTS_BADGE_BG_COLOR = "#C13A2B"; // attention red
+
+/**
+ * Show or clear a badge on the toolbar action indicating the native full-text
+ * search helper is missing and should be installed.
+ * @param {boolean} missing - true to show the "needs install" badge, false to clear it
+ */
+export async function setFtsHelperBadge(missing) {
+    try {
+        if (!browser.action || !browser.action.setBadgeText) {
+            log("[Icon] Badge API not available", "warn");
+            return;
+        }
+
+        await browser.action.setBadgeText({ text: missing ? FTS_BADGE_TEXT : "" });
+        if (missing && browser.action.setBadgeBackgroundColor) {
+            await browser.action.setBadgeBackgroundColor({ color: FTS_BADGE_BG_COLOR });
+        }
+
+        log(`[Icon] FTS helper badge ${missing ? "shown" : "cleared"}`);
+    } catch (e) {
+        log(`[Icon] Failed to set FTS helper badge: ${e}`, "error");
+    }
+}
+
 

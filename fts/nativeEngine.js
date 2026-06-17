@@ -33,6 +33,12 @@ let messageId = 0;
 let pendingRPCs = new Map();
 let hostInfo = null; // Stores host version and capabilities
 let isUpdatingHost = false; // Flag to track if we are in the middle of an update
+// Reliable "is the native helper installed?" signal for UI surfaces (badge /
+// popup / settings). null = not yet determined, true = handshake succeeded,
+// false = connect/handshake failed (helper not installed). connectNative()
+// itself does NOT throw synchronously when the host manifest is missing, so we
+// can only know availability from the init handshake outcome, tracked here.
+let ftsHostAvailable = null;
 
 /**
  * Determine the platform key used by native-fts update artifacts.
@@ -305,6 +311,9 @@ export async function initNativeFts() {
     nativePort.onDisconnect.addListener(() => {
       log("[TMDBG FTS] Native helper disconnected");
       nativePort = null;
+      // A disconnect during an intentional self-update is expected (we reconnect
+      // below); otherwise the helper is gone/unavailable.
+      if (!isUpdatingHost) ftsHostAvailable = false;
       
       // Reject all pending RPCs
       for (const [id, pending] of pendingRPCs) {
@@ -334,6 +343,7 @@ export async function initNativeFts() {
     const updated = await initCheckAndUpdateHost();
     if (updated) {
       log("[TMDBG FTS] Host update initiated. Waiting for restart...");
+      ftsHostAvailable = true; // helper IS installed (just self-updating)
       return true; // Treat as success, reconnection will happen automatically
     }
     
@@ -343,7 +353,8 @@ export async function initNativeFts() {
     const addonId = manifest.browser_specific_settings?.gecko?.id || "thunderbird@tabmail.ai";
     const initResult = await nativeRPC('init', { addonId });
     log(`[TMDBG FTS] DB initialized at: ${initResult.dbPath}`);
-    
+    ftsHostAvailable = true;
+
     log("[TMDBG FTS] Native FTS helper connected successfully");
 
     // NOTE: Version check + auto-reindex is handled by initFtsEngine() in engine.js
@@ -352,6 +363,7 @@ export async function initNativeFts() {
 
     return true;
   } catch (error) {
+    ftsHostAvailable = false;
     log(`[TMDBG FTS] Failed to connect to native helper: ${error.message}`);
     throw error;
   }
@@ -595,6 +607,12 @@ export const nativeFtsSearch = {
   getHostInfo() {
     return hostInfo;
   },
+
+  // Whether the native helper is installed + handshaked.
+  // null = unknown/not yet attempted, true = available, false = missing.
+  getHostAvailability() {
+    return ftsHostAvailable;
+  },
   
   // Mark current schema version as indexed (call after successful reindex)
   async markVersionAsIndexed() {
@@ -679,19 +697,15 @@ export const nativeMemorySearch = {
 };
 
 /**
- * Check if native FTS is available
+ * Check if the native FTS helper is installed + handshaked.
+ *
+ * NOTE: connectNative() does NOT throw synchronously when the host manifest is
+ * missing (the failure arrives asynchronously via the port's onDisconnect), so
+ * a connect/disconnect probe can't tell us availability. The authoritative
+ * signal is the init handshake outcome tracked in `ftsHostAvailable`.
+ * Returns true only when availability has been confirmed.
  */
 export async function isNativeFtsAvailable() {
-  try {
-    // Try to connect
-    const port = browser.runtime.connectNative("tabmail_fts");
-    
-    // If we get here, it's available
-    port.disconnect();
-    return true;
-  } catch (error) {
-    log(`[TMDBG FTS] Native FTS not available: ${error.message}`);
-    return false;
-  }
+  return ftsHostAvailable === true;
 }
 

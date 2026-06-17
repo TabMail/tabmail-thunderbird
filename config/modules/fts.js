@@ -4,6 +4,9 @@
 
 import { $ } from "./dom.js";
 
+// Download page (FTS Helper tab) — shown when the native helper isn't installed.
+const FTS_HELPER_DOWNLOAD_URL = "https://tabmail.ai/download#fts-helper";
+
 export async function loadFtsSettings() {
   try {
     // Load FTS settings directly from storage (like other settings)
@@ -139,6 +142,36 @@ export async function saveFtsSettings() {
 
 export async function updateFtsStatus() {
   try {
+    // If the native helper isn't installed, show an install CTA and skip the
+    // stats query (the FTS command interface isn't attached without the helper,
+    // so the query would just error out).
+    const installCta = $("fts-not-installed");
+    try {
+      const avail = await browser.runtime.sendMessage({ command: "getFtsAvailability" });
+      if (avail?.available === false) {
+        if (installCta) {
+          installCta.style.display = "block";
+          const btn = $("fts-install-helper-btn");
+          if (btn) {
+            btn.onclick = async () => {
+              try {
+                await browser.windows.openDefaultBrowser(FTS_HELPER_DOWNLOAD_URL);
+              } catch (e) {
+                console.warn("[TMDBG Config] Failed to open FTS helper download page", e);
+              }
+            };
+          }
+        }
+        $("fts-stats").textContent = "Native search helper not installed.";
+        const ver = $("fts-host-version");
+        if (ver) ver.textContent = "Not installed";
+        return;
+      }
+      if (installCta) installCta.style.display = "none";
+    } catch (_) {
+      // availability unknown (e.g. init still running) — fall through to normal status
+    }
+
     // Check if FTS is enabled in storage (matches loadFtsSettings approach)
     await browser.storage.local.get({ chat_useFtsSearch: true });
 

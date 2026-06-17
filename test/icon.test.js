@@ -29,6 +29,7 @@ globalThis.browser = {
 
 // We need a fresh import each time because the module has internal state (_lastAuthState)
 let updateIconBasedOnAuthState;
+let setFtsHelperBadge;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -47,11 +48,14 @@ beforeEach(async () => {
     action: {
       setIcon: vi.fn(async () => {}),
       setTitle: vi.fn(async () => {}),
+      setBadgeText: vi.fn(async () => {}),
+      setBadgeBackgroundColor: vi.fn(async () => {}),
     },
   };
 
   const mod = await import('../agent/modules/icon.js');
   updateIconBasedOnAuthState = mod.updateIconBasedOnAuthState;
+  setFtsHelperBadge = mod.setFtsHelperBadge;
 });
 
 describe('updateIconBasedOnAuthState', () => {
@@ -90,5 +94,24 @@ describe('updateIconBasedOnAuthState', () => {
     globalThis.browser = { action: {} };
     await updateIconBasedOnAuthState(true);
     // Should not throw
+  });
+});
+
+describe('setFtsHelperBadge', () => {
+  it('shows the "!" badge with a background color when the helper is missing', async () => {
+    await setFtsHelperBadge(true);
+    expect(browser.action.setBadgeText).toHaveBeenCalledWith({ text: '!' });
+    expect(browser.action.setBadgeBackgroundColor).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the badge and sets no color when the helper is present', async () => {
+    await setFtsHelperBadge(false);
+    expect(browser.action.setBadgeText).toHaveBeenCalledWith({ text: '' });
+    expect(browser.action.setBadgeBackgroundColor).not.toHaveBeenCalled();
+  });
+
+  it('no-ops safely when the badge API is unavailable', async () => {
+    globalThis.browser = { action: {} };
+    await expect(setFtsHelperBadge(true)).resolves.toBeUndefined();
   });
 });

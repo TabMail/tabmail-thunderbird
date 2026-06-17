@@ -543,6 +543,14 @@ export async function initFtsEngine() {
   }
 }
 
+// Reliable "is the native FTS helper installed?" signal for UI surfaces
+// (toolbar badge / popup banner / settings CTA). Reads the availability tracked
+// by initNativeFts() during startup. Returns null (unknown / not yet attempted),
+// true (helper present), or false (helper missing).
+export function getFtsHelperAvailable() {
+  return nativeFtsSearch.getHostAvailability();
+}
+
 export async function disposeFtsEngine() {
   try {
     log("[TMDBG FTS] Disposing FTS engine");

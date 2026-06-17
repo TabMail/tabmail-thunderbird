@@ -336,6 +336,11 @@
 
     <section id="fts-settings">
       <h3>Full Text Search (FTS)</h3>
+      <div id="fts-not-installed" class="field" style="display: none; padding: 12px; border: 1px solid var(--in-content-accent-color); border-left-width: 4px; border-radius: 4px;">
+        <strong style="display: block; margin-bottom: 6px;">🔍 Native search helper not installed</strong>
+        <small style="display: block; margin-bottom: 8px;">Full-text search needs a small native helper that indexes your mail on your device. Install it, then restart Thunderbird.</small>
+        <button id="fts-install-helper-btn">Install Search Helper →</button>
+      </div>
       <div class="field">
         <small><strong>Native FTS:</strong> Full-text email search powered by SQLite FTS5 via native helper. Always enabled for optimal performance.</small>
       </div>

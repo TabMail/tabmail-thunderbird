@@ -43,6 +43,13 @@
             <div id="setup-warning-items" style="font-size: 0.9em;"></div>
             <button id="open-configs-from-warning" style="margin-top: 8px; padding: 6px 12px; background-color: var(--tag-tm-archive); color: white; border: none; border-radius: 4px; cursor: pointer;">Open Settings to Configure</button>
         </div>
+        <div id="fts-missing-warning" style="display: none; margin: 8px 0; padding: 12px; background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent); border-left: 4px solid var(--tag-tm-archive); border-radius: 4px;">
+            <strong style="color: var(--tag-tm-archive); display: block; margin-bottom: 6px;">🔍 Search helper not installed</strong>
+            <div style="font-size: 0.9em; margin-bottom: 8px;">
+                Install the native search helper to enable fast local search across your mail. It runs entirely on your device — nothing is uploaded.
+            </div>
+            <button id="install-fts-helper-btn" style="padding: 6px 12px; background-color: var(--tag-tm-archive); color: white; border: none; border-radius: 4px; cursor: pointer;">Install Search Helper →</button>
+        </div>
         <div id="popup-nav">
             <a id="open-chat-window" class="popup-link" href="#">Chat <span id="chat-hotkey"></span></a>
             <a id="open-configs" class="popup-link" href="#">Settings</a>
