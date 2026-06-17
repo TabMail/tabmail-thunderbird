@@ -39,10 +39,12 @@ async function applyActionIcon(forceUpdate = false) {
         log("[Icon] Icon unchanged, skipping update");
         return;
     }
-    _lastIconPath = iconPath;
 
     log(`[Icon] Setting icon to: ${iconPath} (auth=${_lastAuthState}, warning=${_warningActive})`);
     await browser.action.setIcon({ path: iconPath });
+    // Cache only after a successful setIcon, so a failed set doesn't poison the
+    // dedup and silently skip the correct icon on the next call.
+    _lastIconPath = iconPath;
     if (browser.action.setTitle) {
         await browser.action.setTitle({
             title: _warningActive ? "TabMail — action needed" : "TabMail",

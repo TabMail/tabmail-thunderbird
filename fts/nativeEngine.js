@@ -39,6 +39,12 @@ let isUpdatingHost = false; // Flag to track if we are in the middle of an updat
 // itself does NOT throw synchronously when the host manifest is missing, so we
 // can only know availability from the init handshake outcome, tracked here.
 let ftsHostAvailable = null;
+// Circuit breaker: when the helper is confirmed unavailable, don't re-attempt
+// connectNative on every RPC (it spams "disconnected"/"update check failed").
+// Re-attempt at most once per cooldown so a helper installed before the next
+// restart can still be picked up.
+const RECONNECT_COOLDOWN_MS = 60_000;
+let lastConnectAttemptMs = 0;
 
 /**
  * Determine the platform key used by native-fts update artifacts.
@@ -277,7 +283,9 @@ async function initCheckAndUpdateHost() {
     return false; // No update performed
   } catch (error) {
     isUpdatingHost = false; // Reset on error
-    log(`[TMDBG FTS] Update check failed: ${error.message}`, "error");
+    // Expected when the helper isn't installed; rate-limited by the reconnect
+    // cooldown so it won't spam. warn (not error) to avoid drowning real errors.
+    log(`[TMDBG FTS] Update check failed: ${error.message}`, "warn");
     // Don't throw - allow FTS to work even if update check fails
     return false;
   }
@@ -288,7 +296,8 @@ async function initCheckAndUpdateHost() {
  */
 export async function initNativeFts() {
   log("[TMDBG FTS] Connecting to native FTS helper");
-  
+  lastConnectAttemptMs = Date.now();
+
   try {
     nativePort = browser.runtime.connectNative("tabmail_fts");
     
@@ -374,13 +383,20 @@ export async function initNativeFts() {
  */
 async function ensureConnected() {
   if (nativePort) return true;
-  
+
+  // Circuit breaker: if the helper is known-missing, only re-attempt once per
+  // cooldown instead of on every RPC (otherwise initNativeFts spams
+  // "Native helper disconnected" / "Update check failed" continuously).
+  if (ftsHostAvailable === false && (Date.now() - lastConnectAttemptMs) < RECONNECT_COOLDOWN_MS) {
+    return false;
+  }
+
   log("[TMDBG FTS] Attempting to reconnect to native helper...");
   try {
     await initNativeFts();
     return true;
   } catch (e) {
-    log(`[TMDBG FTS] Reconnection failed: ${e}`, "error");
+    log(`[TMDBG FTS] Reconnection failed: ${e.message || e}`, "warn");
     return false;
   }
 }
