@@ -69,7 +69,16 @@ let serverHealthy = true;
 
 const CONSENT_URL = `${SETTINGS.consentPageUrl}?client=thunderbird`;
 
+// Mirror popup warning conditions onto the toolbar action icon so the toolbar
+// shows a red dot whenever the popup would show an issue (even after it closes).
+function reportWarning(key, active) {
+  try {
+    browser.runtime.sendMessage({ command: "setWarning", key, active: !!active }).catch(() => {});
+  } catch (_) { /* non-fatal */ }
+}
+
 function showConsentWarning(show) {
+  reportWarning("consent", show);
   const warningDiv = document.getElementById("consent-warning");
   const btn = document.getElementById("open-consent-from-warning");
   if (!warningDiv) return;
@@ -138,9 +147,10 @@ async function checkServerHealth() {
  * @param {boolean} show - Whether to show the warning
  */
 function showServerStatusWarning(show) {
+  reportWarning("server", show);
   const warningDiv = document.getElementById("server-status-warning");
   const statusLink = document.getElementById("server-status-link");
-  
+
   if (!warningDiv) return;
   
   if (show) {
@@ -377,6 +387,7 @@ async function updateSetupWarning() {
 
   try {
     const setupStatus = await checkSetupConfiguration();
+    reportWarning("setup", !setupStatus.allConfigured);
 
     if (!setupStatus.allConfigured) {
       // Show warning
@@ -417,7 +428,8 @@ async function updateSetupWarning() {
     }
   } catch (e) {
     console.error("[Popup] Failed to update setup warning:", e);
-    // On error, don't block the user
+    // On error, don't block the user (and don't nag on the toolbar).
+    reportWarning("setup", false);
     warningDiv.style.display = "none";
     if (chatButton) {
       chatButton.disabled = false;
@@ -901,6 +913,7 @@ async function updateFtsHelperPrompt() {
     // Only prompt when we KNOW it's missing. null = unknown (FTS disabled or
     // init not finished yet) → don't nag.
     _ftsHelperMissing = res?.available === false;
+    reportWarning("fts", _ftsHelperMissing);
 
     warningDiv.style.display = _ftsHelperMissing ? "block" : "none";
 

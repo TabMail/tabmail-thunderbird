@@ -4,7 +4,8 @@
 
 // icon.test.js — Tests for agent/modules/icon.js
 //
-// Tests updateIconBasedOnAuthState which updates toolbar icon based on auth state.
+// Tests updateIconBasedOnAuthState (auth → icon) and setWarning (keyed
+// "attention needed" red-dot indicator).
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -27,13 +28,14 @@ globalThis.browser = {
   },
 };
 
-// We need a fresh import each time because the module has internal state (_lastAuthState)
+// We need a fresh import each time because the module has internal state
+// (_connected / _warnings / _lastIconPath).
 let updateIconBasedOnAuthState;
-let setActionWarning;
+let setWarning;
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  // Reset module to clear _lastAuthState cache
+  // Reset module to clear internal state cache
   vi.resetModules();
   // Re-mock dependencies after resetModules
   vi.doMock('../agent/modules/config.js', () => ({
@@ -55,19 +57,21 @@ beforeEach(async () => {
 
   const mod = await import('../agent/modules/icon.js');
   updateIconBasedOnAuthState = mod.updateIconBasedOnAuthState;
-  setActionWarning = mod.setActionWarning;
+  setWarning = mod.setWarning;
 });
 
 describe('updateIconBasedOnAuthState', () => {
-  it('sets connected icon when authState is true', async () => {
+  it('sets connected icon + plain title when authState is true', async () => {
     await updateIconBasedOnAuthState(true);
     expect(browser.action.setIcon).toHaveBeenCalledWith({ path: 'icons/tab.svg' });
     expect(browser.action.setTitle).toHaveBeenCalledWith({ title: 'TabMail' });
   });
 
-  it('sets disconnected icon when authState is false', async () => {
+  it('treats disconnected as a warning: greyed-warning icon + "disconnected" title', async () => {
     await updateIconBasedOnAuthState(false);
-    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: 'icons/tab-greyed.svg' });
+    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: 'icons/tab-greyed-warning.svg' });
+    expect(browser.action.setTitle).toHaveBeenCalledWith({ title: expect.stringContaining('disconnected') });
+    expect(browser.action.setBadgeText).toHaveBeenCalledWith({ text: '!' });
   });
 
   it('skips update when state has not changed', async () => {
@@ -97,34 +101,40 @@ describe('updateIconBasedOnAuthState', () => {
   });
 });
 
-describe('setActionWarning', () => {
-  it('shows the red-dot warning icon (and "!" badge) when active', async () => {
-    await setActionWarning(true);
-    // Primary signal: a *-warning.svg icon variant.
-    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: expect.stringContaining('warning') });
-    // Best-effort badge.
+describe('setWarning', () => {
+  it('raises the red-dot warning icon (and "!" badge) when connected', async () => {
+    await updateIconBasedOnAuthState(true);
+    vi.clearAllMocks();
+    await setWarning('fts', true);
+    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: 'icons/tab-warning.svg' });
+    expect(browser.action.setTitle).toHaveBeenCalledWith({ title: expect.stringContaining('action needed') });
     expect(browser.action.setBadgeText).toHaveBeenCalledWith({ text: '!' });
     expect(browser.action.setBadgeBackgroundColor).toHaveBeenCalledTimes(1);
   });
 
-  it('reverts to a non-warning icon and clears the badge when cleared', async () => {
-    await setActionWarning(true);
+  it('reverts to the normal icon and clears the badge when the warning is cleared', async () => {
+    await updateIconBasedOnAuthState(true);
+    await setWarning('fts', true);
     vi.clearAllMocks();
-    await setActionWarning(false);
-    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: expect.not.stringContaining('warning') });
+    await setWarning('fts', false);
+    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: 'icons/tab.svg' });
     expect(browser.action.setBadgeText).toHaveBeenCalledWith({ text: '' });
     expect(browser.action.setBadgeBackgroundColor).not.toHaveBeenCalled();
   });
 
-  it('keeps the connected icon when warning is active and signed in', async () => {
+  it('stays in warning until ALL keys are cleared (keys are independent)', async () => {
     await updateIconBasedOnAuthState(true);
+    await setWarning('fts', true);
+    await setWarning('consent', true);
     vi.clearAllMocks();
-    await setActionWarning(true);
-    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: 'icons/tab-warning.svg' });
+    await setWarning('fts', false); // consent still active → still warning, icon unchanged
+    expect(browser.action.setIcon).not.toHaveBeenCalled();
+    await setWarning('consent', false); // last one cleared → back to normal
+    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: 'icons/tab.svg' });
   });
 
   it('no-ops safely when the action API is unavailable', async () => {
     globalThis.browser = { action: {} };
-    await expect(setActionWarning(true)).resolves.toBeUndefined();
+    await expect(setWarning('fts', true)).resolves.toBeUndefined();
   });
 });

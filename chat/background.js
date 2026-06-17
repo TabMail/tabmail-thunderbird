@@ -7,7 +7,7 @@
 
 import { log } from "../agent/modules/utils.js";
 import { initFtsEngine, getFtsHelperAvailable } from "../fts/engine.js";
-import { setActionWarning } from "../agent/modules/icon.js";
+import { setWarning } from "../agent/modules/icon.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
 import { openOrFocusChatWindow } from "./modules/chatWindowUtils.js";
 import { handleMessageSelectionRequest, initMessageSelectionListener } from "./modules/messageSelection.js";
@@ -338,17 +338,29 @@ browser.storage.local.get({ chat_useFtsSearch: true }).then(async (stored) => {
       await checkAndRunInitialFtsScan();
 
       // Flag the toolbar icon (red dot) if the native search helper isn't installed.
-      try { await setActionWarning(getFtsHelperAvailable() === false); } catch (_) {}
+      try { await setWarning("fts", getFtsHelperAvailable() === false); } catch (_) {}
     } catch (e) {
       log(`[TMDBG Chat] FTS engine initialization failed: ${e}`, "error");
       // init threw — likely the helper is missing; flag it on the toolbar.
-      try { await setActionWarning(getFtsHelperAvailable() === false); } catch (_) {}
+      try { await setWarning("fts", getFtsHelperAvailable() === false); } catch (_) {}
     }
   } else {
     log("[TMDBG Chat] FTS disabled by config");
   }
 }).catch(e => {
   log(`[TMDBG Chat] Failed to load FTS setting: ${e}`, "error");
+});
+
+// Reflect "consent required" on the toolbar proactively. The popup persists
+// this flag from /whoami; mirror it on the action icon even before the popup is
+// opened, and keep it in sync if it changes.
+browser.storage.local.get({ tabmailConsentRequired: false })
+  .then((s) => setWarning("consent", !!s.tabmailConsentRequired))
+  .catch(() => {});
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.tabmailConsentRequired) {
+    setWarning("consent", !!changes.tabmailConsentRequired.newValue).catch(() => {});
+  }
 });
 
 // Initialize selection listener on startup
@@ -423,6 +435,19 @@ function setupRuntimeMessageListener() {
       } catch (e) {
         log(`[Chat Background] Failed to get FTS availability: ${e}`, "error");
         return Promise.resolve({ available: null });
+      }
+    }
+
+    // Set/clear a keyed toolbar warning (red dot). The popup reports its own
+    // warning conditions ("setup", "server", "consent", "fts") here so the
+    // toolbar reflects any issue the popup would show, even after it closes.
+    if (message && message.command === "setWarning" && typeof message.key === "string") {
+      try {
+        setWarning(message.key, !!message.active).catch(() => {});
+        return { ok: true };
+      } catch (e) {
+        log(`[Chat Background] Failed to set warning: ${e}`, "error");
+        return { ok: false, error: e.message };
       }
     }
     
