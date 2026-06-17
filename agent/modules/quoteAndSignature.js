@@ -48,6 +48,14 @@
     // to count as an inline answer (avoids false positives from whitespace artifacts).
     inlineAnswerMinLineLength: 2,
 
+    // Bare ">" quote fallback: minimum number of CONSECUTIVE ">"-prefixed lines
+    // required before treating them as a quoted reply. A real plain-text quote
+    // carries the ">" marker on a run of lines; a lone ">>"-prefixed line — e.g. a
+    // newsletter "›› Read the full story" link rendered from "&gt;&gt;" — must NOT
+    // collapse the message. Mirrors the iOS collapseQuotesJS fallback
+    // (AutoSizingHTMLView), which requires 2 consecutive ">" lines.
+    quotedFallbackMinConsecutiveLines: 2,
+
     // DOM marker classnames (used by theme CSS for invisibility + reuse checks)
     dom: {
       quoteBoundaryMarkerClass: "tm-quote-boundary-marker",
@@ -325,6 +333,20 @@
       useRaw: true, // Don't trim — we want to detect "> " at line start
       eatBlankLinesBefore: 0,
       fallbackOnly: true, // Only use if no stronger reply/original-message boundary was found
+      // Require a RUN of consecutive ">"-prefixed lines starting here. A single
+      // ">>"-prefixed line is almost never a real quote (e.g. a newsletter
+      // "›› Read the full story" link rendered from "&gt;&gt;"); real quotes carry
+      // the marker on a run of lines. Mirrors the iOS collapseQuotesJS fallback.
+      multiLineCheck: function (lines, i, cfg) {
+        const minRun = (cfg && cfg.quotedFallbackMinConsecutiveLines) || 2;
+        for (let k = 0; k < minRun; k++) {
+          const idx = i + k;
+          if (idx >= lines.length) return false;
+          // Match the same trimStart() used for the boundary line itself (useRaw).
+          if (!/^>/.test((lines[idx] || "").trimStart())) return false;
+        }
+        return true;
+      },
     },
   ];
 

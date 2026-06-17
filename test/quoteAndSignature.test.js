@@ -530,3 +530,56 @@ describe('Apple Mail forward pattern', () => {
     expect(lines[result.lineIndex]).toMatch(/Begin forwarded message/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bare ">" quote fallback — must require a RUN of consecutive ">"-prefixed lines
+// (regression: Vancouver Sun newsletter ">> Read the full story" links were
+// falsely detected as a quote boundary, collapsing nearly the whole email).
+// Mirrors the iOS collapseQuotesJS fallback (2 consecutive ">" lines).
+// ---------------------------------------------------------------------------
+describe('quoted fallback requires consecutive ">" lines', () => {
+  it('does NOT treat a lone ">> ..." newsletter link as a quote', () => {
+    // A single ">>"-prefixed line surrounded by ordinary content.
+    const text = [
+      'Number of patients waiting to see a specialist climbs 10%',
+      '',
+      '>> Read the full story',
+      '',
+      'British Columbia',
+    ].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeNull();
+  });
+
+  it('does NOT treat several scattered ">> ..." links as a quote', () => {
+    // Multiple ">>"-prefixed links, but each isolated by non-quoted content.
+    const text = [
+      'Story one summary',
+      '>> Read the full story',
+      'Story two summary',
+      '>> Subscriber only',
+      'Story three summary',
+      '>> Try Puzzmo!',
+    ].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeNull();
+  });
+
+  it('still detects a genuine multi-line ">" quoted reply', () => {
+    const text = [
+      'Sure, sounds good.',
+      '',
+      '> Can we meet on Tuesday?',
+      '> Let me know what works.',
+    ].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).toBeDefined();
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(2);
+  });
+
+  it('honors config.quotedFallbackMinConsecutiveLines', () => {
+    expect(QD.config.quotedFallbackMinConsecutiveLines).toBe(2);
+  });
+});
