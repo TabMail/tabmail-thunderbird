@@ -46,8 +46,10 @@ async function applyActionIcon(forceUpdate = false) {
     // dedup and silently skip the correct icon on the next call.
     _lastIconPath = iconPath;
     if (browser.action.setTitle) {
+        // Trailing non-breaking spaces add a little gap before TB's own dropdown
+        // caret (regular trailing spaces get collapsed by the toolbar label).
         await browser.action.setTitle({
-            title: _warningActive ? "TabMail — action needed" : "TabMail",
+            title: _warningActive ? "TabMail — action needed  " : "TabMail",
         });
     }
 }
