@@ -4,72 +4,94 @@
 
 import { log } from "./utils.js";
 
-// Cache the last auth state to prevent unnecessary icon updates
-let _lastAuthState = null;
+// The toolbar action icon is a function of TWO independent inputs:
+//   • auth state   — connected (tab.svg) vs signed-out/unknown (tab-greyed.svg)
+//   • warning state — any "attention needed" condition adds a red dot
+//     (tab-warning.svg / tab-greyed-warning.svg)
+// We track both and recompute the effective icon whenever either changes.
+let _lastAuthState = null;   // true = logged in; false/null = logged out/unknown
+let _warningActive = false;  // true = show the red-dot "attention" icon
+let _lastIconPath = null;    // last applied path — avoids redundant setIcon (blinking)
+
+// Badge color (set via the WebExtension API, not CSS, so it can't reference the
+// palette vars). TB renders action badges inconsistently in the unified toolbar,
+// so the red-dot ICON variant is the primary signal and the badge is a bonus.
+const WARNING_BADGE_TEXT = "!";
+const WARNING_BADGE_BG_COLOR = "#D13A2B";
+
+function effectiveIconPath() {
+    // Falsy auth (null/false) → greyed, matching the original behavior.
+    const greyed = !_lastAuthState;
+    if (_warningActive) {
+        return greyed ? "icons/tab-greyed-warning.svg" : "icons/tab-warning.svg";
+    }
+    return greyed ? "icons/tab-greyed.svg" : "icons/tab.svg";
+}
+
+async function applyActionIcon(forceUpdate = false) {
+    if (!browser.action || !browser.action.setIcon) {
+        log("[Icon] Browser action API not available", "warn");
+        return;
+    }
+
+    const iconPath = effectiveIconPath();
+    if (!forceUpdate && _lastIconPath === iconPath) {
+        log("[Icon] Icon unchanged, skipping update");
+        return;
+    }
+    _lastIconPath = iconPath;
+
+    log(`[Icon] Setting icon to: ${iconPath} (auth=${_lastAuthState}, warning=${_warningActive})`);
+    await browser.action.setIcon({ path: iconPath });
+    if (browser.action.setTitle) {
+        await browser.action.setTitle({
+            title: _warningActive ? "TabMail — action needed" : "TabMail",
+        });
+    }
+}
 
 /**
- * Updates the toolbar icon based on authentication state
+ * Updates the toolbar icon based on authentication state.
  * @param {boolean} authState - Authentication state (true = logged in, false = logged out)
  * @param {boolean} [forceUpdate] - Force update even if state hasn't changed
  */
 export async function updateIconBasedOnAuthState(authState, forceUpdate = false) {
     try {
-        if (!browser.action || !browser.action.setIcon) {
-            log("[Icon] Browser action API not available", "warn");
-            return;
-        }
-
         log(`[Icon] updateIconBasedOnAuthState called (forceUpdate=${forceUpdate}, lastState=${_lastAuthState}, authState=${authState})`);
-        
-        // Skip update if state hasn't changed (prevents blinking)
-        if (!forceUpdate && _lastAuthState === authState) {
-            log("[Icon] State unchanged, skipping update");
-            return;
-        }
-        
         _lastAuthState = authState;
-        
-        const iconPath = authState ? "icons/tab.svg" : "icons/tab-greyed.svg";
-        const title = "TabMail";  // Icon color already indicates connection state
-
-        log(`[Icon] Setting icon to: ${iconPath}`);
-        await browser.action.setIcon({ path: iconPath });
-        if (browser.action.setTitle) {
-            await browser.action.setTitle({ title });
-        }
-
-        log(`[Icon] Toolbar icon updated successfully: ${authState ? "connected" : "disconnected"} state`);
+        await applyActionIcon(forceUpdate);
     } catch (e) {
         log(`[Icon] Failed to update toolbar icon: ${e}`, "error");
     }
 }
 
-// Toolbar badge shown when the native FTS search helper is not installed.
-// This is a WebExtension browserAction badge color (set via API, not CSS), so
-// it cannot reference the palette CSS variables — keep it a single named literal.
-const FTS_BADGE_TEXT = "!";
-const FTS_BADGE_BG_COLOR = "#C13A2B"; // attention red
-
 /**
- * Show or clear a badge on the toolbar action indicating the native full-text
- * search helper is missing and should be installed.
- * @param {boolean} missing - true to show the "needs install" badge, false to clear it
+ * Show or clear the toolbar "attention needed" indicator — a red dot baked into
+ * the icon (primary), plus a best-effort badge. Use for any condition the user
+ * should act on; currently the native search helper being missing.
+ * @param {boolean} active - true to show the warning indicator, false to clear it
  */
-export async function setFtsHelperBadge(missing) {
+export async function setActionWarning(active) {
+    _warningActive = !!active;
+
+    // Best-effort badge (TB renders these inconsistently — the icon is the
+    // reliable signal).
     try {
-        if (!browser.action || !browser.action.setBadgeText) {
-            log("[Icon] Badge API not available", "warn");
-            return;
+        if (browser.action && browser.action.setBadgeText) {
+            await browser.action.setBadgeText({ text: _warningActive ? WARNING_BADGE_TEXT : "" });
+            if (_warningActive && browser.action.setBadgeBackgroundColor) {
+                await browser.action.setBadgeBackgroundColor({ color: WARNING_BADGE_BG_COLOR });
+            }
         }
-
-        await browser.action.setBadgeText({ text: missing ? FTS_BADGE_TEXT : "" });
-        if (missing && browser.action.setBadgeBackgroundColor) {
-            await browser.action.setBadgeBackgroundColor({ color: FTS_BADGE_BG_COLOR });
-        }
-
-        log(`[Icon] FTS helper badge ${missing ? "shown" : "cleared"}`);
     } catch (e) {
-        log(`[Icon] Failed to set FTS helper badge: ${e}`, "error");
+        log(`[Icon] Failed to set action badge: ${e}`, "warn");
+    }
+
+    try {
+        await applyActionIcon();
+        log(`[Icon] Action warning ${_warningActive ? "shown" : "cleared"}`);
+    } catch (e) {
+        log(`[Icon] Failed to apply warning icon: ${e}`, "error");
     }
 }
 

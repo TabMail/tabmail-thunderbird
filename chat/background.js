@@ -7,7 +7,7 @@
 
 import { log } from "../agent/modules/utils.js";
 import { initFtsEngine, getFtsHelperAvailable } from "../fts/engine.js";
-import { setFtsHelperBadge } from "../agent/modules/icon.js";
+import { setActionWarning } from "../agent/modules/icon.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
 import { openOrFocusChatWindow } from "./modules/chatWindowUtils.js";
 import { handleMessageSelectionRequest, initMessageSelectionListener } from "./modules/messageSelection.js";
@@ -337,12 +337,12 @@ browser.storage.local.get({ chat_useFtsSearch: true }).then(async (stored) => {
       // Check if we need to run initial scan
       await checkAndRunInitialFtsScan();
 
-      // Surface a toolbar badge if the native search helper isn't installed.
-      try { await setFtsHelperBadge(getFtsHelperAvailable() === false); } catch (_) {}
+      // Flag the toolbar icon (red dot) if the native search helper isn't installed.
+      try { await setActionWarning(getFtsHelperAvailable() === false); } catch (_) {}
     } catch (e) {
       log(`[TMDBG Chat] FTS engine initialization failed: ${e}`, "error");
       // init threw — likely the helper is missing; flag it on the toolbar.
-      try { await setFtsHelperBadge(getFtsHelperAvailable() === false); } catch (_) {}
+      try { await setActionWarning(getFtsHelperAvailable() === false); } catch (_) {}
     }
   } else {
     log("[TMDBG Chat] FTS disabled by config");

@@ -29,7 +29,7 @@ globalThis.browser = {
 
 // We need a fresh import each time because the module has internal state (_lastAuthState)
 let updateIconBasedOnAuthState;
-let setFtsHelperBadge;
+let setActionWarning;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -55,7 +55,7 @@ beforeEach(async () => {
 
   const mod = await import('../agent/modules/icon.js');
   updateIconBasedOnAuthState = mod.updateIconBasedOnAuthState;
-  setFtsHelperBadge = mod.setFtsHelperBadge;
+  setActionWarning = mod.setActionWarning;
 });
 
 describe('updateIconBasedOnAuthState', () => {
@@ -97,21 +97,34 @@ describe('updateIconBasedOnAuthState', () => {
   });
 });
 
-describe('setFtsHelperBadge', () => {
-  it('shows the "!" badge with a background color when the helper is missing', async () => {
-    await setFtsHelperBadge(true);
+describe('setActionWarning', () => {
+  it('shows the red-dot warning icon (and "!" badge) when active', async () => {
+    await setActionWarning(true);
+    // Primary signal: a *-warning.svg icon variant.
+    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: expect.stringContaining('warning') });
+    // Best-effort badge.
     expect(browser.action.setBadgeText).toHaveBeenCalledWith({ text: '!' });
     expect(browser.action.setBadgeBackgroundColor).toHaveBeenCalledTimes(1);
   });
 
-  it('clears the badge and sets no color when the helper is present', async () => {
-    await setFtsHelperBadge(false);
+  it('reverts to a non-warning icon and clears the badge when cleared', async () => {
+    await setActionWarning(true);
+    vi.clearAllMocks();
+    await setActionWarning(false);
+    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: expect.not.stringContaining('warning') });
     expect(browser.action.setBadgeText).toHaveBeenCalledWith({ text: '' });
     expect(browser.action.setBadgeBackgroundColor).not.toHaveBeenCalled();
   });
 
-  it('no-ops safely when the badge API is unavailable', async () => {
+  it('keeps the connected icon when warning is active and signed in', async () => {
+    await updateIconBasedOnAuthState(true);
+    vi.clearAllMocks();
+    await setActionWarning(true);
+    expect(browser.action.setIcon).toHaveBeenCalledWith({ path: 'icons/tab-warning.svg' });
+  });
+
+  it('no-ops safely when the action API is unavailable', async () => {
     globalThis.browser = { action: {} };
-    await expect(setFtsHelperBadge(true)).resolves.toBeUndefined();
+    await expect(setActionWarning(true)).resolves.toBeUndefined();
   });
 });
