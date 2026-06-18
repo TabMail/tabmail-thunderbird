@@ -47,6 +47,28 @@ function resetForbiddenBackoff() {
   }
 }
 
+// Passive backend-health signal for the toolbar "server" warning (issue #12).
+// We derive server health as a side-effect of real completions traffic — NO
+// dedicated health poll. The state is written to storage.local; the background
+// (chat/background.js) owns setWarning("server") via a storage.onChanged
+// listener. llm.js runs in the chat/compose/config contexts (NOT the
+// background), so it must NOT call setWarning directly — that would mutate a
+// different icon.js module instance and clobber the toolbar.
+//
+// "Healthy" = the server responded (incl. 4xx/429 auth/throttle — reachable).
+// "Unhealthy" = we couldn't reach it (network error / connect timeout) or it
+// returned 5xx. We deliberately do NOT flip on 401/403/429 (auth/quota/rate
+// limit) so quota-exhausted users don't see a false "server down" dot.
+// _lastNotedServerHealthy dedups so steady-state traffic doesn't rewrite storage.
+let _lastNotedServerHealthy = null;
+function noteServerHealth(healthy) {
+  if (_lastNotedServerHealthy === healthy) return;
+  _lastNotedServerHealthy = healthy;
+  try {
+    browser.storage.local.set({ tabmailServerHealthy: healthy }).catch(() => {});
+  } catch (_) { /* non-fatal */ }
+}
+
 /**
  * Determines the appropriate endpoint type based on the system prompt.
  * 
@@ -713,6 +735,8 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
     if (!response.ok) {
       const { isAuthError, handleAuthError } = await import("./supabaseAuth.js");
       if (isAuthError(response)) {
+        // Server responded (401/403) — it's reachable, just an auth issue.
+        noteServerHealth(true);
         log(`[COMPLETIONS] Auth error detected (${response.status}), checking auth state`);
         const authResult = await handleAuthError(response);
         if (authResult === "consent_required") {
@@ -756,6 +780,9 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
           throw new Error(`Authentication required. Please sign in and try again.`);
         }
       } else {
+        // Server responded but with a non-auth error: 5xx = backend unhealthy,
+        // 4xx = reachable & healthy (bad request). Drives the "server" dot.
+        noteServerHealth(response.status < 500);
         const txt = await response.text();
         throw new Error(`Request failed: ${response.status} ${txt}`);
       }
@@ -763,6 +790,8 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
 
     // Success — reset 403 backoff
     resetForbiddenBackoff();
+    // Server responded OK — backend is reachable & healthy.
+    noteServerHealth(true);
   } catch (e) {
     // Check if this is a throttling-related error (normal behavior, not an error)
     const isThrottleError = e && e.message && (
@@ -774,6 +803,17 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
       log(`[COMPLETIONS] [THROTTLE] ${e.message}`, "warn");
     } else {
       log(`[COMPLETIONS] Request failed: ${e}`, "error");
+    }
+
+    // Passive "server" health: if the fetch never produced a response, we
+    // couldn't reach the backend (network error / connect-timeout) → unhealthy.
+    // Exclude USER-initiated aborts (external abortSignal) — those aren't a
+    // server outage. A connect-timeout sets internalAbortController.signal.aborted.
+    if (!response) {
+      const userAborted = e?.name === "AbortError" && !(internalAbortController?.signal.aborted);
+      if (!userAborted) {
+        noteServerHealth(false);
+      }
     }
 
     // Convert internal connection-timeout AbortError to a regular Error
@@ -1019,7 +1059,13 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
   return data;
 }
 
-export const _testExports = { checkForbiddenBackoff, recordForbidden, resetForbiddenBackoff, getEndpointType, readSSEStream };
+// Test-only: reset the passive server-health dedup so each test case starts from
+// a clean slate (the real signal dedups across the module's lifetime).
+function _resetServerHealthSignal() {
+  _lastNotedServerHealthy = null;
+}
+
+export const _testExports = { checkForbiddenBackoff, recordForbidden, resetForbiddenBackoff, getEndpointType, readSSEStream, noteServerHealth, _resetServerHealthSignal };
 
 /**
  * Process JSON response from LLM - strips markdown code fences and parses JSON.

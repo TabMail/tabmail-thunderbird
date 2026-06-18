@@ -8,6 +8,7 @@
 import { log } from "../agent/modules/utils.js";
 import { initFtsEngine, getFtsHelperAvailable, recheckFtsHelperAvailable } from "../fts/engine.js";
 import { setWarning } from "../agent/modules/icon.js";
+import { checkSetupConfiguration } from "../agent/modules/setupChecks.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
 import { openOrFocusChatWindow } from "./modules/chatWindowUtils.js";
 import { handleMessageSelectionRequest, initMessageSelectionListener } from "./modules/messageSelection.js";
@@ -413,6 +414,64 @@ browser.storage.local.get({ tabmailConsentRequired: false })
 browser.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.tabmailConsentRequired) {
     setWarning("consent", !!changes.tabmailConsentRequired.newValue).catch(() => {});
+  }
+});
+
+// ── Proactive "setup" toolbar warning (issue #12) ────────────────────────────
+// The popup computes the setup warning on open; mirror it proactively so the red
+// dot reflects setup issues (plaintext/calendar/address book) even before the
+// popup is opened, and clears the moment they're fixed. All inputs are local —
+// ZERO network. Uses the SAME shared checks the popup uses (setupChecks.js) so
+// the two contexts can't disagree.
+//
+// Known limitation (accepted): the per-identity compose_html pref has no
+// WebExtension change event, so flipping it directly in TB's Account Settings
+// won't update the dot until the next popup open / identity event / startup.
+// Calendar/address-book defaults and identity add/remove ARE event-driven below.
+async function syncSetupWarning() {
+  try {
+    const status = await checkSetupConfiguration();
+    await setWarning("setup", !status.allConfigured);
+  } catch (e) {
+    // On error, don't nag — mirror the popup's error path (popup.js updateSetupWarning).
+    log(`[Setup] syncSetupWarning failed (clearing warning): ${e}`, "warn");
+    try { await setWarning("setup", false); } catch (_) {}
+  }
+}
+
+// Evaluate once at startup (top-level so it runs on every background wake).
+syncSetupWarning();
+
+// Re-evaluate when the calendar / address-book defaults change (storage-driven).
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && (changes.defaultCalendarId || changes.defaultAddressBookId)) {
+    syncSetupWarning();
+  }
+});
+
+// Re-evaluate when identities/accounts are added or removed (a new identity may
+// default to HTML compose). Non-async listeners (TB rule 4); feature-detected.
+for (const evt of [
+  browser.accounts?.onCreated,
+  browser.accounts?.onDeleted,
+  browser.identities?.onCreated,
+  browser.identities?.onDeleted,
+  browser.identities?.onUpdated,
+]) {
+  try { evt?.addListener(() => { syncSetupWarning(); }); } catch (_) {}
+}
+
+// ── Proactive "server" toolbar warning (issue #12) ───────────────────────────
+// The backend health state is derived PASSIVELY from real API traffic (see
+// agent/modules/llm.js), which writes `tabmailServerHealthy` to storage — NO new
+// health-poll requests. The popup also writes this key on its on-open /health
+// check. The background is the single authoritative writer of setWarning("server").
+browser.storage.local.get({ tabmailServerHealthy: true })
+  .then((s) => setWarning("server", s.tabmailServerHealthy === false))
+  .catch(() => {});
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.tabmailServerHealthy) {
+    setWarning("server", changes.tabmailServerHealthy.newValue === false).catch(() => {});
   }
 });
 

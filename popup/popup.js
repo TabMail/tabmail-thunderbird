@@ -4,6 +4,7 @@
 
 import { getBackendUrl, SETTINGS } from "../agent/modules/config.js";
 import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
+import { checkSetupConfiguration } from "../agent/modules/setupChecks.js";
 
 // Popup typography: prefer native Thunderbird/system UI font stack + sizing.
 // We still inject TabMail palette colors, but avoid async font-size CSS vars here to prevent flicker.
@@ -148,6 +149,12 @@ async function checkServerHealth() {
  */
 function showServerStatusWarning(show) {
   reportWarning("server", show);
+  // Also persist the health state so the background keeps the toolbar "server"
+  // dot in sync proactively (issue #12). The background owns setWarning("server")
+  // via a storage.onChanged listener — same pattern as "consent".
+  try {
+    browser.storage.local.set({ tabmailServerHealthy: !show }).catch(() => {});
+  } catch (_) { /* non-fatal */ }
   const warningDiv = document.getElementById("server-status-warning");
   const statusLink = document.getElementById("server-status-link");
 
@@ -220,118 +227,10 @@ async function updateDebugModeIndicator() {
 // Update debug mode indicator on popup open
 updateDebugModeIndicator();
 
-// Setup configuration checks
-async function checkPlaintextComposition() {
-  try {
-    if (!browser.tmPrefs) {
-      return { configured: false, reason: "tmPrefs API not available" };
-    }
-
-    const accounts = await browser.accounts.list();
-    const problematicIdentities = [];
-
-    for (const account of accounts) {
-      if (!account.identities || account.identities.length === 0) continue;
-
-      for (const identity of account.identities) {
-        const identityId = identity.id;
-        const prefName = `mail.identity.${identityId}.compose_html`;
-        
-        try {
-          // Default to true (HTML) if pref doesn't exist, as that's Thunderbird's default
-          const composeHtml = await browser.tmPrefs.getBoolSafe(prefName, true);
-          const identityName = identity.name || identity.email || `Identity ${identityId}`;
-          
-          console.log(`[Popup] Identity ${identityId} (${identityName}): compose_html = ${composeHtml}`);
-          
-          if (composeHtml === true) {
-            problematicIdentities.push(identityName);
-          }
-        } catch (e) {
-          // If we can't read, assume HTML (Thunderbird's default) - flag as problematic
-          const identityName = identity.name || identity.email || `Identity ${identityId}`;
-          console.warn(`[Popup] Failed to read compose_html for identity ${identityId}:`, e);
-          problematicIdentities.push(identityName);
-        }
-      }
-    }
-
-    return {
-      configured: problematicIdentities.length === 0,
-      problematicIdentities,
-    };
-  } catch (e) {
-    console.warn("[Popup] Failed to check plaintext composition:", e);
-    return { configured: false, reason: e.message || String(e) };
-  }
-}
-
-async function checkDefaultCalendar() {
-  try {
-    const { defaultCalendarId } = await browser.storage.local.get({ defaultCalendarId: null });
-    
-    // Auto-detection is done on addon startup in background.js
-    // Here we just check if a default is set
-    return {
-      configured: defaultCalendarId !== null && defaultCalendarId !== "",
-    };
-  } catch (e) {
-    console.warn("[Popup] Failed to check default calendar:", e);
-    return { configured: false, reason: e.message || String(e) };
-  }
-}
-
-async function checkDefaultAddressBook() {
-  try {
-    const { defaultAddressBookId } = await browser.storage.local.get({ defaultAddressBookId: null });
-    
-    // Don't auto-select address books - we can't reliably match them to accounts
-    // Let the user configure this manually in settings
-    
-    return {
-      configured: defaultAddressBookId !== null && defaultAddressBookId !== "",
-    };
-  } catch (e) {
-    console.warn("[Popup] Failed to check default address book:", e);
-    return { configured: false, reason: e.message || String(e) };
-  }
-}
-
-async function checkSetupConfiguration() {
-  const [plaintextCheck, calendarCheck, addressBookCheck] = await Promise.all([
-    checkPlaintextComposition(),
-    checkDefaultCalendar(),
-    checkDefaultAddressBook(),
-  ]);
-
-  const issues = [];
-  
-  if (!plaintextCheck.configured) {
-    if (plaintextCheck.problematicIdentities && plaintextCheck.problematicIdentities.length > 0) {
-      issues.push(`Plaintext composition not set for: ${plaintextCheck.problematicIdentities.join(", ")}`);
-    } else {
-      issues.push("Plaintext composition not configured for all email identities");
-    }
-  }
-
-  if (!calendarCheck.configured) {
-    issues.push("Default calendar not set");
-  }
-
-  if (!addressBookCheck.configured) {
-    issues.push("Default address book not set");
-  }
-
-  return {
-    allConfigured: issues.length === 0,
-    issues,
-    details: {
-      plaintext: plaintextCheck,
-      calendar: calendarCheck,
-      addressBook: addressBookCheck,
-    },
-  };
-}
+// Setup configuration checks (checkPlaintextComposition / checkDefaultCalendar /
+// checkDefaultAddressBook / checkSetupConfiguration) now live in the shared
+// ../agent/modules/setupChecks.js module so the background can compute the
+// "setup" toolbar warning identically to the popup (issue #12).
 
 /**
  * Forces all identities to use plaintext composition.
