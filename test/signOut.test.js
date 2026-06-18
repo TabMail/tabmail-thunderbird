@@ -200,17 +200,23 @@ describe("signOut security cleanup", () => {
     expect(storageData["prompt_history_migrated"]).toBeUndefined();
   });
 
-  it("clears consent and calendar state", async () => {
+  it("clears consent state but PRESERVES the default calendar", async () => {
+    // defaultCalendarId points at a LOCAL Thunderbird calendar (not sensitive
+    // account data) — clearing it just nagged the user to reconfigure after
+    // every sign-out, and auto-detect can't recover a calendar with no
+    // organizer_email. It must survive sign-out (like defaultAddressBookId).
     setStorage({
       supabaseSession: { access_token: "tok" },
       "tabmailConsentRequired": false,
       "defaultCalendarId": "cal-123",
+      "defaultAddressBookId": "ab-9",
     });
 
     await signOut();
 
     expect(storageData["tabmailConsentRequired"]).toBeUndefined();
-    expect(storageData["defaultCalendarId"]).toBeUndefined();
+    expect(storageData["defaultCalendarId"]).toBe("cal-123");
+    expect(storageData["defaultAddressBookId"]).toBe("ab-9");
   });
 
   it("returns true even if deviceSync cleanup fails", async () => {

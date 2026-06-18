@@ -663,9 +663,15 @@ export async function signOut() {
       // Prompt history
       "prompt_history",
       "prompt_history_migrated",
-      // Consent & calendar
+      // Consent (per-TabMail-account, must be re-evaluated for the next user)
       "tabmailConsentRequired",
-      "defaultCalendarId",
+      // NOTE: defaultCalendarId is intentionally NOT cleared. It points at a
+      // LOCAL Thunderbird calendar in this profile — not sensitive account data
+      // (the next user can already see/use every calendar regardless of login),
+      // so there's nothing to "leak". Clearing it just nagged the user to
+      // reconfigure after every sign-out (and auto-detect can't recover a
+      // calendar with no organizer_email). defaultAddressBookId — more sensitive
+      // — was never cleared here either, which is the correct treatment.
     ];
     try {
       await browser.storage.local.remove(userStorageKeys);
