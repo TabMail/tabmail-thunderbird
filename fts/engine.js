@@ -551,6 +551,12 @@ export function getFtsHelperAvailable() {
   return nativeFtsSearch.getHostAvailability();
 }
 
+// Force a fresh probe (bypasses the reconnect cooldown) so a just-installed
+// helper is detected without restarting Thunderbird. Returns true if connected.
+export async function recheckFtsHelperAvailable() {
+  return nativeFtsSearch.recheckAvailability();
+}
+
 export async function disposeFtsEngine() {
   try {
     log("[TMDBG FTS] Disposing FTS engine");

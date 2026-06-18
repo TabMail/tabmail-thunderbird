@@ -629,6 +629,24 @@ export const nativeFtsSearch = {
   getHostAvailability() {
     return ftsHostAvailable;
   },
+
+  // Force a fresh availability probe, bypassing the reconnect cooldown. Lets a
+  // helper that was just installed (e.g. via the one-click installer) be picked
+  // up WITHOUT restarting Thunderbird — native-messaging hosts are resolved at
+  // connectNative() time, so no TB restart is required. Called by UI surfaces
+  // (popup / settings) and the periodic recheck. Returns true once connected.
+  async recheckAvailability() {
+    if (nativePort) return true;
+    // Already known-present and connecting/connected elsewhere — don't disturb.
+    // Reset the cooldown so initNativeFts() actually re-attempts right now.
+    lastConnectAttemptMs = 0;
+    try {
+      await initNativeFts();
+    } catch (_) {
+      // initNativeFts() sets ftsHostAvailable = false on failure; nothing to do.
+    }
+    return ftsHostAvailable === true;
+  },
   
   // Mark current schema version as indexed (call after successful reindex)
   async markVersionAsIndexed() {

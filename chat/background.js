@@ -6,7 +6,7 @@
 // Thunderbird 140 MV3 compatible.
 
 import { log } from "../agent/modules/utils.js";
-import { initFtsEngine, getFtsHelperAvailable } from "../fts/engine.js";
+import { initFtsEngine, getFtsHelperAvailable, recheckFtsHelperAvailable } from "../fts/engine.js";
 import { setWarning } from "../agent/modules/icon.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
 import { openOrFocusChatWindow } from "./modules/chatWindowUtils.js";
@@ -300,6 +300,58 @@ async function getFtsScanStatus() {
   }
 }
 
+// ── Native-FTS helper auto-detect (NO Thunderbird restart required) ──────────
+// Native-messaging hosts resolve at connectNative() time, so a helper installed
+// mid-session (e.g. via the one-click installer) is picked up WITHOUT restarting
+// Thunderbird. We surface that by (a) actively re-probing whenever a UI surface
+// asks "is FTS available?" and (b) a 1-min alarm that re-probes while the helper
+// is known-missing and clears the red dot on its own once it appears.
+const FTS_RECHECK_ALARM = "tabmail-fts-helper-recheck";
+
+// Sync the toolbar "fts" warning to current availability, and arm/disarm the
+// periodic recheck alarm (armed only while the helper is known-missing).
+async function syncFtsWarning() {
+  const avail = getFtsHelperAvailable();
+  try { await setWarning("fts", avail === false); } catch (_) {}
+  try {
+    if (avail === false) {
+      browser.alarms.create(FTS_RECHECK_ALARM, { periodInMinutes: 1 });
+    } else if (avail === true) {
+      browser.alarms.clear(FTS_RECHECK_ALARM);
+    }
+  } catch (_) {}
+}
+
+// Active availability probe for UI surfaces (popup banner / settings CTA). If the
+// helper is known-missing, force a fresh re-probe (bypassing the reconnect
+// cooldown); when it newly appears, run the same idempotent initial-scan check
+// the startup path does so indexing kicks in without a restart. Returns fresh
+// availability and keeps the toolbar warning in sync.
+async function probeFtsAvailability() {
+  let available = getFtsHelperAvailable();
+  if (available === false) {
+    try {
+      available = await recheckFtsHelperAvailable();
+      if (available) {
+        try { await checkAndRunInitialFtsScan(); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+  await syncFtsWarning();
+  return { available };
+}
+
+// Periodic auto-detect while the helper is missing. Non-async listener; guards on
+// alarm name + known-missing, and self-disarms once the helper is present.
+browser.alarms.onAlarm.addListener((alarm) => {
+  if (!alarm || alarm.name !== FTS_RECHECK_ALARM) return;
+  if (getFtsHelperAvailable() !== false) {
+    try { browser.alarms.clear(FTS_RECHECK_ALARM); } catch (_) {}
+    return;
+  }
+  probeFtsAvailability().catch(() => {});
+});
+
 // Initialize FTS engine FIRST (before other listeners) if enabled
 browser.storage.local.get({ chat_useFtsSearch: true }).then(async (stored) => {
   if (stored.chat_useFtsSearch) {
@@ -337,12 +389,13 @@ browser.storage.local.get({ chat_useFtsSearch: true }).then(async (stored) => {
       // Check if we need to run initial scan
       await checkAndRunInitialFtsScan();
 
-      // Flag the toolbar icon (red dot) if the native search helper isn't installed.
-      try { await setWarning("fts", getFtsHelperAvailable() === false); } catch (_) {}
+      // Flag the toolbar icon (red dot) if the native search helper isn't
+      // installed, and arm the periodic auto-detect so it clears without a restart.
+      await syncFtsWarning();
     } catch (e) {
       log(`[TMDBG Chat] FTS engine initialization failed: ${e}`, "error");
-      // init threw — likely the helper is missing; flag it on the toolbar.
-      try { await setWarning("fts", getFtsHelperAvailable() === false); } catch (_) {}
+      // init threw — likely the helper is missing; flag it + arm auto-detect.
+      await syncFtsWarning();
     }
   } else {
     log("[TMDBG Chat] FTS disabled by config");
@@ -428,14 +481,14 @@ function setupRuntimeMessageListener() {
     }
 
     // Handle FTS availability requests (is the native search helper installed?).
-    // Returns { available: true | false | null } — null = not yet determined.
+    // Actively re-probes when known-missing so a just-installed helper is picked
+    // up without restarting Thunderbird. Returns { available: true|false|null }.
     if (message && message.command === "getFtsAvailability") {
-      try {
-        return Promise.resolve({ available: getFtsHelperAvailable() });
-      } catch (e) {
+      // NOTE: non-async listener — return the probe promise (TB rule 4).
+      return probeFtsAvailability().catch((e) => {
         log(`[Chat Background] Failed to get FTS availability: ${e}`, "error");
-        return Promise.resolve({ available: null });
-      }
+        return { available: getFtsHelperAvailable() };
+      });
     }
 
     // Set/clear a keyed toolbar warning (red dot). The popup reports its own
