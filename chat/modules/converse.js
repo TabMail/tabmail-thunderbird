@@ -83,8 +83,47 @@ export async function awaitUserInput() {
  * Retry the last user message after an error.
  * Removes the error bubble and resends the last message.
  */
+/**
+ * Resume a turn that was cut off in transit. Re-enters the tool loop from the
+ * preserved conversation_state (carried in ctx.resumeState), so every completed
+ * tool call and prior round's thinking is reused — nothing is re-executed and
+ * the user's message is NOT re-sent. Reuses getAgentResponse's full machinery
+ * (tool execution, bubbles, assistant-turn persistence).
+ */
+async function resumeInterruptedTurn() {
+  const resume = ctx.resumeState;
+  ctx.resumeState = null;
+
+  // Remove the "Connection lost. Tap to retry." system bubble (keep everything
+  // else — the user message and any rendered tool bubbles stay).
+  const container = document.getElementById("chat-container");
+  if (container) {
+    const systemBubbles = container.querySelectorAll(".system-message");
+    if (systemBubbles.length > 0) {
+      systemBubbles[systemBubbles.length - 1].remove();
+    }
+  }
+
+  ctx.canRetry = false;
+  if (window.tmUpdateRetryVisibility) window.tmUpdateRetryVisibility();
+
+  log(`[TMDBG Converse] Resuming interrupted turn (has_state=${!!resume?.conversationState})`);
+  // Continue from the saved conversation_state against the same canonical
+  // message array used by the original turn.
+  await getAgentResponse(ctx.agentConverseMessages, 0, null, resume?.conversationState || null);
+}
+
 export async function retryLastMessage() {
   try {
+    // RESUME path: a turn was cut off in transit and we kept the last good
+    // conversation_state. Continue it from there — do NOT remove the user
+    // message/turn, do NOT re-send. This is distinct from the re-send/fork
+    // pathways below (which restart from the user message).
+    if (ctx.resumeState) {
+      await resumeInterruptedTurn();
+      return;
+    }
+
     const lastMessage = ctx.lastUserMessage;
     if (!lastMessage) {
       log(`[TMDBG Converse] No last message to retry`, "warn");
@@ -332,6 +371,7 @@ export async function agentConverse(userText) {
     // Track last user message for retry functionality
     ctx.lastUserMessage = userText;
     ctx.canRetry = false; // Reset retry state at start of new message
+    ctx.resumeState = null; // A fresh send abandons any interrupted-turn resume
     log(`[TMDBG Converse] Tracked last user message for retry: "${userText.substring(0, 50)}..."`);
 
     // Reset tool pagination sessions at the start of each converse turn
@@ -428,7 +468,7 @@ export async function agentConverse(userText) {
 // (Removed tool return initializer)
 
 // Main conversation loop - turn-based approach
-async function getAgentResponse(messages, retryCount = 0, existingBubble = null) {
+async function getAgentResponse(messages, retryCount = 0, existingBubble = null, conversationState = null) {
   const maxRetries = CHAT_SETTINGS?.llmEmptyResponseMaxRetries ?? 5;
   
   // Reuse existing bubble on retries, create new one only on first attempt
@@ -778,6 +818,9 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
         disableTools: false,
         abortController: chatAbortController,
         onToolExecution: onToolExecution,
+        // RESUME: non-null only when continuing a turn cut off in transit — the
+        // backend picks up from the preserved tool rounds. null for normal sends.
+        conversation_state: conversationState,
       });
     }
     
@@ -869,7 +912,41 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
     // Note: stopExecution() already added "User stopped execution" system message
     return;
   }
-  
+
+  // Connection lost mid-turn (stream cut in transit). Offer a RESUME that
+  // continues from the preserved conversation_state — completed tool calls and
+  // prior thinking are kept and NOT re-run. Intercepts before the generic error
+  // path below (which would restart from the user message). Separate from the
+  // re-send/fork actions on user messages.
+  if (resp?.connection_lost) {
+    try {
+      agentBubble.remove();
+    } catch (_) {}
+    ctx.resumeState = { conversationState: resp.resume_conversation_state || null };
+    try {
+      const systemBubble = appendSystemBubble();
+      const errorSpan = document.createElement("span");
+      errorSpan.textContent = "Connection lost. ";
+      const retryLink = document.createElement("a");
+      retryLink.textContent = "Tap to retry";
+      retryLink.href = "#";
+      retryLink.className = "retry-link";
+      retryLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (window.tmRetryLastMessage) window.tmRetryLastMessage();
+      });
+      const bubbleContent = systemBubble.querySelector(".bubble-content") || systemBubble;
+      bubbleContent.appendChild(errorSpan);
+      bubbleContent.appendChild(retryLink);
+      ctx.canRetry = true;
+      if (window.tmUpdateRetryVisibility) window.tmUpdateRetryVisibility();
+      log(`[CONVERSE] Connection lost — armed resume (has_state=${!!resp.resume_conversation_state})`);
+    } catch (e) {
+      log(`[CONVERSE] Failed to create connection-lost bubble: ${e}`, "warn");
+    }
+    return;
+  }
+
   const assistantText = resp?.assistant || "";
   if (resp?.token_usage) {
     updateConversationTokenUsage(resp.token_usage);
@@ -890,8 +967,11 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null)
       `[EMPTY_RESPONSE_RETRY_${retryCount}]`
     );
 
-    // Immediately retry, passing the existing bubble to reuse (loading spinner still active)
-    return getAgentResponse(messages, nextRetry, agentBubble);
+    // Immediately retry, passing the existing bubble to reuse (loading spinner still active).
+    // Thread conversationState through so an empty response DURING A RESUME keeps the
+    // saved tool-round state — otherwise the silent retry would restart from scratch and
+    // re-execute already-completed (possibly side-effecting) tools.
+    return getAgentResponse(messages, nextRetry, agentBubble, conversationState);
   }
 
   try {

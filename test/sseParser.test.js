@@ -22,7 +22,7 @@ globalThis.browser = {
 globalThis.window = globalThis.window || {};
 
 const { _testExports } = await import('../agent/modules/llm.js');
-const { readSSEStream } = _testExports;
+const { readSSEStream, buildConnectionLostResult } = _testExports;
 
 // Build a Response-like object whose body.getReader() streams pre-chunked bytes.
 function mockSSEResponse(chunks) {
@@ -83,5 +83,69 @@ describe('SSE parser — primer handling', () => {
     ]);
     const result = await readSSEStream(response);
     expect(result).toEqual({ done: true });
+  });
+});
+
+// Truncation / connection-lost trigger. A stream that ends without a parseable
+// `final` event must REJECT (not silently resolve). sendChatCompletions catches
+// this throw and returns { connection_lost: true, resume_conversation_state },
+// which drives the "Connection lost. Tap to retry." resume affordance. If
+// readSSEStream ever started resolving for these, the resume path would break.
+describe('SSE parser — truncation / connection lost', () => {
+  it('rejects when the stream ends with no final event', async () => {
+    const response = mockSSEResponse([
+      'event: keepalive\ndata: {}\n\n',
+      'event: tool_started\ndata: {"tool_name":"search"}\n\n',
+    ]);
+    await expect(readSSEStream(response)).rejects.toThrow(/Connection lost/);
+  });
+
+  it('rejects when the final event JSON is cut mid-token (truncated in transit)', async () => {
+    // The `final` event's data line is incomplete JSON and the stream ends —
+    // JSON.parse fails, no finalResponse is set, so the stream is "lost".
+    const response = mockSSEResponse([
+      'event: keepalive\ndata: {}\n\n',
+      'event: final\ndata: {"assistant":"here is the long ans',
+    ]);
+    await expect(readSSEStream(response)).rejects.toThrow();
+  });
+
+  it('still resolves a complete final even after intermediate tool events', async () => {
+    // Guard the other direction: a well-formed final must NOT be misclassified
+    // as a connection loss just because tool events preceded it.
+    const response = mockSSEResponse([
+      'event: tool_started\ndata: {"tool_name":"search"}\n\n',
+      'event: final\ndata: {"assistant":"done"}\n\n',
+    ]);
+    const result = await readSSEStream(response);
+    expect(result).toEqual({ assistant: 'done' });
+  });
+});
+
+// The catch around readSSEStream wraps the throw into this resumable result, which
+// drives converse.js's "Connection lost. Tap to retry." resume. The resume re-runs
+// the failed round from resume_conversation_state, so it MUST be the level's own
+// input state (carrying completed tool rounds), not dropped.
+describe('buildConnectionLostResult — resumable wrapping', () => {
+  it('surfaces the request level input conversation_state as the resume checkpoint', () => {
+    const state = { harmony_messages: [{ role: 'tool', content: '{}' }], current_round: 2 };
+    const result = buildConnectionLostResult({ messages: [], conversation_state: state }, new Error('boom'));
+    expect(result.connection_lost).toBe(true);
+    expect(result.resume_conversation_state).toBe(state);
+    expect(result.err).toContain('boom');
+  });
+
+  it('resume_conversation_state is null on the first round (no saved state yet)', () => {
+    // Truncation before any tool round: nothing to resume from → restart fallback.
+    const result = buildConnectionLostResult({ messages: [] }, new Error('cut'));
+    expect(result.connection_lost).toBe(true);
+    expect(result.resume_conversation_state).toBeNull();
+  });
+
+  it('tolerates a non-Error throw value', () => {
+    const result = buildConnectionLostResult({ conversation_state: null }, 'plain string');
+    expect(result.connection_lost).toBe(true);
+    expect(result.resume_conversation_state).toBeNull();
+    expect(result.err).toContain('plain string');
   });
 });

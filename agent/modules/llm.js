@@ -505,9 +505,27 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000, abortSigna
 }
 
 /**
+ * Build the resumable "connection lost" result returned when an SSE stream is cut
+ * in transit. Surfaces THIS request level's input conversation_state as the resume
+ * checkpoint (the last good state, carrying every completed tool round). Pure so it
+ * can be unit-tested without the fetch/auth machinery around it.
+ *
+ * @param {Object} payload - The request payload for the level that failed.
+ * @param {Error} error - The thrown stream error.
+ * @returns {{err: string, connection_lost: true, resume_conversation_state: Object|null}}
+ */
+function buildConnectionLostResult(payload, error) {
+  return {
+    err: `SSE stream failed: ${error?.message || String(error)}`,
+    connection_lost: true,
+    resume_conversation_state: payload?.conversation_state || null,
+  };
+}
+
+/**
  * Send a turn-based chat request.
  * Handles tool execution loop automatically.
- * 
+ *
  * @param {Object} payload - Request payload
  * @param {Array} payload.messages - Chat messages
  * @param {Array} [payload.tools] - Optional client-side tools
@@ -941,8 +959,12 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
         log(`[COMPLETIONS] SSE stream aborted by user`, "info");
         throw e;
       }
+      // Stream cut in transit (truncated `final` → JSON.parse threw, or stream
+      // ended with no `final`). Mark it resumable and surface THIS level's input
+      // conversation_state — the last good checkpoint, already carrying every
+      // completed tool round. The caller re-runs only the failed round.
       log(`[COMPLETIONS] SSE stream failed: ${e}`, "error");
-      return { err: `SSE stream failed: ${e.message || String(e)}` };
+      return buildConnectionLostResult(payload, e);
     }
   }
   
@@ -1065,7 +1087,7 @@ function _resetServerHealthSignal() {
   _lastNotedServerHealthy = null;
 }
 
-export const _testExports = { checkForbiddenBackoff, recordForbidden, resetForbiddenBackoff, getEndpointType, readSSEStream, noteServerHealth, _resetServerHealthSignal };
+export const _testExports = { checkForbiddenBackoff, recordForbidden, resetForbiddenBackoff, getEndpointType, readSSEStream, buildConnectionLostResult, noteServerHealth, _resetServerHealthSignal };
 
 /**
  * Process JSON response from LLM - strips markdown code fences and parses JSON.
@@ -1409,6 +1431,7 @@ export async function sendChat(
     disableTools = true,
     abortController = null,
     onToolExecution = null,
+    conversation_state = null,
   } = {}
 ) {
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -1421,6 +1444,10 @@ export async function sendChat(
     client_timestamp_ms: Date.now(),
     disable_tools: disableTools,
     ...(!disableTools && { client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+    // RESUME: when a prior turn was cut off in transit, the caller passes the
+    // last good conversation_state so the backend continues from completed tool
+    // rounds instead of restarting. Omitted (no key) for normal sends.
+    ...(conversation_state && { conversation_state }),
   };
 
   let acquired = false;
