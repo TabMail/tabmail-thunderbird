@@ -19,6 +19,20 @@
             <div id="usage-reset">Resets N/A</div>
             <div id="subscription-status" style="display: none;"></div>
         </div>
+        <div id="upgrade-pro-warning" style="display: none; margin: 8px 0; padding: 12px; background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent); border-left: 4px solid var(--tag-tm-archive); border-radius: 4px;">
+            <strong style="color: var(--tag-tm-archive); display: block; margin-bottom: 6px;">⚡ Monthly AI usage reached</strong>
+            <div style="font-size: 0.9em; margin-bottom: 8px;">
+                Background AI processing may slow down. Upgrade to Pro for full-speed processing.
+            </div>
+            <button id="upgrade-to-pro-from-warning" style="padding: 6px 12px; background-color: var(--tag-tm-archive); color: white; border: none; border-radius: 4px; cursor: pointer;">Upgrade to Pro →</button>
+        </div>
+        <div id="byok-setup-warning" style="display: none; margin: 8px 0; padding: 12px; background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent); border-left: 4px solid var(--tag-tm-archive); border-radius: 4px;">
+            <strong style="color: var(--tag-tm-archive); display: block; margin-bottom: 6px;">🔑 AI processing may slow down</strong>
+            <div style="font-size: 0.9em; margin-bottom: 8px;">
+                You’re on the shared queue. Set up your own AI provider for full-speed processing.
+            </div>
+            <button id="setup-byok-from-warning" style="padding: 6px 12px; background-color: var(--tag-tm-archive); color: white; border: none; border-radius: 4px; cursor: pointer;">Set up your API keys →</button>
+        </div>
         <div id="auth-status-container">
             <div id="auth-status-text">Checking signin...</div>
             <button id="auth-action-btn" disabled>Sign out</button>

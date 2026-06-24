@@ -931,6 +931,24 @@
       </div>
     </section>
 
+    <section id="billing-banner-debug-settings" class="debug-only" style="display: none;">
+      <h3>Billing Banner (Debug)</h3>
+      <div class="field">
+        <label>Current Override</label>
+        <div id="billing-banner-debug-status">
+          <span id="billing-banner-debug-state">Checking...</span>
+        </div>
+      </div>
+      <div class="row">
+        <button id="billing-banner-debug-upgrade" title="Force the &quot;Upgrade to Pro&quot; nudge in the toolbar popup">Force "Upgrade to Pro"</button>
+        <button id="billing-banner-debug-byok" title="Force the &quot;Set up your API keys&quot; nudge in the toolbar popup">Force "Set up your API keys"</button>
+        <button id="billing-banner-debug-clear" title="Clear the override and restore real plan/quota behavior">Clear Override</button>
+      </div>
+      <div class="field">
+        <small>Forces the toolbar popup's billing nudge so you can preview it without a real over-quota / BYOK account. Lights the toolbar red dot immediately; open the toolbar popup to see the banner and its navigation (Upgrade → plan page; Set up your API keys → this page's "Use your own AI keys" section). "Clear Override" restores the real <code>/whoami</code>-driven behavior. The override is local to this device.</small>
+      </div>
+    </section>
+
     <section id="welcome-wizard-settings" class="debug-only" style="display: none;">
       <h3>Welcome Wizard (Debug)</h3>
       <div class="field">

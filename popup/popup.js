@@ -5,6 +5,8 @@
 import { getBackendUrl, SETTINGS } from "../agent/modules/config.js";
 import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
 import { checkSetupConfiguration } from "../agent/modules/setupChecks.js";
+import { bannerFromWhoami, isZeroQuotaPlan } from "../agent/modules/billingBanner.js";
+import { buildByokPayload } from "../agent/modules/byokStorage.js";
 
 // Popup typography: prefer native Thunderbird/system UI font stack + sizing.
 // We still inject TabMail palette colors, but avoid async font-size CSS vars here to prevent flicker.
@@ -342,37 +344,48 @@ async function updateSetupWarning() {
 updateSetupWarning();
 
 // Update quota usage display based on whoami data
-function updateQuotaDisplay(whoamiData) {
+async function updateQuotaDisplay(whoamiData) {
   const progressBar = document.getElementById("usage-bar");
   const usageLabel = document.getElementById("usage-label");
   const resetLabel = document.getElementById("usage-reset");
   const subscriptionStatus = document.getElementById("subscription-status");
-  
+
   if (!progressBar || !usageLabel || !resetLabel) return;
-  
+
   // Update subscription status (cancel/downgrade schedule)
   if (subscriptionStatus) {
     updateSubscriptionStatus(subscriptionStatus, whoamiData);
   }
-  
+
   if (!whoamiData || !whoamiData.logged_in || !whoamiData.has_subscription) {
     // Not logged in or no subscription - show placeholder (always two lines)
+    progressBar.style.display = "";
     progressBar.value = 0;
     usageLabel.textContent = "Monthly usage: N/A";
     usageLabel.style.color = "";
     resetLabel.textContent = "Resets N/A";
     return;
   }
-  
+
+  // BYOK / zero-quota plan has NO priority budget, so a "% of monthly quota" is
+  // meaningless (it always reads 0% / Slow) — the quota is zero, not infinite.
+  // Show "N/A of monthly quota" (parity with iOS). The "byok" debug override also
+  // forces this so it can be previewed without a real BYOK account.
+  const { tabmailBillingBannerDebug } = await browser.storage.local.get({
+    tabmailBillingBannerDebug: null,
+  });
+  const zeroQuota = isZeroQuotaPlan(whoamiData) || tabmailBillingBannerDebug === "byok";
+
   const quotaPercentage = whoamiData.quota_percentage ?? 0;
   const queueMode = whoamiData.queue_mode ?? null;
   const billingPeriodEnd = whoamiData.billing_period_end ?? null;
-  
-  console.log(`[Quota] Received from whoami - percentage: ${quotaPercentage}, mode: ${queueMode}, billing_period_end: ${billingPeriodEnd}`);
-  
-  // Update progress bar
+
+  console.log(`[Quota] Received from whoami - percentage: ${quotaPercentage}, mode: ${queueMode}, billing_period_end: ${billingPeriodEnd}, zeroQuota: ${zeroQuota}`);
+
+  // Update progress bar (hidden when N/A — there's no percentage to show)
+  progressBar.style.display = zeroQuota ? "none" : "";
   progressBar.value = quotaPercentage;
-  
+
   // Format reset/cancel/downgrade date text
   // Priority: cancellation > downgrade > reset date
   const pendingCancellation = whoamiData.pending_cancellation;
@@ -411,33 +424,113 @@ function updateQuotaDisplay(whoamiData) {
     console.log(`[Quota] No billing_period_end available, showing Resets N/A`);
   }
   
-  // Update usage label with queue mode indicator
-  let queueIndicator = "";
-  if (queueMode === "fast") {
-    queueIndicator = " (Fast)";
-  } else if (queueMode === "slow") {
-    queueIndicator = " (Slow)";
-  } else if (queueMode === "blocked") {
-    queueIndicator = " (Blocked)";
+  // For the zero-quota (BYOK) plan there's no quota to "reset" — only keep the
+  // line when it's a pending cancellation/downgrade (still relevant billing info).
+  if (zeroQuota && !pendingCancellation && !pendingDowngrade) {
+    resetText = "";
+    resetColor = "";
   }
-  
-  // IMPORTANT: "Monthly usage" quota is an internal cost cap (max_monthly_cost_cents) determined by the backend.
-  // It is NOT the Stripe plan price.
-  usageLabel.textContent = `${quotaPercentage}% of monthly quota${queueIndicator}`;
+
+  if (zeroQuota) {
+    // No priority quota → a percentage is meaningless (quota is zero, not ∞).
+    usageLabel.textContent = "N/A of monthly quota";
+    usageLabel.style.color = "";
+  } else {
+    // Update usage label with queue mode indicator
+    let queueIndicator = "";
+    if (queueMode === "fast") {
+      queueIndicator = " (Fast)";
+    } else if (queueMode === "slow") {
+      queueIndicator = " (Slow)";
+    } else if (queueMode === "blocked") {
+      queueIndicator = " (Blocked)";
+    }
+
+    // IMPORTANT: "Monthly usage" quota is an internal cost cap (max_monthly_cost_cents) determined by the backend.
+    // It is NOT the Stripe plan price.
+    usageLabel.textContent = `${quotaPercentage}% of monthly quota${queueIndicator}`;
+
+    // Color warnings based on quota usage
+    if (quotaPercentage >= 100) {
+      usageLabel.style.color = "red";
+    } else if (quotaPercentage >= 80) {
+      usageLabel.style.color = "orange";
+    } else {
+      usageLabel.style.color = "";
+    }
+  }
   resetLabel.textContent = resetText;
   resetLabel.style.color = resetColor;
   resetLabel.style.fontWeight = resetColor ? "500" : "";
   
-  // Color warnings based on quota usage
-  if (quotaPercentage >= 100) {
-    usageLabel.style.color = "red";
-  } else if (quotaPercentage >= 80) {
-    usageLabel.style.color = "orange";
-  } else {
-    usageLabel.style.color = "";
-  }
-  
   console.log(`[Quota] Updated display: ${quotaPercentage}% (${queueMode}), resets: ${resetText}`);
+}
+
+// Plan page opened by the "Upgrade to Pro" nudge (matches the config page's
+// own "Upgrade to Pro" button and the site's canonical clean URL).
+const PRICING_URL = "https://tabmail.ai/pricing";
+
+// True when the user has configured at least one own BYOK provider key + model
+// (parity with iOS `AIService.byokBundle != nil`). buildByokPayload() only emits
+// a tier whose provider ≠ 'tabmail' AND has both a key and a model.
+async function hasOwnApiKeysConfigured() {
+  try {
+    const payload = await buildByokPayload();
+    return Object.keys(payload || {}).length > 0;
+  } catch (e) {
+    console.warn(`[Popup] Failed to read BYOK config: ${e}`);
+    return false;
+  }
+}
+
+// Show/hide the tier-branched billing nudge (Upgrade to Pro / Set up your API
+// keys) from the cached /whoami data. Also mirrors the state onto the toolbar
+// red dot immediately (reportWarning) and persists it so the background keeps
+// the dot in sync proactively even before the popup is reopened. Mirrors iOS
+// UsageThrottleStore (ADR-IOS-044).
+async function updateBillingBanner(whoamiData) {
+  const upgradeDiv = document.getElementById("upgrade-pro-warning");
+  const byokDiv = document.getElementById("byok-setup-warning");
+  if (!upgradeDiv || !byokDiv) return;
+
+  let kind = null;
+  try {
+    // Debug override (Settings → Billing Banner (Debug)) wins, so the nudges can
+    // be previewed without a real over-quota / BYOK account. Unset → real logic.
+    const { tabmailBillingBannerDebug } = await browser.storage.local.get({
+      tabmailBillingBannerDebug: null,
+    });
+    if (tabmailBillingBannerDebug === "upgrade" || tabmailBillingBannerDebug === "byok") {
+      kind = tabmailBillingBannerDebug;
+    } else {
+      // Only BYOK users need the (local) own-key check — skip the storage read for
+      // every other tier (decideBillingBanner ignores hasOwnApiKeys there anyway).
+      const hasOwnApiKeys =
+        whoamiData?.plan_tier === "BYOK" ? await hasOwnApiKeysConfigured() : false;
+      kind = bannerFromWhoami(whoamiData, hasOwnApiKeys);
+    }
+  } catch (e) {
+    console.warn(`[Popup] Failed to compute billing banner: ${e}`);
+    kind = null;
+  }
+
+  upgradeDiv.style.display = kind === "upgrade" ? "block" : "none";
+  byokDiv.style.display = kind === "byok" ? "block" : "none";
+
+  reportWarning("billing", kind !== null);
+  try {
+    await browser.storage.local.set({ tabmailBillingBanner: kind });
+  } catch (_) { /* non-fatal */ }
+
+  // Diagnostic: print the exact decision inputs so a "why isn't the banner
+  // showing?" question can be answered from the popup console (e.g. plan_tier=Pro
+  // is intentionally excluded; queue_mode=fast / quota<100 means not throttled).
+  console.log(
+    `[Popup] Billing banner: ${kind ?? "none"} ` +
+      `(plan_tier=${whoamiData?.plan_tier ?? "?"}, queue_mode=${whoamiData?.queue_mode ?? "?"}, ` +
+      `quota_percentage=${whoamiData?.quota_percentage ?? "?"}, ` +
+      `logged_in=${whoamiData?.logged_in ?? "?"}, has_subscription=${whoamiData?.has_subscription ?? "?"})`
+  );
 }
 
 // Check authentication status and update UI
@@ -499,6 +592,7 @@ async function updateAuthStatus() {
       
       // Clear quota display
       updateQuotaDisplay(null);
+      updateBillingBanner(null);
 
       // No auth → no consent warning
       showConsentWarning(false);
@@ -623,6 +717,9 @@ async function updateAuthStatus() {
       // Update quota usage display
       updateQuotaDisplay(data);
 
+      // Tier-branched billing nudge (Upgrade to Pro / Set up your API keys)
+      updateBillingBanner(data);
+
       // Consent gating banner (if required)
       const consentRequired = data?.consent_required === true;
       console.log(`[Auth] Consent required: ${consentRequired}`);
@@ -653,6 +750,7 @@ async function updateAuthStatus() {
       
       // Clear quota display for non-logged-in users
       updateQuotaDisplay(null);
+      updateBillingBanner(null);
 
       showConsentWarning(false);
     }
@@ -1099,6 +1197,30 @@ async function handleCheckForUpdates() {
 // Update version status on popup open
 updateVersionStatus();
 
+// Open the Settings (config) page — focus the existing tab if one is open, else
+// create one. Optionally deep-link to the "Use your own AI keys" (BYOK) section
+// via a one-shot storage flag the config page consumes on load / storage change.
+async function openConfigTab({ scrollToByok = false } = {}) {
+  const url = browser.runtime.getURL("config/config.html");
+
+  if (scrollToByok) {
+    try {
+      await browser.storage.local.set({ tabmailPendingScrollByok: true });
+    } catch (_) { /* non-fatal — page just won't auto-scroll */ }
+  }
+
+  const existingTabs = await browser.tabs.query({ url });
+  if (existingTabs.length > 0) {
+    const configTab = existingTabs[0];
+    await browser.tabs.update(configTab.id, { active: true });
+    await browser.windows.update(configTab.windowId, { focused: true });
+    console.log("Focused existing config tab");
+  } else {
+    await browser.tabs.create({ url });
+    console.log("Created new config tab");
+  }
+}
+
 // Store listener reference for cleanup - using global to persist outside import scope
 if (!window.__popupClickListener) {
   window.__popupClickListener = async (e) => {
@@ -1173,28 +1295,37 @@ if (!window.__popupClickListener) {
     if (e.target.id === "open-configs" || e.target.id === "open-configs-from-warning") {
       e.preventDefault();
       try {
-        const url = browser.runtime.getURL("config/config.html");
-        
-        // Check if config tab is already open
-        const existingTabs = await browser.tabs.query({ url });
-        
-        if (existingTabs.length > 0) {
-          // Focus existing config tab
-          const configTab = existingTabs[0];
-          await browser.tabs.update(configTab.id, { active: true });
-          await browser.windows.update(configTab.windowId, { focused: true });
-          console.log("Focused existing config tab");
-        } else {
-          // Create new config tab
-          await browser.tabs.create({ url });
-          console.log("Created new config tab");
-        }
-        
+        await openConfigTab();
         window.close();
       } catch (error) {
         document.getElementById("status").textContent = `Error: ${error.message}`;
         console.error(error);
       }
+    }
+
+    if (e.target.id === "upgrade-to-pro-from-warning") {
+      e.preventDefault();
+      // Open the plan page in the user's default browser (Stripe checkout etc.
+      // belong in a real browser; matches the popup's other external links).
+      try {
+        await browser.windows.openDefaultBrowser(PRICING_URL);
+      } catch (err) {
+        console.warn(`[Popup] Failed to open pricing page: ${err}`);
+      }
+      return;
+    }
+
+    if (e.target.id === "setup-byok-from-warning") {
+      e.preventDefault();
+      // Open Settings and deep-link to the "Use your own AI keys" section.
+      try {
+        await openConfigTab({ scrollToByok: true });
+        window.close();
+      } catch (error) {
+        document.getElementById("status").textContent = `Error: ${error.message}`;
+        console.error(error);
+      }
+      return;
     }
 
     if (e.target.id === "open-prompts") {

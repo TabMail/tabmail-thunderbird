@@ -56,6 +56,11 @@ import {
     simulateUpdateAvailable,
     updateDebugStatusDisplay,
 } from "./updateDebug.js";
+import {
+    clearBillingBannerOverride,
+    forceBillingBanner,
+    updateBillingBannerDebugStatus,
+} from "./billingBannerDebug.js";
 import { handleNotificationChange, loadNotificationSettings } from "./notifications.js";
 import { handleWebSearchChange, loadWebSearchSettings } from "./webSearch.js";
 import { handleByokChange, handleByokClick, handleByokInput, loadByokSettings } from "./byokSettings.js";
@@ -176,6 +181,12 @@ export async function initConfigPage({
         loadMaintenanceLog().catch((e) => {
           console.warn("[TMDBG Config] Failed to refresh maintenance log:", e);
         });
+      }
+      // Deep-link from the popup's "Set up your API keys" nudge while this page
+      // is already open — scroll to the BYOK section and consume the flag.
+      if (areaName === "local" && changes.tabmailPendingScrollByok?.newValue === true) {
+        browser.storage.local.remove("tabmailPendingScrollByok").catch(() => {});
+        revealByokSection();
       }
     };
     browser.storage.onChanged.addListener(configStorageListener);
@@ -455,6 +466,17 @@ export async function initConfigPage({
       await restartThunderbird();
     }
 
+    // Billing banner debug controls
+    if (e.target.id === "billing-banner-debug-upgrade") {
+      await forceBillingBanner("upgrade");
+    }
+    if (e.target.id === "billing-banner-debug-byok") {
+      await forceBillingBanner("byok");
+    }
+    if (e.target.id === "billing-banner-debug-clear") {
+      await clearBillingBannerOverride();
+    }
+
     // ChatLink debug controls
     if (e.target.id === "chatlink-test-nudge") {
       await sendTestNudge(log);
@@ -482,6 +504,36 @@ export async function initConfigPage({
   // Keyboard shortcuts for prompt editors removed (prompts moved to dedicated page)
   configDOMListeners.documentKeydownHandler = null;
 
+  // Scroll the "Use your own AI keys" (BYOK) section into view with a brief
+  // highlight. Used by the popup's "Set up your API keys" deep-link.
+  function revealByokSection() {
+    const el = document.getElementById("byok-settings");
+    if (!el) return;
+    try {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      el.classList.add("tm-deeplink-highlight");
+      setTimeout(() => el.classList.remove("tm-deeplink-highlight"), 2000);
+    } catch (e) {
+      log(`[Config] revealByokSection failed: ${e}`, "warn");
+    }
+  }
+
+  // One-shot: if the popup asked us to jump to the BYOK section (set just before
+  // opening this page), do it now that the page has loaded, then clear the flag.
+  // Mirrors iOS ADR-IOS-044's pendingScroll deep-link.
+  async function scrollToByokIfRequested() {
+    try {
+      const { tabmailPendingScrollByok } = await browser.storage.local.get({
+        tabmailPendingScrollByok: false,
+      });
+      if (!tabmailPendingScrollByok) return;
+      await browser.storage.local.remove("tabmailPendingScrollByok");
+      revealByokSection();
+    } catch (e) {
+      log(`[Config] BYOK deep-link scroll failed: ${e}`, "warn");
+    }
+  }
+
   await Promise.all([
     updateQuotaDisplay(getBackendUrl),
     loadAppearanceSettings(SETTINGS),
@@ -497,11 +549,15 @@ export async function initConfigPage({
     updatePlaintextStatusUI(log),
     updateWelcomeStatusDisplay(log),
     updateDebugStatusDisplay(),
+    updateBillingBannerDebugStatus(),
     updateChatlinkStatusDisplay(log),
     loadWebSearchSettings(log),
     loadNotificationSettings(log),
     loadChatLinkStatus(),
     loadByokSettings(log),
   ]);
+
+  // After the page is populated, honor a pending BYOK deep-link from the popup.
+  await scrollToByokIfRequested();
 }
 

@@ -79,6 +79,24 @@ section {
   border: 1px solid var(--panel-separator-color);
   border-radius: 8px;
   padding: 20px;
+  scroll-margin-top: 16px;
+}
+
+/* Brief pulse when a section is reached via a deep-link (e.g. the popup's
+   "Set up your API keys" nudge jumping to BYOK). Palette-based, both themes. */
+.tm-deeplink-highlight {
+  animation: tm-deeplink-pulse 2s ease-out;
+}
+
+@keyframes tm-deeplink-pulse {
+  0% {
+    box-shadow: 0 0 0 2px var(--tag-tm-archive);
+    background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+    background-color: var(--in-content-box-background);
+  }
 }
 
 section h3 {

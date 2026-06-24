@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { $ } from "./dom.js";
+import { isZeroQuotaPlan } from "../../agent/modules/billingBanner.js";
 
 // Update subscription status display
 // NOTE: Cancellation and downgrade are now shown in the reset label (updateQuotaDisplay)
@@ -122,38 +123,54 @@ export async function updateQuotaDisplay(getBackendUrl) {
       return;
     }
 
+    // BYOK / zero-quota: no priority budget → "% of monthly quota" is meaningless
+    // (always 0% / Slow) — the quota is zero, not infinite. Show "N/A of monthly
+    // quota" instead (parity with iOS). The "byok" debug override forces this so it
+    // can be previewed without a real BYOK account.
+    const { tabmailBillingBannerDebug } = await browser.storage.local.get({
+      tabmailBillingBannerDebug: null,
+    });
+    const zeroQuota = isZeroQuotaPlan(data) || tabmailBillingBannerDebug === "byok";
+
     const quotaPercentage = data.quota_percentage ?? null;
     const queueMode = data.queue_mode ?? null;
     const billingPeriodEnd = data.billing_period_end ?? null;
 
     console.log(
-      `[TMDBG Config] Received from whoami - percentage: ${quotaPercentage}, mode: ${queueMode}, billing_period_end: ${billingPeriodEnd}`,
+      `[TMDBG Config] Received from whoami - percentage: ${quotaPercentage}, mode: ${queueMode}, billing_period_end: ${billingPeriodEnd}, zeroQuota: ${zeroQuota}`,
     );
     console.log(`[TMDBG Config] Full whoami data:`, data);
 
-    if (quotaPercentage === null) {
+    if (!zeroQuota && quotaPercentage === null) {
       progressBar.value = 0;
       label.textContent = "Monthly usage: Loading...";
       label.style.color = "";
       return;
     }
 
-    // Update progress bar
-    progressBar.value = quotaPercentage;
+    // Update progress bar (hidden when N/A — there's no percentage to show)
+    progressBar.style.display = zeroQuota ? "none" : "";
+    progressBar.value = quotaPercentage ?? 0;
 
-    // Update label with queue mode indicator
-    let queueIndicator = "";
-    if (queueMode === "fast") {
-      queueIndicator = " (Fast queue)";
-    } else if (queueMode === "slow") {
-      queueIndicator = " (Slow queue)";
-    } else if (queueMode === "blocked") {
-      queueIndicator = " (Blocked)";
+    // Update label
+    if (zeroQuota) {
+      // No priority quota → a percentage is meaningless (quota is zero, not ∞).
+      label.textContent = "N/A of monthly quota";
+      label.style.color = "";
+    } else {
+      let queueIndicator = "";
+      if (queueMode === "fast") {
+        queueIndicator = " (Fast queue)";
+      } else if (queueMode === "slow") {
+        queueIndicator = " (Slow queue)";
+      } else if (queueMode === "blocked") {
+        queueIndicator = " (Blocked)";
+      }
+
+      // IMPORTANT: "Monthly usage" quota is an internal cost cap (max_monthly_cost_cents) determined by the backend.
+      // It is NOT the Stripe plan price.
+      label.textContent = `${quotaPercentage}% of monthly quota${queueIndicator}`;
     }
-
-    // IMPORTANT: "Monthly usage" quota is an internal cost cap (max_monthly_cost_cents) determined by the backend.
-    // It is NOT the Stripe plan price.
-    label.textContent = `${quotaPercentage}% of monthly quota${queueIndicator}`;
 
     // Update reset/downgrade/cancel label (right side of bar)
     // Priority: cancellation > downgrade > reset date
@@ -181,8 +198,8 @@ export async function updateQuotaDisplay(getBackendUrl) {
         resetLabel.style.color = "var(--tag-tm-delete)";
         resetLabel.style.fontWeight = "500";
         console.log(`[TMDBG Config] Showing downgrade info in reset label: ${resetLabel.textContent}`);
-      } else if (billingPeriodEnd) {
-        // Show reset date
+      } else if (!zeroQuota && billingPeriodEnd) {
+        // Show reset date (skipped for zero-quota — there's no quota to reset)
         const resetDate = new Date(billingPeriodEnd * 1000);
         const year = resetDate.getFullYear();
         const month = String(resetDate.getMonth() + 1).padStart(2, "0");
@@ -199,13 +216,15 @@ export async function updateQuotaDisplay(getBackendUrl) {
       }
     }
 
-    // Color warnings based on quota usage
-    if (quotaPercentage >= 100) {
-      label.style.color = "red";
-    } else if (quotaPercentage >= 80) {
-      label.style.color = "orange";
-    } else {
-      label.style.color = "";
+    // Color warnings based on quota usage (not applicable when N/A)
+    if (!zeroQuota) {
+      if (quotaPercentage >= 100) {
+        label.style.color = "red";
+      } else if (quotaPercentage >= 80) {
+        label.style.color = "orange";
+      } else {
+        label.style.color = "";
+      }
     }
 
     console.log(

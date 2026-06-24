@@ -417,6 +417,19 @@ browser.storage.onChanged.addListener((changes, area) => {
   }
 });
 
+// Reflect the billing / usage-throttle nudge on the toolbar proactively. The
+// popup persists this from /whoami (tier-branched: "upgrade" | "byok" | null —
+// see agent/modules/billingBanner.js); mirror it on the action icon even before
+// the popup is opened, and keep it in sync if it changes. ZERO extra network.
+browser.storage.local.get({ tabmailBillingBanner: null })
+  .then((s) => setWarning("billing", !!s.tabmailBillingBanner))
+  .catch(() => {});
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.tabmailBillingBanner) {
+    setWarning("billing", !!changes.tabmailBillingBanner.newValue).catch(() => {});
+  }
+});
+
 // ── Proactive "setup" toolbar warning (issue #12) ────────────────────────────
 // The popup computes the setup warning on open; mirror it proactively so the red
 // dot reflects setup issues (plaintext/calendar/address book) even before the
