@@ -142,3 +142,66 @@ describe('_classNameForAction_MHC', () => {
     expect(cls).toContain(HEADER_CHIP_MARKER_CLASS_MHC);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Chip-reuse tooltip contract (regression)
+//
+// `about:message` is cached, so the header chip <span> is REUSED across
+// message displays via the painter's `if (existing)` idempotent-update
+// branch. That branch must refresh ALL action-derived attributes — class,
+// text, AND title — or the tooltip freezes at the first-painted action
+// (the visible "always shows Reply regardless of tag" bug). The painter
+// lives in a privileged experiment closure, so we replicate its update
+// branch here (same pattern as the helpers above) to guard the contract.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function _titleForLabel_MHC(label) {
+  return `${label} — click to apply`;
+}
+
+// Faithful replica of paintHeaderChip's `if (existing)` branch.
+function _updateExistingChip_MHC(existing, action) {
+  const label = _ACTION_LABELS_MHC[action];
+  const expectedCls = _classNameForAction_MHC(action);
+  const titleText = _titleForLabel_MHC(label);
+  if (existing.className !== expectedCls) existing.className = expectedCls;
+  if (existing.textContent !== label) existing.textContent = label;
+  if (existing.getAttribute("title") !== titleText) existing.setAttribute("title", titleText);
+  return existing;
+}
+
+// Minimal element stub: only what the update branch touches.
+function makeChipEl() {
+  const attrs = Object.create(null);
+  return {
+    className: "",
+    textContent: "",
+    getAttribute(name) { return name in attrs ? attrs[name] : null; },
+    setAttribute(name, value) { attrs[name] = String(value); },
+  };
+}
+
+describe('header chip reuse refreshes the tooltip', () => {
+  it('updates title when a reused chip switches action (reply → delete)', () => {
+    const chip = makeChipEl();
+
+    _updateExistingChip_MHC(chip, "reply");
+    expect(chip.textContent).toBe("Reply");
+    expect(chip.getAttribute("title")).toBe("Reply — click to apply");
+
+    // Same element reused for the next displayed message — a delete-tagged one.
+    _updateExistingChip_MHC(chip, "delete");
+    expect(chip.textContent).toBe("Delete");
+    // Regression guard: before the fix the title stayed "Reply — click to apply".
+    expect(chip.getAttribute("title")).toBe("Delete — click to apply");
+    expect(chip.className).toBe("tm-action-chip tm-header-action-chip tm-action-delete");
+  });
+
+  it('keeps title in sync for every action', () => {
+    const chip = makeChipEl();
+    for (const action of ["reply", "archive", "delete", "none"]) {
+      _updateExistingChip_MHC(chip, action);
+      expect(chip.getAttribute("title")).toBe(`${_ACTION_LABELS_MHC[action]} — click to apply`);
+    }
+  });
+});

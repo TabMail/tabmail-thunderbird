@@ -739,10 +739,12 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           return;
         }
         const expectedCls = `${CHIP_CLASS_MLCV} tm-action-${action}`;
+        const titleText = `${label} — click to apply`;
 
         if (existing) {
           if (existing.className !== expectedCls) existing.className = expectedCls;
           if (existing.textContent !== label) existing.textContent = label;
+          if (existing.getAttribute("title") !== titleText) existing.setAttribute("title", titleText);
           return;
         }
 
@@ -751,7 +753,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         chip.textContent = label;
         try { chip.setAttribute("role", "button"); } catch (_) {}
         try { chip.setAttribute("tabindex", "0"); } catch (_) {}
-        try { chip.setAttribute("title", `${label} — click to apply`); } catch (_) {}
+        try { chip.setAttribute("title", titleText); } catch (_) {}
         // No per-chip click listeners — clicks are dispatched by the
         // document-level delegated handler installed via
         // `attachChipDelegation_MLCV` (see init/cleanup wiring). Per-chip

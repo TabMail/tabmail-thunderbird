@@ -349,10 +349,12 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPI {
         const expectedCls = _classNameForAction_MMC(action);
         const color = _colorForAction_MMC(action);
         const weIdAttr = String(weMsgId | 0);
+        const titleText = `${label} — click to apply`;
 
         if (existing) {
           if (existing.className !== expectedCls)   existing.className   = expectedCls;
           if (existing.textContent !== label)       existing.textContent = label;
+          if (existing.getAttribute("title") !== titleText) existing.setAttribute("title", titleText);
           if (existing.dataset.tmWeMsgId !== weIdAttr) existing.dataset.tmWeMsgId = weIdAttr;
           const currentColor = existing.style?.getPropertyValue?.("--tag-color") || "";
           if (color) {
@@ -368,7 +370,7 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPI {
         chip.textContent = label;
         try { chip.setAttribute("role", "button"); } catch (_) {}
         try { chip.setAttribute("tabindex", "0"); } catch (_) {}
-        try { chip.setAttribute("title", `${label} — click to apply`); } catch (_) {}
+        try { chip.setAttribute("title", titleText); } catch (_) {}
         try { chip.dataset.tmWeMsgId = weIdAttr; } catch (_) {}
         if (color) {
           try { chip.style.setProperty("--tag-color", color); } catch (_) {}

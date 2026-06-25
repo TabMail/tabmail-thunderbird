@@ -278,10 +278,12 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
         const expectedCls = _classNameForAction_MHC(action);
         const color = _colorForAction_MHC(action);
         const weIdAttr = String(weMsgId | 0);
+        const titleText = `${label} — click to apply`;
 
         if (existing) {
           if (existing.className !== expectedCls)   existing.className = expectedCls;
           if (existing.textContent !== label)       existing.textContent = label;
+          if (existing.getAttribute("title") !== titleText) existing.setAttribute("title", titleText);
           if (existing.dataset.tmWeMsgId !== weIdAttr) existing.dataset.tmWeMsgId = weIdAttr;
           // --tag-color: set when present, remove when absent (mirror card painter).
           const currentColor = existing.style?.getPropertyValue?.("--tag-color") || "";
@@ -298,7 +300,7 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
         chip.textContent = label;
         try { chip.setAttribute("role", "button"); } catch (_) {}
         try { chip.setAttribute("tabindex", "0"); } catch (_) {}
-        try { chip.setAttribute("title", `${label} — click to apply`); } catch (_) {}
+        try { chip.setAttribute("title", titleText); } catch (_) {}
         try { chip.dataset.tmWeMsgId = weIdAttr; } catch (_) {}
         if (color) {
           try { chip.style.setProperty("--tag-color", color); } catch (_) {}
