@@ -89,7 +89,7 @@ describe('SSE parser — primer handling', () => {
 // Truncation / connection-lost trigger. A stream that ends without a parseable
 // `final` event must REJECT (not silently resolve). sendChatCompletions catches
 // this throw and returns { connection_lost: true, resume_conversation_state },
-// which drives the "Connection lost. Tap to retry." resume affordance. If
+// which drives the "Connection lost. Please retry later." resume affordance. If
 // readSSEStream ever started resolving for these, the resume path would break.
 describe('SSE parser — truncation / connection lost', () => {
   it('rejects when the stream ends with no final event', async () => {
@@ -123,7 +123,7 @@ describe('SSE parser — truncation / connection lost', () => {
 });
 
 // The catch around readSSEStream wraps the throw into this resumable result, which
-// drives converse.js's "Connection lost. Tap to retry." resume. The resume re-runs
+// drives converse.js's "Connection lost. Please retry later." resume. The resume re-runs
 // the failed round from resume_conversation_state, so it MUST be the level's own
 // input state (carrying completed tool rounds), not dropped.
 describe('buildConnectionLostResult — resumable wrapping', () => {

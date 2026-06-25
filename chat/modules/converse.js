@@ -94,7 +94,7 @@ async function resumeInterruptedTurn() {
   const resume = ctx.resumeState;
   ctx.resumeState = null;
 
-  // Remove the "Connection lost. Tap to retry." system bubble (keep everything
+  // Remove the "Connection lost. Please retry later." system bubble (keep everything
   // else — the user message and any rendered tool bubbles stay).
   const container = document.getElementById("chat-container");
   if (container) {
@@ -925,19 +925,12 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null,
     ctx.resumeState = { conversationState: resp.resume_conversation_state || null };
     try {
       const systemBubble = appendSystemBubble();
-      const errorSpan = document.createElement("span");
-      errorSpan.textContent = "Connection lost. ";
-      const retryLink = document.createElement("a");
-      retryLink.textContent = "Tap to retry";
-      retryLink.href = "#";
-      retryLink.className = "retry-link";
-      retryLink.addEventListener("click", (e) => {
-        e.preventDefault();
-        if (window.tmRetryLastMessage) window.tmRetryLastMessage();
-      });
       const bubbleContent = systemBubble.querySelector(".bubble-content") || systemBubble;
-      bubbleContent.appendChild(errorSpan);
-      bubbleContent.appendChild(retryLink);
+      // Advisory text only — the resume affordance is the retry (↻) send button,
+      // armed below via ctx.canRetry + tmUpdateRetryVisibility (awaitUserInput flips
+      // the button to retry mode once the turn ends). No inline link: desktop has no
+      // "tap", and the user needn't know resume-vs-resend — the retry button covers both.
+      bubbleContent.textContent = "Connection lost. Please retry later.";
       ctx.canRetry = true;
       if (window.tmUpdateRetryVisibility) window.tmUpdateRetryVisibility();
       log(`[CONVERSE] Connection lost — armed resume (has_state=${!!resp.resume_conversation_state})`);
