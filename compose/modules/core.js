@@ -113,6 +113,10 @@ Object.assign(TabMail, {
    * @param {boolean} forceGlobal If true, forces global (full email) mode instead of local (chunked).
    */
   triggerCorrection: function (editor, forceGlobal = false) {
+    if (TabMail.state && TabMail.state.autocompleteDisabled) {
+      TabMail.log.debug('core', "triggerCorrection suppressed (autocomplete disabled by user)");
+      return;
+    }
     if (TabMail.state && TabMail.state.inlineEditActive) {
       TabMail.log.debug('core', "triggerCorrection suppressed (inlineEditActive)");
       return;

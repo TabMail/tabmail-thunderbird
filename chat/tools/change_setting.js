@@ -42,6 +42,14 @@ const SETTING_DEFS = {
     default: true,
     storageKey: "task.enabled",
   },
+  // Master on/off for compose autocomplete suggestions. Storage key is read by
+  // the compose content script (compose-autocomplete.js) and the Settings page
+  // (config/modules/autocompleteSettings.js).
+  "compose.autocomplete_enabled": {
+    type: "boolean",
+    default: true,
+    storageKey: "autocompleteEnabled",
+  },
   "task.advance_minutes": {
     type: "number",
     min: 1,

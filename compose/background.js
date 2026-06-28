@@ -469,10 +469,12 @@ function stripComposeHintsBannerFromText(text) {
   );
 
   // 2) Remove the banner string if it somehow got copied/pasted into the body.
-  const bannerMac = "Tab to accept · Shift-Tab to accept all · ⌘K to edit";
-  const bannerNonMac = "Tab to accept · Shift-Tab to accept all · Ctrl+K to edit";
+  const bannerMac = "Tab to accept · Shift-Tab to accept all · ⌘K to edit · Shift+Esc to turn off autocomplete";
+  const bannerNonMac = "Tab to accept · Shift-Tab to accept all · Ctrl+K to edit · Shift+Esc to turn off autocomplete";
+  const bannerOff = "Autocomplete off · Shift+Esc to turn on";
   text = text.replaceAll(bannerMac, "");
   text = text.replaceAll(bannerNonMac, "");
+  text = text.replaceAll(bannerOff, "");
 
   // Also handle any trailing whitespace / stray blank line left behind.
   // (Do not over-normalize; keep minimal.)

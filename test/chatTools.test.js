@@ -401,6 +401,22 @@ describe('TB-053: Invalid arg types produce error', () => {
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('between');
   });
+
+  it('change_setting compose.autocomplete_enabled=false writes autocompleteEnabled storage key', async () => {
+    const result = await changeSetting.run({ setting: 'compose.autocomplete_enabled', value: false });
+    expect(result).toHaveProperty('ok', true);
+    expect(result.value).toBe(false);
+    // The tool persists under the `autocompleteEnabled` storage key (the key the
+    // compose content script + Settings page read), not the dotted setting name.
+    const stored = await globalThis.browser.storage.local.get({ autocompleteEnabled: true });
+    expect(stored.autocompleteEnabled).toBe(false);
+  });
+
+  it('change_setting compose.autocomplete_enabled coerces string "false" to boolean', async () => {
+    const result = await changeSetting.run({ setting: 'compose.autocomplete_enabled', value: 'false' });
+    expect(result).toHaveProperty('ok', true);
+    expect(result.value).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

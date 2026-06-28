@@ -60,7 +60,10 @@ export function buildPaletteCSS(P) {
   --tm-hint-text: #ffffff;
   --tm-hint-border: rgba(255, 255, 255, 0.15);
   --tm-hint-subtle-text: rgba(100, 100, 100, 0.6);
-  --tm-hint-banner-text: rgba(120, 120, 120, 0.5);
+  /* Compose hints banner pill (semi-transparent backdrop + readable text) */
+  --tm-hint-banner-bg: rgba(245, 245, 247, 0.82);
+  --tm-hint-banner-border: rgba(0, 0, 0, 0.12);
+  --tm-hint-banner-text: rgba(60, 60, 67, 0.85);
 
   /* TabMail Opacity Constants */
   --tm-opacity-subtle-light: ${Math.round(OPACITY.SUBTLE_LIGHT * 100)}%;
@@ -162,7 +165,10 @@ export function buildPaletteCSS(P) {
     --tm-hint-text: #f1f2f4;
     --tm-hint-border: rgba(255, 255, 255, 0.2);
     --tm-hint-subtle-text: rgba(180, 180, 180, 0.5);
-    --tm-hint-banner-text: rgba(160, 160, 160, 0.45);
+    /* Compose hints banner pill (semi-transparent backdrop + readable text) */
+    --tm-hint-banner-bg: rgba(44, 44, 46, 0.82);
+    --tm-hint-banner-border: rgba(255, 255, 255, 0.14);
+    --tm-hint-banner-text: rgba(235, 235, 240, 0.9);
 
     /* TabMail Preview Pane Background - Dark Mode */
     --tm-preview-pane-bg: ${DARK.PREVIEW_PANE_BG};

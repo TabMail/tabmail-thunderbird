@@ -33,6 +33,20 @@ var TabMail = TabMail || {};
   let activeEditorNode = null;
 
   /**
+   * Applies a user-configured autocomplete idle delay (ms) to the back-off
+   * scheduler. Keeps the original 250ms back-off headroom by scaling the
+   * ceiling (MAX = INITIAL + 250) and resets the live idle time so the change
+   * takes effect immediately. No-op when the value isn't a valid number.
+   * @param {number} idleMs Parsed delay in milliseconds (may be NaN).
+   */
+  function applyAutocompleteIdleMs(idleMs) {
+    if (isNaN(idleMs) || idleMs < 0) return;
+    TM.config.autocompleteDelay.INITIAL_IDLE_MS = idleMs;
+    TM.config.autocompleteDelay.MAX_IDLE_MS = idleMs + 250;
+    TM.state.currentIdleTime = idleMs;
+  }
+
+  /**
    * Loads configuration from local storage, with default values.
    */
   async function initializeConfig() {
@@ -40,7 +54,9 @@ var TabMail = TabMail || {};
       const settings = await browser.storage.local.get({
         TRIGGER_THROTTLE_MS: null,
         DIFF_RESTORE_DELAY_MS: null,
+        AUTOCOMPLETE_IDLE_MS: null,
         composeHintsBannerEnabled: true,
+        autocompleteEnabled: true,
       });
 
       const throttleVal = parseInt(settings.TRIGGER_THROTTLE_MS, 10);
@@ -52,12 +68,19 @@ var TabMail = TabMail || {};
       if (!isNaN(diffVal)) {
         TM.config.DIFF_RESTORE_DELAY_MS = diffVal;
       }
-      
+
+      // Autocomplete suggestion delay (idle time after typing stops before a
+      // suggestion is requested). Feeds the back-off scheduler's baseline.
+      applyAutocompleteIdleMs(parseInt(settings.AUTOCOMPLETE_IDLE_MS, 10));
+
       // Load compose hints banner setting
       TM.state.composeHintsBannerDisabled = settings.composeHintsBannerEnabled === false;
 
+      // Master autocomplete on/off (default on).
+      TM.state.autocompleteDisabled = settings.autocompleteEnabled === false;
+
       console.log(
-        `[TabMail CS] Config: Trigger throttle ${TM.config.TRIGGER_THROTTLE_MS}ms, Diff restore ${TM.config.DIFF_RESTORE_DELAY_MS}ms, Hints banner ${!TM.state.composeHintsBannerDisabled ? 'enabled' : 'disabled'}`
+        `[TabMail CS] Config: Idle delay ${TM.config.autocompleteDelay.INITIAL_IDLE_MS}ms, Diff restore ${TM.config.DIFF_RESTORE_DELAY_MS}ms, Hints banner ${!TM.state.composeHintsBannerDisabled ? 'enabled' : 'disabled'}, Autocomplete ${TM.state.autocompleteDisabled ? 'OFF' : 'on'}`
       );
     } catch (error) {
       console.error("[TabMail CS] Error loading configuration from storage:", error);
@@ -139,9 +162,33 @@ var TabMail = TabMail || {};
             const enabled = changes.composeHintsBannerEnabled.newValue !== false;
             TM.state.composeHintsBannerDisabled = !enabled;
             console.log(`[TabMail CS] Live config: composeHintsBannerEnabled -> ${enabled}`);
-            // Hide banner immediately if disabled
+            // Hide banner immediately if disabled; otherwise (re)show it.
             if (!enabled && TM.hideComposeHintsBanner) {
               TM.hideComposeHintsBanner();
+            } else if (enabled && TM.showComposeHintsBanner) {
+              TM.showComposeHintsBanner();
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(changes, "AUTOCOMPLETE_IDLE_MS")) {
+            const v = parseInt(changes.AUTOCOMPLETE_IDLE_MS.newValue, 10);
+            applyAutocompleteIdleMs(v);
+            if (!isNaN(v)) {
+              console.log(`[TabMail CS] Live config: AUTOCOMPLETE_IDLE_MS -> ${v}ms`);
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(changes, "autocompleteEnabled")) {
+            const enabled = changes.autocompleteEnabled.newValue !== false;
+            console.log(`[TabMail CS] Live config: autocompleteEnabled -> ${enabled}`);
+            // Mirror the toggle into this compose window. Use the shared
+            // local enable/disable helpers (defined in events.js) so the
+            // suggestion teardown / banner restore matches the Shift+Esc path.
+            if (!enabled && TM.disableAutocompleteLocally) {
+              TM.disableAutocompleteLocally();
+            } else if (enabled && TM.enableAutocompleteLocally) {
+              TM.enableAutocompleteLocally();
+            } else {
+              // Helpers not present yet (defensive) — at least track state.
+              TM.state.autocompleteDisabled = !enabled;
             }
           }
         } catch (e) {

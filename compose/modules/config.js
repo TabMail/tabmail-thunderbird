@@ -285,7 +285,7 @@ TabMail.config = {
     localAccept: { key: "Tab", shiftKey: false },
     localReject: { key: "Unassigned", shiftKey: true },
     globalAccept: { key: "Tab", shiftKey: true },
-    toggleDiffView: { key: "Escape", shiftKey: true },
+    disableAutocomplete: { key: "Escape", shiftKey: true },
     navigateForward: { key: "Tab", shiftKey: false },
     navigateBackward: { key: "Tab", shiftKey: true },
     // Inline edit shortcuts (platform-specific)

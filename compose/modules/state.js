@@ -108,6 +108,17 @@ TabMail.state = {
   // Whether the compose hints banner is disabled by user settings.
   composeHintsBannerDisabled: false,
 
+  // --- Master Autocomplete Toggle ---
+  // When true, autocomplete is turned off entirely: no suggestions are
+  // triggered and the hints banner shows its "off" state. Driven by the
+  // `autocompleteEnabled` storage key (Settings → Autocomplete, the
+  // change_setting tool, or Shift+Esc).
+  autocompleteDisabled: false,
+  // Timer that fires the immediate re-fetch when autocomplete is re-enabled.
+  // A single reused handle so the direct (Shift+Esc) and storage.onChanged
+  // mirror paths don't schedule the fetch twice in the same window.
+  reenableFetchTimer: null,
+
   // --- Pre-send Cleanup Suppression ---
   // When true, TabMail should suppress any non-forced re-renders that would
   // show diffs while Thunderbird is snapshotting the compose body for send.

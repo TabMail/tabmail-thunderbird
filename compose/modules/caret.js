@@ -538,43 +538,63 @@ Object.assign(TabMail, {
   },
 
   /**
-   * Shows the compose keyboard hints banner at the bottom of the compose window.
-   * The banner shows: "Tab to accept · Shift-Tab to accept all · ⌘K to edit"
-   * Always visible in compose window (controlled by settings toggle).
+   * Builds the compose hints banner text for the current state. When
+   * autocomplete is ON it advertises the accept/edit shortcuts plus the
+   * Shift+Esc OFF toggle; when OFF it stays visible (so the toggle is
+   * discoverable) and advertises Shift+Esc to turn it back ON.
+   */
+  _composeHintsBannerText() {
+    if (TabMail.state.autocompleteDisabled) {
+      return "Autocomplete off · Shift+Esc to turn on";
+    }
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const modKey = isMac ? "⌘" : "Ctrl+";
+    return `Tab to accept · Shift-Tab to accept all · ${modKey}K to edit · Shift+Esc to turn off autocomplete`;
+  },
+
+  /**
+   * Shows (or refreshes) the compose keyboard hints banner at the bottom of the
+   * compose window. The text reflects whether autocomplete is on or off — see
+   * `_composeHintsBannerText`. Reuses the existing element when present so
+   * toggling on/off updates in place without flicker. Suppressed entirely when
+   * the "Show keyboard hints" setting is disabled.
    */
   showComposeHintsBanner() {
     try {
-      // Check if banner setting is disabled
+      // Respect the "Show keyboard hints" setting — and clear any stale banner
+      // if that setting was just turned off.
       if (TabMail.state.composeHintsBannerDisabled) {
+        TabMail.hideComposeHintsBanner();
         return;
       }
 
-      // Check if banner already exists
-      if (document.getElementById("tm-compose-hints-banner")) {
+      const text = TabMail._composeHintsBannerText();
+
+      // Reuse the existing banner if present — just update the text. This keeps
+      // the on/off toggle from duplicating or flickering the element.
+      const existing = document.getElementById("tm-compose-hints-banner");
+      if (existing) {
+        const existingPill = existing.firstElementChild;
+        if (existingPill) {
+          existingPill.textContent = text;
+        }
         return;
       }
 
-      // Create the banner element
+      // Outer container: full-width, transparent, centers the pill. Pointer
+      // events disabled so it never intercepts clicks in the compose body.
       const banner = document.createElement("div");
       banner.id = "tm-compose-hints-banner";
       banner.setAttribute("contenteditable", "false");
       banner.setAttribute("aria-hidden", "true");
       banner.setAttribute("role", "presentation");
-      
-      // Detect platform for shortcut display
-      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-      const modKey = isMac ? "⌘" : "Ctrl+";
-      
-      // Subtle, unobtrusive style
       banner.style.cssText = `
         position: fixed;
         bottom: 0;
         left: 0;
         right: 0;
-        padding: 3px 12px;
+        padding: 4px 12px;
         background: transparent;
-        color: var(--tm-hint-banner-text);
-        font-size: 10px;
         text-align: center;
         z-index: 10000;
         pointer-events: none;
@@ -582,7 +602,23 @@ Object.assign(TabMail, {
         -moz-user-select: none;
         -webkit-user-select: none;
       `;
-      banner.textContent = `Tab to accept · Shift-Tab to accept all · ${modKey}K to edit`;
+
+      // Inner pill carries the semi-transparent backdrop so the hint text stays
+      // legible against any compose background. Colors come from the palette
+      // (theme/palette/palette.build.js) — light + dark variants defined there.
+      const pill = document.createElement("span");
+      pill.style.cssText = `
+        display: inline-block;
+        padding: 3px 12px;
+        border-radius: 999px;
+        background: var(--tm-hint-banner-bg);
+        border: 1px solid var(--tm-hint-banner-border);
+        color: var(--tm-hint-banner-text);
+        font-size: 11px;
+        line-height: 1.4;
+      `;
+      pill.textContent = text;
+      banner.appendChild(pill);
 
       // Append to documentElement (html) instead of body to avoid banner text
       // being serialized into compose content when Thunderbird changes identity/account

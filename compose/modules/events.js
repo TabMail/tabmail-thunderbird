@@ -389,6 +389,10 @@ Object.assign(TabMail, {
   },
 
   scheduleTrigger: (editorInstance) => {
+    if (TabMail.state && TabMail.state.autocompleteDisabled) {
+      TabMail.log.debug('events', "scheduleTrigger: suppressed — autocomplete disabled by user.");
+      return;
+    }
     if (TabMail.state && TabMail.state.inlineEditActive) {
       TabMail.log.debug('events', "scheduleTrigger: suppressed due to inlineEditActive.");
       return;
@@ -917,24 +921,34 @@ Object.assign(TabMail, {
     return false;
   },
 
-  handleToggleDiffViewKey: function (e) {
-    // --- Key handling for Shift+Esc to toggle diffs ---
-    if (TabMail._isKeyMatch(e, TabMail.config.keys.toggleDiffView)) {
+  handleEscapeKeys: function (e) {
+    // --- Shift+Esc: TOGGLE autocomplete on/off (persisted) ---
+    if (TabMail._isKeyMatch(e, TabMail.config.keys.disableAutocomplete)) {
       e.preventDefault();
       e.stopPropagation();
 
-      TabMail.state.showDiff = !TabMail.state.showDiff;
-      TabMail.log.debug('events', `Toggled diff visibility (css only): ${TabMail.state.showDiff}`
-      );
+      const turningOff = !TabMail.state.autocompleteDisabled;
+      TabMail.log.info('events', `Shift+Esc pressed — turning autocomplete ${turningOff ? 'OFF' : 'ON'} (persisted)`);
 
-      // Update render
-      TabMail.log.trace('renderText', "Updating render after toggle diff view");
-      const show_diffs = TabMail.state.showDiff && !TabMail.state.autoHideDiff;
-      TabMail.renderText(show_diffs);
+      // Immediate local update for this window (drop suggestion + refresh banner).
+      if (turningOff) {
+        TabMail.disableAutocompleteLocally();
+      } else {
+        TabMail.enableAutocompleteLocally();
+      }
+
+      // Persist so the new state carries across compose windows / restarts and
+      // keeps the Settings page + change_setting tool in sync. The
+      // storage.onChanged listener mirrors it to any other open compose windows.
+      try {
+        browser.storage.local.set({ autocompleteEnabled: !turningOff });
+      } catch (err) {
+        TabMail.log.warn('events', `Failed to persist autocompleteEnabled=${!turningOff}: ${err}`);
+      }
 
       return true;
     }
-    
+
     // --- Key handling for plain Esc to hide suggestions ---
     if (e.key === 'Escape' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       // Only handle if we have visible suggestions
@@ -957,8 +971,85 @@ Object.assign(TabMail, {
         return true;
       }
     }
-    
+
     return false;
+  },
+
+  /**
+   * Turns autocomplete OFF in THIS compose window without persisting: cancels
+   * any pending idle trigger, drops the visible/pending suggestion, re-renders
+   * the user's own text, and refreshes the hints banner to its "off" state
+   * (which advertises Shift+Esc to turn it back on). Persisting
+   * (`autocompleteEnabled` storage) is the caller's responsibility, so this is
+   * safe to call from the storage.onChanged mirror path too.
+   */
+  disableAutocompleteLocally: function () {
+    TabMail.state.autocompleteDisabled = true;
+
+    // Cancel any scheduled idle trigger.
+    if (TabMail.state.autocompleteIdleTimer) {
+      clearTimeout(TabMail.state.autocompleteIdleTimer);
+      TabMail.state.autocompleteIdleTimer = null;
+    }
+    // Cancel a pending re-enable re-fetch (e.g. rapidly toggled off again).
+    if (TabMail.state.reenableFetchTimer) {
+      clearTimeout(TabMail.state.reenableFetchTimer);
+      TabMail.state.reenableFetchTimer = null;
+    }
+
+    // Drop any visible/pending suggestion and re-render the user's own text.
+    TabMail.state.correctedText = null;
+    TabMail.state.lastSuggestionShownTime = 0;
+    TabMail.state.textLengthAtLastSuggestion = 0;
+    try {
+      TabMail.renderText(false);
+    } catch (err) {
+      TabMail.log.warn('events', `disableAutocompleteLocally: renderText failed: ${err}`);
+    }
+
+    // Keep the banner visible but switch it to the "off" hint so the user can
+    // discover Shift+Esc to turn autocomplete back on.
+    if (TabMail.showComposeHintsBanner) {
+      TabMail.showComposeHintsBanner();
+    }
+  },
+
+  /**
+   * Turns autocomplete back ON in THIS compose window (counterpart to
+   * disableAutocompleteLocally). Refreshes the hints banner to its "on" state
+   * and immediately re-fetches a suggestion for the current text instead of
+   * waiting for the next keystroke. Does not persist.
+   */
+  enableAutocompleteLocally: function () {
+    TabMail.state.autocompleteDisabled = false;
+    if (TabMail.showComposeHintsBanner) {
+      TabMail.showComposeHintsBanner();
+    }
+
+    // Kick off a fresh suggestion for whatever is already in the editor. The
+    // user may not have typed since the last suggestion, so the normal
+    // "text unchanged / already sent" dedup in triggerCorrection would
+    // short-circuit the call — clear those markers first to force a re-fetch
+    // (mirrors the triggerInitialCorrection reset pattern).
+    const editor = TabMail.state.editorRef;
+    if (editor) {
+      TabMail.state.originalText = null;
+      TabMail.state.lastSentLocalText = null;
+      TabMail.state.lastSentGlobalText = null;
+      // Reuse a single timer so the direct (Shift+Esc) call and the
+      // storage.onChanged mirror — which both fire in this same window — don't
+      // schedule the re-fetch twice.
+      if (TabMail.state.reenableFetchTimer) {
+        clearTimeout(TabMail.state.reenableFetchTimer);
+      }
+      TabMail.state.reenableFetchTimer = setTimeout(() => {
+        TabMail.state.reenableFetchTimer = null;
+        // Bail if it was toggled back off during the brief delay.
+        if (!TabMail.state.autocompleteDisabled) {
+          TabMail.triggerCorrection(editor);
+        }
+      }, TabMail.config.INITIAL_CORRECTION_DELAY_MS);
+    }
   },
 
   handleAcceptRejectKey: function (e) {
@@ -1194,10 +1285,11 @@ Object.assign(TabMail, {
       return;
     }
 
-    // Toggle diff view -- again, if it runs, we don't do anything else.
-    const didHandleToggleDiffViewRun = TabMail.handleToggleDiffViewKey(e);
-    if (didHandleToggleDiffViewRun) {
-      TabMail.log.trace('autohideDiff', "handleKeyDown: Toggle diff view");
+    // Escape keys (Shift+Esc = turn off autocomplete; Esc = hide suggestion).
+    // If it runs, we don't do anything else.
+    const didHandleEscapeKeysRun = TabMail.handleEscapeKeys(e);
+    if (didHandleEscapeKeysRun) {
+      TabMail.log.trace('autohideDiff', "handleKeyDown: Escape key");
       return;
     }
 

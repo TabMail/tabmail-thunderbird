@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { handleAppearanceChange, loadAppearanceSettings } from "./appearance.js";
+import { handleAutocompleteSettingsChange, loadAutocompleteSettings } from "./autocompleteSettings.js";
 import { handleComposeSettingsChange, loadComposeSettings } from "./composeSettings.js";
 import { handleDebugChange, loadDebugSettings } from "./debugSettings.js";
 import { $ } from "./dom.js";
@@ -188,6 +189,16 @@ export async function initConfigPage({
         browser.storage.local.remove("tabmailPendingScrollByok").catch(() => {});
         revealByokSection();
       }
+      // Keep the Autocomplete section in sync when the toggle/delay is changed
+      // elsewhere — Shift+Esc in a compose window or the change_setting tool.
+      if (
+        areaName === "local" &&
+        (changes.autocompleteEnabled || changes.AUTOCOMPLETE_IDLE_MS)
+      ) {
+        loadAutocompleteSettings().catch((e) => {
+          console.warn("[TMDBG Config] Failed to refresh autocomplete settings:", e);
+        });
+      }
     };
     browser.storage.onChanged.addListener(configStorageListener);
   } catch (e) {
@@ -214,6 +225,7 @@ export async function initConfigPage({
       console.error(`[TMDBG Config] handleAppearanceChange THREW ERROR:`, err);
     }
     await handleComposeSettingsChange(e);
+    await handleAutocompleteSettingsChange(e);
 
     // FTS is always enabled with native helper, no toggle needed
     // (removed enable-fts checkbox handler)
@@ -538,6 +550,7 @@ export async function initConfigPage({
     updateQuotaDisplay(getBackendUrl),
     loadAppearanceSettings(SETTINGS),
     loadComposeSettings(),
+    loadAutocompleteSettings(),
     loadDebugSettings(),
     loadPrivacySettings(getPrivacyOptOutAllAiEnabled, log),
     loadCalendars(),

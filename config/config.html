@@ -129,6 +129,37 @@
       </div>
     </section>
 
+    <section id="autocomplete-settings">
+      <h3>Autocomplete</h3>
+
+      <div class="field">
+        <label class="checkbox-option">
+          <input type="checkbox" id="autocomplete-enabled" checked />
+          <span>Suggest inline edits while I compose</span>
+        </label>
+      </div>
+      <div class="field">
+        <small>As you write, TabMail suggests inline edits you can accept with
+        <strong>Tab</strong>. Turn this off to compose with no suggestions at all.
+        You can also toggle it on/off from the compose window with
+        <strong>Shift+Esc</strong>.</small>
+      </div>
+
+      <div class="field" style="margin-top: 12px; grid-template-columns: 320px 1fr;">
+        <label for="autocomplete-delay">Suggestion delay</label>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <input type="number" id="autocomplete-delay" min="0" max="3000" step="50" style="width: 80px;" />
+          <span>ms</span>
+        </div>
+        <small>How long to wait after you stop typing before a suggestion
+        appears. Lower feels snappier; higher is less interruptive. Default: 250 ms.</small>
+      </div>
+
+      <div id="autocomplete-status" class="field">
+        <small id="autocomplete-status-text"></small>
+      </div>
+    </section>
+
     <section id="notification-settings">
       <h3>Notifications</h3>
 
