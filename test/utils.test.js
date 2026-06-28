@@ -73,12 +73,30 @@ describe('TB-030: normalizeUnicode', () => {
     expect(normalizeUnicode('\uFF21')).toBe('A');
   });
 
-  it('replaces various dashes with standard hyphen', () => {
-    // en-dash \u2013, em-dash \u2014, figure-dash \u2012, minus sign \u2212
-    expect(normalizeUnicode('a\u2013b')).toBe('a-b');
-    expect(normalizeUnicode('a\u2014b')).toBe('a-b');
-    expect(normalizeUnicode('a\u2012b')).toBe('a-b');
-    expect(normalizeUnicode('a\u2212b')).toBe('a-b');
+  it('normalizes line-start dashes (list bullets) to a standard hyphen', () => {
+    // dash at the very start of the string
+    expect(normalizeUnicode('\u2014item')).toBe('-item');
+    // dash right after a newline (en-dash / em-dash / horizontal bar / minus)
+    expect(normalizeUnicode('a\n\u2013item')).toBe('a\n-item');
+    expect(normalizeUnicode('a\n\u2014item')).toBe('a\n-item');
+    expect(normalizeUnicode('a\n\u2015item')).toBe('a\n-item');
+    expect(normalizeUnicode('a\n\u2212item')).toBe('a\n-item');
+    // indented bullets (leading spaces / tabs) still normalize, indentation preserved
+    expect(normalizeUnicode('a\n  \u2013 item')).toBe('a\n  - item');
+    expect(normalizeUnicode('a\n\t\u2014 item')).toBe('a\n\t- item');
+    // an already-ASCII bullet is untouched
+    expect(normalizeUnicode('a\n- item')).toBe('a\n- item');
+  });
+
+  it('leaves inline dashes (prose em-dashes, ranges) intact', () => {
+    // em-dash used as punctuation mid-line is preserved
+    expect(normalizeUnicode('store\u2014it')).toBe('store\u2014it');
+    expect(normalizeUnicode('word \u2014 word')).toBe('word \u2014 word');
+    // en-dash range mid-line is preserved (not at line start)
+    expect(normalizeUnicode('pages 10\u201320')).toBe('pages 10\u201320');
+    // horizontal bar / minus mid-line preserved
+    expect(normalizeUnicode('a\u2015b')).toBe('a\u2015b');
+    expect(normalizeUnicode('5 \u2212 3')).toBe('5 \u2212 3');
   });
 
   it('replaces smart single quotes with straight quote', () => {
@@ -121,8 +139,10 @@ describe('TB-030: normalizeUnicode', () => {
   });
 
   it('handles combined normalizations in one pass', () => {
+    // The em-dash here is inline (mid-line) so it is preserved; quotes and
+    // ellipsis are still normalized.
     const input = '\u201CHello\u201D \u2014 it\u2019s a test\u2026';
-    const expected = '"Hello" - it\'s a test...';
+    const expected = '"Hello" \u2014 it\'s a test...';
     expect(normalizeUnicode(input)).toBe(expected);
   });
 });

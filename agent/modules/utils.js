@@ -1546,8 +1546,13 @@ export function normalizeUnicode(text) {
     
     return text
         .normalize('NFKC')
-        // Replace various dash/hyphen characters with standard hyphen
-        .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
+        // Normalize dashes to a standard hyphen ONLY at the start of a line (after
+        // optional indentation). LLMs frequently emit en/em-dash bullets ("\u2013 item")
+        // instead of "- item", and the summary/action/KB parsers depend on the
+        // bullet being an ASCII hyphen. Inline dashes (em-dashes used as prose
+        // punctuation) are deliberately left intact so proper typography survives
+        // in summaries, chat, and HTML output.
+        .replace(/(^|\n)([ \t]*)[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '$1$2-')
         // Replace various quote characters with standard quotes
         .replace(/[\u2018\u2019\u201B]/g, "'")  // Single quotes (added more variants)
         .replace(/[\u201C\u201D\u201E\u201F]/g, '"')  // Double quotes (added more variants)
