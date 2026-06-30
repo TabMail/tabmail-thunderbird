@@ -10,6 +10,14 @@
 import { $ } from "./dom.js";
 import { getChatLinkUrl } from "../../chatlink/modules/config.js";
 
+// WhatsApp linking is temporarily disabled in the settings page. The inbound
+// WhatsApp → ChatLink path is broken because of Meta/WhatsApp Business
+// configuration changes (number/webhook migration). The settings row shows a
+// static "Temporarily unavailable" state with a disabled Connect button
+// (config.html #whatsapp-link-row). When the Meta-side config is restored,
+// flip this back to false and revert the config.html row to the active state.
+const WHATSAPP_LINKING_DISABLED = true;
+
 let expiryInterval = null;
 let expiryEndTime = null;
 let linkPollInterval = null;
@@ -19,6 +27,13 @@ let linkPollInterval = null;
  * Fetches from backend to ensure accuracy, syncs to local storage.
  */
 export async function loadChatLinkStatus() {
+  // WhatsApp linking disabled: leave the static "Temporarily unavailable" row
+  // from config.html in place. Skipping the backend status fetch + UI sync is
+  // what keeps the disabled Connect button from being re-enabled here.
+  if (WHATSAPP_LINKING_DISABLED) {
+    return;
+  }
+
   try {
     // First check local storage for fast initial render
     const stored = await browser.storage.local.get([
@@ -416,6 +431,12 @@ export async function disconnectWhatsApp() {
  * Uses UI state (which is synced with backend) to determine action.
  */
 export async function handleWhatsAppButtonClick() {
+  // Defense in depth: the button is rendered disabled while linking is off, so
+  // this should never fire, but never start the connect/disconnect flow either.
+  if (WHATSAPP_LINKING_DISABLED) {
+    return;
+  }
+
   const btnEl = $("whatsapp-link-btn");
 
   // Check if button shows "Disconnect" (means connected state)

@@ -216,13 +216,15 @@
     <section id="external-accounts-settings">
       <h3>External Accounts</h3>
 
-      <!-- WhatsApp (active) -->
-      <div class="chatlink-account-row" id="whatsapp-link-row">
+      <!-- WhatsApp (temporarily unavailable — inbound WhatsApp linking disabled
+           while Meta/WhatsApp Business config is broken; see config/modules/chatlink.js
+           WHATSAPP_LINKING_DISABLED to re-enable) -->
+      <div class="chatlink-account-row chatlink-coming-soon" id="whatsapp-link-row">
         <div class="chatlink-account-info">
           <span class="chatlink-platform-name">WhatsApp</span>
-          <span id="whatsapp-status" class="chatlink-status">Not connected</span>
+          <span id="whatsapp-status" class="chatlink-status coming-soon">Temporarily unavailable</span>
         </div>
-        <button id="whatsapp-link-btn" class="chatlink-action-btn">Connect</button>
+        <button id="whatsapp-link-btn" class="chatlink-action-btn" disabled>Connect</button>
       </div>
 
       <!-- WhatsApp relay setting (only shown when connected) -->
