@@ -16,6 +16,13 @@ try {
   console.error("[tmMsgNotify] Failed to import MailServices:", e);
 }
 
+let MailUtilsMsgNotify = null;
+try {
+  ({ MailUtils: MailUtilsMsgNotify } = ChromeUtils.importESModule("resource:///modules/MailUtils.sys.mjs"));
+} catch (e) {
+  console.error("[tmMsgNotify] Failed to import MailUtils:", e);
+}
+
 // Debug flag
 const DEBUG_MSG_NOTIFY = true;
 
@@ -68,7 +75,15 @@ function extractMessageInfo(hdr, folderManager, messageManager, eventType) {
     const subject = String(hdr.mime2DecodedSubject || hdr.subject || "");
     const author = String(hdr.mime2DecodedAuthor || hdr.author || "");
     const dateMs = hdr.dateInSeconds ? hdr.dateInSeconds * 1000 : 0;
-    
+    // msgKey: for IMAP folders this is the IMAP UID — monotonic in
+    // arrival-into-folder order. Used by the indexer's per-folder cursor
+    // (PLAN_RECONCILE_CURSOR.md / ADR-020).
+    let msgKey = null;
+    try {
+      const k = hdr.messageKey;
+      if (typeof k === "number" && Number.isFinite(k)) msgKey = k;
+    } catch (_) {}
+
     return {
       headerMessageId,
       weMsgId,
@@ -78,6 +93,7 @@ function extractMessageInfo(hdr, folderManager, messageManager, eventType) {
       subject,
       author,
       dateMs,
+      msgKey,
       eventType,
     };
   } catch (e) {
@@ -195,6 +211,119 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
         
         async isListenerActive() {
           return self._listener !== null;
+        },
+
+        /**
+         * Per-folder msgDB cursor fingerprints for the add-side reconcile
+         * (PLAN_RECONCILE_CURSOR.md / ADR-020). IMAP accounts only — for IMAP
+         * folders msgKey = IMAP UID (arrival-ordered, monotonic per
+         * UIDVALIDITY). Folders whose msgDB cannot be opened are returned
+         * with an `error` field so the caller can skip them (never seed or
+         * advance a cursor on error).
+         */
+        async getCursorFolders() {
+          const out = [];
+          if (!MailServices?.accounts) return out;
+          for (const account of MailServices.accounts.accounts) {
+            let server = null;
+            try {
+              server = account.incomingServer;
+            } catch (_) {}
+            if (!server || server.type !== "imap") continue;
+
+            let root = null;
+            try {
+              root = server.rootFolder;
+            } catch (e) {
+              debugLog("getCursorFolders: no rootFolder for", server.key, e);
+              continue;
+            }
+            if (!root) continue;
+
+            for (const folder of root.descendants) {
+              const base = {
+                accountId: "",
+                folderPath: "",
+                folderURI: String(folder.URI || ""),
+              };
+              try {
+                const weFolder = folderManager?.convert(folder);
+                base.accountId = weFolder?.accountId || server.key || "";
+                base.folderPath = weFolder?.path || folder.URI || "";
+              } catch (_) {
+                base.accountId = server.key || "";
+                base.folderPath = folder.URI || "";
+              }
+              try {
+                // May throw (missing/out-of-date summary). Do not force a
+                // rebuild — skip and let the caller retry next boot.
+                const db = folder.msgDatabase;
+                const dbInfo = db.dBFolderInfo;
+                out.push({
+                  ...base,
+                  uidValidity: dbInfo.imapUidValidity || 0,
+                  highWater: dbInfo.highWater || 0,
+                  totalMessages: folder.getTotalMessages(false),
+                });
+              } catch (e) {
+                out.push({ ...base, error: String(e) });
+              }
+            }
+          }
+          return out;
+        },
+
+        /**
+         * List msgKeys strictly above sinceKey, ascending. When more than
+         * maxKeys are above, returns the HIGHEST maxKeys (newest arrivals
+         * win) with truncated=true so the caller can log the gap loudly.
+         */
+        async listKeysAboveKey(folderURI, sinceKey, maxKeys) {
+          try {
+            const folder = MailUtilsMsgNotify?.getExistingFolder?.(folderURI);
+            if (!folder) return { keys: [], truncated: false, totalAbove: 0, error: "folder_not_found" };
+            const db = folder.msgDatabase;
+            const since = Number.isFinite(sinceKey) ? sinceKey : 0;
+            const keys = db.listAllKeys().filter((k) => k > since).sort((a, b) => a - b);
+            const cap = Number.isFinite(maxKeys) && maxKeys > 0 ? maxKeys : keys.length;
+            const truncated = keys.length > cap;
+            return {
+              keys: truncated ? keys.slice(keys.length - cap) : keys,
+              truncated,
+              totalAbove: keys.length,
+            };
+          } catch (e) {
+            return { keys: [], truncated: false, totalAbove: 0, error: String(e) };
+          }
+        },
+
+        /**
+         * Resolve msgKeys to serialized messageInfos (same shape as the
+         * onMessageAdded payload). Keys whose header vanished between list
+         * and fetch are silently omitted — message gone means nothing to
+         * index; the remove side owns it.
+         */
+        async getMessageInfosForKeys(folderURI, keys) {
+          try {
+            const folder = MailUtilsMsgNotify?.getExistingFolder?.(folderURI);
+            if (!folder) return { infos: [], error: "folder_not_found" };
+            const db = folder.msgDatabase;
+            const infos = [];
+            for (const key of keys || []) {
+              let hdr = null;
+              try {
+                hdr = db.getMsgHdrForKey(key);
+              } catch (_) {
+                continue; // header gone — skip
+              }
+              if (!hdr) continue;
+              const info = extractMessageInfo(hdr, folderManager, messageManager, "cursorScan");
+              if (info) infos.push(info);
+            }
+            return { infos };
+          } catch (e) {
+            return { infos: [], error: String(e) };
+          }
         },
       },
     };

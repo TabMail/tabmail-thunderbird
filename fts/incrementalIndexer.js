@@ -1153,30 +1153,52 @@ export async function onExperimentMessageAdded(messageInfo) {
   // Track sync event for reconcile quiet-period detection
   _lastSyncEventMs = Date.now();
 
-  const { headerMessageId, weFolderId, folderPath, accountId, subject, eventType } = messageInfo;
+  // Track the highest msgKey seen per folder this session — the heartbeat
+  // merges these into the persistent folder cursors (ADR-020). Only
+  // delivered events advance this, so unevented arrivals stay above the
+  // cursor and are caught by the next boot's cursor scan.
+  _noteSessionMaxKey(messageInfo);
 
-  log(`[TMDBG FTS] Experiment msgAdded: type=${eventType}, folder=${folderPath}, subject="${subject?.substring(0, 50)}"`);
-  
+  log(`[TMDBG FTS] Experiment msgAdded: type=${messageInfo.eventType}, folder=${messageInfo.folderPath}, subject="${messageInfo.subject?.substring(0, 50)}"`);
+
+  await _enqueueNewFromInfo(messageInfo);
+}
+
+/**
+ * Shared enqueue for experiment-shaped messageInfo payloads. Used by the
+ * live event path (onExperimentMessageAdded) and the boot cursor scan
+ * (_runCursorScan). Deliberately does NOT touch _lastSyncEventMs — the
+ * cursor scan is not a sync event and must not starve the maintenance
+ * startup tick's quiet signal.
+ *
+ * @param {Object} messageInfo - Serialized message info from experiment
+ * @param {boolean} [fromCursorScan] - Marks cursor-scan-sourced entries
+ */
+async function _enqueueNewFromInfo(messageInfo, fromCursorScan = false) {
+  if (!_isEnabled) return;
+
+  const { headerMessageId, folderPath, accountId, subject, eventType } = messageInfo;
+
   // Build unique key from the info we have
   const uniqueKey = `${accountId}:${folderPath}:${headerMessageId}`;
-  
+
   if (!uniqueKey || uniqueKey === '::') {
-    log(`[TMDBG FTS] Experiment msgAdded: invalid key components, skipping`, "warn");
+    log(`[TMDBG FTS] Experiment enqueue: invalid key components, skipping`, "warn");
     return;
   }
-  
+
   // Acquire mutex for atomic enqueue
   const { acquired, release } = acquireEnqueueMutex();
-  
+
   try {
     await acquired;
-    
+
     // Check for existing entry
     const existing = _pendingUpdates.get(uniqueKey);
     if (existing) {
-      log(`[TMDBG FTS] Experiment msgAdded: ${uniqueKey} already queued (type=${existing.type}→new, age=${Date.now() - existing.timestamp}ms)`);
+      log(`[TMDBG FTS] Experiment enqueue: ${uniqueKey} already queued (type=${existing.type}→new, age=${Date.now() - existing.timestamp}ms)`);
     }
-    
+
     // Queue for indexing - FTS adds are idempotent, so always queue
     const update = {
       type: 'new',
@@ -1186,12 +1208,13 @@ export async function onExperimentMessageAdded(messageInfo) {
         subject: subject?.substring(0, 100),
         folderName: folderPath,
         fromExperiment: true,
+        fromCursorScan,
         eventType,
       }
     };
-    
+
     _pendingUpdates.set(uniqueKey, update);
-    log(`[TMDBG FTS] Queued new from experiment: ${uniqueKey} (${eventType}) (queue size: ${_pendingUpdates.size})`);
+    log(`[TMDBG FTS] Queued new from ${fromCursorScan ? 'cursor scan' : 'experiment'}: ${uniqueKey} (${eventType}) (queue size: ${_pendingUpdates.size})`);
     scheduleBatchProcess();
     schedulePersist();
   } finally {
@@ -1358,6 +1381,46 @@ const RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000; // 10 minutes
 // heartbeat interval, not the entire uptime.
 const HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
+// ---------------------------------------------------------------------------
+// Per-folder msgKey/UID cursors (add-side reconcile) — ADR-020,
+// PLAN_RECONCILE_CURSOR.md. For IMAP folders msgKey = IMAP UID, monotonic in
+// arrival-into-folder order — the signal the Date-keyed Phase 1 window cannot
+// express ("new to our local msgDB since we last looked"). The boot cursor
+// scan (Phase 1b) enqueues everything above each folder's cursor regardless
+// of its Date header, closing the add-side Class-1 blind spot (06/29 incident:
+// 352 messages synced late into Gmail secondary folders, all missed by the
+// date-windowed Phase 1).
+// ---------------------------------------------------------------------------
+const CURSOR_STORAGE_KEY = "fts_folder_cursors";
+// Keys resolved to messageInfos per experiment RPC
+const CURSOR_KEYS_CHUNK = 500;
+// Cap for full scans (cursorless new folder / UIDVALIDITY reset). Newest keys
+// win; a truncated scan is logged loudly. Matches today's new-folder posture
+// (history is owned by the initial scan / weekly maintenance).
+const CURSOR_FULL_SCAN_MAX_KEYS = 5000;
+// Small yield between messageInfo chunks to keep the event loop responsive
+const CURSOR_CHUNK_DELAY_MS = 10;
+
+// Highest msgKey seen per folder ("accountId:folderPath" -> key) via
+// delivered experiment events this session. Merged into the persistent
+// cursors by the heartbeat. Only delivered events advance this — unevented
+// arrivals stay above the stored cursor for the next boot scan to catch.
+let _sessionMaxKeyByFolder = new Map();
+
+/**
+ * Record the msgKey from a delivered experiment add event.
+ */
+function _noteSessionMaxKey(messageInfo) {
+  const { accountId, folderPath, msgKey } = messageInfo || {};
+  if (!accountId || !folderPath) return;
+  if (typeof msgKey !== "number" || !Number.isFinite(msgKey)) return;
+  const folderKey = `${accountId}:${folderPath}`;
+  const prev = _sessionMaxKeyByFolder.get(folderKey);
+  if (prev === undefined || msgKey > prev) {
+    _sessionMaxKeyByFolder.set(folderKey, msgKey);
+  }
+}
+
 // Tracks the most recent sync-related message event timestamp.
 // Reset on every onExperimentMessageAdded/Removed call.
 let _lastSyncEventMs = Date.now();
@@ -1437,6 +1500,23 @@ async function _writeWatermark(fromMs) {
 }
 
 /**
+ * Drain-stall guard shared by the watermark bump and the cursor advance:
+ * if pending updates have been sitting unprocessed for longer than 2× the
+ * heartbeat interval, the listener fired but the queue isn't draining.
+ * Advancing coverage claims would be false while events sit pending.
+ */
+function _isDrainStalled() {
+  if (_pendingUpdates.size === 0) return false;
+  let oldestTs = Infinity;
+  for (const u of _pendingUpdates.values()) {
+    if (typeof u.timestamp === "number" && u.timestamp < oldestTs) {
+      oldestTs = u.timestamp;
+    }
+  }
+  return oldestTs !== Infinity && Date.now() - oldestTs > HEARTBEAT_INTERVAL_MS * 2;
+}
+
+/**
  * Runtime watermark-advance heartbeat. Bumps completedAtMs forward
  * while the experiment listener is active and the drain queue isn't
  * stalled. Never advances fromMs — only Phase 2 may do that.
@@ -1447,21 +1527,9 @@ async function _writeWatermark(fromMs) {
 async function _heartbeatBumpWatermark() {
   if (!_isEnabled || !_experimentListenersActive || _indexerDisposed) return;
 
-  // Drain-stall guard: if pending updates have been sitting unprocessed
-  // for longer than 2× the heartbeat interval, the listener fired but
-  // the queue isn't draining. Advancing the watermark would falsely
-  // claim "all consistent" while events sit pending.
-  if (_pendingUpdates.size > 0) {
-    let oldestTs = Infinity;
-    for (const u of _pendingUpdates.values()) {
-      if (typeof u.timestamp === "number" && u.timestamp < oldestTs) {
-        oldestTs = u.timestamp;
-      }
-    }
-    if (oldestTs !== Infinity && Date.now() - oldestTs > HEARTBEAT_INTERVAL_MS * 2) {
-      log(`[FTS Heartbeat] Skipped: drain stalled (oldest pending ${Math.round((Date.now() - oldestTs) / 1000)}s old)`);
-      return;
-    }
+  if (_isDrainStalled()) {
+    log(`[FTS Heartbeat] Skipped: drain stalled`);
+    return;
   }
 
   let wm = null;
@@ -1495,6 +1563,72 @@ async function _heartbeatBumpWatermark() {
 }
 
 /**
+ * Read the persistent per-folder cursors. Returns null when never written
+ * (first run — the cursor scan seeds without enumeration in that case).
+ */
+async function _getCursors() {
+  try {
+    const stored = await browser.storage.local.get(CURSOR_STORAGE_KEY);
+    const c = stored?.[CURSOR_STORAGE_KEY];
+    if (c && c.folders && typeof c.folders === "object") return c;
+    return null;
+  } catch (e) {
+    log(`[FTS Cursor] Cursor read failed: ${e}`, "warn");
+    return null;
+  }
+}
+
+async function _writeCursors(cursors) {
+  try {
+    await browser.storage.local.set({ [CURSOR_STORAGE_KEY]: cursors });
+  } catch (e) {
+    // Non-fatal: next boot re-scans from the older cursors (wider diff).
+    log(`[FTS Cursor] Cursor write failed: ${e}`, "warn");
+  }
+}
+
+/**
+ * Heartbeat cursor advance: merge session-max keys (from delivered events)
+ * into the persistent cursors. Only advances EXISTING entries — the boot
+ * cursor scan is the sole minter (mirrors the watermark heartbeat's
+ * "refuse to create" rule). Guarded by the shared drain-stall check: an
+ * event that was delivered and enqueued is covered by queue persistence,
+ * so advancing past it is safe once the drain is healthy.
+ */
+async function _heartbeatAdvanceCursors() {
+  if (!_isEnabled || !_experimentListenersActive || _indexerDisposed) return;
+  if (_sessionMaxKeyByFolder.size === 0) return;
+  if (_isDrainStalled()) {
+    log(`[FTS Cursor Heartbeat] Skipped: drain stalled`);
+    return;
+  }
+
+  const cursors = await _getCursors();
+  // Refuse to create — only the boot cursor scan may mint the cursor store.
+  if (!cursors) return;
+
+  // Re-check disposal AFTER the async read (same pattern as the watermark
+  // heartbeat) so a dispose() during the read doesn't lose to a stale write.
+  if (_indexerDisposed) return;
+
+  let advanced = 0;
+  for (const [folderKey, sessionMax] of _sessionMaxKeyByFolder.entries()) {
+    const entry = cursors.folders[folderKey];
+    if (!entry) continue; // folder not minted yet — next boot's scan owns it
+    if (typeof entry.highestKeySeen === "number" && sessionMax > entry.highestKeySeen) {
+      entry.highestKeySeen = sessionMax;
+      entry.updatedAtMs = Date.now();
+      advanced++;
+    }
+  }
+
+  if (advanced > 0) {
+    await _writeCursors(cursors);
+    log(`[FTS Cursor Heartbeat] Advanced ${advanced} folder cursor(s) from session events`);
+  }
+}
+
+/**
  * Start the heartbeat timer. Called after a clean boot reconcile.
  * Idempotent — clears any prior timer first.
  */
@@ -1506,6 +1640,9 @@ function _startWatermarkHeartbeat() {
   _watermarkHeartbeatTimer = setInterval(() => {
     _heartbeatBumpWatermark().catch(e => {
       log(`[FTS Heartbeat] Unexpected error: ${e}`, "warn");
+    });
+    _heartbeatAdvanceCursors().catch(e => {
+      log(`[FTS Cursor Heartbeat] Unexpected error: ${e}`, "warn");
     });
   }, HEARTBEAT_INTERVAL_MS);
   log(`[FTS Heartbeat] Started — interval ${HEARTBEAT_INTERVAL_MS / 1000}s`);
@@ -1523,11 +1660,227 @@ function _stopWatermarkHeartbeat() {
 }
 
 /**
+ * Phase 1b: per-folder msgKey/UID cursor scan (ADR-020).
+ *
+ * For each IMAP folder, compares the msgDB's highWater key against the
+ * persisted cursor and enqueues everything above it — catching messages
+ * that entered the local msgDB while nothing was listening (addon not yet
+ * loaded, addon disabled, event-less bulk sync), REGARDLESS of their Date
+ * header. This is the arrival-ordered complement to the Date-keyed Phase 1.
+ *
+ * Per-folder advance contract: a folder's cursor advances only when every
+ * enqueue for it succeeded (once enqueued, the drain queue's persistence +
+ * retry own delivery — same contract as the watermark's enqueueFailed rule).
+ * Failed folders keep their old cursor and retry next boot. Independent of
+ * the watermark: neither blocks the other.
+ *
+ * First run (no cursor store): seeds every folder to its current highWater
+ * WITHOUT enumeration — coverage before first deploy is owned by the
+ * initial scan / weekly maintenance. UIDVALIDITY change or a new folder
+ * triggers a capped full scan from key 0 (FTS-level dedup via the drain
+ * queue's filterNewMessages makes re-enqueues cheap no-ops).
+ */
+async function _runCursorScan() {
+  if (!_isEnabled) return { skipped: true, reason: "disabled" };
+  if (!browser.tmMsgNotify || !_experimentListenersActive) {
+    log(`[FTS Cursor] Scan skipped — experiment API unavailable`);
+    return { skipped: true, reason: "no_experiment" };
+  }
+
+  const scanStart = Date.now();
+  const stats = {
+    foldersTotal: 0,
+    foldersUnchanged: 0,
+    foldersSeeded: 0,
+    foldersScanned: 0,
+    foldersAdvanced: 0,
+    foldersSkipped: 0,
+    keysEnqueued: 0,
+    enqueueFailed: 0,
+    truncatedScans: 0,
+  };
+
+  let folders;
+  try {
+    folders = await browser.tmMsgNotify.getCursorFolders();
+  } catch (e) {
+    log(`[FTS Cursor] getCursorFolders failed: ${e} — scan skipped, retry next boot`, "warn");
+    logFtsBatchOperation("cursor_scan", "error", { error: String(e) });
+    return { skipped: true, reason: "getCursorFolders_failed" };
+  }
+
+  const stored = await _getCursors();
+  const firstRun = !stored;
+  const cursors = stored || { version: 1, seededAtMs: Date.now(), folders: {} };
+
+  logFtsBatchOperation("cursor_scan", "start", {
+    firstRun,
+    foldersReported: folders?.length || 0,
+  });
+
+  for (const f of folders || []) {
+    stats.foldersTotal++;
+
+    if (f.error || !f.folderURI) {
+      // msgDB unreadable — never seed or advance on error; retry next boot.
+      stats.foldersSkipped++;
+      logFtsOperation("cursor_scan", "folder_error", {
+        folderPath: f.folderPath,
+        error: f.error || "no_folderURI",
+      });
+      continue;
+    }
+
+    const folderKey = `${f.accountId}:${f.folderPath}`;
+    const cur = cursors.folders[folderKey];
+    const highWater = typeof f.highWater === "number" ? f.highWater : 0;
+    const uidValidity = typeof f.uidValidity === "number" ? f.uidValidity : 0;
+
+    let sinceKey = null;
+    let scanReason = null;
+
+    if (!cur) {
+      if (firstRun) {
+        // Seed without enumeration — claim nothing before deploy.
+        cursors.folders[folderKey] = {
+          uidValidity,
+          highestKeySeen: highWater,
+          updatedAtMs: Date.now(),
+        };
+        stats.foldersSeeded++;
+        continue;
+      }
+      sinceKey = 0;
+      scanReason = "new_folder";
+    } else if (!Number.isFinite(cur.highestKeySeen)) {
+      // Corrupt entry — without this it would compare as "unchanged"
+      // forever and never heal. Re-mint via a capped full scan.
+      sinceKey = 0;
+      scanReason = "corrupt_cursor";
+    } else if (cur.uidValidity !== uidValidity) {
+      // UIDs remapped — FTS keys (headerMessageId-based) stay valid, so a
+      // full re-enqueue dedups against the index; the cursor is re-minted.
+      sinceKey = 0;
+      scanReason = "uidvalidity_reset";
+    } else if (highWater > cur.highestKeySeen) {
+      sinceKey = cur.highestKeySeen;
+      scanReason = "diff";
+    } else {
+      stats.foldersUnchanged++;
+      continue;
+    }
+
+    // Enumerate keys above the cursor
+    let listed;
+    try {
+      listed = await browser.tmMsgNotify.listKeysAboveKey(f.folderURI, sinceKey, CURSOR_FULL_SCAN_MAX_KEYS);
+    } catch (e) {
+      listed = { keys: [], error: String(e) };
+    }
+    if (listed.error) {
+      stats.foldersSkipped++;
+      logFtsOperation("cursor_scan", "list_error", {
+        folderPath: f.folderPath,
+        reason: scanReason,
+        error: listed.error,
+      });
+      continue;
+    }
+
+    if (listed.truncated) {
+      stats.truncatedScans++;
+      log(`[FTS Cursor] TRUNCATED scan for ${folderKey} (${scanReason}): enqueuing newest ${listed.keys.length} of ${listed.totalAbove} keys — older history is NOT recovered by this scan`, "warn");
+      logFtsOperation("cursor_scan", "truncated", {
+        folderPath: f.folderPath,
+        reason: scanReason,
+        enqueued: listed.keys.length,
+        totalAbove: listed.totalAbove,
+      });
+    }
+
+    stats.foldersScanned++;
+
+    // Resolve keys to messageInfos in chunks and enqueue into the drain queue
+    let folderEnqueueFailed = 0;
+    let folderEnqueued = 0;
+    let lastEnumeratedKey = sinceKey;
+    for (let i = 0; i < listed.keys.length; i += CURSOR_KEYS_CHUNK) {
+      const chunk = listed.keys.slice(i, i + CURSOR_KEYS_CHUNK);
+      let res;
+      try {
+        res = await browser.tmMsgNotify.getMessageInfosForKeys(f.folderURI, chunk);
+      } catch (e) {
+        res = { infos: [], error: String(e) };
+      }
+      if (res.error) {
+        // RPC-level failure — coverage for this folder is unproven.
+        folderEnqueueFailed++;
+        logFtsOperation("cursor_scan", "infos_error", {
+          folderPath: f.folderPath,
+          error: res.error,
+        });
+        break;
+      }
+      // Keys omitted from infos = header gone between list and fetch
+      // (message deleted meanwhile) — nothing to index, remove-side owns it.
+      for (const info of res.infos || []) {
+        try {
+          await _enqueueNewFromInfo(info, true);
+          folderEnqueued++;
+        } catch (e) {
+          folderEnqueueFailed++;
+          log(`[FTS Cursor] Enqueue failed for ${folderKey}:${info?.headerMessageId}: ${e}`, "warn");
+        }
+      }
+      lastEnumeratedKey = chunk[chunk.length - 1];
+      if (CURSOR_CHUNK_DELAY_MS > 0 && i + CURSOR_KEYS_CHUNK < listed.keys.length) {
+        await new Promise(r => setTimeout(r, CURSOR_CHUNK_DELAY_MS));
+      }
+    }
+
+    stats.keysEnqueued += folderEnqueued;
+    stats.enqueueFailed += folderEnqueueFailed;
+
+    if (folderEnqueueFailed === 0) {
+      // Advance: everything above the old cursor reached the persistent
+      // drain queue. Keys arriving after the getCursorFolders snapshot are
+      // the live listener's responsibility (it's registered by now).
+      cursors.folders[folderKey] = {
+        uidValidity,
+        highestKeySeen: Math.max(highWater, lastEnumeratedKey || 0),
+        updatedAtMs: Date.now(),
+      };
+      stats.foldersAdvanced++;
+      if (folderEnqueued > 0) {
+        log(`[FTS Cursor] ${folderKey}: enqueued ${folderEnqueued} (${scanReason}), cursor → ${cursors.folders[folderKey].highestKeySeen}`);
+      }
+    } else {
+      stats.foldersSkipped++;
+      log(`[FTS Cursor] ${folderKey}: ${folderEnqueueFailed} enqueue failure(s) — cursor NOT advanced, retry next boot`, "warn");
+    }
+  }
+
+  // Single write: seeded + advanced folders persist; failed folders keep
+  // their old entries (or none) and are retried next boot.
+  await _writeCursors(cursors);
+
+  const elapsed = Date.now() - scanStart;
+  log(`[FTS Cursor] Scan complete: ${stats.foldersTotal} folders (${stats.foldersUnchanged} unchanged, ${stats.foldersSeeded} seeded, ${stats.foldersScanned} scanned, ${stats.foldersAdvanced} advanced, ${stats.foldersSkipped} skipped), ${stats.keysEnqueued} enqueued, ${stats.enqueueFailed} enqueue failures, ${elapsed}ms`);
+  logFtsBatchOperation("cursor_scan", "complete", { ...stats, firstRun, elapsedMs: elapsed });
+
+  return stats;
+}
+
+/**
  * Run post-init reconciliation: discover recent messages across all folders
  * and enqueue any that might be missing into the existing persistent queue.
  *
  * Phase 1: Enqueue current TB messages as 'new' — the drain loop handles
  *          FTS dedup via filterNewMessages (already-indexed messages are skipped).
+ *
+ * Phase 1b: Per-folder msgKey/UID cursor scan (ADR-020) — enqueue everything
+ *          above each folder's persisted cursor, regardless of Date header.
+ *          Catches boot-gap arrivals whose Dates predate the Phase 1 window.
  *
  * Phase 2: Query FTS entries in the same window and remove any whose messages
  *          no longer exist in TB at their indexed folder. This cleans up stale
@@ -1598,6 +1951,21 @@ async function runPostInitReconcile(ftsSearch) {
     });
 
     log(`[FTS Reconcile] Phase 1 complete: ${totalScanned} scanned, ${totalEnqueued} enqueued, ${enqueueFailed} enqueue failures`);
+
+    // =========================================================================
+    // PHASE 1b: Per-folder msgKey/UID cursor scan (ADR-020)
+    // =========================================================================
+    // Arrival-ordered complement to the Date-keyed Phase 1: catches messages
+    // that entered the local msgDB while nothing was listening, regardless of
+    // their Date header. Independent of the watermark — a cursor-scan failure
+    // must not block the watermark advance (per-folder cursors self-retry on
+    // the next boot), and vice versa.
+    try {
+      await _runCursorScan();
+    } catch (cursorErr) {
+      log(`[FTS Cursor] Scan failed: ${cursorErr} — folder cursors not advanced, retry next boot`, "warn");
+      logFtsBatchOperation("cursor_scan", "error", { error: String(cursorErr) });
+    }
 
     // =========================================================================
     // PHASE 2: Remove stale FTS entries for moved/deleted messages
@@ -1908,6 +2276,9 @@ export async function initIncrementalIndexer(ftsSearch) {
   // Reset disposal flag — a previous dispose() may have set it; a fresh
   // init should let the heartbeat run again.
   _indexerDisposed = false;
+  // Fresh session — session-max keys from a previous session were either
+  // merged by the heartbeat or are superseded by the boot cursor scan.
+  _sessionMaxKeyByFolder = new Map();
 
   // Load settings
   await updateIncrementalSettings();
@@ -2059,7 +2430,10 @@ export async function disposeIncrementalIndexer() {
   
   // Clear pending updates from memory
   _pendingUpdates.clear();
-  
+
+  // Clear session cursor tracking
+  _sessionMaxKeyByFolder.clear();
+
   // Clear timers
   if (_batchTimer) {
     clearTimeout(_batchTimer);
@@ -2078,12 +2452,12 @@ export async function disposeIncrementalIndexer() {
 
   // Reset processing flag
   _isProcessing = false;
-  
+
   // Reset mutex
   _enqueueMutex = Promise.resolve();
-  
+
   _ftsSearch = null;
-  
+
   log("[TMDBG FTS] Incremental indexer disposed");
 }
 
@@ -2210,6 +2584,15 @@ export const _testExports = {
   _heartbeatBumpWatermark,
   _startWatermarkHeartbeat,
   _stopWatermarkHeartbeat,
+  // Per-folder cursors (PLAN_RECONCILE_CURSOR.md / ADR-020)
+  _runCursorScan,
+  _heartbeatAdvanceCursors,
+  _noteSessionMaxKey,
+  _getSessionMaxKeyByFolder: () => _sessionMaxKeyByFolder,
+  _clearSessionMaxKeyByFolder: () => { _sessionMaxKeyByFolder.clear(); },
+  CURSOR_STORAGE_KEY,
+  CURSOR_KEYS_CHUNK,
+  CURSOR_FULL_SCAN_MAX_KEYS,
   _hasWatermarkHeartbeatTimer: () => _watermarkHeartbeatTimer !== null,
   _setIndexerDisposed: (v) => { _indexerDisposed = v; },
   _getIndexerDisposed: () => _indexerDisposed,

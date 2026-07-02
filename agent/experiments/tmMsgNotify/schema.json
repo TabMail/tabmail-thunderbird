@@ -20,7 +20,8 @@
               "subject": { "type": "string" },
               "author": { "type": "string" },
               "dateMs": { "type": "integer", "description": "Message date in epoch milliseconds" },
-              "eventType": { "type": "string", "description": "Type of add event: added, classified, copyCompleted, moveCompleted" }
+              "msgKey": { "type": "integer", "description": "msgDB key (IMAP UID for IMAP folders); null if unavailable", "optional": true },
+              "eventType": { "type": "string", "description": "Type of add event: added, classified, copyCompleted, moveCompleted, cursorScan" }
             }
           }
         ]
@@ -52,6 +53,65 @@
         "async": true,
         "parameters": [],
         "returns": { "type": "boolean" }
+      },
+      {
+        "name": "getCursorFolders",
+        "type": "function",
+        "description": "Per-folder msgDB cursor fingerprints (IMAP accounts only) for the add-side reconcile cursor (ADR-020). Folders whose msgDB cannot be opened carry an error field.",
+        "async": true,
+        "parameters": [],
+        "returns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "accountId": { "type": "string" },
+              "folderPath": { "type": "string" },
+              "folderURI": { "type": "string", "description": "Native folder URI for follow-up calls" },
+              "uidValidity": { "type": "integer", "optional": true },
+              "highWater": { "type": "integer", "description": "Highest msgKey in the local msgDB", "optional": true },
+              "totalMessages": { "type": "integer", "optional": true },
+              "error": { "type": "string", "optional": true }
+            }
+          }
+        }
+      },
+      {
+        "name": "listKeysAboveKey",
+        "type": "function",
+        "description": "List msgKeys strictly above sinceKey, ascending. If more than maxKeys exist, returns the highest maxKeys with truncated=true.",
+        "async": true,
+        "parameters": [
+          { "name": "folderURI", "type": "string" },
+          { "name": "sinceKey", "type": "integer" },
+          { "name": "maxKeys", "type": "integer" }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "keys": { "type": "array", "items": { "type": "integer" } },
+            "truncated": { "type": "boolean" },
+            "totalAbove": { "type": "integer" },
+            "error": { "type": "string", "optional": true }
+          }
+        }
+      },
+      {
+        "name": "getMessageInfosForKeys",
+        "type": "function",
+        "description": "Resolve msgKeys to serialized messageInfos (same shape as onMessageAdded). Keys whose header no longer exists are omitted.",
+        "async": true,
+        "parameters": [
+          { "name": "folderURI", "type": "string" },
+          { "name": "keys", "type": "array", "items": { "type": "integer" } }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "infos": { "type": "array", "items": { "type": "object" } },
+            "error": { "type": "string", "optional": true }
+          }
+        }
       }
     ]
   }
