@@ -1899,6 +1899,20 @@ const FOLDER_RECON_RECHECK_KEEPALIVE_EVERY = 50;
 // Full-keyspace upper bound for the orphan sweep: U+FFFF sorts above every
 // character that can appear in a msgId key.
 const FOLDER_RECON_KEYSPACE_END = "￿";
+// The count invariant needs add-side completeness — before the initial FULL
+// scan has completed, every folder has a huge policy deficit and the missing
+// direction would mass-enqueue the whole backlog through the incremental
+// drain queue (whose persistence serializes the entire map per debounce).
+// Gate the whole phase on the initial scan's completion flag (written by
+// chat/background.js runInitialFtsScan).
+const FOLDER_RECON_INITIAL_SCAN_KEY = "fts_initial_scan_complete";
+// Defense-in-depth for any OTHER bulk-bias state (initial scan flag set but
+// coverage still partial, indexing disabled for months, rebuilt FTS): a
+// missing-direction deficit larger than this is bulk-unindexed history, not
+// drop-stuck loss (drops are single digits per stuck cycle) — skip the walk,
+// log loudly, and do NOT memoize so the folder re-evaluates once coverage
+// converges (counts are cheap; only the walk is gated).
+const FOLDER_RECON_MISSING_MAX_DEFICIT = 500;
 
 // Feature detection for the native range RPCs (countMsgIdRange /
 // listMsgIdRange, helper ≥ 0.10.0). null = not probed yet this session;
@@ -2305,6 +2319,23 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
     return { skipped: true, reason: "native_unsupported" };
   }
 
+  // Add-side completeness gate: before the initial FULL scan finishes, every
+  // folder carries a huge policy deficit — the invariant does not hold yet
+  // and the missing direction would mass-enqueue the initial scan's backlog
+  // through the wrong pipeline. Skip the phase; the initial scan owns
+  // coverage until its completion flag is set.
+  try {
+    const scanFlag = await browser.storage.local.get(FOLDER_RECON_INITIAL_SCAN_KEY);
+    if (!scanFlag?.[FOLDER_RECON_INITIAL_SCAN_KEY]) {
+      log(`[FTS FolderRecon] Skipped — initial FTS scan not yet complete (invariant needs add-side completeness)`);
+      logFtsBatchOperation("folder_recon", "skipped_initial_scan_incomplete", {});
+      return { skipped: true, reason: "initial_scan_incomplete" };
+    }
+  } catch (e) {
+    log(`[FTS FolderRecon] Initial-scan flag read failed: ${e} — skipped this boot`, "warn");
+    return { skipped: true, reason: "initial_scan_flag_read_failed" };
+  }
+
   const reconStart = Date.now();
   const stats = {
     foldersTotal: 0,
@@ -2314,6 +2345,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
     foldersClean: 0,       // counts equal on arrival — zero work
     foldersReconciled: 0,  // a direction pass ran and completed cleanly
     foldersFailed: 0,      // a direction pass errored — no memo, retry next boot
+    foldersDeficitCapped: 0, // missing deficit > cap — bulk-unindexed history, walk suppressed
     staleCandidates: 0,
     staleRemoved: 0,
     recheckKeptPresent: 0,
@@ -2420,6 +2452,27 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
       continue;
     }
 
+    // Deficit cap (defense-in-depth): a missing-direction deficit this large
+    // is bulk-unindexed history (partial coverage), not drop-stuck loss —
+    // walking it would mass-enqueue through the incremental drain queue.
+    // Skip the walk WITHOUT memoizing: counts stay cheap to re-check and the
+    // folder heals once coverage converges below the cap.
+    if (msgCount > ftsCount && msgCount - ftsCount > FOLDER_RECON_MISSING_MAX_DEFICIT) {
+      stats.foldersDeficitCapped++;
+      // NOTE: ftsCount already entered totalKnownFtsCount above, so the
+      // orphan sweep's evidence stays sound — only this folder's WALK is
+      // suppressed.
+      log(`[FTS FolderRecon] ${folderKey}: missing deficit ${msgCount - ftsCount} exceeds cap ${FOLDER_RECON_MISSING_MAX_DEFICIT} — bulk-unindexed history, walk skipped (initial scan / coverage owns it)`, "warn");
+      logFtsOperation("folder_recon", "missing_deficit_capped", {
+        folderPath: f.folderPath,
+        msgCount,
+        ftsCount,
+        deficit: msgCount - ftsCount,
+        cap: FOLDER_RECON_MISSING_MAX_DEFICIT,
+      });
+      continue;
+    }
+
     // 5/6) Count mismatch — folder-scoped set diff in the indicated direction.
     log(`[FTS FolderRecon] ${folderKey}: ftsCount=${ftsCount} msgCount=${msgCount} — running ${ftsCount > msgCount ? "stale" : "missing"} direction`, "warn");
     let cleanPass;
@@ -2472,7 +2525,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
   }
 
   const elapsed = Date.now() - reconStart;
-  log(`[FTS FolderRecon] Complete: ${stats.foldersTotal} folders (${stats.foldersMemoHit} memo-hit, ${stats.foldersClean} clean, ${stats.foldersReconciled} reconciled, ${stats.foldersDrainBusy} drain-busy, ${stats.foldersErrored} errored, ${stats.foldersFailed} failed), ${stats.staleRemoved} stale removed (${stats.staleCandidates} candidates, ${stats.recheckKeptPresent} present, ${stats.recheckKeptError} recheck-errors), ${stats.missingEnqueued} missing enqueued, ${stats.orphanRemoved} orphans removed, ${elapsed}ms`);
+  log(`[FTS FolderRecon] Complete: ${stats.foldersTotal} folders (${stats.foldersMemoHit} memo-hit, ${stats.foldersClean} clean, ${stats.foldersReconciled} reconciled, ${stats.foldersDrainBusy} drain-busy, ${stats.foldersErrored} errored, ${stats.foldersFailed} failed, ${stats.foldersDeficitCapped} deficit-capped), ${stats.staleRemoved} stale removed (${stats.staleCandidates} candidates, ${stats.recheckKeptPresent} present, ${stats.recheckKeptError} recheck-errors), ${stats.missingEnqueued} missing enqueued, ${stats.orphanRemoved} orphans removed, ${elapsed}ms`);
   logFtsBatchOperation("folder_recon", "complete", { ...stats, rerun: !!onlyFolderKeys, elapsedMs: elapsed });
 
   return stats;
@@ -3268,6 +3321,8 @@ export const _testExports = {
   FOLDER_RECON_CHUNK_DELAY_MS,
   FOLDER_RECON_RECHECK_KEEPALIVE_EVERY,
   FOLDER_RECON_KEYSPACE_END,
+  FOLDER_RECON_INITIAL_SCAN_KEY,
+  FOLDER_RECON_MISSING_MAX_DEFICIT,
   _hasWatermarkHeartbeatTimer: () => _watermarkHeartbeatTimer !== null,
   _setIndexerDisposed: (v) => { _indexerDisposed = v; },
   _getIndexerDisposed: () => _indexerDisposed,

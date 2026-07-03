@@ -93,6 +93,8 @@ const {
   _setFtsSearch,
   _setIndexerDisposed,
   FOLDER_RECON_STORAGE_KEY,
+  FOLDER_RECON_INITIAL_SCAN_KEY,
+  FOLDER_RECON_MISSING_MAX_DEFICIT,
 } = _testExports;
 
 // ---------------------------------------------------------------------------
@@ -218,6 +220,10 @@ function storedMemo() {
 beforeEach(() => {
   vi.clearAllMocks();
   for (const key of Object.keys(storageData)) delete storageData[key];
+  // The whole phase is gated on the initial FULL scan's completion flag
+  // (add-side completeness precondition) — tests assume a completed scan
+  // unless they explicitly clear it.
+  storageData[FOLDER_RECON_INITIAL_SCAN_KEY] = true;
   delete globalThis.browser.tmMsgNotify;
   globalThis.browser.accounts.list.mockImplementation(async () => []);
   recheckMessageInFolder.mockImplementation(async () => 'absent');
@@ -415,6 +421,33 @@ describe('missing direction', () => {
     expect(_getPendingUpdates().size).toBe(0);
     expect(storedMemo()).toBeUndefined();
   });
+
+  it('deficit above the cap → walk skipped, nothing enqueued, no memo (bulk-unindexed history)', async () => {
+    const fts = makeFtsStore([KEY_A('msg-1@example.com')]); // ftsCount = 1
+    const api = mockNotify([folderA({ totalMessages: 1 + FOLDER_RECON_MISSING_MAX_DEFICIT + 1 })]);
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.foldersDeficitCapped).toBe(1);
+    expect(api.listKeysAboveKey).not.toHaveBeenCalled();
+    expect(_getPendingUpdates().size).toBe(0);
+    expect(storedMemo()).toBeUndefined(); // NOT memoized — heals once coverage converges
+    expect(logFtsOperation).toHaveBeenCalledWith('folder_recon', 'missing_deficit_capped',
+      expect.objectContaining({ deficit: FOLDER_RECON_MISSING_MAX_DEFICIT + 1 }));
+  });
+
+  it('deficit exactly at the cap → missing-direction walk still runs', async () => {
+    const fts = makeFtsStore([]); // ftsCount = 0
+    const api = mockNotify([folderA({ totalMessages: FOLDER_RECON_MISSING_MAX_DEFICIT })], {
+      keysByURI: { [URI_A]: { keys: [1], truncated: false, totalAbove: 1 } },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(api.listKeysAboveKey).toHaveBeenCalledTimes(1);
+    expect(stats.foldersDeficitCapped).toBe(0);
+    expect(stats.missingEnqueued).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -481,6 +514,19 @@ describe('drain-quiet gate and drain-empty re-run', () => {
 // ---------------------------------------------------------------------------
 
 describe('availability gating', () => {
+  it('initial FTS scan incomplete → whole phase skipped (invariant precondition)', async () => {
+    delete storageData[FOLDER_RECON_INITIAL_SCAN_KEY];
+    const fts = makeFtsStore([KEY_A('a@example.com')]);
+    const api = mockNotify([folderA({ totalMessages: 1 })]);
+
+    const result = await _runFolderReconcile(fts);
+
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('initial_scan_incomplete');
+    expect(api.getFolderCounts).not.toHaveBeenCalled();
+    expect(logFtsBatchOperation).toHaveBeenCalledWith('folder_recon', 'skipped_initial_scan_incomplete', {});
+  });
+
   it('native RPC unsupported → whole phase no-ops, logged once per session', async () => {
     const fts = makeFtsStore([]);
     fts.countMsgIdRange.mockImplementation(async () => {
