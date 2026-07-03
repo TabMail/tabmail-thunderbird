@@ -325,6 +325,95 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
             return { infos: [], error: String(e) };
           }
         },
+
+        /**
+         * Per-folder message counts for the count-invariant reconcile
+         * (PLAN_FOLDER_SET_RECONCILE.md). EVERY folder of EVERY account —
+         * all server types, NOT IMAP-only like getCursorFolders: local/POP
+         * folders participate in the remove-side reconcile too.
+         * Uses folder.getTotalMessages(false), which reads TB's folder
+         * cache and does NOT open msgDBs — cheap enough to run every boot.
+         * Per-folder failures are returned as `{ ..., error }` entries.
+         */
+        async getFolderCounts() {
+          const out = [];
+          if (!MailServices?.accounts) return out;
+          for (const account of MailServices.accounts.accounts) {
+            let server = null;
+            try {
+              server = account.incomingServer;
+            } catch (_) {}
+            if (!server) continue;
+
+            let root = null;
+            try {
+              root = server.rootFolder;
+            } catch (e) {
+              debugLog("getFolderCounts: no rootFolder for", server.key, e);
+              continue;
+            }
+            if (!root) continue;
+
+            const serverType = String(server.type || "");
+            for (const folder of root.descendants) {
+              const base = {
+                accountId: "",
+                folderPath: "",
+                folderURI: String(folder.URI || ""),
+                serverType,
+              };
+              try {
+                const weFolder = folderManager?.convert(folder);
+                base.accountId = weFolder?.accountId || server.key || "";
+                base.folderPath = weFolder?.path || folder.URI || "";
+              } catch (_) {
+                base.accountId = server.key || "";
+                base.folderPath = folder.URI || "";
+              }
+              try {
+                out.push({
+                  ...base,
+                  totalMessages: folder.getTotalMessages(false),
+                });
+              } catch (e) {
+                out.push({ ...base, error: String(e) });
+              }
+            }
+          }
+          return out;
+        },
+
+        /**
+         * Probe headerMessageIds against a folder's msgDB via
+         * getMsgHdrForMessageID — a hash index (threading depends on it),
+         * so this is the fast stale-finder that needs NO msgDB enumeration
+         * (PLAN_FOLDER_SET_RECONCILE.md §2). Ids are stored WITHOUT angle
+         * brackets — pass them as-is. Returns the ids with no header
+         * (stale CANDIDATES only — the addon confirms each with the
+         * ADR-017 verify-then-remove recheck before touching FTS).
+         */
+        async probeMessageIds(folderURI, headerMessageIds) {
+          try {
+            const folder = MailUtilsMsgNotify?.getExistingFolder?.(folderURI);
+            if (!folder) return { missing: [], error: "folder_not_found" };
+            // May throw (missing/out-of-date summary) — caller skips the folder.
+            const db = folder.msgDatabase;
+            const missing = [];
+            for (const id of headerMessageIds || []) {
+              let hdr = null;
+              try {
+                hdr = db.getMsgHdrForMessageID(id);
+              } catch (_) {
+                // Lookup error = uncertain — do NOT nominate as missing.
+                continue;
+              }
+              if (!hdr) missing.push(String(id));
+            }
+            return { missing };
+          } catch (e) {
+            return { missing: [], error: String(e) };
+          }
+        },
       },
     };
   }

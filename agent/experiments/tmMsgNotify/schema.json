@@ -112,6 +112,44 @@
             "error": { "type": "string", "optional": true }
           }
         }
+      },
+      {
+        "name": "getFolderCounts",
+        "type": "function",
+        "description": "Per-folder message counts for the count-invariant reconcile (PLAN_FOLDER_SET_RECONCILE.md). Every folder of every account (all server types). Uses the folder cache (getTotalMessages(false)) — does not open msgDBs. Folders that fail carry an error field.",
+        "async": true,
+        "parameters": [],
+        "returns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "accountId": { "type": "string" },
+              "folderPath": { "type": "string" },
+              "folderURI": { "type": "string", "description": "Native folder URI for follow-up calls" },
+              "serverType": { "type": "string", "description": "Incoming server type (imap, pop3, none, nntp, rss, ...)", "optional": true },
+              "totalMessages": { "type": "integer", "optional": true },
+              "error": { "type": "string", "optional": true }
+            }
+          }
+        }
+      },
+      {
+        "name": "probeMessageIds",
+        "type": "function",
+        "description": "Probe headerMessageIds (no angle brackets) against a folder's msgDB hash index (getMsgHdrForMessageID). Returns the ids with no header — stale FTS candidates the addon must confirm via verify-then-remove (ADR-017).",
+        "async": true,
+        "parameters": [
+          { "name": "folderURI", "type": "string" },
+          { "name": "headerMessageIds", "type": "array", "items": { "type": "string" } }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "missing": { "type": "array", "items": { "type": "string" } },
+            "error": { "type": "string", "optional": true }
+          }
+        }
       }
     ]
   }

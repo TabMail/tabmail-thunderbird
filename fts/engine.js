@@ -652,6 +652,16 @@ export const ftsSearch = {
     return await nativeFtsSearch.queryByDateRange(from, to, limit);
   },
 
+  // Generic msgId key-range RPCs (PLAN_FOLDER_SET_RECONCILE.md); rejects on
+  // native helpers < 0.10.0 — callers must feature-detect.
+  async countMsgIdRange(startKey, endKey) {
+    return await nativeFtsSearch.countMsgIdRange(startKey, endKey);
+  },
+
+  async listMsgIdRange(startKey, endKey, afterKey, limit) {
+    return await nativeFtsSearch.listMsgIdRange(startKey, endKey, afterKey, limit);
+  },
+
   async debugSample() {
     return await nativeFtsSearch.debugSample();
   },

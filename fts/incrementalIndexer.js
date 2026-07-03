@@ -966,6 +966,10 @@ async function processPendingUpdates() {
   if (_pendingUpdates.size === 0) {
     // All updates processed - clear storage
     await clearPersistedUpdates();
+    // Drain is empty: folders the boot folder-reconcile skipped as
+    // drain-busy can now be re-checked (single-shot per boot; async —
+    // must not block the drain loop's tail). PLAN_FOLDER_SET_RECONCILE.md.
+    _maybeScheduleFolderReconRerun();
   } else {
     // More updates remain - persist current state
     await persistPendingUpdates();
@@ -1871,6 +1875,634 @@ async function _runCursorScan() {
   return stats;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 1c: Evidence-triggered per-folder set reconcile (remove-side) —
+// ADR-021, PLAN_FOLDER_SET_RECONCILE.md.
+//
+// The count invariant: with add-side completeness guaranteed (ADR-020 cursors
+// + live events), FTS-per-folder ⊇ msgDB-per-folder. Therefore, per folder:
+//   ftsCount > msgCount ⟹ stale (ghost) entries provably exist;
+//   msgCount > ftsCount (folder drain-quiet) ⟹ missing adds;
+//   counts equal ⟹ sets equal ⟹ zero work.
+// No date windows, no periodic jobs — work proportional to drift, works for
+// arbitrarily old emails. The fast stale-finder probes FTS keys against the
+// msgDB's Message-ID hash index (probeMessageIds) — no msgDB enumeration.
+// ---------------------------------------------------------------------------
+const FOLDER_RECON_STORAGE_KEY = "fts_folder_recon_memo";
+// FTS keys / msgDB keys per RPC page in both directions
+const FOLDER_RECON_KEYS_CHUNK = 500;
+// Small yield between chunks / folders to keep the event loop responsive
+const FOLDER_RECON_CHUNK_DELAY_MS = 10;
+// Native-FTS keepalive cadence during the verify-then-remove recheck loop
+// (mirrors RECONCILE_RECHECK_KEEPALIVE_EVERY)
+const FOLDER_RECON_RECHECK_KEEPALIVE_EVERY = 50;
+// Full-keyspace upper bound for the orphan sweep: U+FFFF sorts above every
+// character that can appear in a msgId key.
+const FOLDER_RECON_KEYSPACE_END = "￿";
+
+// Feature detection for the native range RPCs (countMsgIdRange /
+// listMsgIdRange, helper ≥ 0.10.0). null = not probed yet this session;
+// false = old deployed helper → the whole phase no-ops (weekly scan remains
+// that user's backstop); true = supported.
+let _folderReconNativeSupported = null;
+// Folders skipped by the drain-quiet gate this boot ("accountId:folderPath").
+// Re-checked ONCE when the drain queue empties (_maybeScheduleFolderReconRerun).
+let _folderReconDrainSkipped = new Set();
+// Single-shot flag for the drain-empty re-run (per boot)
+let _folderReconRerunDone = false;
+
+/**
+ * Half-open msgId key range covering exactly one folder's FTS keys.
+ * startKey = "<accountId>:<folderPath>:", endKey replaces the trailing ':'
+ * with ';' (':'+1). Subfolder keys (".../INBOX/sub:...") sort BEFORE
+ * ".../INBOX:" ('/' < ':') so they are correctly excluded. The native side
+ * does NO msgId parsing — bounds are computed here.
+ */
+function _folderKeyRange(accountId, folderPath) {
+  const prefix = `${accountId}:${folderPath}:`;
+  return { startKey: prefix, endKey: prefix.slice(0, -1) + ";" };
+}
+
+/**
+ * One-time-per-session probe for the native range RPCs. An unknown-method /
+ * RPC error marks the helper unsupported for the whole session and logs it
+ * ONCE — old deployed helpers must degrade to today's behavior.
+ */
+async function _checkFolderReconNativeSupport(ftsSearch) {
+  if (_folderReconNativeSupported !== null) return _folderReconNativeSupported;
+  try {
+    await ftsSearch.countMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
+    _folderReconNativeSupported = true;
+  } catch (e) {
+    _folderReconNativeSupported = false;
+    log(`[FTS FolderRecon] Native helper lacks range RPCs (${e}) — folder reconcile disabled this session (weekly scan remains the backstop)`, "warn");
+    logFtsBatchOperation("folder_recon", "unsupported", { error: String(e) });
+  }
+  return _folderReconNativeSupported;
+}
+
+/**
+ * Read the per-folder clean-count memo:
+ * { version: 1, folders: { "<acct>:<path>": { lastCleanMsgCount,
+ *   lastCleanFtsCount, updatedAtMs } } }.
+ * Independent of the watermark AND the cursor store (separate storage key).
+ */
+async function _getFolderReconMemo() {
+  try {
+    const stored = await browser.storage.local.get(FOLDER_RECON_STORAGE_KEY);
+    const m = stored?.[FOLDER_RECON_STORAGE_KEY];
+    if (m && m.folders && typeof m.folders === "object") return m;
+  } catch (e) {
+    log(`[FTS FolderRecon] Memo read failed: ${e}`, "warn");
+  }
+  return { version: 1, folders: {} };
+}
+
+async function _writeFolderReconMemo(memo) {
+  try {
+    await browser.storage.local.set({ [FOLDER_RECON_STORAGE_KEY]: memo });
+  } catch (e) {
+    // Non-fatal: next boot re-derives the counts (wider work, same result).
+    log(`[FTS FolderRecon] Memo write failed: ${e}`, "warn");
+  }
+}
+
+/**
+ * Stale direction (ftsCount > msgCount): page the folder's FTS keys
+ * (listMsgIdRange), probe each page's headerMessageIds against the msgDB
+ * hash index (probeMessageIds) — misses are CANDIDATES ONLY — then confirm
+ * every candidate with the ADR-017 verify-then-remove recheck before a
+ * single removeBatch + per-key verify. Never removes on uncertainty.
+ *
+ * @returns {boolean} true when the pass completed with zero errors (memo
+ *   may be written); false on any error (no memo — retried next boot).
+ */
+async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats) {
+  const folderPrefix = `${f.accountId}:${f.folderPath}:`;
+  const weFolder = { accountId: f.accountId, path: f.folderPath };
+
+  // 1) Collect stale candidates by probing FTS keys against the msgDB.
+  const candidates = [];
+  let afterKey = null;
+  for (;;) {
+    let res;
+    try {
+      res = await ftsSearch.listMsgIdRange(startKey, endKey, afterKey, FOLDER_RECON_KEYS_CHUNK);
+    } catch (e) {
+      logFtsOperation("folder_recon", "list_error", { folderPath: f.folderPath, error: String(e) });
+      return false;
+    }
+    const msgIds = res.msgIds || [];
+    if (msgIds.length === 0) break;
+
+    // Every key in [P, P[:-1]+';') starts with the folder prefix exactly, so
+    // a plain prefix strip yields the headerMessageId. (parseUniqueId would
+    // mis-split folder paths containing ':' — the range already scopes the
+    // keys to this folder, making the strip exact.)
+    const headerIds = msgIds.map((msgId) => msgId.slice(folderPrefix.length));
+
+    let probe;
+    try {
+      probe = await browser.tmMsgNotify.probeMessageIds(f.folderURI, headerIds);
+    } catch (e) {
+      probe = { missing: [], error: String(e) };
+    }
+    if (probe.error) {
+      logFtsOperation("folder_recon", "probe_error", { folderPath: f.folderPath, error: probe.error });
+      return false;
+    }
+    for (const missId of probe.missing || []) {
+      candidates.push({ msgId: folderPrefix + missId, headerID: missId });
+    }
+    stats.staleCandidates += (probe.missing || []).length;
+
+    afterKey = msgIds[msgIds.length - 1];
+    if (res.done) break;
+    if (FOLDER_RECON_CHUNK_DELAY_MS > 0) {
+      await new Promise(r => setTimeout(r, FOLDER_RECON_CHUNK_DELAY_MS));
+    }
+  }
+
+  // 2) Verify-then-remove (ADR-017): absent → remove list; present/error →
+  //    keep. Same pattern as reconcile Phase 2 incl. the stats() keepalive.
+  const entriesToRemove = [];
+  let recheckedCount = 0;
+  let hadRecheckError = false;
+  for (const cand of candidates) {
+    if (recheckedCount > 0 && recheckedCount % FOLDER_RECON_RECHECK_KEEPALIVE_EVERY === 0) {
+      try {
+        await ftsSearch.stats();
+      } catch (keepaliveErr) {
+        log(`[FTS FolderRecon] Recheck keepalive ping failed: ${keepaliveErr.message}`, "warn");
+      }
+    }
+    recheckedCount++;
+
+    const verdict = await recheckMessageInFolder(cand.headerID, weFolder);
+    if (verdict === "absent") {
+      entriesToRemove.push(cand.msgId);
+    } else if (verdict === "present") {
+      stats.recheckKeptPresent++;
+      log(`[FTS FolderRecon] Recheck found ${cand.msgId} still present — keeping (transient probe miss)`);
+      logFtsOperation("folder_recon", "recheck_present", { msgId: cand.msgId });
+    } else {
+      stats.recheckKeptError++;
+      hadRecheckError = true;
+      log(`[FTS FolderRecon] Recheck errored for ${cand.msgId} — keeping (unconfirmed)`, "warn");
+      logFtsOperation("folder_recon", "recheck_error", { msgId: cand.msgId });
+    }
+  }
+
+  // 3) Single removeBatch + per-key verify (drain-loop delete posture).
+  if (entriesToRemove.length > 0) {
+    try {
+      await ftsSearch.removeBatch(entriesToRemove);
+    } catch (e) {
+      log(`[FTS FolderRecon] removeBatch failed for ${f.folderPath}: ${e}`, "warn");
+      logFtsOperation("folder_recon", "remove_error", { folderPath: f.folderPath, error: String(e) });
+      return false;
+    }
+    for (const msgId of entriesToRemove) {
+      try {
+        const entry = await ftsSearch.getMessageByMsgId(msgId);
+        if (entry && entry.msgId === msgId) {
+          log(`[FTS FolderRecon] REMOVE VERIFY FAILED: ${msgId} still in FTS`, "warn");
+          logFtsOperation("folder_recon", "remove_verify_failed", { msgId });
+          return false; // coverage unproven — no memo, retry next boot
+        }
+        stats.staleRemoved++;
+        logFtsOperation("folder_recon", "stale_removed", { msgId });
+      } catch (e) {
+        logFtsOperation("folder_recon", "remove_verify_error", { msgId, error: String(e) });
+        return false;
+      }
+    }
+  }
+
+  // An errored recheck left an unverified entry in place — the pass was not
+  // clean, so the memo must not mask it (retried next boot).
+  return !hadRecheckError;
+}
+
+/**
+ * Missing direction (msgCount > ftsCount): walk the folder's msgDB keys with
+ * the existing experiment pair (listKeysAboveKey / getMessageInfosForKeys —
+ * both work for non-IMAP folders; no UID semantics needed, only headers),
+ * filter against FTS (filterNewMessages reads only msgId) and enqueue the
+ * reported-new ones through the shared drain path. Heals drop-stuck losses.
+ * Evidence-gated, chunk-yielded, loudly logged.
+ *
+ * @returns {boolean} true when the pass completed with zero errors.
+ */
+async function _folderReconMissingDirection(ftsSearch, f, stats) {
+  let listed;
+  try {
+    // maxKeys=0 → uncapped (listKeysAboveKey treats non-positive as no cap)
+    listed = await browser.tmMsgNotify.listKeysAboveKey(f.folderURI, 0, 0);
+  } catch (e) {
+    listed = { keys: [], error: String(e) };
+  }
+  if (listed.error) {
+    logFtsOperation("folder_recon", "list_keys_error", { folderPath: f.folderPath, error: listed.error });
+    return false;
+  }
+
+  const keys = listed.keys || [];
+  for (let i = 0; i < keys.length; i += FOLDER_RECON_KEYS_CHUNK) {
+    const chunk = keys.slice(i, i + FOLDER_RECON_KEYS_CHUNK);
+    let res;
+    try {
+      res = await browser.tmMsgNotify.getMessageInfosForKeys(f.folderURI, chunk);
+    } catch (e) {
+      res = { infos: [], error: String(e) };
+    }
+    if (res.error) {
+      logFtsOperation("folder_recon", "infos_error", { folderPath: f.folderPath, error: res.error });
+      return false;
+    }
+
+    // Build minimal { msgId } rows (verified: native reads only msgId).
+    // Messages that cannot derive a key are skipped — they can never be
+    // stored in the key-addressed FTS; the memo pair absorbs this permanent
+    // per-folder bias (same carve-out as the watermark's no-unique-key rule).
+    const infos = [];
+    const rows = [];
+    for (const info of res.infos || []) {
+      if (!info?.headerMessageId || !info.accountId || !info.folderPath) continue;
+      infos.push(info);
+      rows.push({ msgId: `${info.accountId}:${info.folderPath}:${info.headerMessageId}` });
+    }
+    if (rows.length === 0) continue;
+
+    let filterResult;
+    try {
+      filterResult = await ftsSearch.filterNewMessages(rows);
+    } catch (e) {
+      logFtsOperation("folder_recon", "filter_error", { folderPath: f.folderPath, error: String(e) });
+      return false;
+    }
+    const newIds = new Set(filterResult.newMsgIds || []);
+
+    for (let j = 0; j < infos.length; j++) {
+      if (!newIds.has(rows[j].msgId)) continue;
+      try {
+        await _enqueueNewFromInfo(infos[j], true);
+        stats.missingEnqueued++;
+        log(`[FTS FolderRecon] Missing add healed (enqueued): ${rows[j].msgId}`, "warn");
+        logFtsOperation("folder_recon", "missing_enqueued", { msgId: rows[j].msgId, folderPath: f.folderPath });
+      } catch (e) {
+        logFtsOperation("folder_recon", "enqueue_error", { msgId: rows[j].msgId, error: String(e) });
+        return false;
+      }
+    }
+
+    if (FOLDER_RECON_CHUNK_DELAY_MS > 0 && i + FOLDER_RECON_KEYS_CHUNK < keys.length) {
+      await new Promise(r => setTimeout(r, FOLDER_RECON_CHUNK_DELAY_MS));
+    }
+  }
+  return true;
+}
+
+/**
+ * Independent existing-folder key set ("accountId:path") from the
+ * WebExtension API — the orphan sweep's second confirmation source for
+ * "this folder is truly absent from TB".
+ */
+async function _listAllWeFolderKeys() {
+  const out = new Set();
+  const accounts = await browser.accounts.list(true);
+  const walk = (accountId, folder) => {
+    if (!folder) return;
+    if (folder.path) out.add(`${accountId}:${folder.path}`);
+    for (const sub of folder.subFolders || []) {
+      walk(accountId, sub);
+    }
+  };
+  for (const acct of accounts || []) {
+    walk(acct.id, acct.rootFolder);
+  }
+  return out;
+}
+
+/**
+ * Orphaned-prefix sweep (folders deleted/renamed while off): when the
+ * full-keyspace count exceeds the sum of per-folder counts, keys must exist
+ * under prefixes no reported folder owns. Walk the keyspace, keep every key
+ * some existing folder's prefix covers (incl. folder paths containing ':' —
+ * the parse edge), confirm the rest against an independent accounts walk,
+ * and remove only keys that ALSO pass the ADR-017 recheck. This walk runs
+ * ONLY on count evidence.
+ */
+async function _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFtsCount, stats) {
+  const totalAll = (await ftsSearch.countMsgIdRange("", FOLDER_RECON_KEYSPACE_END)).count;
+  if (!(totalAll > totalKnownFtsCount)) return;
+
+  log(`[FTS FolderRecon] Orphan sweep: totalAll=${totalAll} > totalKnown=${totalKnownFtsCount} — walking keyspace`, "warn");
+
+  let weFolderKeys;
+  try {
+    weFolderKeys = await _listAllWeFolderKeys();
+  } catch (e) {
+    log(`[FTS FolderRecon] Orphan sweep: accounts walk failed (${e}) — sweep skipped this boot`, "warn");
+    return;
+  }
+
+  const knownPrefixes = [...knownFolderKeys].map(k => `${k}:`);
+  const wePrefixes = [...weFolderKeys].map(k => `${k}:`);
+
+  // Walk the full keyspace and collect keys no existing folder owns.
+  const orphanKeys = [];
+  let afterKey = null;
+  for (;;) {
+    const res = await ftsSearch.listMsgIdRange("", FOLDER_RECON_KEYSPACE_END, afterKey, FOLDER_RECON_KEYS_CHUNK);
+    const msgIds = res.msgIds || [];
+    if (msgIds.length === 0) break;
+
+    for (const msgId of msgIds) {
+      // Fast path: the derived "accountId:folderPath" of well-formed keys.
+      const parsed = parseUniqueId(msgId);
+      const derivedKey = parsed ? `${parsed.weFolder.accountId}:${parsed.weFolder.path}` : null;
+      if (derivedKey && knownFolderKeys.has(derivedKey)) continue;
+      // Slow path: folder paths containing ':' make the derived split wrong —
+      // a key is owned iff SOME existing folder's "acct:path:" prefixes it.
+      if (knownPrefixes.some(p => msgId.startsWith(p)) || wePrefixes.some(p => msgId.startsWith(p))) {
+        stats.orphanKeysKept++;
+        log(`[FTS FolderRecon] Orphan candidate's folder exists (parse edge) — keeping: ${msgId}`);
+        logFtsOperation("folder_recon", "orphan_kept_folder_exists", { msgId });
+        continue;
+      }
+      orphanKeys.push(msgId);
+    }
+
+    afterKey = msgIds[msgIds.length - 1];
+    if (res.done) break;
+    if (FOLDER_RECON_CHUNK_DELAY_MS > 0) {
+      await new Promise(r => setTimeout(r, FOLDER_RECON_CHUNK_DELAY_MS));
+    }
+  }
+  if (orphanKeys.length === 0) return;
+
+  // Verify-then-remove: even for an orphaned prefix, only a SUCCESSFUL
+  // global query confirming the message is not at the key's folder may
+  // remove it (ADR-017 — never remove on uncertainty).
+  const entriesToRemove = [];
+  let recheckedCount = 0;
+  for (const msgId of orphanKeys) {
+    if (recheckedCount > 0 && recheckedCount % FOLDER_RECON_RECHECK_KEEPALIVE_EVERY === 0) {
+      try {
+        await ftsSearch.stats();
+      } catch (keepaliveErr) {
+        log(`[FTS FolderRecon] Orphan recheck keepalive ping failed: ${keepaliveErr.message}`, "warn");
+      }
+    }
+    recheckedCount++;
+
+    const parsed = parseUniqueId(msgId);
+    if (!parsed) {
+      stats.orphanKeysKept++;
+      logFtsOperation("folder_recon", "orphan_kept_unparseable", { msgId });
+      continue;
+    }
+    const verdict = await recheckMessageInFolder(parsed.headerID, parsed.weFolder);
+    if (verdict === "absent") {
+      entriesToRemove.push(msgId);
+    } else {
+      stats.orphanKeysKept++;
+      logFtsOperation("folder_recon", "orphan_kept_recheck", { msgId, verdict });
+    }
+  }
+  if (entriesToRemove.length === 0) return;
+
+  await ftsSearch.removeBatch(entriesToRemove); // throw → caller's catch logs
+  for (const msgId of entriesToRemove) {
+    stats.orphanRemoved++;
+    log(`[FTS FolderRecon] Orphaned-prefix key removed: ${msgId}`, "warn");
+    logFtsOperation("folder_recon", "orphan_removed", { msgId });
+  }
+}
+
+/**
+ * Phase 1c: evidence-triggered per-folder set reconcile (ADR-021,
+ * PLAN_FOLDER_SET_RECONCILE.md). Runs after the cursor scan inside
+ * runPostInitReconcile, in its own try/catch — independent of the watermark
+ * AND the cursor store. Skips cleanly when the experiment API or the native
+ * range RPCs are unavailable.
+ *
+ * @param {Object} ftsSearch - FTS search interface
+ * @param {Set<string>|null} [onlyFolderKeys] - Restrict to these
+ *   "accountId:folderPath" keys (the drain-empty re-run). The orphan sweep
+ *   only runs on the unrestricted boot pass.
+ */
+async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
+  if (!_isEnabled || !ftsSearch) return { skipped: true, reason: "disabled" };
+  if (!browser.tmMsgNotify
+      || typeof browser.tmMsgNotify.getFolderCounts !== "function"
+      || typeof browser.tmMsgNotify.probeMessageIds !== "function") {
+    log(`[FTS FolderRecon] Skipped — experiment API unavailable`);
+    return { skipped: true, reason: "no_experiment" };
+  }
+  if (!(await _checkFolderReconNativeSupport(ftsSearch))) {
+    return { skipped: true, reason: "native_unsupported" };
+  }
+
+  const reconStart = Date.now();
+  const stats = {
+    foldersTotal: 0,
+    foldersErrored: 0,
+    foldersDrainBusy: 0,
+    foldersMemoHit: 0,
+    foldersClean: 0,       // counts equal on arrival — zero work
+    foldersReconciled: 0,  // a direction pass ran and completed cleanly
+    foldersFailed: 0,      // a direction pass errored — no memo, retry next boot
+    staleCandidates: 0,
+    staleRemoved: 0,
+    recheckKeptPresent: 0,
+    recheckKeptError: 0,
+    missingEnqueued: 0,
+    orphanRemoved: 0,
+    orphanKeysKept: 0,
+  };
+
+  let folders;
+  try {
+    folders = await browser.tmMsgNotify.getFolderCounts();
+  } catch (e) {
+    log(`[FTS FolderRecon] getFolderCounts failed: ${e} — skipped, retry next boot`, "warn");
+    logFtsBatchOperation("folder_recon", "error", { error: String(e) });
+    return { skipped: true, reason: "getFolderCounts_failed" };
+  }
+
+  logFtsBatchOperation("folder_recon", "start", {
+    foldersReported: folders?.length || 0,
+    rerun: !!onlyFolderKeys,
+  });
+
+  const memo = await _getFolderReconMemo();
+  let memoChanged = false;
+  // Every folder TB reported — even errored/gated ones — EXISTS; its keys
+  // are never orphans. (The orphan sweep's known set must be complete.)
+  const knownFolderKeys = new Set();
+  let totalKnownFtsCount = 0;
+  // The orphan sweep's count evidence is only sound when every folder's
+  // ftsCount actually entered the sum.
+  let allFoldersCounted = true;
+
+  for (const f of folders || []) {
+    stats.foldersTotal++;
+    const folderKey = `${f.accountId}:${f.folderPath}`;
+    if (f.accountId || f.folderPath) knownFolderKeys.add(folderKey);
+
+    // Re-run scope: only the drain-skipped folders.
+    if (onlyFolderKeys && !onlyFolderKeys.has(folderKey)) {
+      allFoldersCounted = false;
+      continue;
+    }
+
+    // 1) Folder errored → skip (retry next boot).
+    if (f.error || !f.folderURI || !Number.isFinite(f.totalMessages)) {
+      stats.foldersErrored++;
+      allFoldersCounted = false;
+      logFtsOperation("folder_recon", "folder_error", {
+        folderPath: f.folderPath,
+        error: f.error || "bad_folder_entry",
+      });
+      continue;
+    }
+
+    // 2) Drain-quiet gate: pending updates for this folder mean its counts
+    //    are in flux — skip this boot, re-check on drain-empty.
+    const pendingPrefix = `${folderKey}:`;
+    let drainBusy = false;
+    for (const pendingKey of _pendingUpdates.keys()) {
+      if (pendingKey.startsWith(pendingPrefix)) {
+        drainBusy = true;
+        break;
+      }
+    }
+    if (drainBusy) {
+      stats.foldersDrainBusy++;
+      allFoldersCounted = false;
+      _folderReconDrainSkipped.add(folderKey);
+      continue;
+    }
+
+    // 3) The count comparison — the entire evidence check.
+    const { startKey, endKey } = _folderKeyRange(f.accountId, f.folderPath);
+    let ftsCount;
+    try {
+      ftsCount = (await ftsSearch.countMsgIdRange(startKey, endKey)).count;
+    } catch (e) {
+      stats.foldersFailed++;
+      allFoldersCounted = false;
+      logFtsOperation("folder_recon", "count_error", { folderPath: f.folderPath, error: String(e) });
+      continue;
+    }
+    totalKnownFtsCount += ftsCount;
+    const msgCount = f.totalMessages;
+
+    // 4) Memo hit → zero work. Also absorbs permanent per-folder bias
+    //    (unindexable no-key messages) without rescanning every boot.
+    const m = memo.folders[folderKey];
+    if (m && m.lastCleanMsgCount === msgCount && m.lastCleanFtsCount === ftsCount) {
+      stats.foldersMemoHit++;
+      continue;
+    }
+
+    // Counts equal ⟹ sets equal (superset invariant) ⟹ zero work; memoize.
+    if (ftsCount === msgCount) {
+      memo.folders[folderKey] = {
+        lastCleanMsgCount: msgCount,
+        lastCleanFtsCount: ftsCount,
+        updatedAtMs: Date.now(),
+      };
+      memoChanged = true;
+      stats.foldersClean++;
+      continue;
+    }
+
+    // 5/6) Count mismatch — folder-scoped set diff in the indicated direction.
+    log(`[FTS FolderRecon] ${folderKey}: ftsCount=${ftsCount} msgCount=${msgCount} — running ${ftsCount > msgCount ? "stale" : "missing"} direction`, "warn");
+    let cleanPass;
+    if (ftsCount > msgCount) {
+      cleanPass = await _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats);
+    } else {
+      cleanPass = await _folderReconMissingDirection(ftsSearch, f, stats);
+    }
+
+    if (!cleanPass) {
+      stats.foldersFailed++;
+      log(`[FTS FolderRecon] ${folderKey}: pass had errors — memo NOT written, retry next boot`, "warn");
+    } else {
+      // 7) Clean pass: recount and memoize the (msgCount, ftsCount-now) pair.
+      try {
+        const ftsNow = (await ftsSearch.countMsgIdRange(startKey, endKey)).count;
+        memo.folders[folderKey] = {
+          lastCleanMsgCount: msgCount,
+          lastCleanFtsCount: ftsNow,
+          updatedAtMs: Date.now(),
+        };
+        memoChanged = true;
+        stats.foldersReconciled++;
+      } catch (e) {
+        stats.foldersFailed++;
+        logFtsOperation("folder_recon", "recount_error", { folderPath: f.folderPath, error: String(e) });
+      }
+    }
+
+    // 8) Yield between folders.
+    if (FOLDER_RECON_CHUNK_DELAY_MS > 0) {
+      await new Promise(r => setTimeout(r, FOLDER_RECON_CHUNK_DELAY_MS));
+    }
+  }
+
+  // Orphaned-prefix sweep — boot pass only, and only when every reported
+  // folder's ftsCount entered the sum (otherwise totalAll > totalKnown is
+  // vacuously true and the full-keyspace walk would fire without evidence).
+  if (!onlyFolderKeys && allFoldersCounted) {
+    try {
+      await _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFtsCount, stats);
+    } catch (e) {
+      log(`[FTS FolderRecon] Orphan sweep failed: ${e} — retried next boot`, "warn");
+      logFtsOperation("folder_recon", "orphan_sweep_error", { error: String(e) });
+    }
+  }
+
+  if (memoChanged) {
+    await _writeFolderReconMemo(memo);
+  }
+
+  const elapsed = Date.now() - reconStart;
+  log(`[FTS FolderRecon] Complete: ${stats.foldersTotal} folders (${stats.foldersMemoHit} memo-hit, ${stats.foldersClean} clean, ${stats.foldersReconciled} reconciled, ${stats.foldersDrainBusy} drain-busy, ${stats.foldersErrored} errored, ${stats.foldersFailed} failed), ${stats.staleRemoved} stale removed (${stats.staleCandidates} candidates, ${stats.recheckKeptPresent} present, ${stats.recheckKeptError} recheck-errors), ${stats.missingEnqueued} missing enqueued, ${stats.orphanRemoved} orphans removed, ${elapsed}ms`);
+  logFtsBatchOperation("folder_recon", "complete", { ...stats, rerun: !!onlyFolderKeys, elapsedMs: elapsed });
+
+  return stats;
+}
+
+/**
+ * Drain-empty re-run: called by processPendingUpdates when the queue hits
+ * zero. Re-runs the folder reconcile ONCE per boot for exactly the folders
+ * the boot pass skipped as drain-busy. Fire-and-forget (never blocks the
+ * drain loop); returns the promise for tests.
+ */
+function _maybeScheduleFolderReconRerun() {
+  if (_folderReconRerunDone) return undefined;
+  if (_folderReconDrainSkipped.size === 0) return undefined;
+  if (!_isEnabled || !_ftsSearch) return undefined;
+
+  _folderReconRerunDone = true; // single-shot per boot
+  const only = new Set(_folderReconDrainSkipped);
+  _folderReconDrainSkipped.clear();
+  const ftsSearch = _ftsSearch;
+
+  log(`[FTS FolderRecon] Drain empty — re-running folder reconcile for ${only.size} skipped folder(s)`);
+  return Promise.resolve()
+    .then(() => _runFolderReconcile(ftsSearch, only))
+    .catch(e => {
+      log(`[FTS FolderRecon] Drain-empty re-run failed: ${e}`, "warn");
+      logFtsBatchOperation("folder_recon", "error", { error: String(e), rerun: true });
+    });
+}
+
 /**
  * Run post-init reconciliation: discover recent messages across all folders
  * and enqueue any that might be missing into the existing persistent queue.
@@ -1881,6 +2513,10 @@ async function _runCursorScan() {
  * Phase 1b: Per-folder msgKey/UID cursor scan (ADR-020) — enqueue everything
  *          above each folder's persisted cursor, regardless of Date header.
  *          Catches boot-gap arrivals whose Dates predate the Phase 1 window.
+ *
+ * Phase 1c: Evidence-triggered per-folder set reconcile (ADR-021) — the
+ *          count invariant (ftsCount vs msgCount) detects drift per folder;
+ *          only mismatched folders get a folder-scoped set diff.
  *
  * Phase 2: Query FTS entries in the same window and remove any whose messages
  *          no longer exist in TB at their indexed folder. This cleans up stale
@@ -1965,6 +2601,21 @@ async function runPostInitReconcile(ftsSearch) {
     } catch (cursorErr) {
       log(`[FTS Cursor] Scan failed: ${cursorErr} — folder cursors not advanced, retry next boot`, "warn");
       logFtsBatchOperation("cursor_scan", "error", { error: String(cursorErr) });
+    }
+
+    // =========================================================================
+    // PHASE 1c: Evidence-triggered per-folder set reconcile (ADR-021)
+    // =========================================================================
+    // Count-invariant drift detection (PLAN_FOLDER_SET_RECONCILE.md): per
+    // folder, ftsCount vs msgCount; mismatches get a folder-scoped set diff
+    // (verify-then-remove stale side / filterNewMessages+enqueue missing
+    // side). Independent of the watermark AND the cursor store — its own
+    // storage key, per-folder retry; failures must not block the watermark.
+    try {
+      await _runFolderReconcile(ftsSearch);
+    } catch (folderReconErr) {
+      log(`[FTS FolderRecon] Failed: ${folderReconErr} — retried next boot`, "warn");
+      logFtsBatchOperation("folder_recon", "error", { error: String(folderReconErr) });
     }
 
     // =========================================================================
@@ -2279,6 +2930,12 @@ export async function initIncrementalIndexer(ftsSearch) {
   // Fresh session — session-max keys from a previous session were either
   // merged by the heartbeat or are superseded by the boot cursor scan.
   _sessionMaxKeyByFolder = new Map();
+  // Fresh session for the folder reconcile too: re-probe native support
+  // (the helper may have been updated), forget drain-skip state, and allow
+  // one drain-empty re-run this boot.
+  _folderReconNativeSupported = null;
+  _folderReconDrainSkipped = new Set();
+  _folderReconRerunDone = false;
 
   // Load settings
   await updateIncrementalSettings();
@@ -2433,6 +3090,9 @@ export async function disposeIncrementalIndexer() {
 
   // Clear session cursor tracking
   _sessionMaxKeyByFolder.clear();
+
+  // Clear folder-reconcile session state
+  _folderReconDrainSkipped.clear();
 
   // Clear timers
   if (_batchTimer) {
@@ -2593,6 +3253,21 @@ export const _testExports = {
   CURSOR_STORAGE_KEY,
   CURSOR_KEYS_CHUNK,
   CURSOR_FULL_SCAN_MAX_KEYS,
+  // Per-folder set reconcile (PLAN_FOLDER_SET_RECONCILE.md / ADR-021)
+  _runFolderReconcile,
+  _maybeScheduleFolderReconRerun,
+  _getFolderReconDrainSkipped: () => _folderReconDrainSkipped,
+  _getFolderReconNativeSupported: () => _folderReconNativeSupported,
+  _resetFolderReconState: () => {
+    _folderReconNativeSupported = null;
+    _folderReconDrainSkipped = new Set();
+    _folderReconRerunDone = false;
+  },
+  FOLDER_RECON_STORAGE_KEY,
+  FOLDER_RECON_KEYS_CHUNK,
+  FOLDER_RECON_CHUNK_DELAY_MS,
+  FOLDER_RECON_RECHECK_KEEPALIVE_EVERY,
+  FOLDER_RECON_KEYSPACE_END,
   _hasWatermarkHeartbeatTimer: () => _watermarkHeartbeatTimer !== null,
   _setIndexerDisposed: (v) => { _indexerDisposed = v; },
   _getIndexerDisposed: () => _indexerDisposed,
