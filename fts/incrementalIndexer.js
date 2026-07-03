@@ -1938,6 +1938,11 @@ const FOLDER_RECON_ENTRY_DELAY_MS = 10;
 // over successive boots instead of storming one.
 const FOLDER_RECON_MAX_RECHECKS_PER_RUN = 200;
 const FOLDER_RECON_MAX_MISSING_ENQUEUES_PER_RUN = 200;
+// Max per-folder detail entries carried in the storage snapshot. Release
+// builds suppress info AND warn logging (only errors print), so the snapshot
+// is the ONLY way to identify WHICH folders were deficit-capped / truncated /
+// failed / reconciled on a production install.
+const FOLDER_RECON_SNAPSHOT_NOTABLE_MAX = 20;
 
 // Feature detection for the native range RPCs (countMsgIdRange /
 // listMsgIdRange, helper ≥ 0.10.0). null = not probed yet this session;
@@ -2463,6 +2468,9 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
   // bound the boot's total global-recheck queries and drain-queue heals so a
   // mature profile's first-run backlog converges over boots instead of
   // storming the main thread (rechecks) and IMAP (getFull body fetches).
+  // Per-folder detail for the storage snapshot (bounded) — identifies WHICH
+  // folders did something interesting, since release builds log errors only.
+  const notable = [];
   const budget = _folderReconBudgetOverride
     ? { ..._folderReconBudgetOverride }
     : {
@@ -2557,6 +2565,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
     // folder heals once coverage converges below the cap.
     if (msgCount > ftsCount && msgCount - ftsCount > FOLDER_RECON_MISSING_MAX_DEFICIT) {
       stats.foldersDeficitCapped++;
+      notable.push({ folder: folderKey, kind: "deficit_capped", msgCount, ftsCount });
       // NOTE: ftsCount already entered totalKnownFtsCount above, so the
       // orphan sweep's evidence stays sound — only this folder's WALK is
       // suppressed.
@@ -2576,6 +2585,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
     const needsStale = ftsCount > msgCount;
     if ((needsStale && budget.rechecks <= 0) || (!needsStale && budget.enqueues <= 0)) {
       stats.foldersBudgetPartial++;
+      notable.push({ folder: folderKey, kind: "budget_skipped", msgCount, ftsCount });
       logFtsOperation("folder_recon", "budget_exhausted_skip", { folderPath: f.folderPath });
       continue;
     }
@@ -2591,9 +2601,11 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
 
     if (pass.budgetPartial) {
       stats.foldersBudgetPartial++;
+      notable.push({ folder: folderKey, kind: "budget_truncated", msgCount, ftsCount });
       log(`[FTS FolderRecon] ${folderKey}: pass budget-truncated — memo NOT written, continues next boot`, "warn");
     } else if (!pass.clean) {
       stats.foldersFailed++;
+      notable.push({ folder: folderKey, kind: "failed", msgCount, ftsCount });
       log(`[FTS FolderRecon] ${folderKey}: pass had errors — memo NOT written, retry next boot`, "warn");
     } else {
       // 7) Clean pass: recount and memoize the (msgCount, ftsCount-now) pair.
@@ -2606,6 +2618,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
         };
         memoChanged = true;
         stats.foldersReconciled++;
+        notable.push({ folder: folderKey, kind: "reconciled", msgCount, ftsCount, ftsCountAfter: ftsNow });
       } catch (e) {
         stats.foldersFailed++;
         logFtsOperation("folder_recon", "recount_error", { folderPath: f.folderPath, error: String(e) });
@@ -2637,7 +2650,14 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
   const elapsed = Date.now() - reconStart;
   log(`[FTS FolderRecon] Complete: ${stats.foldersTotal} folders (${stats.foldersMemoHit} memo-hit, ${stats.foldersClean} clean, ${stats.foldersReconciled} reconciled, ${stats.foldersDrainBusy} drain-busy, ${stats.foldersErrored} errored, ${stats.foldersFailed} failed, ${stats.foldersDeficitCapped} deficit-capped, ${stats.foldersBudgetPartial} budget-partial), ${stats.staleRemoved} stale removed (${stats.staleCandidates} candidates, ${stats.recheckKeptPresent} present, ${stats.recheckKeptError} recheck-errors), ${stats.missingEnqueued} missing enqueued, ${stats.orphanRemoved} orphans removed, ${elapsed}ms`);
   logFtsBatchOperation("folder_recon", "complete", { ...stats, rerun: !!onlyFolderKeys, elapsedMs: elapsed });
-  _writeReconSnapshot("fts_folder_recon_last", { ...stats, rerun: !!onlyFolderKeys, elapsedMs: elapsed });
+  // Boot pass and drain-empty re-run get SEPARATE snapshot keys so the
+  // re-run doesn't overwrite the boot pass's outcome.
+  _writeReconSnapshot(onlyFolderKeys ? "fts_folder_recon_last_rerun" : "fts_folder_recon_last", {
+    ...stats,
+    rerun: !!onlyFolderKeys,
+    elapsedMs: elapsed,
+    notable: notable.slice(0, FOLDER_RECON_SNAPSHOT_NOTABLE_MAX),
+  });
 
   return stats;
 }

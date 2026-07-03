@@ -435,6 +435,11 @@ describe('missing direction', () => {
     expect(storedMemo()).toBeUndefined(); // NOT memoized — heals once coverage converges
     expect(logFtsOperation).toHaveBeenCalledWith('folder_recon', 'missing_deficit_capped',
       expect.objectContaining({ deficit: FOLDER_RECON_MISSING_MAX_DEFICIT + 1 }));
+    // Release builds only print errors — the snapshot must NAME the folder.
+    const snap = storageData['fts_folder_recon_last'];
+    expect(snap.notable).toEqual([
+      expect.objectContaining({ folder: 'account1:/INBOX', kind: 'deficit_capped' }),
+    ]);
   });
 
   it('deficit exactly at the cap → missing-direction walk still runs', async () => {
@@ -642,6 +647,19 @@ describe('orphaned-prefix sweep', () => {
 // ---------------------------------------------------------------------------
 // Per-run work budgets (main-thread/lag protection)
 // ---------------------------------------------------------------------------
+
+describe('snapshot observability', () => {
+  it('boot pass and drain-empty re-run write separate snapshot keys', async () => {
+    const fts = makeFtsStore([KEY_A('a@example.com')]);
+    mockNotify([folderA({ totalMessages: 1 })]);
+
+    await _runFolderReconcile(fts);                       // boot pass
+    await _runFolderReconcile(fts, new Set(['account1:/INBOX'])); // re-run scope
+
+    expect(storageData['fts_folder_recon_last']).toMatchObject({ rerun: false });
+    expect(storageData['fts_folder_recon_last_rerun']).toMatchObject({ rerun: true });
+  });
+});
 
 describe('per-run work budgets', () => {
   it('recheck budget truncates the stale pass: partial removal, no memo, remainder next boot', async () => {
