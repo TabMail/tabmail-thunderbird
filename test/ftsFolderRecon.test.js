@@ -95,6 +95,7 @@ const {
   FOLDER_RECON_STORAGE_KEY,
   FOLDER_RECON_INITIAL_SCAN_KEY,
   FOLDER_RECON_MISSING_MAX_DEFICIT,
+  _setFolderReconBudgetOverride,
 } = _testExports;
 
 // ---------------------------------------------------------------------------
@@ -635,5 +636,67 @@ describe('orphaned-prefix sweep', () => {
     await _runFolderReconcile(fts);
 
     expect(fts.listMsgIdRange).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-run work budgets (main-thread/lag protection)
+// ---------------------------------------------------------------------------
+
+describe('per-run work budgets', () => {
+  it('recheck budget truncates the stale pass: partial removal, no memo, remainder next boot', async () => {
+    _setFolderReconBudgetOverride({ rechecks: 2, enqueues: 100 });
+    // 3 ghosts in FTS, none in the msgDB (probe reports all missing).
+    const fts = makeFtsStore([
+      KEY_A('g1@example.com'), KEY_A('g2@example.com'), KEY_A('g3@example.com'),
+    ]);
+    mockNotify([folderA({ totalMessages: 0 })]);
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.staleRemoved).toBe(2);         // budgeted subset only
+    expect(fts._keys.size).toBe(1);             // one ghost remains for next boot
+    expect(stats.foldersBudgetPartial).toBe(1);
+    expect(storedMemo()).toBeUndefined();       // truncated pass never memoizes
+    expect(logFtsOperation).toHaveBeenCalledWith('folder_recon', 'recheck_budget_truncated',
+      expect.objectContaining({ processedNow: 2 }));
+  });
+
+  it('missing-heal budget truncates enqueues: partial heal, no memo', async () => {
+    _setFolderReconBudgetOverride({ rechecks: 100, enqueues: 1 });
+    const fts = makeFtsStore([]);
+    mockNotify([folderA({ totalMessages: 2 })], {
+      keysByURI: { [URI_A]: { keys: [1, 2], truncated: false, totalAbove: 2 } },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.missingEnqueued).toBe(1);
+    expect(_getPendingUpdates().size).toBe(1);
+    expect(stats.foldersBudgetPartial).toBe(1);
+    expect(storedMemo()).toBeUndefined();
+    expect(logFtsOperation).toHaveBeenCalledWith('folder_recon', 'missing_budget_truncated',
+      expect.objectContaining({ folderPath: '/INBOX' }));
+  });
+
+  it('exhausted budget pre-skips direction passes but clean folders still memoize', async () => {
+    _setFolderReconBudgetOverride({ rechecks: 0, enqueues: 0 });
+    // folderA drifted (would need stale direction); folderB clean.
+    const fts = makeFtsStore([
+      KEY_A('g1@example.com'),
+      KEY_B('ok@example.com'),
+    ]);
+    const api = mockNotify([folderA({ totalMessages: 0 }), folderB({ totalMessages: 1 })]);
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.foldersBudgetPartial).toBe(1);      // folderA skipped
+    expect(stats.foldersClean).toBe(1);              // folderB memoized
+    expect(api.probeMessageIds).not.toHaveBeenCalled();
+    expect(fts._keys.size).toBe(2);                  // nothing removed
+    expect(storedMemo().folders['account3:/[Gmail]/All Mail']).toBeTruthy();
+    expect(storedMemo().folders['account1:/INBOX']).toBeUndefined();
+    expect(logFtsOperation).toHaveBeenCalledWith('folder_recon', 'budget_exhausted_skip',
+      expect.objectContaining({ folderPath: '/INBOX' }));
   });
 });

@@ -1913,6 +1913,19 @@ const FOLDER_RECON_INITIAL_SCAN_KEY = "fts_initial_scan_complete";
 // log loudly, and do NOT memoize so the folder re-evaluates once coverage
 // converges (counts are cheap; only the walk is gated).
 const FOLDER_RECON_MISSING_MAX_DEFICIT = 500;
+// Yield between individual verify-then-remove rechecks. Each recheck is a
+// GLOBAL messages.query (full-profile enumeration on the parent main thread)
+// — running them back-to-back on a mature profile's ghost backlog saturates
+// the UI. Mirrors RECONCILE_ENTRY_DELAY_MS in reconcile Phase 2.
+const FOLDER_RECON_ENTRY_DELAY_MS = 10;
+// Per-run work budgets (shared across ALL folders in one _runFolderReconcile
+// invocation). A mature profile's FIRST reconcile can carry years of backlog:
+// unbounded rechecks (global queries) and unbounded missing-heal enqueues
+// (each becomes a drain-queue getFull body fetch) caused sustained main-thread
+// lag. Budgeted folders are left WITHOUT a memo, so the backlog converges
+// over successive boots instead of storming one.
+const FOLDER_RECON_MAX_RECHECKS_PER_RUN = 200;
+const FOLDER_RECON_MAX_MISSING_ENQUEUES_PER_RUN = 200;
 
 // Feature detection for the native range RPCs (countMsgIdRange /
 // listMsgIdRange, helper ≥ 0.10.0). null = not probed yet this session;
@@ -1924,6 +1937,8 @@ let _folderReconNativeSupported = null;
 let _folderReconDrainSkipped = new Set();
 // Single-shot flag for the drain-empty re-run (per boot)
 let _folderReconRerunDone = false;
+// Test-only override for the per-run work budgets (null in production).
+let _folderReconBudgetOverride = null;
 
 /**
  * Half-open msgId key range covering exactly one folder's FTS keys.
@@ -1988,15 +2003,17 @@ async function _writeFolderReconMemo(memo) {
  * every candidate with the ADR-017 verify-then-remove recheck before a
  * single removeBatch + per-key verify. Never removes on uncertainty.
  *
- * @returns {boolean} true when the pass completed with zero errors (memo
- *   may be written); false on any error (no memo — retried next boot).
+ * @returns {{clean: boolean, budgetPartial: boolean}} clean = zero errors and
+ *   not budget-truncated (memo may be written); budgetPartial = the per-run
+ *   recheck budget cut the pass short (no memo — remainder next boot).
  */
-async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats) {
+async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats, budget) {
   const folderPrefix = `${f.accountId}:${f.folderPath}:`;
   const weFolder = { accountId: f.accountId, path: f.folderPath };
 
   // 1) Collect stale candidates by probing FTS keys against the msgDB.
   const candidates = [];
+  let budgetTruncated = false;
   let afterKey = null;
   for (;;) {
     let res;
@@ -2004,7 +2021,7 @@ async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats)
       res = await ftsSearch.listMsgIdRange(startKey, endKey, afterKey, FOLDER_RECON_KEYS_CHUNK);
     } catch (e) {
       logFtsOperation("folder_recon", "list_error", { folderPath: f.folderPath, error: String(e) });
-      return false;
+      return { clean: false, budgetPartial: false };
     }
     const msgIds = res.msgIds || [];
     if (msgIds.length === 0) break;
@@ -2023,12 +2040,26 @@ async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats)
     }
     if (probe.error) {
       logFtsOperation("folder_recon", "probe_error", { folderPath: f.folderPath, error: probe.error });
-      return false;
+      return { clean: false, budgetPartial: false };
     }
     for (const missId of probe.missing || []) {
       candidates.push({ msgId: folderPrefix + missId, headerID: missId });
     }
     stats.staleCandidates += (probe.missing || []).length;
+
+    // Per-run recheck budget: stop nominating once this run's allowance is
+    // reached — each candidate costs a GLOBAL messages.query. The remainder
+    // is picked up next boot (no memo is written for a truncated pass).
+    if (candidates.length >= budget.rechecks) {
+      budgetTruncated = true;
+      candidates.length = Math.max(budget.rechecks, 0);
+      log(`[FTS FolderRecon] ${f.folderPath}: recheck budget reached (${FOLDER_RECON_MAX_RECHECKS_PER_RUN}/run) — processing ${candidates.length} candidates now, remainder next boot`, "warn");
+      logFtsOperation("folder_recon", "recheck_budget_truncated", {
+        folderPath: f.folderPath,
+        processedNow: candidates.length,
+      });
+      break;
+    }
 
     afterKey = msgIds[msgIds.length - 1];
     if (res.done) break;
@@ -2051,6 +2082,7 @@ async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats)
       }
     }
     recheckedCount++;
+    budget.rechecks--;
 
     const verdict = await recheckMessageInFolder(cand.headerID, weFolder);
     if (verdict === "absent") {
@@ -2065,6 +2097,13 @@ async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats)
       log(`[FTS FolderRecon] Recheck errored for ${cand.msgId} — keeping (unconfirmed)`, "warn");
       logFtsOperation("folder_recon", "recheck_error", { msgId: cand.msgId });
     }
+
+    // Each recheck is a global query on the parent main thread — yield so
+    // the UI stays responsive through a backlog (mirrors Phase 2's
+    // RECONCILE_ENTRY_DELAY_MS).
+    if (FOLDER_RECON_ENTRY_DELAY_MS > 0) {
+      await new Promise(r => setTimeout(r, FOLDER_RECON_ENTRY_DELAY_MS));
+    }
   }
 
   // 3) Single removeBatch + per-key verify (drain-loop delete posture).
@@ -2074,7 +2113,7 @@ async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats)
     } catch (e) {
       log(`[FTS FolderRecon] removeBatch failed for ${f.folderPath}: ${e}`, "warn");
       logFtsOperation("folder_recon", "remove_error", { folderPath: f.folderPath, error: String(e) });
-      return false;
+      return { clean: false, budgetPartial: false };
     }
     for (const msgId of entriesToRemove) {
       try {
@@ -2082,20 +2121,21 @@ async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats)
         if (entry && entry.msgId === msgId) {
           log(`[FTS FolderRecon] REMOVE VERIFY FAILED: ${msgId} still in FTS`, "warn");
           logFtsOperation("folder_recon", "remove_verify_failed", { msgId });
-          return false; // coverage unproven — no memo, retry next boot
+          return { clean: false, budgetPartial: false }; // coverage unproven — no memo
         }
         stats.staleRemoved++;
         logFtsOperation("folder_recon", "stale_removed", { msgId });
       } catch (e) {
         logFtsOperation("folder_recon", "remove_verify_error", { msgId, error: String(e) });
-        return false;
+        return { clean: false, budgetPartial: false };
       }
     }
   }
 
-  // An errored recheck left an unverified entry in place — the pass was not
-  // clean, so the memo must not mask it (retried next boot).
-  return !hadRecheckError;
+  // An errored recheck (unverified entry left in place) or a budget
+  // truncation (unexamined candidates remain) means the pass was not clean —
+  // the memo must not mask either (retried/continued next boot).
+  return { clean: !hadRecheckError && !budgetTruncated, budgetPartial: budgetTruncated };
 }
 
 /**
@@ -2106,9 +2146,12 @@ async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats)
  * reported-new ones through the shared drain path. Heals drop-stuck losses.
  * Evidence-gated, chunk-yielded, loudly logged.
  *
- * @returns {boolean} true when the pass completed with zero errors.
+ * @returns {{clean: boolean, budgetPartial: boolean}} clean = zero errors and
+ *   not budget-truncated; budgetPartial = the per-run enqueue budget cut the
+ *   pass short (each enqueue becomes a drain-queue getFull body fetch — the
+ *   remainder heals on subsequent boots).
  */
-async function _folderReconMissingDirection(ftsSearch, f, stats) {
+async function _folderReconMissingDirection(ftsSearch, f, stats, budget) {
   let listed;
   try {
     // maxKeys=0 → uncapped (listKeysAboveKey treats non-positive as no cap)
@@ -2118,9 +2161,10 @@ async function _folderReconMissingDirection(ftsSearch, f, stats) {
   }
   if (listed.error) {
     logFtsOperation("folder_recon", "list_keys_error", { folderPath: f.folderPath, error: listed.error });
-    return false;
+    return { clean: false, budgetPartial: false };
   }
 
+  let budgetTruncated = false;
   const keys = listed.keys || [];
   for (let i = 0; i < keys.length; i += FOLDER_RECON_KEYS_CHUNK) {
     const chunk = keys.slice(i, i + FOLDER_RECON_KEYS_CHUNK);
@@ -2132,7 +2176,7 @@ async function _folderReconMissingDirection(ftsSearch, f, stats) {
     }
     if (res.error) {
       logFtsOperation("folder_recon", "infos_error", { folderPath: f.folderPath, error: res.error });
-      return false;
+      return { clean: false, budgetPartial: false };
     }
 
     // Build minimal { msgId } rows (verified: native reads only msgId).
@@ -2153,28 +2197,39 @@ async function _folderReconMissingDirection(ftsSearch, f, stats) {
       filterResult = await ftsSearch.filterNewMessages(rows);
     } catch (e) {
       logFtsOperation("folder_recon", "filter_error", { folderPath: f.folderPath, error: String(e) });
-      return false;
+      return { clean: false, budgetPartial: false };
     }
     const newIds = new Set(filterResult.newMsgIds || []);
 
     for (let j = 0; j < infos.length; j++) {
       if (!newIds.has(rows[j].msgId)) continue;
+      // Per-run enqueue budget: every heal becomes a drain-queue body fetch
+      // (getFull). Stop when this run's allowance is spent — the remainder
+      // heals next boot (no memo for a truncated pass).
+      if (budget.enqueues <= 0) {
+        budgetTruncated = true;
+        log(`[FTS FolderRecon] ${f.folderPath}: missing-heal budget reached (${FOLDER_RECON_MAX_MISSING_ENQUEUES_PER_RUN}/run) — remainder next boot`, "warn");
+        logFtsOperation("folder_recon", "missing_budget_truncated", { folderPath: f.folderPath });
+        break;
+      }
       try {
         await _enqueueNewFromInfo(infos[j], true);
+        budget.enqueues--;
         stats.missingEnqueued++;
         log(`[FTS FolderRecon] Missing add healed (enqueued): ${rows[j].msgId}`, "warn");
         logFtsOperation("folder_recon", "missing_enqueued", { msgId: rows[j].msgId, folderPath: f.folderPath });
       } catch (e) {
         logFtsOperation("folder_recon", "enqueue_error", { msgId: rows[j].msgId, error: String(e) });
-        return false;
+        return { clean: false, budgetPartial: false };
       }
     }
+    if (budgetTruncated) break;
 
     if (FOLDER_RECON_CHUNK_DELAY_MS > 0 && i + FOLDER_RECON_KEYS_CHUNK < keys.length) {
       await new Promise(r => setTimeout(r, FOLDER_RECON_CHUNK_DELAY_MS));
     }
   }
-  return true;
+  return { clean: !budgetTruncated, budgetPartial: budgetTruncated };
 }
 
 /**
@@ -2207,7 +2262,12 @@ async function _listAllWeFolderKeys() {
  * and remove only keys that ALSO pass the ADR-017 recheck. This walk runs
  * ONLY on count evidence.
  */
-async function _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFtsCount, stats) {
+async function _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFtsCount, stats, budget) {
+  // The sweep's per-key rechecks share the run's global-query budget.
+  if (budget.rechecks <= 0) {
+    log(`[FTS FolderRecon] Orphan sweep deferred — recheck budget exhausted this run`, "warn");
+    return;
+  }
   const totalAll = (await ftsSearch.countMsgIdRange("", FOLDER_RECON_KEYSPACE_END)).count;
   if (!(totalAll > totalKnownFtsCount)) return;
 
@@ -2271,6 +2331,16 @@ async function _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFts
     }
     recheckedCount++;
 
+    // Shared per-run budget: stop rechecking (keep remaining keys) once
+    // spent — count evidence re-fires the sweep next boot.
+    if (budget.rechecks <= 0) {
+      stats.orphanKeysKept += orphanKeys.length - recheckedCount + 1;
+      log(`[FTS FolderRecon] Orphan sweep budget-truncated — ${orphanKeys.length - recheckedCount + 1} keys deferred to next boot`, "warn");
+      logFtsOperation("folder_recon", "orphan_budget_truncated", { deferred: orphanKeys.length - recheckedCount + 1 });
+      break;
+    }
+    budget.rechecks--;
+
     const parsed = parseUniqueId(msgId);
     if (!parsed) {
       stats.orphanKeysKept++;
@@ -2283,6 +2353,9 @@ async function _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFts
     } else {
       stats.orphanKeysKept++;
       logFtsOperation("folder_recon", "orphan_kept_recheck", { msgId, verdict });
+    }
+    if (FOLDER_RECON_ENTRY_DELAY_MS > 0) {
+      await new Promise(r => setTimeout(r, FOLDER_RECON_ENTRY_DELAY_MS));
     }
   }
   if (entriesToRemove.length === 0) return;
@@ -2346,6 +2419,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
     foldersReconciled: 0,  // a direction pass ran and completed cleanly
     foldersFailed: 0,      // a direction pass errored — no memo, retry next boot
     foldersDeficitCapped: 0, // missing deficit > cap — bulk-unindexed history, walk suppressed
+    foldersBudgetPartial: 0, // per-run work budget cut the folder's pass short — continued next boot
     staleCandidates: 0,
     staleRemoved: 0,
     recheckKeptPresent: 0,
@@ -2371,6 +2445,16 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
 
   const memo = await _getFolderReconMemo();
   let memoChanged = false;
+  // Per-run work budgets shared across all folders (and the orphan sweep):
+  // bound the boot's total global-recheck queries and drain-queue heals so a
+  // mature profile's first-run backlog converges over boots instead of
+  // storming the main thread (rechecks) and IMAP (getFull body fetches).
+  const budget = _folderReconBudgetOverride
+    ? { ..._folderReconBudgetOverride }
+    : {
+        rechecks: FOLDER_RECON_MAX_RECHECKS_PER_RUN,
+        enqueues: FOLDER_RECON_MAX_MISSING_ENQUEUES_PER_RUN,
+      };
   // Every folder TB reported — even errored/gated ones — EXISTS; its keys
   // are never orphans. (The orphan sweep's known set must be complete.)
   const knownFolderKeys = new Set();
@@ -2473,16 +2557,28 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
       continue;
     }
 
-    // 5/6) Count mismatch — folder-scoped set diff in the indicated direction.
-    log(`[FTS FolderRecon] ${folderKey}: ftsCount=${ftsCount} msgCount=${msgCount} — running ${ftsCount > msgCount ? "stale" : "missing"} direction`, "warn");
-    let cleanPass;
-    if (ftsCount > msgCount) {
-      cleanPass = await _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats);
-    } else {
-      cleanPass = await _folderReconMissingDirection(ftsSearch, f, stats);
+    // Budget pre-check: nothing left for this direction this run — leave the
+    // folder un-memoized (counts are cheap to re-check next boot).
+    const needsStale = ftsCount > msgCount;
+    if ((needsStale && budget.rechecks <= 0) || (!needsStale && budget.enqueues <= 0)) {
+      stats.foldersBudgetPartial++;
+      logFtsOperation("folder_recon", "budget_exhausted_skip", { folderPath: f.folderPath });
+      continue;
     }
 
-    if (!cleanPass) {
+    // 5/6) Count mismatch — folder-scoped set diff in the indicated direction.
+    log(`[FTS FolderRecon] ${folderKey}: ftsCount=${ftsCount} msgCount=${msgCount} — running ${needsStale ? "stale" : "missing"} direction`, "warn");
+    let pass;
+    if (needsStale) {
+      pass = await _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats, budget);
+    } else {
+      pass = await _folderReconMissingDirection(ftsSearch, f, stats, budget);
+    }
+
+    if (pass.budgetPartial) {
+      stats.foldersBudgetPartial++;
+      log(`[FTS FolderRecon] ${folderKey}: pass budget-truncated — memo NOT written, continues next boot`, "warn");
+    } else if (!pass.clean) {
       stats.foldersFailed++;
       log(`[FTS FolderRecon] ${folderKey}: pass had errors — memo NOT written, retry next boot`, "warn");
     } else {
@@ -2513,7 +2609,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
   // vacuously true and the full-keyspace walk would fire without evidence).
   if (!onlyFolderKeys && allFoldersCounted) {
     try {
-      await _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFtsCount, stats);
+      await _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFtsCount, stats, budget);
     } catch (e) {
       log(`[FTS FolderRecon] Orphan sweep failed: ${e} — retried next boot`, "warn");
       logFtsOperation("folder_recon", "orphan_sweep_error", { error: String(e) });
@@ -2525,7 +2621,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
   }
 
   const elapsed = Date.now() - reconStart;
-  log(`[FTS FolderRecon] Complete: ${stats.foldersTotal} folders (${stats.foldersMemoHit} memo-hit, ${stats.foldersClean} clean, ${stats.foldersReconciled} reconciled, ${stats.foldersDrainBusy} drain-busy, ${stats.foldersErrored} errored, ${stats.foldersFailed} failed, ${stats.foldersDeficitCapped} deficit-capped), ${stats.staleRemoved} stale removed (${stats.staleCandidates} candidates, ${stats.recheckKeptPresent} present, ${stats.recheckKeptError} recheck-errors), ${stats.missingEnqueued} missing enqueued, ${stats.orphanRemoved} orphans removed, ${elapsed}ms`);
+  log(`[FTS FolderRecon] Complete: ${stats.foldersTotal} folders (${stats.foldersMemoHit} memo-hit, ${stats.foldersClean} clean, ${stats.foldersReconciled} reconciled, ${stats.foldersDrainBusy} drain-busy, ${stats.foldersErrored} errored, ${stats.foldersFailed} failed, ${stats.foldersDeficitCapped} deficit-capped, ${stats.foldersBudgetPartial} budget-partial), ${stats.staleRemoved} stale removed (${stats.staleCandidates} candidates, ${stats.recheckKeptPresent} present, ${stats.recheckKeptError} recheck-errors), ${stats.missingEnqueued} missing enqueued, ${stats.orphanRemoved} orphans removed, ${elapsed}ms`);
   logFtsBatchOperation("folder_recon", "complete", { ...stats, rerun: !!onlyFolderKeys, elapsedMs: elapsed });
 
   return stats;
@@ -3315,7 +3411,9 @@ export const _testExports = {
     _folderReconNativeSupported = null;
     _folderReconDrainSkipped = new Set();
     _folderReconRerunDone = false;
+    _folderReconBudgetOverride = null;
   },
+  _setFolderReconBudgetOverride: (v) => { _folderReconBudgetOverride = v; },
   FOLDER_RECON_STORAGE_KEY,
   FOLDER_RECON_KEYS_CHUNK,
   FOLDER_RECON_CHUNK_DELAY_MS,
@@ -3323,6 +3421,9 @@ export const _testExports = {
   FOLDER_RECON_KEYSPACE_END,
   FOLDER_RECON_INITIAL_SCAN_KEY,
   FOLDER_RECON_MISSING_MAX_DEFICIT,
+  FOLDER_RECON_ENTRY_DELAY_MS,
+  FOLDER_RECON_MAX_RECHECKS_PER_RUN,
+  FOLDER_RECON_MAX_MISSING_ENQUEUES_PER_RUN,
   _hasWatermarkHeartbeatTimer: () => _watermarkHeartbeatTimer !== null,
   _setIndexerDisposed: (v) => { _indexerDisposed = v; },
   _getIndexerDisposed: () => _indexerDisposed,
