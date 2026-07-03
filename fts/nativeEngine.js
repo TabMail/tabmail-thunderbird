@@ -14,6 +14,13 @@ import { SETTINGS } from "../agent/modules/config.js";
 // 0.7.0:  Semantic search (sqlite-vec embeddings + hybrid FTS5/vector scoring)
 const MIN_HOST_VERSION = "0.8.1";
 
+// Time-box for the update-manifest CDN fetch. It runs inside the awaited
+// init chain on EVERY boot; an un-time-boxed fetch on a stalled connection
+// (network blackhole) silently held the entire FTS engine — search,
+// indexing, reconcile — hostage for a whole session (observed 2026-07-03).
+// On timeout/failure the update check is skipped and init proceeds locally.
+const UPDATE_MANIFEST_FETCH_TIMEOUT_MS = 15_000;
+
 // Storage key for tracking last indexed schema version (for auto-reindex on schema change)
 const STORAGE_KEY_LAST_INDEXED_SCHEMA_VERSION = "ftsLastIndexedSchemaVersion";
 
@@ -131,7 +138,10 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate) {
   const updateManifestUrl = `${UPDATE_BASE_URL}/${platformKey}/update-manifest.json`;
   log(`[TMDBG FTS] Fetching native-fts update manifest for ${platformKey} from ${updateManifestUrl}`);
 
-  const response = await fetch(updateManifestUrl, { cache: 'no-cache' });
+  const response = await fetch(updateManifestUrl, {
+    cache: 'no-cache',
+    signal: AbortSignal.timeout(UPDATE_MANIFEST_FETCH_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch update manifest: ${response.status}`);
   }

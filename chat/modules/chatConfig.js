@@ -108,7 +108,10 @@ export const CHAT_SETTINGS = {
   // attached the command interface yet (startup race) or it was torn down by a
   // hot-reload. We poll-retry the send up to this total budget before giving up
   // and surfacing "invalid response format" to the LLM.
-  ftsReadinessTimeoutMs: 10000,
+  // 30s (was 10s): must comfortably cover a cold engine boot INCLUDING the
+  // worst-case update-manifest fetch timeout (15s) + native init, so tool
+  // calls ride out engine self-heal instead of giving up (2026-07-03).
+  ftsReadinessTimeoutMs: 30000,
   // Delay between readiness retries.
   ftsReadinessRetryDelayMs: 250,
   // --- Hotkeys ---

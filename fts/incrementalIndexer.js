@@ -1567,6 +1567,17 @@ async function _heartbeatBumpWatermark() {
 }
 
 /**
+ * Fire-and-forget prod-observability snapshot: released builds suppress all
+ * info logging, so the last cursor-scan / folder-recon outcome is persisted
+ * to storage.local where it can be inspected on ANY build
+ * (`fts_cursor_scan_last` / `fts_folder_recon_last`).
+ */
+function _writeReconSnapshot(key, payload) {
+  browser.storage.local.set({ [key]: { at: new Date().toISOString(), ...payload } })
+    .catch(() => {});
+}
+
+/**
  * Read the persistent per-folder cursors. Returns null when never written
  * (first run — the cursor scan seeds without enumeration in that case).
  */
@@ -1871,6 +1882,7 @@ async function _runCursorScan() {
   const elapsed = Date.now() - scanStart;
   log(`[FTS Cursor] Scan complete: ${stats.foldersTotal} folders (${stats.foldersUnchanged} unchanged, ${stats.foldersSeeded} seeded, ${stats.foldersScanned} scanned, ${stats.foldersAdvanced} advanced, ${stats.foldersSkipped} skipped), ${stats.keysEnqueued} enqueued, ${stats.enqueueFailed} enqueue failures, ${elapsed}ms`);
   logFtsBatchOperation("cursor_scan", "complete", { ...stats, firstRun, elapsedMs: elapsed });
+  _writeReconSnapshot("fts_cursor_scan_last", { ...stats, firstRun, elapsedMs: elapsed });
 
   return stats;
 }
@@ -1966,6 +1978,7 @@ async function _checkFolderReconNativeSupport(ftsSearch) {
     _folderReconNativeSupported = false;
     log(`[FTS FolderRecon] Native helper lacks range RPCs (${e}) — folder reconcile disabled this session (weekly scan remains the backstop)`, "warn");
     logFtsBatchOperation("folder_recon", "unsupported", { error: String(e) });
+    _writeReconSnapshot("fts_folder_recon_last", { skipped: true, reason: "native_unsupported", error: String(e) });
   }
   return _folderReconNativeSupported;
 }
@@ -2402,6 +2415,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
     if (!scanFlag?.[FOLDER_RECON_INITIAL_SCAN_KEY]) {
       log(`[FTS FolderRecon] Skipped — initial FTS scan not yet complete (invariant needs add-side completeness)`);
       logFtsBatchOperation("folder_recon", "skipped_initial_scan_incomplete", {});
+      _writeReconSnapshot("fts_folder_recon_last", { skipped: true, reason: "initial_scan_incomplete" });
       return { skipped: true, reason: "initial_scan_incomplete" };
     }
   } catch (e) {
@@ -2623,6 +2637,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
   const elapsed = Date.now() - reconStart;
   log(`[FTS FolderRecon] Complete: ${stats.foldersTotal} folders (${stats.foldersMemoHit} memo-hit, ${stats.foldersClean} clean, ${stats.foldersReconciled} reconciled, ${stats.foldersDrainBusy} drain-busy, ${stats.foldersErrored} errored, ${stats.foldersFailed} failed, ${stats.foldersDeficitCapped} deficit-capped, ${stats.foldersBudgetPartial} budget-partial), ${stats.staleRemoved} stale removed (${stats.staleCandidates} candidates, ${stats.recheckKeptPresent} present, ${stats.recheckKeptError} recheck-errors), ${stats.missingEnqueued} missing enqueued, ${stats.orphanRemoved} orphans removed, ${elapsed}ms`);
   logFtsBatchOperation("folder_recon", "complete", { ...stats, rerun: !!onlyFolderKeys, elapsedMs: elapsed });
+  _writeReconSnapshot("fts_folder_recon_last", { ...stats, rerun: !!onlyFolderKeys, elapsedMs: elapsed });
 
   return stats;
 }

@@ -116,9 +116,16 @@ export async function run(args = {}, options = {}) {
         );
         const readyDeadline = Date.now() + readyTimeoutMs;
         let readyAttempts = 0;
+        // Actively kick a helper reconnect probe (cooldown-guarded in the
+        // background) so the engine self-heals while we poll below.
+        // Fire-and-forget; always the FIRST fts message this call sends.
+        try {
+          browser.runtime.sendMessage({ type: "fts", cmd: "getFtsAvailability" }).catch(() => {});
+        } catch (_) {}
         while (true) {
           readyAttempts += 1;
-          hits = await browser.runtime.sendMessage({
+          try {
+            hits = await browser.runtime.sendMessage({
             type: "fts",
             cmd: "memorySearch",
             q: rawQuery,
@@ -127,6 +134,12 @@ export async function run(args = {}, options = {}) {
             limit: fetchLimit,
             ignoreDate,
           });
+          } catch (sendErr) {
+            // Thrown sendMessage (no receiving end yet) == not ready: retry
+            // until the deadline instead of failing the tool call instantly.
+            log(`[TMDBG Tools] memory_search: FTS message send failed (attempt ${readyAttempts}): ${sendErr}`);
+            hits = undefined;
+          }
           if (typeof hits !== "undefined") break;
           if (Date.now() >= readyDeadline) {
             log(

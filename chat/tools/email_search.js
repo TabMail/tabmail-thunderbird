@@ -113,9 +113,16 @@ export async function run(args = {}, options = {}) {
         );
         const readyDeadline = Date.now() + readyTimeoutMs;
         let readyAttempts = 0;
+        // Actively kick a helper reconnect probe (cooldown-guarded in the
+        // background) so the engine self-heals while we poll below.
+        // Fire-and-forget; always the FIRST fts message this call sends.
+        try {
+          browser.runtime.sendMessage({ type: "fts", cmd: "getFtsAvailability" }).catch(() => {});
+        } catch (_) {}
         while (true) {
           readyAttempts += 1;
-          hits = await browser.runtime.sendMessage({
+          try {
+            hits = await browser.runtime.sendMessage({
             type: "fts",
             cmd: "search",
             q: rawQuery,
@@ -124,6 +131,14 @@ export async function run(args = {}, options = {}) {
             limit: fetchLimit,
             ignoreDate
           });
+          } catch (sendErr) {
+            // A THROWN sendMessage (no receiving end yet — boot/hot-reload
+            // race) is the same "not ready" condition as an undefined
+            // response: keep retrying until the deadline instead of failing
+            // the tool call instantly (observed 2026-07-03).
+            log(`[TMDBG Tools] email_search: FTS message send failed (attempt ${readyAttempts}): ${sendErr}`);
+            hits = undefined;
+          }
           if (typeof hits !== "undefined") break;
           if (Date.now() >= readyDeadline) {
             log(

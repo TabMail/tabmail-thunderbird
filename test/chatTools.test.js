@@ -540,6 +540,7 @@ describe('TB-062: email_search query construction', () => {
 
   it('retries while FTS backend returns undefined, then succeeds', async () => {
     browser.runtime.sendMessage
+      .mockResolvedValueOnce(null) // reconnect-kick probe (getFtsAvailability)
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce([
@@ -947,21 +948,27 @@ describe('TB-069: memory_search handler logic', () => {
   });
 
   it('returns no-results message when backend returns empty array', async () => {
-    browser.runtime.sendMessage.mockResolvedValueOnce([]);
+    browser.runtime.sendMessage
+      .mockResolvedValueOnce(null) // reconnect-kick probe
+      .mockResolvedValueOnce([]);
     const result = await memorySearch.run({ query: 'nonexistent' });
     expect(result.totalItems).toBe(0);
     expect(result.results).toContain('No relevant memories');
   });
 
   it('returns error when backend returns error object', async () => {
-    browser.runtime.sendMessage.mockResolvedValueOnce({ error: 'index corrupted' });
+    browser.runtime.sendMessage
+      .mockResolvedValueOnce(null) // reconnect-kick probe
+      .mockResolvedValueOnce({ error: 'index corrupted' });
     const result = await memorySearch.run({ query: 'test' });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('memory search failed');
   });
 
   it('returns error when backend returns non-array', async () => {
-    browser.runtime.sendMessage.mockResolvedValueOnce('not an array');
+    browser.runtime.sendMessage
+      .mockResolvedValueOnce(null) // reconnect-kick probe
+      .mockResolvedValueOnce('not an array');
     const result = await memorySearch.run({ query: 'test' });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('invalid response format');
@@ -969,6 +976,7 @@ describe('TB-069: memory_search handler logic', () => {
 
   it('retries while backend returns undefined (FTS not ready), then succeeds', async () => {
     browser.runtime.sendMessage
+      .mockResolvedValueOnce(null) // reconnect-kick probe
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce([
@@ -1477,12 +1485,19 @@ describe('Additional tool edge cases', () => {
     expect(browser.tmCalendar.listCalendars.mock.calls.length).toBe(listCallCount);
   });
 
-  it('memory_search handles FTS backend exception', async () => {
+  it('memory_search retries after a thrown sendMessage and succeeds on recovery', async () => {
+    // New contract (2026-07-03): a THROWN sendMessage (no receiving end —
+    // boot/hot-reload race) is treated as "not ready" and retried within the
+    // readiness budget, instead of failing the tool call instantly.
     memorySearch.resetPaginationSessions();
-    browser.runtime.sendMessage.mockRejectedValueOnce(new Error('FTS unavailable'));
+    browser.runtime.sendMessage
+      .mockResolvedValueOnce(null) // reconnect-kick probe
+      .mockRejectedValueOnce(new Error('Could not establish connection'))
+      .mockResolvedValueOnce([
+        { dateMs: Date.now(), content: 'recovered', snippet: 'recovered' },
+      ]);
     const result = await memorySearch.run({ query: 'test' });
-    expect(result).toHaveProperty('error');
-    expect(result.error).toContain('memory search failed');
+    expect(result.totalItems).toBe(1);
   });
 
   it('memory_read with invalid (non-numeric) timestamp returns error', async () => {
