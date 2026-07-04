@@ -8,6 +8,7 @@ import { processSummaryResponse, sendChat } from "./llm.js";
 import { formatTimestampForAgent, getUserName } from "../../chat/modules/helpers.js";
 import { SETTINGS } from "./config.js";
 import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
+import { computeRecipientStatus } from "./senderFilter.js";
 import {
   extractBodyFromParts,
   getRealSubject,
@@ -336,6 +337,17 @@ export async function generateSummary(messageHeader, highPriority = false) {
   const emailDateFormatted = formatTimestampForAgent(emailDateObj);
   const emailDayOfWeek = emailDateObj.toLocaleDateString("en-US", { weekday: "long" });
 
+  // Recipient status: "cc" when none of the user's registered addresses is in the
+  // To field (backend injects an explicit cc notice). Omitted when the user IS in
+  // To, or when own addresses can't be determined (same policy as senderFilter).
+  const recipientStatus = await computeRecipientStatus(messageHeader);
+  log(
+    `${PFX}recipient_status for ${uniqueKey}: ` +
+    (recipientStatus
+      ? `"${recipientStatus}" (field SENT in summary request)`
+      : `direct/unknown (field omitted)`)
+  );
+
   // Build single consolidated message that backend will process
   // Note: We send email_date (not current_time) so LLM reasons relative to the email
   const systemMsg = {
@@ -350,6 +362,7 @@ export async function generateSummary(messageHeader, highPriority = false) {
     body: plainBody,
     is_noreply_address: emailFilter.isNoReply,
     has_unsubscribe_link: emailFilter.hasUnsubscribe,
+    ...(recipientStatus ? { recipient_status: recipientStatus } : {}),
   };
 
   const resp = await sendChat([systemMsg], { ignoreSemaphore: highPriority, disableTools: false });

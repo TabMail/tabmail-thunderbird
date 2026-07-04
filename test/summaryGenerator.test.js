@@ -100,6 +100,11 @@ vi.mock("../agent/modules/deviceSync.js", () => ({
   probeAICache: vi.fn(async () => null),
 }));
 
+// ─── Mock senderFilter.js ───────────────────────────────────────────────────
+vi.mock("../agent/modules/senderFilter.js", () => ({
+  computeRecipientStatus: vi.fn(async () => ""),
+}));
+
 // ─── Browser mock ───────────────────────────────────────────────────────────
 globalThis.browser = {
   tmHdr: {
@@ -132,6 +137,7 @@ const { sendChat, processSummaryResponse } = await import(
 const { getUniqueMessageKey, safeGetFull, extractBodyFromParts, indexHeader, saveChatLog } =
   await import("../agent/modules/utils.js");
 const { probeAICache } = await import("../agent/modules/deviceSync.js");
+const { computeRecipientStatus } = await import("../agent/modules/senderFilter.js");
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -394,6 +400,26 @@ describe("generateSummary", () => {
     expect(result.blurb).toBe("Already generated");
     // sendChat should NOT be called since cache was hit
     expect(sendChat).not.toHaveBeenCalled();
+  });
+
+  it("adds recipient_status to the request when user is only cc'd", async () => {
+    computeRecipientStatus.mockResolvedValueOnce("cc");
+    const header = makeHeader();
+    await generateSummary(header);
+
+    expect(sendChat).toHaveBeenCalled();
+    const [messages] = sendChat.mock.calls[0];
+    expect(messages[0].recipient_status).toBe("cc");
+  });
+
+  it("omits recipient_status when user is a direct recipient (or unknown)", async () => {
+    computeRecipientStatus.mockResolvedValueOnce("");
+    const header = makeHeader();
+    await generateSummary(header);
+
+    expect(sendChat).toHaveBeenCalled();
+    const [messages] = sendChat.mock.calls[0];
+    expect("recipient_status" in messages[0]).toBe(false);
   });
 
   it("returns null when LLM returns empty response", async () => {
