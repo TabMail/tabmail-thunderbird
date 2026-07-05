@@ -184,8 +184,178 @@ describe('classifyRecipientStatus', () => {
   });
 
   it('returns "" when classification throws (defensive catch)', () => {
-    // Duck-typed userEmails with size but no iterator → spread throws → catch → ""
+    // Duck-typed claimEmails without an iterator → for..of throws → catch → ""
     expect(classifyRecipientStatus(['a@b.com'], ['me@example.com'], FROM, { size: 1 })).toBe('');
+  });
+
+  it('claim path ignores address-shaped tokens in display names / comments / encoded words', () => {
+    // Decoded quoted display name carrying the user's address → NOT evidence.
+    expect(classifyRecipientStatus(['other@example.com'], ['"me@example.com" <bob@corp.com>'], FROM, userEmails)).toBe('');
+    // RFC 2047 encoded word (raw Gmail header shape) → NOT evidence.
+    expect(classifyRecipientStatus(['other@example.com'], ['=?utf-8?Q?me@example.com?= <bob@corp.com>'], FROM, userEmails)).toBe('');
+    // Comment carrying the address → NOT evidence.
+    expect(classifyRecipientStatus(['other@example.com'], ['(me@example.com) <bob@corp.com>'], FROM, userEmails)).toBe('');
+    // Unquoted display-name address before a bracketed mailbox → NOT evidence.
+    expect(classifyRecipientStatus(['other@example.com'], ['me@example.com <bob@corp.com>'], FROM, userEmails)).toBe('');
+    // Unclosed bracket → yields nothing rather than falling back to display text.
+    expect(classifyRecipientStatus(['other@example.com'], ['<bob@corp.com me@example.com'], FROM, userEmails)).toBe('');
+    // The user actually bracketed in Cc still claims.
+    expect(classifyRecipientStatus(['other@example.com'], ['"Anything at all" <me@example.com>'], FROM, userEmails)).toBe('cc');
+  });
+
+  it('full atext extraction: no truncated-tail collisions with neighboring addresses', () => {
+    // o'brien@example.com must extract WHOLE — a narrow class would yield
+    // brien@example.com and falsely claim for user brien@example.com.
+    const brien = new Set(['brien@example.com']);
+    expect(classifyRecipientStatus(['other@example.com'], ["o'brien@example.com"], FROM, brien)).toBe('');
+    // And o'brien in To must not suppress user brien (different mailbox)…
+    expect(classifyRecipientStatus(["o'brien@example.com"], ['brien@example.com'], FROM, brien)).toBe('cc');
+    // …while the real o'brien user still matches exactly.
+    const obrien = new Set(["o'brien@example.com"]);
+    expect(classifyRecipientStatus(['other@example.com'], ["O'Brien <o'brien@example.com>"], FROM, obrien)).toBe('cc');
+  });
+
+  it('claim path is whole-token anchored — truncated heads/tails never claim', () => {
+    // Combining mark after the address (Swift graphemes vs JS code units — the
+    // anchored exact match rejects on BOTH platforms, restoring parity).
+    expect(classifyRecipientStatus(['other@example.com'], ['<me@example.coḿ>'], FROM, userEmails)).toBe('');
+    // Non-ASCII prefix restarts a substring match mid-token; exact match rejects.
+    expect(classifyRecipientStatus(['other@example.com'], ['<öme@example.com>'], FROM, userEmails)).toBe('');
+    // Trailing junk after a matching domain must not claim the prefix.
+    expect(classifyRecipientStatus(['other@example.com'], ['<me@example.com_x>'], FROM, userEmails)).toBe('');
+    // Bracket span with extra tokens is not a single addr-spec.
+    expect(classifyRecipientStatus(['other@example.com'], ['<junk me@example.com>'], FROM, userEmails)).toBe('');
+  });
+
+  it('a part with brackets counts ONLY bracketed spans (quote-imbalance defense)', () => {
+    // Unescaped quotes in a formatted display name can strand a planted
+    // address in a bare comma segment — the bracket-in-part rule ignores it.
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['"a", me@example.com, b" <other2@example.com>'], FROM, userEmails
+    )).toBe('');
+    // Deliberate trade-off: a bare address mixed into a bracketed part is
+    // also ignored (missed claim = safe omit).
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['me@example.com, Name <c@company.com>'], FROM, userEmails
+    )).toBe('');
+  });
+
+  it('group syntax: leading "name:" prefix is stripped for the first member', () => {
+    expect(classifyRecipientStatus(['other@example.com'], ['team: me@example.com, boss@example.com;'], FROM, userEmails)).toBe('cc');
+  });
+
+  it('bounded matcher input: degenerate runs and oversized fields safely omit', () => {
+    // 100KB unbroken atext run — must complete fast (token bound) and omit.
+    const run = 'a'.repeat(100000);
+    const t0 = Date.now();
+    expect(classifyRecipientStatus(['other@example.com'], [run], FROM, userEmails)).toBe('');
+    // Same run glued to the user's address: one giant token, dropped → omit.
+    expect(classifyRecipientStatus(['other@example.com'], [run + 'me@example.com'], FROM, userEmails)).toBe('');
+    // Oversized field (> 64KB) → classification skipped entirely.
+    expect(classifyRecipientStatus([run], ['me@example.com'], FROM, userEmails)).toBe('');
+    expect(Date.now() - t0).toBeLessThan(2000);
+    // Normal-size comma-packed list still extracts on the claim path.
+    const packed = Array.from({ length: 200 }, (_, i) => `u${i}@example.com`).join(',') + ',me@example.com';
+    expect(classifyRecipientStatus(['other@example.com'], [packed], FROM, userEmails)).toBe('cc');
+  });
+
+  it('claim path is linear on unbalanced-opener floods (round-2 ReDoS shapes)', () => {
+    // '<' and '(' floods at the 64KB field cap previously hit quadratic regex
+    // scans (~6s in JS, minutes in Swift). Linear scans must stay fast.
+    const t0 = Date.now();
+    expect(classifyRecipientStatus(['other@example.com'], ['<'.repeat(65536)], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['other@example.com'], ['('.repeat(65536)], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['other@example.com'], ['"'.repeat(65536)], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['other@example.com'], ['=?'.repeat(32768)], FROM, userEmails)).toBe('');
+    expect(classifyRecipientStatus(['other@example.com'], ['<a'.repeat(32768)], FROM, userEmails)).toBe('');
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+
+  it('many REAL addresses stay fast (per-candidate validator cost is bounded)', () => {
+    // Flood shapes produce zero exactAddr calls; this shape produces 2000
+    // (sized under the 64KB field cap) — pins the per-candidate cost (the
+    // round-3 Swift finding class).
+    const bracketed = Array.from({ length: 2000 }, (_, i) => `U${i} <u${i}@example.com>`).join(', ');
+    const bare = Array.from({ length: 2000 }, (_, i) => `u${i}@example.com`).join(',');
+    const t0 = Date.now();
+    expect(classifyRecipientStatus(['other@example.com'], [bracketed + ', Me <me@example.com>'], FROM, userEmails)).toBe('cc');
+    expect(classifyRecipientStatus(['other@example.com'], [bare + ',me@example.com'], FROM, userEmails)).toBe('cc');
+    // Large To (user absent) exercises the suppress path at volume; user in Cc still claims.
+    expect(classifyRecipientStatus([bare], ['me@example.com'], FROM, userEmails)).toBe('cc');
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+
+  it('bracket-exposed display-name injection cannot fabricate a claim (last-span rule)', () => {
+    // SwiftMail MIME-decodes a display name and re-wraps it in UNESCAPED quotes,
+    // so a Cc entry `bob@corp.com` with decoded name `x" <me@example.com> "y`
+    // reaches the classifier as: "x" <me@example.com> "y" <bob@corp.com>.
+    // The escaped-quote defense doesn't apply (quotes are unescaped), so the
+    // planted <me@example.com> survives quote-stripping. Only the LAST bracket
+    // span per segment is the real address, so the injection is rejected.
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['"x" <me@example.com> "y" <bob@corp.com>'], FROM, userEmails
+    )).toBe('');
+    // Bare-address form in a display position (before the real bracket) too.
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['me@example.com <bob@corp.com>'], FROM, userEmails
+    )).toBe('');
+    // The real user address as the LAST span still claims.
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['"decoy <bob@corp.com>" <me@example.com>'], FROM, userEmails
+    )).toBe('cc');
+    // Multi-address list where an injected span precedes each real address.
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['"<me@example.com>" <a@corp.com>, "<me@example.com>" <b@corp.com>'], FROM, userEmails
+    )).toBe('');
+  });
+
+  it('documents the accepted residual: unescaped-quote + comma injection (KNOWN LIMITATION)', () => {
+    // ACCEPTED LOW-IMPACT LIMITATION (2026-07-05) — see _extractAddressEmails
+    // doc + PROJECT_MEMORY.md. When a producer (SwiftMail IMAP formatAddress)
+    // emits the decoded display name in UNESCAPED quotes AND the name contains
+    // a comma/semicolon, the injected <me@example.com> becomes the last span of
+    // its own segment. The resulting string is BYTE-IDENTICAL to a legitimate
+    // two-recipient Cc that MUST claim, so no string parser can distinguish
+    // them. This test PINS the current (spuriously "cc") behavior so the
+    // tradeoff is visible; it is NOT an endorsement. Flipping it to "" requires
+    // producer-side escaping or structured per-address plumbing (out of scope).
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['"x" <me@example.com> , "y" <bob@corp.com>'], FROM, userEmails
+    )).toBe('cc');
+    // The legitimate twin it is byte-ambiguous with — MUST claim (a real
+    // multi-recipient Cc where the user is genuinely a named recipient).
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['"Me" <me@example.com>, "Bob" <bob@corp.com>'], FROM, userEmails
+    )).toBe('cc');
+  });
+
+  it('sanitizers are escape-aware — escaped delimiters cannot expose planted spans', () => {
+    // Backslash-escaped quotes inside a quoted display name mis-paired the
+    // old regex sanitizer, exposing <victim> as a countable span.
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['"a\\" <me@example.com> \\"b" <real@company.com>'], FROM, userEmails
+    )).toBe('');
+    // Same for escaped parens inside a comment.
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['(a\\) <me@example.com> \\(b) <real@company.com>'], FROM, userEmails
+    )).toBe('');
+    // Escaped-escape (\\\\) before a quote is NOT an escaped quote — still pairs.
+    expect(classifyRecipientStatus(
+      ['other@example.com'], ['"a\\\\" <me@example.com>'], FROM, userEmails
+    )).toBe('cc');
+  });
+
+  it('suppressEmails only suppress — they never create a claim', () => {
+    const claim = new Set(['me@example.com']);
+    const suppress = new Set(['otheracct@example.com']);
+    // Another own account in To → suppressed even though claim address is in Cc.
+    expect(classifyRecipientStatus(['otheracct@example.com'], ['me@example.com'], FROM, claim, suppress)).toBe('');
+    // Another own account as the AUTHOR → suppressed.
+    expect(classifyRecipientStatus(['list@company.com'], ['me@example.com'], 'otheracct@example.com', claim, suppress)).toBe('');
+    // A suppress-only address in Cc does NOT claim.
+    expect(classifyRecipientStatus(['other@example.com'], ['otheracct@example.com'], FROM, claim, suppress)).toBe('');
+    // Suppress list absent → claim set alone still works.
+    expect(classifyRecipientStatus(['other@example.com'], ['me@example.com'], FROM, claim)).toBe('cc');
   });
 });
 
@@ -268,6 +438,27 @@ describe('computeRecipientStatus', () => {
   it('returns "" when header property access throws (defensive catch)', async () => {
     const evil = new Proxy({}, { get() { throw new Error('boom'); } });
     expect(await computeRecipientStatus(evil)).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// invalidateUserEmailCache
+// ---------------------------------------------------------------------------
+
+describe('invalidateUserEmailCache', () => {
+  it('forces the next getUserEmailSetCached call to reload from accounts', async () => {
+    const { invalidateUserEmailCache } = await import('../agent/modules/senderFilter.js');
+    browser.accounts.list.mockResolvedValue([
+      { type: 'imap', identities: [{ email: 'fresh@example.com' }] },
+    ]);
+    // Cached set (empty from earlier tests) is returned until invalidated.
+    expect((await getUserEmailSetCached()).has('fresh@example.com')).toBe(false);
+    invalidateUserEmailCache();
+    expect((await getUserEmailSetCached()).has('fresh@example.com')).toBe(true);
+    // Leave the module cache empty for any later tests (restore old state).
+    browser.accounts.list.mockResolvedValue([]);
+    invalidateUserEmailCache();
+    await getUserEmailSetCached();
   });
 });
 

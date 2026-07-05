@@ -1444,6 +1444,40 @@ function cleanupAccountCreatedListener() {
     }
 }
 
+// ── Account-change invalidation for senderFilter's email-set cache ─────────
+// Without this, an account added/removed mid-session is invisible to the
+// recipient-status suppress checks until the MV3 worker restarts.
+let _onAccountChangedInvalidator = null;
+
+function setupAccountChangeCacheInvalidation() {
+    if (_onAccountChangedInvalidator || !browser.accounts?.onCreated) return;
+    _onAccountChangedInvalidator = () => {
+        import("./modules/senderFilter.js")
+            .then((m) => m.invalidateUserEmailCache())
+            .catch(() => {});
+    };
+    browser.accounts.onCreated.addListener(_onAccountChangedInvalidator);
+    browser.accounts.onDeleted?.addListener(_onAccountChangedInvalidator);
+    browser.accounts.onUpdated?.addListener(_onAccountChangedInvalidator);
+    // Identity edits don't necessarily raise accounts.onUpdated — watch them too.
+    browser.identities?.onCreated?.addListener(_onAccountChangedInvalidator);
+    browser.identities?.onUpdated?.addListener(_onAccountChangedInvalidator);
+    browser.identities?.onDeleted?.addListener(_onAccountChangedInvalidator);
+    log("[SenderFilter] Account-change cache invalidation listeners attached");
+}
+
+function cleanupAccountChangeCacheInvalidation() {
+    if (!_onAccountChangedInvalidator) return;
+    browser.accounts?.onCreated?.removeListener(_onAccountChangedInvalidator);
+    browser.accounts?.onDeleted?.removeListener(_onAccountChangedInvalidator);
+    browser.accounts?.onUpdated?.removeListener(_onAccountChangedInvalidator);
+    browser.identities?.onCreated?.removeListener(_onAccountChangedInvalidator);
+    browser.identities?.onUpdated?.removeListener(_onAccountChangedInvalidator);
+    browser.identities?.onDeleted?.removeListener(_onAccountChangedInvalidator);
+    _onAccountChangedInvalidator = null;
+    log("[SenderFilter] Account-change cache invalidation listeners removed");
+}
+
 /**
  * Setup listener for account creation to show welcome wizard when first account is added
  */
@@ -1742,6 +1776,14 @@ async function init() {
         // log("[TMDBG ContextMenus] Right-click context menus initialised.");
     } catch (e) {
         // log(`[TMDBG ContextMenus] Failed to initialise context menus: ${e}`);
+    }
+
+    // 2a'. Keep senderFilter's account/identity email cache fresh across
+    // account add/remove/update (recipient-status suppress checks).
+    try {
+        setupAccountChangeCacheInvalidation();
+    } catch (e) {
+        log(`[SenderFilter] Failed to attach account-change invalidation: ${e}`, "warn");
     }
 
     // 2b. Listen for Tab key events via experiment API (delegated to modules/tabKey.js)
@@ -2081,6 +2123,13 @@ if (typeof browser !== 'undefined' && browser.runtime) {
       cleanupAccountCreatedListener();
     } catch (e) {
       log(`Error during account created listener cleanup: ${e}`, "error");
+    }
+
+    try {
+      // Cleanup account-change cache invalidation listeners (senderFilter)
+      cleanupAccountChangeCacheInvalidation();
+    } catch (e) {
+      log(`Error during account-change invalidation cleanup: ${e}`, "error");
     }
     
     try {
