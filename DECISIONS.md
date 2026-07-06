@@ -514,9 +514,19 @@ exist; `msgCount > ftsCount` (drain-quiet) ⟹ missing adds; equal ⟹ sets equa
   misses are CANDIDATES ONLY → each confirmed by the ADR-017 `recheckMessageInFolder`
   verify-then-remove (absent → remove; present/error → keep) → single `removeBatch` +
   per-key verify, stats() keepalive every 50 rechecks.
-- **Missing direction:** walk msgDB keys via the existing `listKeysAboveKey` /
-  `getMessageInfosForKeys` pair, `filterNewMessages` on minimal `{msgId}` rows, enqueue
-  reported-new via `_enqueueNewFromInfo` (shared drain path). Heals drop-stuck losses.
+- **Missing direction (RESUMABLE BACKFILL, revised 2026-07-06):** sweeps msgDB keys ASCENDING
+  from a persisted per-folder cursor (`missingBackfillKey` in the recon memo, 0 first time),
+  resolving via `getMessageInfosForKeys` + `filterNewMessages` and enqueuing reported-new via
+  `_enqueueNewFromInfo`. The cursor advances PER KEY (a mid-sweep budget stop never skips an
+  un-enqueued key) and climbs to highWater ONCE per folder, then the add-side cursor scan owns
+  everything after. Two shared per-run budgets bound the two costs: `scans` (cheap: keys
+  examined, default 10000) to climb, `enqueues` (expensive: getFull body fetches, default 200)
+  to heal. This REPLACES the original hard deficit cap (`FOLDER_RECON_MISSING_MAX_DEFICIT = 500`,
+  which skipped large-deficit folders entirely and merely delegated them to the weekly scan) —
+  so the add side no longer relies on the weekly scan for ANY folder, at any deficit size. The
+  initial-scan-completion gate is retained (that is the real "don't fight the first full index"
+  guard; the cap was never doing that job). Partial sweeps persist the cursor without a
+  count-pair memo; reaching the top writes the count-pair and completes.
 - **Memo:** `fts_folder_recon_memo` stores the `(msgCount, ftsCount)` pair after a clean pass
   (zero errors in both directions; recounted post-work). A memo hit costs one count RPC and
   does zero work — this also absorbs permanent per-folder bias (unindexable no-key messages).

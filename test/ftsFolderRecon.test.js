@@ -94,8 +94,9 @@ const {
   _setIndexerDisposed,
   FOLDER_RECON_STORAGE_KEY,
   FOLDER_RECON_INITIAL_SCAN_KEY,
-  FOLDER_RECON_MISSING_MAX_DEFICIT,
+  FOLDER_RECON_MISSING_SCAN_KEYS_PER_RUN,
   _setFolderReconBudgetOverride,
+  _setFolderReconInProgress,
 } = _testExports;
 
 // ---------------------------------------------------------------------------
@@ -180,9 +181,11 @@ function mockNotify(folders, { msgDbByURI = {}, probeErrorByURI = {}, keysByURI 
       const present = msgDbByURI[uri] || new Set();
       return { missing: (headerIds || []).filter(id => !present.has(id)) };
     }),
-    listKeysAboveKey: vi.fn(async (uri, _sinceKey, _maxKeys) =>
-      keysByURI[uri] || { keys: [], truncated: false, totalAbove: 0 }
-    ),
+    listKeysAboveKey: vi.fn(async (uri, sinceKey, _maxKeys) => {
+      const all = (keysByURI[uri]?.keys) || [];
+      const above = all.filter(k => k > (sinceKey || 0)).sort((a, b) => a - b);
+      return { keys: above, truncated: false, totalAbove: above.length };
+    }),
     getMessageInfosForKeys: vi.fn(async (uri, keys) => {
       if (infosByURI[uri]) return infosByURI[uri];
       const f = byURI[uri];
@@ -423,36 +426,76 @@ describe('missing direction', () => {
     expect(storedMemo()).toBeUndefined();
   });
 
-  it('deficit above the cap → walk skipped, nothing enqueued, no memo (bulk-unindexed history)', async () => {
-    const fts = makeFtsStore([KEY_A('msg-1@example.com')]); // ftsCount = 1
-    const api = mockNotify([folderA({ totalMessages: 1 + FOLDER_RECON_MISSING_MAX_DEFICIT + 1 })]);
-
-    const stats = await _runFolderReconcile(fts);
-
-    expect(stats.foldersDeficitCapped).toBe(1);
-    expect(api.listKeysAboveKey).not.toHaveBeenCalled();
-    expect(_getPendingUpdates().size).toBe(0);
-    expect(storedMemo()).toBeUndefined(); // NOT memoized — heals once coverage converges
-    expect(logFtsOperation).toHaveBeenCalledWith('folder_recon', 'missing_deficit_capped',
-      expect.objectContaining({ deficit: FOLDER_RECON_MISSING_MAX_DEFICIT + 1 }));
-    // Release builds only print errors — the snapshot must NAME the folder.
-    const snap = storageData['fts_folder_recon_last'];
-    expect(snap.notable).toEqual([
-      expect.objectContaining({ folder: 'account1:/INBOX', kind: 'deficit_capped' }),
-    ]);
-  });
-
-  it('deficit exactly at the cap → missing-direction walk still runs', async () => {
-    const fts = makeFtsStore([]); // ftsCount = 0
-    const api = mockNotify([folderA({ totalMessages: FOLDER_RECON_MISSING_MAX_DEFICIT })], {
-      keysByURI: { [URI_A]: { keys: [1], truncated: false, totalAbove: 1 } },
+  it('large deficit is backfilled slowly: enqueue budget bounds one run, cursor persists, no count-memo', async () => {
+    // 6 unindexed keys, enqueue budget 2 → only keys 1,2 this run; cursor→2.
+    _setFolderReconBudgetOverride({ enqueues: 2 });
+    const fts = makeFtsStore([]);
+    mockNotify([folderA({ totalMessages: 6 })], {
+      keysByURI: { [URI_A]: { keys: [1, 2, 3, 4, 5, 6] } },
     });
 
     const stats = await _runFolderReconcile(fts);
 
-    expect(api.listKeysAboveKey).toHaveBeenCalledTimes(1);
-    expect(stats.foldersDeficitCapped).toBe(0);
-    expect(stats.missingEnqueued).toBe(1);
+    expect(stats.missingEnqueued).toBe(2);
+    expect(_getPendingUpdates().size).toBe(2);
+    expect(stats.foldersBudgetPartial).toBe(1);
+    // Progress cursor persisted; NO count-pair memo (pass was partial).
+    const m = storedMemo().folders['account1:/INBOX'];
+    expect(m.missingBackfillKey).toBe(2);
+    expect(m.lastCleanMsgCount).toBeUndefined();
+    // Snapshot names the backfilling folder.
+    expect(storageData['fts_folder_recon_last'].notable).toEqual([
+      expect.objectContaining({ folder: 'account1:/INBOX', kind: 'backfilling', cursor: 2 }),
+    ]);
+  });
+
+  it('backfill resumes from the persisted cursor and completes over runs', async () => {
+    const fts = makeFtsStore([]);
+    mockNotify([folderA({ totalMessages: 3 })], {
+      keysByURI: { [URI_A]: { keys: [1, 2, 3] } },
+    });
+
+    // Run 1: enqueue budget 2 → keys 1,2; cursor→2; partial.
+    _setFolderReconBudgetOverride({ enqueues: 2 });
+    await _runFolderReconcile(fts);
+    expect(storedMemo().folders['account1:/INBOX'].missingBackfillKey).toBe(2);
+    expect(_getPendingUpdates().has(KEY_A('msg-1@example.com'))).toBe(true);
+    expect(_getPendingUpdates().has(KEY_A('msg-3@example.com'))).toBe(false);
+
+    // Simulate the drain completing between boots: keys 1,2 indexed + pending
+    // cleared (otherwise the drain-quiet gate correctly skips a busy folder).
+    fts._keys.add(KEY_A('msg-1@example.com'));
+    fts._keys.add(KEY_A('msg-2@example.com'));
+    _getPendingUpdates().clear();
+
+    // Run 2: fresh budget → resumes above cursor 2 → only key 3, reaches top.
+    _setFolderReconBudgetOverride({ enqueues: 100 });
+    await _runFolderReconcile(fts);
+    expect(_getPendingUpdates().has(KEY_A('msg-3@example.com'))).toBe(true);
+    // Reached the top → count-pair memo written (backfill complete).
+    const m = storedMemo().folders['account1:/INBOX'];
+    expect(m.lastCleanMsgCount).toBe(3);
+    expect(m.missingBackfillKey).toBe(3);
+  });
+
+  it('scan budget bounds the climb through already-indexed keys', async () => {
+    // All 5 keys already indexed; scan budget 2 → examine only 1,2 this run.
+    _setFolderReconBudgetOverride({ scans: 2 });
+    const fts = makeFtsStore([
+      KEY_A('msg-1@example.com'), KEY_A('msg-2@example.com'), KEY_A('msg-3@example.com'),
+      KEY_A('msg-4@example.com'), KEY_A('msg-5@example.com'),
+    ]);
+    // msgCount 6 > ftsCount 5 → missing direction, but the 5 keys are indexed;
+    // the "deficit" is a phantom (count skew) — scan climbs, finds nothing new.
+    mockNotify([folderA({ totalMessages: 6 })], {
+      keysByURI: { [URI_A]: { keys: [1, 2, 3, 4, 5] } },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.missingEnqueued).toBe(0);
+    expect(stats.foldersBudgetPartial).toBe(1);
+    expect(storedMemo().folders['account1:/INBOX'].missingBackfillKey).toBe(2);
   });
 });
 
@@ -504,6 +547,21 @@ describe('drain-quiet gate and drain-empty re-run', () => {
   it('re-run is not scheduled when nothing was skipped', () => {
     _setFtsSearch(makeFtsStore([]));
     expect(_maybeScheduleFolderReconRerun()).toBeUndefined();
+  });
+
+  it('re-run defers (without consuming the single-shot) while a pass is in progress', () => {
+    _setFtsSearch(makeFtsStore([]));
+    _getFolderReconDrainSkipped().add('account1:/INBOX');
+    _setFolderReconInProgress(true);
+
+    // In-progress → deferred (no concurrent _runFolderReconcile spawned).
+    expect(_maybeScheduleFolderReconRerun()).toBeUndefined();
+    // Single-shot NOT consumed + skip set preserved → the next drain-empty
+    // (after the pass ends) can still fire the re-run.
+    expect(_getFolderReconDrainSkipped().has('account1:/INBOX')).toBe(true);
+
+    _setFolderReconInProgress(false);
+    expect(_maybeScheduleFolderReconRerun()).toBeInstanceOf(Promise);
   });
 
   it('processPendingUpdates wires the re-run hook into its drain-empty branch (source contract)', () => {
@@ -632,6 +690,28 @@ describe('orphaned-prefix sweep', () => {
     expect(fts.listMsgIdRange).not.toHaveBeenCalled();
   });
 
+  it('tolerates backfill-enqueue inflation: an apparent orphan within missingEnqueued slack is NOT swept', async () => {
+    // Folder A: 2 indexed (msg-1,2), msgCount 3 → backfill enqueues msg-3
+    // (missingEnqueued=1). The store also holds ONE key under an unknown
+    // prefix (a would-be orphan). totalAll=3, totalKnown=2, slack=1 →
+    // 3 > 2+1 is false → sweep suppressed (the +1 models a drain that could
+    // have indexed the enqueue mid-loop). Without the slack it would fire.
+    const fts = makeFtsStore([
+      KEY_A('msg-1@example.com'), KEY_A('msg-2@example.com'),
+      'zzzacct:/Gone:orphan@example.com',
+    ]);
+    mockNotify([folderA({ totalMessages: 3 })], {
+      keysByURI: { [URI_A]: { keys: [1, 2, 3] } },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.missingEnqueued).toBe(1);
+    expect(stats.orphanRemoved).toBe(0);
+    expect(fts.listMsgIdRange).not.toHaveBeenCalled(); // sweep never walked
+    expect(fts._keys.has('zzzacct:/Gone:orphan@example.com')).toBe(true);
+  });
+
   it('skips the sweep when a folder was skipped before counting (evidence incomplete)', async () => {
     // Folder B errored → its ftsCount never entered the sum, so
     // totalAll > totalKnown is vacuous — no full-keyspace walk.
@@ -692,7 +772,10 @@ describe('per-run work budgets', () => {
     expect(stats.missingEnqueued).toBe(1);
     expect(_getPendingUpdates().size).toBe(1);
     expect(stats.foldersBudgetPartial).toBe(1);
-    expect(storedMemo()).toBeUndefined();
+    // Partial pass persists the cursor (progress) but NO count-pair memo.
+    const m = storedMemo().folders['account1:/INBOX'];
+    expect(m.missingBackfillKey).toBe(1);
+    expect(m.lastCleanMsgCount).toBeUndefined();
     expect(logFtsOperation).toHaveBeenCalledWith('folder_recon', 'missing_budget_truncated',
       expect.objectContaining({ folderPath: '/INBOX' }));
   });
