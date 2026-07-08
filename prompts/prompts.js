@@ -11,7 +11,7 @@ import { initHistoryHandlers, loadChatHistory, showClearAllConfirmation } from "
 import { parseMarkdown, reconstructMarkdown } from "./modules/markdown.js";
 import { loadReminders } from "./modules/reminders.js";
 import { loadTasks } from "./modules/tasks.js";
-import { loadKbConfig, loadPromptFile, resetPromptFile, saveKbConfig, savePromptFile } from "./modules/storage.js";
+import { loadActionConfig, loadKbConfig, loadPromptFile, resetPromptFile, saveActionConfig, saveKbConfig, savePromptFile } from "./modules/storage.js";
 import { autoGrowTextarea, deepClone, flashBorder, flashButton, showStatus } from "./modules/utils.js";
 
 // Inject TabMail palette CSS
@@ -964,6 +964,9 @@ async function initialize() {
     originalActionData = deepClone(actionData);
     renderActionSections();
     
+    // Load action config
+    await loadActionConfig();
+
     // Load KB content and config
     await loadKbContent();
     await loadKbConfig();
@@ -1321,6 +1324,20 @@ document.addEventListener("DOMContentLoaded", () => {
       spinner.style.display = "none";
     }
   });
+
+  // Action config slider: sync displayed value on input, auto-save on change
+  const actionCompactSlider = document.getElementById("action-compact-threshold");
+  const actionCompactVal = document.getElementById("action-compact-threshold-val");
+  if (actionCompactSlider) {
+    if (actionCompactVal) {
+      actionCompactSlider.addEventListener("input", () => {
+        actionCompactVal.textContent = actionCompactSlider.value;
+      });
+    }
+    actionCompactSlider.addEventListener("change", async () => {
+      await saveActionConfig();
+    });
+  }
 
   // KB config sliders: sync displayed value on input, auto-save on change
   const kbSliders = [

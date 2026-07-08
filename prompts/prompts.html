@@ -44,6 +44,21 @@
     </div>
 
     <div id="action-editor" class="prompt-content">
+      <div class="section-container">
+        <div class="section-header">
+          <h3>Action Classification Configuration</h3>
+        </div>
+        <div class="kb-config-content">
+          <div class="kb-config-row">
+            <label for="action-compact-threshold">Rule compaction threshold:</label>
+            <div class="kb-slider-group">
+              <input type="range" id="action-compact-threshold" min="20" max="500" step="10" value="100" />
+              <span class="kb-slider-value" id="action-compact-threshold-val">100</span>
+            </div>
+            <span class="kb-config-hint">When rules exceed this count, similar rules are automatically merged during refinement</span>
+          </div>
+        </div>
+      </div>
       <div id="action-sections"></div>
     </div>
 

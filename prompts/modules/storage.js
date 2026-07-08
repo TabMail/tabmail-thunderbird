@@ -72,6 +72,55 @@ export async function resetPromptFile(filename) {
     }
 }
 
+// Action Config defaults
+const ACTION_CONFIG_DEFAULTS = {
+    compact_threshold: 100,
+};
+
+/**
+ * Load action config from storage and sync UI slider
+ */
+export async function loadActionConfig() {
+    try {
+        const key = "user_prompts:action_config";
+        const obj = await browser.storage.local.get(key);
+        const config = obj[key] || {};
+
+        const threshold = config.compact_threshold || ACTION_CONFIG_DEFAULTS.compact_threshold;
+
+        // Update slider value + displayed number
+        const slider = document.getElementById("action-compact-threshold");
+        const display = document.getElementById("action-compact-threshold-val");
+        if (slider) slider.value = threshold;
+        if (display) display.textContent = String(threshold);
+
+        log(`[Prompts] Action config loaded: compact_threshold=${threshold}`);
+    } catch (e) {
+        log(`[Prompts] Failed to load action config: ${e}`, "error");
+    }
+}
+
+/**
+ * Save action config to storage from current slider value
+ */
+export async function saveActionConfig() {
+    try {
+        const thresholdSlider = document.getElementById("action-compact-threshold");
+
+        const config = {
+            compact_threshold: parseInt(thresholdSlider?.value, 10) || ACTION_CONFIG_DEFAULTS.compact_threshold,
+        };
+
+        const key = "user_prompts:action_config";
+        await browser.storage.local.set({ [key]: config });
+
+        log(`[Prompts] Action config saved: compact_threshold=${config.compact_threshold}`);
+    } catch (e) {
+        log(`[Prompts] Failed to save action config: ${e}`, "error");
+        throw e;
+    }
+}
+
 // KB Config defaults
 const KB_CONFIG_DEFAULTS = {
     reminder_retention_days: 14,

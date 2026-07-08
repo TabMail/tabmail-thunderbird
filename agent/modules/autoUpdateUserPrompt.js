@@ -14,6 +14,32 @@ import {
     saveChatLog
 } from "./utils.js";
 
+// ----------------------------------------------------------
+// Configuration for action operations
+// ----------------------------------------------------------
+const ACTION_CONFIG = {
+    defaultCompactThreshold: 100,
+};
+
+/**
+ * Load action config from storage (set in prompts config page)
+ */
+async function getActionConfig() {
+    try {
+        const key = "user_prompts:action_config";
+        const obj = await browser.storage.local.get(key);
+        const config = obj[key] || {};
+        return {
+            compact_threshold: config.compact_threshold || ACTION_CONFIG.defaultCompactThreshold,
+        };
+    } catch (e) {
+        log(`[TMDBG AutoPrompt] Failed to load action config, using defaults: ${e}`, "warn");
+        return {
+            compact_threshold: ACTION_CONFIG.defaultCompactThreshold,
+        };
+    }
+}
+
 // Note: The original agent-assigned action, justification, and user prompt are stored once under keys:
 //   "action:orig:<uniqueKey>", "action:justification:<uniqueKey>", and "action:userprompt:<uniqueKey>"
 // where <uniqueKey> matches the action cache identifier (e.g., summaryId or header Message-Id).
@@ -104,6 +130,10 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
             return;
         }
 
+        // Load action config (user-configurable compaction threshold)
+        const actionConfig = await getActionConfig();
+        log(`[TMDBG AutoPrompt] Using action config: compact_threshold=${actionConfig.compact_threshold}`);
+
         // Build single consolidated message that backend will process
         const systemMsg = {
             role: "system",
@@ -116,6 +146,7 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
             original_user_action_prompt: originalUserActionPrompt,
             user_manual_tag: action || "",
             current_user_action_md: currentUserActionMd,
+            action_compact_threshold: actionConfig.compact_threshold,
         };
 
         const messages = [systemMsg];
