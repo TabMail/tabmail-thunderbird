@@ -42,6 +42,12 @@ vi.mock('../agent/modules/utils.js', () => ({
   getRealSubject: vi.fn(async () => 'test subject'),
   log: vi.fn(),
   saveChatLog: vi.fn(() => {}),
+  // Provide normalizeUnicode so the real patchApplier can be exercised in the
+  // integration test below — existing mocked-patchApplier tests are unaffected.
+  normalizeUnicode: (text) => {
+    if (!text || typeof text !== 'string') return text;
+    return text.normalize('NFKC');
+  },
 }));
 
 globalThis.browser = {
@@ -348,5 +354,111 @@ describe('autoUpdateUserPromptOnTag', () => {
     expect(patchApplier.applyActionPatch).toHaveBeenCalledTimes(1);
     // But storage.local.set was NOT called — no partial write
     expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: multi-op combined patch through the REAL applier
+//
+// The tests above mock patchApplier. This separate block uses vi.importActual
+// to obtain the real applyActionPatch and routes the mock to it, so we can
+// assert the exact post-patch document content rather than just that the mock
+// was called with the right arguments.
+// ---------------------------------------------------------------------------
+
+describe('autoUpdateUserPromptOnTag — integration with real patchApplier', async () => {
+  // Load the real module (utils.js will use our mock, which includes normalizeUnicode)
+  const { applyActionPatch: realApplyActionPatch } =
+    await vi.importActual('../agent/modules/patchApplier.js');
+
+  // Four-section fixture with generic placeholder content only.
+  // Section headers use the exact format the real applier requires.
+  const FIXTURE_DOC = [
+    '# Emails to be marked as `delete` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Newsletters from domain.com about weekly deals.',
+    '- Promotional emails from store.example.com.',
+    '',
+    '# Emails to be marked as `archive` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Automated reports from system@company.com.',
+    '- Status updates from status.org.com.',
+    '',
+    '# Emails to be marked as `reply` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Inquiries from contact@example.com requiring a response.',
+    '',
+    '# Emails to be marked as `none` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Internal memos from team@org.com.',
+  ].join('\n');
+
+  // Combined server patch: 2 DELs (one from delete section, one from archive) +
+  // 2 ADDs (replacements in the same sections). Simulates a server compaction + new rule.
+  // DEL texts match the fixture lines exactly (after normalizeContent stripping).
+  const COMBINED_PATCH = [
+    'DEL',
+    'delete',
+    'Newsletters from domain.com about weekly deals.',
+    'DEL',
+    'archive',
+    'Automated reports from system@company.com.',
+    'ADD',
+    'delete',
+    'Merged rule for domain.com and example.com weekly content.',
+    'ADD',
+    'archive',
+    'Merged automated notifications from company.com.',
+  ].join('\n');
+
+  // Expected doc after all 4 ops applied in order by the real applier.
+  // The real applier inserts ADDs at the end of the target section.
+  const EXPECTED_DOC = [
+    '# Emails to be marked as `delete` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Promotional emails from store.example.com.',
+    '- Merged rule for domain.com and example.com weekly content.',
+    '',
+    '# Emails to be marked as `archive` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Status updates from status.org.com.',
+    '- Merged automated notifications from company.com.',
+    '',
+    '# Emails to be marked as `reply` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Inquiries from contact@example.com requiring a response.',
+    '',
+    '# Emails to be marked as `none` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Internal memos from team@org.com.',
+  ].join('\n');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Route the mock to the real implementation for all tests in this block.
+    patchApplier.applyActionPatch.mockImplementation(realApplyActionPatch);
+  });
+
+  it('(f) 2 DELs + 2 ADDs across two sections persisted by the real strict applier', async () => {
+    idb.get.mockImplementation(async (key) => {
+      if (key.startsWith('summary:')) {
+        return { [key]: { blurb: 'b', subject: 's', fromSender: 'user@example.com', todos: '' } };
+      }
+      if (key.startsWith('action:orig:')) return { [key]: 'archive' };
+      if (key.startsWith('action:userprompt:')) return { [key]: '' };
+      return {};
+    });
+    globalThis.browser.storage.local.get.mockResolvedValue({});
+
+    // Both reads return the same fixture doc → drift guard passes → applier runs.
+    promptGenerator.getUserActionPrompt.mockResolvedValue(FIXTURE_DOC);
+
+    llm.sendChat.mockResolvedValueOnce({
+      assistant: JSON.stringify({ patch: COMBINED_PATCH }),
+    });
+    llm.processJSONResponse.mockReturnValueOnce({ patch: COMBINED_PATCH });
+
+    await autoUpdateUserPromptOnTag(700, 'reply', { source: 'test' });
+
+    // The real applier must have been called and succeeded (not null).
+    expect(patchApplier.applyActionPatch).toHaveBeenCalledTimes(1);
+    expect(patchApplier.applyActionPatch).toHaveBeenCalledWith(FIXTURE_DOC, COMBINED_PATCH);
+
+    // The persisted doc must equal the exact expected post-patch document.
+    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
+      'user_prompts:user_action.md': EXPECTED_DOC,
+    });
   });
 });
