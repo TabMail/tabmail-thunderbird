@@ -1339,6 +1339,58 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // Action config chars slider: sync displayed value on input, auto-save on change
+  const actionCompactCharsSlider = document.getElementById("action-compact-threshold-chars");
+  const actionCompactCharsVal = document.getElementById("action-compact-threshold-chars-val");
+  if (actionCompactCharsSlider) {
+    if (actionCompactCharsVal) {
+      actionCompactCharsSlider.addEventListener("input", () => {
+        actionCompactCharsVal.textContent = actionCompactCharsSlider.value;
+      });
+    }
+    actionCompactCharsSlider.addEventListener("change", async () => {
+      await saveActionConfig();
+    });
+  }
+
+  // Compact now button
+  document.getElementById("action-compact-now")?.addEventListener("click", async () => {
+    const btn = document.getElementById("action-compact-now");
+    const spinner = document.getElementById("action-compact-now-spinner");
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Compacting…";
+    if (spinner) spinner.style.display = "inline-block";
+    try {
+      const result = await browser.runtime.sendMessage({ command: "action-compact-now" });
+      if (result && result.ok) {
+        flashButton(btn, "blue");
+        const msg = result.applied > 0
+          ? `Merged ${result.applied} rule${result.applied !== 1 ? "s" : ""}`
+          : "Nothing to compact";
+        showStatus(msg);
+        // Reload action sections so merged rules appear immediately
+        try {
+          const content = await loadPromptFile("user_action.md");
+          lastKnownActionMd = content;
+          actionData = parseMarkdown(content, false);
+          originalActionData = deepClone(actionData);
+          renderActionSections();
+        } catch (_) {}
+      } else if (result && result.ok === false && result.reason === "drift") {
+        showStatus("Compaction skipped: rules were modified concurrently", true);
+      } else {
+        showStatus("Compaction failed: " + (result?.error || "unknown error"), true);
+      }
+    } catch (e) {
+      showStatus("Compaction failed: " + e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+      if (spinner) spinner.style.display = "none";
+    }
+  });
+
   // KB config sliders: sync displayed value on input, auto-save on change
   const kbSliders = [
     { slider: document.getElementById("kb-reminder-retention"), display: document.getElementById("kb-reminder-retention-val") },

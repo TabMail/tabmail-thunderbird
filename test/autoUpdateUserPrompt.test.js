@@ -69,6 +69,7 @@ globalThis.browser = {
 const {
   autoUpdateUserPromptOnMove,
   autoUpdateUserPromptOnTag,
+  compactActionRulesNow,
 } = await import('../agent/modules/autoUpdateUserPrompt.js');
 const idb = await import('../agent/modules/idbStorage.js');
 const llm = await import('../agent/modules/llm.js');
@@ -460,5 +461,133 @@ describe('autoUpdateUserPromptOnTag — integration with real patchApplier', asy
     expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
       'user_prompts:user_action.md': EXPECTED_DOC,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compactActionRulesNow tests
+// ---------------------------------------------------------------------------
+
+describe('compactActionRulesNow', () => {
+  // Shared fixture
+  const COMPACT_DOC = [
+    '# Emails to be marked as `delete` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Newsletters from domain.com.',
+    '- Promos from store.example.com.',
+    '',
+    '# Emails to be marked as `archive` (DO NOT EDIT/DELETE THIS SECTION HEADER)',
+    '- Reports from system@company.com.',
+  ].join('\n');
+
+  const COMPACT_PATCH = [
+    'DEL',
+    'delete',
+    'Newsletters from domain.com.',
+    'DEL',
+    'delete',
+    'Promos from store.example.com.',
+    'ADD',
+    'delete',
+    'Merged newsletters and promos from domain.com and store.example.com.',
+  ].join('\n');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default: storage returns empty action_config (defaults apply)
+    globalThis.browser.storage.local.get.mockResolvedValue({});
+  });
+
+  // (a) sends action_compact_only: true + both thresholds + current md
+  it('(a) sends action_compact_only:true, both thresholds and current_user_action_md to backend', async () => {
+    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":""}' });
+    llm.processJSONResponse.mockReturnValueOnce({ patch: '' });
+
+    await compactActionRulesNow();
+
+    expect(llm.sendChat).toHaveBeenCalledTimes(1);
+    const msgs = llm.sendChat.mock.calls[0][0];
+    expect(Array.isArray(msgs)).toBe(true);
+    const sysMsg = msgs[0];
+    expect(sysMsg.content).toBe('system_prompt_action_refine');
+    expect(sysMsg.action_compact_only).toBe(true);
+    expect(sysMsg.action_compact_threshold).toBe(100);
+    expect(sysMsg.action_compact_threshold_chars).toBe(8000);
+    expect(sysMsg.current_user_action_md).toBe(COMPACT_DOC);
+  });
+
+  // (a) sends custom thresholds when stored in config
+  it('(a) sends custom thresholds from stored action_config', async () => {
+    globalThis.browser.storage.local.get.mockImplementation(async (key) => {
+      if (key === 'user_prompts:action_config') {
+        return { 'user_prompts:action_config': { compact_threshold: 300, compact_threshold_chars: 15000 } };
+      }
+      return {};
+    });
+    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":""}' });
+    llm.processJSONResponse.mockReturnValueOnce({ patch: '' });
+
+    await compactActionRulesNow();
+
+    const sysMsg = llm.sendChat.mock.calls[0][0][0];
+    expect(sysMsg.action_compact_threshold).toBe(300);
+    expect(sysMsg.action_compact_threshold_chars).toBe(15000);
+  });
+
+  // (b) applies returned multi-op patch and persists
+  it('(b) applies returned multi-op patch and persists; applied count = number of DEL+ADD ops', async () => {
+    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    llm.sendChat.mockResolvedValueOnce({ assistant: JSON.stringify({ patch: COMPACT_PATCH }) });
+    llm.processJSONResponse.mockReturnValueOnce({ patch: COMPACT_PATCH });
+    patchApplier.applyActionPatch.mockReturnValueOnce('# updated compact doc');
+
+    const result = await compactActionRulesNow();
+
+    expect(patchApplier.applyActionPatch).toHaveBeenCalledWith(COMPACT_DOC, COMPACT_PATCH);
+    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
+      'user_prompts:user_action.md': '# updated compact doc',
+    });
+    expect(result).toEqual({ ok: true, applied: 3 }); // 2 DEL + 1 ADD = 3 ops
+  });
+
+  // (c) empty patch → no write, applied:0
+  it('(c) empty patch {"patch":""} → no write to storage, applied:0', async () => {
+    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":""}' });
+    llm.processJSONResponse.mockReturnValueOnce({ patch: '' });
+
+    const result = await compactActionRulesNow();
+
+    expect(patchApplier.applyActionPatch).not.toHaveBeenCalled();
+    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true, applied: 0 });
+  });
+
+  // (d) drift → no write
+  it('(d) drift during backend call → no write, ok:false reason:"drift"', async () => {
+    let readCount = 0;
+    promptGenerator.getUserActionPrompt.mockImplementation(async () => {
+      readCount++;
+      return readCount === 1 ? COMPACT_DOC : COMPACT_DOC + '\n- extra rule added concurrently';
+    });
+    llm.sendChat.mockResolvedValueOnce({ assistant: JSON.stringify({ patch: COMPACT_PATCH }) });
+    llm.processJSONResponse.mockReturnValueOnce({ patch: COMPACT_PATCH });
+
+    const result = await compactActionRulesNow();
+
+    expect(patchApplier.applyActionPatch).not.toHaveBeenCalled();
+    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, reason: 'drift' });
+  });
+
+  // skips when user_action.md is empty
+  it('returns {ok:true,applied:0} without calling backend when user_action.md is empty', async () => {
+    promptGenerator.getUserActionPrompt.mockResolvedValue('');
+
+    const result = await compactActionRulesNow();
+
+    expect(llm.sendChat).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true, applied: 0 });
   });
 });

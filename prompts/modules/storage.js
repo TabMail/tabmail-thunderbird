@@ -75,10 +75,11 @@ export async function resetPromptFile(filename) {
 // Action Config defaults
 const ACTION_CONFIG_DEFAULTS = {
     compact_threshold: 100,
+    compact_threshold_chars: 8000,
 };
 
 /**
- * Load action config from storage and sync UI slider
+ * Load action config from storage and sync UI sliders
  */
 export async function loadActionConfig() {
     try {
@@ -87,34 +88,42 @@ export async function loadActionConfig() {
         const config = obj[key] || {};
 
         const threshold = config.compact_threshold || ACTION_CONFIG_DEFAULTS.compact_threshold;
+        const thresholdChars = config.compact_threshold_chars || ACTION_CONFIG_DEFAULTS.compact_threshold_chars;
 
-        // Update slider value + displayed number
+        // Update slider values + displayed numbers
         const slider = document.getElementById("action-compact-threshold");
         const display = document.getElementById("action-compact-threshold-val");
         if (slider) slider.value = threshold;
         if (display) display.textContent = String(threshold);
 
-        log(`[Prompts] Action config loaded: compact_threshold=${threshold}`);
+        const sliderChars = document.getElementById("action-compact-threshold-chars");
+        const displayChars = document.getElementById("action-compact-threshold-chars-val");
+        if (sliderChars) sliderChars.value = thresholdChars;
+        if (displayChars) displayChars.textContent = String(thresholdChars);
+
+        log(`[Prompts] Action config loaded: compact_threshold=${threshold}, compact_threshold_chars=${thresholdChars}`);
     } catch (e) {
         log(`[Prompts] Failed to load action config: ${e}`, "error");
     }
 }
 
 /**
- * Save action config to storage from current slider value
+ * Save action config to storage from current slider values
  */
 export async function saveActionConfig() {
     try {
         const thresholdSlider = document.getElementById("action-compact-threshold");
+        const thresholdCharsSlider = document.getElementById("action-compact-threshold-chars");
 
         const config = {
             compact_threshold: parseInt(thresholdSlider?.value, 10) || ACTION_CONFIG_DEFAULTS.compact_threshold,
+            compact_threshold_chars: parseInt(thresholdCharsSlider?.value, 10) || ACTION_CONFIG_DEFAULTS.compact_threshold_chars,
         };
 
         const key = "user_prompts:action_config";
         await browser.storage.local.set({ [key]: config });
 
-        log(`[Prompts] Action config saved: compact_threshold=${config.compact_threshold}`);
+        log(`[Prompts] Action config saved: compact_threshold=${config.compact_threshold}, compact_threshold_chars=${config.compact_threshold_chars}`);
     } catch (e) {
         log(`[Prompts] Failed to save action config: ${e}`, "error");
         throw e;

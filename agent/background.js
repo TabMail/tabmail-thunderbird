@@ -15,6 +15,7 @@ import { checkAndShowArchivePrompt, setDefaultSortForLargeInbox } from "./module
 // getInboxForAccount no longer needed - messages are processed directly from event listeners
 import { purgeExpiredActionEntries } from "./modules/actionGenerator.js";
 import { purgeOlderThanByPrefixes } from "./modules/idbStorage.js";
+import { compactActionRulesNow } from "./modules/autoUpdateUserPrompt.js";
 import { kbCompress, kbUpdate } from "./modules/knowledgebase.js";
 import { scanAllInboxes } from "./modules/messageProcessor.js";
 import { enqueueProcessMessage, initProcessMessageQueue } from "./modules/messageProcessorQueue.js";
@@ -404,6 +405,18 @@ function setupRuntimeMessageListener() {
             });
         }
         return { ok: true }; // Immediate response, KB update continues async
+    }
+
+    if (message.command === "action-compact-now") {
+        log("[AutoPrompt] Received manual action compact request from prompts page");
+        return (async () => {
+            try {
+                return await compactActionRulesNow();
+            } catch (e) {
+                log(`[AutoPrompt] Manual action compact failed: ${e}`, "warn");
+                return { ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+        })();
     }
 
     if (message.command === "kb-compress") {

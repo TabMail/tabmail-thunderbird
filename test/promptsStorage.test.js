@@ -46,9 +46,11 @@ const { loadActionConfig, saveActionConfig } = await import('../prompts/modules/
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Reset DOM element stubs
+  // Reset DOM element stubs for both sliders
   _domElements['action-compact-threshold'] = makeDomElement(100);
   _domElements['action-compact-threshold-val'] = makeDomElement(100);
+  _domElements['action-compact-threshold-chars'] = makeDomElement(8000);
+  _domElements['action-compact-threshold-chars-val'] = makeDomElement(8000);
 });
 
 describe('loadActionConfig — defaults', () => {
@@ -76,36 +78,89 @@ describe('loadActionConfig — defaults', () => {
     expect(Number(slider.value)).toBe(200);
     expect(display.textContent).toBe('200');
   });
+
+  // (e) compact_threshold_chars — load default
+  it('(e) sets compact_threshold_chars slider to default 8000 when storage is empty', async () => {
+    globalThis.browser.storage.local.get.mockResolvedValueOnce({});
+
+    await loadActionConfig();
+
+    const slider = _domElements['action-compact-threshold-chars'];
+    const display = _domElements['action-compact-threshold-chars-val'];
+    expect(Number(slider.value)).toBe(8000);
+    expect(display.textContent).toBe('8000');
+  });
+
+  // (e) compact_threshold_chars — load custom stored value
+  it('(e) sets compact_threshold_chars slider to stored custom value', async () => {
+    globalThis.browser.storage.local.get.mockResolvedValueOnce({
+      'user_prompts:action_config': { compact_threshold: 150, compact_threshold_chars: 12000 },
+    });
+
+    await loadActionConfig();
+
+    const slider = _domElements['action-compact-threshold-chars'];
+    const display = _domElements['action-compact-threshold-chars-val'];
+    expect(Number(slider.value)).toBe(12000);
+    expect(display.textContent).toBe('12000');
+  });
 });
 
 describe('saveActionConfig — defaults', () => {
-  it('writes default 100 when slider value is 100', async () => {
+  it('writes default 100 and 8000 when sliders are at defaults', async () => {
     _domElements['action-compact-threshold'] = makeDomElement(100);
+    _domElements['action-compact-threshold-chars'] = makeDomElement(8000);
 
     await saveActionConfig();
 
     expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:action_config': { compact_threshold: 100 },
+      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 8000 },
     });
   });
 
-  it('writes custom value from slider', async () => {
+  it('writes custom value from compact_threshold slider', async () => {
     _domElements['action-compact-threshold'] = makeDomElement(250);
+    _domElements['action-compact-threshold-chars'] = makeDomElement(8000);
 
     await saveActionConfig();
 
     expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:action_config': { compact_threshold: 250 },
+      'user_prompts:action_config': { compact_threshold: 250, compact_threshold_chars: 8000 },
     });
   });
 
-  it('falls back to default when slider element is absent', async () => {
+  it('falls back to default compact_threshold when slider element is absent', async () => {
     _domElements['action-compact-threshold'] = null;
+    _domElements['action-compact-threshold-chars'] = makeDomElement(8000);
 
     await saveActionConfig();
 
     expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:action_config': { compact_threshold: 100 },
+      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 8000 },
+    });
+  });
+
+  // (e) compact_threshold_chars — save roundtrip with custom value
+  it('(e) writes custom compact_threshold_chars from slider', async () => {
+    _domElements['action-compact-threshold'] = makeDomElement(100);
+    _domElements['action-compact-threshold-chars'] = makeDomElement(20000);
+
+    await saveActionConfig();
+
+    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
+      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 20000 },
+    });
+  });
+
+  // (e) compact_threshold_chars — falls back to default when chars slider absent
+  it('(e) falls back to default compact_threshold_chars when chars slider element is absent', async () => {
+    _domElements['action-compact-threshold'] = makeDomElement(100);
+    _domElements['action-compact-threshold-chars'] = null;
+
+    await saveActionConfig();
+
+    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
+      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 8000 },
     });
   });
 });

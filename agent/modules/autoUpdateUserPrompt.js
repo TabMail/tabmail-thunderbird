@@ -19,6 +19,7 @@ import {
 // ----------------------------------------------------------
 const ACTION_CONFIG = {
     defaultCompactThreshold: 100,
+    defaultCompactThresholdChars: 8000,
 };
 
 /**
@@ -31,11 +32,13 @@ async function getActionConfig() {
         const config = obj[key] || {};
         return {
             compact_threshold: config.compact_threshold || ACTION_CONFIG.defaultCompactThreshold,
+            compact_threshold_chars: config.compact_threshold_chars || ACTION_CONFIG.defaultCompactThresholdChars,
         };
     } catch (e) {
         log(`[TMDBG AutoPrompt] Failed to load action config, using defaults: ${e}`, "warn");
         return {
             compact_threshold: ACTION_CONFIG.defaultCompactThreshold,
+            compact_threshold_chars: ACTION_CONFIG.defaultCompactThresholdChars,
         };
     }
 }
@@ -147,6 +150,7 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
             user_manual_tag: action || "",
             current_user_action_md: currentUserActionMd,
             action_compact_threshold: actionConfig.compact_threshold,
+            action_compact_threshold_chars: actionConfig.compact_threshold_chars,
         };
 
         const messages = [systemMsg];
@@ -218,4 +222,102 @@ export async function autoUpdateUserPromptOnTag(messageId, action, extra = {}) {
     return _runExclusively("autoUpdateUserPromptOnTag", () => _autoUpdateUserPromptOnTagImpl(messageId, action, extra));
 }
 
+// ----------------------------------------------------------
+// Manual "Compact now" — runs compaction-only refine
+// ----------------------------------------------------------
+
+/**
+ * Count DEL + ADD ops in a patch text.
+ * Each op starts with a line that is exactly "DEL" or "ADD".
+ */
+function _countPatchOps(patchText) {
+    if (!patchText) return 0;
+    return patchText.split("\n").filter(l => l === "DEL" || l === "ADD").length;
+}
+
+async function _compactActionRulesNowImpl() {
+    log("[TMDBG AutoPrompt] compactActionRulesNow: start");
+
+    const currentUserActionMd = (await getUserActionPrompt()) || "";
+    if (!currentUserActionMd.trim()) {
+        log("[TMDBG AutoPrompt] compactActionRulesNow: user_action.md empty; nothing to compact.");
+        return { ok: true, applied: 0 };
+    }
+
+    const actionConfig = await getActionConfig();
+    log(`[TMDBG AutoPrompt] compactActionRulesNow: compact_threshold=${actionConfig.compact_threshold}, compact_threshold_chars=${actionConfig.compact_threshold_chars}`);
+
+    // Build the compact-only system message — email metadata fields are empty strings for template safety
+    const systemMsg = {
+        role: "system",
+        content: "system_prompt_action_refine",
+        subject: "",
+        from_sender: "",
+        summary_blurb: "",
+        todos: "",
+        original_agent_action: "",
+        original_user_action_prompt: "",
+        user_manual_tag: "",
+        current_user_action_md: currentUserActionMd,
+        action_compact_threshold: actionConfig.compact_threshold,
+        action_compact_threshold_chars: actionConfig.compact_threshold_chars,
+        action_compact_only: true,
+    };
+
+    const resp = await sendChat([systemMsg]);
+    if (!resp?.assistant) {
+        log("[TMDBG AutoPrompt] compactActionRulesNow: LLM returned empty response.", "warn");
+        return { ok: false, error: "LLM returned empty response" };
+    }
+
+    const parsed = processJSONResponse(resp.assistant) || {};
+    const patchText = typeof parsed.patch === "string" ? parsed.patch.trim() : "";
+    if (!patchText) {
+        log("[TMDBG AutoPrompt] compactActionRulesNow: empty patch; nothing to merge.");
+        return { ok: true, applied: 0 };
+    }
+
+    // Drift guard: re-read to detect concurrent mutation during backend call
+    const latestActionMd = (await getUserActionPrompt()) || "";
+    if (latestActionMd !== currentUserActionMd) {
+        log(`[TMDBG AutoPrompt] compactActionRulesNow: SKIP — user_action.md drifted during backend call.`);
+        return { ok: false, reason: "drift" };
+    }
+
+    const updated = applyActionPatch(currentUserActionMd, patchText);
+    if (updated == null) {
+        log("[TMDBG AutoPrompt] compactActionRulesNow: applyActionPatch failed (null).", "warn");
+        return { ok: false, error: "patch apply failed" };
+    }
+    if (updated === currentUserActionMd) {
+        log("[TMDBG AutoPrompt] compactActionRulesNow: patch produced no change.");
+        return { ok: true, applied: 0 };
+    }
+
+    // Persist
+    try {
+        const key = "user_prompts:user_action.md";
+        await browser.storage.local.set({ [key]: updated });
+        log(`[TMDBG AutoPrompt] compactActionRulesNow: user_action.md updated (len ${updated.length}).`);
+    } catch (e) {
+        log(`[TMDBG AutoPrompt] compactActionRulesNow: Failed to persist: ${e}`, "error");
+        return { ok: false, error: String(e) };
+    }
+
+    // Notify listeners (e.g., prompts page)
+    try {
+        const evt = (SETTINGS && SETTINGS.events && SETTINGS.events.userActionPromptUpdated) || "user-action-prompt-updated";
+        await browser.runtime.sendMessage({ command: evt, key: "user_prompts:user_action.md", source: "compact-now" });
+    } catch (e) {
+        log(`[TMDBG AutoPrompt] compactActionRulesNow: Failed to send update notification: ${e}`, "warn");
+    }
+
+    const opCount = _countPatchOps(patchText);
+    log(`[TMDBG AutoPrompt] compactActionRulesNow: done, applied ${opCount} ops.`);
+    return { ok: true, applied: opCount };
+}
+
+export async function compactActionRulesNow() {
+    return _runExclusively("compactActionRulesNow", () => _compactActionRulesNowImpl());
+}
 
