@@ -485,13 +485,20 @@ function renderActionSections() {
   for (const section of actionData.sections) {
     const sectionDiv = document.createElement("div");
     sectionDiv.className = "section-container";
-    
+
     // Section header
     const headerDiv = document.createElement("div");
     headerDiv.className = "section-header";
-    
+
     const titleEl = document.createElement("h3");
     titleEl.textContent = section.title;
+    const countSpan = document.createElement("span");
+    countSpan.className = "kb-entry-count";
+    const countBullets = (content) => content
+      ? content.split("\n").map(l => l.trim()).filter(l => l.startsWith("- ") && l.length > 2).length
+      : 0;
+    countSpan.textContent = ` (${countBullets(section.content)})`;
+    titleEl.appendChild(countSpan);
     headerDiv.appendChild(titleEl);
     
     // Add section actions
@@ -549,7 +556,7 @@ function renderActionSections() {
 
     const bulletEditor = createBulletListEditor(
       section.content || "",
-      (newContent) => { section.content = newContent; },
+      (newContent) => { section.content = newContent; countSpan.textContent = ` (${countBullets(newContent)})`; },
       "Add rule..."
     );
     bulletEditor.setAttribute("data-section", section.title);
