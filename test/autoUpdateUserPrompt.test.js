@@ -569,7 +569,8 @@ describe('compactActionRulesNow', () => {
 
     expect(patchApplier.applyActionPatch).not.toHaveBeenCalled();
     expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
-    expect(result).toEqual({ ok: true, applied: 0 });
+    // reason is additive: empty string when the backend attaches no code
+    expect(result).toEqual({ ok: true, applied: 0, reason: "" });
   });
 
   // (d) drift → no write

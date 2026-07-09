@@ -273,8 +273,12 @@ async function _compactActionRulesNowImpl() {
     const parsed = processJSONResponse(resp.assistant) || {};
     const patchText = typeof parsed.patch === "string" ? parsed.patch.trim() : "";
     if (!patchText) {
-        log("[TMDBG AutoPrompt] compactActionRulesNow: empty patch; nothing to merge.");
-        return { ok: true, applied: 0 };
+        // The backend attaches a machine-readable reason to empty-patch exits
+        // (guard trip / non-applying ops / model failure) so a discarded merge
+        // is distinguishable from a genuinely clean rules file.
+        const reason = typeof parsed.reason === "string" ? parsed.reason : "";
+        log(`[TMDBG AutoPrompt] compactActionRulesNow: empty patch; reason=${reason || "none"}.`);
+        return { ok: true, applied: 0, reason };
     }
 
     // Drift guard: re-read to detect concurrent mutation during backend call

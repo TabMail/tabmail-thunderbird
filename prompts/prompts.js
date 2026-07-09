@@ -1365,9 +1365,18 @@ document.addEventListener("DOMContentLoaded", () => {
       const result = await browser.runtime.sendMessage({ command: "action-compact-now" });
       if (result && result.ok) {
         flashButton(btn, "blue");
+        // Backend reason codes distinguish a discarded merge from a clean file
+        const REASON_TEXT = {
+          guard_char_retention: "Merge discarded by safety check \u2014 try again",
+          guard_pure_delete: "Merge discarded by safety check \u2014 try again",
+          no_ops_applied: "Merge didn't match current rules \u2014 try again",
+          no_ops_parsed: "Merge didn't match current rules \u2014 try again",
+          parse_failed: "Model response unusable \u2014 try again",
+          llm_error: "Model response unusable \u2014 try again",
+        };
         const msg = result.applied > 0
           ? `Merged ${result.applied} rule${result.applied !== 1 ? "s" : ""}`
-          : "Nothing to compact";
+          : (REASON_TEXT[result.reason] || "Nothing to compact");
         showStatus(msg);
         // Reload action sections so merged rules appear immediately
         try {
