@@ -797,6 +797,14 @@ button:focus-visible {
   border-right: 1px solid var(--panel-separator-color);
 }
 
+/* Solo variant: the group is the only header action (e.g. the action editor's
+   "Compact now"), so the divider toward sibling buttons is dropped. */
+.kb-compress-group-solo {
+  border-right: none;
+  padding-right: 0;
+  margin-right: 0;
+}
+
 .kb-spinner {
   display: inline-block;
   width: 18px;
