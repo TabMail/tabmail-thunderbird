@@ -15,3 +15,6 @@ node_modules/
 # Test coverage reports
 coverage/
 cov_out/
+
+# Plan files
+PLAN_*.md
