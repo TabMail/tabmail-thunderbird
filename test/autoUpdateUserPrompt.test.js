@@ -549,6 +549,14 @@ describe('compactActionRulesNow', () => {
       'user_prompts:user_action.md': '# updated compact doc',
     });
     expect(result).toEqual({ ok: true, applied: 3 }); // 2 DEL + 1 ADD = 3 ops
+
+    // Pin: success path fires user-action-prompt-updated notification
+    // The source module sends: { command: evt, key: "user_prompts:user_action.md", source: "compact-now" }
+    // where evt = SETTINGS.events.userActionPromptUpdated || "user-action-prompt-updated".
+    // The SETTINGS mock in this file has no .events property, so the fallback literal is used.
+    expect(globalThis.browser.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'user-action-prompt-updated' })
+    );
   });
 
   // (c) empty patch → no write, applied:0
