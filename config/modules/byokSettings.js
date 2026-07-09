@@ -142,6 +142,12 @@ function catalogModelsFor(catalog, provider, wireTier) {
 const BYOK_LIVE_REFRESH_DEBOUNCE_MS = 600;
 
 let _liveModelsCache = {};
+// Per-provider epoch counter: invalidateLiveModels() bumps it, and an
+// in-flight getLiveModels() only commits its result to the cache if the epoch
+// it captured at entry is still current. Without this, a fetch started with an
+// old key that resolves AFTER "Remove key"/"key replaced" would poison the
+// cache with models from the removed key.
+let _liveModelsEpoch = {};
 const _liveRefreshTimers = {};
 
 /**
@@ -150,15 +156,24 @@ const _liveRefreshTimers = {};
  * throws. A null result and an empty array are distinct: null means "couldn't
  * determine the live list" (picker stays Recommended-only); [] means "fetched
  * successfully, zero models" (also renders no live group, but isn't a failure).
+ * The returned value may still be handed to the caller even when the epoch
+ * moved on mid-flight (the caller's own generation guard handles display);
+ * only the CACHE write is epoch-gated.
  */
 async function getLiveModels(provider, log) {
   if (Object.prototype.hasOwnProperty.call(_liveModelsCache, provider)) {
     return _liveModelsCache[provider];
   }
+  const epoch = _liveModelsEpoch[provider] || 0;
+  const commit = (value) => {
+    if ((_liveModelsEpoch[provider] || 0) === epoch) {
+      _liveModelsCache[provider] = value;
+    }
+    return value;
+  };
   const apiKey = await getProviderKey(provider);
   if (!apiKey) {
-    _liveModelsCache[provider] = null;
-    return null;
+    return commit(null);
   }
   try {
     const result = await listByokModels(provider, apiKey);
@@ -167,19 +182,17 @@ async function getLiveModels(provider, log) {
         `[Config] BYOK live model list unavailable for ${provider}: ${result?.error_code || "unknown_error"}`,
         "warn"
       );
-      _liveModelsCache[provider] = null;
-      return null;
+      return commit(null);
     }
-    _liveModelsCache[provider] = result.models;
-    return result.models;
+    return commit(result.models);
   } catch (e) {
     log?.(`[Config] BYOK live model list fetch failed for ${provider}: ${e}`, "warn");
-    _liveModelsCache[provider] = null;
-    return null;
+    return commit(null);
   }
 }
 
 function invalidateLiveModels(provider) {
+  _liveModelsEpoch[provider] = (_liveModelsEpoch[provider] || 0) + 1;
   delete _liveModelsCache[provider];
 }
 
@@ -187,13 +200,23 @@ function invalidateLiveModels(provider) {
  * Pure: the live ids not already represented by a Recommended (catalog) entry,
  * using byokStorage's isModelAvailable() dedupe semantics — a dated provider
  * id (`claude-haiku-4-5-20251001`) is excluded when its dateless catalog id
- * (`claude-haiku-4-5`) is already in `recommended`. Order is preserved from
+ * (`claude-haiku-4-5`) is already in `recommended`. Repeated ids WITHIN the
+ * live list itself are also deduped (seen-Set, iOS parity — a provider that
+ * ever returns a duplicate must not render it twice). Order is preserved from
  * `liveModels` (the backend already returns them sorted).
  */
 function dedupeLiveModels(recommended, liveModels) {
   if (!Array.isArray(liveModels)) return [];
   const rec = Array.isArray(recommended) ? recommended : [];
-  return liveModels.filter((id) => !rec.some((c) => isModelAvailable(c, [id])));
+  const seen = new Set();
+  const out = [];
+  for (const id of liveModels) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (rec.some((c) => isModelAvailable(c, [id]))) continue;
+    out.push(id);
+  }
+  return out;
 }
 
 /**
@@ -202,20 +225,35 @@ function dedupeLiveModels(recommended, liveModels) {
  * when there's no key / the fetch hasn't resolved / it failed), and the
  * currently saved model id.
  *
- * Selection rule: keep `current` if it's present in EITHER rendered group;
- * otherwise fall back to the first Recommended entry (today's
- * ensureDefaultModel behavior). `changed` tells the caller whether the fallback
- * needs to be persisted (it should NOT persist when `current` was simply not
- * checked yet, e.g. before the live group has resolved).
+ * Selection rule (iOS semantic): NEVER overwrite a non-empty stored model.
+ * A set `current` is ALWAYS kept as the selection — even when it appears in
+ * neither group (transient live-fetch failure, model retired from the catalog,
+ * provider hiccup…). "Absent from one fetch" is not evidence the model is
+ * gone, and clobbering a saved pick on a transient failure destroys user
+ * intent. The renderer appends a bare <option> for an uncovered `current` so
+ * the native select actually displays it (a value with no matching option
+ * renders as selectedIndex -1).
+ *
+ * `changed: true` (persist the fill) ONLY when `current` is empty/falsy:
+ *  - fill with the first Recommended entry when the catalog has entries
+ *    (catalog presence is confirmed, safe to persist in phase 1);
+ *  - if the catalog is empty, fill with the first live entry only after a
+ *    SUCCESSFUL live fetch (Array.isArray) that returned entries;
+ *  - otherwise leave it empty (changed: false).
  */
 function computeModelGroups(recommended, liveModels, current) {
   const rec = Array.isArray(recommended) ? recommended : [];
   const live = dedupeLiveModels(rec, liveModels);
-  if (rec.includes(current) || live.includes(current)) {
+  if (current) {
     return { recommended: rec, live, selected: current, changed: false };
   }
-  const fallback = rec[0] ?? "";
-  return { recommended: rec, live, selected: fallback, changed: fallback !== current };
+  if (rec.length > 0) {
+    return { recommended: rec, live, selected: rec[0], changed: true };
+  }
+  if (Array.isArray(liveModels) && live.length > 0) {
+    return { recommended: rec, live, selected: live[0], changed: true };
+  }
+  return { recommended: rec, live, selected: "", changed: false };
 }
 
 function buildOptionEl(id) {
@@ -230,6 +268,32 @@ function buildOptGroup(label, ids) {
   group.label = label;
   for (const id of ids) group.appendChild(buildOptionEl(id));
   return group;
+}
+
+/**
+ * (Re)render a model <select> from a computeModelGroups() result. Clears the
+ * existing content, appends the Recommended optgroup, the live optgroup, and —
+ * when the selected (saved) model is covered by neither group — a bare
+ * <option> for it, so the native select displays the user's actual saved
+ * choice instead of silently showing something else (a value with no matching
+ * option yields selectedIndex -1). Disabled only when there is nothing at all
+ * to show (both sources empty/unavailable AND no saved model).
+ */
+function renderModelOptions(sel, groups) {
+  sel.textContent = "";
+  if (groups.recommended.length > 0) {
+    sel.appendChild(buildOptGroup("Recommended", groups.recommended));
+  }
+  if (groups.live.length > 0) {
+    sel.appendChild(buildOptGroup("All models (from your API key)", groups.live));
+  }
+  const selectedCovered =
+    groups.recommended.includes(groups.selected) || groups.live.includes(groups.selected);
+  if (groups.selected && !selectedCovered) {
+    sel.appendChild(buildOptionEl(groups.selected));
+  }
+  sel.disabled = groups.recommended.length === 0 && groups.live.length === 0 && !groups.selected;
+  sel.value = groups.selected;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,14 +314,21 @@ const _populateGeneration = {};
  *    preserved: first = default, cheapest-first for Light). Rendered
  *    immediately so the UI stays responsive.
  *  - "All models (from your API key)" — the provider's live model list,
- *    appended once the fetch resolves (only when a key is saved). Dated
- *    variants of a Recommended id are excluded so nothing shows twice.
+ *    rendered once the fetch resolves (only when a key is saved). Dated
+ *    variants of a Recommended id, and duplicates within the live list, are
+ *    excluded so nothing shows twice.
  *
- * Selection: keeps the saved choice if present in either group; otherwise
- * falls back to the first Recommended entry. The fallback is NOT persisted
- * until the live group (if any) has also been checked — a saved live-only
- * pick must survive a reload without being clobbered before the live fetch
- * resolves.
+ * Selection: a non-empty saved model is NEVER overwritten — it stays selected
+ * (with a bare <option> appended when it's covered by neither group). Only an
+ * EMPTY saved model is filled: rec[0] in phase 1 (catalog presence confirmed),
+ * or live[0] in phase 2 when the catalog is empty but a successful live fetch
+ * returned entries. An empty catalog no longer hard-disables the picker — the
+ * live fetch is still attempted; disabled only when both sources come up empty
+ * and nothing is saved.
+ *
+ * Every await is followed by a generation re-check: a slow older call (stale
+ * catalog fetch, slow storage read, in-flight live fetch) must never clear or
+ * re-render a newer provider/tier's DOM.
  */
 async function populateModelSelect(tier, provider, log) {
   const sel = $(`byok-${tier.ui}-model`);
@@ -265,21 +336,24 @@ async function populateModelSelect(tier, provider, log) {
   const generation = (_populateGeneration[tier.ui] = (_populateGeneration[tier.ui] || 0) + 1);
 
   const catalog = await getCatalog(log);
+  if (_populateGeneration[tier.ui] !== generation) return;
   const models = catalogModelsFor(catalog, provider, tier.wire);
   const current = await getTierModel(tier.ui, provider);
+  // Guard immediately before the DOM clear below — this is the phase-1 race:
+  // getCatalog/getTierModel resolve BEFORE the clear, so without this check a
+  // slow older call clobbers a newer render with the wrong provider's list.
+  if (_populateGeneration[tier.ui] !== generation) return;
 
-  sel.textContent = "";
-
-  if (models.length === 0) {
-    sel.disabled = true;
-    return;
-  }
-  sel.disabled = false;
-  sel.appendChild(buildOptGroup("Recommended", models));
-
-  // Immediate (pre-live-fetch) selection — tentative only, never persisted.
+  // Phase 1 — render the Recommended group immediately (UI responsiveness);
+  // the live list hasn't been consulted yet (null = "not fetched").
   const phase1 = computeModelGroups(models, null, current);
-  sel.value = phase1.selected;
+  renderModelOptions(sel, phase1);
+  if (phase1.changed) {
+    // Only reachable when the stored model was EMPTY and the catalog has
+    // entries — fills with rec[0]. A non-empty stored model is never touched.
+    await setTierModel(tier.ui, provider, phase1.selected);
+    if (_populateGeneration[tier.ui] !== generation) return;
+  }
 
   const liveModels = await getLiveModels(provider, log);
 
@@ -290,12 +364,12 @@ async function populateModelSelect(tier, provider, log) {
   const selNow = $(`byok-${tier.ui}-model`);
   if (!selNow) return;
 
-  const result = computeModelGroups(models, liveModels, current);
-  if (result.live.length > 0) {
-    selNow.appendChild(buildOptGroup("All models (from your API key)", result.live));
-  }
-  selNow.value = result.selected;
+  const effectiveCurrent = current || phase1.selected;
+  const result = computeModelGroups(models, liveModels, effectiveCurrent);
+  renderModelOptions(selNow, result);
   if (result.changed) {
+    // Only reachable when the stored model was EMPTY and the catalog had
+    // nothing — fills with live[0] after a successful live fetch.
     await setTierModel(tier.ui, provider, result.selected);
   }
 }
@@ -319,6 +393,18 @@ function scheduleProviderModelsRefresh(provider, log) {
       log?.(`[Config] BYOK live model refresh failed: ${e}`, "warn");
     });
   }, BYOK_LIVE_REFRESH_DEBOUNCE_MS);
+}
+
+/**
+ * Clear all pending debounced live-model refresh timers. Wired into the config
+ * page's cleanupAllConfigListeners (beforeunload / re-init) — TB rule 5:
+ * always clean up timers for hot-reload support.
+ */
+export function cleanupByokTimers() {
+  for (const provider of Object.keys(_liveRefreshTimers)) {
+    clearTimeout(_liveRefreshTimers[provider]);
+    delete _liveRefreshTimers[provider];
+  }
 }
 
 /** Show/hide a tier's model row + "add a key" hint based on its provider. */
@@ -611,6 +697,7 @@ export const _testExports = {
   },
   resetLiveModelsCache: () => {
     _liveModelsCache = {};
+    _liveModelsEpoch = {};
   },
   _setLiveModelsCache: (provider, models) => {
     _liveModelsCache[provider] = models;
@@ -619,6 +706,7 @@ export const _testExports = {
   dedupeLiveModels,
   computeModelGroups,
   getLiveModels,
+  invalidateLiveModels,
   populateModelSelect,
   refreshProviderModels,
   BYOK_LIVE_REFRESH_DEBOUNCE_MS,

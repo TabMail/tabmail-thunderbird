@@ -279,13 +279,14 @@ describe("runProviderSmoke", () => {
     expect(sentPayload.messages[0]).toEqual({ role: "system", content: "system_prompt_agent" });
   });
 
-  it("picks an interactive-catalog model when the user's saved model is non-interactive (Light-only) — fixes Google tier_entry_invalid", async () => {
-    // Repro of the user-reported bug: Light tier configured with a model that is
-    // ONLY in Google's autocomplete/background catalogs (gemini-3.1-flash-lite),
-    // not interactive. The smoke sends through system_prompt_agent (→
-    // interactive), so it MUST pick from interactiveModels — never fall back to
-    // the user's saved Light-only model, which the backend rejects as
-    // `tier_entry_invalid`.
+  it("sends the user's saved model VERBATIM even when it's not in the interactive catalog (gateway accepts any id)", async () => {
+    // Historical: the smoke used to substitute an interactive-catalog model
+    // whenever the saved model wasn't in the interactive catalog (the catalog
+    // was the gateway's allow-list, and a Light-only saved pick triggered
+    // tier_entry_invalid). The backend now accepts any well-formed id — the
+    // catalog is just the recommended list — so Test Connectivity MUST
+    // exercise the user's REAL saved model (e.g. a live-only pick from the
+    // "All models (from your API key)" group), never a silent stand-in.
     const listByokModels = vi.fn(async () => ({ ok: true, models: ["gemini-3.1-flash-lite", "gemini-3.5-flash"] }));
     const sendFn = vi.fn(async () => ({ byok_routed: true, assistant: allDays }));
     const googleCatalog = async () => ({
@@ -295,9 +296,7 @@ describe("runProviderSmoke", () => {
       provider: "google", apiKey: "AIza-x", tier, model: "gemini-3.1-flash-lite",
       listByokModels, getCatalog: googleCatalog, catalogModelsFor, sendFn,
     });
-    const sentModel = sendFn.mock.calls[0][0].byok.interactive.model;
-    expect(["gemini-3.5-flash", "gemini-3.1-pro-preview"]).toContain(sentModel);
-    expect(sentModel).not.toBe("gemini-3.1-flash-lite");
+    expect(sendFn.mock.calls[0][0].byok.interactive.model).toBe("gemini-3.1-flash-lite");
     expect(failures).toEqual([]);
   });
 
@@ -334,16 +333,28 @@ describe("runProviderSmoke", () => {
     expect(sendFn).toHaveBeenCalledTimes(1);
   });
 
-  it("fails clearly when the interactive catalog is empty (no model to send)", async () => {
-    const listByokModels = vi.fn(async () => ({ ok: true, models: ["anything"] }));
-    const sendFn = vi.fn();
+  it("empty interactive catalog: still tests a saved model verbatim; fails only when nothing is configured at all", async () => {
     const emptyCatalog = async () => ({ google: { interactive: [] } });
+
+    // A saved model with an empty catalog (e.g. a live-only pick) still runs
+    // the completion with the saved model — the catalog is not an allow-list.
+    const listByokModels = vi.fn(async () => ({ ok: true, models: ["gemini-x-test"] }));
+    const sendFn = vi.fn(async () => ({ byok_routed: true, assistant: allDays }));
     const failures = await runProviderSmoke({
-      provider: "google", apiKey: "AIza-x", tier, model: "gemini-3.5-flash",
+      provider: "google", apiKey: "AIza-x", tier, model: "gemini-x-test",
       listByokModels, getCatalog: emptyCatalog, catalogModelsFor, sendFn,
     });
-    expect(failures.some((f) => f.includes("interactive tier"))).toBe(true);
-    expect(sendFn).not.toHaveBeenCalled();
+    expect(sendFn.mock.calls[0][0].byok.interactive.model).toBe("gemini-x-test");
+    expect(failures).toEqual([]);
+
+    // No saved model AND an empty catalog → clear failure, nothing sent.
+    const sendFn2 = vi.fn();
+    const failures2 = await runProviderSmoke({
+      provider: "google", apiKey: "AIza-x", tier, model: "",
+      listByokModels, getCatalog: emptyCatalog, catalogModelsFor, sendFn: sendFn2,
+    });
+    expect(failures2.some((f) => f.includes("interactive tier"))).toBe(true);
+    expect(sendFn2).not.toHaveBeenCalled();
   });
 
   it("appends a self-diagnostic line on tier_entry_invalid (so the user can spot wrong key length / catalog mismatch)", async () => {
@@ -412,6 +423,10 @@ describe("dedupeLiveModels", () => {
   it("tolerates a non-array recommended list", () => {
     expect(dedupeLiveModels(null, ["gpt-x-test"])).toEqual(["gpt-x-test"]);
   });
+
+  it("dedupes repeated ids within the live list itself (iOS seen-Set parity)", () => {
+    expect(dedupeLiveModels([], ["gpt-x-a", "gpt-x-a", "gpt-x-b", "gpt-x-a"])).toEqual(["gpt-x-a", "gpt-x-b"]);
+  });
 });
 
 describe("computeModelGroups", () => {
@@ -423,13 +438,30 @@ describe("computeModelGroups", () => {
     expect(r).toEqual({ recommended, live: [], selected: "gpt-x-heavy", changed: false });
   });
 
-  it("recommended-only (live null) — falls back to the first entry when current is unset/invalid", () => {
+  it("recommended-only (live null) — fills the first entry ONLY when current is empty", () => {
     const r = computeModelGroups(recommended, null, "");
     expect(r.selected).toBe("gpt-x-light");
     expect(r.changed).toBe(true);
-    const r2 = computeModelGroups(recommended, null, "some-stale-model");
-    expect(r2.selected).toBe("gpt-x-light");
-    expect(r2.changed).toBe(true);
+  });
+
+  it("NEVER overwrites a non-empty current, even when it's in neither group (transient failure safety)", () => {
+    // "Absent from one fetch" is not evidence the model is gone — a saved
+    // model in neither group must be kept AND not re-persisted.
+    const r = computeModelGroups(recommended, null, "gpt-x-my-saved-live-only-model");
+    expect(r.selected).toBe("gpt-x-my-saved-live-only-model");
+    expect(r.changed).toBe(false);
+  });
+
+  it("empty catalog + successful live fetch — fills live[0] only when current is empty", () => {
+    const r = computeModelGroups([], ["gpt-x-live-a", "gpt-x-live-b"], "");
+    expect(r.selected).toBe("gpt-x-live-a");
+    expect(r.changed).toBe(true);
+  });
+
+  it("empty catalog + FAILED live fetch (null) — leaves an empty current empty (no persist)", () => {
+    const r = computeModelGroups([], null, "");
+    expect(r.selected).toBe("");
+    expect(r.changed).toBe(false);
   });
 
   it("merged — keeps current when it's a live-only (non-Recommended) id", () => {
@@ -446,10 +478,10 @@ describe("computeModelGroups", () => {
     expect(r.changed).toBe(false);
   });
 
-  it("merged — falls back to first Recommended entry when current is in neither group", () => {
+  it("merged — a non-empty current in neither group is still kept (never overwritten)", () => {
     const r = computeModelGroups(recommended, ["gpt-x-live-only"], "gpt-x-removed");
-    expect(r.selected).toBe("gpt-x-light");
-    expect(r.changed).toBe(true);
+    expect(r.selected).toBe("gpt-x-removed");
+    expect(r.changed).toBe(false);
   });
 });
 
@@ -478,12 +510,17 @@ function makeMockEl(tag) {
 }
 
 function optgroupLabels(sel) {
-  return sel._children.map((g) => g.label);
+  return sel._children.filter((c) => c.tagName === "OPTGROUP").map((g) => g.label);
 }
 
 function optgroupValues(sel, label) {
-  const g = sel._children.find((c) => c.label === label);
+  const g = sel._children.find((c) => c.tagName === "OPTGROUP" && c.label === label);
   return g ? g._children.map((o) => o.value) : null;
+}
+
+/** Values of BARE <option> children (a saved model covered by neither group). */
+function bareOptionValues(sel) {
+  return sel._children.filter((c) => c.tagName === "OPTION").map((o) => o.value);
 }
 
 function makeDomRegistry() {
@@ -548,16 +585,101 @@ describe("populateModelSelect (DOM integration)", () => {
     expect(await getTierModel("light", "openai")).toBe("gpt-x-new");
   });
 
-  it("falls back to the first Recommended entry and persists it when the saved model is in neither group", async () => {
+  it("(audit a) a saved live-only model SURVIVES a transient live-fetch failure — storage untouched, rendered as an option", async () => {
+    // Audit reproduction: saved "gpt-x-my-saved-live-only-model" + fetch throw
+    // used to overwrite storage with rec[0]. Must never happen.
     const sel = makeMockEl("select");
     registry["byok-light-model"] = sel;
-    byokSettingsTestExports._setLiveModelsCache("openai", ["gpt-x-new"]);
-    await setTierModel("light", "openai", "gpt-x-long-removed");
+    await setProviderKey("openai", "sk-live-key");
+    await setTierModel("light", "openai", "gpt-x-my-saved-live-only-model");
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("transient network failure");
+    });
+    const log = vi.fn();
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", log);
+
+    expect(await getTierModel("light", "openai")).toBe("gpt-x-my-saved-live-only-model");
+    expect(sel.value).toBe("gpt-x-my-saved-live-only-model");
+    // The select must actually DISPLAY the saved choice: a bare <option> is
+    // appended (a value with no matching option renders as selectedIndex -1).
+    expect(bareOptionValues(sel)).toEqual(["gpt-x-my-saved-live-only-model"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("transient network failure"), "warn");
+  });
+
+  it("(audit b) a saved live-only model absent from a SUCCESSFUL live fetch is still kept and rendered", async () => {
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    await setProviderKey("openai", "sk-live-key");
+    await setTierModel("light", "openai", "gpt-x-my-saved-live-only-model");
+    globalThis.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, models: ["gpt-x-other"] }) }));
 
     await byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn());
 
-    expect(sel.value).toBe("gpt-x-light-a");
-    expect(await getTierModel("light", "openai")).toBe("gpt-x-light-a");
+    expect(await getTierModel("light", "openai")).toBe("gpt-x-my-saved-live-only-model");
+    expect(sel.value).toBe("gpt-x-my-saved-live-only-model");
+    expect(bareOptionValues(sel)).toEqual(["gpt-x-my-saved-live-only-model"]);
+    expect(optgroupValues(sel, "All models (from your API key)")).toEqual(["gpt-x-other"]);
+  });
+
+  it("(audit c) empty current + empty catalog + successful live fetch — live[0] persisted, picker enabled", async () => {
+    byokSettingsTestExports._setCatalogCache({ openai: { background: [] } });
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    await setProviderKey("openai", "sk-live-key");
+    globalThis.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, models: ["gpt-x-live-a", "gpt-x-live-b"] }) }));
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn());
+
+    expect(await getTierModel("light", "openai")).toBe("gpt-x-live-a");
+    expect(sel.value).toBe("gpt-x-live-a");
+    expect(sel.disabled).toBe(false);
+    expect(optgroupLabels(sel)).toEqual(["All models (from your API key)"]);
+    expect(optgroupValues(sel, "All models (from your API key)")).toEqual(["gpt-x-live-a", "gpt-x-live-b"]);
+  });
+
+  it("(audit f) duplicate ids within the live list render only one option", async () => {
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    byokSettingsTestExports._setLiveModelsCache("openai", ["gpt-x-new", "gpt-x-new"]);
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn());
+
+    expect(optgroupValues(sel, "All models (from your API key)")).toEqual(["gpt-x-new"]);
+  });
+
+  it("(audit e) phase-1 race: an older populate resolving later does not clobber the newer render", async () => {
+    // The older (openai) call's getTierModel storage read is artificially
+    // slowed, so it resolves AFTER the newer (anthropic) call fully rendered.
+    // Without a generation check after every await, the older call would clear
+    // the select and render openai's Recommended list on top.
+    byokSettingsTestExports._setCatalogCache({
+      openai: { background: ["gpt-x-light-a"] },
+      anthropic: { background: ["claude-x-light-a"] },
+    });
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+
+    const realGet = globalThis.browser.storage.local.get;
+    globalThis.browser.storage.local.get = async (defaults) => {
+      const out = await realGet(defaults);
+      if (defaults && Object.prototype.hasOwnProperty.call(defaults, "byok.light.openai.model")) {
+        await new Promise((r) => setTimeout(r, 25)); // inject latency into the OLDER call only
+      }
+      return out;
+    };
+
+    // Start the older call and let it get PAST the post-getCatalog guard and
+    // into its slow getTierModel read before the newer call begins — so the
+    // only thing standing between it and the DOM clear is the guard right
+    // before the clear (the exact spot the audit's reproduction hit).
+    const older = byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn());
+    await new Promise((r) => setTimeout(r, 0));
+    const newer = byokSettingsTestExports.populateModelSelect(tier, "anthropic", vi.fn());
+    await Promise.all([older, newer]);
+
+    expect(optgroupValues(sel, "Recommended")).toEqual(["claude-x-light-a"]);
+    expect(sel.value).toBe("claude-x-light-a");
   });
 
   it("live-fetch failure (ok:false) falls back to Recommended-only and logs the failure visibly", async () => {
@@ -656,6 +778,35 @@ describe("getLiveModels (network path)", () => {
     const result = await byokSettingsTestExports.getLiveModels("openai", log);
     expect(result).toBeNull();
     expect(log).toHaveBeenCalledWith(expect.any(String), "warn");
+  });
+
+  it("(audit d) an in-flight fetch resolving AFTER invalidation does not poison the cache (epoch guard)", async () => {
+    // Audit reproduction: fetch started with the old key resolves after
+    // "Remove key" — its result must NOT be written into _liveModelsCache.
+    await setProviderKey("openai", "sk-live-key");
+    let resolveFetch;
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        })
+    );
+
+    const inflight = byokSettingsTestExports.getLiveModels("openai", vi.fn());
+    // Let the call reach its fetch await, then invalidate mid-flight (the
+    // remove-key / key-replaced scenario bumps the epoch).
+    await new Promise((r) => setTimeout(r, 0));
+    byokSettingsTestExports.invalidateLiveModels("openai");
+    resolveFetch({ json: async () => ({ ok: true, models: ["gpt-x-stale"] }) });
+    await inflight;
+
+    // The stale result was returned to its caller (display is the caller's
+    // generation-guard problem) but must NOT have been cached: a fresh call
+    // re-fetches and sees the new list.
+    globalThis.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, models: ["gpt-x-fresh"] }) }));
+    const fresh = await byokSettingsTestExports.getLiveModels("openai", vi.fn());
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1); // re-fetched, not served from a poisoned cache
+    expect(fresh).toEqual(["gpt-x-fresh"]);
   });
 });
 

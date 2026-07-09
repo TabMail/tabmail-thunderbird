@@ -133,22 +133,27 @@ export async function runProviderSmoke({
   }
 
   // 2. One real end-to-end completion through system_prompt_agent (interactive
-  //    BYOK tier). The model MUST be in byokModelCatalog[provider].interactive
-  //    or the backend rejects with `tier_entry_invalid` — the catalog is the
-  //    authoritative allow-list for what's accepted at the gateway. We do NOT
-  //    filter by the `accessible` set here: `/byok/list-models` is noisy
-  //    across providers (versioned aliases, prefixed names, etc.) and using it
-  //    as a gate produced false negatives → falling back to the user's saved
-  //    *Light/background* tier model → backend rejection. If the chosen model
-  //    isn't actually in the user's account, we'll surface a real provider
-  //    error from the chat call (clearer signal than tier_entry_invalid).
+  //    BYOK tier). The backend accepts ANY well-formed model id — the catalog
+  //    is just the "recommended" list, NOT a gateway allow-list — so the
+  //    user's saved model is used VERBATIM whenever one is set; the first
+  //    interactive-catalog model is only a fill-in when nothing is saved.
+  //    (Historical: when the catalog was the gateway allow-list, this
+  //    substituted an interactive-catalog model for any saved model not in it,
+  //    which meant Test Connectivity never exercised the user's real model —
+  //    e.g. a live-only pick from the "All models" group.) We do NOT filter by
+  //    the `accessible` set here either: `/byok/list-models` is noisy across
+  //    providers (versioned aliases, prefixed names, etc.) and using it as a
+  //    gate produced false negatives. If the chosen model isn't actually in
+  //    the user's account, we'll surface a real provider error from the chat
+  //    call (the clearest signal).
   const catalog = await getCatalog();
   const interactiveModels = catalogModelsFor(catalog, provider, "interactive");
-  const completionModel =
-    (model && interactiveModels.includes(model)) ? model : interactiveModels[0];
+  const completionModel = model || interactiveModels[0];
 
   if (!completionModel) {
-    failures.push(`No ${providerLabel} model available for the interactive tier in the catalog.`);
+    failures.push(
+      `No ${providerLabel} model configured and the catalog has no interactive tier entry to fall back to.`
+    );
     return failures;
   }
 
@@ -182,8 +187,10 @@ export async function runProviderSmoke({
       // it ourselves), so spell out exactly what we sent so the user can
       // compare against the regex / catalog inline.
       if (result?.byok_skip_reason === "tier_entry_invalid") {
-        // The backend no longer checks api_key FORMAT — so tier_entry_invalid
-        // now means the model isn't in byokModelCatalog.<provider>.<resolvedTier>
+        // The backend no longer checks api_key FORMAT, and current backends
+        // accept any well-formed model id — so tier_entry_invalid now means
+        // either a malformed model id or an older deployed backend that still
+        // enforces byokModelCatalog.<provider>.<resolvedTier> as an allow-list
         // (the only other gate is "api_key empty", which the UI guards above).
         failures.push(
           `↳ Sent: provider=${provider} model="${completionModel}" key=${keyDiag}. ` +

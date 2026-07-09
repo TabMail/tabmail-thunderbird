@@ -64,7 +64,13 @@ describe("BYOK module import bindings (real modules, no mocks)", () => {
 
   it("byokSettings.js loads against all its real imports", async () => {
     const settings = await import("../config/modules/byokSettings.js");
-    for (const name of ["loadByokSettings", "handleByokChange", "handleByokClick", "handleByokInput"]) {
+    for (const name of [
+      "loadByokSettings",
+      "handleByokChange",
+      "handleByokClick",
+      "handleByokInput",
+      "cleanupByokTimers", // wired into init.js cleanupAllConfigListeners
+    ]) {
       expect(typeof settings[name], `byokSettings must export ${name}`).toBe("function");
     }
   });

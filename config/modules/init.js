@@ -64,7 +64,13 @@ import {
 } from "./billingBannerDebug.js";
 import { handleNotificationChange, loadNotificationSettings } from "./notifications.js";
 import { handleWebSearchChange, loadWebSearchSettings } from "./webSearch.js";
-import { handleByokChange, handleByokClick, handleByokInput, loadByokSettings } from "./byokSettings.js";
+import {
+    cleanupByokTimers,
+    handleByokChange,
+    handleByokClick,
+    handleByokInput,
+    loadByokSettings,
+} from "./byokSettings.js";
 import {
     clearWelcomeStatus,
     openWelcomeWizard,
@@ -158,6 +164,9 @@ export async function initConfigPage({
     cleanupConfigRuntimeListener();
     cleanupConfigStorageListener();
     cleanupConfigDOMListeners();
+    // Pending debounced BYOK live-model refresh timers (TB rule 5: clean up
+    // timers on unload/re-init for hot-reload support).
+    cleanupByokTimers();
   }
 
   // Clean up any existing listeners and set up page cleanup
