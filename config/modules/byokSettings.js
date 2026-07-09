@@ -14,6 +14,7 @@ import {
   getProviderKey,
   setProviderKey,
   clearProviderKey,
+  isModelAvailable,
 } from "../../agent/modules/byokStorage.js";
 import { runProviderSmoke } from "./byokSmoke.js";
 
@@ -122,6 +123,116 @@ function catalogModelsFor(catalog, provider, wireTier) {
 }
 
 // ---------------------------------------------------------------------------
+// Live model list (per provider) — the backend now accepts ANY well-formed
+// BYOK model id; the catalog above is just the "recommended" subset. This
+// fetches the provider's actual /v1/models list (via the user's own key, the
+// same `listByokModels()` the connectivity smoke uses) so newly-released
+// models are selectable the day they ship, without waiting on a catalog
+// update. Progressive enhancement, not a fallback: no key, or a failed fetch,
+// just leaves the picker Recommended-only — the failure is always logged,
+// never silently swallowed (ADR-003, no fallback routines).
+// ---------------------------------------------------------------------------
+
+// Debounces the live-list refetch triggered by the key <input> field, which
+// fires on every keystroke (the field persists "as typed" — see
+// handleByokInput). Without this, typing a 40+ char key manually would send a
+// live provider request per character. Module-local "config" constant,
+// mirrors the existing *_MS constant pattern used across the addon (e.g.
+// fts/nativeEngine.js RECONNECT_COOLDOWN_MS).
+const BYOK_LIVE_REFRESH_DEBOUNCE_MS = 600;
+
+let _liveModelsCache = {};
+const _liveRefreshTimers = {};
+
+/**
+ * Fetch (and cache) the model ids the saved key for `provider` can access.
+ * Returns null when there's no key, or the fetch failed/was rejected — never
+ * throws. A null result and an empty array are distinct: null means "couldn't
+ * determine the live list" (picker stays Recommended-only); [] means "fetched
+ * successfully, zero models" (also renders no live group, but isn't a failure).
+ */
+async function getLiveModels(provider, log) {
+  if (Object.prototype.hasOwnProperty.call(_liveModelsCache, provider)) {
+    return _liveModelsCache[provider];
+  }
+  const apiKey = await getProviderKey(provider);
+  if (!apiKey) {
+    _liveModelsCache[provider] = null;
+    return null;
+  }
+  try {
+    const result = await listByokModels(provider, apiKey);
+    if (!result || result.ok !== true || !Array.isArray(result.models)) {
+      log?.(
+        `[Config] BYOK live model list unavailable for ${provider}: ${result?.error_code || "unknown_error"}`,
+        "warn"
+      );
+      _liveModelsCache[provider] = null;
+      return null;
+    }
+    _liveModelsCache[provider] = result.models;
+    return result.models;
+  } catch (e) {
+    log?.(`[Config] BYOK live model list fetch failed for ${provider}: ${e}`, "warn");
+    _liveModelsCache[provider] = null;
+    return null;
+  }
+}
+
+function invalidateLiveModels(provider) {
+  delete _liveModelsCache[provider];
+}
+
+/**
+ * Pure: the live ids not already represented by a Recommended (catalog) entry,
+ * using byokStorage's isModelAvailable() dedupe semantics — a dated provider
+ * id (`claude-haiku-4-5-20251001`) is excluded when its dateless catalog id
+ * (`claude-haiku-4-5`) is already in `recommended`. Order is preserved from
+ * `liveModels` (the backend already returns them sorted).
+ */
+function dedupeLiveModels(recommended, liveModels) {
+  if (!Array.isArray(liveModels)) return [];
+  const rec = Array.isArray(recommended) ? recommended : [];
+  return liveModels.filter((id) => !rec.some((c) => isModelAvailable(c, [id])));
+}
+
+/**
+ * Pure: compute the two rendered groups + which value should end up selected,
+ * given the Recommended (catalog) list, the raw live list (or null/undefined
+ * when there's no key / the fetch hasn't resolved / it failed), and the
+ * currently saved model id.
+ *
+ * Selection rule: keep `current` if it's present in EITHER rendered group;
+ * otherwise fall back to the first Recommended entry (today's
+ * ensureDefaultModel behavior). `changed` tells the caller whether the fallback
+ * needs to be persisted (it should NOT persist when `current` was simply not
+ * checked yet, e.g. before the live group has resolved).
+ */
+function computeModelGroups(recommended, liveModels, current) {
+  const rec = Array.isArray(recommended) ? recommended : [];
+  const live = dedupeLiveModels(rec, liveModels);
+  if (rec.includes(current) || live.includes(current)) {
+    return { recommended: rec, live, selected: current, changed: false };
+  }
+  const fallback = rec[0] ?? "";
+  return { recommended: rec, live, selected: fallback, changed: fallback !== current };
+}
+
+function buildOptionEl(id) {
+  const opt = document.createElement("option");
+  opt.value = id;
+  opt.textContent = id;
+  return opt;
+}
+
+function buildOptGroup(label, ids) {
+  const group = document.createElement("optgroup");
+  group.label = label;
+  for (const id of ids) group.appendChild(buildOptionEl(id));
+  return group;
+}
+
+// ---------------------------------------------------------------------------
 // UI rendering / persistence
 //
 // Layout mirrors iOS: the two tier blocks (Light/Heavy) carry only the provider
@@ -129,34 +240,85 @@ function catalogModelsFor(catalog, provider, wireTier) {
 // per provider that's in use (the key is shared per provider across tiers).
 // ---------------------------------------------------------------------------
 
-/** Populate a tier's model <select> from the catalog, auto-selecting a default. */
+// Per-tier monotonic counter guarding the async live-model append below
+// against the user switching provider/tier while a request is in flight.
+const _populateGeneration = {};
+
+/**
+ * Populate a tier's model <select> with two groups:
+ *  - "Recommended" — the catalog models for this provider+tier (order
+ *    preserved: first = default, cheapest-first for Light). Rendered
+ *    immediately so the UI stays responsive.
+ *  - "All models (from your API key)" — the provider's live model list,
+ *    appended once the fetch resolves (only when a key is saved). Dated
+ *    variants of a Recommended id are excluded so nothing shows twice.
+ *
+ * Selection: keeps the saved choice if present in either group; otherwise
+ * falls back to the first Recommended entry. The fallback is NOT persisted
+ * until the live group (if any) has also been checked — a saved live-only
+ * pick must survive a reload without being clobbered before the live fetch
+ * resolves.
+ */
 async function populateModelSelect(tier, provider, log) {
   const sel = $(`byok-${tier.ui}-model`);
   if (!sel) return;
+  const generation = (_populateGeneration[tier.ui] = (_populateGeneration[tier.ui] || 0) + 1);
+
   const catalog = await getCatalog(log);
   const models = catalogModelsFor(catalog, provider, tier.wire);
   const current = await getTierModel(tier.ui, provider);
 
   sel.textContent = "";
-  for (const m of models) {
-    const opt = document.createElement("option");
-    opt.value = m;
-    opt.textContent = m;
-    sel.appendChild(opt);
-  }
 
   if (models.length === 0) {
     sel.disabled = true;
     return;
   }
   sel.disabled = false;
+  sel.appendChild(buildOptGroup("Recommended", models));
 
-  // ensureDefaultModel: keep the saved choice if still valid, else first model.
-  const chosen = models.includes(current) ? current : models[0];
-  sel.value = chosen;
-  if (chosen !== current) {
-    await setTierModel(tier.ui, provider, chosen);
+  // Immediate (pre-live-fetch) selection — tentative only, never persisted.
+  const phase1 = computeModelGroups(models, null, current);
+  sel.value = phase1.selected;
+
+  const liveModels = await getLiveModels(provider, log);
+
+  // The user may have switched provider/tier (or the select may have been
+  // torn down/repopulated) while the live fetch was in flight — don't let a
+  // stale request clobber a newer render.
+  if (_populateGeneration[tier.ui] !== generation) return;
+  const selNow = $(`byok-${tier.ui}-model`);
+  if (!selNow) return;
+
+  const result = computeModelGroups(models, liveModels, current);
+  if (result.live.length > 0) {
+    selNow.appendChild(buildOptGroup("All models (from your API key)", result.live));
   }
+  selNow.value = result.selected;
+  if (result.changed) {
+    await setTierModel(tier.ui, provider, result.selected);
+  }
+}
+
+/** Invalidate + re-fetch the live group for every tier currently using `provider`. */
+async function refreshProviderModels(provider, log) {
+  invalidateLiveModels(provider);
+  for (const tier of TIERS) {
+    if ((await getTierProvider(tier.ui)) === provider) {
+      await populateModelSelect(tier, provider, log);
+    }
+  }
+}
+
+/** Debounced trigger for refreshProviderModels (see BYOK_LIVE_REFRESH_DEBOUNCE_MS). */
+function scheduleProviderModelsRefresh(provider, log) {
+  if (_liveRefreshTimers[provider]) clearTimeout(_liveRefreshTimers[provider]);
+  _liveRefreshTimers[provider] = setTimeout(() => {
+    delete _liveRefreshTimers[provider];
+    refreshProviderModels(provider, log).catch((e) => {
+      log?.(`[Config] BYOK live model refresh failed: ${e}`, "warn");
+    });
+  }, BYOK_LIVE_REFRESH_DEBOUNCE_MS);
 }
 
 /** Show/hide a tier's model row + "add a key" hint based on its provider. */
@@ -321,6 +483,8 @@ export async function handleByokInput(e, log) {
   if (key) await setProviderKey(provider, key);
   else await clearProviderKey(provider);
   await refreshProviderState(provider, log);
+  // Debounced: this handler fires on every keystroke while the key is typed.
+  scheduleProviderModelsRefresh(provider, log);
 }
 
 /** Delegated `click` handler (paste, show/hide, get-a-key, test, remove). */
@@ -370,6 +534,13 @@ export async function handleByokClick(e, log) {
     const resultEl = $(`byok-key-${provider}-test-result`);
     if (resultEl) { resultEl.textContent = ""; resultEl.dataset.state = ""; }
     await refreshProviderState(provider, log);
+    // A deliberate click, not per-keystroke noise — refresh immediately
+    // (drops the live group right away instead of waiting on the debounce).
+    if (_liveRefreshTimers[provider]) {
+      clearTimeout(_liveRefreshTimers[provider]);
+      delete _liveRefreshTimers[provider];
+    }
+    await refreshProviderModels(provider, log);
     return true;
   }
 
@@ -428,10 +599,28 @@ async function runConnectivityTest(provider, log) {
   }
 }
 
-// Test-only hook to reset the in-memory catalog cache between tests.
+// Test-only hooks to reset/prime the in-memory caches between tests, and to
+// exercise otherwise-private logic (dedupe/selection are pure; populate is the
+// DOM-integration entry point).
 export const _testExports = {
   resetCatalogCache: () => {
     _catalogCache = null;
   },
+  _setCatalogCache: (catalog) => {
+    _catalogCache = catalog;
+  },
+  resetLiveModelsCache: () => {
+    _liveModelsCache = {};
+  },
+  _setLiveModelsCache: (provider, models) => {
+    _liveModelsCache[provider] = models;
+  },
   catalogModelsFor,
+  dedupeLiveModels,
+  computeModelGroups,
+  getLiveModels,
+  populateModelSelect,
+  refreshProviderModels,
+  BYOK_LIVE_REFRESH_DEBOUNCE_MS,
+  _hasScheduledLiveModelsRefresh: (provider) => Boolean(_liveRefreshTimers[provider]),
 };

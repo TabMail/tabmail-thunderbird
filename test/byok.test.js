@@ -6,12 +6,22 @@
 // Covers PLAN_BYOK_SUPPORT.md §6.1 (Thunderbird): wire-shape parity with iOS,
 // autocomplete never carried, snake_case keys, and the connectivity smoke.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 
 // byokSmoke imports llm.js (heavy / browser-only) — stub it.
 vi.mock("../agent/modules/llm.js", () => ({
   sendChatCompletions: vi.fn(),
+}));
+
+// byokSettings imports these for the catalog/list-models fetches — stub them
+// the same way (heavy / browser-only); network itself is stubbed per-test via
+// globalThis.fetch.
+vi.mock("../agent/modules/config.js", () => ({
+  getBackendUrl: vi.fn(async () => "https://api.tabmail.ai"),
+}));
+vi.mock("../agent/modules/supabaseAuth.js", () => ({
+  getAccessToken: vi.fn(async () => "test-token"),
 }));
 
 function makeStorageMock() {
@@ -49,6 +59,7 @@ const {
   isModelAvailable,
   setTierProvider,
   setTierModel,
+  getTierModel,
   setProviderKey,
   getTierProvider,
 } = await import("../agent/modules/byokStorage.js");
@@ -59,6 +70,12 @@ const {
   evaluateCompletion,
   runProviderSmoke,
 } = await import("../config/modules/byokSmoke.js");
+
+const {
+  _testExports: byokSettingsTestExports,
+  handleByokInput,
+  handleByokClick,
+} = await import("../config/modules/byokSettings.js");
 
 beforeEach(() => {
   globalThis.browser.storage.local = makeStorageMock();
@@ -357,5 +374,398 @@ describe("runProviderSmoke", () => {
       listByokModels, getCatalog, catalogModelsFor, sendFn,
     });
     expect(failures.some((f) => f.includes("byok_rate_limited"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model picker: Recommended (catalog) + "All models (from your API key)"
+// (live /v1/models via the user's own key). Backend now accepts ANY
+// well-formed BYOK model id — the catalog is just the recommended subset.
+// ---------------------------------------------------------------------------
+
+describe("dedupeLiveModels", () => {
+  const { dedupeLiveModels } = byokSettingsTestExports;
+
+  it("removes an exact match to a Recommended id", () => {
+    expect(dedupeLiveModels(["gpt-x-test"], ["gpt-x-test", "gpt-y-test"])).toEqual(["gpt-y-test"]);
+  });
+
+  it("removes a dated variant of a dateless Recommended id", () => {
+    expect(dedupeLiveModels(["claude-x-test"], ["claude-x-test-20260101", "claude-y-test"])).toEqual([
+      "claude-y-test",
+    ]);
+  });
+
+  it("keeps a live id whose suffix isn't a pure date (not a dated variant)", () => {
+    expect(dedupeLiveModels(["claude-x-test"], ["claude-x-test-preview"])).toEqual(["claude-x-test-preview"]);
+  });
+
+  it("preserves live list order (backend already sorts it)", () => {
+    expect(dedupeLiveModels([], ["z-test", "a-test", "m-test"])).toEqual(["z-test", "a-test", "m-test"]);
+  });
+
+  it("returns [] for a non-array live list", () => {
+    expect(dedupeLiveModels(["gpt-x-test"], null)).toEqual([]);
+    expect(dedupeLiveModels(["gpt-x-test"], undefined)).toEqual([]);
+  });
+
+  it("tolerates a non-array recommended list", () => {
+    expect(dedupeLiveModels(null, ["gpt-x-test"])).toEqual(["gpt-x-test"]);
+  });
+});
+
+describe("computeModelGroups", () => {
+  const { computeModelGroups } = byokSettingsTestExports;
+  const recommended = ["gpt-x-light", "gpt-x-heavy"];
+
+  it("recommended-only (live null) — selects the saved current when valid", () => {
+    const r = computeModelGroups(recommended, null, "gpt-x-heavy");
+    expect(r).toEqual({ recommended, live: [], selected: "gpt-x-heavy", changed: false });
+  });
+
+  it("recommended-only (live null) — falls back to the first entry when current is unset/invalid", () => {
+    const r = computeModelGroups(recommended, null, "");
+    expect(r.selected).toBe("gpt-x-light");
+    expect(r.changed).toBe(true);
+    const r2 = computeModelGroups(recommended, null, "some-stale-model");
+    expect(r2.selected).toBe("gpt-x-light");
+    expect(r2.changed).toBe(true);
+  });
+
+  it("merged — keeps current when it's a live-only (non-Recommended) id", () => {
+    const r = computeModelGroups(recommended, ["gpt-x-live-only"], "gpt-x-live-only");
+    expect(r.live).toEqual(["gpt-x-live-only"]);
+    expect(r.selected).toBe("gpt-x-live-only");
+    expect(r.changed).toBe(false);
+  });
+
+  it("merged — dedupes a dated variant of a Recommended id out of the live group", () => {
+    const r = computeModelGroups(["claude-x-test"], ["claude-x-test-20260101", "claude-x-extra"], "claude-x-test");
+    expect(r.live).toEqual(["claude-x-extra"]);
+    expect(r.selected).toBe("claude-x-test"); // present in Recommended
+    expect(r.changed).toBe(false);
+  });
+
+  it("merged — falls back to first Recommended entry when current is in neither group", () => {
+    const r = computeModelGroups(recommended, ["gpt-x-live-only"], "gpt-x-removed");
+    expect(r.selected).toBe("gpt-x-light");
+    expect(r.changed).toBe(true);
+  });
+});
+
+// --- Minimal hand-rolled DOM (no jsdom dependency in this repo; matches the
+// pattern used by test/helpersDom.test.js) covering <select>/<optgroup>/<option>.
+function makeMockEl(tag) {
+  const el = {
+    tagName: String(tag).toUpperCase(),
+    _children: [],
+    value: "",
+    label: "",
+    disabled: false,
+    get textContent() {
+      return this._text ?? "";
+    },
+    set textContent(v) {
+      this._text = v;
+      if (v === "") this._children = []; // sel.textContent = "" clears options
+    },
+    appendChild(child) {
+      this._children.push(child);
+      return child;
+    },
+  };
+  return el;
+}
+
+function optgroupLabels(sel) {
+  return sel._children.map((g) => g.label);
+}
+
+function optgroupValues(sel, label) {
+  const g = sel._children.find((c) => c.label === label);
+  return g ? g._children.map((o) => o.value) : null;
+}
+
+function makeDomRegistry() {
+  const registry = {};
+  globalThis.document = {
+    createElement: (tag) => makeMockEl(tag),
+    getElementById: (id) => registry[id] || null,
+  };
+  return registry;
+}
+
+describe("populateModelSelect (DOM integration)", () => {
+  const tier = { ui: "light", wire: "background" };
+  let registry;
+
+  beforeEach(() => {
+    registry = makeDomRegistry();
+    byokSettingsTestExports.resetCatalogCache();
+    byokSettingsTestExports.resetLiveModelsCache();
+    byokSettingsTestExports._setCatalogCache({
+      openai: { background: ["gpt-x-light-a", "gpt-x-light-b"] },
+    });
+  });
+
+  it("renders Recommended-only when the provider has no saved key", async () => {
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn());
+
+    expect(optgroupLabels(sel)).toEqual(["Recommended"]);
+    expect(optgroupValues(sel, "Recommended")).toEqual(["gpt-x-light-a", "gpt-x-light-b"]);
+    expect(sel.value).toBe("gpt-x-light-a"); // default = first (cheapest) recommended entry
+    expect(sel.disabled).toBe(false);
+  });
+
+  it("renders both groups when a key is present, deduping dated variants", async () => {
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    // Pre-seed the live cache directly (isolates DOM/selection logic from the
+    // network path, which getLiveModels() tests cover separately).
+    byokSettingsTestExports._setLiveModelsCache("openai", ["gpt-x-light-a-20260101", "gpt-x-new"]);
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn());
+
+    expect(optgroupLabels(sel)).toEqual(["Recommended", "All models (from your API key)"]);
+    expect(optgroupValues(sel, "Recommended")).toEqual(["gpt-x-light-a", "gpt-x-light-b"]);
+    // The dated variant of gpt-x-light-a is deduped away; the genuinely new id stays.
+    expect(optgroupValues(sel, "All models (from your API key)")).toEqual(["gpt-x-new"]);
+  });
+
+  it("keeps the saved selection when it's a live-only model", async () => {
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    byokSettingsTestExports._setLiveModelsCache("openai", ["gpt-x-new"]);
+    await setTierModel("light", "openai", "gpt-x-new");
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn());
+
+    expect(sel.value).toBe("gpt-x-new");
+    // Selection was valid already — must not have been rewritten in storage.
+    expect(await getTierModel("light", "openai")).toBe("gpt-x-new");
+  });
+
+  it("falls back to the first Recommended entry and persists it when the saved model is in neither group", async () => {
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    byokSettingsTestExports._setLiveModelsCache("openai", ["gpt-x-new"]);
+    await setTierModel("light", "openai", "gpt-x-long-removed");
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn());
+
+    expect(sel.value).toBe("gpt-x-light-a");
+    expect(await getTierModel("light", "openai")).toBe("gpt-x-light-a");
+  });
+
+  it("live-fetch failure (ok:false) falls back to Recommended-only and logs the failure visibly", async () => {
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    await setProviderKey("openai", "sk-live-key");
+    globalThis.fetch = vi.fn(async () => ({ json: async () => ({ ok: false, error_code: "byok_key_rejected" }) }));
+    const log = vi.fn();
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", log);
+
+    expect(optgroupLabels(sel)).toEqual(["Recommended"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("byok_key_rejected"), "warn");
+  });
+
+  it("live-fetch failure (network throw) falls back to Recommended-only and logs the failure visibly", async () => {
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    await setProviderKey("openai", "sk-live-key");
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    const log = vi.fn();
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", log);
+
+    expect(optgroupLabels(sel)).toEqual(["Recommended"]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("network down"), "warn");
+  });
+
+  it("guards against a provider switch mid-flight — only the latest call's live group is appended", async () => {
+    byokSettingsTestExports._setCatalogCache({
+      openai: { background: ["gpt-x-light-a"] },
+      anthropic: { background: ["claude-x-light-a"] },
+    });
+    byokSettingsTestExports._setLiveModelsCache("openai", ["gpt-x-b"]);
+    byokSettingsTestExports._setLiveModelsCache("anthropic", ["claude-x-b"]);
+
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+
+    // Both start before either resolves; anthropic is issued second so it has
+    // the higher generation and should "win" the live-group append.
+    await Promise.all([
+      byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn()),
+      byokSettingsTestExports.populateModelSelect(tier, "anthropic", vi.fn()),
+    ]);
+
+    const liveGroups = sel._children.filter((c) => c.label === "All models (from your API key)");
+    expect(liveGroups).toHaveLength(1);
+    expect(liveGroups[0]._children.map((o) => o.value)).toEqual(["claude-x-b"]);
+  });
+
+  it("disables the select and renders no groups when the catalog has no entries for this provider+tier", async () => {
+    byokSettingsTestExports._setCatalogCache({ openai: { background: [] } });
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+
+    await byokSettingsTestExports.populateModelSelect(tier, "openai", vi.fn());
+
+    expect(sel.disabled).toBe(true);
+    expect(sel._children).toEqual([]);
+  });
+});
+
+describe("getLiveModels (network path)", () => {
+  beforeEach(() => {
+    byokSettingsTestExports.resetLiveModelsCache();
+  });
+
+  it("returns null without fetching when there's no saved key", async () => {
+    globalThis.fetch = vi.fn();
+    const result = await byokSettingsTestExports.getLiveModels("openai", vi.fn());
+    expect(result).toBeNull();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("fetches and caches the live list on success; a second call reuses the cache", async () => {
+    await setProviderKey("openai", "sk-live-key");
+    globalThis.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, models: ["gpt-x-a", "gpt-x-b"] }) }));
+
+    const first = await byokSettingsTestExports.getLiveModels("openai", vi.fn());
+    expect(first).toEqual(["gpt-x-a", "gpt-x-b"]);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+    const second = await byokSettingsTestExports.getLiveModels("openai", vi.fn());
+    expect(second).toEqual(["gpt-x-a", "gpt-x-b"]);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1); // cached, no re-fetch
+  });
+
+  it("logs a visible warning and returns null on a malformed response", async () => {
+    await setProviderKey("openai", "sk-live-key");
+    globalThis.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, models: "not-an-array" }) }));
+    const log = vi.fn();
+
+    const result = await byokSettingsTestExports.getLiveModels("openai", log);
+    expect(result).toBeNull();
+    expect(log).toHaveBeenCalledWith(expect.any(String), "warn");
+  });
+});
+
+describe("refreshProviderModels — cache invalidation on key save/clear", () => {
+  const tier = { ui: "heavy", wire: "interactive" };
+
+  beforeEach(() => {
+    byokSettingsTestExports.resetCatalogCache();
+    byokSettingsTestExports.resetLiveModelsCache();
+    byokSettingsTestExports._setCatalogCache({ anthropic: { interactive: ["claude-x-heavy"] } });
+  });
+
+  it("invalidates the cached live list so a subsequent populate re-fetches", async () => {
+    const registry = makeDomRegistry();
+    const sel = makeMockEl("select");
+    registry["byok-heavy-model"] = sel;
+    await setTierProvider("heavy", "anthropic");
+
+    byokSettingsTestExports._setLiveModelsCache("anthropic", ["claude-x-old"]);
+    globalThis.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, models: ["claude-x-fresh"] }) }));
+    await setProviderKey("anthropic", "sk-ant-new");
+
+    await byokSettingsTestExports.refreshProviderModels("anthropic", vi.fn());
+
+    // The stale seeded cache is gone; refreshProviderModels re-fetched via the
+    // (mocked) network and the fresh list is what's rendered.
+    expect(optgroupValues(sel, "All models (from your API key)")).toEqual(["claude-x-fresh"]);
+  });
+});
+
+describe("handleByokInput / handleByokClick — live-model refresh wiring", () => {
+  beforeEach(() => {
+    byokSettingsTestExports.resetCatalogCache();
+    byokSettingsTestExports.resetLiveModelsCache();
+    byokSettingsTestExports._setCatalogCache({ openai: { background: ["gpt-x-a"] } });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("handleByokInput (key saved as typed) debounces the live-model refresh", async () => {
+    vi.useFakeTimers();
+    const registry = makeDomRegistry();
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    await setTierProvider("light", "openai");
+    globalThis.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, models: ["gpt-x-new"] }) }));
+
+    const e = { target: { id: "byok-key-openai-input", value: "sk-live-key" } };
+    await handleByokInput(e, vi.fn());
+
+    // Not fired yet — still debouncing.
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(byokSettingsTestExports.BYOK_LIVE_REFRESH_DEBOUNCE_MS);
+
+    expect(globalThis.fetch).toHaveBeenCalled();
+    expect(optgroupValues(sel, "All models (from your API key)")).toEqual(["gpt-x-new"]);
+  });
+
+  it("handleByokInput coalesces rapid keystrokes into a single refresh", async () => {
+    vi.useFakeTimers();
+    const registry = makeDomRegistry();
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    await setTierProvider("light", "openai");
+    globalThis.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, models: ["gpt-x-new"] }) }));
+
+    for (const partial of ["s", "sk", "sk-l", "sk-live-key"]) {
+      await handleByokInput({ target: { id: "byok-key-openai-input", value: partial } }, vi.fn());
+    }
+
+    await vi.advanceTimersByTimeAsync(byokSettingsTestExports.BYOK_LIVE_REFRESH_DEBOUNCE_MS);
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("handleByokClick's remove handler drops the live group immediately (no debounce wait)", async () => {
+    const registry = makeDomRegistry();
+    const sel = makeMockEl("select");
+    registry["byok-light-model"] = sel;
+    await setTierProvider("light", "openai");
+    await setProviderKey("openai", "sk-live-key");
+    byokSettingsTestExports._setLiveModelsCache("openai", ["gpt-x-old"]);
+    await byokSettingsTestExports.populateModelSelect({ ui: "light", wire: "background" }, "openai", vi.fn());
+    expect(optgroupValues(sel, "All models (from your API key)")).toEqual(["gpt-x-old"]);
+
+    const clickEvent = {
+      target: { id: "byok-key-openai-remove", closest: () => ({ id: "byok-key-openai-remove" }) },
+    };
+    const handled = await handleByokClick(clickEvent, vi.fn());
+
+    expect(handled).toBe(true);
+    // Key removed -> no key -> live group dropped, no timer needed.
+    expect(optgroupLabels(sel)).toEqual(["Recommended"]);
+  });
+
+  it("handleByokClick's remove handler cancels a pending debounced refresh", async () => {
+    vi.useFakeTimers();
+    await setTierProvider("light", "openai");
+
+    await handleByokInput({ target: { id: "byok-key-openai-input", value: "sk-live-key" } }, vi.fn());
+    expect(byokSettingsTestExports._hasScheduledLiveModelsRefresh("openai")).toBe(true);
+
+    const clickEvent = {
+      target: { id: "byok-key-openai-remove", closest: () => ({ id: "byok-key-openai-remove" }) },
+    };
+    await handleByokClick(clickEvent, vi.fn());
+
+    expect(byokSettingsTestExports._hasScheduledLiveModelsRefresh("openai")).toBe(false);
   });
 });
