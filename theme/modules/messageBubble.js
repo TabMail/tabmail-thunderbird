@@ -256,7 +256,15 @@
       return;
     }
 
-    // Step 2: Walk up to the closest block-level ancestor
+    // Step 2: Walk up to the closest block-level ancestor.
+    // The climb carries the same prior-content guard as the step-3 walk-up:
+    // if the current (inline) element has a previous sibling with real text,
+    // climbing further would swallow the user's own reply. Flat webmail HTML
+    // (MailPlug/Zimbra) emits `<font>----- Original Message -----<br>From : …</font>`
+    // as a direct sibling of the reply <p>s — the nearest block ancestor is
+    // the whole-body container (div.moz-text-html), and using it collapses
+    // the ENTIRE message including the reply. The inline <font> itself is
+    // the correct anchor in that case.
     const BLOCK_TAGS = new Set(['DIV', 'P', 'BLOCKQUOTE', 'TABLE', 'PRE', 'UL', 'OL', 'LI', 'HR', 'BR', 'TR', 'TD', 'TH', 'TBODY', 'THEAD', 'TFOOT']);
     let quoteStart = targetNode.nodeType === Node.ELEMENT_NODE ? targetNode : targetNode.parentElement;
     while (quoteStart && quoteStart !== wrapper) {
@@ -265,6 +273,14 @@
         const display = window.getComputedStyle(quoteStart).display;
         if (display === 'block' || display === 'flex' || display === 'table') break;
       } catch (_) {}
+      let hasPriorInlineContent = false;
+      for (let sib = quoteStart.previousSibling; sib; sib = sib.previousSibling) {
+        if ((sib.textContent || '').trim().length >= 2) { hasPriorInlineContent = true; break; }
+      }
+      if (hasPriorInlineContent) {
+        console.log(`[TabMail MsgBubble] Block walk stopped at inline ${quoteStart.tagName}.${quoteStart.className || ''}: prior content sibling, climbing would swallow reply`);
+        break;
+      }
       quoteStart = quoteStart.parentElement;
     }
     console.log(`[TabMail MsgBubble] quoteStart after block walk: ${quoteStart ? quoteStart.tagName + '.' + (quoteStart.className || '') : 'NULL/wrapper'}`);

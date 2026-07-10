@@ -236,8 +236,14 @@ function buildSandbox(bodyChildren) {
   };
 
   const win = {
+    // Match browser defaults: these tags are display:inline in a real DOM.
+    // FONT in particular must be inline so the block-walk climb path is
+    // actually exercised (a 'block' fallback would break at <font> and
+    // structurally hide the MailPlug/Zimbra regression below).
     getComputedStyle: (el) => ({
-      display: el.tagName === 'SPAN' || el.tagName === 'A' ? 'inline' : 'block',
+      display: ['SPAN', 'A', 'FONT', 'B', 'I', 'EM', 'STRONG', 'U'].includes(el.tagName)
+        ? 'inline'
+        : 'block',
     }),
     requestAnimationFrame: (cb) => cb(),
     __tmDisplayGateFlags: {},
@@ -598,6 +604,77 @@ describe('messageBubble <pre> split for plain-text quote collapse', () => {
     const toggle = quoteWrapper.querySelector('.tm-quote-toggle');
     expect(toggle).not.toBeNull();
     expect(toggle.innerHTML).toContain('forwarded message');
+  });
+
+  it('anchors collapse at inline <font> boundary when reply <p>s are its flat siblings (MailPlug/Zimbra webmail)', () => {
+    // Regression: MailPlug/Zimbra webmail emits the quote boundary as
+    //   <font>----- Original Message -----<br>From : …</font>
+    // — an INLINE element that is a direct sibling of the reply <p>s inside
+    // one flat container (div.moz-text-html). Pre-fix, the block-level
+    // ancestor walk climbed past the <font> (not in BLOCK_TAGS, display
+    // inline) straight to div.moz-text-html and collapsed the ENTIRE
+    // message, reply included — visible text was just the toggle.
+    const wrapper = new DOMElement('div');
+    wrapper.id = 'tm-message-bubble-wrapper';
+
+    const mozTextHtml = new DOMElement('div');
+    mozTextHtml.className = 'moz-text-html';
+
+    // Reply paragraphs — flat direct children of the body container
+    const p1 = new DOMElement('p');
+    p1.appendChild(new DOMTextNode('Thanks for the detailed feedback on the draft document.'));
+    mozTextHtml.appendChild(p1);
+    const p2 = new DOMElement('p');
+    p2.appendChild(new DOMTextNode('Best regards,'));
+    mozTextHtml.appendChild(p2);
+    const p3 = new DOMElement('p');
+    p3.appendChild(new DOMTextNode('Student Name'));
+    mozTextHtml.appendChild(p3);
+    mozTextHtml.appendChild(new DOMElement('br'));
+
+    // Inline <font> carrying the boundary + quote headers — flat sibling
+    const font = new DOMElement('font');
+    font.appendChild(new DOMTextNode('----- Original Message -----'));
+    font.appendChild(new DOMElement('br'));
+    font.appendChild(new DOMTextNode('From : <sender@example.com>'));
+    font.appendChild(new DOMElement('br'));
+    font.appendChild(new DOMTextNode('To : <recipient@example.com>'));
+    font.appendChild(new DOMElement('br'));
+    font.appendChild(new DOMTextNode('Sent : 2026-01-01 00:00:00'));
+    font.appendChild(new DOMElement('br'));
+    font.appendChild(new DOMTextNode('Subject : Re: Something'));
+    mozTextHtml.appendChild(font);
+
+    // Quoted original content — another flat sibling after the <font>
+    const quotedDiv = new DOMElement('div');
+    quotedDiv.appendChild(new DOMTextNode('Hi, this is the quoted original reply content.'));
+    mozTextHtml.appendChild(quotedDiv);
+
+    wrapper.appendChild(mozTextHtml);
+
+    const sandbox = buildSandbox([wrapper]);
+    const MB = loadModules(sandbox);
+
+    MB.setupCollapsibleQuotes();
+
+    const quoteWrapper = wrapper.querySelector('.tm-quote-wrapper');
+    expect(quoteWrapper).not.toBeNull();
+
+    const quoteContent = quoteWrapper.querySelector('.tm-quote-content');
+    const collapsedText = quoteContent.textContent;
+
+    // The boundary and everything after it is collapsed
+    expect(collapsedText).toContain('----- Original Message -----');
+    expect(collapsedText).toContain('quoted original reply content');
+
+    // The reply must NOT be collapsed (pre-fix it was)
+    expect(collapsedText).not.toContain('detailed feedback');
+    expect(collapsedText).not.toContain('Best regards');
+    expect(collapsedText).not.toContain('Student Name');
+
+    // The reply <p>s remain in place, visible outside the wrapper
+    expect(p1.parentNode).toBe(mozTextHtml);
+    expect(p3.parentNode).toBe(mozTextHtml);
   });
 
   it('sweeps trailing siblings of ancestor into collapse (attachment fieldsets)', () => {
