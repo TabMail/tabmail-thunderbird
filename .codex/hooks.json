@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env bash \"$(git rev-parse --show-toplevel)/.codex/hooks/block-secrets.sh\"",
+            "timeout": 10,
+            "statusMessage": "Checking for secret-file access"
+          }
+        ]
+      }
+    ]
+  }
+}
