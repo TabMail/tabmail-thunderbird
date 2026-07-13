@@ -1,6 +1,6 @@
 # TabMail Thunderbird Add-on - Claude Code Rules
 
-> **STOP. Before answering, I must read ALL companion files listed below — both global and project-specific. I must also update them when I discover something new. This is mandatory for every task, every time — no exceptions. You MUST always state in your response that you have read the companion files, so you are reminded of this obligation in every answer.**
+> **STOP. Before answering, I must read ALL companion files listed below — both global and project-specific. I must also update them when I discover something new. This is mandatory for every task, every time — no exceptions.**
 
 ## Companion Files (READ BEFORE EVERY TASK)
 
