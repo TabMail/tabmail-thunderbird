@@ -75,7 +75,7 @@ export async function resetPromptFile(filename) {
 // Action Config defaults
 const ACTION_CONFIG_DEFAULTS = {
     compact_threshold: 100,
-    compact_threshold_chars: 8000,
+    compact_threshold_chars: 16000,
 };
 
 /**

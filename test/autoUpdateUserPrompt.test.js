@@ -512,7 +512,7 @@ describe('compactActionRulesNow', () => {
     expect(sysMsg.content).toBe('system_prompt_action_refine');
     expect(sysMsg.action_compact_only).toBe(true);
     expect(sysMsg.action_compact_threshold).toBe(100);
-    expect(sysMsg.action_compact_threshold_chars).toBe(8000);
+    expect(sysMsg.action_compact_threshold_chars).toBe(16000);
     expect(sysMsg.current_user_action_md).toBe(COMPACT_DOC);
   });
 

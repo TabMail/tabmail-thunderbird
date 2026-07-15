@@ -49,8 +49,8 @@ beforeEach(() => {
   // Reset DOM element stubs for both sliders
   _domElements['action-compact-threshold'] = makeDomElement(100);
   _domElements['action-compact-threshold-val'] = makeDomElement(100);
-  _domElements['action-compact-threshold-chars'] = makeDomElement(8000);
-  _domElements['action-compact-threshold-chars-val'] = makeDomElement(8000);
+  _domElements['action-compact-threshold-chars'] = makeDomElement(16000);
+  _domElements['action-compact-threshold-chars-val'] = makeDomElement(16000);
 });
 
 describe('loadActionConfig — defaults', () => {
@@ -80,15 +80,15 @@ describe('loadActionConfig — defaults', () => {
   });
 
   // (e) compact_threshold_chars — load default
-  it('(e) sets compact_threshold_chars slider to default 8000 when storage is empty', async () => {
+  it('(e) sets compact_threshold_chars slider to default 16000 when storage is empty', async () => {
     globalThis.browser.storage.local.get.mockResolvedValueOnce({});
 
     await loadActionConfig();
 
     const slider = _domElements['action-compact-threshold-chars'];
     const display = _domElements['action-compact-threshold-chars-val'];
-    expect(Number(slider.value)).toBe(8000);
-    expect(display.textContent).toBe('8000');
+    expect(Number(slider.value)).toBe(16000);
+    expect(display.textContent).toBe('16000');
   });
 
   // (e) compact_threshold_chars — load custom stored value
@@ -107,36 +107,36 @@ describe('loadActionConfig — defaults', () => {
 });
 
 describe('saveActionConfig — defaults', () => {
-  it('writes default 100 and 8000 when sliders are at defaults', async () => {
+  it('writes default 100 and 16000 when sliders are at defaults', async () => {
     _domElements['action-compact-threshold'] = makeDomElement(100);
-    _domElements['action-compact-threshold-chars'] = makeDomElement(8000);
+    _domElements['action-compact-threshold-chars'] = makeDomElement(16000);
 
     await saveActionConfig();
 
     expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 8000 },
+      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 16000 },
     });
   });
 
   it('writes custom value from compact_threshold slider', async () => {
     _domElements['action-compact-threshold'] = makeDomElement(250);
-    _domElements['action-compact-threshold-chars'] = makeDomElement(8000);
+    _domElements['action-compact-threshold-chars'] = makeDomElement(16000);
 
     await saveActionConfig();
 
     expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:action_config': { compact_threshold: 250, compact_threshold_chars: 8000 },
+      'user_prompts:action_config': { compact_threshold: 250, compact_threshold_chars: 16000 },
     });
   });
 
   it('falls back to default compact_threshold when slider element is absent', async () => {
     _domElements['action-compact-threshold'] = null;
-    _domElements['action-compact-threshold-chars'] = makeDomElement(8000);
+    _domElements['action-compact-threshold-chars'] = makeDomElement(16000);
 
     await saveActionConfig();
 
     expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 8000 },
+      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 16000 },
     });
   });
 
@@ -160,7 +160,7 @@ describe('saveActionConfig — defaults', () => {
     await saveActionConfig();
 
     expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 8000 },
+      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 16000 },
     });
   });
 });

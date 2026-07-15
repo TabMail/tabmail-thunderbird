@@ -19,7 +19,7 @@ import {
 // ----------------------------------------------------------
 const ACTION_CONFIG = {
     defaultCompactThreshold: 100,
-    defaultCompactThresholdChars: 8000,
+    defaultCompactThresholdChars: 16000,
 };
 
 /**
