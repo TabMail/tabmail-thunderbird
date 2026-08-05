@@ -1,0 +1,10 @@
+# Quote collapse swallowed the ENTIRE message on inline <font> boundaries (MailPlug/Zimbra)
+
+> Routed out of `PROJECT_MEMORY.md` § Recent Discoveries → 2026-07-09 by the `companion-compact` skill on 2026-08-05. The block between the markers below is the inline text **byte-for-byte** — nothing was reworded, merged, reordered or truncated. Index line: `PROJECT_MEMORY.md`.
+
+<!-- BEGIN PRESERVED BLOCK -->
+- **Symptom**: an email whose quote correctly starts at `----- Original Message -----` rendered with the whole body (reply included) inside `.tm-quote-content` — only "Show quoted text" visible. Detection itself was CORRECT (`data-pattern="original-message"` marker present); the bug was in mapping the boundary text node to the collapse anchor.
+- **Root cause** (`theme/modules/messageBubble.js`, Step 2 block-ancestor walk): MailPlug/Zimbra webmail emits `<font>----- Original Message -----<br>From : …</font>` as an INLINE flat sibling of the reply `<p>`s directly under `div.moz-text-html`. `FONT` isn't in `BLOCK_TAGS` and computes `display:inline`, so the walk climbed past it to `div.moz-text-html` (the whole body). Step 2b narrowing can't rescue it (the boundary text node is the `<font>`'s FIRST child → no prior text at text-node level) and Step 3's prior-content walk-up never runs (`div.moz-text-html` is already a direct child of the wrapper). Same bug existed in the iOS port (`AutoSizingHTMLView.swift` block walk) — fixed in both the same day.
+- **Fix**: the Step 2 climb now stops at an inline element whose previous sibling carries real text (≥2 trimmed chars — same guard as Step 3) and uses that inline element as `quoteStart`; the existing wrapper/sweep logic handles the rest.
+- **Test-mock gotcha**: `test/messageBubbleQuoteSplit.test.js`'s `getComputedStyle` mock returned `display:block` for every tag except SPAN/A — a `<font>` in a test DOM would break the walk immediately, making this bug class structurally untestable. The mock now returns `inline` for SPAN/A/FONT/B/I/EM/STRONG/U (browser defaults). Regression test: 'anchors collapse at inline `<font>` boundary when reply `<p>`s are its flat siblings'.
+<!-- END PRESERVED BLOCK -->

@@ -1,0 +1,9 @@
+# Native-FTS helper auto-detect: NO Thunderbird restart needed
+
+> Routed out of `PROJECT_MEMORY.md` § Recent Discoveries → 2026-06-18 by the `companion-compact` skill on 2026-08-05. The block between the markers below is the inline text **byte-for-byte** — nothing was reworded, merged, reordered or truncated. Index line: `PROJECT_MEMORY.md`.
+
+<!-- BEGIN PRESERVED BLOCK -->
+- **Native-messaging hosts resolve at `connectNative()` time, not at TB startup** — so a helper installed mid-session (e.g. via the one-click installer) is picked up **without restarting Thunderbird**. Do NOT tell users to restart, and do NOT wire the FTS warning into the `restartForUpdate` popup (that mechanism is for add-on self-update only). The reconnect cooldown comment already intended this ("a helper installed before the next restart can still be picked up").
+- **Forced re-probe:** `nativeFtsSearch.recheckAvailability()` (`fts/nativeEngine.js`) resets `lastConnectAttemptMs` to bypass the 60 s cooldown and re-runs `initNativeFts()`; returns `ftsHostAvailable === true`. Wrapped by `engine.js getFtsHelperAvailable`'s sibling `recheckFtsHelperAvailable()`.
+- **Auto-clear the red dot (`chat/background.js`):** `probeFtsAvailability()` actively re-probes when the helper is **known-missing** (`false`, not `null`), and on a fresh appearance runs the idempotent `checkAndRunInitialFtsScan()` so indexing kicks in. The `getFtsAvailability` command now returns `probeFtsAvailability()` (kept non-async per TB rule 4), so opening the popup / settings clears the dot live. `syncFtsWarning()` arms a 1-min `tabmail-fts-helper-recheck` `browser.alarms` while missing and self-disarms once present → the dot also clears on its own without opening the popup. Replaced the two startup `setWarning("fts", …)` calls.
+<!-- END PRESERVED BLOCK -->

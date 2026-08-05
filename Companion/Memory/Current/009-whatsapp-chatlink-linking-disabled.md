@@ -1,0 +1,10 @@
+# WhatsApp (ChatLink) linking disabled in Settings UI (v1.6.10)
+
+> Routed out of `PROJECT_MEMORY.md` § Recent Discoveries → 2026-06-30 by the `companion-compact` skill on 2026-08-05. The block between the markers below is the inline text **byte-for-byte** — nothing was reworded, merged, reordered or truncated. Index line: `PROJECT_MEMORY.md`.
+
+<!-- BEGIN PRESERVED BLOCK -->
+- **Why:** the inbound WhatsApp → ChatLink path broke after Meta/WhatsApp Business config/number/webhook migration. Shipped a release that disables the *settings-page Connect button* only (per owner: "just disable the connection button"). The background bridge (`chatlink/background.js` WebSocket auto-connect) and all `chatlink/modules/*` relay code are **left intact** — not ripped out.
+- **Single toggle:** `const WHATSAPP_LINKING_DISABLED = true` in `config/modules/chatlink.js`. It (a) early-returns `loadChatLinkStatus()` so the backend status fetch + UI sync don't re-enable the button, and (b) guards `handleWhatsAppButtonClick()` (defense-in-depth). **To re-enable when Meta is fixed:** flip to `false` AND revert the `#whatsapp-link-row` markup in `config/config.html` back to the active state (remove `chatlink-coming-soon` / `coming-soon` classes + `disabled`, restore "Not connected" / "Connect" text).
+- **config.html:** WhatsApp row now mirrors the Telegram/Slack/Discord "coming soon" pattern — `chatlink-coming-soon` row class (opacity 0.6), status `coming-soon` (italic) reading "Temporarily unavailable", and a `disabled` Connect button. IDs (`#whatsapp-link-row`, `#whatsapp-status`, `#whatsapp-link-btn`) kept unchanged.
+- **Not a master kill-switch:** there is still NO single static flag gating the *whole* feature (runtime gate is `chatlink_enabled` + `chatlink_platform==="whatsapp"` in storage). This change only hides/disables the UI entry point. Existing-linked users can't disconnect from Settings while disabled (acceptable — WhatsApp is broken anyway; they can still send STOP from WhatsApp).
+<!-- END PRESERVED BLOCK -->

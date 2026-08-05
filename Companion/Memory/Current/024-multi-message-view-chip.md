@@ -1,0 +1,13 @@
+# Multi-message-view chip (collapsed-thread / multi-select summary)
+
+> Routed out of `PROJECT_MEMORY.md` § Multi-message-view chip (collapsed-thread / multi-select summary) by the `companion-compact` skill on 2026-08-05. The block between the markers below is the inline text **byte-for-byte** — nothing was reworded, merged, reordered or truncated. Index line: `PROJECT_MEMORY.md`.
+
+<!-- BEGIN PRESERVED BLOCK -->
+- **Experiment**: `theme/experiments/tmMultiMessageChip/` — passive painter for the iOS-style action chip on each `<li>` row of `multimessageview.xhtml`. Plan: `PLAN_MULTI_MESSAGE_CHIP.md`. Decision: ADR-015.
+- Reads `tm-action` mork prop per-row hdr. Per-row hdr is resolved from `gMessageSummary._msgNodes` (the upstream TB script's own dict; see `multimessageview.js:122-130, 704`) by reverse-mapping `<li>` → hdrs, then disambiguating multi-selection-summarizer rows by `<li>.dataset.messageId` (the thread-head's RFC Message-ID per `multimessageview.js:259`).
+- Chip carries `tm-action-chip tm-multi-action-chip tm-action-X` plus inline `--tag-color` and `data-tm-we-msg-id`. Distinct marker class from the header chip so click delegations don't cross-fire (defensive — different docs anyway).
+- Click → `tmMultiMessageChip.onActionChipClick` → MV3 `_onMultiMessageChipClick` → `performTaggedAction({id: weMsgId})`. Same direct-acting contract as the header chip.
+- **Structural difference from the header chip:** multimessageview is a TRANSIENT document (only loaded when user clicks a collapsed thread / multi-selects). `attachToWindow` finds zero docs at extension load. The single per-doc workhorse `_attachAndPaintDoc` (idempotent attach helpers + paint) is called from BOTH `attachToWindow` AND `_repaintAll`, so the transient doc gets attached lazily on first `onMessagesDisplayed`. List-rebuild MO is rooted at `#content` (parent of `#messageList`) per `multimessageview.js:137`'s `replaceChildren()` semantics. See `PLAN_MULTI_MESSAGE_CHIP.md` §4.1, §4.4.
+- `actionCache._refreshChips` (renamed from `_refreshHeaderChip` when this surface landed) fans out to BOTH `tmMessageHeaderChip.refreshAll` and `tmMultiMessageChip.refreshAll` in parallel via `Promise.all` after the IPC-race-avoidance `await _writeActionToHdr`.
+- **Open followup (out of scope of this surface):** `tmMessageHeaderChip` attaches delegation+MO only inside `attachToWindow`, not inside `_repaintAll`. If about:message is ever recreated on URL change (e.g., toggle to multimessageview and back), the new doc has no delegation. Today it works (TB likely caches about:message), but the multi-msg pattern (idempotent attach inside refresh) is the safer one. Worth a future commit to mirror.
+<!-- END PRESERVED BLOCK -->
