@@ -589,3 +589,60 @@ describe('_buildDueApproachingMessage', () => {
     expect(msg).toContain('Overdue (1 day)');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Unattended task execution must not request the interactive tool set
+// ---------------------------------------------------------------------------
+
+/**
+ * The backend keys its per-prompt allowed_tools off the prompt token the client sends, so the token
+ * used by scheduled-task execution IS the tool-access decision. That path runs with no user present
+ * and with email content in context, and executeToolsHeadless does not confirm every tool it can run,
+ * so it must not be offered the interactive-chat tool set.
+ *
+ * Pinned here because a revert to the interactive token is silent: nothing fails, no test breaks, and
+ * the task keeps working — it simply regains blanket tool access. This asserts the INVARIANT (the
+ * unattended path does not use the interactive token) rather than the literal string alone, and it
+ * checks the CALLSITE as well as the constant, because a correct constant that nothing uses is
+ * exactly as broken as a wrong one.
+ */
+describe('task evaluation system prompt token', () => {
+  const { TASK_EVAL_SYSTEM_PROMPT, INTERACTIVE_SYSTEM_PROMPT } = _testExports;
+
+  it('is a distinct token from the interactive chat prompt', () => {
+    // Non-vacuity: both constants must actually exist, or the inequality below passes
+    // trivially on two undefineds.
+    expect(typeof TASK_EVAL_SYSTEM_PROMPT).toBe('string');
+    expect(typeof INTERACTIVE_SYSTEM_PROMPT).toBe('string');
+    expect(TASK_EVAL_SYSTEM_PROMPT.length).toBeGreaterThan(0);
+    expect(INTERACTIVE_SYSTEM_PROMPT.length).toBeGreaterThan(0);
+
+    expect(TASK_EVAL_SYSTEM_PROMPT).not.toBe(INTERACTIVE_SYSTEM_PROMPT);
+  });
+
+  it('matches the token name the backend config defines', () => {
+    // Cross-repo contract: the backend's tier lookup THROWS on an unknown token rather than failing
+    // closed, so a typo here breaks task execution outright instead of degrading it.
+    expect(TASK_EVAL_SYSTEM_PROMPT).toBe('system_prompt_task_eval');
+    expect(INTERACTIVE_SYSTEM_PROMPT).toBe('system_prompt_agent');
+  });
+
+  it('is what the task systemMessage actually sends, and no bare interactive token remains', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(
+      fileURLToPath(new URL('../agent/modules/proactiveCheckin.js', import.meta.url)),
+      'utf8'
+    );
+
+    // The systemMessage must reference the constant, not a hardcoded string, so that the constant's
+    // security note is unavoidable for anyone changing it.
+    expect(src).toMatch(/content:\s*TASK_EVAL_SYSTEM_PROMPT/);
+
+    // And the interactive token must appear ONLY in its own constant declaration — never as a value
+    // handed to a request. One occurrence = the declaration.
+    const interactiveOccurrences = src.match(/["']system_prompt_agent["']/g) || [];
+    expect(interactiveOccurrences.length).toBe(1);
+    expect(src).toMatch(/const INTERACTIVE_SYSTEM_PROMPT = "system_prompt_agent";/);
+  });
+});

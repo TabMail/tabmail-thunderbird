@@ -34,6 +34,30 @@ const ALARM_NAME = "tabmail-proactive-reachout";
 const TASK_ALARM_NAME = "tabmail-task-eval";
 const TASK_EVAL_INTERVAL_MINUTES = 5; // Evaluate tasks every 5 minutes
 
+// Backend prompt token for UNATTENDED scheduled-task execution.
+//
+// ⚠️ SECURITY BOUNDARY — not an alias for convenience, and not interchangeable with the interactive
+// chat token. The backend keys its per-prompt allowed_tools off this string, so this constant is what
+// decides which tools a task run can reach. Task execution happens with no user present and with
+// email content in context, and executeToolsHeadless does not require confirmation for every tool it
+// can run, so this path must be offered a narrower tool set than interactive chat. Changing this
+// value back to the interactive token silently restores blanket tool access.
+//
+// Widening the tool set is a backend-side decision (src/config/systemPromptTiers.json) — do not try to
+// widen it from here by switching tokens. Rationale, the denied set, and why it is wider than it first
+// looks are recorded in the private backend repo, not here: this add-on is public, and enumerating the
+// reachable-but-ungated tools would hand an exploit recipe to anyone running a client that predates
+// this change (the token is client-chosen, so older clients keep the old behaviour until they update).
+//
+// ⚠️ DEPLOY ORDER: the backend must ship this token BEFORE this file does. The backend's tier lookup
+// THROWS on an unknown token rather than failing closed, so a client that ships first does not
+// degrade to "no tools" — task execution breaks outright.
+const TASK_EVAL_SYSTEM_PROMPT = "system_prompt_task_eval";
+
+// The interactive-chat token, referenced ONLY so the test suite can assert the two never converge.
+// chat/modules/init.js legitimately uses this: a user is present there.
+const INTERACTIVE_SYSTEM_PROMPT = "system_prompt_agent";
+
 // Legacy keys for one-time migration
 const LEGACY_KEYS = {
   ENABLED: "proactiveCheckinEnabled",
@@ -690,9 +714,16 @@ async function _executeTask(task, taskHash) {
     const { getUserKBPrompt } = await import("./promptGenerator.js");
     const { buildReminderList } = await import("./reminderBuilder.js");
 
-    // Build the agent system prompt (same as normal chat init).
-    // The backend expands "system_prompt_agent" into the full agent system prompt
-    // with tools, KB context, reminders, and timezone.
+    // Build the agent system prompt. TASK_EVAL_SYSTEM_PROMPT expands, on the backend, into the SAME
+    // full agent system prompt as normal chat init — it aliases the agent expander and shares its
+    // template, so the two cannot drift — but it resolves to a narrower allowed_tools list.
+    //
+    // ⚠️ The distinct token is a SECURITY boundary, not cosmetic: this path runs unattended, so it
+    // must not be given the tool set that interactive chat gets. Do NOT "simplify" it back to the
+    // interactive token, and see the constant's own note before widening it.
+    //
+    // ⚠️ DEPLOY ORDER: the backend must ship this token BEFORE this line does, or task execution
+    // fails outright rather than degrading. See the constant.
     let userName = "";
     try {
       const stored = await browser.storage.local.get("userName");
@@ -716,7 +747,7 @@ async function _executeTask(task, taskHash) {
 
     const systemMessage = {
       role: "system",
-      content: "system_prompt_agent",
+      content: TASK_EVAL_SYSTEM_PROMPT,
       user_name: userName,
       user_kb_content: userKBContent,
       user_reminders_json: remindersJson,
@@ -1260,6 +1291,8 @@ export async function sendTestProactiveNudge() {
 // ─────────────────────────────────────────────────────────────
 
 export const _testExports = {
+  TASK_EVAL_SYSTEM_PROMPT,
+  INTERACTIVE_SYSTEM_PROMPT,
   _hashReminderList,
   _formatDueLabel,
   _resolveDueDateTime,
