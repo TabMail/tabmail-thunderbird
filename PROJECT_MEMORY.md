@@ -73,8 +73,8 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ## Recent Discoveries
 
-### 2026-08-13 — Native FTS routine signing-key cutover has a timed bridge + reinstall fallback (ADR-023)
-- **[Detail](Companion/Decisions/Active/adr-023-native-fts-routine-signing-key-cutover.md)** — v0.11.1 is the dual-key bridge; the pending signer was promoted on 2026-08-13 after the bridge and Thunderbird fallback were verified. Old public keys remain trusted unless compromised. Thunderbird 1.7.2+ gives pre-0.11.1 helpers a distinct `unsupported` state and reinstall CTA that preserves the local index and needs no Thunderbird restart.
+### 2026-08-13 — Native FTS signing-key cutover uses one bridge release + reinstall fallback (ADR-023)
+- **[Detail](Companion/Decisions/Active/adr-023-native-fts-routine-signing-key-cutover.md)** — v0.11.1 is the dual-key bridge; the pending signer was promoted on 2026-08-13 after the bridge and Thunderbird fallback were verified. v0.11.2 removes the previous public key. Thunderbird 1.7.2+ gives pre-0.11.1 helpers a distinct `unsupported` state and reinstall CTA that preserves the local index and needs no Thunderbird restart.
 
 ### 2026-08-13 — Startup UID/FTS membership proof replaces count memo + automatic scans (ADR-022)
 - **[Detail](Companion/Decisions/Active/adr-022-startup-uid-fts-membership-fingerprints.md)** — `fts_folder_recon_memo` v2 checkpoints exact SHA-256 equality; IMAP steady boots compare sorted UID-set + native folder-range digests, changed folders hash local Message-ID headers and reconcile both directions through post-drain verification. Equal-count swaps are covered. Automatic date-window boot scans and periodic maintenance alarms retired; manual repair retained. Requires native helper 0.11.0; no schema bump.

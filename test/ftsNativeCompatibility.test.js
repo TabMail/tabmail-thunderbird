@@ -25,7 +25,7 @@ describe("native FTS signing-key overlap compatibility", () => {
     expect(result.minimumSupportedVersion).toBe(NATIVE_FTS_BRIDGE_VERSION);
   });
 
-  it("continues supporting the dual-key bridge after retirement", () => {
+  it("keeps the bridge supported so it can update under the current signer", () => {
     expect(getNativeFtsCompatibility("0.11.1", RETIREMENT_MS).supported).toBe(true);
     expect(getNativeFtsCompatibility("0.12.0", RETIREMENT_MS + 1).supported).toBe(true);
   });
