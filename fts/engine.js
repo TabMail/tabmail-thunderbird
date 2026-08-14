@@ -551,6 +551,12 @@ export function getFtsHelperAvailable() {
   return nativeFtsSearch.getHostAvailability();
 }
 
+// Structured helper state for UI surfaces: unknown, available, missing, or
+// unsupported (including the installed version and compatibility cutoff).
+export function getFtsHelperStatus() {
+  return nativeFtsSearch.getHostStatus();
+}
+
 // Force a fresh probe (bypasses the reconnect cooldown) so a just-installed
 // helper is detected without restarting Thunderbird. Returns true if connected.
 export async function recheckFtsHelperAvailable() {

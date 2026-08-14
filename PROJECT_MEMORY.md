@@ -73,6 +73,9 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ## Recent Discoveries
 
+### 2026-08-13 — Native FTS routine signing-key cutover has a timed bridge + reinstall fallback (ADR-023)
+- **[Detail](Companion/Decisions/Active/adr-023-native-fts-routine-signing-key-cutover.md)** — v0.11.1 is the dual-key bridge; the pending signer was promoted on 2026-08-13 after the bridge and Thunderbird fallback were verified. Old public keys remain trusted unless compromised. Thunderbird 1.7.2+ gives pre-0.11.1 helpers a distinct `unsupported` state and reinstall CTA that preserves the local index and needs no Thunderbird restart.
+
 ### 2026-08-13 — Startup UID/FTS membership proof replaces count memo + automatic scans (ADR-022)
 - **[Detail](Companion/Decisions/Active/adr-022-startup-uid-fts-membership-fingerprints.md)** — `fts_folder_recon_memo` v2 checkpoints exact SHA-256 equality; IMAP steady boots compare sorted UID-set + native folder-range digests, changed folders hash local Message-ID headers and reconcile both directions through post-drain verification. Equal-count swaps are covered. Automatic date-window boot scans and periodic maintenance alarms retired; manual repair retained. Requires native helper 0.11.0; no schema bump.
 
@@ -104,7 +107,7 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 - **[Detail](Companion/Memory/Current/012-popup-billing-usage-nudge.md)** — `decideBillingBanner(...)`, port of iOS `UsageThrottleStore.banner`. **NOT A BUG: a Pro account over quota shows NO banner** (intentional, iOS parity). Zero extra network; `isZeroQuotaPlan` renders "N/A of monthly quota"; debug override checked FIRST.
 
 ### 2026-06-17 — Native FTS install prompt + `connectNative` availability gotcha
-- **[Detail](Companion/Memory/Current/013-native-fts-install-prompt-connectnative-gotcha.md)** — `connectNative()` does NOT throw synchronously when the host manifest is missing (failure arrives via `port.onDisconnect`), so the old probe returned `true` with no helper; use `ftsHostAvailable` from the init handshake. `setBadgeText` does not render in TB's unified toolbar — the icon swap is the real signal.
+- **[Detail](Companion/Memory/Current/013-native-fts-install-prompt-connectnative-gotcha.md)** — `connectNative()` does NOT throw synchronously when the host manifest is missing (failure arrives via `port.onDisconnect`), so the old probe returned `true` with no helper; use the init-handshake status (`ftsHostStatus`, with legacy boolean availability derived from it). `setBadgeText` does not render in TB's unified toolbar — the icon swap is the real signal.
 
 ### 2026-06-17 — Proactive `setup` + `server` toolbar warnings (issue #12)
 - **[Detail](Companion/Memory/Current/014-proactive-setup-and-server-toolbar-warnings.md)** — sharing `setupChecks.js` between popup and background is mandatory (divergent computation flips the dot on every popup open); `llm.js` must NOT call `setWarning` directly (different module instance) — it relays via storage. Health does not flip on 401/403/429.

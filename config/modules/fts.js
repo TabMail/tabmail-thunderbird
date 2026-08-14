@@ -3,9 +3,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { $ } from "./dom.js";
-
-// Download page (FTS Helper tab) — shown when the native helper isn't installed.
-const FTS_HELPER_DOWNLOAD_URL = "https://tabmail.ai/download#fts-helper";
+import {
+  FTS_HELPER_DOWNLOAD_URL,
+  getFtsHelperPrompt,
+} from "../../fts/helperPrompt.js";
 
 export async function loadFtsSettings() {
   try {
@@ -143,17 +144,23 @@ export async function saveFtsSettings() {
 
 export async function updateFtsStatus() {
   try {
-    // If the native helper isn't installed, show an install CTA and skip the
+    // If the native helper needs user action, show an install/reinstall CTA and skip the
     // stats query (the FTS command interface isn't attached without the helper,
     // so the query would just error out).
     const installCta = $("fts-not-installed");
     try {
       const avail = await browser.runtime.sendMessage({ command: "getFtsAvailability" });
-      if (avail?.available === false) {
+      const prompt = getFtsHelperPrompt(avail);
+      if (prompt) {
         if (installCta) {
           installCta.style.display = "block";
+          const title = $("fts-helper-warning-title");
+          const message = $("fts-helper-warning-message");
+          if (title) title.textContent = prompt.title;
+          if (message) message.textContent = prompt.message;
           const btn = $("fts-install-helper-btn");
           if (btn) {
+            btn.textContent = prompt.buttonLabel;
             btn.onclick = async () => {
               try {
                 await browser.windows.openDefaultBrowser(FTS_HELPER_DOWNLOAD_URL);
@@ -163,9 +170,9 @@ export async function updateFtsStatus() {
             };
           }
         }
-        $("fts-stats").textContent = "Native search helper not installed.";
+        $("fts-stats").textContent = prompt.statsLabel;
         const ver = $("fts-host-version");
-        if (ver) ver.textContent = "Not installed";
+        if (ver) ver.textContent = prompt.versionLabel;
         return;
       }
       if (installCta) installCta.style.display = "none";

@@ -7,6 +7,10 @@
 
 import { log } from "../agent/modules/utils.js";
 import { SETTINGS } from "../agent/modules/config.js";
+import {
+  getNativeFtsCompatibility,
+  versionLessThan,
+} from "./nativeCompatibility.js";
 
 // Minimum required host version (update this when you need new host features)
 // 0.6.10: Added memory database for chat history search (memory_search tool)
@@ -46,7 +50,22 @@ let isUpdatingHost = false; // Flag to track if we are in the middle of an updat
 // false = connect/handshake failed (helper not installed). connectNative()
 // itself does NOT throw synchronously when the host manifest is missing, so we
 // can only know availability from the init handshake outcome, tracked here.
-let ftsHostAvailable = null;
+let ftsHostStatus = { status: "unknown" };
+
+function setFtsHostStatus(status, details = {}) {
+  const nextStatus = { status, ...details };
+  const changed = JSON.stringify(nextStatus) !== JSON.stringify(ftsHostStatus);
+  ftsHostStatus = nextStatus;
+  if (changed) {
+    log(`[TMDBG FTS] Helper status → ${status}${details.hostVersion ? ` (v${details.hostVersion})` : ""}`);
+  }
+}
+
+function getFtsHostAvailability() {
+  if (ftsHostStatus.status === "available") return true;
+  if (ftsHostStatus.status === "unknown") return null;
+  return false;
+}
 // Circuit breaker: when the helper is confirmed unavailable, don't re-attempt
 // connectNative on every RPC (it spams "disconnected"/"update check failed").
 // Re-attempt at most once per cooldown so a helper installed before the next
@@ -87,20 +106,6 @@ async function getNativeFtsPlatformKey() {
 /**
  * Compare semantic versions (e.g., "0.5.0" vs "0.4.1")
  */
-function versionLessThan(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  const len = Math.max(pa.length, pb.length);
-  
-  for (let i = 0; i < len; i++) {
-    const va = pa[i] || 0;
-    const vb = pb[i] || 0;
-    if (va < vb) return true;
-    if (va > vb) return false;
-  }
-  return false;
-}
-
 /**
  * Show the native update restart banner (shared by auto and manual update paths).
  * Tries the experiment update bar first, falls back to a popup window.
@@ -252,6 +257,29 @@ async function initCheckAndUpdateHost() {
     log(`[TMDBG FTS] Native host impl: ${hostInfo.hostImpl || "unknown"}`);
     log(`[TMDBG FTS] Can self-update: ${hostInfo.canSelfUpdate}, User install: ${hostInfo.isUserInstall}`);
 
+    const compatibility = getNativeFtsCompatibility(hostInfo.hostVersion);
+    if (!compatibility.supported) {
+      setFtsHostStatus("unsupported", {
+        hostVersion: hostInfo.hostVersion,
+        minimumSupportedVersion: compatibility.minimumSupportedVersion,
+        retirementAt: compatibility.retirementAt,
+      });
+      log(
+        `[TMDBG FTS] Host v${hostInfo.hostVersion} is outside the signing-key overlap window; ` +
+        `v${compatibility.minimumSupportedVersion}+ must be reinstalled`,
+        "warn"
+      );
+      const portToClose = nativePort;
+      nativePort = null;
+      try { portToClose?.disconnect(); } catch (_) {}
+      const error = new Error(
+        `Native FTS helper v${hostInfo.hostVersion} is no longer supported; ` +
+        `reinstall v${compatibility.minimumSupportedVersion} or newer`
+      );
+      error.code = "NATIVE_FTS_UNSUPPORTED";
+      throw error;
+    }
+
     // Inform user about auto-migration with popup window
     if (hostInfo.userLocalReady && hostInfo.isSystemInstall) {
       log(`[TMDBG FTS] ✅ Auto-migrated to user-local install! Restart Thunderbird to enable auto-updates.`, "info");
@@ -294,6 +322,7 @@ async function initCheckAndUpdateHost() {
     return false; // No update performed
   } catch (error) {
     isUpdatingHost = false; // Reset on error
+    if (error?.code === "NATIVE_FTS_UNSUPPORTED") throw error;
     // Expected when the helper isn't installed; rate-limited by the reconnect
     // cooldown so it won't spam. warn (not error) to avoid drowning real errors.
     log(`[TMDBG FTS] Update check failed: ${error.message}`, "warn");
@@ -333,7 +362,9 @@ export async function initNativeFts() {
       nativePort = null;
       // A disconnect during an intentional self-update is expected (we reconnect
       // below); otherwise the helper is gone/unavailable.
-      if (!isUpdatingHost) ftsHostAvailable = false;
+      if (!isUpdatingHost && ftsHostStatus.status !== "unsupported") {
+        setFtsHostStatus("missing");
+      }
       
       // Reject all pending RPCs
       for (const [id, pending] of pendingRPCs) {
@@ -363,7 +394,7 @@ export async function initNativeFts() {
     const updated = await initCheckAndUpdateHost();
     if (updated) {
       log("[TMDBG FTS] Host update initiated. Waiting for restart...");
-      ftsHostAvailable = true; // helper IS installed (just self-updating)
+      setFtsHostStatus("available", { hostVersion: hostInfo?.hostVersion });
       return true; // Treat as success, reconnection will happen automatically
     }
     
@@ -373,7 +404,7 @@ export async function initNativeFts() {
     const addonId = manifest.browser_specific_settings?.gecko?.id || "thunderbird@tabmail.ai";
     const initResult = await nativeRPC('init', { addonId });
     log(`[TMDBG FTS] DB initialized at: ${initResult.dbPath}`);
-    ftsHostAvailable = true;
+    setFtsHostStatus("available", { hostVersion: hostInfo?.hostVersion });
 
     log("[TMDBG FTS] Native FTS helper connected successfully");
 
@@ -383,7 +414,9 @@ export async function initNativeFts() {
 
     return true;
   } catch (error) {
-    ftsHostAvailable = false;
+    if (error?.code !== "NATIVE_FTS_UNSUPPORTED") {
+      setFtsHostStatus("missing");
+    }
     log(`[TMDBG FTS] Failed to connect to native helper: ${error.message}`);
     throw error;
   }
@@ -395,10 +428,10 @@ export async function initNativeFts() {
 async function ensureConnected() {
   if (nativePort) return true;
 
-  // Circuit breaker: if the helper is known-missing, only re-attempt once per
+  // Circuit breaker: if the helper is unavailable, only re-attempt once per
   // cooldown instead of on every RPC (otherwise initNativeFts spams
   // "Native helper disconnected" / "Update check failed" continuously).
-  if (ftsHostAvailable === false && (Date.now() - lastConnectAttemptMs) < RECONNECT_COOLDOWN_MS) {
+  if (getFtsHostAvailability() === false && (Date.now() - lastConnectAttemptMs) < RECONNECT_COOLDOWN_MS) {
     return false;
   }
 
@@ -656,7 +689,14 @@ export const nativeFtsSearch = {
   // Whether the native helper is installed + handshaked.
   // null = unknown/not yet attempted, true = available, false = missing.
   getHostAvailability() {
-    return ftsHostAvailable;
+    return getFtsHostAvailability();
+  },
+
+  // Structured state for UI surfaces. `available` remains a separate legacy
+  // boolean so existing callers continue to work; this distinguishes a missing
+  // helper from an installed helper that is outside the signing-key window.
+  getHostStatus() {
+    return { ...ftsHostStatus };
   },
 
   // Force a fresh availability probe, bypassing the reconnect cooldown. Lets a
@@ -672,9 +712,9 @@ export const nativeFtsSearch = {
     try {
       await initNativeFts();
     } catch (_) {
-      // initNativeFts() sets ftsHostAvailable = false on failure; nothing to do.
+      // initNativeFts() records missing vs unsupported on failure.
     }
-    return ftsHostAvailable === true;
+    return getFtsHostAvailability() === true;
   },
   
   // Mark current schema version as indexed (call after successful reindex)
@@ -765,9 +805,9 @@ export const nativeMemorySearch = {
  * NOTE: connectNative() does NOT throw synchronously when the host manifest is
  * missing (the failure arrives asynchronously via the port's onDisconnect), so
  * a connect/disconnect probe can't tell us availability. The authoritative
- * signal is the init handshake outcome tracked in `ftsHostAvailable`.
+ * signal is the structured init handshake outcome tracked in `ftsHostStatus`.
  * Returns true only when availability has been confirmed.
  */
 export async function isNativeFtsAvailable() {
-  return ftsHostAvailable === true;
+  return getFtsHostAvailability() === true;
 }

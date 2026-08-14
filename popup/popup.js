@@ -7,6 +7,10 @@ import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
 import { checkSetupConfiguration } from "../agent/modules/setupChecks.js";
 import { bannerFromWhoami, isZeroQuotaPlan } from "../agent/modules/billingBanner.js";
 import { buildByokPayload } from "../agent/modules/byokStorage.js";
+import {
+  FTS_HELPER_DOWNLOAD_URL,
+  getFtsHelperPrompt,
+} from "../fts/helperPrompt.js";
 
 // Popup typography: prefer native Thunderbird/system UI font stack + sizing.
 // We still inject TabMail palette colors, but avoid async font-size CSS vars here to prevent flicker.
@@ -891,14 +895,11 @@ updateAutoReauthCheckbox();
 // =============================================================================
 // NATIVE FTS HELPER INSTALL PROMPT
 // =============================================================================
-// Shown when the native search helper isn't installed. Links to the download
-// page's FTS Helper tab. Declared before updateFtsScanStatus so its poll can
-// read _ftsHelperMissing without a temporal-dead-zone error.
-const FTS_HELPER_DOWNLOAD_URL = "https://tabmail.ai/download#fts-helper";
+// Shown when the native search helper needs installation or replacement.
 
 // Cached so the 2s scan-status poll can suppress the (meaningless) indexing
-// banner while the helper is missing.
-let _ftsHelperMissing = false;
+// banner while the helper needs user action.
+let _ftsHelperNeedsAction = false;
 
 async function updateFtsHelperPrompt() {
   const warningDiv = document.getElementById("fts-missing-warning");
@@ -907,15 +908,19 @@ async function updateFtsHelperPrompt() {
 
   try {
     const res = await browser.runtime.sendMessage({ command: "getFtsAvailability" });
-    // Only prompt when we KNOW it's missing. null = unknown (FTS disabled or
-    // init not finished yet) → don't nag.
-    _ftsHelperMissing = res?.available === false;
-    reportWarning("fts", _ftsHelperMissing);
+    const prompt = getFtsHelperPrompt(res);
+    _ftsHelperNeedsAction = !!prompt;
+    reportWarning("fts", _ftsHelperNeedsAction);
 
-    warningDiv.style.display = _ftsHelperMissing ? "block" : "none";
+    warningDiv.style.display = _ftsHelperNeedsAction ? "block" : "none";
 
-    if (_ftsHelperMissing) {
+    if (_ftsHelperNeedsAction) {
+      const title = document.getElementById("fts-helper-warning-title");
+      const message = document.getElementById("fts-helper-warning-message");
+      if (title) title.textContent = prompt.title;
+      if (message) message.textContent = prompt.message;
       if (installBtn) {
+        installBtn.textContent = prompt.buttonLabel;
         installBtn.onclick = async (e) => {
           e.preventDefault();
           try {
@@ -931,7 +936,7 @@ async function updateFtsHelperPrompt() {
     }
   } catch (e) {
     console.error(`[Popup] Failed to check FTS availability: ${e}`);
-    _ftsHelperMissing = false;
+    _ftsHelperNeedsAction = false;
   }
 }
 
@@ -944,9 +949,9 @@ async function updateFtsScanStatus() {
   const statusText = document.getElementById("fts-status-text");
   const progressText = document.getElementById("fts-status-progress");
 
-  // If the native helper isn't installed, the install prompt covers it — don't
-  // also show a stuck "indexing pending" banner.
-  if (_ftsHelperMissing) {
+  // The helper action prompt covers missing and unsupported states — don't also
+  // show a stuck "indexing pending" banner.
+  if (_ftsHelperNeedsAction) {
     if (banner) banner.style.display = "none";
     return;
   }

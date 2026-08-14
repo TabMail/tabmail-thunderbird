@@ -137,6 +137,10 @@
 
 - **[Full ADR](Companion/Decisions/Active/adr-022-startup-uid-fts-membership-fingerprints.md)** — IMAP startup checkpoints compare `(UIDVALIDITY, SHA-256(sorted UID set))` with SHA-256 of the native folder-key range; unchanged pairs preserve the prior exact proof without header/body reads. Changed/unseeded folders hash the exact de-duplicated `account:path:Message-ID` msgDB set and run both stale + missing repair directions until post-drain digests match. Non-IMAP hashes headers each boot. Retires automatic date-window boot scans and periodic maintenance alarms; explicit manual repair remains. Native helper ≥0.11.0 (`fingerprintMsgIdRange`), schema unchanged.
 
+## ADR-023: Native FTS Routine Signing-Key Cutover Uses a Timed Bridge and Reinstall Fallback
+
+- **[Full ADR](Companion/Decisions/Active/adr-023-native-fts-routine-signing-key-cutover.md)** — v0.11.1 is the old-signed bridge that trusts both public keys; after the bridge and reinstall UI were verified, the pending signer was promoted on 2026-08-13. Routine rotation retains the previous public key indefinitely. Thunderbird 1.7.2+ marks pre-0.11.1 helpers `unsupported`, stops FTS, and offers a live-detected reinstall that preserves the existing index.
+
 ---
 
 ## Template for New Decisions

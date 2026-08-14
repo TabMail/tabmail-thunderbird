@@ -46,6 +46,8 @@ tabmail-thunderbird/
 │   ├── engine.js               # Search engine
 │   ├── indexer.js              # Main indexer
 │   ├── incrementalIndexer.js   # Live indexing + startup UID/FTS fingerprint reconcile
+│   ├── helperPrompt.js         # Shared install/reinstall CTA copy
+│   ├── nativeCompatibility.js  # Signing-key overlap/cutoff policy
 │   ├── nativeEngine.js         # Native messaging bridge (incl. folder-range fingerprints)
 │   ├── memoryIndexer.js        # In-memory indexing
 │   └── maintenanceScheduler.js # Manual repair scans (automatic schedules retired)
