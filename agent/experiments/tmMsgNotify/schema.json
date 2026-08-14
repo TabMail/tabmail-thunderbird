@@ -39,6 +39,7 @@
               "weFolderId": { "type": "string", "description": "WebExtension folder ID where message was removed from" },
               "folderPath": { "type": "string", "description": "Folder path where message was removed from" },
               "accountId": { "type": "string", "description": "Account ID" },
+              "msgKey": { "type": "integer", "description": "msgDB key (IMAP UID for IMAP folders); null if unavailable", "optional": true },
               "eventType": { "type": "string", "description": "Type of remove event: deleted, moveCompleted" }
             }
           }
@@ -55,24 +56,27 @@
         "returns": { "type": "boolean" }
       },
       {
-        "name": "getCursorFolders",
+        "name": "getCursorFolder",
         "type": "function",
-        "description": "Per-folder msgDB cursor fingerprints (IMAP accounts only) for the add-side reconcile cursor (ADR-020). Folders whose msgDB cannot be opened carry an error field.",
+        "description": "Read one IMAP folder's msgDB cursor state for the add-side reconcile cursor (ADR-020). One-folder calls let the WebExtension yield between summary DB opens.",
         "async": true,
-        "parameters": [],
+        "parameters": [
+          { "name": "accountId", "type": "string" },
+          { "name": "folderPath", "type": "string" }
+        ],
         "returns": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "accountId": { "type": "string" },
-              "folderPath": { "type": "string" },
-              "folderURI": { "type": "string", "description": "Native folder URI for follow-up calls" },
-              "uidValidity": { "type": "integer", "optional": true },
-              "highWater": { "type": "integer", "description": "Highest msgKey in the local msgDB", "optional": true },
-              "totalMessages": { "type": "integer", "optional": true },
-              "error": { "type": "string", "optional": true }
-            }
+          "type": "object",
+          "properties": {
+            "accountId": { "type": "string" },
+            "folderPath": { "type": "string" },
+            "folderURI": { "type": "string", "description": "Native folder URI for follow-up calls" },
+            "uidValidity": { "type": "integer", "optional": true },
+            "highWater": { "type": "integer", "description": "Highest msgKey in the local msgDB", "optional": true },
+            "totalMessages": { "type": "integer", "optional": true },
+            "lookupMs": { "type": "integer", "optional": true },
+            "dbOpenMs": { "type": "integer", "optional": true },
+            "elapsedMs": { "type": "integer", "optional": true },
+            "error": { "type": "string", "optional": true }
           }
         }
       },
@@ -114,23 +118,51 @@
         }
       },
       {
-        "name": "getFolderCounts",
+        "name": "getFolderState",
         "type": "function",
-        "description": "Per-folder message counts for the count-invariant reconcile (PLAN_FOLDER_SET_RECONCILE.md). Every folder of every account (all server types). Uses the folder cache (getTotalMessages(false)) — does not open msgDBs. Folders that fail carry an error field.",
+        "description": "Read one folder's startup membership state. IMAP folders include a UID-set SHA-256 fingerprint under UIDVALIDITY; other server types report stableUidKeys=false. One-folder calls let the WebExtension yield between summary DB opens.",
         "async": true,
-        "parameters": [],
+        "parameters": [
+          { "name": "accountId", "type": "string" },
+          { "name": "folderPath", "type": "string" }
+        ],
         "returns": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "accountId": { "type": "string" },
-              "folderPath": { "type": "string" },
-              "folderURI": { "type": "string", "description": "Native folder URI for follow-up calls" },
-              "serverType": { "type": "string", "description": "Incoming server type (imap, pop3, none, nntp, rss, ...)", "optional": true },
-              "totalMessages": { "type": "integer", "optional": true },
-              "error": { "type": "string", "optional": true }
-            }
+          "type": "object",
+          "properties": {
+            "accountId": { "type": "string" },
+            "folderPath": { "type": "string" },
+            "folderURI": { "type": "string" },
+            "serverType": { "type": "string", "optional": true },
+            "stableUidKeys": { "type": "boolean" },
+            "uidValidity": { "type": "integer", "optional": true },
+            "uidCount": { "type": "integer", "optional": true },
+            "uidSha256": { "type": "string", "optional": true },
+            "highestModSeq": { "type": "string", "optional": true },
+            "lookupMs": { "type": "integer", "optional": true },
+            "dbOpenMs": { "type": "integer", "optional": true },
+            "hashMs": { "type": "integer", "optional": true },
+            "elapsedMs": { "type": "integer", "optional": true },
+            "error": { "type": "string", "optional": true }
+          }
+        }
+      },
+      {
+        "name": "fingerprintFolderMessages",
+        "type": "function",
+        "description": "Fingerprint the exact de-duplicated account:path:Message-ID set represented by a folder msgDB, without reading message bodies.",
+        "async": true,
+        "parameters": [
+          { "name": "folderURI", "type": "string" }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "count": { "type": "integer", "optional": true },
+            "sha256": { "type": "string", "optional": true },
+            "accountId": { "type": "string", "optional": true },
+            "folderPath": { "type": "string", "optional": true },
+            "unkeyedCount": { "type": "integer", "optional": true },
+            "error": { "type": "string", "optional": true }
           }
         }
       },

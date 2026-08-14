@@ -12,7 +12,8 @@ import { SETTINGS } from "../agent/modules/config.js";
 // 0.6.10: Added memory database for chat history search (memory_search tool)
 // 0.6.12: Stability improvements, empty query support for memory search
 // 0.7.0:  Semantic search (sqlite-vec embeddings + hybrid FTS5/vector scoring)
-const MIN_HOST_VERSION = "0.8.1";
+// 0.11.0: Ordered msgId membership fingerprints required by startup reconcile
+const MIN_HOST_VERSION = "0.11.0";
 
 // Time-box for the update-manifest CDN fetch. It runs inside the awaited
 // init chain on EVERY boot; an un-time-boxed fetch on a stalled connection
@@ -506,6 +507,12 @@ export const nativeFtsSearch = {
     return nativeRPC('countMsgIdRange', { startKey, endKey });
   },
 
+  // Collision-resistant digest of the ordered msgId set. Requires helper
+  // ≥ 0.11.0 and is used by startup folder reconciliation.
+  async fingerprintMsgIdRange(startKey, endKey) {
+    return nativeRPC('fingerprintMsgIdRange', { startKey, endKey });
+  },
+
   async listMsgIdRange(startKey, endKey, afterKey, limit) {
     return nativeRPC('listMsgIdRange', { startKey, endKey, afterKey, limit });
   },
@@ -764,4 +771,3 @@ export const nativeMemorySearch = {
 export async function isNativeFtsAvailable() {
   return ftsHostAvailable === true;
 }
-

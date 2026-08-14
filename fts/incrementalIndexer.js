@@ -1186,7 +1186,7 @@ async function _enqueueNewFromInfo(messageInfo, fromCursorScan = false) {
   // Build unique key from the info we have
   const uniqueKey = `${accountId}:${folderPath}:${headerMessageId}`;
 
-  if (!uniqueKey || uniqueKey === '::') {
+  if (!accountId || !folderPath || !headerMessageId) {
     log(`[TMDBG FTS] Experiment enqueue: invalid key components, skipping`, "warn");
     return;
   }
@@ -1242,14 +1242,14 @@ export async function onExperimentMessageRemoved(messageInfo) {
   // Track sync event for reconcile quiet-period detection
   _lastSyncEventMs = Date.now();
 
-  const { headerMessageId, weFolderId, folderPath, accountId, eventType } = messageInfo;
+  const { headerMessageId, weFolderId, folderPath, accountId, msgKey, eventType } = messageInfo;
 
   log(`[TMDBG FTS] Experiment msgRemoved: type=${eventType}, folder=${folderPath}, headerMessageId=${headerMessageId?.substring(0, 30)}`);
   
   // Build unique key from the info we have
   const uniqueKey = `${accountId}:${folderPath}:${headerMessageId}`;
   
-  if (!uniqueKey || uniqueKey === '::') {
+  if (!accountId || !folderPath || !headerMessageId) {
     log(`[TMDBG FTS] Experiment msgRemoved: invalid key components, skipping`, "warn");
     return;
   }
@@ -1273,6 +1273,7 @@ export async function onExperimentMessageRemoved(messageInfo) {
       timestamp: Date.now(),
       metadata: {
         folderName: folderPath,
+        msgKey,
         fromExperiment: true,
         eventType,
       }
@@ -1344,14 +1345,14 @@ export async function removeExperimentListeners() {
 // Post-init reconciliation
 // =====================================================================
 // Covers the startup timing gap: TB may sync folders before the experiment
-// listener is registered, so messages arriving during that window are missed
-// by the incremental indexer.  After listeners are up, we reconcile by
-// enqueuing recent messages into the existing persistent queue — the drain
-// loop handles FTS flakiness, retry, body extraction, and dedup via
-// filterNewMessages (messages already in FTS are skipped automatically).
+// listener is registered, so membership changes during that window can miss
+// the incremental indexer. After listeners are up and sync becomes quiet, the
+// startup proof compares every folder's local membership with native FTS.
+// Unchanged IMAP folders use UID/UIDVALIDITY + FTS digest checkpoints; changed
+// folders get an exact two-way repair through the persistent drain queue.
 //
-// Reconcile window is bounded by a persistent WATERMARK, not by the
-// newest FTS date. See PLAN_RECONCILE_WATERMARK.md.
+// The older date-window, watermark, and cursor helpers remain below for
+// compatibility/tests, but the automatic startup path no longer calls them.
 // =====================================================================
 
 // Storage key for persisting reconcile-needed state across restarts
@@ -1369,10 +1370,8 @@ const RECONCILE_OVERLAP_MS = 24 * 60 * 60 * 1000;
 // completes, this is unreachable in steady state.
 const RECONCILE_FALLBACK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-// Quiet period before running reconcile — prevents races with TB's startup sync.
-// During sync, messages.query can return inconsistent snapshots, causing Phase 2
-// to mark valid entries as stale and remove them. We wait for no sync events
-// for this duration before running reconcile.
+// Quiet period before running reconcile — prevents taking a membership
+// fingerprint while TB is still mutating the local msgDB during startup sync.
 const RECONCILE_QUIET_PERIOD_MS = 60 * 1000; // 60 seconds
 // Check interval for quiet-period polling
 const RECONCILE_QUIET_CHECK_INTERVAL_MS = 10 * 1000; // 10 seconds
@@ -1695,9 +1694,79 @@ function _stopWatermarkHeartbeat() {
  * triggers a capped full scan from key 0 (FTS-level dedup via the drain
  * queue's filterNewMessages makes re-enqueues cheap no-ops).
  */
+async function _listWeFolderIdentities({ imapOnly = false } = {}) {
+  const started = Date.now();
+  const accounts = await browser.accounts.list(true);
+  const folders = [];
+  const walk = (accountId, folder) => {
+    if (!folder) return;
+    if (folder.path && folder.path !== "/" && !folder.isRoot) {
+      folders.push({ accountId, folderPath: folder.path });
+    }
+    for (const sub of folder.subFolders || []) walk(accountId, sub);
+  };
+  for (const account of accounts || []) {
+    // Older TB test doubles may omit type; the privileged per-folder call is
+    // still authoritative and will reject a non-IMAP cursor request.
+    if (imapOnly && account.type && account.type !== "imap") continue;
+    walk(account.id, account.rootFolder);
+  }
+  log(`[TMDBG FTS FolderProbe] WebExtension inventory: ${folders.length} folder(s) from ${accounts?.length || 0} account(s) in ${Date.now() - started}ms`);
+  return folders;
+}
+
+function _logFolderProbeTiming(kind, state) {
+  const elapsedMs = Number(state?.elapsedMs) || 0;
+  const details = {
+    kind,
+    accountId: state?.accountId || "",
+    folderPath: state?.folderPath || "",
+    elapsedMs,
+    lookupMs: Number(state?.lookupMs) || 0,
+    dbOpenMs: Number(state?.dbOpenMs) || 0,
+    hashMs: Number(state?.hashMs) || 0,
+    error: state?.error || "",
+  };
+  const line = `${details.accountId}:${details.folderPath} total=${elapsedMs}ms lookup=${details.lookupMs}ms db=${details.dbOpenMs}ms hash=${details.hashMs}ms`;
+  if (state?.error) {
+    log(`[FTS FolderProbe] ${kind} failed for ${line}: ${state.error}`, "warn");
+  } else if (elapsedMs >= 250) {
+    log(`[FTS FolderProbe] Slow ${kind}: ${line}`, "warn");
+  } else {
+    log(`[TMDBG FTS FolderProbe] ${kind}: ${line}`);
+  }
+  logFtsOperation("folder_probe", state?.error ? "error" : "timing", details);
+}
+
+async function _readPerFolderExperimentState(methodName, { imapOnly = false, onlyFolderKeys = null } = {}) {
+  let identities = await _listWeFolderIdentities({ imapOnly });
+  if (onlyFolderKeys) {
+    identities = identities.filter(identity => onlyFolderKeys.has(`${identity.accountId}:${identity.folderPath}`));
+  }
+  const out = [];
+  for (let i = 0; i < identities.length; i++) {
+    const identity = identities[i];
+    let state;
+    try {
+      state = await browser.tmMsgNotify[methodName](identity.accountId, identity.folderPath);
+    } catch (e) {
+      state = { ...identity, folderURI: "", elapsedMs: 0, error: String(e) };
+    }
+    out.push(state);
+    _logFolderProbeTiming(methodName, state);
+    // Each Experiment call may synchronously open one summary DB. Yield a
+    // full task between folders so an account-wide startup proof stays
+    // responsive even when many folders need inspection.
+    if (i + 1 < identities.length) await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  return out;
+}
+
 async function _runCursorScan() {
   if (!_isEnabled) return { skipped: true, reason: "disabled" };
-  if (!browser.tmMsgNotify || !_experimentListenersActive) {
+  if (!browser.tmMsgNotify
+      || typeof browser.tmMsgNotify.getCursorFolder !== "function"
+      || !_experimentListenersActive) {
     log(`[FTS Cursor] Scan skipped — experiment API unavailable`);
     return { skipped: true, reason: "no_experiment" };
   }
@@ -1717,11 +1786,11 @@ async function _runCursorScan() {
 
   let folders;
   try {
-    folders = await browser.tmMsgNotify.getCursorFolders();
+    folders = await _readPerFolderExperimentState("getCursorFolder", { imapOnly: true });
   } catch (e) {
-    log(`[FTS Cursor] getCursorFolders failed: ${e} — scan skipped, retry next boot`, "warn");
+    log(`[FTS Cursor] Folder inventory failed: ${e} — scan skipped, retry next boot`, "warn");
     logFtsBatchOperation("cursor_scan", "error", { error: String(e) });
-    return { skipped: true, reason: "getCursorFolders_failed" };
+    return { skipped: true, reason: "folder_inventory_failed" };
   }
 
   const stored = await _getCursors();
@@ -1888,17 +1957,17 @@ async function _runCursorScan() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1c: Evidence-triggered per-folder set reconcile (remove-side) —
-// ADR-021, PLAN_FOLDER_SET_RECONCILE.md.
+// Phase 1c: Startup per-folder membership proof and exact set reconcile.
 //
-// The count invariant: with add-side completeness guaranteed (ADR-020 cursors
-// + live events), FTS-per-folder ⊇ msgDB-per-folder. Therefore, per folder:
-//   ftsCount > msgCount ⟹ stale (ghost) entries provably exist;
-//   msgCount > ftsCount (folder drain-quiet) ⟹ missing adds;
-//   counts equal ⟹ sets equal ⟹ zero work.
-// No date windows, no periodic jobs — work proportional to drift, works for
-// arbitrarily old emails. The fast stale-finder probes FTS keys against the
-// msgDB's Message-ID hash index (probeMessageIds) — no msgDB enumeration.
+// IMAP folders expose a cheap local UID-set digest under UIDVALIDITY. If that
+// digest and the native FTS-key digest match the last verified checkpoint, the
+// equality proof is preserved without enumerating headers. Otherwise we hash
+// the folder's exact account:path:Message-ID set (headers only, never bodies)
+// and compare it directly with native FTS. A mismatch runs BOTH stale and
+// missing directions, so equal-cardinality swaps are repaired too. Non-IMAP
+// folders lack stable UID semantics and therefore hash headers every boot.
+//
+// This replaces cached folder-count inference and periodic maintenance scans.
 // ---------------------------------------------------------------------------
 const FOLDER_RECON_STORAGE_KEY = "fts_folder_recon_memo";
 // FTS keys / msgDB keys per RPC page in both directions
@@ -1911,8 +1980,8 @@ const FOLDER_RECON_RECHECK_KEEPALIVE_EVERY = 50;
 // Full-keyspace upper bound for the orphan sweep: U+FFFF sorts above every
 // character that can appear in a msgId key.
 const FOLDER_RECON_KEYSPACE_END = "￿";
-// The count invariant needs add-side completeness — before the initial FULL
-// scan has completed, every folder has a huge policy deficit and the missing
+// The exact membership proof needs initial add-side completeness. Before the
+// initial FULL scan has completed, every folder has a huge policy deficit and the missing
 // direction would mass-enqueue the whole backlog through the incremental
 // drain queue (whose persistence serializes the entire map per debounce).
 // Gate the whole phase on the initial scan's completion flag (written by
@@ -1926,10 +1995,10 @@ const FOLDER_RECON_INITIAL_SCAN_KEY = "fts_initial_scan_complete";
 //     folder to FIND missing entries.
 //   - ENQUEUE msgs/run: expensive (each becomes a drain-queue getFull body
 //     fetch over IMAP) — actually index them.
-// The cursor climbs 0 → highWater ONCE per folder, then that folder is done
-// (the add-side cursor scan owns everything after). This removes the reliance
-// on the weekly maintenance scan for the add side. The initial-scan-completion
-// gate above remains — it is the real "don't fight the first full index" guard.
+// The cursor climbs 0 → highWater until the mismatch is repaired; an exact
+// digest recheck then establishes the checkpoint. This removes reliance on a
+// periodic scan. The initial-scan-completion gate above remains the real
+// "don't fight the first full index" guard.
 const FOLDER_RECON_MISSING_SCAN_KEYS_PER_RUN = 10000;
 // Yield between individual verify-then-remove rechecks. Each recheck is a
 // GLOBAL messages.query (full-profile enumeration on the parent main thread)
@@ -1950,10 +2019,9 @@ const FOLDER_RECON_MAX_MISSING_ENQUEUES_PER_RUN = 200;
 // failed / reconciled on a production install.
 const FOLDER_RECON_SNAPSHOT_NOTABLE_MAX = 20;
 
-// Feature detection for the native range RPCs (countMsgIdRange /
-// listMsgIdRange, helper ≥ 0.10.0). null = not probed yet this session;
-// false = old deployed helper → the whole phase no-ops (weekly scan remains
-// that user's backstop); true = supported.
+// Feature detection for the native fingerprint/range RPCs (helper ≥ 0.11.0).
+// null = not probed yet this session; false = old deployed helper → the whole
+// phase no-ops and the user must upgrade or use an explicit manual repair.
 let _folderReconNativeSupported = null;
 // Folders skipped by the drain-quiet gate this boot ("accountId:folderPath").
 // Re-checked ONCE when the drain queue empties (_maybeScheduleFolderReconRerun).
@@ -1966,6 +2034,10 @@ let _folderReconRerunDone = false;
 // shared fts_folder_recon_memo (lost cursor updates — idempotent but wasteful).
 // The re-run defers while this is set; the next drain-empty retries it.
 let _folderReconInProgress = false;
+// Folder identities whose equality has not yet been proven during this boot.
+// Unlike per-pass stats, this survives the drain-empty scoped rerun, so that
+// resolving one busy folder cannot mask a different folder's earlier error.
+let _folderReconUnverified = new Set();
 // Test-only override for the per-run work budgets (null in production).
 let _folderReconBudgetOverride = null;
 
@@ -1982,18 +2054,20 @@ function _folderKeyRange(accountId, folderPath) {
 }
 
 /**
- * One-time-per-session probe for the native range RPCs. An unknown-method /
+ * One-time-per-session probe for the native fingerprint RPC. An unknown-method /
  * RPC error marks the helper unsupported for the whole session and logs it
  * ONCE — old deployed helpers must degrade to today's behavior.
  */
 async function _checkFolderReconNativeSupport(ftsSearch) {
   if (_folderReconNativeSupported !== null) return _folderReconNativeSupported;
   try {
-    await ftsSearch.countMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
+    // Equal bounds exercise method dispatch/validation without scanning the
+    // user's index; real per-folder fingerprints follow immediately.
+    await ftsSearch.fingerprintMsgIdRange("", "");
     _folderReconNativeSupported = true;
   } catch (e) {
     _folderReconNativeSupported = false;
-    log(`[FTS FolderRecon] Native helper lacks range RPCs (${e}) — folder reconcile disabled this session (weekly scan remains the backstop)`, "warn");
+    log(`[FTS FolderRecon] Native helper lacks fingerprint RPCs (${e}) — startup consistency proof disabled until helper upgrade; manual repair remains available`, "warn");
     logFtsBatchOperation("folder_recon", "unsupported", { error: String(e) });
     _writeReconSnapshot("fts_folder_recon_last", { skipped: true, reason: "native_unsupported", error: String(e) });
   }
@@ -2001,27 +2075,27 @@ async function _checkFolderReconNativeSupport(ftsSearch) {
 }
 
 /**
- * Read the per-folder clean-count memo:
- * { version: 1, folders: { "<acct>:<path>": { lastCleanMsgCount,
- *   lastCleanFtsCount, updatedAtMs } } }.
+ * Read the per-folder verified membership checkpoint (schema v2).
+ * A v1 count memo is intentionally discarded: equal counts never proved set
+ * equality and must not seed the stronger checkpoint.
  * Independent of the watermark AND the cursor store (separate storage key).
  */
 async function _getFolderReconMemo() {
   try {
     const stored = await browser.storage.local.get(FOLDER_RECON_STORAGE_KEY);
     const m = stored?.[FOLDER_RECON_STORAGE_KEY];
-    if (m && m.folders && typeof m.folders === "object") return m;
+    if (m?.version === 2 && m.folders && typeof m.folders === "object") return m;
   } catch (e) {
     log(`[FTS FolderRecon] Memo read failed: ${e}`, "warn");
   }
-  return { version: 1, folders: {} };
+  return { version: 2, folders: {} };
 }
 
 async function _writeFolderReconMemo(memo) {
   try {
     await browser.storage.local.set({ [FOLDER_RECON_STORAGE_KEY]: memo });
   } catch (e) {
-    // Non-fatal: next boot re-derives the counts (wider work, same result).
+    // Non-fatal: next boot re-derives the fingerprints (wider work, same result).
     log(`[FTS FolderRecon] Memo write failed: ${e}`, "warn");
   }
 }
@@ -2169,7 +2243,7 @@ async function _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats,
 }
 
 /**
- * Missing direction (msgCount > ftsCount): walk the folder's msgDB keys with
+ * Missing direction (local msgDB → FTS): walk the folder's msgDB keys with
  * the existing experiment pair (listKeysAboveKey / getMessageInfosForKeys —
  * both work for non-IMAP folders; no UID semantics needed, only headers),
  * filter against FTS (filterNewMessages reads only msgId) and enqueue the
@@ -2439,11 +2513,10 @@ async function _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFts
 }
 
 /**
- * Phase 1c: evidence-triggered per-folder set reconcile (ADR-021,
- * PLAN_FOLDER_SET_RECONCILE.md). Runs after the cursor scan inside
- * runPostInitReconcile, in its own try/catch — independent of the watermark
- * AND the cursor store. Skips cleanly when the experiment API or the native
- * range RPCs are unavailable.
+ * Startup fingerprint proof + exact per-folder set reconcile. This is the
+ * automatic post-init reconciliation path and is independent of the legacy
+ * watermark and cursor stores. Skips cleanly when the experiment API or native
+ * fingerprint/range RPCs are unavailable.
  *
  * @param {Object} ftsSearch - FTS search interface
  * @param {Set<string>|null} [onlyFolderKeys] - Restrict to these
@@ -2453,7 +2526,8 @@ async function _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFts
 async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
   if (!_isEnabled || !ftsSearch) return { skipped: true, reason: "disabled" };
   if (!browser.tmMsgNotify
-      || typeof browser.tmMsgNotify.getFolderCounts !== "function"
+      || typeof browser.tmMsgNotify.getFolderState !== "function"
+      || typeof browser.tmMsgNotify.fingerprintFolderMessages !== "function"
       || typeof browser.tmMsgNotify.probeMessageIds !== "function") {
     log(`[FTS FolderRecon] Skipped — experiment API unavailable`);
     return { skipped: true, reason: "no_experiment" };
@@ -2463,14 +2537,14 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
   }
 
   // Add-side completeness gate: before the initial FULL scan finishes, every
-  // folder carries a huge policy deficit — the invariant does not hold yet
+  // folder carries a huge policy deficit — set equality cannot hold yet
   // and the missing direction would mass-enqueue the initial scan's backlog
   // through the wrong pipeline. Skip the phase; the initial scan owns
   // coverage until its completion flag is set.
   try {
     const scanFlag = await browser.storage.local.get(FOLDER_RECON_INITIAL_SCAN_KEY);
     if (!scanFlag?.[FOLDER_RECON_INITIAL_SCAN_KEY]) {
-      log(`[FTS FolderRecon] Skipped — initial FTS scan not yet complete (invariant needs add-side completeness)`);
+      log(`[FTS FolderRecon] Skipped — initial FTS scan not yet complete (proof needs add-side completeness)`);
       logFtsBatchOperation("folder_recon", "skipped_initial_scan_incomplete", {});
       _writeReconSnapshot("fts_folder_recon_last", { skipped: true, reason: "initial_scan_incomplete" });
       return { skipped: true, reason: "initial_scan_incomplete" };
@@ -2482,14 +2556,15 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
 
   _folderReconInProgress = true;
   try {
+  if (!onlyFolderKeys) _folderReconUnverified = new Set();
   const reconStart = Date.now();
   const stats = {
     foldersTotal: 0,
     foldersErrored: 0,
     foldersDrainBusy: 0,
     foldersMemoHit: 0,
-    foldersClean: 0,       // counts equal on arrival — zero work
-    foldersReconciled: 0,  // a direction pass ran and completed cleanly
+    foldersClean: 0,       // exact expected/native fingerprints equal
+    foldersReconciled: 0,  // both-direction pass completed and equality verified
     foldersFailed: 0,      // a direction pass errored — no memo, retry next boot
     foldersBudgetPartial: 0, // per-run work budget cut the folder's pass short — continued next boot
     staleCandidates: 0,
@@ -2503,11 +2578,11 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
 
   let folders;
   try {
-    folders = await browser.tmMsgNotify.getFolderCounts();
+    folders = await _readPerFolderExperimentState("getFolderState", { onlyFolderKeys });
   } catch (e) {
-    log(`[FTS FolderRecon] getFolderCounts failed: ${e} — skipped, retry next boot`, "warn");
+    log(`[FTS FolderRecon] Folder inventory failed: ${e} — skipped, retry next boot`, "warn");
     logFtsBatchOperation("folder_recon", "error", { error: String(e) });
-    return { skipped: true, reason: "getFolderCounts_failed" };
+    return { skipped: true, reason: "folder_inventory_failed" };
   }
 
   logFtsBatchOperation("folder_recon", "start", {
@@ -2538,6 +2613,10 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
   // ftsCount actually entered the sum.
   let allFoldersCounted = true;
 
+  if (!folders || folders.length === 0) {
+    _folderReconUnverified.add("__no_folders_reported__");
+  }
+
   for (const f of folders || []) {
     stats.foldersTotal++;
     const folderKey = `${f.accountId}:${f.folderPath}`;
@@ -2548,9 +2627,10 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
       allFoldersCounted = false;
       continue;
     }
+    _folderReconUnverified.add(folderKey);
 
-    // 1) Folder errored → skip (retry next boot).
-    if (f.error || !f.folderURI || !Number.isFinite(f.totalMessages)) {
+    // 1) Folder errored / lacks a stable identity → skip (retry next boot).
+    if (f.error || !f.folderURI || !f.accountId || !f.folderPath) {
       stats.foldersErrored++;
       allFoldersCounted = false;
       logFtsOperation("folder_recon", "folder_error", {
@@ -2577,102 +2657,167 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
       continue;
     }
 
-    // 3) The count comparison — the entire evidence check.
+    // 3) Fingerprint native membership. This is a local ordered PK scan and
+    //    returns only {count, sha256}; no key list crosses the RPC boundary.
     const { startKey, endKey } = _folderKeyRange(f.accountId, f.folderPath);
-    let ftsCount;
+    let nativeFingerprint;
     try {
-      ftsCount = (await ftsSearch.countMsgIdRange(startKey, endKey)).count;
+      nativeFingerprint = await ftsSearch.fingerprintMsgIdRange(startKey, endKey);
     } catch (e) {
       stats.foldersFailed++;
       allFoldersCounted = false;
-      logFtsOperation("folder_recon", "count_error", { folderPath: f.folderPath, error: String(e) });
+      logFtsOperation("folder_recon", "fingerprint_error", { folderPath: f.folderPath, error: String(e) });
       continue;
     }
+    const ftsCount = nativeFingerprint.count;
     totalKnownFtsCount += ftsCount;
-    const msgCount = f.totalMessages;
 
-    // 4) Memo hit → zero work. Also absorbs permanent per-folder bias
-    //    (unindexable no-key messages) without rescanning every boot.
+    // 4) Cheap checkpoint hit. For IMAP, unchanged UIDVALIDITY + UID-set
+    //    digest proves local folder membership is unchanged. An unchanged FTS
+    //    digest proves the other side is unchanged. Since the checkpoint was
+    //    written only after exact equality, equality is preserved.
     const m = memo.folders[folderKey];
-    if (m && m.lastCleanMsgCount === msgCount && m.lastCleanFtsCount === ftsCount) {
+    const uidCheckpointHit = f.stableUidKeys === true
+      && m?.verified === true
+      && m.uidValidity === f.uidValidity
+      && m.uidCount === f.uidCount
+      && m.uidSha256 === f.uidSha256;
+    const ftsCheckpointHit = m?.verified === true
+      && m.ftsCount === ftsCount
+      && m.ftsSha256 === nativeFingerprint.sha256;
+    if (uidCheckpointHit && ftsCheckpointHit) {
       stats.foldersMemoHit++;
+      _folderReconUnverified.delete(folderKey);
       continue;
     }
 
-    // Counts equal ⟹ sets equal (superset invariant) ⟹ zero work; memoize.
-    if (ftsCount === msgCount) {
+    // 5) The cheap signal changed (or this is the first v2 boot / non-IMAP).
+    //    Hash the exact expected unique-key set from msgDB headers. No bodies
+    //    or WebExtension messages.query calls are involved.
+    let expected;
+    try {
+      expected = await browser.tmMsgNotify.fingerprintFolderMessages(f.folderURI);
+    } catch (e) {
+      expected = { error: String(e) };
+    }
+    const expectedIdentityMismatch = (expected?.accountId && expected.accountId !== f.accountId)
+      || (expected?.folderPath && expected.folderPath !== f.folderPath);
+    if (expected?.error || expectedIdentityMismatch || !Number.isFinite(expected?.count) || !expected?.sha256) {
+      stats.foldersErrored++;
+      allFoldersCounted = false;
+      logFtsOperation("folder_recon", "expected_fingerprint_error", {
+        folderPath: f.folderPath,
+        error: expected?.error || (expectedIdentityMismatch ? "folder_identity_changed" : "bad_fingerprint"),
+      });
+      continue;
+    }
+    const msgCount = expected.count;
+
+    const writeVerifiedCheckpoint = (ftsFingerprint) => {
       memo.folders[folderKey] = {
-        lastCleanMsgCount: msgCount,
-        lastCleanFtsCount: ftsCount,
+        verified: true,
+        expectedCount: msgCount,
+        expectedSha256: expected.sha256,
+        ftsCount: ftsFingerprint.count,
+        ftsSha256: ftsFingerprint.sha256,
+        ...(f.stableUidKeys === true ? {
+          uidValidity: f.uidValidity,
+          uidCount: f.uidCount,
+          uidSha256: f.uidSha256,
+          highestModSeq: f.highestModSeq || "",
+        } : {}),
         updatedAtMs: Date.now(),
       };
       memoChanged = true;
+    };
+
+    // Direct cryptographic equality — this is the only path that creates a
+    // verified checkpoint.
+    if (msgCount === ftsCount && expected.sha256 === nativeFingerprint.sha256) {
+      writeVerifiedCheckpoint(nativeFingerprint);
       stats.foldersClean++;
+      _folderReconUnverified.delete(folderKey);
       continue;
     }
 
-    // Budget pre-check: nothing left for this direction this run — leave the
-    // folder un-memoized (counts are cheap to re-check next boot). Missing
-    // needs BOTH the scan budget (climb) and enqueue budget (heal).
-    const needsStale = ftsCount > msgCount;
-    if ((needsStale && budget.rechecks <= 0)
-        || (!needsStale && (budget.enqueues <= 0 || budget.scans <= 0))) {
+    // 6) A digest mismatch is an exact set-difference trigger. Always run both
+    //    directions: counts can be equal while one stale key and one missing
+    //    key cancel out. Budgeted work remains explicitly unverified and is
+    //    resumed on the next startup, never memoized as clean.
+    if (budget.rechecks <= 0 || budget.enqueues <= 0 || budget.scans <= 0) {
       stats.foldersBudgetPartial++;
       notable.push({ folder: folderKey, kind: "budget_skipped", msgCount, ftsCount });
       logFtsOperation("folder_recon", "budget_exhausted_skip", { folderPath: f.folderPath });
       continue;
     }
 
-    // 5/6) Count mismatch — folder-scoped set diff in the indicated direction.
-    log(`[FTS FolderRecon] ${folderKey}: ftsCount=${ftsCount} msgCount=${msgCount} — running ${needsStale ? "stale" : "missing (backfill)"} direction`, "warn");
-    let pass;
-    if (needsStale) {
-      pass = await _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats, budget);
-    } else {
-      const resumeKey = memo.folders[folderKey]?.missingBackfillKey;
-      pass = await _folderReconMissingDirection(ftsSearch, f, stats, budget, resumeKey);
-      // Persist backfill progress whenever the cursor ADVANCED (partial or
-      // complete), so it survives to next boot. An immediate error with no
-      // progress (cursor unchanged) writes nothing. Keep count-pair fields.
-      if (Number.isFinite(pass.cursor) && pass.cursor > (resumeKey || 0)) {
-        memo.folders[folderKey] = {
-          ...(memo.folders[folderKey] || {}),
-          missingBackfillKey: pass.cursor,
-          updatedAtMs: Date.now(),
-        };
-        memoChanged = true;
-      }
+    log(`[FTS FolderRecon] ${folderKey}: membership digest mismatch (fts=${ftsCount}, expected=${msgCount}) — running exact two-way reconcile`, "warn");
+    const stalePass = await _folderReconStaleDirection(ftsSearch, f, startKey, endKey, stats, budget);
+    if (stalePass.budgetPartial) {
+      stats.foldersBudgetPartial++;
+      notable.push({ folder: folderKey, kind: "stale_budget_truncated", msgCount, ftsCount });
+      continue;
+    }
+    if (!stalePass.clean) {
+      stats.foldersFailed++;
+      notable.push({ folder: folderKey, kind: "stale_failed", msgCount, ftsCount });
+      continue;
     }
 
-    if (pass.budgetPartial) {
+    // Resume only if the exact expected set is unchanged since the partial
+    // sweep; otherwise restart at key zero so newly visible low keys cannot be
+    // skipped (important for local/POP folders without IMAP UID semantics).
+    const resumeKey = m?.partialExpectedSha256 === expected.sha256
+      ? m.missingBackfillKey
+      : 0;
+    const enqueuedBefore = stats.missingEnqueued;
+    const missingPass = await _folderReconMissingDirection(ftsSearch, f, stats, budget, resumeKey);
+    if (Number.isFinite(missingPass.cursor) && missingPass.cursor > (resumeKey || 0)) {
+      memo.folders[folderKey] = {
+        verified: false,
+        partialExpectedSha256: expected.sha256,
+        missingBackfillKey: missingPass.cursor,
+        updatedAtMs: Date.now(),
+      };
+      memoChanged = true;
+    }
+
+    if (missingPass.budgetPartial) {
       stats.foldersBudgetPartial++;
-      const note = { folder: folderKey, kind: needsStale ? "budget_truncated" : "backfilling", msgCount, ftsCount };
-      if (!needsStale) note.cursor = pass.cursor; // stale has no cursor
+      const note = { folder: folderKey, kind: "backfilling", msgCount, ftsCount, cursor: missingPass.cursor };
       notable.push(note);
-      log(`[FTS FolderRecon] ${folderKey}: pass budget-truncated — count-memo NOT written, continues next boot`, "warn");
-    } else if (!pass.clean) {
+      log(`[FTS FolderRecon] ${folderKey}: exact pass budget-truncated — checkpoint remains unverified`, "warn");
+    } else if (!missingPass.clean) {
       stats.foldersFailed++;
       notable.push({ folder: folderKey, kind: "failed", msgCount, ftsCount });
-      log(`[FTS FolderRecon] ${folderKey}: pass had errors — memo NOT written, retry next boot`, "warn");
+      log(`[FTS FolderRecon] ${folderKey}: exact pass had errors — checkpoint remains unverified`, "warn");
     } else {
-      // 7) Clean pass (stale confirmed / backfill reached the top): recount and
-      // memoize the (msgCount, ftsCount-now) pair. For backfill, ftsNow is
-      // still pre-drain (enqueued not yet indexed) — next boot's count movement
-      // re-checks; if drops leave a residual it stabilizes as a memo-hit.
+      const enqueuedHere = stats.missingEnqueued - enqueuedBefore;
+      if (enqueuedHere > 0) {
+        // The exact expected set is known but native FTS cannot match until the
+        // shared drain indexes the queued bodies. Re-run this folder once the
+        // queue is empty; do not write a verified checkpoint early.
+        _folderReconDrainSkipped.add(folderKey);
+        notable.push({ folder: folderKey, kind: "awaiting_drain", msgCount, ftsCount, enqueued: enqueuedHere });
+        continue;
+      }
+
+      // 7) No queued writes remain: prove equality again after stale removals.
       try {
-        const ftsNow = (await ftsSearch.countMsgIdRange(startKey, endKey)).count;
-        memo.folders[folderKey] = {
-          ...(memo.folders[folderKey] || {}),
-          lastCleanMsgCount: msgCount,
-          lastCleanFtsCount: ftsNow,
-          updatedAtMs: Date.now(),
-        };
-        memoChanged = true;
-        stats.foldersReconciled++;
-        notable.push({ folder: folderKey, kind: "reconciled", msgCount, ftsCount, ftsCountAfter: ftsNow });
+        const ftsNow = await ftsSearch.fingerprintMsgIdRange(startKey, endKey);
+        if (ftsNow.count === msgCount && ftsNow.sha256 === expected.sha256) {
+          writeVerifiedCheckpoint(ftsNow);
+          stats.foldersReconciled++;
+          _folderReconUnverified.delete(folderKey);
+          notable.push({ folder: folderKey, kind: "reconciled", msgCount, ftsCount, ftsCountAfter: ftsNow.count });
+        } else {
+          stats.foldersFailed++;
+          notable.push({ folder: folderKey, kind: "post_verify_mismatch", msgCount, ftsCount, ftsCountAfter: ftsNow.count });
+          log(`[FTS FolderRecon] ${folderKey}: post-repair digest still differs — checkpoint remains unverified`, "warn");
+        }
       } catch (e) {
         stats.foldersFailed++;
-        logFtsOperation("folder_recon", "recount_error", { folderPath: f.folderPath, error: String(e) });
+        logFtsOperation("folder_recon", "post_fingerprint_error", { folderPath: f.folderPath, error: String(e) });
       }
     }
 
@@ -2689,6 +2834,8 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
     try {
       await _folderReconOrphanSweep(ftsSearch, knownFolderKeys, totalKnownFtsCount, stats, budget);
     } catch (e) {
+      stats.foldersFailed++;
+      _folderReconUnverified.add("__orphan_sweep__");
       log(`[FTS FolderRecon] Orphan sweep failed: ${e} — retried next boot`, "warn");
       logFtsOperation("folder_recon", "orphan_sweep_error", { error: String(e) });
     }
@@ -2698,6 +2845,7 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
     await _writeFolderReconMemo(memo);
   }
 
+  stats.unverifiedFolders = _folderReconUnverified.size;
   const elapsed = Date.now() - reconStart;
   log(`[FTS FolderRecon] Complete: ${stats.foldersTotal} folders (${stats.foldersMemoHit} memo-hit, ${stats.foldersClean} clean, ${stats.foldersReconciled} reconciled, ${stats.foldersDrainBusy} drain-busy, ${stats.foldersErrored} errored, ${stats.foldersFailed} failed, ${stats.foldersBudgetPartial} budget-partial), ${stats.staleRemoved} stale removed (${stats.staleCandidates} candidates, ${stats.recheckKeptPresent} present, ${stats.recheckKeptError} recheck-errors), ${stats.missingEnqueued} missing enqueued, ${stats.orphanRemoved} orphans removed, ${elapsed}ms`);
   logFtsBatchOperation("folder_recon", "complete", { ...stats, rerun: !!onlyFolderKeys, elapsedMs: elapsed });
@@ -2708,11 +2856,18 @@ async function _runFolderReconcile(ftsSearch, onlyFolderKeys = null) {
     rerun: !!onlyFolderKeys,
     elapsedMs: elapsed,
     notable: notable.slice(0, FOLDER_RECON_SNAPSHOT_NOTABLE_MAX),
+    unverifiedFolderKeys: [..._folderReconUnverified].slice(0, FOLDER_RECON_SNAPSHOT_NOTABLE_MAX),
   });
 
   return stats;
   } finally {
     _folderReconInProgress = false;
+    // If this pass itself enqueued the last outstanding repair, its drain may
+    // have reached zero while the mutual-exclusion guard was still set. Give
+    // the single-shot rerun another chance now that the guard is clear.
+    if (_pendingUpdates.size === 0 && _folderReconDrainSkipped.size > 0) {
+      setTimeout(() => _maybeScheduleFolderReconRerun(), 0);
+    }
   }
 }
 
@@ -2739,178 +2894,65 @@ function _maybeScheduleFolderReconRerun() {
   log(`[FTS FolderRecon] Drain empty — re-running folder reconcile for ${only.size} skipped folder(s)`);
   return Promise.resolve()
     .then(() => _runFolderReconcile(ftsSearch, only))
+    .then(async (stats) => {
+      if (_folderReconStatsVerified(stats)) {
+        await browser.storage.local.remove(RECONCILE_STORAGE_KEY);
+      }
+      return stats;
+    })
     .catch(e => {
       log(`[FTS FolderRecon] Drain-empty re-run failed: ${e}`, "warn");
       logFtsBatchOperation("folder_recon", "error", { error: String(e), rerun: true });
     });
 }
 
+function _folderReconStatsVerified(stats) {
+  return !!stats
+    && !stats.skipped
+    && (stats.foldersTotal || 0) > 0
+    && (stats.foldersErrored || 0) === 0
+    && (stats.foldersDrainBusy || 0) === 0
+    && (stats.foldersFailed || 0) === 0
+    && (stats.foldersBudgetPartial || 0) === 0
+    && (stats.missingEnqueued || 0) === 0
+    && _folderReconDrainSkipped.size === 0
+    && _folderReconUnverified.size === 0;
+}
+
 /**
- * Run post-init reconciliation: discover recent messages across all folders
- * and enqueue any that might be missing into the existing persistent queue.
+ * Run the post-init consistency proof after startup sync settles.
  *
- * Phase 1: Enqueue current TB messages as 'new' — the drain loop handles
- *          FTS dedup via filterNewMessages (already-indexed messages are skipped).
- *
- * Phase 1b: Per-folder msgKey/UID cursor scan (ADR-020) — enqueue everything
- *          above each folder's persisted cursor, regardless of Date header.
- *          Catches boot-gap arrivals whose Dates predate the Phase 1 window.
- *
- * Phase 1c: Evidence-triggered per-folder set reconcile (ADR-021) — the
- *          count invariant (ftsCount vs msgCount) detects drift per folder;
- *          only mismatched folders get a folder-scoped set diff.
- *
- * Phase 2: Query FTS entries in the same window and remove any whose messages
- *          no longer exist in TB at their indexed folder. This cleans up stale
- *          entries left by moves/deletes that happened during the boot gap.
+ * The former date-window message walk, cursor scan, and date-window stale scan
+ * are intentionally absent here. The UID/UIDVALIDITY checkpoint detects any
+ * IMAP membership change regardless of message Date, and the exact folder-key
+ * fingerprint repairs both missing and stale keys when change is observed.
+ * This is both stronger and substantially cheaper on unchanged folders.
  */
 async function runPostInitReconcile(ftsSearch) {
   if (!_isEnabled) return;
 
   const reconcileStart = Date.now();
-
-  // Determine the lower bound from the persistent watermark (or 7d fallback).
-  // Captured once, used by both phases — no FTS query, no retry loop.
-  const reconcileFrom = await _getReconcileFrom();
-
-  let totalScanned = 0;
-  let totalEnqueued = 0;
-  // Thrown enqueue failures (transient: storage/mutex/key-derivation errors).
-  // Any such message was NOT handed to the persistent drain queue, so the
-  // watermark must not advance past it — next boot's reconcile retries.
-  // (queueMessageUpdate's silent no-unique-key return is deliberately NOT
-  // counted: a message that cannot derive a key can never be stored in the
-  // key-addressed FTS, so blocking the watermark on it would pin the window
-  // forever for an unindexable message.)
-  let enqueueFailed = 0;
-
-  logFtsBatchOperation("reconcile", "start", {
-    reconcileFrom: new Date(reconcileFrom).toISOString(),
-  });
+  logFtsBatchOperation("reconcile", "start", { mode: "folder_fingerprint" });
 
   try {
-    // =========================================================================
-    // PHASE 1: Enqueue current TB messages as 'new'
-    // =========================================================================
-    // Single cross-account query by date — much faster than folder-by-folder walking.
-    // messages.query with fromDate only uses the local header DB (no IMAP, no body fetch).
-    let page = await browser.messages.query({ fromDate: new Date(reconcileFrom) });
-
-    // Drain every continuation page (same pattern as recheckMessageInFolder):
-    // a page's emptiness says nothing about completeness — only a null
-    // continuation id ends the walk. Stopping on an empty page would silently
-    // drop the rest of the boot-gap messages while the watermark advances.
-    while (page) {
-      for (const msg of (page.messages || [])) {
-        totalScanned++;
-        try {
-          await queueMessageUpdate('new', msg);
-          totalEnqueued++;
-        } catch (queueErr) {
-          enqueueFailed++;
-          log(`[TMDBG FTS] Reconcile: failed to enqueue msg ${msg.headerMessageId}: ${queueErr}`, "warn");
-        }
-      }
-      if (!page.id) break;
-      page = await browser.messages.continueList(page.id);
-    }
-    if (!page) {
-      // Nullish page (initial query or mid-drain) is an API contract
-      // violation — the walk did NOT complete, so coverage must not be
-      // claimed. Throw into the outer catch: watermark withheld, pending
-      // flag stays set (fail closed, same as recheckMessageInFolder).
-      throw new Error("Reconcile Phase 1: message walk returned a nullish page");
-    }
-
-    logFtsBatchOperation("reconcile_phase1", "complete", {
-      totalScanned,
-      totalEnqueued,
-      enqueueFailed,
-    });
-
-    log(`[FTS Reconcile] Phase 1 complete: ${totalScanned} scanned, ${totalEnqueued} enqueued, ${enqueueFailed} enqueue failures`);
-
-    // =========================================================================
-    // PHASE 1b: Per-folder msgKey/UID cursor scan (ADR-020)
-    // =========================================================================
-    // Arrival-ordered complement to the Date-keyed Phase 1: catches messages
-    // that entered the local msgDB while nothing was listening, regardless of
-    // their Date header. Independent of the watermark — a cursor-scan failure
-    // must not block the watermark advance (per-folder cursors self-retry on
-    // the next boot), and vice versa.
-    try {
-      await _runCursorScan();
-    } catch (cursorErr) {
-      log(`[FTS Cursor] Scan failed: ${cursorErr} — folder cursors not advanced, retry next boot`, "warn");
-      logFtsBatchOperation("cursor_scan", "error", { error: String(cursorErr) });
-    }
-
-    // =========================================================================
-    // PHASE 1c: Evidence-triggered per-folder set reconcile (ADR-021)
-    // =========================================================================
-    // Count-invariant drift detection (PLAN_FOLDER_SET_RECONCILE.md): per
-    // folder, ftsCount vs msgCount; mismatches get a folder-scoped set diff
-    // (verify-then-remove stale side / filterNewMessages+enqueue missing
-    // side). Independent of the watermark AND the cursor store — its own
-    // storage key, per-folder retry; failures must not block the watermark.
-    try {
-      await _runFolderReconcile(ftsSearch);
-    } catch (folderReconErr) {
-      log(`[FTS FolderRecon] Failed: ${folderReconErr} — retried next boot`, "warn");
-      logFtsBatchOperation("folder_recon", "error", { error: String(folderReconErr) });
-    }
-
-    // =========================================================================
-    // PHASE 2: Remove stale FTS entries for moved/deleted messages
-    // =========================================================================
-    // Query FTS entries in the same date window and validate each against TB.
-    // If the message no longer exists at its indexed folder, remove from FTS.
-    const cleanupResult = await _reconcileCleanupStaleEntries(ftsSearch, reconcileFrom);
-
-    // Clear the persisted reconcile-needed flag on success
-    await browser.storage.local.remove(RECONCILE_STORAGE_KEY);
-
-    // Watermark advance — only on clean completion. accountsSkipped > 0
-    // means some FTS entries weren't actually re-verified (their accounts
-    // were unavailable at scan time); removeFailed means confirmed-stale
-    // entries are still sitting in FTS; enqueueFailed > 0 means boot-gap
-    // messages never reached the persistent drain queue. In every case we
-    // must not claim coverage — next boot recomputes from the older
-    // watermark → retry. (Once a message IS enqueued, the drain queue's own
-    // persistence + retry guarantees take over; nothing is dropped there.)
-    const accountsSkipped = cleanupResult.accountsSkipped || 0;
-    const removeFailed = !!cleanupResult.removeFailed;
-    const watermarkAdvanced = accountsSkipped === 0 && !removeFailed && enqueueFailed === 0;
-    if (watermarkAdvanced) {
-      await _writeWatermark(reconcileFrom);
-      _startWatermarkHeartbeat();
+    const stats = await _runFolderReconcile(ftsSearch);
+    if (_folderReconStatsVerified(stats)) {
+      await browser.storage.local.remove(RECONCILE_STORAGE_KEY);
     } else {
-      log(`[FTS Reconcile] Watermark NOT advanced — ${accountsSkipped} account(s) unavailable, removeFailed=${removeFailed}, enqueueFailed=${enqueueFailed}`, "warn");
+      log(`[FTS Reconcile] Startup proof incomplete — pending marker retained for retry`, "warn");
     }
-
     const elapsed = Date.now() - reconcileStart;
-    log(`[FTS Reconcile] Complete: ${totalScanned} scanned, ${totalEnqueued} enqueued, ${cleanupResult.removed} stale removed (${cleanupResult.checked} checked, ${accountsSkipped} accounts skipped), ${elapsed}ms`);
-
+    log(`[FTS Reconcile] Startup membership proof complete in ${elapsed}ms`);
     logFtsBatchOperation("reconcile", "complete", {
-      totalScanned,
-      totalEnqueued,
-      enqueueFailed,
-      staleChecked: cleanupResult.checked,
-      staleRemoved: cleanupResult.removed,
-      accountsSkipped,
-      removeFailed,
-      watermarkAdvanced,
+      mode: "folder_fingerprint",
+      ...(stats || {}),
       elapsedMs: elapsed,
     });
   } catch (e) {
     log(`[TMDBG FTS] Reconcile failed: ${e}`, "error");
-    logFtsBatchOperation("reconcile", "error", {
-      error: String(e),
-      totalScanned,
-      totalEnqueued,
-    });
-    // Exception path: do NOT write watermark, do NOT start heartbeat.
-    // Next boot will recompute from the older watermark.
+    logFtsBatchOperation("reconcile", "error", { error: String(e), mode: "folder_fingerprint" });
+    // Leave RECONCILE_STORAGE_KEY set so an interrupted service worker/app
+    // restart retries. Per-folder unverified checkpoints also fail closed.
   }
 }
 
@@ -3179,6 +3221,7 @@ export async function initIncrementalIndexer(ftsSearch) {
   _folderReconDrainSkipped = new Set();
   _folderReconRerunDone = false;
   _folderReconInProgress = false;
+  _folderReconUnverified = new Set();
 
   // Load settings
   await updateIncrementalSettings();
@@ -3208,12 +3251,9 @@ export async function initIncrementalIndexer(ftsSearch) {
   // will re-run reconcile for the rest.
   await browser.storage.local.set({ [RECONCILE_STORAGE_KEY]: Date.now() });
 
-  // Schedule post-init reconciliation to run after TB's startup sync settles.
-  // During active sync, messages.query can return inconsistent snapshots,
-  // causing Phase 2 to mark valid entries as stale and remove them. We wait
-  // for a quiet period (no msgAdded/msgRemoved events for RECONCILE_QUIET_PERIOD_MS)
-  // before running reconcile. Listeners are already active, so any new events
-  // during the wait are caught by the incremental indexer normally.
+  // Schedule the membership proof after TB's startup sync settles. A quiet
+  // local msgDB snapshot keeps the two fingerprints comparable. Listeners are
+  // already active, so events during the wait still enter the durable queue.
   _scheduleReconcileWhenQuiet(ftsSearch);
 }
 
@@ -3506,6 +3546,7 @@ export const _testExports = {
     _folderReconDrainSkipped = new Set();
     _folderReconRerunDone = false;
     _folderReconInProgress = false;
+    _folderReconUnverified = new Set();
     _folderReconBudgetOverride = null;
   },
   _setFolderReconBudgetOverride: (v) => { _folderReconBudgetOverride = v; },
@@ -3527,6 +3568,7 @@ export const _testExports = {
   _setExperimentListenersActive: (v) => { _experimentListenersActive = v; },
   _setIsEnabled: (v) => { _isEnabled = v; },
   _setFtsSearch: (v) => { _ftsSearch = v; },
+  onExperimentMessageRemoved,
   WATERMARK_KEY,
   HEARTBEAT_INTERVAL_MS,
   RECONCILE_OVERLAP_MS,

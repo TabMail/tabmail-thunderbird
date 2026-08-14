@@ -656,135 +656,94 @@ describe('isReconcilePending / getLastSyncEventMs (real implementations)', () =>
 });
 
 // ---------------------------------------------------------------------------
-// runPostInitReconcile watermark gating on removeFailed
+// Automatic startup path: fingerprint proof, not date-window scans
 // ---------------------------------------------------------------------------
 
-describe('runPostInitReconcile watermark gate', () => {
+describe('runPostInitReconcile fingerprint path', () => {
   afterEach(() => {
-    _testExports._stopWatermarkHeartbeat();
     _testExports._setIsEnabled(false);
-    // arrangeReconcile sets a sticky mockResolvedValue on the shared global
-    // query mock; vi.clearAllMocks() clears calls but NOT implementations
+    delete browser.tmMsgNotify;
     browser.messages.query.mockReset();
     browser.messages.continueList.mockReset();
+    _testExports._resetFolderReconState();
   });
 
-  function arrangeReconcile({ removeBatchImpl }) {
+  function arrangeFingerprintReconcile({ fingerprintImpl } = {}) {
     _testExports._setIsEnabled(true);
-    // Phase 1: no messages in the window
-    browser.messages.query.mockResolvedValue({ messages: [] });
-    // Phase 2: one stale entry, recheck confirms absence
-    const staleEntry = {
-      msgId: 'account1:/INBOX:gone@example.com',
-      subject: 'Gone',
-      dateMs: Date.now() - 3600000,
+    storageData.fts_initial_scan_complete = true;
+    storageData.fts_reconcile_pending = Date.now();
+    browser.accounts.list.mockResolvedValue([{
+      id: 'account1',
+      type: 'imap',
+      rootFolder: {
+        path: '/',
+        isRoot: true,
+        subFolders: [{ path: '/INBOX', subFolders: [] }],
+      },
+    }]);
+    browser.tmMsgNotify = {
+      getFolderState: vi.fn(async () => ({
+        accountId: 'account1',
+        folderPath: '/INBOX',
+        folderURI: 'imap://host/INBOX',
+        serverType: 'imap',
+        stableUidKeys: true,
+        uidValidity: 1,
+        uidCount: 0,
+        uidSha256: 'empty-uids',
+      })),
+      fingerprintFolderMessages: vi.fn(async () => ({
+        count: 0,
+        sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      })),
+      probeMessageIds: vi.fn(async () => ({ missing: [] })),
+      listKeysAboveKey: vi.fn(async () => ({ keys: [] })),
+      getMessageInfosForKeys: vi.fn(async () => ({ infos: [] })),
     };
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [staleEntry] });
-    ftsSearch.removeBatch = vi.fn(removeBatchImpl);
-    mockHeaderIDToWeID.mockResolvedValue(null);
-    mockRecheckMessageInFolder.mockResolvedValue('absent');
-    return ftsSearch;
+    const empty = {
+      ok: true,
+      count: 0,
+      sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    };
+    return {
+      fingerprintMsgIdRange: vi.fn(fingerprintImpl || (async () => empty)),
+      countMsgIdRange: vi.fn(async () => ({ ok: true, count: 0 })),
+      listMsgIdRange: vi.fn(async () => ({ ok: true, msgIds: [], done: true })),
+      removeBatch: vi.fn(async () => ({ count: 0 })),
+      filterNewMessages: vi.fn(async () => ({ newMsgIds: [] })),
+      getMessageByMsgId: vi.fn(async () => null),
+      stats: vi.fn(async () => ({ docs: 0 })),
+    };
   }
 
-  it('advances the watermark when removal succeeds', async () => {
-    const ftsSearch = arrangeReconcile({
-      removeBatchImpl: async () => ({ count: 1 }),
-    });
+  it('proves folder membership without invoking the old date-window message APIs', async () => {
+    const ftsSearch = arrangeFingerprintReconcile();
 
     await _testExports.runPostInitReconcile(ftsSearch);
 
-    expect(storageData['fts_reconcile_watermark']).toEqual(
-      expect.objectContaining({ version: 1, fromMs: expect.any(Number), completedAtMs: expect.any(Number) }),
-    );
+    expect(browser.messages.query).not.toHaveBeenCalled();
+    expect(browser.messages.continueList).not.toHaveBeenCalled();
+    expect(ftsSearch.queryByDateRange).toBeUndefined();
+    expect(browser.tmMsgNotify.getFolderState).toHaveBeenCalledOnce();
+    expect(storageData.fts_folder_recon_memo.folders['account1:/INBOX'].verified).toBe(true);
+    expect(storageData.fts_reconcile_pending).toBeUndefined();
+    expect(storageData.fts_reconcile_watermark).toBeUndefined();
   });
 
-  it('does NOT advance the watermark when removeBatch fails (confirmed-stale entries still in FTS)', async () => {
-    const ftsSearch = arrangeReconcile({
-      removeBatchImpl: async () => {
+  it('leaves the pending marker when the proof throws', async () => {
+    const ftsSearch = arrangeFingerprintReconcile({
+      fingerprintImpl: async () => {
         throw new Error('native disconnected');
       },
     });
 
     await _testExports.runPostInitReconcile(ftsSearch);
 
-    expect(storageData['fts_reconcile_watermark']).toBeUndefined();
-    expect(_testExports._hasWatermarkHeartbeatTimer()).toBe(false);
-  });
-
-  it('does NOT advance the watermark when Phase 2 itself throws (window not verified)', async () => {
-    const ftsSearch = arrangeReconcile({
-      removeBatchImpl: async () => ({ count: 1 }),
-    });
-    // First FTS scan call dies — the whole window goes unverified
-    ftsSearch.queryByDateRange = vi.fn().mockRejectedValue(new Error('native crash'));
-
-    await _testExports.runPostInitReconcile(ftsSearch);
-
-    expect(storageData['fts_reconcile_watermark']).toBeUndefined();
-    expect(_testExports._hasWatermarkHeartbeatTimer()).toBe(false);
-  });
-
-  it('does NOT advance the watermark when Phase 1 yields a nullish page (walk incomplete)', async () => {
-    _testExports._setIsEnabled(true);
-    // API contract violation: the walk cannot be considered complete —
-    // fail closed, same as recheckMessageInFolder
-    browser.messages.query.mockResolvedValue(undefined);
-
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [] });
-    await _testExports.runPostInitReconcile(ftsSearch);
-
-    expect(storageData['fts_reconcile_watermark']).toBeUndefined();
-    expect(_testExports._hasWatermarkHeartbeatTimer()).toBe(false);
-    // Pending flag survives so the next boot retries (it was never set here,
-    // but the remove must not have run either)
-    expect(ftsSearch.queryByDateRange).not.toHaveBeenCalled(); // Phase 2 never reached
-  });
-
-  it('does NOT advance the watermark when a Phase 1 enqueue throws (message never reached the queue)', async () => {
-    _testExports._setIsEnabled(true);
-    // queueMessageUpdate must get past its _ftsSearch guard to reach the
-    // throwing key derivation
-    _testExports._setFtsSearch({ stats: vi.fn() });
-    try {
-      browser.messages.query.mockResolvedValue({
-        messages: [{ id: 7, headerMessageId: 'boot-gap-msg@example.com' }],
-      });
-      // Transient failure during enqueue — the message was NOT handed to the
-      // persistent drain queue, so reconcile must retry it next boot
-      mockGetUniqueMessageKey.mockRejectedValue(new Error('storage hiccup'));
-
-      const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [] });
-      await _testExports.runPostInitReconcile(ftsSearch);
-
-      expect(storageData['fts_reconcile_watermark']).toBeUndefined();
-      expect(_testExports._hasWatermarkHeartbeatTimer()).toBe(false);
-      expect(logFtsBatchOperation).toHaveBeenCalledWith(
-        'reconcile_phase1',
-        'complete',
-        expect.objectContaining({ enqueueFailed: 1 }),
-      );
-    } finally {
-      _testExports._setFtsSearch(null);
-    }
-  });
-
-  it('Phase 1 drains an empty-but-continuable page instead of stopping', async () => {
-    _testExports._setIsEnabled(true);
-    // Empty first page with a continuation id, real message on page 2 —
-    // page emptiness says nothing about completeness, only id: null does
-    browser.messages.query.mockResolvedValue({ messages: [], id: 'cont-1' });
-    browser.messages.continueList.mockResolvedValue({
-      messages: [{ id: 7, headerMessageId: 'boot-gap-msg@example.com' }],
-    });
-
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [] });
-    await _testExports.runPostInitReconcile(ftsSearch);
-
-    expect(browser.messages.continueList).toHaveBeenCalledWith('cont-1');
-    expect(logFtsBatchOperation).toHaveBeenCalledWith(
-      'reconcile_phase1',
-      'complete',
-      expect.objectContaining({ totalScanned: 1 }),
-    );
+    // Feature detection is fail-closed inside the phase, so the current run
+    // completes as unsupported; the per-folder checkpoint is not written and
+    // the startup-pending marker remains for the next helper/app restart.
+    expect(storageData.fts_folder_recon_memo).toBeUndefined();
+    expect(storageData.fts_reconcile_pending).toBeTruthy();
+    expect(storageData.fts_reconcile_watermark).toBeUndefined();
   });
 });

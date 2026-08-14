@@ -131,7 +131,11 @@
 
 ## ADR-021: Remove-Side Reconcile via Evidence-Triggered Per-Folder Count Invariant (No Date Windows, No Periodic Jobs)
 
-- **[Full ADR](Companion/Decisions/Active/adr-021-remove-side-reconcile-count-invariant.md)** — with add-side completeness guaranteed, FTS-per-folder ⊇ msgDB-per-folder, so per folder `ftsCount > msgCount` ⟹ ghosts, `msgCount > ftsCount` (drain-quiet) ⟹ missing adds, equal ⟹ zero work. Phase 1c `_runFolderReconcile` on generic `countMsgIdRange`/`listMsgIdRange` PK-range RPCs (no schema change, no host-side msgId parsing). The `indexedAt`/`verifiedAt` column was REJECTED. Missing direction is a RESUMABLE backfill (revised 2026-07-06) that replaced the hard `FOLDER_RECON_MISSING_MAX_DEFICIT = 500` cap.
+- **[Full ADR](Companion/Decisions/Active/adr-021-remove-side-reconcile-count-invariant.md)** — historical count-invariant design; **superseded by ADR-022** because cached counts and equal-cardinality swaps cannot prove set equality.
+
+## ADR-022: Startup UID/FTS Membership Fingerprints Replace Count Inference and Automatic Scans
+
+- **[Full ADR](Companion/Decisions/Active/adr-022-startup-uid-fts-membership-fingerprints.md)** — IMAP startup checkpoints compare `(UIDVALIDITY, SHA-256(sorted UID set))` with SHA-256 of the native folder-key range; unchanged pairs preserve the prior exact proof without header/body reads. Changed/unseeded folders hash the exact de-duplicated `account:path:Message-ID` msgDB set and run both stale + missing repair directions until post-drain digests match. Non-IMAP hashes headers each boot. Retires automatic date-window boot scans and periodic maintenance alarms; explicit manual repair remains. Native helper ≥0.11.0 (`fingerprintMsgIdRange`), schema unchanged.
 
 ---
 

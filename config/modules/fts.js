@@ -18,10 +18,10 @@ export async function loadFtsSettings() {
       chat_ftsIncrementalEnabled: true,
       chat_ftsIncrementalBatchDelay: 1000,
       chat_ftsIncrementalBatchSize: 50,
-      chat_ftsMaintenanceEnabled: true,
-      chat_ftsMaintenanceHourlyEnabled: false, // Disabled by default - incremental catches most
-      chat_ftsMaintenanceDailyEnabled: false,  // Disabled by default - weekly is sufficient
-      chat_ftsMaintenanceWeeklyEnabled: true,  // Weekly enabled as primary backstop
+      chat_ftsMaintenanceEnabled: false,
+      chat_ftsMaintenanceHourlyEnabled: false, // Automatic scans are retired.
+      chat_ftsMaintenanceDailyEnabled: false,
+      chat_ftsMaintenanceWeeklyEnabled: false,
       chat_ftsMaintenanceMonthlyEnabled: false,
       chat_ftsMaintenanceWeeklyDay: 3, // Wednesday
       chat_ftsMaintenanceWeeklyHourStart: 9,
@@ -34,11 +34,11 @@ export async function loadFtsSettings() {
     $("fts-incremental-enabled").checked = stored.chat_ftsIncrementalEnabled;
     $("fts-incremental-batch-delay").value = stored.chat_ftsIncrementalBatchDelay;
     $("fts-incremental-batch-size").value = stored.chat_ftsIncrementalBatchSize;
-    $("fts-maintenance-enabled").checked = stored.chat_ftsMaintenanceEnabled;
-    $("fts-maintenance-hourly").checked = stored.chat_ftsMaintenanceHourlyEnabled;
-    $("fts-maintenance-daily").checked = stored.chat_ftsMaintenanceDailyEnabled;
-    $("fts-maintenance-weekly").checked = stored.chat_ftsMaintenanceWeeklyEnabled;
-    $("fts-maintenance-monthly").checked = stored.chat_ftsMaintenanceMonthlyEnabled;
+    $("fts-maintenance-enabled").checked = false;
+    $("fts-maintenance-hourly").checked = false;
+    $("fts-maintenance-daily").checked = false;
+    $("fts-maintenance-weekly").checked = false;
+    $("fts-maintenance-monthly").checked = false;
     
     // Weekly schedule settings
     $("fts-maintenance-weekly-day").value = stored.chat_ftsMaintenanceWeeklyDay;
@@ -60,13 +60,12 @@ export async function loadFtsSettings() {
 
 // Helper to show/hide weekly schedule time options
 function updateWeeklyScheduleVisibility() {
-  const weeklyEnabled = $("fts-maintenance-weekly")?.checked;
   const container = $("weekly-schedule-container");
   if (container) {
-    // Find the schedule row (the div with day/time inputs) and toggle its visibility
+    // Automatic scheduling is retired; keep the explicit manual scan buttons visible.
     const scheduleRow = container.querySelector(".row");
     if (scheduleRow) {
-      scheduleRow.style.display = weeklyEnabled ? "flex" : "none";
+      scheduleRow.style.display = "flex";
     }
   }
 }
@@ -82,11 +81,13 @@ export async function saveFtsSettings() {
       parseInt($("fts-incremental-batch-delay").value, 10) || 1000;
     const incrementalBatchSize =
       parseInt($("fts-incremental-batch-size").value, 10) || 50;
-    const maintenanceEnabled = $("fts-maintenance-enabled").checked;
-    const maintenanceHourly = $("fts-maintenance-hourly").checked;
-    const maintenanceDaily = $("fts-maintenance-daily").checked;
-    const maintenanceWeekly = $("fts-maintenance-weekly").checked;
-    const maintenanceMonthly = $("fts-maintenance-monthly").checked;
+    // Periodic scans are retired; these stored flags stay false so upgrades
+    // cannot resurrect an old alarm schedule.
+    const maintenanceEnabled = false;
+    const maintenanceHourly = false;
+    const maintenanceDaily = false;
+    const maintenanceWeekly = false;
+    const maintenanceMonthly = false;
     
     // Weekly schedule settings
     const weeklyDay = parseInt($("fts-maintenance-weekly-day").value, 10) || 3;
@@ -1168,4 +1169,3 @@ export async function handleFtsMaintenanceChange(e) {
     console.log(`[TMDBG Config] Weekly maintenance end hour set to ${hourEnd}`);
   }
 }
-

@@ -45,10 +45,10 @@ tabmail-thunderbird/
 ├── fts/                         # Full-Text Search engine
 │   ├── engine.js               # Search engine
 │   ├── indexer.js              # Main indexer
-│   ├── incrementalIndexer.js   # Incremental indexing
-│   ├── nativeEngine.js         # Native messaging bridge to tabmail-native-fts
+│   ├── incrementalIndexer.js   # Live indexing + startup UID/FTS fingerprint reconcile
+│   ├── nativeEngine.js         # Native messaging bridge (incl. folder-range fingerprints)
 │   ├── memoryIndexer.js        # In-memory indexing
-│   └── maintenanceScheduler.js # Index maintenance
+│   └── maintenanceScheduler.js # Manual repair scans (automatic schedules retired)
 │
 ├── gui/                         # GUI tweaks & preferences
 │   ├── tweaks.js               # GUI tweaks implementation

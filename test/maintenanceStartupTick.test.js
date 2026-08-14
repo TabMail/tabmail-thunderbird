@@ -257,8 +257,8 @@ describe('_scheduleStartupTickWhenQuiet', () => {
   });
 });
 
-describe('initMaintenanceScheduler startup-tick deferral', () => {
-  it('schedules the deferred tick instead of running maintenance synchronously', async () => {
+describe('initMaintenanceScheduler retirement migration', () => {
+  it('clears legacy schedules and does not create a startup tick or alarm', async () => {
     mockGetLastSyncEventMs.mockImplementation(() => Date.now());
     mockIsReconcilePending.mockResolvedValue(true);
 
@@ -266,8 +266,16 @@ describe('initMaintenanceScheduler startup-tick deferral', () => {
     _setInitializedForTest(false);
     await scheduler.initMaintenanceScheduler({ stats: vi.fn() });
 
-    // Timer scheduled, but nothing ran yet (no scan status writes beyond init cleanup)
-    expect(_hasStartupTickTimer()).toBe(true);
+    expect(_hasStartupTickTimer()).toBe(false);
+    expect(browser.alarms.create).not.toHaveBeenCalled();
+    expect(browser.alarms.clear).toHaveBeenCalled();
+    expect(browser.alarms.onAlarm.addListener).not.toHaveBeenCalled();
+
+    expect(browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+      chat_ftsMaintenanceEnabled: false,
+      chat_ftsMaintenanceWeeklyEnabled: false,
+      fts_periodic_scans_retired_v1: true,
+    }));
 
     // No maintenance scan started: fts_scan_status never set to isScanning=true
     const scanningWrites = browser.storage.local.set.mock.calls.filter(
@@ -275,7 +283,6 @@ describe('initMaintenanceScheduler startup-tick deferral', () => {
     );
     expect(scanningWrites).toHaveLength(0);
 
-    // Dispose clears the pending startup tick
     await scheduler.disposeMaintenanceScheduler();
     expect(_hasStartupTickTimer()).toBe(false);
   });

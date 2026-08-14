@@ -32,6 +32,119 @@ function debugLog(...args) {
   }
 }
 
+const HASH_CHUNK_BYTES = 1024 * 1024;
+
+// Experiment modules run in a privileged Thunderbird scope where Web-platform
+// globals such as TextEncoder are not guaranteed (TB 154 Beta has none). Keep
+// the encoding local and deterministic instead of failing the entire API at
+// module evaluation time. Lone UTF-16 surrogates match TextEncoder semantics
+// by becoming U+FFFD.
+function encodeUtf8(value) {
+  const input = String(value);
+  const bytes = [];
+  for (let i = 0; i < input.length; i++) {
+    let cp = input.charCodeAt(i);
+    if (cp >= 0xd800 && cp <= 0xdbff) {
+      const low = input.charCodeAt(i + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
+        i++;
+      } else {
+        cp = 0xfffd;
+      }
+    } else if (cp >= 0xdc00 && cp <= 0xdfff) {
+      cp = 0xfffd;
+    }
+
+    if (cp <= 0x7f) {
+      bytes.push(cp);
+    } else if (cp <= 0x7ff) {
+      bytes.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    } else if (cp <= 0xffff) {
+      bytes.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    } else {
+      bytes.push(
+        0xf0 | (cp >> 18),
+        0x80 | ((cp >> 12) & 0x3f),
+        0x80 | ((cp >> 6) & 0x3f),
+        0x80 | (cp & 0x3f),
+      );
+    }
+  }
+  return Uint8Array.from(bytes);
+}
+
+function bytesCompare(a, b) {
+  const shared = Math.min(a.length, b.length);
+  for (let i = 0; i < shared; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
+}
+
+function finishSha256Hex(hash) {
+  const binary = hash.finish(false);
+  let hex = "";
+  for (let i = 0; i < binary.length; i++) {
+    hex += binary.charCodeAt(i).toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
+/** Hash sorted UTF-8 strings using the native helper's length framing. */
+function fingerprintStrings(values) {
+  const encoded = Array.from(values, encodeUtf8);
+  encoded.sort(bytesCompare);
+  const hash = Cc["@mozilla.org/security/hash;1"].createInstance(Ci.nsICryptoHash);
+  hash.init(hash.SHA256);
+  const chunk = new Uint8Array(HASH_CHUNK_BYTES);
+  const chunkView = new DataView(chunk.buffer);
+  let offset = 0;
+  const flush = () => {
+    if (offset === 0) return;
+    hash.update(chunk.subarray(0, offset), offset);
+    offset = 0;
+  };
+  for (const bytes of encoded) {
+    if (bytes.length + 8 > chunk.length) {
+      flush();
+      const length = new Uint8Array(8);
+      new DataView(length.buffer).setUint32(4, bytes.length, false);
+      hash.update(length, length.length);
+      hash.update(bytes, bytes.length);
+      continue;
+    }
+    if (offset + 8 + bytes.length > chunk.length) flush();
+    chunkView.setUint32(offset, 0, false);
+    chunkView.setUint32(offset + 4, bytes.length, false);
+    offset += 8;
+    chunk.set(bytes, offset);
+    offset += bytes.length;
+  }
+  flush();
+  return { count: encoded.length, sha256: finishSha256Hex(hash) };
+}
+
+/** Hash sorted msgDB keys. In IMAP folders these are the folder's UID set. */
+function fingerprintMsgKeys(keys) {
+  const sorted = Array.from(keys || [], Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const hash = Cc["@mozilla.org/security/hash;1"].createInstance(Ci.nsICryptoHash);
+  hash.init(hash.SHA256);
+  const chunk = new Uint8Array(HASH_CHUNK_BYTES);
+  const view = new DataView(chunk.buffer);
+  let offset = 0;
+  for (const key of sorted) {
+    if (offset + 4 > chunk.length) {
+      hash.update(chunk, offset);
+      offset = 0;
+    }
+    view.setUint32(offset, key >>> 0, false);
+    offset += 4;
+  }
+  if (offset > 0) hash.update(chunk.subarray(0, offset), offset);
+  return { count: sorted.length, sha256: finishSha256Hex(hash) };
+}
+
 /**
  * Extract message info from nsIMsgDBHdr for serialization to WebExtension.
  * IMPORTANT: Do not hold references to nsIMsgDBHdr objects - serialize immediately.
@@ -125,14 +238,24 @@ function extractRemovedInfo(hdr, folderManager, eventType) {
         accountId = weFolder?.accountId || "";
       } catch (_) {
         folderPath = folder.URI || "";
+        try {
+          accountId = folder.server?.key || "";
+        } catch (_) {}
       }
     }
+
+    let msgKey = null;
+    try {
+      const k = hdr.messageKey;
+      if (typeof k === "number" && Number.isFinite(k)) msgKey = k;
+    } catch (_) {}
     
     return {
       headerMessageId,
       weFolderId,
       folderPath,
       accountId,
+      msgKey,
       eventType,
     };
   } catch (e) {
@@ -221,56 +344,49 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
          * with an `error` field so the caller can skip them (never seed or
          * advance a cursor on error).
          */
-        async getCursorFolders() {
-          const out = [];
-          if (!MailServices?.accounts) return out;
-          for (const account of MailServices.accounts.accounts) {
-            let server = null;
-            try {
-              server = account.incomingServer;
-            } catch (_) {}
-            if (!server || server.type !== "imap") continue;
-
-            let root = null;
-            try {
-              root = server.rootFolder;
-            } catch (e) {
-              debugLog("getCursorFolders: no rootFolder for", server.key, e);
-              continue;
+        async getCursorFolder(accountId, folderPath) {
+          const started = Date.now();
+          const base = {
+            accountId: String(accountId || ""),
+            folderPath: String(folderPath || ""),
+            folderURI: "",
+          };
+          debugLog("getCursorFolder:start", `${base.accountId}:${base.folderPath}`);
+          try {
+            const lookupStarted = Date.now();
+            const folder = folderManager?.get(base.accountId, base.folderPath);
+            const lookupMs = Date.now() - lookupStarted;
+            if (!folder) return { ...base, lookupMs, elapsedMs: Date.now() - started, error: "folder_not_found" };
+            base.folderURI = String(folder.URI || "");
+            const isVirtual = folder.getFlag(Ci.nsMsgFolderFlags.Virtual);
+            if (String(folder.server?.type || "") !== "imap" || isVirtual) {
+              return { ...base, lookupMs, elapsedMs: Date.now() - started, error: "not_imap" };
             }
-            if (!root) continue;
 
-            for (const folder of root.descendants) {
-              const base = {
-                accountId: "",
-                folderPath: "",
-                folderURI: String(folder.URI || ""),
-              };
-              try {
-                const weFolder = folderManager?.convert(folder);
-                base.accountId = weFolder?.accountId || server.key || "";
-                base.folderPath = weFolder?.path || folder.URI || "";
-              } catch (_) {
-                base.accountId = server.key || "";
-                base.folderPath = folder.URI || "";
-              }
-              try {
-                // May throw (missing/out-of-date summary). Do not force a
-                // rebuild — skip and let the caller retry next boot.
-                const db = folder.msgDatabase;
-                const dbInfo = db.dBFolderInfo;
-                out.push({
-                  ...base,
-                  uidValidity: dbInfo.imapUidValidity || 0,
-                  highWater: dbInfo.highWater || 0,
-                  totalMessages: folder.getTotalMessages(false),
-                });
-              } catch (e) {
-                out.push({ ...base, error: String(e) });
-              }
-            }
+            // This is deliberately one folder per Experiment call. Opening a
+            // large or stale summary DB can be synchronous; the WebExtension
+            // caller yields between calls so one account-wide loop cannot
+            // monopolize Thunderbird's extension thread at startup.
+            const dbOpenStarted = Date.now();
+            const db = folder.msgDatabase;
+            const dbInfo = db.dBFolderInfo;
+            const dbOpenMs = Date.now() - dbOpenStarted;
+            const result = {
+              ...base,
+              uidValidity: dbInfo.imapUidValidity || 0,
+              highWater: dbInfo.highWater || 0,
+              totalMessages: folder.getTotalMessages(false),
+              lookupMs,
+              dbOpenMs,
+              elapsedMs: Date.now() - started,
+            };
+            debugLog("getCursorFolder:done", `${base.accountId}:${base.folderPath}`, result);
+            return result;
+          } catch (e) {
+            const result = { ...base, elapsedMs: Date.now() - started, error: String(e) };
+            console.warn("[tmMsgNotify] getCursorFolder:error", `${base.accountId}:${base.folderPath}`, result);
+            return result;
           }
-          return out;
         },
 
         /**
@@ -327,60 +443,119 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
         },
 
         /**
-         * Per-folder message counts for the count-invariant reconcile
-         * (PLAN_FOLDER_SET_RECONCILE.md). EVERY folder of EVERY account —
-         * all server types, NOT IMAP-only like getCursorFolders: local/POP
-         * folders participate in the remove-side reconcile too.
-         * Uses folder.getTotalMessages(false), which reads TB's folder
-         * cache and does NOT open msgDBs — cheap enough to run every boot.
-         * Per-folder failures are returned as `{ ..., error }` entries.
+         * Cheap startup membership state for every folder. IMAP msgDB keys
+         * are UIDs, so their sorted digest plus UIDVALIDITY is a stable,
+         * deletion-sensitive fingerprint. Other server types deliberately do
+         * not claim stable keys and are verified from Message-IDs each boot.
          */
-        async getFolderCounts() {
-          const out = [];
-          if (!MailServices?.accounts) return out;
-          for (const account of MailServices.accounts.accounts) {
-            let server = null;
+        async getFolderState(accountId, folderPath) {
+          const started = Date.now();
+          const base = {
+            accountId: String(accountId || ""),
+            folderPath: String(folderPath || ""),
+            folderURI: "",
+            serverType: "",
+            stableUidKeys: false,
+          };
+          debugLog("getFolderState:start", `${base.accountId}:${base.folderPath}`);
+          try {
+            const lookupStarted = Date.now();
+            const folder = folderManager?.get(base.accountId, base.folderPath);
+            const lookupMs = Date.now() - lookupStarted;
+            if (!folder) return { ...base, lookupMs, elapsedMs: Date.now() - started, error: "folder_not_found" };
+            base.folderURI = String(folder.URI || "");
+            base.serverType = String(folder.server?.type || "");
+            // Saved-search/virtual folders can live under an IMAP server, but
+            // their msgDB keys are search-view artifacts, not IMAP UIDs.
+            base.stableUidKeys = base.serverType === "imap"
+              && !folder.getFlag(Ci.nsMsgFolderFlags.Virtual);
+
+            if (!base.stableUidKeys) {
+              const result = { ...base, lookupMs, elapsedMs: Date.now() - started };
+              debugLog("getFolderState:done", `${base.accountId}:${base.folderPath}`, result);
+              return result;
+            }
+
+            const dbOpenStarted = Date.now();
+            const db = folder.msgDatabase;
+            const dbInfo = db.dBFolderInfo;
+            const dbOpenMs = Date.now() - dbOpenStarted;
+            const hashStarted = Date.now();
+            const uid = fingerprintMsgKeys(db.listAllKeys());
+            const hashMs = Date.now() - hashStarted;
+            let highestModSeq = "";
             try {
-              server = account.incomingServer;
+              highestModSeq = String(dbInfo.getCharProperty("highestModSeq") || "");
             } catch (_) {}
-            if (!server) continue;
-
-            let root = null;
-            try {
-              root = server.rootFolder;
-            } catch (e) {
-              debugLog("getFolderCounts: no rootFolder for", server.key, e);
-              continue;
-            }
-            if (!root) continue;
-
-            const serverType = String(server.type || "");
-            for (const folder of root.descendants) {
-              const base = {
-                accountId: "",
-                folderPath: "",
-                folderURI: String(folder.URI || ""),
-                serverType,
-              };
-              try {
-                const weFolder = folderManager?.convert(folder);
-                base.accountId = weFolder?.accountId || server.key || "";
-                base.folderPath = weFolder?.path || folder.URI || "";
-              } catch (_) {
-                base.accountId = server.key || "";
-                base.folderPath = folder.URI || "";
-              }
-              try {
-                out.push({
-                  ...base,
-                  totalMessages: folder.getTotalMessages(false),
-                });
-              } catch (e) {
-                out.push({ ...base, error: String(e) });
-              }
-            }
+            const result = {
+              ...base,
+              uidValidity: dbInfo.imapUidValidity || 0,
+              uidCount: uid.count,
+              uidSha256: uid.sha256,
+              highestModSeq,
+              lookupMs,
+              dbOpenMs,
+              hashMs,
+              elapsedMs: Date.now() - started,
+            };
+            debugLog("getFolderState:done", `${base.accountId}:${base.folderPath}`, result);
+            return result;
+          } catch (e) {
+            const result = { ...base, elapsedMs: Date.now() - started, error: String(e) };
+            console.warn("[tmMsgNotify] getFolderState:error", `${base.accountId}:${base.folderPath}`, result);
+            return result;
           }
-          return out;
+        },
+
+        /**
+         * Exact expected FTS-key fingerprint from the folder's local msgDB.
+         * This reads headers only (never message bodies), normalizes the same
+         * account:path:Message-ID key used by the indexer, and de-duplicates
+         * duplicate Message-IDs to match the native primary key.
+         */
+        async fingerprintFolderMessages(folderURI) {
+          try {
+            const folder = MailUtilsMsgNotify?.getExistingFolder?.(folderURI);
+            if (!folder) return { error: "folder_not_found" };
+
+            let accountId = "";
+            let folderPath = "";
+            try {
+              const weFolder = folderManager?.convert(folder);
+              accountId = weFolder?.accountId || folder.server?.key || "";
+              folderPath = weFolder?.path || folder.URI || "";
+            } catch (_) {
+              accountId = folder.server?.key || "";
+              folderPath = folder.URI || "";
+            }
+            if (!accountId || !folderPath) return { error: "folder_identity_missing" };
+
+            const db = folder.msgDatabase;
+            const msgIds = new Set();
+            let unkeyedCount = 0;
+            for (const key of db.listAllKeys()) {
+              let hdr = null;
+              try {
+                hdr = db.getMsgHdrForKey(key);
+              } catch (_) {
+                continue;
+              }
+              const headerMessageId = String(hdr?.messageId || "").replace(/[<>]/g, "");
+              if (!headerMessageId) {
+                unkeyedCount += 1;
+                continue;
+              }
+              msgIds.add(`${accountId}:${folderPath}:${headerMessageId}`);
+            }
+            return {
+              ...fingerprintStrings(msgIds),
+              accountId,
+              folderPath,
+              unkeyedCount,
+            };
+          } catch (e) {
+            return { error: String(e) };
+          }
         },
 
         /**

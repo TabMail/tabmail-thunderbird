@@ -3,9 +3,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 /**
- * FTS Maintenance Scheduler
+ * FTS Manual Maintenance
  * 
- * Implements periodic maintenance scans to keep the FTS index healthy:
+ * Retains explicit maintenance/repair commands with historical scopes:
  * - Hourly scan of last 1 day messages
  * - Daily scan of last 3 days messages  
  * - Weekly scan of last 3 weeks messages
@@ -21,7 +21,8 @@
  * 
  * Per FTS5 docs: https://www.sqlite.org/fts5.html#the_merge_command
  * 
- * Uses browser.alarms for scheduling and browser.storage.local for tracking.
+ * Automatic alarms are retired; startup membership reconciliation now owns
+ * consistency. The scheduling helpers remain private compatibility/test code.
  */
 
 import { SETTINGS } from "../agent/modules/config.js";
@@ -146,9 +147,8 @@ const MAINTENANCE_SCHEDULES = {
   }
 };
 
-// Single "tick" alarm: fires on startup + every hour, and chooses at most ONE run.
-// Per requirements: order oldest->latest (monthly -> weekly -> daily -> hourly),
-// and longer interval coverage marks shorter intervals as "also ran".
+// Retired tick-alarm definitions retained to clear alarms from older versions
+// and to preserve deterministic manual/test helpers.
 const MAINTENANCE_TICK_ALARM_NAME = "fts-maintenance-tick";
 const MAINTENANCE_TYPE_ORDER = Object.freeze(["monthly", "weekly", "daily", "hourly"]);
 const MAINTENANCE_COVERAGE = Object.freeze({
@@ -299,31 +299,26 @@ export async function initMaintenanceScheduler(ftsSearch) {
     log(`[TMDBG FTS] Failed to check/clear stuck status: ${e?.message || String(e)}`, "error");
   }
   
-  // Load settings and set up alarms
-  const settings = await getMaintenanceSettings();
-  
-  if (settings.enabled) {
-    await setupMaintenanceAlarms();
-    log("[TMDBG FTS] Maintenance scheduler initialized");
-    // Per requirement: also check/run on Thunderbird launch (not only on the first hourly alarm).
-    // This runs at most ONE maintenance item, applying coverage rules.
-    // DEFERRED behind the startup sync quiet period + boot reconcile — running
-    // a due scan immediately at launch races TB's startup folder sync, where
-    // messages.query can return inconsistent snapshots and cleanupMissingEntries
-    // would mark valid entries as stale (observed 2026-06-03, [Gmail]/Bin).
-    _scheduleStartupTickWhenQuiet();
-  } else {
-    await clearMaintenanceAlarms();
-    log("[TMDBG FTS] Maintenance scheduler disabled");
-  }
-  
-  // Listen for alarm events (avoid duplicate listeners)
+  // Periodic scans were replaced by the startup UID/FTS membership proof.
+  // Migrate every previously-enabled installation and clear both current and
+  // legacy alarms. Manual maintenance entry points remain available.
+  await browser.storage.local.set({
+    chat_ftsMaintenanceEnabled: false,
+    chat_ftsMaintenanceHourlyEnabled: false,
+    chat_ftsMaintenanceDailyEnabled: false,
+    chat_ftsMaintenanceWeeklyEnabled: false,
+    chat_ftsMaintenanceMonthlyEnabled: false,
+    fts_periodic_scans_retired_v1: true,
+  });
+  await clearMaintenanceAlarms();
+  _clearStartupTickTimer();
+
+  // Do not attach an alarm listener: no automatic maintenance job exists.
   if (_alarmListener) {
     browser.alarms.onAlarm.removeListener(_alarmListener);
+    _alarmListener = null;
   }
-  _alarmListener = handleMaintenanceAlarm;
-  browser.alarms.onAlarm.addListener(_alarmListener);
-  log("[TMDBG FTS] Maintenance alarm listener attached");
+  log("[TMDBG FTS] Periodic maintenance retired; startup membership reconciliation active (manual repair remains available)");
 }
 
 /**
@@ -332,10 +327,7 @@ export async function initMaintenanceScheduler(ftsSearch) {
 export async function disposeMaintenanceScheduler(options = {}) {
   if (!_isInitialized) return;
   
-  // IMPORTANT (MV3/TB 145): on a normal suspend we should NOT clear alarms,
-  // otherwise alarms can't wake the service worker again.
-  // If you explicitly want alarms removed (e.g. user disabled maintenance),
-  // call with { clearAlarms: true }.
+  // Compatibility option for callers that want another legacy-alarm cleanup.
   const clearAlarms = options?.clearAlarms === true;
   if (clearAlarms) {
     await clearMaintenanceAlarms();
@@ -356,22 +348,22 @@ export async function disposeMaintenanceScheduler(options = {}) {
  */
 async function getMaintenanceSettings() {
   const stored = await browser.storage.local.get({
-    chat_ftsMaintenanceEnabled: true,
-    chat_ftsMaintenanceHourlyEnabled: false, // Disabled by default - incremental should catch most changes
-    chat_ftsMaintenanceDailyEnabled: false,  // Disabled by default - weekly is sufficient backstop
-    chat_ftsMaintenanceWeeklyEnabled: true,  // Weekly enabled as primary maintenance backstop
-    chat_ftsMaintenanceMonthlyEnabled: false, // Monthly disabled by default (heavy)
+    chat_ftsMaintenanceEnabled: false,
+    chat_ftsMaintenanceHourlyEnabled: false,
+    chat_ftsMaintenanceDailyEnabled: false,
+    chat_ftsMaintenanceWeeklyEnabled: false,
+    chat_ftsMaintenanceMonthlyEnabled: false,
     chat_ftsMaintenanceWeeklyDay: 3, // 0=Sunday, 3=Wednesday (default)
     chat_ftsMaintenanceWeeklyHourStart: 9, // 9 AM
     chat_ftsMaintenanceWeeklyHourEnd: 12, // 12 PM (noon)
   });
   
   return {
-    enabled: stored.chat_ftsMaintenanceEnabled,
-    hourly: stored.chat_ftsMaintenanceHourlyEnabled,
-    daily: stored.chat_ftsMaintenanceDailyEnabled,
-    weekly: stored.chat_ftsMaintenanceWeeklyEnabled,
-    monthly: stored.chat_ftsMaintenanceMonthlyEnabled,
+    enabled: false,
+    hourly: false,
+    daily: false,
+    weekly: false,
+    monthly: false,
     weeklySchedule: {
       dayOfWeek: stored.chat_ftsMaintenanceWeeklyDay,
       hourStart: stored.chat_ftsMaintenanceWeeklyHourStart,
@@ -384,31 +376,10 @@ async function getMaintenanceSettings() {
  * Set up browser alarms for maintenance schedules
  */
 async function setupMaintenanceAlarms() {
-  const settings = await getMaintenanceSettings();
-  
-  // Clear existing alarms first
+  // Kept as a private compatibility hook for settings messages from an older
+  // options page. Periodic scheduling is retired unconditionally.
   await clearMaintenanceAlarms();
-
-  if (!settings.enabled) {
-    log("[TMDBG FTS] Maintenance disabled - not scheduling maintenance tick alarm");
-    return;
-  }
-
-  const tickIntervalMinutes = MAINTENANCE_SCHEDULES.hourly.interval;
-  await browser.alarms.create(MAINTENANCE_TICK_ALARM_NAME, {
-    // Do not rely on tiny delay values (may be clamped). We explicitly run a startup tick above.
-    delayInMinutes: tickIntervalMinutes,
-    periodInMinutes: tickIntervalMinutes,
-  });
-
-  // Log enabled schedule flags for debugging.
-  log(`[TMDBG FTS] Scheduled maintenance tick alarm every ${tickIntervalMinutes} minutes (alarm: ${MAINTENANCE_TICK_ALARM_NAME})`);
-  log(`[TMDBG FTS] Maintenance schedule flags: hourly=${!!settings.hourly}, daily=${!!settings.daily}, weekly=${!!settings.weekly}, monthly=${!!settings.monthly}`);
-
-  // Verify alarms were created
-  const alarms = await browser.alarms.getAll();
-  const maintenanceAlarms = alarms.filter(a => a.name === MAINTENANCE_TICK_ALARM_NAME || LEGACY_MAINTENANCE_ALARM_NAMES.includes(a.name));
-  log(`[TMDBG FTS] Maintenance alarms present (${maintenanceAlarms.length}):`, maintenanceAlarms.map(a => a.name));
+  log("[TMDBG FTS] Periodic maintenance scheduling request ignored — feature retired");
 }
 
 /**
@@ -432,24 +403,7 @@ async function clearMaintenanceAlarms() {
  * Handle alarm events for maintenance
  */
 async function handleMaintenanceAlarm(alarm) {
-  log(`[TMDBG FTS] Alarm triggered: ${alarm.name} at ${new Date().toISOString()}`);
-
-  // Only handle the single maintenance tick alarm.
-  if (alarm.name !== MAINTENANCE_TICK_ALARM_NAME) {
-    // Legacy alarms should not run; they're cleared on init but log if they still fire.
-    if (LEGACY_MAINTENANCE_ALARM_NAMES.includes(alarm.name)) {
-      log(`[TMDBG FTS] Legacy maintenance alarm fired (${alarm.name}) - ignoring (should be cleared)`, "warn");
-    } else {
-      log(`[TMDBG FTS] Alarm ${alarm.name} is not a maintenance alarm, ignoring`);
-    }
-    return;
-  }
-
-  try {
-    await runScheduledMaintenanceTick("alarm");
-  } catch (e) {
-    log(`[TMDBG FTS] Maintenance tick failed: ${e?.message || String(e)}`, "warn");
-  }
+  log(`[TMDBG FTS] Retired maintenance alarm ignored: ${alarm?.name || "unknown"}`, "warn");
 }
 
 /**
@@ -1458,14 +1412,21 @@ export async function getMaintenanceStatus() {
  * Update maintenance settings and reschedule alarms
  */
 export async function updateMaintenanceSettings(newSettings) {
-  await browser.storage.local.set(newSettings);
+  await browser.storage.local.set({
+    ...newSettings,
+    chat_ftsMaintenanceEnabled: false,
+    chat_ftsMaintenanceHourlyEnabled: false,
+    chat_ftsMaintenanceDailyEnabled: false,
+    chat_ftsMaintenanceWeeklyEnabled: false,
+    chat_ftsMaintenanceMonthlyEnabled: false,
+  });
   
   // Reinitialize with new settings
   if (_isInitialized && _ftsSearch) {
     await setupMaintenanceAlarms();
   }
   
-  log("[TMDBG FTS] Maintenance settings updated");
+  log("[TMDBG FTS] Periodic maintenance settings forced off (feature retired)");
 }
 
 /**

@@ -1,3 +1,6 @@
+<!-- COMPANION-CURRENT-NOTE-BEGIN -->
+> **2026-08-13:** Superseded by [ADR-022](adr-022-startup-uid-fts-membership-fingerprints.md). Cached folder counts and memoized count pairs do not prove membership equality; the preserved block remains byte-identical history.
+<!-- COMPANION-CURRENT-NOTE-END -->
 # ADR-021: Remove-Side Reconcile via Evidence-Triggered Per-Folder Count Invariant (No Date Windows, No Periodic Jobs)
 
 > Routed out of `DECISIONS.md` § ADR-021 by the `companion-compact` skill on 2026-08-05. The block between the markers below is the inline text **byte-for-byte** — nothing was reworded, merged, reordered or truncated. Index line: `DECISIONS.md`.

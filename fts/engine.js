@@ -658,6 +658,10 @@ export const ftsSearch = {
     return await nativeFtsSearch.countMsgIdRange(startKey, endKey);
   },
 
+  async fingerprintMsgIdRange(startKey, endKey) {
+    return await nativeFtsSearch.fingerprintMsgIdRange(startKey, endKey);
+  },
+
   async listMsgIdRange(startKey, endKey, afterKey, limit) {
     return await nativeFtsSearch.listMsgIdRange(startKey, endKey, afterKey, limit);
   },

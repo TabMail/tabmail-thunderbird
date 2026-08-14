@@ -57,6 +57,7 @@ globalThis.browser = {
       remove: vi.fn(async (key) => { delete storageData[key]; }),
     },
   },
+  accounts: { list: vi.fn(async () => []) },
 };
 
 const { logFtsOperation } = await import('../agent/modules/eventLogger.js');
@@ -131,8 +132,19 @@ function infoForKey(folder, key) {
  */
 function mockNotify(folders, { keysByURI = {}, infosByURI = {} } = {}) {
   const byURI = Object.fromEntries(folders.map(f => [f.folderURI, f]));
+  const byIdentity = Object.fromEntries(folders.map(f => [`${f.accountId}:${f.folderPath}`, f]));
+  const grouped = new Map();
+  for (const folder of folders) {
+    if (!grouped.has(folder.accountId)) grouped.set(folder.accountId, []);
+    grouped.get(folder.accountId).push({ path: folder.folderPath, subFolders: [] });
+  }
+  globalThis.browser.accounts.list.mockResolvedValue([...grouped].map(([id, subFolders]) => ({
+    id,
+    type: 'imap',
+    rootFolder: { path: '/', isRoot: true, subFolders },
+  })));
   const api = {
-    getCursorFolders: vi.fn(async () => folders),
+    getCursorFolder: vi.fn(async (accountId, folderPath) => byIdentity[`${accountId}:${folderPath}`]),
     listKeysAboveKey: vi.fn(async (uri, _sinceKey, _maxKeys) =>
       keysByURI[uri] || { keys: [], truncated: false, totalAbove: 0 }
     ),
@@ -166,6 +178,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   for (const key of Object.keys(storageData)) delete storageData[key];
   delete globalThis.browser.tmMsgNotify;
+  globalThis.browser.accounts.list.mockResolvedValue([]);
   _getPendingUpdates().clear();
   _clearSessionMaxKeyByFolder();
   _setIsEnabled(true);
@@ -356,10 +369,11 @@ describe('_runCursorScan', () => {
     expect(cur.folders['account3:/[Gmail]/All Mail']).toBeUndefined();
   });
 
-  it('getCursorFolders throwing skips the scan without writing cursors', async () => {
+  it('folder inventory throwing skips the scan without writing cursors', async () => {
     globalThis.browser.tmMsgNotify = {
-      getCursorFolders: vi.fn(async () => { throw new Error('ipc dead'); }),
+      getCursorFolder: vi.fn(async () => { throw new Error('ipc dead'); }),
     };
+    globalThis.browser.accounts.list.mockRejectedValue(new Error('ipc dead'));
 
     const result = await _runCursorScan();
 
