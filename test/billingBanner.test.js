@@ -175,29 +175,87 @@ describe("bannerFromWhoami — real payload shapes", () => {
   });
 });
 
-// The usage area renders "N/A of monthly quota" for the zero-priority-budget
-// plan instead of a misleading "0% of monthly quota". Detection mirrors iOS
-// isZeroPlan (planTier == "BYOK").
-describe("isZeroQuotaPlan", () => {
-  it("true for BYOK", () => {
-    expect(isZeroQuotaPlan({ plan_tier: "BYOK" })).toBe(true);
-    expect(isZeroQuotaPlan(whoami({ plan_tier: "BYOK" }))).toBe(true);
+// The usage area renders "N/A of monthly quota" for a zero-priority-budget plan
+// instead of a misleading "0% of monthly quota (Slow)". Detection is keyed on the
+// WIRE QUOTA SIGNAL (`limit_cost_cents === 0`), not on a hardcoded tier list, so
+// EVERY plan the backend puts on its zero-priority-budget branch (BYOK, Trial, …)
+// gets the N/A treatment without a client change. The invariant under test is
+// "no priority budget ⇒ no percentage", never "the tier is spelled BYOK".
+
+// Byte-real /whoami bodies. The zero-priority-budget branch reports
+// queue_mode "slow" + quota_percentage 0 + limit_cost_cents 0; a plan with a real
+// budget reports its actual cap and a live percentage.
+const zeroBudgetWhoami = (planTier) => ({
+  logged_in: true,
+  has_subscription: true,
+  plan_tier: planTier,
+  queue_mode: "slow",
+  quota_percentage: 0,
+  limit_cost_cents: 0,
+  max_monthly_cost_cents: 0,
+});
+
+const paidWhoami = (planTier, limitCents, extra = {}) => ({
+  logged_in: true,
+  has_subscription: true,
+  plan_tier: planTier,
+  queue_mode: "fast",
+  quota_percentage: 12.5,
+  limit_cost_cents: limitCents,
+  max_monthly_cost_cents: limitCents,
+  ...extra,
+});
+
+describe("isZeroQuotaPlan — zero-priority-budget detection", () => {
+  it("true for BYOK (behavior preserved)", () => {
+    expect(isZeroQuotaPlan(zeroBudgetWhoami("BYOK"))).toBe(true);
   });
 
-  it("false for Basic / Pro", () => {
-    expect(isZeroQuotaPlan({ plan_tier: "Basic" })).toBe(false);
-    expect(isZeroQuotaPlan({ plan_tier: "Pro" })).toBe(false);
+  it("true for Trial — same zero-budget shape BYOK gets", () => {
+    // A Trial plan reports the SAME zero-budget quota shape as BYOK, so it must
+    // get the same "N/A" treatment. Keying on the tier name rendered a
+    // misleading "0% of monthly quota (Slow)" here.
+    expect(isZeroQuotaPlan(zeroBudgetWhoami("Trial"))).toBe(true);
   });
 
-  it("false for unknown / null / missing (no false N/A)", () => {
-    expect(isZeroQuotaPlan({ plan_tier: "Unknown" })).toBe(false);
-    expect(isZeroQuotaPlan({ plan_tier: null })).toBe(false);
+  it("false for Basic / Pro — a real positive budget keeps its percentage", () => {
+    expect(isZeroQuotaPlan(paidWhoami("Basic", 500))).toBe(false);
+    expect(isZeroQuotaPlan(paidWhoami("Pro", 1000))).toBe(false);
+  });
+
+  it("false for a legacy card-based trial (real quota, must keep the percentage)", () => {
+    // subscription_status "trialing" on a paid tier is a card trial: it has a
+    // genuine monthly budget, so the percentage is meaningful and must show.
+    expect(
+      isZeroQuotaPlan(paidWhoami("Basic", 500, { subscription_status: "trialing" }))
+    ).toBe(false);
+  });
+
+  it("false when the quota signal is absent (undefined !== 0 — no false N/A)", () => {
+    // Logged out / no subscription / quota block missing entirely: never claim a
+    // zero budget we were not told about.
+    expect(isZeroQuotaPlan({ logged_in: false })).toBe(false);
+    expect(isZeroQuotaPlan({ logged_in: true, has_subscription: false })).toBe(false);
+    expect(isZeroQuotaPlan({ logged_in: true, has_subscription: true, plan_tier: "Basic" })).toBe(false);
+    expect(isZeroQuotaPlan({ plan_tier: "BYOK" })).toBe(false);
     expect(isZeroQuotaPlan({})).toBe(false);
     expect(isZeroQuotaPlan(null)).toBe(false);
     expect(isZeroQuotaPlan(undefined)).toBe(false);
   });
 
-  it("case-sensitive — lowercase 'byok' is NOT treated as zero-quota", () => {
-    expect(isZeroQuotaPlan({ plan_tier: "byok" })).toBe(false);
+  it("strict equality — a string \"0\" is NOT a zero budget (never coerce)", () => {
+    // `==` would accept "0", "", false, [] and null-ish values off a malformed
+    // wire body and silently blank out a real quota.
+    expect(isZeroQuotaPlan({ ...zeroBudgetWhoami("Trial"), limit_cost_cents: "0" })).toBe(false);
+    expect(isZeroQuotaPlan({ ...zeroBudgetWhoami("Trial"), limit_cost_cents: null })).toBe(false);
+    expect(isZeroQuotaPlan({ ...zeroBudgetWhoami("Trial"), limit_cost_cents: false })).toBe(false);
+  });
+
+  it("keys on the quota signal, not the tier spelling", () => {
+    // Tier casing/naming is irrelevant now: the budget decides. This is the
+    // property that makes a NEW zero-budget plan work with no client change.
+    expect(isZeroQuotaPlan(zeroBudgetWhoami("byok"))).toBe(true);
+    expect(isZeroQuotaPlan(zeroBudgetWhoami("SomeFuturePlan"))).toBe(true);
+    expect(isZeroQuotaPlan(paidWhoami("BYOK", 500))).toBe(false);
   });
 });
