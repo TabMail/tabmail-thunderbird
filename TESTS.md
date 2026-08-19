@@ -227,6 +227,37 @@ CRDT hashing and merge logic.
 | TB-164 | fuzzyMatchWithList rejects distant strings | No match | Threshold |
 | TB-165 | getGenericTimezoneAbbr returns abbreviation | PT/ET/CT etc. | Timezone |
 
+### 4.7 Zero-Priority-Budget Usage Display (agent/modules/billingBanner.js `isZeroQuotaPlan`)
+
+The usage surfaces (`popup/popup.js`, `config/modules/planUsage.js`) render "N/A of
+monthly quota" for a plan with no priority budget, instead of a misleading
+"0% of monthly quota (Slow)". Detection is keyed on the **wire quota signal**
+(`limit_cost_cents === 0`), not on a hardcoded tier list, so every plan the backend
+puts on its zero-priority-budget branch is covered with no client change. Fixtures are
+byte-real `/whoami` bodies.
+
+| # | Test | Expected | Category |
+|---|------|----------|----------|
+| TB-170 | BYOK zero-budget payload | `true` — N/A treatment preserved | Regression guard |
+| TB-171 | Trial zero-budget payload (`queue_mode:"slow"`, `quota_percentage:0`, `limit_cost_cents:0`) | `true` — same treatment as BYOK | **Red-first** |
+| TB-172 | Basic / Pro with a real positive budget | `false` — percentage still shown | Happy path |
+| TB-173 | Legacy card-based trial (`subscription_status:"trialing"`, positive budget) | `false` — real quota keeps its percentage | Near-miss |
+| TB-174 | Quota signal absent (logged out / no subscription / no quota block) | `false` — `undefined !== 0`, no false N/A | Edge case |
+| TB-175 | `limit_cost_cents: "0"` / `null` / `false` | `false` — strict `===`, never coerce | Type safety |
+| TB-176 | Zero budget on any tier spelling; positive budget on a "BYOK" tier | Signal decides, not the tier name | Invariant |
+
+**Red-first evidence (2026-08-18):** TB-171 and TB-176 were written against the previous
+tier-keyed predicate (`plan_tier === "BYOK"`) and observed FAILING before the fix —
+TB-171 `expected false to be true` (the Trial misrender), TB-176 `expected false to be
+true`. TB-174 also failed in the opposite direction (`expected true to be false`): the old
+predicate claimed a zero quota for a `plan_tier:"BYOK"` body carrying no quota block at
+all. All three pass after re-keying onto `limit_cost_cents === 0`; TB-170/172/173/175
+passed both before and after (behavior-preservation cases).
+
+**Coverage:** `agent/modules/billingBanner.js` — 100% statements / 100% lines /
+95.83% branches. The single uncovered branch is the pre-existing `plan_tier ?? null`
+fallback in `bannerFromWhoami`, unrelated to this predicate.
+
 ### 4.8 Plan Status Label (config/modules/planUsage.js) — MEDIUM PRIORITY
 
 `updatePlanStatusDisplay` renders the settings-page plan label. Two independent
