@@ -62,19 +62,34 @@ export function decideBillingBanner({ planTier, queueMode, quotaPercentage, hasO
 }
 
 /**
- * True for the zero-priority-budget (BYOK) plan, whose "% of monthly quota" is
- * meaningless — the backend reports `quota_percentage: 0` + `queue_mode: "slow"`
- * + `limit_cost_cents: 0` (see whoami.ts `isZeroPriorityBudgetPlan` branch), so a
- * naive render shows a misleading "0% of monthly quota (Slow)". The usage UI
- * shows "N/A of monthly quota" instead — there's no priority budget, so a
- * percentage is meaningless (the quota is zero, not infinite). Mirrors iOS
- * `AccountDashboardView.isZeroPlan` (= `planTier == "BYOK"`), which also renders
- * "N/A" ("site dashboard precedent").
+ * True for a zero-priority-budget plan (BYOK, Trial, …), whose "% of monthly
+ * quota" is meaningless — the backend reports `quota_percentage: 0` +
+ * `queue_mode: "slow"` + `limit_cost_cents: 0` (see whoami.ts
+ * `isZeroPriorityBudgetPlan` branch), so a naive render shows a misleading
+ * "0% of monthly quota (Slow)". The usage UI shows "N/A of monthly quota"
+ * instead — there's no priority budget, so a percentage is meaningless (the
+ * quota is zero, not infinite).
+ *
+ * Keyed on the WIRE QUOTA SIGNAL (`limit_cost_cents === 0`) rather than a
+ * hardcoded tier list: that is exactly the condition the backend's zero-budget
+ * branch reports, so every plan it puts on that branch gets the N/A treatment
+ * with no client change. A tier list silently mis-rendered each new zero-budget
+ * plan until the client shipped a matching release.
+ *
+ * Strict `===` on purpose: `==` would accept `"0"`, `""`, `false` and `[]` off a
+ * malformed body and blank out a real quota. An ABSENT field (no quota block on
+ * the response at all) is `undefined !== 0` → false, so a missing signal never
+ * produces a false "N/A"; a plan with a real budget keeps its percentage.
+ *
+ * iOS mirrors this decision but keys on the tier (`AccountDashboardView.isZeroPlan`),
+ * rendering the same "N/A" ("site dashboard precedent"). The two predicates are
+ * written differently and must stay BEHAVIORALLY aligned — a plan treated as
+ * zero-budget here must be treated as zero-budget there.
  * @param {Object|null|undefined} whoamiData
  * @returns {boolean}
  */
 export function isZeroQuotaPlan(whoamiData) {
-  return whoamiData?.plan_tier === "BYOK";
+  return whoamiData?.limit_cost_cents === 0;
 }
 
 /**
