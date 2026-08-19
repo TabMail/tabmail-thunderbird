@@ -227,6 +227,42 @@ CRDT hashing and merge logic.
 | TB-164 | fuzzyMatchWithList rejects distant strings | No match | Threshold |
 | TB-165 | getGenericTimezoneAbbr returns abbreviation | PT/ET/CT etc. | Timezone |
 
+### 4.8 Plan Status Label (config/modules/planUsage.js) — MEDIUM PRIORITY
+
+`updatePlanStatusDisplay` renders the settings-page plan label. Two independent
+`/whoami` signals can mark a trial: the tier string itself (`plan_tier: "Trial"`,
+server-granted signup trial) and a trialing subscription (`trial.is_trial` or
+`subscription_status: "trialing"`, card trial sitting on a Basic/Pro tier).
+
+**Invariant:** the label names the trial state **at most once**. When the tier
+string already says "Trial", the `" (Trial)"` suffix is redundant and suppressed;
+on every other tier the suffix is the only thing that says "trial" and is kept.
+
+**Red-first evidence (pre-fix, `npx vitest run test/planUsage.test.js`):**
+`7 failed | 29 passed (36)` — the label rendered `"Plan: TabMail Trial (Trial)"`
+for every signup-trial case (TB-177 rows and the tier-`Trial` rows of TB-180).
+Post-fix: `36 passed (36)`. Test file: `test/planUsage.test.js`.
+
+| # | Test | Expected | Category |
+|---|------|----------|----------|
+| TB-177 | plan_tier `Trial` + `trial.is_trial` | `Plan: TabMail Trial` | Signup trial |
+| TB-177 | plan_tier `Trial` + `subscription_status: trialing` | `Plan: TabMail Trial` | Signup trial |
+| TB-177 | plan_tier `Trial` + both trial signals | `Plan: TabMail Trial` | Signup trial |
+| TB-177 | plan_tier `Trial` + no trial signal | `Plan: TabMail Trial` | Signup trial |
+| TB-178 | plan_tier `Basic` + `subscription_status: trialing` | `Plan: TabMail Basic (Trial)` | Card trial |
+| TB-178 | plan_tier `Basic` + `trial.is_trial` | `Plan: TabMail Basic (Trial)` | Card trial |
+| TB-178 | plan_tier `Pro` + `subscription_status: trialing` | `Plan: TabMail Pro (Trial)` | Card trial |
+| TB-178 | plan_tier `BYOK` + `trial.is_trial` | `Plan: TabMail BYOK (Trial)` | Card trial |
+| TB-179 | plan_tier `Pro`, no trial | `Plan: TabMail Pro` | Paid |
+| TB-179 | plan_tier `Basic`, no trial | `Plan: TabMail Basic` | Paid |
+| TB-179 | plan_tier absent | `Plan: TabMail Unknown` | Fallback |
+| TB-179 | `has_subscription: false` | `Plan: No subscription` | No subscription |
+| TB-179 | `logged_in: false` | `Plan: Not logged in` | Logged out |
+| TB-179 | `data` is null | `Plan: Not logged in` | Logged out |
+| TB-180 | 5 tiers × 4 trial-signal combinations | "Trial" occurs ≤ 1× in label | Invariant matrix |
+| TB-180 | Non-vacuity: trialing paid tier | "Trial" occurs exactly 1× | Invariant matrix |
+| TB-180 | Non-vacuity: signup-trial tier | "Trial" occurs exactly 1× | Invariant matrix |
+
 ---
 
 ## Testing Setup
