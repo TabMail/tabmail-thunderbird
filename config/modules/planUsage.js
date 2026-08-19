@@ -45,7 +45,11 @@ export function updatePlanStatusDisplay(data) {
 
   const planTier = data.plan_tier || "Unknown";
   const isTrialing = data.trial?.is_trial || data.subscription_status === "trialing";
-  const trialSuffix = isTrialing ? " (Trial)" : "";
+  // The tier string can itself be "Trial" (server-granted signup trial), in
+  // which case the suffix would render "Plan: TabMail Trial (Trial)". Only add
+  // it when the tier does not already name the trial (card trials sit on a
+  // Basic/Pro tier and still need it).
+  const trialSuffix = isTrialing && planTier !== "Trial" ? " (Trial)" : "";
 
   planStatusLabel.textContent = `Plan: TabMail ${planTier}${trialSuffix}`;
 
