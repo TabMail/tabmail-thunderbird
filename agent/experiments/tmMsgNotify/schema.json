@@ -149,7 +149,7 @@
       {
         "name": "fingerprintFolderMessages",
         "type": "function",
-        "description": "Fingerprint the exact de-duplicated account:path:Message-ID set represented by a folder msgDB, without reading message bodies.",
+        "description": "Fingerprint the exact de-duplicated account:path:Message-ID set and numeric msgKey mapping represented by a folder msgDB, without reading message bodies.",
         "async": true,
         "parameters": [
           { "name": "folderURI", "type": "string" }
@@ -159,6 +159,8 @@
           "properties": {
             "count": { "type": "integer", "optional": true },
             "sha256": { "type": "string", "optional": true },
+            "keyMapCount": { "type": "integer", "description": "Number of numeric msgKey to FTS-key mappings hashed", "optional": true },
+            "keyMapSha256": { "type": "string", "description": "SHA-256 fingerprint of the exact numeric msgKey to FTS-key mapping", "optional": true },
             "accountId": { "type": "string", "optional": true },
             "folderPath": { "type": "string", "optional": true },
             "unkeyedCount": { "type": "integer", "optional": true },

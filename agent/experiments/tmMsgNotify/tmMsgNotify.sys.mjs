@@ -508,10 +508,12 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
         },
 
         /**
-         * Exact expected FTS-key fingerprint from the folder's local msgDB.
-         * This reads headers only (never message bodies), normalizes the same
-         * account:path:Message-ID key used by the indexer, and de-duplicates
-         * duplicate Message-IDs to match the native primary key.
+         * Exact expected FTS-key and msgKey-mapping fingerprints from the
+         * folder's local msgDB. This reads headers only (never message bodies)
+         * and normalizes the same account:path:Message-ID key used by the
+         * indexer. The set fingerprint de-duplicates duplicate Message-IDs to
+         * match the native primary key; the mapping fingerprint retains every
+         * numeric msgKey association.
          */
         async fingerprintFolderMessages(folderURI) {
           try {
@@ -532,6 +534,7 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
 
             const db = folder.msgDatabase;
             const msgIds = new Set();
+            const keyMappings = [];
             let unkeyedCount = 0;
             for (const key of db.listAllKeys()) {
               let hdr = null;
@@ -545,10 +548,18 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
                 unkeyedCount += 1;
                 continue;
               }
-              msgIds.add(`${accountId}:${folderPath}:${headerMessageId}`);
+              const uniqueKey = `${accountId}:${folderPath}:${headerMessageId}`;
+              msgIds.add(uniqueKey);
+              // Thunderbird 145 exposes IMAP UIDs through signed msgKey
+              // storage. Canonicalize the key's uint32 bit pattern so the
+              // mapping proof is stable across signed/unsigned API surfaces.
+              keyMappings.push(`${key >>> 0}:${uniqueKey}`);
             }
+            const keyMapFingerprint = fingerprintStrings(keyMappings);
             return {
               ...fingerprintStrings(msgIds),
+              keyMapCount: keyMapFingerprint.count,
+              keyMapSha256: keyMapFingerprint.sha256,
               accountId,
               folderPath,
               unkeyedCount,
