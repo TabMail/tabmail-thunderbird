@@ -8,6 +8,10 @@
 const { ExtensionCommon: ExtensionCommonMsgNotify } = ChromeUtils.importESModule(
   "resource://gre/modules/ExtensionCommon.sys.mjs"
 );
+const {
+  clearInterval: clearGeckoInterval,
+  setInterval: setGeckoInterval,
+} = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
 
 let MailServices = null;
 try {
@@ -32,117 +36,44 @@ function debugLog(...args) {
   }
 }
 
-const HASH_CHUNK_BYTES = 1024 * 1024;
+const FOLDER_SCAN_MAX_PAGE_ITEMS = 1000;
+const FOLDER_SCAN_MAX_LIVE = 8;
+const FOLDER_SCAN_IDLE_TTL_MS = 5 * 60 * 1000;
+const FOLDER_SCAN_SWEEP_INTERVAL_MS = 60 * 1000;
+const folderMessageScans = new Map();
+let nextFolderMessageScanId = 1;
+let folderMessageScanSweepTimer = null;
 
-// Experiment modules run in a privileged Thunderbird scope where Web-platform
-// globals such as TextEncoder are not guaranteed (TB 154 Beta has none). Keep
-// the encoding local and deterministic instead of failing the entire API at
-// module evaluation time. Lone UTF-16 surrogates match TextEncoder semantics
-// by becoming U+FFFD.
-function encodeUtf8(value) {
-  const input = String(value);
-  const bytes = [];
-  for (let i = 0; i < input.length; i++) {
-    let cp = input.charCodeAt(i);
-    if (cp >= 0xd800 && cp <= 0xdbff) {
-      const low = input.charCodeAt(i + 1);
-      if (low >= 0xdc00 && low <= 0xdfff) {
-        cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
-        i++;
-      } else {
-        cp = 0xfffd;
+function sweepFolderMessageScans(nowMs = Date.now(), reserveSlot = false) {
+  for (const [token, scan] of folderMessageScans) {
+    if (nowMs - scan.lastAccessMs >= FOLDER_SCAN_IDLE_TTL_MS) {
+      folderMessageScans.delete(token);
+    }
+  }
+  const limit = reserveSlot ? FOLDER_SCAN_MAX_LIVE - 1 : FOLDER_SCAN_MAX_LIVE;
+  while (folderMessageScans.size > limit) {
+    let oldestToken = null;
+    let oldestAccess = Infinity;
+    for (const [token, scan] of folderMessageScans) {
+      if (scan.lastAccessMs < oldestAccess) {
+        oldestToken = token;
+        oldestAccess = scan.lastAccessMs;
       }
-    } else if (cp >= 0xdc00 && cp <= 0xdfff) {
-      cp = 0xfffd;
     }
-
-    if (cp <= 0x7f) {
-      bytes.push(cp);
-    } else if (cp <= 0x7ff) {
-      bytes.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
-    } else if (cp <= 0xffff) {
-      bytes.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
-    } else {
-      bytes.push(
-        0xf0 | (cp >> 18),
-        0x80 | ((cp >> 12) & 0x3f),
-        0x80 | ((cp >> 6) & 0x3f),
-        0x80 | (cp & 0x3f),
-      );
-    }
+    if (!oldestToken) break;
+    folderMessageScans.delete(oldestToken);
   }
-  return Uint8Array.from(bytes);
 }
 
-function bytesCompare(a, b) {
-  const shared = Math.min(a.length, b.length);
-  for (let i = 0; i < shared; i++) {
-    if (a[i] !== b[i]) return a[i] - b[i];
+function isExcludedProofHeader(hdr) {
+  try {
+    const excludedFlags = Ci.nsMsgMessageFlags.IMAPDeleted
+      | Ci.nsMsgMessageFlags.Expunged;
+    return !!(hdr && (hdr.flags & excludedFlags));
+  } catch (_) {
+    // A summary/flag read failure cannot authorize membership proof.
+    return true;
   }
-  return a.length - b.length;
-}
-
-function finishSha256Hex(hash) {
-  const binary = hash.finish(false);
-  let hex = "";
-  for (let i = 0; i < binary.length; i++) {
-    hex += binary.charCodeAt(i).toString(16).padStart(2, "0");
-  }
-  return hex;
-}
-
-/** Hash sorted UTF-8 strings using the native helper's length framing. */
-function fingerprintStrings(values) {
-  const encoded = Array.from(values, encodeUtf8);
-  encoded.sort(bytesCompare);
-  const hash = Cc["@mozilla.org/security/hash;1"].createInstance(Ci.nsICryptoHash);
-  hash.init(hash.SHA256);
-  const chunk = new Uint8Array(HASH_CHUNK_BYTES);
-  const chunkView = new DataView(chunk.buffer);
-  let offset = 0;
-  const flush = () => {
-    if (offset === 0) return;
-    hash.update(chunk.subarray(0, offset), offset);
-    offset = 0;
-  };
-  for (const bytes of encoded) {
-    if (bytes.length + 8 > chunk.length) {
-      flush();
-      const length = new Uint8Array(8);
-      new DataView(length.buffer).setUint32(4, bytes.length, false);
-      hash.update(length, length.length);
-      hash.update(bytes, bytes.length);
-      continue;
-    }
-    if (offset + 8 + bytes.length > chunk.length) flush();
-    chunkView.setUint32(offset, 0, false);
-    chunkView.setUint32(offset + 4, bytes.length, false);
-    offset += 8;
-    chunk.set(bytes, offset);
-    offset += bytes.length;
-  }
-  flush();
-  return { count: encoded.length, sha256: finishSha256Hex(hash) };
-}
-
-/** Hash sorted msgDB keys. In IMAP folders these are the folder's UID set. */
-function fingerprintMsgKeys(keys) {
-  const sorted = Array.from(keys || [], Number).filter(Number.isFinite).sort((a, b) => a - b);
-  const hash = Cc["@mozilla.org/security/hash;1"].createInstance(Ci.nsICryptoHash);
-  hash.init(hash.SHA256);
-  const chunk = new Uint8Array(HASH_CHUNK_BYTES);
-  const view = new DataView(chunk.buffer);
-  let offset = 0;
-  for (const key of sorted) {
-    if (offset + 4 > chunk.length) {
-      hash.update(chunk, offset);
-      offset = 0;
-    }
-    view.setUint32(offset, key >>> 0, false);
-    offset += 4;
-  }
-  if (offset > 0) hash.update(chunk.subarray(0, offset), offset);
-  return { count: sorted.length, sha256: finishSha256Hex(hash) };
 }
 
 /**
@@ -273,6 +204,11 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
   }
   
   onShutdown(isAppShutdown) {
+    if (folderMessageScanSweepTimer) {
+      clearGeckoInterval(folderMessageScanSweepTimer);
+      folderMessageScanSweepTimer = null;
+    }
+    folderMessageScans.clear();
     if (isAppShutdown) return;
     this._removeListener();
   }
@@ -293,6 +229,12 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
     const self = this;
     const folderManager = context.extension.folderManager;
     const messageManager = context.extension.messageManager;
+    if (!folderMessageScanSweepTimer) {
+      folderMessageScanSweepTimer = setGeckoInterval(
+        () => sweepFolderMessageScans(),
+        FOLDER_SCAN_SWEEP_INTERVAL_MS,
+      );
+    }
     
     return {
       tmMsgNotify: {
@@ -390,27 +332,102 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
         },
 
         /**
-         * List msgKeys strictly above sinceKey, ascending. When more than
-         * maxKeys are above, returns the HIGHEST maxKeys (newest arrivals
-         * win) with truncated=true so the caller can log the gap loudly.
+         * Begin a bounded, live parent-process header walk. The opaque token
+         * deliberately is not durable: a restart discards it and the addon
+         * restarts the exact fingerprint from the beginning, which can repeat
+         * work but cannot skip a row or mint a false checkpoint.
          */
-        async listKeysAboveKey(folderURI, sinceKey, maxKeys) {
+        async beginFolderMessageScan(folderURI, includeMessageIds) {
           try {
+            sweepFolderMessageScans(Date.now(), true);
             const folder = MailUtilsMsgNotify?.getExistingFolder?.(folderURI);
-            if (!folder) return { keys: [], truncated: false, totalAbove: 0, error: "folder_not_found" };
+            if (!folder) return { error: "folder_not_found" };
+            let accountId = "";
+            let folderPath = "";
+            try {
+              const weFolder = folderManager?.convert(folder);
+              accountId = weFolder?.accountId || folder.server?.key || "";
+              folderPath = weFolder?.path || folder.URI || "";
+            } catch (_) {
+              accountId = folder.server?.key || "";
+              folderPath = folder.URI || "";
+            }
+            if (!accountId || !folderPath) return { error: "folder_identity_missing" };
+
             const db = folder.msgDatabase;
-            const since = Number.isFinite(sinceKey) ? sinceKey : 0;
-            const keys = db.listAllKeys().filter((k) => k > since).sort((a, b) => a - b);
-            const cap = Number.isFinite(maxKeys) && maxKeys > 0 ? maxKeys : keys.length;
-            const truncated = keys.length > cap;
+            const dbInfo = db.dBFolderInfo;
+            const serverType = String(folder.server?.type || "");
+            const stableUidKeys = serverType === "imap"
+              && !folder.getFlag(Ci.nsMsgFolderFlags.Virtual);
+            let highestModSeq = "";
+            try {
+              highestModSeq = String(dbInfo.getCharProperty("highestModSeq") || "");
+            } catch (_) {}
+            const token = `folder-scan-${nextFolderMessageScanId++}`;
+            folderMessageScans.set(token, {
+              enumerator: db.enumerateMessages(),
+              includeMessageIds: includeMessageIds === true,
+              lastAccessMs: Date.now(),
+            });
             return {
-              keys: truncated ? keys.slice(keys.length - cap) : keys,
-              truncated,
-              totalAbove: keys.length,
+              token,
+              accountId,
+              folderPath,
+              serverType,
+              stableUidKeys,
+              uidValidity: stableUidKeys ? (dbInfo.imapUidValidity || 0) : 0,
+              highestModSeq,
             };
           } catch (e) {
-            return { keys: [], truncated: false, totalAbove: 0, error: String(e) };
+            return { error: String(e) };
           }
+        },
+
+        /** Pull at most maxItems headers from a live folder scan. */
+        async readFolderMessageScanPage(token, maxItems) {
+          const scan = folderMessageScans.get(token);
+          if (!scan) return { rows: [], done: true, error: "scan_not_found" };
+          try {
+            scan.lastAccessMs = Date.now();
+            const cap = Math.max(1, Math.min(
+              FOLDER_SCAN_MAX_PAGE_ITEMS,
+              Number.isFinite(maxItems) ? Math.floor(maxItems) : 0,
+            ));
+            const rows = [];
+            let visited = 0;
+            while (visited < cap && scan.enumerator.hasMoreElements()) {
+              const hdr = scan.enumerator.getNext().QueryInterface(Ci.nsIMsgDBHdr);
+              visited++;
+              // Match WebExtension messages.list/get: neither IMAPDeleted nor
+              // Expunged rows belong to the exact local proof domain.
+              if (isExcludedProofHeader(hdr)) continue;
+              const row = { msgKey: hdr.messageKey };
+              if (scan.includeMessageIds) {
+                row.headerMessageId = String(hdr.messageId || "").replace(/[<>]/g, "");
+              }
+              rows.push(row);
+            }
+            const done = !scan.enumerator.hasMoreElements();
+            if (done) folderMessageScans.delete(token);
+            return { rows, done };
+          } catch (e) {
+            folderMessageScans.delete(token);
+            return { rows: [], done: true, error: String(e) };
+          }
+        },
+
+        async cancelFolderMessageScan(token) {
+          return { cancelled: folderMessageScans.delete(token) };
+        },
+
+        /** Privacy-safe live scan-token resource telemetry. */
+        async getFolderMessageScanStats() {
+          sweepFolderMessageScans();
+          return {
+            live: folderMessageScans.size,
+            maxLive: FOLDER_SCAN_MAX_LIVE,
+            idleTtlMs: FOLDER_SCAN_IDLE_TTL_MS,
+          };
         },
 
         /**
@@ -433,6 +450,7 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
                 continue; // header gone — skip
               }
               if (!hdr) continue;
+              if (isExcludedProofHeader(hdr)) continue;
               const info = extractMessageInfo(hdr, folderManager, messageManager, "cursorScan");
               if (info) infos.push(info);
             }
@@ -443,13 +461,10 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
         },
 
         /**
-         * Cheap startup membership state for every folder. IMAP msgDB keys
-         * are UIDs, so their sorted digest plus UIDVALIDITY is a stable,
-         * deletion-sensitive fingerprint. Other server types deliberately do
-         * not claim stable keys and are verified from Message-IDs each boot.
+         * Cheap startup identity/epoch state for one folder. Exact local
+         * membership is collected separately through the bounded live scan.
          */
         async getFolderState(accountId, folderPath) {
-          const started = Date.now();
           const base = {
             accountId: String(accountId || ""),
             folderPath: String(folderPath || ""),
@@ -457,12 +472,9 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
             serverType: "",
             stableUidKeys: false,
           };
-          debugLog("getFolderState:start", `${base.accountId}:${base.folderPath}`);
           try {
-            const lookupStarted = Date.now();
             const folder = folderManager?.get(base.accountId, base.folderPath);
-            const lookupMs = Date.now() - lookupStarted;
-            if (!folder) return { ...base, lookupMs, elapsedMs: Date.now() - started, error: "folder_not_found" };
+            if (!folder) return { ...base, error: "folder_not_found" };
             base.folderURI = String(folder.URI || "");
             base.serverType = String(folder.server?.type || "");
             // Saved-search/virtual folders can live under an IMAP server, but
@@ -471,18 +483,11 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
               && !folder.getFlag(Ci.nsMsgFolderFlags.Virtual);
 
             if (!base.stableUidKeys) {
-              const result = { ...base, lookupMs, elapsedMs: Date.now() - started };
-              debugLog("getFolderState:done", `${base.accountId}:${base.folderPath}`, result);
-              return result;
+              return base;
             }
 
-            const dbOpenStarted = Date.now();
             const db = folder.msgDatabase;
             const dbInfo = db.dBFolderInfo;
-            const dbOpenMs = Date.now() - dbOpenStarted;
-            const hashStarted = Date.now();
-            const uid = fingerprintMsgKeys(db.listAllKeys());
-            const hashMs = Date.now() - hashStarted;
             let highestModSeq = "";
             try {
               highestModSeq = String(dbInfo.getCharProperty("highestModSeq") || "");
@@ -490,71 +495,11 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
             const result = {
               ...base,
               uidValidity: dbInfo.imapUidValidity || 0,
-              uidCount: uid.count,
-              uidSha256: uid.sha256,
               highestModSeq,
-              lookupMs,
-              dbOpenMs,
-              hashMs,
-              elapsedMs: Date.now() - started,
             };
-            debugLog("getFolderState:done", `${base.accountId}:${base.folderPath}`, result);
             return result;
           } catch (e) {
-            const result = { ...base, elapsedMs: Date.now() - started, error: String(e) };
-            console.warn("[tmMsgNotify] getFolderState:error", `${base.accountId}:${base.folderPath}`, result);
-            return result;
-          }
-        },
-
-        /**
-         * Exact expected FTS-key fingerprint from the folder's local msgDB.
-         * This reads headers only (never message bodies), normalizes the same
-         * account:path:Message-ID key used by the indexer, and de-duplicates
-         * duplicate Message-IDs to match the native primary key.
-         */
-        async fingerprintFolderMessages(folderURI) {
-          try {
-            const folder = MailUtilsMsgNotify?.getExistingFolder?.(folderURI);
-            if (!folder) return { error: "folder_not_found" };
-
-            let accountId = "";
-            let folderPath = "";
-            try {
-              const weFolder = folderManager?.convert(folder);
-              accountId = weFolder?.accountId || folder.server?.key || "";
-              folderPath = weFolder?.path || folder.URI || "";
-            } catch (_) {
-              accountId = folder.server?.key || "";
-              folderPath = folder.URI || "";
-            }
-            if (!accountId || !folderPath) return { error: "folder_identity_missing" };
-
-            const db = folder.msgDatabase;
-            const msgIds = new Set();
-            let unkeyedCount = 0;
-            for (const key of db.listAllKeys()) {
-              let hdr = null;
-              try {
-                hdr = db.getMsgHdrForKey(key);
-              } catch (_) {
-                continue;
-              }
-              const headerMessageId = String(hdr?.messageId || "").replace(/[<>]/g, "");
-              if (!headerMessageId) {
-                unkeyedCount += 1;
-                continue;
-              }
-              msgIds.add(`${accountId}:${folderPath}:${headerMessageId}`);
-            }
-            return {
-              ...fingerprintStrings(msgIds),
-              accountId,
-              folderPath,
-              unkeyedCount,
-            };
-          } catch (e) {
-            return { error: String(e) };
+            return { ...base, error: String(e) };
           }
         },
 
@@ -582,7 +527,7 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
                 // Lookup error = uncertain — do NOT nominate as missing.
                 continue;
               }
-              if (!hdr) missing.push(String(id));
+              if (!hdr || isExcludedProofHeader(hdr)) missing.push(String(id));
             }
             return { missing };
           } catch (e) {

@@ -242,7 +242,7 @@ describe('_scheduleStartupTickWhenQuiet', () => {
     expect(_hasStartupTickTimer()).toBe(false);
   });
 
-  it('treats indexer state as quiet if the indexer module is unavailable', async () => {
+  it('defers and then cap-skips if the indexer module is unavailable', async () => {
     mockGetLastSyncEventMs.mockImplementation(() => {
       throw new Error('indexer gone');
     });
@@ -250,10 +250,14 @@ describe('_scheduleStartupTickWhenQuiet', () => {
 
     _scheduleStartupTickWhenQuiet(runner);
 
-    // First check should already pass (quietFor treated as Infinity)
-    await vi.advanceTimersByTimeAsync(STARTUP_TICK_CHECK_INTERVAL_MS * 2);
+    await vi.advanceTimersByTimeAsync(STARTUP_TICK_QUIET_PERIOD_MS * 2);
+    expect(runner).not.toHaveBeenCalled();
+    expect(_hasStartupTickTimer()).toBe(true);
 
-    expect(runner).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(STARTUP_TICK_MAX_WAIT_MS);
+
+    expect(runner).not.toHaveBeenCalled();
+    expect(_hasStartupTickTimer()).toBe(false);
   });
 });
 

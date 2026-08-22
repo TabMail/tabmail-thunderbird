@@ -401,6 +401,24 @@ export const SETTINGS = {
             // If anything gets dequeued, the counter resets.
             maxConsecutiveNoProgress: 20,
         },
+        // Exact startup/live folder reconciliation. These are per-slice
+        // limits, not total-work caps: the durable scheduler keeps taking
+        // slices until every folder has a fresh equality proof.
+        ftsFolderRecon: {
+            folderScanPageSize: 250,
+            digestWorkChunkEntries: 1000,
+            missingPageKeys: 500,
+            stalePageKeys: 100,
+            stalePagesPerSlice: 1,
+            rechecksPerSlice: 5,
+            enqueuesPerSlice: 20,
+            pendingHighWater: 100,
+            pendingLowWater: 25,
+            paceDelayMs: 250,
+            pressureDelayMs: 2000,
+            errorDelayMs: 10000,
+            syncQuietMs: 5000,
+        },
         // Proactive inbox scan - DISABLED.
         // Replaced by tagSort row coloring pass coverage which detects untagged
         // messages and enqueues them for processing automatically.
@@ -557,4 +575,4 @@ if (!_storageChangeListener) {
     } catch (e) {
         if (SETTINGS.debugLogging) console.warn("[TMDBG Config] Failed to load debugMode from storage, using default:", e);
     }
-})(); 
+})();

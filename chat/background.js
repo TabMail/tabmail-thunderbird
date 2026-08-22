@@ -12,6 +12,11 @@ import {
   initFtsEngine,
   recheckFtsHelperAvailable,
 } from "../fts/engine.js";
+import {
+  acquireFtsExclusiveOperation,
+  clearOwnedFtsScanStatus,
+  writeOwnedFtsScanStatus,
+} from "../fts/operationCoordinator.js";
 import { setWarning } from "../agent/modules/icon.js";
 import { checkSetupConfiguration } from "../agent/modules/setupChecks.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
@@ -211,18 +216,20 @@ async function checkAndRunInitialFtsScan() {
 
 // Run the initial FTS scan
 async function runInitialFtsScan() {
+  let operationLease = null;
+  let scanError = null;
   try {
-    // Set status to indicate scan is in progress
-    await browser.storage.local.set({
-      [FTS_SCAN_STATUS_KEY]: {
-        isScanning: true,
-        scanType: "initial",
-        startTime: Date.now(),
-        progress: {
-          folder: "",
-          totalIndexed: 0,
-          totalBatches: 0
-        }
+    // Acquire before the first status write or native/indexing work. The
+    // process-local lease is the lock; durable status is observability only.
+    operationLease = await acquireFtsExclusiveOperation("initial");
+    const scanStartedAt = Date.now();
+    await writeOwnedFtsScanStatus(operationLease, {
+      scanType: "initial",
+      startTime: scanStartedAt,
+      progress: {
+        folder: "",
+        totalIndexed: 0,
+        totalBatches: 0
       }
     });
     
@@ -230,16 +237,13 @@ async function runInitialFtsScan() {
     
     // Progress callback to update status
     const progressCallback = async (progress) => {
-      await browser.storage.local.set({
-        [FTS_SCAN_STATUS_KEY]: {
-          isScanning: true,
-          scanType: "initial",
-          startTime: Date.now(),
-          progress: {
-            folder: progress.folder || "",
-            totalIndexed: progress.totalIndexed || 0,
-            totalBatches: progress.totalBatches || 0
-          }
+      await writeOwnedFtsScanStatus(operationLease, {
+        scanType: "initial",
+        startTime: scanStartedAt,
+        progress: {
+          folder: progress.folder || "",
+          totalIndexed: progress.totalIndexed || 0,
+          totalBatches: progress.totalBatches || 0
         }
       });
     };
@@ -255,28 +259,15 @@ async function runInitialFtsScan() {
     
     // Mark initial scan as complete
     await browser.storage.local.set({
-      [FTS_INITIAL_SCAN_KEY]: true,
-      [FTS_SCAN_STATUS_KEY]: {
-        isScanning: false,
-        scanType: "none",
-        lastCompleted: Date.now()
-      }
+      [FTS_INITIAL_SCAN_KEY]: true
     });
     
     log("[TMDBG FTS] Initial scan marked as complete");
   } catch (e) {
+    scanError = e;
     log(`[TMDBG FTS] Initial scan failed: ${e}`, "error");
-    
-    // Clear scanning status on error, but don't mark as complete so it will retry
-    await browser.storage.local.set({
-      [FTS_SCAN_STATUS_KEY]: {
-        isScanning: false,
-        scanType: "error",
-        error: e.message,
-        lastError: Date.now()
-      }
-    });
-    
+
+    // Do not mark completion on error; startup/retry must try again.
     // Retry after a delay (configurable, default 5 minutes)
     const retryDelay = CHAT_SETTINGS.ftsInitialScanRetryDelayMs || 300000;
     setTimeout(async () => {
@@ -286,6 +277,19 @@ async function runInitialFtsScan() {
         await runInitialFtsScan();
       }
     }, retryDelay);
+  } finally {
+    if (operationLease) {
+      try {
+        await clearOwnedFtsScanStatus(operationLease, scanError ? {
+          error: scanError?.message || String(scanError),
+          lastError: Date.now(),
+        } : {});
+      } catch (e) {
+        log(`[TMDBG FTS] Failed to clear owned initial scan status: ${e}`, "warn");
+      } finally {
+        operationLease.release();
+      }
+    }
   }
 }
 

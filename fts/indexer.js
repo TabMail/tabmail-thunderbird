@@ -8,7 +8,12 @@
 import { getAllFoldersForAccount } from "../agent/modules/folderUtils.js";
 import { getInboxForAccount } from "../agent/modules/inboxContext.js";
 import { sanitizeMessageTags } from "../agent/modules/onMoved.js";
-import { getRealSubject, log, safeGetFull } from "../agent/modules/utils.js";
+import {
+  getRealSubject,
+  getUniqueMessageKey,
+  log,
+  safeGetFull,
+} from "../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../chat/modules/icsParser.js";
 import { extractPlainText } from "./bodyExtract.js";
 
@@ -114,8 +119,6 @@ export async function resumeIndexer() {
 
 // Build batch with only headers (no expensive body extraction)
 export async function buildBatchHeader(messages) {
-  const { getUniqueMessageKey } = await import("../../agent/modules/utils.js");
-
   const BATCH_LIMIT = BATCH_SIZE;        // assumes you've set these elsewhere
   const BYTES_LIMIT = MAX_BATCH_BYTES;
 

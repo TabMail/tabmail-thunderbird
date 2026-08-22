@@ -92,8 +92,13 @@ globalThis.browser = {
 };
 
 const { logFtsOperation } = await import('../agent/modules/eventLogger.js');
-const { _testExports } = await import('../fts/maintenanceScheduler.js');
+const { _testExports, triggerCleanupScan } = await import('../fts/maintenanceScheduler.js');
 const { cleanupMissingEntries } = _testExports;
+const {
+  _resetFtsOperationCoordinatorForTests,
+  getFtsOperationState,
+  tryAcquireFtsReconcileLease,
+} = await import('../fts/operationCoordinator.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -119,8 +124,65 @@ function dateRange() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  _resetFtsOperationCoordinatorForTests();
+  _testExports._setFtsSearchForTest(null);
   mockHeaderIDToWeID.mockReset();
   mockRecheckMessageInFolder.mockReset();
+});
+
+describe('manual cleanup operation ownership', () => {
+  it('waits behind reconciliation, then owns status through query and history logging', async () => {
+    const statusStore = {};
+    const order = [];
+    globalThis.browser.storage.local.get.mockImplementation(async (keyOrDefault) => {
+      if (typeof keyOrDefault === 'string') return { [keyOrDefault]: statusStore[keyOrDefault] };
+      return Object.fromEntries(Object.entries(keyOrDefault || {}).map(([key, fallback]) => [
+        key, statusStore[key] === undefined ? fallback : statusStore[key],
+      ]));
+    });
+    globalThis.browser.storage.local.set.mockImplementation(async obj => {
+      Object.assign(statusStore, obj);
+      if (obj.fts_scan_status?.isScanning === true) order.push('status:on');
+      if (obj.fts_scan_status?.isScanning === false) order.push('status:off');
+      if (obj.fts_maintenance_log) order.push('history');
+    });
+    const fts = makeFtsSearch([]);
+    fts.queryByDateRange.mockImplementation(async () => {
+      order.push('query');
+      return [];
+    });
+    _testExports._setFtsSearchForTest(fts);
+    const reconcile = tryAcquireFtsReconcileLease();
+
+    const cleanup = triggerCleanupScan('daily');
+    await Promise.resolve();
+    expect(reconcile.cancelRequested).toBe(true);
+    expect(fts.queryByDateRange).not.toHaveBeenCalled();
+
+    reconcile.release();
+    await expect(cleanup).resolves.toMatchObject({ ok: true, scheduleType: 'daily' });
+    expect(order.indexOf('status:on')).toBeLessThan(order.indexOf('query'));
+    expect(order.indexOf('query')).toBeLessThan(order.indexOf('history'));
+    expect(order.indexOf('history')).toBeLessThan(order.indexOf('status:off'));
+    expect(statusStore.fts_scan_status).toMatchObject({ isScanning: false, scanType: 'none' });
+    expect(getFtsOperationState()).toMatchObject({ exclusive: false, reconcile: false });
+  });
+
+  it('clears owned status and releases the cleanup lease when querying throws', async () => {
+    const statusStore = {};
+    globalThis.browser.storage.local.get.mockImplementation(async key => ({
+      [key]: statusStore[key],
+    }));
+    globalThis.browser.storage.local.set.mockImplementation(async obj => Object.assign(statusStore, obj));
+    const fts = makeFtsSearch([]);
+    fts.queryByDateRange.mockRejectedValueOnce(new Error('query failed'));
+    _testExports._setFtsSearchForTest(fts);
+
+    await expect(triggerCleanupScan('weekly')).rejects.toThrow('query failed');
+
+    expect(statusStore.fts_scan_status).toMatchObject({ isScanning: false, scanType: 'none' });
+    expect(getFtsOperationState()).toMatchObject({ exclusive: false, reconcile: false });
+  });
 });
 
 // ---------------------------------------------------------------------------

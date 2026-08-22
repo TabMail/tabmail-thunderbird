@@ -26,6 +26,11 @@
  */
 
 import { SETTINGS } from "../agent/modules/config.js";
+import {
+  acquireFtsExclusiveOperation,
+  clearOwnedFtsScanStatus,
+  writeOwnedFtsScanStatus,
+} from "./operationCoordinator.js";
 import { logFtsOperation } from "../agent/modules/eventLogger.js";
 import { headerIDToWeID, log, parseUniqueId, recheckMessageInFolder } from "../agent/modules/utils.js";
 
@@ -236,8 +241,11 @@ function _scheduleStartupTickWhenQuiet(runner = runScheduledMaintenanceTick) {
         quietFor = now - indexer.getLastSyncEventMs();
         reconcilePending = await indexer.isReconcilePending();
       } catch (e) {
-        // Indexer state unavailable — don't block the startup tick on it.
-        log(`[TMDBG FTS] Startup tick: indexer state unavailable (${e?.message || String(e)}) — treating as quiet`, "warn");
+        // Storage/read uncertainty cannot prove that reconciliation is idle.
+        // Defer fairly until the next poll; the hard cap remains the backstop.
+        quietFor = 0;
+        reconcilePending = true;
+        log(`[TMDBG FTS] Startup tick: indexer state unavailable (${e?.message || String(e)}) — deferring`, "warn");
       }
 
       const ready = quietFor >= STARTUP_TICK_QUIET_PERIOD_MS && !reconcilePending;
@@ -280,24 +288,6 @@ export async function initMaintenanceScheduler(ftsSearch) {
   
   _ftsSearch = ftsSearch;
   _isInitialized = true;
-  
-  // Reset any stuck maintenance status on startup
-  try {
-    const { fts_scan_status } = await browser.storage.local.get("fts_scan_status");
-    if (fts_scan_status?.isScanning && fts_scan_status?.scanType === "maintenance") {
-      await browser.storage.local.set({
-        fts_scan_status: {
-          isScanning: false,
-          scanType: "none",
-          lastCompleted: Date.now(),
-          lastMaintenanceType: fts_scan_status.maintenanceType || "unknown"
-        }
-      });
-      log("[TMDBG FTS] Cleared stuck maintenance scan status on startup");
-    }
-  } catch (e) {
-    log(`[TMDBG FTS] Failed to check/clear stuck status: ${e?.message || String(e)}`, "error");
-  }
   
   // Periodic scans were replaced by the startup UID/FTS membership proof.
   // Migrate every previously-enabled installation and clear both current and
@@ -956,21 +946,19 @@ async function runMaintenanceScan(scheduleType, config, force = false, progressC
   let cleanupResult = { processed: 0, removed: 0 };
   let combinedCorrectionDetails = [];
   let combinedCorrectionDetailsTruncated = false;
+  const operationLease = await acquireFtsExclusiveOperation(`maintenance:${scheduleType}`);
 
   try {
     // Set scan status to indicate maintenance scan is in progress
-    await browser.storage.local.set({
-      fts_scan_status: {
-        isScanning: true,
-        scanType: "maintenance",
-        maintenanceType: scheduleType,
-        startTime: now,
-        progress: {
-          folder: "",
-          totalIndexed: 0,
-          totalBatches: 0
-        }
-      }
+    await writeOwnedFtsScanStatus(operationLease, {
+      scanType: "maintenance",
+      maintenanceType: scheduleType,
+      startTime: now,
+      progress: {
+        folder: "",
+        totalIndexed: 0,
+        totalBatches: 0,
+      },
     });
     
     // Calculate date range for this scan
@@ -1138,15 +1126,11 @@ async function runMaintenanceScan(scheduleType, config, force = false, progressC
       cleanupRemoved: cleanupResult?.removed || 0,
     };
   } finally {
-    // ALWAYS clear scan status, even if there was an error
-    await browser.storage.local.set({
-      fts_scan_status: {
-        isScanning: false,
-        scanType: "none",
-        lastCompleted: Date.now(),
-        lastMaintenanceType: scheduleType
-      }
-    });
+    try {
+      await clearOwnedFtsScanStatus(operationLease, { lastMaintenanceType: scheduleType });
+    } finally {
+      operationLease.release();
+    }
   }
 }
 
@@ -1350,21 +1334,36 @@ export async function triggerCleanupScan(scheduleType = 'daily') {
   if (!_ftsSearch) {
     throw new Error("FTS search not initialized");
   }
-  
-  log(`[TMDBG FTS] Manually triggering ${scheduleType} cleanup scan`);
-  
-  // Calculate date range for this scan
-  const dateRange = calculateDateRange(config.scope, config.scopeUnit);
-  
-  // No entry limits - chunked pagination handles large datasets safely
-  const cleanup = await cleanupMissingEntries(_ftsSearch, dateRange.start, dateRange.end, {
-    // maxEntries: 0 means unlimited (default)
-  });
-  
-  // Log the cleanup run to maintenance history
-  await logCleanupRun(scheduleType, cleanup);
-  
-  return { ok: true, scheduleType, ...cleanup };
+
+  const operation = await acquireFtsExclusiveOperation(`cleanup:${scheduleType}`);
+  try {
+    await writeOwnedFtsScanStatus(operation, {
+      scanType: "cleanup",
+      maintenanceType: scheduleType,
+      startedAt: Date.now(),
+    });
+    log(`[TMDBG FTS] Manually triggering ${scheduleType} cleanup scan`);
+
+    // Calculate date range for this scan
+    const dateRange = calculateDateRange(config.scope, config.scopeUnit);
+
+    // No entry limits - chunked pagination handles large datasets safely
+    const cleanup = await cleanupMissingEntries(_ftsSearch, dateRange.start, dateRange.end, {
+      // maxEntries: 0 means unlimited (default)
+    });
+
+    // Keep ownership through the durable history write: another native writer
+    // cannot begin while this cleanup is still recording its outcome.
+    await logCleanupRun(scheduleType, cleanup);
+
+    return { ok: true, scheduleType, ...cleanup };
+  } finally {
+    try {
+      await clearOwnedFtsScanStatus(operation, { lastMaintenanceType: scheduleType });
+    } finally {
+      operation.release();
+    }
+  }
 }
 
 /**
