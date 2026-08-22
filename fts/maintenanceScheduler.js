@@ -11,15 +11,12 @@
  * - Weekly scan of last 3 weeks messages
  * - Monthly scan of last 3 months messages
  * 
- * FTS5 Incremental Optimize Strategy:
- * - Uses FTS5 'merge' command instead of blocking 'optimize' (MV3-friendly)
- * - Breaks work into small 1-2s steps that yield between operations
- * - Runs multiple slices per maintenance cycle (daily: 5, weekly: 8, monthly: 12)
- * - Each slice is resumable - if interrupted, next cycle continues where we left off
- * - Converges to same optimized state as full optimize, but service worker safe
- * - See ENABLE_AUTO_OPTIMIZE flag to disable (FTS5 still self-maintains via automerge)
- * 
- * Per FTS5 docs: https://www.sqlite.org/fts5.html#the_merge_command
+ * Native FTS5 optimize:
+ * - Daily/weekly/monthly maintenance requests one full native optimize call.
+ * - The native protocol accepts no tuning parameters; the current helper
+ *   returns { ok: true } and exposes no progress or convergence metrics.
+ * - Optimize failure is non-critical to the completed repair scan and is logged
+ *   truthfully for a later manual maintenance run.
  * 
  * Automatic alarms are retired; startup membership reconciliation now owns
  * consistency. The scheduling helpers remain private compatibility/test code.
@@ -1008,92 +1005,17 @@ async function runMaintenanceScan(scheduleType, config, force = false, progressC
       log(`[TMDBG FTS] Failed to build maintenance correction details: ${e?.message || String(e)}`, "warn");
     }
     
-    // =============================================================================
-    // FTS5 INCREMENTAL OPTIMIZE - MV3-Friendly Chunked Merge
-    // =============================================================================
-    // 
-    // APPROACH:
-    // - Uses FTS5's 'merge' command instead of blocking 'optimize'
-    // - Breaks work into small slices (1-2s each) that yield between steps
-    // - Runs multiple slices per maintenance cycle
-    // - Each slice is resumable - if interrupted, next cycle continues
-    // - Converges to same optimized state as full optimize, but MV3-safe
-    //
-    // CONFIGURATION:
-    // - pageBudget: pages merged per step (higher = more work per step)
-    // - stepTimeMs: time budget per merge step (lower = more frequent yields)
-    // - slices: number of slice invocations per maintenance run
-    //
-    // WHY THIS WORKS:
-    // 1. ✓ Each merge step completes in ~100-2000ms (well under 30s limit)
-    // 2. ✓ Yields between steps keep event loop responsive
-    // 3. ✓ Service worker stays alive (no idle timeout)
-    // 4. ✓ If slice fails, next maintenance continues (resumable)
-    // 5. ✓ No special keep-alive hacks needed
-    //
-    // Per FTS5 docs: https://www.sqlite.org/fts5.html#the_merge_command
-    // =============================================================================
-    const ENABLE_AUTO_OPTIMIZE = true;
-    
-    if (ENABLE_AUTO_OPTIMIZE && (scheduleType === 'daily' || scheduleType === 'weekly' || scheduleType === 'monthly')) {
-      // Configure slices by schedule type: daily = more frequent, monthly = larger chunks
-      const pageBudgetBySchedule = { daily: 800, weekly: 1200, monthly: 1600 };
-      const stepMsBySchedule     = { daily: 1200, weekly: 1500, monthly: 1800 };
-      const slicesPerRun         = { daily: 5, weekly: 8, monthly: 12 };
-      
-      const pageBudget = pageBudgetBySchedule[scheduleType];
-      const stepTimeMs = stepMsBySchedule[scheduleType];
-      const nSlices    = slicesPerRun[scheduleType];
-      
-      log(`[TMDBG FTS] Running incremental FTS5 optimization after ${scheduleType} maintenance`);
-      log(`[TMDBG FTS] Config: ${nSlices} slices, pageBudget=${pageBudget}, stepTimeMs=${stepTimeMs}ms`);
-      
-      let totalSteps = 0;
-      let totalChanges = 0;
-      let converged = false;
-      
+    if (scheduleType === 'daily' || scheduleType === 'weekly' || scheduleType === 'monthly') {
+      log(`[TMDBG FTS] Running full native FTS5 optimize after ${scheduleType} maintenance`);
       try {
-        for (let i = 0; i < nSlices; i++) {
-          try {
-            const sliceResult = await _ftsSearch.optimize({ 
-              pageBudget, 
-              stepTimeMs, 
-              maxSteps: 10 
-            });
-            
-            totalSteps += sliceResult.steps || 0;
-            totalChanges += sliceResult.totalChanges || 0;
-            
-            log(`[TMDBG FTS] Slice ${i + 1}/${nSlices}: ${sliceResult.steps} steps, Δ=${sliceResult.totalChanges}, size=${sliceResult.dbSizeMB}MB`);
-            
-            // If slice converged (< 2 changes), index is fully optimized - stop early
-            if (sliceResult.converged || (sliceResult.totalChanges ?? 0) < 2) {
-              log(`[TMDBG FTS] ✓ FTS5 optimization converged at slice ${i + 1}/${nSlices}`);
-              converged = true;
-              break;
-            }
-            
-            // Yield between slices
-            // eslint-disable-next-line no-await-in-loop
-            await new Promise(r => setTimeout(r, 0));
-          } catch (e) {
-            log(`[TMDBG FTS] Optimize slice ${i + 1} failed: ${e.message}`, "warn");
-            // Continue to next slice or stop - non-critical failure
-            break;
-          }
+        const optimizeResult = await _ftsSearch.optimize();
+        if (optimizeResult?.ok !== true) {
+          throw new Error("invalid response");
         }
-        
-        if (converged) {
-          log(`[TMDBG FTS] ✓ FTS5 incremental optimization complete: ${totalSteps} total steps, ${totalChanges} total changes`);
-        } else {
-          log(`[TMDBG FTS] FTS5 incremental optimization progress: ${totalSteps} steps, ${totalChanges} changes (will continue next ${scheduleType} cycle)`);
-        }
+        log(`[TMDBG FTS] Native FTS5 optimize completed after ${scheduleType} maintenance`);
       } catch (e) {
-        log(`[TMDBG FTS] FTS5 optimization error: ${e.message}`, "warn");
-        log(`[TMDBG FTS] Non-critical - will retry on next ${scheduleType} maintenance`, "warn");
+        log(`[TMDBG FTS] Native FTS5 optimize failed: ${e?.message || String(e)}`, "warn");
       }
-    } else if (!ENABLE_AUTO_OPTIMIZE && (scheduleType === 'daily' || scheduleType === 'weekly' || scheduleType === 'monthly')) {
-      log(`[TMDBG FTS] Optimize disabled (ENABLE_AUTO_OPTIMIZE = false) - skipping after ${scheduleType} maintenance`);
     }
     
     // Update last scan timestamp (success only)

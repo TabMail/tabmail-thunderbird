@@ -73,6 +73,9 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ## Recent Discoveries
 
+### 2026-08-22 — Native FTS optimize is one full, parameterless call
+- **[Detail](Companion/Memory/Current/029-native-fts-optimize-one-shot-contract.md)** — helper `optimize` ignores parameters and returns only `{ok:true}` after a full writer-thread FTS5 optimize. Maintenance must never invent slice budgets, progress, size, or convergence; malformed acknowledgments fail the optimize phase closed while the completed maintenance repair remains successful.
+
 ### 2026-08-13 — Native FTS signing-key cutover uses one bridge release + reinstall fallback (ADR-023)
 - **[Detail](Companion/Decisions/Active/adr-023-native-fts-routine-signing-key-cutover.md)** — v0.11.1 is the dual-key bridge; the pending signer was promoted on 2026-08-13 after the bridge and Thunderbird fallback were verified. v0.11.2 removes the previous public key. Thunderbird 1.7.2+ gives pre-0.11.1 helpers a distinct `unsupported` state and reinstall CTA that preserves the local index and needs no Thunderbird restart.
 
