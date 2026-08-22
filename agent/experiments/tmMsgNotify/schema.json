@@ -81,22 +81,82 @@
         }
       },
       {
-        "name": "listKeysAboveKey",
+        "name": "beginFolderMessageScan",
         "type": "function",
-        "description": "List msgKeys strictly above sinceKey, ascending. If more than maxKeys exist, returns the highest maxKeys with truncated=true.",
+        "description": "Begin an opaque live msgDB header scan whose pages are bounded by readFolderMessageScanPage.",
         "async": true,
         "parameters": [
           { "name": "folderURI", "type": "string" },
-          { "name": "sinceKey", "type": "integer" },
-          { "name": "maxKeys", "type": "integer" }
+          { "name": "includeMessageIds", "type": "boolean" }
         ],
         "returns": {
           "type": "object",
           "properties": {
-            "keys": { "type": "array", "items": { "type": "integer" } },
-            "truncated": { "type": "boolean" },
-            "totalAbove": { "type": "integer" },
+            "token": { "type": "string", "optional": true },
+            "accountId": { "type": "string", "optional": true },
+            "folderPath": { "type": "string", "optional": true },
+            "serverType": { "type": "string", "optional": true },
+            "stableUidKeys": { "type": "boolean", "optional": true },
+            "uidValidity": { "type": "integer", "optional": true },
+            "highestModSeq": { "type": "string", "optional": true },
             "error": { "type": "string", "optional": true }
+          }
+        }
+      },
+      {
+        "name": "readFolderMessageScanPage",
+        "type": "function",
+        "description": "Read at most maxItems rows from an opaque folder scan, yielding control between calls.",
+        "async": true,
+        "parameters": [
+          { "name": "token", "type": "string" },
+          { "name": "maxItems", "type": "integer" }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "msgKey": { "type": "integer" },
+                  "headerMessageId": { "type": "string", "optional": true }
+                }
+              }
+            },
+            "done": { "type": "boolean" },
+            "error": { "type": "string", "optional": true }
+          }
+        }
+      },
+      {
+        "name": "cancelFolderMessageScan",
+        "type": "function",
+        "description": "Cancel and release an opaque folder scan token.",
+        "async": true,
+        "parameters": [
+          { "name": "token", "type": "string" }
+        ],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "cancelled": { "type": "boolean" }
+          }
+        }
+      },
+      {
+        "name": "getFolderMessageScanStats",
+        "type": "function",
+        "description": "Return aggregate-only bounds and current usage for opaque folder scan tokens.",
+        "async": true,
+        "parameters": [],
+        "returns": {
+          "type": "object",
+          "properties": {
+            "live": { "type": "integer" },
+            "maxLive": { "type": "integer" },
+            "idleTtlMs": { "type": "integer" }
           }
         }
       },
@@ -120,7 +180,7 @@
       {
         "name": "getFolderState",
         "type": "function",
-        "description": "Read one folder's startup membership state. IMAP folders include a UID-set SHA-256 fingerprint under UIDVALIDITY; other server types report stableUidKeys=false. One-folder calls let the WebExtension yield between summary DB opens.",
+        "description": "Read one folder's startup identity and UIDVALIDITY state. Other server types report stableUidKeys=false. One-folder calls let the WebExtension yield between summary DB opens.",
         "async": true,
         "parameters": [
           { "name": "accountId", "type": "string" },
@@ -135,35 +195,7 @@
             "serverType": { "type": "string", "optional": true },
             "stableUidKeys": { "type": "boolean" },
             "uidValidity": { "type": "integer", "optional": true },
-            "uidCount": { "type": "integer", "optional": true },
-            "uidSha256": { "type": "string", "optional": true },
             "highestModSeq": { "type": "string", "optional": true },
-            "lookupMs": { "type": "integer", "optional": true },
-            "dbOpenMs": { "type": "integer", "optional": true },
-            "hashMs": { "type": "integer", "optional": true },
-            "elapsedMs": { "type": "integer", "optional": true },
-            "error": { "type": "string", "optional": true }
-          }
-        }
-      },
-      {
-        "name": "fingerprintFolderMessages",
-        "type": "function",
-        "description": "Fingerprint the exact de-duplicated account:path:Message-ID set and numeric msgKey mapping represented by a folder msgDB, without reading message bodies.",
-        "async": true,
-        "parameters": [
-          { "name": "folderURI", "type": "string" }
-        ],
-        "returns": {
-          "type": "object",
-          "properties": {
-            "count": { "type": "integer", "optional": true },
-            "sha256": { "type": "string", "optional": true },
-            "keyMapCount": { "type": "integer", "description": "Number of numeric msgKey to FTS-key mappings hashed", "optional": true },
-            "keyMapSha256": { "type": "string", "description": "SHA-256 fingerprint of the exact numeric msgKey to FTS-key mapping", "optional": true },
-            "accountId": { "type": "string", "optional": true },
-            "folderPath": { "type": "string", "optional": true },
-            "unkeyedCount": { "type": "integer", "optional": true },
             "error": { "type": "string", "optional": true }
           }
         }

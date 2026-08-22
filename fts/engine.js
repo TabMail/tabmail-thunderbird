@@ -9,6 +9,13 @@
 import { SETTINGS } from "../agent/modules/config.js";
 import { log } from "../agent/modules/utils.js";
 import { initNativeFts, nativeFtsSearch, nativeMemorySearch } from "./nativeEngine.js";
+import {
+  acquireFtsExclusiveOperation,
+  clearOwnedFtsScanStatus,
+  normalizeInterruptedFtsScanStatus,
+  runFtsMembershipMutation,
+  writeOwnedFtsScanStatus,
+} from "./operationCoordinator.js";
 
 let _inited = false;
 let _runtimeMessageHandler = null;
@@ -24,6 +31,16 @@ const FTS_ENGINE_DIAG_STATE = {
   hostInfoEmptyLogs: 0,
   hostInfoEmptyLastMs: 0,
 };
+
+async function _runOwnedFtsScan(kind, status, body) {
+  const lease = await acquireFtsExclusiveOperation(kind);
+  try {
+    await writeOwnedFtsScanStatus(lease, { ...status, startTime: Date.now() });
+    return await body(lease);
+  } finally {
+    try { await clearOwnedFtsScanStatus(lease); } finally { lease.release(); }
+  }
+}
 
 // Command interface for runtime messaging
 function attachCommandInterface() {
@@ -43,102 +60,53 @@ function attachCommandInterface() {
               return;
             }
             case "reindexAll": {
-              await ftsSearch.clearIndex();
-              await ftsSearch.clearCheckpoints();
-              
-              // Mark version as indexed immediately when clearing DB
-              // This clears the "reindex required" warning right away
-              await nativeFtsSearch.markVersionAsIndexed();
-              log("[TMDBG FTS] Marked current host version as indexed (reindex started)");
-              
-              // Set scan status to show indexing is in progress
-              await browser.storage.local.set({
-                "fts_initial_scan_complete": false,
-                "fts_scan_status": {
-                  isScanning: true,
-                  scanType: "reindex",
-                  startTime: Date.now()
-                }
-              });
-              
-              const { indexMessages } = await import("./indexer.js");
-              
-              // Progress callback that updates both the UI and scan status
-              const progressCallback = msg.progress ? async (p) => {
-                await browser.storage.local.set({
-                  "fts_scan_status": {
-                    isScanning: true,
+              const result = await _runOwnedFtsScan("reindex", { scanType: "reindex" }, async (lease) => {
+                await browser.storage.local.set({ "fts_initial_scan_complete": false });
+                await ftsSearch.clearIndex();
+                await ftsSearch.clearCheckpoints();
+                await nativeFtsSearch.markVersionAsIndexed();
+                log("[TMDBG FTS] Marked current host version as indexed (reindex started)");
+                const { indexMessages } = await import("./indexer.js");
+                const progressCallback = msg.progress ? async (p) => {
+                  await writeOwnedFtsScanStatus(lease, {
                     scanType: "reindex",
-                    startTime: Date.now(),
                     progress: {
                       folder: p.folder || "",
                       totalIndexed: p.totalIndexed || 0,
-                      totalBatches: p.totalBatches || 0
-                    }
-                  }
-                });
-                browser.runtime.sendMessage({type:"ftsProgress", ...p});
-              } : undefined;
-              
-              const result = await indexMessages(ftsSearch, progressCallback);
-              
-              // Mark complete
-              await browser.storage.local.set({
-                "fts_initial_scan_complete": true,
-                "fts_scan_status": {
-                  isScanning: false,
-                  scanType: "none",
-                  lastCompleted: Date.now()
-                }
+                      totalBatches: p.totalBatches || 0,
+                    },
+                  });
+                  browser.runtime.sendMessage({type:"ftsProgress", ...p});
+                } : undefined;
+                const scanResult = await indexMessages(ftsSearch, progressCallback);
+                await browser.storage.local.set({ "fts_initial_scan_complete": true });
+                return scanResult;
               });
               sendResponse(result);
               return;
             }
             case "smartReindex": {
-              // Set scan status to show indexing is in progress
-              await browser.storage.local.set({
-                "fts_scan_status": {
-                  isScanning: true,
-                  scanType: "smart",
-                  startTime: Date.now()
-                }
-              });
-              
-              const { indexMessages } = await import("./indexer.js");
-              
-              // Progress callback that updates scan status
-              const progressCallback = msg.progress ? async (p) => {
-                await browser.storage.local.set({
-                  "fts_scan_status": {
-                    isScanning: true,
+              const result = await _runOwnedFtsScan("smart", { scanType: "smart" }, async (lease) => {
+                const { indexMessages } = await import("./indexer.js");
+                const progressCallback = msg.progress ? async (p) => {
+                  await writeOwnedFtsScanStatus(lease, {
                     scanType: "smart",
                     progress: {
                       folder: p.folder || "",
                       totalIndexed: p.totalIndexed || 0,
-                      totalBatches: p.totalBatches || 0
-                    }
-                  }
-                });
-                browser.runtime.sendMessage({type:"ftsProgress", ...p});
-              } : undefined;
-              
-              const result = await indexMessages(ftsSearch, progressCallback);
-              
-              // Log the full maintenance run to history
-              try {
-                const { logSmartReindexRun } = await import("./maintenanceScheduler.js");
-                await logSmartReindexRun(result);
-              } catch (logErr) {
-                log(`[TMDBG FTS] Failed to log smart reindex: ${logErr.message}`, "warn");
-              }
-              
-              // Mark complete
-              await browser.storage.local.set({
-                "fts_scan_status": {
-                  isScanning: false,
-                  scanType: "none",
-                  lastCompleted: Date.now()
+                      totalBatches: p.totalBatches || 0,
+                    },
+                  });
+                  browser.runtime.sendMessage({type:"ftsProgress", ...p});
+                } : undefined;
+                const scanResult = await indexMessages(ftsSearch, progressCallback);
+                try {
+                  const { logSmartReindexRun } = await import("./maintenanceScheduler.js");
+                  await logSmartReindexRun(scanResult);
+                } catch (logErr) {
+                  log(`[TMDBG FTS] Failed to log smart reindex: ${logErr.message}`, "warn");
                 }
+                return scanResult;
               });
               sendResponse(result);
               return;
@@ -159,11 +127,12 @@ function attachCommandInterface() {
               sendResponse(await ftsSearch.stats());
               return;
             case "clear": 
-              await ftsSearch.clearIndex();
-              await ftsSearch.clearCheckpoints();
-              await browser.storage.local.remove(["fts_initial_scan_complete", "fts_scan_status"]);
-              // Mark version as indexed when clearing (clears reindex warning)
-              await nativeFtsSearch.markVersionAsIndexed();
+              await _runOwnedFtsScan("clear", { scanType: "clear" }, async () => {
+                await ftsSearch.clearIndex();
+                await ftsSearch.clearCheckpoints();
+                await browser.storage.local.remove("fts_initial_scan_complete");
+                await nativeFtsSearch.markVersionAsIndexed();
+              });
               log("[TMDBG FTS] Index cleared and initial scan flags reset");
               sendResponse({ ok: true });
               return;
@@ -222,8 +191,9 @@ function attachCommandInterface() {
               return;
             }
             case "resetInitialScan": {
-              await browser.storage.local.remove("fts_initial_scan_complete");
-              await browser.storage.local.remove("fts_scan_status");
+              await _runOwnedFtsScan("reset", { scanType: "reset" }, async () => {
+                await browser.storage.local.remove("fts_initial_scan_complete");
+              });
               log("[TMDBG FTS] Initial scan flag reset");
               sendResponse({ ok: true });
               return;
@@ -244,7 +214,7 @@ function attachCommandInterface() {
             }
             case "incrementalStatus": {
               const { getIncrementalIndexerStatus } = await import("./incrementalIndexer.js");
-              sendResponse(getIncrementalIndexerStatus());
+              sendResponse(await getIncrementalIndexerStatus());
               return;
             }
             case "clearPendingUpdates": {
@@ -313,31 +283,23 @@ function attachCommandInterface() {
               return;
             }
             case "rebuildEmbeddings": {
-              // Set scan status for UI
-              await browser.storage.local.set({
-                "fts_scan_status": { isScanning: true, scanType: "embeddingRebuild", startTime: Date.now() }
-              });
-
-              const rebuildProgressCb = (p) => {
-                browser.storage.local.set({
-                  "fts_scan_status": {
-                    isScanning: true, scanType: "embeddingRebuild",
-                    progress: { phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total }
-                  }
-                }).catch(() => {});
-                browser.runtime.sendMessage({
-                  type: "ftsProgress", scanType: "embeddingRebuild",
-                  phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total,
-                }).catch(() => {});
-              };
-
-              // Non-destructive: rebuild vector embeddings from existing FTS data
-              const result = await nativeFtsSearch.rebuildEmbeddings(rebuildProgressCb);
-
-              // Clear scan status
-              await browser.storage.local.set({
-                "fts_scan_status": { isScanning: false, scanType: "none", lastCompleted: Date.now() }
-              });
+              const result = await _runOwnedFtsScan(
+                "embedding",
+                { scanType: "embeddingRebuild" },
+                async (lease) => {
+                  const rebuildProgressCb = (p) => {
+                    writeOwnedFtsScanStatus(lease, {
+                      scanType: "embeddingRebuild",
+                      progress: { phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total },
+                    }).catch(() => {});
+                    browser.runtime.sendMessage({
+                      type: "ftsProgress", scanType: "embeddingRebuild",
+                      phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total,
+                    }).catch(() => {});
+                  };
+                  return nativeFtsSearch.rebuildEmbeddings(rebuildProgressCb);
+                },
+              );
 
               if (result?.ok) {
                 await nativeFtsSearch.markVersionAsIndexed();
@@ -419,6 +381,7 @@ export async function initFtsEngine() {
 
   try {
     await initNativeFts();
+    await normalizeInterruptedFtsScanStatus();
     attachCommandInterface(); // Attach command handlers
 
     // Check if embeddings need rebuilding AFTER command interface is registered.
@@ -461,31 +424,21 @@ export async function initFtsEngine() {
         log(`[TMDBG FTS] 🔄 Embedding rebuild needed: ${rebuildReason}`);
         log(`[TMDBG FTS] Auto-rebuilding embeddings (non-destructive, FTS5 index preserved)`);
 
-        // Set scan status so the settings page can show progress
-        await browser.storage.local.set({
-          "fts_scan_status": { isScanning: true, scanType: "embeddingRebuild", startTime: Date.now() }
-        });
-
-        // Progress callback: update scan status + send runtime messages for UI
-        const rebuildProgress = (p) => {
-          browser.storage.local.set({
-            "fts_scan_status": {
-              isScanning: true, scanType: "embeddingRebuild",
-              progress: { phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total }
-            }
-          }).catch(() => {});
-          browser.runtime.sendMessage({
-            type: "ftsProgress", scanType: "embeddingRebuild",
-            phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total,
-          }).catch(() => {});
-        };
-
         // Non-destructive: rebuild embeddings from existing FTS data via native RPC.
         // Uses batch-based RPC so FTS search remains accessible during rebuild.
-        nativeFtsSearch.rebuildEmbeddings(rebuildProgress).then(async (result) => {
-          await browser.storage.local.set({
-            "fts_scan_status": { isScanning: false, scanType: "none", lastCompleted: Date.now() }
-          }).catch(() => {});
+        _runOwnedFtsScan("embedding", { scanType: "embeddingRebuild" }, async (lease) => {
+          const rebuildProgress = (p) => {
+            writeOwnedFtsScanStatus(lease, {
+              scanType: "embeddingRebuild",
+              progress: { phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total },
+            }).catch(() => {});
+            browser.runtime.sendMessage({
+              type: "ftsProgress", scanType: "embeddingRebuild",
+              phase: p.phase, processed: p.processed, embedded: p.embedded, total: p.total,
+            }).catch(() => {});
+          };
+          return nativeFtsSearch.rebuildEmbeddings(rebuildProgress);
+        }).then(async (result) => {
           if (result?.ok) {
             log(`[TMDBG FTS] ✅ Embedding rebuild completed: ${result.emailEmbedded}/${result.emailTotal} emails, ${result.memoryEmbedded}/${result.memoryTotal} memory`);
             await nativeFtsSearch.markVersionAsIndexed();
@@ -493,9 +446,6 @@ export async function initFtsEngine() {
             log(`[TMDBG FTS] ❌ Embedding rebuild failed: ${result?.error || "unknown error"}`, "error");
           }
         }).catch(async (e) => {
-          await browser.storage.local.set({
-            "fts_scan_status": { isScanning: false, scanType: "none", lastCompleted: Date.now() }
-          }).catch(() => {});
           log(`[TMDBG FTS] ❌ Embedding rebuild error: ${e.message}`, "error");
         });
       }
@@ -602,9 +552,12 @@ export async function disposeFtsEngine() {
 
 // Main FTS API exposed to the rest of the extension
 export const ftsSearch = {
-  async indexBatch(rows) {
+  async indexBatch(rows, membershipFenceToken = null) {
     log(`[TMDBG FTS] indexBatch called with ${rows.length} rows`);
-    return await nativeFtsSearch.indexBatch(rows);
+    return runFtsMembershipMutation(
+      () => nativeFtsSearch.indexBatch(rows),
+      membershipFenceToken,
+    );
   },
 
   async filterNewMessages(rows) {
@@ -626,9 +579,12 @@ export const ftsSearch = {
     return await nativeFtsSearch.stats();
   },
 
-  async clear() {
+  async clear(membershipFenceToken = null) {
     log("[TMDBG FTS] Clearing FTS index");
-    return await nativeFtsSearch.clear();
+    return runFtsMembershipMutation(
+      () => nativeFtsSearch.clear(),
+      membershipFenceToken,
+    );
   },
 
   // Alias for clear (used by old code)
@@ -641,9 +597,12 @@ export const ftsSearch = {
     return await nativeFtsSearch.optimize(params);
   },
 
-  async removeBatch(ids) {
+  async removeBatch(ids, membershipFenceToken = null) {
     log(`[TMDBG FTS] removeBatch called with ${ids.length} IDs`);
-    return await nativeFtsSearch.removeBatch(ids);
+    return runFtsMembershipMutation(
+      () => nativeFtsSearch.removeBatch(ids),
+      membershipFenceToken,
+    );
   },
 
   async getMessageByMsgId(msgId) {
@@ -658,8 +617,9 @@ export const ftsSearch = {
     return await nativeFtsSearch.queryByDateRange(from, to, limit);
   },
 
-  // Generic msgId key-range RPCs (PLAN_FOLDER_SET_RECONCILE.md); rejects on
-  // native helpers < 0.10.0 — callers must feature-detect.
+  // Generic msgId key-range RPCs (PLAN_FOLDER_SET_RECONCILE.md). Count/list
+  // have older history; fingerprintMsgIdRange requires helper >= 0.11.0, so
+  // callers must feature-detect the complete reconciliation surface.
   async countMsgIdRange(startKey, endKey) {
     return await nativeFtsSearch.countMsgIdRange(startKey, endKey);
   },

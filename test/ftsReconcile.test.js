@@ -65,6 +65,9 @@ globalThis.browser = {
         if (typeof keyOrDefault === 'string') {
           return { [keyOrDefault]: storageData[keyOrDefault] || null };
         }
+        if (Array.isArray(keyOrDefault)) {
+          return Object.fromEntries(keyOrDefault.map(key => [key, storageData[key]]));
+        }
         const result = {};
         for (const [k, def] of Object.entries(keyOrDefault)) {
           result[k] = storageData[k] !== undefined ? storageData[k] : def;
@@ -619,6 +622,7 @@ describe('isReconcilePending / getLastSyncEventMs (real implementations)', () =>
 
   it('returns true when enabled and the pending flag is set', async () => {
     _testExports._setIsEnabled(true);
+    _testExports._setLastSyncEventMs(0);
     storageData['fts_reconcile_pending'] = Date.now();
     expect(await isReconcilePending()).toBe(true);
   });
@@ -636,13 +640,13 @@ describe('isReconcilePending / getLastSyncEventMs (real implementations)', () =>
     expect(await isReconcilePending()).toBe(false);
   });
 
-  it('returns false when the storage read throws', async () => {
+  it('fails closed when the storage read throws', async () => {
     _testExports._setIsEnabled(true);
     storageData['fts_reconcile_pending'] = Date.now();
     browser.storage.local.get.mockImplementationOnce(async () => {
       throw new Error('storage gone');
     });
-    expect(await isReconcilePending()).toBe(false);
+    await expect(isReconcilePending()).rejects.toThrow('storage gone');
   });
 
   it('getLastSyncEventMs reflects the tracked sync-event timestamp', () => {
@@ -692,11 +696,16 @@ describe('runPostInitReconcile fingerprint path', () => {
         uidCount: 0,
         uidSha256: 'empty-uids',
       })),
-      fingerprintFolderMessages: vi.fn(async () => ({
-        count: 0,
-        sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-      })),
       probeMessageIds: vi.fn(async () => ({ missing: [] })),
+      beginFolderMessageScan: vi.fn(async () => ({
+        token: 'scan-1',
+        accountId: 'account1',
+        folderPath: '/INBOX',
+        stableUidKeys: true,
+        uidValidity: 1,
+      })),
+      readFolderMessageScanPage: vi.fn(async () => ({ rows: [], done: true })),
+      cancelFolderMessageScan: vi.fn(async () => ({ cancelled: true })),
       listKeysAboveKey: vi.fn(async () => ({ keys: [] })),
       getMessageInfosForKeys: vi.fn(async () => ({ infos: [] })),
     };
@@ -717,17 +726,27 @@ describe('runPostInitReconcile fingerprint path', () => {
   }
 
   it('proves folder membership without invoking the old date-window message APIs', async () => {
-    const ftsSearch = arrangeFingerprintReconcile();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-22T00:00:00Z'));
+    try {
+      const ftsSearch = arrangeFingerprintReconcile();
+      _testExports._setFtsSearch(ftsSearch);
+      _testExports._setLastSyncEventMs(0);
 
-    await _testExports.runPostInitReconcile(ftsSearch);
+      await _testExports.runPostInitReconcile(ftsSearch);
+      await _testExports._runFolderReconSchedulerTick(ftsSearch);
 
-    expect(browser.messages.query).not.toHaveBeenCalled();
-    expect(browser.messages.continueList).not.toHaveBeenCalled();
-    expect(ftsSearch.queryByDateRange).toBeUndefined();
-    expect(browser.tmMsgNotify.getFolderState).toHaveBeenCalledOnce();
-    expect(storageData.fts_folder_recon_memo.folders['account1:/INBOX'].verified).toBe(true);
-    expect(storageData.fts_reconcile_pending).toBeUndefined();
-    expect(storageData.fts_reconcile_watermark).toBeUndefined();
+      expect(browser.messages.query).not.toHaveBeenCalled();
+      expect(browser.messages.continueList).not.toHaveBeenCalled();
+      expect(ftsSearch.queryByDateRange).toBeUndefined();
+      expect(browser.tmMsgNotify.getFolderState).toHaveBeenCalledOnce();
+      expect(storageData.fts_folder_recon_memo.folders['account1:/INBOX'].verified).toBe(true);
+      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(storageData.fts_reconcile_watermark).toBeUndefined();
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.useRealTimers();
+    }
   });
 
   it('leaves the pending marker when the proof throws', async () => {
@@ -736,6 +755,7 @@ describe('runPostInitReconcile fingerprint path', () => {
         throw new Error('native disconnected');
       },
     });
+    _testExports._setFtsSearch(ftsSearch);
 
     await _testExports.runPostInitReconcile(ftsSearch);
 

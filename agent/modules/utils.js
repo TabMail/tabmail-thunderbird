@@ -51,6 +51,19 @@ export function signalChatTyping() {
 }
 
 /**
+ * Read-only pressure signal for cooperative background work. This exposes the
+ * existing SafeGetFull pool and chat-typing gate; callers must defer work, not
+ * create a second body-fetch pool or mutate these counters.
+ */
+export function getForegroundFetchPressure() {
+  return {
+    active: activeGetFullCount,
+    waiting: getFullWaiters.length,
+    chatTyping: _chatTypingUntil > Date.now(),
+  };
+}
+
+/**
  * Wait if the user is actively typing in chat.
  * Resolves immediately if not typing, otherwise waits until cooldown expires.
  */

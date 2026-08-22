@@ -27,6 +27,7 @@ vi.mock('../agent/modules/eventLogger.js', () => ({
 }));
 
 vi.mock('../agent/modules/utils.js', () => ({
+  getForegroundFetchPressure: vi.fn(() => ({ active: 0, waiting: 0, chatTyping: false })),
   headerIDToWeID: vi.fn(),
   log: vi.fn(),
   parseUniqueId: vi.fn(),
@@ -76,7 +77,6 @@ const {
   _setLastSyncEventMs,
   _getLastSyncEventMs,
   CURSOR_STORAGE_KEY,
-  CURSOR_FULL_SCAN_MAX_KEYS,
 } = _testExports;
 
 // ---------------------------------------------------------------------------
@@ -126,8 +126,8 @@ function infoForKey(folder, key) {
 }
 
 /**
- * Install a browser.tmMsgNotify mock. keysByURI maps folderURI ->
- * listKeysAboveKey result; infos are derived from the folder + keys unless
+ * Install a browser.tmMsgNotify mock. keysByURI supplies the rows returned by
+ * the bounded scan pages; infos are derived from the folder + keys unless
  * infosByURI overrides (set to { error } to simulate RPC failure).
  */
 function mockNotify(folders, { keysByURI = {}, infosByURI = {} } = {}) {
@@ -143,11 +143,30 @@ function mockNotify(folders, { keysByURI = {}, infosByURI = {} } = {}) {
     type: 'imap',
     rootFolder: { path: '/', isRoot: true, subFolders },
   })));
+  const scans = new Map();
+  let nextScan = 1;
   const api = {
     getCursorFolder: vi.fn(async (accountId, folderPath) => byIdentity[`${accountId}:${folderPath}`]),
-    listKeysAboveKey: vi.fn(async (uri, _sinceKey, _maxKeys) =>
-      keysByURI[uri] || { keys: [], truncated: false, totalAbove: 0 }
-    ),
+    beginFolderMessageScan: vi.fn(async (uri) => {
+      const configured = keysByURI[uri] || { keys: [], truncated: false, totalAbove: 0 };
+      const keys = configured.truncated && configured.totalAbove > configured.keys.length
+        ? Array.from({ length: configured.totalAbove }, (_, index) => index + 1)
+        : [...configured.keys];
+      const token = `scan-${nextScan++}`;
+      scans.set(token, { keys, offset: 0 });
+      return { token };
+    }),
+    readFolderMessageScanPage: vi.fn(async (token, maxItems) => {
+      const scan = scans.get(token);
+      if (!scan) return { rows: [], done: true, error: 'scan_not_found' };
+      const page = scan.keys.slice(scan.offset, scan.offset + maxItems);
+      scan.offset += page.length;
+      return {
+        rows: page.map(msgKey => ({ msgKey })),
+        done: scan.offset >= scan.keys.length,
+      };
+    }),
+    cancelFolderMessageScan: vi.fn(async token => ({ cancelled: scans.delete(token) })),
     getMessageInfosForKeys: vi.fn(async (uri, keys) => {
       if (infosByURI[uri]) return infosByURI[uri];
       const f = byURI[uri];
@@ -201,7 +220,7 @@ describe('_runCursorScan', () => {
 
     expect(stats.foldersSeeded).toBe(2);
     expect(stats.foldersScanned).toBe(0);
-    expect(api.listKeysAboveKey).not.toHaveBeenCalled();
+    expect(api.beginFolderMessageScan).not.toHaveBeenCalled();
     expect(api.getMessageInfosForKeys).not.toHaveBeenCalled();
 
     const cur = storedCursors();
@@ -217,7 +236,7 @@ describe('_runCursorScan', () => {
     const stats = await _runCursorScan();
 
     expect(stats.foldersUnchanged).toBe(1);
-    expect(api.listKeysAboveKey).not.toHaveBeenCalled();
+    expect(api.beginFolderMessageScan).not.toHaveBeenCalled();
     expect(_getPendingUpdates().size).toBe(0);
   });
 
@@ -229,7 +248,7 @@ describe('_runCursorScan', () => {
 
     const stats = await _runCursorScan();
 
-    expect(api.listKeysAboveKey).toHaveBeenCalledWith(URI_A, 100, CURSOR_FULL_SCAN_MAX_KEYS);
+    expect(api.beginFolderMessageScan).toHaveBeenCalledWith(URI_A, false);
     expect(stats.keysEnqueued).toBe(5);
     expect(stats.foldersAdvanced).toBe(1);
 
@@ -274,7 +293,7 @@ describe('_runCursorScan', () => {
 
     const stats = await _runCursorScan();
 
-    expect(api.listKeysAboveKey).toHaveBeenCalledWith(URI_A, 0, CURSOR_FULL_SCAN_MAX_KEYS);
+    expect(api.beginFolderMessageScan).toHaveBeenCalledWith(URI_A, false);
     expect(stats.keysEnqueued).toBe(3);
     expect(storedCursors().folders['account1:/INBOX']).toMatchObject({
       uidValidity: 999,
@@ -290,7 +309,7 @@ describe('_runCursorScan', () => {
 
     const stats = await _runCursorScan();
 
-    expect(api.listKeysAboveKey).toHaveBeenCalledWith(URI_B, 0, CURSOR_FULL_SCAN_MAX_KEYS);
+    expect(api.beginFolderMessageScan).toHaveBeenCalledWith(URI_B, false);
     expect(stats.keysEnqueued).toBe(2);
     expect(storedCursors().folders['account3:/[Gmail]/All Mail']).toMatchObject({
       uidValidity: 333,
@@ -298,7 +317,7 @@ describe('_runCursorScan', () => {
     });
   });
 
-  it('truncated full scan enqueues the returned newest keys, logs it, and still advances', async () => {
+  it('keeps a truncated bounded scan behind queue high-water and does not advance', async () => {
     seedCursorStore({ 'account1:/INBOX': { uidValidity: 111, highestKeySeen: 100, updatedAtMs: 1 } });
     mockNotify([folderA({ uidValidity: 999, highWater: 9000 })], {
       keysByURI: { [URI_A]: { keys: [8998, 8999, 9000], truncated: true, totalAbove: 9000 } },
@@ -307,12 +326,13 @@ describe('_runCursorScan', () => {
     const stats = await _runCursorScan();
 
     expect(stats.truncatedScans).toBe(1);
-    expect(stats.keysEnqueued).toBe(3);
-    expect(stats.foldersAdvanced).toBe(1);
+    expect(stats.keysEnqueued).toBe(_testExports.FOLDER_RECON_PENDING_HIGH_WATER);
+    expect(stats.enqueueFailed).toBe(1);
+    expect(stats.foldersAdvanced).toBe(0);
     expect(logFtsOperation).toHaveBeenCalledWith('cursor_scan', 'truncated', expect.objectContaining({
       totalAbove: 9000,
     }));
-    expect(storedCursors().folders['account1:/INBOX'].highestKeySeen).toBe(9000);
+    expect(storedCursors().folders['account1:/INBOX'].highestKeySeen).toBe(100);
   });
 
   it('corrupt cursor entry (non-numeric highestKeySeen) triggers a re-minting full scan', async () => {
@@ -323,7 +343,7 @@ describe('_runCursorScan', () => {
 
     const stats = await _runCursorScan();
 
-    expect(api.listKeysAboveKey).toHaveBeenCalledWith(URI_A, 0, CURSOR_FULL_SCAN_MAX_KEYS);
+    expect(api.beginFolderMessageScan).toHaveBeenCalledWith(URI_A, false);
     expect(stats.keysEnqueued).toBe(3);
     expect(storedCursors().folders['account1:/INBOX']).toMatchObject({
       uidValidity: 111,
@@ -331,7 +351,7 @@ describe('_runCursorScan', () => {
     });
   });
 
-  it('resolves keys in chunks of CURSOR_KEYS_CHUNK and advances past the last chunk', async () => {
+  it('stops resolving at queue high-water and does not advance the durable cursor', async () => {
     const total = _testExports.CURSOR_KEYS_CHUNK + 1; // forces two RPC calls
     const keys = Array.from({ length: total }, (_, i) => 101 + i);
     seedCursorStore({ 'account1:/INBOX': { uidValidity: 111, highestKeySeen: 100, updatedAtMs: 1 } });
@@ -341,11 +361,11 @@ describe('_runCursorScan', () => {
 
     const stats = await _runCursorScan();
 
-    expect(api.getMessageInfosForKeys).toHaveBeenCalledTimes(2);
+    expect(api.getMessageInfosForKeys).toHaveBeenCalledOnce();
     expect(api.getMessageInfosForKeys.mock.calls[0][1]).toHaveLength(_testExports.CURSOR_KEYS_CHUNK);
-    expect(api.getMessageInfosForKeys.mock.calls[1][1]).toEqual([100 + total]);
-    expect(stats.keysEnqueued).toBe(total);
-    expect(storedCursors().folders['account1:/INBOX'].highestKeySeen).toBe(100 + total);
+    expect(stats.keysEnqueued).toBe(_testExports.FOLDER_RECON_PENDING_HIGH_WATER);
+    expect(stats.enqueueFailed).toBe(1);
+    expect(storedCursors().folders['account1:/INBOX'].highestKeySeen).toBe(100);
   });
 
   it('is skipped cleanly when the experiment API is unavailable', async () => {
@@ -363,7 +383,7 @@ describe('_runCursorScan', () => {
 
     expect(stats.foldersSeeded).toBe(1);
     expect(stats.foldersSkipped).toBe(1);
-    expect(api.listKeysAboveKey).not.toHaveBeenCalled();
+    expect(api.beginFolderMessageScan).not.toHaveBeenCalled();
     const cur = storedCursors();
     expect(cur.folders['account1:/INBOX']).toBeTruthy();
     expect(cur.folders['account3:/[Gmail]/All Mail']).toBeUndefined();

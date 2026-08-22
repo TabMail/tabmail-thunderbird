@@ -29,6 +29,7 @@ vi.mock('../agent/modules/eventLogger.js', () => ({
 }));
 
 vi.mock('../agent/modules/utils.js', () => ({
+  getForegroundFetchPressure: vi.fn(() => ({ active: 0, waiting: 0, chatTyping: false })),
   headerIDToWeID: vi.fn(),
   log: vi.fn(),
   parseUniqueId: vi.fn(),
@@ -40,11 +41,24 @@ vi.mock('../fts/indexer.js', () => ({
   populateBatchBody: vi.fn(),
 }));
 
+const storageData = {};
 globalThis.browser = {
   storage: {
     local: {
-      get: vi.fn(async (defaults) => defaults),
-      set: vi.fn(async () => {}),
+      get: vi.fn(async (keyOrDefaults) => {
+        if (typeof keyOrDefaults === 'string') return { [keyOrDefaults]: storageData[keyOrDefaults] };
+        if (Array.isArray(keyOrDefaults)) {
+          return Object.fromEntries(keyOrDefaults.map(key => [key, storageData[key]]));
+        }
+        return Object.fromEntries(Object.entries(keyOrDefaults || {}).map(([key, fallback]) => [
+          key,
+          storageData[key] === undefined ? fallback : storageData[key],
+        ]));
+      }),
+      set: vi.fn(async obj => Object.assign(storageData, obj)),
+      remove: vi.fn(async keyOrKeys => {
+        for (const key of Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys]) delete storageData[key];
+      }),
     },
   },
   messages: {
@@ -67,7 +81,8 @@ globalThis.browser = {
   },
 };
 
-const { _testExports } = await import('../fts/incrementalIndexer.js');
+const incrementalIndexer = await import('../fts/incrementalIndexer.js');
+const { _testExports, clearPendingUpdates } = incrementalIndexer;
 const {
   _getRetryConfig,
   _shouldDropFailedUpdates,
@@ -77,6 +92,9 @@ const {
   _getConsecutiveNoProgressCycles,
   _setConsecutiveNoProgressCycles,
   _getPendingUpdates,
+  _abandonPendingUpdates,
+  _getFolderReconDirty,
+  _resetFolderReconState,
 } = _testExports;
 
 // ---------------------------------------------------------------------------
@@ -84,8 +102,102 @@ const {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  globalThis.browser.storage.local.get.mockImplementation(async (keyOrDefaults) => {
+    if (typeof keyOrDefaults === 'string') return { [keyOrDefaults]: storageData[keyOrDefaults] };
+    if (Array.isArray(keyOrDefaults)) {
+      return Object.fromEntries(keyOrDefaults.map(key => [key, storageData[key]]));
+    }
+    return Object.fromEntries(Object.entries(keyOrDefaults || {}).map(([key, fallback]) => [
+      key,
+      storageData[key] === undefined ? fallback : storageData[key],
+    ]));
+  });
+  globalThis.browser.storage.local.set.mockImplementation(async obj => Object.assign(storageData, obj));
+  globalThis.browser.storage.local.remove.mockImplementation(async keyOrKeys => {
+    for (const key of Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys]) delete storageData[key];
+  });
+  for (const key of Object.keys(storageData)) delete storageData[key];
   _setConsecutiveNoProgressCycles(0);
   _getPendingUpdates().clear();
+  _resetFolderReconState();
+});
+
+describe('atomic queue abandonment', () => {
+  const entry = (uniqueKey, type, timestamp, folderKey) => ({
+    uniqueKey, type, timestamp, folderKey, metadata: {}, hasFailed: true,
+  });
+
+  it('durably dirties exact folders once before dropping mixed add/move/delete failures', async () => {
+    const captured = [
+      entry('account1:/A:add@example.com', 'new', 1, 'account1:/A'),
+      entry('account1:/A:move@example.com', 'moved', 2, 'account1:/A'),
+      entry('account1:/B:delete@example.com', 'deleted', 3, 'account1:/B'),
+    ];
+    for (const update of captured) _getPendingUpdates().set(update.uniqueKey, update);
+
+    const result = await _abandonPendingUpdates(captured, 'queue_stuck');
+
+    expect(result).toMatchObject({ dropped: 3, retained: 0 });
+    expect(_getPendingUpdates().size).toBe(0);
+    expect(_getFolderReconDirty()).toEqual(new Set(['account1:/A', 'account1:/B']));
+    expect(globalThis.browser.storage.local.set.mock.calls.filter(
+      ([obj]) => Object.hasOwn(obj, 'fts_reconcile_pending'),
+    )).toHaveLength(1);
+  });
+
+  it('retains every captured entry when the durable dirty marker write fails', async () => {
+    const captured = [entry('account1:/A:add@example.com', 'new', 1, 'account1:/A')];
+    _getPendingUpdates().set(captured[0].uniqueKey, captured[0]);
+    globalThis.browser.storage.local.set.mockRejectedValueOnce(new Error('disk full'));
+
+    await expect(_abandonPendingUpdates(captured, 'unparseable')).rejects.toThrow('disk full');
+    expect(_getPendingUpdates().get(captured[0].uniqueKey)).toEqual(captured[0]);
+  });
+
+  it('never drops a newer timestamp or changed operation requeued under the same key', async () => {
+    const old = entry('account1:/A:same@example.com', 'new', 1, 'account1:/A');
+    _getPendingUpdates().set(old.uniqueKey, { ...old, type: 'deleted', timestamp: 2 });
+
+    const result = await _abandonPendingUpdates([old], 'empty_header_batch');
+
+    expect(result).toMatchObject({ dropped: 0, retained: 1 });
+    expect(_getPendingUpdates().get(old.uniqueKey)).toMatchObject({ type: 'deleted', timestamp: 2 });
+    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+  });
+
+  it('coalesces a persisted dirty marker instead of writing once per dropped key or wake', async () => {
+    const first = entry('account1:/A:one@example.com', 'new', 1, 'account1:/A');
+    const second = entry('account1:/A:two@example.com', 'deleted', 2, 'account1:/A');
+    _getPendingUpdates().set(first.uniqueKey, first);
+    await _abandonPendingUpdates([first], 'stuck');
+    _getPendingUpdates().set(second.uniqueKey, second);
+    await _abandonPendingUpdates([second], 'stuck');
+
+    expect(globalThis.browser.storage.local.set.mock.calls.filter(
+      ([obj]) => Object.hasOwn(obj, 'fts_reconcile_pending'),
+    )).toHaveLength(1);
+  });
+
+  it('maps an admitted legacy entry without a folder identity to __all__', async () => {
+    const legacy = entry('legacy-unparseable', 'new', 1, undefined);
+    _getPendingUpdates().set(legacy.uniqueKey, legacy);
+
+    await _abandonPendingUpdates([legacy], 'unparseable');
+
+    expect(_getFolderReconDirty()).toEqual(new Set(['__all__']));
+  });
+
+  it('manual clear durably dirties admitted work instead of silently erasing it', async () => {
+    const pending = entry('account1:/A:manual@example.com', 'new', 1, 'account1:/A');
+    _getPendingUpdates().set(pending.uniqueKey, pending);
+
+    await clearPendingUpdates();
+
+    expect(_getPendingUpdates().size).toBe(0);
+    expect(storageData.fts_reconcile_pending).toBeTruthy();
+    expect(_getFolderReconDirty()).toContain('account1:/A');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ vi.mock('../agent/modules/eventLogger.js', () => ({
 }));
 
 vi.mock('../agent/modules/utils.js', () => ({
+  getForegroundFetchPressure: vi.fn(() => ({ active: 0, waiting: 0, chatTyping: false })),
   headerIDToWeID: vi.fn(),
   log: vi.fn(),
   parseUniqueId: vi.fn((uniqueId) => {
@@ -53,6 +54,9 @@ globalThis.browser = {
         if (typeof keyOrDefault === 'string') {
           return { [keyOrDefault]: storageData[keyOrDefault] ?? null };
         }
+        if (Array.isArray(keyOrDefault)) {
+          return Object.fromEntries(keyOrDefault.map(key => [key, storageData[key]]));
+        }
         return Object.fromEntries(Object.entries(keyOrDefault).map(([key, fallback]) => [
           key,
           storageData[key] === undefined ? fallback : storageData[key],
@@ -66,10 +70,12 @@ globalThis.browser = {
 };
 
 const { logFtsBatchOperation, logFtsOperation } = await import('../agent/modules/eventLogger.js');
-const { recheckMessageInFolder } = await import('../agent/modules/utils.js');
+const { getForegroundFetchPressure, recheckMessageInFolder } = await import('../agent/modules/utils.js');
+const { runFtsMembershipMutation } = await import('../fts/operationCoordinator.js');
 const { _testExports } = await import('../fts/incrementalIndexer.js');
 const {
   _getFolderReconDrainSkipped,
+  _invalidateFolderReconProofForEvent,
   _getPendingUpdates,
   _maybeScheduleFolderReconRerun,
   _resetFolderReconState,
@@ -80,6 +86,7 @@ const {
   _setFtsSearch,
   _setIndexerDisposed,
   _setIsEnabled,
+  _setLastSyncEventMs,
   onExperimentMessageRemoved,
   FOLDER_RECON_INITIAL_SCAN_KEY,
   FOLDER_RECON_STORAGE_KEY,
@@ -91,10 +98,18 @@ const URI_C = 'imap://user@host/INBOX/a%3Ab';
 const KEY_A = (id) => `account1:/INBOX:${id}`;
 const KEY_B = (id) => `account3:/[Gmail]/All Mail:${id}`;
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 function framedDigest(keys) {
   const hash = createHash('sha256');
-  for (const key of [...keys].sort()) {
-    const bytes = Buffer.from(key, 'utf8');
+  const encoded = [...keys].map(key => Buffer.from(key, 'utf8'));
+  encoded.sort(Buffer.compare);
+  for (const bytes of encoded) {
     const length = Buffer.alloc(8);
     length.writeBigUInt64BE(BigInt(bytes.length));
     hash.update(length);
@@ -109,6 +124,16 @@ function digest(keys) {
 
 function keyMapDigest(entries) {
   return framedDigest(entries.map(([key, uniqueKey]) => `${Number(key) >>> 0}:${uniqueKey}`));
+}
+
+function uidDigest(keys) {
+  const hash = createHash('sha256');
+  for (const key of [...keys].map(Number).sort((a, b) => a - b)) {
+    const bytes = Buffer.alloc(4);
+    bytes.writeUInt32BE(key >>> 0);
+    hash.update(bytes);
+  }
+  return hash.digest('hex');
 }
 
 function folderA(over = {}) {
@@ -141,8 +166,16 @@ function folderB(over = {}) {
   };
 }
 
+function sqliteBinaryCompare(left, right) {
+  return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
+}
+
 function inRange(keys, start, end, after = null) {
-  return [...keys].sort().filter(key => key >= start && key < end && (after == null || key > after));
+  return [...keys]
+    .filter(key => sqliteBinaryCompare(key, start) >= 0
+      && sqliteBinaryCompare(key, end) < 0
+      && (after == null || sqliteBinaryCompare(key, after) > 0))
+    .sort(sqliteBinaryCompare);
 }
 
 function makeFtsStore(initialKeys = []) {
@@ -197,31 +230,53 @@ function mockNotify(folders, {
     type: folders.find(folder => folder.accountId === id)?.serverType || 'imap',
     rootFolder: { path: '/', isRoot: true, subFolders },
   })));
+  let nextScan = 1;
+  const scans = new Map();
+  const scanRows = (uri) => {
+    const folder = byURI[uri];
+    const headerIdsByKey = headerIdsByKeyByURI[uri];
+    if (headerIdsByKey) {
+      return Object.entries(headerIdsByKey).map(([key, headerMessageId]) => ({
+        msgKey: Number(key),
+        headerMessageId,
+      }));
+    }
+    const actual = actualKeysByURI[uri] || [];
+    const numericKeys = keysByURI[uri] || [];
+    const prefix = `${folder.accountId}:${folder.folderPath}:`;
+    return actual.map((uniqueKey, index) => ({
+      msgKey: numericKeys[index] ?? index + 1,
+      headerMessageId: uniqueKey.slice(prefix.length),
+    }));
+  };
   const api = {
     getFolderState: vi.fn(async (accountId, folderPath) => byIdentity[`${accountId}:${folderPath}`]),
-    fingerprintFolderMessages: vi.fn(async (uri) => {
+    beginFolderMessageScan: vi.fn(async (uri, includeMessageIds = true) => {
       const folder = byURI[uri];
-      const headerIdsByKey = headerIdsByKeyByURI[uri];
-      const keyedRows = headerIdsByKey
-        ? Object.entries(headerIdsByKey).map(([key, headerMessageId]) => [
-          key,
-          `${folder.accountId}:${folder.folderPath}:${headerMessageId}`,
-        ])
-        : [];
-      const keys = headerIdsByKey ? keyedRows.map(([, uniqueKey]) => uniqueKey) : (actualKeysByURI[uri] || []);
+      if (!folder) return { error: 'folder_not_found' };
+      const token = `scan-${nextScan++}`;
+      scans.set(token, { rows: scanRows(uri), offset: 0, includeMessageIds });
       return {
-        ok: true,
-        count: new Set(keys).size,
-        sha256: digest(keys),
-        ...(headerIdsByKey ? {
-          // Source-accurate: the producer fingerprints the full mapping array,
-          // while only the FTS-key membership fingerprint de-duplicates IDs.
-          keyMapCount: keyedRows.length,
-          keyMapSha256: keyMapDigest(keyedRows),
-        } : {}),
-        unkeyedCount: 0,
+        token,
+        accountId: folder.accountId,
+        folderPath: folder.folderPath,
+        stableUidKeys: folder.stableUidKeys,
+        uidValidity: folder.uidValidity,
+        highestModSeq: folder.highestModSeq,
       };
     }),
+    readFolderMessageScanPage: vi.fn(async (token, maxItems) => {
+      const scan = scans.get(token);
+      if (!scan) return { rows: [], done: true, error: 'scan_not_found' };
+      const rows = scan.rows.slice(scan.offset, scan.offset + maxItems).map(row => (
+        scan.includeMessageIds ? row : { msgKey: row.msgKey }
+      ));
+      scan.offset += rows.length;
+      const done = scan.offset >= scan.rows.length;
+      if (done) scans.delete(token);
+      return { rows, done };
+    }),
+    cancelFolderMessageScan: vi.fn(async token => ({ cancelled: scans.delete(token) })),
     probeMessageIds: vi.fn(async (uri, ids) => {
       if (probeErrorByURI[uri]) return { missing: [], error: probeErrorByURI[uri] };
       const present = msgDbByURI[uri] || new Set();
@@ -263,6 +318,7 @@ beforeEach(() => {
   delete globalThis.browser.tmMsgNotify;
   globalThis.browser.accounts.list.mockImplementation(async () => []);
   recheckMessageInFolder.mockImplementation(async () => 'absent');
+  getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
   _getPendingUpdates().clear();
   _resetFolderReconState();
   _setIsEnabled(true);
@@ -272,7 +328,23 @@ beforeEach(() => {
 });
 
 describe('startup membership proof', () => {
-  it('establishes a v2 verified checkpoint from exact matching fingerprints', async () => {
+  it('paginates native range mocks in SQLite UTF-8 BINARY order', async () => {
+    const bmp = KEY_A('\uE000@example.com');
+    const supplementary = KEY_A('\u{10000}@example.com');
+    // UTF-16 orders U+10000 before U+E000; UTF-8 BINARY/SQLite orders U+E000 first.
+    expect([bmp, supplementary].sort()).toEqual([supplementary, bmp]);
+    const fts = makeFtsStore([supplementary, bmp]);
+    const start = 'account1:/INBOX:';
+    const end = 'account1:/INBOX;';
+
+    const first = await fts.listMsgIdRange(start, end, null, 1);
+    const second = await fts.listMsgIdRange(start, end, first.msgIds[0], 1);
+
+    expect(first).toMatchObject({ msgIds: [bmp], done: false });
+    expect(second).toMatchObject({ msgIds: [supplementary], done: false });
+  });
+
+  it('establishes a v3 verified checkpoint from cooperatively paged exact fingerprints', async () => {
     const keys = [KEY_A('a@example.com'), KEY_A('b@example.com')];
     const fts = makeFtsStore(keys);
     const api = mockNotify([folderA()], { actualKeysByURI: { [URI_A]: keys } });
@@ -280,11 +352,11 @@ describe('startup membership proof', () => {
     const stats = await _runFolderReconcile(fts);
 
     expect(stats.foldersClean).toBe(1);
-    expect(api.fingerprintFolderMessages).toHaveBeenCalledOnce();
+    expect(api.beginFolderMessageScan).toHaveBeenCalledOnce();
     expect(api.probeMessageIds).not.toHaveBeenCalled();
     expect(fts.listMsgIdRange).not.toHaveBeenCalled();
     expect(storageData[FOLDER_RECON_STORAGE_KEY]).toMatchObject({
-      version: 2,
+      version: 3,
       folders: {
         'account1:/INBOX': {
           verified: true,
@@ -292,24 +364,26 @@ describe('startup membership proof', () => {
           expectedSha256: digest(keys),
           ftsSha256: digest(keys),
           uidValidity: 7,
-          uidSha256: 'uid-a',
+          uidSha256: uidDigest([1, 2]),
         },
       },
     });
   });
 
-  it('uses UID + FTS checkpoint equality without walking headers', async () => {
+  it('reuses a stable verified IMAP projection from a UID-only scan', async () => {
     const keys = [KEY_A('a@example.com'), KEY_A('b@example.com')];
     seedMemo({
       'account1:/INBOX': {
         verified: true,
         expectedCount: 2,
         expectedSha256: digest(keys),
+        keyMapCount: 2,
+        keyMapSha256: keyMapDigest([[1, keys[0]], [2, keys[1]]]),
         ftsCount: 2,
         ftsSha256: digest(keys),
         uidValidity: 7,
         uidCount: 2,
-        uidSha256: 'uid-a',
+        uidSha256: uidDigest([1, 2]),
         updatedAtMs: 1,
       },
     });
@@ -319,7 +393,9 @@ describe('startup membership proof', () => {
     const stats = await _runFolderReconcile(fts);
 
     expect(stats.foldersMemoHit).toBe(1);
-    expect(api.fingerprintFolderMessages).not.toHaveBeenCalled();
+    expect(api.beginFolderMessageScan).toHaveBeenCalledOnce();
+    expect(api.beginFolderMessageScan).toHaveBeenCalledWith(URI_A, false);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].version).toBe(3);
     expect(api.probeMessageIds).not.toHaveBeenCalled();
   });
 
@@ -330,11 +406,13 @@ describe('startup membership proof', () => {
         verified: true,
         expectedCount: 2,
         expectedSha256: digest(keys),
+        keyMapCount: 2,
+        keyMapSha256: keyMapDigest([[1, keys[0]], [2, keys[1]]]),
         ftsCount: 2,
         ftsSha256: digest(keys),
         uidValidity: 0xffffffff,
         uidCount: 2,
-        uidSha256: 'uid-a',
+        uidSha256: uidDigest([1, 2]),
       },
     });
     const fts = makeFtsStore(keys);
@@ -343,7 +421,8 @@ describe('startup membership proof', () => {
     const stats = await _runFolderReconcile(fts);
 
     expect(stats.foldersMemoHit).toBe(1);
-    expect(api.fingerprintFolderMessages).not.toHaveBeenCalled();
+    expect(api.beginFolderMessageScan).toHaveBeenCalledOnce();
+    expect(api.beginFolderMessageScan).toHaveBeenCalledWith(URI_A, false);
   });
 
   it.each([
@@ -376,7 +455,8 @@ describe('startup membership proof', () => {
     const stats = await _runFolderReconcile(fts);
 
     expect(stats.foldersMemoHit).toBe(0);
-    expect(api.fingerprintFolderMessages).toHaveBeenCalledOnce();
+    expect(api.beginFolderMessageScan).toHaveBeenCalledOnce();
+    expect(api.beginFolderMessageScan).toHaveBeenCalledWith(URI_A, true);
     expect(fts._keys.has(KEY_A('old@example.com'))).toBe(false);
     expect(_getPendingUpdates().has(KEY_A('new@example.com'))).toBe(true);
   });
@@ -386,6 +466,10 @@ describe('startup membership proof', () => {
     seedMemo({
       'account1:/INBOX': {
         verified: true,
+        expectedCount: 2,
+        expectedSha256: digest(keys),
+        keyMapCount: 2,
+        keyMapSha256: keyMapDigest([[1, keys[0]], [2, keys[1]]]),
         ftsCount: 2,
         ftsSha256: digest(keys),
         uidValidity: 7,
@@ -401,8 +485,83 @@ describe('startup membership proof', () => {
     const stats = await _runFolderReconcile(fts);
 
     expect(stats.foldersClean).toBe(1);
-    expect(api.fingerprintFolderMessages).toHaveBeenCalledOnce();
-    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'].uidSha256).toBe('new-uid-set');
+    expect(api.beginFolderMessageScan.mock.calls.map(call => call[1])).toEqual([false, true]);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'].uidSha256).toBe(uidDigest([1, 2]));
+  });
+
+  it('falls back to a full projection when the native digest changed under a stable UID set', async () => {
+    const local = KEY_A('live@example.com');
+    const ghost = KEY_A('ghost@example.com');
+    seedMemo({
+      'account1:/INBOX': {
+        verified: true,
+        expectedCount: 1,
+        expectedSha256: digest([local]),
+        keyMapCount: 1,
+        keyMapSha256: keyMapDigest([[1, local]]),
+        ftsCount: 1,
+        ftsSha256: digest([local]),
+        uidValidity: 7,
+        uidCount: 1,
+        uidSha256: uidDigest([1]),
+      },
+    });
+    const fts = makeFtsStore([local, ghost]);
+    const api = mockNotify([folderA({ uidCount: 1 })], {
+      actualKeysByURI: { [URI_A]: [local] },
+      msgDbByURI: { [URI_A]: new Set(['live@example.com']) },
+      keysByURI: { [URI_A]: [1] },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.foldersMemoHit).toBe(0);
+    expect(api.beginFolderMessageScan.mock.calls.map(call => call[1])).toEqual([false, true]);
+    expect(fts._keys.has(ghost)).toBe(false);
+  });
+
+  it('matches SQLite BINARY ordering for supplementary-plane and BMP Message-IDs', async () => {
+    const keys = [KEY_A('\u{10000}@example.com'), KEY_A('\uE000@example.com')];
+    const fts = makeFtsStore(keys);
+    mockNotify([folderA()], { actualKeysByURI: { [URI_A]: [...keys].reverse() } });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.foldersClean).toBe(1);
+    expect(stats.foldersFailed).toBe(0);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX']).toMatchObject({
+      verified: true,
+      expectedSha256: digest(keys),
+      ftsSha256: digest(keys),
+    });
+  });
+
+  it('uses a native fingerprint captured after the ordinary fresh local scan', async () => {
+    const live = KEY_A('live@example.com');
+    const nativeOnly = KEY_A('native-only@example.com');
+    const fts = makeFtsStore([live]);
+    const api = mockNotify([folderA({ uidCount: 1 })], {
+      actualKeysByURI: { [URI_A]: [live] },
+      headerIdsByKeyByURI: { [URI_A]: { 1: 'live@example.com' } },
+      msgDbByURI: { [URI_A]: new Set(['live@example.com']) },
+      keysByURI: { [URI_A]: [1] },
+    });
+    const readPage = api.readFolderMessageScanPage.getMockImplementation();
+    api.readFolderMessageScanPage.mockImplementationOnce(async (...args) => {
+      const page = await readPage(...args);
+      fts._keys.add(nativeOnly);
+      return page;
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.staleRemoved).toBe(1);
+    expect(fts._keys).toEqual(new Set([live]));
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX']).toMatchObject({
+      verified: true,
+      expectedSha256: digest([live]),
+      ftsSha256: digest([live]),
+    });
   });
 
   it('never trusts the old count memo schema', async () => {
@@ -413,8 +572,8 @@ describe('startup membership proof', () => {
 
     await _runFolderReconcile(fts);
 
-    expect(api.fingerprintFolderMessages).toHaveBeenCalledOnce();
-    expect(storageData[FOLDER_RECON_STORAGE_KEY].version).toBe(2);
+    expect(api.beginFolderMessageScan).toHaveBeenCalledOnce();
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].version).toBe(3);
   });
 
   it('non-IMAP folders take the exact local-header proof path every boot', async () => {
@@ -426,7 +585,8 @@ describe('startup membership proof', () => {
     await _runFolderReconcile(fts);
     await _runFolderReconcile(fts);
 
-    expect(api.fingerprintFolderMessages).toHaveBeenCalledTimes(2);
+    expect(api.beginFolderMessageScan).toHaveBeenCalledTimes(2);
+    expect(api.beginFolderMessageScan.mock.calls.every(call => call[1] === true)).toBe(true);
   });
 });
 
@@ -458,7 +618,22 @@ describe('exact mismatch repair', () => {
     fts._keys.add(KEY_A('msg-2@example.com'));
     _getPendingUpdates().clear();
     _setFtsSearch(fts);
-    await _maybeScheduleFolderReconRerun();
+    _setLastSyncEventMs(0);
+    vi.useFakeTimers();
+    try {
+      const calls = globalThis.browser.tmMsgNotify.getFolderState.mock.calls.length;
+      expect(_maybeScheduleFolderReconRerun()).toBeUndefined();
+      expect(globalThis.browser.tmMsgNotify.getFolderState).toHaveBeenCalledTimes(calls);
+      await vi.advanceTimersByTimeAsync(249);
+      expect(globalThis.browser.tmMsgNotify.getFolderState).toHaveBeenCalledTimes(calls);
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => {
+        expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'])
+          .toMatchObject({ verified: true });
+      });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX']).toMatchObject({
       verified: true,
       expectedSha256: digest(actualKeys),
@@ -558,8 +733,8 @@ describe('exact mismatch repair', () => {
 
     expect(stats.staleRemoved).toBe(1);
     expect(stats.missingEnqueued).toBe(1);
-    expect(stats.foldersBudgetPartial).toBe(0);
-    expect(api.listKeysAboveKey).toHaveBeenCalledWith(URI_B, 0, 0);
+    expect(stats.foldersBudgetPartial).toBe(1);
+    expect(api.getMessageInfosForKeys).toHaveBeenCalledWith(URI_B, [1, 2]);
     expect(logFtsOperation).not.toHaveBeenCalledWith(
       'folder_recon',
       'recheck_budget_truncated',
@@ -583,6 +758,142 @@ describe('exact mismatch repair', () => {
     expect(stats.foldersBudgetPartial).toBe(0);
     expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'])
       .toMatchObject({ verified: true, expectedCount: 0, ftsCount: 0 });
+  });
+
+  it('continues stale rechecks across cooperative slices beyond one slice budget', async () => {
+    _setFolderReconBudgetOverride({ rechecks: 1 });
+    const ghosts = [KEY_A('ghost-1@example.com'), KEY_A('ghost-2@example.com')];
+    const fts = makeFtsStore(ghosts);
+    mockNotify([folderA({ uidCount: 0, uidSha256: 'uid-empty' })], {
+      actualKeysByURI: { [URI_A]: [] },
+      msgDbByURI: { [URI_A]: new Set() },
+      keysByURI: { [URI_A]: [] },
+    });
+
+    const first = await _runFolderReconcile(fts);
+    expect(first.staleRemoved).toBe(1);
+    expect(first.foldersBudgetPartial).toBe(1);
+    expect(fts._keys.size).toBe(1);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'])
+      .toMatchObject({ verified: false, staleAfterKey: ghosts[0] });
+
+    const second = await _runFolderReconcile(fts);
+    expect(second.staleRemoved).toBe(1);
+    expect(fts._keys.size).toBe(0);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'])
+      .toMatchObject({ verified: true, expectedCount: 0, ftsCount: 0 });
+  });
+
+  it('clears a completed stale cursor when the post-verify native fingerprint still mismatches', async () => {
+    _setFolderReconBudgetOverride({ rechecks: 1 });
+    const ghosts = [KEY_A('ghost-1@example.com'), KEY_A('ghost-2@example.com')];
+    const lateGhost = KEY_A('late-ghost@example.com');
+    const fts = makeFtsStore(ghosts);
+    mockNotify([folderA({ uidCount: 0 })], {
+      actualKeysByURI: { [URI_A]: [] },
+      msgDbByURI: { [URI_A]: new Set() },
+      keysByURI: { [URI_A]: [] },
+    });
+
+    await _runFolderReconcile(fts);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'])
+      .toHaveProperty('staleAfterKey', ghosts[0]);
+
+    const realFingerprint = fts.fingerprintMsgIdRange.getMockImplementation();
+    let folderFingerprintCalls = 0;
+    fts.fingerprintMsgIdRange.mockImplementation(async (...args) => {
+      if (args[0] !== args[1]) {
+        folderFingerprintCalls++;
+        if (folderFingerprintCalls === 2) fts._keys.add(lateGhost);
+      }
+      return realFingerprint(...args);
+    });
+
+    const second = await _runFolderReconcile(fts);
+    const checkpoint = storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'];
+
+    expect(second.foldersFailed).toBe(1);
+    expect(fts._keys.has(lateGhost)).toBe(true);
+    expect(checkpoint).not.toHaveProperty('staleAfterKey');
+    expect(checkpoint).not.toHaveProperty('partialStaleFtsSha256');
+  });
+
+  it('keeps a backed-off stale cursor paired with its earned native fingerprint', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const live = KEY_A('live@example.com');
+      const earnedNative = [live, KEY_A('old-ghost@example.com')];
+      const currentNative = [...earnedNative, KEY_A('new-ghost@example.com')];
+      seedMemo({
+        'account1:/INBOX': {
+          verified: false,
+          partialExpectedCount: 1,
+          partialExpectedSha256: digest([live]),
+          partialKeyMapCount: 1,
+          partialKeyMapSha256: keyMapDigest([[1, live]]),
+          missingBackfillKey: 1,
+          staleAfterKey: earnedNative[0],
+          partialStaleFtsCount: earnedNative.length,
+          partialStaleFtsSha256: digest(earnedNative),
+          partialPostVerifyFailureCount: 3,
+          partialRetryNotBeforeMs: 9_000_000,
+          partialPostVerifyFtsCount: currentNative.length,
+          partialPostVerifyFtsSha256: digest(currentNative),
+        },
+      });
+      const fts = makeFtsStore(currentNative);
+      mockNotify([folderA({ uidValidity: 0, uidCount: 1 })], {
+        headerIdsByKeyByURI: { [URI_A]: { 1: 'live@example.com' } },
+        keysByURI: { [URI_A]: [1] },
+      });
+
+      const stats = await _runFolderReconcile(fts);
+      const checkpoint = storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'];
+
+      expect(stats.foldersBackoff).toBe(1);
+      expect(checkpoint).toMatchObject({
+        staleAfterKey: earnedNative[0],
+        partialStaleFtsCount: earnedNative.length,
+        partialStaleFtsSha256: digest(earnedNative),
+      });
+      expect(checkpoint.partialStaleFtsSha256).not.toBe(digest(currentNative));
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('restarts a stale sweep when local deletion appears below its live cursor', async () => {
+    const a = KEY_A('a@example.com');
+    const b = KEY_A('b@example.com');
+    const c = KEY_A('c@example.com');
+    seedMemo({
+      'account1:/INBOX': {
+        verified: false,
+        partialExpectedCount: 3,
+        partialExpectedSha256: digest([a, b, c]),
+        partialKeyMapCount: 3,
+        partialKeyMapSha256: keyMapDigest([[1, a], [2, b], [3, c]]),
+        partialStableUidKeys: true,
+        partialUidValidity: 7,
+        missingBackfillKey: 2,
+        staleAfterKey: b,
+        partialStaleFtsCount: 3,
+        partialStaleFtsSha256: digest([a, b, c]),
+      },
+    });
+    const fts = makeFtsStore([a, b, c]);
+    mockNotify([folderA({ uidCount: 2 })], {
+      actualKeysByURI: { [URI_A]: [b, c] },
+      headerIdsByKeyByURI: { [URI_A]: { 2: 'b@example.com', 3: 'c@example.com' } },
+      msgDbByURI: { [URI_A]: new Set(['b@example.com', 'c@example.com']) },
+      keysByURI: { [URI_A]: [2, 3] },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.staleRemoved).toBe(1);
+    expect(fts._keys).toEqual(new Set([b, c]));
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'].verified).toBe(true);
   });
 
   it('runs the fail-closed missing direction even when stale rechecks truncate', async () => {
@@ -657,6 +968,7 @@ describe('exact mismatch repair', () => {
     actualKeys.push(KEY_A('msg-6@example.com'));
     folder.uidCount = 6;
     folder.uidSha256 = 'uid-set-6';
+    _invalidateFolderReconProofForEvent('account1', '/INBOX');
 
     await _runFolderReconcile(fts);
     expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'].missingBackfillKey).toBe(4);
@@ -734,6 +1046,7 @@ describe('exact mismatch repair', () => {
     msgDbIds.add('msg-6@example.com');
     folder.uidCount = 6;
     folder.uidSha256 = 'uid-set-6';
+    _invalidateFolderReconProofForEvent('account1', '/INBOX');
     await _runFolderReconcile(fts);
 
     expect(storageData[FOLDER_RECON_STORAGE_KEY]
@@ -767,27 +1080,10 @@ describe('exact mismatch repair', () => {
     // key 4 to key 1. Resuming above key 2 would skip it.
     headerIdsByKey[1] = 'msg-a@example.com';
     headerIdsByKey[4] = 'msg-b@example.com';
+    _invalidateFolderReconProofForEvent('account1', '/INBOX');
     await _runFolderReconcile(fts);
 
     expect(_getPendingUpdates().has(KEY_A('msg-a@example.com'))).toBe(true);
-  });
-
-  it('counts every numeric key in a duplicate-Message-ID mapping fingerprint', async () => {
-    const duplicate = KEY_A('duplicate@example.com');
-    const headerIdsByKey = { 1: 'duplicate@example.com', 2: 'duplicate@example.com' };
-    const api = mockNotify([folderA({ uidCount: 2, uidSha256: 'two-keys' })], {
-      headerIdsByKeyByURI: { [URI_A]: headerIdsByKey },
-      keysByURI: { [URI_A]: [1, 2] },
-    });
-
-    const fingerprint = await api.fingerprintFolderMessages(URI_A);
-
-    expect(fingerprint).toMatchObject({
-      count: 1,
-      sha256: digest([duplicate]),
-      keyMapCount: 2,
-      keyMapSha256: keyMapDigest([[1, duplicate], [2, duplicate]]),
-    });
   });
 
   it('restarts below a partial cursor when UIDVALIDITY changes but the exact Message-ID set does not', async () => {
@@ -965,7 +1261,7 @@ describe('exact mismatch repair', () => {
 
     await _runFolderReconcile(fts);
 
-    expect(api.listKeysAboveKey).toHaveBeenCalledWith(URI_A, 0, 0);
+    expect(api.getMessageInfosForKeys).toHaveBeenCalledWith(URI_A, [1, 2]);
     expect(_getPendingUpdates().has(missingLow)).toBe(true);
   });
 
@@ -995,8 +1291,98 @@ describe('exact mismatch repair', () => {
 
     await _runFolderReconcile(fts);
 
-    expect(api.listKeysAboveKey).toHaveBeenCalledWith(URI_A, 0x80000000, 0);
+    expect(api.getMessageInfosForKeys).toHaveBeenCalledWith(URI_A, [0x80000001]);
     expect(_getPendingUpdates().has(missingAfterCursor)).toBe(true);
+  });
+
+  it('matches a signed serialized msgKey to the snapshot uint32 spelling', async () => {
+    const highKey = 0x80000001;
+    const missing = KEY_A('signed-info@example.com');
+    const fts = makeFtsStore([]);
+    mockNotify([folderA({ uidCount: 1, uidSha256: 'uid-high' })], {
+      headerIdsByKeyByURI: { [URI_A]: { [highKey]: 'signed-info@example.com' } },
+      keysByURI: { [URI_A]: [highKey] },
+      infosByURI: { [URI_A]: { infos: [{
+        accountId: 'account1',
+        folderPath: '/INBOX',
+        headerMessageId: 'signed-info@example.com',
+        msgKey: highKey | 0,
+        eventType: 'cursorScan',
+      }] } },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.missingEnqueued).toBe(1);
+    expect(_getPendingUpdates().has(missing)).toBe(true);
+  });
+
+  it('enqueues a sole missing message whose valid msgKey is zero', async () => {
+    const missing = KEY_A('zero@example.com');
+    const fts = makeFtsStore([]);
+    const api = mockNotify([folderA({ uidCount: 1 })], {
+      actualKeysByURI: { [URI_A]: [missing] },
+      headerIdsByKeyByURI: { [URI_A]: { 0: 'zero@example.com' } },
+      keysByURI: { [URI_A]: [0] },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(api.getMessageInfosForKeys).toHaveBeenCalledWith(URI_A, [0]);
+    expect(stats.missingEnqueued).toBe(1);
+    expect(_getPendingUpdates().has(missing)).toBe(true);
+  });
+
+  it('resumes a sliced key-zero then key-one sweep without replay or skip', async () => {
+    _setFolderReconBudgetOverride({ scans: 1, enqueues: 1 });
+    const zero = KEY_A('zero@example.com');
+    const one = KEY_A('one@example.com');
+    const fts = makeFtsStore([]);
+    const api = mockNotify([folderA({ uidCount: 2 })], {
+      actualKeysByURI: { [URI_A]: [zero, one] },
+      headerIdsByKeyByURI: { [URI_A]: { 0: 'zero@example.com', 1: 'one@example.com' } },
+      keysByURI: { [URI_A]: [0, 1] },
+    });
+
+    await _runFolderReconcile(fts);
+    expect(api.getMessageInfosForKeys).toHaveBeenLastCalledWith(URI_A, [0]);
+    expect(_getPendingUpdates().has(zero)).toBe(true);
+    expect(_getPendingUpdates().has(one)).toBe(false);
+
+    fts._keys.add(zero);
+    _getPendingUpdates().clear();
+    await _runFolderReconcile(fts);
+
+    expect(api.getMessageInfosForKeys.mock.calls.map(([, keys]) => keys)).toEqual([[0], [1]]);
+    expect(_getPendingUpdates().has(zero)).toBe(false);
+    expect(_getPendingUpdates().has(one)).toBe(true);
+  });
+
+  it.each([2, 3])('migrates a v%s ambiguous zero cursor to before the valid key zero', async (version) => {
+    const missing = KEY_A('zero@example.com');
+    seedMemo({
+      'account1:/INBOX': {
+        verified: false,
+        partialExpectedCount: 1,
+        partialExpectedSha256: digest([missing]),
+        partialKeyMapCount: 1,
+        partialKeyMapSha256: keyMapDigest([[0, missing]]),
+        partialStableUidKeys: true,
+        partialUidValidity: 7,
+        missingBackfillKey: 0,
+      },
+    }, version);
+    const fts = makeFtsStore([]);
+    const api = mockNotify([folderA({ uidCount: 1 })], {
+      actualKeysByURI: { [URI_A]: [missing] },
+      headerIdsByKeyByURI: { [URI_A]: { 0: 'zero@example.com' } },
+      keysByURI: { [URI_A]: [0] },
+    });
+
+    await _runFolderReconcile(fts);
+
+    expect(api.getMessageInfosForKeys).toHaveBeenCalledWith(URI_A, [0]);
+    expect(_getPendingUpdates().has(missing)).toBe(true);
   });
 
   it('replays a no-msgKey row when the enqueue budget is initially exhausted', async () => {
@@ -1134,6 +1520,8 @@ describe('exact mismatch repair', () => {
         missingBackfillKey: 0,
         partialPostVerifyFailureCount: 2,
         partialRetryNotBeforeMs: 9_000_000,
+        partialPostVerifyFtsCount: 0,
+        partialPostVerifyFtsSha256: digest([]),
       },
     });
     const fts = makeFtsStore([]);
@@ -1172,6 +1560,8 @@ describe('exact mismatch repair', () => {
         missingBackfillKey: 1,
         partialPostVerifyFailureCount: 40,
         partialRetryNotBeforeMs: nowMs - 1,
+        partialPostVerifyFtsCount: 0,
+        partialPostVerifyFtsSha256: digest([]),
       },
     });
     const fts = makeFtsStore([]);
@@ -1205,6 +1595,8 @@ describe('exact mismatch repair', () => {
         missingBackfillKey: 1,
         partialPostVerifyFailureCount: 3,
         partialRetryNotBeforeMs: nowMs + maxBackoffMs + 123_456,
+        partialPostVerifyFtsCount: 1,
+        partialPostVerifyFtsSha256: digest([KEY_A('stale@example.com')]),
       },
     });
     const fts = makeFtsStore([KEY_A('stale@example.com')]);
@@ -1218,8 +1610,8 @@ describe('exact mismatch repair', () => {
 
     const stats = await _runFolderReconcile(fts);
 
-    expect(stats.foldersFailed).toBe(1);
-    expect(api.listKeysAboveKey).not.toHaveBeenCalled();
+    expect(stats.foldersBackoff).toBe(1);
+    expect(api.getMessageInfosForKeys).not.toHaveBeenCalled();
     expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'])
       .toMatchObject({
         partialPostVerifyFailureCount: 3,
@@ -1248,6 +1640,8 @@ describe('exact mismatch repair', () => {
         partialPostVerifyFailureCount: 4,
         // Represents a deadline minted before the wall clock rolled back.
         partialRetryNotBeforeMs: firstNowMs + (30 * dayMs),
+        partialPostVerifyFtsCount: 0,
+        partialPostVerifyFtsSha256: digest([]),
       },
     });
     const fts = makeFtsStore([]);
@@ -1295,7 +1689,7 @@ describe('exact mismatch repair', () => {
 
       expect(stats.foldersBackoff).toBe(0);
       expect(stats.missingEnqueued).toBe(1);
-      expect(api.listKeysAboveKey).toHaveBeenCalledWith(URI_A, 0, 0);
+      expect(api.getMessageInfosForKeys).toHaveBeenCalledWith(URI_A, [1]);
       expect(_getPendingUpdates().has(actual)).toBe(true);
       expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'])
         .not.toHaveProperty('partialRetryNotBeforeMs');
@@ -1346,7 +1740,7 @@ describe('exact mismatch repair', () => {
     }
   });
 
-  it('clears active terminal-failure backoff when stale removal restores exact equality', async () => {
+  it('applies active terminal-failure backoff before stale global rechecks', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
     try {
       const actual = KEY_A('same@example.com');
@@ -1361,6 +1755,8 @@ describe('exact mismatch repair', () => {
           missingBackfillKey: 0,
           partialPostVerifyFailureCount: 3,
           partialRetryNotBeforeMs: 9_000_000,
+          partialPostVerifyFtsCount: 2,
+          partialPostVerifyFtsSha256: digest([actual, ghost]),
         },
       });
       const fts = makeFtsStore([actual, ghost]);
@@ -1373,19 +1769,17 @@ describe('exact mismatch repair', () => {
       expect(fts._keys).toEqual(new Set([actual, ghost]));
       const stats = await _runFolderReconcile(fts);
 
-      expect(stats.staleRemoved).toBe(1);
-      expect(stats.foldersReconciled).toBe(1);
-      expect(stats.foldersBackoff).toBe(0);
-      expect(api.listKeysAboveKey).not.toHaveBeenCalled();
-      expect(fts._keys).toEqual(new Set([actual]));
+      expect(stats.staleRemoved).toBe(0);
+      expect(stats.foldersReconciled).toBe(0);
+      expect(stats.foldersBackoff).toBe(1);
+      expect(api.getMessageInfosForKeys).not.toHaveBeenCalled();
+      expect(fts.listMsgIdRange).not.toHaveBeenCalled();
+      expect(fts._keys).toEqual(new Set([actual, ghost]));
       expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX']).toMatchObject({
-        verified: true,
-        expectedSha256: digest([actual]),
+        verified: false,
+        partialExpectedSha256: digest([actual]),
+        partialPostVerifyFailureCount: 3,
       });
-      expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'])
-        .not.toHaveProperty('partialPostVerifyFailureCount');
-      expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'])
-        .not.toHaveProperty('partialRetryNotBeforeMs');
     } finally {
       now.mockRestore();
     }
@@ -1410,22 +1804,48 @@ describe('gating and drain coordination', () => {
 
     _getPendingUpdates().clear();
     _setFtsSearch(fts);
+    _setLastSyncEventMs(0);
     const calls = api.getFolderState.mock.calls.length;
-    await _maybeScheduleFolderReconRerun();
-    expect(api.getFolderState).toHaveBeenCalledTimes(calls + 1);
-    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'].verified).toBe(true);
-    _getFolderReconDrainSkipped().add('account1:/INBOX');
-    expect(_maybeScheduleFolderReconRerun()).toBeUndefined();
+    vi.useFakeTimers();
+    try {
+      expect(_maybeScheduleFolderReconRerun()).toBeUndefined();
+      expect(api.getFolderState).toHaveBeenCalledTimes(calls);
+      await vi.advanceTimersByTimeAsync(249);
+      expect(api.getFolderState).toHaveBeenCalledTimes(calls);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(api.getFolderState).toHaveBeenCalledTimes(calls + 1);
+      await vi.waitFor(() => {
+        expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'].verified).toBe(true);
+      });
+      _getFolderReconDrainSkipped().add('account1:/INBOX');
+      expect(_maybeScheduleFolderReconRerun()).toBeUndefined();
+      expect(_getFolderReconDrainSkipped().has('account1:/INBOX')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('defers the rerun without consuming it while reconciliation is active', () => {
-    _setFtsSearch(makeFtsStore([]));
+  it('defers the rerun without consuming it while reconciliation is active', async () => {
+    const key = KEY_A('a@example.com');
+    const fts = makeFtsStore([key]);
+    mockNotify([folderA({ uidCount: 1 })], { actualKeysByURI: { [URI_A]: [key] } });
+    _setFtsSearch(fts);
     _getFolderReconDrainSkipped().add('account1:/INBOX');
     _setFolderReconInProgress(true);
-    expect(_maybeScheduleFolderReconRerun()).toBeUndefined();
-    expect(_getFolderReconDrainSkipped().has('account1:/INBOX')).toBe(true);
-    _setFolderReconInProgress(false);
-    expect(_maybeScheduleFolderReconRerun()).toBeInstanceOf(Promise);
+    vi.useFakeTimers();
+    try {
+      expect(_maybeScheduleFolderReconRerun()).toBeUndefined();
+      expect(_getFolderReconDrainSkipped().has('account1:/INBOX')).toBe(true);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(globalThis.browser.tmMsgNotify.getFolderState).not.toHaveBeenCalled();
+
+      _setFolderReconInProgress(false);
+      expect(_maybeScheduleFolderReconRerun()).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(globalThis.browser.tmMsgNotify.getFolderState).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not let a clean scoped rerun mask another folder\'s boot error', async () => {
@@ -1476,6 +1896,27 @@ describe('gating and drain coordination', () => {
 });
 
 describe('orphan prefixes and event hardening', () => {
+  it('preempts orphan work after one atomic global recheck', async () => {
+    const ghosts = [
+      'gone:/Deleted:ghost-1@example.com',
+      'gone:/Deleted:ghost-2@example.com',
+    ];
+    const fts = makeFtsStore(ghosts);
+    recheckMessageInFolder.mockImplementationOnce(async () => {
+      getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false });
+      return 'absent';
+    });
+
+    await expect(_testExports._runFolderReconOrphanSlice(
+      fts,
+      [],
+      { version: 3, folders: {} },
+    )).rejects.toThrow('folder_recon_pressure');
+
+    expect(recheckMessageInFolder).toHaveBeenCalledOnce();
+    expect(fts.removeBatch).not.toHaveBeenCalled();
+  });
+
   it('removes a key owned by no current folder after independent confirmation', async () => {
     const actualA = [KEY_A('a@example.com')];
     const edge = 'account1:/INBOX/a:b:y@example.com';
@@ -1493,11 +1934,62 @@ describe('orphan prefixes and event hardening', () => {
       rootFolder: { path: '/', subFolders: [{ path: '/INBOX', subFolders: [{ path: '/INBOX/a:b', subFolders: [] }] }] },
     }]);
 
-    const stats = await _runFolderReconcile(fts);
+    const memo = { version: 3, folders: {} };
+    const identities = [folderA({ uidCount: 1 }), folderC];
+    const first = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
+    expect(first).toMatchObject({ deferred: true, basisProgress: true });
+    const stats = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
 
     expect(stats.orphanRemoved).toBe(1);
     expect(fts._keys.has(ghost)).toBe(false);
     expect(fts._keys.has(edge)).toBe(true);
+  });
+
+  it('keeps advancing an inventory-bound orphan cursor during benign known-folder growth', async () => {
+    const ghosts = Array.from({ length: 12 }, (_, index) =>
+      `gone:/Deleted:ghost-${String(index).padStart(2, '0')}@example.com`);
+    const fts = makeFtsStore(ghosts);
+    const identities = [folderA({ uidCount: 0 })];
+    const memo = { version: 3, folders: {} };
+    recheckMessageInFolder.mockImplementation(async () => 'present');
+
+    const first = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
+    const firstCursor = first.cursor;
+    expect(firstCursor).toBeTypeOf('string');
+
+    await runFtsMembershipMutation(async () => {
+      fts._keys.add(KEY_A('new-known-mail@example.com'));
+    });
+    const second = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
+
+    expect(fts.listMsgIdRange.mock.calls[1][2]).toBe(firstCursor);
+    expect(second.cursor.localeCompare(firstCursor)).toBeGreaterThan(0);
+  });
+
+  it('restarts an orphan cursor when the exact folder inventory is renamed', async () => {
+    const oldIdentity = folderA({ folderPath: '/Old', folderURI: 'imap://old', uidCount: 1 });
+    const newIdentity = folderA({ folderPath: '/New', folderURI: 'imap://new', uidCount: 1 });
+    const oldMail = 'account1:/Old:old@example.com';
+    const newMail = 'account1:/New:new@example.com';
+    const ghosts = Array.from({ length: 7 }, (_, index) =>
+      `gone:/Deleted:ghost-${String(index).padStart(2, '0')}@example.com`);
+    const fts = makeFtsStore([oldMail, ...ghosts]);
+    const memo = { version: 3, folders: {} };
+    recheckMessageInFolder.mockImplementation(async () => 'present');
+
+    const first = await _testExports._runFolderReconOrphanSlice(fts, [oldIdentity], memo);
+    const oldCursor = first.cursor;
+    expect(oldCursor.localeCompare(oldMail)).toBeGreaterThan(0);
+    expect(memo.orphanSweep.inventorySha256).toBe(digest(['account1:/Old']));
+
+    await runFtsMembershipMutation(async () => { fts._keys.add(newMail); });
+    recheckMessageInFolder.mockImplementation(async () => 'absent');
+    const second = await _testExports._runFolderReconOrphanSlice(fts, [newIdentity], memo);
+
+    expect(fts.listMsgIdRange.mock.calls[1][2]).toBeNull();
+    expect(fts._keys.has(oldMail)).toBe(false);
+    expect(second.orphanRemoved).toBeGreaterThanOrEqual(1);
+    expect(memo.orphanSweep.inventorySha256).toBe(digest(['account1:/New']));
   });
 
   it('rejects partial removal-event keys instead of queueing malformed deletes', async () => {
@@ -1513,17 +2005,64 @@ describe('orphan prefixes and event hardening', () => {
   it('pins the experiment schema and source contracts for UID/delete payloads', () => {
     const schema = JSON.parse(readFileSync(fileURLToPath(new URL('../agent/experiments/tmMsgNotify/schema.json', import.meta.url)), 'utf8'));
     const names = schema[0].functions.map(fn => fn.name);
-    expect(names).toEqual(expect.arrayContaining(['getFolderState', 'fingerprintFolderMessages']));
+    expect(names).toContain('getFolderState');
+    expect(names).not.toContain('fingerprintFolderMessages');
     const removed = schema[0].events.find(event => event.name === 'onMessageRemoved');
     expect(removed.parameters[0].properties.msgKey).toBeTruthy();
-    const folderFingerprint = schema[0].functions.find(fn => fn.name === 'fingerprintFolderMessages');
-    expect(folderFingerprint.returns.properties.keyMapCount).toBeTruthy();
-    expect(folderFingerprint.returns.properties.keyMapSha256).toBeTruthy();
+    const folderState = schema[0].functions.find(fn => fn.name === 'getFolderState');
+    expect(folderState.returns.properties).not.toHaveProperty('uidCount');
+    expect(folderState.returns.properties).not.toHaveProperty('uidSha256');
+    expect(folderState.returns.properties).not.toHaveProperty('hashMs');
+    expect(folderState.returns.properties).not.toHaveProperty('lookupMs');
+    expect(folderState.returns.properties).not.toHaveProperty('dbOpenMs');
+    expect(folderState.returns.properties).not.toHaveProperty('elapsedMs');
     const experimentSource = readFileSync(fileURLToPath(new URL('../agent/experiments/tmMsgNotify/tmMsgNotify.sys.mjs', import.meta.url)), 'utf8');
-    expect(experimentSource).not.toContain('new TextEncoder');
-    expect(experimentSource).toContain('function encodeUtf8');
-    expect(experimentSource).toContain('keyMappings.push(`${key >>> 0}:${uniqueKey}`)');
-    expect(experimentSource).toContain('keyMapSha256: keyMapFingerprint.sha256');
+    expect(experimentSource).not.toContain('async fingerprintFolderMessages');
+    const folderStateBody = experimentSource.match(
+      /async getFolderState[\s\S]*?\n        },\n\n        \/\*\*/,
+    )?.[0] || '';
+    expect(folderStateBody.length, 'getFolderState extraction is non-vacuous').toBeGreaterThan(500);
+    expect(folderStateBody).not.toMatch(/debugLog|lookupMs|dbOpenMs|elapsedMs/);
+  });
+
+  it('documents fingerprint range support at the native helper version that introduced it', () => {
+    const engineSource = readFileSync(
+      fileURLToPath(new URL('../fts/engine.js', import.meta.url)),
+      'utf8',
+    );
+    const rangeHelpers = engineSource.match(
+      /\/\/ Generic msgId key-range RPCs[\s\S]*?async debugSample/,
+    )?.[0] || '';
+    expect(rangeHelpers.length, 'range helper extraction is non-vacuous').toBeGreaterThan(400);
+    expect(rangeHelpers).toMatch(/fingerprint[^\n]*>= 0\.11\.0/i);
+  });
+
+  it('keeps the ADR-022 manifest title and hash identical to the routed document', () => {
+    const adr = readFileSync(fileURLToPath(new URL(
+      '../Companion/Decisions/Active/adr-022-startup-uid-fts-membership-fingerprints.md',
+      import.meta.url,
+    )), 'utf8');
+    const manifest = readFileSync(fileURLToPath(new URL(
+      '../Companion/Decisions/manifest.tsv',
+      import.meta.url,
+    )), 'utf8');
+    const row = manifest.split('\n').find(line => line.includes('adr-022-startup-uid'));
+    const columns = row?.split('\t') || [];
+    const h1 = adr.match(/^# (.+)$/m)?.[1] || '';
+
+    expect(h1.length, 'ADR H1 extraction is non-vacuous').toBeGreaterThan(40);
+    expect(columns[6]).toBe(h1);
+    expect(columns[4]).toBe(createHash('sha256').update(adr).digest('hex'));
+  });
+
+  it('keeps read-only fingerprints and storage promises outside membership fences', () => {
+    const source = readFileSync(fileURLToPath(new URL('../fts/incrementalIndexer.js', import.meta.url)), 'utf8');
+    expect(source).not.toContain('withFtsMembershipFence(staleCursorEpoch, async () =>');
+    expect(source).not.toContain('withFtsMembershipFence(basis.membershipEpoch, () =>');
+    expect(source).not.toContain('withFtsMembershipFence(commitEpoch, () =>');
+    expect(source).not.toMatch(
+      /withFtsMembershipFence\(memoEpochByFolder\.get\(folderKey\)[\s\S]{0,300}_writeFolderReconMemo/,
+    );
   });
 
   it('keeps the drain-empty rerun hook wired into the queue processor', () => {
@@ -1531,5 +2070,286 @@ describe('orphan prefixes and event hardening', () => {
     const branch = source.match(/if \(_pendingUpdates\.size === 0\) \{[\s\S]*?\} else \{/);
     expect(branch?.[0]).toContain('_maybeScheduleFolderReconRerun()');
     expect(logFtsOperation).toBeDefined();
+  });
+});
+
+describe('fresh proof and native-bound checkpoint contracts', () => {
+  it('refuses a UID/native memo shortcut when the exact current Message-ID projection changed', async () => {
+    const oldKey = KEY_A('old@example.com');
+    const newKey = KEY_A('new@example.com');
+    seedMemo({
+      'account1:/INBOX': {
+        verified: true,
+        uidValidity: 7,
+        uidCount: 1,
+        uidSha256: uidDigest([1]),
+        ftsCount: 1,
+        ftsSha256: digest([oldKey]),
+        expectedCount: 1,
+        expectedSha256: digest([oldKey]),
+      },
+    }, 3);
+    const fts = makeFtsStore([oldKey]);
+    mockNotify([folderA({ uidCount: 1 })], {
+      headerIdsByKeyByURI: { [URI_A]: { 1: 'new@example.com' } },
+      msgDbByURI: { [URI_A]: new Set(['new@example.com']) },
+      keysByURI: { [URI_A]: [1] },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.foldersMemoHit).toBe(0);
+    expect(fts.listMsgIdRange).toHaveBeenCalled();
+    expect(_getPendingUpdates().has(newKey)).toBe(true);
+  });
+
+  it('does not honor a legacy terminal backoff that lacks the native fingerprint it was earned under', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const actual = KEY_A('actual@example.com');
+      seedMemo({
+        'account1:/INBOX': {
+          verified: false,
+          partialExpectedCount: 1,
+          partialExpectedSha256: digest([actual]),
+          partialKeyMapCount: 1,
+          partialKeyMapSha256: keyMapDigest([[1, actual]]),
+          missingBackfillKey: 1,
+          missingBackfillStarted: true,
+          partialPostVerifyFailureCount: 3,
+          partialRetryNotBeforeMs: 9_000_000,
+        },
+      }, 3);
+      const fts = makeFtsStore([KEY_A('ghost@example.com')]);
+      mockNotify([folderA({ uidValidity: 0, uidCount: 1 })], {
+        headerIdsByKeyByURI: { [URI_A]: { 1: 'actual@example.com' } },
+        keysByURI: { [URI_A]: [1] },
+      });
+
+      const stats = await _runFolderReconcile(fts);
+
+      expect(stats.foldersBackoff).toBe(0);
+      expect(fts.listMsgIdRange).toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('retries immediately when current native membership differs from the terminal backoff proof', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const actual = KEY_A('actual@example.com');
+      const oldGhost = KEY_A('old-ghost@example.com');
+      const newGhost = KEY_A('new-ghost@example.com');
+      seedMemo({
+        'account1:/INBOX': {
+          verified: false,
+          partialExpectedCount: 1,
+          partialExpectedSha256: digest([actual]),
+          partialKeyMapCount: 1,
+          partialKeyMapSha256: keyMapDigest([[1, actual]]),
+          missingBackfillKey: 1,
+          missingBackfillStarted: true,
+          partialPostVerifyFailureCount: 3,
+          partialRetryNotBeforeMs: 9_000_000,
+          partialPostVerifyFtsCount: 1,
+          partialPostVerifyFtsSha256: digest([oldGhost]),
+        },
+      }, 3);
+      const fts = makeFtsStore([newGhost]);
+      mockNotify([folderA({ uidValidity: 0, uidCount: 1 })], {
+        headerIdsByKeyByURI: { [URI_A]: { 1: 'actual@example.com' } },
+        keysByURI: { [URI_A]: [1] },
+      });
+
+      const stats = await _runFolderReconcile(fts);
+
+      expect(stats.foldersBackoff).toBe(0);
+      expect(fts.listMsgIdRange).toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('builds orphan count evidence from fresh folder ranges, never stale memo ftsCounts', async () => {
+    const actual = KEY_A('actual@example.com');
+    const ghost = 'gone:/Deleted:ghost@example.com';
+    const fts = makeFtsStore([actual, ghost]);
+    const identities = [folderA({ uidCount: 1 })];
+    globalThis.browser.accounts.list.mockResolvedValue([{
+      id: 'account1',
+      rootFolder: { path: '/', subFolders: [{ path: '/INBOX', subFolders: [] }] },
+    }]);
+    const memo = {
+      version: 3,
+      folders: {
+        'account1:/INBOX': { verified: true, ftsCount: 999_999 },
+      },
+    };
+
+    const result = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
+
+    expect(fts.countMsgIdRange).toHaveBeenCalledWith('account1:/INBOX:', 'account1:/INBOX;');
+    expect(result.orphanRemoved).toBe(1);
+    expect(fts._keys.has(ghost)).toBe(false);
+  });
+
+  it('does not hold the membership mutex across a global orphan fingerprint', async () => {
+    const fts = makeFtsStore([]);
+    const fingerprintStarted = deferred();
+    const allowFingerprint = deferred();
+    fts.fingerprintMsgIdRange.mockImplementationOnce(async () => {
+      fingerprintStarted.resolve();
+      await allowFingerprint.promise;
+      return { count: 0, sha256: digest([]) };
+    });
+    const orphan = _testExports._runFolderReconOrphanSlice(
+      fts,
+      [],
+      { version: 3, folders: {} },
+    );
+    await fingerprintStarted.promise;
+    let foregroundRan = false;
+    const foreground = runFtsMembershipMutation(async () => {
+      foregroundRan = true;
+      return { count: 0 };
+    });
+    const ranBeforeRelease = await Promise.race([
+      foreground.then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 20)),
+    ]);
+    allowFingerprint.resolve();
+    await foreground;
+    await orphan.catch(() => {});
+
+    expect(ranBeforeRelease).toBe(true);
+    expect(foregroundRan).toBe(true);
+  });
+
+  it('does not hold the membership mutex across memo storage and rejects the stale proof', async () => {
+    const fts = makeFtsStore([]);
+    mockNotify([folderA({ uidCount: 0 })], { actualKeysByURI: { [URI_A]: [] } });
+    const writeStarted = deferred();
+    const allowWrite = deferred();
+    globalThis.browser.storage.local.set.mockImplementation(async obj => {
+      if (Object.hasOwn(obj, FOLDER_RECON_STORAGE_KEY)) {
+        writeStarted.resolve();
+        await allowWrite.promise;
+      }
+      Object.assign(storageData, obj);
+    });
+    const recon = _runFolderReconcile(fts);
+    await writeStarted.promise;
+    const foreground = runFtsMembershipMutation(async () => ({ count: 0 }));
+    const ranBeforeRelease = await Promise.race([
+      foreground.then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 20)),
+    ]);
+    allowWrite.resolve();
+    await foreground;
+    const outcome = await recon.then(value => value, error => error);
+
+    expect(ranBeforeRelease).toBe(true);
+    expect(String(outcome?.message || outcome)).toContain('membership_epoch_changed');
+  });
+
+  it('refuses stale removal/cursor proof when foreground membership mutates after recheck', async () => {
+    const actual = KEY_A('actual@example.com');
+    const ghost = KEY_A('ghost@example.com');
+    const fts = makeFtsStore([actual, ghost]);
+    mockNotify([folderA({ uidCount: 1 })], {
+      actualKeysByURI: { [URI_A]: [actual] },
+      msgDbByURI: { [URI_A]: new Set(['actual@example.com']) },
+    });
+    recheckMessageInFolder.mockImplementationOnce(async () => {
+      await runFtsMembershipMutation(async () => ({ count: 1 }));
+      return 'absent';
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.staleRemoved).toBe(0);
+    expect(fts._keys.has(ghost)).toBe(true);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY]?.folders?.['account1:/INBOX']?.verified)
+      .not.toBe(true);
+  });
+
+  it('refuses a stale cursor when membership mutates after its page but before the binding fingerprint', async () => {
+    const actual = KEY_A('actual@example.com');
+    const ghosts = Array.from({ length: 100 }, (_, index) =>
+      KEY_A(`ghost-${String(index).padStart(3, '0')}@example.com`));
+    const insertedBelowCursor = KEY_A('000-inserted@example.com');
+    const fts = makeFtsStore([actual, ...ghosts]);
+    const api = mockNotify([folderA({ uidCount: 1 })], {
+      actualKeysByURI: { [URI_A]: [actual] },
+      msgDbByURI: { [URI_A]: new Set(['actual@example.com', ...ghosts.map(key => key.slice(KEY_A('').length))]) },
+      keysByURI: { [URI_A]: [1] },
+    });
+    api.probeMessageIds.mockImplementationOnce(async () => {
+      await runFtsMembershipMutation(async () => { fts._keys.add(insertedBelowCursor); });
+      return { missing: [] };
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.foldersFailed).toBe(1);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY]?.folders?.['account1:/INBOX']?.staleAfterKey)
+      .toBeUndefined();
+  });
+
+  it('refuses a bound stale cursor when membership mutates before its targeted memo commit', async () => {
+    const actual = KEY_A('actual@example.com');
+    const ghosts = Array.from({ length: 100 }, (_, index) =>
+      KEY_A(`ghost-${String(index).padStart(3, '0')}@example.com`));
+    const insertedBelowCursor = KEY_A('000-inserted@example.com');
+    const fts = makeFtsStore([actual, ...ghosts]);
+    const api = mockNotify([folderA({ uidCount: 1 })], {
+      actualKeysByURI: { [URI_A]: [actual] },
+      msgDbByURI: { [URI_A]: new Set(['actual@example.com', ...ghosts.map(key => key.slice(KEY_A('').length))]) },
+      keysByURI: { [URI_A]: [1] },
+    });
+    const realInfos = api.getMessageInfosForKeys.getMockImplementation();
+    api.getMessageInfosForKeys.mockImplementationOnce(async (...args) => {
+      await runFtsMembershipMutation(async () => { fts._keys.add(insertedBelowCursor); });
+      return realInfos(...args);
+    });
+
+    await expect(_runFolderReconcile(fts)).rejects.toThrow(/membership_epoch_changed/);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY]?.folders?.['account1:/INBOX']?.staleAfterKey)
+      .toBeUndefined();
+  });
+
+  it('rejects a memo shortcut if membership changes during its native fingerprint', async () => {
+    const actual = KEY_A('actual@example.com');
+    seedMemo({
+      'account1:/INBOX': {
+        verified: true,
+        uidValidity: 7,
+        uidCount: 1,
+        uidSha256: uidDigest([1]),
+        expectedCount: 1,
+        expectedSha256: digest([actual]),
+        keyMapCount: 1,
+        keyMapSha256: keyMapDigest([[1, actual]]),
+        ftsCount: 1,
+        ftsSha256: digest([actual]),
+      },
+    }, 3);
+    const fts = makeFtsStore([actual]);
+    fts.fingerprintMsgIdRange.mockImplementation(async (start, end) => {
+      const rows = inRange(fts._keys, start, end);
+      if (start) await runFtsMembershipMutation(async () => ({ count: 0 }));
+      return { count: rows.length, sha256: digest(rows) };
+    });
+    mockNotify([folderA({ uidCount: 1 })], {
+      headerIdsByKeyByURI: { [URI_A]: { 1: 'actual@example.com' } },
+      keysByURI: { [URI_A]: [1] },
+    });
+
+    const stats = await _runFolderReconcile(fts);
+
+    expect(stats.foldersMemoHit).toBe(0);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'].verified)
+      .not.toBe(true);
   });
 });
