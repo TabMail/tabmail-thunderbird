@@ -12,9 +12,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../agent/modules/utils.js', () => ({
-  log: vi.fn(),
-  parseUniqueId: vi.fn((uid) => {
+vi.mock('../agent/modules/utils.js', () => {
+  const parseUniqueId = vi.fn((uid) => {
     if (!uid || typeof uid !== 'string') return null;
     const parts = uid.split(':');
     if (parts.length < 3) return null;
@@ -22,9 +21,20 @@ vi.mock('../agent/modules/utils.js', () => ({
       weFolder: { accountId: parts[0], path: parts[1] },
       headerID: parts[2],
     };
-  }),
-  headerIDToWeID: vi.fn(async () => null),
-}));
+  });
+  const headerIDToWeID = vi.fn(async () => null);
+  return {
+    log: vi.fn(),
+    parseUniqueId,
+    headerIDToWeID,
+    resolveUniqueMessageKey: vi.fn(async (uid) => {
+      const parsed = parseUniqueId(uid);
+      if (!parsed) return null;
+      const weID = await headerIDToWeID(parsed.headerID, parsed.weFolder);
+      return weID ? { ...parsed, weID } : null;
+    }),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // globalThis.browser mock

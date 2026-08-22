@@ -406,6 +406,9 @@ export const SETTINGS = {
         // slices until every folder has a fresh equality proof.
         ftsFolderRecon: {
             folderScanPageSize: 250,
+            membershipAssignBatchSize: 1000,
+            membershipListPageSize: 500,
+            membershipStatePageSize: 50,
             digestWorkChunkEntries: 1000,
             missingPageKeys: 500,
             stalePageKeys: 100,

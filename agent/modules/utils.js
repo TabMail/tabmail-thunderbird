@@ -1308,6 +1308,82 @@ export function parseUniqueId(uniqueId) {
 }
 
 /**
+ * Enumerate every live-folder interpretation of a legacy composite message
+ * key without deciding whether a ':' belongs to folderPath or Message-ID.
+ * The returned Message-ID tail is preserved byte-for-byte, including legal
+ * IPv6 domain literals.  Callers must resolve the candidates against live
+ * message evidence before selecting one.
+ */
+export function getUniqueMessageKeyCandidates(uniqueId, folders) {
+    if (!uniqueId || typeof uniqueId !== "string") return [];
+    const accountBoundary = uniqueId.indexOf(":");
+    if (accountBoundary <= 0) return [];
+    const accountId = uniqueId.slice(0, accountBoundary);
+    const candidates = [];
+    for (const folder of folders || []) {
+        if (!folder || folder.accountId !== accountId || !folder.path) continue;
+        const prefix = `${accountId}:${folder.path}:`;
+        if (!uniqueId.startsWith(prefix)) continue;
+        const headerID = uniqueId.slice(prefix.length);
+        if (!headerID) continue;
+        candidates.push({ weFolder: folder, headerID });
+    }
+    // Longer folder paths first is only a performance choice; live evidence,
+    // not ordering, decides the result and multiple positives fail closed.
+    return candidates.sort((left, right) => right.weFolder.path.length - left.weFolder.path.length);
+}
+
+/**
+ * Resolve a legacy `accountId:folderPath:Message-ID` through Thunderbird's
+ * current folder relation.  Context-free delimiter parsing cannot distinguish
+ * a colon-bearing mailbox from a colon-bearing Message-ID, so every candidate
+ * folder is queried exactly and the result is accepted only when one live
+ * interpretation exists.
+ */
+export async function resolveUniqueMessageKey(uniqueId) {
+    if (!uniqueId || typeof uniqueId !== "string") return null;
+    const accountBoundary = uniqueId.indexOf(":");
+    if (accountBoundary <= 0) return null;
+    const accountId = uniqueId.slice(0, accountBoundary);
+    let folders;
+    try {
+        folders = await browser.folders.query({ accountId });
+    } catch (e) {
+        log(`[TMDBG HeaderResolver] Could not enumerate folders for structured key resolution: ${e}`, "warn");
+        return null;
+    }
+    const candidates = getUniqueMessageKeyCandidates(uniqueId, folders);
+    let match = null;
+    for (const candidate of candidates) {
+        try {
+            let page = await browser.messages.query({
+                folderId: candidate.weFolder.id,
+                headerMessageId: candidate.headerID,
+            });
+            let candidateWeID = null;
+            for (;;) {
+                candidateWeID ??= page?.messages?.find(message => message?.id != null)?.id ?? null;
+                if (!page?.id || typeof browser.messages.continueList !== "function") break;
+                page = await browser.messages.continueList(page.id);
+            }
+            if (candidateWeID !== null) {
+                if (match) {
+                    log(`[TMDBG HeaderResolver] Legacy composite key has multiple live interpretations; refusing context-free resolution`, "warn");
+                    return null;
+                }
+                // Duplicate headers inside the same folder are one structured
+                // interpretation; retain Thunderbird's first-match behavior.
+                match = { ...candidate, weID: candidateWeID };
+            }
+        } catch (e) {
+            log(`[TMDBG HeaderResolver] Live candidate query failed for structured key resolution: ${e}`, "warn");
+            return null;
+        }
+    }
+    return match;
+}
+
+/**
  * Resolves a headerID to one or more WebExtension message IDs (weID).
  * 
  * This function uses a robust three-stage algorithm:

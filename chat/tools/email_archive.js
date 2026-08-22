@@ -19,22 +19,16 @@ async function normalizeArgs(args = {}) {
   // Optional list of unique_ids to override tag-based listing
   if (Array.isArray(a.unique_ids)) {
     try {
-      const { parseUniqueId, headerIDToWeID } = await import("../../agent/modules/utils.js");
+      const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
       const resolvedIds = [];
       
       for (const uniqueId of a.unique_ids) {
         if (uniqueId && typeof uniqueId === 'string') {
           log(`[TMDBG Tools] email_archive: Processing unique_id: '${uniqueId}'`);
-          const parsed = parseUniqueId(uniqueId);
-          const { weFolder, headerID } = parsed;
-          log(`[TMDBG Tools] email_archive: Parsed to weFolder='${weFolder}' headerID='${headerID}'`);
-          
-          // Resolve headerID to internal weID
-          const internalIds = await headerIDToWeID(headerID, weFolder);
-          log(`[TMDBG Tools] email_archive: headerIDToWeID returned: ${JSON.stringify(internalIds)}`);
-          if (internalIds) {
-            resolvedIds.push(internalIds);
-            log(`[TMDBG Tools] email_archive: Resolved unique_id '${uniqueId}' to ${internalIds} internal ID`);
+          const resolved = await resolveUniqueMessageKey(uniqueId);
+          if (resolved) {
+            resolvedIds.push(resolved.weID);
+            log(`[TMDBG Tools] email_archive: Resolved unique_id '${uniqueId}' to ${resolved.weID} internal ID`);
           } else {
             log(`[TMDBG Tools] email_archive: Failed to resolve unique_id '${uniqueId}'`, "warn");
           }
@@ -166,5 +160,4 @@ export async function completeExecution(currentState, prevState) {
 }
 
 export function resetPaginationSessions() {}
-
 

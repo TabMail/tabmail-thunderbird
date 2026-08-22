@@ -45,10 +45,11 @@ tabmail-thunderbird/
 ├── fts/                         # Full-Text Search engine
 │   ├── engine.js               # Search engine
 │   ├── indexer.js              # Main indexer
-│   ├── incrementalIndexer.js   # Live indexing + startup UID/FTS fingerprint reconcile
+│   ├── folderMembershipIdentity.js # Durable exact account/path membership identity
+│   ├── incrementalIndexer.js   # Live indexing + opaque-folder migration/exact startup reconcile
 │   ├── helperPrompt.js         # Shared install/reinstall CTA copy
 │   ├── nativeCompatibility.js  # Signing-key overlap/cutoff policy
-│   ├── nativeEngine.js         # Native messaging bridge (incl. folder-range fingerprints)
+│   ├── nativeEngine.js         # Native bridge (range + opaque-folder membership RPCs)
 │   ├── memoryIndexer.js        # In-memory indexing
 │   └── maintenanceScheduler.js # Manual repair scans (automatic schedules retired)
 │
@@ -132,6 +133,6 @@ For detailed documentation on complex sub-components, see:
 | compose/ | 16+ | — | — | Compose enhancement |
 | theme/ | 17+ | — | — | Theming, rendering |
 | config/ | 22+ | 1 | 1 | Settings UI |
-| fts/ | 11 | — | — | Full-text search |
+| fts/ | 13 | — | — | Full-text search |
 | welcome/ | 31+ | 1 | 1 | Onboarding |
 | **Total** | **~220** | **28** | **10** | |

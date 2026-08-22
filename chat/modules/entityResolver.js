@@ -5,7 +5,7 @@
 // entityResolver.js – Shared helpers to resolve contact, event, and email details
 // Thunderbird 145, MV3
 
-import { headerIDToWeID, log, parseUniqueId } from "../../agent/modules/utils.js";
+import { log, resolveUniqueMessageKey } from "../../agent/modules/utils.js";
 
 /**
  * Resolve contact details from a contact ID
@@ -113,21 +113,12 @@ export async function resolveEventDetails(eventId) {
  */
 export async function resolveEmailSubject(uniqueId) {
   try {
-    // Parse unique_id to extract folder and headerID
-    const parsed = parseUniqueId(uniqueId);
-    if (!parsed) {
-      log(`[EntityResolver] Failed to parse unique_id: ${uniqueId}`);
+    const resolved = await resolveUniqueMessageKey(uniqueId);
+    if (!resolved) {
+      log(`[EntityResolver] Failed to resolve unique_id to one live message: ${uniqueId}`);
       return null;
     }
-    
-    const { weFolder, headerID } = parsed;
-    
-    // Resolve to internal message ID
-    const internalId = await headerIDToWeID(headerID, weFolder);
-    if (!internalId) {
-      log(`[EntityResolver] Failed to resolve headerID ${headerID}`);
-      return null;
-    }
+    const internalId = resolved.weID;
     
     // Get message header
     const header = await browser.messages.get(internalId);

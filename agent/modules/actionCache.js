@@ -17,7 +17,7 @@
  */
 
 import * as idb from "./idbStorage.js";
-import { getUniqueMessageKey } from "./utils.js";
+import { getUniqueMessageKey, getUniqueMessageKeyCandidates } from "./utils.js";
 
 const ACTION_PREFIX = "action:";
 const ACTION_TS_PREFIX = "action:ts:";
@@ -275,66 +275,95 @@ export async function pushAllActionsToExperimentsOnStartup() {
 
     const kv = await idb.get(actionKeys);
 
-    // Group IDB entries by (accountId, folderPath).
-    const byFolder = new Map(); // "accountId|folderPath" -> Map<headerMessageId, action>
-    for (const cacheKey of actionKeys) {
-      const action = kv[cacheKey];
-      if (!action) continue;
-      const uniqueKey = cacheKey.slice(ACTION_PREFIX.length);
-      const colonIdx1 = uniqueKey.indexOf(":");
-      if (colonIdx1 <= 0) continue;
-      const colonIdx2 = uniqueKey.indexOf(":", colonIdx1 + 1);
-      if (colonIdx2 <= 0) continue;
-      const accountId = uniqueKey.slice(0, colonIdx1);
-      const folderPath = uniqueKey.slice(colonIdx1 + 1, colonIdx2);
-      const headerMessageId = uniqueKey.slice(colonIdx2 + 1);
-      if (!accountId || !folderPath || !headerMessageId) continue;
-      const groupKey = accountId + "|" + folderPath;
-      let sub = byFolder.get(groupKey);
-      if (!sub) { sub = new Map(); byFolder.set(groupKey, sub); }
-      sub.set(headerMessageId, action);
-    }
-    if (byFolder.size === 0) return;
-
-    // Resolve folderPath → folderId for each affected folder.
+    // Resolve against the current structured folder inventory. A raw key has
+    // no context-free "second colon": both folder paths and valid Message-IDs
+    // may contain colons. Ambiguous live prefixes fail closed.
     const accounts = await browser.accounts.list();
-    const folderIdByKey = new Map();
+    const liveFolders = [];
     for (const acc of accounts) {
       try {
         if (!acc?.rootFolder) continue;
         const subFolders = await browser.folders.getSubFolders(acc.rootFolder.id, true);
-        for (const f of [acc.rootFolder, ...subFolders]) {
-          if (f?.id && f?.path) folderIdByKey.set(acc.id + "|" + f.path, f.id);
+        for (const folder of [acc.rootFolder, ...subFolders]) {
+          if (folder?.id && folder?.path) {
+            liveFolders.push({ ...folder, accountId: folder.accountId || acc.id });
+          }
         }
       } catch (_) {}
     }
 
-    // One `messages.list` per folder, in parallel. Match headerMessageIds
-    // locally instead of issuing a per-message query.
     const normalizeMid = (v) => String(v || "").replace(/[<>]/g, "").trim();
+    const records = [];
+    const refsByFolder = new Map(); // MailFolder.id -> Map<normalized Message-ID, refs[]>
+    for (const cacheKey of actionKeys) {
+      const action = kv[cacheKey];
+      if (!action) continue;
+      const uniqueKey = cacheKey.slice(ACTION_PREFIX.length);
+      const candidates = getUniqueMessageKeyCandidates(uniqueKey, liveFolders);
+      if (candidates.length === 0) continue;
+      const record = { action, matches: new Map(), uncertain: false };
+      records.push(record);
+      for (const candidate of candidates) {
+        const mid = normalizeMid(candidate.headerID);
+        if (!mid) continue;
+        let byMid = refsByFolder.get(candidate.weFolder.id);
+        if (!byMid) { byMid = new Map(); refsByFolder.set(candidate.weFolder.id, byMid); }
+        let refs = byMid.get(mid);
+        if (!refs) { refs = []; byMid.set(mid, refs); }
+        refs.push({ record, folderId: candidate.weFolder.id });
+      }
+    }
+    if (refsByFolder.size === 0) return;
+
+    // Validate all structural candidates against actual live messages while
+    // scanning each affected folder only once. Structural prefix overlap is
+    // not ambiguity; two matched candidate folders are. Multiple matching
+    // rows inside one folder retain the base backfill behavior.
     const folderFetches = [];
-    for (const [groupKey, midMap] of byFolder) {
-      const folderId = folderIdByKey.get(groupKey);
-      if (!folderId) continue;
+    for (const [folderId, refsByMid] of refsByFolder) {
       folderFetches.push((async () => {
-        const entries = [];
         try {
           let page = await browser.messages.list(folderId);
-          while (page && Array.isArray(page.messages) && page.messages.length > 0) {
+          const continuationIds = new Set();
+          while (page) {
+            if (!Array.isArray(page.messages)) throw new Error("action_cache_folder_page_invalid");
             for (const m of page.messages) {
               const mid = normalizeMid(m?.headerMessageId);
               if (!mid) continue;
-              const action = midMap.get(mid);
-              if (action && m?.id) entries.push({ weMsgId: m.id, action });
+              const refs = refsByMid.get(mid);
+              if (!refs || !m?.id) continue;
+              for (const ref of refs) {
+                let messageIds = ref.record.matches.get(ref.folderId);
+                if (!messageIds) {
+                  messageIds = new Set();
+                  ref.record.matches.set(ref.folderId, messageIds);
+                }
+                messageIds.add(m.id);
+              }
             }
-            if (page.id) page = await browser.messages.continueList(page.id);
-            else break;
+            if (!page.id) break;
+            if (continuationIds.has(page.id)
+                || typeof browser.messages.continueList !== "function") {
+              throw new Error("action_cache_folder_continuation_invalid");
+            }
+            continuationIds.add(page.id);
+            page = await browser.messages.continueList(page.id);
           }
-        } catch (_) {}
-        return entries;
+        } catch (_) {
+          for (const refs of refsByMid.values()) {
+            for (const ref of refs) ref.record.uncertain = true;
+          }
+        }
       })());
     }
-    const allEntries = (await Promise.all(folderFetches)).flat();
+    await Promise.all(folderFetches);
+    const allEntries = [];
+    for (const record of records) {
+      if (record.uncertain || record.matches.size !== 1) continue;
+      for (const weMsgId of record.matches.values().next().value) {
+        allEntries.push({ weMsgId, action: record.action });
+      }
+    }
     if (allEntries.length === 0) return;
 
     // Backfill hdr properties in batches.

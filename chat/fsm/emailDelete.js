@@ -199,24 +199,16 @@ export async function runStateDeleteExecute() {
       // Resolve uniqueId to internal weID if needed
       let msgId = email.messageId; // Backward compatibility
       if (!msgId && email.uniqueId) {
-        const { parseUniqueId, headerIDToWeID } = await import("../../agent/modules/utils.js");
-        const parsed = parseUniqueId(email.uniqueId);
-        if (parsed) {
-          msgId = await headerIDToWeID(parsed.headerID, parsed.weFolder);
-          if (!msgId) {
-            log(
-              `[DeleteExecute] Failed to resolve uniqueId '${email.uniqueId}' to internal ID`,
-              "warn"
-            );
-            continue;
-          }
-        } else {
+        const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
+        const resolved = await resolveUniqueMessageKey(email.uniqueId);
+        if (!resolved) {
           log(
-            `[DeleteExecute] Failed to parse uniqueId '${email.uniqueId}'`,
+            `[DeleteExecute] Failed to resolve uniqueId '${email.uniqueId}' to one live message`,
             "warn"
           );
           continue;
         }
+        msgId = resolved.weID;
       }
 
       const header = await browser.messages.get(msgId);

@@ -638,6 +638,25 @@ export const ftsSearch = {
     return await nativeFtsSearch.listMsgIdRange(startKey, endKey, afterKey, limit);
   },
 
+  supportsFolderMembership() {
+    return nativeFtsSearch.supportsFolderMembership();
+  },
+
+  async listFolderMembership(folderId, afterMsgId, limit) {
+    return await nativeFtsSearch.listFolderMembership(folderId, afterMsgId, limit);
+  },
+
+  async listFolderMembershipState(afterMsgId, limit) {
+    return await nativeFtsSearch.listFolderMembershipState(afterMsgId, limit);
+  },
+
+  async assignFolderMembershipBatch(assignments, membershipFenceToken = null) {
+    return runFtsMembershipMutation(
+      () => nativeFtsSearch.assignFolderMembershipBatch(assignments),
+      membershipFenceToken,
+    );
+  },
+
   async debugSample() {
     return await nativeFtsSearch.debugSample();
   },

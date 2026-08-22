@@ -38,8 +38,8 @@ vi.mock('../agent/modules/eventLogger.js', () => ({
 }));
 vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
+  getUniqueMessageKeyCandidates: vi.fn(),
   headerIDToWeID: vi.fn(),
-  parseUniqueId: vi.fn(),
   recheckMessageInFolder: vi.fn(),
 }));
 

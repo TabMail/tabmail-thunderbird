@@ -276,22 +276,30 @@ export async function applyPriorityTag(weId, action) {
 export async function isMessageInInboxByUniqueKey(uniqueKey) {
   try {
     if (!uniqueKey || typeof uniqueKey !== "string") return false;
-
-    const parts = uniqueKey.split(":");
-    if (parts.length < 3) return false;
-
-    const accountId = parts[0];
-    const headerMessageId = parts.slice(2).join(":");
-    if (!accountId || !headerMessageId) return false;
-
+    const accountBoundary = uniqueKey.indexOf(":");
+    if (accountBoundary <= 0) return false;
+    const accountId = uniqueKey.slice(0, accountBoundary);
     const inbox = await findInboxFolderForAccount(accountId);
-    if (!inbox?.id) return false;
+    if (!inbox?.id || !inbox.path) return false;
+    const inboxPrefix = `${accountId}:${inbox.path}:`;
+    if (!uniqueKey.startsWith(inboxPrefix)) return false;
+    const headerMessageId = uniqueKey.slice(inboxPrefix.length);
+    if (!headerMessageId) return false;
 
-    const page = await browser.messages.query({
+    let page = await browser.messages.query({
       folderId: [inbox.id],
       headerMessageId: _normalizeHeaderMessageId(headerMessageId),
     });
-    return !!(page?.messages && page.messages.length > 0);
+    const continuationIds = new Set();
+    while (page) {
+      if ((page?.messages || []).length > 0) return true;
+      if (!page.id) return false;
+      if (continuationIds.has(page.id)
+          || typeof browser.messages.continueList !== "function") return false;
+      continuationIds.add(page.id);
+      page = await browser.messages.continueList(page.id);
+    }
+    return false;
   } catch (e) {
     console.log(`[TMDBG Tag] isMessageInInboxByUniqueKey failed uniqueKey=${uniqueKey}: ${e}`);
     return false;

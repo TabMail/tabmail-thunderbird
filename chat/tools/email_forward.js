@@ -94,14 +94,9 @@ async function _runEmailForward(args = {}, options = {}) {
       return;
     }
 
-    // Parse unique_id to extract weFolder and headerID
-    const { parseUniqueId, headerIDToWeID } = await import("../../agent/modules/utils.js");
-    const parsed = parseUniqueId(uniqueId);
-    const { weFolder, headerID } = parsed;
-    
-    // Resolve headerID to internal weID
-    const internalId = await headerIDToWeID(headerID, weFolder);
-    if (!internalId) {
+    const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
+    const resolved = await resolveUniqueMessageKey(uniqueId);
+    if (!resolved) {
       const errorMsg = `ERROR: Failed to resolve unique_id '${uniqueId}' to internal ID`;
       log(`[TMDBG Tools] email_forward: ${errorMsg}`, "error");
 
@@ -117,6 +112,7 @@ async function _runEmailForward(args = {}, options = {}) {
       await core.executeAgentAction();
       return;
     }
+    const internalId = resolved.weID;
 
     log(`[TMDBG Tools] email_forward: Resolved unique_id '${uniqueId}' to internal ID ${internalId}`);
 

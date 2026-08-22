@@ -284,14 +284,10 @@ function fuzzyMatchIdMapItems(query, maxResults = 20) {
  */
 async function getEmailById(uniqueId) {
   try {
-    // Parse uniqueId and get the email header
-    const { parseUniqueId, headerIDToWeID } = await import("../../agent/modules/utils.js");
-    const parsed = parseUniqueId(uniqueId);
-    if (parsed) {
-      const { weFolder, headerID } = parsed;
-      const weID = await headerIDToWeID(headerID, weFolder);
-      if (weID) {
-        const header = await browser.messages.get(weID);
+    const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
+    const resolved = await resolveUniqueMessageKey(uniqueId);
+    if (resolved) {
+        const header = await browser.messages.get(resolved.weID);
         if (header) {
           // Extract to field from recipients
           const toRecipients = header.recipients || [];
@@ -304,7 +300,6 @@ async function getEmailById(uniqueId) {
             date: header.date ? new Date(header.date) : null,
           };
         }
-      }
     }
     
     // Fallback to cache if live fetch fails
@@ -1022,19 +1017,15 @@ async function renderMentionChips_DEPRECATED(textarea) {
         const { toRealId } = await import("./idTranslator.js");
         const realId = toRealId(Number(numericId));
         if (realId) {
-          const { parseUniqueId, headerIDToWeID } = await import("../../agent/modules/utils.js");
-          const parsed = parseUniqueId(realId);
-          if (parsed) {
-            const { weFolder, headerID } = parsed;
-            const weID = await headerIDToWeID(headerID, weFolder);
-            if (weID) {
-              const header = await browser.messages.get(weID);
+          const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
+          const resolved = await resolveUniqueMessageKey(realId);
+          if (resolved) {
+              const header = await browser.messages.get(resolved.weID);
               if (header && header.subject) {
                 subject = header.subject.length > 30 
                   ? header.subject.substring(0, 27) + "..." 
                   : header.subject;
               }
-            }
           }
         }
       } catch (e) {
@@ -1166,4 +1157,3 @@ export function cleanupMentionAutocomplete() {
     log(`[MentionAutocomplete] Failed to clean up: ${e}`, "error");
   }
 }
-

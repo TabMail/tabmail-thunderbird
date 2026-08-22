@@ -4,7 +4,7 @@
 
 // email_read.js – returns a full email content with summaries
 
-import { extractBodyFromParts, getRealSubject, getUniqueMessageKey, headerIDToWeID, log, parseUniqueId, safeGetFull } from "../../agent/modules/utils.js";
+import { extractBodyFromParts, getRealSubject, getUniqueMessageKey, log, resolveUniqueMessageKey, safeGetFull } from "../../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../modules/icsParser.js";
 
 
@@ -20,22 +20,19 @@ export async function run(args = {}, options = {}) {
       return { error: "invalid or missing unique_id" };
     }
 
-    // Parse unique_id to extract folderUri and headerID
-    const parsed = parseUniqueId(uniqueId);
-    if (!parsed) {
-      log(`[TMDBG Tools] email_read: failed to parse unique_id: ${uniqueId}`, "error");
-      log(`[TMDBG Tools] email_read: unique_id should be in format 'accountId:folderPath:headerID', got: '${uniqueId}'`, "error");
+    const resolved = await resolveUniqueMessageKey(uniqueId);
+    if (!resolved) {
+      log(`[TMDBG Tools] email_read: unique_id did not have one live structured match: ${uniqueId}`, "error");
       // Note the error message below is sent to the LLM, so we should not
       // reveal the format here (it relies on a translator)
       return { error: "Invalid unique_id" };
     }
     
-    const { weFolder, headerID } = parsed;
+    const { weFolder, headerID, weID: internalId } = resolved;
     log(`[TMDBG Tools] email_read: uniqueId='${uniqueId}' -> weFolder='${weFolder}' headerID='${headerID}'`);
 
     // Direct fetch using headerIDToWeID + safeGetFull (faster than FTS database query)
     // FTS was designed for full-text search, not for single message lookups by ID
-    let internalId = null;
     let header = null;
     let body = "";
     let icsAttachments = [];
@@ -43,20 +40,13 @@ export async function run(args = {}, options = {}) {
     log(`[TMDBG Tools] email_read: Using direct fetch (headerIDToWeID + safeGetFull) for faster response`);
     log(`[TMDBG Tools] email_read: Calling headerIDToWeID with headerID='${headerID}' weFolder='${weFolder}'`);
     
-    internalId = await headerIDToWeID(headerID, weFolder);
-    if (!internalId) {
-      log(`[TMDBG Tools] email_read: headerIDToWeID failed to resolve headerID='${headerID}' in weFolder='${weFolder}'`, "error");
-      log(`[TMDBG Tools] email_read: This could mean the email was moved/deleted, or the headerID format is incorrect`, "error");
-      return { error: `message not found for headerID '${headerID}' in folder '${weFolder.path}'` };
-    }
-    
     // Get header for complete information
     header = await browser.messages.get(internalId);
     if (!header) {
       log(`[TMDBG Tools] email_read: messages.get(${internalId}) returned null after resolution`, "error");
       return { error: "message not found after resolution" };
     }
-    log(`[TMDBG Tools] email_read: Successfully resolved via headerIDToWeID: headerID='${headerID}' -> weID=${internalId}`);
+    log(`[TMDBG Tools] email_read: Successfully resolved by live folder evidence: headerID='${headerID}' -> weID=${internalId}`);
     
     // Get body using safeGetFull
     try {
@@ -164,7 +154,6 @@ export async function run(args = {}, options = {}) {
     return { error: String(e || "unknown error in email_read") };
   }
 }
-
 
 
 
