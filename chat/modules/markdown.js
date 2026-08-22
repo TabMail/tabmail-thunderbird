@@ -175,22 +175,13 @@ function unwrapMarkdownFenceContainers(input) {
 async function handleEmailClick(uniqueId) {
   try {
     log(`[TMDBG Markdown] Opening email: ${uniqueId}`);
-    // Parse unique_id to get folderUri and headerID
-    const { parseUniqueId, headerIDToWeID } = await import("../../agent/modules/utils.js");
-    const parsed = parseUniqueId(uniqueId);
-    if (!parsed) {
-      log(`[TMDBG Markdown] Failed to parse email unique_id: ${uniqueId}`, "error");
+    const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
+    const resolved = await resolveUniqueMessageKey(uniqueId);
+    if (!resolved) {
+      log(`[TMDBG Markdown] Failed to resolve email unique_id to one live message: ${uniqueId}`, "error");
       return;
     }
-    
-    const { weFolder, headerID } = parsed;
-    
-    // Convert headerMessageId to WebExtension message ID (weID)
-    const weID = await headerIDToWeID(headerID, weFolder);
-    if (!weID) {
-      log(`[TMDBG Markdown] Failed to resolve headerID to weID: ${headerID}`, "error");
-      return;
-    }
+    const { weFolder, headerID, weID } = resolved;
     
     log(`[TMDBG Markdown] Resolved email ${uniqueId} -> headerID: ${headerID}, weID: ${weID}`);
     
@@ -510,13 +501,10 @@ export async function renderMarkdown(mdText) {
           icon = "📧"; // Email envelope emoji
           
           // Gather email data upfront
-          const { parseUniqueId, headerIDToWeID } = await import("../../agent/modules/utils.js");
-          const parsed = parseUniqueId(id);
-          if (parsed) {
-            const { weFolder, headerID } = parsed;
-            const weID = await headerIDToWeID(headerID, weFolder);
-            if (weID) {
-              const header = await browser.messages.get(weID);
+          const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
+          const resolved = await resolveUniqueMessageKey(id);
+          if (resolved) {
+              const header = await browser.messages.get(resolved.weID);
               if (header) {
                 displayText = header.subject || "No subject";
                 tooltipData = {
@@ -525,7 +513,6 @@ export async function renderMarkdown(mdText) {
                   to: header.recipients?.join(", ") || "Unknown recipients"
                 };
               }
-            }
           }
           
           if (!displayText) {
@@ -1578,4 +1565,3 @@ function hideTooltip() {
     }
   }
 }
-

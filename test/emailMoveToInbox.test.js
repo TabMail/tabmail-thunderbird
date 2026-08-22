@@ -22,14 +22,23 @@ vi.mock('../../agent/modules/utils.js', () => ({
   headerIDToWeID: vi.fn(async () => null),
 }));
 
-vi.mock('../agent/modules/utils.js', () => ({
-  log: vi.fn(),
-  parseUniqueId: vi.fn((id) => {
+vi.mock('../agent/modules/utils.js', () => {
+  const parseUniqueId = vi.fn((id) => {
     const parts = id.split(':');
     return { weFolder: parts[0] || '', headerID: parts[1] || id };
-  }),
-  headerIDToWeID: vi.fn(async (headerID) => headerID === 'valid' ? 101 : null),
-}));
+  });
+  const headerIDToWeID = vi.fn(async (headerID) => headerID === 'valid' ? 101 : null);
+  return {
+    log: vi.fn(),
+    parseUniqueId,
+    headerIDToWeID,
+    resolveUniqueMessageKey: vi.fn(async (id) => {
+      const parsed = parseUniqueId(id);
+      const weID = await headerIDToWeID(parsed.headerID);
+      return weID ? { ...parsed, weID } : null;
+    }),
+  };
+});
 
 vi.mock('../agent/modules/config.js', () => ({
   SETTINGS: {

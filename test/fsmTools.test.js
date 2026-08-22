@@ -50,15 +50,22 @@ globalThis.requestAnimationFrame = vi.fn((fn) => setTimeout(fn, 0));
 // ---------------------------------------------------------------------------
 // Module mocks — no top-level variable references in factories (hoisting)
 // ---------------------------------------------------------------------------
-vi.mock('../agent/modules/utils.js', () => ({
-  log: vi.fn(),
-  parseUniqueId: vi.fn((uid) => ({ weFolder: null, headerID: uid })),
-  headerIDToWeID: vi.fn(async (hid) => {
+vi.mock('../agent/modules/utils.js', () => {
+  const headerIDToWeID = vi.fn(async (hid) => {
     if (hid === 'valid-header') return 42;
     return null;
-  }),
-  getUniqueMessageKey: vi.fn(async () => 'unique-key'),
-}));
+  });
+  return {
+    log: vi.fn(),
+    parseUniqueId: vi.fn((uid) => ({ weFolder: null, headerID: uid })),
+    headerIDToWeID,
+    resolveUniqueMessageKey: vi.fn(async (uid) => {
+      const weID = await headerIDToWeID(uid);
+      return weID ? { weID, headerID: uid, weFolder: null } : null;
+    }),
+    getUniqueMessageKey: vi.fn(async () => 'unique-key'),
+  };
+});
 
 vi.mock('../agent/modules/config.js', () => ({
   SETTINGS: { debugLogging: false },

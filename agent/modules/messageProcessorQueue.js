@@ -5,7 +5,12 @@
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
 import { processMessage } from "./messageProcessor.js";
-import { getUniqueMessageKey, headerIDToWeID, log, parseUniqueId } from "./utils.js";
+import {
+  getUniqueMessageKey,
+  getUniqueMessageKeyCandidates,
+  log,
+  resolveUniqueMessageKey,
+} from "./utils.js";
 
 // Lazy-loaded to avoid circular imports — only needed for tagCleanup operation type.
 let _performLeaveInboxTagCleanup = null;
@@ -94,13 +99,22 @@ function _clearTimer(refName) {
   } catch (_) {}
 }
 
+function _durableQueueMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return {};
+  // Thunderbird MailFolder.id is minted for the current session. The durable
+  // recovery evidence is the exact raw accountId/folderPath tuple captured
+  // beside the raw unique key; never retain or re-persist a session id.
+  const { folderId: _discardedSessionFolderId, ...durable } = metadata;
+  return durable;
+}
+
 async function _persistNow() {
   try {
     const arr = Array.from(_pending.values()).map((it) => ({
       uniqueKey: it.uniqueKey,
       timestamp: it.timestamp,
       opts: it.opts || {},
-      metadata: it.metadata || {},
+      metadata: _durableQueueMetadata(it.metadata),
       attempts: it.attempts || 0,
       lastErrorAtMs: it.lastErrorAtMs || 0,
     }));
@@ -136,6 +150,7 @@ async function _restoreFromStorage() {
 
     let restored = 0;
     let skipped = 0;
+    let strippedSessionFolderId = false;
     for (const it of arr) {
       const key = it?.uniqueKey ? String(it.uniqueKey) : "";
       if (!key) continue;
@@ -143,17 +158,22 @@ async function _restoreFromStorage() {
         skipped++;
         continue;
       }
+      const metadata = _durableQueueMetadata(it?.metadata);
+      if (Object.prototype.hasOwnProperty.call(it?.metadata || {}, "folderId")) {
+        strippedSessionFolderId = true;
+      }
       _pending.set(key, {
         uniqueKey: key,
         timestamp: Number(it?.timestamp) || Date.now(),
         opts: it?.opts || {},
-        metadata: it?.metadata || {},
+        metadata,
         attempts: Number(it?.attempts) || 0,
         lastErrorAtMs: Number(it?.lastErrorAtMs) || 0,
       });
       restored++;
     }
     log(`[TMDBG PMQ] Restored ${restored} queued processMessage items from storage (skipped=${skipped})`);
+    if (strippedSessionFolderId) await _persistNow();
   } catch (e) {
     log(`[TMDBG PMQ] Failed to restore queue from storage: ${e}`, "error");
   }
@@ -253,10 +273,11 @@ export async function enqueueProcessMessage(messageHeader, opts = {}) {
       timestamp: prev?.timestamp || now,
       opts: { ...(prev?.opts || {}), ...(opts || {}) },
       metadata: {
-        ...(prev?.metadata || {}),
+        ..._durableQueueMetadata(prev?.metadata),
         subject: messageHeader?.subject,
+        accountId: messageHeader?.folder?.accountId || prev?.metadata?.accountId,
         folderName: messageHeader?.folder?.name,
-        folderPath: messageHeader?.folder?.path,
+        folderPath: messageHeader?.folder?.path || prev?.metadata?.folderPath,
       },
       attempts: Number(prev?.attempts) || 0,
       lastErrorAtMs: Number(prev?.lastErrorAtMs) || 0,
@@ -277,6 +298,44 @@ export async function enqueueProcessMessage(messageHeader, opts = {}) {
   }
 }
 
+function _candidateFromPersistedEnqueueIdentity(it, uniqueKey) {
+  const accountId = String(it?.metadata?.accountId || "");
+  const folderPath = String(it?.metadata?.folderPath || "");
+  if (!accountId || !folderPath) return null;
+  const prefix = `${accountId}:${folderPath}:`;
+  if (!uniqueKey.startsWith(prefix)) return null;
+  const headerID = uniqueKey.slice(prefix.length);
+  if (!headerID) return null;
+  return {
+    weFolder: {
+      accountId,
+      path: folderPath,
+    },
+    headerID,
+  };
+}
+
+async function _queryMessageInAccount(headerMessageId, accountId) {
+  if (!headerMessageId || !accountId) throw new Error("broad_query_identity_missing");
+  let page = await browser.messages.query({ headerMessageId });
+  let found = null;
+  const continuationIds = new Set();
+  while (page) {
+    if (!Array.isArray(page.messages)) throw new Error("broad_query_page_invalid");
+    for (const message of page.messages) {
+      if (!found && message?.folder?.accountId === accountId) found = message;
+    }
+    if (!page.id) break;
+    if (continuationIds.has(page.id)
+        || typeof browser.messages.continueList !== "function") {
+      throw new Error("broad_query_continuation_invalid");
+    }
+    continuationIds.add(page.id);
+    page = await browser.messages.continueList(page.id);
+  }
+  return found;
+}
+
 /**
  * Process a single queued item. Returns result for aggregation.
  * The result includes `operationType` so the drain loop can gate post-processing hooks.
@@ -287,10 +346,11 @@ async function _processOneItem(it) {
 
   const operationType = it?.opts?.operationType || "processMessage";
 
-  // Resolve uniqueKey -> weID -> MessageHeader
-  const parsed = parseUniqueId(key);
-  if (!parsed?.headerID) {
-    log(`[TMDBG PMQ] Invalid uniqueKey (cannot parse) - dropping: ${key}`, "warn");
+  const firstBoundary = key.indexOf(":");
+  if (firstBoundary <= 0
+      || key.indexOf(":", firstBoundary + 1) < 0
+      || key.endsWith(":")) {
+    log(`[TMDBG PMQ] Structurally invalid uniqueKey - dropping: ${key}`, "warn");
     _pending.delete(key);
     return { status: "dropped", operationType };
   }
@@ -298,10 +358,33 @@ async function _processOneItem(it) {
   // Resolve uniqueKey -> weID -> MessageHeader
   // Never drop on resolve failure — could be transient IMAP/Gmail sync.
   let weId = null;
+  let fallbackCandidate = null;
   try {
-    weId = await headerIDToWeID(parsed.headerID, parsed.weFolder, false, true);
+    const resolved = await resolveUniqueMessageKey(key);
+    weId = resolved?.weID || null;
+    if (!resolved) {
+      const accountId = key.slice(0, firstBoundary);
+      const folders = await browser.folders.query({ accountId });
+      const candidates = getUniqueMessageKeyCandidates(key, folders);
+      // Only a single structured interpretation may feed the later broad
+      // moved/deleted check. Multiple live folder prefixes remain retryable.
+      if (candidates.length === 1) fallbackCandidate = candidates[0];
+      const persistedCandidate = _candidateFromPersistedEnqueueIdentity(it, key);
+      if (persistedCandidate) {
+        if (fallbackCandidate
+            && (fallbackCandidate.headerID !== persistedCandidate.headerID
+              || fallbackCandidate.weFolder?.accountId !== persistedCandidate.weFolder.accountId)) {
+          fallbackCandidate = null;
+        } else {
+          // Enqueue metadata is captured from the authoritative MessageHeader
+          // beside this exact raw key. It remains usable after its folder is
+          // renamed/deleted, unlike a fresh folder inventory.
+          fallbackCandidate = persistedCandidate;
+        }
+      }
+    }
   } catch (eResolve) {
-    log(`[TMDBG PMQ] headerIDToWeID threw for key=${key}: ${eResolve}`, "warn");
+    log(`[TMDBG PMQ] structured message resolution threw for key=${key}: ${eResolve}`, "warn");
   }
 
   let header = null;
@@ -321,11 +404,13 @@ async function _processOneItem(it) {
     // to confirm whether the message still exists anywhere in the account.
     if (!header) {
       const verifyAfter = _num(_cfg().cleanupVerifyAfterAttempts, 3);
-      if (attempts >= verifyAfter) {
+      if (attempts >= verifyAfter && fallbackCandidate) {
         try {
-          const headerMessageId = parsed.headerID;
-          const queryResult = await browser.messages.query({ headerMessageId });
-          const found = queryResult?.messages?.[0] || null;
+          const headerMessageId = fallbackCandidate.headerID;
+          const found = await _queryMessageInAccount(
+            headerMessageId,
+            fallbackCandidate.weFolder.accountId,
+          );
           if (found) {
             header = found;
             log(`[TMDBG PMQ] tagCleanup: resolved via broad query key=${key} foundId=${found.id}`);
@@ -392,10 +477,12 @@ async function _processOneItem(it) {
     const attempts = (Number(it?.attempts) || 0) + 1;
     const verifyAfter = _num(_cfg().maxResolveAttempts, 5);
 
-    if (attempts >= verifyAfter) {
+    if (attempts >= verifyAfter && fallbackCandidate) {
       try {
-        const queryResult = await browser.messages.query({ headerMessageId: parsed.headerID });
-        const found = queryResult?.messages?.[0] || null;
+        const found = await _queryMessageInAccount(
+          fallbackCandidate.headerID,
+          fallbackCandidate.weFolder.accountId,
+        );
         if (found) {
           // Resolve glitch — the message exists after all. Recover and process it.
           header = found;
@@ -640,4 +727,3 @@ export function getProcessMessageQueueStatus() {
     },
   };
 }
-

@@ -29,7 +29,12 @@ import {
   writeOwnedFtsScanStatus,
 } from "./operationCoordinator.js";
 import { logFtsOperation } from "../agent/modules/eventLogger.js";
-import { headerIDToWeID, log, parseUniqueId, recheckMessageInFolder } from "../agent/modules/utils.js";
+import {
+  getUniqueMessageKeyCandidates,
+  headerIDToWeID,
+  log,
+  recheckMessageInFolder,
+} from "../agent/modules/utils.js";
 
 /**
  * Format a timestamp with timezone information
@@ -684,13 +689,12 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
     // =========================================================================
     const accountIds = new Set();
     for (const entry of allEntries) {
-      const parsed = parseUniqueId(entry.msgId);
-      if (parsed?.weFolder?.accountId) {
-        accountIds.add(parsed.weFolder.accountId);
-      }
+      const boundary = String(entry?.msgId || '').indexOf(':');
+      if (boundary > 0) accountIds.add(entry.msgId.slice(0, boundary));
     }
 
     const unavailableAccounts = new Set();
+    const foldersByAccount = new Map();
     for (const accountId of accountIds) {
       try {
         const acct = await browser.accounts.get(accountId);
@@ -700,10 +704,12 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
           continue;
         }
         // Verify we can actually query messages in this account
-        const folders = await browser.folders.query({ accountId, limit: 1 });
+        const folders = await browser.folders.query({ accountId });
         if (!folders || folders.length === 0) {
           log(`[TMDBG FTS] Cleanup: account ${accountId} has no queryable folders — skipping its entries`, "warn");
           unavailableAccounts.add(accountId);
+        } else {
+          foldersByAccount.set(accountId, folders);
         }
       } catch (e) {
         log(`[TMDBG FTS] Cleanup: account ${accountId} check failed (${e.message}) — skipping its entries`, "warn");
@@ -735,15 +741,21 @@ async function cleanupMissingEntries(ftsSearch, startDate, endDate, options = {}
       // Process each entry in the batch
       for (const entry of batch) {
         try {
-          // Parse the uniqueId to extract headerID and folder info
-          const parsed = parseUniqueId(entry.msgId);
-          if (!parsed) {
-            log(`[TMDBG FTS] Skipping invalid msgId format: ${entry.msgId}`, "warn");
+          const accountBoundary = String(entry?.msgId || '').indexOf(':');
+          const accountId = accountBoundary > 0 ? entry.msgId.slice(0, accountBoundary) : '';
+          const candidates = getUniqueMessageKeyCandidates(
+            entry.msgId,
+            foldersByAccount.get(accountId) || [],
+          );
+          // Manual cleanup has no exact folderId in date-range result rows.
+          // A single live prefix is safe; overlap ambiguity stays indexed and
+          // is repaired by ADR-024's exact automatic reconciliation instead.
+          if (candidates.length !== 1) {
+            log(`[TMDBG FTS] Skipping structurally ambiguous msgId during manual cleanup: ${entry.msgId}`, "warn");
             processed++;
             continue;
           }
-          
-          const { weFolder, headerID } = parsed;
+          const { weFolder, headerID } = candidates[0];
 
           // Skip entries for accounts that aren't queryable (prevents mass false-stale removals)
           if (unavailableAccounts.has(weFolder?.accountId)) {

@@ -6,9 +6,13 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { makeFolderMembershipId } from '../fts/folderMembershipIdentity.js';
 
 const reconConfig = {
   folderScanPageSize: 250,
+  membershipAssignBatchSize: 1000,
+  membershipListPageSize: 50,
+  membershipStatePageSize: 50,
   digestWorkChunkEntries: 1000,
   missingPageKeys: 500,
   stalePageKeys: 100,
@@ -55,9 +59,22 @@ vi.mock('../agent/modules/eventLogger.js', () => ({
 
 vi.mock('../agent/modules/utils.js', () => ({
   getForegroundFetchPressure: vi.fn(() => ({ active: 0, waiting: 0, chatTyping: false })),
+  getUniqueMessageKeyCandidates: vi.fn((uniqueId, folders) => {
+    const first = uniqueId.indexOf(':');
+    if (first <= 0) return [];
+    const accountId = uniqueId.slice(0, first);
+    return (folders || []).filter(folder =>
+      folder.accountId === accountId
+      && uniqueId.startsWith(`${accountId}:${folder.path}:`))
+      .map(folder => ({
+        weFolder: folder,
+        headerID: uniqueId.slice(`${accountId}:${folder.path}:`.length),
+      }));
+  }),
   headerIDToWeID: vi.fn(),
   log: vi.fn(),
   parseUniqueId: vi.fn(),
+  resolveUniqueMessageKey: vi.fn(),
   recheckMessageInFolder: vi.fn(async () => 'absent'),
   getUniqueMessageKey: vi.fn(),
 }));
@@ -96,6 +113,7 @@ const {
   headerIDToWeID,
   parseUniqueId,
   recheckMessageInFolder,
+  resolveUniqueMessageKey,
 } = await import('../agent/modules/utils.js');
 const { buildBatchHeader, populateBatchBody } = await import('../fts/indexer.js');
 const {
@@ -335,6 +353,163 @@ function installRepairFolders(specs) {
   return { folders, rowsByURI, nativeKeys, fts };
 }
 
+function installExactMembershipFolders(specs, { conflictingMsgId = null } = {}) {
+  const folders = specs.map((spec, index) => ({
+    accountId: 'account1',
+    folderPath: spec.folderPath,
+    folderId: makeFolderMembershipId('account1', spec.folderPath),
+    weFolderId: spec.weFolderId || spec.folderId || `session-folder-${index}`,
+    folderURI: `none://membership-${index}`,
+    serverType: 'none',
+    stableUidKeys: false,
+    uidValidity: 0,
+  }));
+  const rowsByURI = new Map(folders.map((folder, index) => [
+    folder.folderURI,
+    (specs[index].headerMessageIds || []).map((headerMessageId, rowIndex) => ({
+      msgKey: rowIndex + 1,
+      headerMessageId,
+    })),
+  ]));
+  globalThis.browser.accounts.list.mockResolvedValue([{
+    id: 'account1', type: 'none',
+    rootFolder: {
+      path: '/', isRoot: true,
+      subFolders: folders.map(folder => ({
+        id: folder.weFolderId,
+        path: folder.folderPath,
+        subFolders: [],
+      })),
+    },
+  }]);
+  let nextToken = 1;
+  const scans = new Map();
+  globalThis.browser.tmMsgNotify = {
+    getFolderState: vi.fn(async (accountId, folderPath) => ({
+      ...folders.find(folder =>
+        folder.accountId === accountId && folder.folderPath === folderPath),
+    })),
+    beginFolderMessageScan: vi.fn(async (uri) => {
+      const folder = folders.find(item => item.folderURI === uri);
+      const token = `membership-${nextToken++}`;
+      scans.set(token, { uri, offset: 0 });
+      return { token, ...folder };
+    }),
+    readFolderMessageScanPage: vi.fn(async (token, limit) => {
+      const scan = scans.get(token);
+      const source = rowsByURI.get(scan.uri);
+      const rows = source.slice(scan.offset, scan.offset + limit);
+      scan.offset += rows.length;
+      const done = scan.offset >= source.length;
+      if (done) scans.delete(token);
+      return { rows, done };
+    }),
+    cancelFolderMessageScan: vi.fn(async token => ({ cancelled: scans.delete(token) })),
+    getMessageInfosForKeys: vi.fn(async (uri, keys) => ({
+      infos: rowsByURI.get(uri).filter(row => keys.includes(row.msgKey)).map(row => ({
+        accountId: 'account1',
+        folderPath: folders.find(folder => folder.folderURI === uri).folderPath,
+        headerMessageId: row.headerMessageId,
+        msgKey: row.msgKey,
+      })),
+    })),
+    probeMessageIds: vi.fn(async () => ({ missing: [] })),
+  };
+  const nativeRows = new Map();
+  for (let index = 0; index < folders.length; index++) {
+    for (const row of rowsByURI.get(folders[index].folderURI)) {
+      const msgId = `account1:${folders[index].folderPath}:${row.headerMessageId}`;
+      nativeRows.set(msgId, msgId === conflictingMsgId ? 'wrong-folder' : null);
+    }
+  }
+  globalThis.browser.messages = {
+    query: vi.fn(async ({ folderId, headerMessageId }) => {
+      const folder = folders.find(item => item.weFolderId === folderId);
+      const found = folder && rowsByURI.get(folder.folderURI)
+        .some(row => row.headerMessageId === headerMessageId);
+      return { messages: found ? [{ id: `${folderId}:${headerMessageId}` }] : [] };
+    }),
+  };
+  const rowsForFolder = folderId => [...nativeRows]
+    .filter(([, assignedFolderId]) => assignedFolderId === folderId)
+    .map(([msgId]) => msgId)
+    .sort(sqliteBinaryCompare);
+  const allRows = () => [...nativeRows.keys()].sort(sqliteBinaryCompare);
+  const fts = {
+    supportsFolderMembership: vi.fn(() => true),
+    listFolderMembership: vi.fn(async (folderId, after, limit) => {
+      const rows = rowsForFolder(folderId)
+        .filter(msgId => after == null || sqliteBinaryCompare(msgId, after) > 0);
+      const page = rows.slice(0, limit);
+      return { ok: true, msgIds: page, done: page.length === rows.length };
+    }),
+    listFolderMembershipState: vi.fn(async (after, limit) => {
+      const rows = [...nativeRows]
+        .map(([msgId, folderId]) => ({ msgId, folderId }))
+        .filter(entry => after == null || sqliteBinaryCompare(entry.msgId, after) > 0)
+        .sort((a, b) => sqliteBinaryCompare(a.msgId, b.msgId));
+      const entries = rows.slice(0, limit);
+      return { ok: true, entries, done: entries.length === rows.length };
+    }),
+    assignFolderMembershipBatch: vi.fn(async assignments => {
+      for (const { msgId, folderId } of assignments) {
+        const existing = nativeRows.get(msgId);
+        if (existing != null && existing !== folderId) throw new Error('folder_membership_conflict');
+      }
+      let assigned = 0;
+      let alreadyAssigned = 0;
+      let missing = 0;
+      for (const { msgId, folderId } of assignments) {
+        if (!nativeRows.has(msgId)) missing++;
+        else if (nativeRows.get(msgId) === folderId) alreadyAssigned++;
+        else {
+          nativeRows.set(msgId, folderId);
+          assigned++;
+        }
+      }
+      return { ok: true, assigned, alreadyAssigned, missing };
+    }),
+    fingerprintMsgIdRange: vi.fn(async (start, end) => {
+      const rows = sqliteNativeRange(allRows(), start, end);
+      return { count: rows.length, sha256: framedDigest(rows) };
+    }),
+    countMsgIdRange: vi.fn(async (start, end) => ({
+      count: sqliteNativeRange(allRows(), start, end).length,
+    })),
+    listMsgIdRange: vi.fn(async (start, end, after, limit) => {
+      const rows = sqliteNativeRange(allRows(), start, end, after);
+      const page = rows.slice(0, limit);
+      return { msgIds: page, done: page.length === rows.length };
+    }),
+    filterNewMessages: vi.fn(async rows => ({
+      newMsgIds: rows.map(row => row.msgId).filter(msgId => !nativeRows.has(msgId)),
+    })),
+    removeBatch: vi.fn(async ids => {
+      for (const id of ids) nativeRows.delete(id);
+      return { count: ids.length };
+    }),
+    getMessageByMsgId: vi.fn(async id => (nativeRows.has(id) ? { msgId: id } : null)),
+    stats: vi.fn(async () => ({})),
+  };
+  return { folders, rowsByURI, nativeRows, fts };
+}
+
+/*
+ * Keep this sentinel near the exact-membership fake: no implementation under
+ * test may recover the deprecated unassigned-only or whole-folder fingerprint
+ * RPCs by accident.
+ */
+function expectOnlyBoundedFolderMembershipReads(fts) {
+  expect(fts).not.toHaveProperty('fingerprintFolderMembership');
+  expect(fts).not.toHaveProperty('listUnassignedFolderMembership');
+  expect(fts.listFolderMembership.mock.calls.every(
+    ([, , limit]) => limit > 0 && limit <= 2000,
+  )).toBe(true);
+  expect(fts.listFolderMembershipState.mock.calls.every(
+    ([, limit]) => limit > 0 && limit <= 2000,
+  )).toBe(true);
+}
+
 async function settleSchedulerTickWithFakeTimers(fts) {
   let settled = false;
   let outcome;
@@ -468,6 +643,12 @@ beforeEach(() => {
       weFolder: { accountId: uniqueId.slice(0, first), path: uniqueId.slice(first + 1, second) },
       headerID: uniqueId.slice(second + 1),
     };
+  });
+  resolveUniqueMessageKey.mockImplementation(async (uniqueId) => {
+    const parsed = parseUniqueId(uniqueId);
+    if (!parsed) return null;
+    const weID = await headerIDToWeID(parsed.headerID, parsed.weFolder, false);
+    return weID ? { ...parsed, weID } : null;
   });
   recheckMessageInFolder.mockResolvedValue('absent');
   headerIDToWeID.mockReset();
@@ -1839,6 +2020,664 @@ describe('cooperative folder reconcile production contracts', () => {
     const status = await getIncrementalIndexerStatus();
     expect(status.folderRecon).toMatchObject({ ambiguousGroups: 1, ambiguousFolders: 2 });
     expect(JSON.stringify(status.folderRecon)).not.toMatch(/account1|\/INBOX|live@example/);
+  });
+
+  it.each([
+    ['/F', '/F:suffix'],
+    ['/F:suffix', '/F'],
+  ])('migrates F and F:suffix independently in inventory order %s, %s', async (...folderOrder) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const specsByPath = new Map([
+        ['/F', {
+          folderPath: '/F',
+          folderId: 'opaque-parent',
+          headerMessageIds: ['parent@example.com'],
+        }],
+        ['/F:suffix', {
+          folderPath: '/F:suffix',
+          folderId: 'opaque-child',
+          headerMessageIds: ['child@[IPv6:2001:db8::1]'],
+        }],
+      ]);
+      const { folders, nativeRows, fts } = installExactMembershipFolders(
+        folderOrder.map(path => specsByPath.get(path)),
+      );
+      storageData.fts_reconcile_pending = 123;
+
+      const outcomes = [];
+      for (let turn = 0; turn < 10; turn++) {
+        outcomes.push(await _testExports._runFolderReconSchedulerTick(fts));
+        vi.setSystemTime(Date.now() + 100);
+        if (_testExports._getFolderMembershipCutoverProven()
+            && _testExports._getFolderReconSessionDone().size === folders.length) break;
+      }
+
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect([...nativeRows.values()].sort()).toEqual([
+        makeFolderMembershipId('account1', '/F'),
+        makeFolderMembershipId('account1', '/F:suffix'),
+      ].sort());
+      expect(fts.assignFolderMembershipBatch).toHaveBeenCalled();
+      expect(fts.assignFolderMembershipBatch.mock.calls.every(
+        ([assignments]) => assignments.length <= reconConfig.membershipAssignBatchSize,
+      )).toBe(true);
+      expect(fts.listFolderMembership).toHaveBeenCalledWith(
+        makeFolderMembershipId('account1', '/F'), null, expect.any(Number),
+      );
+      expect(fts.listFolderMembership).toHaveBeenCalledWith(
+        makeFolderMembershipId('account1', '/F:suffix'), null, expect.any(Number),
+      );
+      expectOnlyBoundedFolderMembershipReads(fts);
+      expect(globalThis.browser.tmMsgNotify.probeMessageIds).not.toHaveBeenCalled();
+      expect(outcomes).not.toContainEqual(expect.objectContaining({
+        skipped: true,
+        reason: 'ambiguous_folder_keyspace',
+      }));
+      const childAssignment = fts.assignFolderMembershipBatch.mock.calls
+        .flatMap(([assignments]) => assignments)
+        .find(assignment => assignment.folderId
+          === makeFolderMembershipId('account1', '/F:suffix'));
+      expect(childAssignment.msgId).toBe(
+        'account1:/F:suffix:child@[IPv6:2001:db8::1]',
+      );
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps exact migration incomplete when native reports a folder conflict', async () => {
+    const conflictingMsgId = 'account1:/F:suffix:child@example.com';
+    const { fts } = installExactMembershipFolders([
+      {
+        folderPath: '/F:suffix',
+        folderId: 'opaque-child',
+        headerMessageIds: ['child@example.com'],
+      },
+    ], { conflictingMsgId });
+
+    const result = await _testExports._runFolderReconSchedulerTick(fts);
+
+    expect(result).toMatchObject({
+      complete: false,
+      migration: { failed: true, reason: 'folder_assignment_failed' },
+    });
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+    expectOnlyBoundedFolderMembershipReads(fts);
+    expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+      ?.folderMembershipMigration?.completedFolderIds?.[
+        makeFolderMembershipId('account1', '/F:suffix')
+      ]).not.toBe(true);
+  });
+
+  it('keeps composed, decomposed, and non-BMP folder identities byte-exact', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const specs = [
+        { folderPath: '/Caf\u00e9', folderId: 'opaque-nfc', headerMessageIds: ['nfc@example.com'] },
+        { folderPath: '/Cafe\u0301', folderId: 'opaque-nfd', headerMessageIds: ['nfd@example.com'] },
+        { folderPath: '/\ud83d\udce8', folderId: 'opaque-plane', headerMessageIds: ['sender@[IPv6:2001:db8::1]'] },
+      ];
+      const { nativeRows, fts } = installExactMembershipFolders(specs);
+
+      for (let turn = 0; turn < 40
+        && (!_testExports._getFolderMembershipCutoverProven()
+          || [...nativeRows.values()].some(folderId => folderId === null)); turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      expect(nativeRows.get('account1:/Caf\u00e9:nfc@example.com'))
+        .toBe(makeFolderMembershipId('account1', '/Caf\u00e9'));
+      expect(nativeRows.get('account1:/Cafe\u0301:nfd@example.com'))
+        .toBe(makeFolderMembershipId('account1', '/Cafe\u0301'));
+      expect(nativeRows.get('account1:/\ud83d\udce8:sender@[IPv6:2001:db8::1]'))
+        .toBe(makeFolderMembershipId('account1', '/\ud83d\udce8'));
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reuses durable membership after restart when Thunderbird folder ids change', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const specs = [
+        {
+          folderPath: '/F:%/Caf\u00e9/\ud83d\udce8',
+          weFolderId: 'session-old-nfc',
+          headerMessageIds: ['nfc@example.com'],
+        },
+        {
+          folderPath: '/F:%/Cafe\u0301/\ud83d\udce8',
+          weFolderId: 'session-old-nfd',
+          headerMessageIds: ['nfd@[IPv6:2001:db8::1]'],
+        },
+      ];
+      const { folders, nativeRows, fts } = installExactMembershipFolders(specs);
+
+      for (let turn = 0; turn < 40
+        && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+
+      const nfcMembershipId = makeFolderMembershipId('account1', specs[0].folderPath);
+      const nfdMembershipId = makeFolderMembershipId('account1', specs[1].folderPath);
+      expect(nfcMembershipId).not.toBe(nfdMembershipId);
+      expect(new Set(nativeRows.values())).toEqual(new Set([
+        nfcMembershipId,
+        nfdMembershipId,
+      ]));
+
+      // Simulate a restart whose Thunderbird session minted different
+      // MailFolder.id values, with the durable migration needing to replay
+      // its idempotent per-folder assignment proof.
+      folders[0].weFolderId = 'session-new-nfc';
+      folders[1].weFolderId = 'session-new-nfd';
+      globalThis.browser.accounts.list.mockResolvedValue([{
+        id: 'account1', type: 'none',
+        rootFolder: {
+          path: '/', isRoot: true,
+          subFolders: folders.map(folder => ({
+            id: folder.weFolderId,
+            path: folder.folderPath,
+            subFolders: [],
+          })),
+        },
+      }]);
+      const migration = storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        .folderMembershipMigration;
+      migration.completedFolderIds = {};
+      migration.cutoverProven = false;
+      fts.assignFolderMembershipBatch.mockClear();
+      _testExports._resetFolderReconState();
+      _testExports._setIsEnabled(true);
+      _testExports._setIndexerDisposed(false);
+      _testExports._setFtsSearch(fts);
+      _testExports._setLastSyncEventMs(0);
+
+      for (let turn = 0; turn < 40
+        && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+        const result = await settleSchedulerTickWithFakeTimers(fts);
+        expect(result?.migration?.reason).not.toBe('folder_assignment_failed');
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect(new Set(nativeRows.values())).toEqual(new Set([
+        nfcMembershipId,
+        nfdMembershipId,
+      ]));
+      expect(fts.assignFolderMembershipBatch.mock.calls
+        .flatMap(([assignments]) => assignments)
+        .map(assignment => assignment.folderId))
+        .toEqual(expect.arrayContaining([nfcMembershipId, nfdMembershipId]));
+      expect(fts.assignFolderMembershipBatch.mock.calls
+        .flatMap(([assignments]) => assignments)
+        .some(assignment => assignment.folderId.startsWith('session-'))).toBe(false);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps cutover incomplete when a global state row has no unique live owner', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/F',
+        folderId: 'opaque-parent',
+        headerMessageIds: [],
+      }]);
+      nativeRows.set('account1:/Gone:orphan@example.com', null);
+
+      await _testExports._runFolderReconSchedulerTick(fts); // empty folder scan
+      vi.setSystemTime(Date.now() + 100);
+      await _testExports._runFolderReconSchedulerTick(fts); // durable state-pass reset
+      vi.setSystemTime(Date.now() + 100);
+      const result = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(result).toMatchObject({
+        complete: false,
+        migration: { failed: true, restart: true, reason: 'unresolved_legacy_rows' },
+      });
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expect(nativeRows.get('account1:/Gone:orphan@example.com')).toBeNull();
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed when a current opaque owner is attached to a mismatched raw key', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/F', folderId: 'opaque-parent', headerMessageIds: [],
+      }]);
+      const mismatched = 'account1:/Other:message@example.com';
+      nativeRows.set(mismatched, makeFolderMembershipId('account1', '/F'));
+      await _testExports._runFolderReconSchedulerTick(fts); // empty folder scan
+      vi.setSystemTime(Date.now() + 100);
+      await _testExports._runFolderReconSchedulerTick(fts); // session reset
+      vi.setSystemTime(Date.now() + 100);
+
+      const result = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(result).toMatchObject({
+        complete: false,
+        migration: { failed: true, restart: true, reason: 'unresolved_legacy_rows' },
+      });
+      expect(nativeRows.has(mismatched)).toBe(true);
+      expect(fts.removeBatch).not.toHaveBeenCalled();
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats a live-scan assignment for a vanished native row as an accounted no-op', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const msgId = 'account1:/F:vanished@example.com';
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/F',
+        folderId: 'opaque-parent',
+        headerMessageIds: ['vanished@example.com'],
+      }]);
+      nativeRows.delete(msgId);
+
+      const scanResult = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(scanResult).toMatchObject({
+        complete: false,
+        migration: { folderProgress: true, folderComplete: true },
+      });
+      expect(fts.assignFolderMembershipBatch).toHaveBeenCalledWith([{
+        msgId,
+        folderId: makeFolderMembershipId('account1', '/F'),
+      }], expect.anything());
+      expect(fts.filterNewMessages).not.toHaveBeenCalled();
+      expect(nativeRows.has(msgId)).toBe(false);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+
+      vi.setSystemTime(Date.now() + 100);
+      await _testExports._runFolderReconSchedulerTick(fts); // durable state-pass reset
+      vi.setSystemTime(Date.now() + 100);
+      await _testExports._runFolderReconSchedulerTick(fts);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('enumerates an unbounded legacy relation backlog through bounded native pages', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const headerMessageIds = Array.from(
+        { length: reconConfig.membershipStatePageSize * 2 + 1 },
+        (_, index) => `legacy-${String(index).padStart(4, '0')}@example.com`,
+      );
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/F',
+        folderId: 'opaque-parent',
+        headerMessageIds,
+      }]);
+      storageData[_testExports.FOLDER_RECON_STORAGE_KEY] = {
+        version: 3,
+        roundRobinCursor: null,
+        folders: {},
+        folderMembershipMigration: {
+          version: 1,
+          inventoryCount: 1,
+          inventorySha256: framedDigest([
+            `${makeFolderMembershipId('account1', '/F')}\u0000account1\u0000/F`,
+          ]),
+          completedFolderIds: { [makeFolderMembershipId('account1', '/F')]: true },
+          stateAfterMsgId: null,
+          passMembershipEpoch: null,
+          passMutated: false,
+          passUnresolved: 0,
+          cutoverProven: false,
+        },
+      };
+
+      for (let turn = 0; turn < 20
+        && (!_testExports._getFolderMembershipCutoverProven()
+          || !_testExports._getFolderReconSessionDone().has('account1:/F'));
+        turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect([...nativeRows.values()].every(folderId =>
+        folderId === makeFolderMembershipId('account1', '/F'))).toBe(true);
+      expect(_testExports._getFolderReconSessionDone()).toContain('account1:/F');
+      expect(fts.listFolderMembershipState).toHaveBeenCalledTimes(6);
+      expect(fts.listFolderMembershipState.mock.calls.every(
+        ([, limit]) => limit === reconConfig.membershipStatePageSize,
+      )).toBe(true);
+      expect(fts.assignFolderMembershipBatch.mock.calls.every(
+        ([assignments]) => assignments.length <= reconConfig.membershipAssignBatchSize,
+      )).toBe(true);
+      expect(fts.listFolderMembership.mock.calls.filter(
+        ([folderId]) => folderId === makeFolderMembershipId('account1', '/F'),
+      ).length).toBeGreaterThanOrEqual(3);
+      expectOnlyBoundedFolderMembershipReads(fts);
+      expect(populateBatchBody).not.toHaveBeenCalled();
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      name: 'deleted folder',
+      specs: [{ folderPath: '/Keep', folderId: 'opaque-keep', headerMessageIds: ['keep@example.com'] }],
+      stale: ['account1:/Deleted:stale@example.com', 'opaque-deleted'],
+    },
+    {
+      name: 'renamed folder',
+      specs: [{ folderPath: '/New', folderId: 'opaque-new', headerMessageIds: ['live@example.com'] }],
+      stale: ['account1:/Old:live@example.com', 'opaque-old'],
+    },
+    {
+      name: 'empty inventory',
+      specs: [],
+      stale: ['account1:/Gone:stale@example.com', 'opaque-gone'],
+    },
+  ])('removes assigned stale ownership and converges for $name', async ({ specs, stale }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { nativeRows, fts } = installExactMembershipFolders(specs);
+      for (const [msgId] of nativeRows) {
+        const owner = specs.find(spec => msgId.startsWith(`account1:${spec.folderPath}:`));
+        nativeRows.set(msgId, makeFolderMembershipId('account1', owner.folderPath));
+      }
+      nativeRows.set(stale[0], stale[1]);
+
+      for (let turn = 0; turn < 40
+        && (!_testExports._getFolderMembershipCutoverProven()
+          || nativeRows.has(stale[0])); turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      expect(nativeRows.has(stale[0])).toBe(false);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      for (const spec of specs) {
+        expect(nativeRows.has(`account1:${spec.folderPath}:${spec.headerMessageIds[0]}`)).toBe(true);
+      }
+      expect(fts.removeBatch).toHaveBeenCalledWith([stale[0]], expect.anything());
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('removes a post-cutover orphan by authoritative unknown folderId without reparsing', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/Keep', folderId: 'opaque-keep', headerMessageIds: ['keep@example.com'],
+      }]);
+      nativeRows.set(
+        'account1:/Keep:keep@example.com',
+        makeFolderMembershipId('account1', '/Keep'),
+      );
+      for (let turn = 0; turn < 30
+        && (!_testExports._getFolderMembershipCutoverProven()
+          || !_testExports._getFolderReconSessionDone().has('account1:/Keep'));
+        turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+      const orphan = 'account1:/Former:sender@[IPv6:2001:db8::1]';
+      nativeRows.set(orphan, 'opaque-former');
+
+      for (let turn = 0; turn < 20 && nativeRows.has(orphan); turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      expect(nativeRows.has(orphan)).toBe(false);
+      expect(nativeRows.has('account1:/Keep:keep@example.com')).toBe(true);
+      expect(globalThis.browser.messages.query).not.toHaveBeenCalledWith(
+        expect.objectContaining({ headerMessageId: 'sender@[IPv6:2001:db8::1]' }),
+      );
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('limits exact native enumeration to one page per scheduler slice across many pages', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const headerMessageIds = Array.from(
+        { length: reconConfig.membershipListPageSize * 3 + 1 },
+        (_, index) => `page-${String(index).padStart(4, '0')}@example.com`,
+      );
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/Paged', folderId: 'opaque-paged', headerMessageIds,
+      }]);
+      for (const msgId of nativeRows.keys()) {
+        nativeRows.set(msgId, makeFolderMembershipId('account1', '/Paged'));
+      }
+      const callsPerTurn = [];
+      let ordinaryTurns = 0;
+
+      for (let turn = 0; turn < 40
+        && (!_testExports._getFolderMembershipCutoverProven()
+          || !_testExports._getFolderReconSessionDone().has('account1:/Paged'));
+        turn++) {
+        const before = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        await settleSchedulerTickWithFakeTimers(fts);
+        const after = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        callsPerTurn.push(after - before);
+        await Promise.resolve().then(() => { ordinaryTurns++; });
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      expect(_testExports._getFolderReconSessionDone()).toContain('account1:/Paged');
+      expect(fts.listFolderMembership.mock.calls.length).toBeGreaterThan(3);
+      expect(callsPerTurn.every(count => count <= 1)).toBe(true);
+      expect(ordinaryTurns).toBe(callsPerTurn.length);
+      expectOnlyBoundedFolderMembershipReads(fts);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a metadata-only scan at a pressure boundary without minting cutover', async () => {
+    const { fts } = installExactMembershipFolders([
+      {
+        folderPath: '/F',
+        folderId: 'opaque-parent',
+        headerMessageIds: ['parent@example.com'],
+      },
+    ]);
+    const pageStarted = deferred();
+    const allowPage = deferred();
+    globalThis.browser.tmMsgNotify.readFolderMessageScanPage.mockImplementationOnce(async () => {
+      pageStarted.resolve();
+      await allowPage.promise;
+      return { rows: [{ msgKey: 1, headerMessageId: 'parent@example.com' }], done: true };
+    });
+
+    const running = _testExports._runFolderReconSchedulerTick(fts);
+    await pageStarted.promise;
+    getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false });
+    allowPage.resolve();
+    const result = await running;
+
+    expect(result).toMatchObject({ skipped: true, reason: 'pressure' });
+    expect(globalThis.browser.tmMsgNotify.cancelFolderMessageScan)
+      .toHaveBeenCalledWith('membership-1');
+    expect(fts.assignFolderMembershipBatch).not.toHaveBeenCalled();
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+  });
+
+  it('restarts the global membership-state proof when its epoch changes mid-page', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { fts } = installExactMembershipFolders([{
+        folderPath: '/F',
+        folderId: 'opaque-parent',
+        headerMessageIds: [],
+      }]);
+      await _testExports._runFolderReconSchedulerTick(fts); // durable empty folder scan
+      vi.setSystemTime(Date.now() + 100);
+      await _testExports._runFolderReconSchedulerTick(fts); // durable state-pass reset
+      vi.setSystemTime(Date.now() + 100);
+      fts.listFolderMembershipState.mockImplementationOnce(async () => {
+        await runFtsMembershipMutation(async () => ({ ok: true }));
+        return { ok: true, entries: [], done: true };
+      });
+
+      const result = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(result).toMatchObject({
+        complete: false,
+        migration: { restart: true, reason: 'membership_epoch_changed' },
+      });
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expectOnlyBoundedFolderMembershipReads(fts);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('restarts global proof from page one after capability downgrade and re-upgrade', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { fts } = installExactMembershipFolders([{
+        folderPath: '/F', folderId: 'opaque-parent', headerMessageIds: [],
+      }]);
+      let capable = true;
+      fts.supportsFolderMembership.mockImplementation(() => capable);
+      await _testExports._runFolderReconSchedulerTick(fts); // folder scan
+      vi.setSystemTime(Date.now() + 100);
+      await _testExports._runFolderReconSchedulerTick(fts); // session state reset
+      capable = false;
+      vi.setSystemTime(Date.now() + 100);
+      await _testExports._runFolderReconSchedulerTick(fts);
+      capable = true;
+      vi.setSystemTime(Date.now() + 100);
+
+      const restarted = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(restarted).toMatchObject({
+        complete: false,
+        migration: { restart: true, reason: 'session_membership_state_reset' },
+      });
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expect(fts.listFolderMembershipState).not.toHaveBeenCalled();
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('sets volatile cutover only after the terminal durable marker succeeds', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { fts } = installExactMembershipFolders([{
+        folderPath: '/F', folderId: 'opaque-parent', headerMessageIds: [],
+      }]);
+      await _testExports._runFolderReconSchedulerTick(fts); // folder scan
+      vi.setSystemTime(Date.now() + 100);
+      await _testExports._runFolderReconSchedulerTick(fts); // session state reset
+      vi.setSystemTime(Date.now() + 100);
+      globalThis.browser.storage.local.set.mockRejectedValueOnce(new Error('disk full'));
+
+      await expect(_testExports._runFolderReconSchedulerTick(fts))
+        .rejects.toThrow('disk full');
+
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        ?.folderMembershipMigration?.cutoverProven).not.toBe(true);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('restarts a live metadata scan after a cross-slice folder mutation', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { fts } = installExactMembershipFolders([{
+        folderPath: '/F',
+        folderId: 'opaque-parent',
+        headerMessageIds: ['parent@example.com'],
+      }]);
+      globalThis.browser.tmMsgNotify.readFolderMessageScanPage
+        .mockResolvedValueOnce({
+          rows: [{ msgKey: 1, headerMessageId: 'parent@example.com' }],
+          done: false,
+        })
+        .mockResolvedValueOnce({
+          rows: [{ msgKey: 1, headerMessageId: 'parent@example.com' }],
+          done: true,
+        });
+
+      await _testExports._runFolderReconSchedulerTick(fts);
+      _testExports._invalidateFolderReconProofForEvent('account1', '/F');
+      vi.setSystemTime(Date.now() + 100);
+      const restarted = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(globalThis.browser.tmMsgNotify.cancelFolderMessageScan)
+        .toHaveBeenCalledWith('membership-1');
+      expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).toHaveBeenCalledTimes(2);
+      expect(restarted).toMatchObject({
+        complete: false,
+        migration: { folderProgress: true, folderComplete: true },
+      });
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it('uses exact path-boundary lookups instead of a quadratic ambiguity census', () => {

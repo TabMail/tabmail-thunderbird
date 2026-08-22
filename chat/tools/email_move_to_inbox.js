@@ -14,22 +14,16 @@ async function normalizeArgs(args = {}) {
   // Required list of unique_ids to move to inbox
   if (Array.isArray(a.unique_ids) && a.unique_ids.length > 0) {
     try {
-      const { parseUniqueId, headerIDToWeID } = await import("../../agent/modules/utils.js");
+      const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
       const resolvedIds = [];
       
       for (const uniqueId of a.unique_ids) {
         if (uniqueId && typeof uniqueId === 'string') {
           log(`[TMDBG Tools] email_move_to_inbox: Processing unique_id: '${uniqueId}'`);
-          const parsed = parseUniqueId(uniqueId);
-          const { weFolder, headerID } = parsed;
-          log(`[TMDBG Tools] email_move_to_inbox: Parsed to weFolder='${weFolder}' headerID='${headerID}'`);
-          
-          // Resolve headerID to internal weID
-          const internalIds = await headerIDToWeID(headerID, weFolder);
-          log(`[TMDBG Tools] email_move_to_inbox: headerIDToWeID returned: ${JSON.stringify(internalIds)}`);
-          if (internalIds) {
-            resolvedIds.push(internalIds);
-            log(`[TMDBG Tools] email_move_to_inbox: Resolved unique_id '${uniqueId}' to ${internalIds} internal ID`);
+          const resolved = await resolveUniqueMessageKey(uniqueId);
+          if (resolved) {
+            resolvedIds.push(resolved.weID);
+            log(`[TMDBG Tools] email_move_to_inbox: Resolved unique_id '${uniqueId}' to ${resolved.weID} internal ID`);
           } else {
             log(`[TMDBG Tools] email_move_to_inbox: Failed to resolve unique_id '${uniqueId}'`, "warn");
           }
@@ -142,4 +136,3 @@ export async function run(args = {}, options = {}) {
 }
 
 export function resetPaginationSessions() {}
-

@@ -19,7 +19,7 @@ async function normalizeArgs(args = {}) {
   // Optional list of unique_ids to override tag-based listing
   if (Array.isArray(a.unique_ids)) {
     try {
-      const { parseUniqueId, headerIDToWeID } = await import(
+      const { resolveUniqueMessageKey } = await import(
         "../../agent/modules/utils.js"
       );
       const resolvedIds = [];
@@ -29,23 +29,11 @@ async function normalizeArgs(args = {}) {
           log(
             `[TMDBG Tools] email_delete: Processing unique_id: '${uniqueId}'`
           );
-          const parsed = parseUniqueId(uniqueId);
-          const { weFolder, headerID } = parsed;
-          log(
-            `[TMDBG Tools] email_delete: Parsed to weFolder='${weFolder}' headerID='${headerID}'`
-          );
-
-          // Resolve headerID to internal weID
-          const internalId = await headerIDToWeID(headerID, weFolder);
-          log(
-            `[TMDBG Tools] email_delete: headerIDToWeID returned: ${JSON.stringify(
-              internalId
-            )}`
-          );
-          if (internalId) {
-            resolvedIds.push(internalId);
+          const resolved = await resolveUniqueMessageKey(uniqueId);
+          if (resolved) {
+            resolvedIds.push(resolved.weID);
             log(
-              `[TMDBG Tools] email_delete: Resolved unique_id '${uniqueId}' to ${internalId} internal ID`
+              `[TMDBG Tools] email_delete: Resolved unique_id '${uniqueId}' to ${resolved.weID} internal ID`
             );
           } else {
             log(

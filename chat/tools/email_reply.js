@@ -106,17 +106,14 @@ async function _runEmailReply(args = {}, options = {}) {
     return;
   }
 
-  // Parse unique_id to extract weFolder and headerID
-  const { parseUniqueId } = await import("../../agent/modules/utils.js");
-  const parsed = parseUniqueId(uniqueId);
-  const { weFolder, headerID } = parsed;
-
-  if (!headerID) {
+  const { resolveUniqueMessageKey } = await import("../../agent/modules/utils.js");
+  const resolved = await resolveUniqueMessageKey(uniqueId);
+  if (!resolved) {
     log(
-      `[TMDBG Tools] email_reply: empty headerID in unique_id: ${uniqueId}`,
+      `[TMDBG Tools] email_reply: unique_id did not have one live structured match: ${uniqueId}`,
       "error"
     );
-    const errorMsg = "Empty headerID in unique_id";
+    const errorMsg = "Could not resolve unique_id";
 
     try {
       const pid = ctx.activePid || ctx.activeToolCallId || 0;
@@ -131,28 +128,7 @@ async function _runEmailReply(args = {}, options = {}) {
     return;
   }
 
-  // Resolve headerID to internal weID
-  const { headerIDToWeID } = await import("../../agent/modules/utils.js");
-  const internalId = await headerIDToWeID(headerID, weFolder);
-  if (!internalId) {
-    log(
-      `[TMDBG Tools] email_reply: Failed to resolve headerID '${headerID}' to internal ID`,
-      "error"
-    );
-    const errorMsg = `Could not find email with unique ID: ${uniqueId}`;
-
-    try {
-      const pid = ctx.activePid || ctx.activeToolCallId || 0;
-      if (pid) {
-        ctx.fsmSessions[pid] = ctx.fsmSessions[pid] || {};
-        ctx.fsmSessions[pid].failReason = errorMsg;
-      }
-    } catch (_) {}
-    ctx.state = "exec_fail";
-    const core = await import("../fsm/core.js");
-    await core.executeAgentAction();
-    return;
-  }
+  const internalId = resolved.weID;
 
   log(
     `[TMDBG Tools] email_reply: Resolved uniqueId '${uniqueId}' to internal ID ${internalId}`

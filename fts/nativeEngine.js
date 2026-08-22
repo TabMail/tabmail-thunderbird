@@ -44,6 +44,10 @@ let nativePort = null;
 let messageId = 0;
 let pendingRPCs = new Map();
 let hostInfo = null; // Stores host version and capabilities
+let nativeConnectionGeneration = 0;
+let nativeReadyState = null;
+let nativeInitializationPromise = null;
+let nativeInitializationState = null;
 let isUpdatingHost = false; // Flag to track if we are in the middle of an update
 // Reliable "is the native helper installed?" signal for UI surfaces (badge /
 // popup / settings). null = not yet determined, true = handshake succeeded,
@@ -51,6 +55,111 @@ let isUpdatingHost = false; // Flag to track if we are in the middle of an updat
 // itself does NOT throw synchronously when the host manifest is missing, so we
 // can only know availability from the init handshake outcome, tracked here.
 let ftsHostStatus = { status: "unknown" };
+
+function _createNativeReadyState(port) {
+  let resolveHello;
+  let rejectHello;
+  let resolveOperational;
+  let rejectOperational;
+  const helloPromise = new Promise((resolve, reject) => {
+    resolveHello = resolve;
+    rejectHello = reject;
+  });
+  const operationalPromise = new Promise((resolve, reject) => {
+    resolveOperational = resolve;
+    rejectOperational = reject;
+  });
+  // A disconnect or failed bootstrap may reject either phase before an
+  // external waiter attaches. Keep both state promises safely awaitable.
+  helloPromise.catch(() => {});
+  operationalPromise.catch(() => {});
+  return {
+    generation: ++nativeConnectionGeneration,
+    port,
+    hostInfo: null,
+    helloPromise,
+    resolveHello,
+    rejectHello,
+    helloSettled: false,
+    helloSucceeded: false,
+    operationalPromise,
+    resolveOperational,
+    rejectOperational,
+    operationalSettled: false,
+    operationalSucceeded: false,
+  };
+}
+
+function _isNativeStateCurrent(state) {
+  return !!state && state === nativeReadyState && state.port === nativePort;
+}
+
+function _assertNativeStateCurrent(state, phase) {
+  if (!_isNativeStateCurrent(state)) {
+    const error = new Error(`Native FTS ${phase} generation changed`);
+    error.code = "NATIVE_FTS_STALE_GENERATION";
+    throw error;
+  }
+}
+
+function _resolveNativeHello(state, info) {
+  if (!_isNativeStateCurrent(state) || state.helloSettled) {
+    return false;
+  }
+  state.hostInfo = info;
+  state.helloSettled = true;
+  state.helloSucceeded = true;
+  hostInfo = info;
+  state.resolveHello(info);
+  return true;
+}
+
+function _rejectNativeOperational(state, error) {
+  if (!state || state.operationalSettled) return;
+  state.operationalSettled = true;
+  state.rejectOperational(error);
+}
+
+function _rejectNativeReady(state, error) {
+  if (!state) return;
+  if (!state.helloSettled) {
+    state.helloSettled = true;
+    state.rejectHello(error);
+  }
+  _rejectNativeOperational(state, error);
+}
+
+function _resolveNativeOperational(state, initResult) {
+  if (!_isNativeStateCurrent(state)
+      || !state.helloSucceeded || state.operationalSettled) {
+    return false;
+  }
+  state.operationalSettled = true;
+  state.operationalSucceeded = true;
+  state.resolveOperational(initResult);
+  return true;
+}
+
+async function _awaitNativeHello(state = nativeReadyState) {
+  if (!state) {
+    throw new Error("Native FTS hello readiness unavailable");
+  }
+  const info = await state.helloPromise;
+  _assertNativeStateCurrent(state, "hello");
+  return { state, info };
+}
+
+async function _awaitCurrentNativeOperational() {
+  const state = nativeReadyState;
+  if (!_isNativeStateCurrent(state)) {
+    throw new Error("Native FTS operational readiness unavailable");
+  }
+  await state.operationalPromise;
+  if (!_isNativeStateCurrent(state) || !state.operationalSucceeded) {
+    throw new Error("Native FTS operational generation changed");
+  }
+  return { state, info: state.hostInfo };
+}
 
 function setFtsHostStatus(status, details = {}) {
   const nextStatus = { status, ...details };
@@ -65,6 +174,10 @@ function getFtsHostAvailability() {
   if (ftsHostStatus.status === "available") return true;
   if (ftsHostStatus.status === "unknown") return null;
   return false;
+}
+
+function supportsFolderMembership() {
+  return hostInfo?.capabilities?.folderMembershipV1 === true;
 }
 // Circuit breaker: when the helper is confirmed unavailable, don't re-attempt
 // connectNative on every RPC (it spams "disconnected"/"update check failed").
@@ -139,8 +252,9 @@ async function showNativeUpdateBanner(version) {
  *
  * Returns { updateAvailable, canUpdate, updated, latestVersion, oldVersion, newVersion, error }
  */
-async function fetchAndApplyUpdate(currentVersion, canSelfUpdate) {
+async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState = null) {
   const platformKey = await getNativeFtsPlatformKey();
+  if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update platform");
   const updateManifestUrl = `${UPDATE_BASE_URL}/${platformKey}/update-manifest.json`;
   log(`[TMDBG FTS] Fetching native-fts update manifest for ${platformKey} from ${updateManifestUrl}`);
 
@@ -148,22 +262,44 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate) {
     cache: 'no-cache',
     signal: AbortSignal.timeout(UPDATE_MANIFEST_FETCH_TIMEOUT_MS),
   });
+  if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update manifest");
   if (!response.ok) {
     throw new Error(`Failed to fetch update manifest: ${response.status}`);
   }
 
   const updateManifest = await response.json();
+  if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update metadata");
   const latestRelease = updateManifest.latest;
   log(`[TMDBG FTS] Latest host version available for ${platformKey}: ${latestRelease.version}`);
 
-  if (!versionLessThan(currentVersion, latestRelease.version)) {
+  const manifestNeedsUpdate = versionLessThan(currentVersion, latestRelease.version);
+  if (!manifestNeedsUpdate) {
     log(`[TMDBG FTS] Host version ${currentVersion} is up to date`);
-    return { updateAvailable: false, latestVersion: latestRelease.version };
+  } else {
+    log(`[TMDBG FTS] 🔄 Update available: ${currentVersion} → ${latestRelease.version}`);
   }
 
-  log(`[TMDBG FTS] 🔄 Update available: ${currentVersion} → ${latestRelease.version}`);
-
   if (!canSelfUpdate) {
+    return manifestNeedsUpdate
+      ? { updateAvailable: true, canUpdate: false, latestVersion: latestRelease.version }
+      : { updateAvailable: false, latestVersion: latestRelease.version };
+  }
+
+  const updateRpcOptions = bootstrapState
+    ? { bootstrapPhase: "preinit", expectedState: bootstrapState }
+    : undefined;
+  const updateCheck = await nativeRPC('updateCheck', {
+    targetVersion: latestRelease.version,
+  }, updateRpcOptions);
+  if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update eligibility");
+  if (typeof updateCheck?.needsUpdate !== "boolean"
+      || typeof updateCheck?.canUpdate !== "boolean") {
+    throw new Error("Native FTS update check returned an invalid response");
+  }
+  if (!updateCheck.needsUpdate) {
+    return { updateAvailable: false, latestVersion: latestRelease.version };
+  }
+  if (!updateCheck.canUpdate) {
     return { updateAvailable: true, canUpdate: false, latestVersion: latestRelease.version };
   }
 
@@ -175,16 +311,21 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate) {
     sha256: latestRelease.sha256,
     platform: platformKey,
     signature: latestRelease.signature,
-  });
+  }, updateRpcOptions);
 
-  if (updateResult.success) {
+  if (updateResult?.success === true) {
+    // Native 175f6fe writes this success response and then intentionally exits.
+    // The response is the commit point: from here onward the captured port may
+    // disappear before, during, or after UI work and must not be revalidated.
     log(`[TMDBG FTS] ✅ Host update successful! Prompting for Thunderbird restart.`);
     await showNativeUpdateBanner(latestRelease.version);
     return { updateAvailable: true, canUpdate: true, updated: true, oldVersion: currentVersion, newVersion: latestRelease.version };
   } else {
+    if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update failure");
     isUpdatingHost = false;
-    log(`[TMDBG FTS] ❌ Host update failed: ${updateResult.error}`, "error");
-    return { updateAvailable: true, canUpdate: true, updated: false, error: updateResult.error || "Update failed" };
+    const updateFailure = updateResult?.message || updateResult?.error || "Update failed";
+    log(`[TMDBG FTS] ❌ Host update failed: ${updateFailure}`, "error");
+    return { updateAvailable: true, canUpdate: true, updated: false, error: updateFailure };
   }
 }
 
@@ -244,7 +385,7 @@ async function markSchemaVersionAsIndexed(schemaVersion) {
  * Init-time: hello handshake, migration popup, and auto-update check.
  * Returns true if an update was applied (caller should wait for reconnect).
  */
-async function initCheckAndUpdateHost() {
+async function initCheckAndUpdateHost(bootstrapState) {
   try {
     // Say hello to get host version
     const manifest = browser.runtime.getManifest();
@@ -252,20 +393,24 @@ async function initCheckAndUpdateHost() {
 
     log(`[TMDBG FTS] Addon version: ${addonVersion}, Min host version: ${MIN_HOST_VERSION}`);
 
-    hostInfo = await nativeRPC('hello', { addonVersion });
-    log(`[TMDBG FTS] Native host version: ${hostInfo.hostVersion}, installed at: ${hostInfo.installPath}`);
-    log(`[TMDBG FTS] Native host impl: ${hostInfo.hostImpl || "unknown"}`);
-    log(`[TMDBG FTS] Can self-update: ${hostInfo.canSelfUpdate}, User install: ${hostInfo.isUserInstall}`);
+    const connectionHostInfo = await nativeRPC(
+      'hello',
+      { addonVersion },
+      { bootstrapPhase: "hello", expectedState: bootstrapState },
+    );
+    log(`[TMDBG FTS] Native host version: ${connectionHostInfo.hostVersion}, installed at: ${connectionHostInfo.installPath}`);
+    log(`[TMDBG FTS] Native host impl: ${connectionHostInfo.hostImpl || "unknown"}`);
+    log(`[TMDBG FTS] Can self-update: ${connectionHostInfo.canSelfUpdate}, User install: ${connectionHostInfo.isUserInstall}`);
 
-    const compatibility = getNativeFtsCompatibility(hostInfo.hostVersion);
+    const compatibility = getNativeFtsCompatibility(connectionHostInfo.hostVersion);
     if (!compatibility.supported) {
       setFtsHostStatus("unsupported", {
-        hostVersion: hostInfo.hostVersion,
+        hostVersion: connectionHostInfo.hostVersion,
         minimumSupportedVersion: compatibility.minimumSupportedVersion,
         retirementAt: compatibility.retirementAt,
       });
       log(
-        `[TMDBG FTS] Host v${hostInfo.hostVersion} is outside the signing-key overlap window; ` +
+        `[TMDBG FTS] Host v${connectionHostInfo.hostVersion} is outside the signing-key overlap window; ` +
         `v${compatibility.minimumSupportedVersion}+ must be reinstalled`,
         "warn"
       );
@@ -273,7 +418,7 @@ async function initCheckAndUpdateHost() {
       nativePort = null;
       try { portToClose?.disconnect(); } catch (_) {}
       const error = new Error(
-        `Native FTS helper v${hostInfo.hostVersion} is no longer supported; ` +
+        `Native FTS helper v${connectionHostInfo.hostVersion} is no longer supported; ` +
         `reinstall v${compatibility.minimumSupportedVersion} or newer`
       );
       error.code = "NATIVE_FTS_UNSUPPORTED";
@@ -281,7 +426,7 @@ async function initCheckAndUpdateHost() {
     }
 
     // Inform user about auto-migration with popup window
-    if (hostInfo.userLocalReady && hostInfo.isSystemInstall) {
+    if (connectionHostInfo.userLocalReady && connectionHostInfo.isSystemInstall) {
       log(`[TMDBG FTS] ✅ Auto-migrated to user-local install! Restart Thunderbird to enable auto-updates.`, "info");
 
       try {
@@ -304,16 +449,20 @@ async function initCheckAndUpdateHost() {
 
     // Check if update is needed
     let needsMandatoryUpdate = false;
-    if (versionLessThan(hostInfo.hostVersion, MIN_HOST_VERSION)) {
-      log(`[TMDBG FTS] ⚠️ Host needs update: ${hostInfo.hostVersion} < ${MIN_HOST_VERSION}`, "warn");
+    if (versionLessThan(connectionHostInfo.hostVersion, MIN_HOST_VERSION)) {
+      log(`[TMDBG FTS] ⚠️ Host needs update: ${connectionHostInfo.hostVersion} < ${MIN_HOST_VERSION}`, "warn");
       needsMandatoryUpdate = true;
     } else {
-      log(`[TMDBG FTS] ✅ Host version ${hostInfo.hostVersion} meets minimum requirement ${MIN_HOST_VERSION}`);
+      log(`[TMDBG FTS] ✅ Host version ${connectionHostInfo.hostVersion} meets minimum requirement ${MIN_HOST_VERSION}`);
     }
 
     // Always check for updates if self-update is possible
-    if (hostInfo.canSelfUpdate) {
-      const result = await fetchAndApplyUpdate(hostInfo.hostVersion, true);
+    if (connectionHostInfo.canSelfUpdate) {
+      const result = await fetchAndApplyUpdate(
+        connectionHostInfo.hostVersion,
+        true,
+        bootstrapState,
+      );
       if (result.updated) return true;
     } else if (needsMandatoryUpdate) {
        log(`[TMDBG FTS] ⚠️ Host cannot self-update (needs admin permissions). Please reinstall TabMail.`, "warn");
@@ -321,7 +470,11 @@ async function initCheckAndUpdateHost() {
 
     return false; // No update performed
   } catch (error) {
-    isUpdatingHost = false; // Reset on error
+    // A replaced bootstrap must not clear a newer generation's update state.
+    if (!bootstrapState || _isNativeStateCurrent(bootstrapState)) {
+      isUpdatingHost = false;
+    }
+    if (error?.code === "NATIVE_FTS_STALE_GENERATION") throw error;
     if (error?.code === "NATIVE_FTS_UNSUPPORTED") throw error;
     // Expected when the helper isn't installed; rate-limited by the reconnect
     // cooldown so it won't spam. warn (not error) to avoid drowning real errors.
@@ -334,15 +487,39 @@ async function initCheckAndUpdateHost() {
 /**
  * Connect to native FTS helper
  */
-export async function initNativeFts() {
+export function initNativeFts() {
+  if (nativeInitializationPromise) return nativeInitializationPromise;
+  const initialization = _initNativeFtsOnce();
+  nativeInitializationPromise = initialization;
+  // Publish the exact promise before observing rejection. Even when
+  // connectNative throws before the async initializer reaches its first
+  // await, this handler runs in a later microtask and clears only this cached
+  // generation. A newer reconnect promise is never cleared by a stale tail.
+  initialization.catch(() => {
+    if (nativeInitializationPromise === initialization) {
+      nativeInitializationPromise = null;
+      nativeInitializationState = null;
+    }
+  });
+  return initialization;
+}
+
+async function _initNativeFtsOnce() {
   log("[TMDBG FTS] Connecting to native FTS helper");
   lastConnectAttemptMs = Date.now();
+  let connectedPort = null;
+  let connectedReadyState = null;
 
   try {
     nativePort = browser.runtime.connectNative("tabmail_fts");
+    connectedPort = nativePort;
+    connectedReadyState = _createNativeReadyState(connectedPort);
+    nativeReadyState = connectedReadyState;
+    nativeInitializationState = connectedReadyState;
+    hostInfo = null;
     
     // Handle responses
-    nativePort.onMessage.addListener((msg) => {
+    connectedPort.onMessage.addListener((msg) => {
       const { id, result, error } = msg;
       
       const pending = pendingRPCs.get(id);
@@ -357,9 +534,17 @@ export async function initNativeFts() {
     });
     
     // Handle disconnect
-    nativePort.onDisconnect.addListener(() => {
+    connectedPort.onDisconnect.addListener(() => {
       log("[TMDBG FTS] Native helper disconnected");
+      if (nativePort !== connectedPort) return;
+      _rejectNativeReady(connectedReadyState, new Error("Native helper disconnected before hello"));
       nativePort = null;
+      hostInfo = null;
+      nativeReadyState = null;
+      if (nativeInitializationState === connectedReadyState) {
+        nativeInitializationPromise = null;
+        nativeInitializationState = null;
+      }
       // A disconnect during an intentional self-update is expected (we reconnect
       // below); otherwise the helper is gone/unavailable.
       if (!isUpdatingHost && ftsHostStatus.status !== "unsupported") {
@@ -391,20 +576,28 @@ export async function initNativeFts() {
     
     // Check for updates FIRST (before init)
     // If update is triggered, the process will exit and we'll reconnect via onDisconnect
-    const updated = await initCheckAndUpdateHost();
+    const updated = await initCheckAndUpdateHost(connectedReadyState);
     if (updated) {
       log("[TMDBG FTS] Host update initiated. Waiting for restart...");
-      setFtsHostStatus("available", { hostVersion: hostInfo?.hostVersion });
-      return true; // Treat as success, reconnection will happen automatically
+      // updateRequest success is committed even if the old process has already
+      // exited. Its onDisconnect owns the reconnect; only the new generation's
+      // successful init may publish operational/available state.
+      return true;
     }
     
     // Initialize the native helper
     // The helper auto-detects TB profile and handles migration from old location
     const manifest = browser.runtime.getManifest();
     const addonId = manifest.browser_specific_settings?.gecko?.id || "thunderbird@tabmail.ai";
-    const initResult = await nativeRPC('init', { addonId });
+    const initResult = await nativeRPC(
+      'init',
+      { addonId },
+      { bootstrapPhase: "init", expectedState: connectedReadyState },
+    );
     log(`[TMDBG FTS] DB initialized at: ${initResult.dbPath}`);
-    setFtsHostStatus("available", { hostVersion: hostInfo?.hostVersion });
+    setFtsHostStatus("available", {
+      hostVersion: connectedReadyState.hostInfo?.hostVersion,
+    });
 
     log("[TMDBG FTS] Native FTS helper connected successfully");
 
@@ -414,7 +607,22 @@ export async function initNativeFts() {
 
     return true;
   } catch (error) {
-    if (error?.code !== "NATIVE_FTS_UNSUPPORTED") {
+    const ownsPublicState = connectedReadyState
+      ? _isNativeStateCurrent(connectedReadyState)
+      : nativeReadyState === null && nativePort === null;
+    _rejectNativeReady(connectedReadyState, error);
+    if (connectedReadyState && nativeReadyState === connectedReadyState) {
+      if (nativePort === connectedPort) nativePort = null;
+      hostInfo = null;
+      nativeReadyState = null;
+    }
+    // A failed owned bootstrap must not leave a live native process/port
+    // detached from the adapter. Clear ownership first so the synchronous
+    // onDisconnect tail cannot repeat cleanup; stale A can never close B.
+    if (ownsPublicState && connectedPort) {
+      try { connectedPort.disconnect(); } catch (_) {}
+    }
+    if (ownsPublicState && error?.code !== "NATIVE_FTS_UNSUPPORTED") {
       setFtsHostStatus("missing");
     }
     log(`[TMDBG FTS] Failed to connect to native helper: ${error.message}`);
@@ -426,7 +634,14 @@ export async function initNativeFts() {
  * Reconnect to native helper if disconnected
  */
 async function ensureConnected() {
-  if (nativePort) return true;
+  if (nativePort) {
+    try {
+      await _awaitCurrentNativeOperational();
+      return true;
+    } catch (_) {
+      if (nativePort) return false;
+    }
+  }
 
   // Circuit breaker: if the helper is unavailable, only re-attempt once per
   // cooldown instead of on every RPC (otherwise initNativeFts spams
@@ -438,6 +653,7 @@ async function ensureConnected() {
   log("[TMDBG FTS] Attempting to reconnect to native helper...");
   try {
     await initNativeFts();
+    await _awaitCurrentNativeOperational();
     return true;
   } catch (e) {
     log(`[TMDBG FTS] Reconnection failed: ${e.message || e}`, "warn");
@@ -448,39 +664,87 @@ async function ensureConnected() {
 /**
  * Send RPC to native helper (auto-reconnects if needed)
  */
-async function nativeRPC(method, params) {
-  // Auto-reconnect if not connected
-  if (!nativePort) {
+async function nativeRPC(
+  method,
+  paramsOrFactory,
+  { bootstrapPhase = null, expectedState = null } = {},
+) {
+  let ready = null;
+  // Bootstrap has two ordered readiness phases on the same port generation:
+  // hello publishes capabilities, then init earns operational readiness.
+  // General external RPCs cannot bypass the latter.
+  if (bootstrapPhase === "hello") {
+    if (method !== "hello" || !expectedState) {
+      throw new Error("Native FTS hello bootstrap state invalid");
+    }
+    _assertNativeStateCurrent(expectedState, "hello bootstrap");
+    ready = { state: expectedState, info: null };
+  } else if (bootstrapPhase === "preinit" || bootstrapPhase === "init") {
+    if (!expectedState) throw new Error("Native FTS bootstrap generation missing");
+    ready = await _awaitNativeHello(expectedState);
+  } else {
     const reconnected = await ensureConnected();
     if (!reconnected || !nativePort) {
       throw new Error("Native FTS helper not connected");
     }
+    ready = await _awaitCurrentNativeOperational();
   }
+  const rpcReadyState = ready?.state;
+  _assertNativeStateCurrent(rpcReadyState, `${method} dispatch`);
+  const rpcPort = rpcReadyState.port;
+  // Capability-dependent request shaping must happen after the hello for the
+  // port that will receive this RPC. In particular, a reconnect may replace a
+  // capable helper with a legacy one (or vice versa) between API invocation
+  // and this point.
+  const params = typeof paramsOrFactory === "function"
+    ? paramsOrFactory(ready?.info || null)
+    : paramsOrFactory;
   
   const id = `rpc-${++messageId}`;
   const RPC_TIMEOUT_MS = SETTINGS?.memoryManagement?.nativeRpcTimeoutMs || 60_000;
 
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      if (pendingRPCs.has(id)) {
+  let result;
+  try {
+    result = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (pendingRPCs.has(id)) {
+          pendingRPCs.delete(id);
+          reject(new Error(`Native RPC '${method}' timed out after ${RPC_TIMEOUT_MS}ms`));
+        }
+      }, RPC_TIMEOUT_MS);
+
+      pendingRPCs.set(id, {
+        resolve: (val) => { clearTimeout(timer); resolve(val); },
+        reject: (err) => { clearTimeout(timer); reject(err); },
+      });
+
+      try {
+        rpcPort.postMessage({ id, method, params });
+      } catch (error) {
+        clearTimeout(timer);
         pendingRPCs.delete(id);
-        reject(new Error(`Native RPC '${method}' timed out after ${RPC_TIMEOUT_MS}ms`));
+        reject(error);
       }
-    }, RPC_TIMEOUT_MS);
-
-    pendingRPCs.set(id, {
-      resolve: (val) => { clearTimeout(timer); resolve(val); },
-      reject: (err) => { clearTimeout(timer); reject(err); },
     });
-
-    try {
-      nativePort.postMessage({ id, method, params });
-    } catch (error) {
-      clearTimeout(timer);
-      pendingRPCs.delete(id);
-      reject(error);
+  } catch (error) {
+    if (bootstrapPhase === "hello") _rejectNativeReady(rpcReadyState, error);
+    if (bootstrapPhase === "init") _rejectNativeOperational(rpcReadyState, error);
+    throw error;
+  }
+  if (bootstrapPhase === "hello") {
+    if (rpcReadyState !== nativeReadyState
+        || rpcPort !== nativePort
+        || !_resolveNativeHello(rpcReadyState, result)) {
+      throw new Error("Native FTS hello completed for a stale connection generation");
     }
-  });
+  } else if (bootstrapPhase === "init") {
+    if (rpcReadyState !== nativeReadyState
+        || rpcPort !== nativePort
+        || !_resolveNativeOperational(rpcReadyState, result)) {
+      throw new Error("Native FTS init completed for a stale connection generation");
+    }
+  }
+  return result;
 }
 
 /**
@@ -492,7 +756,23 @@ export const nativeFtsSearch = {
   },
   
   async indexBatch(rows) {
-    return nativeRPC('indexBatch', { rows });
+    // `folderId` is an additive wire field.  Older helpers did not advertise
+    // the contract and must keep receiving the byte-for-byte legacy row shape.
+    // New helpers accept only a non-empty opaque app-owned membership id.
+    return nativeRPC('indexBatch', connectionHostInfo => {
+      const includeFolderId = connectionHostInfo?.capabilities?.folderMembershipV1 === true;
+      const wireRows = (rows || []).map(row => {
+        const { folderId, ...legacyRow } = row || {};
+        if (includeFolderId) {
+          if (typeof folderId !== "string" || folderId.length === 0) {
+            throw new Error("Native FTS capable index row is missing opaque folderId");
+          }
+          return { ...legacyRow, folderId };
+        }
+        return legacyRow;
+      });
+      return { rows: wireRows };
+    });
   },
   
   async search(query, options = {}) {
@@ -552,6 +832,59 @@ export const nativeFtsSearch = {
 
   async listMsgIdRange(startKey, endKey, afterKey, limit) {
     return nativeRPC('listMsgIdRange', { startKey, endKey, afterKey, limit });
+  },
+
+  supportsFolderMembership,
+
+  async listFolderMembership(folderId, afterMsgId, limit) {
+    const result = await nativeRPC('listFolderMembership', {
+      folderId,
+      afterMsgId,
+      limit,
+    });
+    if (result?.ok !== true
+        || !Array.isArray(result.msgIds)
+        || typeof result.done !== "boolean"
+        || result.msgIds.some(msgId => typeof msgId !== "string" || msgId.length === 0)) {
+      throw new Error("Native FTS folder membership list returned an invalid response");
+    }
+    return result;
+  },
+
+  async listFolderMembershipState(afterMsgId, limit) {
+    const result = await nativeRPC('listFolderMembershipState', {
+      afterMsgId,
+      limit,
+    });
+    if (result?.ok !== true
+        || !Array.isArray(result.entries)
+        || typeof result.done !== "boolean"
+        || result.entries.some(entry => !entry
+          || typeof entry.msgId !== "string"
+          || entry.msgId.length === 0
+          || (entry.folderId !== null
+            && (typeof entry.folderId !== "string" || entry.folderId.length === 0)))) {
+      throw new Error("Native FTS folder membership state list returned an invalid response");
+    }
+    return result;
+  },
+
+  async assignFolderMembershipBatch(assignments) {
+    const result = await nativeRPC('assignFolderMembershipBatch', { assignments });
+    const accounted = Number(result?.assigned)
+      + Number(result?.alreadyAssigned)
+      + Number(result?.missing);
+    if (result?.ok !== true
+        || !Number.isSafeInteger(result.assigned)
+        || result.assigned < 0
+        || !Number.isSafeInteger(result.alreadyAssigned)
+        || result.alreadyAssigned < 0
+        || !Number.isSafeInteger(result.missing)
+        || result.missing < 0
+        || accounted !== assignments.length) {
+      throw new Error("Native FTS folder membership assignment returned an invalid response");
+    }
+    return result;
   },
 
   async debugSample() {

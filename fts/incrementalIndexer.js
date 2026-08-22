@@ -10,12 +10,15 @@ import { logFtsBatchOperation, logFtsOperation, logMessageEventBatch, logMoveEve
 import {
   getForegroundFetchPressure,
   getUniqueMessageKey,
+  getUniqueMessageKeyCandidates,
   headerIDToWeID,
   log,
   parseUniqueId,
   recheckMessageInFolder,
+  resolveUniqueMessageKey,
 } from "../agent/modules/utils.js";
 import { buildBatchHeader, populateBatchBody } from "./indexer.js";
+import { makeFolderMembershipId } from "./folderMembershipIdentity.js";
 import {
   _resetFtsOperationCoordinatorForTests,
   addFtsExclusiveMembershipChangeListener,
@@ -422,17 +425,21 @@ function _getRetryConfig() {
  * @returns {Promise<{found: boolean, deletedKeys: string[]}>}
  */
 async function _tryFallbackDeletion(originalKey, ftsSearch) {
-  const { parseUniqueId, headerIDToWeID } = await import("../agent/modules/utils.js");
-  const parsed = parseUniqueId(originalKey);
-  if (!parsed?.headerID || !parsed?.weFolder?.accountId) {
+  const firstBoundary = originalKey.indexOf(":");
+  if (firstBoundary <= 0) {
     return { found: false, deletedKeys: [] };
   }
 
-  const { weFolder, headerID } = parsed;
-  const accountId = weFolder.accountId;
-  const originalFolder = weFolder.path;
-
   try {
+    const accountId = originalKey.slice(0, firstBoundary);
+    const liveFolders = await browser.folders.query({ accountId });
+    const originalCandidates = getUniqueMessageKeyCandidates(originalKey, liveFolders);
+    // A deleted/renamed folder may no longer be represented; an overlapping
+    // folder path may produce several interpretations. Neither is permission
+    // to derive a destructive lookup from delimiter position.
+    if (originalCandidates.length !== 1) return { found: false, deletedKeys: [] };
+    const { weFolder, headerID } = originalCandidates[0];
+    const originalFolder = weFolder.path;
     // Use native search to find all FTS entries with this headerMessageId in this account
     const matchingKeys = await ftsSearch.findByHeaderMessageId(accountId, headerID);
 
@@ -450,19 +457,26 @@ async function _tryFallbackDeletion(originalKey, ftsSearch) {
       // Skip the original key - it was already tried in the main deletion
       if (key === originalKey) continue;
 
-      // Parse the found key to get its folder path
-      const foundParsed = parseUniqueId(key);
-      if (!foundParsed?.weFolder) {
-        log(`[TMDBG FTS] Skipping unparseable found key: ${key}`, "warn");
+      const foundCandidates = getUniqueMessageKeyCandidates(key, liveFolders)
+        .filter(candidate => candidate.headerID === headerID);
+      if (foundCandidates.length !== 1) {
+        log(`[TMDBG FTS] Skipping ambiguous found key: ${key}`, "warn");
         continue;
       }
-
-      const foundFolder = foundParsed.weFolder;
+      const foundFolder = foundCandidates[0].weFolder;
 
       // CRITICAL: Check if the message still exists in the found folder
       // If it does, we should NOT delete it from FTS (e.g., Gmail virtual folders)
       try {
-        const weId = await headerIDToWeID(headerID, foundFolder, false);
+        let page = await browser.messages.query({
+          folderId: foundFolder.id,
+          headerMessageId: headerID,
+        });
+        let weId = page?.messages?.[0]?.id || null;
+        while (!weId && page?.id && typeof browser.messages.continueList === "function") {
+          page = await browser.messages.continueList(page.id);
+          weId = page?.messages?.[0]?.id || null;
+        }
         if (weId) {
           // Message still exists in this folder - do NOT delete from FTS
           log(`[TMDBG FTS] Message still exists in ${foundFolder.path} (weId=${weId}), skipping FTS deletion`);
@@ -477,8 +491,10 @@ async function _tryFallbackDeletion(originalKey, ftsSearch) {
           continue;
         }
       } catch (e) {
-        // If we can't verify, assume message is gone (conservative approach for actual deletions)
+        // Verification uncertainty is not deletion evidence.
         log(`[TMDBG FTS] Could not verify message existence in ${foundFolder.path}: ${e}`, "info");
+        skippedKeys.push(key);
+        continue;
       }
 
       // Message is gone from this folder - safe to delete from FTS
@@ -746,13 +762,12 @@ async function processPendingUpdates() {
       
       for (const update of toIndexUpdates) {
         try {
-          // Parse uniqueKey: accountId:folderPath:headerMessageId
-          // NOTE: Queue is based on headerMessageId (stable), NOT weId (unstable)
-          // At processing time, we re-resolve to get the CURRENT weId
-          const parsed = parseUniqueId(update.uniqueKey);
-          if (!parsed) {
+          const firstBoundary = update.uniqueKey.indexOf(":");
+          if (firstBoundary <= 0
+              || update.uniqueKey.indexOf(":", firstBoundary + 1) < 0
+              || update.uniqueKey.endsWith(":")) {
             // Unparseable key is a permanent failure - drop immediately
-            log(`[TMDBG FTS] Failed to parse uniqueKey: ${update.uniqueKey} - dropping (unparseable)`, "warn");
+            log(`[TMDBG FTS] Structurally invalid uniqueKey: ${update.uniqueKey} - dropping`, "warn");
             logFtsOperation("resolve", "failure", {
               uniqueKey: update.uniqueKey,
               reason: "unparseable_key",
@@ -763,21 +778,20 @@ async function processPendingUpdates() {
             continue;
           }
           
-          const { weFolder, headerID } = parsed;
-          
           // Re-resolve headerMessageId -> current weId at processing time
           // This handles weId instability during IMAP sync - if it fails, we retry
-          let weID = null;
+          let resolved = null;
           try {
-            weID = await headerIDToWeID(headerID, weFolder, false);
+            resolved = await resolveUniqueMessageKey(update.uniqueKey);
           } catch (resolveError) {
-            log(`[TMDBG FTS] Error resolving headerID ${headerID}: ${resolveError}`, "warn");
+            log(`[TMDBG FTS] Error resolving structured key ${update.uniqueKey}: ${resolveError}`, "warn");
           }
-          
+          const weID = resolved?.weID || null;
+          const headerID = resolved?.headerID || "";
           if (!weID) {
             // Resolution failed - mark for retry (weId may stabilize on next attempt)
             _markResolveFailed(update);
-            log(`[TMDBG FTS] Failed to resolve headerID to weId: ${headerID} - marked for retry`);
+            log(`[TMDBG FTS] Failed to resolve uniqueKey to one live message - marked for retry`);
             logFtsOperation("resolve", "failure", {
               uniqueKey: update.uniqueKey,
               headerMessageId: headerID,
@@ -2037,7 +2051,12 @@ async function _listWeFolderIdentities({ imapOnly = false } = {}) {
   const walk = (accountId, folder) => {
     if (!folder) return;
     if (folder.path && folder.path !== "/" && !folder.isRoot) {
-      folders.push({ accountId, folderPath: folder.path });
+      folders.push({
+        accountId,
+        folderPath: folder.path,
+        folderId: makeFolderMembershipId(accountId, folder.path),
+        weFolderId: typeof folder.id === "string" ? folder.id : "",
+      });
     }
     for (const sub of folder.subFolders || []) walk(accountId, sub);
   };
@@ -2092,7 +2111,9 @@ async function _readPerFolderExperimentState(
     } catch (e) {
       state = { ...identity, folderURI: "", error: String(e) };
     }
-    out.push(state);
+    // The privileged folder-state API predates opaque WebExtension folder
+    // ids. Preserve the id from the fresh account inventory beside its state.
+    out.push({ ...identity, ...state });
     if (methodName !== "getFolderState") _logFolderProbeTiming(methodName, state);
     // Each Experiment call may synchronously open one summary DB. Yield a
     // full task between folders so an account-wide startup proof stays
@@ -2411,6 +2432,9 @@ const FOLDER_RECON_KEYSPACE_END = "￿";
 const FOLDER_RECON_INITIAL_SCAN_KEY = "fts_initial_scan_complete";
 const FOLDER_RECON_CONFIG = {
   folderScanPageSize: 250,
+  membershipAssignBatchSize: 1000,
+  membershipListPageSize: 500,
+  membershipStatePageSize: 500,
   digestWorkChunkEntries: 1000,
   missingPageKeys: 500,
   stalePageKeys: 100,
@@ -2471,7 +2495,21 @@ const FOLDER_RECON_ENTRY_DELAY_MS = 10;
 // Per-slice limits prevent a mature profile's backlog from issuing an
 // unbroken run of parent-thread global rechecks or drain-queue body fetches.
 // The scheduler's total progress remains unbounded.
-const FOLDER_RECON_SCAN_PAGE_SIZE = FOLDER_RECON_CONFIG.folderScanPageSize;
+const FOLDER_MEMBERSHIP_ASSIGN_BATCH_MAX = 1000;
+const FOLDER_MEMBERSHIP_LIST_PAGE_MAX = 2000;
+const FOLDER_RECON_SCAN_PAGE_SIZE = Math.max(1, Math.floor(FOLDER_RECON_CONFIG.folderScanPageSize));
+const FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE = Math.max(1, Math.min(
+  FOLDER_MEMBERSHIP_ASSIGN_BATCH_MAX,
+  Math.floor(FOLDER_RECON_CONFIG.membershipAssignBatchSize),
+));
+const FOLDER_MEMBERSHIP_LIST_PAGE_SIZE = Math.max(1, Math.min(
+  FOLDER_MEMBERSHIP_LIST_PAGE_MAX,
+  Math.floor(FOLDER_RECON_CONFIG.membershipListPageSize),
+));
+const FOLDER_MEMBERSHIP_STATE_PAGE_SIZE = Math.max(1, Math.min(
+  FOLDER_MEMBERSHIP_LIST_PAGE_MAX,
+  Math.floor(FOLDER_RECON_CONFIG.membershipStatePageSize),
+));
 const FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES = FOLDER_RECON_CONFIG.digestWorkChunkEntries;
 const FOLDER_RECON_MISSING_PAGE_KEYS = FOLDER_RECON_CONFIG.missingPageKeys;
 const FOLDER_RECON_STALE_PAGE_KEYS = FOLDER_RECON_CONFIG.stalePageKeys;
@@ -2503,6 +2541,17 @@ function _sanitizeFolderReconRetryNotBeforeMs(value, nowMs) {
 // null = not probed yet this session; false = old deployed helper → the whole
 // phase no-ops and the user must upgrade or use an explicit manual repair.
 let _folderReconNativeSupported = null;
+// The additive relation is never trusted merely because a durable marker
+// exists. Every add-on session earns cutover from a stable bounded global
+// membership-state pass with no null row after the live-folder metadata scans
+// have durably completed.
+let _folderMembershipCutoverProven = false;
+let _folderMembershipScanSession = null;
+let _folderMembershipMigrationSessionStarted = false;
+let _folderMembershipCapabilityState = null;
+let _folderMembershipPageBudget = 0;
+let _folderMembershipDigestSessions = new Map();
+let _folderMembershipDigestResults = new Map();
 // Compatibility/debug view of folders waiting for the shared incremental
 // drain. Unlike the old single-shot rerun, the scheduler revisits these after
 // every low-water transition until equality is proven.
@@ -2631,6 +2680,10 @@ function _handleExclusiveFtsMembershipChange() {
   _folderReconDrainFailureCounts.clear();
   _folderReconOrphanDone = false;
   _folderReconOrphanBasis = null;
+  _folderMembershipCutoverProven = false;
+  _folderMembershipMigrationSessionStarted = false;
+  _cancelFolderMembershipScanSession();
+  _resetFolderMembershipVolatileProof();
   _releaseFolderReconActiveProof(null, "invalidation");
   _folderReconDirty.add("__all__");
 
@@ -2764,6 +2817,141 @@ function _assertNoFolderReconForegroundPressure() {
 
 function _bytesToHex(bytes) {
   return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// WebCrypto has no streaming digest API. Native membership readers are
+// deliberately page-bounded, so retaining every returned msgId and one giant
+// framed buffer would defeat that bound on mature profiles. This small SHA-256
+// accumulator consumes the exact existing framing incrementally; scheduler
+// page boundaries remain the cooperative yield/pressure boundaries.
+const FOLDER_RECON_SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+  0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+  0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+  0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+  0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+  0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+function _folderReconRotateRight(value, bits) {
+  return (value >>> bits) | (value << (32 - bits));
+}
+
+class _FolderReconSha256 {
+  constructor() {
+    this._state = new Uint32Array([
+      0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    ]);
+    this._buffer = new Uint8Array(64);
+    this._bufferLength = 0;
+    this._bytesHashed = 0n;
+    this._finished = false;
+  }
+
+  update(bytes) {
+    if (this._finished) throw new Error("folder_membership_digest_finished");
+    this._bytesHashed += BigInt(bytes.length);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const take = Math.min(64 - this._bufferLength, bytes.length - offset);
+      this._buffer.set(bytes.subarray(offset, offset + take), this._bufferLength);
+      this._bufferLength += take;
+      offset += take;
+      if (this._bufferLength === 64) {
+        this._compress(this._buffer);
+        this._bufferLength = 0;
+      }
+    }
+  }
+
+  _compress(block) {
+    const words = new Uint32Array(64);
+    const view = new DataView(block.buffer, block.byteOffset, block.byteLength);
+    for (let i = 0; i < 16; i++) words[i] = view.getUint32(i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const x = words[i - 15];
+      const y = words[i - 2];
+      const s0 = _folderReconRotateRight(x, 7)
+        ^ _folderReconRotateRight(x, 18)
+        ^ (x >>> 3);
+      const s1 = _folderReconRotateRight(y, 17)
+        ^ _folderReconRotateRight(y, 19)
+        ^ (y >>> 10);
+      words[i] = (words[i - 16] + s0 + words[i - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = this._state;
+    for (let i = 0; i < 64; i++) {
+      const sum1 = _folderReconRotateRight(e, 6)
+        ^ _folderReconRotateRight(e, 11)
+        ^ _folderReconRotateRight(e, 25);
+      const choice = (e & f) ^ (~e & g);
+      const t1 = (h + sum1 + choice + FOLDER_RECON_SHA256_K[i] + words[i]) >>> 0;
+      const sum0 = _folderReconRotateRight(a, 2)
+        ^ _folderReconRotateRight(a, 13)
+        ^ _folderReconRotateRight(a, 22);
+      const majority = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (sum0 + majority) >>> 0;
+      h = g;
+      g = f;
+      f = e;
+      e = (d + t1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (t1 + t2) >>> 0;
+    }
+    this._state[0] = (this._state[0] + a) >>> 0;
+    this._state[1] = (this._state[1] + b) >>> 0;
+    this._state[2] = (this._state[2] + c) >>> 0;
+    this._state[3] = (this._state[3] + d) >>> 0;
+    this._state[4] = (this._state[4] + e) >>> 0;
+    this._state[5] = (this._state[5] + f) >>> 0;
+    this._state[6] = (this._state[6] + g) >>> 0;
+    this._state[7] = (this._state[7] + h) >>> 0;
+  }
+
+  digest() {
+    if (this._finished) throw new Error("folder_membership_digest_finished");
+    this._finished = true;
+    const bitLength = this._bytesHashed * 8n;
+    const finalLength = this._bufferLength < 56 ? 64 : 128;
+    const final = new Uint8Array(finalLength);
+    final.set(this._buffer.subarray(0, this._bufferLength));
+    final[this._bufferLength] = 0x80;
+    const view = new DataView(final.buffer);
+    view.setUint32(finalLength - 8, Number((bitLength >> 32n) & 0xffffffffn), false);
+    view.setUint32(finalLength - 4, Number(bitLength & 0xffffffffn), false);
+    for (let offset = 0; offset < finalLength; offset += 64) {
+      this._compress(final.subarray(offset, offset + 64));
+    }
+    const out = new Uint8Array(32);
+    const outView = new DataView(out.buffer);
+    for (let i = 0; i < this._state.length; i++) {
+      outView.setUint32(i * 4, this._state[i], false);
+    }
+    return out;
+  }
+}
+
+function _updateFolderReconFramedDigest(hasher, value) {
+  const bytes = _folderReconEncoder.encode(value);
+  const frame = new Uint8Array(8);
+  const view = new DataView(frame.buffer);
+  view.setUint32(0, Math.floor(bytes.length / 0x100000000), false);
+  view.setUint32(4, bytes.length >>> 0, false);
+  hasher.update(frame);
+  hasher.update(bytes);
 }
 
 function _compareFolderReconEncoded(a, b) {
@@ -2931,7 +3119,8 @@ function _assertFolderReconLease(lease, generation, syncStartedAt = _lastSyncEve
 function _throwIfFolderReconInterrupted(error) {
   const message = String(error?.message || error);
   if (message.includes("folder_recon_cancelled")
-      || message.includes("folder_recon_pressure")) {
+      || message.includes("folder_recon_pressure")
+      || message.includes("folder_membership_page_pending")) {
     throw error;
   }
 }
@@ -3361,9 +3550,9 @@ function _folderReconAmbiguousKeyspaces(identities) {
 /**
  * Half-open msgId key range covering exactly one folder's FTS keys, provided
  * the fresh inventory has no same-account `path` / `path:` overlap. The
- * pre-existing key schema is non-injective for those paths; issue #20 owns the
- * future schema migration. Reconciliation detects that condition and fails
- * closed before any range proof or orphan work.
+ * pre-existing key schema is non-injective for those paths. Capable helpers
+ * use ADR-024's opaque relation instead; this range remains the fail-closed
+ * compatibility path for older helpers.
  * startKey = "<accountId>:<folderPath>:", endKey replaces the trailing ':'
  * with ';' (':'+1). Subfolder keys (".../INBOX/sub:...") sort BEFORE
  * ".../INBOX:" ('/' < ':') so they are correctly excluded. The native side
@@ -3381,6 +3570,10 @@ function _folderKeyRange(accountId, folderPath) {
  */
 async function _checkFolderReconNativeSupport(ftsSearch) {
   if (_folderReconNativeSupported !== null) return _folderReconNativeSupported;
+  if (ftsSearch?.supportsFolderMembership?.() === true) {
+    _folderReconNativeSupported = true;
+    return true;
+  }
   try {
     // Equal bounds exercise method dispatch/validation without scanning the
     // user's index; real per-folder fingerprints follow immediately.
@@ -3393,6 +3586,217 @@ async function _checkFolderReconNativeSupport(ftsSearch) {
     _writeReconSnapshot("fts_folder_recon_last", { skipped: true, reason: "native_unsupported", error: String(e) });
   }
   return _folderReconNativeSupported;
+}
+
+function _useExactFolderMembership(ftsSearch) {
+  return _folderMembershipCutoverProven
+    && ftsSearch?.supportsFolderMembership?.() === true;
+}
+
+function _resetFolderMembershipVolatileProof() {
+  _folderMembershipPageBudget = 0;
+  _folderMembershipDigestSessions.clear();
+  _folderMembershipDigestResults.clear();
+}
+
+function _observeFolderMembershipCapability(ftsSearch) {
+  const capable = ftsSearch?.supportsFolderMembership?.() === true;
+  if (_folderMembershipCapabilityState !== capable) {
+    _folderMembershipCapabilityState = capable;
+    _folderMembershipCutoverProven = false;
+    _folderMembershipMigrationSessionStarted = false;
+    _cancelFolderMembershipScanSession();
+    _resetFolderMembershipVolatileProof();
+  }
+  if (!capable) {
+    _folderMembershipMigrationSessionStarted = false;
+    _cancelFolderMembershipScanSession();
+    _resetFolderMembershipVolatileProof();
+  }
+  return capable;
+}
+
+function _consumeFolderMembershipPageBudget() {
+  if (_folderMembershipPageBudget <= 0) {
+    throw new Error("folder_membership_page_pending");
+  }
+  _folderMembershipPageBudget--;
+}
+
+function _folderMembershipProofStamp() {
+  return {
+    generation: _folderReconGeneration,
+    mutationSerial: _folderReconMutationSerial,
+    membershipEpoch: getFtsMembershipEpoch(),
+  };
+}
+
+function _folderMembershipProofStampCurrent(stamp) {
+  return stamp?.generation === _folderReconGeneration
+    && stamp?.mutationSerial === _folderReconMutationSerial
+    && stamp?.membershipEpoch === getFtsMembershipEpoch();
+}
+
+function _pruneFolderMembershipDigestProofs() {
+  for (const [key, value] of _folderMembershipDigestSessions) {
+    if (!_folderMembershipProofStampCurrent(value)) {
+      _folderMembershipDigestSessions.delete(key);
+    }
+  }
+  for (const [key, value] of _folderMembershipDigestResults) {
+    if (!_folderMembershipProofStampCurrent(value)) {
+      _folderMembershipDigestResults.delete(key);
+    }
+  }
+  while (_folderMembershipDigestSessions.size > 8) {
+    _folderMembershipDigestSessions.delete(_folderMembershipDigestSessions.keys().next().value);
+  }
+  while (_folderMembershipDigestResults.size > 8) {
+    _folderMembershipDigestResults.delete(_folderMembershipDigestResults.keys().next().value);
+  }
+}
+
+function _assertStrictMembershipCursor(previous, current) {
+  if (typeof current !== "string" || current.length === 0) {
+    throw new Error("folder_membership_msg_id_invalid");
+  }
+  if (previous === null) return;
+  const left = { bytes: _folderReconEncoder.encode(previous) };
+  const right = { bytes: _folderReconEncoder.encode(current) };
+  if (_compareFolderReconEncoded(left, right) >= 0) {
+    throw new Error("folder_membership_order_invalid");
+  }
+}
+
+async function _fingerprintFolderMembershipPages(
+  ftsSearch,
+  folderId,
+  assertActive = _assertNoFolderReconForegroundPressure,
+  proofSlot = null,
+) {
+  if (!folderId) throw new Error("folder_membership_id_missing");
+  _pruneFolderMembershipDigestProofs();
+  const key = `folder\u0000${folderId}\u0000${proofSlot || "ephemeral"}`;
+  const completed = proofSlot ? _folderMembershipDigestResults.get(key) : null;
+  if (completed && _folderMembershipProofStampCurrent(completed)) {
+    return { count: completed.count, sha256: completed.sha256 };
+  }
+  let session = _folderMembershipDigestSessions.get(key);
+  if (!session || !_folderMembershipProofStampCurrent(session)) {
+    session = {
+      ..._folderMembershipProofStamp(),
+      hasher: new _FolderReconSha256(),
+      count: 0,
+      afterMsgId: null,
+    };
+    _folderMembershipDigestSessions.set(key, session);
+  }
+  _consumeFolderMembershipPageBudget();
+  assertActive();
+  const page = await ftsSearch.listFolderMembership(
+    folderId,
+    session.afterMsgId,
+    FOLDER_MEMBERSHIP_LIST_PAGE_SIZE,
+  );
+  assertActive();
+  if (!_folderMembershipProofStampCurrent(session)) {
+    _folderMembershipDigestSessions.delete(key);
+    throw new Error("membership_epoch_changed");
+  }
+  const pageIds = page?.msgIds || [];
+  if (pageIds.length > FOLDER_MEMBERSHIP_LIST_PAGE_SIZE
+      || (page.done !== true && pageIds.length === 0)) {
+    _folderMembershipDigestSessions.delete(key);
+    throw new Error("folder_membership_page_invalid");
+  }
+  for (const msgId of pageIds) {
+    _assertStrictMembershipCursor(session.afterMsgId, msgId);
+    session.afterMsgId = msgId;
+    _updateFolderReconFramedDigest(session.hasher, msgId);
+    session.count++;
+  }
+  if (page.done !== true) throw new Error("folder_membership_page_pending");
+  const result = { count: session.count, sha256: _bytesToHex(session.hasher.digest()) };
+  _folderMembershipDigestSessions.delete(key);
+  if (proofSlot) _folderMembershipDigestResults.set(key, { ...session, ...result, hasher: null });
+  return result;
+}
+
+async function _fingerprintFolderMembershipStatePages(
+  ftsSearch,
+  assertActive = _assertNoFolderReconForegroundPressure,
+  proofSlot = null,
+) {
+  _pruneFolderMembershipDigestProofs();
+  const key = `state\u0000${proofSlot || "ephemeral"}`;
+  const completed = proofSlot ? _folderMembershipDigestResults.get(key) : null;
+  if (completed && _folderMembershipProofStampCurrent(completed)) {
+    return { count: completed.count, sha256: completed.sha256 };
+  }
+  let session = _folderMembershipDigestSessions.get(key);
+  if (!session || !_folderMembershipProofStampCurrent(session)) {
+    session = {
+      ..._folderMembershipProofStamp(),
+      hasher: new _FolderReconSha256(),
+      count: 0,
+      afterMsgId: null,
+    };
+    _folderMembershipDigestSessions.set(key, session);
+  }
+  _consumeFolderMembershipPageBudget();
+  assertActive();
+  const page = await ftsSearch.listFolderMembershipState(
+    session.afterMsgId,
+    FOLDER_MEMBERSHIP_STATE_PAGE_SIZE,
+  );
+  assertActive();
+  if (!_folderMembershipProofStampCurrent(session)) {
+    _folderMembershipDigestSessions.delete(key);
+    throw new Error("membership_epoch_changed");
+  }
+  const entries = page?.entries || [];
+  if (entries.length > FOLDER_MEMBERSHIP_STATE_PAGE_SIZE
+      || (page.done !== true && entries.length === 0)) {
+    _folderMembershipDigestSessions.delete(key);
+    throw new Error("folder_membership_state_page_invalid");
+  }
+  for (const entry of entries) {
+    _assertStrictMembershipCursor(session.afterMsgId, entry?.msgId);
+    if (typeof entry.folderId !== "string" || entry.folderId.length === 0) {
+      _folderMembershipCutoverProven = false;
+      _folderMembershipDigestSessions.delete(key);
+      throw new Error("folder_membership_state_incomplete");
+    }
+    session.afterMsgId = entry.msgId;
+    _updateFolderReconFramedDigest(session.hasher, entry.msgId);
+    session.count++;
+  }
+  if (page.done !== true) throw new Error("folder_membership_page_pending");
+  const result = { count: session.count, sha256: _bytesToHex(session.hasher.digest()) };
+  _folderMembershipDigestSessions.delete(key);
+  if (proofSlot) _folderMembershipDigestResults.set(key, { ...session, ...result, hasher: null });
+  return result;
+}
+
+async function _fingerprintFolderNative(ftsSearch, folder, startKey, endKey, proofSlot = null) {
+  if (_useExactFolderMembership(ftsSearch)) {
+    return _fingerprintFolderMembershipPages(
+      ftsSearch,
+      folder?.folderId,
+      _assertNoFolderReconForegroundPressure,
+      proofSlot,
+    );
+  }
+  return ftsSearch.fingerprintMsgIdRange(startKey, endKey);
+}
+
+async function _listFolderNative(ftsSearch, folder, startKey, endKey, afterKey, limit) {
+  if (_useExactFolderMembership(ftsSearch)) {
+    if (!folder?.folderId) throw new Error("folder_membership_id_missing");
+    _consumeFolderMembershipPageBudget();
+    return ftsSearch.listFolderMembership(folder.folderId, afterKey, limit);
+  }
+  return ftsSearch.listMsgIdRange(startKey, endKey, afterKey, limit);
 }
 
 /**
@@ -3452,6 +3856,7 @@ async function _writeFolderReconMemo(
     folderKeys = null,
     roundRobin = false,
     orphanSweep = false,
+    membershipMigration = false,
   } = {},
 ) {
   const keysToPatch = folderKeys || Object.keys(memo?.folders || {});
@@ -3467,6 +3872,13 @@ async function _writeFolderReconMemo(
     if (orphanSweep) {
       if (memo.orphanSweep) state.memo.orphanSweep = structuredClone(memo.orphanSweep);
       else delete state.memo.orphanSweep;
+    }
+    if (membershipMigration) {
+      if (memo.folderMembershipMigration) {
+        state.memo.folderMembershipMigration = structuredClone(memo.folderMembershipMigration);
+      } else {
+        delete state.memo.folderMembershipMigration;
+      }
     }
   });
 }
@@ -3513,7 +3925,9 @@ async function _folderReconStaleDirection(
     let res;
     try {
       assertCurrent();
-      res = await ftsSearch.listMsgIdRange(
+      res = await _listFolderNative(
+        ftsSearch,
+        f,
         startKey,
         endKey,
         afterKey,
@@ -3530,6 +3944,12 @@ async function _folderReconStaleDirection(
       return { clean: true, budgetPartial: false, cursor: null, reachedEnd: true };
     }
 
+    if (msgIds.some(msgId => typeof msgId !== "string" || !msgId.startsWith(folderPrefix))) {
+      logFtsOperation("folder_recon", "folder_membership_identity_mismatch", {
+        folderPath: f.folderPath,
+      });
+      return { clean: false, budgetPartial: false, cursor: afterKey, reachedEnd: false };
+    }
     const headerIds = msgIds.map((msgId) => msgId.slice(folderPrefix.length));
     let probe;
     try {
@@ -3910,6 +4330,7 @@ function _folderReconMsgIdHasKnownFolderPrefix(msgId, knownFolderKeys) {
 async function _folderReconOrphanSweep(
   ftsSearch,
   knownFolderKeys,
+  identities,
   totalKnownFtsCount,
   stats,
   budget,
@@ -3924,9 +4345,12 @@ async function _folderReconOrphanSweep(
     _assertNoFolderReconForegroundPressure();
   };
   const basisEpoch = basisProof?.membershipEpoch ?? getFtsMembershipEpoch();
+  const exactMembership = _useExactFolderMembership(ftsSearch);
   assertCurrent();
   const nativeAll = basisProof?.nativeAll
-    || await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
+    || (exactMembership
+      ? await _fingerprintFolderMembershipStatePages(ftsSearch, assertCurrent)
+      : await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END));
   assertCurrent();
   if (!(nativeAll.count > totalKnownFtsCount)) {
     return { complete: true, cursor: null, nativeAll, terminalEpoch: basisEpoch };
@@ -3944,21 +4368,74 @@ async function _folderReconOrphanSweep(
   }
   const pageEpoch = getFtsMembershipEpoch();
   assertCurrent();
-  const res = await ftsSearch.listMsgIdRange(
-    "",
-    FOLDER_RECON_KEYSPACE_END,
-    afterKey,
-    FOLDER_RECON_STALE_PAGE_KEYS,
-  );
+  const res = exactMembership
+    ? await (async () => {
+      _consumeFolderMembershipPageBudget();
+      return ftsSearch.listFolderMembershipState(afterKey, FOLDER_RECON_STALE_PAGE_KEYS);
+    })()
+    : await ftsSearch.listMsgIdRange(
+      "",
+      FOLDER_RECON_KEYSPACE_END,
+      afterKey,
+      FOLDER_RECON_STALE_PAGE_KEYS,
+    );
   assertCurrent();
-  const msgIds = res.msgIds || [];
+  const exactEntries = exactMembership ? (res.entries || []) : [];
+  const msgIds = exactMembership ? exactEntries.map(entry => entry.msgId) : (res.msgIds || []);
+  if (exactMembership) {
+    let previousMsgId = afterKey;
+    try {
+      if (exactEntries.length > FOLDER_RECON_STALE_PAGE_KEYS
+          || (res.done !== true && exactEntries.length === 0)) {
+        throw new Error("folder_membership_state_page_invalid");
+      }
+      for (const entry of exactEntries) {
+        _assertStrictMembershipCursor(previousMsgId, entry.msgId);
+        previousMsgId = entry.msgId;
+      }
+    } catch (error) {
+      return { complete: false, failed: true, cursor: afterKey, nativeAll, error: String(error) };
+    }
+  }
 
   const entriesToRemove = [];
   let processed = 0;
+  const knownFolderIds = exactMembership
+    ? new Set(identities.map(identity => identity.folderId))
+    : null;
+  const identityByFolderId = exactMembership
+    ? new Map(identities.map(identity => [identity.folderId, identity]))
+    : null;
   for (let i = 0; i < msgIds.length; i++) {
     const msgId = msgIds[i];
-    if (_folderReconMsgIdHasKnownFolderPrefix(msgId, knownFolderKeys)) {
+    if (!exactMembership && _folderReconMsgIdHasKnownFolderPrefix(msgId, knownFolderKeys)) {
       processed = i + 1;
+      continue;
+    }
+    if (exactMembership) {
+      const membershipFolderId = exactEntries[i]?.folderId;
+      if (typeof membershipFolderId !== "string" || membershipFolderId.length === 0) {
+        _folderMembershipCutoverProven = false;
+        stats.orphanKeysKept++;
+        return { complete: false, failed: true, cursor: afterKey, nativeAll };
+      }
+      if (knownFolderIds.has(membershipFolderId)) {
+        const owner = identityByFolderId.get(membershipFolderId);
+        if (!msgId.startsWith(`${owner.accountId}:${owner.folderPath}:`)) {
+          stats.orphanKeysKept++;
+          return { complete: false, failed: true, cursor: afterKey, nativeAll };
+        }
+        processed = i + 1;
+        continue;
+      }
+      // The relation's non-null opaque owner is authoritative. Once that id
+      // is absent from the fresh inventory, no raw-key parse or live folder
+      // query can make it current again; remove the stale row directly.
+      entriesToRemove.push(msgId);
+      processed = i + 1;
+      assertCurrent();
+      await _folderReconYield(FOLDER_RECON_ENTRY_DELAY_MS);
+      assertCurrent();
       continue;
     }
     const parsed = parseUniqueId(msgId);
@@ -4006,13 +4483,27 @@ async function _folderReconOrphanSweep(
     } else if (pageEpoch !== getFtsMembershipEpoch()) {
       throw new Error("membership_epoch_changed");
     }
-    if (terminalPage) {
+    if (terminalPage && exactMembership) {
+      if (entriesToRemove.length > 0 || pageEpoch !== basisEpoch) {
+        return {
+          complete: false,
+          restart: true,
+          terminalRefresh: true,
+          cursor: null,
+          nativeAll,
+        };
+      }
+      finalNative = nativeAll;
+      terminalEpoch = basisEpoch;
+    } else if (terminalPage) {
       const fingerprintEpoch = getFtsMembershipEpoch();
       // This data-sized read is intentionally outside the membership mutex.
       // A foreground writer proceeds immediately; its epoch advance simply
       // makes this terminal proof stale and starts another safe pass.
       assertCurrent();
-      finalNative = await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
+      finalNative = exactMembership
+        ? await _fingerprintFolderMembershipStatePages(ftsSearch, assertCurrent)
+        : await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
       assertCurrent();
       if (fingerprintEpoch !== getFtsMembershipEpoch()) {
         return {
@@ -4164,7 +4655,9 @@ async function _runFolderReconcile(
     return { skipped: true, reason: "folder_inventory_failed" };
   }
 
-  const directAmbiguity = _folderReconAmbiguousKeyspaces(currentIdentities || folders);
+  const directAmbiguity = _useExactFolderMembership(ftsSearch)
+    ? { folderKeys: new Set(), groups: 0 }
+    : _folderReconAmbiguousKeyspaces(currentIdentities || folders);
   if (directAmbiguity.groups > 0) {
     for (const folderKey of directAmbiguity.folderKeys) {
       _folderReconUnverified.add(folderKey);
@@ -4279,7 +4772,9 @@ async function _runFolderReconcile(
         if (uidOnly.proofKind !== "uid_only") throw new Error("uid_only_proof_expected");
         folderMembershipEpoch = getFtsMembershipEpoch();
         _assertNoFolderReconForegroundPressure();
-        const uidNative = await ftsSearch.fingerprintMsgIdRange(startKey, endKey);
+        const uidNative = await _fingerprintFolderNative(
+          ftsSearch, f, startKey, endKey, "uid_checkpoint",
+        );
         _assertFolderReconLease(reconcileLease, generation);
         _assertNoFolderReconForegroundPressure();
         if (folderMembershipEpoch !== getFtsMembershipEpoch()) {
@@ -4333,7 +4828,9 @@ async function _runFolderReconcile(
     try {
       folderMembershipEpoch = getFtsMembershipEpoch();
       _assertNoFolderReconForegroundPressure();
-      nativeFingerprint = await ftsSearch.fingerprintMsgIdRange(startKey, endKey);
+      nativeFingerprint = await _fingerprintFolderNative(
+        ftsSearch, f, startKey, endKey, "initial",
+      );
       _assertFolderReconLease(reconcileLease, generation);
       _assertNoFolderReconForegroundPressure();
       if (folderMembershipEpoch !== getFtsMembershipEpoch()) {
@@ -4355,7 +4852,9 @@ async function _runFolderReconcile(
         };
         folderMembershipEpoch = getFtsMembershipEpoch();
         _assertNoFolderReconForegroundPressure();
-        nativeFingerprint = await ftsSearch.fingerprintMsgIdRange(startKey, endKey);
+        nativeFingerprint = await _fingerprintFolderNative(
+          ftsSearch, f, startKey, endKey, "fresh_after_working",
+        );
         _assertFolderReconLease(reconcileLease, generation);
         _assertNoFolderReconForegroundPressure();
         if (folderMembershipEpoch !== getFtsMembershipEpoch()) {
@@ -4604,7 +5103,9 @@ async function _runFolderReconcile(
         // the membership mutex, then bind the cursor only if its earning epoch
         // is still current. A later storage commit fences the same epoch.
         _assertNoFolderReconForegroundPressure();
-        const staleFingerprint = await ftsSearch.fingerprintMsgIdRange(startKey, endKey);
+        const staleFingerprint = await _fingerprintFolderNative(
+          ftsSearch, f, startKey, endKey, "stale_checkpoint",
+        );
         _assertFolderReconLease(reconcileLease, generation);
         _assertNoFolderReconForegroundPressure();
         if (staleCursorEpoch !== getFtsMembershipEpoch()) {
@@ -4714,7 +5215,9 @@ async function _runFolderReconcile(
         const freshGuard = _folderReconGuardForFreshProof(folderKey, freshEntry, freshExpected);
         folderMembershipEpoch = getFtsMembershipEpoch();
         _assertNoFolderReconForegroundPressure();
-        const ftsNow = await ftsSearch.fingerprintMsgIdRange(startKey, endKey);
+        const ftsNow = await _fingerprintFolderNative(
+          ftsSearch, f, startKey, endKey, "terminal",
+        );
         _assertFolderReconLease(reconcileLease, generation);
         _assertNoFolderReconForegroundPressure();
         if (folderMembershipEpoch !== getFtsMembershipEpoch()) {
@@ -4886,8 +5389,12 @@ async function _runFolderReconOrphanSlice(ftsSearch, identities, memo) {
     if (reconcileLease) _assertFolderReconLease(reconcileLease, generation);
     if (_hasFolderReconForegroundPressure()) throw new Error("folder_recon_pressure");
   };
+  const exactMembership = _useExactFolderMembership(ftsSearch);
   const inventory = await _fingerprintStringsCooperatively(
-    [...knownFolderKeys],
+    exactMembership
+      ? identities.map(identity =>
+        `${identity.folderId}\u0000${identity.accountId}\u0000${identity.folderPath}`)
+      : [...knownFolderKeys],
     true,
     assertCurrent,
   );
@@ -4917,7 +5424,9 @@ async function _runFolderReconOrphanSlice(ftsSearch, identities, memo) {
     const identity = identities[basis.nextFolderIndex];
     const { startKey, endKey } = _folderKeyRange(identity.accountId, identity.folderPath);
     assertCurrent();
-    const range = await ftsSearch.countMsgIdRange(startKey, endKey);
+    const range = exactMembership
+      ? await _fingerprintFolderMembershipPages(ftsSearch, identity.folderId, assertCurrent)
+      : await ftsSearch.countMsgIdRange(startKey, endKey);
     assertCurrent();
     if (generation !== _folderReconGeneration
         || basis.membershipEpoch !== getFtsMembershipEpoch()) {
@@ -4926,16 +5435,18 @@ async function _runFolderReconOrphanSlice(ftsSearch, identities, memo) {
     }
     basis.knownFtsCount += Math.max(0, Number(range?.count) || 0);
     basis.nextFolderIndex++;
-    if (basis.nextFolderIndex < identities.length) {
+    if (exactMembership || basis.nextFolderIndex < identities.length) {
       return { complete: false, deferred: true, basisProgress: true };
     }
   }
   if (!basis.nativeAll) {
     try {
       const fingerprintEpoch = basis.membershipEpoch;
-      // A full-index fingerprint is data-sized and must not monopolize the
-      // membership mutex. Epoch validation after the read rejects stale proof.
-      basis.nativeAll = await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
+      // Exact helpers expose only bounded pages. Thunderbird computes the
+      // framed digest cooperatively and rejects any missing relation row.
+      basis.nativeAll = exactMembership
+        ? await _fingerprintFolderMembershipStatePages(ftsSearch, assertCurrent)
+        : await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
       assertCurrent();
       if (fingerprintEpoch !== getFtsMembershipEpoch()) {
         throw new Error("membership_epoch_changed");
@@ -4956,6 +5467,7 @@ async function _runFolderReconOrphanSlice(ftsSearch, identities, memo) {
   const result = await _folderReconOrphanSweep(
     ftsSearch,
     knownFolderKeys,
+    identities,
     basis.knownFtsCount,
     stats,
     { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE },
@@ -5019,6 +5531,456 @@ async function _getFolderReconInventory(reconcileLease, generation, syncStartedA
   return identities;
 }
 
+function _cancelFolderMembershipScanSession() {
+  const session = _folderMembershipScanSession;
+  _folderMembershipScanSession = null;
+  if (session?.token && typeof browser.tmMsgNotify?.cancelFolderMessageScan === "function") {
+    void browser.tmMsgNotify.cancelFolderMessageScan(session.token).catch(() => {});
+  }
+}
+
+function _newFolderMembershipMigration(inventory) {
+  return {
+    version: 1,
+    inventoryCount: inventory.count,
+    inventorySha256: inventory.sha256,
+    completedFolderIds: {},
+    stateAfterMsgId: null,
+    passMembershipEpoch: null,
+    passMutated: false,
+    passUnresolved: 0,
+    cutoverProven: false,
+    updatedAtMs: Date.now(),
+  };
+}
+
+function _resetFolderMembershipStatePass(migration) {
+  migration.stateAfterMsgId = null;
+  migration.passMembershipEpoch = null;
+  migration.passMutated = false;
+  migration.passUnresolved = 0;
+  migration.cutoverProven = false;
+  migration.updatedAtMs = Date.now();
+}
+
+async function _persistFolderMembershipMigration(
+  memo,
+  expectedEpoch,
+  reconcileLease,
+  generation,
+) {
+  await _assertFolderReconMembershipEpoch(expectedEpoch, reconcileLease, generation);
+  await _writeFolderReconMemo(memo, {
+    generation,
+    folderKeys: [],
+    membershipMigration: true,
+  });
+  await _assertFolderReconMembershipEpoch(expectedEpoch, reconcileLease, generation);
+}
+
+async function _resolveFolderMembershipAssignment(msgId, identities, assertCurrent) {
+  const folders = identities.map(identity => ({
+    id: identity.weFolderId,
+    accountId: identity.accountId,
+    path: identity.folderPath,
+  }));
+  const candidates = getUniqueMessageKeyCandidates(msgId, folders);
+  let match = null;
+  for (const candidate of candidates) {
+    assertCurrent();
+    let page;
+    try {
+      page = await browser.messages.query({
+        folderId: candidate.weFolder.id,
+        headerMessageId: candidate.headerID,
+      });
+    } catch (_) {
+      return null;
+    }
+    assertCurrent();
+    let found = (page?.messages || []).length > 0;
+    while (page?.id && typeof browser.messages.continueList === "function") {
+      page = await browser.messages.continueList(page.id);
+      assertCurrent();
+      if ((page?.messages || []).length > 0) found = true;
+    }
+    if (!found) continue;
+    const owner = identities.find(identity =>
+      identity.weFolderId === candidate.weFolder.id
+      && identity.accountId === candidate.weFolder.accountId
+      && identity.folderPath === candidate.weFolder.path);
+    if (!owner) return null;
+    if (match && match.folderId !== owner.folderId) return null;
+    match = { msgId, folderId: owner.folderId };
+  }
+  return match;
+}
+
+async function _runFolderMembershipScanSlice(
+  ftsSearch,
+  folder,
+  migration,
+  assertCurrent,
+) {
+  let session = _folderMembershipScanSession;
+  if (!session
+      || session.generation !== _folderReconGeneration
+      || session.folderId !== folder.folderId
+      || session.folderURI !== folder.folderURI
+      || session.syncStartedAt !== _lastSyncEventMs
+      || session.mutationSerial !== _folderReconMutationSerial) {
+    _cancelFolderMembershipScanSession();
+    assertCurrent();
+    const started = await browser.tmMsgNotify.beginFolderMessageScan(folder.folderURI, true);
+    assertCurrent();
+    if (started?.error || !started?.token) throw new Error(started?.error || "scan_start_failed");
+    if ((started.accountId && started.accountId !== folder.accountId)
+        || (started.folderPath && started.folderPath !== folder.folderPath)) {
+      try { await browser.tmMsgNotify.cancelFolderMessageScan(started.token); } catch (_) {}
+      throw new Error("folder_identity_changed");
+    }
+    session = {
+      generation: _folderReconGeneration,
+      folderId: folder.folderId,
+      folderURI: folder.folderURI,
+      token: started.token,
+      syncStartedAt: _lastSyncEventMs,
+      mutationSerial: _folderReconMutationSerial,
+    };
+    _folderMembershipScanSession = session;
+  }
+  const assertScanCurrent = () => {
+    assertCurrent();
+    if (session.syncStartedAt !== _lastSyncEventMs
+        || session.mutationSerial !== _folderReconMutationSerial) {
+      throw new Error("folder_changed_during_scan");
+    }
+  };
+
+  try {
+    assertScanCurrent();
+    const page = await browser.tmMsgNotify.readFolderMessageScanPage(
+      session.token,
+      FOLDER_RECON_SCAN_PAGE_SIZE,
+    );
+    assertScanCurrent();
+    if (page?.error) throw new Error(page.error);
+    const assignmentsByMsgId = new Map();
+    for (const row of page?.rows || []) {
+      const headerMessageId = String(row?.headerMessageId || "").replace(/[<>]/g, "");
+      if (!headerMessageId) continue;
+      const msgId = `${folder.accountId}:${folder.folderPath}:${headerMessageId}`;
+      assignmentsByMsgId.set(msgId, { msgId, folderId: folder.folderId });
+    }
+    const assignments = [...assignmentsByMsgId.values()];
+    let expectedEpoch = getFtsMembershipEpoch();
+    for (let offset = 0; offset < assignments.length;
+      offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
+      const batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
+      await withFtsMembershipFence(expectedEpoch, async (membershipFenceToken) => {
+        assertScanCurrent();
+        await ftsSearch.assignFolderMembershipBatch(batch, membershipFenceToken);
+        assertScanCurrent();
+      }, { mutation: true });
+      expectedEpoch = getFtsMembershipEpoch();
+      assertScanCurrent();
+    }
+    _bumpFolderReconTelemetry("scanPages");
+    _bumpFolderReconTelemetry("scanHeaders", (page?.rows || []).length);
+    if (page?.done === true) {
+      _folderMembershipScanSession = null;
+      migration.completedFolderIds[folder.folderId] = true;
+      _resetFolderMembershipStatePass(migration);
+      migration.updatedAtMs = Date.now();
+      return { complete: true, expectedEpoch };
+    }
+    return { complete: false, expectedEpoch };
+  } catch (error) {
+    _cancelFolderMembershipScanSession();
+    throw error;
+  }
+}
+
+/**
+ * Upgrade only the additive folder relation. Each scheduler slice reads at
+ * most one live-folder page or one native membership-state page. Assignments are
+ * idempotent and durable, so interruption restarts only the current proof,
+ * never a body fetch or full-text reindex.
+ */
+async function _runFolderMembershipMigrationSlice(
+  ftsSearch,
+  identities,
+  memo,
+  reconcileLease,
+  generation,
+  syncStartedAt,
+) {
+  if (ftsSearch?.supportsFolderMembership?.() !== true) {
+    _folderMembershipCutoverProven = false;
+    _cancelFolderMembershipScanSession();
+    return { complete: true, legacy: true };
+  }
+  const assertCurrent = () => {
+    _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+    _assertNoFolderReconForegroundPressure();
+  };
+  const validIdentities = identities.filter(identity =>
+    identity.accountId && identity.folderPath && identity.folderId && identity.weFolderId);
+  const distinctFolderIds = new Set(validIdentities.map(identity => identity.folderId));
+  if (validIdentities.length !== identities.length
+      || distinctFolderIds.size !== validIdentities.length) {
+    _folderMembershipCutoverProven = false;
+    _cancelFolderMembershipScanSession();
+    return { complete: false, failed: true, reason: "folder_id_inventory_invalid" };
+  }
+  const inventory = await _fingerprintStringsCooperatively(
+    validIdentities.map(identity =>
+      `${identity.folderId}\u0000${identity.accountId}\u0000${identity.folderPath}`),
+    true,
+    assertCurrent,
+  );
+  assertCurrent();
+  let migration = memo.folderMembershipMigration;
+  if (migration?.version !== 1
+      || migration.inventoryCount !== inventory.count
+      || migration.inventorySha256 !== inventory.sha256
+      || !migration.completedFolderIds
+      || typeof migration.completedFolderIds !== "object") {
+    migration = _newFolderMembershipMigration(inventory);
+    memo.folderMembershipMigration = migration;
+    _folderMembershipCutoverProven = false;
+    _cancelFolderMembershipScanSession();
+  }
+  if (_folderMembershipCutoverProven && migration.cutoverProven === true) {
+    return { complete: true, cutover: true };
+  }
+
+  const incompleteIdentity = validIdentities.find(identity =>
+    migration.completedFolderIds[identity.folderId] !== true);
+  if (incompleteIdentity) {
+    assertCurrent();
+    let folder;
+    try {
+      const state = await browser.tmMsgNotify.getFolderState(
+        incompleteIdentity.accountId,
+        incompleteIdentity.folderPath,
+      );
+      // Privileged state supplies URI/scan metadata, but app-owned membership
+      // and current WebExtension ids always come from this turn's raw
+      // account/path inventory.
+      folder = { ...state, ...incompleteIdentity };
+    } catch (error) {
+      return { complete: false, failed: true, reason: "folder_state_failed", error: String(error) };
+    }
+    assertCurrent();
+    if (!folder.folderURI || folder.error) {
+      return { complete: false, failed: true, reason: "folder_state_invalid" };
+    }
+    try {
+      const result = await _runFolderMembershipScanSlice(
+        ftsSearch,
+        folder,
+        migration,
+        assertCurrent,
+      );
+      await _persistFolderMembershipMigration(
+        memo,
+        result.expectedEpoch,
+        reconcileLease,
+        generation,
+      );
+      return { complete: false, folderProgress: true, folderComplete: result.complete };
+    } catch (error) {
+      _throwIfFolderReconInterrupted(error);
+      _resetFolderMembershipStatePass(migration);
+      return { complete: false, failed: true, reason: "folder_assignment_failed", error: String(error) };
+    }
+  }
+
+  if (!_folderMembershipMigrationSessionStarted) {
+    // A durable folder completion marker is reusable because all subsequent
+    // writes are capability-gated. A partially enumerated native pass is not:
+    // durably restart it before reading page one so an interruption cannot
+    // accidentally resume at a prior session's terminal cursor.
+    _resetFolderMembershipStatePass(migration);
+    const resetEpoch = getFtsMembershipEpoch();
+    await _persistFolderMembershipMigration(
+      memo,
+      resetEpoch,
+      reconcileLease,
+      generation,
+    );
+    _folderMembershipMigrationSessionStarted = true;
+    return { complete: false, restart: true, reason: "session_membership_state_reset" };
+  }
+
+  if (!Number.isSafeInteger(migration.passMembershipEpoch)) {
+    migration.passMembershipEpoch = getFtsMembershipEpoch();
+  }
+  if (migration.passMembershipEpoch !== getFtsMembershipEpoch()) {
+    _resetFolderMembershipStatePass(migration);
+    await _persistFolderMembershipMigration(
+      memo,
+      getFtsMembershipEpoch(),
+      reconcileLease,
+      generation,
+    );
+    return { complete: false, restart: true, reason: "membership_epoch_changed" };
+  }
+  const pageEpoch = migration.passMembershipEpoch;
+  assertCurrent();
+  let page;
+  try {
+    _consumeFolderMembershipPageBudget();
+    page = await ftsSearch.listFolderMembershipState(
+      migration.stateAfterMsgId,
+      FOLDER_MEMBERSHIP_STATE_PAGE_SIZE,
+    );
+  } catch (error) {
+    return { complete: false, failed: true, reason: "membership_state_list_failed", error: String(error) };
+  }
+  assertCurrent();
+  if (pageEpoch !== getFtsMembershipEpoch()) {
+    _resetFolderMembershipStatePass(migration);
+    return { complete: false, restart: true, reason: "membership_epoch_changed" };
+  }
+
+  const assignments = [];
+  const staleOrphanMsgIds = [];
+  let unresolved = 0;
+  const identityByFolderId = new Map(
+    validIdentities.map(identity => [identity.folderId, identity]),
+  );
+  if ((page.entries || []).length > FOLDER_MEMBERSHIP_STATE_PAGE_SIZE
+      || (page.done !== true && (page.entries || []).length === 0)) {
+    _resetFolderMembershipStatePass(migration);
+    return { complete: false, failed: true, reason: "membership_state_page_invalid" };
+  }
+  let previousMsgId = migration.stateAfterMsgId;
+  for (const entry of page.entries || []) {
+    const msgId = entry?.msgId;
+    try {
+      _assertStrictMembershipCursor(previousMsgId, msgId);
+    } catch (error) {
+      _resetFolderMembershipStatePass(migration);
+      return {
+        complete: false,
+        failed: true,
+        reason: "membership_state_order_invalid",
+        error: String(error),
+      };
+    }
+    previousMsgId = msgId;
+    if (entry.folderId !== null
+        && (typeof entry.folderId !== "string" || entry.folderId.length === 0)) {
+      _resetFolderMembershipStatePass(migration);
+      return { complete: false, failed: true, reason: "membership_state_folder_id_invalid" };
+    }
+    if (entry.folderId !== null) {
+      const owner = identityByFolderId.get(entry.folderId);
+      if (!owner) {
+        // The relation is authoritative even though the raw legacy key is
+        // ambiguous. A non-null opaque id absent from this fresh, fenced
+        // inventory belongs to a deleted/renamed folder and is stale.
+        staleOrphanMsgIds.push(msgId);
+      } else if (!msgId.startsWith(`${owner.accountId}:${owner.folderPath}:`)) {
+        // A current folder id attached to a structurally different raw key is
+        // a conflict, not deletion evidence.
+        unresolved++;
+      }
+      continue;
+    }
+    const assignment = await _resolveFolderMembershipAssignment(
+      msgId,
+      validIdentities,
+      assertCurrent,
+    );
+    if (assignment) assignments.push(assignment);
+    else unresolved++;
+  }
+  let expectedEpoch = pageEpoch;
+  if (staleOrphanMsgIds.length > 0) {
+    try {
+      await withFtsMembershipFence(expectedEpoch, async (membershipFenceToken) => {
+        assertCurrent();
+        await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
+        assertCurrent();
+        for (const msgId of staleOrphanMsgIds) {
+          const remaining = await ftsSearch.getMessageByMsgId(msgId);
+          assertCurrent();
+          if (remaining?.msgId === msgId) throw new Error("stale_folder_remove_verify_failed");
+        }
+      }, { mutation: true });
+      expectedEpoch = getFtsMembershipEpoch();
+      migration.passMembershipEpoch = expectedEpoch;
+      migration.passMutated = true;
+    } catch (error) {
+      _throwIfFolderReconInterrupted(error);
+      _resetFolderMembershipStatePass(migration);
+      return { complete: false, failed: true, reason: "stale_folder_remove_failed", error: String(error) };
+    }
+  }
+  if (assignments.length > 0) {
+    try {
+      for (let offset = 0; offset < assignments.length;
+        offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
+        const batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
+        await withFtsMembershipFence(expectedEpoch, async (membershipFenceToken) => {
+          assertCurrent();
+          await ftsSearch.assignFolderMembershipBatch(batch, membershipFenceToken);
+          assertCurrent();
+        }, { mutation: true });
+        expectedEpoch = getFtsMembershipEpoch();
+      }
+      migration.passMembershipEpoch = expectedEpoch;
+      migration.passMutated = true;
+    } catch (error) {
+      _throwIfFolderReconInterrupted(error);
+      _resetFolderMembershipStatePass(migration);
+      return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
+    }
+  }
+  migration.passUnresolved += unresolved;
+  migration.stateAfterMsgId = (page.entries || []).length > 0
+    ? page.entries[page.entries.length - 1].msgId
+    : migration.stateAfterMsgId;
+  migration.updatedAtMs = Date.now();
+  if (page.done === true) {
+    if (migration.passMutated || migration.passUnresolved > 0) {
+      const passUnresolved = migration.passUnresolved;
+      _resetFolderMembershipStatePass(migration);
+      await _persistFolderMembershipMigration(
+        memo,
+        expectedEpoch,
+        reconcileLease,
+        generation,
+      );
+      return {
+        complete: false,
+        restart: true,
+        ...(passUnresolved > 0 ? { failed: true, reason: "unresolved_legacy_rows" } : {}),
+      };
+    }
+    migration.cutoverProven = true;
+    migration.updatedAtMs = Date.now();
+    await _persistFolderMembershipMigration(
+      memo,
+      expectedEpoch,
+      reconcileLease,
+      generation,
+    );
+    _folderMembershipCutoverProven = true;
+    return { complete: true, cutover: true };
+  }
+  await _persistFolderMembershipMigration(
+    memo,
+    expectedEpoch,
+    reconcileLease,
+    generation,
+  );
+  return { complete: false, membershipStateProgress: true };
+}
+
 /** Run one fair, bounded-cost folder/orphan slice and arrange the next tick. */
 async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
   _bumpFolderReconTelemetry("schedulerTicks");
@@ -5053,6 +6015,8 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
     Math.max(minimumMs, Date.now() - sliceStartedAt);
   const owner = { generation, reconcileLease, syncStartedAt };
   _folderReconSchedulerOwner = owner;
+  const folderMembershipCapable = _observeFolderMembershipCapability(ftsSearch);
+  _folderMembershipPageBudget = 1;
   _bumpFolderReconTelemetry("schedulerSlices");
   try {
     let scanGate;
@@ -5072,7 +6036,37 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
     const keys = identities.map(i => `${i.accountId}:${i.folderPath}`);
     const currentFolderKeys = new Set(keys);
     _pruneFolderReconRuntimeToFolderKeys(currentFolderKeys);
-    const ambiguous = _folderReconAmbiguousKeyspaces(identities);
+    const memo = await _getFolderReconMemo();
+    _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+    if (folderMembershipCapable) {
+      let migration;
+      try {
+        migration = await _runFolderMembershipMigrationSlice(
+          ftsSearch,
+          identities,
+          memo,
+          reconcileLease,
+          generation,
+          syncStartedAt,
+        );
+      } catch (error) {
+        if (!String(error?.message || error).includes("folder_recon_pressure")) throw error;
+        _bumpFolderReconTelemetry("schedulerPressureSkips");
+        _wakeFolderRecon("membership_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
+        return { skipped: true, reason: "pressure" };
+      }
+      _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+      if (!migration.complete) {
+        _wakeFolderRecon("membership_continue", migration.failed
+          ? cooperativeDelay(FOLDER_RECON_ERROR_DELAY_MS)
+          : cooperativeDelay());
+        return { complete: false, migration };
+      }
+    }
+    const exactMembership = _useExactFolderMembership(ftsSearch);
+    const ambiguous = exactMembership
+      ? { folderKeys: new Set(), groups: 0 }
+      : _folderReconAmbiguousKeyspaces(identities);
     if (!_folderReconRuntimeTelemetry) _resetFolderReconRuntimeTelemetry();
     _folderReconRuntimeTelemetry.ambiguousGroups = ambiguous.groups;
     _folderReconRuntimeTelemetry.ambiguousFolders = ambiguous.folderKeys.size;
@@ -5083,8 +6077,8 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
     }
     if (ambiguous.groups > 0) {
       // Aggregate-only observability for the non-injective legacy key schema.
-      // No folder/account/message identifiers are emitted. Issue #20 owns the
-      // schema migration; until then every overlapping range fails closed.
+      // No folder/account/message identifiers are emitted. ADR-024 bypasses
+      // this path only after capable helpers earn exact-relation cutover.
       logFtsBatchOperation("folder_recon", "ambiguous_keyspace", {
         ambiguousGroups: ambiguous.groups,
         ambiguousFolders: ambiguous.folderKeys.size,
@@ -5112,8 +6106,6 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
       }
     }
 
-    const memo = await _getFolderReconMemo();
-    _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
     const anchor = memo.roundRobinCursor;
     const start = anchor && keys.includes(anchor) ? (keys.indexOf(anchor) + 1) % keys.length : 0;
     let target = null;
@@ -5183,7 +6175,12 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
       try {
         orphan = await _runFolderReconOrphanSlice(ftsSearch, identities, memo);
       } catch (e) {
-        if (!String(e?.message || e).includes("folder_recon_pressure")) throw e;
+        const message = String(e?.message || e);
+        if (message.includes("folder_membership_page_pending")) {
+          _wakeFolderRecon("orphan_membership_page", cooperativeDelay());
+          return { complete: false, orphan: { deferred: true, pageProgress: true } };
+        }
+        if (!message.includes("folder_recon_pressure")) throw e;
         _bumpFolderReconTelemetry("schedulerPressureSkips");
         _wakeFolderRecon("orphan_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
         return { skipped: true, reason: "pressure" };
@@ -5225,7 +6222,12 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
         identities,
       );
     } catch (e) {
-      if (!String(e?.message || e).includes("folder_recon_pressure")) throw e;
+      const message = String(e?.message || e);
+      if (message.includes("folder_membership_page_pending")) {
+        _wakeFolderRecon("folder_membership_page", cooperativeDelay());
+        return { complete: false, deferred: true, reason: "membership_page" };
+      }
+      if (!message.includes("folder_recon_pressure")) throw e;
       _bumpFolderReconTelemetry("schedulerPressureSkips");
       _wakeFolderRecon("folder_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
       return { skipped: true, reason: "pressure" };
@@ -5290,6 +6292,7 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
     _wakeFolderRecon("next_folder", cooperativeDelay());
     return stats;
   } finally {
+    _folderMembershipPageBudget = 0;
     if (_folderReconSchedulerOwner === owner) {
       const elapsedMs = Math.max(0, Date.now() - sliceStartedAt);
       if (!_folderReconRuntimeTelemetry) _resetFolderReconRuntimeTelemetry();
@@ -5360,9 +6363,8 @@ const RECONCILE_RECHECK_KEEPALIVE_EVERY = 50;
  * Phase 2 of reconciliation: query FTS entries in the reconcile window and
  * remove any that no longer exist in TB at their indexed folder path.
  *
- * Uses the same parseUniqueId + headerIDToWeID approach as maintenanceScheduler's
- * cleanupMissingEntries, but with lighter chunking since the reconcile window
- * is typically small.
+ * Uses exact live-folder candidates and folder-scoped message queries, with
+ * lighter chunking since the reconcile window is typically small.
  */
 async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
   const startDate = new Date(reconcileFromMs);
@@ -5420,6 +6422,7 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
     let cursorEndMs = endDate.getTime();
     const startMs = startDate.getTime();
     const seenMsgIds = new Set();
+    const exactMembership = _useExactFolderMembership(ftsSearch);
 
     while (cursorEndMs > startMs) {
       const chunk = await ftsSearch.queryByDateRange(startDate, new Date(cursorEndMs), RECONCILE_QUERY_CHUNK_SIZE);
@@ -5432,24 +6435,76 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
         seenMsgIds.add(entry.msgId);
         newInChunk++;
 
-        const parsed = parseUniqueId(entry.msgId);
-        if (!parsed) {
+        if (!exactMembership) {
+          const parsed = parseUniqueId(entry.msgId);
+          if (!parsed) {
+            checked++;
+            continue;
+          }
+          const { weFolder, headerID } = parsed;
+          await ensureAccountChecked(weFolder?.accountId);
+          if (unavailableAccounts.has(weFolder?.accountId)) {
+            checked++;
+            continue;
+          }
+          try {
+            const weID = await headerIDToWeID(headerID, weFolder, false, false);
+            if (!weID) {
+              staleCandidates.push({ msgId: entry.msgId, headerID, weFolder });
+              logFtsOperation("reconcile_stale", "found", {
+                msgId: entry.msgId,
+                folderPath: weFolder?.path || "",
+                headerID,
+                subject: entry.subject || "",
+              });
+            }
+          } catch (e) {
+            log(`[TMDBG FTS] Reconcile cleanup: error checking ${entry.msgId}: ${e}`, "info");
+            logFtsOperation("reconcile_stale", "error_skipped", {
+              msgId: entry.msgId,
+              folderPath: weFolder?.path || "",
+              headerID,
+              error: String(e),
+            });
+          }
           checked++;
+          if (RECONCILE_ENTRY_DELAY_MS > 0) {
+            await new Promise(r => setTimeout(r, RECONCILE_ENTRY_DELAY_MS));
+          }
           continue;
         }
 
-        const { weFolder, headerID } = parsed;
+        const firstBoundary = String(entry.msgId || "").indexOf(":");
+        if (firstBoundary <= 0) {
+          checked++;
+          continue;
+        }
+        const accountId = entry.msgId.slice(0, firstBoundary);
 
         // Skip entries for accounts that aren't queryable
-        await ensureAccountChecked(weFolder?.accountId);
-        if (unavailableAccounts.has(weFolder?.accountId)) {
+        await ensureAccountChecked(accountId);
+        if (unavailableAccounts.has(accountId)) {
           checked++;
           continue;
         }
 
         try {
-          // Check if message still exists at its indexed folder (no global fallback)
-          const weID = await headerIDToWeID(headerID, weFolder, false, false);
+          const liveFolders = await browser.folders.query({ accountId });
+          const candidates = getUniqueMessageKeyCandidates(entry.msgId, liveFolders);
+          if (candidates.length !== 1) {
+            checked++;
+            continue;
+          }
+          const { weFolder, headerID } = candidates[0];
+          let page = await browser.messages.query({
+            folderId: weFolder.id,
+            headerMessageId: headerID,
+          });
+          let weID = page?.messages?.[0]?.id || null;
+          while (!weID && page?.id && typeof browser.messages.continueList === "function") {
+            page = await browser.messages.continueList(page.id);
+            weID = page?.messages?.[0]?.id || null;
+          }
 
           if (!weID) {
             // Message not found at its indexed folder — stale CANDIDATE.
@@ -5471,8 +6526,6 @@ async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
           log(`[TMDBG FTS] Reconcile cleanup: error checking ${entry.msgId}: ${e}`, "info");
           logFtsOperation("reconcile_stale", "error_skipped", {
             msgId: entry.msgId,
-            folderPath: weFolder?.path || "",
-            headerID,
             error: String(e),
           });
         }
@@ -5615,6 +6668,11 @@ export async function initIncrementalIndexer(ftsSearch) {
   _folderReconRequestedDueMs = Infinity;
   _folderReconHardNotBeforeMs = 0;
   _folderReconNativeSupported = null;
+  _folderMembershipCutoverProven = false;
+  _folderMembershipMigrationSessionStarted = false;
+  _folderMembershipCapabilityState = null;
+  _cancelFolderMembershipScanSession();
+  _resetFolderMembershipVolatileProof();
   _folderReconDrainSkipped = new Set();
   _folderReconInProgressOwner = null;
   _folderReconUnverified = new Set();
@@ -5748,6 +6806,11 @@ export async function disposeIncrementalIndexer() {
   _cancelExclusiveMarkerRetry();
   _folderReconInProgressOwner = null;
   _folderReconSchedulerOwner = null;
+  _folderMembershipCutoverProven = false;
+  _folderMembershipMigrationSessionStarted = false;
+  _folderMembershipCapabilityState = null;
+  _cancelFolderMembershipScanSession();
+  _resetFolderMembershipVolatileProof();
   _resetFolderReconRuntimeTelemetry();
   if (_folderReconTimer) {
     clearTimeout(_folderReconTimer);
@@ -6018,9 +7081,16 @@ export const _testExports = {
   _maybeScheduleFolderReconRerun,
   _getFolderReconDrainSkipped: () => _folderReconDrainSkipped,
   _getFolderReconNativeSupported: () => _folderReconNativeSupported,
+  _getFolderMembershipCutoverProven: () => _folderMembershipCutoverProven,
+  _runFolderMembershipMigrationSlice,
   _resetFolderReconState: () => {
     _resetFtsOperationCoordinatorForTests();
     _folderReconNativeSupported = null;
+    _folderMembershipCutoverProven = false;
+    _folderMembershipMigrationSessionStarted = false;
+    _folderMembershipCapabilityState = null;
+    _cancelFolderMembershipScanSession();
+    _resetFolderMembershipVolatileProof();
     _folderReconDrainSkipped = new Set();
     _folderReconInProgressOwner = null;
     _folderReconUnverified = new Set();

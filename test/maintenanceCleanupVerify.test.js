@@ -76,7 +76,10 @@ globalThis.browser = {
   },
   messages: { get: vi.fn(), query: vi.fn() },
   folders: {
-    query: vi.fn(async () => [{ id: 1, path: '/INBOX' }]), // accounts queryable
+    query: vi.fn(async ({ accountId }) => [
+      { id: 1, accountId, path: '/INBOX' },
+      { id: 2, accountId, path: '/[Gmail]/Bin' },
+    ]), // accounts queryable
     getSubFolders: vi.fn(),
   },
   accounts: {
@@ -128,6 +131,10 @@ beforeEach(() => {
   _testExports._setFtsSearchForTest(null);
   mockHeaderIDToWeID.mockReset();
   mockRecheckMessageInFolder.mockReset();
+  globalThis.browser.folders.query.mockImplementation(async ({ accountId }) => [
+    { id: 1, accountId, path: '/INBOX' },
+    { id: 2, accountId, path: '/[Gmail]/Bin' },
+  ]);
 });
 
 describe('manual cleanup operation ownership', () => {
@@ -190,6 +197,28 @@ describe('manual cleanup operation ownership', () => {
 // ---------------------------------------------------------------------------
 
 describe('cleanupMissingEntries verify-then-remove (Phase 2.5)', () => {
+  it('fails closed instead of delimiter-parsing a colon-overlapping folder key', async () => {
+    const { start, end } = dateRange();
+    const ftsSearch = makeFtsSearch([{
+      msgId: 'account1:/F:suffix:message@example.com',
+      subject: 'Ambiguous',
+      dateMs: end.getTime() - 3600000,
+    }]);
+    globalThis.browser.folders.query.mockResolvedValue([
+      { id: 10, accountId: 'account1', path: '/F' },
+      { id: 11, accountId: 'account1', path: '/F:suffix' },
+    ]);
+    mockHeaderIDToWeID.mockResolvedValue(null);
+    mockRecheckMessageInFolder.mockResolvedValue('absent');
+
+    const result = await cleanupMissingEntries(ftsSearch, start, end);
+
+    expect(result).toMatchObject({ processed: 1, removed: 0 });
+    expect(mockHeaderIDToWeID).not.toHaveBeenCalled();
+    expect(mockRecheckMessageInFolder).not.toHaveBeenCalled();
+    expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
+  });
+
   it('does not recheck or remove entries that pass the first existence check', async () => {
     const { start, end } = dateRange();
     const ftsSearch = makeFtsSearch([
@@ -221,7 +250,7 @@ describe('cleanupMissingEntries verify-then-remove (Phase 2.5)', () => {
     expect(ftsSearch.removeBatch).toHaveBeenCalledWith(['account1:/[Gmail]/Bin:really-gone@example.com']);
     expect(mockRecheckMessageInFolder).toHaveBeenCalledWith(
       'really-gone@example.com',
-      { accountId: 'account1', path: '/[Gmail]/Bin' },
+      expect.objectContaining({ accountId: 'account1', path: '/[Gmail]/Bin' }),
     );
     expect(result.removedDetails).toEqual([
       expect.objectContaining({

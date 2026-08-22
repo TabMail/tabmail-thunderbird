@@ -16,6 +16,7 @@ import {
 } from "../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../chat/modules/icsParser.js";
 import { extractPlainText } from "./bodyExtract.js";
+import { makeFolderMembershipId } from "./folderMembershipIdentity.js";
 
 // Load FTS settings from storage
 async function getFtsSettings() {
@@ -135,6 +136,12 @@ export async function buildBatchHeader(messages) {
     // 2) Build lightweight header row
     const row = {
       msgId,                              // accountId:folderPath:headerID
+      // Additive structured relation used by native helpers that advertise
+      // folderMembershipV1.  The native adapter strips it for older helpers.
+      folderId: makeFolderMembershipId(
+        String(m.folder?.accountId || ""),
+        String(m.folder?.path || ""),
+      ),
       subject: (await getRealSubject(m)) || "",
       from_: (m.author || ""),
       to_: (m.recipients || []).join(", "),
