@@ -508,8 +508,12 @@ export const nativeFtsSearch = {
     return nativeRPC('clear', {});
   },
   
-  async optimize(params = {}) {
-    return nativeRPC('optimize', params);
+  async optimize() {
+    const result = await nativeRPC('optimize', {});
+    if (result?.ok !== true) {
+      throw new Error("Native FTS optimize returned an invalid response");
+    }
+    return result;
   },
   
   async filterNewMessages(rows) {

@@ -136,9 +136,15 @@ function attachCommandInterface() {
               log("[TMDBG FTS] Index cleared and initial scan flags reset");
               sendResponse({ ok: true });
               return;
-            case "optimize":
-              sendResponse(await ftsSearch.optimize(msg));
+            case "optimize": {
+              const result = await _runOwnedFtsScan(
+                "optimize",
+                { scanType: "optimize" },
+                async () => ftsSearch.optimize(),
+              );
+              sendResponse(result);
               return;
+            }
             case "clearCheckpoints":
               sendResponse(await ftsSearch.clearCheckpoints());
               return;
@@ -592,9 +598,9 @@ export const ftsSearch = {
     return await this.clear();
   },
 
-  async optimize(params = {}) {
+  async optimize() {
     log("[TMDBG FTS] Running FTS optimize");
-    return await nativeFtsSearch.optimize(params);
+    return await nativeFtsSearch.optimize();
   },
 
   async removeBatch(ids, membershipFenceToken = null) {
