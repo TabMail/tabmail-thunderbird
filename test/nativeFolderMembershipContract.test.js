@@ -283,11 +283,48 @@ describe("native folder-membership v1 contract", () => {
     expect(port.messages.some(message => message.method === "indexBatch")).toBe(false);
   });
 
-  it("uses the frozen exact-equality reader and metadata backfill RPC shapes", async () => {
+  it("includes string cursors in both folder-membership reader RPC shapes", async () => {
     const { nativeFtsSearch, port } = await initialized(true);
 
     await nativeFtsSearch.listFolderMembership("opaque-folder-17", "after-key", 25);
     await nativeFtsSearch.listFolderMembershipState("after-key", 25);
+
+    expect(port.messages.find(message => message.method === "listFolderMembership")?.params)
+      .toEqual({ folderId: "opaque-folder-17", afterMsgId: "after-key", limit: 25 });
+    expect(port.messages.find(message => message.method === "listFolderMembershipState")?.params)
+      .toEqual({ afterMsgId: "after-key", limit: 25 });
+  });
+
+  it.each([
+    { cursor: null, label: "null" },
+    { cursor: undefined, label: "undefined" },
+  ])("omits a $label cursor from both folder-membership reader RPC shapes", async ({ cursor }) => {
+    const { nativeFtsSearch, port } = await initialized(true);
+
+    await nativeFtsSearch.listFolderMembership("opaque-folder-17", cursor, 25);
+    await nativeFtsSearch.listFolderMembershipState(cursor, 25);
+
+    expect(port.messages.find(message => message.method === "listFolderMembership")?.params)
+      .toStrictEqual({ folderId: "opaque-folder-17", limit: 25 });
+    expect(port.messages.find(message => message.method === "listFolderMembershipState")?.params)
+      .toStrictEqual({ limit: 25 });
+  });
+
+  it("forwards non-null malformed cursors to native validation in both reader RPC shapes", async () => {
+    const { nativeFtsSearch, port } = await initialized(true);
+
+    await nativeFtsSearch.listFolderMembership("opaque-folder-17", 17, 25);
+    await nativeFtsSearch.listFolderMembershipState(17, 25);
+
+    expect(port.messages.find(message => message.method === "listFolderMembership")?.params)
+      .toStrictEqual({ folderId: "opaque-folder-17", afterMsgId: 17, limit: 25 });
+    expect(port.messages.find(message => message.method === "listFolderMembershipState")?.params)
+      .toStrictEqual({ afterMsgId: 17, limit: 25 });
+  });
+
+  it("uses the frozen exact-equality metadata backfill RPC shape", async () => {
+    const { nativeFtsSearch, port } = await initialized(true);
+
     await nativeFtsSearch.assignFolderMembershipBatch([{
       msgId: "account:/Client:Acme:message@example.com",
       folderId: "opaque-folder-17",
@@ -295,10 +332,6 @@ describe("native folder-membership v1 contract", () => {
 
     expect(port.messages.some(message => message.method === "fingerprintFolderMembership"))
       .toBe(false);
-    expect(port.messages.find(message => message.method === "listFolderMembership"))
-      .toMatchObject({ params: { folderId: "opaque-folder-17", afterMsgId: "after-key", limit: 25 } });
-    expect(port.messages.find(message => message.method === "listFolderMembershipState"))
-      .toMatchObject({ params: { afterMsgId: "after-key", limit: 25 } });
     expect(port.messages.find(message => message.method === "assignFolderMembershipBatch"))
       .toMatchObject({ params: { assignments: [{
         msgId: "account:/Client:Acme:message@example.com",

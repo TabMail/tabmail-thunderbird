@@ -837,11 +837,9 @@ export const nativeFtsSearch = {
   supportsFolderMembership,
 
   async listFolderMembership(folderId, afterMsgId, limit) {
-    const result = await nativeRPC('listFolderMembership', {
-      folderId,
-      afterMsgId,
-      limit,
-    });
+    const params = { folderId, limit };
+    if (afterMsgId != null) params.afterMsgId = afterMsgId;
+    const result = await nativeRPC('listFolderMembership', params);
     if (result?.ok !== true
         || !Array.isArray(result.msgIds)
         || typeof result.done !== "boolean"
@@ -852,10 +850,9 @@ export const nativeFtsSearch = {
   },
 
   async listFolderMembershipState(afterMsgId, limit) {
-    const result = await nativeRPC('listFolderMembershipState', {
-      afterMsgId,
-      limit,
-    });
+    const params = { limit };
+    if (afterMsgId != null) params.afterMsgId = afterMsgId;
+    const result = await nativeRPC('listFolderMembershipState', params);
     if (result?.ok !== true
         || !Array.isArray(result.entries)
         || typeof result.done !== "boolean"
