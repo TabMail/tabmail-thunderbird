@@ -43,6 +43,10 @@ const CONFIG_MLTV = {
   className: "tm-table-sender-processed",
   maxLogs: 10,
   stripEmail: true,
+  // Thunderbird virtualizes the table, so this bounds self-heal work to the
+  // small rendered row pool rather than the full dbView.
+  selfHealRenderedRowLimit: 200,
+  selfHealFallbackDelayMs: 0,
   // Columns to process
   columnSelectors: [
     '[data-column-name="correspondentcol"]',
@@ -55,6 +59,8 @@ const CONFIG_MLTV = {
 // Mirrors tagSort's sort priority. Phase 2 will replace keyword lookup with an
 // IDB-backed action map.
 const TM_ACTION_TAG_KEY_PRIORITY_MLTV = ["tm_reply", "tm_none", "tm_archive", "tm_delete"];
+// Keep collapsed-thread aggregation consistent with tmMessageListCardView.
+const TM_ACTION_PRIORITY_MLTV = ["reply", "none", "archive", "delete"];
 
 // Coverage detection rate limits.
 const UNTAGGED_COVERAGE_CONFIG_MLTV = {
@@ -181,6 +187,53 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
     }
 
     /**
+     * Paint one currently-rendered row from the authoritative mork property.
+     * This leaf is shared by fillRow and the insertion-time self-heal so both
+     * paths converge on exactly the same visible end state.
+     */
+    function paintRenderedTableRow_MLTV(row) {
+      if (!row) return;
+      try {
+        const view = row.view || null;
+        const rowIndex = Number.isInteger(row._index) ? row._index : -1;
+        let hdr = null;
+        if (view && rowIndex >= 0) {
+          try { hdr = view.getMsgHdrAt?.(rowIndex); } catch (_) {}
+          if (!hdr) try { hdr = view.getMessageHdrAt?.(rowIndex); } catch (_) {}
+        }
+
+        if (!hdr) return;
+
+        const action = _aggregateActionForThread_MLTV(view, rowIndex, hdr);
+        _paintRowForAction_MLTV(row, action);
+
+        // Coverage detection: if this is an inbox row with no action, fire the
+        // event so MV3 can enqueue it for classification.
+        if (!action && UNTAGGED_COVERAGE_CONFIG_MLTV.enabled && self._onUntaggedFire_MLTV) {
+          try {
+            const folder = hdr.folder;
+            if (folder && _isInboxOrUnifiedInboxFolder_MLTV(folder)) {
+              _fireUntaggedMessage_MLTV(hdr, rowIndex, folder.URI || "");
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    function repaintRenderedTableRows_MLTV(doc) {
+      if (!doc || !isTableView_MLTV(doc)) return;
+      const tree = doc.getElementById("threadTree");
+      if (!tree) return;
+      const rows = tree.querySelectorAll('tr[is="thread-row"], [id^="threadTree-row"]');
+      let painted = 0;
+      for (const row of rows) {
+        if (painted >= CONFIG_MLTV.selfHealRenderedRowLimit) break;
+        paintRenderedTableRow_MLTV(row);
+        painted++;
+      }
+    }
+
+    /**
      * Process all visible rows in the table
      */
     function processAllTableRows_MLTV(doc) {
@@ -194,6 +247,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
       for (const row of rows) {
         processTableRow_MLTV(row);
       }
+      repaintRenderedTableRows_MLTV(doc);
     }
 
     let logCount_MLTV = 0;
@@ -269,35 +323,14 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
           // Paint from cache. Uses own-properties `this.view` and `this._index`
           // which TB 145's ThreadRow sets before/during fillRow.
           try {
-            const view = this.view || null;
-            const rowIndex = Number.isInteger(this._index) ? this._index : -1;
-            let hdr = null;
-            if (view && rowIndex >= 0) {
-              try { hdr = view.getMsgHdrAt?.(rowIndex); } catch (_) {}
-              if (!hdr) try { hdr = view.getMessageHdrAt?.(rowIndex); } catch (_) {}
-            }
-            if (hdr) {
-              const action = _lookupActionForRow_MLTV(hdr);
-              _paintRowForAction_MLTV(this, action);
-
-              // Coverage detection: if this is an inbox row with no action,
-              // fire the event so MV3 can enqueue it for classification.
-              if (!action && UNTAGGED_COVERAGE_CONFIG_MLTV.enabled && self._onUntaggedFire_MLTV) {
-                try {
-                  const folder = hdr.folder;
-                  if (folder && _isInboxOrUnifiedInboxFolder_MLTV(folder)) {
-                    _fireUntaggedMessage_MLTV(hdr, rowIndex, folder.URI || "");
-                  }
-                } catch (_) {}
-              }
-            }
+            paintRenderedTableRow_MLTV(this);
           } catch (_) {}
         };
         newFillRow.__tmTableOwner = processTableRow_MLTV;
         proto.fillRow = newFillRow;
 
         ThreadRow.__tmTableSenderPatched = true;
-        console.log(`${LOG_PREFIX_MLTV} ✓ ThreadRow.fillRow patched for sender stripping`);
+        console.log(`${LOG_PREFIX_MLTV} ✓ ThreadRow.fillRow patched for sender stripping and action paint`);
         return true;
       } catch (e) {
         console.error(`${LOG_PREFIX_MLTV} patchThreadRowPrototype failed:`, e);
@@ -315,6 +348,9 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
           if (existingRow) ThreadRow = existingRow.constructor;
         }
         if (!ThreadRow) return;
+        if (ThreadRow.prototype.fillRow?.__tmTableOwner !== processTableRow_MLTV) {
+          return;
+        }
         // Restore pristine fillRow so a future patch re-wraps the same
         // baseline rather than stacking on this module's wrapper. The
         // origFillRow stash stays on the constructor (class-static) so the
@@ -334,10 +370,62 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
     /**
      * Attach MutationObserver to catch table row updates
      */
+    function cancelScheduledTableRepaint_MLTV(doc, ownerOnly = true) {
+      try {
+        const pending = doc?.__tmTableActionPaintFrame_MLTV;
+        if (!pending) return;
+        if (ownerOnly && pending.owner !== processTableRow_MLTV) return;
+        try { pending.cancel?.(pending.id); } catch (_) {}
+        if (doc.__tmTableActionPaintFrame_MLTV === pending) {
+          delete doc.__tmTableActionPaintFrame_MLTV;
+        }
+      } catch (_) {}
+    }
+
+    function scheduleRenderedTableRepaint_MLTV(doc) {
+      try {
+        if (!doc?.defaultView) return;
+        const existing = doc.__tmTableActionPaintFrame_MLTV;
+        if (existing?.owner === processTableRow_MLTV) return;
+        if (existing) cancelScheduledTableRepaint_MLTV(doc, false);
+
+        const contentWin = doc.defaultView;
+        const pending = {
+          owner: processTableRow_MLTV,
+          id: null,
+          cancel: null,
+        };
+        const run = () => {
+          if (doc.__tmTableActionPaintFrame_MLTV !== pending) return;
+          delete doc.__tmTableActionPaintFrame_MLTV;
+          repaintRenderedTableRows_MLTV(doc);
+        };
+
+        if (typeof contentWin.requestAnimationFrame === "function") {
+          pending.cancel = id => contentWin.cancelAnimationFrame?.(id);
+          pending.id = contentWin.requestAnimationFrame(run);
+        } else if (typeof contentWin.setTimeout === "function") {
+          pending.cancel = id => contentWin.clearTimeout?.(id);
+          pending.id = contentWin.setTimeout(run, CONFIG_MLTV.selfHealFallbackDelayMs);
+        } else {
+          return;
+        }
+        doc.__tmTableActionPaintFrame_MLTV = pending;
+      } catch (_) {}
+    }
+
     function attachTableObserver_MLTV(doc) {
       try {
         if (!doc) return;
-        if (doc.__tmTableSenderMO_MLTV) return; // Already attached
+        if (doc.__tmTableSenderMO_MLTV?.__tmTableOwner === processTableRow_MLTV) {
+          return; // Already attached by this exact module instance.
+        }
+        if (doc.__tmTableSenderMO_MLTV) {
+          try { doc.__tmTableSenderMO_MLTV.disconnect(); } catch (_) {}
+          delete doc.__tmTableSenderMO_MLTV;
+        }
+        // A previous hot-reloaded module may have left a queued frame behind.
+        cancelScheduledTableRepaint_MLTV(doc, false);
         
         const tree = doc.getElementById("threadTree");
         if (!tree) return;
@@ -362,10 +450,15 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
                 }
               }
             }
+            // NoteChange can be coalesced while Thunderbird inserts/recycles
+            // rows. Re-read the bounded rendered pool on the next frame, after
+            // the DOM/view indices settle, without relying on tagSort.
+            scheduleRenderedTableRepaint_MLTV(doc);
           } catch (_) {}
         });
         
         mo.observe(tree, { childList: true, subtree: true, characterData: true });
+        mo.__tmTableOwner = processTableRow_MLTV;
         doc.__tmTableSenderMO_MLTV = mo;
         console.log(`${LOG_PREFIX_MLTV} ✓ MutationObserver attached`);
       } catch (e) {
@@ -376,10 +469,12 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
     function detachTableObserver_MLTV(doc) {
       try {
         if (!doc) return;
-        if (doc.__tmTableSenderMO_MLTV) {
-          doc.__tmTableSenderMO_MLTV.disconnect();
+        const observer = doc.__tmTableSenderMO_MLTV;
+        if (observer?.__tmTableOwner === processTableRow_MLTV) {
+          observer.disconnect();
           delete doc.__tmTableSenderMO_MLTV;
         }
+        cancelScheduledTableRepaint_MLTV(doc);
       } catch (_) {}
     }
 
@@ -428,6 +523,49 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
         if (prop) return String(prop);
       } catch (_) {}
       return _actionFromKeywords_MLTV(hdr);
+    }
+
+    /**
+     * Closed thread roots represent every hidden child in one visible row.
+     * Aggregate their actions using the same priority order as card view;
+     * expanded containers and ordinary rows continue to paint their own hdr.
+     */
+    function _aggregateActionForThread_MLTV(view, rowIndex, rootHdr) {
+      const fallback = _lookupActionForRow_MLTV(rootHdr);
+      try {
+        const isContainer = typeof view.isContainer === "function"
+          ? view.isContainer(rowIndex)
+          : false;
+        if (!isContainer) return fallback;
+        const isOpen = typeof view.isContainerOpen === "function"
+          ? view.isContainerOpen(rowIndex)
+          : false;
+        if (isOpen) return fallback;
+        if (typeof view.getThreadContainingIndex !== "function") return fallback;
+
+        const thread = view.getThreadContainingIndex(rowIndex);
+        const numChildren = thread?.numChildren | 0;
+        if (numChildren <= 1) return fallback;
+
+        let best = null;
+        let bestRank = TM_ACTION_PRIORITY_MLTV.length;
+        for (let i = 0; i < numChildren; i++) {
+          let childHdr = null;
+          try { childHdr = thread.getChildHdrAt(i); } catch (_) {}
+          if (!childHdr) continue;
+          const action = _lookupActionForRow_MLTV(childHdr);
+          if (!action) continue;
+          const rank = TM_ACTION_PRIORITY_MLTV.indexOf(action);
+          if (rank < 0) continue;
+          if (rank <= bestRank) {
+            best = action;
+            bestRank = rank;
+          }
+        }
+        return best || fallback;
+      } catch (_) {
+        return fallback;
+      }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -566,10 +704,9 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
       } catch (_) {}
     }
 
-    // No manual recolor pass is needed in Phase 2b — the fillRow patch reads
-    // `hdr.getStringProperty("tm-action")` on every row render, and
-    // `browser.tmHdr.setAction` fires `view.NoteChange(rowIndex, 1, CHANGED)`
-    // after writing the property, which re-invokes our fillRow for the row.
+    // The primary path remains NoteChange → fillRow. The observer schedules a
+    // bounded rendered-row pass only when Thunderbird mutates the virtualized
+    // table, covering a direct invalidation coalesced during insertion.
 
     function ensureTableEnhancements_MLTV(win) {
       try {

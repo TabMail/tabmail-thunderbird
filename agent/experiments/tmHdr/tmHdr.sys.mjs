@@ -191,8 +191,81 @@ let _invalLog = 0;
 // no structural shift" code — forces fillRow without touching selection.
 const NOTIFY_CHANGED = 2;
 
+function _isValidViewIndex(index) {
+  return typeof index === "number" && index >= 0 && index < 0x7fffffff;
+}
+
 /**
- * Find any currently-open 3pane window whose dbView contains this hdr and
+ * Enumerate every dbView owned by an outer 3-pane window, including inactive
+ * about:3pane tabs. A single Thunderbird window can keep several independent
+ * folder/search views alive; `currentAbout3Pane` covers only the focused one.
+ */
+function _enumerateDBViewsInWindow(win) {
+  const views = [];
+  const addView = view => {
+    if (view && !views.includes(view)) views.push(view);
+  };
+  const addContentWindow = contentWin => {
+    if (!contentWin) return;
+    addView(contentWin.gDBView || null);
+    addView(contentWin.gFolderDisplay?.view?.dbView || null);
+  };
+
+  try {
+    const tabmail = win?.document?.getElementById?.("tabmail");
+    addContentWindow(tabmail?.currentAbout3Pane || null);
+    addContentWindow(tabmail?.currentTabInfo?.chromeBrowser?.contentWindow || null);
+    addContentWindow(tabmail?.currentTabInfo?.browser?.contentWindow || null);
+    for (const tabInfo of tabmail?.tabInfo || []) {
+      addContentWindow(tabInfo?.chromeBrowser?.contentWindow || null);
+      addContentWindow(tabInfo?.browser?.contentWindow || null);
+    }
+  } catch (_) {}
+
+  // Compatibility path for windows/TB generations that expose the dbView on
+  // the outer messenger window rather than the about:3pane content window.
+  addView(win?.gDBView || null);
+  addView(win?.gFolderDisplay?.view?.dbView || null);
+  return views;
+}
+
+/**
+ * Resolve the row Thunderbird will actually render for `hdr` without
+ * expanding a collapsed thread. `findIndexOfMsgHdr` searches for the exact
+ * header and therefore returns -1 for a hidden child; `findIndexForMsgURI`
+ * explicitly maps that child to the view's visible thread root.
+ */
+function _findRenderedRowForHdr(view, hdr) {
+  if (!view || !hdr) return -1;
+
+  try {
+    const index = view.findIndexOfMsgHdr?.(hdr, false);
+    if (_isValidViewIndex(index)) return index;
+  } catch (_) {}
+
+  try {
+    const msgURI = hdr.folder?.getUriForMsg?.(hdr) || "";
+    if (msgURI) {
+      const index = view.findIndexForMsgURI?.(msgURI, false);
+      if (_isValidViewIndex(index)) return index;
+    }
+  } catch (_) {}
+
+  // Plain unthreaded folder compatibility path.
+  try {
+    const folderURI = hdr.folder?.URI || "";
+    const viewFolderURI = view.msgFolder?.URI || view.displayedFolder?.URI || "";
+    if (folderURI && viewFolderURI === folderURI) {
+      const index = view.FindKey?.(hdr.messageKey, true);
+      if (_isValidViewIndex(index)) return index;
+    }
+  } catch (_) {}
+
+  return -1;
+}
+
+/**
+ * Find every currently-open 3pane dbView that contains this hdr and
  * issue `view.NoteChange(rowIndex, 1, CHANGED)` so TB re-renders that row
  * immediately (which re-invokes our patched fillRow → painter picks up the
  * new property value).
@@ -213,58 +286,12 @@ function _invalidateRowForHdrInAllWindows(hdr) {
     while (enumWin.hasMoreElements()) {
       const win = enumWin.getNext();
       try {
-        const tabmail = win.document?.getElementById?.("tabmail");
-        const contentWin = tabmail?.currentAbout3Pane
-          || tabmail?.currentTabInfo?.chromeBrowser?.contentWindow
-          || tabmail?.currentTabInfo?.browser?.contentWindow;
-        const view = contentWin?.gDBView
-          || contentWin?.gFolderDisplay?.view?.dbView
-          || win.gDBView
-          || null;
-        if (!view) continue;
-        diagViewsSeen++;
-        // findIndexOfMsgHdr returns 0xffffffff (signed: -1) if hdr not in view.
-        let rowIndex = -1;
-        try {
-          const r = view.findIndexOfMsgHdr?.(hdr, false);
-          if (typeof r === "number" && r >= 0 && r < 0x7fffffff) rowIndex = r;
-        } catch (_) {}
-        // Fallback: FindKey on the view's msgFolder (works for plain views
-        // where the msgKey matches the folder the hdr lives in).
-        if (rowIndex < 0) {
-          try {
-            const viewFolderURI = view?.msgFolder?.URI || view?.displayedFolder?.URI || "";
-            if (viewFolderURI === folderURI) {
-              const r2 = view.FindKey?.(msgKey, true);
-              if (typeof r2 === "number" && r2 >= 0) rowIndex = r2;
-            }
-          } catch (_) {}
-        }
-        // Thread-collapsed fallback: if `hdr` is a child of a collapsed
-        // thread, it has no visible row of its own — `findIndexOfMsgHdr`
-        // returns -1. The card painter aggregates child actions onto the
-        // thread head row, so we must invalidate the head's row index, not
-        // the child's. Walk the thread's children and pick the one whose
-        // findIndexOfMsgHdr resolves — that's the visible head.
-        if (rowIndex < 0) {
-          try {
-            const db = hdr?.folder?.msgDatabase;
-            const thread = db?.GetThreadContainingMsgHdr?.(hdr) || null;
-            const n = thread?.numChildren | 0;
-            for (let i = 0; i < n; i++) {
-              let childHdr = null;
-              try { childHdr = thread.getChildHdrAt(i); } catch (_) {}
-              if (!childHdr) continue;
-              const r3 = view.findIndexOfMsgHdr?.(childHdr, false);
-              if (typeof r3 === "number" && r3 >= 0 && r3 < 0x7fffffff) {
-                rowIndex = r3;
-                break;
-              }
-            }
-          } catch (_) {}
-        }
-        if (rowIndex >= 0) {
-          try { view.NoteChange?.(rowIndex, 1, NOTIFY_CHANGED); diagNoted++; } catch (_) {}
+        for (const view of _enumerateDBViewsInWindow(win)) {
+          diagViewsSeen++;
+          const rowIndex = _findRenderedRowForHdr(view, hdr);
+          if (rowIndex >= 0) {
+            try { view.NoteChange?.(rowIndex, 1, NOTIFY_CHANGED); diagNoted++; } catch (_) {}
+          }
         }
       } catch (_) {}
     }
@@ -330,8 +357,6 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
         async setActionsBulk(entries) {
           if (!Array.isArray(entries) || entries.length === 0) return 0;
           let written = 0;
-          // Group by folder for a single view-invalidation per folder.
-          const touchedViews = new Map(); // folderURI -> {view, minRow, maxRow}
           for (const e of entries) {
             try {
               if (!mm) break;
@@ -355,17 +380,11 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
               while (enumWin.hasMoreElements()) {
                 const win = enumWin.getNext();
                 try {
-                  const tabmail = win.document?.getElementById?.("tabmail");
-                  const contentWin = tabmail?.currentAbout3Pane
-                    || tabmail?.currentTabInfo?.chromeBrowser?.contentWindow
-                    || tabmail?.currentTabInfo?.browser?.contentWindow;
-                  const view = contentWin?.gDBView
-                    || contentWin?.gFolderDisplay?.view?.dbView
-                    || win.gDBView
-                    || null;
-                  const rc = view?.rowCount || 0;
-                  if (view && rc > 0) {
-                    try { view.NoteChange?.(0, rc, NOTIFY_CHANGED); } catch (_) {}
+                  for (const view of _enumerateDBViewsInWindow(win)) {
+                    const rc = view?.rowCount || 0;
+                    if (rc > 0) {
+                      try { view.NoteChange?.(0, rc, NOTIFY_CHANGED); } catch (_) {}
+                    }
                   }
                 } catch (_) {}
               }
@@ -499,5 +518,3 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
     };
   }
 };
-
-
