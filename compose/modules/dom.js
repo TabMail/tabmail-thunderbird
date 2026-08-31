@@ -1498,6 +1498,9 @@ Object.assign(TabMail, {
     let charCount = 0;
     let found = false;
     const offsets = new Map();
+    const remainingTargets = isBatch
+      ? new Set(targetNodes.keys())
+      : null;
 
     function recordNodes(nodes) {
       for (const node of nodes) {
@@ -1505,11 +1508,20 @@ Object.assign(TabMail, {
       }
     }
 
-    function recordSkippedNodes(node) {
+    function recordTarget(node) {
+      if (!remainingTargets.has(node)) return;
       const nodes = targetNodes.get(node);
       if (nodes) recordNodes(nodes);
-      for (const child of Array.from(node.childNodes || [])) {
-        recordSkippedNodes(child);
+      remainingTargets.delete(node);
+    }
+
+    function recordSkippedNodes(node) {
+      recordTarget(node);
+      if (remainingTargets.size === 0) return;
+      const children = node.childNodes || [];
+      for (let i = 0; i < children.length; i++) {
+        recordSkippedNodes(children[i]);
+        if (remainingTargets.size === 0) return;
       }
     }
 
@@ -1535,8 +1547,8 @@ Object.assign(TabMail, {
 
     function traverse(node) {
       if (isBatch) {
-        const nodes = targetNodes.get(node);
-        if (nodes) recordNodes(nodes);
+        recordTarget(node);
+        if (remainingTargets.size === 0) return;
       }
 
       if (shouldSkip(node)) {
@@ -1585,8 +1597,9 @@ Object.assign(TabMail, {
           return;
         }
 
-        for (const child of Array.from(node.childNodes)) {
-          traverse(child);
+        for (let i = 0; i < node.childNodes.length; i++) {
+          traverse(node.childNodes[i]);
+          if (isBatch && remainingTargets.size === 0) return;
         }
 
         // If the cursor was located within one of the children, the count is

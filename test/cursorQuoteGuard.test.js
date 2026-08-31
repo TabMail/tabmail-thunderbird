@@ -565,20 +565,145 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
     });
     const inner = makeElement('span', { classes: ['tm-inline-overlay'] });
     const sharedLeaf = makeTextNode('value');
+    const skippedRemainder = makeElement('span');
+    const preservedTail = makeElement('blockquote');
+    let skippedRemainderReads = 0;
+    let preservedTailReads = 0;
+    let outerChildReads = 0;
+    for (let index = 0; index < 64; index++) {
+      const skippedText = makeTextNode('ignored');
+      Object.defineProperty(skippedText, 'childNodes', {
+        configurable: true,
+        get() {
+          skippedRemainderReads++;
+          return [];
+        },
+      });
+      skippedRemainder.appendChild(skippedText);
+
+      const preservedText = makeTextNode('preserved');
+      Object.defineProperty(preservedText, 'textContent', {
+        configurable: true,
+        get() {
+          preservedTailReads++;
+          return 'preserved';
+        },
+      });
+      preservedTail.appendChild(preservedText);
+    }
     inner.appendChild(sharedLeaf);
     outer.appendChild(inner);
+    outer.appendChild(skippedRemainder);
+    outer.childNodes = new Proxy(outer.childNodes, {
+      get(children, property, receiver) {
+        if (/^\d+$/.test(String(property))) outerChildReads++;
+        return Reflect.get(children, property, receiver);
+      },
+    });
     editor.appendChild(prefix);
     editor.appendChild(outer);
+    editor.appendChild(preservedTail);
+    const attachedTargets = new Set([outer, inner, sharedLeaf]);
+    editor.contains = (node) => attachedTargets.has(node);
     TM.state.editorRef = editor;
 
     const offsets = TM.getOffsetsOfNodeStarts(
       [outer, inner, sharedLeaf],
       { skipDeletes: true }
     );
+    const batchOuterChildReads = outerChildReads;
 
     expect(offsets.get(outer)).toBe(3);
     expect(offsets.get(inner)).toBe(3);
     expect(offsets.get(sharedLeaf)).toBe(3);
+    expect(skippedRemainderReads).toBe(0);
+    expect(preservedTailReads).toBe(0);
+    expect(batchOuterChildReads).toBe(2);
+  });
+
+  it('stops an early batch target before walking a large preserved tail', () => {
+    const editor = makeElement('body');
+    const target = makeElement('span', {
+      dataset: { tabmailDiff: 'insert' },
+    });
+    const targetLeaf = makeTextNode('target');
+    const preservedTail = makeElement('blockquote');
+    let preservedTailReads = 0;
+    let editorChildReads = 0;
+    target.appendChild(targetLeaf);
+    for (let index = 0; index < 256; index++) {
+      const tailText = makeTextNode('preserved');
+      Object.defineProperty(tailText, 'textContent', {
+        configurable: true,
+        get() {
+          preservedTailReads++;
+          return 'preserved';
+        },
+      });
+      preservedTail.appendChild(tailText);
+    }
+    editor.appendChild(target);
+    editor.appendChild(preservedTail);
+    editor.childNodes = new Proxy(editor.childNodes, {
+      get(children, property, receiver) {
+        if (/^\d+$/.test(String(property))) editorChildReads++;
+        return Reflect.get(children, property, receiver);
+      },
+    });
+    editor.contains = (node) => node === target;
+    TM.state.editorRef = editor;
+
+    const offsets = TM.getOffsetsOfNodeStarts([target]);
+    const batchTailReads = preservedTailReads;
+    const batchEditorChildReads = editorChildReads;
+    const scalarOffset = TM.getOffsetOfNodeStart(target);
+
+    expect(offsets.get(target)).toBe(0);
+    expect(offsets.get(target)).toBe(scalarOffset);
+    expect(batchTailReads).toBe(0);
+    expect(batchEditorChildReads).toBe(1);
+  });
+
+  it('keeps the exact batch offset when the only target is the last node', () => {
+    const editor = makeElement('body');
+    const target = makeElement('span');
+    target.appendChild(makeTextNode('target'));
+    editor.appendChild(makeTextNode('AB'));
+    editor.appendChild(makeElement('br'));
+    editor.appendChild(target);
+    TM.state.editorRef = editor;
+
+    const offsets = TM.getOffsetsOfNodeStarts([target]);
+
+    expect(offsets.get(target)).toBe(3);
+    expect(offsets.get(target)).toBe(TM.getOffsetOfNodeStart(target));
+  });
+
+  it('does not mutate the caller-owned batch target map or shared node lists', () => {
+    const editor = makeElement('body');
+    const first = makeElement('span');
+    const last = makeElement('span');
+    const firstLeaf = makeTextNode('AB');
+    const lastLeaf = makeTextNode('last');
+    const firstNodes = [first];
+    const lastNodes = [last];
+    first.appendChild(firstLeaf);
+    last.appendChild(lastLeaf);
+    editor.appendChild(first);
+    editor.appendChild(makeElement('br'));
+    editor.appendChild(last);
+    const targets = new Map([
+      [firstLeaf, firstNodes],
+      [lastLeaf, lastNodes],
+    ]);
+
+    const offsets = TM.traverseAndCount(editor, { targetNodes: targets });
+
+    expect(offsets.get(first)).toBe(0);
+    expect(offsets.get(last)).toBe(3);
+    expect(Array.from(targets.keys())).toEqual([firstLeaf, lastLeaf]);
+    expect(targets.get(firstLeaf)).toBe(firstNodes);
+    expect(targets.get(lastLeaf)).toBe(lastNodes);
   });
 
   it.each([
