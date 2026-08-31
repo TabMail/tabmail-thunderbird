@@ -55,6 +55,9 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  runComposeEdit.mockReset();
+  getComposeDetails.mockReset();
+  setComposeDetails.mockReset().mockResolvedValue(undefined);
 });
 
 describe("inline compose recipient application", () => {
@@ -100,5 +103,29 @@ describe("inline compose recipient application", () => {
       to: ["first@example.com", "Primary <PRIMARY@example.com>"],
       cc: ["existing@example.com", "user-added@example.com"],
     });
+  });
+
+  it("does not write recipient fields for a body-only AI result", async () => {
+    const current = {
+      to: ["person@example.com"],
+      cc: ["other@example.com"],
+      bcc: ["private@example.com"],
+      subject: "Subject",
+      type: "new",
+    };
+    getComposeDetails.mockResolvedValue(current);
+    runComposeEdit.mockResolvedValue({
+      body: "Updated body",
+      subject: "Subject",
+    });
+
+    const result = await handleRuntimeMessage(
+      { type: "runInlineComposeEdit", body: "Body", request: "Improve this" },
+      { tab: { id: 42 } }
+    );
+
+    expect(result).toEqual({ body: "Updated body", subject: "Subject" });
+    expect(getComposeDetails).toHaveBeenCalledTimes(2);
+    expect(setComposeDetails).not.toHaveBeenCalled();
   });
 });

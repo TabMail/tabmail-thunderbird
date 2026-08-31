@@ -9,6 +9,9 @@ vi.mock("../agent/modules/utils.js", () => ({ log: vi.fn() }));
 const parseMailboxString = vi.fn(async (raw, preserveGroups) => {
   const value = String(raw).trim();
   if (value === "throws@example.com") throw new Error("parser failure");
+  if (value === "not-array@example.com") return null;
+  if (value === "non-string@example.com") return [{ email: 42 }];
+  if (value === "blank@example.com") return [{ email: " " }];
   if (value === "multiple@example.com") {
     return [{ email: "multiple@example.com" }, { email: "second@example.com" }];
   }
@@ -39,8 +42,57 @@ const { removeToDuplicatesFromCc } = await import(
 const { buildInlineRecipientPatch } = await import(
   "../compose/modules/recipientDeltas.js"
 );
+const { parseComposeRecipient } = await import(
+  "../compose/modules/recipientDeltas.js"
+);
+
+describe("parseComposeRecipient", () => {
+  it.each([undefined, null, "", "   "])(
+    "returns null for an empty compose value (%s)",
+    (value) => {
+      expect(parseComposeRecipient(value)).toBeNull();
+    }
+  );
+
+  it("preserves a bare mailbox and parses named and quoted-name forms", () => {
+    expect(parseComposeRecipient(" person@example.com ")).toEqual({
+      name: "",
+      email: "person@example.com",
+    });
+    expect(parseComposeRecipient("Person <person@example.com>")).toEqual({
+      name: "Person",
+      email: "person@example.com",
+    });
+    expect(parseComposeRecipient("<person@example.com>")).toEqual({
+      name: "",
+      email: "person@example.com",
+    });
+    expect(parseComposeRecipient('"Doe, Jane" <jane@example.com>')).toEqual({
+      name: "Doe, Jane",
+      email: "jane@example.com",
+    });
+  });
+
+  it("does not partially parse malformed bracket forms", () => {
+    expect(parseComposeRecipient("Person <person@example.com> trailing")).toEqual({
+      name: "",
+      email: "Person <person@example.com> trailing",
+    });
+  });
+});
 
 describe("removeToDuplicatesFromCc", () => {
+  it("fails closed for omitted, empty, and non-array recipient lists", async () => {
+    const cc = ["person@example.com"];
+
+    expect(await removeToDuplicatesFromCc()).toEqual([]);
+    expect(await removeToDuplicatesFromCc([], cc)).toEqual(cc);
+    expect(await removeToDuplicatesFromCc([], "person@example.com")).toEqual([]);
+    expect(await removeToDuplicatesFromCc([null], cc)).toEqual(cc);
+    expect(await removeToDuplicatesFromCc("person@example.com", cc)).toEqual(cc);
+    expect(await removeToDuplicatesFromCc(["person@example.com"], "person@example.com")).toEqual([]);
+  });
+
   it("matches one parsed mailbox case-insensitively and preserves other values", async () => {
     const cc = [
       "Different name <person@example.com>",
@@ -105,6 +157,9 @@ describe("removeToDuplicatesFromCc", () => {
   it("preserves parser failures, groups, and multi-mailbox strings", async () => {
     const unambiguous = [
       "throws@example.com",
+      "not-array@example.com",
+      "non-string@example.com",
+      "blank@example.com",
       "multiple@example.com",
       "Group: member@example.com;",
     ];
@@ -115,6 +170,21 @@ describe("removeToDuplicatesFromCc", () => {
       "Group: member@example.com;",
       true
     );
+  });
+
+  it("preserves every unparseable Cc form even when To has a valid mailbox", async () => {
+    const unparseableCc = [
+      "throws@example.com",
+      "not-array@example.com",
+      "non-string@example.com",
+      "blank@example.com",
+      "multiple@example.com",
+      "Group: member@example.com;",
+    ];
+
+    expect(
+      await removeToDuplicatesFromCc(["person@example.com"], unparseableCc)
+    ).toEqual(unparseableCc);
   });
 });
 
@@ -265,6 +335,54 @@ describe("buildInlineRecipientPatch", () => {
         parseMailboxString
       )
     ).toEqual({ to: ["throws@example.com", "multiple@example.com", "New <new@example.com>"] });
+  });
+
+  it("preserves all parser-rejected current values and skips invalid additions", async () => {
+    const parserRejected = [
+      "throws@example.com",
+      "not-array@example.com",
+      "non-string@example.com",
+      "blank@example.com",
+      "multiple@example.com",
+      "Group: member@example.com;",
+    ];
+    expect(
+      await buildInlineRecipientPatch(
+        { to: parserRejected, cc: [], bcc: [] },
+        {
+          to: {
+            adds: [
+              null,
+              {},
+              { email: "   " },
+              { email: "*" },
+              { email: "new@example.com" },
+            ],
+          },
+          cc: undefined,
+          bcc: undefined,
+        },
+        parseMailboxString
+      )
+    ).toEqual({ to: [...parserRejected, "new@example.com"] });
+  });
+
+  it("accepts omitted current fields and empty delta lists without inventing changes", async () => {
+    expect(
+      await buildInlineRecipientPatch(
+        {},
+        { to: { adds: undefined, removes: undefined } },
+        parseMailboxString
+      )
+    ).toEqual({ to: [] });
+
+    expect(
+      await buildInlineRecipientPatch(
+        { to: [""], cc: [], bcc: [] },
+        { to: { adds: [], removes: [] } },
+        parseMailboxString
+      )
+    ).toEqual({ to: [] });
   });
 
   it("does not flatten a one-member group while applying an inline AI delta", async () => {
