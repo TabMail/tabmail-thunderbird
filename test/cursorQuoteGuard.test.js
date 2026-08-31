@@ -714,6 +714,76 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
       tmWindow.getSelection = () => null;
     }
   });
+
+  it('uses one batched walk when the nearest labeled span supplies the sentence fallback', () => {
+    const editor = makeElement('body');
+    const spanSpecs = [
+      ['Far away. ', '0'],
+      ['Near. ', 'not-a-number'],
+      ['Omega.', '2'],
+    ];
+    const spans = spanSpecs.map(([text, sentenceNew], index) => {
+      const span = makeElement('span', {
+        dataset: {
+          tabmailDiff: 'insert',
+          tabmailSentenceNew: sentenceNew,
+          tabmailDiffIndex: String(index),
+        },
+      });
+      span.appendChild(makeTextNode(text));
+      editor.appendChild(span);
+      return span;
+    });
+    TM.state.editorRef = editor;
+
+    const range = {
+      startContainer: spans[1].firstChild,
+      startOffset: 2,
+    };
+    tmWindow.getSelection = () => ({
+      rangeCount: 1,
+      isCollapsed: true,
+      anchorNode: range.startContainer,
+      anchorOffset: range.startOffset,
+      getRangeAt: () => range,
+    });
+
+    const originalTraverseAndCount = TM.traverseAndCount;
+    const originalSplitIntoSentences = TM.splitIntoSentences;
+    const originalFindSentenceContainingCursor = TM.findSentenceContainingCursor;
+    let traversalCount = 0;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+    TM.splitIntoSentences = (text) => {
+      expect(text).toBe('Far away. Near. Omega.');
+      return ['Far away. ', 'Near. ', 'Omega.'];
+    };
+    TM.findSentenceContainingCursor = (sentences, cursorOffset) => {
+      expect(Array.from(sentences)).toEqual(['Far away. ', 'Near. ', 'Omega.']);
+      expect(cursorOffset).toBe(12);
+      return 1;
+    };
+
+    try {
+      const diffs = [
+        [1, 'Far away. ', 0, 0],
+        [1, 'Near. ', 1, 1],
+        [1, 'Omega.', 2, 2],
+      ];
+
+      expect(TM.findSpansAtCursor('Far away. Near. Omega.', diffs)).toEqual([
+        spans[2],
+      ]);
+      expect(traversalCount).toBe(2);
+    } finally {
+      TM.traverseAndCount = originalTraverseAndCount;
+      TM.splitIntoSentences = originalSplitIntoSentences;
+      TM.findSentenceContainingCursor = originalFindSentenceContainingCursor;
+      tmWindow.getSelection = () => null;
+    }
+  });
 });
 
 
