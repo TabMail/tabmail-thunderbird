@@ -360,5 +360,3 @@ export async function isInternalSender(messageHeader) {
     return false;
   }
 }
-
-

@@ -20,6 +20,7 @@ import { awaitUserInput } from "../modules/converse.js";
 import { isChatLinkMessage } from "../../chatlink/modules/core.js";
 import { relayFsmConfirmation } from "../../chatlink/modules/fsm.js";
 import { waitForComposeReady, setComposeBody, sendComposedEmail } from "../../chatlink/modules/compose.js";
+import { removeToDuplicatesFromCc } from "../../agent/modules/recipientRoles.js";
 
 // ---------------------------------------------------------------------------
 // Shared validator/normalizer for recipients, cc, bcc lists used by tools
@@ -133,6 +134,11 @@ export async function validateAndNormalizeRecipientSets(
 // send_email – open compose window and wait until closed
 // ---------------------------------------------------------------------------
 export async function runStateSendEmail() {
+  ctx.composeDraft.cc = await removeToDuplicatesFromCc(
+    ctx.composeDraft.recipients,
+    ctx.composeDraft.cc
+  );
+
   // Check for headless compose mode (ChatLink users bypass compose window)
   const useHeadless = CHAT_SETTINGS.headlessComposeEnabled || isChatLinkMessage();
   if (useHeadless) {

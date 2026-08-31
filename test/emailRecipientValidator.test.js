@@ -17,6 +17,13 @@ import { describe, it, expect, vi } from 'vitest';
 globalThis.browser = globalThis.browser || {
   storage: { local: { get: vi.fn(async () => ({})), set: vi.fn(async () => {}) } },
 };
+globalThis.messenger = globalThis.browser;
+globalThis.messenger.messengerUtilities = {
+  parseMailboxString: vi.fn(async (raw) => {
+    const value = String(raw).trim();
+    return value && value.includes("@") ? [{ email: value }] : [];
+  }),
+};
 
 // Mock the normalize step so we exercise only shape/validation logic. The real
 // normalizer pulls in compose-window browser APIs that aren't available in vitest.
@@ -31,8 +38,12 @@ vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
   getIdentityForMessage: vi.fn(),
 }));
-vi.mock('../chat/modules/context.js', () => ({ ctx: {} }));
-vi.mock('../chat/modules/chatConfig.js', () => ({ CHAT_SETTINGS: {} }));
+vi.mock('../chat/modules/context.js', () => ({
+  ctx: { composeDraft: {}, state: '' },
+}));
+vi.mock('../chat/modules/chatConfig.js', () => ({
+  CHAT_SETTINGS: { headlessComposeEnabled: true },
+}));
 vi.mock('../chat/modules/helpers.js', () => ({ initialiseEmailCompose: vi.fn(), streamText: vi.fn() }));
 vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: vi.fn() }));
 vi.mock('../chat/modules/converse.js', () => ({ awaitUserInput: vi.fn() }));
@@ -43,8 +54,10 @@ vi.mock('../chatlink/modules/compose.js', () => ({
   setComposeBody: vi.fn(),
   sendComposedEmail: vi.fn(),
 }));
+vi.mock('../chat/fsm/core.js', () => ({ executeAgentAction: vi.fn() }));
 
-const { validateAndNormalizeRecipientSets } = await import('../chat/fsm/emailCompose.js');
+const { ctx } = await import('../chat/modules/context.js');
+const { validateAndNormalizeRecipientSets, runStateSendEmail } = await import('../chat/fsm/emailCompose.js');
 
 describe('validateAndNormalizeRecipientSets', () => {
   describe('requireRecipients: false (full-replace without requiring recipients)', () => {
@@ -138,5 +151,35 @@ describe('validateAndNormalizeRecipientSets', () => {
       expect(vr.ok).toBe(true);
       expect(vr.recipients).toEqual([{ email: 'to@x.com' }]);
     });
+  });
+});
+
+describe('send_email recipient roles', () => {
+  it('keeps To and removes every case-insensitive duplicate from Cc without changing Bcc', async () => {
+    ctx.composeDraft = {
+      recipients: [
+        { name: 'Primary', email: 'Person@Example.com' },
+        { name: 'Second', email: 'second@example.com' },
+      ],
+      cc: [
+        { name: 'Duplicate one', email: 'person@example.com' },
+        { name: 'Other', email: 'other@example.com' },
+        { name: 'Duplicate two', email: ' PERSON@example.com ' },
+      ],
+      bcc: [{ name: 'Private copy', email: 'person@example.com' }],
+    };
+
+    await runStateSendEmail();
+
+    expect(ctx.composeDraft.recipients).toEqual([
+      { name: 'Primary', email: 'Person@Example.com' },
+      { name: 'Second', email: 'second@example.com' },
+    ]);
+    expect(ctx.composeDraft.cc).toEqual([
+      { name: 'Other', email: 'other@example.com' },
+    ]);
+    expect(ctx.composeDraft.bcc).toEqual([
+      { name: 'Private copy', email: 'person@example.com' },
+    ]);
   });
 });

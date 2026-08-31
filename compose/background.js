@@ -12,6 +12,10 @@ import * as idb from "../agent/modules/idbStorage.js";
 import { getUniqueMessageKey } from "../agent/modules/utils.js";
 import { generateCorrection } from "./modules/autocompleteGenerator.js";
 import { runComposeEdit } from "./modules/edit.js";
+import {
+  buildInlineRecipientPatch,
+  parseComposeRecipient,
+} from "./modules/recipientDeltas.js";
 
 /**
  * Listens for messages from the content script, fetches a suggestion from the
@@ -21,7 +25,7 @@ import { runComposeEdit } from "./modules/edit.js";
  * @param {object} sender - The sender object.
  * @returns {Promise<object>} A promise that resolves with the backend's JSON response.
  */
-async function handleRuntimeMessage(message, sender) {
+export async function handleRuntimeMessage(message, sender) {
   // console.log("[TabMail BG] handleRuntimeMessage received:", message);
   if (message.type === "getSuggestion" && message.context) {
     try {
@@ -219,22 +223,9 @@ async function handleRuntimeMessage(message, sender) {
       
       const details = await messenger.compose.getComposeDetails(senderTabId);
       // details.to/cc/bcc items are strings — either bare emails or `Name <email>`.
-      const toRecipient = (s) => {
-        const str = String(s || "").trim();
-        if (!str) return null;
-        const m = str.match(/^(.*?)\s*<([^<>]+)>\s*$/);
-        if (m) {
-          let name = (m[1] || "").trim();
-          if (name.startsWith('"') && name.endsWith('"') && name.length >= 2) {
-            name = name.slice(1, -1);
-          }
-          return { name, email: (m[2] || "").trim() };
-        }
-        return { name: "", email: str };
-      };
-      const recipients = (details.to || []).map(toRecipient).filter(Boolean);
-      const cc = (details.cc || []).map(toRecipient).filter(Boolean);
-      const bcc = (details.bcc || []).map(toRecipient).filter(Boolean);
+      const recipients = (details.to || []).map(parseComposeRecipient).filter(Boolean);
+      const cc = (details.cc || []).map(parseComposeRecipient).filter(Boolean);
+      const bcc = (details.bcc || []).map(parseComposeRecipient).filter(Boolean);
       const subject = details.subject || "";
       const body = message.body || "";
       const request = (message.request || "").trim();
@@ -308,63 +299,25 @@ async function handleRuntimeMessage(message, sender) {
       // via setComposeDetails. Body/subject are handled by the inline editor
       // itself via DOM animation; recipients just update without animation.
       try {
-        const parseComposeEntry = (s) => {
-          const str = String(s || "").trim();
-          if (!str) return null;
-          const m = str.match(/^(.*?)\s*<([^<>]+)>\s*$/);
-          if (m) {
-            let name = (m[1] || "").trim();
-            if (name.startsWith('"') && name.endsWith('"') && name.length >= 2) {
-              name = name.slice(1, -1);
-            }
-            return { name, email: (m[2] || "").trim() };
-          }
-          return { name: "", email: str };
-        };
-        const formatForCompose = (r) => {
-          if (!r || !r.email) return null;
-          const name = String(r.name || "").trim();
-          const email = String(r.email).trim();
-          return name ? `${name} <${email}>` : email;
-        };
-        const applyDelta = (currentList, delta) => {
-          const current = (currentList || []).map(parseComposeEntry).filter(Boolean);
-          const clearAll = (delta.removes || []).some((e) => e === "*");
-          const removeSet = new Set(
-            (delta.removes || []).filter((e) => e !== "*").map((e) => String(e).toLowerCase())
-          );
-          const kept = clearAll
-            ? []
-            : current.filter((r) => !removeSet.has(r.email.toLowerCase()));
-          const seen = new Set(kept.map((r) => r.email.toLowerCase()));
-          for (const add of delta.adds || []) {
-            const email = String(add?.email || "").trim();
-            if (!email || email === "*") continue;
-            const key = email.toLowerCase();
-            if (!seen.has(key)) {
-              kept.push({ name: String(add?.name || "").trim(), email });
-              seen.add(key);
-            }
-          }
-          return kept.map(formatForCompose).filter(Boolean);
-        };
-
-        const recipientPatch = {};
         const deltaFor = {
           to: result?.toDelta,
           cc: result?.ccDelta,
           bcc: result?.bccDelta,
         };
+        // The AI call above can take seconds; re-read so a user edit made
+        // while it was in flight becomes the delta's base rather than being
+        // overwritten by the stale request-time details.
+        const currentDetails = await messenger.compose.getComposeDetails(senderTabId);
         const currentFor = {
-          to: details.to,
-          cc: details.cc,
-          bcc: details.bcc,
+          to: currentDetails.to,
+          cc: currentDetails.cc,
+          bcc: currentDetails.bcc,
         };
-        for (const field of ["to", "cc", "bcc"]) {
-          const delta = deltaFor[field];
-          if (delta === undefined) continue;
-          recipientPatch[field] = applyDelta(currentFor[field], delta);
-        }
+        const recipientPatch = await buildInlineRecipientPatch(
+          currentFor,
+          deltaFor,
+          messenger.messengerUtilities.parseMailboxString
+        );
         if (Object.keys(recipientPatch).length > 0) {
           const summary = (f) => {
             const d = deltaFor[f];
