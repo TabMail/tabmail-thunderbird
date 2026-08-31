@@ -16,6 +16,8 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { runInNewContext } from 'vm';
 
+let tmWindow;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DOM mock helpers — lightweight, just enough to exercise the real code paths.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,6 +74,27 @@ function makeElement(tag, opts = {}) {
         }
       }
       return null;
+    },
+    querySelectorAll(sel) {
+      const matches = [];
+      const dataAttribute = sel.match(/^\[data-([\w-]+)\]$/);
+      const datasetKey = dataAttribute
+        ? dataAttribute[1]
+            .split('-')
+            .map((part, index) =>
+              index === 0 ? part : part[0].toUpperCase() + part.slice(1)
+            )
+            .join('')
+        : null;
+      function collect(node) {
+        for (const child of node.childNodes) {
+          if (child.nodeType !== 1) continue;
+          if (datasetKey && datasetKey in child.dataset) matches.push(child);
+          collect(child);
+        }
+      }
+      collect(el);
+      return matches;
     },
     get lastChild() { return this.childNodes.length ? this.childNodes[this.childNodes.length - 1] : null; },
     get firstChild() { return this.childNodes.length ? this.childNodes[0] : null; },
@@ -282,6 +305,8 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
         config: { DELETED_NEWLINE_VISUAL_CHAR: null, HIDE_DELETE_NEWLINES: false, quoteSeparator: {} },
         log: { debug: () => {}, info: () => {} },
         state: { editorRef: null, currentlyHighlightedSpans: [] },
+        splitIntoSentences: (text) => [text],
+        findSentenceContainingCursor: () => 0,
         _beginProgrammaticSelection: () => {},
         _endProgrammaticSelection: () => {},
       },
@@ -332,6 +357,7 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
     };
     runInNewContext(code, sandbox);
     TM = sandbox.TabMail;
+    tmWindow = sandbox.window;
   });
 
   beforeEach(() => {
@@ -453,6 +479,109 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
     const offset = TM.traverseAndCount(editor, { targetNode: after, targetOffset: 0 });
     // "Hello" = 5; the anchor <br> is skipped (a counted <br> would give 6).
     expect(offset).toBe(5);
+  });
+
+  it('gets multiple span starts with one root traversal while skipping deleted text', () => {
+    const editor = makeElement('body');
+    const before = makeTextNode('A');
+    const inserted = makeElement('span', { dataset: { tabmailDiff: 'insert' } });
+    const deleted = makeElement('span', { dataset: { tabmailDiff: 'delete' } });
+    const after = makeElement('span', { dataset: { tabmailDiff: 'insert' } });
+    inserted.appendChild(makeTextNode('BC'));
+    deleted.appendChild(makeTextNode('D'));
+    after.appendChild(makeTextNode('EF'));
+    editor.appendChild(before);
+    editor.appendChild(inserted);
+    editor.appendChild(deleted);
+    editor.appendChild(after);
+    TM.state.editorRef = editor;
+
+    const originalTraverseAndCount = TM.traverseAndCount;
+    let traversalCount = 0;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+
+    try {
+      const offsets = TM.getOffsetsOfNodeStarts(
+        [inserted, deleted, after],
+        { skipDeletes: true }
+      );
+
+      expect([...offsets.entries()]).toEqual([
+        [inserted, 1],
+        [deleted, 3],
+        [after, 3],
+      ]);
+      expect(traversalCount).toBe(1);
+    } finally {
+      TM.traverseAndCount = originalTraverseAndCount;
+    }
+  });
+
+  it('selects sentence spans with one shared offset walk', () => {
+    const editor = makeElement('body');
+    const spans = [0, 1, 2].map((index) => {
+      const span = makeElement('span', {
+        dataset: {
+          tabmailDiff: index === 1 ? 'delete' : 'insert',
+          tabmailSentenceNew: '0',
+          tabmailDiffIndex: String(index),
+        },
+      });
+      span.appendChild(makeTextNode(`part${index}`));
+      editor.appendChild(span);
+      return span;
+    });
+    TM.state.editorRef = editor;
+
+    const range = {
+      startContainer: spans[0].firstChild,
+      startOffset: 1,
+    };
+    tmWindow.getSelection = () => ({
+      rangeCount: 1,
+      isCollapsed: true,
+      anchorNode: range.startContainer,
+      anchorOffset: range.startOffset,
+      getRangeAt: () => range,
+    });
+
+    const originalTraverseAndCount = TM.traverseAndCount;
+    const originalGetOffsetsOfNodeStarts = TM.getOffsetsOfNodeStarts;
+    let traversalCount = 0;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+
+    try {
+      const diffs = [
+        [0, 'part0', 0, 0],
+        [-1, 'part1', 0, 0],
+        [1, 'part2', 0, 0],
+      ];
+
+      expect(TM.findSpansAtCursor('part0part1part2', diffs)).toEqual(spans);
+      expect(traversalCount).toBe(2);
+
+      traversalCount = 0;
+      TM.getOffsetsOfNodeStarts = (nodes, options) =>
+        new Map(
+          nodes.map((node) => [
+            node,
+            TM.getOffsetOfNodeStart(node, options),
+          ])
+        );
+
+      expect(TM.findSpansAtCursor('part0part1part2', diffs)).toEqual(spans);
+      expect(traversalCount).toBe(4);
+    } finally {
+      TM.traverseAndCount = originalTraverseAndCount;
+      TM.getOffsetsOfNodeStarts = originalGetOffsetsOfNodeStarts;
+      tmWindow.getSelection = () => null;
+    }
   });
 });
 
