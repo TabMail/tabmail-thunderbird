@@ -557,11 +557,13 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
     }
   });
 
-  it('records every requested wrapper that shares the same first text leaf', () => {
+  it('records shared-leaf targets throughout a nested skipped subtree', () => {
     const editor = makeElement('body');
     const prefix = makeTextNode('abc');
-    const outer = makeElement('span');
-    const inner = makeElement('span');
+    const outer = makeElement('span', {
+      dataset: { tabmailDiff: 'delete' },
+    });
+    const inner = makeElement('span', { classes: ['tm-inline-overlay'] });
     const sharedLeaf = makeTextNode('value');
     inner.appendChild(sharedLeaf);
     outer.appendChild(inner);
@@ -569,7 +571,10 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
     editor.appendChild(outer);
     TM.state.editorRef = editor;
 
-    const offsets = TM.getOffsetsOfNodeStarts([outer, inner, sharedLeaf]);
+    const offsets = TM.getOffsetsOfNodeStarts(
+      [outer, inner, sharedLeaf],
+      { skipDeletes: true }
+    );
 
     expect(offsets.get(outer)).toBe(3);
     expect(offsets.get(inner)).toBe(3);
@@ -651,6 +656,85 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
     } finally {
       TM.traverseAndCount = originalTraverseAndCount;
     }
+  });
+
+  it('scales skipped-subtree target discovery linearly while preserving every offset', () => {
+    function measure(spanCount) {
+      const editor = makeElement('body');
+      const spans = Array.from({ length: spanCount }, (_, index) => {
+        const span = makeElement('span', {
+          dataset: { tabmailDiff: index % 2 === 0 ? 'delete' : 'insert' },
+        });
+        span.appendChild(makeTextNode('x'));
+        editor.appendChild(span);
+        return span;
+      });
+      TM.state.editorRef = editor;
+
+      const attached = new Set(spans);
+      let containsCalls = 0;
+      let skippedChildReads = 0;
+      editor.contains = (node) => {
+        containsCalls++;
+        return attached.has(node);
+      };
+
+      for (let index = 0; index < spans.length; index += 2) {
+        const span = spans[index];
+        const originalContains = span.contains;
+        span.contains = (node) => {
+          containsCalls++;
+          return originalContains(node);
+        };
+
+        const children = span.childNodes;
+        Object.defineProperty(span, 'childNodes', {
+          configurable: true,
+          get() {
+            skippedChildReads++;
+            return children;
+          },
+        });
+      }
+
+      const batchOffsets = TM.getOffsetsOfNodeStarts(spans, {
+        skipDeletes: true,
+      });
+      const batchContainsCalls = containsCalls;
+      const batchSkippedChildReads = skippedChildReads;
+      const offsets = spans.map((span) => batchOffsets.get(span));
+      const scalarOffsets = spans.map((span) =>
+        TM.getOffsetOfNodeStart(span, { skipDeletes: true })
+      );
+
+      return {
+        offsets,
+        scalarOffsets,
+        batchContainsCalls,
+        batchSkippedChildReads,
+      };
+    }
+
+    const twenty = measure(20);
+    const forty = measure(40);
+
+    expect(twenty.offsets).toEqual([
+      0, 0, 1, 1, 2, 2, 3, 3, 4, 4,
+      5, 5, 6, 6, 7, 7, 8, 8, 9, 9,
+    ]);
+    expect(forty.offsets).toEqual(
+      Array.from({ length: 40 }, (_, index) => Math.floor(index / 2))
+    );
+    expect(twenty.offsets).toEqual(twenty.scalarOffsets);
+    expect(forty.offsets).toEqual(forty.scalarOffsets);
+
+    expect(twenty.batchContainsCalls).toBe(20);
+    expect(forty.batchContainsCalls).toBe(40);
+    expect(twenty.batchSkippedChildReads).toBeLessThanOrEqual(40);
+    expect(forty.batchSkippedChildReads).toBeLessThanOrEqual(80);
+    expect(forty.batchSkippedChildReads).toBe(
+      twenty.batchSkippedChildReads * 2
+    );
   });
 
   it('uses the batched offsets to select only the sentence containing the cursor', () => {

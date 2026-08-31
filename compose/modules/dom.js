@@ -1506,10 +1506,10 @@ Object.assign(TabMail, {
     }
 
     function recordSkippedNodes(node) {
-      for (const [leaf, nodes] of targetNodes) {
-        if (node === leaf || node.contains(leaf)) {
-          recordNodes(nodes);
-        }
+      const nodes = targetNodes.get(node);
+      if (nodes) recordNodes(nodes);
+      for (const child of Array.from(node.childNodes || [])) {
+        recordSkippedNodes(child);
       }
     }
 
