@@ -622,6 +622,39 @@ Object.assign(TabMail, {
   },
 
   /**
+   * Calculates the start offsets of several nodes in one editor traversal.
+   * @param {Node[]} nodes Nodes whose starts should be measured.
+   * @param {object} options Options for traversal, e.g., { skipDeletes: true }.
+   * @returns {Map<Node, number>} Each requested node's character offset, or -1 when unavailable.
+   */
+  getOffsetsOfNodeStarts: function (nodes, options = {}) {
+    const offsets = new Map();
+    const editor = TabMail.state.editorRef;
+    const targetsByLeaf = new Map();
+    for (const node of nodes) {
+      offsets.set(node, -1);
+      if (!editor || !node || !editor.contains(node)) continue;
+
+      const leaf = TabMail.findFirstLeaf(node);
+      const nodesAtLeaf = targetsByLeaf.get(leaf) || [];
+      nodesAtLeaf.push(node);
+      targetsByLeaf.set(leaf, nodesAtLeaf);
+    }
+
+    if (targetsByLeaf.size === 0) return offsets;
+
+    const traversedOffsets = this.traverseAndCount(
+      editor,
+      { targetNodes: targetsByLeaf },
+      options
+    );
+    for (const [node, offset] of traversedOffsets) {
+      offsets.set(node, offset);
+    }
+    return offsets;
+  },
+
+  /**
    * Helper function to find the first "leaf" node (Text or BR) in a DOM subtree.
    * This is used to accurately place the cursor at the beginning of a complex
    * block element (e.g., a <div> containing <span>s).
@@ -806,6 +839,9 @@ Object.assign(TabMail, {
       const allSpans = Array.from(
         editor.querySelectorAll("[data-tabmail-diff]")
       );
+      const spanOffsets = TabMail.getOffsetsOfNodeStarts(allSpans, {
+        skipDeletes: true,
+      });
 
       // Gather visible spans whose start lies within the visualized sentence window
       const spansInVisualSentence = [];
@@ -816,7 +852,7 @@ Object.assign(TabMail, {
         const sNewStr = span.dataset.tabmailSentenceNew;
         const sNewVal = typeof sNewStr === "string" ? parseInt(sNewStr, 10) : NaN;
 
-        const spanStart = TabMail.getOffsetOfNodeStart(span, { skipDeletes: true });
+        const spanStart = spanOffsets.get(span);
 
         if (spanStart >= 0 && spanStart >= visualSentStart && spanStart < visualSentEnd) {
           spansInVisualSentence.push(span);
@@ -836,7 +872,7 @@ Object.assign(TabMail, {
         for (const span of allSpans) {
           const sNewStr = span.dataset.tabmailSentenceNew;
           const sNewVal = typeof sNewStr === "string" ? parseInt(sNewStr, 10) : NaN;
-          const pos = TabMail.getOffsetOfNodeStart(span, { skipDeletes: true });
+          const pos = spanOffsets.get(span);
           if (!Number.isNaN(sNewVal) && pos >= 0) {
             const delta = Math.abs(pos - visualSentStart);
             if (delta < bestDelta) {
@@ -1102,11 +1138,12 @@ Object.assign(TabMail, {
     if (allSpans.length === 0) return null;
 
     const cursorOffset = TabMail.getCursorOffset(editor);
+    const spanOffsets = TabMail.getOffsetsOfNodeStarts(allSpans);
 
     const spansWithOffsets = allSpans
       .map((span) => ({
         span,
-        offset: TabMail.getOffsetOfNodeStart(span),
+        offset: spanOffsets.get(span),
       }))
       .filter((item) => item.offset !== -1) // Filter out spans we can't get offset for
       .sort((a, b) => a.offset - b.offset);
@@ -1456,10 +1493,38 @@ Object.assign(TabMail, {
    */
   traverseAndCount: function (editor, target, options = {}) {
     const { skipInserts = false, skipDeletes = false } = options;
-    const { targetNode, targetOffset } = target;
+    const { targetNode, targetOffset, targetNodes } = target;
+    const isBatch = targetNodes instanceof Map;
 
     let charCount = 0;
     let found = false;
+    const offsets = new Map();
+    const remainingTargets = isBatch
+      ? new Set(targetNodes.keys())
+      : null;
+
+    function recordNodes(nodes) {
+      for (const node of nodes) {
+        offsets.set(node, charCount);
+      }
+    }
+
+    function recordTarget(node) {
+      if (!remainingTargets.has(node)) return;
+      const nodes = targetNodes.get(node);
+      if (nodes) recordNodes(nodes);
+      remainingTargets.delete(node);
+    }
+
+    function recordSkippedNodes(node) {
+      recordTarget(node);
+      if (remainingTargets.size === 0) return;
+      const children = node.childNodes || [];
+      for (let i = 0; i < children.length; i++) {
+        recordSkippedNodes(children[i]);
+        if (remainingTargets.size === 0) return;
+      }
+    }
 
     function shouldSkip(node) {
       if (node.nodeType !== Node.ELEMENT_NODE) return false;
@@ -1482,12 +1547,21 @@ Object.assign(TabMail, {
     }
 
     function traverse(node) {
+      if (isBatch) {
+        recordTarget(node);
+        if (remainingTargets.size === 0) return;
+      }
+
       if (shouldSkip(node)) {
-        if (node.contains(targetNode)) found = true;
+        if (isBatch) {
+          recordSkippedNodes(node);
+        } else if (node.contains(targetNode)) {
+          found = true;
+        }
         return;
       }
 
-      if (targetNode === node) {
+      if (!isBatch && targetNode === node) {
         if (node.nodeType === Node.TEXT_NODE) {
           charCount += targetOffset;
         } else if (node.nodeType === Node.ELEMENT_NODE) {
@@ -1501,7 +1575,7 @@ Object.assign(TabMail, {
         return;
       }
 
-      if (found) return;
+      if (!isBatch && found) return;
 
       if (node.nodeType === Node.TEXT_NODE) {
         let textContent = node.textContent;
@@ -1524,13 +1598,14 @@ Object.assign(TabMail, {
           return;
         }
 
-        for (const child of Array.from(node.childNodes)) {
-          traverse(child);
+        for (let i = 0; i < node.childNodes.length; i++) {
+          traverse(node.childNodes[i]);
+          if (isBatch && remainingTargets.size === 0) return;
         }
 
         // If the cursor was located within one of the children, the count is
         // final. Do not add a newline for the container block itself.
-        if (found) return;
+        if (!isBatch && found) return;
 
         const isBlock =
           tagName === "DIV" ||
@@ -1572,7 +1647,7 @@ Object.assign(TabMail, {
     //   });
     // } catch(_) { /* ignore */ }
 
-    return found ? charCount : -1;
+    return isBatch ? offsets : found ? charCount : -1;
   },
 
   /**

@@ -16,6 +16,8 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { runInNewContext } from 'vm';
 
+let tmWindow;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DOM mock helpers — lightweight, just enough to exercise the real code paths.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,6 +74,27 @@ function makeElement(tag, opts = {}) {
         }
       }
       return null;
+    },
+    querySelectorAll(sel) {
+      const matches = [];
+      const dataAttribute = sel.match(/^\[data-([\w-]+)\]$/);
+      const datasetKey = dataAttribute
+        ? dataAttribute[1]
+            .split('-')
+            .map((part, index) =>
+              index === 0 ? part : part[0].toUpperCase() + part.slice(1)
+            )
+            .join('')
+        : null;
+      function collect(node) {
+        for (const child of node.childNodes) {
+          if (child.nodeType !== 1) continue;
+          if (datasetKey && datasetKey in child.dataset) matches.push(child);
+          collect(child);
+        }
+      }
+      collect(el);
+      return matches;
     },
     get lastChild() { return this.childNodes.length ? this.childNodes[this.childNodes.length - 1] : null; },
     get firstChild() { return this.childNodes.length ? this.childNodes[0] : null; },
@@ -282,6 +305,8 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
         config: { DELETED_NEWLINE_VISUAL_CHAR: null, HIDE_DELETE_NEWLINES: false, quoteSeparator: {} },
         log: { debug: () => {}, info: () => {} },
         state: { editorRef: null, currentlyHighlightedSpans: [] },
+        splitIntoSentences: (text) => [text],
+        findSentenceContainingCursor: () => 0,
         _beginProgrammaticSelection: () => {},
         _endProgrammaticSelection: () => {},
       },
@@ -332,6 +357,7 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
     };
     runInNewContext(code, sandbox);
     TM = sandbox.TabMail;
+    tmWindow = sandbox.window;
   });
 
   beforeEach(() => {
@@ -453,6 +479,574 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
     const offset = TM.traverseAndCount(editor, { targetNode: after, targetOffset: 0 });
     // "Hello" = 5; the anchor <br> is skipped (a counted <br> would give 6).
     expect(offset).toBe(5);
+  });
+
+  it('gets multiple span starts with one root traversal while skipping deleted text', () => {
+    const editor = makeElement('body');
+    const before = makeTextNode('A');
+    const inserted = makeElement('span', { dataset: { tabmailDiff: 'insert' } });
+    const deleted = makeElement('span', { dataset: { tabmailDiff: 'delete' } });
+    const after = makeElement('span', { dataset: { tabmailDiff: 'insert' } });
+    inserted.appendChild(makeTextNode('BC'));
+    deleted.appendChild(makeTextNode('D'));
+    after.appendChild(makeTextNode('EF'));
+    editor.appendChild(before);
+    editor.appendChild(inserted);
+    editor.appendChild(deleted);
+    editor.appendChild(after);
+    TM.state.editorRef = editor;
+
+    const originalTraverseAndCount = TM.traverseAndCount;
+    let traversalCount = 0;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+
+    try {
+      const offsets = TM.getOffsetsOfNodeStarts(
+        [inserted, deleted, after],
+        { skipDeletes: true }
+      );
+
+      expect([...offsets.entries()]).toEqual([
+        [inserted, 1],
+        [deleted, 3],
+        [after, 3],
+      ]);
+      expect(traversalCount).toBe(1);
+    } finally {
+      TM.traverseAndCount = originalTraverseAndCount;
+    }
+  });
+
+  it('uses one batched walk to find the closest span in either direction', () => {
+    const editor = makeElement('body');
+    const first = makeElement('span', {
+      dataset: { tabmailDiff: 'insert' },
+    });
+    const second = makeElement('span', {
+      dataset: { tabmailDiff: 'delete' },
+    });
+    first.appendChild(makeTextNode('B'));
+    second.appendChild(makeTextNode('D'));
+    editor.appendChild(makeTextNode('A'));
+    editor.appendChild(first);
+    editor.appendChild(makeTextNode('CC'));
+    editor.appendChild(second);
+    TM.state.editorRef = editor;
+
+    const originalGetCursorOffset = TM.getCursorOffset;
+    const originalTraverseAndCount = TM.traverseAndCount;
+    let traversalCount = 0;
+    TM.getCursorOffset = () => 2;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+
+    try {
+      expect(TM.findClosestSpan('forward')).toBe(second);
+      expect(traversalCount).toBe(1);
+
+      traversalCount = 0;
+      expect(TM.findClosestSpan('backward')).toBe(first);
+      expect(traversalCount).toBe(1);
+    } finally {
+      TM.getCursorOffset = originalGetCursorOffset;
+      TM.traverseAndCount = originalTraverseAndCount;
+    }
+  });
+
+  it('does not count the configured deleted-newline marker before a batch target', () => {
+    const editor = makeElement('body');
+    const target = makeElement('span');
+    target.appendChild(makeTextNode('target'));
+    editor.appendChild(makeTextNode('A⏎B'));
+    editor.appendChild(target);
+    TM.state.editorRef = editor;
+
+    const originalMarker = TM.config.DELETED_NEWLINE_VISUAL_CHAR;
+    TM.config.DELETED_NEWLINE_VISUAL_CHAR = '⏎';
+    try {
+      expect(TM.getOffsetsOfNodeStarts([target]).get(target)).toBe(2);
+    } finally {
+      TM.config.DELETED_NEWLINE_VISUAL_CHAR = originalMarker;
+    }
+  });
+
+  it('returns -1 for unavailable targets without walking when none are in the editor', () => {
+    const editor = makeElement('body');
+    const outside = makeElement('span');
+    outside.appendChild(makeTextNode('outside'));
+    TM.state.editorRef = editor;
+
+    const originalTraverseAndCount = TM.traverseAndCount;
+    let traversalCount = 0;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+
+    try {
+      const offsets = TM.getOffsetsOfNodeStarts([outside, null]);
+
+      expect(offsets.get(outside)).toBe(-1);
+      expect(offsets.get(null)).toBe(-1);
+      expect(traversalCount).toBe(0);
+
+      TM.state.editorRef = null;
+      expect(TM.getOffsetsOfNodeStarts([outside]).get(outside)).toBe(-1);
+      expect(traversalCount).toBe(0);
+
+      const inside = makeElement('span');
+      inside.appendChild(makeTextNode('inside'));
+      editor.appendChild(inside);
+      TM.state.editorRef = editor;
+      const mixedOffsets = TM.getOffsetsOfNodeStarts([outside, inside]);
+      expect(mixedOffsets.get(outside)).toBe(-1);
+      expect(mixedOffsets.get(inside)).toBe(0);
+      expect(traversalCount).toBe(1);
+    } finally {
+      TM.traverseAndCount = originalTraverseAndCount;
+    }
+  });
+
+  it('records shared-leaf targets throughout a nested skipped subtree', () => {
+    const editor = makeElement('body');
+    const prefix = makeTextNode('abc');
+    const outer = makeElement('span', {
+      dataset: { tabmailDiff: 'delete' },
+    });
+    const inner = makeElement('span', { classes: ['tm-inline-overlay'] });
+    const sharedLeaf = makeTextNode('value');
+    const skippedRemainder = makeElement('span');
+    const preservedTail = makeElement('blockquote');
+    let skippedRemainderReads = 0;
+    let preservedTailReads = 0;
+    let outerChildReads = 0;
+    for (let index = 0; index < 64; index++) {
+      const skippedText = makeTextNode('ignored');
+      Object.defineProperty(skippedText, 'childNodes', {
+        configurable: true,
+        get() {
+          skippedRemainderReads++;
+          return [];
+        },
+      });
+      skippedRemainder.appendChild(skippedText);
+
+      const preservedText = makeTextNode('preserved');
+      Object.defineProperty(preservedText, 'textContent', {
+        configurable: true,
+        get() {
+          preservedTailReads++;
+          return 'preserved';
+        },
+      });
+      preservedTail.appendChild(preservedText);
+    }
+    inner.appendChild(sharedLeaf);
+    outer.appendChild(inner);
+    outer.appendChild(skippedRemainder);
+    outer.childNodes = new Proxy(outer.childNodes, {
+      get(children, property, receiver) {
+        if (/^\d+$/.test(String(property))) outerChildReads++;
+        return Reflect.get(children, property, receiver);
+      },
+    });
+    editor.appendChild(prefix);
+    editor.appendChild(outer);
+    editor.appendChild(preservedTail);
+    const attachedTargets = new Set([outer, inner, sharedLeaf]);
+    editor.contains = (node) => attachedTargets.has(node);
+    TM.state.editorRef = editor;
+
+    const offsets = TM.getOffsetsOfNodeStarts(
+      [outer, inner, sharedLeaf],
+      { skipDeletes: true }
+    );
+    const batchOuterChildReads = outerChildReads;
+
+    expect(offsets.get(outer)).toBe(3);
+    expect(offsets.get(inner)).toBe(3);
+    expect(offsets.get(sharedLeaf)).toBe(3);
+    expect(skippedRemainderReads).toBe(0);
+    expect(preservedTailReads).toBe(0);
+    expect(batchOuterChildReads).toBe(2);
+  });
+
+  it('stops an early batch target before walking a large preserved tail', () => {
+    const editor = makeElement('body');
+    const target = makeElement('span', {
+      dataset: { tabmailDiff: 'insert' },
+    });
+    const targetLeaf = makeTextNode('target');
+    const preservedTail = makeElement('blockquote');
+    let preservedTailReads = 0;
+    let editorChildReads = 0;
+    target.appendChild(targetLeaf);
+    for (let index = 0; index < 256; index++) {
+      const tailText = makeTextNode('preserved');
+      Object.defineProperty(tailText, 'textContent', {
+        configurable: true,
+        get() {
+          preservedTailReads++;
+          return 'preserved';
+        },
+      });
+      preservedTail.appendChild(tailText);
+    }
+    editor.appendChild(target);
+    editor.appendChild(preservedTail);
+    editor.childNodes = new Proxy(editor.childNodes, {
+      get(children, property, receiver) {
+        if (/^\d+$/.test(String(property))) editorChildReads++;
+        return Reflect.get(children, property, receiver);
+      },
+    });
+    editor.contains = (node) => node === target;
+    TM.state.editorRef = editor;
+
+    const offsets = TM.getOffsetsOfNodeStarts([target]);
+    const batchTailReads = preservedTailReads;
+    const batchEditorChildReads = editorChildReads;
+    const scalarOffset = TM.getOffsetOfNodeStart(target);
+
+    expect(offsets.get(target)).toBe(0);
+    expect(offsets.get(target)).toBe(scalarOffset);
+    expect(batchTailReads).toBe(0);
+    expect(batchEditorChildReads).toBe(1);
+  });
+
+  it('keeps the exact batch offset when the only target is the last node', () => {
+    const editor = makeElement('body');
+    const target = makeElement('span');
+    target.appendChild(makeTextNode('target'));
+    editor.appendChild(makeTextNode('AB'));
+    editor.appendChild(makeElement('br'));
+    editor.appendChild(target);
+    TM.state.editorRef = editor;
+
+    const offsets = TM.getOffsetsOfNodeStarts([target]);
+
+    expect(offsets.get(target)).toBe(3);
+    expect(offsets.get(target)).toBe(TM.getOffsetOfNodeStart(target));
+  });
+
+  it('does not mutate the caller-owned batch target map or shared node lists', () => {
+    const editor = makeElement('body');
+    const first = makeElement('span');
+    const last = makeElement('span');
+    const firstLeaf = makeTextNode('AB');
+    const lastLeaf = makeTextNode('last');
+    const firstNodes = [first];
+    const lastNodes = [last];
+    first.appendChild(firstLeaf);
+    last.appendChild(lastLeaf);
+    editor.appendChild(first);
+    editor.appendChild(makeElement('br'));
+    editor.appendChild(last);
+    const targets = new Map([
+      [firstLeaf, firstNodes],
+      [lastLeaf, lastNodes],
+    ]);
+
+    const offsets = TM.traverseAndCount(editor, { targetNodes: targets });
+
+    expect(offsets.get(first)).toBe(0);
+    expect(offsets.get(last)).toBe(3);
+    expect(Array.from(targets.keys())).toEqual([firstLeaf, lastLeaf]);
+    expect(targets.get(firstLeaf)).toBe(firstNodes);
+    expect(targets.get(lastLeaf)).toBe(lastNodes);
+  });
+
+  it.each([
+    ['tm-fake-caret', 'span'],
+    ['tm-cursor-arrow', 'span'],
+    ['tm-nl', 'span'],
+    ['tm-edit-anchor', 'br'],
+    ['tm-inline-overlay', 'span'],
+    ['tm-inline-spinner', 'span'],
+    ['tm-quote-separator', 'span'],
+  ])('records a target inside skipped .%s without counting its contents', (className, tagName) => {
+    const editor = makeElement('body');
+    const skipped = makeElement(tagName, { classes: [className] });
+    const after = makeElement('span');
+    if (tagName !== 'br') skipped.appendChild(makeTextNode('ignored'));
+    after.appendChild(makeTextNode('after'));
+    editor.appendChild(makeTextNode('AB'));
+    editor.appendChild(skipped);
+    editor.appendChild(after);
+    TM.state.editorRef = editor;
+
+    const offsets = TM.getOffsetsOfNodeStarts([skipped, after]);
+
+    expect(offsets.get(skipped)).toBe(2);
+    expect(offsets.get(after)).toBe(2);
+  });
+
+  it.each([
+    ['counts both diff kinds', {}, [4, 4, 6, 8]],
+    ['skips inserts', { skipInserts: true }, [4, 4, 4, 6]],
+    ['skips deletes', { skipDeletes: true }, [4, 4, 6, 7]],
+    ['skips inserts and deletes', { skipInserts: true, skipDeletes: true }, [4, 4, 4, 5]],
+  ])('uses literal text, BR, block, ignored-node, and diff offsets when it %s', (_name, options, expected) => {
+    const editor = makeElement('body');
+    const block = makeElement('div');
+    const ignored = makeElement('span', { classes: ['tm-fake-caret'] });
+    const inserted = makeElement('span', { dataset: { tabmailDiff: 'insert' } });
+    const deleted = makeElement('span', { dataset: { tabmailDiff: 'delete' } });
+    const after = makeElement('span');
+
+    ignored.appendChild(makeTextNode('ignored'));
+    inserted.appendChild(makeTextNode('XY'));
+    deleted.appendChild(makeTextNode('Z'));
+    after.appendChild(makeTextNode('Q'));
+    block.appendChild(makeTextNode('BC'));
+    block.appendChild(ignored);
+    block.appendChild(inserted);
+    block.appendChild(deleted);
+    editor.appendChild(makeTextNode('A'));
+    editor.appendChild(makeElement('br'));
+    editor.appendChild(block);
+    editor.appendChild(after);
+    TM.state.editorRef = editor;
+
+    const originalTraverseAndCount = TM.traverseAndCount;
+    let traversalCount = 0;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+
+    try {
+      const offsets = TM.getOffsetsOfNodeStarts(
+        [ignored, inserted, deleted, after],
+        options
+      );
+
+      expect([
+        offsets.get(ignored),
+        offsets.get(inserted),
+        offsets.get(deleted),
+        offsets.get(after),
+      ]).toEqual(expected);
+      expect(traversalCount).toBe(1);
+    } finally {
+      TM.traverseAndCount = originalTraverseAndCount;
+    }
+  });
+
+  it('scales skipped-subtree target discovery linearly while preserving every offset', () => {
+    function measure(spanCount) {
+      const editor = makeElement('body');
+      const spans = Array.from({ length: spanCount }, (_, index) => {
+        const span = makeElement('span', {
+          dataset: { tabmailDiff: index % 2 === 0 ? 'delete' : 'insert' },
+        });
+        span.appendChild(makeTextNode('x'));
+        editor.appendChild(span);
+        return span;
+      });
+      TM.state.editorRef = editor;
+
+      const attached = new Set(spans);
+      let containsCalls = 0;
+      let skippedChildReads = 0;
+      editor.contains = (node) => {
+        containsCalls++;
+        return attached.has(node);
+      };
+
+      for (let index = 0; index < spans.length; index += 2) {
+        const span = spans[index];
+        const originalContains = span.contains;
+        span.contains = (node) => {
+          containsCalls++;
+          return originalContains(node);
+        };
+
+        const children = span.childNodes;
+        Object.defineProperty(span, 'childNodes', {
+          configurable: true,
+          get() {
+            skippedChildReads++;
+            return children;
+          },
+        });
+      }
+
+      const batchOffsets = TM.getOffsetsOfNodeStarts(spans, {
+        skipDeletes: true,
+      });
+      const batchContainsCalls = containsCalls;
+      const batchSkippedChildReads = skippedChildReads;
+      const offsets = spans.map((span) => batchOffsets.get(span));
+      const scalarOffsets = spans.map((span) =>
+        TM.getOffsetOfNodeStart(span, { skipDeletes: true })
+      );
+
+      return {
+        offsets,
+        scalarOffsets,
+        batchContainsCalls,
+        batchSkippedChildReads,
+      };
+    }
+
+    const twenty = measure(20);
+    const forty = measure(40);
+
+    expect(twenty.offsets).toEqual([
+      0, 0, 1, 1, 2, 2, 3, 3, 4, 4,
+      5, 5, 6, 6, 7, 7, 8, 8, 9, 9,
+    ]);
+    expect(forty.offsets).toEqual(
+      Array.from({ length: 40 }, (_, index) => Math.floor(index / 2))
+    );
+    expect(twenty.offsets).toEqual(twenty.scalarOffsets);
+    expect(forty.offsets).toEqual(forty.scalarOffsets);
+
+    expect(twenty.batchContainsCalls).toBe(20);
+    expect(forty.batchContainsCalls).toBe(40);
+    expect(twenty.batchSkippedChildReads).toBeLessThanOrEqual(40);
+    expect(forty.batchSkippedChildReads).toBeLessThanOrEqual(80);
+    expect(forty.batchSkippedChildReads).toBe(
+      twenty.batchSkippedChildReads * 2
+    );
+  });
+
+  it('uses the batched offsets to select only the sentence containing the cursor', () => {
+    const editor = makeElement('body');
+    const spans = ['Alpha. ', 'Beta.'].map((text, index) => {
+      const span = makeElement('span', {
+        dataset: {
+          tabmailDiff: 'insert',
+          tabmailSentenceNew: String(index),
+          tabmailDiffIndex: String(index),
+        },
+      });
+      span.appendChild(makeTextNode(text));
+      editor.appendChild(span);
+      return span;
+    });
+    TM.state.editorRef = editor;
+
+    const range = {
+      startContainer: spans[1].firstChild,
+      startOffset: 2,
+    };
+    tmWindow.getSelection = () => ({
+      rangeCount: 1,
+      isCollapsed: true,
+      anchorNode: range.startContainer,
+      anchorOffset: range.startOffset,
+      getRangeAt: () => range,
+    });
+
+    const originalTraverseAndCount = TM.traverseAndCount;
+    const originalSplitIntoSentences = TM.splitIntoSentences;
+    const originalFindSentenceContainingCursor = TM.findSentenceContainingCursor;
+    let traversalCount = 0;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+    TM.splitIntoSentences = (text) => {
+      expect(text).toBe('Alpha. Beta.');
+      return ['Alpha. ', 'Beta.'];
+    };
+    TM.findSentenceContainingCursor = (sentences, cursorOffset) => {
+      expect(Array.from(sentences)).toEqual(['Alpha. ', 'Beta.']);
+      expect(cursorOffset).toBe(9);
+      return cursorOffset < 7 ? 0 : 1;
+    };
+
+    try {
+      const diffs = [
+        [1, 'Alpha. ', 0, 0],
+        [1, 'Beta.', 1, 1],
+      ];
+
+      expect(TM.findSpansAtCursor('Alpha. Beta.', diffs)).toEqual([spans[1]]);
+      expect(traversalCount).toBe(2);
+    } finally {
+      TM.traverseAndCount = originalTraverseAndCount;
+      TM.splitIntoSentences = originalSplitIntoSentences;
+      TM.findSentenceContainingCursor = originalFindSentenceContainingCursor;
+      tmWindow.getSelection = () => null;
+    }
+  });
+
+  it('uses one batched walk when the nearest labeled span supplies the sentence fallback', () => {
+    const editor = makeElement('body');
+    const spanSpecs = [
+      ['Far away. ', '0'],
+      ['Near. ', 'not-a-number'],
+      ['Omega.', '2'],
+    ];
+    const spans = spanSpecs.map(([text, sentenceNew], index) => {
+      const span = makeElement('span', {
+        dataset: {
+          tabmailDiff: 'insert',
+          tabmailSentenceNew: sentenceNew,
+          tabmailDiffIndex: String(index),
+        },
+      });
+      span.appendChild(makeTextNode(text));
+      editor.appendChild(span);
+      return span;
+    });
+    TM.state.editorRef = editor;
+
+    const range = {
+      startContainer: spans[1].firstChild,
+      startOffset: 2,
+    };
+    tmWindow.getSelection = () => ({
+      rangeCount: 1,
+      isCollapsed: true,
+      anchorNode: range.startContainer,
+      anchorOffset: range.startOffset,
+      getRangeAt: () => range,
+    });
+
+    const originalTraverseAndCount = TM.traverseAndCount;
+    const originalSplitIntoSentences = TM.splitIntoSentences;
+    const originalFindSentenceContainingCursor = TM.findSentenceContainingCursor;
+    let traversalCount = 0;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+    TM.splitIntoSentences = (text) => {
+      expect(text).toBe('Far away. Near. Omega.');
+      return ['Far away. ', 'Near. ', 'Omega.'];
+    };
+    TM.findSentenceContainingCursor = (sentences, cursorOffset) => {
+      expect(Array.from(sentences)).toEqual(['Far away. ', 'Near. ', 'Omega.']);
+      expect(cursorOffset).toBe(12);
+      return 1;
+    };
+
+    try {
+      const diffs = [
+        [1, 'Far away. ', 0, 0],
+        [1, 'Near. ', 1, 1],
+        [1, 'Omega.', 2, 2],
+      ];
+
+      expect(TM.findSpansAtCursor('Far away. Near. Omega.', diffs)).toEqual([
+        spans[2],
+      ]);
+      expect(traversalCount).toBe(2);
+    } finally {
+      TM.traverseAndCount = originalTraverseAndCount;
+      TM.splitIntoSentences = originalSplitIntoSentences;
+      TM.findSentenceContainingCursor = originalFindSentenceContainingCursor;
+      tmWindow.getSelection = () => null;
+    }
   });
 });
 
