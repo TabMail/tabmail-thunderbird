@@ -116,13 +116,25 @@ reference to the identifier other than its own declaration, so an alias counts a
    consumer catches it, and doing so is cheap: a plain object stands in for the manager, no XPCOM
    fake required.
 3. **A static census cannot win an arms race against computed forms** — a contract built by
-   `Array.join`, `obj["get" + "Service"](…)`, `globalThis["sendCalendar" + "Invitations"]()`. Two
+   `Array.join`, `obj["get" + "Service"](…)`, `globalThis["sendCalendar" + "Invitations"]()`, and a
+   zero-argument `Cc[…].getService()` that is ordinary Gecko style rather than an evasion. Three
    such mutants survive by decision, recorded in `TESTS.md` and beside the census in the source.
    The answer is to execute one more consumer, never to add another pattern.
+4. **A fixture with only all-present and all-absent states cannot see a WRONG service** — the
+   partial state is where per-name resolution lives. A sibling fallback
+   (`getCalNamespace()[name] ?? getCalNamespace().manager`) handed the calendar manager to every
+   timezone and ICS consumer on a HEALTHY profile, with no log at all, and stayed 18/18 green.
+   Worse than the silent null the fix exists to prevent. Two models found this class
+   independently in one round, from opposite directions: wrong-service-returned, and
+   value-acquired-then-discarded (`getCalendarManager(); const mgr = null;` inside `getCalendars`,
+   which keeps the exhaustive AST table byte-identical).
 
-Generalisation covering all three: **a subset guard, a shape guard and a call-existence guard all
-read exactly like a total guard in a passing run. Assert the whole enumeration, and assert
-behaviour, not shape.**
+Generalisation covering all four: **a subset guard, a shape guard, a call-existence guard and an
+all-or-nothing fixture all read exactly like a total guard in a passing run. Assert the whole
+enumeration, assert behaviour rather than shape, and drive the PARTIAL state — the degenerate
+states are the ones a wrong answer survives.** Corollary paid for here: when a mutant is killed,
+check WHAT killed it. Sibling fallbacks were dying only incidentally, to a global
+`expect(consoleErrors).toHaveLength(3)` double-count, not to any assertion about service identity.
 
-17 mutants, 15 killed, 2 surviving by decision. Red-first against the shipped 1.7.4 bytes:
-`11 failed | 7 passed (18)`.
+19 mutants, 17 killed, 3 surviving by decision. Red-first against the shipped 1.7.4 bytes:
+`16 failed | 6 passed (22)`.

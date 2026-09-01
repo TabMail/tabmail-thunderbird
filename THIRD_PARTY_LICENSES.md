@@ -43,5 +43,6 @@ shipped in the add-on XPI:
 
 - **vitest** — MIT License — https://github.com/vitest-dev/vitest
 - **@vitest/coverage-v8** — MIT License — https://github.com/vitest-dev/vitest
+- **acorn** — MIT License — https://github.com/acornjs/acorn
 
 See `package.json` for exact versions.

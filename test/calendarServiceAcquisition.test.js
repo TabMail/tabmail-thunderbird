@@ -106,27 +106,35 @@ function stringLiterals(ast) {
 // static census structurally cannot do, both measured, both deliberately not
 // chased with more patterns:
 //
-//   a. It sees syntax, so it catches a contract written as a literal and an
-//      interface reached as a member expression — what every honest
-//      reintroduction of this bug looks like. It does NOT catch deliberately
-//      computed forms: a contract built by template literal or `Array.join`,
-//      an interface bound to a local first, `obj["get" + "Service"](...)`, or
-//      `globalThis["sendCalendar" + "Invitations"]()`. Two such mutants survive
-//      this file today, by decision.
+//   a. It matches `<x>.getService(<y>.calI…)` — a contract written as a literal
+//      and an interface reached as a member expression. It does NOT catch
+//      deliberately computed forms: a contract built by template literal or
+//      `Array.join`, an interface bound to a local first,
+//      `obj["get" + "Service"](...)`, or
+//      `globalThis["sendCalendar" + "Invitations"]()`. Nor does it catch a
+//      ZERO-ARGUMENT `Cc[…].getService()`, which is ordinary modern Gecko
+//      style rather than an evasion — for the three contracts this fix killed
+//      the string census catches that anyway, whatever the `getService` form,
+//      but do not read the call census as covering a service added later.
+//      Three such mutants survive this file today, by decision.
 //   b. A pinned call site proves the accessor is CALLED, never that its result
 //      is USED. `getCalendarManager(); const mgr = null;` satisfies every
 //      static assertion here.
 //
 // Chasing either with more regexes or more AST shapes is an arms race the
 // census cannot win, and three review rounds were spent learning that. The
-// defence is the executed half below: `Cc` is a proxy that throws on ANY
+// defence is the executed half below: `Cc` is a proxy that throws on any
 // property access, so a lookup that actually runs fails however its string was
-// built, and asserting a consumer's real output catches a discarded result.
-// Execution currently covers the four accessors, `toEpochMsUTC` and
-// `listCalendarsInternal`. Still unexecuted: `toCalIDateTime`,
-// `applyRecurrenceToItem`, `queryCalendarItemsInternal` and the nine call sites
-// inside `getAPI`. **When this matters again, execute one of those — copy the
-// `listCalendarsInternal` test — rather than adding another pattern here.**
+// built — unless it is wrapped in its own `try`/`catch`, which a HARMFUL
+// reintroduction cannot be, because swallowing the throw also swallows the
+// service it was trying to fetch — and asserting a consumer's real output
+// catches a discarded result.
+// Execution covers the four accessors, per-service resolution against a partial
+// namespace, `toEpochMsUTC`, `listCalendarsInternal` and the `getCalendars`
+// getAPI surface. Still unexecuted: `toCalIDateTime`, `applyRecurrenceToItem`,
+// `queryCalendarItemsInternal` and the remaining eight call sites inside
+// `getAPI`. **When this matters again, execute one of those — copy the
+// `getCalendars` test — rather than adding another pattern here.**
 function calendarGetServiceCalls(ast) {
   const out = [];
   walk(ast, node => {
@@ -205,6 +213,12 @@ function findFunctionDeclaration(ast, name) {
 const AST = parseScript(RAW);
 const CODE_STRINGS = stringLiterals(AST);
 const ACCESSORS = ["getCalendarManager", "getTimezoneService", "getIcsService"];
+// The `cal` property each accessor must resolve, and no other.
+const SERVICE_OF = {
+  getCalendarManager: "manager",
+  getTimezoneService: "timezoneService",
+  getIcsService: "icsService",
+};
 
 // Services that must never be reached through XPCOM again.
 const DEAD_SERVICE_CONTRACTS = [
@@ -481,6 +495,33 @@ describe("tmCalendar calendar-service acquisition — executed behaviour", () =>
     expect(consoleErrors.join("\n")).toContain("cal.icsService");
   });
 
+  // One service absent, the other two present. The all-absent case above cannot
+  // see a sibling fallback: `getCalNamespace()[name] ?? getCalNamespace().manager`
+  // returns null there too, so it stays green while, on a HEALTHY profile, every
+  // timezone and ICS consumer silently receives the CALENDAR MANAGER instead --
+  // `manager.UTC` and `manager.defaultTimezone` are undefined, so every ISO
+  // conversion mis-anchors or throws, with no log at all. That is strictly worse
+  // than the silent null this fix exists to prevent. Assert per-name identity,
+  // because a global log count is defeated by any fallback that does not
+  // double-log.
+  for (const absent of ACCESSORS) {
+    const service = SERVICE_OF[absent];
+    it(`${absent} returns null while the others still return their own service`, () => {
+      const cal = SENTINELS();
+      delete cal[service];
+      const { ctx, consoleErrors } = runScript({ cal });
+
+      expect(ctx[absent](), `${absent} must not borrow a sibling service`).toBeNull();
+      for (const other of ACCESSORS) {
+        if (other === absent) continue;
+        expect(ctx[other](), `${other} must be unaffected`).toBe(cal[SERVICE_OF[other]]);
+      }
+      // Exactly the absent one is reported, and by its own name.
+      expect(consoleErrors).toHaveLength(1);
+      expect(consoleErrors[0]).toContain(`cal.${service}`);
+    });
+  }
+
   it("each accessor returns null and logs when the calUtils import throws", () => {
     const { ctx, consoleErrors } = runScript({
       importCalUtils() {
@@ -545,6 +586,59 @@ describe("tmCalendar calendar-service acquisition — executed behaviour", () =>
     // No manager: fails closed with an empty list rather than inventing data.
     const { ctx: degraded } = runScript({ cal: {} });
     expect(degraded.listCalendarsInternal()).toEqual([]);
+  });
+
+  it("the getCalendars API uses the manager it acquired, and refuses without one", () => {
+    // Kills the mutant that a pinned call site cannot see:
+    //     getCalendarManager();
+    //     const mgr = null;
+    // substituted for `const mgr = getCalendarManager()` inside getCalendars.
+    // That keeps exactly one accessor call in the same enclosing region, so the
+    // exhaustive AST table stays byte-identical and the whole suite stays green,
+    // while the live user-facing API reports "calendar manager unavailable" for
+    // every valid profile. listCalendars is covered above via
+    // listCalendarsInternal; getCalendars is the separate getAPI surface and
+    // needs its own execution.
+    const cal = SENTINELS();
+    cal.manager = {
+      getCalendars: () => [
+        {
+          id: "cal-1",
+          name: "Work",
+          type: "caldav",
+          readOnly: false,
+          uri: { spec: "https://example.com/dav" },
+          getProperty: key => (key === "color" ? "#112233" : null),
+        },
+      ],
+    };
+    const { ctx } = runScript({ cal });
+    const api = new ctx.tmCalendar().getAPI({}).tmCalendar;
+
+    return api.getCalendars().then(res => {
+      expect(res.ok, "getCalendars must succeed with a live manager").toBe(true);
+      expect(res.calendars).toEqual([
+        {
+          id: "cal-1",
+          name: "Work",
+          type: "caldav",
+          readOnly: false,
+          color: "#112233",
+          uri: "https://example.com/dav",
+          organizer_email: null,
+        },
+      ]);
+
+      // No manager: an explicit refusal, never a fabricated empty success.
+      const { ctx: degraded } = runScript({ cal: {} });
+      const degradedApi = new degraded.tmCalendar().getAPI({}).tmCalendar;
+      return degradedApi.getCalendars().then(refusal => {
+        expect(refusal).toEqual({
+          ok: false,
+          error: "calendar manager unavailable",
+        });
+      });
+    });
   });
 
   it("toEpochMsUTC converts through the timezone service's UTC", () => {
