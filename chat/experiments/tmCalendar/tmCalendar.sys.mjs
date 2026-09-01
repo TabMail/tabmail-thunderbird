@@ -96,20 +96,79 @@ function applyDurationPreservation({
   return { derived: null };
 }
 
-function getCalendarManager() {
+// -------- Calendar service accessors --------
+// Thunderbird de-XPCOM'd its calendar back end. The XPCOM contracts we used to
+// reach the calendar *services* through are now either unregistered or point at
+// a module-level singleton instance that XPCOM still tries to `new`, so
+// `getService()` fails:
+//
+//   @mozilla.org/calendar/manager;1          registered, but CalCalendarManager
+//                                            is `export const … = new (class{})`
+//                                            => "… is not a constructor",
+//                                            surfaced as
+//                                            NS_ERROR_XPC_GS_RETURNED_FAILURE
+//   @mozilla.org/calendar/timezone-service;1 same shape, same failure
+//   @mozilla.org/calendar/ics-service;1      contract removed outright
+//
+// Thunderbird itself reaches these three services only through the `cal`
+// namespace -- no in-tree caller resolves manager, timezone-service or
+// ics-service through Cc[] any more. `cal` resolves them on both the old
+// (XPCOMUtils.defineLazyServiceGetter, TB 140 ESR) and current
+// (ChromeUtils.defineESModuleGetters) layouts, so one code path covers this
+// add-on's whole declared 140.0-155.* range. Use it here for the same reason.
+// (Thunderbird does still use Cc[] for other calendar contracts -- ics-parser,
+// alarm-service and friends -- so this is not a blanket "no Cc[] for calendar"
+// rule; see the construction contracts below.)
+//
+// Object *construction* contracts (event, attendee, recurrence-*, datetime,
+// ics-serializer, itip-item) still register real constructors and keep working,
+// so they are deliberately left on Cc[].createInstance.
+//
+// No module-level cache on purpose. ChromeUtils.importESModule already hands
+// back the one cached namespace object per URL, so a local cache would buy
+// nothing but a mutable binding -- and every experiment parent script in this
+// add-on is executed into ONE shared global (ExtensionCommon's SchemaAPIManager
+// runs them all into `this.global`, via loadSubScript or script.executeInGlobal
+// depending on the path), where each additional top-level binding is one more
+// thing to collide with a sibling experiment or to break on re-evaluation.
+// test/calendarServiceAcquisition.test.js pins the cache-free behaviour, so
+// "optimising" this later has to argue with a red test.
+function getCalNamespace() {
+  const { cal } = ChromeUtils.importESModule("resource:///modules/calendar/calUtils.sys.mjs");
+  return cal;
+}
+
+// One acquisition chokepoint. Returns the service or null, and ALWAYS logs on
+// failure -- including the quiet case where calUtils imports fine but no longer
+// carries the property. The Cc[].getService() this replaced threw on every
+// failure, so it was always loud; returning a bare `cal[name] || null` would
+// have been strictly quieter than the code it replaced, and a silent null here
+// is precisely the shape that made this outage hard to diagnose in the first
+// place (the user's console errors are what identified it).
+function calService(name) {
   try {
-    const Ci = globalThis.Ci;
-    const Cc = globalThis.Cc;
-    if (!Cc || !Ci) {
-      console.error("[tmCalendar] Cc/Ci not available in parent context");
+    const service = getCalNamespace()[name];
+    if (!service) {
+      console.error(`[tmCalendar] cal.${name} is unavailable (calUtils resolved, service missing)`);
       return null;
     }
-    const mgr = Cc["@mozilla.org/calendar/manager;1"].getService(Ci.calICalendarManager);
-    return mgr || null;
+    return service;
   } catch (e) {
-    console.error("[tmCalendar] Failed to get calendar manager via Cc/Ci:", e);
+    console.error(`[tmCalendar] Failed to get cal.${name}:`, e);
     return null;
   }
+}
+
+function getCalendarManager() {
+  return calService("manager");
+}
+
+function getTimezoneService() {
+  return calService("timezoneService");
+}
+
+function getIcsService() {
+  return calService("icsService");
 }
 
 // -------- Provider detection & invite policy --------
@@ -311,7 +370,7 @@ function applyRecurrenceToItem(item, recurrenceDetails) {
     // Best-effort: also construct recurrenceInfo so providers expand occurrences immediately
     try {
       const Ci = globalThis.Ci; const Cc = globalThis.Cc;
-      const icsService = Cc["@mozilla.org/calendar/ics-service;1"].getService(Ci.calIICSService);
+      const icsService = getIcsService();
       const prop = icsService.createIcalProperty("RRULE");
       prop.value = value;
       const rule = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
@@ -497,7 +556,7 @@ function toCalIDateTime(iso, tzId) {
   try {
     const Ci = globalThis.Ci;
     const Cc = globalThis.Cc;
-    const tzService = Cc["@mozilla.org/calendar/timezone-service;1"].getService(Ci.calITimezoneService);
+    const tzService = getTimezoneService();
     const dt = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
 
     const d = new Date(iso);
@@ -764,8 +823,7 @@ function formatAttendees(attArr) {
 function toEpochMsUTC(calDt) {
   try {
     if (!calDt) return null;
-    const Ci = globalThis.Ci; const Cc = globalThis.Cc;
-    const tzService = Cc["@mozilla.org/calendar/timezone-service;1"].getService(Ci.calITimezoneService);
+    const tzService = getTimezoneService();
     const asUtc = typeof calDt.getInTimezone === 'function' ? calDt.getInTimezone(tzService.UTC) : calDt;
     const y = Number(asUtc.year);
     const m = Number(asUtc.month);
@@ -838,6 +896,19 @@ function wireEventEditorCallbacks(onAccept, onCancel) {
   return false;
 }
 
+// UNREACHABLE WIP: every call site is commented out ("does not work yet and
+// fails to find iMIP transport"). Two of its XPCOM lookups are dead in current
+// Thunderbird and are deliberately left as-is rather than half-fixed here:
+//   @mozilla.org/calendar/itip-service;1    contract AND the calIItipService
+//                                           interface are gone; the
+//                                           calIItipItem construction below is
+//                                           already the live path
+//   @mozilla.org/calendar/itip-transport;1  never registered bare — Thunderbird
+//                                           only registers the
+//                                           "?type=email" form, which is why
+//                                           this function could never resolve a
+//                                           transport
+// Reviving iMIP send means starting from those two facts.
 async function sendCalendarInvitations(event, calendar, method = "REQUEST", organizerEmail = null) {
   try {
     const Ci = globalThis.Ci, Cc = globalThis.Cc;
@@ -860,7 +931,7 @@ async function sendCalendarInvitations(event, calendar, method = "REQUEST", orga
     }
 
     // 3) Build ICS with METHOD using the serializer
-    const icsService = Cc["@mozilla.org/calendar/ics-service;1"].getService(Ci.calIICSService);
+    const icsService = getIcsService();
     const serializer = Cc["@mozilla.org/calendar/ics-serializer;1"].createInstance(Ci.calIIcsSerializer);
     serializer.addItems([work]);
 
@@ -1930,7 +2001,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // that's hard to debug at execution time.
             let rebuildError = null;
             try {
-              const icsService = Cc["@mozilla.org/calendar/ics-service;1"].getService(Ci.calIICSService);
+              const icsService = getIcsService();
               const prop = icsService.createIcalProperty("RRULE");
               prop.value = cappedRrule;
               const rule = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
@@ -2072,7 +2143,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (newRrule) {
               try { newEv.setProperty("RRULE", newRrule); } catch (_) {}
               try {
-                const icsService2 = Cc["@mozilla.org/calendar/ics-service;1"].getService(Ci.calIICSService);
+                const icsService2 = getIcsService();
                 const prop2 = icsService2.createIcalProperty("RRULE");
                 prop2.value = newRrule;
                 const rule2 = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
