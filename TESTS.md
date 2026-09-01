@@ -294,6 +294,109 @@ Post-fix: `36 passed (36)`. Test file: `test/planUsage.test.js`.
 | TB-180 | Non-vacuity: trialing paid tier | "Trial" occurs exactly 1× | Invariant matrix |
 | TB-180 | Non-vacuity: signup-trial tier | "Trial" occurs exactly 1× | Invariant matrix |
 
+### 4.9 Calendar Service Acquisition (chat/experiments/tmCalendar/tmCalendar.sys.mjs)
+
+Thunderbird de-XPCOM'd its calendar back end. By Thunderbird 154 all three calendar
+*service* contracts `tmCalendar` used were dead: `@mozilla.org/calendar/manager;1` and
+`@mozilla.org/calendar/timezone-service;1` still register, but their registered
+constructors are now module-level singleton **instances**, so XPCOM's `new` throws
+`TypeError: (...) is not a constructor` and `getService()` fails with
+`NS_ERROR_XPC_GS_RETURNED_FAILURE`; `@mozilla.org/calendar/ics-service;1` was removed
+outright. Every calendar feature failed with them.
+
+**Invariant:** no reachable code path resolves a calendar *service* through an XPCOM
+contract; each consumer receives the service it actually needs from `cal.manager` /
+`cal.timezoneService` / `cal.icsService`, returning `null` rather than throwing when the
+namespace is unavailable; and the still-registered *construction* contracts are left alone.
+
+**Two instruments, deliberately overlapping.** `node:vm` executes the real file **as a
+classic script** — the one property of Thunderbird's loader that matters here, since
+top-level function declarations become global-object properties exactly as
+`SchemaAPIManager` reads them back. It is *not* a reproduction of Gecko: it is Node/V8 with
+a synthetic global, no XPCOM and no privileged sandbox. What it buys is that the accessors'
+return values, null contract, logging and cache-free behaviour are asserted by *running*
+them. `acorn` parses the file so the negative census is answered structurally. Both
+replaced a text-scanning first draft that review defeated four ways, each reproduced: a
+live XPCOM lookup parked between two string literals containing `/*` and `*/` was erased by
+comment stripping; a `getService(` split across lines slipped past a line-oriented regex;
+`getService(globalThis.Ci.calIFoo)` slipped past a regex requiring `Ci.` after the paren;
+and a function's own declaration satisfied its "has ≥ 1 caller" count. Comments are not AST
+nodes and declarations are not `CallExpression`s, so all four dissolve structurally rather
+than needing another regex.
+
+**Red-first evidence (`npx vitest run test/calendarServiceAcquisition.test.js` against
+`origin/main`'s `tmCalendar.sys.mjs`, SHA-256 `55fb327daafb4ce410a9e56120657195a97692505f4fb07814d491cbc7f9144f`
+— byte-identical to the shipped 1.7.4 XPI that produced the reported failure):
+`16 failed | 6 passed (22)`. Post-fix: `22 passed (22)`. The six that pass on base are the
+three instrument controls (independent of the file under test), the iMIP-unreachability
+guard, the construction-contract guard, and the classic-script load — all correctly
+base-agnostic.
+
+**Coverage note.** `npx vitest run --coverage` reports **0%** for `tmCalendar.sys.mjs`.
+That is an artefact, not a gap: the file is executed through `node:vm`, which v8/vitest
+cannot attribute back to the source. A `NODE_V8_COVERAGE` harness that replays the executed
+assertions shows the code this fix introduces — `getCalNamespace`, `calService` and the
+three accessors — at **zero uncovered blocks**. Mutation, not the coverage percentage, is
+the meaningful oracle for this file.
+
+**Mutation evidence — 19 mutants, 17 killed, 3 surviving by decision.** Applied one at a
+time in a disposable rig outside the worktree. Killed: pre-fix base source; the new
+missing-service log removed; the whole `!service` guard removed; swapped timezone/ICS
+accessor bodies; `calService`'s `try/catch` deleted; `undefined` returned instead of `null`;
+accessors forced to always return `null`; a module-level namespace cache added;
+`getService(globalThis.Ci.calI…)`; a dead-manager lookup hidden between `/*` and `*/`
+string literals; `sendCalendarInvitations` reached through an alias; the series-split ICS
+site swapped to the timezone service; a `getAPI` manager site swapped to the ICS service;
+**all seven `getAPI` manager sites forced to `null`**; `listCalendarsInternal` calling
+the accessor but discarding its result; **a sibling fallback in `calService`
+(`getCalNamespace()[name] ?? getCalNamespace().manager`)**, which returned the calendar
+manager for every timezone and ICS consumer with no log at all; and **`getCalendars`
+discarding the manager it acquired** (`getCalendarManager(); const mgr = null;`), which
+kept the exhaustive AST table byte-identical while the live API refused every valid
+profile. The last two were found independently by two models in the same round, survived
+18/18 green before this correction, and are the reason the executed half grew.
+
+**The two survivors are recorded, not hidden**, and the reason is in the source beside the
+census: a contract assembled by `Array.join` reached through a computed
+`"get" + "Service"`, iMIP invoked as `globalThis["sendCalendar" + "Invitations"]()`, and a
+zero-argument `Cc[…].getService()`. A static census sees syntax and cannot win an arms race
+against deliberately computed forms; the answer is to execute a consumer, not to add
+another pattern. Execution covers the four accessors, per-service resolution against a
+partial namespace, `toEpochMsUTC`, `listCalendarsInternal` and the `getCalendars` getAPI
+surface; `toCalIDateTime`, `applyRecurrenceToItem`, `queryCalendarItemsInternal` and the
+remaining eight `getAPI` call sites are covered statically only.
+
+| # | Test | Expected | Category |
+|---|------|----------|----------|
+| TB-181 | AST census on a literal sample carrying all four known defeats | Code-side contract seen; comment-only mentions not; multi-line qualified `getService` caught; `createInstance` not | Instrument control |
+| TB-181 | `accessorCallSites` on declaration-only and declaration-plus-call samples | Zero, then the region-qualified calls — a declaration is not a call | Instrument control |
+| TB-181 | Dead contracts still named in the source's comments; > 100 code strings parsed | Two-sided; documentation preserved | Non-vacuity control |
+| TB-182 | `@mozilla.org/calendar/manager;1` absent from code strings | Not resolved via XPCOM | **Red-first** |
+| TB-182 | `@mozilla.org/calendar/timezone-service;1` absent from code strings | Not resolved via XPCOM | **Red-first** |
+| TB-182 | `@mozilla.org/calendar/ics-service;1` absent from code strings | Not resolved via XPCOM | **Red-first** |
+| TB-183 | No `*.getService(*.calI…)` outside the unreachable iMIP function, at any line breaking or `Ci` qualification | Catches a service reintroduced with an explicit `calI…` interface argument. A zero-argument `getService()` is NOT matched by this census — the three dead contracts are covered by TB-182's string census whatever the form, but a service added later would need its own row | **Red-first** invariant |
+| TB-184 | Zero references to `sendCalendarInvitations` other than its own declaration name | The TB-183 exemption stays sound; an alias counts, so reviving iMIP trips this first | Exemption guard |
+| TB-185 | `calUtils` imported by exactly one `CallExpression`, lexically inside `getCalNamespace` | Single chokepoint | **Red-first** |
+| TB-186 | All 15 accessor call sites equal the pinned `<region chain> :: <accessor>` table | Exhaustive, not a subset or a threshold: adding, removing, relocating or swapping any accessor call anywhere fails here | **Red-first** direction map |
+| TB-187 | event / attendee / datetime / recurrence-\* / ics-serializer contracts still present | The fix did not sweep away contracts Thunderbird still registers | Opposite direction |
+| TB-188 | Each accessor returns its own sentinel service | Swapped bodies caught | **Red-first** executed |
+| TB-188 | Each accessor returns `null` (not `undefined`) **and logs** when the namespace lacks the service | Documented null contract, and never quieter than the `getService()` throw it replaced | **Red-first** executed |
+| TB-190 | `listCalendarsInternal` maps the acquired manager's calendars, and returns `[]` with no manager | A pinned call site proves the call, not that its result is used | **Red-first** executed |
+| TB-188 | Each accessor returns `null` and logs its own service name when the import throws | `try/catch` is load-bearing | **Red-first** executed |
+| TB-189 | Three accessor calls import `calUtils` three times | No module-level cache, deliberately | **Red-first** executed |
+| TB-190 | Loading the file performs no `Cc[…]` lookup and imports only `ExtensionCommon` | `Cc` proxy throws on any access | Executed |
+| TB-190 | `toEpochMsUTC` receives UTC from the timezone service and returns the right epoch | Behavioural counterpart to the direction map | **Red-first** executed |
+| TB-191 | With one service absent and the other two present, that accessor returns `null` and logs its own name while the others still return **their own** sentinel | A sibling fallback returns the manager for every timezone/ICS consumer on a healthy profile, silently; an all-absent fixture cannot see it, and a global log count is defeated by any fallback that does not double-log | **Red-first** executed |
+| TB-192 | `getAPI().tmCalendar.getCalendars()` returns the mapped calendars with a live manager, and the explicit `calendar manager unavailable` refusal without one | Discarding the acquired manager keeps the exhaustive AST table byte-identical while the live API refuses every valid profile | **Red-first** executed |
+
+**Coverage:** `node:vm` executes the real file, so the accessors and `toEpochMsUTC` are
+genuinely exercised rather than only read. The remaining behavioural coverage for this
+experiment lives in the exported mirror `chat/experiments/tmCalendar/durationPreservationLogic.js`
+(via `test/calendarDurationPreservation.test.js`, which also byte-pins the mirror against
+the parent script); `test/calendarEditScope.test.js`, `test/calendarAttendeeDelta.test.js`
+and `test/calendarEventReadHelpers.test.js` cover the sibling `chat/fsm/` logic, not this
+file.
+
 ---
 
 ## Testing Setup
