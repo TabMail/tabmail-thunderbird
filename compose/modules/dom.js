@@ -1138,11 +1138,12 @@ Object.assign(TabMail, {
     if (allSpans.length === 0) return null;
 
     const cursorOffset = TabMail.getCursorOffset(editor);
+    const spanOffsets = TabMail.getOffsetsOfNodeStarts(allSpans);
 
     const spansWithOffsets = allSpans
       .map((span) => ({
         span,
-        offset: TabMail.getOffsetOfNodeStart(span),
+        offset: spanOffsets.get(span),
       }))
       .filter((item) => item.offset !== -1) // Filter out spans we can't get offset for
       .sort((a, b) => a.offset - b.offset);

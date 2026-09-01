@@ -520,6 +520,61 @@ describe('_setCursorByOffsetInternal skips tm-quote-separator', () => {
     }
   });
 
+  it('uses one batched walk to find the closest span in either direction', () => {
+    const editor = makeElement('body');
+    const first = makeElement('span', {
+      dataset: { tabmailDiff: 'insert' },
+    });
+    const second = makeElement('span', {
+      dataset: { tabmailDiff: 'delete' },
+    });
+    first.appendChild(makeTextNode('B'));
+    second.appendChild(makeTextNode('D'));
+    editor.appendChild(makeTextNode('A'));
+    editor.appendChild(first);
+    editor.appendChild(makeTextNode('CC'));
+    editor.appendChild(second);
+    TM.state.editorRef = editor;
+
+    const originalGetCursorOffset = TM.getCursorOffset;
+    const originalTraverseAndCount = TM.traverseAndCount;
+    let traversalCount = 0;
+    TM.getCursorOffset = () => 2;
+    TM.traverseAndCount = (...args) => {
+      traversalCount++;
+      return originalTraverseAndCount(...args);
+    };
+
+    try {
+      expect(TM.findClosestSpan('forward')).toBe(second);
+      expect(traversalCount).toBe(1);
+
+      traversalCount = 0;
+      expect(TM.findClosestSpan('backward')).toBe(first);
+      expect(traversalCount).toBe(1);
+    } finally {
+      TM.getCursorOffset = originalGetCursorOffset;
+      TM.traverseAndCount = originalTraverseAndCount;
+    }
+  });
+
+  it('does not count the configured deleted-newline marker before a batch target', () => {
+    const editor = makeElement('body');
+    const target = makeElement('span');
+    target.appendChild(makeTextNode('target'));
+    editor.appendChild(makeTextNode('A⏎B'));
+    editor.appendChild(target);
+    TM.state.editorRef = editor;
+
+    const originalMarker = TM.config.DELETED_NEWLINE_VISUAL_CHAR;
+    TM.config.DELETED_NEWLINE_VISUAL_CHAR = '⏎';
+    try {
+      expect(TM.getOffsetsOfNodeStarts([target]).get(target)).toBe(2);
+    } finally {
+      TM.config.DELETED_NEWLINE_VISUAL_CHAR = originalMarker;
+    }
+  });
+
   it('returns -1 for unavailable targets without walking when none are in the editor', () => {
     const editor = makeElement('body');
     const outside = makeElement('span');
