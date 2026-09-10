@@ -3,6 +3,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { $ } from "./dom.js";
+import {
+  getShowAiSummariesEnabled,
+  setShowAiSummariesEnabled,
+} from "../../agent/modules/summaryDisplaySettings.js";
 
 // ============================================================================
 // SHARED THEME UTILITIES (used by both config page and welcome wizard)
@@ -178,6 +182,12 @@ export async function loadAppearanceSettings(SETTINGS) {
     const hintsCheckbox = $("compose-hints-banner");
     if (hintsCheckbox) {
       hintsCheckbox.checked = stored.composeHintsBannerEnabled !== false;
+    }
+
+    // Load "Show AI Summaries" display preference (default: enabled, #34)
+    const showSummariesCheckbox = $("show-ai-summaries");
+    if (showSummariesCheckbox) {
+      showSummariesCheckbox.checked = await getShowAiSummariesEnabled();
     }
 
     // Load font size settings from TB prefs
@@ -402,6 +412,21 @@ export async function handleAppearanceChange(e, SETTINGS) {
     const statusEl = $("appearance-status-text");
     if (statusEl) {
       statusEl.textContent = `✓ Keyboard hints ${enabled ? "enabled" : "disabled"}`;
+      setTimeout(() => {
+        statusEl.textContent = "";
+      }, 3000);
+    }
+  }
+
+  // "Show AI Summaries" checkbox (display only, #34)
+  if (e.target.id === "show-ai-summaries") {
+    const enabled = e.target.checked === true;
+    await setShowAiSummariesEnabled(enabled);
+    console.log(`[TMDBG Config] Show AI Summaries ${enabled ? "enabled" : "disabled"}`);
+
+    const statusEl = $("appearance-status-text");
+    if (statusEl) {
+      statusEl.textContent = `✓ AI summaries ${enabled ? "shown" : "hidden"}`;
       setTimeout(() => {
         statusEl.textContent = "";
       }, 3000);

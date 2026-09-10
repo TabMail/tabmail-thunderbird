@@ -8,6 +8,7 @@ import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
 import { isAutoEnabled } from "./deviceSync.js";
 import { isInternalSender } from "./senderFilter.js";
+import { getShowAiSummariesEnabled } from "./summaryDisplaySettings.js";
 import { getSummary } from "./summaryGenerator.js";
 import { getAccessToken } from "./supabaseAuth.js";
 import { applyActionTags } from "./tagHelper.js";
@@ -175,12 +176,16 @@ async function sendBannerMessageWithRetry(tabId, payload, contextLabel) {
 async function processVisibleMessages(tab, messages) {
   log(`Processing ${messages.length} visible messages for tab ${tab.id}.`);
 
-  // Skip banner display if multiple messages are selected since there's no message preview pane
-  const shouldShowBanner = messages.length === 1;
+  // Skip banner display if multiple messages are selected since there's no message preview pane,
+  // or when the user turned "Show AI Summaries" off (Settings → Appearance, #34). The preference
+  // is DISPLAY only: summaries are still generated, cached and action-tagged below.
+  const showAiSummaries = await getShowAiSummariesEnabled();
+  const shouldShowBanner = messages.length === 1 && showAiSummaries;
+  const bannerSkipReason = !showAiSummaries ? "summaries-hidden" : "multi-select";
   let _bannerDisplayedFromCache = false;
 
   // If we are not going to show the summary banner UI, tell the display gate not to wait for it.
-  // This prevents the preview from staying hidden in cases like multi-select.
+  // This prevents the preview from staying hidden in cases like multi-select or summaries hidden.
   if (!shouldShowBanner) {
     try {
       // Gate control is handled by theme side; if this send fails due to listener timing,
@@ -189,12 +194,12 @@ async function processVisibleMessages(tab, messages) {
         .sendMessage(tab.id, { command: "tm-gate-summary-disabled" })
         .catch((e) =>
           log(
-            `[TMDBG Banner] Failed to send tm-gate-summary-disabled (multi-select) to tab ${tab.id}: ${e}`,
+            `[TMDBG Banner] Failed to send tm-gate-summary-disabled (${bannerSkipReason}) to tab ${tab.id}: ${e}`,
             "warn"
           )
         );
     } catch (e) {
-      log(`[TMDBG Banner] tm-gate-summary-disabled (multi-select) threw: ${e}`, "warn");
+      log(`[TMDBG Banner] tm-gate-summary-disabled (${bannerSkipReason}) threw: ${e}`, "warn");
     }
   }
 
