@@ -186,18 +186,18 @@ async function processVisibleMessages(tab, messages) {
 
   // If we are not going to show the summary banner UI, tell the display gate not to wait for it.
   // This prevents the preview from staying hidden in cases like multi-select or summaries hidden.
+  // Sent through the same bounded retry the banner itself uses: both onMessagesDisplayed
+  // listeners fire on one event, and this send can otherwise land before the theme side has
+  // injected messageDisplayGate.js ("Receiving end does not exist"), leaving the preview
+  // blank until the gate's own timeout. In multi-select there is no preview pane, so the
+  // retries are wasted but bounded.
   if (!shouldShowBanner) {
     try {
-      // Gate control is handled by theme side; if this send fails due to listener timing,
-      // it is non-fatal (gate is disabled in multi-select anyway).
-      browser.tabs
-        .sendMessage(tab.id, { command: "tm-gate-summary-disabled" })
-        .catch((e) =>
-          log(
-            `[TMDBG Banner] Failed to send tm-gate-summary-disabled (${bannerSkipReason}) to tab ${tab.id}: ${e}`,
-            "warn"
-          )
-        );
+      await sendBannerMessageWithRetry(
+        tab.id,
+        { command: "tm-gate-summary-disabled" },
+        `${bannerSkipReason}:tm-gate-summary-disabled`
+      );
     } catch (e) {
       log(`[TMDBG Banner] tm-gate-summary-disabled (${bannerSkipReason}) threw: ${e}`, "warn");
     }
