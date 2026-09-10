@@ -22,7 +22,7 @@ vi.mock('../agent/modules/config.js', () => ({
     debugLogging: false,
     debugMode: false,
     logTruncateLength: 100,
-    summaryBanner: { bubbleReadyTimeoutMs: 1, sendRetryDelaysMs: [0] },
+    summaryBanner: { bubbleReadyTimeoutMs: 1, sendRetryDelaysMs: [0, 0, 0] },
     summaryBubble: { defaultBaseFontSizePx: 50 },
     actionTagging: {},
   },
@@ -104,6 +104,25 @@ describe('Show AI Summaries preference off', () => {
     expect(getAction).toHaveBeenCalledTimes(1);
     expect(applyActionTags).toHaveBeenCalledTimes(1);
     expect(enqueueProcessMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('still releases the display gate when the first send lands before the content script exists', async () => {
+    // Both onMessagesDisplayed listeners fire on one event; the agent can reach
+    // this send before the theme side has injected messageDisplayGate.js.
+    // Invariant: the gate is released anyway (the preview must not stay blank).
+    showAiSummaries.value = false;
+    sendMessage.mockRejectedValueOnce(
+      new Error('Could not establish connection. Receiving end does not exist.'),
+    );
+    await displayedListener(tab, { messages: [inboxMessage] });
+    const gateCalls = sendMessage.mock.calls.filter(
+      ([, payload]) => payload?.command === 'tm-gate-summary-disabled',
+    );
+    expect(gateCalls.length).toBeGreaterThanOrEqual(2);
+    // The last gate-release attempt resolved (only the first was rejected).
+    const lastResult = sendMessage.mock.results[sendMessage.mock.results.length - 1];
+    await expect(lastResult.value).resolves.toBeUndefined();
+    expect(sentCommands()).not.toContain('displaySummary');
   });
 
   it('is read per display, so flipping the preference back on renders on the next message', async () => {
