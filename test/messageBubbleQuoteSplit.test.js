@@ -740,3 +740,171 @@ describe('messageBubble <pre> split for plain-text quote collapse', () => {
     expect(afterQuoteWrapper.length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bare ">" fallback through the REAL render path (setupCollapsibleQuotes over
+// the sender's DOM). Invariant: a ">" run followed by substantial non-quoted
+// content (a digest embedding an excerpt) never collapses; a trailing ">" run
+// still does. Regression: Reddit digest, 2026-09-10 (see Companion/Memory 032).
+// ---------------------------------------------------------------------------
+
+function buildDigestEmail({ excerptLines, tailLines, secondExcerptLines = null }) {
+  const wrapper = new DOMElement('div');
+  wrapper.id = 'tm-message-bubble-wrapper';
+  const body = new DOMElement('div');
+  body.className = 'moz-text-html';
+  const addRow = (text) => {
+    const row = new DOMElement('div');
+    row.appendChild(new DOMTextNode(text));
+    body.appendChild(row);
+  };
+  const addExcerpt = (lines) => {
+    const post = new DOMElement('div');
+    const link = new DOMElement('a');
+    link.appendChild(new DOMTextNode(lines.join('\n')));
+    post.appendChild(link);
+    body.appendChild(post);
+  };
+  addRow('r/example');
+  addRow('Some notice about a data breach');
+  addExcerpt(excerptLines);
+  const mid = Math.floor(tailLines.length / 2);
+  for (const t of tailLines.slice(0, mid)) addRow(t);
+  if (secondExcerptLines) addExcerpt(secondExcerptLines);
+  for (const t of tailLines.slice(mid)) addRow(t);
+  wrapper.appendChild(body);
+  return wrapper;
+}
+
+function visibleTextOutsideQuote(wrapper) {
+  let out = '';
+  const walk = (el) => {
+    if (el._classList && el._classList.has('tm-quote-wrapper')) return;
+    for (const c of el._children) {
+      if (c.nodeType === NODE_TEXT) out += c._data + '\n';
+      else if (c.nodeType === NODE_ELEMENT) walk(c);
+    }
+  };
+  walk(wrapper);
+  return out;
+}
+
+describe('bare ">" fallback through setupCollapsibleQuotes', () => {
+  const excerpt = ['> Dear Customer,', '>', '> We are writing to inform you of a recent data s...'];
+  const digestTail = [];
+  for (let n = 1; n <= 12; n++) digestTail.push(`Post ${n} title`, `${n} upvotes`, `${n} comments`);
+  digestTail.push('Unsubscribe from daily digest messages.');
+
+  it('a digest embedding a ">" excerpt is NOT collapsed and every later post stays visible', () => {
+    const wrapper = buildDigestEmail({ excerptLines: excerpt, tailLines: digestTail });
+    const sandbox = buildSandbox([wrapper]);
+    const MB = loadModules(sandbox);
+    MB.setupCollapsibleQuotes();
+    expect(wrapper.querySelector('.tm-quote-wrapper')).toBeNull();
+    const visible = visibleTextOutsideQuote(wrapper);
+    for (const t of digestTail) expect(visible).toContain(t);
+    expect(visible).toContain('> Dear Customer,');
+  });
+
+  it('a digest embedding TWO ">" excerpts is NOT collapsed either (no blockquote to isolate a trailing section)', () => {
+    const wrapper = buildDigestEmail({
+      excerptLines: excerpt,
+      tailLines: digestTail,
+      secondExcerptLines: ['> Another quoted notice', '> from a later post'],
+    });
+    const sandbox = buildSandbox([wrapper]);
+    const MB = loadModules(sandbox);
+    MB.setupCollapsibleQuotes();
+    expect(wrapper.querySelector('.tm-quote-wrapper')).toBeNull();
+    const visible = visibleTextOutsideQuote(wrapper);
+    for (const t of digestTail) expect(visible).toContain(t);
+    expect(visible).toContain('> Another quoted notice');
+  });
+
+  it('an attribution above literal ">" inline answers with NO blockquote is left visible', () => {
+    // Shape: an HTML client that emits literal "> " lines instead of
+    // <blockquote>, replying inline under an "On ... wrote:" line. The
+    // boundary is the attribution, the inline cycle is genuine, and there is
+    // no blockquote to isolate — collapsing from the attribution would hide
+    // every answer.
+    const wrapper = new DOMElement('div');
+    wrapper.id = 'tm-message-bubble-wrapper';
+    const body = new DOMElement('div');
+    body.className = 'moz-text-html';
+    const lines = [
+      'Hi,',
+      'On 3/15/26 10:30, Bob Smith wrote:',
+      '> Question one?',
+      'Answer one.',
+      '> Question two?',
+      'Answer two.',
+    ];
+    for (const l of lines) {
+      body.appendChild(new DOMTextNode(l));
+      body.appendChild(new DOMElement('br'));
+    }
+    wrapper.appendChild(body);
+    const sandbox = buildSandbox([wrapper]);
+    const logs = [];
+    sandbox.console = { ...console, log: (...a) => logs.push(a.join(' ')) };
+    const MB = loadModules(sandbox);
+    MB.setupCollapsibleQuotes();
+    // Fixture must provably reach the inline branch.
+    expect(logs.some((l) => l.includes('Inline answers detected'))).toBe(true);
+    expect(wrapper.querySelector('.tm-quote-wrapper')).toBeNull();
+    const visible = visibleTextOutsideQuote(wrapper);
+    expect(visible).toContain('Answer one.');
+    expect(visible).toContain('Answer two.');
+  });
+
+  it('a false-positive inline cycle INSIDE a single <blockquote> still falls through to normal collapse', () => {
+    // Shape: a top-posted reply whose one <blockquote> quotes a plain-text
+    // thread with its own ">" lines and answers (quoted -> non-quoted ->
+    // quoted inside the blockquote). collapseTrailingQuote needs two
+    // top-level blockquotes and fails; the blockquote's presence means the
+    // normal collapse from the attribution is correct and must be kept.
+    const wrapper = new DOMElement('div');
+    wrapper.id = 'tm-message-bubble-wrapper';
+    const flowed = new DOMElement('div');
+    flowed.className = 'moz-text-flowed';
+    flowed.appendChild(new DOMTextNode('Thanks for the update.'));
+    flowed.appendChild(new DOMElement('br'));
+    flowed.appendChild(new DOMTextNode('On 3/15/26 10:30, Bob Smith wrote:'));
+    flowed.appendChild(new DOMElement('br'));
+    const bq = new DOMElement('blockquote');
+    for (const l of ['> Please send the report.', 'Sent it yesterday.', '> And the invoice?', 'Attached.']) {
+      bq.appendChild(new DOMTextNode(l));
+      bq.appendChild(new DOMElement('br'));
+    }
+    flowed.appendChild(bq);
+    wrapper.appendChild(flowed);
+    const sandbox = buildSandbox([wrapper]);
+    const logs = [];
+    sandbox.console = { ...console, log: (...a) => logs.push(a.join(' ')) };
+    const MB = loadModules(sandbox);
+    MB.setupCollapsibleQuotes();
+    expect(logs.some((l) => l.includes('Inline answers detected'))).toBe(true);
+    expect(logs.some((l) => l.includes('falling back to normal collapse'))).toBe(true);
+    const quoteWrapper = wrapper.querySelector('.tm-quote-wrapper');
+    expect(quoteWrapper).not.toBeNull();
+    const collapsed = quoteWrapper.querySelector('.tm-quote-content').textContent;
+    expect(collapsed).toContain('On 3/15/26 10:30, Bob Smith wrote:');
+    expect(collapsed).toContain('Please send the report.');
+    expect(collapsed).not.toContain('Thanks for the update.');
+    expect(visibleTextOutsideQuote(wrapper)).toContain('Thanks for the update.');
+  });
+
+  it('control: a trailing ">" run with a short sign-off IS collapsed and the intro stays visible', () => {
+    const wrapper = buildDigestEmail({ excerptLines: excerpt, tailLines: ['Thanks,', 'Name'] });
+    const sandbox = buildSandbox([wrapper]);
+    const MB = loadModules(sandbox);
+    MB.setupCollapsibleQuotes();
+    const quoteWrapper = wrapper.querySelector('.tm-quote-wrapper');
+    expect(quoteWrapper).not.toBeNull();
+    const collapsed = quoteWrapper.querySelector('.tm-quote-content').textContent;
+    expect(collapsed).toContain('> Dear Customer,');
+    const visible = visibleTextOutsideQuote(wrapper);
+    expect(visible).toContain('Some notice about a data breach');
+    expect(visible).not.toContain('> Dear Customer,');
+  });
+});

@@ -583,3 +583,205 @@ describe('quoted fallback requires consecutive ">" lines', () => {
     expect(QD.config.quotedFallbackMinConsecutiveLines).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bare ">" quote fallback — the run must be TRAILING. Invariant: a ">" run
+// followed by substantial non-quoted content is embedded content, never a
+// collapse boundary (regression: a Reddit digest whose second post quoted a
+// notice with three ">" lines collapsed the remaining posts and the footer on
+// both TB and iOS). Mirrors the iOS collapseQuotesJS fallback.
+// ---------------------------------------------------------------------------
+describe('quoted fallback requires a TRAILING ">" run', () => {
+  const digestTail = [];
+  for (let n = 1; n <= 12; n++) digestTail.push(`Post ${n} title`, `${n} upvotes`, `${n} comments`);
+
+  it('does NOT collapse a digest that embeds a ">" excerpt followed by more content', () => {
+    const text = [
+      'r/example',
+      'Some notice about a data breach',
+      '> Dear Customer,',
+      '>',
+      '> We are writing to inform you of a recent data s...',
+      'Read More',
+      ...digestTail,
+      'Unsubscribe from daily digest messages.',
+    ].join('\n');
+    expect(QD.findBoundaryInPlainText(text)).toBeNull();
+  });
+
+  it('does NOT collapse a bottom-posted reply (quote first, answer below)', () => {
+    const answer = [];
+    for (let n = 1; n <= 12; n++) answer.push(`Answer paragraph ${n}.`);
+    const text = ['> Can we meet on Tuesday?', '> Let me know what works.', '', ...answer].join('\n');
+    expect(QD.findBoundaryInPlainText(text)).toBeNull();
+  });
+
+  it('still collapses a trailing quote followed by a short sign-off and undelimited signature', () => {
+    const text = [
+      'Sure, sounds good.',
+      '',
+      '> Can we meet on Tuesday?',
+      '> Let me know what works.',
+      '',
+      'Thanks,',
+      'Name',
+      'Title, Company',
+      '+1 555 0100',
+    ].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(2);
+  });
+
+  it('ignores a long tail that sits under a non-quoted "-- " signature delimiter', () => {
+    const sig = [];
+    for (let n = 1; n <= 12; n++) sig.push(`Signature line ${n}`);
+    const text = ['> Quoted one', '> Quoted two', '-- ', ...sig].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(0);
+  });
+
+  it('honors config.quotedFallbackMaxTrailingLines', () => {
+    expect(QD.config.quotedFallbackMaxTrailingLines).toBe(10);
+  });
+
+  const tail = (n, prefix = 'Tail') => Array.from({ length: n }, (_, k) => `${prefix} ${k + 1}`);
+  const run = ['> Quoted one', '> Quoted two'];
+
+  it('threshold is exact on both sides: max trailing lines collapse, one more does not', () => {
+    const max = QD.config.quotedFallbackMaxTrailingLines;
+    const atMax = QD.findBoundaryInPlainText([...run, ...tail(max)].join('\n'));
+    expect(atMax).not.toBeNull();
+    expect(atMax.lineIndex).toBe(0);
+    expect(QD.findBoundaryInPlainText([...run, ...tail(max + 1)].join('\n'))).toBeNull();
+  });
+
+  it('blank tail lines are not counted', () => {
+    const max = QD.config.quotedFallbackMaxTrailingLines;
+    const text = [...run, ...tail(max).flatMap((l) => [l, '', '   '])].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.lineIndex).toBe(0);
+  });
+
+  it('an interleaved (inline) reply keeps its FIRST run as the boundary and its final answer visible, however long the answers', () => {
+    // Invariant: the trailing-run rule never changes how an inline reply splits.
+    // Pre-round-2 candidate moved the boundary to the LAST run once the answers
+    // exceeded the threshold, and the final answer silently fell into `quote`.
+    const text = [
+      'Hi,',
+      '> Question one?',
+      '> More of question one.',
+      ...tail(12, 'Answer one line'),
+      '> Question two?',
+      '> More of question two.',
+      ...tail(4, 'Answer two line'),
+    ].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(1);
+    expect(result.hasInlineAnswers).toBe(true);
+    const split = QD.splitPlainTextForQuote(text);
+    expect(split.main).toContain('Answer two line 4');
+    expect(split.quote).toBe('');
+  });
+
+  it('an interleaved reply whose LATER run is indented keeps its first run and its final answer visible', () => {
+    // The tail walk must recognise an indented later ">" line as a run; an
+    // untrimmed test would move the boundary to that run and drop the final
+    // answer into `quote`.
+    const text = [
+      'Hi,',
+      '> Question one?',
+      '> More of question one.',
+      ...tail(12, 'Answer one line'),
+      '  > Question two?',
+      '  > More of question two.',
+      'Answer two.',
+    ].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(1);
+    expect(result.hasInlineAnswers).toBe(true);
+    const split = QD.splitPlainTextForQuote(text);
+    expect(split.main).toContain('Answer two.');
+    expect(split.quote).toBe('');
+  });
+
+  it('accepts an indented ">" run', () => {
+    const text = ['Reply.', '', '  > Quoted one', '  > Quoted two'].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(2);
+  });
+
+  it('a stronger boundary is preserved even when the ">" run is not trailing', () => {
+    const text = ['Reply.', 'On Mon, Jan 1, 2026, Someone <s@example.com> wrote:', ...run, ...tail(20)].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('an embedded run followed by a later run is an inline reply, not a boundary at the later run', () => {
+    const text = ['Intro.', ...run, ...tail(20), '> Trailing one', '> Trailing two'].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.lineIndex).toBe(1);
+    expect(result.hasInlineAnswers).toBe(true);
+    expect(QD.findQuoteRegion(text)).toBeNull();
+  });
+
+  it('an INDENTED embedded run with a long tail is not a boundary (run detection ignores leading whitespace)', () => {
+    const text = ['Intro.', '  > Quoted one', '  > Quoted two', ...tail(20)].join('\n');
+    expect(QD.findBoundaryInPlainText(text)).toBeNull();
+  });
+
+  it('a "-- " delimiter after a long answer does not rescue a bottom-posted reply', () => {
+    const text = [...run, ...tail(12, 'Answer line'), '-- ', 'Name', 'Title'].join('\n');
+    expect(QD.findBoundaryInPlainText(text)).toBeNull();
+  });
+
+  it('config.quotedFallbackMaxTrailingLines is the live threshold, not a default', () => {
+    const saved = QD.config.quotedFallbackMaxTrailingLines;
+    try {
+      QD.config.quotedFallbackMaxTrailingLines = 3;
+      expect(QD.findBoundaryInPlainText([...run, ...tail(4)].join('\n'))).toBeNull();
+      const ok = QD.findBoundaryInPlainText([...run, ...tail(3)].join('\n'));
+      expect(ok).not.toBeNull();
+      expect(ok.lineIndex).toBe(0);
+    } finally {
+      QD.config.quotedFallbackMaxTrailingLines = saved;
+    }
+  });
+
+  it('processes many short ">" runs separated by blank lines in bounded time', () => {
+    const lines = ['Reply.'];
+    for (let n = 0; n < 16000; n++) lines.push('> a', '> b', '');
+    const text = lines.join('\n');
+    const start = performance.now();
+    const result = QD.findBoundaryInPlainText(text);
+    const elapsed = performance.now() - start;
+    expect(result).not.toBeNull();
+    expect(result.lineIndex).toBe(1);
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  it('processes a long ">" body in bounded time (no per-line suffix rescans)', () => {
+    const lines = ['Reply.', ...tail(32000, '> quoted line')];
+    const text = lines.join('\n');
+    const start = performance.now();
+    const result = QD.findBoundaryInPlainText(text);
+    const elapsed = performance.now() - start;
+    expect(result).not.toBeNull();
+    expect(result.lineIndex).toBe(1);
+    // Pre-fix candidate measured 17 s here; base 133 ms. Generous bound.
+    expect(elapsed).toBeLessThan(2000);
+  });
+});
