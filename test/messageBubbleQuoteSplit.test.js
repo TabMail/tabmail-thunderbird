@@ -821,6 +821,79 @@ describe('bare ">" fallback through setupCollapsibleQuotes', () => {
     expect(visible).toContain('> Another quoted notice');
   });
 
+  it('an attribution above literal ">" inline answers with NO blockquote is left visible', () => {
+    // Shape: an HTML client that emits literal "> " lines instead of
+    // <blockquote>, replying inline under an "On ... wrote:" line. The
+    // boundary is the attribution, the inline cycle is genuine, and there is
+    // no blockquote to isolate — collapsing from the attribution would hide
+    // every answer.
+    const wrapper = new DOMElement('div');
+    wrapper.id = 'tm-message-bubble-wrapper';
+    const body = new DOMElement('div');
+    body.className = 'moz-text-html';
+    const lines = [
+      'Hi,',
+      'On 3/15/26 10:30, Bob Smith wrote:',
+      '> Question one?',
+      'Answer one.',
+      '> Question two?',
+      'Answer two.',
+    ];
+    for (const l of lines) {
+      body.appendChild(new DOMTextNode(l));
+      body.appendChild(new DOMElement('br'));
+    }
+    wrapper.appendChild(body);
+    const sandbox = buildSandbox([wrapper]);
+    const logs = [];
+    sandbox.console = { ...console, log: (...a) => logs.push(a.join(' ')) };
+    const MB = loadModules(sandbox);
+    MB.setupCollapsibleQuotes();
+    // Fixture must provably reach the inline branch.
+    expect(logs.some((l) => l.includes('Inline answers detected'))).toBe(true);
+    expect(wrapper.querySelector('.tm-quote-wrapper')).toBeNull();
+    const visible = visibleTextOutsideQuote(wrapper);
+    expect(visible).toContain('Answer one.');
+    expect(visible).toContain('Answer two.');
+  });
+
+  it('a false-positive inline cycle INSIDE a single <blockquote> still falls through to normal collapse', () => {
+    // Shape: a top-posted reply whose one <blockquote> quotes a plain-text
+    // thread with its own ">" lines and answers (quoted -> non-quoted ->
+    // quoted inside the blockquote). collapseTrailingQuote needs two
+    // top-level blockquotes and fails; the blockquote's presence means the
+    // normal collapse from the attribution is correct and must be kept.
+    const wrapper = new DOMElement('div');
+    wrapper.id = 'tm-message-bubble-wrapper';
+    const flowed = new DOMElement('div');
+    flowed.className = 'moz-text-flowed';
+    flowed.appendChild(new DOMTextNode('Thanks for the update.'));
+    flowed.appendChild(new DOMElement('br'));
+    flowed.appendChild(new DOMTextNode('On 3/15/26 10:30, Bob Smith wrote:'));
+    flowed.appendChild(new DOMElement('br'));
+    const bq = new DOMElement('blockquote');
+    for (const l of ['> Please send the report.', 'Sent it yesterday.', '> And the invoice?', 'Attached.']) {
+      bq.appendChild(new DOMTextNode(l));
+      bq.appendChild(new DOMElement('br'));
+    }
+    flowed.appendChild(bq);
+    wrapper.appendChild(flowed);
+    const sandbox = buildSandbox([wrapper]);
+    const logs = [];
+    sandbox.console = { ...console, log: (...a) => logs.push(a.join(' ')) };
+    const MB = loadModules(sandbox);
+    MB.setupCollapsibleQuotes();
+    expect(logs.some((l) => l.includes('Inline answers detected'))).toBe(true);
+    expect(logs.some((l) => l.includes('falling back to normal collapse'))).toBe(true);
+    const quoteWrapper = wrapper.querySelector('.tm-quote-wrapper');
+    expect(quoteWrapper).not.toBeNull();
+    const collapsed = quoteWrapper.querySelector('.tm-quote-content').textContent;
+    expect(collapsed).toContain('On 3/15/26 10:30, Bob Smith wrote:');
+    expect(collapsed).toContain('Please send the report.');
+    expect(collapsed).not.toContain('Thanks for the update.');
+    expect(visibleTextOutsideQuote(wrapper)).toContain('Thanks for the update.');
+  });
+
   it('control: a trailing ">" run with a short sign-off IS collapsed and the intro stays visible', () => {
     const wrapper = buildDigestEmail({ excerptLines: excerpt, tailLines: ['Thanks,', 'Name'] });
     const sandbox = buildSandbox([wrapper]);

@@ -223,14 +223,16 @@
       if (collapseTrailingQuote(wrapper)) {
         return;
       }
-      // A bare ">" boundary with NO <blockquote> anywhere means the inline
-      // answers live in plain text (e.g. a digest embedding several ">"
-      // excerpts, or a ">"-quoted interleaved reply). There is no trailing
-      // section to isolate, and collapsing from the first run would hide the
-      // answers between the runs — leave the message visible, as the text path
-      // (findQuoteRegion) already does for this shape.
-      if (quoteMatch.patternType === 'quoted' && !wrapper.querySelector('blockquote')) {
-        console.log('[TabMail MsgBubble] Inline ">" answers with no blockquote — leaving message visible');
+      // NO <blockquote> anywhere means the inline answers live in plain text
+      // (a digest embedding several ">" excerpts, or a ">"-quoted interleaved
+      // reply, with or without an attribution line above it). There is no
+      // trailing section to isolate, and collapsing from the first boundary
+      // would hide the answers between the runs — leave the message visible,
+      // as the text path (findQuoteRegion) already does for this shape. With a
+      // <blockquote> present (e.g. a single quoted block whose own text
+      // contains ">" lines) the cycle is a false positive: fall through.
+      if (!wrapper.querySelector('blockquote')) {
+        console.log('[TabMail MsgBubble] Inline answers with no blockquote — leaving message visible');
         return;
       }
       console.log('[TabMail MsgBubble] Trailing quote collapse failed — falling back to normal collapse');

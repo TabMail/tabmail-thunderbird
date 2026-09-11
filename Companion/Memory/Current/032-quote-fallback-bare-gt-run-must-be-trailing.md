@@ -65,6 +65,16 @@ boundary was wrong.
   in the wrapper now RETURNS (leave visible), mirroring `findQuoteRegion → null`. Pinned by a
   two-excerpt DOM test. Coverage survivors closed: indented embedded run + long tail, `-- ` after a
   long bottom-posted answer, config override (3) is the live threshold.
+- **Gate round 4 (Fable max fallback)**: architecture, correctness, robustness CLEAN; coverage found the
+  DOM bail's `patternType === 'quoted'` conjunct untested and, on inspection, wrong in the same
+  direction as the original bug: an attribution line above literal `>` inline answers with no
+  `<blockquote>` collapsed from the attribution and hid every answer. The conjunct was DELETED —
+  the bail is now simply "inline answers detected, no `<blockquote>` in the wrapper → leave visible".
+  The other conjunct stays: a single `<blockquote>` whose own text carries a `>` cycle (a top-posted
+  reply quoting a plain-text inline thread) is a false positive and must still collapse from the
+  attribution. Both directions are pinned by DOM tests that assert the inline branch was entered.
+  Also pinned: an indented LATER run in an interleaved reply (the tail walk's `trim()` is
+  load-bearing).
 - **Parity**: the iOS `collapseQuotesJS` fallback in `AutoSizingHTMLView.swift` carries the same
   2-consecutive-lines rule and needs the same trailing-run rule and constant (ADR-IOS-008
   parity). Pending at the time of writing.

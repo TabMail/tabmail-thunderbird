@@ -690,6 +690,29 @@ describe('quoted fallback requires a TRAILING ">" run', () => {
     expect(split.quote).toBe('');
   });
 
+  it('an interleaved reply whose LATER run is indented keeps its first run and its final answer visible', () => {
+    // The tail walk must recognise an indented later ">" line as a run; an
+    // untrimmed test would move the boundary to that run and drop the final
+    // answer into `quote`.
+    const text = [
+      'Hi,',
+      '> Question one?',
+      '> More of question one.',
+      ...tail(12, 'Answer one line'),
+      '  > Question two?',
+      '  > More of question two.',
+      'Answer two.',
+    ].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(1);
+    expect(result.hasInlineAnswers).toBe(true);
+    const split = QD.splitPlainTextForQuote(text);
+    expect(split.main).toContain('Answer two.');
+    expect(split.quote).toBe('');
+  });
+
   it('accepts an indented ">" run', () => {
     const text = ['Reply.', '', '  > Quoted one', '  > Quoted two'].join('\n');
     const result = QD.findBoundaryInPlainText(text);
