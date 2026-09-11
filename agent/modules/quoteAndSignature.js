@@ -58,11 +58,14 @@
 
     // Bare ">" quote fallback: the run must be TRAILING. After the run ends, at
     // most this many non-blank non-">" lines may follow before the end of the
-    // message (or before a non-quoted "-- " signature delimiter, which the
-    // quote region already excludes). A sign-off plus an undelimited signature
-    // is well under this; a forum/newsletter digest that merely EMBEDS a ">"
-    // excerpt (e.g. a Reddit post quoting a notice, followed by more posts and
-    // the footer) is far over it and must NOT collapse the rest of the message.
+    // message or before the first non-quoted "-- " signature delimiter. The
+    // delimiter stop is a heuristic allowance for a signature-like tail — it is
+    // NOT a guarantee that callers keep that tail visible (setupCollapsibleQuotes
+    // sweeps everything after the boundary into the collapsed wrapper, as it
+    // always has). A sign-off plus an undelimited signature is well under this;
+    // a forum/newsletter digest that merely EMBEDS a ">" excerpt (e.g. a Reddit
+    // post quoting a notice, followed by more posts and the footer) is far over
+    // it and must NOT collapse the rest of the message.
     // Mirrors the iOS collapseQuotesJS fallback.
     quotedFallbackMaxTrailingLines: 10,
 
@@ -355,11 +358,18 @@
           // Match the same trimStart() used for the boundary line itself (useRaw).
           if (!/^>/.test((lines[idx] || "").trimStart())) return false;
         }
+        // Only the FIRST line of a run can be the earliest candidate, and every
+        // later line of the same run shares its tail, so reject non-start lines
+        // outright. This keeps the tail walk below linear in the message:
+        // without it a long ">" body re-walked its suffix once per quoted line
+        // (measured 17 s for 32k quoted lines).
+        if (i > 0 && /^>/.test((lines[i - 1] || "").trimStart())) return false;
         // The run must be TRAILING: count the non-blank non-">" lines after the
-        // run, stopping at a non-quoted "-- " signature delimiter (that tail is
-        // already excluded from the collapsed region). A large tail means the
-        // ">" block is embedded content (digest excerpt, bottom-posted reply),
-        // not a trailing quote — collapsing from here would hide the message.
+        // run, stopping at the first non-quoted "-- " signature delimiter (a
+        // heuristic allowance for a signature-like tail; see the config comment).
+        // A large tail means the ">" block is embedded content (digest excerpt,
+        // bottom-posted reply), not a trailing quote — collapsing from here
+        // would hide the message.
         const maxTrailing = (cfg && cfg.quotedFallbackMaxTrailingLines) || 10;
         let idx = i;
         while (idx < lines.length && /^>/.test((lines[idx] || "").trimStart())) idx++;

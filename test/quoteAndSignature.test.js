@@ -647,4 +647,67 @@ describe('quoted fallback requires a TRAILING ">" run', () => {
   it('honors config.quotedFallbackMaxTrailingLines', () => {
     expect(QD.config.quotedFallbackMaxTrailingLines).toBe(10);
   });
+
+  const tail = (n, prefix = 'Tail') => Array.from({ length: n }, (_, k) => `${prefix} ${k + 1}`);
+  const run = ['> Quoted one', '> Quoted two'];
+
+  it('threshold is exact on both sides: max trailing lines collapse, one more does not', () => {
+    const max = QD.config.quotedFallbackMaxTrailingLines;
+    const atMax = QD.findBoundaryInPlainText([...run, ...tail(max)].join('\n'));
+    expect(atMax).not.toBeNull();
+    expect(atMax.lineIndex).toBe(0);
+    expect(QD.findBoundaryInPlainText([...run, ...tail(max + 1)].join('\n'))).toBeNull();
+  });
+
+  it('blank tail lines are not counted', () => {
+    const max = QD.config.quotedFallbackMaxTrailingLines;
+    const text = [...run, ...tail(max).flatMap((l) => [l, '', '   '])].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.lineIndex).toBe(0);
+  });
+
+  it('later ">" lines in the tail are not counted', () => {
+    const max = QD.config.quotedFallbackMaxTrailingLines;
+    const text = [...run, ...tail(max).flatMap((l) => [l, '> later quoted'])].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.lineIndex).toBe(0);
+  });
+
+  it('accepts an indented ">" run', () => {
+    const text = ['Reply.', '', '  > Quoted one', '  > Quoted two'].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(2);
+  });
+
+  it('a stronger boundary is preserved even when the ">" run is not trailing', () => {
+    const text = ['Reply.', 'On Mon, Jan 1, 2026, Someone <s@example.com> wrote:', ...run, ...tail(20)].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('attribution');
+    expect(result.lineIndex).toBe(1);
+  });
+
+  it('a later trailing run still collapses when the first run is embedded', () => {
+    const text = ['Intro.', ...run, ...tail(20), '> Trailing one', '> Trailing two'].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(1 + run.length + 20);
+  });
+
+  it('processes a long ">" body in bounded time (no per-line suffix rescans)', () => {
+    const lines = ['Reply.', ...tail(32000, '> quoted line')];
+    const text = lines.join('\n');
+    const start = performance.now();
+    const result = QD.findBoundaryInPlainText(text);
+    const elapsed = performance.now() - start;
+    expect(result).not.toBeNull();
+    expect(result.lineIndex).toBe(1);
+    // Pre-fix candidate measured 17 s here; base 133 ms. Generous bound.
+    expect(elapsed).toBeLessThan(2000);
+  });
 });

@@ -34,9 +34,20 @@ boundary was wrong.
   (`.mcnPreviewText`, `List-Unsubscribe`) — the next forum digest lacks them; deleting the
   fallback outright — plain-text replies from clients that emit no attribution line still need it
   (owner may still rule on this).
+- **Gate round 1 (Codex, 2026-09-10)**: architecture + correctness CLEAN; robustness UNCLEAN on a
+  real quadratic — `findBoundaryInPlainText` collects candidates over EVERY line, so the tail walk
+  re-ran once per quoted line (32k-line `>` body: 133 ms base → 17 s). Fix: `multiLineCheck` rejects
+  any line whose predecessor is also `>` (only a run's first line can be the earliest candidate and
+  every later line shares its tail), so each run is walked once. Comment-only C1: the `-- ` stop is a
+  heuristic allowance, NOT a caller guarantee — `setupCollapsibleQuotes` sweeps the tail regardless.
 - **Tests**: `test/quoteAndSignature.test.js` › `quoted fallback requires a TRAILING ">" run` —
   digest shape, bottom-posted reply, sign-off + undelimited-signature negative control,
-  `-- `-delimited long tail control, config pin. Three were red on the pre-fix module.
+  `-- `-delimited long tail control, config pin, exact 10/11 threshold both sides, blank and later-`>`
+  tail lines not counted, indented run, stronger boundary preserved, later trailing run after an
+  embedded one, 32k-line bounded-time test. `test/messageBubbleQuoteSplit.test.js` › `bare ">"
+  fallback through setupCollapsibleQuotes` drives the REAL render path over a digest DOM (no wrapper,
+  every post visible) and a trailing-run control (wrapper, intro visible). Mutants killed: threshold
+  neutralised (5 red), run-start guard removed (timing red).
 - **Parity**: the iOS `collapseQuotesJS` fallback in `AutoSizingHTMLView.swift` carries the same
   2-consecutive-lines rule and needs the same trailing-run rule and constant (ADR-IOS-008
   parity). Pending at the time of writing.
