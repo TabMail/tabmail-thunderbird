@@ -73,6 +73,9 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ## Recent Discoveries
 
+### 2026-09-11 — Cold-start folder inventory absence is NOT deletion evidence (hotfix 1.7.7, mass FTS wipe 2026-09-10)
+- **[Detail](Companion/Memory/Current/033-cold-start-inventory-absence-is-not-deletion-evidence.md)** — `browser.accounts.list(true)` returns what Thunderbird has LOADED, not what exists; ADR-024's membership state pass + orphan sweep removed ~58k native rows (whole archive trees) because owner `folderId`s were absent from a partial inventory. Both removal sites now require the row's `accountId` to be in the inventory (`_folderReconTrustedAccountIds`, telemetry `unloadedAccountRowsKept`); an empty inventory removes nothing. The legacy path's `ensureAccountChecked` guard was dropped in the port (MIS-018). Recovery: Full Maintenance Scan / reindex.
+
 ### 2026-09-10 — "Show AI summaries" Appearance toggle is display-only; gate release must use the bounded banner retry (PR #35)
 - **[Detail](Companion/Memory/Current/031-ai-summaries-display-toggle-gate-release-retry.md)** — `storage.local.showAiSummariesEnabled` (default ON, only explicit `false` hides; fail-open read); sole reader `summary.js processVisibleMessages`, which still runs `getSummary`/`applyActionTags`/`enqueueProcessMessage` when hidden. **Never release the message-display gate with a bare `tabs.sendMessage` from an `onMessagesDisplayed` handler** — in the 3-pane preview the theme listener injects the gate script on the SAME event, so the send can precede injection and the user waits the full gate timeout; use `sendBannerMessageWithRetry`.
 

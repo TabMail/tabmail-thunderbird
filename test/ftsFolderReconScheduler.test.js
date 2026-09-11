@@ -2403,11 +2403,6 @@ describe('cooperative folder reconcile production contracts', () => {
       specs: [{ folderPath: '/New', folderId: 'opaque-new', headerMessageIds: ['live@example.com'] }],
       stale: ['account1:/Old:live@example.com', 'opaque-old'],
     },
-    {
-      name: 'empty inventory',
-      specs: [],
-      stale: ['account1:/Gone:stale@example.com', 'opaque-gone'],
-    },
   ])('removes assigned stale ownership and converges for $name', async ({ specs, stale }) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
@@ -2432,6 +2427,87 @@ describe('cooperative folder reconcile production contracts', () => {
         expect(nativeRows.has(`account1:${spec.folderPath}:${spec.headerMessageIds[0]}`)).toBe(true);
       }
       expect(fts.removeBatch).toHaveBeenCalledWith([stale[0]], expect.anything());
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  // INVARIANT (2026-09-10 cold-start wipe): `browser.accounts.list(true)` only
+  // describes what Thunderbird has LOADED. A membership row whose opaque owner
+  // is absent from the inventory may be removed only when the row's ACCOUNT is
+  // present in that inventory; an account with no enumerated folder is
+  // unknown, never deleted. Before the fix both the migration state pass and
+  // the post-cutover orphan sweep removed every such row, wiping ~58k rows
+  // across the four accounts Thunderbird had not loaded yet.
+  it('never removes a row on inventory absence when Thunderbird has loaded no folders at all', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { nativeRows, fts } = installExactMembershipFolders([]);
+      const coldRows = [
+        ['account1:/Gone:stale@example.com', 'opaque-gone'],
+        ['account1:/Archive:kept@example.com', makeFolderMembershipId('account1', '/Archive')],
+      ];
+      for (const [msgId, folderId] of coldRows) nativeRows.set(msgId, folderId);
+
+      for (let turn = 0; turn < 40; turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      for (const [msgId] of coldRows) expect(nativeRows.has(msgId)).toBe(true);
+      expect(fts.removeBatch).not.toHaveBeenCalled();
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps rows of an account absent from a cold inventory while still removing stale rows of a loaded account', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/Keep', folderId: 'opaque-keep', headerMessageIds: ['keep@example.com'],
+      }]);
+      nativeRows.set(
+        'account1:/Keep:keep@example.com',
+        makeFolderMembershipId('account1', '/Keep'),
+      );
+      // account1 is loaded (it contributed a folder) and this folder is gone:
+      // genuine deleted-folder evidence, must still be removed.
+      const stale = 'account1:/Deleted:stale@example.com';
+      nativeRows.set(stale, 'opaque-deleted');
+      // account2 contributed NO folder to the inventory: not loaded yet. Every
+      // one of its rows must survive both the state pass and the orphan sweep.
+      const coldRows = Array.from({ length: 3 }, (_, index) =>
+        `account2:/Archive:cold-${index}@example.com`);
+      for (const msgId of coldRows) {
+        nativeRows.set(msgId, makeFolderMembershipId('account2', '/Archive'));
+      }
+
+      for (let turn = 0; turn < 40
+        && (!_testExports._getFolderMembershipCutoverProven()
+          || !_testExports._getFolderReconSessionDone().has('account1:/Keep')
+          || nativeRows.has(stale)); turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+      // Keep ticking so the post-cutover orphan sweep gets its turns too.
+      for (let turn = 0; turn < 20; turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect(nativeRows.has(stale)).toBe(false);
+      expect(nativeRows.has('account1:/Keep:keep@example.com')).toBe(true);
+      for (const msgId of coldRows) expect(nativeRows.has(msgId)).toBe(true);
+      const removedKeys = fts.removeBatch.mock.calls.flatMap(([ids]) => ids);
+      expect(removedKeys).toEqual([stale]);
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();

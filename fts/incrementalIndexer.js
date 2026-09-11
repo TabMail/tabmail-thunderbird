@@ -2710,6 +2710,7 @@ function _newFolderReconRuntimeTelemetry() {
     maxPendingObserved: 0,
     ambiguousGroups: 0,
     ambiguousFolders: 0,
+    unloadedAccountRowsKept: 0,
   };
 }
 
@@ -4406,6 +4407,9 @@ async function _folderReconOrphanSweep(
   const identityByFolderId = exactMembership
     ? new Map(identities.map(identity => [identity.folderId, identity]))
     : null;
+  const trustedAccountIds = exactMembership
+    ? _folderReconTrustedAccountIds(identities)
+    : null;
   for (let i = 0; i < msgIds.length; i++) {
     const msgId = msgIds[i];
     if (!exactMembership && _folderReconMsgIdHasKnownFolderPrefix(msgId, knownFolderKeys)) {
@@ -4428,9 +4432,19 @@ async function _folderReconOrphanSweep(
         processed = i + 1;
         continue;
       }
-      // The relation's non-null opaque owner is authoritative. Once that id
-      // is absent from the fresh inventory, no raw-key parse or live folder
-      // query can make it current again; remove the stale row directly.
+      if (!trustedAccountIds.has(_folderReconAccountIdOfMsgId(msgId))) {
+        // The owner is absent, but so is its whole account: Thunderbird has
+        // not loaded that account into this inventory, so absence is not
+        // deletion evidence (see _folderReconTrustedAccountIds). Keep the row.
+        stats.orphanKeysKept++;
+        _bumpFolderReconTelemetry("unloadedAccountRowsKept");
+        processed = i + 1;
+        continue;
+      }
+      // The relation's non-null opaque owner is authoritative and its account
+      // is present in this fresh inventory, so the id can only be absent
+      // because the folder was deleted or renamed. No raw-key parse or live
+      // folder query can make it current again; remove the stale row directly.
       entriesToRemove.push(msgId);
       processed = i + 1;
       assertCurrent();
@@ -5531,6 +5545,43 @@ async function _getFolderReconInventory(reconcileLease, generation, syncStartedA
   return identities;
 }
 
+/**
+ * Cold-start guard for every "owner absent from the inventory" removal.
+ *
+ * `browser.accounts.list(true)` is a snapshot of what Thunderbird has LOADED,
+ * not of what exists. At startup and after an MV3 resume an account whose
+ * folder tree is not populated yet contributes zero folders, so every
+ * membership row it owns reads as "opaque owner absent from the fresh
+ * inventory". Treating that absence as deleted-folder evidence removed
+ * ~58k rows across four not-yet-loaded accounts on 2026-09-10 while the one
+ * loaded account was untouched. The legacy `_reconcileCleanupStaleEntries`
+ * path has always skipped an account it cannot see for this exact reason;
+ * the ADR-024 exact-membership paths dropped that guard.
+ *
+ * Rule: a row may be judged stale by inventory absence ONLY when its account
+ * is itself present in this very inventory (>= 1 enumerated folder). An
+ * account with no enumerated folder is unknown, never deleted — keep its rows.
+ * A genuinely removed account therefore keeps its ghosts until an explicit
+ * repair scan; that is the accepted fail-closed cost.
+ */
+function _folderReconTrustedAccountIds(identities) {
+  const accountIds = new Set();
+  for (const identity of identities || []) {
+    const accountId = String(identity?.accountId || "");
+    if (accountId) accountIds.add(accountId);
+  }
+  return accountIds;
+}
+
+// The raw key is `accountId:folderPath:Message-ID`; Thunderbird account keys
+// never contain ':' so the first separator is unambiguous. The opaque owner id
+// is deliberately NOT decoded here (ADR-024: compare only, never decode).
+function _folderReconAccountIdOfMsgId(msgId) {
+  const text = String(msgId || "");
+  const separator = text.indexOf(":");
+  return separator > 0 ? text.slice(0, separator) : "";
+}
+
 function _cancelFolderMembershipScanSession() {
   const session = _folderMembershipScanSession;
   _folderMembershipScanSession = null;
@@ -5848,9 +5899,11 @@ async function _runFolderMembershipMigrationSlice(
   const assignments = [];
   const staleOrphanMsgIds = [];
   let unresolved = 0;
+  let unloadedAccountRowsKept = 0;
   const identityByFolderId = new Map(
     validIdentities.map(identity => [identity.folderId, identity]),
   );
+  const trustedAccountIds = _folderReconTrustedAccountIds(validIdentities);
   if ((page.entries || []).length > FOLDER_MEMBERSHIP_STATE_PAGE_SIZE
       || (page.done !== true && (page.entries || []).length === 0)) {
     _resetFolderMembershipStatePass(migration);
@@ -5879,9 +5932,18 @@ async function _runFolderMembershipMigrationSlice(
     if (entry.folderId !== null) {
       const owner = identityByFolderId.get(entry.folderId);
       if (!owner) {
+        if (!trustedAccountIds.has(_folderReconAccountIdOfMsgId(msgId))) {
+          // The owner's whole account is absent from this inventory, so
+          // Thunderbird has not loaded it yet; absence is not deletion
+          // evidence (see _folderReconTrustedAccountIds). Keep the row and
+          // let a later inventory that includes the account decide.
+          unloadedAccountRowsKept++;
+          continue;
+        }
         // The relation is authoritative even though the raw legacy key is
         // ambiguous. A non-null opaque id absent from this fresh, fenced
-        // inventory belongs to a deleted/renamed folder and is stale.
+        // inventory whose account IS present belongs to a deleted/renamed
+        // folder and is stale.
         staleOrphanMsgIds.push(msgId);
       } else if (!msgId.startsWith(`${owner.accountId}:${owner.folderPath}:`)) {
         // A current folder id attached to a structurally different raw key is
@@ -5897,6 +5959,11 @@ async function _runFolderMembershipMigrationSlice(
     );
     if (assignment) assignments.push(assignment);
     else unresolved++;
+  }
+  if (unloadedAccountRowsKept > 0) {
+    _bumpFolderReconTelemetry("unloadedAccountRowsKept", unloadedAccountRowsKept);
+    // Aggregate-only: no account, folder, or Message-ID values.
+    log(`[FTS FolderRecon] Membership pass kept ${unloadedAccountRowsKept} row(s) whose account is absent from the current inventory — not loaded yet, not deletion evidence`, "warn");
   }
   let expectedEpoch = pageEpoch;
   if (staleOrphanMsgIds.length > 0) {
