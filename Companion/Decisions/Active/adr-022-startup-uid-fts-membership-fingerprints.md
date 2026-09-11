@@ -4,6 +4,8 @@
 
 > **2026-08-22:** [ADR-024](adr-024-opaque-native-folder-membership.md) resolves issue #20 for capable helpers by adding exact opaque folder membership beside the unchanged raw key. This ADR's overlap census remains the required fail-closed fallback for older helpers.
 
+> **2026-09-11:** "empty inventories still clean orphans" is REVOKED by the ADR-024 amendment — a row is removable on inventory absence only when its account is present in the inventory; an empty or partial cold-start inventory removes nothing for the missing accounts.
+
 **Context:** Weekly scans in July/August 2026 repeatedly removed old ghosts from Gmail Bin even after ADR-020/021. The count design had two unsound assumptions: `getTotalMessages(false)` is cached state, and equal cardinality does not imply equal membership (one ghost plus one missing key cancels). A highest UID alone detects additions but not arbitrary deletions; HIGHESTMODSEQ detects change but also advances for flag-only changes and does not identify the changed UID.
 
 **Decision:** Make reconciliation an exact, collision-resistant membership proof that is continuously and cooperatively scheduled after startup:
