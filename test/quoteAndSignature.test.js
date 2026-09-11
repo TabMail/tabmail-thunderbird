@@ -583,3 +583,68 @@ describe('quoted fallback requires consecutive ">" lines', () => {
     expect(QD.config.quotedFallbackMinConsecutiveLines).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bare ">" quote fallback — the run must be TRAILING. Invariant: a ">" run
+// followed by substantial non-quoted content is embedded content, never a
+// collapse boundary (regression: a Reddit digest whose second post quoted a
+// notice with three ">" lines collapsed the remaining posts and the footer on
+// both TB and iOS). Mirrors the iOS collapseQuotesJS fallback.
+// ---------------------------------------------------------------------------
+describe('quoted fallback requires a TRAILING ">" run', () => {
+  const digestTail = [];
+  for (let n = 1; n <= 12; n++) digestTail.push(`Post ${n} title`, `${n} upvotes`, `${n} comments`);
+
+  it('does NOT collapse a digest that embeds a ">" excerpt followed by more content', () => {
+    const text = [
+      'r/example',
+      'Some notice about a data breach',
+      '> Dear Customer,',
+      '>',
+      '> We are writing to inform you of a recent data s...',
+      'Read More',
+      ...digestTail,
+      'Unsubscribe from daily digest messages.',
+    ].join('\n');
+    expect(QD.findBoundaryInPlainText(text)).toBeNull();
+  });
+
+  it('does NOT collapse a bottom-posted reply (quote first, answer below)', () => {
+    const answer = [];
+    for (let n = 1; n <= 12; n++) answer.push(`Answer paragraph ${n}.`);
+    const text = ['> Can we meet on Tuesday?', '> Let me know what works.', '', ...answer].join('\n');
+    expect(QD.findBoundaryInPlainText(text)).toBeNull();
+  });
+
+  it('still collapses a trailing quote followed by a short sign-off and undelimited signature', () => {
+    const text = [
+      'Sure, sounds good.',
+      '',
+      '> Can we meet on Tuesday?',
+      '> Let me know what works.',
+      '',
+      'Thanks,',
+      'Name',
+      'Title, Company',
+      '+1 555 0100',
+    ].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(2);
+  });
+
+  it('ignores a long tail that sits under a non-quoted "-- " signature delimiter', () => {
+    const sig = [];
+    for (let n = 1; n <= 12; n++) sig.push(`Signature line ${n}`);
+    const text = ['> Quoted one', '> Quoted two', '-- ', ...sig].join('\n');
+    const result = QD.findBoundaryInPlainText(text);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('quoted');
+    expect(result.lineIndex).toBe(0);
+  });
+
+  it('honors config.quotedFallbackMaxTrailingLines', () => {
+    expect(QD.config.quotedFallbackMaxTrailingLines).toBe(10);
+  });
+});

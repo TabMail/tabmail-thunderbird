@@ -56,6 +56,16 @@
     // (AutoSizingHTMLView), which requires 2 consecutive ">" lines.
     quotedFallbackMinConsecutiveLines: 2,
 
+    // Bare ">" quote fallback: the run must be TRAILING. After the run ends, at
+    // most this many non-blank non-">" lines may follow before the end of the
+    // message (or before a non-quoted "-- " signature delimiter, which the
+    // quote region already excludes). A sign-off plus an undelimited signature
+    // is well under this; a forum/newsletter digest that merely EMBEDS a ">"
+    // excerpt (e.g. a Reddit post quoting a notice, followed by more posts and
+    // the footer) is far over it and must NOT collapse the rest of the message.
+    // Mirrors the iOS collapseQuotesJS fallback.
+    quotedFallbackMaxTrailingLines: 10,
+
     // DOM marker classnames (used by theme CSS for invisibility + reuse checks)
     dom: {
       quoteBoundaryMarkerClass: "tm-quote-boundary-marker",
@@ -344,6 +354,24 @@
           if (idx >= lines.length) return false;
           // Match the same trimStart() used for the boundary line itself (useRaw).
           if (!/^>/.test((lines[idx] || "").trimStart())) return false;
+        }
+        // The run must be TRAILING: count the non-blank non-">" lines after the
+        // run, stopping at a non-quoted "-- " signature delimiter (that tail is
+        // already excluded from the collapsed region). A large tail means the
+        // ">" block is embedded content (digest excerpt, bottom-posted reply),
+        // not a trailing quote — collapsing from here would hide the message.
+        const maxTrailing = (cfg && cfg.quotedFallbackMaxTrailingLines) || 10;
+        let idx = i;
+        while (idx < lines.length && /^>/.test((lines[idx] || "").trimStart())) idx++;
+        let trailing = 0;
+        for (; idx < lines.length; idx++) {
+          const raw = lines[idx] || "";
+          const trimmed = raw.trim();
+          if (!trimmed) continue;
+          if (/^>/.test(trimmed)) continue;
+          if (signatureDelimiterLine.test(trimmed)) break;
+          trailing++;
+          if (trailing > maxTrailing) return false;
         }
         return true;
       },
