@@ -138,3 +138,23 @@ check WHAT killed it. Sibling fallbacks were dying only incidentally, to a globa
 
 19 mutants, 17 killed, 3 surviving by decision. Red-first against the shipped 1.7.4 bytes:
 `16 failed | 6 passed (22)`.
+
+## ESR 140 compatibility — verified against source (2026-09-10)
+
+Owner asked whether the `cal`-namespace swap (b08f242, shipped in 1.7.5) broke the declared
+`strict_min_version` 140.0. Checked directly against `comm-esr140` on hg.mozilla.org, head revision
+`dfc45cd5f44fe8bf169959fe17d2465ac1569fe8` (the `raw-file/tip` URL 404s with "not found in manifest";
+use the `json-log` head node instead):
+
+- `calendar/base/modules/calUtils.sys.mjs` exists at that path and defines `cal.manager`,
+  `cal.icsService`, `cal.timezoneService` via `XPCOMUtils.defineLazyServiceGetter` on the same three
+  contracts 1.7.4 used directly.
+- `CalCalendarManager.sys.mjs` / `CalTimezoneService.sys.mjs` still `export function …`, and
+  `components.conf` registers `manager;1`, `timezone-service;1` and `ics-service;1`, so those lazy
+  getters resolve on 140.
+- `comm-esr128` has the identical layout (same file, same three getters), so the code path would
+  also run on 128 even though the manifest does not declare it.
+
+Conclusion: the 140.0–155.* claim above holds; nothing in 1.7.4→1.7.5 touched any other experiment
+or the manifest version pins. The `Cc[].createInstance` construction contracts left in place were
+already in 1.7.4 and are unchanged.
