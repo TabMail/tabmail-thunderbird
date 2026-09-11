@@ -2885,7 +2885,7 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
-  it('reconciles old native rows to completion when the fresh inventory is empty', async () => {
+  it('legacy sweep never removes a row on inventory absence when Thunderbird has loaded no folders at all', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
     try {
@@ -2911,11 +2911,7 @@ describe('cooperative folder reconcile production contracts', () => {
         filterNewMessages: vi.fn(async () => ({ newMsgIds: [] })),
         stats: vi.fn(async () => ({})),
       };
-      const recheckReached = deferred();
-      recheckMessageInFolder.mockImplementationOnce(async () => {
-        recheckReached.resolve();
-        return 'absent';
-      });
+      recheckMessageInFolder.mockResolvedValue('absent');
       globalThis.browser.accounts.list.mockResolvedValue([]);
       globalThis.browser.tmMsgNotify = {
         getFolderState: vi.fn(),
@@ -2927,17 +2923,92 @@ describe('cooperative folder reconcile production contracts', () => {
       storageData.fts_reconcile_pending = 123;
       _testExports._setFtsSearch(fts);
 
-      const firstTick = _testExports._runFolderReconSchedulerTick(fts);
-      await recheckReached.promise;
-      await vi.advanceTimersByTimeAsync(_testExports.FOLDER_RECON_ENTRY_DELAY_MS);
-      const first = await firstTick;
-      expect(first.orphan.orphanRemoved).toBe(1);
+      const runTick = async () => {
+        let settled = false;
+        const tick = _testExports._runFolderReconSchedulerTick(fts).then(value => { settled = true; return value; });
+        for (let step = 0; step < 200 && !settled; step++) {
+          await vi.advanceTimersByTimeAsync(_testExports.FOLDER_RECON_ENTRY_DELAY_MS);
+        }
+        return tick;
+      };
+      const first = await runTick();
+      expect(first.orphan.orphanRemoved).toBe(0);
       vi.setSystemTime(Date.now() + 1000);
-      const second = await _testExports._runFolderReconSchedulerTick(fts);
+      const second = await runTick();
 
       expect(second).toMatchObject({ complete: true });
-      expect(keys.size).toBe(0);
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      // An empty inventory is a cold Thunderbird, not an empty mailbox: the row
+      // survives, no recheck was even attempted, and nothing was removed.
+      expect(keys.has(oldKey)).toBe(true);
+      expect(recheckMessageInFolder).not.toHaveBeenCalled();
+      expect(fts.removeBatch).not.toHaveBeenCalled();
+      expect(_testExports._getFolderReconRuntimeTelemetry().unloadedAccountRowsKept).toBeGreaterThan(0);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('legacy sweep keeps rows of an account absent from a cold inventory while still removing a rechecked-absent row of a loaded account', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const staleKey = 'account1:/Deleted:stale@example.com';
+      const coldKeys = [
+        'account2:/Archive:cold-0@example.com',
+        'account2:/Archive:cold-1@example.com',
+        'account2:/Archive:cold-2@example.com',
+      ];
+      const keys = new Set([staleKey, ...coldKeys]);
+      const fts = {
+        fingerprintMsgIdRange: vi.fn(async (start, end) => {
+          const rows = sqliteNativeRange(keys, start, end);
+          return { count: rows.length, sha256: framedDigest(rows) };
+        }),
+        countMsgIdRange: vi.fn(async () => ({ count: 0 })),
+        listMsgIdRange: vi.fn(async (start, end, after, limit) => {
+          const rows = sqliteNativeRange(keys, start, end, after);
+          const page = rows.slice(0, limit);
+          return { msgIds: page, done: page.length < limit };
+        }),
+        removeBatch: vi.fn(async ids => {
+          let count = 0;
+          for (const id of ids) count += keys.delete(id) ? 1 : 0;
+          return { count };
+        }),
+        getMessageByMsgId: vi.fn(async id => (keys.has(id) ? { msgId: id } : null)),
+        filterNewMessages: vi.fn(async () => ({ newMsgIds: [] })),
+        stats: vi.fn(async () => ({})),
+      };
+      // Only account1 is loaded, and its inventory has no /Deleted folder any more.
+      installEmptyFolders([['account1', '/Keep']]);
+      recheckMessageInFolder.mockResolvedValue('absent');
+      storageData.fts_reconcile_pending = 123;
+      _testExports._setFtsSearch(fts);
+
+      let result = null;
+      for (let turn = 0; turn < 20 && !(result?.complete); turn++) {
+        // Drive the tick's cooperative yields under fake timers until it settles.
+        let settled = false;
+        const tick = _testExports._runFolderReconSchedulerTick(fts).then(value => { settled = true; return value; });
+        for (let step = 0; step < 200 && !settled; step++) {
+          await vi.advanceTimersByTimeAsync(_testExports.FOLDER_RECON_ENTRY_DELAY_MS);
+        }
+        result = await tick;
+        vi.setSystemTime(Date.now() + 1000);
+      }
+
+      expect(result).toMatchObject({ complete: true });
+      expect(keys.has(staleKey)).toBe(false);
+      for (const key of coldKeys) expect(keys.has(key)).toBe(true);
+      const removedKeys = fts.removeBatch.mock.calls.flatMap(([ids]) => ids);
+      expect(removedKeys).toEqual([staleKey]);
+      // The global recheck was only ever consulted for the loaded account's row.
+      for (const [, weFolder] of recheckMessageInFolder.mock.calls) {
+        expect(weFolder?.accountId ?? weFolder).not.toContain('account2');
+      }
+      expect(_testExports._getFolderReconRuntimeTelemetry().unloadedAccountRowsKept).toBeGreaterThanOrEqual(3);
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();

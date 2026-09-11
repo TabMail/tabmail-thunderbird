@@ -4407,9 +4407,11 @@ async function _folderReconOrphanSweep(
   const identityByFolderId = exactMembership
     ? new Map(identities.map(identity => [identity.folderId, identity]))
     : null;
-  const trustedAccountIds = exactMembership
-    ? _folderReconTrustedAccountIds(identities)
-    : null;
+  // Both sweep modes gate removal on the row's account being present in this
+  // inventory: an unloaded account is invisible to the exact relation AND to
+  // the legacy global recheck (a query cannot see folders Thunderbird has not
+  // loaded), so "absent" from either is not deletion evidence for it.
+  const trustedAccountIds = _folderReconTrustedAccountIds(identities);
   for (let i = 0; i < msgIds.length; i++) {
     const msgId = msgIds[i];
     if (!exactMembership && _folderReconMsgIdHasKnownFolderPrefix(msgId, knownFolderKeys)) {
@@ -4450,6 +4452,15 @@ async function _folderReconOrphanSweep(
       assertCurrent();
       await _folderReconYield(FOLDER_RECON_ENTRY_DELAY_MS);
       assertCurrent();
+      continue;
+    }
+    if (!trustedAccountIds.has(_folderReconAccountIdOfMsgId(msgId))) {
+      // Legacy sweep, same rule as the exact branch above: the account is not
+      // in the inventory, so a global recheck would report "absent" for a row
+      // that is merely not loaded yet. Keep it.
+      stats.orphanKeysKept++;
+      _bumpFolderReconTelemetry("unloadedAccountRowsKept");
+      processed = i + 1;
       continue;
     }
     const parsed = parseUniqueId(msgId);
@@ -7203,6 +7214,7 @@ export const _testExports = {
   _admitFolderReconActiveProof,
   _invalidateFolderReconProofForEvent,
   _getFolderReconWorkingProofTelemetry: _folderReconWorkingProofTelemetry,
+  _getFolderReconRuntimeTelemetry: () => _folderReconRuntimeTelemetry,
   _getFolderReconActiveProofKey: () => _folderReconActiveProof?.folderKey || null,
   _getFolderReconSessionDone: () => new Set(_folderReconSessionDone),
   _getFolderReconEphemeralEvidence: () => ({
