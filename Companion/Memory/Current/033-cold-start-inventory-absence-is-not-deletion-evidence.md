@@ -31,3 +31,14 @@ carry it over, and the recon test suite's `'empty inventory'` case BLESSED the w
 Pinned by `test/ftsFolderReconScheduler.test.js` ("never removes a row on inventory absence when
 Thunderbird has loaded no folders at all", "keeps rows of an account absent from a cold inventory while
 still removing stale rows of a loaded account"); both fail on 1.7.6 code.
+
+## 1.7.8 follow-up (2026-09-11) — the LEGACY sweep had the same hole
+
+The post-merge review of 1.7.7 found the guard was only on the exact-membership branch of
+`_folderReconOrphanSweep`. Helpers without `folderMembershipV1` take the legacy branch: keys with no
+known folder prefix go to `recheckMessageInFolder`, whose global query cannot see an unloaded account
+and therefore answers "absent" → removed, five per slice. 1.7.8 builds `trustedAccountIds`
+unconditionally and applies the same keep-rule before `parseUniqueId`. Five tests in
+`test/ftsFolderRecon.test.js` and one in the scheduler suite had ghost rows under accounts absent from
+the inventory (`gone:`, `ghostAcct:`) and asserted removal — blessing tests; they now use a loaded
+account with a vanished folder (`account1:/Deleted`), which is the only legitimate orphan shape.

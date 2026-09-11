@@ -1898,8 +1898,8 @@ describe('gating and drain coordination', () => {
 describe('orphan prefixes and event hardening', () => {
   it('preempts orphan work after one atomic global recheck', async () => {
     const ghosts = [
-      'gone:/Deleted:ghost-1@example.com',
-      'gone:/Deleted:ghost-2@example.com',
+      'account1:/Deleted:ghost-1@example.com',
+      'account1:/Deleted:ghost-2@example.com',
     ];
     const fts = makeFtsStore(ghosts);
     recheckMessageInFolder.mockImplementationOnce(async () => {
@@ -1907,9 +1907,10 @@ describe('orphan prefixes and event hardening', () => {
       return 'absent';
     });
 
+    // account1 must be loaded for its /Deleted ghosts to be recheck candidates at all.
     await expect(_testExports._runFolderReconOrphanSlice(
       fts,
-      [],
+      [folderA({ uidCount: 0 })],
       { version: 3, folders: {} },
     )).rejects.toThrow('folder_recon_pressure');
 
@@ -1920,7 +1921,7 @@ describe('orphan prefixes and event hardening', () => {
   it('removes a key owned by no current folder after independent confirmation', async () => {
     const actualA = [KEY_A('a@example.com')];
     const edge = 'account1:/INBOX/a:b:y@example.com';
-    const ghost = 'ghostAcct:/Gone:x@example.com';
+    const ghost = 'account1:/Gone:x@example.com';
     const fts = makeFtsStore([...actualA, edge, ghost]);
     const folderC = {
       accountId: 'account1', folderPath: '/INBOX/a:b', folderURI: URI_C,
@@ -1947,7 +1948,7 @@ describe('orphan prefixes and event hardening', () => {
 
   it('keeps advancing an inventory-bound orphan cursor during benign known-folder growth', async () => {
     const ghosts = Array.from({ length: 12 }, (_, index) =>
-      `gone:/Deleted:ghost-${String(index).padStart(2, '0')}@example.com`);
+      `account1:/Deleted:ghost-${String(index).padStart(2, '0')}@example.com`);
     const fts = makeFtsStore(ghosts);
     const identities = [folderA({ uidCount: 0 })];
     const memo = { version: 3, folders: {} };
@@ -1971,8 +1972,9 @@ describe('orphan prefixes and event hardening', () => {
     const newIdentity = folderA({ folderPath: '/New', folderURI: 'imap://new', uidCount: 1 });
     const oldMail = 'account1:/Old:old@example.com';
     const newMail = 'account1:/New:new@example.com';
+    // Ghosts sort AFTER /Old so the first slice's cursor lands beyond oldMail.
     const ghosts = Array.from({ length: 7 }, (_, index) =>
-      `gone:/Deleted:ghost-${String(index).padStart(2, '0')}@example.com`);
+      `account1:/Removed:ghost-${String(index).padStart(2, '0')}@example.com`);
     const fts = makeFtsStore([oldMail, ...ghosts]);
     const memo = { version: 3, folders: {} };
     recheckMessageInFolder.mockImplementation(async () => 'present');
@@ -2173,7 +2175,7 @@ describe('fresh proof and native-bound checkpoint contracts', () => {
 
   it('builds orphan count evidence from fresh folder ranges, never stale memo ftsCounts', async () => {
     const actual = KEY_A('actual@example.com');
-    const ghost = 'gone:/Deleted:ghost@example.com';
+    const ghost = 'account1:/Deleted:ghost@example.com';
     const fts = makeFtsStore([actual, ghost]);
     const identities = [folderA({ uidCount: 1 })];
     globalThis.browser.accounts.list.mockResolvedValue([{
