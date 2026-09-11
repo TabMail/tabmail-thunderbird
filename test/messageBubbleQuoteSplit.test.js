@@ -748,7 +748,7 @@ describe('messageBubble <pre> split for plain-text quote collapse', () => {
 // still does. Regression: Reddit digest, 2026-09-10 (see Companion/Memory 032).
 // ---------------------------------------------------------------------------
 
-function buildDigestEmail({ excerptLines, tailLines }) {
+function buildDigestEmail({ excerptLines, tailLines, secondExcerptLines = null }) {
   const wrapper = new DOMElement('div');
   wrapper.id = 'tm-message-bubble-wrapper';
   const body = new DOMElement('div');
@@ -758,14 +758,20 @@ function buildDigestEmail({ excerptLines, tailLines }) {
     row.appendChild(new DOMTextNode(text));
     body.appendChild(row);
   };
+  const addExcerpt = (lines) => {
+    const post = new DOMElement('div');
+    const link = new DOMElement('a');
+    link.appendChild(new DOMTextNode(lines.join('\n')));
+    post.appendChild(link);
+    body.appendChild(post);
+  };
   addRow('r/example');
   addRow('Some notice about a data breach');
-  const post = new DOMElement('div');
-  const link = new DOMElement('a');
-  link.appendChild(new DOMTextNode(excerptLines.join('\n')));
-  post.appendChild(link);
-  body.appendChild(post);
-  for (const t of tailLines) addRow(t);
+  addExcerpt(excerptLines);
+  const mid = Math.floor(tailLines.length / 2);
+  for (const t of tailLines.slice(0, mid)) addRow(t);
+  if (secondExcerptLines) addExcerpt(secondExcerptLines);
+  for (const t of tailLines.slice(mid)) addRow(t);
   wrapper.appendChild(body);
   return wrapper;
 }
@@ -798,6 +804,21 @@ describe('bare ">" fallback through setupCollapsibleQuotes', () => {
     const visible = visibleTextOutsideQuote(wrapper);
     for (const t of digestTail) expect(visible).toContain(t);
     expect(visible).toContain('> Dear Customer,');
+  });
+
+  it('a digest embedding TWO ">" excerpts is NOT collapsed either (no blockquote to isolate a trailing section)', () => {
+    const wrapper = buildDigestEmail({
+      excerptLines: excerpt,
+      tailLines: digestTail,
+      secondExcerptLines: ['> Another quoted notice', '> from a later post'],
+    });
+    const sandbox = buildSandbox([wrapper]);
+    const MB = loadModules(sandbox);
+    MB.setupCollapsibleQuotes();
+    expect(wrapper.querySelector('.tm-quote-wrapper')).toBeNull();
+    const visible = visibleTextOutsideQuote(wrapper);
+    for (const t of digestTail) expect(visible).toContain(t);
+    expect(visible).toContain('> Another quoted notice');
   });
 
   it('control: a trailing ">" run with a short sign-off IS collapsed and the intro stays visible', () => {

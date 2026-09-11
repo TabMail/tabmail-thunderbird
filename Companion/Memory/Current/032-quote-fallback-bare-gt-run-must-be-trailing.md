@@ -22,7 +22,7 @@ boundary was wrong.
   non-blank non-`>` lines may follow before end of text or a non-quoted `-- ` signature delimiter
   (`findQuoteRegion` already ends the collapsed region there). Scope is the `quoted` fallback only;
   attribution and structured boundaries are untouched. Both the plain-text and DOM paths share
-  `findBoundaryInPlainText`, so one change covers both.
+  `findBoundaryInPlainText`; the DOM path additionally needs the no-blockquote bail below.
 - **Why a line count, and why 10**: a sign-off plus an undelimited HTML signature is well under
   ten lines; a digest tail or a bottom-posted answer is far over it. The failure directions are
   asymmetric — declining to collapse leaves content visible, collapsing wrongly hides the message —
@@ -47,7 +47,7 @@ boundary was wrong.
   fallback through setupCollapsibleQuotes` drives the REAL render path over a digest DOM (no wrapper,
   every post visible) and a trailing-run control (wrapper, intro visible). Mutants killed: threshold
   neutralised (5 red), run-start guard removed (timing red).
-- **Gate round 2 (Fable max fallback, Codex quota out until 2026-09-14)**: correctness UNCLEAN — the
+- **Gate round 2 (Fable max fallback)**: correctness UNCLEAN — the
   first cut SKIPPED later `>` lines in the tail count, so an interleaved (inline) reply whose answers
   exceeded 10 lines had its first run rejected, the boundary moved to the LAST run, the inline-answer
   cycle no longer fired, and `splitPlainTextForQuote` dropped the final answer into `quote` (reply
@@ -57,6 +57,14 @@ boundary was wrong.
   blank-separated short runs (2.5 s → ~70 ms at 32k lines). The test that had pinned "boundary at the
   later run" was a MIS-014 mechanism pin of the regression and was replaced by the inline-reply
   invariant (`hasInlineAnswers === true`, `main` keeps the final answer).
+- **Gate round 3 (Fable max fallback)**: robustness CLEAN; correctness flagged the base-identical DOM
+  twin — a digest embedding TWO OR MORE `>` excerpts: the accepted first run sets `hasInlineAnswers`,
+  `collapseTrailingQuote` needs ≥2 `<blockquote>`s and there are none, and `setupCollapsibleQuotes`
+  fell through to the normal collapse from the first excerpt. "One change covers both paths" was
+  therefore false for that shape. Fix: in that fallthrough, a `quoted` boundary with no `<blockquote>`
+  in the wrapper now RETURNS (leave visible), mirroring `findQuoteRegion → null`. Pinned by a
+  two-excerpt DOM test. Coverage survivors closed: indented embedded run + long tail, `-- ` after a
+  long bottom-posted answer, config override (3) is the live threshold.
 - **Parity**: the iOS `collapseQuotesJS` fallback in `AutoSizingHTMLView.swift` carries the same
   2-consecutive-lines rule and needs the same trailing-run rule and constant (ADR-IOS-008
   parity). Pending at the time of writing.

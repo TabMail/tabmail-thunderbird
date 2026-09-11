@@ -715,6 +715,29 @@ describe('quoted fallback requires a TRAILING ">" run', () => {
     expect(QD.findQuoteRegion(text)).toBeNull();
   });
 
+  it('an INDENTED embedded run with a long tail is not a boundary (run detection ignores leading whitespace)', () => {
+    const text = ['Intro.', '  > Quoted one', '  > Quoted two', ...tail(20)].join('\n');
+    expect(QD.findBoundaryInPlainText(text)).toBeNull();
+  });
+
+  it('a "-- " delimiter after a long answer does not rescue a bottom-posted reply', () => {
+    const text = [...run, ...tail(12, 'Answer line'), '-- ', 'Name', 'Title'].join('\n');
+    expect(QD.findBoundaryInPlainText(text)).toBeNull();
+  });
+
+  it('config.quotedFallbackMaxTrailingLines is the live threshold, not a default', () => {
+    const saved = QD.config.quotedFallbackMaxTrailingLines;
+    try {
+      QD.config.quotedFallbackMaxTrailingLines = 3;
+      expect(QD.findBoundaryInPlainText([...run, ...tail(4)].join('\n'))).toBeNull();
+      const ok = QD.findBoundaryInPlainText([...run, ...tail(3)].join('\n'));
+      expect(ok).not.toBeNull();
+      expect(ok.lineIndex).toBe(0);
+    } finally {
+      QD.config.quotedFallbackMaxTrailingLines = saved;
+    }
+  });
+
   it('processes many short ">" runs separated by blank lines in bounded time', () => {
     const lines = ['Reply.'];
     for (let n = 0; n < 16000; n++) lines.push('> a', '> b', '');
