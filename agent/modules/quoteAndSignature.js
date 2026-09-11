@@ -360,16 +360,21 @@
         }
         // Only the FIRST line of a run can be the earliest candidate, and every
         // later line of the same run shares its tail, so reject non-start lines
-        // outright. This keeps the tail walk below linear in the message:
-        // without it a long ">" body re-walked its suffix once per quoted line
-        // (measured 17 s for 32k quoted lines).
+        // outright — otherwise a long ">" body re-walks its suffix once per
+        // quoted line (measured 17 s for 32k quoted lines).
         if (i > 0 && /^>/.test((lines[i - 1] || "").trimStart())) return false;
-        // The run must be TRAILING: count the non-blank non-">" lines after the
-        // run, stopping at the first non-quoted "-- " signature delimiter (a
-        // heuristic allowance for a signature-like tail; see the config comment).
-        // A large tail means the ">" block is embedded content (digest excerpt,
-        // bottom-posted reply), not a trailing quote — collapsing from here
-        // would hide the message.
+        // The run must be TRAILING: count the non-blank non-">" lines between
+        // the end of this run and the NEXT ">" line, the first non-quoted "-- "
+        // signature delimiter (a heuristic allowance for a signature-like tail;
+        // see the config comment), or the end of text. A later ">" line ACCEPTS
+        // the run: the message is an interleaved (inline) reply and the existing
+        // inline-answer cycle check decides what to do with it, exactly as before
+        // this rule existed — rejecting the run here would move the boundary to
+        // the last run and silently drop the final answer from the split. A large
+        // tail with no later run means the ">" block is embedded content (digest
+        // excerpt, bottom-posted reply), not a trailing quote — collapsing from
+        // here would hide the message. Each walk is bounded by the gap to the
+        // next run, so a long ">" body stays linear.
         const maxTrailing = (cfg && cfg.quotedFallbackMaxTrailingLines) || 10;
         let idx = i;
         while (idx < lines.length && /^>/.test((lines[idx] || "").trimStart())) idx++;
@@ -378,12 +383,11 @@
           const raw = lines[idx] || "";
           const trimmed = raw.trim();
           if (!trimmed) continue;
-          if (/^>/.test(trimmed)) continue;
+          if (/^>/.test(trimmed)) return true;
           if (signatureDelimiterLine.test(trimmed)) break;
           trailing++;
-          if (trailing > maxTrailing) return false;
         }
-        return true;
+        return trailing <= maxTrailing;
       },
     },
   ];

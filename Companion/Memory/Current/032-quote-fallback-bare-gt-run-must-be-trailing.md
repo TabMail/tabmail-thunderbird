@@ -7,14 +7,13 @@ boundary was wrong.
 
 - **Symptom**: a Reddit daily digest (Mailchimp-style nested tables) rendered with only the header
   and the first post visible; posts 2–5, the "View More Posts" button and the footer all sat inside
-  `.tm-quote-content` behind "Show quoted text". Reproduced identically on iOS
-  (`tabmail-ios/logmain.log` `[QuoteDetect] Result: boundaryLine=324`, `visibleText=253chars` of a
-  75 KB body).
+  `.tm-quote-content` behind "Show quoted text". Reproduced identically on iOS (its `[QuoteDetect]`
+  trace picked the excerpt line as the boundary and left ~250 visible chars of a 75 KB body).
 - **Root cause** (`agent/modules/quoteAndSignature.js`, `replyBoundaryPatterns` entry
   `type: "quoted"`): no structured reply boundary matched, so detection fell through to the bare
   `^>` fallback. Its only guard was `quotedFallbackMinConsecutiveLines` (2), added for the lone
-  `›› Read the full story` newsletter link. The second post's preview quoted a TELUS notice with
-  three literal `&gt;` lines — a legitimate `>` block that is not a reply quote — and the fallback
+  `›› Read the full story` newsletter link. The second post's preview quoted a third-party notice
+  with three literal `&gt;` lines — a legitimate `>` block that is not a reply quote — and the fallback
   never looked at what FOLLOWED the run. `detectInlineAnswersInPlainText` did not rescue it because
   it demands a full cycle (quoted → non-quoted → quoted); the digest is quoted → a 40-plus-line
   non-quoted tail → nothing. `topLevelBQs` was 0, so the blockquote inline-reply check was inert.
@@ -48,6 +47,16 @@ boundary was wrong.
   fallback through setupCollapsibleQuotes` drives the REAL render path over a digest DOM (no wrapper,
   every post visible) and a trailing-run control (wrapper, intro visible). Mutants killed: threshold
   neutralised (5 red), run-start guard removed (timing red).
+- **Gate round 2 (Fable max fallback, Codex quota out until 2026-09-14)**: correctness UNCLEAN — the
+  first cut SKIPPED later `>` lines in the tail count, so an interleaved (inline) reply whose answers
+  exceeded 10 lines had its first run rejected, the boundary moved to the LAST run, the inline-answer
+  cycle no longer fired, and `splitPlainTextForQuote` dropped the final answer into `quote` (reply
+  generator, compose edit, thread bubble, `extractUserWrittenContent` all consume that split). Fix: a
+  later `>` line ACCEPTS the run (the existing cycle check then decides, exactly as on base). The same
+  change bounds every tail walk by the gap to the next run, closing the residual O(runs × n) on
+  blank-separated short runs (2.5 s → ~70 ms at 32k lines). The test that had pinned "boundary at the
+  later run" was a MIS-014 mechanism pin of the regression and was replaced by the inline-reply
+  invariant (`hasInlineAnswers === true`, `main` keeps the final answer).
 - **Parity**: the iOS `collapseQuotesJS` fallback in `AutoSizingHTMLView.swift` carries the same
   2-consecutive-lines rule and needs the same trailing-run rule and constant (ADR-IOS-008
   parity). Pending at the time of writing.
