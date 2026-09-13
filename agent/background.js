@@ -1676,7 +1676,11 @@ async function init() {
         // log(`[TMDBG ThreadTT] Failed to initialise threadTooltip: ${e}`);
     }
 
-    await ensureActionTags();
+    try {
+        await ensureActionTags();
+    } catch (_) {
+        log("[ActionTags] Optional tag setup failed; continuing startup", "debug");
+    }
 
     // 0c. Activate tagSort experiment for Date→Tags sorting in the message list.
     try {

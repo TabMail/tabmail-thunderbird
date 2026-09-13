@@ -433,3 +433,27 @@ describe('explicit recompute replaces older work',()=>{
   await SUT.cleanupProcessMessageQueue();expect(token.valid).toBe(false);
  });
 });
+
+describe('replacement during identity resolution',()=>{
+ it('persists and executes a newer recompute after an older resolve finishes',async()=>{
+  mockGet.mockResolvedValue({id:123,folder:{id:'folder-inbox',accountId:'acct1',path:'/INBOX'},headerMessageId:'msgid@x'});
+  let release;
+  mockHeaderIDToWeID.mockImplementationOnce(()=>new Promise(r=>{release=r;})).mockResolvedValue(123);
+  mockProcessMessage.mockResolvedValue({ok:true});
+  await enqueueOne();const oldDrain=SUT.drainProcessMessageQueue();
+  await vi.waitFor(()=>expect(release).toBeTypeOf('function'));
+  await enqueueOne({forceRecompute:true});release(123);await oldDrain;
+  expect(SUT.getProcessMessageQueueStatus().pending).toBe(1);
+  const snapshots=browser.storage.local.set.mock.calls.map(([value])=>value.agent_processmessage_pending).filter(Boolean);
+  expect(snapshots.length).toBeGreaterThan(0);
+  const persisted=snapshots.at(-1);expect(persisted).toHaveLength(1);
+  expect(persisted[0].opts.forceRecompute).toBe(true);
+  expect(mockProcessMessage).toHaveBeenCalledTimes(1);
+  expect(mockProcessMessage.mock.calls[0][1].token.valid).toBe(false);
+  await SUT.drainProcessMessageQueue();
+  expect(mockProcessMessage).toHaveBeenCalledTimes(2);
+  expect(mockProcessMessage.mock.calls[1][1].forceRecompute).toBe(true);
+  expect(mockProcessMessage.mock.calls[1][1].token).not.toBe(mockProcessMessage.mock.calls[0][1].token);
+  expect(SUT.getProcessMessageQueueStatus().pending).toBe(0);
+ });
+});

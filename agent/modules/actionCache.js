@@ -169,7 +169,7 @@ export function touchAction(key) {
     if (previous[payloadKey(key)] !== undefined) await idb.set({ [tsKey(key)]: { ts: Date.now() } });
   });
 }
-async function _clear(items, { metadata = "ts", token } = {}, { wipe = false, extraKeys = [] } = {}) {
+async function _clear(items, { metadata = "ts", token } = {}, { extraKeys = [] } = {}) {
   const records = new Map(), inventory = new Map();
   for (const item of items) {
     const key = item.uniqueKey || await _resolveUniqueKey(item.header);
@@ -180,14 +180,12 @@ async function _clear(items, { metadata = "ts", token } = {}, { wipe = false, ex
   const previous = await idb.get([...records.keys()].map(payloadKey));
   const keys = [...extraKeys];
   for (const key of records.keys()) keys.push(...(metadata === "all" ? allKeysFor(key) : [payloadKey(key), tsKey(key)]));
-  if (wipe) await idb.clear();
-  else if (keys.length) await idb.remove([...new Set(keys)]);
+  if (keys.length) await idb.remove([...new Set(keys)]);
   for (const [key, targets] of records) { _bump(key); await _project(targets, ""); }
   if (records.size) {
     await _refreshChips();
     if (Object.keys(previous).length) triggerSortRefresh();
   }
-  if (wipe) { _epoch++; _workTokens.clear(); }
   return records.size > 0;
 }
 export function clearActions(items, options) { return _enqueue(() => _clear(items, options)); }
@@ -202,8 +200,10 @@ export function clearAllActions() {
 }
 export function wipeAll() {
   return _enqueue(async () => {
-    const keys = (await idb.getAllKeys()).filter(isActionPayloadKey);
-    return _clear(keys.map(k => ({ uniqueKey: k.slice(ACTION_PREFIX.length) })), {}, { wipe: true });
+    // Privacy cleanup must not depend on message inventory or repaint reads.
+    await idb.clear();
+    _epoch++;
+    _workTokens.clear();
   });
 }
 export function purgeMetadataOlderThan(cutoffTs) {
@@ -272,12 +272,10 @@ export async function backfillAccount(accountId) {
           await _enqueue(async () => {
             const entries = [];
             for (const message of chunk) {
-              // Revalidate identities rather than trusting ids held across awaits.
               const key = await _resolveUniqueKey({ ...message, folder });
               if (!key) continue;
-              const target = await _targets(key, { ...message, folder });
               const value = (await idb.get(payloadKey(key)))[payloadKey(key)];
-              for (const weMsgId of target.weIds) entries.push({ weMsgId, action: VALID_ACTIONS.has(value) ? value : "" });
+              entries.push({ weMsgId: message.id, action: VALID_ACTIONS.has(value) ? value : "" });
             }
             if (entries.length) {
               try {

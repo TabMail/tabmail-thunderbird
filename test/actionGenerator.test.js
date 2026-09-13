@@ -703,3 +703,16 @@ describe('generator mutation ownership boundaries',()=>{
   expect(browser.tmHdr.setAction).not.toHaveBeenCalledWith(1,'reply');
  });
 });
+
+describe('peer cache replied invariant',()=>{
+ it('commits a peer reply as none when the live message was already replied',async()=>{
+  const {probeAICache}=await import('../agent/modules/deviceSync.js');
+  probeAICache.mockResolvedValueOnce('reply');browser.tmHdr.getReplied.mockResolvedValue(true);
+  expect(await getAction(makeHeader())).toBe('none');
+  expect(probeAICache).toHaveBeenCalledOnce();expect(mockSendChat).not.toHaveBeenCalled();
+  expect(idbStore['action:test-unique-key']).toBe('none');
+  expect(mockIdbSet.mock.calls.filter(([values])=>'action:test-unique-key' in values).map(([values])=>values['action:test-unique-key'])).toEqual(['none']);
+  expect(browser.tmHdr.setAction).toHaveBeenCalledWith(1,'none');
+  expect(browser.tmHdr.setAction).not.toHaveBeenCalledWith(1,'reply');
+ });
+});

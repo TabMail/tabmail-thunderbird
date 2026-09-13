@@ -1,10 +1,10 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ store: {}, native: new Map(), events: [], query: vi.fn(), resolve: vi.fn(), remove: vi.fn(), sort: vi.fn() }));
+const h = vi.hoisted(() => ({ store: {}, native: new Map(), events: [], query: vi.fn(), resolve: vi.fn(), remove: vi.fn(), sort: vi.fn(), clear: vi.fn() }));
 vi.mock('../agent/modules/idbStorage.js', () => ({
  get: async keys => Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>k in h.store).map(k=>[k,h.store[k]])),
  set: async values => { h.events.push('commit'); Object.assign(h.store, values); },
  remove: async keys => { await h.remove(); h.events.push('commit'); for(const k of keys) delete h.store[k]; },
- clear: async () => { h.store={}; }, getAllKeys: async()=>Object.keys(h.store),
+ clear: async () => { await h.clear(); h.store={}; }, getAllKeys: async()=>Object.keys(h.store),
  purgeOlderThanByPrefixes: vi.fn(),
 }));
 vi.mock('../agent/modules/utils.js', () => ({
@@ -18,7 +18,7 @@ const header={id:1,headerMessageId:'synthetic@example.test',folder};
 const key='acc:/INBOX:synthetic@example.test';
 let owner;
 beforeEach(async()=>{
- vi.resetModules(); vi.useFakeTimers(); h.store={};h.native=new Map();h.events=[];h.sort.mockClear();h.remove.mockReset();h.query.mockReset();h.resolve.mockReset();
+ vi.resetModules(); vi.useFakeTimers(); h.store={};h.native=new Map();h.events=[];h.sort.mockClear();h.clear.mockReset();h.remove.mockReset();h.query.mockReset();h.resolve.mockReset();
  h.query.mockResolvedValue({messages:[header,{...header,id:2}]});
  h.resolve.mockResolvedValue({status:'resolved',weIds:[1,2],folder});
  globalThis.browser={messages:{query:h.query,get:async()=>header},tmHdr:{setAction:async(id,a)=>{h.events.push(`paint:${id}:${a}`);h.native.set(id,a);return true;}},tmMessageHeaderChip:{refreshAll:async()=>h.events.push('chips')},tmMultiMessageChip:{refreshAll:async()=>{}},folders:{query:async()=>[folder]},accounts:{list:async()=>[]}};
@@ -62,9 +62,9 @@ describe('ordering and recovery boundaries',()=>{
   await owner.setAction(header,'reply');
   expect(h.native.size).toBe(0);expect(h.store[`action:${key}`]).toBe('reply');
  });
- it('invalidates a token minted while the wipe is awaiting resolution',async()=>{
+ it('invalidates a token minted while the wipe is awaiting commit',async()=>{
   h.store[`action:${key}`]='reply';let release;
-  h.resolve.mockImplementationOnce(()=>new Promise(r=>{release=r;}));
+  h.clear.mockImplementationOnce(()=>new Promise(r=>{release=r;}));
   const wiping=owner.wipeAll();await vi.waitFor(()=>expect(release).toBeTypeOf('function'));
   const token=owner.beginAutomaticWork(key);release({status:'resolved',weIds:[1],folder});await wiping;
   expect(await owner.setAction(header,'reply',{token})).toBeNull();
@@ -125,7 +125,7 @@ describe('mutation boundary regression coverage',()=>{
   h.store={other:'synthetic', [`action:${key}`]:'reply'};
   const token=owner.beginAutomaticWork(key);
   await owner.wipeAll();
-  expect(h.store).toEqual({});expect([...h.native.values()]).toEqual(['','']);
+  expect(h.store).toEqual({});
   expect(await owner.setAction(header,'reply',{token})).toBeNull();
  });
  it('rejects invalid action values without committing or projecting',async()=>{
@@ -155,24 +155,23 @@ describe('mutation boundary regression coverage',()=>{
   expect(browser.accounts.onCreated.removeListener).toHaveBeenCalledWith(browser.accounts.onCreated.addListener.mock.calls[0][0]);
   expect(browser.folders.onCreated.removeListener).toHaveBeenCalledWith(browser.folders.onCreated.addListener.mock.calls[0][0]);
  });
- it('backfills every chunk and list page, including query-page twins',async()=>{
+ it('backfills every listed chunk and page without rescanning the folder',async()=>{
   const messages=Array.from({length:103},(_,i)=>({...header,id:i+10,headerMessageId:`page-${i}@example.test`}));
+  const twins=[{...messages[0],id:1000},{...messages[0],id:1001}];
   browser.messages.list=vi.fn(async()=>({messages:messages.slice(0,101),id:'inbox-next'}));
-  let inboxPage=0,queryPage=0;
-  browser.messages.continueList=vi.fn(async id=>{
-   if(id==='inbox-next')return ++inboxPage===1?{messages:[messages[101]],id:'inbox-next'}:{messages:[messages[102]],id:null};
-   return ++queryPage===1?{messages:[{...messages[0],id:1000}],id:'query-next'}:{messages:[{...messages[0],id:1001}],id:null};
-  });
-  h.query.mockImplementation(async({headerMessageId})=>{
-   const m=messages.find(m=>m.headerMessageId===headerMessageId);
-   return {messages:[m],...(m===messages[0]?{id:'query-next'}:{})};
-  });
+  let inboxPage=0;
+  browser.messages.continueList=vi.fn(async()=>++inboxPage===1
+   ?{messages:[messages[101],twins[0]],id:'inbox-next'}
+   :{messages:[messages[102],twins[1]],id:null});
   h.store['action:acc:/INBOX:page-0@example.test']='reply';
   browser.tmHdr.setActionsBulk=vi.fn(async entries=>{for(const e of entries)h.native.set(e.weMsgId,e.action);return entries.length;});
   expect(await owner.backfillAccount('acc')).toBe(true);
-  expect(browser.tmHdr.setActionsBulk.mock.calls.map(([entries])=>entries.length)).toEqual([102,1,1,1]);
-  expect(h.native.get(1000)).toBe('reply');expect(h.native.get(messages[102].id)).toBe('');
-  expect(browser.messages.continueList).toHaveBeenCalledWith('query-next');
+  expect(browser.tmHdr.setActionsBulk.mock.calls.map(([entries])=>entries.length)).toEqual([100,1,2,2]);
+  expect(h.native.size).toBe(105);
+  for(const m of [messages[0],...twins])expect(h.native.get(m.id)).toBe('reply');
+  expect(h.native.get(messages[102].id)).toBe('');
+  expect(h.query).not.toHaveBeenCalled();
+  expect(browser.messages.continueList).toHaveBeenCalledTimes(2);
   expect(browser.messages.continueList).toHaveBeenCalledWith('inbox-next');
  });
 });
@@ -181,4 +180,28 @@ it('routes metadata retention through the serialized owner',async()=>{
  const idb=await import('../agent/modules/idbStorage.js');
  await owner.purgeMetadataOlderThan(123);
  expect(idb.purgeOlderThanByPrefixes).toHaveBeenCalledWith(owner.METADATA_PREFIXES,123);
+});
+
+describe('lifecycle outcomes for work without an existing row',()=>{
+ it.each(['wipe','suspend'])('refuses pre-%s work and accepts newly-started work',async transition=>{
+  const token=owner.beginAutomaticWork(key);
+  expect(h.store[`action:${key}`]).toBeUndefined();
+  if(transition==='wipe')await owner.wipeAll();else owner.cleanupActionCache();
+  expect(await owner.setAction(header,'reply',{token,meta:{userprompt:'synthetic old prompt'}})).toBeNull();
+  expect(h.store).toEqual({});expect(h.native.size).toBe(0);
+  const fresh=owner.beginAutomaticWork(key);
+  await owner.setAction(header,'archive',{token:fresh});
+  expect(h.store[`action:${key}`]).toBe('archive');
+  expect([...h.native.values()]).toEqual(['archive','archive']);
+ });
+ it('does not let a recovered old identity overwrite a manual action at a different identity',async()=>{
+  const oldToken=owner.beginAutomaticWork('acc:/PreviousInbox:synthetic@example.test');
+  await owner.setAction(header,'delete');
+  h.events=[];
+  expect(await owner.setAction(header,'reply',{token:oldToken})).toBeNull();
+  expect(h.store[`action:${key}`]).toBe('delete');
+  expect([...h.native.values()]).toEqual(['delete','delete']);expect(h.events).toEqual([]);
+  await owner.setAction(header,'archive',{token:owner.beginAutomaticWork(key)});
+  expect(h.store[`action:${key}`]).toBe('archive');expect([...h.native.values()]).toEqual(['archive','archive']);
+ });
 });

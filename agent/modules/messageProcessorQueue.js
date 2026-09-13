@@ -28,6 +28,7 @@ const QUEUE_STORAGE_KEY = "agent_processmessage_pending";
 //        message never resolves to a header, so reason #2 (which needs a header to read
 //        the folder) can never observe it leaving — #4 closes that gap and prevents the
 //        "HeaderResolver ALL STAGES FAILED → will retry" loop from running forever.
+//     5. The recovered message now has a different unique key (obsolete work).
 //   For tagCleanupOnLeaveInbox:
 //     1. performLeaveInboxTagCleanup succeeds (ok=true, tags stripped)
 //     2. The message is back in inbox (user undid the move, cleanup unnecessary)
@@ -531,6 +532,12 @@ async function _processOneItem(it) {
       `[TMDBG PMQ] Message no longer in inbox - dropping before processing: weId=${header.id} key=${key} folder="${folder?.name || "none"}" path="${folder?.path || ""}" type="${folder?.type || ""}"`,
       "warn"
     );
+    _dropPendingItem(it);
+    return { status: "dropped", operationType };
+  }
+
+  // Recovered work belongs to its original identity; do not replay it at a new key.
+  if (await getUniqueMessageKey(header) !== key) {
     _dropPendingItem(it);
     return { status: "dropped", operationType };
   }
