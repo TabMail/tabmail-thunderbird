@@ -183,10 +183,10 @@ it('routes metadata retention through the serialized owner',async()=>{
 });
 
 describe('lifecycle outcomes for work without an existing row',()=>{
- it.each(['wipe','suspend'])('refuses pre-%s work and accepts newly-started work',async transition=>{
+ it.each(['wipe','suspend','clear all'])('refuses pre-%s work and accepts newly-started work',async transition=>{
   const token=owner.beginAutomaticWork(key);
   expect(h.store[`action:${key}`]).toBeUndefined();
-  if(transition==='wipe')await owner.wipeAll();else owner.cleanupActionCache();
+  if(transition==='wipe')await owner.wipeAll();else if(transition==='clear all')await owner.clearAllActions();else owner.cleanupActionCache();
   expect(await owner.setAction(header,'reply',{token,meta:{userprompt:'synthetic old prompt'}})).toBeNull();
   expect(h.store).toEqual({});expect(h.native.size).toBe(0);
   const fresh=owner.beginAutomaticWork(key);

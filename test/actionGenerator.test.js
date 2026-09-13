@@ -716,3 +716,21 @@ describe('peer cache replied invariant',()=>{
   expect(browser.tmHdr.setAction).not.toHaveBeenCalledWith(1,'reply');
  });
 });
+
+it('completed cached reads retire their work without preventing fresh writes',async()=>{
+ const owner=await import('../agent/modules/actionCache.js');
+ const begin=owner.beginAutomaticWork,tokens=[];
+ const spy=vi.spyOn(owner,'beginAutomaticWork').mockImplementation(key=>{const token=begin(key);tokens.push(token);return token;});
+ try {
+  idbStore['action:test-unique-key']='archive';
+  for(let n=0;n<30;n++)expect(await getAction(makeHeader())).toBe('archive');
+  expect(tokens).toHaveLength(30);
+  for(const token of tokens)expect(await owner.setAction(makeHeader(),'reply',{token})).toBeNull();
+  expect(idbStore['action:test-unique-key']).toBe('archive');
+  expect(browser.tmHdr.setAction).not.toHaveBeenCalledWith(1,'reply');
+  const fresh=begin('test-unique-key');
+  await owner.setAction(makeHeader(),'delete',{token:fresh});owner.finishAutomaticWork(fresh);
+  expect(idbStore['action:test-unique-key']).toBe('delete');
+  expect(browser.tmHdr.setAction).toHaveBeenCalledWith(1,'delete');
+ } finally {spy.mockRestore();for(const token of tokens)owner.finishAutomaticWork(token);}
+});

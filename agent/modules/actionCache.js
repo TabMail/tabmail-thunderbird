@@ -194,8 +194,11 @@ export function clearActionByUniqueKey(uniqueKey) { return clearActions([{ uniqu
 export function clearAllActions() {
   return _enqueue(async () => {
     const keys = (await idb.getAllKeys()).filter(k => k.startsWith(ACTION_PREFIX));
-    return _clear(keys.filter(isActionPayloadKey).map(k => ({ uniqueKey: k.slice(ACTION_PREFIX.length) })),
+    const cleared = await _clear(keys.filter(isActionPayloadKey).map(k => ({ uniqueKey: k.slice(ACTION_PREFIX.length) })),
       { metadata: "all" }, { extraKeys: keys });
+    _epoch++;
+    _workTokens.clear();
+    return cleared;
   });
 }
 export function wipeAll() {
