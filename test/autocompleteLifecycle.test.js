@@ -649,3 +649,48 @@ it('an empty-draft proposal has no source underline',()=>{
   expect(w.document.querySelector('.source-underline')).toBeNull();
   expect(body.innerHTML).toBe('');
 });
+
+it('every wrapped source fragment is underlined while authored content is unchanged', () => {
+ const {w,tm,body}=setup('This is a long sentence that wraps onto another line.');
+ const before=body.innerHTML;
+ const boxes=[{left:8,top:20,right:248,bottom:40,width:240,height:20},{left:8,top:40,right:120,bottom:60,width:112,height:20}];
+ w.Range.prototype.getClientRects=function(){return boxes;};
+ tm.state.correctedText='This is a clear sentence that wraps onto another line.';
+ tm.renderText(true);
+ expect(tm.state.previewModel.replacement).toBe('This is a clear sentence that wraps onto another line.');
+ const lines=[...w.document.querySelectorAll('.source-underline')];
+ expect(lines.map(line=>[line.style.left,line.style.top,line.style.width])).toEqual([['8px','39px','240px'],['8px','59px','112px']]);
+ expect(lines.every(line=>!body.contains(line))).toBe(true);
+ expect(body.innerHTML).toBe(before);
+ tm.dismissComposeSuggestion();
+ expect(w.document.querySelectorAll('.source-underline')).toHaveLength(0);
+ expect(body.innerHTML).toBe(before);
+});
+it('moving from a proposal to jump-only context clears the previously underlined sentence',()=>{
+ const {w,tm,body}=setup('First is bad. Second is fine.');
+ const before=body.innerHTML;
+ tm.state.correctedText='First is good. Second is fine.';
+ tm.renderText(true);
+ const first=[...w.document.querySelectorAll('.source-underline')];
+ expect(first.length).toBeGreaterThan(0);
+ tm.setCursorByOffset(body,20);
+ tm.renderText(true);
+ expect(tm.state.previewModel).toBeNull();
+ expect(tm.state.previewJumpOffset).toBeGreaterThanOrEqual(0);
+ expect(w.document.querySelector('.preview .content').textContent).toBe('Tab to jump to suggestion');
+ expect(w.document.querySelectorAll('.source-underline')).toHaveLength(0);
+ expect(first.every(line=>!line.isConnected)).toBe(true);
+ expect(body.innerHTML).toBe(before);
+});
+it.each(['<p>Target bad.</p><p>After.</p>','Target bad.<br>After.'])('paragraph and line-break separators do not produce painted source fragments: %s',html=>{
+ const {w,tm,body}=setup(html);
+ const before=body.innerHTML;
+ w.Range.prototype.getClientRects=function(){return [{left:8,top:20,right:120,bottom:40,width:112,height:20}];};
+ tm.state.correctedText='Target good.\nAfter.';
+ tm.setCursorByOffset(body,3);
+ tm.renderText(true);
+ expect(tm.state.previewModel.replacement.trim()).toBe('Target good.');
+ expect(tm.state.previewModel.original).toBe('Target bad.\nAfter.');
+ expect(w.document.querySelectorAll('.source-underline')).toHaveLength(1);
+ expect(body.innerHTML).toBe(before);
+});
