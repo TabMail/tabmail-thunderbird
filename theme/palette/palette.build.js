@@ -34,7 +34,7 @@ export function buildPaletteCSS(P) {
   --tm-preview-context: ${BASE.TEXT_READ_LIGHT};
   --tm-preview-border: rgba(0,0,0,0.15);
   --tm-preview-shadow: rgba(0,0,0,0.15);
-  --tm-preview-insert: rgba(0,163,0,${OPACITY.SUBTLE_LIGHT});
+  --tm-preview-insert: color-mix(in srgb, ${LIGHT.ACCENT_COLOR} ${Math.round(OPACITY.SUBTLE_LIGHT * 100)}%, transparent);
 
   /* TabMail Tag Colors */
   --tag-tm-reply: ${TAG_COLORS.tm_reply};
@@ -156,7 +156,7 @@ export function buildPaletteCSS(P) {
     --tm-preview-context: ${BASE.TEXT_READ_DARK};
     --tm-preview-border: rgba(255,255,255,0.18);
     --tm-preview-shadow: rgba(0,0,0,0.35);
-    --tm-preview-insert: rgba(0,163,0,${OPACITY.SELECTED_DARK});
+    --tm-preview-insert: color-mix(in srgb, ${DARK.ACCENT_COLOR} ${Math.round(OPACITY.SELECTED_DARK * 100)}%, transparent);
 
     /* TabMail Danger Colors - Dark Mode (brighter for visibility) */
     --tm-danger-text: color-mix(in srgb, ${BASE.RED} 75%, white);

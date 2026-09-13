@@ -60,6 +60,7 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     vi.useFakeTimers();
     tm.config.DIFF_RESTORE_DELAY_MS = delay;
     tm.config.BEFORE_SEND_CLEANUP_SUPPRESS_MS = 60;
+    tm.state.currentIdleTime = 30;
     if(inline){
       body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
       expect(w.document.getElementById('tm-inline-edit')).not.toBeNull();
@@ -80,6 +81,7 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     }
     const snapshot=body.innerHTML;
     const nativeWrite=vi.fn();w.document.execCommand=nativeWrite;
+    tm.getCorrectionFromServer=vi.fn(async()=>({}));
     if(failure==='details')api.compose.getComposeDetails.mockRejectedValue(new Error('Synthetic details failure'));
     if(failure==='delivery-after-cleanup')api.tabs.sendMessage.mockImplementation(async(tabId,message)=>{
       for(const listener of contentMessageListeners)await listener(message,{},()=>{});
@@ -97,6 +99,7 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     // A canceled/failed send leaves the same compose window open. Successful
     // subsequent corrections must become visible after the snapshot guard ends.
     await vi.advanceTimersByTimeAsync(40);
+    expect(tm.getCorrectionFromServer).not.toHaveBeenCalled();
     expect(tm.state.beforeSendCleanupActive).toBe(true);
     expect(w.document.querySelector('.tm-compose-preview')).toBeNull();
     expect(body.innerHTML).toBe(before);
@@ -116,12 +119,13 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     body.firstChild.textContent = 'New draft.';
     expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('New draft.');
     tm.setCursorByOffset(body, 3);
+    tm.getCorrectionFromServer = vi.fn(async()=>({suggestion:'New corrected draft.',usertext:'New draft.'}));
     body.dispatchEvent(new w.KeyboardEvent('keydown', {key:'x', bubbles:true}));
     body.dispatchEvent(new w.InputEvent('input', {bubbles:true, data:'x'}));
     const afterTyping = body.innerHTML;
-    tm.getCorrectionFromServer = vi.fn(async()=>({suggestion:'New corrected draft.',usertext:'New draft.'}));
-    tm.state.latestGlobalRequestId = tm._nextRequestId(tm.state.latestGlobalRequestId);
-    await tm.triggerCorrectionBackend(body, 'New draft.', 'Signature', tm.state.latestGlobalRequestId, false);
+    await vi.advanceTimersByTimeAsync(40);
+    expect(tm.getCorrectionFromServer).toHaveBeenCalled();
+    expect(tm.getCorrectionFromServer.mock.calls[0][0]).toMatchObject({userMessage:'New draft.',isLocal:true,quoteAndSignature:'\nSignature'});
     expect(tm.state.correctedText).toBe('New corrected draft.');
     expect(tm.state.previewModel).not.toBeNull();
     expect(tm.state.previewView.host.querySelector('.content').textContent).toBe('New corrected draft.');
