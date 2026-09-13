@@ -16,6 +16,10 @@ it.each(['LIGHT','DARK'])('injected %s compose colors tint insertions with the a
     const injected=await injectPaletteIntoDocument(document,'https://example.com/palette');
     const rootRule=mode==='LIGHT'?injected.sheet.cssRules[0]:injected.sheet.cssRules[1].cssRules[0];
     const css=document.createElement('style');css.textContent=readFileSync(new URL('../compose/preview.css',import.meta.url),'utf8');document.head.appendChild(css);
+    const bubbleRule=[...css.sheet.cssRules].find(rule=>rule.selectorText==='.tm-compose-preview .preview');
+    const surface=bubbleRule.style.getPropertyValue('background').replace(/var\((--[^)]+)\)/g,(_,name)=>rootRule.style.getPropertyValue(name));
+    const surfaceColor=convert.colorToRgb(surface);
+    expect(surfaceColor).toHaveLength(4);expect(surfaceColor[3]).toBeCloseTo(0.92,2);
     const insertionRule=[...css.sheet.cssRules].find(rule=>rule.selectorText==='.tm-compose-preview .inserted');
     // Resolve the real consumer's custom property against each injected theme.
     // JSDOM does not resolve custom properties in computed styles.

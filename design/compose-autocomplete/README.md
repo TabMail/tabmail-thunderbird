@@ -9,3 +9,5 @@ Tab or Accept applies the complete displayed suggestion; Esc or Dismiss drops it
 `previewModel.js` reuses sentence diff computation. `richText.js` supplies shared text offsets and DOM ranges. `preview.js` renders outside the message body; source underlines use measured text-node rectangles in the same overlay, without inserting spans into the draft. Acceptance clones the editable region, applies escaped text edits, validates the resulting text projection, and submits one native HTML editor command. Unrepresentable structural edits fail closed.
 
 Thunderbird Beta 156.0 native visual, formatting, and undo/redo smoke checks passed; reproducible guarded probes and limits are documented in `test/manual/README.md`. JSDOM checks validate models, payloads, and lifecycle invariants; they do not prove Gecko transaction behavior.
+
+The preview surface is 92% opaque in both themes, has an 8px minimum horizontal viewport inset, and scales source typography to 90% while retaining relative emphasis. The source underline remains at the original draft geometry; smaller preview text may wrap differently.

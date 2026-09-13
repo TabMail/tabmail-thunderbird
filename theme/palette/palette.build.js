@@ -29,7 +29,7 @@ export function buildPaletteCSS(P) {
 
   return `
 :root {
-  --tm-preview-bg: ${THEME.LIGHT.PAGE_BG};
+  --tm-preview-bg: color-mix(in srgb, ${THEME.LIGHT.PAGE_BG} 92%, transparent);
   --tm-preview-text: ${THEME.LIGHT.TEXT_COLOR};
   --tm-preview-context: ${BASE.TEXT_READ_LIGHT};
   --tm-preview-border: rgba(0,0,0,0.15);
@@ -151,7 +151,7 @@ export function buildPaletteCSS(P) {
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --tm-preview-bg: ${THEME.DARK.BOX_BG};
+    --tm-preview-bg: color-mix(in srgb, ${THEME.DARK.BOX_BG} 92%, transparent);
     --tm-preview-text: ${THEME.DARK.TEXT_COLOR};
     --tm-preview-context: ${BASE.TEXT_READ_DARK};
     --tm-preview-border: rgba(255,255,255,0.18);

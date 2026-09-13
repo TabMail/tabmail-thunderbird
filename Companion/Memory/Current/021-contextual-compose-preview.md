@@ -9,3 +9,5 @@ Disable suggestions is a clickable bubble action. The persistent bottom control 
 Native HTML acceptance must preserve formatting, signatures, quotes, and native undo. The current insertion command is guarded by exact text projection checks; DOM emulation is not evidence of native Gecko undo behavior. Test the real Thunderbird editor before merge when changing this path. The legacy diff-span helpers retained in source are not used by the preview renderer.
 
 Send cleanup uses its own bounded preview guard. It must let inline-edit/IME visibility restoration finish; canceling that timer can leave suggestions hidden after a failed or canceled send. The former timer-cancellation behavior is superseded.
+
+The preview surface is 92% opaque in both themes, has an 8px minimum horizontal viewport inset, and scales source typography to 90% while retaining relative emphasis. The source underline remains at the original draft geometry; smaller preview text may wrap differently.

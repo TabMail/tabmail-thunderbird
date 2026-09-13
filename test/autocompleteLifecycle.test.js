@@ -694,3 +694,30 @@ it.each(['<p>Target bad.</p><p>After.</p>','Target bad.<br>After.'])('paragraph 
  expect(w.document.querySelectorAll('.source-underline')).toHaveLength(1);
  expect(body.innerHTML).toBe(before);
 });
+
+it.each([[200,'left'],[200,'right'],[1024,'left'],[1024,'right']])('keeps the suggestion inset on both sides of a %ipx viewport with a %s anchor',(viewport,anchor)=>{
+ const {w,tm,body}=setup('Bad sentence.');
+ Object.defineProperty(w,'innerWidth',{value:viewport,configurable:true});
+ body.getBoundingClientRect=()=>({left:0,right:viewport,top:0,bottom:100,width:viewport,height:100});
+ w.Range.prototype.getBoundingClientRect=()=>({left:anchor==='left'?8:viewport-20,right:anchor==='left'?16:viewport-12,top:20,bottom:40,width:8,height:20});
+ tm.state.correctedText='Good sentence.';
+ tm.renderComposePreview();
+ const host=tm.state.previewView.host,left=parseFloat(host.style.left),width=parseFloat(host.style.width);
+ expect(left).toBeGreaterThanOrEqual(8);
+ expect(width).toBeGreaterThan(100);
+ expect(left+width).toBeLessThanOrEqual(viewport-8);
+ const bubble=host.querySelector('.preview');
+ expect(width-parseFloat(bubble.style.paddingLeft)-parseFloat(bubble.style.paddingRight)-2).toBeGreaterThanOrEqual(94);
+ expect(body.textContent).toBe('Bad sentence.');
+});
+it('reduces preview typography proportionally while preserving authored emphasis and content',()=>{
+ const {w,tm,body}=setup('<p style="font:20px/30px Arial">Bad <b style="font-size:24px">sentence</b>.</p>');
+ const before=body.innerHTML;
+ tm.state.correctedText='Good sentence.';tm.renderComposePreview();
+ const content=tm.state.previewView.host.querySelector('.content');
+ expect(content.style.fontSize).toBe('18px');expect(content.style.lineHeight).toBe('27px');
+ const bold=[...content.children].find(span=>span.textContent==='sentence');
+ expect(bold).toBeDefined();expect(bold.style.fontSize).toBe('21.6px');expect(bold.style.fontWeight).toBe('bold');
+ expect(content.querySelector('.inserted').style.fontSize).toBe('18px');
+ expect(body.innerHTML).toBe(before);expect(w.document.execCommand).not.toHaveBeenCalled();
+});

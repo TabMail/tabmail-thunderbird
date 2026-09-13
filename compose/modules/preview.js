@@ -82,7 +82,8 @@ Object.assign(TabMail, {
     const sourceElement = sourceNode.nodeType === Node.ELEMENT_NODE ? sourceNode : sourceNode.parentElement;
     const style = getComputedStyle(sourceElement);
     content.style.font = style.font;
-    content.style.lineHeight = style.lineHeight;
+    content.style.fontSize = `${parseFloat(style.fontSize) * cfg.fontScale}px`;
+    content.style.lineHeight = style.lineHeight === 'normal' ? 'normal' : `${parseFloat(style.lineHeight) * cfg.fontScale}px`;
     const context = model.edits.length ? TabMail.composeLineContext(index, model.start, model.end) : null;
     const anchorRange = TabMail.composeRange(index, model.edits.length ? model.start : cursor);
     const rect = anchorRange.getBoundingClientRect();
@@ -99,7 +100,7 @@ Object.assign(TabMail, {
         const element = point.node.nodeType === Node.TEXT_NODE ? point.node.parentElement : point.node;
         const typography = getComputedStyle(element);
         for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch', 'fontVariant', 'letterSpacing', 'textDecoration']) {
-          span.style[property] = typography[property];
+          span.style[property] = property === 'fontSize' ? `${parseFloat(typography.fontSize) * cfg.fontScale}px` : typography[property];
         }
       }
       content.appendChild(span);
@@ -170,12 +171,12 @@ Object.assign(TabMail, {
     action('Disable suggestions', 'Disable suggestions (Shift+Esc)', () => TabMail.setAutocompleteEnabled(false));
     bubble.appendChild(actions);
     host.appendChild(bubble);
-    // At the viewport edge, reduce bubble padding instead of shifting the
-    // preview text away from its corresponding source line.
-    const x = Math.max(0, left - cfg.padding - 1);
-    const availableWidth = Math.max(1, window.innerWidth - x);
+    // Keep the surface inset from both viewport edges, preserving source
+    // alignment wherever the available space permits.
+    const x = Math.min(Math.max(cfg.margin, left - cfg.padding - 1), Math.max(cfg.margin, window.innerWidth - cfg.margin - cfg.minWidth));
+    const availableWidth = Math.max(1, window.innerWidth - x - cfg.margin);
     const width = Math.min(availableWidth, Math.max(cfg.minWidth, editorRect.right - x + cfg.padding + 1));
-    bubble.style.paddingLeft = `${Math.max(0, left - x - 1)}px`;
+    bubble.style.paddingLeft = `${Math.min(cfg.padding, Math.max(0, left - x - 1))}px`;
     bubble.style.paddingRight = `${Math.max(0, x + width - editorRect.right - 1)}px`;
     Object.assign(host.style, { position: 'fixed', zIndex: String(cfg.zIndex), left: `${x}px`, top: `${bottom + cfg.gap}px`, width: `${width}px` });
     // Sibling of BODY: the native compose serializer cannot include the preview.
