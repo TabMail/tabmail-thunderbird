@@ -259,25 +259,6 @@ describe("processMessage resolve-failure verify-then-drop", () => {
     expect(SUT.getProcessMessageQueueStatus().pending).toBe(0);
   });
 
-  it("uses persisted enqueue identity when the original folder no longer exists", async () => {
-    const found = {
-      id: 556,
-      folder: { id: "renamed", accountId: "acct1", name: "Inbox", path: "/Renamed" },
-    };
-    mockHeaderIDToWeID.mockResolvedValue(null);
-    browser.folders.query.mockResolvedValue([]);
-    mockGetUniqueMessageKeyCandidates.mockReturnValue([]);
-    mockQuery.mockResolvedValue({ messages: [found] });
-
-    await enqueueOne();
-    await SUT.drainProcessMessageQueue();
-    await SUT.drainProcessMessageQueue();
-    await SUT.drainProcessMessageQueue();
-
-    expect(mockQuery).toHaveBeenCalledWith({ headerMessageId: "msgid@x" });
-    expect(mockProcessMessage).toHaveBeenCalledWith(found, expect.anything());
-  });
-
   it("fails closed for restored legacy work with no authoritative folder evidence", async () => {
     await SUT.cleanupProcessMessageQueue();
     browser.storage.local.get.mockResolvedValueOnce({

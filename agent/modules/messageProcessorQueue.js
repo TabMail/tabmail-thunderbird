@@ -152,17 +152,24 @@ async function _restoreFromStorage() {
 
     let restored = 0;
     let skipped = 0;
-    let strippedSessionFolderId = false;
+    let sanitizedQueue = false;
     for (const it of arr) {
       const key = it?.uniqueKey ? String(it.uniqueKey) : "";
       if (!key) continue;
+      // Forced recompute authority is session-local: its cancellation token
+      // cannot survive serialization. Never replay it over a newer action.
+      if (it?.opts?.forceRecompute === true) {
+        skipped++;
+        sanitizedQueue = true;
+        continue;
+      }
       if (_pending.has(key)) {
         skipped++;
         continue;
       }
       const metadata = _durableQueueMetadata(it?.metadata);
       if (Object.prototype.hasOwnProperty.call(it?.metadata || {}, "folderId")) {
-        strippedSessionFolderId = true;
+        sanitizedQueue = true;
       }
       _pending.set(key, {
         uniqueKey: key,
@@ -175,7 +182,7 @@ async function _restoreFromStorage() {
       restored++;
     }
     log(`[TMDBG PMQ] Restored ${restored} queued processMessage items from storage (skipped=${skipped})`);
-    if (strippedSessionFolderId) await _persistNow();
+    if (sanitizedQueue) await _persistNow();
   } catch (e) {
     log(`[TMDBG PMQ] Failed to restore queue from storage: ${e}`, "error");
   }
