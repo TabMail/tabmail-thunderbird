@@ -126,11 +126,14 @@ it('a recycled non-inbox table root loses its aggregate tint while an inbox root
  f._paintRowForAction_MLTV(row,f._aggregateActionForThread_MLTV(view,0,outside));
  expect(cls.size).toBe(0);expect(style.size).toBe(0);expect(inbox.getStringProperty('tm-action')).toBe('reply');
 });
-it.each(['scan','debounced'])('%s metadata retention removes expired writer-produced metadata but retains fresh metadata and action payloads',async mode=>{
+it.each(['scan','debounced'])('%s retention expires old payloads and metadata while preserving fresh unknown-inventory data',async mode=>{
  vi.setSystemTime(100000);await owner.setAction(header,'reply',{meta:{orig:'reply',userprompt:'synthetic expired prompt'}});
  vi.setSystemTime(200000);await owner.setAction(other,'delete',{meta:{orig:'delete',userprompt:'synthetic fresh prompt'}});
+ h.resolve.mockResolvedValue({status:'unknown',weIds:[],folder:null});
+ const {SETTINGS}=await import('../agent/modules/config.js');SETTINGS.actionTTLSeconds=1;
+ const {purgeExpiredActionEntries}=await import('../agent/modules/actionGenerator.js');
  const env={browser,Date,log:()=>{},SETTINGS:{replyTTLSeconds:1,actionTTLSeconds:1,summaryTTLSeconds:1,cacheCleanupDebounceMs:10},
- purgeExpiredReplyEntries:async()=>{},purgeExpiredSummaryEntries:async()=>{},purgeExpiredActionEntries:async()=>{},purgeOlderThanByPrefixes:async()=>0,purgeMetadataOlderThan:owner.purgeMetadataOlderThan};
+ purgeExpiredReplyEntries:async()=>{},purgeExpiredSummaryEntries:async()=>{},purgeExpiredActionEntries,purgeOlderThanByPrefixes:async()=>0,purgeMetadataOlderThan:owner.purgeMetadataOlderThan};
  if(mode==='scan'){
   const {scanAllInboxes}=experimentFunctions(source('agent/modules/messageProcessor.js'),['scanAllInboxes'],env);await scanAllInboxes();
  }else{
@@ -139,7 +142,8 @@ it.each(['scan','debounced'])('%s metadata retention removes expired writer-prod
  }
  expect(h.store[owner.origKey(key)]).toBeUndefined();expect(h.store[owner.userPromptKey(key)]).toBeUndefined();
  expect(h.store[owner.origKey(otherKey)]).toBe('delete');expect(h.store[owner.userPromptKey(otherKey)]).toBe('synthetic fresh prompt');
- expect(h.store[owner.payloadKey(key)]).toBe('reply');expect(h.native.get(1)).toBe('reply');
+ expect(h.store[owner.payloadKey(key)]).toBeUndefined();expect(h.store[owner.tsKey(key)]).toBeUndefined();
+ expect(h.store[owner.payloadKey(otherKey)]).toBe('delete');expect(h.native.get(9)).toBe('delete');
 });
 
 it('completed direct processor calls retire their own cached-read work and leave fresh actions usable',async()=>{

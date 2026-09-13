@@ -183,3 +183,64 @@ it('unknown member lookup prevents partial thread writes while a complete retry 
  expect(await owner.applyThreadEffective([1,3])).toBe(true);
  expect(h.store['action:'+key]).toBe('reply');expect(h.native.get(1)).toBe('reply');
 });
+
+it('actual menu replaces retained failed work with an effective new recompute',async()=>{
+ let listener;const disk={debugMode:true};
+ browser.storage.local={get:async()=>structuredClone(disk),set:async v=>Object.assign(disk,structuredClone(v)),remove:async keys=>{for(const k of [].concat(keys))delete disk[k];}};
+ browser.menus={removeAll:async()=>{},create:()=>{},refresh:async()=>{},onClicked:{addListener:f=>{listener=f;},removeListener:()=>{}},onShown:{addListener:()=>{},removeListener:()=>{}}};
+ h.resolve.mockResolvedValue({weID:1,weFolder:folder,headerID:header.headerMessageId});
+ const queue=await import('../agent/modules/messageProcessorQueue.js');
+ dependencies.reply.mockRejectedValueOnce(Error('synthetic temporary reply failure'));
+ await queue.enqueueProcessMessage(header);await queue.drainProcessMessageQueue();
+ expect(queue.getProcessMessageQueueStatus().pending).toBe(1);expect(h.store[owner.payloadKey(key)]).toBe('archive');
+ dependencies.chat.mockResolvedValue({assistant:'{"action":"delete"}'});
+ const menus=await import('../agent/modules/contextMenus.js');await menus.initContextMenus();
+ await listener({menuItemId:'tabmail-agent-recompute-action',selectedMessages:{messages:[header]}});
+ expect(h.store[owner.payloadKey(key)]).toBeUndefined();expect(disk.agent_processmessage_pending).toHaveLength(1);
+ await queue.drainProcessMessageQueue();expect(queue.getProcessMessageQueueStatus().pending).toBe(0);
+ expect(h.store[owner.payloadKey(key)]).toBe('delete');expect(h.native.get(1)).toBe('delete');
+ await queue.cleanupProcessMessageQueue();menus.cleanupContextMenus();
+});
+it.each(['outside','gone'])('%s terminal work leaves no retained cancellation authority',async mode=>{
+ const queue=await import('../agent/modules/messageProcessorQueue.js');
+ const begin=owner.beginAutomaticWork,tokens=[],messages=[];
+ const spy=vi.spyOn(owner,'beginAutomaticWork').mockImplementation(key=>{const token=begin(key);tokens.push(token);return token;});
+ try {
+ for(let n=0;n<20;n++){
+  const message={...header,id:100+n,headerMessageId:`terminal-${n}@example.test`};messages.push(message);
+  h.resolve.mockResolvedValue({weID:message.id,weFolder:folder,headerID:message.headerMessageId});
+  if(mode==='outside'){h.resolve.mockResolvedValue(null);h.query.mockResolvedValue({messages:[{...message,folder:{...folder,path:'/Sent',specialUse:['sent']}}]});}
+  else{
+   browser.messages.get=vi.fn().mockResolvedValueOnce(message).mockRejectedValueOnce(Error('synthetic message disappeared'));
+   dependencies.summary.mockResolvedValueOnce(null);dependencies.chat.mockResolvedValueOnce({assistant:'{"action":"invalid"}'});
+  }
+  await queue.enqueueProcessMessage(message);for(let attempt=0;attempt<(mode==='outside'?5:1);attempt++)await queue.drainProcessMessageQueue();
+  expect(queue.getProcessMessageQueueStatus().pending).toBe(0);
+ }
+ expect(h.store).toEqual({});expect(h.native.size).toBe(0);
+ expect(tokens).toHaveLength(20);
+ for(let n=0;n<20;n++)expect(await owner.setAction(messages[n],'reply',{token:tokens[n]})).toBeNull();
+ expect(h.store).toEqual({});expect(h.native.size).toBe(0);
+ browser.messages.get=async()=>header;h.query.mockResolvedValue({messages:[header,{...header,id:2}]});h.resolve.mockResolvedValue({weID:1,weFolder:folder,headerID:header.headerMessageId});
+ await queue.enqueueProcessMessage(header);await queue.drainProcessMessageQueue();
+ expect(h.store[owner.payloadKey(key)]).toBe('archive');expect(h.native.get(1)).toBe('archive');
+ } finally {spy.mockRestore();await queue.cleanupProcessMessageQueue();}
+});
+
+it('older completion cannot consume a later actual menu recompute',async()=>{
+ let listener;const disk={debugMode:true};
+ browser.storage.local={get:async()=>structuredClone(disk),set:async v=>Object.assign(disk,structuredClone(v)),remove:async keys=>{for(const k of [].concat(keys))delete disk[k];}};
+ browser.menus={removeAll:async()=>{},create:()=>{},refresh:async()=>{},onClicked:{addListener:f=>{listener=f;},removeListener:()=>{}},onShown:{addListener:()=>{},removeListener:()=>{}}};
+ h.resolve.mockResolvedValue({weID:1,weFolder:folder,headerID:header.headerMessageId});
+ const queue=await import('../agent/modules/messageProcessorQueue.js');
+ let release;dependencies.chat.mockImplementationOnce(()=>new Promise(r=>{release=r;})).mockResolvedValue({assistant:'{"action":"delete"}'});
+ await queue.enqueueProcessMessage(header,{forceRecompute:true});const old=queue.drainProcessMessageQueue();await waitStarted(()=>release);
+ const menus=await import('../agent/modules/contextMenus.js');await menus.initContextMenus();
+ await listener({menuItemId:'tabmail-agent-recompute-action',selectedMessages:{messages:[header]}});
+ release({assistant:'{"action":"reply"}'});await old;
+ expect(queue.getProcessMessageQueueStatus().pending).toBe(1);expect(disk.agent_processmessage_pending).toHaveLength(1);
+ expect(h.store[owner.payloadKey(key)]).toBeUndefined();expect(h.native.get(1)).toBe('');
+ await queue.drainProcessMessageQueue();expect(queue.getProcessMessageQueueStatus().pending).toBe(0);
+ expect(h.store[owner.payloadKey(key)]).toBe('delete');expect(h.native.get(1)).toBe('delete');
+ await queue.cleanupProcessMessageQueue();menus.cleanupContextMenus();
+});
