@@ -11,14 +11,17 @@ vi.mock('../agent/modules/utils.js',()=>({getUniqueMessageKey:vi.fn()}));
 vi.mock('../compose/modules/autocompleteGenerator.js',()=>({generateCorrection:vi.fn()}));
 vi.mock('../compose/modules/edit.js',()=>({runComposeEdit:vi.fn()}));
 
-it('the registered scripts and styles produce a passive preview and clean it before sending',async()=>{
+it.each([{inline:false,repeat:false},{inline:true,repeat:false},{inline:false,repeat:true},{inline:true,repeat:true}])('registered send cleanup preserves preview recovery (inline=$inline, repeat=$repeat)',async({inline,repeat})=>{
+  vi.resetModules();
   vi.useFakeTimers();
   const messageListeners = new Set();
+  const contentMessageListeners = new Set();
   const runtime = {getURL:p=>`https://example.com/${p}`,sendMessage:vi.fn(async()=>({})),onMessage:{addListener:f=>messageListeners.add(f),removeListener:f=>messageListeners.delete(f)}};
   const api = {
     runtime,
     storage:{local:{get:vi.fn(async defaults=>defaults),set:vi.fn()},onChanged:{addListener:vi.fn(),removeListener:vi.fn()}},
-    compose:{onBeforeSend:{addListener:vi.fn()}},
+    tabs:{sendMessage:vi.fn(async(tabId,message)=>{expect(tabId).toBe(1);for(const listener of contentMessageListeners)await listener(message,{},()=>{});})},
+    compose:{onBeforeSend:{addListener:vi.fn()},getComposeDetails:vi.fn(async()=>({body:dom.window.document.body.innerHTML})),setComposeDetails:vi.fn()},
     scripting:{compose:{unregisterScripts:vi.fn(async()=>{}),registerScripts:vi.fn(async()=>{})}},
   };
   globalThis.browser = globalThis.messenger = api;
@@ -29,9 +32,9 @@ it('the registered scripts and styles produce a passive preview and clean it bef
     const registrations = api.scripting.compose.registerScripts.mock.calls[0][0];
     expect(api.scripting.compose.unregisterScripts).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
-    dom = new JSDOM('<body contenteditable="true"><p>This is very useful.</p><div class="moz-signature">Signature</div></body>',{runScripts:'outside-only',pretendToBeVisual:true});
+    dom = new JSDOM('<body contenteditable="true"><p>This is very useful.</p><div class="moz-signature">Signature</div></body>',{url:'https://example.com/compose',runScripts:'outside-only',pretendToBeVisual:true});
     const w = dom.window;
-    w.browser = api;
+    w.browser = {...api,runtime:{...runtime,onMessage:{addListener:f=>contentMessageListeners.add(f),removeListener:f=>contentMessageListeners.delete(f)}}};
     w.CSS={highlights:new Map()};w.Highlight=class{};
     w.Range.prototype.getBoundingClientRect=()=>({left:8,top:20,right:200,bottom:40,width:192,height:20});
     for(const registration of registrations){
@@ -48,8 +51,23 @@ it('the registered scripts and styles produce a passive preview and clean it bef
     expect(w.getComputedStyle(bubble).borderRadius).toBe('8px');
     expect(body.innerHTML).toBe(before);
     expect(w.CSS.highlights.size).toBe(1);
-    tm.config.BEFORE_SEND_CLEANUP_SUPPRESS_MS = 1;
-    for(const listener of messageListeners)await listener({command:'cleanupBeforeSend'},{},()=>{});
+    vi.useFakeTimers();
+    tm.config.DIFF_RESTORE_DELAY_MS = 20;
+    tm.config.BEFORE_SEND_CLEANUP_SUPPRESS_MS = 60;
+    if(inline){
+      body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+      expect(w.document.getElementById('tm-inline-edit')).not.toBeNull();
+      expect(tm.state.inlineEditActive).toBe(true);
+      tm.cancelInlineEditDropdown();
+      expect(w.document.getElementById('tm-inline-edit')).toBeNull();
+      expect(tm.state.inlineEditActive).toBe(false);
+      expect(tm.state.autoHideDiff).toBe(true);
+      expect(tm.state.diffRestoreTimer).not.toBeNull();
+      expect(body.innerHTML).toBe(before);
+    }
+    const beforeSend=api.compose.onBeforeSend.addListener.mock.calls[0][0];
+    await beforeSend({id:1});
+    expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
     expect(w.document.querySelector('.tm-compose-preview')).toBeNull();
     expect(w.CSS.highlights.size).toBe(0);
     expect(tm.state.beforeSendCleanupActive).toBe(true);
@@ -58,9 +76,22 @@ it('the registered scripts and styles produce a passive preview and clean it bef
     expect(body.innerHTML).toBe(before);
     // A canceled/failed send leaves the same compose window open. Successful
     // subsequent corrections must become visible after the snapshot guard ends.
-    await new Promise(resolve => w.setTimeout(resolve, 5));
+    await vi.advanceTimersByTimeAsync(40);
+    expect(tm.state.beforeSendCleanupActive).toBe(true);
+    expect(w.document.querySelector('.tm-compose-preview')).toBeNull();
+    expect(body.innerHTML).toBe(before);
+    if(repeat)await beforeSend({id:1});
+    await vi.advanceTimersByTimeAsync(20);
+    expect(tm.state.beforeSendCleanupActive).toBe(repeat);
+    if(repeat){
+      tm.renderText(true);
+      expect(w.document.querySelector('.tm-compose-preview')).toBeNull();
+      expect(body.innerHTML).toBe(before);
+      await vi.advanceTimersByTimeAsync(40);
+    }
     expect(tm.state.beforeSendCleanupActive).toBe(false);
-    body.firstChild.firstChild.textContent = 'New draft.';
+    body.firstChild.textContent = 'New draft.';
+    expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('New draft.');
     tm.setCursorByOffset(body, 3);
     body.dispatchEvent(new w.KeyboardEvent('keydown', {key:'x', bubbles:true}));
     body.dispatchEvent(new w.InputEvent('input', {bubbles:true, data:'x'}));

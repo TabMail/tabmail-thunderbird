@@ -244,11 +244,8 @@ var TabMail = TabMail || {};
           TM.state.beforeSendCleanupResetTimer = null;
         }
 
-        // Cancel any pending timers that might re-render diffs or trigger new suggestions.
-        if (TM.state.diffRestoreTimer) {
-          clearTimeout(TM.state.diffRestoreTimer);
-          TM.state.diffRestoreTimer = null;
-        }
+        // Let inline-edit/IME visibility restoration finish under the send guard.
+        // Cancel pending suggestion requests while Thunderbird snapshots the draft.
         if (TM.state.autocompleteIdleTimer) {
           clearTimeout(TM.state.autocompleteIdleTimer);
           TM.state.autocompleteIdleTimer = null;
