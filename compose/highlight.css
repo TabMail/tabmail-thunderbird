@@ -1,4 +1,4 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
-::highlight(tm-compose-sentence) { text-decoration: underline; text-decoration-color: var(--in-content-accent-color); text-decoration-thickness: 1px; }
+.tm-compose-preview .source-underline { position: fixed; z-index: 0; height: 0; border-bottom-style: solid; border-bottom-width: 1px; border-bottom-color: var(--in-content-accent-color); pointer-events: none; }

@@ -6,7 +6,6 @@ var TabMail = TabMail || {};
 Object.assign(TabMail, {
   hideComposePreview() {
     TabMail.state.previewView?.host.remove();
-    globalThis.CSS?.highlights?.delete('tm-compose-sentence');
     TabMail.state.previewView = null;
     TabMail.state.previewModel = null;
     TabMail.state.previewJumpOffset = null;
@@ -57,7 +56,6 @@ Object.assign(TabMail, {
     if (cursor === null || typeof state.correctedText !== 'string' || !state.correctedText || state.correctedText === index.text) { TabMail.hideComposePreview(); return; }
     const model = TabMail.buildPreviewModel(index.text, state.correctedText, cursor);
     if (!model.edits.length && (model.jumpOffset == null || model.jumpOffset < 0)) { TabMail.hideComposePreview(); return; }
-    globalThis.CSS?.highlights?.delete('tm-compose-sentence');
     state.previewModel = model.edits.length ? model : null;
     state.previewJumpOffset = model.edits.length ? null : model.jumpOffset;
     const cfg = TabMail.config.preview;
@@ -72,6 +70,7 @@ Object.assign(TabMail, {
     }
     const { host } = view;
     host.querySelector('.preview')?.remove();
+    host.querySelectorAll('.source-underline').forEach(line => line.remove());
     const bubble = document.createElement('div');
     bubble.className = 'preview';
     bubble.setAttribute('role', 'group');
@@ -129,8 +128,22 @@ Object.assign(TabMail, {
         add(model.replacement.match(/[^\S\n]+$/)?.[0] || '', 'context');
         addOriginal(model.end, context.end, 'context');
       }
-      if (typeof Highlight !== 'undefined' && CSS.highlights && model.end > model.start) {
-        CSS.highlights.set('tm-compose-sentence', new Highlight(TabMail.composeRange(index, model.start, model.end)));
+      // Text-node rectangles keep the underline out of authored markup and
+      // work on Thunderbird versions without CSS Highlight decorations.
+      for (const entry of index.entries) {
+        const a = Math.max(model.start, entry.start), b = Math.min(model.end, entry.end);
+        if (entry.kind !== 'text' || a >= b) continue;
+        const range = document.createRange();
+        range.setStart(entry.node, a - entry.start);
+        range.setEnd(entry.node, b - entry.start);
+        for (const rect of range.getClientRects()) {
+          if (!rect.width || !rect.height) continue;
+          const line = document.createElement('span');
+          line.className = 'source-underline';
+          line.setAttribute('aria-hidden', 'true');
+          Object.assign(line.style, {left: `${rect.left}px`, top: `${rect.bottom - 1}px`, width: `${rect.width}px`});
+          host.appendChild(line);
+        }
       }
     } else add('Tab to jump to suggestion', 'context');
     bubble.appendChild(content);

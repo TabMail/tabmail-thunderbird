@@ -41,8 +41,8 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     dom = new JSDOM('<body contenteditable="true"><p>This is very useful.</p><div class="moz-signature">Signature</div></body>',{url:'https://example.com/compose',runScripts:'outside-only',pretendToBeVisual:true});
     const w = dom.window;
     w.browser = {...api,runtime:{...runtime,onMessage:{addListener:f=>contentMessageListeners.add(f),removeListener:f=>contentMessageListeners.delete(f)}}};
-    w.CSS={highlights:new Map()};w.Highlight=class{};
     w.Range.prototype.getBoundingClientRect=()=>({left:8,top:20,right:200,bottom:40,width:192,height:20});
+    w.Range.prototype.getClientRects=function(){return [this.getBoundingClientRect()];};
     for(const registration of registrations){
       for(const css of registration.css||[]){const style=w.document.createElement('style');style.textContent=readFileSync(resolve(css),'utf8');w.document.head.appendChild(style);}
       for(const file of registration.js||[])runInContext(readFileSync(resolve(file),'utf8'),dom.getInternalVMContext(),{filename:resolve(file)});
@@ -56,7 +56,7 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     expect(bubble.querySelector('.content').textContent).toBe('This is useful.');
     expect(w.getComputedStyle(bubble).borderRadius).toBe('8px');
     expect(body.innerHTML).toBe(before);
-    expect(w.CSS.highlights.size).toBe(1);
+    expect(w.document.querySelectorAll('.source-underline')).toHaveLength(1);
     vi.useFakeTimers();
     tm.config.DIFF_RESTORE_DELAY_MS = delay;
     tm.config.BEFORE_SEND_CLEANUP_SUPPRESS_MS = 60;
@@ -91,7 +91,7 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     await beforeSend({id:1});
     expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
     expect(w.document.querySelector('.tm-compose-preview')).toBeNull();
-    expect(w.CSS.highlights.size).toBe(0);
+    expect(w.document.querySelector('.source-underline')).toBeNull();
     expect(tm.state.beforeSendCleanupActive).toBe(true);
     tm.renderText(true);
     expect(w.document.querySelector('.tm-compose-preview')).toBeNull();

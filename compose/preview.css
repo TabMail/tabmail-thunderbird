@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 .tm-compose-preview { color-scheme: light dark; pointer-events: none; }
-.tm-compose-preview .preview { box-sizing: border-box; max-height: calc(100vh - 16px); overflow: auto; pointer-events: auto; padding: 10px 12px; border: 1px solid var(--tm-preview-border); border-radius: 8px; background: var(--tm-preview-bg); color: var(--tm-preview-text); box-shadow: 0 4px 16px var(--tm-preview-shadow); }
+.tm-compose-preview .preview { position: relative; z-index: 1; box-sizing: border-box; max-height: calc(100vh - 16px); overflow: auto; pointer-events: auto; padding: 10px 12px; border: 1px solid var(--tm-preview-border); border-radius: 8px; background: var(--tm-preview-bg); color: var(--tm-preview-text); box-shadow: 0 4px 16px var(--tm-preview-shadow); }
 .tm-compose-preview .content { white-space: pre-wrap; overflow-wrap: anywhere; }
 .tm-compose-preview .context { color: var(--tm-preview-context); }
 .tm-compose-preview .inserted { background: var(--tm-preview-insert); box-decoration-break: clone; }

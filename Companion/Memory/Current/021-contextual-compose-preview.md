@@ -1,6 +1,6 @@
 # Contextual compose preview
 
-Autocomplete presentation uses `compose/modules/preview.js`, backed by `previewModel.js` and the shared `richText.js` text/range projection. The preview is a sibling of the message BODY, and the active sentence uses a blue CSS-highlight underline with no background fill. Rendering and dismissal must never reconstruct the draft DOM.
+Autocomplete presentation uses `compose/modules/preview.js`, backed by `previewModel.js` and the shared `richText.js` text/range projection. The preview is a sibling of the message BODY, and the active sentence uses a blue overlay underline with no background fill. Text-node range rectangles place underline fragments in the same external host; this replaces CSS Highlight decorations, which are unavailable on Thunderbird 145. Rendering and dismissal must never reconstruct the draft DOM.
 
 The bubble shows the proposed sentence plus muted context on its intersecting rendered lines only. Inserted/amended runs use a blue accent tint inside the bubble; deletion text is absent. Tab and the Accept button apply the complete displayed suggestion; Esc and Dismiss discard it. Next-sentence continuations and full empty-draft suggestions remain supported. Shift+Tab acceptance is removed.
 

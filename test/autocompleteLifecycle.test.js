@@ -12,13 +12,12 @@ function setup(html = '') {
   const dom = new JSDOM(`<body contenteditable="true">${html}</body>`, { runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window;
   windows.push(w);
-  w.CSS = { highlights: new Map() };
-  w.Highlight = class { constructor(range) { this.range = range; } };
   w.browser = { runtime: { getURL: path => `https://example.com/${path}`, sendMessage: vi.fn(), onMessage: { addListener: vi.fn(), removeListener: vi.fn() } }, storage: { local: { set: vi.fn() } } };
   w.Range.prototype.getBoundingClientRect = function () {
     const top = Math.floor(this.startOffset / 30) * 20 + 20;
     return { left: (this.startOffset % 30) * 8 + 8, right: (this.startOffset % 30) * 8 + 16, top, bottom: top + 20, height: 20, width: 8 };
   };
+  w.Range.prototype.getClientRects = function () { return [this.getBoundingClientRect()]; };
   for (const name of ['libs/jsdiff.min.js', 'libs/diff-match-patch.js', 'modules/config.js', 'modules/logger.js', 'modules/state.js', 'modules/sentences.js', 'modules/tokens.js', 'modules/dom.js', 'modules/core.js', 'modules/diff.js', 'modules/previewModel.js', 'modules/richText.js', 'modules/preview.js', 'modules/events.js', 'modules/caret.js', 'modules/inlineEditor.js']) {
     const filename = resolve('compose', name);
     runInContext(readFileSync(filename, 'utf8'), dom.getInternalVMContext(), { filename });
@@ -327,9 +326,9 @@ it('detaches keyboard and layout listeners and removes highlights on cleanup', (
   tm.attachAutocomplete(body);
   tm.state.correctedText = 'This is useful.';
   tm.renderComposePreview();
-  expect(w.CSS.highlights.size).toBeGreaterThan(0);
+  expect(w.document.querySelectorAll('.source-underline').length).toBeGreaterThan(0);
   tm.cleanupEventListeners();
-  expect(w.CSS.highlights.size).toBe(0);
+  expect(w.document.querySelector('.source-underline')).toBeNull();
   const render = vi.spyOn(tm, 'renderComposePreview');
   w.dispatchEvent(new w.Event('resize'));
   w.document.dispatchEvent(new w.Event('scroll'));
@@ -363,8 +362,8 @@ it('preview renders model markup as literal text',()=>{
  const content=tm.state.previewView.host.querySelector('.content');expect(content.textContent).toContain('<em>world</em>');expect(content.querySelector('em')).toBeNull();expect(body.innerHTML).toBe(before);
 });
 it('repeated dismissal removes source highlights without draft mutation',()=>{
- const {w,tm,body}=setup('Hello.');const before=body.innerHTML;tm.state.correctedText='Hello there.';tm.renderText(true);expect(w.CSS.highlights.has('tm-compose-sentence')).toBe(true);
- tm.dismissComposeSuggestion();tm.dismissComposeSuggestion();expect(w.CSS.highlights.has('tm-compose-sentence')).toBe(false);expect(body.innerHTML).toBe(before);expect(tm.state.previewView).toBeNull();
+ const {w,tm,body}=setup('Hello.');const before=body.innerHTML;tm.state.correctedText='Hello there.';tm.renderText(true);expect(w.document.querySelector('.source-underline')).not.toBeNull();
+ tm.dismissComposeSuggestion();tm.dismissComposeSuggestion();expect(w.document.querySelector('.source-underline')).toBeNull();expect(body.innerHTML).toBe(before);expect(tm.state.previewView).toBeNull();
 });
 it('composition start forbids a previously displayed acceptance',()=>{
  const {w,tm,body}=setup('Hello.');w.document.execCommand=vi.fn();tm.state.correctedText='Hello there.';tm.renderText(true);expect(tm.state.previewModel).not.toBeNull();tm.state.isIMEComposing=true;
@@ -599,4 +598,54 @@ it.each(['mouse','keyboard'])('%s jump navigates before allowing acceptance',mod
  expect(body.innerHTML).toBe(before);expect(tm.composeCursorOffset(tm.indexComposeText(body))).toBeGreaterThan(6);
  expect(tm.state.previewModel.replacement).toContain('This is good.');expect(w.document.execCommand).not.toHaveBeenCalled();
  tm.state.previewView.host.querySelector('button').click();expect(body.textContent).toBe('Hello. This is good.');expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+});
+
+
+it('underlines only source text fragments outside the authored DOM without the Highlight API', () => {
+  const {w,tm,body}=setup('<p>Before. Target <b>sentence</b><img alt="kept" src="cid:fixture"> here. After.</p>');
+  w.CSS=undefined;w.Highlight=undefined;
+  const style=w.document.createElement('style');style.textContent=readFileSync(resolve('compose/highlight.css'),'utf8')+readFileSync(resolve('compose/preview.css'),'utf8');w.document.head.appendChild(style);
+  const before=body.innerHTML,measured=[];
+  let shift=0;
+  w.Range.prototype.getClientRects=function(){
+    expect(this.startContainer.nodeType).toBe(w.Node.TEXT_NODE);
+    expect(this.endContainer).toBe(this.startContainer);
+    measured.push(this.toString());
+    const left=this.startContainer.parentElement.tagName==='B'?128: this.startContainer.nodeValue.startsWith('Before')?72:8;
+    const top=left===8?40:20;
+    return [{left:left+shift,right:left+shift+48,top,bottom:top+20,width:48,height:20},{left:0,top:0,right:0,bottom:20,width:0,height:20},{left:0,top:0,right:48,bottom:0,width:48,height:0}];
+  };
+  tm.setCursorByOffset(body,10);tm.state.correctedText='Before. Revised sentence here. After.';tm.renderText(true);
+  const lines=[...w.document.querySelectorAll('.source-underline')];
+  expect(lines).toHaveLength(3);
+  expect(measured.join('').trim()).toBe('Target sentence here.');
+  expect(lines.map(line=>[line.style.left,line.style.top,line.style.width])).toEqual([['72px','39px','48px'],['128px','39px','48px'],['8px','59px','48px']]);
+  for(const line of lines){
+    expect(body.contains(line)).toBe(false);
+    expect(line.getAttribute('aria-hidden')).toBe('true');
+    const painted=w.getComputedStyle(line);
+    expect(painted.position).toBe('fixed');
+    expect(painted.zIndex).toBe('0');
+    expect(painted.pointerEvents).toBe('none');
+    expect(painted.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(painted.borderBottomStyle).toBe('solid');
+    expect(painted.borderBottomWidth).toBe('1px');
+  }
+  expect(w.getComputedStyle(w.document.querySelector('.preview')).position).toBe('relative');
+  expect(w.getComputedStyle(w.document.querySelector('.preview')).zIndex).toBe('1');
+  shift=100;tm.renderText(true);
+  expect(w.document.querySelectorAll('.source-underline')).toHaveLength(3);
+  expect(lines.every(line=>!line.isConnected)).toBe(true);
+  expect(w.document.querySelector('.source-underline').style.left).toBe('172px');
+  expect(body.innerHTML).toBe(before);
+  tm.dismissComposeSuggestion();
+  expect(w.document.querySelector('.source-underline')).toBeNull();
+  expect(body.innerHTML).toBe(before);
+});
+
+it('an empty-draft proposal has no source underline',()=>{
+  const {w,tm,body}=setup('');tm.state.correctedText='Hello Alex.';tm.renderText(true);
+  expect(w.document.querySelector('.preview .content').textContent).toBe('Hello Alex.');
+  expect(w.document.querySelector('.source-underline')).toBeNull();
+  expect(body.innerHTML).toBe('');
 });
