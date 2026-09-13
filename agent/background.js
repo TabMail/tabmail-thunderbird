@@ -32,7 +32,8 @@ import {
 } from "./modules/eventLogger.js";
 import { enforceMailSyncPrefs } from "./modules/startupPrefs.js";
 import { initSummaryFeatures, refreshCurrentMessageSummary, signalBubbleReady } from "./modules/summary.js";
-import { getActionForUniqueKey, pushAllActionsToExperimentsOnStartup } from "./modules/actionCache.js";
+import { ensureActionTags } from "./modules/tagDefs.js";
+import { clearAllActions, cleanupActionCache, isActionPayloadKey, purgeMetadataOlderThan, getActionForUniqueKey, pushAllActionsToExperimentsOnStartup } from "./modules/actionCache.js";
 import { registerTabKeyHandlers } from "./modules/tagActionKey.js";
 import {
   attachTagByThreadListener,
@@ -124,13 +125,8 @@ function setupRuntimeMessageListener() {
     }
 
     if (message.command === "clear-action-cache") {
-        log("Received clear-action-cache command – clearing only action:* entries.");
-        idb.get(null).then(all => {
-            const del = Object.keys(all).filter(k => k.startsWith("action:"));
-            if (del.length) idb.remove(del);
-            log(`Cleared ${del.length} action cache entries.`);
-        });
-        return { ok: true };
+        log("Received clear-action-cache command – clearing action entries.");
+        return clearAllActions().then(() => ({ ok: true }));
     }
 
     if (message.command === "clear-summary-cache") {
@@ -918,13 +914,11 @@ function scheduleCacheCleanup() {
         Number(SETTINGS.summaryTTLSeconds || 0)
       );
       const cutoff = Date.now() - ttlSeconds * 1000;
+      await purgeMetadataOlderThan(cutoff);
       const removed = await purgeOlderThanByPrefixes(
         [
           "activePrecompose:",
           "activeHistory:",
-          "action:orig:",
-          "action:userprompt:",
-          "action:justification:",
           "threadTags:",
         ],
         cutoff
@@ -1682,6 +1676,12 @@ async function init() {
         // log(`[TMDBG ThreadTT] Failed to initialise threadTooltip: ${e}`);
     }
 
+    try {
+        await ensureActionTags();
+    } catch (_) {
+        log("[ActionTags] Optional tag setup failed; continuing startup", "debug");
+    }
+
     // 0c. Activate tagSort experiment for Date→Tags sorting in the message list.
     try {
         if (browser.tagSort && browser.tagSort.init) {
@@ -1920,7 +1920,7 @@ async function init() {
                 // the same prefix — matching them returns timestamps/metadata instead of data.
                 const suffix = `:${probeKey}`;
                 const summaryMatch = wantSummary ? allIdbKeys.find(k => k.startsWith("summary:") && !k.startsWith("summary:ts:") && k.endsWith(suffix)) : null;
-                const actionMatch = wantAction ? allIdbKeys.find(k => k.startsWith("action:") && !k.startsWith("action:ts:") && !k.startsWith("action:orig:") && !k.startsWith("action:userprompt:") && !k.startsWith("action:justification:") && k.endsWith(suffix)) : null;
+                const actionMatch = wantAction ? allIdbKeys.find(k => isActionPayloadKey(k) && k.endsWith(suffix)) : null;
                 const replyMatch = wantReply ? allIdbKeys.find(k => k.startsWith("reply:") && !k.startsWith("reply:ts:") && k.endsWith(suffix)) : null;
                 if (!summaryMatch && !actionMatch && !replyMatch) continue;
 
@@ -2050,6 +2050,7 @@ init();
 if (typeof browser !== 'undefined' && browser.runtime) {
   // This fires when the extension is being disabled, uninstalled, or reloaded
   browser.runtime.onSuspend?.addListener(() => {
+    cleanupActionCache();
     log("Extension suspending - cleaning up experiments and listeners");
     try {
       cleanupContextMenus();

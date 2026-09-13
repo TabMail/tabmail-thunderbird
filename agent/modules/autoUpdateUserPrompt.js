@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { SETTINGS } from "./config.js";
+import { origKey as actionOrigKey, userPromptKey as actionUserPromptKey } from "./actionCache.js";
 import * as idb from "./idbStorage.js";
 import { processJSONResponse, sendChat } from "./llm.js";
 import { applyActionPatch } from "./patchApplier.js";
@@ -105,7 +106,7 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
         }
 
         // Original agent action (write-once record)
-        const origKey = "action:orig:" + uniqueKey;
+        const origKey = actionOrigKey(uniqueKey);
         const origObj = await idb.get(origKey);
         const originalAgentAction = (origObj && origObj[origKey]) || "";
         if (!originalAgentAction) {
@@ -113,7 +114,7 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
         }
 
         // Original user action prompt (write-once record)
-        const userPromptKey = "action:userprompt:" + uniqueKey;
+        const userPromptKey = actionUserPromptKey(uniqueKey);
         const userPromptObj = await idb.get(userPromptKey);
         const originalUserActionPrompt = (userPromptObj && userPromptObj[userPromptKey]) || "";
         if (!originalUserActionPrompt) {

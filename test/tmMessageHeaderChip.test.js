@@ -2,14 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// tmMessageHeaderChip.test.js — Tests for header-chip helper logic.
-//
-// The actual functions live inside a privileged experiment closure
-// (theme/experiments/tmMessageHeaderChip/tmMessageHeaderChip.sys.mjs) and
-// can't be imported directly. Per the established pattern (see
-// staleRowFilter.test.js), we replicate the pure-JS helpers here so any
-// drift surfaces in CI. The painter / DOM mutation / lifecycle code is
-// exercised through manual QA per PLAN_HEADER_CHIP.md §8.
+// Header-chip class names and tooltip reuse. Canonical readers are tested
+// against production source in actionPainterContracts.test.js.
 
 import { describe, it, expect } from 'vitest';
 
@@ -39,75 +33,10 @@ const HEADER_CHIP_MARKER_CLASS_MHC = "tm-header-action-chip";
 // Replicated helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-function _actionFromKeywords_MHC(hdr) {
-  try {
-    const kw = hdr?.getStringProperty?.("keywords") || "";
-    if (!kw) return null;
-    const keys = kw.split(/\s+/).filter(Boolean);
-    for (const a of TM_ACTION_PRIORITY_MHC) {
-      const k = _ACTION_TO_KEYWORD_MHC[a];
-      if (k && keys.includes(k)) return a;
-    }
-    return null;
-  } catch (_) {
-    return null;
-  }
-}
-
 function _classNameForAction_MHC(action) {
   if (!action || !Object.hasOwn(_ACTION_LABELS_MHC, action)) return "";
   return `${CHIP_BASE_CLASS_MHC} ${HEADER_CHIP_MARKER_CLASS_MHC} tm-action-${action}`;
 }
-
-// Tiny hdr stub used by the keyword tests.
-function makeHdr(keywordsString) {
-  return {
-    getStringProperty(name) {
-      return name === "keywords" ? keywordsString : "";
-    },
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe('_actionFromKeywords_MHC', () => {
-  it('returns null when no header is provided', () => {
-    expect(_actionFromKeywords_MHC(null)).toBe(null);
-    expect(_actionFromKeywords_MHC(undefined)).toBe(null);
-  });
-
-  it('returns null when the keywords prop is empty', () => {
-    expect(_actionFromKeywords_MHC(makeHdr(""))).toBe(null);
-  });
-
-  it('returns null when getStringProperty throws', () => {
-    const throwingHdr = {
-      getStringProperty() { throw new Error("boom"); },
-    };
-    expect(_actionFromKeywords_MHC(throwingHdr)).toBe(null);
-  });
-
-  it('resolves each single tm_* keyword to its action', () => {
-    expect(_actionFromKeywords_MHC(makeHdr("tm_reply"))).toBe("reply");
-    expect(_actionFromKeywords_MHC(makeHdr("tm_archive"))).toBe("archive");
-    expect(_actionFromKeywords_MHC(makeHdr("tm_delete"))).toBe("delete");
-    expect(_actionFromKeywords_MHC(makeHdr("tm_none"))).toBe("none");
-  });
-
-  it('ignores non-tm keywords and surrounding whitespace', () => {
-    expect(_actionFromKeywords_MHC(makeHdr("  $label1   tm_reply  other "))).toBe("reply");
-    expect(_actionFromKeywords_MHC(makeHdr("$label1 $label2"))).toBe(null);
-  });
-
-  it('resolves multiple keywords using TM_ACTION_PRIORITY_MHC: reply > none > archive > delete', () => {
-    expect(_actionFromKeywords_MHC(makeHdr("tm_archive tm_reply"))).toBe("reply");
-    expect(_actionFromKeywords_MHC(makeHdr("tm_delete tm_archive"))).toBe("archive");
-    expect(_actionFromKeywords_MHC(makeHdr("tm_delete tm_none"))).toBe("none");
-    expect(_actionFromKeywords_MHC(makeHdr("tm_reply tm_none tm_archive tm_delete"))).toBe("reply");
-  });
-});
 
 describe('_classNameForAction_MHC', () => {
   it('returns empty string for null / undefined / empty action', () => {

@@ -77,6 +77,8 @@ const mockSaveChatLog = vi.fn();
 
 vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
+  indexHeader: vi.fn(),
+  resolveUniqueMessageKey: async key => ({status:'resolved',weIds:[],folder:{type:await mockIsMessageInInboxByUniqueKey(key)?'inbox':'archive'}}),
   getUniqueMessageKey: (...args) => mockGetUniqueMessageKey(...args),
   extractBodyFromParts: (...args) => mockExtractBodyFromParts(...args),
   stripHtml: (...args) => mockStripHtml(...args),
@@ -129,9 +131,13 @@ vi.mock('../agent/modules/deviceSync.js', () => ({
 // Browser mock
 globalThis.browser = {
   messages: {
+    query: vi.fn(async()=>({messages:[makeHeader()]})),
     get: vi.fn().mockResolvedValue({ tags: [] }),
   },
   tmHdr: {
+    setAction:vi.fn(async()=>true),
+    getMsgKey:vi.fn(async()=>1),
+    getReplied:vi.fn(async()=>false),
     getFlags: vi.fn().mockResolvedValue({ exists: false }),
   },
   storage: {
@@ -185,6 +191,7 @@ beforeEach(() => {
   mockIsMessageInInboxByUniqueKey.mockResolvedValue(true);
   mockGetRealSubject.mockImplementation(async (header) => header?.subject || "");
   browser.messages.get.mockResolvedValue({ tags: [] });
+  browser.tmHdr.getReplied.mockResolvedValue(false);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -664,4 +671,66 @@ describe('getAction semaphore', () => {
     expect(result1).toBe('reply');
     expect(result2).toBe('reply');
   });
+});
+
+
+describe('generator mutation ownership boundaries',()=>{
+ it('downgrades an already-replied cached reply through native projection',async()=>{
+  idbStore['action:test-unique-key']='reply';browser.tmHdr.getReplied.mockResolvedValue(true);
+  expect(await getAction(makeHeader())).toBe('none');
+  expect(idbStore['action:test-unique-key']).toBe('none');
+  expect(browser.tmHdr.setAction).toHaveBeenCalledWith(1,'none');
+ });
+ it('commits an already-replied generated reply as none in the first transaction',async()=>{
+  browser.tmHdr.getReplied.mockResolvedValue(true);
+  mockSendChat.mockResolvedValue({assistant:'{"action":"reply"}'});mockProcessJSONResponse.mockReturnValue({action:'reply'});
+  expect(await getAction(makeHeader(),{forceRecompute:true})).toBe('none');
+  expect(mockIdbSet.mock.calls.filter(([values])=>'action:test-unique-key' in values).map(([values])=>values['action:test-unique-key'])).toEqual(['none']);
+ });
+ it('commits peer cache actions and original metadata through the owner',async()=>{
+  const {probeAICache}=await import('../agent/modules/deviceSync.js');probeAICache.mockResolvedValueOnce('archive');
+  expect(await getAction(makeHeader())).toBe('archive');
+  expect(idbStore['action:test-unique-key']).toBe('archive');
+  expect(idbStore['action:orig:test-unique-key']).toBe('archive');
+  expect(browser.tmHdr.setAction).toHaveBeenCalledWith(1,'archive');expect(mockSendChat).not.toHaveBeenCalled();
+ });
+ it('preserves the supplied automatic token when generation finishes after a manual edit',async()=>{
+  const owner=await import('../agent/modules/actionCache.js');const token=owner.beginAutomaticWork('test-unique-key');
+  await owner.setAction(makeHeader(),'delete');
+  mockSendChat.mockResolvedValue({assistant:'{"action":"reply"}'});mockProcessJSONResponse.mockReturnValue({action:'reply'});
+  await getAction(makeHeader(),{forceRecompute:true,token});
+  expect(idbStore['action:test-unique-key']).toBe('delete');
+  expect(browser.tmHdr.setAction).not.toHaveBeenCalledWith(1,'reply');
+ });
+});
+
+describe('peer cache replied invariant',()=>{
+ it('commits a peer reply as none when the live message was already replied',async()=>{
+  const {probeAICache}=await import('../agent/modules/deviceSync.js');
+  probeAICache.mockResolvedValueOnce('reply');browser.tmHdr.getReplied.mockResolvedValue(true);
+  expect(await getAction(makeHeader())).toBe('none');
+  expect(probeAICache).toHaveBeenCalledOnce();expect(mockSendChat).not.toHaveBeenCalled();
+  expect(idbStore['action:test-unique-key']).toBe('none');
+  expect(mockIdbSet.mock.calls.filter(([values])=>'action:test-unique-key' in values).map(([values])=>values['action:test-unique-key'])).toEqual(['none']);
+  expect(browser.tmHdr.setAction).toHaveBeenCalledWith(1,'none');
+  expect(browser.tmHdr.setAction).not.toHaveBeenCalledWith(1,'reply');
+ });
+});
+
+it('completed cached reads retire their work without preventing fresh writes',async()=>{
+ const owner=await import('../agent/modules/actionCache.js');
+ const begin=owner.beginAutomaticWork,tokens=[];
+ const spy=vi.spyOn(owner,'beginAutomaticWork').mockImplementation(key=>{const token=begin(key);tokens.push(token);return token;});
+ try {
+  idbStore['action:test-unique-key']='archive';
+  for(let n=0;n<30;n++)expect(await getAction(makeHeader())).toBe('archive');
+  expect(tokens).toHaveLength(30);
+  for(const token of tokens)expect(await owner.setAction(makeHeader(),'reply',{token})).toBeNull();
+  expect(idbStore['action:test-unique-key']).toBe('archive');
+  expect(browser.tmHdr.setAction).not.toHaveBeenCalledWith(1,'reply');
+  const fresh=begin('test-unique-key');
+  await owner.setAction(makeHeader(),'delete',{token:fresh});owner.finishAutomaticWork(fresh);
+  expect(idbStore['action:test-unique-key']).toBe('delete');
+  expect(browser.tmHdr.setAction).toHaveBeenCalledWith(1,'delete');
+ } finally {spy.mockRestore();for(const token of tokens)owner.finishAutomaticWork(token);}
 });

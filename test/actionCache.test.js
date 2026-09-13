@@ -44,6 +44,8 @@ vi.mock('../agent/modules/idbStorage.js', () => ({
 
 const mockGetUniqueMessageKey = vi.fn();
 
+vi.mock('../agent/modules/config.js', () => ({ SETTINGS: {} }));
+vi.mock('../agent/modules/tagDefs.js', () => ({ triggerSortRefresh: vi.fn(), maxPriorityAction: vi.fn() }));
 vi.mock('../agent/modules/utils.js', () => ({
   getUniqueMessageKey: (...args) => mockGetUniqueMessageKey(...args),
 }));
@@ -86,106 +88,6 @@ describe('ACTIONS enum', () => {
 
   it('is frozen', () => {
     expect(Object.isFrozen(ACTIONS)).toBe(true);
-  });
-});
-
-describe('setAction', () => {
-  it('writes both action key and ts meta key to IDB for a header object', async () => {
-    mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:msgid1');
-    const header = { id: 1, headerMessageId: 'msgid1', folder: { accountId: 'acc1', path: 'INBOX' } };
-
-    const result = await setAction(header, 'reply');
-
-    expect(result).toBe('acc1:INBOX:msgid1');
-    expect(idbStore['action:acc1:INBOX:msgid1']).toBe('reply');
-    expect(idbStore['action:ts:acc1:INBOX:msgid1']).toMatchObject({ ts: expect.any(Number) });
-  });
-
-  it('accepts a WE message id number and resolves via getUniqueMessageKey', async () => {
-    mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:msgid2');
-
-    const result = await setAction(42, 'archive');
-
-    expect(result).toBe('acc1:INBOX:msgid2');
-    expect(idbStore['action:acc1:INBOX:msgid2']).toBe('archive');
-    expect(mockGetUniqueMessageKey).toHaveBeenCalledWith(42);
-  });
-
-  it('accepts a uniqueKey string directly (three-segment)', async () => {
-    const result = await setAction('acc1:INBOX:msgid3', 'delete');
-
-    expect(result).toBe('acc1:INBOX:msgid3');
-    expect(idbStore['action:acc1:INBOX:msgid3']).toBe('delete');
-    expect(mockGetUniqueMessageKey).not.toHaveBeenCalled();
-  });
-
-  it('rejects invalid action values', async () => {
-    mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:msgid1');
-
-    expect(await setAction({ id: 1 }, 'not_a_valid_action')).toBe(null);
-    expect(await setAction({ id: 1 }, '')).toBe(null);
-    expect(await setAction({ id: 1 }, null)).toBe(null);
-    expect(await setAction({ id: 1 }, undefined)).toBe(null);
-    expect(mockIdbSet).not.toHaveBeenCalled();
-  });
-
-  it('accepts all four valid actions', async () => {
-    for (const a of ['reply', 'archive', 'delete', 'none']) {
-      mockGetUniqueMessageKey.mockResolvedValue(`acc1:INBOX:${a}`);
-      const result = await setAction({ id: 1 }, a);
-      expect(result).toBe(`acc1:INBOX:${a}`);
-      expect(idbStore[`action:acc1:INBOX:${a}`]).toBe(a);
-    }
-  });
-
-  it('returns null when uniqueKey cannot be resolved', async () => {
-    mockGetUniqueMessageKey.mockResolvedValue(null);
-    expect(await setAction({ id: 1 }, 'reply')).toBe(null);
-    expect(mockIdbSet).not.toHaveBeenCalled();
-  });
-
-  it('returns null for falsy input', async () => {
-    expect(await setAction(null, 'reply')).toBe(null);
-    expect(await setAction(undefined, 'reply')).toBe(null);
-    expect(mockIdbSet).not.toHaveBeenCalled();
-  });
-
-  it('writes hdr property via browser.tmHdr.setAction when input is a WE id', async () => {
-    mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:mid-push-we');
-
-    await setAction(42, 'reply');
-
-    // Push is fire-and-forget; let microtasks flush.
-    await new Promise((r) => setTimeout(r, 0));
-    expect(mockHdrSetAction).toHaveBeenCalledWith(42, 'reply');
-  });
-
-  it('writes hdr property when input is a header object', async () => {
-    mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:mid-push-hdr');
-    const header = { id: 99, headerMessageId: 'mid-push-hdr', folder: { accountId: 'acc1', path: 'INBOX' } };
-
-    await setAction(header, 'archive');
-
-    await new Promise((r) => setTimeout(r, 0));
-    expect(mockHdrSetAction).toHaveBeenCalledWith(99, 'archive');
-  });
-
-  it('does NOT write hdr property when input is a bare uniqueKey string (no weMsgId available)', async () => {
-    await setAction('acc1:INBOX:mid-no-weid', 'delete');
-
-    await new Promise((r) => setTimeout(r, 0));
-    expect(mockHdrSetAction).not.toHaveBeenCalled();
-  });
-});
-
-describe('clearAction — hdr property write', () => {
-  it('writes null action to hdr property when clearing by weMsgId', async () => {
-    mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:mid-clear');
-
-    await clearAction(55);
-
-    await new Promise((r) => setTimeout(r, 0));
-    expect(mockHdrSetAction).toHaveBeenCalledWith(55, undefined);
   });
 });
 
@@ -248,44 +150,5 @@ describe('getActionsForUniqueKeys', () => {
     idbStore['action:k1'] = 'reply';
     const result = await getActionsForUniqueKeys(['k1', null, '', undefined]);
     expect(result).toEqual({ k1: 'reply' });
-  });
-});
-
-describe('clearAction / clearActionByUniqueKey', () => {
-  it('removes both action and ts keys from IDB', async () => {
-    idbStore['action:acc1:INBOX:msgid1'] = 'reply';
-    idbStore['action:ts:acc1:INBOX:msgid1'] = { ts: 123 };
-
-    const result = await clearActionByUniqueKey('acc1:INBOX:msgid1');
-    expect(result).toBe(true);
-    expect(idbStore['action:acc1:INBOX:msgid1']).toBeUndefined();
-    expect(idbStore['action:ts:acc1:INBOX:msgid1']).toBeUndefined();
-  });
-
-  it('is a no-op for no cache entry but still returns true', async () => {
-    const result = await clearActionByUniqueKey('acc1:INBOX:nonexistent');
-    expect(result).toBe(true);
-  });
-
-  it('returns false for empty/null input', async () => {
-    expect(await clearActionByUniqueKey(null)).toBe(false);
-    expect(await clearActionByUniqueKey('')).toBe(false);
-  });
-
-  it('clearAction resolves uniqueKey from header object', async () => {
-    mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:msgid1');
-    idbStore['action:acc1:INBOX:msgid1'] = 'reply';
-    idbStore['action:ts:acc1:INBOX:msgid1'] = { ts: 123 };
-
-    const header = { id: 1 };
-    const result = await clearAction(header);
-    expect(result).toBe(true);
-    expect(idbStore['action:acc1:INBOX:msgid1']).toBeUndefined();
-  });
-
-  it('clearAction returns false when uniqueKey cannot be resolved', async () => {
-    mockGetUniqueMessageKey.mockResolvedValue(null);
-    const result = await clearAction({ id: 1 });
-    expect(result).toBe(false);
   });
 });

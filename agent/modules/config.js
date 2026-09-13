@@ -207,7 +207,7 @@ export const SETTINGS = {
     },
 
     // TabMail action-tag behavior (Inbox-only).
-    // - per-message action is cached as idb key: "action:<uniqueKey>"
+    // - per-message action is cached through actionCache.payloadKey(uniqueKey)
     // - per-thread tag aggregate (Inbox thread) is cached as idb key: "threadTags:<threadKey>"
     // ThreadKey format is defined in agent/modules/tagHelper.js.
     actionTagging: {

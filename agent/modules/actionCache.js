@@ -2,54 +2,82 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-/**
- * actionCache.js — Canonical source of truth for per-message AI action state.
- *
- * Action state lives in IDB under `action:<uniqueKey>` (with metadata under
- * `action:ts:<uniqueKey>`). Every read/write on the "what action does this
- * message have" question funnels through this module.
- *
- * Phase 2b: on every write, dual-write IDB + local mork hdr property
- * ("tm-action"). Painter + sort read the hdr property synchronously — no
- * in-memory map, no cross-process push, no cold-start delay. IDB stays
- * canonical for cross-device sync (Device Sync reads/writes it); the hdr
- * property is the fast local render cache.
- */
-
+/** Canonical action mutations: commit, project, refresh chips, then delay sorting. */
 import * as idb from "./idbStorage.js";
-import { getUniqueMessageKey, getUniqueMessageKeyCandidates } from "./utils.js";
+import { getUniqueMessageKey, resolveUniqueMessageKey, log } from "./utils.js";
+import { isInboxFolder } from "./folderUtils.js";
+import { maxPriorityAction, triggerSortRefresh } from "./tagDefs.js";
 
 const ACTION_PREFIX = "action:";
 const ACTION_TS_PREFIX = "action:ts:";
+export const payloadKey = key => ACTION_PREFIX + key;
+export const tsKey = key => ACTION_TS_PREFIX + key;
+export const origKey = key => "action:orig:" + key;
+export const userPromptKey = key => "action:userprompt:" + key;
+export const justificationKey = key => "action:justification:" + key;
+export const METADATA_PREFIXES = [origKey(""), userPromptKey(""), justificationKey("")];
+export const allKeysFor = key => [payloadKey(key), tsKey(key), origKey(key), userPromptKey(key), justificationKey(key)];
+export const isActionPayloadKey = key => typeof key === "string" && key.startsWith(ACTION_PREFIX)
+  && ![ACTION_TS_PREFIX, ...METADATA_PREFIXES].some(prefix => key.startsWith(prefix));
+export const ACTIONS = Object.freeze({ REPLY: "reply", ARCHIVE: "archive", DELETE: "delete", NONE: "none" });
+const VALID_ACTIONS = new Set(Object.values(ACTIONS));
+let _queue = Promise.resolve();
+let _epoch = 0;
+const _workTokens = new Map();
+const _backfilledAccounts = new Set();
+let _listeners = null;
 
-/**
- * Write the action to the message's native hdr as a local mork string
- * property via the `tmHdr` experiment. The property is LOCAL — IMAP sync
- * only rewrites the "keywords" property, so "tm-action" survives IMAP
- * FETCH/IDLE. Painter + sort read this synchronously on each row render.
- * Fire-and-forget; a failure (hdr gone, API not ready) is harmless because
- * IDB remains the canonical cross-device cache.
- */
-async function _writeActionToHdr(weMsgId, action) {
-  if (!Number.isInteger(weMsgId) || weMsgId <= 0) return;
-  try {
-    if (browser?.tmHdr?.setAction) {
-      await browser.tmHdr.setAction(weMsgId, action || undefined);
-    }
-  } catch (_) {}
+function _enqueue(fn) {
+  const result = _queue.then(fn);
+  _queue = result.catch(() => log("[actionCache] mutation step failed", "debug"));
+  return result;
 }
-
-/**
- * Repaint the action chip on every painter surface (preview-pane header,
- * multi-message-view rows). Fire-and-forget; per-experiment no-op when
- * unavailable. Callers MUST `await _writeActionToHdr(...)` BEFORE invoking
- * this when they're updating the mork prop, otherwise the painter may
- * read the OLD prop value (parent-process IPC race — see
- * tabmail-thunderbird/PLAN_HEADER_CHIP.md §6 "Action-change broadcast race").
- *
- * Both surface refreshes run in parallel (Promise.all) since neither
- * depends on the other.
- */
+export function beginAutomaticWork(key) {
+  const token = { key, epoch: _epoch, valid: true };
+  if (!_workTokens.has(key)) _workTokens.set(key, new Set());
+  _workTokens.get(key).add(token);
+  return token;
+}
+export function finishAutomaticWork(token) {
+  if (!token) return;
+  token.valid = false;
+  const tokens = _workTokens.get(token.key);
+  tokens?.delete(token);
+  if (tokens?.size === 0) _workTokens.delete(token.key);
+}
+function _current(key, token) { return !token || token.valid && token.key === key && token.epoch === _epoch; }
+function _bump(key) {
+  for (const token of _workTokens.get(key) || []) token.valid = false;
+  _workTokens.delete(key);
+}
+async function _resolveUniqueKey(input) {
+  if (typeof input === "string") return input.includes(":") ? input : null;
+  if (!input) return null;
+  try { return await getUniqueMessageKey(input); } catch (_) { return null; }
+}
+async function _targets(key, header, folderInventory) {
+  if (!header) return resolveUniqueMessageKey(key, { all: true, folderInventory });
+  const folder = header.folder;
+  if (!folder?.id || !header.headerMessageId) return { status: "unknown", weIds: [], folder };
+  try {
+    let page = await browser.messages.query({ folderId: folder.id, headerMessageId: header.headerMessageId });
+    const ids = new Set();
+    for (;;) {
+      if (!Array.isArray(page?.messages)) throw new Error("invalid page");
+      for (const m of page.messages) if (Number.isInteger(m?.id)) ids.add(m.id);
+      if (!page.id) break;
+      page = await browser.messages.continueList(page.id);
+    }
+    return { status: ids.size ? "resolved" : "absent", weIds: [...ids], folder };
+  } catch (_) { return { status: "unknown", weIds: [], folder }; }
+}
+async function _project(targets, action) {
+  for (const id of targets.weIds) {
+    try {
+      if (!await browser.tmHdr?.setAction(id, action)) log("[actionCache] native projection incomplete", "debug");
+    } catch (_) { log("[actionCache] native projection failed", "debug"); }
+  }
+}
 async function _refreshChips() {
   await Promise.all([
     (async () => {
@@ -69,59 +97,6 @@ async function _refreshChips() {
   ]);
 }
 
-/**
- * Display enum for the four AI actions. Plain names (no `tm_` prefix) —
- * the transport-layer `tm_*` naming exists only at IMAP/Gmail boundaries.
- */
-export const ACTIONS = Object.freeze({
-  REPLY: "reply",
-  ARCHIVE: "archive",
-  DELETE: "delete",
-  NONE: "none",
-});
-
-const VALID_ACTIONS = new Set(Object.values(ACTIONS));
-
-function _isValidAction(action) {
-  return typeof action === "string" && VALID_ACTIONS.has(action);
-}
-
-/**
- * Resolve the input (WE message id, header object, or uniqueKey string) to a
- * uniqueKey. Callers may pass any of these; we normalize here.
- */
-async function _resolveUniqueKey(input) {
-  if (!input && input !== 0) return null;
-  if (typeof input === "string") {
-    // Treat as already-a-uniqueKey if it has the three-segment shape.
-    return input.includes(":") ? input : null;
-  }
-  try {
-    return await getUniqueMessageKey(input);
-  } catch (_) {
-    return null;
-  }
-}
-
-/**
- * Extract a WE message id from any of the accepted inputs. Returns null if
- * the input is a uniqueKey string (no weId available without a lookup).
- */
-function _resolveWeMsgId(input) {
-  if (typeof input === "number") return input;
-  if (input && typeof input === "object" && Number.isInteger(input.id)) return input.id;
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Reads
-// ---------------------------------------------------------------------------
-
-/**
- * Get the cached action for a message. Returns null if no cache.
- * @param {number|object} headerOrWeId - WE message id or header object.
- * @returns {Promise<string|null>} action name or null
- */
 export async function getActionForWeId(headerOrWeId) {
   const key = await _resolveUniqueKey(headerOrWeId);
   return getActionForUniqueKey(key);
@@ -167,220 +142,191 @@ export async function getActionsForUniqueKeys(uniqueKeys) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Writes
-// ---------------------------------------------------------------------------
 
-/**
- * Write an action for a message to the IDB cache.
- * @param {number|object|string} headerOrWeIdOrUniqueKey
- * @param {string} action - one of ACTIONS values
- * @returns {Promise<string|null>} the uniqueKey written, or null on failure
- */
-export async function setAction(headerOrWeIdOrUniqueKey, action) {
-  if (!_isValidAction(action)) return null;
-  const uniqueKey = await _resolveUniqueKey(headerOrWeIdOrUniqueKey);
-  if (!uniqueKey) return null;
-  try {
-    const cacheKey = ACTION_PREFIX + uniqueKey;
-    const metaKey = ACTION_TS_PREFIX + uniqueKey;
-    await idb.set({ [cacheKey]: action, [metaKey]: { ts: Date.now() } });
-
-    // Push to view experiments so paint+sort stay in sync with IDB.
-    const weMsgId = _resolveWeMsgId(headerOrWeIdOrUniqueKey);
-    if (weMsgId) {
-      // Sequential: prop write must complete before chip refresh reads from it.
-      await _writeActionToHdr(weMsgId, action).catch(() => {});
+export function setAction(header, action, { token, meta } = {}) {
+  if (!header || typeof header !== "object" || !VALID_ACTIONS.has(action)) return Promise.resolve(null);
+  return _enqueue(async () => {
+    if (!isInboxFolder(header.folder)) return null;
+    const key = await _resolveUniqueKey(header);
+    if (!key || !_current(key, token)) return null;
+    const previous = await idb.get(allKeysFor(key));
+    const targets = await _targets(key, header);
+    const values = { [payloadKey(key)]: action, [tsKey(key)]: { ts: Date.now() } };
+    for (const [name, builder] of [["orig", origKey], ["userprompt", userPromptKey]]) {
+      if (meta?.[name] !== undefined && previous[builder(key)] === undefined) values[builder(key)] = meta[name];
     }
-    _refreshChips().catch(() => {});
-
-    return uniqueKey;
-  } catch (_) {
-    return null;
-  }
+    await idb.set(values);
+    _bump(key);
+    await _project(targets, action);
+    await _refreshChips();
+    if (previous[payloadKey(key)] !== action) triggerSortRefresh();
+    return key;
+  });
 }
-
-/**
- * Clear the cached action for a message. No-op if no cache entry.
- * @param {number|object|string} headerOrWeIdOrUniqueKey
- * @returns {Promise<boolean>} true if removal attempted
- */
-export async function clearAction(headerOrWeIdOrUniqueKey) {
-  const uniqueKey = await _resolveUniqueKey(headerOrWeIdOrUniqueKey);
-  if (!uniqueKey) return false;
-  const ok = await clearActionByUniqueKey(uniqueKey);
-  const weMsgId = _resolveWeMsgId(headerOrWeIdOrUniqueKey);
-  if (weMsgId) {
-    // Sequential: prop write must complete before chip refresh reads from it.
-    await _writeActionToHdr(weMsgId, null).catch(() => {});
-  }
-  _refreshChips().catch(() => {});
-  return ok;
+export function touchAction(key) {
+  return _enqueue(async () => {
+    const previous = await idb.get(payloadKey(key));
+    if (previous[payloadKey(key)] !== undefined) await idb.set({ [tsKey(key)]: { ts: Date.now() } });
+  });
 }
-
-/**
- * Clear the cached action by uniqueKey directly. Useful when the caller has
- * the key but the header is already gone (e.g. post-move).
- * @param {string} uniqueKey
- * @returns {Promise<boolean>}
- */
-export async function clearActionByUniqueKey(uniqueKey) {
-  if (!uniqueKey) return false;
-  try {
-    await idb.remove([ACTION_PREFIX + uniqueKey, ACTION_TS_PREFIX + uniqueKey]);
-    // Symmetric coverage only — this site has no weMsgId so it cannot
-    // clear the mork prop. For onMoved.js's post-move case, the chip
-    // actually clears via onMessagesDisplayed firing on the new-folder
-    // hdr (which has no mork prop). See PLAN_HEADER_CHIP.md §4.7 site #3.
-    _refreshChips().catch(() => {});
+async function _clear(items, { metadata = "ts", token } = {}, { extraKeys = [] } = {}) {
+  const records = new Map(), inventory = new Map();
+  for (const item of items) {
+    const key = item.uniqueKey || await _resolveUniqueKey(item.header);
+    if (key && _current(key, token) && !records.has(key)) {
+      records.set(key, await _targets(key, item.header, inventory));
+    }
+  }
+  const previous = await idb.get([...records.keys()].map(payloadKey));
+  const keys = [...extraKeys];
+  for (const key of records.keys()) keys.push(...(metadata === "all" ? allKeysFor(key) : [payloadKey(key), tsKey(key)]));
+  if (keys.length) await idb.remove([...new Set(keys)]);
+  for (const [key, targets] of records) { _bump(key); await _project(targets, ""); }
+  if (records.size) {
+    await _refreshChips();
+    if (Object.keys(previous).length) triggerSortRefresh();
+  }
+  return records.size > 0;
+}
+export function clearActions(items, options) { return _enqueue(() => _clear(items, options)); }
+export function clearAction(header) { return clearActions([{ header }]); }
+export function clearActionByUniqueKey(uniqueKey) { return clearActions([{ uniqueKey }]); }
+export function clearAllActions() {
+  return _enqueue(async () => {
+    const keys = (await idb.getAllKeys()).filter(k => k.startsWith(ACTION_PREFIX));
+    const cleared = await _clear(keys.filter(isActionPayloadKey).map(k => ({ uniqueKey: k.slice(ACTION_PREFIX.length) })),
+      { metadata: "all" }, { extraKeys: keys });
+    _epoch++;
+    _workTokens.clear();
+    return cleared;
+  });
+}
+export function wipeAll() {
+  return _enqueue(async () => {
+    // Privacy cleanup must not depend on message inventory or repaint reads.
+    await idb.clear();
+    _epoch++;
+    _workTokens.clear();
+  });
+}
+export function purgeMetadataOlderThan(cutoffTs) {
+  return _enqueue(() => idb.purgeOlderThanByPrefixes(METADATA_PREFIXES, cutoffTs));
+}
+export function purgeExpired({ cutoffTs }) {
+  return _enqueue(async () => {
+    const keys = await idb.getAllKeys();
+    const candidates = new Set(keys.filter(isActionPayloadKey).map(k => k.slice(ACTION_PREFIX.length)));
+    for (const key of keys.filter(k => k.startsWith(ACTION_TS_PREFIX))) candidates.add(key.slice(ACTION_TS_PREFIX.length));
+    const timestamps = await idb.get([...candidates].map(tsKey));
+    const inventory = new Map(), removals = [];
+    for (const key of candidates) {
+      const ts = timestamps[tsKey(key)]?.ts;
+      if (!Number.isFinite(ts) || ts < cutoffTs) {
+        removals.push({ uniqueKey: key });
+        continue;
+      }
+      const targets = await _targets(key, null, inventory);
+      if (targets.status === "unknown") continue;
+      if (targets.status === "absent" || !isInboxFolder(targets.folder)) removals.push({ uniqueKey: key });
+    }
+    return _clear(removals);
+  });
+}
+export function applyThreadEffective(weIds) {
+  return _enqueue(async () => {
+    const members = new Map();
+    for (const id of new Set(weIds)) {
+      let header;
+      try { header = await browser.messages.get(id); } catch (_) { return false; }
+      if (!isInboxFolder(header?.folder)) continue;
+      const key = await _resolveUniqueKey(header);
+      if (!key) return false;
+      members.set(key, header);
+    }
+    if (!members.size) return false;
+    const previous = await idb.get([...members.keys()].map(payloadKey));
+    const actions = [...members.keys()].map(key => previous[payloadKey(key)]);
+    if (actions.some(action => !VALID_ACTIONS.has(action))) return false;
+    const action = maxPriorityAction(actions), values = {}, targets = new Map();
+    for (const [key, header] of members) {
+      if (previous[payloadKey(key)] === action) continue;
+      targets.set(key, await _targets(key, header));
+      values[payloadKey(key)] = action;
+      values[tsKey(key)] = { ts: Date.now() };
+    }
+    if (!targets.size) return false;
+    await idb.set(values);
+    for (const [key, target] of targets) { _bump(key); await _project(target, action); }
+    await _refreshChips();
+    triggerSortRefresh();
     return true;
-  } catch (_) {
-    return false;
-  }
+  });
 }
 
-// ---------------------------------------------------------------------------
-// Startup push — populate experiment action maps from IDB
-// ---------------------------------------------------------------------------
-
-const _BULK_PUSH_BATCH_SIZE = 100;
-
-/**
- * One-time startup backfill: ensure every IDB `action:*` entry is also
- * present as a mork `tm-action` property on its message header. After
- * this runs once, all new classifications dual-write (IDB + hdr) so the
- * painter always finds the property synchronously on render.
- *
- * Strategy: one `browser.messages.list(folderId)` per affected folder, in
- * parallel across folders. For each listed message, look up the matching
- * action by `headerMessageId` in the pre-built map and write via
- * `browser.tmHdr.setActionsBulk` in batches.
- *
- * Fire-and-forget — callers should not await.
- *
- * NOTE: this function does NOT call `_refreshChips()`. Startup runs
- * before any message-display, so there's no chip to refresh on either
- * surface (header chip or multi-message-view chips); the first
- * `messageDisplay.onMessagesDisplayed` event will paint chips with the
- * just-written mork prop. See PLAN_HEADER_CHIP.md §4.7.
- */
-export async function pushAllActionsToExperimentsOnStartup() {
-  const t0 = Date.now();
+// Inventory is gathered outside the queue; each chunk re-reads canonical state
+// inside it so manual mutations can interleave without a stale snapshot replay.
+export async function backfillAccount(accountId) {
+  let foundInbox = false;
   try {
-    const allKeys = await idb.getAllKeys();
-    const actionKeys = allKeys.filter(
-      (k) => k.startsWith(ACTION_PREFIX) && !k.startsWith(ACTION_TS_PREFIX),
-    );
-    if (actionKeys.length === 0) return;
-
-    const kv = await idb.get(actionKeys);
-
-    // Resolve against the current structured folder inventory. A raw key has
-    // no context-free "second colon": both folder paths and valid Message-IDs
-    // may contain colons. Ambiguous live prefixes fail closed.
-    const accounts = await browser.accounts.list();
-    const liveFolders = [];
-    for (const acc of accounts) {
-      try {
-        if (!acc?.rootFolder) continue;
-        const subFolders = await browser.folders.getSubFolders(acc.rootFolder.id, true);
-        for (const folder of [acc.rootFolder, ...subFolders]) {
-          if (folder?.id && folder?.path) {
-            liveFolders.push({ ...folder, accountId: folder.accountId || acc.id });
-          }
+    const folders = await browser.folders.query({ accountId });
+    for (const folder of folders.filter(isInboxFolder)) {
+      let page = await browser.messages.list(folder.id);
+      for (;;) {
+        if (!Array.isArray(page?.messages)) throw new Error("invalid inbox page");
+        foundInbox = true;
+        for (let i = 0; i < page.messages.length; i += 100) {
+          const chunk = page.messages.slice(i, i + 100);
+          await _enqueue(async () => {
+            const entries = [];
+            for (const message of chunk) {
+              const key = await _resolveUniqueKey({ ...message, folder });
+              if (!key) continue;
+              const value = (await idb.get(payloadKey(key)))[payloadKey(key)];
+              entries.push({ weMsgId: message.id, action: VALID_ACTIONS.has(value) ? value : "" });
+            }
+            if (entries.length) {
+              try {
+                const count = await browser.tmHdr?.setActionsBulk(entries);
+                if (count !== entries.length) log("[actionCache] bulk projection incomplete", "debug");
+              } catch (_) { log("[actionCache] backfill incomplete", "debug"); }
+            }
+          });
         }
-      } catch (_) {}
-    }
-
-    const normalizeMid = (v) => String(v || "").replace(/[<>]/g, "").trim();
-    const records = [];
-    const refsByFolder = new Map(); // MailFolder.id -> Map<normalized Message-ID, refs[]>
-    for (const cacheKey of actionKeys) {
-      const action = kv[cacheKey];
-      if (!action) continue;
-      const uniqueKey = cacheKey.slice(ACTION_PREFIX.length);
-      const candidates = getUniqueMessageKeyCandidates(uniqueKey, liveFolders);
-      if (candidates.length === 0) continue;
-      const record = { action, matches: new Map(), uncertain: false };
-      records.push(record);
-      for (const candidate of candidates) {
-        const mid = normalizeMid(candidate.headerID);
-        if (!mid) continue;
-        let byMid = refsByFolder.get(candidate.weFolder.id);
-        if (!byMid) { byMid = new Map(); refsByFolder.set(candidate.weFolder.id, byMid); }
-        let refs = byMid.get(mid);
-        if (!refs) { refs = []; byMid.set(mid, refs); }
-        refs.push({ record, folderId: candidate.weFolder.id });
+        if (!page.id) break;
+        page = await browser.messages.continueList(page.id);
       }
     }
-    if (refsByFolder.size === 0) return;
-
-    // Validate all structural candidates against actual live messages while
-    // scanning each affected folder only once. Structural prefix overlap is
-    // not ambiguity; two matched candidate folders are. Multiple matching
-    // rows inside one folder retain the base backfill behavior.
-    const folderFetches = [];
-    for (const [folderId, refsByMid] of refsByFolder) {
-      folderFetches.push((async () => {
-        try {
-          let page = await browser.messages.list(folderId);
-          const continuationIds = new Set();
-          while (page) {
-            if (!Array.isArray(page.messages)) throw new Error("action_cache_folder_page_invalid");
-            for (const m of page.messages) {
-              const mid = normalizeMid(m?.headerMessageId);
-              if (!mid) continue;
-              const refs = refsByMid.get(mid);
-              if (!refs || !m?.id) continue;
-              for (const ref of refs) {
-                let messageIds = ref.record.matches.get(ref.folderId);
-                if (!messageIds) {
-                  messageIds = new Set();
-                  ref.record.matches.set(ref.folderId, messageIds);
-                }
-                messageIds.add(m.id);
-              }
-            }
-            if (!page.id) break;
-            if (continuationIds.has(page.id)
-                || typeof browser.messages.continueList !== "function") {
-              throw new Error("action_cache_folder_continuation_invalid");
-            }
-            continuationIds.add(page.id);
-            page = await browser.messages.continueList(page.id);
-          }
-        } catch (_) {
-          for (const refs of refsByMid.values()) {
-            for (const ref of refs) ref.record.uncertain = true;
-          }
-        }
-      })());
-    }
-    await Promise.all(folderFetches);
-    const allEntries = [];
-    for (const record of records) {
-      if (record.uncertain || record.matches.size !== 1) continue;
-      for (const weMsgId of record.matches.values().next().value) {
-        allEntries.push({ weMsgId, action: record.action });
-      }
-    }
-    if (allEntries.length === 0) return;
-
-    // Backfill hdr properties in batches.
-    if (!browser?.tmHdr?.setActionsBulk) return;
-    let written = 0;
-    for (let i = 0; i < allEntries.length; i += _BULK_PUSH_BATCH_SIZE) {
-      const chunk = allEntries.slice(i, i + _BULK_PUSH_BATCH_SIZE);
-      try {
-        const n = await browser.tmHdr.setActionsBulk(chunk);
-        if (Number.isFinite(n)) written += n;
-      } catch (_) {}
-    }
-    try {
-      const dt = Date.now() - t0;
-      console.log(`[actionCache] hdr backfill: ${written}/${allEntries.length} entries in ${dt}ms`);
-    } catch (_) {}
-  } catch (e) {
-    try { console.log("[actionCache] pushAllActionsToExperimentsOnStartup failed:", e); } catch (_) {}
+    if (foundInbox) _backfilledAccounts.add(accountId);
+  } catch (_) { log("[actionCache] backfill incomplete", "debug"); }
+  return foundInbox;
+}
+export async function backfillLoadedAccounts({ reason = "startup" } = {}) {
+  const accounts = (await browser.accounts.list()).map(a => a.id).filter(id => !_backfilledAccounts.has(id));
+  let loaded = false;
+  for (const id of accounts) loaded = await backfillAccount(id) || loaded;
+  if (loaded) {
+    await _enqueue(async () => {
+      await _refreshChips();
+      if (reason === "startup") await browser.tagSort?.refreshImmediate();
+      else triggerSortRefresh();
+    });
+  }
+}
+export function pushAllActionsToExperimentsOnStartup() {
+  if (!_listeners) {
+    const late = () => backfillLoadedAccounts({ reason: "late" }).catch(() => log("[actionCache] late account backfill failed", "debug"));
+    browser.accounts.onCreated?.addListener(late);
+    browser.folders.onCreated?.addListener(late);
+    _listeners = late;
+  }
+  return backfillLoadedAccounts({ reason: "startup" });
+}
+export function cleanupActionCache() {
+  _epoch++;
+  _workTokens.clear();
+  if (_listeners) {
+    browser.accounts?.onCreated?.removeListener(_listeners);
+    browser.folders?.onCreated?.removeListener(_listeners);
+    _listeners = null;
   }
 }

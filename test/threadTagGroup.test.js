@@ -35,7 +35,7 @@ vi.mock('../agent/modules/config.js', () => ({
 
 const mockSetAction = vi.fn();
 vi.mock('../agent/modules/actionCache.js', () => ({
-  setAction: (...args) => mockSetAction(...args),
+  applyThreadEffective: (...args) => mockSetAction(...args),
   ACTIONS: { REPLY: 'reply', ARCHIVE: 'archive', DELETE: 'delete', NONE: 'none' },
 }));
 
@@ -126,7 +126,7 @@ beforeEach(() => {
 });
 
 describe('updateThreadEffectiveTagsIfNeeded — Phase 0 contracts', () => {
-  it('writes effective action to IDB via actionCache.setAction for every thread message', async () => {
+  it('delegates member ids to the owner without replaying captured actions', async () => {
     // Seed: setup a thread of 3 messages with mixed actions
     const headers = {
       101: { id: 101, folder: { isInbox: true, path: 'INBOX' }, headerMessageId: 'mid101' },
@@ -148,10 +148,7 @@ describe('updateThreadEffectiveTagsIfNeeded — Phase 0 contracts', () => {
     await updateThreadEffectiveTagsIfNeeded(101, precomputed, 'test');
 
     // Should write "reply" (max priority) to all three messages
-    expect(mockSetAction).toHaveBeenCalledTimes(3);
-    expect(mockSetAction).toHaveBeenCalledWith(headers[101], 'reply');
-    expect(mockSetAction).toHaveBeenCalledWith(headers[102], 'reply');
-    expect(mockSetAction).toHaveBeenCalledWith(headers[103], 'reply');
+    expect(mockSetAction).toHaveBeenCalledExactlyOnceWith([101,102,103]);
 
     // Should NOT call browser.messages.update (ADD path is gone)
     expect(browser.messages.update).not.toHaveBeenCalled();
@@ -177,7 +174,7 @@ describe('updateThreadEffectiveTagsIfNeeded — Phase 0 contracts', () => {
     expect(browser.messages.update).not.toHaveBeenCalled();
   });
 
-  it('skips write when allActionsReady=false', async () => {
+  it('lets the owner re-read readiness instead of trusting captured readiness', async () => {
     browser.storage.local.get.mockResolvedValue({ tagByThreadEnabled: true });
 
     const precomputed = {
@@ -189,7 +186,7 @@ describe('updateThreadEffectiveTagsIfNeeded — Phase 0 contracts', () => {
 
     await updateThreadEffectiveTagsIfNeeded(101, precomputed, 'test');
 
-    expect(mockSetAction).not.toHaveBeenCalled();
+    expect(mockSetAction).toHaveBeenCalledWith([101,102]);
   });
 
   it('skips write when precomputed.ok=false', async () => {
@@ -225,8 +222,7 @@ describe('updateThreadEffectiveTagsIfNeeded — Phase 0 contracts', () => {
     await updateThreadEffectiveTagsIfNeeded(201, precomputed, 'test');
 
     // Only the inbox message gets the write
-    expect(mockSetAction).toHaveBeenCalledTimes(1);
-    expect(mockSetAction).toHaveBeenCalledWith(headers[201], 'delete');
+    expect(mockSetAction).toHaveBeenCalledExactlyOnceWith([201,202]);
   });
 });
 

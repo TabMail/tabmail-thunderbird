@@ -17,7 +17,7 @@
  *     removed (we don't rely on server tags as a sync source anymore).
  */
 
-import { setAction } from "./actionCache.js";
+import { applyThreadEffective } from "./actionCache.js";
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
 import * as idb from "./idbStorage.js";
@@ -176,15 +176,13 @@ export async function retagAllInboxesForTagByThreadToggle(enabled) {
         threadsScheduled++;
         tasks.push(async () => {
           if (enabled) {
-            const { ok, threadKey, weIds, actions, allActionsReady } = await computeAndStoreThreadTagList(id);
+            const { ok, threadKey, weIds } = await computeAndStoreThreadTagList(id);
             if (!ok || !weIds || weIds.length === 0) return;
             if (threadKey) {
               if (seenThreadKeys.has(threadKey)) return;
               seenThreadKeys.add(threadKey);
             }
-            if (!allActionsReady) return;
-            const effectiveAction = maxPriorityAction(actions);
-            await _applyEffectiveActionToWeIds(weIds, effectiveAction);
+            await applyThreadEffective(weIds);
           } else {
             await _retagThreadForGroupingDisabled(id);
           }
@@ -275,9 +273,9 @@ export async function computeAndStoreThreadTagList(weMsgId) {
             ok: true,
             threadKey,
             conversationId,
-            weIds: existingData.weIds || weIds,
+            weIds,
             actions: existingData.actions || actions,
-            allActionsReady: existingData.allActionsReady || false,
+            allActionsReady: false,
           };
         }
       }
@@ -408,57 +406,21 @@ export async function recomputeThreadForInboxMessage(weMsgId, reason = "") {
 // Apply effective action to thread messages (IDB-only post Phase 0)
 // ---------------------------------------------------------------------------
 
-async function _applyEffectiveActionToWeIds(weIds, effectiveAction) {
-  if (!effectiveAction) return;
-
-  const writes = (weIds || []).map(async (id) => {
-    try {
-      const hdr = await browser.messages.get(id);
-      if (!hdr || !hdr.id) return;
-      if (!hdr.folder || !isInboxFolder(hdr.folder)) return;
-      await setAction(hdr, effectiveAction);
-    } catch (_) {}
-  });
-
-  await Promise.all(writes);
-}
-
 /**
  * Apply the effective (max-priority) action to all messages in a thread.
  * Only applies if ALL messages have cached actions (allActionsReady).
  */
 export async function updateThreadEffectiveTagsIfNeeded(weMsgId, precomputed = null, reason = "") {
   try {
-    let ok, weIds, actions, allActionsReady;
-    if (precomputed && precomputed.ok !== undefined) {
-      ok = precomputed.ok;
-      weIds = precomputed.weIds;
-      actions = precomputed.actions;
-      allActionsReady = precomputed.allActionsReady;
-    } else {
-      const computed = await computeAndStoreThreadTagList(weMsgId);
-      ok = computed.ok;
-      weIds = computed.weIds;
-      actions = computed.actions;
-      allActionsReady = computed.allActionsReady;
-    }
+    const { ok, weIds } = precomputed?.ok !== undefined
+      ? precomputed : await computeAndStoreThreadTagList(weMsgId);
 
     if (!ok || !weIds || weIds.length === 0) return;
 
     const tagByThreadEnabled = await getTagByThreadEnabled();
     if (!tagByThreadEnabled) return;
 
-    if (!allActionsReady) {
-      if (isDebugTagRaceEnabled()) {
-        console.log(
-          `[TMDBG TagRace] updateThreadEffectiveTagsIfNeeded skip (not all actions ready): seed=${weMsgId} reason=${reason || ""}`
-        );
-      }
-      return;
-    }
-
-    const effectiveAction = maxPriorityAction(actions);
-    await _applyEffectiveActionToWeIds(weIds, effectiveAction);
+    await applyThreadEffective(weIds);
   } catch (e) {
     console.log(`[TMDBG Tag] updateThreadEffectiveTagsIfNeeded failed for weMsgId=${weMsgId}: ${e}`);
   }

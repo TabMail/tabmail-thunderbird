@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { getActionForUniqueKey } from "./actionCache.js";
+import { beginAutomaticWork, finishAutomaticWork, setAction, purgeMetadataOlderThan, getActionForUniqueKey } from "./actionCache.js";
 import { getAction, purgeExpiredActionEntries } from "./actionGenerator.js";
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
@@ -11,7 +11,7 @@ import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
 import { purgeExpiredReplyEntries } from "./replyGenerator.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary, purgeExpiredSummaryEntries } from "./summaryGenerator.js";
-import { applyActionTags, applyPriorityTag } from "./tagHelper.js";
+import { runThreadAggregation } from "./tagHelper.js";
 import { getUniqueMessageKey, log } from "./utils.js";
 
 /**
@@ -32,7 +32,7 @@ import { getUniqueMessageKey, log } from "./utils.js";
  */
 export async function processMessage(
   messageHeader,
-  { isPriority = false, forceRecompute = false } = {}
+  { isPriority = false, forceRecompute = false, token } = {}
 ) {
   if (!messageHeader) {
     log("processMessage called without a valid messageHeader — skipping.");
@@ -46,6 +46,8 @@ export async function processMessage(
     };
   }
 
+  const ownsToken = !token;
+  token ??= beginAutomaticWork(await getUniqueMessageKey(messageHeader));
   try {
     log(`[ProcessMessage] Starting processing for message ${messageHeader.id}: "${messageHeader.subject}"`);
 
@@ -60,7 +62,9 @@ export async function processMessage(
       const summaryOk = !!summaryObj;
 
       // Apply tm_none tag to mark as processed
-      await applyPriorityTag(messageHeader.id, "none");
+      if (await setAction(messageHeader, "none", { token })) {
+        await runThreadAggregation([messageHeader]);
+      }
 
       log(`[ProcessMessage] Completed internal message ${messageHeader.id} - Summary: ${summaryOk}, Tag: tm_none`);
       return {
@@ -80,7 +84,7 @@ export async function processMessage(
 
     // Launch SA (summary→action) and R (reply) in parallel.
     // R does NOT depend on summary/action output — only needs body text.
-    const saPromise = _processSA(messageHeader, { isPriority, forceRecompute });
+    const saPromise = _processSA(messageHeader, { isPriority, forceRecompute, token });
 
     let replyPromise;
     if (quickFilter.skipCachedReply) {
@@ -155,6 +159,8 @@ export async function processMessage(
       reason: "unexpected-error",
       error: String(err),
     };
+  } finally {
+    if (ownsToken) finishAutomaticWork(token);
   }
 }
 
@@ -163,7 +169,7 @@ export async function processMessage(
  * Action depends on summary output (uses blurb/todos as prompt vars).
  * @returns {{ summaryOk: boolean, actionOk: boolean, action: string|null }}
  */
-async function _processSA(messageHeader, { isPriority, forceRecompute }) {
+async function _processSA(messageHeader, { isPriority, forceRecompute, token }) {
   let summaryOk = false;
   let actionOk = false;
   let action = null;
@@ -176,43 +182,13 @@ async function _processSA(messageHeader, { isPriority, forceRecompute }) {
   // Action suggestion + tag application
   try {
     log(`[ProcessMessage] >>> Calling getAction for message ${messageHeader.id}`);
-    action = await getAction(messageHeader, { forceRecompute });
+    action = await getAction(messageHeader, { forceRecompute, token });
     log(`[ProcessMessage] <<< Action result for ${messageHeader.id}: ${action || 'FAILED/NULL'}`);
     actionOk = !!action;
 
     // Only apply tags if we have both a valid summary and action
     if (summaryObj && action) {
-      // If action is `reply` but already replied, we set it to `none`
-      try {
-        const nativeArgs = { folderURI: messageHeader.folder?.id, key: messageHeader.id };
-        try {
-          const pathStr = messageHeader.folder?.path;
-          let nativeMsgKey = -1;
-          try {
-            const weId = nativeArgs.key;
-            const mk = await browser.tmHdr.getMsgKey(nativeArgs.folderURI, weId, pathStr);
-            if (typeof mk === "number" && mk >= 0) nativeMsgKey = mk;
-          } catch (e) {
-            console.log(`[ReplyDetect] getMsgKey failed for ${messageHeader.id}: ${e}`);
-          }
-          const alreadyReplied = await browser.tmHdr.getReplied(nativeArgs.folderURI, nativeMsgKey, pathStr, messageHeader.headerMessageId || "");
-          if (action === "reply" && alreadyReplied) {
-            action = "none";
-            await applyPriorityTag(messageHeader.id, "none");
-            console.log(
-              `[ReplyDetect] native replied=${alreadyReplied}, action set to "none" for message ${messageHeader.id} ('${messageHeader.subject}') because it was already replied (native)`
-            );
-          }
-        } catch (rdErr) {
-          console.log(`[ReplyDetect] Error checking native replied flag for ${messageHeader.id}: ${rdErr}`);
-        }
-      } catch (rdErr) {
-        console.log(`[ReplyDetect] Error checking native replied flag for ${messageHeader.id}: ${rdErr}`);
-      }
-      // Now apply the action tag
-      log(`[ProcessMessage] Calling applyActionTags for ${messageHeader.id} with action=${action} summaryId=${summaryObj.id}`);
-      await applyActionTags([messageHeader], { [summaryObj.id]: action });
-      log(`[ProcessMessage] applyActionTags completed for ${messageHeader.id}`);
+      await runThreadAggregation([messageHeader]);
     } else {
       log(`processMessage: skipping tag application for message ${messageHeader.id} - summaryObj=${!!summaryObj}, action=${action}`);
     }
@@ -403,13 +379,11 @@ export async function scanAllInboxes() {
         Number(SETTINGS.summaryTTLSeconds || 0)
       );
       const cutoff = Date.now() - ttlSeconds * 1000;
+      await purgeMetadataOlderThan(cutoff);
       const removed = await purgeOlderThanByPrefixes(
         [
           "activePrecompose:",
           "activeHistory:",
-          "action:orig:",
-          "action:userprompt:",
-          "action:justification:",
           // Per-thread tag aggregates (Inbox-only). Stored as "threadTags:<threadKey>".
           "threadTags:",
         ],

@@ -4,6 +4,7 @@
 
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
+import { beginAutomaticWork, finishAutomaticWork } from "./actionCache.js";
 import { processMessage } from "./messageProcessor.js";
 import {
   getUniqueMessageKey,
@@ -27,6 +28,7 @@ const QUEUE_STORAGE_KEY = "agent_processmessage_pending";
 //        message never resolves to a header, so reason #2 (which needs a header to read
 //        the folder) can never observe it leaving — #4 closes that gap and prevents the
 //        "HeaderResolver ALL STAGES FAILED → will retry" loop from running forever.
+//     5. The recovered message now has a different unique key (obsolete work).
 //   For tagCleanupOnLeaveInbox:
 //     1. performLeaveInboxTagCleanup succeeds (ok=true, tags stripped)
 //     2. The message is back in inbox (user undid the move, cleanup unnecessary)
@@ -150,17 +152,24 @@ async function _restoreFromStorage() {
 
     let restored = 0;
     let skipped = 0;
-    let strippedSessionFolderId = false;
+    let sanitizedQueue = false;
     for (const it of arr) {
       const key = it?.uniqueKey ? String(it.uniqueKey) : "";
       if (!key) continue;
+      // Forced recompute authority is session-local: its cancellation token
+      // cannot survive serialization. Never replay it over a newer action.
+      if (it?.opts?.forceRecompute === true) {
+        skipped++;
+        sanitizedQueue = true;
+        continue;
+      }
       if (_pending.has(key)) {
         skipped++;
         continue;
       }
       const metadata = _durableQueueMetadata(it?.metadata);
       if (Object.prototype.hasOwnProperty.call(it?.metadata || {}, "folderId")) {
-        strippedSessionFolderId = true;
+        sanitizedQueue = true;
       }
       _pending.set(key, {
         uniqueKey: key,
@@ -173,7 +182,7 @@ async function _restoreFromStorage() {
       restored++;
     }
     log(`[TMDBG PMQ] Restored ${restored} queued processMessage items from storage (skipped=${skipped})`);
-    if (strippedSessionFolderId) await _persistNow();
+    if (sanitizedQueue) await _persistNow();
   } catch (e) {
     log(`[TMDBG PMQ] Failed to restore queue from storage: ${e}`, "error");
   }
@@ -268,10 +277,13 @@ export async function enqueueProcessMessage(messageHeader, opts = {}) {
 
     const now = Date.now();
     const prev = _pending.get(uniqueKey);
+    const newWork = opts.forceRecompute === true;
+    if (newWork) finishAutomaticWork(prev?.token);
     const merged = {
       uniqueKey,
-      timestamp: prev?.timestamp || now,
-      opts: { ...(prev?.opts || {}), ...(opts || {}) },
+      timestamp: newWork ? now : prev?.timestamp || now,
+      token: newWork ? beginAutomaticWork(uniqueKey) : prev?.token,
+      opts: { ...(prev?.opts || {}), ...(opts || {}), ...(newWork ? { operationType: "processMessage" } : {}) },
       metadata: {
         ..._durableQueueMetadata(prev?.metadata),
         subject: messageHeader?.subject,
@@ -279,8 +291,8 @@ export async function enqueueProcessMessage(messageHeader, opts = {}) {
         folderName: messageHeader?.folder?.name,
         folderPath: messageHeader?.folder?.path || prev?.metadata?.folderPath,
       },
-      attempts: Number(prev?.attempts) || 0,
-      lastErrorAtMs: Number(prev?.lastErrorAtMs) || 0,
+      attempts: newWork ? 0 : Number(prev?.attempts) || 0,
+      lastErrorAtMs: newWork ? 0 : Number(prev?.lastErrorAtMs) || 0,
     };
     _pending.set(uniqueKey, merged);
 
@@ -336,6 +348,19 @@ async function _queryMessageInAccount(headerMessageId, accountId) {
   return found;
 }
 
+// A new explicit recompute must survive completion of an older in-flight attempt.
+function _updatePendingItem(item, next) {
+  if (_pending.get(item.uniqueKey)?.token !== item.token) {
+    finishAutomaticWork(item.token);
+    return;
+  }
+  _pending.set(item.uniqueKey, next);
+}
+function _dropPendingItem(item) {
+  finishAutomaticWork(item.token);
+  if (_pending.get(item.uniqueKey)?.token === item.token) _pending.delete(item.uniqueKey);
+}
+
 /**
  * Process a single queued item. Returns result for aggregation.
  * The result includes `operationType` so the drain loop can gate post-processing hooks.
@@ -345,13 +370,14 @@ async function _processOneItem(it) {
   if (!key) return { status: "skip" };
 
   const operationType = it?.opts?.operationType || "processMessage";
+  if (operationType === "processMessage") it.token ??= beginAutomaticWork(key);
 
   const firstBoundary = key.indexOf(":");
   if (firstBoundary <= 0
       || key.indexOf(":", firstBoundary + 1) < 0
       || key.endsWith(":")) {
     log(`[TMDBG PMQ] Structurally invalid uniqueKey - dropping: ${key}`, "warn");
-    _pending.delete(key);
+    _dropPendingItem(it);
     return { status: "dropped", operationType };
   }
 
@@ -416,7 +442,7 @@ async function _processOneItem(it) {
             log(`[TMDBG PMQ] tagCleanup: resolved via broad query key=${key} foundId=${found.id}`);
           } else {
             log(`[TMDBG PMQ] tagCleanup: message confirmed deleted (broad query empty) - dropping: key=${key}`);
-            _pending.delete(key);
+            _dropPendingItem(it);
             return { status: "dropped", operationType };
           }
         } catch (eQuery) {
@@ -425,7 +451,7 @@ async function _processOneItem(it) {
       }
       if (!header) {
         log(`[TMDBG PMQ] tagCleanup: resolve failed key=${key} attempt=${attempts} - will retry`, "warn");
-        _pending.set(key, { ...it, attempts, lastErrorAtMs: Date.now() });
+        _updatePendingItem(it, { ...it, attempts, lastErrorAtMs: Date.now() });
         return { status: "retry", operationType };
       }
     }
@@ -434,12 +460,12 @@ async function _processOneItem(it) {
     const folder = header?.folder;
     if (folder && isInboxFolder(folder)) {
       log(`[TMDBG PMQ] tagCleanup: back in inbox - dropping: weId=${header.id} key=${key}`);
-      _pending.delete(key);
+      _dropPendingItem(it);
       return { status: "dropped", operationType };
     }
 
     // Execute cleanup
-    _pending.set(key, { ...it, attempts });
+    _updatePendingItem(it, { ...it, attempts });
     try {
       if (!_performLeaveInboxTagCleanup) {
         const mod = await import("./onMoved.js");
@@ -448,15 +474,15 @@ async function _processOneItem(it) {
       log(`[TMDBG PMQ] tagCleanup: executing weId=${header.id} key=${key} attempt=${attempts}`);
       const res = await _performLeaveInboxTagCleanup(header);
       if (res?.ok) {
-        _pending.delete(key);
+        _dropPendingItem(it);
         log(`[TMDBG PMQ] tagCleanup OK: weId=${header.id} key=${key}`);
         return { status: "processed", operationType };
       }
-      _pending.set(key, { ..._pending.get(key), lastErrorAtMs: Date.now() });
+      _updatePendingItem(it, { ..._pending.get(key), lastErrorAtMs: Date.now() });
       log(`[TMDBG PMQ] tagCleanup incomplete: weId=${header.id} key=${key} attempt=${attempts} reason=${res?.reason || "unknown"}`, "warn");
       return { status: "retry", operationType };
     } catch (eCleanup) {
-      _pending.set(key, { ..._pending.get(key), lastErrorAtMs: Date.now() });
+      _updatePendingItem(it, { ..._pending.get(key), lastErrorAtMs: Date.now() });
       log(`[TMDBG PMQ] tagCleanup threw: weId=${header.id} key=${key} err=${eCleanup}`, "warn");
       return { status: "retry", operationType };
     }
@@ -490,7 +516,7 @@ async function _processOneItem(it) {
           log(`[TMDBG PMQ] Resolved via broad query after ${attempts} resolve failures: key=${key} foundId=${found.id}`);
         } else {
           log(`[TMDBG PMQ] Message confirmed deleted (broad query empty after ${attempts} resolve failures) - dropping: key=${key}`);
-          _pending.delete(key);
+          _dropPendingItem(it);
           return { status: "dropped", operationType };
         }
       } catch (eQuery) {
@@ -500,7 +526,7 @@ async function _processOneItem(it) {
 
     if (!header) {
       log(`[TMDBG PMQ] Could not resolve message for key=${key} attempt=${attempts} weId=${weId ?? "none"} - will retry`, "warn");
-      _pending.set(key, { ...it, attempts, lastErrorAtMs: Date.now() });
+      _updatePendingItem(it, { ...it, attempts, lastErrorAtMs: Date.now() });
       return { status: "retry", operationType };
     }
   }
@@ -513,27 +539,33 @@ async function _processOneItem(it) {
       `[TMDBG PMQ] Message no longer in inbox - dropping before processing: weId=${header.id} key=${key} folder="${folder?.name || "none"}" path="${folder?.path || ""}" type="${folder?.type || ""}"`,
       "warn"
     );
-    _pending.delete(key);
+    _dropPendingItem(it);
+    return { status: "dropped", operationType };
+  }
+
+  // Recovered work belongs to its original identity; do not replay it at a new key.
+  if (await getUniqueMessageKey(header) !== key) {
+    _dropPendingItem(it);
     return { status: "dropped", operationType };
   }
 
   // Attempt processing; only remove from queue when processMessage reports ok=true.
   const attemptNo = (Number(it?.attempts) || 0) + 1;
-  _pending.set(key, { ...it, attempts: attemptNo });
+  _updatePendingItem(it, { ...it, attempts: attemptNo });
   try {
     log(`[TMDBG PMQ] Attempting processMessage: weId=${header.id} key=${key} attempt=${attemptNo}`);
-    const res = await processMessage(header, it?.opts || {});
+    const res = await processMessage(header, { ...it?.opts, token: it.token });
     const ok = !!res?.ok;
     if (ok) {
-      _pending.delete(key);
+      _dropPendingItem(it);
       log(`[TMDBG PMQ] processMessage OK: weId=${header.id} key=${key} removedFromQueue=true`);
       return { status: "processed", operationType };
     } else if (res?.reason === "message-not-found") {
-      _pending.delete(key);
+      _dropPendingItem(it);
       log(`[TMDBG PMQ] Message gone during processing - dropping: weId=${header.id} key=${key}`);
       return { status: "dropped", operationType };
     } else {
-      _pending.set(key, {
+      _updatePendingItem(it, {
         ..._pending.get(key),
         lastErrorAtMs: Date.now(),
       });
@@ -544,7 +576,7 @@ async function _processOneItem(it) {
       return { status: "retry", operationType };
     }
   } catch (eProc) {
-    _pending.set(key, {
+    _updatePendingItem(it, {
       ..._pending.get(key),
       lastErrorAtMs: Date.now(),
     });
@@ -627,25 +659,8 @@ export async function drainProcessMessageQueue() {
 
     log(`[TMDBG PMQ] Drain cycle complete: processed=${processed} dropped=${dropped} remaining=${_pending.size}`);
 
-    // Trigger tagSort refresh if any AI processing items were completed (tags were computed).
-    // Tag cleanup items don't need tagSort refresh or proactive checkin — they only remove tags.
-    // IMPORTANT DESIGN CHOICE: Use debounced refresh() NOT refreshImmediate()!
-    // - refreshImmediate() would cause emails to visually jump around while user is watching
-    // - refresh() uses a 30-second delayed sort from the last change, so sorting only
-    //   happens when the user isn't actively looking (reduces jarring UI experience)
-    // - The 30s timer resets on each call, ensuring we wait for activity to settle
-    // - When user switches views/tabs, immediate sort is triggered by TabSelect/folderURIChanged
     const processedAI = results.filter(r => r.status === "processed" && r.operationType !== "tagCleanupOnLeaveInbox").length;
     if (processedAI > 0) {
-      try {
-        if (browser.tagSort?.refresh) {
-          browser.tagSort.refresh();
-          log(`[TMDBG PMQ] Triggered tagSort.refresh() after processing ${processedAI} AI message(s)`);
-        }
-      } catch (eRefresh) {
-        log(`[TMDBG PMQ] Failed to trigger tagSort.refresh(): ${eRefresh}`, "warn");
-      }
-
       // Check for reminder changes → may trigger proactive check-in
       try {
         const { onInboxUpdated } = await import("./proactiveCheckin.js");
@@ -703,6 +718,10 @@ export async function cleanupProcessMessageQueue() {
     }
   } catch (_) {}
 
+  for (const item of _pending.values()) {
+    finishAutomaticWork(item.token);
+    delete item.token;
+  }
   _inFlight.clear();
   _isProcessing = false;
   _inited = false;

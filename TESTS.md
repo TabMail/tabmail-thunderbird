@@ -486,3 +486,32 @@ The following modules remain at 0% or very low coverage due to heavy browser/XPC
 | Experiment `.sys.mjs` files | Require XPCOM/Thunderbird runtime context |
 
 Pure logic modules (utils, parsers, config, CRDT) are well-tested at 15.24% overall. The testable ~50% of the codebase has significantly higher effective coverage.
+
+
+## Action mutation repaint regression (2026-09-12)
+
+- `actionMutationOwner.test.js`: transaction ordering, exact-folder twins, key-only clearing, same-value sort suppression, stale automatic results, wipe epochs, unknown inventory, bounded projection failure, metadata, and thread-effective writes.
+- `actionCacheStartupResolution.test.js`: symmetric inbox hydration, native orphan clearing, late inbox creation, bounded partial-bulk failure, and suspend cleanup.
+- `actionPainterContracts.test.js`: production-source reader tests for all five surfaces, inbox scope, absence of legacy-keyword fallback, card wrapper ownership, and delayed sort restart.
+- `tableViewActionRepaint.test.js`: real experiment VM integration, background tabs, collapsed children, native bulk clearing, hot reload, and a rendered pool of 250 rows.
+- `actionMutationRoutes.test.js` and `tagSortRuntime.test.js`: actual entry callbacks, clear-command completion/failure, recompute/move routing, native sort execution after the delay, and cancellation at shutdown.
+- `actionRecomputePipeline.test.js` and `automaticWorkLifetime.test.js`: real queue/processor/generator/owner recompute after a partial failure, plus active-token invalidation and retirement without permanent history. Queue tests cover newer requests surviving older in-flight success/failure.
+- `actionMutationFence.test.js`: AST census of action key construction and full-cache wipe ownership. Caller tests cover generator, queue, manual tagging, grouping, summary and sign-out routing.
+
+The full candidate suite passed 4,047 tests across 162 files. Run `npm test -- --run`. Tests that inspect backend prompt files require the sibling `tabmail-backend` checkout. Install the locked development dependencies with `npm ci --ignore-scripts`.
+
+Live smoke used Thunderbird Beta 156.0 on macOS, a temporary worktree add-on, and a synthetic email in the unified inbox. Before the fix, a key-only clear removed the cached action but left native `reply` and a green row. After reload, symmetric backfill removed that orphan. A stationary check then exposed a second gap: the optional `NoteChange` call silently skipped repaint because the DB view has no such JavaScript method. Replacing it with the owning thread tree invalidation API cleared the tint with the inbox left open and untouched, before the delayed sort could run. The owner clear returned null cached action and empty native action in 40 ms; this measures command completion, not DOM frame latency. Five real-API-shape regression cases failed before this native fix and all nine table integration tests passed afterward. This is Beta smoke evidence; Thunderbird 145/ESR 140 and a full real-account mutation matrix were not run. Sorting timing and multi-window/collapsed-thread boundaries are covered programmatically.
+
+Additional startup/sign-out/identity regressions cover optional tag-list rejection, privacy clearing despite inventory-read failure, terminal discard of obsolete cross-path work, and successful fresh work. Lifecycle tests begin without a cached row; queue replacement is also exercised during identity lookup, and peer-cache reply normalization is checked against native state. Extracted-function probes use distinct script names and provide behavioral/mutation evidence only, not original-source coverage attribution.
+
+`actionPipelineBoundaries.test.js` and `actionThreadBoundaries.test.js` exercise real queue/generator/processor/owner handoffs: rowless clear-all, stale peer and internal results, thread-effective invalidation, query pagination and continuation failure, toggle-on aggregation, and partial thread data after session IDs change. Repeated cached-read tests verify completed work can no longer write while fresh work succeeds.
+
+Internal-message tests exercise grouping both enabled and disabled through the real processor/tag helper/owner. Unsupported model actions retain queue work until a valid response commits. Collapsed-card rendering checks remove the recycled chip, class and color outside the Inbox while preserving the child action.
+
+Restart coverage persists a partially completed recompute, applies a newer manual action, resets modules, and verifies the newer canonical/native action survives while fresh recompute succeeds. Lifecycle edge tests cover metadata reset and both retention callers, fresh confirmed-absent eviction, semaphore reply normalization, moved-header cleanup, collapsed table inbox scope, direct-processor token retirement, and thread-action retention. Each of these nine retained behaviors has a demonstrated failing mutation.
+
+Retention tests use the actual action writer and identity resolver to expire aged removed-account rows while preserving fresh unknown-inventory rows. The real registered recompute command is exercised through durable queue creation and retirement. Queue tests cover outside-inbox and vanished-message retirement with fresh-work recovery, and thread tests refuse partial writes after member lookup failure. Five corresponding branch/caller mutations fail these boundary tests.
+
+Both cleanup callers now exercise the real action-expiry wrapper alongside metadata retention. Actual-menu tests cover retained failure and an older in-flight completion. Repeated terminal queue work is verified unable to mutate actions after retirement, followed by successful fresh processing. These outcome tests kill the four remaining caller/lifecycle mutations without adding a production debug accessor.
+
+The scan retention test imports the real scan module. The background cleanup probe binds action dependencies through the source's actual named import declarations. Removing either action-expiry import, or either metadata-retention import, fails the durable-effect test instead of being hidden by injected globals.

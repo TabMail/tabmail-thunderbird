@@ -10,6 +10,8 @@ import { describe, it, expect, vi } from 'vitest';
 // Mocks
 // ---------------------------------------------------------------------------
 
+vi.mock('../agent/modules/config.js', () => ({ SETTINGS: {} }));
+vi.mock('../agent/modules/tagDefs.js', () => ({ triggerSortRefresh: vi.fn(), maxPriorityAction: vi.fn() }));
 vi.mock('../agent/modules/idbStorage.js', () => ({
   get: vi.fn(async () => ({})),
 }));

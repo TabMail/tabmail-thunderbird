@@ -6,6 +6,7 @@
 // Provides per-message cache clearing operations via right-click on message list.
 
 import { autoUpdateUserPromptOnTag } from "./autoUpdateUserPrompt.js";
+import { clearActions } from "./actionCache.js";
 import * as idb from "./idbStorage.js";
 import { debugDumpSelectedMessages } from "./messageDebugDump.js";
 import { isInternalSender } from "./senderFilter.js";
@@ -232,41 +233,7 @@ async function clearSummaryCache(messages) {
 }
 
 async function clearActionCache(messages) {
-    try { log(`[TMDBG ContextMenus] clearActionCache start count=${messages?.length ?? 0}`); } catch(_) {}
-    const keys = [];
-    for (const msg of messages) {
-        if (!msg || msg.id === undefined) continue;
-        try {
-            const uKey = await getUniqueMessageKey(msg);
-            if (!uKey) {
-                try {
-                    log(
-                        `[TMDBG ContextMenus] clearActionCache: failed to compute uniqueKey id=${msg?.id} headerMessageId=${msg?.headerMessageId || ""} folderPath=${msg?.folder?.path || ""}`,
-                        "warn"
-                    );
-                } catch (_) {}
-                continue;
-            }
-
-            // Remove both payload and meta entries for this unique key.
-            keys.push(`action:${uKey}`);
-            keys.push(`action:ts:${uKey}`);
-            keys.push(`action:orig:${uKey}`);
-            keys.push(`action:userprompt:${uKey}`);
-            keys.push(`action:justification:${uKey}`);
-        } catch (e) {
-            try { log(`[TMDBG ContextMenus] clearActionCache: exception id=${msg?.id}: ${e}`, "warn"); } catch (_) {}
-        }
-    }
-    if (!keys.length) return;
-    try { log(`[TMDBG ContextMenus] clearActionCache resolvedKeys=${keys.length}`); } catch(_) {}
-    const pre = await idb.get(keys);
-    const preHits = Object.keys(pre || {}).length;
-    try { log(`[TMDBG ContextMenus] clearActionCache preHits=${preHits}`); } catch(_) {}
-    await idb.remove(keys);
-    const post = await idb.get(keys);
-    const postHits = Object.keys(post || {}).length;
-    try { log(`[TMDBG ContextMenus] clearActionCache done removed=${preHits} remaining=${postHits}`); } catch(_) {}
+    await clearActions((messages || []).filter(m => m?.id !== undefined).map(header => ({ header })), { metadata: "all" });
 }
 
 async function clearReplyEntries(messages) {

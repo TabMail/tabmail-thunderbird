@@ -11,7 +11,7 @@ import { isInternalSender } from "./senderFilter.js";
 import { getShowAiSummariesEnabled } from "./summaryDisplaySettings.js";
 import { getSummary } from "./summaryGenerator.js";
 import { getAccessToken } from "./supabaseAuth.js";
-import { applyActionTags } from "./tagHelper.js";
+import { runThreadAggregation } from "./tagHelper.js";
 import { getUniqueMessageKey, log } from "./utils.js";
 
 /**
@@ -374,7 +374,7 @@ async function processVisibleMessages(tab, messages) {
     // Only apply action tags to external messages. For internal/self-sent, we intentionally apply NO action tag
     // (not even tm_none) so "no tag applied" is preserved.
     if (externalMessages.length > 0) {
-      await applyActionTags(externalMessages, actions);
+      await runThreadAggregation(externalMessages);
     }
 
     // Step 5: Run unified pipeline (cached). Dynamic import avoids static cycle.

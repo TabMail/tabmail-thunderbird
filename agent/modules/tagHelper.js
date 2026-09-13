@@ -19,11 +19,9 @@
 import { setAction } from "./actionCache.js";
 import { SETTINGS } from "./config.js";
 import { getAllFoldersForAccount, isInboxFolder } from "./folderUtils.js";
-import { getUniqueMessageKey, indexHeader } from "./utils.js";
+import { getUniqueMessageKey } from "./utils.js";
 import {
   ACTION_TAG_IDS,
-  ensureActionTags,
-  triggerSortRefresh,
   isDebugTagRaceEnabled,
 } from "./tagDefs.js";
 import {
@@ -140,67 +138,8 @@ export async function readCachedActionForWeId(weMsgId) {
 // Main entry points
 // ---------------------------------------------------------------------------
 
-/**
- * Apply action tags to messages based on the action map.
- * Post Phase 0: IDB writes only, no native tag writes, no Gmail sync.
- * Thread aggregate computation + effective-tag application still runs after.
- *
- * @param {Array} messages - Array of message header objects
- * @param {Object} actionMap - Map of uniqueKey -> action (e.g. {"acc:INBOX:msgid": "reply"})
- */
-export async function applyActionTags(messages, actionMap) {
-  // Ensure tag defs exist (native TB still renders legacy tm_* keywords on
-  // pre-existing inbox messages until they leave inbox; the defs need to stay).
-  await ensureActionTags();
-
-  const writes = (messages || []).map(async (msg) => {
-    try {
-      // Inbox-only guard: TabMail action classifications are inbox-scoped.
-      try {
-        const folder = msg?.folder || null;
-        const ok = folder && isInboxFolder(folder);
-        if (!ok) {
-          console.log(
-            `[TMDBG Tag] applyActionTags skip (not inbox): id=${msg?.id} folderName=${folder?.name || ""} folderPath=${folder?.path || ""}`
-          );
-          return;
-        }
-      } catch (eGate) {
-        console.log(`[TMDBG Tag] applyActionTags inbox gate check failed id=${msg?.id}: ${eGate}`);
-        return;
-      }
-
-      // Keep WE id cache warm to avoid future expensive lookups.
-      try { indexHeader(msg); } catch (_) {}
-
-      const key = await getUniqueMessageKey(msg);
-      if (!key) return;
-      const action = actionMap[key];
-      if (!action) return;
-
-      if (isDebugTagRaceEnabled()) {
-        console.log(
-          `[TMDBG TagRace] applyActionTags IDB-write id=${msg.id} uniqueKey=${key} action=${action}`
-        );
-      }
-
-      // Pass the header object (not just the uniqueKey string) so
-      // actionCache.setAction can ALSO write the `tm-action` hdr property
-      // via tmHdr.setAction. Without the header, only IDB gets updated and
-      // the row never re-paints.
-      await setAction(msg, action);
-    } catch (e) {
-      console.log(`[TMDBG Tag] applyActionTags failed for message ${msg?.id}: ${e}`);
-    }
-  });
-
-  await Promise.all(writes);
-
-  // Sort refresh — still relevant for Phase 0 where the painter continues to
-  // read native keywords. Once Phase 2 repoints painters to IDB, the refresh
-  // will be triggered by the actionCache→experiments push.
-  triggerSortRefresh();
-
+/** Recompute thread bookkeeping; effective writes re-read canonical actions in the owner. */
+export async function runThreadAggregation(messages) {
   // Thread aggregation + (optional) effective tag application.
   try {
     const tagByThreadEnabled = await getTagByThreadEnabled();
@@ -210,11 +149,11 @@ export async function applyActionTags(messages, actionMap) {
 
       const threadResult = await computeAndStoreThreadTagList(weId);
       if (tagByThreadEnabled && threadResult.ok) {
-        await updateThreadEffectiveTagsIfNeeded(weId, threadResult, "applyActionTags-post");
+        await updateThreadEffectiveTagsIfNeeded(weId, threadResult, "aggregation-post");
       }
     }
   } catch (e) {
-    console.log(`[TMDBG Tag] Thread tag aggregation post-applyActionTags failed: ${e}`);
+    console.log(`[TMDBG Tag] Thread tag aggregation failed: ${e}`);
   }
 }
 
@@ -251,7 +190,7 @@ export async function applyPriorityTag(weId, action) {
     // Pass the header so actionCache can write both IDB + hdr property.
     await setAction(header, action);
 
-    // Thread aggregate + effective tag (same as applyActionTags post-step).
+    // Thread aggregate + effective tag (same as the generated-action post-step).
     try {
       const threadResult = await computeAndStoreThreadTagList(weId);
       const tagByThreadEnabled = await getTagByThreadEnabled();
@@ -261,8 +200,6 @@ export async function applyPriorityTag(weId, action) {
     } catch (e) {
       console.log(`[TMDBG Tag] Thread tag update after applyPriorityTag failed: ${e}`);
     }
-
-    triggerSortRefresh();
   } catch (e) {
     console.log(`[TMDBG Tag] applyPriorityTag failed id=${weId}: ${e}`);
   }

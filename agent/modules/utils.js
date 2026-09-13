@@ -1340,47 +1340,44 @@ export function getUniqueMessageKeyCandidates(uniqueId, folders) {
  * folder is queried exactly and the result is accepted only when one live
  * interpretation exists.
  */
-export async function resolveUniqueMessageKey(uniqueId) {
-    if (!uniqueId || typeof uniqueId !== "string") return null;
-    const accountBoundary = uniqueId.indexOf(":");
-    if (accountBoundary <= 0) return null;
-    const accountId = uniqueId.slice(0, accountBoundary);
-    let folders;
+export async function resolveUniqueMessageKey(uniqueId, { all = false, folderInventory } = {}) {
+    const result = (status, match = null) => all
+        ? { status, weIds: match?.weIds || [], folder: match?.weFolder || null }
+        : match && { weFolder: match.weFolder, headerID: match.headerID, weID: match.weIds[0] };
+    if (!uniqueId || typeof uniqueId !== "string") return result("unknown");
+    const boundary = uniqueId.indexOf(":");
+    if (boundary <= 0) return result("unknown");
+    const accountId = uniqueId.slice(0, boundary);
     try {
-        folders = await browser.folders.query({ accountId });
-    } catch (e) {
-        log(`[TMDBG HeaderResolver] Could not enumerate folders for structured key resolution: ${e}`, "warn");
-        return null;
-    }
-    const candidates = getUniqueMessageKeyCandidates(uniqueId, folders);
-    let match = null;
-    for (const candidate of candidates) {
-        try {
-            let page = await browser.messages.query({
-                folderId: candidate.weFolder.id,
-                headerMessageId: candidate.headerID,
-            });
-            let candidateWeID = null;
+        let folders;
+        if (folderInventory) {
+            if (!folderInventory.has(accountId)) {
+                folderInventory.set(accountId, browser.folders.query({ accountId }));
+            }
+            folders = await folderInventory.get(accountId);
+        } else {
+            folders = await browser.folders.query({ accountId });
+        }
+        if (!Array.isArray(folders) || !folders.length) return result("unknown");
+        let match = null;
+        for (const candidate of getUniqueMessageKeyCandidates(uniqueId, folders)) {
+            let page = await browser.messages.query({ folderId: candidate.weFolder.id, headerMessageId: candidate.headerID });
+            const ids = new Set();
             for (;;) {
-                candidateWeID ??= page?.messages?.find(message => message?.id != null)?.id ?? null;
-                if (!page?.id || typeof browser.messages.continueList !== "function") break;
+                if (!Array.isArray(page?.messages)) return result("unknown");
+                for (const message of page.messages) if (message?.id != null) ids.add(message.id);
+                if (!page.id) break;
                 page = await browser.messages.continueList(page.id);
             }
-            if (candidateWeID !== null) {
-                if (match) {
-                    log(`[TMDBG HeaderResolver] Legacy composite key has multiple live interpretations; refusing context-free resolution`, "warn");
-                    return null;
-                }
-                // Duplicate headers inside the same folder are one structured
-                // interpretation; retain Thunderbird's first-match behavior.
-                match = { ...candidate, weID: candidateWeID };
+            if (ids.size) {
+                if (match) return result("unknown");
+                match = { ...candidate, weIds: [...ids] };
             }
-        } catch (e) {
-            log(`[TMDBG HeaderResolver] Live candidate query failed for structured key resolution: ${e}`, "warn");
-            return null;
         }
+        return result(match ? "resolved" : "absent", match);
+    } catch (_) {
+        return result("unknown");
     }
-    return match;
 }
 
 /**
