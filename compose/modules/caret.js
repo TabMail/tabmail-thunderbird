@@ -537,99 +537,32 @@ Object.assign(TabMail, {
     }
   },
 
-  /**
-   * Builds the compose hints banner text for the current state. When
-   * autocomplete is ON it advertises the accept/edit shortcuts plus the
-   * Shift+Esc OFF toggle; when OFF it stays visible (so the toggle is
-   * discoverable) and advertises Shift+Esc to turn it back ON.
-   */
+  /** Only disabled autocomplete needs a persistent bottom control. */
   _composeHintsBannerText() {
-    if (TabMail.state.autocompleteDisabled) {
-      return "Autocomplete off · Shift+Esc to turn on";
-    }
-    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-    const modKey = isMac ? "⌘" : "Ctrl+";
-    return `Tab to accept · Shift-Tab to accept all · ${modKey}K to edit · Shift+Esc to turn off autocomplete`;
+    return TabMail.state.autocompleteDisabled ? 'Enable suggestions' : '';
   },
 
-  /**
-   * Shows (or refreshes) the compose keyboard hints banner at the bottom of the
-   * compose window. The text reflects whether autocomplete is on or off — see
-   * `_composeHintsBannerText`. Reuses the existing element when present so
-   * toggling on/off updates in place without flicker. Suppressed entirely when
-   * the "Show keyboard hints" setting is disabled.
-   */
   showComposeHintsBanner() {
-    try {
-      // Respect the "Show keyboard hints" setting — and clear any stale banner
-      // if that setting was just turned off.
-      if (TabMail.state.composeHintsBannerDisabled) {
-        TabMail.hideComposeHintsBanner();
-        return;
-      }
-
-      const text = TabMail._composeHintsBannerText();
-
-      // Reuse the existing banner if present — just update the text. This keeps
-      // the on/off toggle from duplicating or flickering the element.
-      const existing = document.getElementById("tm-compose-hints-banner");
-      if (existing) {
-        const existingPill = existing.firstElementChild;
-        if (existingPill) {
-          existingPill.textContent = text;
-        }
-        return;
-      }
-
-      // Outer container: full-width, transparent, centers the pill. Pointer
-      // events disabled so it never intercepts clicks in the compose body.
-      const banner = document.createElement("div");
-      banner.id = "tm-compose-hints-banner";
-      banner.setAttribute("contenteditable", "false");
-      banner.setAttribute("aria-hidden", "true");
-      banner.setAttribute("role", "presentation");
-      banner.style.cssText = `
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        padding: 4px 12px;
-        background: transparent;
-        text-align: center;
-        z-index: 10000;
-        pointer-events: none;
-        user-select: none;
-        -moz-user-select: none;
-        -webkit-user-select: none;
-      `;
-
-      // Inner pill carries the semi-transparent backdrop so the hint text stays
-      // legible against any compose background. Colors come from the palette
-      // (theme/palette/palette.build.js) — light + dark variants defined there.
-      const pill = document.createElement("span");
-      pill.style.cssText = `
-        display: inline-block;
-        padding: 3px 12px;
-        border-radius: 999px;
-        background: var(--tm-hint-banner-bg);
-        border: 1px solid var(--tm-hint-banner-border);
-        color: var(--tm-hint-banner-text);
-        font-size: 11px;
-        line-height: 1.4;
-      `;
-      pill.textContent = text;
-      banner.appendChild(pill);
-
-      // Append to documentElement (html) instead of body to avoid banner text
-      // being serialized into compose content when Thunderbird changes identity/account
-      document.documentElement.appendChild(banner);
-      console.log(
-        `[TabMail] Compose hints banner injected to documentElement (designMode=${document.designMode}, body.isContentEditable=${!!document.body && !!document.body.isContentEditable})`
-      );
-
-    } catch (err) {
-      console.error("[TabMail] showComposeHintsBanner error:", err);
+    if (!TabMail.state.autocompleteDisabled) {
+      TabMail.hideComposeHintsBanner();
+      return;
     }
+    if (document.getElementById('tm-compose-hints-banner')) return;
+    const banner = document.createElement('div');
+    banner.id = 'tm-compose-hints-banner';
+    banner.setAttribute('data-tabmail-ui', '');
+    banner.contentEditable = 'false';
+    banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;padding:4px 12px;text-align:center;z-index:10000;pointer-events:none';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = TabMail._composeHintsBannerText();
+    button.title = 'Enable suggestions (Shift+Esc)';
+    button.style.cssText = 'pointer-events:auto;cursor:pointer;padding:3px 12px;border-radius:999px;background:var(--tm-hint-banner-bg);border:1px solid var(--tm-hint-banner-border);color:var(--tm-hint-banner-text);font:11px/1.4 system-ui';
+    button.addEventListener('mousedown', event => event.preventDefault());
+    button.addEventListener('click', () => TabMail.setAutocompleteEnabled(true));
+    banner.appendChild(button);
+    // Keep the control outside the message Thunderbird serializes.
+    document.documentElement.appendChild(banner);
   },
 
   /**

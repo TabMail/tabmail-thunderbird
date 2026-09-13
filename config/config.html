@@ -113,16 +113,6 @@
         <small style="display: block; margin-top: 4px;">Shows the AI summary above each email. Summaries are still generated and action tags still apply when this is off.</small>
       </div>
 
-      <div class="field" style="margin-top: 24px;">
-        <label>Compose Window</label>
-        <div style="margin-top: 8px;">
-          <label class="checkbox-option">
-            <input type="checkbox" id="compose-hints-banner" checked />
-            <span>Show keyboard hints</span>
-          </label>
-        </div>
-        <small style="display: block; margin-top: 4px;">Shows shortcuts like Tab to accept, Shift-Tab to accept all, ⌘K to edit when suggestions are available.</small>
-      </div>
       <div class="field" style="margin-top: 16px;">
         <label>Tag by Thread</label>
         <div style="margin-top: 8px;">
@@ -844,29 +834,7 @@
         <input type="number" id="diff-restore-delay" min="0" step="50" />
       </div>
       
-      <div id="plaintext-composition-section">
-        <h4>Plaintext Composition</h4>
-        <div id="plaintext-warning" style="display: none; margin: 8px 0; padding: 12px; background-color: color-mix(in srgb, var(--tag-tm-archive) var(--tm-opacity-subtle-light), transparent); border-left: 4px solid var(--tag-tm-archive); border-radius: 4px;">
-          <strong style="color: var(--tag-tm-archive);">⚠️ Warning</strong>
-          <p style="margin: 8px 0 0 0; font-size: 0.9em;">
-            TabMail only supports plaintext email composition. Some of your email identities are currently set to compose HTML emails, which may cause issues.
-          </p>
-          <p style="margin: 8px 0 0 0; font-size: 0.9em;">
-            <strong>Identities not set to plaintext:</strong>
-            <span id="plaintext-problematic-identities"></span>
-          </p>
-        </div>
-        <div class="row" style="margin-top: 8px;">
-          <button id="force-plaintext-all" title="Force all email identities to use plaintext composition">Force Plaintext for All Identities</button>
-          <button id="refresh-plaintext-status" title="Refresh plaintext composition status">Refresh Status</button>
-        </div>
-        <div class="field">
-          <small>TabMail requires plaintext composition mode. Click "Force Plaintext" to set all your email identities to compose in plaintext mode. This setting is required for TabMail to function properly.</small>
-        </div>
-        <div id="plaintext-status" style="margin-top: 8px; font-size: 0.9em; color: var(--in-content-deemphasized-text);">
-          Checking status...
-        </div>
-      </div>
+      <p>Autocomplete supports HTML and plain-text composition. Choose your preferred format in Thunderbird Account Settings.</p>
     </section>
 
     <section id="reminder-settings" class="debug-only" style="display: none;">

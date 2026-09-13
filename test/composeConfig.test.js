@@ -65,7 +65,8 @@ describe('TabMail.config', () => {
   it('has keybindings', () => {
     expect(config.keys).toBeDefined();
     expect(config.keys.localAccept.key).toBe('Tab');
-    expect(config.keys.globalAccept.key).toBe('Tab');
+    expect(config.keys.globalAccept).toBeUndefined();
+    expect(config.keys.navigateBackward).toBeUndefined();
     expect(config.keys.disableAutocomplete.key).toBe('Escape');
     expect(config.keys.disableAutocomplete.shiftKey).toBe(true);
     expect(config.keys.inlineEditCmd.key).toBe('k');

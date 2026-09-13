@@ -23,6 +23,11 @@ Object.assign(TabMail, {
    */
   cleanupEventListeners: function() {
     try {
+      TabMail.hideComposePreview?.();
+      if (TabMail._eventListeners.layoutHandler) {
+        window.removeEventListener("resize", TabMail._eventListeners.layoutHandler);
+        document.removeEventListener("scroll", TabMail._eventListeners.layoutHandler, true);
+      }
       if (TabMail._eventListeners.keydownHandler) {
         document.removeEventListener("keydown", TabMail._eventListeners.keydownHandler, true);
         TabMail._eventListeners.keydownHandler = null;
@@ -318,7 +323,7 @@ Object.assign(TabMail, {
    */
   handleBeforeInput: function (e) {
     try {
-      if (!TabMail.state || !TabMail.state.inlineEditActive) {
+      if (TabMail.state?.applyingPreview || !TabMail.state || !TabMail.state.inlineEditActive) {
         return false;
       }
       const editor = TabMail.state.editorRef;
@@ -497,6 +502,7 @@ Object.assign(TabMail, {
     TabMail.cleanupEventListeners();
     
     TabMail.state.editorRef = editor;
+    editor.contentEditable = "true";
     TabMail._eventListeners.attachedEditor = editor;
     TabMail.log.info('events', "Attaching autocomplete listeners to editor:", editor);
 
@@ -586,20 +592,6 @@ Object.assign(TabMail, {
       TabMail.log.info('events', `Initialized autocomplete idle time to ${TabMail.state.currentIdleTime}ms`);
     }
 
-    // --- Baseline undo snapshot ---
-    if (TabMail.undoManager && !TabMail.state.undoBaselineAdded) {
-      TabMail.log.debug('undo', "Queuing baseline snapshot (empty -> first input)."
-      );
-      TabMail.state.pendingUndoSnapshot = {
-        text: "",
-        cursor: 0,
-        marker: "baseline",
-      };
-      // Note: actual commit happens upon first `input` event.
-      // We set the flag to avoid duplicate queuing.
-      TabMail.state.undoBaselineAdded = true;
-    }
-
     // IME Composition tracking - handled by global document listeners below
 
     // Global IME event handling (capture phase to catch all events)
@@ -614,8 +606,8 @@ Object.assign(TabMail, {
         TabMail.state.isIMEComposing = true;
         
         // Handle cursor positioning and autohide diffs
-        TabMail.handleCursorInInsertSpan(e);
-        TabMail.handleAutohideDiff(e);
+        // Preview content is outside the editable body.
+        TabMail.dismissComposeSuggestion();
         
         // Cancel any restore timer
         if (TabMail.state.diffRestoreTimer) {
@@ -654,6 +646,10 @@ Object.assign(TabMail, {
     };
     document.addEventListener("compositionend", TabMail._eventListeners.compositionendHandler, true);
 
+    TabMail._eventListeners.layoutHandler = () => TabMail.renderText(TabMail.state.showDiff && !TabMail.state.autoHideDiff);
+    window.addEventListener("resize", TabMail._eventListeners.layoutHandler);
+    document.addEventListener("scroll", TabMail._eventListeners.layoutHandler, true);
+
     // Input (typing)
     TabMail._eventListeners.inputHandler = (e) => {
       // DEBUG: detect if this input event came from a programmatic render
@@ -675,74 +671,10 @@ Object.assign(TabMail, {
         return;
       }
       
-      // Check if the keystroke adhered to the current suggestion.
-      // If so, skip scheduling a new completion request - the user is typing along with the suggestion.
-      let skipScheduleTrigger = false;
-      if (TabMail.state.lastKeystrokeAdheredToSuggestion) {
-        TabMail.log.info('events', "Input adhered to suggestion - updating diffs directly");
-        // Clear the flag for the next keystroke
-        TabMail.state.lastKeystrokeAdheredToSuggestion = false;
-        
-        // Apply the adherence to modify diffs in place (prevents scattering)
-        const adherenceInfo = TabMail.state.adherenceInfo;
-        TabMail._applyAdherenceToDiffs(adherenceInfo);
-        TabMail.state.adherenceInfo = null;
-        
-        // Render using the modified diffs (no recomputation)
-        // Pass advanceCursorBy for special cases (e.g., Enter before newline)
-        const advanceCursorBy = adherenceInfo && adherenceInfo.advanceCursorBy ? adherenceInfo.advanceCursorBy : 0;
-        TabMail._renderWithExistingDiffs(advanceCursorBy);
-        
-        skipScheduleTrigger = true;
-      }
-      
-      if (!skipScheduleTrigger) {
-        TabMail.log.trace('events', "Input event triggered (non-IME), scheduling autocomplete trigger."
-        );
-        // After any input, schedule a correction.
-        TabMail.scheduleTrigger(editor);
-      }
+      if (TabMail.state.applyingPreview) return;
+      TabMail.dismissComposeSuggestion();
+      TabMail.scheduleTrigger(editor);
 
-      // ---------------- Undo snapshot finalisation ----------------
-      const pending = TabMail.state.pendingUndoSnapshot;
-      if (pending) {
-        try {
-          const { originalUserMessage: afterText } =
-            TabMail.extractUserAndQuoteTexts(editor);
-          const afterCursor = TabMail.getCursorOffsetIgnoringInserts(editor);
-
-          // Adjust cursor for space vs newline so that UNDO places the caret sensibly.
-          let beforeCursor = pending.cursor;
-          if (
-            e.inputType === "insertParagraph" ||
-            e.inputType === "insertLineBreak"
-          ) {
-            beforeCursor = afterCursor;
-          } else if (e.inputType === "insertText" && e.data === " ") {
-            beforeCursor = Math.max(0, afterCursor - 1);
-          }
-
-          TabMail.log.trace('undo', "Snapshot committed (", e.inputType, ")");
-          TabMail.pushUndoSnapshot(
-            pending.text,
-            beforeCursor,
-            afterText,
-            afterCursor,
-            pending.marker || "typing"
-          );
-
-          if (pending.marker === "baseline") {
-            TabMail.log.trace('undo', "Baseline snapshot committed.");
-          }
-        } catch (err) {
-          TabMail.log.error('undo', "Failed to complete pending snapshot:",
-            err
-          );
-        } finally {
-          // Clear pending snapshot irrespective of success or failure.
-          TabMail.state.pendingUndoSnapshot = null;
-        }
-      }
     };
     editor.addEventListener("input", TabMail._eventListeners.inputHandler);
 
@@ -760,6 +692,7 @@ Object.assign(TabMail, {
     // Add listener for cursor movement to highlight spans as well as trigger
     // for completion call to the backend.
     TabMail._eventListeners.selectionchangeHandler = () => {
+      if (TabMail.state.selectionMuteDepth > 0 || TabMail.state.applyingPreview) return;
       // Debounce selection change handling to avoid re-renders during multi-click/drag gestures.
       if (TabMail.state.selectionDebounceTimer) {
         clearTimeout(TabMail.state.selectionDebounceTimer);
@@ -780,7 +713,7 @@ Object.assign(TabMail, {
         }
 
         // Always update highlighting – works for both collapsed and ranged selections.
-        TabMail.handleCursorHighlighting();
+        if (!isCollapsed) TabMail.hideComposePreview();
 
         // // Handle completion call to the backend.
         // TabMail.scheduleTrigger(editor);
@@ -814,110 +747,14 @@ Object.assign(TabMail, {
     };
     window.addEventListener("beforeunload", TabMail._eventListeners.beforeunloadHandler);
 
-    // Initialize editor content structure by rendering once with empty content
-    // This ensures the inline editor can work properly even when the compose window is empty.
-    // For reply/precompose, this is already done via preloaded suggestions.
-    // For new compose windows, we need to do this explicitly.
-    try {
-      const { originalUserMessage, quoteBoundaryNode } = TabMail.extractUserAndQuoteTexts(editor);
-      const isEmpty = !originalUserMessage || originalUserMessage.trim() === "";
-      
-      // If this is an empty reply/forward window with a quote boundary, remove trailing newlines
-      // to prevent diff splitting issues. Thunderbird initially adds two newlines before the quote.
-      if (isEmpty && quoteBoundaryNode) {
-        // Check if there are trailing newlines (likely two) before the quote
-        const trailingNewlines = originalUserMessage.match(/\n+$/);
-        if (trailingNewlines && trailingNewlines[0].length >= 2) {
-          TabMail.log.debug('events', `Removing ${trailingNewlines[0].length} trailing newlines from initial empty reply/forward`);
-          
-          // Remove trailing newlines from the DOM by finding and removing <br> elements before the quote
-          const range = document.createRange();
-          range.selectNodeContents(editor);
-          range.setEndBefore(quoteBoundaryNode);
-          
-          // Find all trailing <br> elements before the quote
-          const walker = document.createTreeWalker(
-            range.cloneContents(),
-            NodeFilter.SHOW_ELEMENT,
-            { acceptNode: (node) => node.tagName === 'BR' ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT }
-          );
-          
-          const brs = [];
-          let node;
-          while (node = walker.nextNode()) {
-            brs.push(node);
-          }
-          
-          // Remove trailing <br> elements (up to 2) from the actual DOM
-          let removed = 0;
-          let currentNode = quoteBoundaryNode.previousSibling;
-          while (currentNode && removed < 2) {
-            if (currentNode.nodeType === Node.ELEMENT_NODE && currentNode.tagName === 'BR') {
-              const toRemove = currentNode;
-              currentNode = currentNode.previousSibling;
-              toRemove.remove();
-              removed++;
-            } else if (currentNode.nodeType === Node.TEXT_NODE && currentNode.textContent.trim() === '') {
-              // Skip empty text nodes
-              currentNode = currentNode.previousSibling;
-            } else {
-              break;
-            }
-          }
-          
-          TabMail.log.debug('events', `Removed ${removed} trailing <br> elements`);
-        }
-      }
-      
-      if (isEmpty) {
-        TabMail.log.debug('events', "Initializing editor content structure with empty renderText call"
-        );
-        // Set initial state to empty so renderText has something to work with
-        TabMail.state.originalText = "";
-        TabMail.state.correctedText = "";
-        TabMail.state.isDiffActive = false;
-        // Render once with no diffs to initialize the DOM structure
-        TabMail.renderText(false);
-      }
-    } catch (err) {
-      TabMail.log.error('events', "Error initializing editor content structure:", err);
-    }
-
     // Ask the background script if we should trigger an initial correction.
     TabMail.log.info('events', "Asking background script to check for initial trigger."
     );
     browser.runtime.sendMessage({ type: "initialTriggerCheck" });
   },
 
-  handleUndoRedoKey: function (e) {
-    // --- Undo / Redo shortcuts (Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z / Ctrl+Y) ---
-    const keyLower = e.key.toLowerCase();
-    const isUndoShortcut =
-      (e.metaKey || e.ctrlKey) && !e.shiftKey && keyLower === "z";
-    const isRedoShortcut =
-      (e.metaKey || e.ctrlKey) &&
-      ((e.shiftKey && keyLower === "z") || keyLower === "y");
-    if ((isUndoShortcut || isRedoShortcut) && TabMail.undoManager) {
-      TabMail.log.debug('undo', "shortcut", isUndoShortcut ? "UNDO" : "REDO");
-      e.preventDefault();
-      e.stopPropagation();
-      if (isUndoShortcut) {
-        TabMail.undoManager.undo();
-      } else {
-        TabMail.undoManager.redo();
-      }
-      // After state changes, re-render and schedule backend correction once.
-      const editor = TabMail.state.editorRef;
-      if (editor) {
-        // Render Text
-        // Note: only render the diffs if they are enabled and not auto-hidden.
-        TabMail.log.trace('renderText', "Rendering text with diffs after undo/redo");
-        const show_diffs = TabMail.state.showDiff && !TabMail.state.autoHideDiff;
-        TabMail.renderText(show_diffs);
-        TabMail.scheduleTrigger(editor);
-      }
-      return true;
-    }
+  handleUndoRedoKey: function () {
+    // Native HTML editor owns history, including typing and accepted previews.
     return false;
   },
 
@@ -927,24 +764,7 @@ Object.assign(TabMail, {
       e.preventDefault();
       e.stopPropagation();
 
-      const turningOff = !TabMail.state.autocompleteDisabled;
-      TabMail.log.info('events', `Shift+Esc pressed — turning autocomplete ${turningOff ? 'OFF' : 'ON'} (persisted)`);
-
-      // Immediate local update for this window (drop suggestion + refresh banner).
-      if (turningOff) {
-        TabMail.disableAutocompleteLocally();
-      } else {
-        TabMail.enableAutocompleteLocally();
-      }
-
-      // Persist so the new state carries across compose windows / restarts and
-      // keeps the Settings page + change_setting tool in sync. The
-      // storage.onChanged listener mirrors it to any other open compose windows.
-      try {
-        browser.storage.local.set({ autocompleteEnabled: !turningOff });
-      } catch (err) {
-        TabMail.log.warn('events', `Failed to persist autocompleteEnabled=${!turningOff}: ${err}`);
-      }
+      TabMail.setAutocompleteEnabled(TabMail.state.autocompleteDisabled);
 
       return true;
     }
@@ -959,7 +779,7 @@ Object.assign(TabMail, {
         TabMail.log.info('events', 'ESC pressed - hiding suggestions until next typing');
         
         // Clear suggestion state
-        TabMail.state.correctedText = null;
+        TabMail.dismissComposeSuggestion();
         
         // Render without diffs
         TabMail.renderText(false);
@@ -983,6 +803,14 @@ Object.assign(TabMail, {
    * (`autocompleteEnabled` storage) is the caller's responsibility, so this is
    * safe to call from the storage.onChanged mirror path too.
    */
+  setAutocompleteEnabled(enabled) {
+    if (enabled) TabMail.enableAutocompleteLocally();
+    else TabMail.disableAutocompleteLocally();
+    Promise.resolve(browser.storage.local.set({ autocompleteEnabled: enabled })).catch(error => {
+      TabMail.log.warn('events', 'Could not save the suggestions preference');
+    });
+  },
+
   disableAutocompleteLocally: function () {
     TabMail.state.autocompleteDisabled = true;
 
@@ -998,7 +826,7 @@ Object.assign(TabMail, {
     }
 
     // Drop any visible/pending suggestion and re-render the user's own text.
-    TabMail.state.correctedText = null;
+    TabMail.dismissComposeSuggestion();
     TabMail.state.lastSuggestionShownTime = 0;
     TabMail.state.textLengthAtLastSuggestion = 0;
     try {
@@ -1053,212 +881,10 @@ Object.assign(TabMail, {
   },
 
   handleAcceptRejectKey: function (e) {
-    const editor = TabMail.state.editorRef;
-
-    const isLocalAccept = TabMail._isKeyMatch(
-      e,
-      TabMail.config.keys.localAccept
-    );
-    const isLocalReject = TabMail._isKeyMatch(
-      e,
-      TabMail.config.keys.localReject
-    );
-    const isGlobalAccept = TabMail._isKeyMatch(
-      e,
-      TabMail.config.keys.globalAccept
-    );
-    const isNavigateForward = TabMail._isKeyMatch(
-      e,
-      TabMail.config.keys.navigateForward
-    );
-    const isNavigateBackward = TabMail._isKeyMatch(
-      e,
-      TabMail.config.keys.navigateBackward
-    );
-    const isAccept = isLocalAccept || isGlobalAccept;
-    const isReject = isLocalReject; // Note: Only local reject exists.
-    const isAction = isAccept || isReject;
-    const isNav = isNavigateForward || isNavigateBackward;
-
-    if (!isAction && !isNav) {
-      return false; // Not a key we care about.
-    }
-
-    // 1. Determine targets based on the action scope (global vs. local).
-    let targets = [];
-    if (isGlobalAccept) {
-      TabMail.log.debug('events', `handleKeyDown: Global Accept (Shift-Tab)`);
-      const insElements = editor.querySelectorAll(
-        'span[data-tabmail-diff="insert"]'
-      );
-      const delElements = editor.querySelectorAll(
-        'span[data-tabmail-diff="delete"]'
-      );
-      targets = [...insElements, ...delElements];
-      TabMail.log.debug('events', "Targets:", targets);
-    } else if (isAction) {
-      // A local action
-      // Get original text and diffs from last rendered state for sentence-based span finding
-      const { original: originalText, diffs: diffsToRender } = TabMail.state.lastRenderedText;
-      // console.log("[TabMail DOM] Finding spans at cursor:", TabMail.state.lastRenderedText);
-      targets = TabMail.findSpansAtCursor(originalText, diffsToRender);
-      // console.groupCollapsed(`[TabMail Events] handleKeyDown: Local Action`);
-      // console.log("Found spans:", targets);
-      // console.log("Unique targets:", targets);
-      // console.groupEnd();
-    }
-
-    // If we have targets, or navigating,we stop default key behavior (note
-    // that if we don't have targets we should not!)
-    if (targets.length > 0 || isNav) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-
-    // 2. If we have an action and targets, process them.
-    if (isAction && targets.length > 0) {
-      const initialCursorOffset = TabMail.getCursorOffset(editor);
-      // Capture snapshot BEFORE we mutate DOM (only for accept actions)
-      let snapshotBefore = null;
-      if (isAccept && TabMail.undoManager) {
-        const { originalUserMessage: beforeUserText } =
-          TabMail.extractUserAndQuoteTexts(editor);
-        snapshotBefore = {
-          text: beforeUserText,
-          cursor: TabMail.getCursorOffsetIgnoringInserts(editor),
-        };
-      }
-
-      let newCursorOffset = initialCursorOffset;
-      let placeCursorAfterNode = false;
-      let nodeForCursor = null;
-
-      for (const span of targets) {
-        const result = TabMail.processSpanAction(
-          span,
-          isAccept,
-          isGlobalAccept,
-          newCursorOffset,
-          editor
-        );
-
-        newCursorOffset = result.newCursorOffset;
-        if (result.nodeForCursor) {
-          nodeForCursor = result.nodeForCursor;
-        }
-        // This can be overwritten in the loop, which is the intended behavior
-        // for handling multiple targets (e.g., global accept).
-        placeCursorAfterNode = result.placeCursorAfterNode;
-      }
-
-      // Move cursor appropriately (the only case we use the node-based logic
-      // is the local accept)
-      if (placeCursorAfterNode && nodeForCursor) {
-        TabMail.log.debug('events', "handleKeyDown: Setting cursor after node.",
-          nodeForCursor
-        );
-        TabMail.setCursorAfterNode(nodeForCursor);
-      } else {
-        TabMail.log.debug('events', "handleKeyDown: Setting cursor by offset.",
-          newCursorOffset
-        );
-        TabMail.setCursorByOffset(editor, newCursorOffset);
-      }
-
-      // Capture snapshot AFTER mutations and push to undo stack
-      if (snapshotBefore) {
-        const { originalUserMessage: afterUserText } =
-          TabMail.extractUserAndQuoteTexts(editor);
-        const snapshotAfter = {
-          text: afterUserText,
-          cursor: TabMail.getCursorOffsetIgnoringInserts(editor),
-        };
-        try {
-          TabMail.log.debug('undo', "Accept - Before len", snapshotBefore.text.length, "After len", snapshotAfter.text.length);
-
-          // Replaced manual undoManager handler with centralised helper
-          TabMail.pushUndoSnapshot(
-            snapshotBefore.text,
-            snapshotBefore.cursor,
-            snapshotAfter.text,
-            snapshotAfter.cursor,
-            "accept"
-          );
-        } catch (err) {
-          TabMail.log.error('undo', "Failed to register undo snapshot:",
-            err
-          );
-        }
-      }
-
-      // 3. If no action was taken, but a navigation key was pressed, navigate.
-    } else if (isNav) {
-      const direction = isNavigateBackward ? "backward" : "forward";
-      const closestSpan = TabMail.findClosestSpan(direction);
-      if (closestSpan) {
-        TabMail.log.debug('events', "handleKeyDown: Navigating to closest span.",
-          closestSpan
-        );
-        TabMail.setCursorBeforeNode(closestSpan);
-      }
-    }
-
-    // Also un-highlight any existing spans if we lose focus.
-    TabMail.updateSpanHighlighting([]);
-    return true;
-  },
-
-  handleCursorInInsertSpan: function (e) {
-    // Early return if we are not doing any insertions -- support both keydown
-    // and beforeinput events.
-
-    const isInsert = TabMail.isInputEvent(e);
-
-    if (!isInsert) {
-      // console.log(
-      //   `[TabMail] ${e.type} ${
-      //     e.key || e.inputType
-      //   } Not an insert, returning.`
-      // );
-      return false;
-    }
-
-    TabMail.log.trace('autohideDiff', "handleCursorInInsertSpan: Insert detected, handling cursor relocation.");
-
-    // If the caret is currently INSIDE a non-editable / ephemeral region,
-    // move it *before* that region so that user input doesn't land inside
-    // elements that will be skipped during text extraction or hidden later.
-    // Covers: diff INSERT spans and the quote separator.
-    try {
-      const sel = window.getSelection();
-      if (sel && sel.isCollapsed && sel.anchorNode) {
-        // Walk up from the cursor's anchor node to find any forbidden ancestor.
-        let node = sel.anchorNode;
-        const editor = TabMail.state.editorRef;
-        while (node && node !== editor) {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            // Eject from INSERT span
-            if (node.dataset && node.dataset.tabmailDiff === "insert") {
-              TabMail.log.debug('events', "Cursor inside INSERT span – relocating before span.");
-              TabMail.setCursorBeforeNode(node);
-              break;
-            }
-            // Eject from quote separator
-            if (node.classList && node.classList.contains("tm-quote-separator")) {
-              TabMail.log.debug('events', "Cursor inside quote separator – relocating before separator.");
-              TabMail.setCursorBeforeNode(node);
-              break;
-            }
-          }
-          node = node.parentNode;
-        }
-      }
-    } catch (cursorRelocateErr) {
-      TabMail.log.error('events', "Failed to relocate cursor before hidden region:",
-        cursorRelocateErr
-      );
-    }
-
+    if (!TabMail._isKeyMatch(e, TabMail.config.keys.localAccept) || !TabMail.state.previewModel) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    TabMail.acceptComposePreview();
     return true;
   },
 
@@ -1268,68 +894,16 @@ Object.assign(TabMail, {
    * @param {KeyboardEvent} e The keyboard event.
    */
   handleKeyDown: function (e) {
-    try {
-      // If inline edit is active, delegate to the dedicated handler to keep this flow readable.
-      if (TabMail._handleInlineEditKeyDown(e)) return;
-    } catch (_) {}
-
-    // Cmd/Ctrl+K inline edit entry
+    if (TabMail.state.isIMEComposing || e.isComposing) return;
+    if (TabMail._handleInlineEditKeyDown(e)) return;
+    const selection = window.getSelection();
+    if (!selection?.anchorNode || !TabMail.state.editorRef?.contains(selection.anchorNode)) return;
     if (TabMail._handleInlineEditShortcut(e)) return;
-
-    // Global Escape now handled inside _handleInlineEditKeyDown to ensure correct ordering
-
-    // Undo/redo -- if it runs, we don't do anything else.
-    const didHandleUndoRedoRun = TabMail.handleUndoRedoKey(e);
-    if (didHandleUndoRedoRun) {
-      TabMail.log.trace('autohideDiff', "handleUndoRedoKey");
-      return;
-    }
-
-    // Escape keys (Shift+Esc = turn off autocomplete; Esc = hide suggestion).
-    // If it runs, we don't do anything else.
-    const didHandleEscapeKeysRun = TabMail.handleEscapeKeys(e);
-    if (didHandleEscapeKeysRun) {
-      TabMail.log.trace('autohideDiff', "handleKeyDown: Escape key");
-      return;
-    }
-
-    // Handle cursor movement tooltip Tab key
-    const didHandleCursorMovementRun = TabMail.handleCursorMovementKey(e);
-    if (didHandleCursorMovementRun) {
-      TabMail.log.trace('autohideDiff', "handleKeyDown: Cursor movement");
-      return;
-    }
-
-    // Accept/reject -- if it runs, we don't do anything else either.
-    const didHandleAcceptRejectRun = TabMail.handleAcceptRejectKey(e);
-    if (didHandleAcceptRejectRun) {
-      TabMail.log.trace('autohideDiff', "handleKeyDown: Accept/reject");
-      return;
-    }
-
-    // Undo snapshot -- no need to check output for now.
-    TabMail.handleUndoSnapshot(e);
-
-    // If we have an active selection, we handle it. This also triggers early
-    // exit, so that we don't ruin the action that people expect with a
-    // selection.
-    const didHandleInputWhileSelectionRun = TabMail.handleInputWhileSelection(e);
-    if (didHandleInputWhileSelectionRun) {
-      TabMail.log.trace('autohideDiff', "handleKeyDown: Input while selection");
-      return;
-    }
-    // Note from here we are sure we don't have a selection.
-
-    // Normalize cursor position to be before the diff span if it is inside one
-    // if we are doing any insertions.
-    TabMail.handleCursorInInsertSpan(e);
-
-    // Autohide diffs -- if it runs, we don't do anything else either.
-    const didHandleAutohideDiffRun = TabMail.handleAutohideDiff(e);
-    if (didHandleAutohideDiffRun) {
-      TabMail.log.trace('autohideDiff', "handleKeyDown: Autohide diff");
-      return;
-    }
+    if (TabMail.handleEscapeKeys(e)) return;
+    if (selection.isCollapsed && TabMail.handleCursorMovementKey(e)) return;
+    if (selection.isCollapsed && TabMail.handleAcceptRejectKey(e)) return;
+    if (TabMail._isTypingKey(e)) TabMail.hideComposePreview();
+    // All other editing, selection and history keys belong to Thunderbird.
   },
 
   /**
@@ -1338,201 +912,12 @@ Object.assign(TabMail, {
    * @returns {boolean} True if the event was handled.
    */
   handleCursorMovementKey: function (e) {
-    if (TabMail.state && TabMail.state.inlineEditActive) {
-      // While inline edit is active, do not hijack Tab for caret jumping.
-      return false;
-    }
-    // Check if this is a Tab key press
-    if (e.key !== "Tab" || e.shiftKey) {
-      return false;
-    }
-
-    const editor = TabMail.state.editorRef;
-    if (!editor) {
-      return false;
-    }
-
-    // Check if there's a cursor movement indicator (caret or arrow)
-    const caret = editor.querySelector('.tm-fake-caret');
-    const arrow = editor.querySelector('.tm-cursor-arrow');
-    if (!caret && !arrow) {
-      return false;
-    }
-
-    // Get the suggested cursor position from the indicator data
-    const suggestedPosition = parseInt(caret?.dataset.suggestedPosition || arrow?.dataset.suggestedPosition);
-    if (isNaN(suggestedPosition)) {
-      return false;
-    }
-
-    TabMail.log.debug('events', "Tab key pressed - jumping to suggested cursor position:", suggestedPosition);
-
-    // Remove the visual indicators
-    if (caret) caret.remove();
-    if (arrow) arrow.remove();
-    // Also remove jump overlay if it exists
-    if (TabMail && TabMail.removeJumpOverlay) {
-      TabMail.removeJumpOverlay();
-    }
-
-    // Move cursor to the suggested position
-    TabMail.setCursorByOffset(editor, suggestedPosition);
-
-    // Re-render the diffs now that we're at the correct position, respecting the auto-hide diff setting and the global diff setting.
-    const show_diffs = TabMail.state.showDiff && !TabMail.state.autoHideDiff;
-    TabMail.log.trace('renderText', "Rendering text with diffs after cursor movement");
-    TabMail.renderText(show_diffs);
-
+    if (!TabMail._isKeyMatch(e, TabMail.config.keys.localAccept) || TabMail.state.previewJumpOffset == null) return false;
     e.preventDefault();
     e.stopPropagation();
+    TabMail.setCursorByOffset(TabMail.state.editorRef, TabMail.state.previewJumpOffset);
+    TabMail.renderText(true);
     return true;
   },
 
-  handleUndoSnapshot: function (e) {
-    if (TabMail.state && TabMail.state.inlineEditActive) return false;
-
-    // We only care about this event if diffs are active and the user is
-    // performing a content insertion (typing, enter, etc.).
-
-    // Early return if we are not doing any insertions
-    const isInsert = TabMail.isInputEvent(e);
-
-    if (!isInsert) {
-      // console.log(
-      //   `[TabMail Autohide Diff] ${e.type} ${
-      //     e.key || e.inputType
-      //   } Not an insert, returning.`
-      // );
-      return false;
-    }
-
-    const editor = TabMail.state.editorRef;
-    // For undo handling we may capture state BEFORE DOM changes.
-    let snapshotBeforeText = null;
-    let snapshotBeforeCursor = null;
-    let snapshotMarker = "typing";
-    const isWordBoundary = TabMail.isWordBoundaryEvent(e);
-
-    // Determine if we should capture a snapshot before DOM mutations.
-    const sel = window.getSelection();
-    const hasSelection = sel && !sel.isCollapsed;
-    // We capture when:
-    // 1) User is at a word boundary (space/newline)
-    // 2) There is an active (non-collapsed) selection that will be replaced
-
-    if ((isWordBoundary || hasSelection) && editor) {
-      snapshotBeforeText =
-        TabMail.extractUserAndQuoteTexts(editor).originalUserMessage;
-      snapshotBeforeCursor = TabMail.getCursorOffsetIgnoringInserts(editor);
-      snapshotMarker = "typing";
-    }
-
-    // If we captured a snapshot, store it on state for the input handler to finalise.
-    if (snapshotBeforeText !== null && TabMail.state) {
-      if (!TabMail.state.pendingUndoSnapshot) {
-        TabMail.state.pendingUndoSnapshot = {
-          text: snapshotBeforeText,
-          cursor: snapshotBeforeCursor,
-          marker: snapshotMarker,
-        };
-      }
-    }    
-
-    return true;
-  },
-
-  handleInputWhileSelection: function (e) {
-    if (TabMail.state && TabMail.state.inlineEditActive) return true;
-    // If an IME is composing, early return so that we don't break the IME. The
-    // `isComposing` property on the event is the most reliable way to check
-    // this within `beforeinput`.
-    if (e.isComposing) {
-      TabMail.log.trace('autohideDiff', "handleInputWhileSelection: IME composing"
-      );
-      return true;
-    }
-
-    // Early return if the user is selecting text so that the text selection
-    // action behaves as intended.
-    const sel = window.getSelection();
-    if (!sel.rangeCount || !sel.isCollapsed) {
-      TabMail.log.trace('autohideDiff', "handleInputWhileSelection: User has a selection"
-      );
-      
-      // Check if this is an input event (typing, backspace, delete, etc.)
-      const isInputEvent = TabMail.isInputEvent(e);
-      
-      if (!isInputEvent) {
-        return true; // Not an input event, let it pass through
-      }
-      
-      // Check if the selection overlaps with any insert spans
-      const editor = TabMail.state.editorRef;
-      if (editor) {
-        const insertSpans = editor.querySelectorAll('span[data-tabmail-diff="insert"]');
-        let hasOverlap = false;
-        
-        for (const span of insertSpans) {
-          if (sel.getRangeAt(0).intersectsNode(span)) {
-            hasOverlap = true;
-            break;
-          }
-        }
-        
-        if (hasOverlap) {
-          TabMail.log.trace('autohideDiff', "handleInputWhileSelection: Selection overlaps insert span - handling manually"
-          );
-          
-          // Handle the selection deletion and cursor positioning
-          TabMail.removeSelection(sel);
-          
-          // For backspace and delete, we're done (just deletion)
-          if (TabMail.isDeletionEvent(e)) {
-            
-            e.preventDefault();
-            e.stopPropagation();
-            
-            // Manually schedule trigger since we prevented the default behavior
-            const editor = TabMail.state.editorRef;
-            if (editor) {
-              TabMail.scheduleTrigger(editor);
-            }
-            
-            // Also let things continue as if nothing happened.
-            TabMail.log.trace('autohideDiff', "handleInputWhileSelection: Returning false to let things continue as if nothing happened.");
-            return false;
-          }
-          
-          // For other input events, let the default behavior continue
-          return false;
-        }
-      }
-      
-      return true;
-    }
-
-  },
-
-  /**
-   * Handles cursor movement to highlight diff spans.
-   */
-  handleCursorHighlighting: function () {
-    if (!TabMail.state.isDiffActive || !TabMail.state.editorRef) {
-      return;
-    }
-
-    const selection = window.getSelection();
-    if (!selection || !TabMail.state.editorRef.contains(selection.anchorNode)) {
-      // If there's no selection, a selection range, or cursor is outside editor, do nothing.
-      // Also un-highlight any existing spans if we lose focus.
-      TabMail.updateSpanHighlighting([]);
-      return;
-    }
-
-    // Get original text and diffs for sentence-based span finding
-    const { original: originalText, diffs: diffsToRender } = TabMail.state.lastRenderedText;
-    // console.log("[TabMail DOM] Finding spans at cursor:", TabMail.state.lastRenderedText);
-    const targets = TabMail.findSpansAtCursor(originalText, diffsToRender);
-    TabMail.updateSpanHighlighting(targets);
-  },
 });

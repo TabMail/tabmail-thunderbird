@@ -1,0 +1,12 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+:host { color-scheme: light dark; pointer-events: none; }
+.preview { box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--tm-preview-border); border-radius: 8px; background: var(--tm-preview-bg); color: var(--tm-preview-text); box-shadow: 0 4px 16px var(--tm-preview-shadow); }
+.content { white-space: pre-wrap; overflow-wrap: anywhere; }
+.context { color: var(--tm-preview-context); }
+.inserted { background: var(--tm-preview-insert); box-decoration-break: clone; }
+.actions { margin-top: 6px; text-align: right; font: 11px/1.4 system-ui; color: var(--tm-preview-context); }
+
+.actions button { pointer-events: auto; cursor: pointer; font: inherit; color: inherit; background: transparent; border: 0; border-radius: 4px; padding: 3px 6px; }
+.actions button:hover, .actions button:focus-visible { background: var(--tm-preview-insert); color: var(--tm-preview-text); }

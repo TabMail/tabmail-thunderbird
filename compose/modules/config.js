@@ -281,13 +281,13 @@ TabMail.config = {
   /**
    * Keybindings
    */
+  preview: { zIndex: 10001, padding: 12, margin: 8, gap: 6, minWidth: 120, lineTolerance: 2, lineHeightFactor: 1.2 },
+
   keys: {
     localAccept: { key: "Tab", shiftKey: false },
     localReject: { key: "Unassigned", shiftKey: true },
-    globalAccept: { key: "Tab", shiftKey: true },
     disableAutocomplete: { key: "Escape", shiftKey: true },
     navigateForward: { key: "Tab", shiftKey: false },
-    navigateBackward: { key: "Tab", shiftKey: true },
     // Inline edit shortcuts (platform-specific)
     inlineEditCmd: { key: "k", metaKey: true },
     inlineEditCtrl: { key: "k", ctrlKey: true },

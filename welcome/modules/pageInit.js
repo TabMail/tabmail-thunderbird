@@ -14,8 +14,6 @@ export function createPageInitializer({
   loadCalendars,
   loadAddressBooks,
   appearanceHandlers,
-  checkPlaintextStatus,
-  setupPlaintextButton,
   updateInlineEditorShortcut,
   updateThemePageImages,
   updateViewModePageImages,
@@ -66,10 +64,6 @@ export function createPageInitializer({
       case "calendar-contacts":
         await loadCalendars();
         await loadAddressBooks();
-        break;
-      case "plaintext":
-        await checkPlaintextStatus();
-        setupPlaintextButton({ checkPlaintextStatusFn: checkPlaintextStatus });
         break;
       case "inbox-optimization":
         setupInboxOptimizationHandlers();

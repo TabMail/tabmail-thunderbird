@@ -308,40 +308,14 @@ Object.assign(TabMail, {
 
       let correctedMessage = null;
       let backendUserText = originalUserMessage;
-      let shouldDirectReplace = false;
       if (correctionData) {
         correctedMessage = correctionData.suggestion || null;
         backendUserText = correctionData.usertext || backendUserText;
-        shouldDirectReplace = correctionData.directReplace || false;
         TabMail.log.info('core', `✓ Request #${requestId} returned suggestion: ${correctedMessage ? correctedMessage.substring(0, 50) + '...' : 'NULL'}`
         );
       } else {
         TabMail.log.warn('core', `⚠️ Request #${requestId} returned NO correction data`
         );
-      }
-
-      // Handle direct replacement mode
-      if (shouldDirectReplace && correctedMessage && originalUserMessage.trim() === "") {
-        TabMail.log.info('core', "Direct replacement mode: replacing empty content with suggestion");
-        try {
-          // Note: We no longer add trailing newlines here. setEditorPlainText
-          // will add separator <br>s when there's a quote boundary.
-          
-          // Set the editor content (separator handled by setEditorPlainText)
-          TabMail.setEditorPlainText(editor, correctedMessage);
-          
-          // Position cursor at the start of the content
-          TabMail.setCursorByOffset(editor, 0);
-          
-          // Update state to reflect the content
-          TabMail.state.originalText = correctedMessage;
-          TabMail.state.correctedText = correctedMessage;
-          TabMail.log.info('core', "Direct replacement completed successfully");
-          return; // Skip the normal suggestion flow
-        } catch (e) {
-          TabMail.log.warn('core', `Direct replacement failed: ${e}`);
-          // Fall through to normal suggestion flow
-        }
       }
 
       // Process the corrected text (normal suggestion flow).

@@ -150,24 +150,6 @@ TabMail.state = {
   },
 };
 
-// Initialise global undo manager (single instance)
-try {
-  if (typeof UndoManager !== 'undefined' && !TabMail.undoManager) {
-    TabMail.undoManager = new UndoManager();
-    console.log('[TabMail Undo] UndoManager initialised (state.js immediate).');
-  } else {
-    // Library not yet loaded; defer until next tick
-    setTimeout(() => {
-      if (typeof UndoManager !== 'undefined' && !TabMail.undoManager) {
-        TabMail.undoManager = new UndoManager();
-        console.log('[TabMail Undo] UndoManager initialised (state.js deferred).');
-      }
-    }, 0);
-  }
-} catch (e) {
-  console.warn('[TabMail Undo] Could not initialise UndoManager:', e);
-}
-
 // Provide global helpers for programmatic selection muting if not yet defined.
 try {
   if (!TabMail._beginProgrammaticSelection) {

@@ -1,890 +1,247 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { JSDOM } from 'jsdom';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 
-// autocompleteLifecycle.test.js — Integration tests for the autocomplete render
-// lifecycle.  Exercises the full flow: extractUserAndQuoteTexts → renderText →
-// _applyFragmentToEditor → extract again, verifying that user text is NEVER
-// silently lost.
-//
-// Uses a realistic DOM mock (FakeDOM) that maintains a live tree so the modules
-// interact with each other the same way they would in Gecko.
-
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
-import { runInNewContext } from 'vm';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// FakeDOM — a minimal but realistic DOM tree that supports the operations
-// used by renderText, _applyFragmentToEditor, and extractUserAndQuoteTexts.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const NODE_TYPES = { ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_FRAGMENT_NODE: 11, DOCUMENT_POSITION_FOLLOWING: 4 };
-
-function createFakeElement(tag, opts = {}) {
-  const el = {
-    nodeType: NODE_TYPES.ELEMENT_NODE,
-    tagName: tag.toUpperCase(),
-    style: {},
-    dataset: { ...(opts.dataset || {}) },
-    childNodes: [],
-    parentNode: null,
-    ownerDocument: null,
-    contentEditable: opts.contentEditable !== undefined ? String(opts.contentEditable) : 'inherit',
-    className: opts.classes ? opts.classes.join(' ') : '',
-    classList: {
-      _c: opts.classes ? [...opts.classes] : [],
-      add(cls) { if (!this._c.includes(cls)) this._c.push(cls); el.className = this._c.join(' '); },
-      contains(cls) { return this._c.includes(cls); },
-    },
-    hasChildNodes() { return this.childNodes.length > 0; },
-    appendChild(child) { return _appendChild(el, child); },
-    insertBefore(child, ref) { return _insertBefore(el, child, ref); },
-    removeChild(child) { return _removeChild(el, child); },
-    contains(other) { return _contains(el, other); },
-    querySelector(sel) { return _querySelector(el, sel); },
-    querySelectorAll(sel) { return _querySelectorAll(el, sel); },
-    remove() { if (el.parentNode) el.parentNode.removeChild(el); },
-    setAttribute() {},
-    getAttribute() { return null; },
-    get firstChild() { return this.childNodes[0] || null; },
-    get lastChild() { return this.childNodes[this.childNodes.length - 1] || null; },
-    get previousSibling() {
-      if (!el.parentNode) return null;
-      const i = el.parentNode.childNodes.indexOf(el);
-      return i > 0 ? el.parentNode.childNodes[i - 1] : null;
-    },
-    get nextSibling() {
-      if (!el.parentNode) return null;
-      const i = el.parentNode.childNodes.indexOf(el);
-      return i < el.parentNode.childNodes.length - 1 ? el.parentNode.childNodes[i + 1] : null;
-    },
-    get textContent() {
-      return this.childNodes.map(c => c.textContent || '').join('');
-    },
-    set textContent(val) {
-      this.childNodes.length = 0;
-      if (val) _appendChild(el, createFakeTextNode(val));
-    },
-    get innerHTML() {
-      return this.childNodes.map(c => {
-        if (c.nodeType === NODE_TYPES.TEXT_NODE) return c.textContent;
-        if (c.nodeType === NODE_TYPES.ELEMENT_NODE) {
-          const attrs = [];
-          if (c.className) attrs.push(`class="${c.className}"`);
-          if (c.contentEditable !== 'inherit') attrs.push(`contenteditable="${c.contentEditable}"`);
-          return `<${c.tagName.toLowerCase()}${attrs.length ? ' ' + attrs.join(' ') : ''}>${c.innerHTML}</${c.tagName.toLowerCase()}>`;
-        }
-        return '';
-      }).join('');
-    },
+const windows = [];
+function setup(html = '') {
+  const dom = new JSDOM(`<body contenteditable="true">${html}</body>`, { runScripts: 'outside-only', pretendToBeVisual: true });
+  const w = dom.window;
+  windows.push(w);
+  w.CSS = { highlights: new Map() };
+  w.Highlight = class { constructor(range) { this.range = range; } };
+  w.browser = { runtime: { getURL: path => `https://example.com/${path}`, sendMessage: vi.fn() }, storage: { local: { set: vi.fn() } } };
+  w.Range.prototype.getBoundingClientRect = function () {
+    const top = Math.floor(this.startOffset / 30) * 20 + 20;
+    return { left: (this.startOffset % 30) * 8 + 8, right: (this.startOffset % 30) * 8 + 16, top, bottom: top + 20, height: 20, width: 8 };
   };
-  return el;
-}
-
-function createFakeTextNode(text) {
-  return {
-    nodeType: NODE_TYPES.TEXT_NODE,
-    textContent: text,
-    parentNode: null,
-    get length() { return this.textContent.length; },
-    splitText(offset) {
-      const newNode = createFakeTextNode(this.textContent.slice(offset));
-      this.textContent = this.textContent.slice(0, offset);
-      if (this.parentNode) {
-        const idx = this.parentNode.childNodes.indexOf(this);
-        this.parentNode.childNodes.splice(idx + 1, 0, newNode);
-        newNode.parentNode = this.parentNode;
-      }
-      return newNode;
-    },
-  };
-}
-
-function createFakeFragment() {
-  const frag = {
-    nodeType: NODE_TYPES.DOCUMENT_FRAGMENT_NODE,
-    childNodes: [],
-    parentNode: null,
-    hasChildNodes() { return this.childNodes.length > 0; },
-    appendChild(child) { return _appendChild(frag, child); },
-    insertBefore(child, ref) { return _insertBefore(frag, child, ref); },
-    get lastChild() { return this.childNodes[this.childNodes.length - 1] || null; },
-    get firstChild() { return this.childNodes[0] || null; },
-    get textContent() { return this.childNodes.map(c => c.textContent || '').join(''); },
-  };
-  return frag;
-}
-
-function _appendChild(parent, child) {
-  if (child.nodeType === NODE_TYPES.DOCUMENT_FRAGMENT_NODE) {
-    const kids = [...child.childNodes];
-    for (const k of kids) { _appendChild(parent, k); }
-    child.childNodes.length = 0;
-    return child;
+  for (const name of ['libs/jsdiff.min.js', 'libs/diff-match-patch.js', 'modules/config.js', 'modules/logger.js', 'modules/state.js', 'modules/sentences.js', 'modules/tokens.js', 'modules/dom.js', 'modules/core.js', 'modules/diff.js', 'modules/previewModel.js', 'modules/richText.js', 'modules/preview.js', 'modules/events.js', 'modules/caret.js']) {
+    w.eval(readFileSync(resolve('compose', name), 'utf8'));
   }
-  if (child.parentNode) _removeChild(child.parentNode, child);
-  child.parentNode = parent;
-  parent.childNodes.push(child);
-  return child;
+  const tm = w.TabMail;
+  tm.log = { debug() {}, trace() {}, info() {}, warn() {}, error() {} };
+  tm.state.editorRef = w.document.body;
+  tm.state.correctedText = '';
+  const node = w.document.body.firstChild || w.document.body;
+  const r = w.document.createRange(); r.setStart(node, 0); r.collapse(true);
+  w.getSelection().addRange(r);
+  return { w, tm, body: w.document.body };
+}
+afterEach(() => { for (const w of windows.splice(0)) w.close(); });
+
+function commandCapture(w) {
+  let html;
+  w.document.execCommand = vi.fn((command, ui, value) => { html = value; return true; });
+  return () => html;
 }
 
-function _insertBefore(parent, child, ref) {
-  if (child.nodeType === NODE_TYPES.DOCUMENT_FRAGMENT_NODE) {
-    const kids = [...child.childNodes];
-    for (const k of kids) _insertBefore(parent, k, ref);
-    child.childNodes.length = 0;
-    return child;
-  }
-  if (child.parentNode) _removeChild(child.parentNode, child);
-  child.parentNode = parent;
-  const idx = parent.childNodes.indexOf(ref);
-  if (idx === -1) parent.childNodes.push(child);
-  else parent.childNodes.splice(idx, 0, child);
-  return child;
-}
+describe('passive autocomplete preview lifecycle', () => {
+  it.each([true, false])('does not mutate a rich body when visibility is %s', show => {
+    const { tm, body } = setup('<p>Hello <b>Alex</b>.</p><p>I can send it next week.</p><div class="moz-signature">Signature</div>');
+    const before = body.innerHTML;
+    tm.state.correctedText = 'Hello Alex.\nI can send it Thursday.\n';
+    tm.renderText(show);
+    expect(body.innerHTML).toBe(before);
+    expect(body.querySelector('[data-tabmail-diff]')).toBeNull();
+  });
+  it('puts the preview outside the serialized body and removes it without changing content', () => {
+    const { w, tm, body } = setup('This is very useful.');
+    const before = body.innerHTML;
+    tm.state.correctedText = 'This is useful.';
+    tm.renderText(true);
+    const host = w.document.getElementById('tm-compose-preview');
+    expect(host).not.toBeNull();
+    expect(host.parentNode).toBe(w.document.documentElement);
+    expect(body.innerHTML).toBe(before);
+    tm.renderText(false);
+    expect(w.document.getElementById('tm-compose-preview')).toBeNull();
+    expect(body.innerHTML).toBe(before);
+  });
+  it.each(['isIMEComposing', 'inlineEditActive', 'beforeSendCleanupActive', 'autocompleteDisabled'])('suppresses preview during %s', flag => {
+    const { w, tm } = setup('This is very useful.');
+    tm.state.correctedText = 'This is useful.';
+    tm.state[flag] = true;
+    tm.renderText(true);
+    expect(w.document.getElementById('tm-compose-preview')).toBeNull();
+  });
+  it('dismissal invalidates both in-flight request generations', () => {
+    const { tm } = setup('Hello.');
+    tm.state.latestLocalRequestId = 7; tm.state.latestGlobalRequestId = 9;
+    tm.state.correctedText = 'Hello Alex.';
+    tm.dismissComposeSuggestion();
+    expect(tm.state.latestLocalRequestId).toBe(8);
+    expect(tm.state.latestGlobalRequestId).toBe(10);
+    expect(tm.state.correctedText).toBeNull();
+  });
+  it('Shift+Tab has no acceptance or jump action', () => {
+    const { tm } = setup('Hello.');
+    const e = { key: 'Tab', shiftKey: true, ctrlKey: false, altKey: false, metaKey: false, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+    tm.state.previewJumpOffset = 1;
+    expect(tm.handleAcceptRejectKey(e)).toBe(false);
+    expect(tm.handleCursorMovementKey(e)).toBe(false);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+  it('native undo shortcut is not intercepted', () => {
+    const { tm } = setup('Hello.');
+    const e = { key: 'z', metaKey: true, preventDefault: vi.fn() };
+    expect(tm.handleUndoRedoKey(e)).toBe(false);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+});
 
-function _removeChild(parent, child) {
-  const idx = parent.childNodes.indexOf(child);
-  if (idx !== -1) parent.childNodes.splice(idx, 1);
-  child.parentNode = null;
-  return child;
-}
+describe('shared HTML text/range projection', () => {
+  it('uses one separator for nested blocks', () => {
+    const { tm, body } = setup('<div><p>First sentence.</p></div><p>Second sentence.</p>');
+    const index = tm.indexComposeText(body);
+    expect(index.text).toBe('First sentence.\nSecond sentence.\n');
+    const range = tm.composeRange(index, 16, 22);
+    expect(range.toString()).toBe('Second');
+  });
+  it('does not add a synthetic paragraph newline before a caret inside that paragraph', () => {
+    const { w, tm, body } = setup('<p>First sentence.</p><p>Second sentence.</p>');
+    const r = w.document.createRange();r.setStart(body.lastChild.firstChild, 3);r.collapse(true);
+    w.getSelection().removeAllRanges();w.getSelection().addRange(r);
+    expect(tm.composeCursorOffset(tm.indexComposeText(body))).toBe(19);
+  });
+  it('excludes signature and quoted reply from editable offsets', () => {
+    const { tm, body } = setup('Draft<div class="moz-signature">Signature</div><blockquote>Quoted text</blockquote>');
+    expect(tm.extractUserAndQuoteTexts(body)).toMatchObject({ originalUserMessage: 'Draft', quoteAndSignatureText: 'Signature\nQuoted text\n' });
+  });
+  it('keeps list items on distinct lines', () => {
+    const { tm, body } = setup('<ul><li>First</li><li>Second</li></ul>');
+    expect(tm.indexComposeText(body).text).toBe('First\nSecond\n');
+  });
+});
 
-function _contains(parent, other) {
-  if (parent === other) return true;
-  for (const c of parent.childNodes) {
-    if (c === other) return true;
-    if (c.nodeType === NODE_TYPES.ELEMENT_NODE && _contains(c, other)) return true;
-  }
-  return false;
-}
+describe('native acceptance payload (Gecko transaction semantics require live smoke tests)', () => {
+  it('preserves unchanged rich markup and inline images between edits', () => {
+    const { w, tm, body } = setup('<p><b>Bad</b> <img src="cid:synthetic"> <a href="https://example.com">link</a> bad</p><div class="moz-signature">Signature</div>');
+    const read = commandCapture(w);
+    const before = tm.extractUserAndQuoteTexts(body).originalUserMessage;
+    expect(tm.applyComposeEdits(body, before, [{ start: 0, end: 3, text: 'Good' }, { start: before.indexOf('bad'), end: before.indexOf('bad') + 3, text: 'good' }])).toBe(true);
+    expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+    const output = new JSDOM(read()).window.document.body;
+    expect(output.querySelector('b').textContent).toBe('Good');
+    expect(output.querySelector('img').getAttribute('src')).toBe('cid:synthetic');
+    expect(output.querySelector('a').getAttribute('href')).toBe('https://example.com');
+    expect(output.querySelector('.moz-signature')).toBeNull();
+  });
+  it('escapes proposed HTML as literal text', () => {
+    const { w, tm, body } = setup('Hello');
+    const read = commandCapture(w);
+    expect(tm.applyComposeEdits(body, 'Hello', [{ start: 0, end: 5, text: '<img src=x onerror=alert(1)>' }])).toBe(true);
+    expect(read()).toContain('&lt;img');
+    expect(read()).not.toContain('<img');
+  });
+  it('rejects stale baseline without a native command', () => {
+    const { w, tm, body } = setup('New user text');commandCapture(w);
+    expect(tm.applyComposeEdits(body, 'Old text', [{ start: 0, end: 8, text: 'Suggestion' }])).toBe(false);
+    expect(w.document.execCommand).not.toHaveBeenCalled();
+    expect(body.textContent).toBe('New user text');
+  });
+  it('preserves an empty draft’s signature while proposing a complete native insertion', () => {
+    const { w, tm, body } = setup('<div class="moz-signature">Signature</div>');
+    const read = commandCapture(w);
+    expect(tm.applyComposeEdits(body, '', [{ start: 0, end: 0, text: 'Hello\n\nBest,\nSam' }])).toBe(true);
+    expect(read()).toBe('Hello<br><br>Best,<br>Sam');
+    expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
+  });
+});
 
-function _matchesSel(node, sel) {
-  if (node.nodeType !== NODE_TYPES.ELEMENT_NODE) return false;
-  const parts = sel.split(',').map(s => s.trim());
-  for (const part of parts) {
-    if (part.startsWith('.') && node.classList.contains(part.slice(1))) return true;
-    if (part === node.tagName.toLowerCase() || part === node.tagName) return true;
-    // Handle attribute selectors like [data-tabmail-diff]
-    const attrMatch = part.match(/\[([^\]=]+)(?:="([^"]*)")?\]/);
-    if (attrMatch) {
-      const [, attr, val] = attrMatch;
-      const dsParts = attr.split('-');
-      // Convert data-tabmail-diff to dataset.tabmailDiff
-      if (attr.startsWith('data-')) {
-        const dsKey = dsParts.slice(1).map((p, i) => i === 0 ? p : p[0].toUpperCase() + p.slice(1)).join('');
-        if (node.dataset && (val === undefined ? dsKey in node.dataset : node.dataset[dsKey] === val)) return true;
-      }
-    }
-  }
-  return false;
-}
 
-function _querySelector(el, sel) {
-  for (const c of el.childNodes) {
-    if (_matchesSel(c, sel)) return c;
-    if (c.nodeType === NODE_TYPES.ELEMENT_NODE) {
-      const found = _querySelector(c, sel);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function _querySelectorAll(el, sel) {
-  const results = [];
-  function walk(node) {
-    for (const c of node.childNodes) {
-      if (_matchesSel(c, sel)) results.push(c);
-      if (c.nodeType === NODE_TYPES.ELEMENT_NODE) walk(c);
-    }
-  }
-  walk(el);
-  return results;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// FakeRange — tracks the range boundaries and implements deleteContents /
-// insertNode so we can exercise the real _applyFragmentToEditor logic.
-// ─────────────────────────────────────────────────────────────────────────────
-
-function createFakeRange(editor) {
-  let startContainer = editor, startOffset = 0;
-  let endContainer = editor, endOffset = editor.childNodes.length;
-
-  const range = {
-    get startContainer() { return startContainer; },
-    get startOffset() { return startOffset; },
-    selectNodeContents(node) {
-      startContainer = node;
-      startOffset = 0;
-      endContainer = node;
-      endOffset = node.childNodes.length;
-    },
-    setStart(node, offset) { startContainer = node; startOffset = offset; },
-    setStartBefore(node) {
-      startContainer = node.parentNode;
-      startOffset = node.parentNode.childNodes.indexOf(node);
-    },
-    setStartAfter(node) {
-      startContainer = node.parentNode;
-      startOffset = node.parentNode.childNodes.indexOf(node) + 1;
-    },
-    setEndBefore(node) {
-      endContainer = node.parentNode;
-      endOffset = node.parentNode.childNodes.indexOf(node);
-    },
-    setEnd(node, offset) { endContainer = node; endOffset = offset; },
-    collapse(toStart) {
-      if (toStart) { endContainer = startContainer; endOffset = startOffset; }
-      else { startContainer = endContainer; startOffset = endOffset; }
-    },
-    deleteContents() {
-      // Simple: remove children of the container between startOffset and endOffset
-      if (startContainer === endContainer && startContainer.childNodes) {
-        const removed = startContainer.childNodes.splice(startOffset, endOffset - startOffset);
-        for (const r of removed) r.parentNode = null;
-        endOffset = startOffset;
-      }
-    },
-    insertNode(node) {
-      if (startContainer.childNodes) {
-        const ref = startContainer.childNodes[startOffset] || null;
-        if (ref) _insertBefore(startContainer, node, ref);
-        else _appendChild(startContainer, node);
-      }
-    },
-    cloneContents() {
-      const frag = createFakeFragment();
-      if (startContainer === endContainer && startContainer.childNodes) {
-        for (let i = startOffset; i < endOffset; i++) {
-          const child = startContainer.childNodes[i];
-          frag.appendChild(_cloneNode(child));
-        }
-      }
-      return frag;
-    },
-    cloneRange() { return createFakeRange(editor); },
-    toString() {
-      const frag = range.cloneContents();
-      return frag.textContent;
-    },
-  };
-  return range;
-}
-
-function _cloneNode(node) {
-  if (node.nodeType === NODE_TYPES.TEXT_NODE) return createFakeTextNode(node.textContent);
-  if (node.nodeType === NODE_TYPES.ELEMENT_NODE) {
-    const el = createFakeElement(node.tagName, {
-      classes: [...node.classList._c],
-      dataset: { ...node.dataset },
-      contentEditable: node.contentEditable,
+describe('preview content and atomic keyboard integration', () => {
+  it('reuses its styled bubble while the caret moves within the same sentence', () => {
+    const { w, tm, body } = setup('The team is available. I can send it next week. Thanks.');
+    tm.state.correctedText = 'The team is available. I can send it Thursday. Thanks.';
+    const place = offset => { const r = w.document.createRange(); r.setStart(body.firstChild, offset); r.collapse(true); w.getSelection().removeAllRanges(); w.getSelection().addRange(r); };
+    place(25); tm.renderComposePreview();
+    const host = tm.state.previewView.host;
+    const content = tm.state.previewView.shadow.querySelector('.content').textContent;
+    place(35); tm.renderComposePreview();
+    expect(tm.state.previewView.host).toBe(host);
+    expect(tm.state.previewView.shadow.querySelector('.content').textContent).toBe(content);
+    expect(tm.state.previewView.shadow.querySelector('.inserted').textContent).toContain('Thursday');
+    expect(content).not.toContain('next week');
+    expect(body.textContent).toContain('next week');
+  });
+  it('measures only the rendered lines intersecting the target sentence', () => {
+    const { tm, body } = setup('A'.repeat(120));
+    const context = tm.composeLineContext(tm.indexComposeText(body), 35, 65);
+    expect(context).toMatchObject({ start: 30, end: 90, top: 40, bottom: 80 });
+  });
+  it('shows no extra paragraph delimiter in the bubble', () => {
+    const { tm } = setup('<p>This is very useful.</p><p>Unrelated paragraph.</p>');
+    tm.state.correctedText = 'This is useful.\nUnrelated paragraph.\n';
+    tm.renderComposePreview();
+    const content = tm.state.previewView.shadow.querySelector('.content').textContent;
+    expect(content).toBe('This is useful.');
+  });
+  it('Tab applies every displayed edit once, preserves the signature, and leaves the caret at the accepted change', () => {
+    const { w, tm, body } = setup('Hello. This is very bad. Thanks.<div class="moz-signature">Signature</div>');
+    const r = w.document.createRange(); r.setStart(body.firstChild, 14); r.collapse(true); w.getSelection().removeAllRanges(); w.getSelection().addRange(r);
+    tm.state.correctedText = 'Hello. This is good. Thanks.';
+    tm.renderComposePreview();
+    // This models DOM insertion for integration assertions; Gecko undo remains
+    // a separate runtime smoke requirement.
+    w.document.execCommand = vi.fn((command, ui, html) => {
+      const range = w.getSelection().getRangeAt(0);
+      range.deleteContents(); range.insertNode(range.createContextualFragment(html));
+      return true;
     });
-    for (const c of node.childNodes) el.appendChild(_cloneNode(c));
-    return el;
-  }
-  return createFakeFragment();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Test suite
-// ─────────────────────────────────────────────────────────────────────────────
-
-let TM;
-let fakeDoc;
-
-beforeAll(() => {
-  fakeDoc = {
-    getElementById: () => true,
-    createElement: (tag) => createFakeElement(tag),
-    createDocumentFragment: () => createFakeFragment(),
-    createTextNode: (text) => createFakeTextNode(text),
-    createRange: () => createFakeRange(createFakeElement('body')),
-    head: { appendChild: () => {} },
-    documentElement: { appendChild: () => {} },
-    body: createFakeElement('body'),
-  };
-
-  const sandbox = {
-    TabMail: {},
-    console,
-    Object, Array, String, Number, RegExp, Math, Map, Set, NaN, Infinity,
-    parseInt, parseFloat, isNaN, JSON,
-    setTimeout, clearTimeout,
-    Node: NODE_TYPES,
-    document: fakeDoc,
-    window: { getSelection: () => null, scrollTo: () => {}, getComputedStyle: () => ({ overflowY: 'visible' }) },
-    performance: { now: () => Date.now() },
-  };
-
-  // Load modules in dependency order
-  const domCode = readFileSync(resolve(__dirname, '../compose/modules/dom.js'), 'utf8');
-  runInNewContext(domCode, sandbox);
-
-  const sentencesCode = readFileSync(resolve(__dirname, '../compose/modules/sentences.js'), 'utf8');
-  runInNewContext(sentencesCode, sandbox);
-
-  // Provide config and stubs needed by diff.js
-  sandbox.TabMail.config = {
-    getColor: (c) => c || 'inherit',
-    diffPerfLogging: false,
-    diffLogGrouping: false,
-    diffLogDebug: false,
-    DELETED_NEWLINE_VISUAL_CHAR: null,
-    HIDE_DELETE_NEWLINES: false,
-    colors: {
-      insert: { background: '#e6ffe6', text: 'inherit', highlight: { background: '#b3ffb3', text: 'inherit' } },
-      delete: { background: '#ffe6e6', text: 'inherit', highlight: { background: '#ffb3b3', text: 'inherit' } },
-    },
-    newlineMarker: { NBSP_COUNT: 1 },
-    quoteSeparator: { BR_COUNT_DEFAULT: 2, BR_COUNT_WHEN_SIGNATURE_BOUNDARY_WITH_QUOTE_AFTER: 1 },
-    DIFF_RESTORE_DELAY_MS: 500,
-  };
-  sandbox.TabMail.log = { debug: () => {}, info: () => {}, trace: () => {}, warn: () => {}, error: () => {} };
-  sandbox.TabMail.state = {
-    editorRef: null,
-    correctedText: null,
-    originalText: null,
-    lastRenderedText: null,
-    autoHideDiff: false,
-    showDiff: true,
-    isDiffActive: false,
-    isIMEComposing: false,
-    inlineEditActive: false,
-    beforeSendCleanupActive: false,
-    currentlyHighlightedSpans: [],
-    selectionMuteDepth: 0,
-    diffRestoreTimer: null,
-    lastKeystrokeAdheredToSuggestion: false,
-    adherenceInfo: null,
-  };
-  sandbox.TabMail._beginProgrammaticSelection = () => {};
-  sandbox.TabMail._endProgrammaticSelection = () => {};
-  sandbox.TabMail.showCursorMovementTooltip = () => {};
-
-  sandbox.Diff = { diffArrays: () => [] };
-  sandbox.diff_match_patch = class {
-    constructor() { this.Diff_EditCost = 4; }
-    diff_main(a, b) {
-      // Minimal real diff for testing
-      if (a === b) return [[0, a]];
-      if (!a) return [[1, b]];
-      if (!b) return [[-1, a]];
-      // Find common prefix
-      let i = 0;
-      while (i < a.length && i < b.length && a[i] === b[i]) i++;
-      const prefix = a.slice(0, i);
-      const aSuffix = a.slice(i);
-      const bSuffix = b.slice(i);
-      const result = [];
-      if (prefix) result.push([0, prefix]);
-      if (aSuffix) result.push([-1, aSuffix]);
-      if (bSuffix) result.push([1, bSuffix]);
-      return result;
-    }
-    diff_cleanupEfficiency() {}
-  };
-
-  const diffCode = readFileSync(resolve(__dirname, '../compose/modules/diff.js'), 'utf8');
-  runInNewContext(diffCode, sandbox);
-
-  const autohideCode = readFileSync(resolve(__dirname, '../compose/modules/autohideDiff.js'), 'utf8');
-  runInNewContext(autohideCode, sandbox);
-
-  TM = sandbox.TabMail;
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: build an editor body with signature and optional quoted text
-// ─────────────────────────────────────────────────────────────────────────────
-
-function buildEditor(userText = '', { hasSig = true, hasQuote = true } = {}) {
-  const editor = createFakeElement('body', { contentEditable: 'true' });
-
-  if (userText) {
-    editor.appendChild(createFakeTextNode(userText));
-  }
-
-  if (hasSig) {
-    const sig = createFakeElement('div', { classes: ['moz-signature'] });
-    sig.appendChild(createFakeTextNode('-- \nMy Signature'));
-    editor.appendChild(sig);
-  }
-
-  if (hasQuote) {
-    const quote = createFakeElement('blockquote');
-    quote.appendChild(createFakeTextNode('On date, person wrote:\n> original message'));
-    editor.appendChild(quote);
-  }
-
-  // Override createRange on fakeDoc to use this editor
-  fakeDoc.createRange = () => createFakeRange(editor);
-
-  return editor;
-}
-
-function extract(editor) {
-  return TM.extractUserAndQuoteTexts(editor);
-}
-
-function resetState() {
-  TM.state.correctedText = null;
-  TM.state.originalText = null;
-  TM.state.lastRenderedText = null;
-  TM.state.autoHideDiff = false;
-  TM.state.showDiff = true;
-  TM.state.isDiffActive = false;
-  TM.state.isIMEComposing = false;
-  TM.state.inlineEditActive = false;
-  TM.state.beforeSendCleanupActive = false;
-  TM.state.selectionMuteDepth = 0;
-  if (TM.state.diffRestoreTimer) {
-    clearTimeout(TM.state.diffRestoreTimer);
-    TM.state.diffRestoreTimer = null;
-  }
-}
-
-beforeEach(() => {
-  resetState();
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 1: No LLM suggestion (slow/missing response)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Scenario: No LLM suggestion (slow response)', () => {
-  it('user types in empty editor — text survives renderText cycle', () => {
-    const editor = buildEditor('');
-    TM.state.editorRef = editor;
-
-    // Initial render (attachAutocomplete calls this)
-    TM.renderText(false);
-    // Simulate user typing "Hello" — insert text node before the separator
-    const userRegionNodes = editor.childNodes.filter(
-      n => !n.classList?.contains?.('moz-signature') &&
-           !n.classList?.contains?.('tm-quote-separator') &&
-           n.tagName !== 'BLOCKQUOTE'
-    );
-    // Find the empty text anchor or add text
-    const textAnchor = userRegionNodes.find(n => n.nodeType === NODE_TYPES.TEXT_NODE);
-    if (textAnchor) {
-      textAnchor.textContent = 'Hello';
-    } else {
-      // Insert before separator
-      const sep = editor.querySelector('.tm-quote-separator');
-      if (sep) editor.insertBefore(createFakeTextNode('Hello'), sep);
-      else editor.insertBefore(createFakeTextNode('Hello'), editor.firstChild);
-    }
-
-    // No correctedText (LLM hasn't responded)
-    TM.state.correctedText = null;
-
-    // renderText triggered by selectionchange — should NOT wipe "Hello"
-    TM.renderText(true);
-    const result = extract(editor);
-    expect(result.originalUserMessage).toBe('Hello');
+    const event = { key: 'Tab', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+    expect(tm.handleAcceptRejectKey(event)).toBe(true);
+    expect(body.textContent).toBe('Hello. This is good. Thanks.Signature');
+    expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+    expect(tm.state.previewModel).toBeNull();
+    const caret = tm.composeCursorOffset(tm.indexComposeText(body, tm.getQuoteBoundaryNode(body)));
+    expect(body.textContent.slice(0, caret)).toBe('Hello. This is goo');
+    expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
   });
-
-  it('multiple render cycles with no suggestion preserve text', () => {
-    const editor = buildEditor('Test message');
-    TM.state.editorRef = editor;
-
-    // No suggestion
-    TM.state.correctedText = null;
-
-    // First render
-    TM.renderText(false);
-    expect(extract(editor).originalUserMessage).toBe('Test message');
-
-    // Second render (selectionchange)
-    TM.renderText(true);
-    expect(extract(editor).originalUserMessage).toBe('Test message');
-
-    // Third render (diffRestoreTimer)
-    TM.state.autoHideDiff = false;
-    TM.renderText(true);
-    expect(extract(editor).originalUserMessage).toBe('Test message');
-  });
-
-  it('renderText with show_diffs=false preserves text when no correctedText', () => {
-    const editor = buildEditor('Draft email body');
-    TM.state.editorRef = editor;
-    TM.state.correctedText = null;
-
-    TM.renderText(false);
-    expect(extract(editor).originalUserMessage).toBe('Draft email body');
+  it('restores selection and releases suppression after a failed native command', async () => {
+    const { w, tm, body } = setup('Hello');
+    const original = w.getSelection().getRangeAt(0).cloneRange();
+    w.document.execCommand = vi.fn(() => { throw new Error('native failure'); });
+    expect(tm.applyComposeEdits(body, 'Hello', [{ start: 0, end: 5, text: 'Hi' }])).toBe(false);
+    expect(body.textContent).toBe('Hello');
+    expect(w.getSelection().anchorNode).toBe(original.startContainer);
+    expect(tm.state.applyingPreview).toBe(false);
+    await new Promise(resolve => w.setTimeout(resolve, 0));
+    expect(tm.state.selectionMuteDepth).toBe(0);
   });
 });
 
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 2: Stale suggestion arrives
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Scenario: Stale suggestion arrives', () => {
-  it('correctedText from old request does not clobber current text', () => {
-    // User typed "Hello world" but stale suggestion was for "Hel"
-    const editor = buildEditor('Hello world');
-    TM.state.editorRef = editor;
-
-    // Stale correctedText — but since we render with show_diffs=false and null
-    // correctedText (simulating handleAutohideDiff nulling it), text is preserved.
-    TM.state.correctedText = null;
-
-    TM.renderText(false);
-    const result = extract(editor);
-    expect(result.originalUserMessage).toBe('Hello world');
+describe('clickable suggestion controls', () => {
+  it('offers disable inside a live preview and enable only in the disabled bottom floater', () => {
+    const { w, tm, body } = setup('This is very useful.');
+    tm.state.correctedText = 'This is useful.';
+    tm.renderComposePreview(); tm.showComposeHintsBanner();
+    expect(w.document.getElementById('tm-compose-hints-banner')).toBeNull();
+    const controls = [...tm.state.previewView.shadow.querySelectorAll('button')];
+    expect(controls.map(button => button.textContent)).toEqual(['Accept', 'Dismiss', 'Disable suggestions']);
+    controls[2].click();
+    expect(tm.state.autocompleteDisabled).toBe(true);
+    expect(w.browser.storage.local.set).toHaveBeenCalledWith({ autocompleteEnabled: false });
+    expect(w.document.getElementById('tm-compose-preview')).toBeNull();
+    const banner = w.document.getElementById('tm-compose-hints-banner');
+    expect(banner.parentElement).toBe(w.document.documentElement);
+    expect(banner.textContent).toBe('Enable suggestions');
+    expect(body.textContent).toBe('This is very useful.');
+    banner.querySelector('button').click();
+    expect(tm.state.autocompleteDisabled).toBe(false);
+    expect(w.browser.storage.local.set).toHaveBeenLastCalledWith({ autocompleteEnabled: true });
+    expect(w.document.getElementById('tm-compose-hints-banner')).toBeNull();
   });
-
-  it('after autohide nulls correctedText, render uses original text', () => {
-    const editor = buildEditor('Current text');
-    TM.state.editorRef = editor;
-    TM.state.correctedText = 'Old stale suggestion';
-    TM.state.isDiffActive = true;
-
-    // Simulate user keydown → handleAutohideDiff
-    TM.state.autoHideDiff = true;
-    TM.state.correctedText = null; // handleAutohideDiff does this
-
-    TM.renderText(false);
-    expect(extract(editor).originalUserMessage).toBe('Current text');
-  });
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 3: Proper suggestion — show diffs, hide diffs, restore diffs
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Scenario: Proper suggestion lifecycle', () => {
-  let origComputeDiff;
-
-  beforeEach(() => {
-    origComputeDiff = TM.computeDiff;
-  });
-
-  afterEach(() => {
-    TM.computeDiff = origComputeDiff;
-  });
-
-  it('suggestion shown with diffs preserves original text on extraction', () => {
-    const editor = buildEditor('Hello wrold');
-    TM.state.editorRef = editor;
-    TM.state.correctedText = 'Hello world';
-
-    // Stub computeDiff to return known diffs with sentence indices
-    TM.computeDiff = () => [[0, 'Hello w', 0, 0], [-1, 'rold', 0, 0], [1, 'orld', 0, 0]];
-
-    TM.renderText(true);
-    // After rendering diffs, extraction with skipInserts should return original
-    const result = extract(editor);
-    expect(result.originalUserMessage).toBe('Hello wrold');
-  });
-
-  it('hide diffs → render(false) preserves text', () => {
-    const editor = buildEditor('Hello wrold');
-    TM.state.editorRef = editor;
-    TM.state.correctedText = 'Hello world';
-    TM.computeDiff = () => [[0, 'Hello w', 0, 0], [-1, 'rold', 0, 0], [1, 'orld', 0, 0]];
-
-    // Show diffs first
-    TM.renderText(true);
-    expect(TM.state.isDiffActive).toBe(true);
-
-    // User types → autohide: correctedText nulled, render without diffs
-    TM.state.autoHideDiff = true;
-    TM.state.correctedText = null;
-
-    TM.renderText(false);
-    expect(extract(editor).originalUserMessage).toBe('Hello wrold');
-    expect(TM.state.isDiffActive).toBe(false);
-  });
-
-  it('diffRestoreTimer → render(true) after autohide preserves text', () => {
-    const editor = buildEditor('Hello wrold');
-    TM.state.editorRef = editor;
-
-    // Initially render without diffs
-    TM.state.correctedText = null;
-    TM.renderText(false);
-    expect(extract(editor).originalUserMessage).toBe('Hello wrold');
-
-    // diffRestoreTimer fires — no correctedText, should still preserve
-    TM.state.autoHideDiff = false;
-    TM.renderText(true);
-    expect(extract(editor).originalUserMessage).toBe('Hello wrold');
-  });
-
-  it('full cycle: show → hide → restore preserves text', () => {
-    const editor = buildEditor('Teh quick fox');
-    TM.state.editorRef = editor;
-    TM.computeDiff = () => [[0, '', 0, 0], [-1, 'Teh', 0, 0], [1, 'The', 0, 0], [0, ' quick fox', 0, 0]];
-
-    // Step 1: suggestion arrives
-    TM.state.correctedText = 'The quick fox';
-    TM.renderText(true);
-    expect(extract(editor).originalUserMessage).toBe('Teh quick fox');
-
-    // Step 2: user types non-adhering → autohide
-    TM.state.autoHideDiff = true;
-    TM.state.correctedText = null;
-    TM.renderText(false);
-    expect(extract(editor).originalUserMessage).toBe('Teh quick fox');
-
-    // Step 3: diffRestoreTimer fires — no correctedText
-    TM.state.autoHideDiff = false;
-    TM.renderText(true);
-    expect(extract(editor).originalUserMessage).toBe('Teh quick fox');
-  });
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 4: Partial acceptance (typing along)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Scenario: Partial acceptance via adherence', () => {
-  it('_applyAdherenceToDiffs consumes chars correctly', () => {
-    // Diffs: EQUAL "Hello" | INSERT " World"
-    const diffs = [[0, 'Hello'], [1, ' World']];
-    TM.state.lastRenderedText = { diffs, original: 'Hello', corrected: 'Hello World', show_diffs: true, show_newlines: true, originalCursorOffset: 5 };
-
-    // User types space — adheres to suggestion
-    TM._applyAdherenceToDiffs({ type: 'insert', diffIndex: 1, charIndex: 0, char: ' ' });
-
-    expect(diffs[0][1]).toBe('Hello ');
-    expect(diffs[1][1]).toBe('World');
-
-    // User types 'W'
-    TM._applyAdherenceToDiffs({ type: 'insert', diffIndex: 1, charIndex: 0, char: 'W' });
-    expect(diffs[0][1]).toBe('Hello W');
-    expect(diffs[1][1]).toBe('orld');
-  });
-
-  it('fully consumed INSERT is removed from diffs', () => {
-    const diffs = [[0, 'Hi'], [1, '!']];
-    TM.state.lastRenderedText = { diffs, original: 'Hi', corrected: 'Hi!' };
-
-    TM._applyAdherenceToDiffs({ type: 'insert', diffIndex: 1, charIndex: 0, char: '!' });
-
-    expect(diffs.length).toBe(1);
-    expect(diffs[0]).toEqual([0, 'Hi!']);
-  });
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 5: Empty editor with signature (the original bug)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Scenario: Empty editor with signature (original bug)', () => {
-  it('initial render of empty editor does not crash', () => {
-    const editor = buildEditor('');
-    TM.state.editorRef = editor;
-    TM.state.correctedText = null;
-
-    expect(() => TM.renderText(false)).not.toThrow();
-    expect(extract(editor).originalUserMessage).toBe('');
-  });
-
-  it('separator is present after initial render', () => {
-    const editor = buildEditor('');
-    TM.state.editorRef = editor;
-    TM.renderText(false);
-
-    const sep = editor.querySelector('.tm-quote-separator');
-    expect(sep).not.toBeNull();
-  });
-
-  it('editable <br> anchor (preceded by a text node) exists before separator after render', () => {
-    const editor = buildEditor('');
-    TM.state.editorRef = editor;
-    TM.renderText(false);
-
-    const sep = editor.querySelector('.tm-quote-separator');
-    expect(sep).not.toBeNull();
-
-    const idx = editor.childNodes.indexOf(sep);
-    expect(idx).toBeGreaterThan(1);
-
-    // The node right before the separator is the editable <br> anchor: it gives
-    // Gecko a typable boundary so end-of-text keystrokes are not dropped into
-    // the contenteditable=false separator dead-zone.
-    const beforeSep = editor.childNodes[idx - 1];
-    expect(beforeSep.nodeType).toBe(NODE_TYPES.ELEMENT_NODE);
-    expect(beforeSep.tagName).toBe('BR');
-    expect(beforeSep.classList.contains('tm-edit-anchor')).toBe(true);
-
-    // ...and a text node precedes that anchor for caret placement.
-    const beforeAnchor = editor.childNodes[idx - 2];
-    expect(beforeAnchor.nodeType).toBe(NODE_TYPES.TEXT_NODE);
-  });
-
-  it('repeated renders of empty editor do not accumulate separators', () => {
-    const editor = buildEditor('');
-    TM.state.editorRef = editor;
-
-    TM.renderText(false);
-    TM.state.lastRenderedText = null; // force re-render
-    TM.renderText(true);
-    TM.state.lastRenderedText = null;
-    TM.renderText(false);
-
-    // Count separators
-    const seps = editor.childNodes.filter(
-      n => n.nodeType === NODE_TYPES.ELEMENT_NODE && n.classList?.contains?.('tm-quote-separator')
-    );
-    expect(seps.length).toBe(1);
-  });
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 6: Editor without signature / quote
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Scenario: Editor without signature or quote', () => {
-  it('renders text correctly when no quote boundary', () => {
-    const editor = buildEditor('Just text', { hasSig: false, hasQuote: false });
-    TM.state.editorRef = editor;
-    TM.state.correctedText = null;
-
-    TM.renderText(false);
-    expect(extract(editor).originalUserMessage).toBe('Just text');
-  });
-
-  it('no separator is added when no quote boundary', () => {
-    const editor = buildEditor('No sig', { hasSig: false, hasQuote: false });
-    TM.state.editorRef = editor;
-
-    TM.renderText(false);
-    const sep = editor.querySelector('.tm-quote-separator');
-    expect(sep).toBeNull();
-  });
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 7: handleAutohideDiff guard
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Scenario: handleAutohideDiff guard prevents unnecessary renders', () => {
-  let renderTextCalls;
-  let origRenderText;
-  let origIsInputEvent;
-  let origIsKeystrokeAdhering;
-
-  beforeEach(() => {
-    renderTextCalls = [];
-    origRenderText = TM.renderText;
-    origIsInputEvent = TM.isInputEvent;
-    origIsKeystrokeAdhering = TM._isKeystrokeAdheringToSuggestion;
-    TM.renderText = (...args) => renderTextCalls.push(args);
-    TM.isInputEvent = () => true;
-    TM._isKeystrokeAdheringToSuggestion = () => false;
-  });
-
-  afterEach(() => {
-    TM.renderText = origRenderText;
-    TM.isInputEvent = origIsInputEvent;
-    TM._isKeystrokeAdheringToSuggestion = origIsKeystrokeAdhering;
-    if (TM.state.diffRestoreTimer) {
-      clearTimeout(TM.state.diffRestoreTimer);
-      TM.state.diffRestoreTimer = null;
-    }
-  });
-
-  it('does not render when no active diffs and no suggestion', () => {
-    TM.state.isDiffActive = false;
-    TM.state.correctedText = null;
-
-    TM.handleAutohideDiff({ type: 'keydown', key: 'a' });
-
-    expect(renderTextCalls.length).toBe(0);
-  });
-
-  it('renders when isDiffActive even without correctedText', () => {
-    TM.state.isDiffActive = true;
-    TM.state.correctedText = null;
-
-    TM.handleAutohideDiff({ type: 'keydown', key: 'a' });
-
-    expect(renderTextCalls.length).toBe(1);
-  });
-
-  it('renders when correctedText exists even without active diffs', () => {
-    TM.state.isDiffActive = false;
-    TM.state.correctedText = 'some text';
-
-    TM.handleAutohideDiff({ type: 'keydown', key: 'a' });
-
-    expect(renderTextCalls.length).toBe(1);
-  });
-
-  it('does not render for non-insert keystrokes', () => {
-    TM.isInputEvent = () => false;
-    TM.state.isDiffActive = true;
-
-    TM.handleAutohideDiff({ type: 'keydown', key: 'ArrowLeft' });
-
-    expect(renderTextCalls.length).toBe(0);
-  });
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 8: Early-return dedup in renderText
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Scenario: renderText early-return dedup', () => {
-  it('skips re-render when lastRenderedText matches current state', () => {
-    const editor = buildEditor('Same text');
-    TM.state.editorRef = editor;
-    TM.state.correctedText = null;
-
-    // First render populates lastRenderedText
-    TM.renderText(false);
-    const after1 = extract(editor).originalUserMessage;
-    expect(after1).toBe('Same text');
-
-    // Second render with same params should early-return (no DOM change)
-    const childCountBefore = editor.childNodes.length;
-    TM.renderText(false);
-    // Text still preserved
-    expect(extract(editor).originalUserMessage).toBe('Same text');
-  });
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Scenario 9: Multiline text with suggestion
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Scenario: Multiline text', () => {
-  it('preserves multiline text through render cycle', () => {
-    const editor = buildEditor('Line one\nLine two\nLine three');
-    TM.state.editorRef = editor;
-    TM.state.correctedText = null;
-
-    TM.renderText(false);
-    expect(extract(editor).originalUserMessage).toBe('Line one\nLine two\nLine three');
-  });
-
-  it('suggestion with multiline text preserves original on extraction', () => {
-    const editor = buildEditor('Line one\nLine too');
-    TM.state.editorRef = editor;
-    TM.state.correctedText = 'Line one\nLine two';
-
-    // Stub computeDiff with known diffs
-    const origCD = TM.computeDiff;
-    TM.computeDiff = () => [[0, 'Line one\nLine t', 0, 0], [-1, 'oo', 0, 0], [1, 'wo', 0, 0]];
-    TM.renderText(true);
-    TM.computeDiff = origCD;
-
-    expect(extract(editor).originalUserMessage).toBe('Line one\nLine too');
+  it('mouse dismissal preserves the draft and clears all suggestion state', () => {
+    const { tm, body } = setup('This is very useful.');
+    tm.state.correctedText = 'This is useful.';
+    tm.renderComposePreview();
+    [...tm.state.previewView.shadow.querySelectorAll('button')].find(button => button.textContent === 'Dismiss').click();
+    expect(body.textContent).toBe('This is very useful.');
+    expect(tm.state.correctedText).toBeNull();
+    expect(tm.state.previewView).toBeNull();
   });
 });
