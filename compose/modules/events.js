@@ -646,7 +646,10 @@ Object.assign(TabMail, {
     };
     document.addEventListener("compositionend", TabMail._eventListeners.compositionendHandler, true);
 
-    TabMail._eventListeners.layoutHandler = () => TabMail.renderText(TabMail.state.showDiff && !TabMail.state.autoHideDiff);
+    TabMail._eventListeners.layoutHandler = event => {
+      if (event.target instanceof Node && TabMail.state.previewView?.host.contains(event.target)) return;
+      TabMail.renderText(TabMail.state.showDiff && !TabMail.state.autoHideDiff);
+    };
     window.addEventListener("resize", TabMail._eventListeners.layoutHandler);
     document.addEventListener("scroll", TabMail._eventListeners.layoutHandler, true);
 

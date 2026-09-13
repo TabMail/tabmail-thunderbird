@@ -23,6 +23,7 @@ function setup(html = '') {
     const filename = resolve('compose', name);
     runInContext(readFileSync(filename, 'utf8'), dom.getInternalVMContext(), { filename });
   }
+  installNativeModel(w);
   const tm = w.TabMail;
   tm.log = { debug() {}, trace() {}, info() {}, warn() {}, error() {} };
   tm.state.editorRef = w.document.body;
@@ -33,6 +34,19 @@ function setup(html = '') {
   return { w, tm, body: w.document.body };
 }
 afterEach(() => { for (const w of windows.splice(0)) w.close(); });
+
+// A stateful command model with distinct text/HTML semantics. Actual Gecko
+// transactions and undo are additionally checked by test/manual probes.
+function installNativeModel(w) {
+  w.document.execCommand = vi.fn((command, ui, value) => {
+    if (!['insertHTML', 'insertText'].includes(command)) return false;
+    const range = w.getSelection().getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(command === 'insertHTML' ? range.createContextualFragment(value) : w.document.createTextNode(value));
+    w.document.body.dispatchEvent(new w.InputEvent('input', {bubbles:true, inputType:'insertText'}));
+    return true;
+  });
+}
 
 function commandCapture(w) {
   let html;
@@ -385,4 +399,133 @@ it('preserves same-line inline typography in the preview without cloning authore
   expect(context.textContent).toBe('Context.');
   expect(context.style.fontWeight).toBe('bold');
   expect(tm.state.previewView.host.querySelector('b')).toBeNull();
+});
+
+it('scrolling a long empty-draft proposal preserves the visible scroll position and draft',()=>{
+ const {w,tm,body}=setup('');
+ try {
+  tm.attachAutocomplete(body);
+  tm.state.correctedText='A complete proposed paragraph.\n'.repeat(100);
+  tm.renderComposePreview();
+  const bubble=tm.state.previewView.host.querySelector('.preview');
+  const content=bubble.querySelector('.content').textContent;
+  expect(content.length).toBeGreaterThan(2500);
+  expect(body.innerHTML).toBe('');
+  bubble.scrollTop=150;
+  bubble.dispatchEvent(new w.Event('scroll',{bubbles:false}));
+  const current=tm.state.previewView.host.querySelector('.preview');
+  expect(current.scrollTop).toBe(150);
+  expect(current.querySelector('.content').textContent).toBe(content);
+  expect(body.innerHTML).toBe('');
+  const render=vi.spyOn(tm,'renderComposePreview');
+  w.document.dispatchEvent(new w.Event('scroll'));
+  expect(render).toHaveBeenCalledTimes(1);
+  w.dispatchEvent(new w.Event('resize'));
+  expect(render).toHaveBeenCalledTimes(2);
+  expect(body.innerHTML).toBe('');
+ } finally {w.close();}
+});
+
+it('a newer caret action prevents Tab from editing the previous sentence',()=>{
+ const {w,tm,body}=setup('First is bad. Second is bad.');
+ try {
+  tm.attachAutocomplete(body);tm.state.correctedText='First is good. Second is good.';tm.renderComposePreview();
+  expect(tm.state.previewModel.replacement.trim()).toBe('First is good.');
+  tm.setCursorByOffset(body,20);w.document.dispatchEvent(new w.Event('selectionchange'));
+  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+  expect(body.textContent.startsWith('First is bad.')).toBe(true);
+  tm.renderComposePreview();
+  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+  expect(body.textContent).toBe('First is bad. Second is good.');
+ } finally {w.close();}
+});
+
+it('a cached precompose reply must remain a proposal until the user accepts it',async()=>{
+ const {w,tm,body}=setup('');
+ try{
+  tm.state.latestGlobalRequestId=1;
+  tm.getCorrectionFromServer=async()=>({suggestion:'Hello Alex.\n\nHere is the proposal.',usertext:'',directReplace:true});
+  await tm.triggerCorrectionBackend(body,'','',1,false);
+  expect(tm.state.correctedText).toBe('Hello Alex.\n\nHere is the proposal.');
+  expect(body.innerHTML).toBe('');
+  expect(tm.state.isGlobalRequestInFlight).toBe(false);
+  if(tm.state.previewModel){expect(tm.state.previewModel.edits.length).toBeGreaterThan(0);expect(tm.state.previewView.host.querySelector('.content').textContent).toContain('Here is the proposal.');}
+ }finally{w.close();}
+});
+
+
+it('refuses an inline-produced paragraph join without altering authored structure', () => {
+  const { w, tm, body } = setup('<p>One.</p><p>Two.</p>');
+  const before = body.innerHTML;
+  w.document.execCommand = vi.fn();
+  const original = tm.indexComposeText(body).text;
+  const edits = tm.composeEditsFromDiff(tm.computeDiff(original, 'One. Two.'));
+  expect(tm.applyComposeEdits(body, original, edits)).toBe(false);
+  expect(body.innerHTML).toBe(before);
+  expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+
+it('mouse Accept applies the displayed rich edit through its registered click handler', () => {
+  const { w, tm, body } = setup('<p>Hello <b>bad</b>.</p>');
+  tm.attachAutocomplete(body);
+  const schedule = vi.spyOn(tm, 'scheduleTrigger');
+  tm.state.correctedText = 'Hello good.';tm.renderComposePreview();
+  tm.state.previewView.host.querySelector('button').click();
+  expect(body.innerHTML).toBe('<p>Hello <b>good</b>.</p>');
+  expect(tm.state.previewModel).toBeNull();
+  expect(schedule).not.toHaveBeenCalled();
+  expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+});
+
+it('registered typing and IME handlers invalidate previews and defer requests until composition ends', () => {
+  const { w, tm, body } = setup('Hello.');
+  tm.attachAutocomplete(body);
+  const schedule = vi.spyOn(tm, 'scheduleTrigger').mockImplementation(() => {});
+  tm.state.correctedText = 'Hello Alex.';tm.renderComposePreview();
+  body.dispatchEvent(new w.InputEvent('input', {bubbles:true, data:'x'}));
+  expect(tm.state.correctedText).toBeNull();
+  expect(tm.state.previewModel).toBeNull();
+  expect(schedule).toHaveBeenCalledTimes(1);
+  tm.state.correctedText = 'Hello Alex.';tm.renderComposePreview();
+  body.dispatchEvent(new w.CompositionEvent('compositionstart', {bubbles:true}));
+  body.dispatchEvent(new w.InputEvent('input', {bubbles:true, isComposing:true}));
+  expect(tm.state.isIMEComposing).toBe(true);
+  expect(tm.state.previewModel).toBeNull();
+  expect(schedule).toHaveBeenCalledTimes(1);
+  body.dispatchEvent(new w.CompositionEvent('compositionend', {bubbles:true}));
+  expect(tm.state.isIMEComposing).toBe(false);
+  expect(schedule).toHaveBeenCalledTimes(2);
+  expect(body.textContent).toBe('Hello.');
+});
+
+it('the real inline editor restores the compose host before applying formatted text', async () => {
+  const { w, tm, body } = setup('<p>Hello <b>bad</b>.</p><div class="moz-signature">Signature</div>');
+  tm.attachAutocomplete(body);
+  w.document.designMode = 'on';
+  w.browser.runtime.sendMessage.mockResolvedValue({body:'Hello good.'});
+  body.dispatchEvent(new w.KeyboardEvent('keydown', {key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+  const wrapper = w.document.getElementById('tm-inline-edit');
+  expect(wrapper).not.toBeNull();
+  expect(tm.state.inlineEditActive).toBe(true);
+  const input = wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
+  input.value = 'Correct the wording';
+  input.dispatchEvent(new w.KeyboardEvent('keydown', {key:'Enter',ctrlKey:true,bubbles:true,cancelable:true}));
+  await vi.waitFor(() => expect(body.querySelector('b').textContent).toBe('good'));
+  expect(w.document.getElementById('tm-inline-edit')).toBeNull();
+  expect(w.document.designMode).toBe('on');
+  expect(tm.state.inlineEditActive).toBe(false);
+  expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
+});
+
+it('registered selection changes refresh the sentence preview after a user caret move', async () => {
+  const { w, tm, body } = setup('First is bad. Second is bad.');
+  tm.attachAutocomplete(body);
+  tm.state.correctedText = 'First is good. Second is good.';tm.renderComposePreview();
+  expect(tm.state.previewModel.replacement.trim()).toBe('First is good.');
+  const caret = w.document.createRange();caret.setStart(body.firstChild,20);caret.collapse(true);
+  w.getSelection().removeAllRanges();w.getSelection().addRange(caret);
+  w.document.dispatchEvent(new w.Event('selectionchange'));
+  await vi.waitFor(()=>expect(tm.state.previewModel.replacement.trim()).toBe('Second is good.'));
+  expect(body.textContent).toBe('First is bad. Second is bad.');
 });

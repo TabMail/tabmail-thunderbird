@@ -185,8 +185,13 @@ Object.assign(TabMail, {
   },
 
   acceptComposePreview() {
+    const displayed = TabMail.state.previewModel;
+    if (!displayed) return false;
+    // Selection notifications may still be queued. Never commit an older
+    // sentence target after a newer caret action or a changed draft/proposal.
+    TabMail.renderComposePreview();
     const model = TabMail.state.previewModel;
-    if (!model) return false;
+    if (!model || model.original !== displayed.original || JSON.stringify(model.edits) !== JSON.stringify(displayed.edits)) return false;
     if (!TabMail.applyComposeEdits(TabMail.state.editorRef, model.original, model.edits)) {
       TabMail.hideComposePreview();
       return false;
