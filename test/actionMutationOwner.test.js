@@ -81,11 +81,11 @@ describe('ordering and recovery boundaries',()=>{
   await owner.purgeExpired({cutoffTs:2});await owner.touchAction(key);
   expect(h.store).toEqual({});
  });
- it('retains expired data when inventory is unknown, but evicts confirmed absence',async()=>{
-  h.store[`action:${key}`]='reply';h.resolve.mockResolvedValue({status:'unknown',weIds:[],folder:null});
-  await owner.purgeExpired({cutoffTs:2});expect(h.store[`action:${key}`]).toBe('reply');
-  h.resolve.mockResolvedValue({status:'absent',weIds:[],folder:null});
-  await owner.purgeExpired({cutoffTs:2});expect(h.store[`action:${key}`]).toBeUndefined();
+ it('preserves a fresh writer-produced action when inventory is unknown',async()=>{
+  vi.setSystemTime(100000);await owner.setAction(header,'reply');
+  h.resolve.mockResolvedValue({status:'unknown',weIds:[],folder:null});
+  await owner.purgeExpired({cutoffTs:99999});
+  expect(h.store[`action:${key}`]).toBe('reply');expect(h.native.get(1)).toBe('reply');
  });
  it('clears metadata-only records without a sort',async()=>{
   h.store[`action:orig:${key}`]='reply';h.store.other='keep';await owner.clearAllActions();

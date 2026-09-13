@@ -220,10 +220,14 @@ export function purgeExpired({ cutoffTs }) {
     const timestamps = await idb.get([...candidates].map(tsKey));
     const inventory = new Map(), removals = [];
     for (const key of candidates) {
+      const ts = timestamps[tsKey(key)]?.ts;
+      if (!Number.isFinite(ts) || ts < cutoffTs) {
+        removals.push({ uniqueKey: key });
+        continue;
+      }
       const targets = await _targets(key, null, inventory);
       if (targets.status === "unknown") continue;
-      const ts = timestamps[tsKey(key)]?.ts;
-      if (targets.status === "absent" || !isInboxFolder(targets.folder) || !Number.isFinite(ts) || ts < cutoffTs) removals.push({ uniqueKey: key });
+      if (targets.status === "absent" || !isInboxFolder(targets.folder)) removals.push({ uniqueKey: key });
     }
     return _clear(removals);
   });

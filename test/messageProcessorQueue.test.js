@@ -438,3 +438,31 @@ describe('replacement during identity resolution',()=>{
   expect(SUT.getProcessMessageQueueStatus().pending).toBe(0);
  });
 });
+
+describe('terminal queue outcomes',()=>{
+ it.each(['outside','gone'])('retires writer-produced queue work in %s terminal state and accepts fresh work',async mode=>{
+  const disk={};
+  browser.storage.local={get:vi.fn(async()=>structuredClone(disk)),set:vi.fn(async v=>Object.assign(disk,structuredClone(v))),remove:vi.fn(async keys=>{for(const k of [].concat(keys))delete disk[k];})};
+  const live={id:123,headerMessageId:'msgid@x',folder:{id:'folder-inbox',accountId:'acct1',path:'/INBOX'}};
+  mockGet.mockResolvedValue(live);
+  if(mode==='outside'){
+   mockHeaderIDToWeID.mockResolvedValue(null);
+   mockIsInboxFolder.mockImplementation(f=>f.path==='/INBOX');
+   mockQuery.mockResolvedValue({messages:[{...live,id:456,folder:{...live.folder,id:'folder-sent',path:'/Sent'}}]});
+  }else{
+   mockHeaderIDToWeID.mockResolvedValue(123);
+   mockProcessMessage.mockResolvedValue({ok:false,reason:'message-not-found'});
+  }
+  await enqueueOne();expect(SUT.getProcessMessageQueueStatus().pending).toBe(1);expect(disk.agent_processmessage_pending).toHaveLength(1);
+  for(let n=0;n<(mode==='outside'?3:1);n++)await SUT.drainProcessMessageQueue();
+  expect(SUT.getProcessMessageQueueStatus().pending).toBe(0);
+  expect(disk.agent_processmessage_pending).toBeUndefined();
+  const calls=mockProcessMessage.mock.calls.length;
+  expect(calls).toBe(mode==='outside'?0:1);
+  await SUT.drainProcessMessageQueue();expect(mockProcessMessage).toHaveBeenCalledTimes(calls);
+  mockHeaderIDToWeID.mockResolvedValue(123);mockIsInboxFolder.mockReturnValue(true);mockProcessMessage.mockResolvedValue({ok:true});
+  await enqueueOne();await SUT.drainProcessMessageQueue();
+  expect(mockProcessMessage).toHaveBeenCalledTimes(calls+1);expect(SUT.getProcessMessageQueueStatus().pending).toBe(0);
+  await SUT.cleanupProcessMessageQueue();
+ });
+});

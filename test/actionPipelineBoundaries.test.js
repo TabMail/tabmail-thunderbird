@@ -150,3 +150,36 @@ it('invalid generated action remains retryable and a valid retry writes both sto
  expect(dependencies.chat).toHaveBeenCalledTimes(2);
  expect({pending:queue.getProcessMessageQueueStatus().pending,durable:h.store['action:'+key],native:h.native.get(1)}).toEqual({pending:0,durable:'archive',native:'archive'});
 });
+
+vi.mock('../agent/modules/autoUpdateUserPrompt.js',()=>({autoUpdateUserPromptOnTag:vi.fn()}));
+vi.mock('../agent/modules/messageDebugDump.js',()=>({debugDumpSelectedMessages:vi.fn()}));
+vi.mock('../agent/modules/tagCleanup.js',()=>({clearTabMailActionTags:vi.fn()}));
+vi.mock('../agent/modules/userNotice.js',()=>({notifyCannotTagSelf:vi.fn()}));
+it('actual recompute menu clears selected state before creating durable fresh work',async()=>{
+ let listener;const created=[];let disk={debugMode:true};
+ browser.storage.local={get:async()=>structuredClone(disk),set:async v=>Object.assign(disk,structuredClone(v)),remove:async keys=>{for(const k of [].concat(keys))delete disk[k];}};
+ browser.menus={removeAll:async()=>{},create:v=>created.push(v),refresh:async()=>{},onClicked:{addListener:f=>{listener=f;},removeListener:()=>{}},onShown:{addListener:()=>{},removeListener:()=>{}}};
+ h.resolve.mockResolvedValue({weID:1,weFolder:folder,headerID:header.headerMessageId});
+ await owner.setAction(header,'reply',{meta:{orig:'reply',userprompt:'synthetic old prompt'}});
+ h.store.unrelated='keep';h.native.set(999,'none');
+ const menus=await import('../agent/modules/contextMenus.js');const queue=await import('../agent/modules/messageProcessorQueue.js');
+ await menus.initContextMenus();expect(created.some(m=>m.id==='tabmail-agent-recompute-action')).toBe(true);
+ await listener({menuItemId:'tabmail-agent-recompute-action',selectedMessages:{messages:[header]}});
+ expect(h.store['action:'+key]).toBeUndefined();expect(h.store['action:orig:'+key]).toBeUndefined();expect(h.native.get(1)).toBe('');
+ expect(queue.getProcessMessageQueueStatus().pending).toBe(1);expect(disk.agent_processmessage_pending).toHaveLength(1);
+ await queue.drainProcessMessageQueue();
+ expect({action:h.store['action:'+key],native:h.native.get(1),orig:h.store['action:orig:'+key],pending:queue.getProcessMessageQueueStatus().pending}).toEqual({action:'archive',native:'archive',orig:'archive',pending:0});
+ expect(h.store.unrelated).toBe('keep');expect(h.native.get(999)).toBe('none');expect(disk.agent_processmessage_pending).toBeUndefined();
+ await queue.cleanupProcessMessageQueue();menus.cleanupContextMenus();
+});
+it('unknown member lookup prevents partial thread writes while a complete retry succeeds',async()=>{
+ const other={...header,id:3,headerMessageId:'other@example.test'};
+ h.query.mockImplementation(async q=>({messages:q.headerMessageId===other.headerMessageId?[other]:[header]}));
+ await owner.setAction(header,'archive');await owner.setAction(other,'reply');
+ browser.messages.get=async id=>{if(id===4)throw Error('synthetic lookup unavailable');return id===3?other:header;};
+ h.events=[];
+ expect(await owner.applyThreadEffective([1,3,4])).toBe(false);
+ expect(h.store['action:'+key]).toBe('archive');expect(h.native.get(1)).toBe('archive');expect(h.events).toEqual([]);
+ expect(await owner.applyThreadEffective([1,3])).toBe(true);
+ expect(h.store['action:'+key]).toBe('reply');expect(h.native.get(1)).toBe('reply');
+});
