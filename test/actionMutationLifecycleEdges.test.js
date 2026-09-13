@@ -130,14 +130,15 @@ it.each(['scan','debounced'])('%s retention expires old payloads and metadata wh
  vi.setSystemTime(100000);await owner.setAction(header,'reply',{meta:{orig:'reply',userprompt:'synthetic expired prompt'}});
  vi.setSystemTime(200000);await owner.setAction(other,'delete',{meta:{orig:'delete',userprompt:'synthetic fresh prompt'}});
  h.resolve.mockResolvedValue({status:'unknown',weIds:[],folder:null});
- const {SETTINGS}=await import('../agent/modules/config.js');SETTINGS.actionTTLSeconds=1;
- const {purgeExpiredActionEntries}=await import('../agent/modules/actionGenerator.js');
+ const {SETTINGS}=await import('../agent/modules/config.js');SETTINGS.actionTTLSeconds=1;SETTINGS.replyTTLSeconds=1;SETTINGS.summaryTTLSeconds=1;
+ const actionGenerator=await import('../agent/modules/actionGenerator.js');
+ const imports={'./modules/actionGenerator.js':actionGenerator,'./modules/actionCache.js':owner};
  const env={browser,Date,log:()=>{},SETTINGS:{replyTTLSeconds:1,actionTTLSeconds:1,summaryTTLSeconds:1,cacheCleanupDebounceMs:10},
- purgeExpiredReplyEntries:async()=>{},purgeExpiredSummaryEntries:async()=>{},purgeExpiredActionEntries,purgeOlderThanByPrefixes:async()=>0,purgeMetadataOlderThan:owner.purgeMetadataOlderThan};
+ purgeExpiredReplyEntries:async()=>{},purgeExpiredSummaryEntries:async()=>{},purgeOlderThanByPrefixes:async()=>0};
  if(mode==='scan'){
-  const {scanAllInboxes}=experimentFunctions(source('agent/modules/messageProcessor.js'),['scanAllInboxes'],env);await scanAllInboxes();
+  const {scanAllInboxes}=await import('../agent/modules/messageProcessor.js');await scanAllInboxes();
  }else{
-  const {scheduleCacheCleanup}=experimentFunctions(source('agent/background.js'),['scheduleCacheCleanup'],{...env,setTimeout,clearTimeout,_cacheCleanupTimer:null});
+  const {scheduleCacheCleanup}=experimentFunctions(source('agent/background.js'),['scheduleCacheCleanup'],{...env,setTimeout,clearTimeout,_cacheCleanupTimer:null},imports);
   scheduleCacheCleanup();await vi.advanceTimersByTimeAsync(10);
  }
  expect(h.store[owner.origKey(key)]).toBeUndefined();expect(h.store[owner.userPromptKey(key)]).toBeUndefined();
