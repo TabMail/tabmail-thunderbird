@@ -400,10 +400,36 @@ describe('automatic mutation token lifetime',()=>{
   mockGet.mockResolvedValue({id:123,folder:{id:'folder-inbox',accountId:'acct1',path:'/INBOX'},headerMessageId:'msgid@x'});
   mockProcessMessage.mockResolvedValueOnce({ok:false}).mockResolvedValue({ok:true});
   await enqueueOne({forceRecompute:true});await SUT.drainProcessMessageQueue();
-  const firstToken=mockProcessMessage.mock.calls[0][1].token;expect(firstToken).toEqual({epoch:0,seq:0});
+  const firstToken=mockProcessMessage.mock.calls[0][1].token;expect(firstToken).toMatchObject({key:'acct1:/INBOX:msgid@x',valid:true});
   await enqueueOne({isPriority:true});await SUT.drainProcessMessageQueue();
   expect(mockProcessMessage.mock.calls[1][1].token).toBe(firstToken);
   const snapshots=browser.storage.local.set.mock.calls.map(([value])=>value.agent_processmessage_pending).filter(Boolean).flat();
   expect(snapshots.some(item=>'token' in item||'token' in (item.opts||{}))).toBe(false);
+ });
+});
+
+
+describe('explicit recompute replaces older work',()=>{
+ it.each([true,false])('preserves a new request when an older attempt completes with ok=%s',async ok=>{
+  mockHeaderIDToWeID.mockResolvedValue(123);
+  mockGet.mockResolvedValue({id:123,folder:{id:'folder-inbox',accountId:'acct1',path:'/INBOX'},headerMessageId:'msgid@x'});
+  let release;mockProcessMessage.mockImplementationOnce(()=>new Promise(r=>{release=r;})).mockResolvedValue({ok:true});
+  await enqueueOne();const oldDrain=SUT.drainProcessMessageQueue();
+  await vi.waitFor(()=>expect(release).toBeTypeOf('function'));
+  const oldToken=mockProcessMessage.mock.calls[0][1].token;
+  await enqueueOne({forceRecompute:true});expect(oldToken.valid).toBe(false);
+  release({ok});await oldDrain;expect(SUT.getProcessMessageQueueStatus().pending).toBe(1);
+  await SUT.drainProcessMessageQueue();
+  expect(mockProcessMessage).toHaveBeenCalledTimes(2);
+  expect(mockProcessMessage.mock.calls[1][1].token).not.toBe(oldToken);
+  expect(SUT.getProcessMessageQueueStatus().pending).toBe(0);
+ });
+ it('releases a retained retry token on queue cleanup',async()=>{
+  mockHeaderIDToWeID.mockResolvedValue(123);
+  mockGet.mockResolvedValue({id:123,folder:{id:'folder-inbox',accountId:'acct1',path:'/INBOX'},headerMessageId:'msgid@x'});
+  mockProcessMessage.mockResolvedValue({ok:false});
+  await enqueueOne();await SUT.drainProcessMessageQueue();
+  const token=mockProcessMessage.mock.calls[0][1].token;expect(token.valid).toBe(true);
+  await SUT.cleanupProcessMessageQueue();expect(token.valid).toBe(false);
  });
 });

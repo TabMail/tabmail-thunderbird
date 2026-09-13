@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { beginAutomaticWork, setAction, purgeMetadataOlderThan, getActionForUniqueKey } from "./actionCache.js";
+import { beginAutomaticWork, finishAutomaticWork, setAction, purgeMetadataOlderThan, getActionForUniqueKey } from "./actionCache.js";
 import { getAction, purgeExpiredActionEntries } from "./actionGenerator.js";
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
@@ -46,6 +46,7 @@ export async function processMessage(
     };
   }
 
+  const ownsToken = !token;
   token ??= beginAutomaticWork(await getUniqueMessageKey(messageHeader));
   try {
     log(`[ProcessMessage] Starting processing for message ${messageHeader.id}: "${messageHeader.subject}"`);
@@ -156,6 +157,8 @@ export async function processMessage(
       reason: "unexpected-error",
       error: String(err),
     };
+  } finally {
+    if (ownsToken) finishAutomaticWork(token);
   }
 }
 

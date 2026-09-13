@@ -6,7 +6,6 @@
 import * as idb from "./idbStorage.js";
 import { getUniqueMessageKey, resolveUniqueMessageKey, log } from "./utils.js";
 import { isInboxFolder } from "./folderUtils.js";
-import { SETTINGS } from "./config.js";
 import { maxPriorityAction, triggerSortRefresh } from "./tagDefs.js";
 
 const ACTION_PREFIX = "action:";
@@ -24,35 +23,37 @@ export const ACTIONS = Object.freeze({ REPLY: "reply", ARCHIVE: "archive", DELET
 const VALID_ACTIONS = new Set(Object.values(ACTIONS));
 let _queue = Promise.resolve();
 let _epoch = 0;
-const _seq = new Map();
-const _accountsNeedingBackfill = new Set();
+const _workTokens = new Map();
 const _backfilledAccounts = new Set();
-let _repairTimer = null;
 let _listeners = null;
-let _suspended = false;
 
 function _enqueue(fn) {
   const result = _queue.then(fn);
   _queue = result.catch(() => log("[actionCache] mutation step failed", "debug"));
   return result;
 }
-export function beginAutomaticWork(key) { return { epoch: _epoch, seq: _seq.get(key) || 0 }; }
-function _current(key, token) { return !token || token.epoch === _epoch && token.seq === (_seq.get(key) || 0); }
-function _bump(key) { _seq.set(key, (_seq.get(key) || 0) + 1); }
+export function beginAutomaticWork(key) {
+  const token = { key, epoch: _epoch, valid: true };
+  if (!_workTokens.has(key)) _workTokens.set(key, new Set());
+  _workTokens.get(key).add(token);
+  return token;
+}
+export function finishAutomaticWork(token) {
+  if (!token) return;
+  token.valid = false;
+  const tokens = _workTokens.get(token.key);
+  tokens?.delete(token);
+  if (tokens?.size === 0) _workTokens.delete(token.key);
+}
+function _current(key, token) { return !token || token.valid && token.key === key && token.epoch === _epoch; }
+function _bump(key) {
+  for (const token of _workTokens.get(key) || []) token.valid = false;
+  _workTokens.delete(key);
+}
 async function _resolveUniqueKey(input) {
   if (typeof input === "string") return input.includes(":") ? input : null;
   if (!input) return null;
   try { return await getUniqueMessageKey(input); } catch (_) { return null; }
-}
-function _account(key) { return key?.slice(0, key.indexOf(":")); }
-function _markRepair(accountId) {
-  if (!accountId || _suspended) return;
-  _accountsNeedingBackfill.add(accountId);
-  if (_repairTimer !== null) return;
-  _repairTimer = setTimeout(() => {
-    _repairTimer = null;
-    backfillLoadedAccounts({ reason: "repair" }).catch(() => log("[actionCache] repair failed", "debug"));
-  }, SETTINGS?.actionCache?.repairDebounceMs ?? 1000);
 }
 async function _targets(key, header, folderInventory) {
   if (!header) return resolveUniqueMessageKey(key, { all: true, folderInventory });
@@ -60,25 +61,21 @@ async function _targets(key, header, folderInventory) {
   if (!folder?.id || !header.headerMessageId) return { status: "unknown", weIds: [], folder };
   try {
     let page = await browser.messages.query({ folderId: folder.id, headerMessageId: header.headerMessageId });
-    const ids = new Set(), seen = new Set();
+    const ids = new Set();
     for (;;) {
       if (!Array.isArray(page?.messages)) throw new Error("invalid page");
       for (const m of page.messages) if (Number.isInteger(m?.id)) ids.add(m.id);
       if (!page.id) break;
-      if (seen.has(page.id) || !browser.messages.continueList) throw new Error("invalid continuation");
-      seen.add(page.id);
       page = await browser.messages.continueList(page.id);
     }
     return { status: ids.size ? "resolved" : "absent", weIds: [...ids], folder };
   } catch (_) { return { status: "unknown", weIds: [], folder }; }
 }
-async function _project(key, targets, action) {
-  const account = targets.folder?.accountId || _account(key);
-  if (targets.status === "unknown") _markRepair(account);
+async function _project(targets, action) {
   for (const id of targets.weIds) {
     try {
-      if (!await browser.tmHdr?.setAction(id, action)) _markRepair(account);
-    } catch (_) { _markRepair(account); }
+      if (!await browser.tmHdr?.setAction(id, action)) log("[actionCache] native projection incomplete", "debug");
+    } catch (_) { log("[actionCache] native projection failed", "debug"); }
   }
 }
 async function _refreshChips() {
@@ -160,7 +157,7 @@ export function setAction(header, action, { token, meta } = {}) {
     }
     await idb.set(values);
     _bump(key);
-    await _project(key, targets, action);
+    await _project(targets, action);
     await _refreshChips();
     if (previous[payloadKey(key)] !== action) triggerSortRefresh();
     return key;
@@ -185,12 +182,12 @@ async function _clear(items, { metadata = "ts", token } = {}, { wipe = false, ex
   for (const key of records.keys()) keys.push(...(metadata === "all" ? allKeysFor(key) : [payloadKey(key), tsKey(key)]));
   if (wipe) await idb.clear();
   else if (keys.length) await idb.remove([...new Set(keys)]);
-  for (const [key, targets] of records) { _bump(key); await _project(key, targets, ""); }
+  for (const [key, targets] of records) { _bump(key); await _project(targets, ""); }
   if (records.size) {
     await _refreshChips();
     if (Object.keys(previous).length) triggerSortRefresh();
   }
-  if (wipe) { _epoch++; _seq.clear(); }
+  if (wipe) { _epoch++; _workTokens.clear(); }
   return records.size > 0;
 }
 export function clearActions(items, options) { return _enqueue(() => _clear(items, options)); }
@@ -252,7 +249,7 @@ export function applyThreadEffective(weIds) {
     }
     if (!targets.size) return false;
     await idb.set(values);
-    for (const [key, target] of targets) { _bump(key); await _project(key, target, action); }
+    for (const [key, target] of targets) { _bump(key); await _project(target, action); }
     await _refreshChips();
     triggerSortRefresh();
     return true;
@@ -267,7 +264,6 @@ export async function backfillAccount(accountId) {
     const folders = await browser.folders.query({ accountId });
     for (const folder of folders.filter(isInboxFolder)) {
       let page = await browser.messages.list(folder.id);
-      const seen = new Set();
       for (;;) {
         if (!Array.isArray(page?.messages)) throw new Error("invalid inbox page");
         foundInbox = true;
@@ -278,38 +274,29 @@ export async function backfillAccount(accountId) {
             for (const message of chunk) {
               // Revalidate identities rather than trusting ids held across awaits.
               const key = await _resolveUniqueKey({ ...message, folder });
-              if (!key) { _markRepair(accountId); continue; }
+              if (!key) continue;
               const target = await _targets(key, { ...message, folder });
-              if (target.status === "unknown") _markRepair(accountId);
               const value = (await idb.get(payloadKey(key)))[payloadKey(key)];
               for (const weMsgId of target.weIds) entries.push({ weMsgId, action: VALID_ACTIONS.has(value) ? value : "" });
             }
             if (entries.length) {
               try {
                 const count = await browser.tmHdr?.setActionsBulk(entries);
-                if (count !== entries.length) _markRepair(accountId);
-              } catch (_) { _markRepair(accountId); }
+                if (count !== entries.length) log("[actionCache] bulk projection incomplete", "debug");
+              } catch (_) { log("[actionCache] backfill incomplete", "debug"); }
             }
           });
         }
         if (!page.id) break;
-        if (seen.has(page.id) || !browser.messages.continueList) throw new Error("invalid inbox continuation");
-        seen.add(page.id);
         page = await browser.messages.continueList(page.id);
       }
     }
     if (foundInbox) _backfilledAccounts.add(accountId);
-  } catch (_) { _markRepair(accountId); }
+  } catch (_) { log("[actionCache] backfill incomplete", "debug"); }
   return foundInbox;
 }
 export async function backfillLoadedAccounts({ reason = "startup" } = {}) {
-  let accounts;
-  if (reason === "repair") {
-    accounts = [..._accountsNeedingBackfill];
-    _accountsNeedingBackfill.clear();
-  } else {
-    accounts = (await browser.accounts.list()).map(a => a.id).filter(id => !_backfilledAccounts.has(id));
-  }
+  const accounts = (await browser.accounts.list()).map(a => a.id).filter(id => !_backfilledAccounts.has(id));
   let loaded = false;
   for (const id of accounts) loaded = await backfillAccount(id) || loaded;
   if (loaded) {
@@ -321,7 +308,6 @@ export async function backfillLoadedAccounts({ reason = "startup" } = {}) {
   }
 }
 export function pushAllActionsToExperimentsOnStartup() {
-  _suspended = false;
   if (!_listeners) {
     const late = () => backfillLoadedAccounts({ reason: "late" }).catch(() => log("[actionCache] late account backfill failed", "debug"));
     browser.accounts.onCreated?.addListener(late);
@@ -331,9 +317,8 @@ export function pushAllActionsToExperimentsOnStartup() {
   return backfillLoadedAccounts({ reason: "startup" });
 }
 export function cleanupActionCache() {
-  _suspended = true;
-  if (_repairTimer !== null) clearTimeout(_repairTimer);
-  _repairTimer = null;
+  _epoch++;
+  _workTokens.clear();
   if (_listeners) {
     browser.accounts?.onCreated?.removeListener(_listeners);
     browser.folders?.onCreated?.removeListener(_listeners);

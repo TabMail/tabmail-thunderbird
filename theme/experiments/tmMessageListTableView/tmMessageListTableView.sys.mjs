@@ -444,7 +444,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
                 }
               }
             }
-            // NoteChange can be coalesced while Thunderbird inserts/recycles
+            // Row invalidation can be coalesced while Thunderbird inserts/recycles
             // rows. Re-read the bounded rendered pool on the next frame, after
             // the DOM/view indices settle, without relying on tagSort.
             scheduleRenderedTableRepaint_MLTV(doc);
@@ -679,7 +679,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
       } catch (_) {}
     }
 
-    // The primary path remains NoteChange → fillRow. The observer schedules a
+    // The primary path remains threadTree.invalidateRow → fillRow. The observer schedules a
     // bounded rendered-row pass only when Thunderbird mutates the virtualized
     // table, covering a direct invalidation coalesced during insertion.
 

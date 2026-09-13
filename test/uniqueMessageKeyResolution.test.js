@@ -138,3 +138,21 @@ describe('all-header resolution status',()=>{
   expect((await resolveUniqueMessageKey('account:/Client:mid',{all:true})).status).toBe('unknown');
  });
 });
+
+
+describe('paged and shared-inventory resolution',()=>{
+ it('reuses one inventory request for multiple keys in the same mutation',async()=>{
+  browser.messages.query.mockResolvedValue({messages:[{id:1}]});
+  const folderInventory=new Map();
+  await resolveUniqueMessageKey('account:/Client:first',{all:true,folderInventory});
+  await resolveUniqueMessageKey('account:/Client:second',{all:true,folderInventory});
+  expect(browser.folders.query).toHaveBeenCalledTimes(1);
+ });
+ it('collects pages with a reused list ID and rejects failed continuation',async()=>{
+  browser.messages.query.mockResolvedValue({messages:[{id:1}],id:'next'});
+  browser.messages.continueList=vi.fn().mockResolvedValueOnce({messages:[{id:1},{id:2}],id:'next'}).mockResolvedValueOnce({messages:[{id:3}],id:null});
+  expect((await resolveUniqueMessageKey('account:/Client:mid',{all:true})).weIds).toEqual([1,2,3]);
+  browser.messages.continueList.mockRejectedValue(new Error('synthetic continuation failure'));
+  expect((await resolveUniqueMessageKey('account:/Client:mid',{all:true})).status).toBe('unknown');
+ });
+});

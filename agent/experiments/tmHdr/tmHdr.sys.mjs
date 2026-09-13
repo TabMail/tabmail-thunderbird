@@ -183,32 +183,28 @@ function tmGetHdrByMessageId(folderURI, messageId, pathStr) {
 const TM_ACTION_PROP_NAME = "tm-action";
 
 let _invalLog = 0;
-// nsMsgViewNotificationCodeValue (from comm-central/mailnews/base/public/nsIMsgDBView.idl).
-// CRITICAL: `1` is `insertOrDelete`, NOT `changed`. Passing `1` made TB
-// shift `view.selection.currentIndex` down by one for every NoteChange
-// issued at or before the selection (observed 2026-04-24 as the "selected
-// row slides down" bug in card view). `2` is the correct "row body changed,
-// no structural shift" code — forces fillRow without touching selection.
-const NOTIFY_CHANGED = 2;
 
 function _isValidViewIndex(index) {
   return typeof index === "number" && index >= 0 && index < 0x7fffffff;
 }
 
 /**
- * Enumerate every dbView owned by an outer 3-pane window, including inactive
+ * Enumerate each dbView and its owning thread tree, including inactive
  * about:3pane tabs. A single Thunderbird window can keep several independent
  * folder/search views alive; `currentAbout3Pane` covers only the focused one.
  */
-function _enumerateDBViewsInWindow(win) {
+function _enumerateViewTreesInWindow(win) {
   const views = [];
-  const addView = view => {
-    if (view && !views.includes(view)) views.push(view);
+  const addView = (view, tree) => {
+    if (view && tree && !views.some(entry => entry.view === view && entry.tree === tree)) {
+      views.push({ view, tree });
+    }
   };
   const addContentWindow = contentWin => {
     if (!contentWin) return;
-    addView(contentWin.gDBView || null);
-    addView(contentWin.gFolderDisplay?.view?.dbView || null);
+    const tree = contentWin.document?.getElementById?.("threadTree");
+    addView(contentWin.gDBView || null, tree);
+    addView(contentWin.gFolderDisplay?.view?.dbView || null, tree);
   };
 
   try {
@@ -224,8 +220,9 @@ function _enumerateDBViewsInWindow(win) {
 
   // Compatibility path for windows/TB generations that expose the dbView on
   // the outer messenger window rather than the about:3pane content window.
-  addView(win?.gDBView || null);
-  addView(win?.gFolderDisplay?.view?.dbView || null);
+  const tree = win?.document?.getElementById?.("threadTree");
+  addView(win?.gDBView || null, tree);
+  addView(win?.gFolderDisplay?.view?.dbView || null, tree);
   return views;
 }
 
@@ -266,9 +263,10 @@ function _findRenderedRowForHdr(view, hdr) {
 
 /**
  * Find every currently-open 3pane dbView that contains this hdr and
- * issue `view.NoteChange(rowIndex, 1, CHANGED)` so TB re-renders that row
- * immediately (which re-invokes our patched fillRow → painter picks up the
- * new property value).
+ * call `threadTree.invalidateRow(rowIndex)` so TB re-renders that row
+ * immediately. NoteChange is not exposed by nsIMsgDBView to JavaScript.
+ * The tree invalidation re-invokes our patched fillRow → painter picks up the
+ * new property value.
  *
  * Uses `view.findIndexOfMsgHdr(hdr)` which works across unified inboxes,
  * virtual folders, and plain folder views — no URI-string comparison.
@@ -286,11 +284,11 @@ function _invalidateRowForHdrInAllWindows(hdr) {
     while (enumWin.hasMoreElements()) {
       const win = enumWin.getNext();
       try {
-        for (const view of _enumerateDBViewsInWindow(win)) {
+        for (const { view, tree } of _enumerateViewTreesInWindow(win)) {
           diagViewsSeen++;
           const rowIndex = _findRenderedRowForHdr(view, hdr);
           if (rowIndex >= 0) {
-            try { view.NoteChange?.(rowIndex, 1, NOTIFY_CHANGED); diagNoted++; } catch (_) {}
+            try { tree.invalidateRow(rowIndex); diagNoted++; } catch (_) {}
           }
         }
       } catch (_) {}
@@ -380,10 +378,10 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
               while (enumWin.hasMoreElements()) {
                 const win = enumWin.getNext();
                 try {
-                  for (const view of _enumerateDBViewsInWindow(win)) {
+                  for (const { view, tree } of _enumerateViewTreesInWindow(win)) {
                     const rc = view?.rowCount || 0;
                     if (rc > 0) {
-                      try { view.NoteChange?.(0, rc, NOTIFY_CHANGED); } catch (_) {}
+                      try { tree.invalidate(); } catch (_) {}
                     }
                   }
                 } catch (_) {}

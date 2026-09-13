@@ -1363,13 +1363,10 @@ export async function resolveUniqueMessageKey(uniqueId, { all = false, folderInv
         for (const candidate of getUniqueMessageKeyCandidates(uniqueId, folders)) {
             let page = await browser.messages.query({ folderId: candidate.weFolder.id, headerMessageId: candidate.headerID });
             const ids = new Set();
-            const continuations = new Set();
             for (;;) {
                 if (!Array.isArray(page?.messages)) return result("unknown");
                 for (const message of page.messages) if (message?.id != null) ids.add(message.id);
                 if (!page.id) break;
-                if (continuations.has(page.id) || !browser.messages.continueList) return result("unknown");
-                continuations.add(page.id);
                 page = await browser.messages.continueList(page.id);
             }
             if (ids.size) {

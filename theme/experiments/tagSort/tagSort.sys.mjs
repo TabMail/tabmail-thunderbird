@@ -349,17 +349,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
 
       const now = Date.now();
       if (now - getWinSortTimestamp(win) < SORT_DEBOUNCE_MS) {
-        if (immediate && !win.__tmTagSortImmediateRetry) {
-          win.__tmTagSortImmediateRetry = win.setTimeout(() => {
-            win.__tmTagSortImmediateRetry = null;
-            applySort(win, true);
-          }, SORT_DEBOUNCE_MS);
-        }
         return;
-      }
-      if (win.__tmTagSortImmediateRetry) {
-        win.clearTimeout(win.__tmTagSortImmediateRetry);
-        win.__tmTagSortImmediateRetry = null;
       }
 
       const tabmail = win.document.getElementById("tabmail");
@@ -630,8 +620,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
             delete win.__tmTagSortContentWindows;
             delete win.__tmTagSortEnsureListeners;
           }
-          if (win.__tmTagSortImmediateRetry) win.clearTimeout(win.__tmTagSortImmediateRetry);
-          delete win.__tmTagSortImmediateRetry;
           const resortTimer = getWinResortTimer(win);
           if (resortTimer) { win.clearTimeout(resortTimer); setWinResortTimer(win, null); }
           const delayedTimer = getWinDelayedSortTimer(win);

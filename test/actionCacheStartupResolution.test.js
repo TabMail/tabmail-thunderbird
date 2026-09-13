@@ -46,14 +46,13 @@ describe('symmetric inbox backfill',()=>{
   await accountCreated.addListener.mock.calls[0][0]();
   expect(browser.messages.list).toHaveBeenCalledOnce();
  });
- it('repairs a partial bulk projection with the delayed sort path',async()=>{
-  browser.tmHdr.setActionsBulk.mockResolvedValueOnce(1);
+ it('does not turn persistent bulk failure into an autonomous retry loop',async()=>{
+  browser.tmHdr.setActionsBulk.mockResolvedValue(0);
   await owner.pushAllActionsToExperimentsOnStartup();
-  state.events=[];await vi.advanceTimersByTimeAsync(100);
-  expect(browser.tmHdr.setActionsBulk).toHaveBeenCalledTimes(2);
-  expect(state.events.at(-1)).toBe('delayed');expect(state.events).not.toContain('immediate');
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(browser.tmHdr.setActionsBulk).toHaveBeenCalledOnce();expect(vi.getTimerCount()).toBe(0);
  });
- it('removes listeners and its repair timer on suspend',async()=>{
+ it('removes creation listeners on suspend',async()=>{
   browser.tmHdr.setActionsBulk.mockResolvedValue(0);
   await owner.pushAllActionsToExperimentsOnStartup();owner.cleanupActionCache();
   await vi.advanceTimersByTimeAsync(1000);

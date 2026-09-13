@@ -15,7 +15,7 @@ globalThis.browser = {
   },
 };
 
-vi.mock("../agent/modules/actionCache.js", () => ({beginAutomaticWork: vi.fn(()=>({epoch:0,seq:0})),setAction:vi.fn(),getActionForUniqueKey:vi.fn(),purgeMetadataOlderThan:vi.fn()}));
+vi.mock("../agent/modules/actionCache.js", () => ({finishAutomaticWork:vi.fn(),beginAutomaticWork: vi.fn(()=>({epoch:0,seq:0})),setAction:vi.fn(),getActionForUniqueKey:vi.fn(),purgeMetadataOlderThan:vi.fn()}));
 const {setAction}=await import("../agent/modules/actionCache.js");
 // Mock all imported modules before importing processMessage
 vi.mock("../agent/modules/config.js", () => ({
@@ -108,6 +108,13 @@ const makeHeader = (id = 1) => ({
 });
 
 describe("processMessage", () => {
+  it("forwards the exact queued automatic token to action generation", async () => {
+    const token = { epoch: 7, seq: 4 };
+    const header = makeHeader();
+    await processMessage(header, { token });
+    expect(getAction).toHaveBeenCalledWith(header, { forceRecompute: false, token });
+    expect(getAction.mock.calls[0][1].token).toBe(token);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     // Re-apply defaults after clearAllMocks

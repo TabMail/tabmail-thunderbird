@@ -107,12 +107,78 @@ describe('ordering and recovery boundaries',()=>{
   expect(h.store[`action:${otherKey}`]).toBe('reply');h.events=[];
   expect(await owner.applyThreadEffective([1,3])).toBe(false);expect(h.events).toEqual([]);
  });
- it('marks a failed twin for symmetric account repair after a clear',async()=>{
-  browser.accounts.list=async()=>[{id:'acc'}];browser.messages.list=async()=>({messages:[header]});
-  browser.tmHdr.setAction=vi.fn(async(id,a)=>{if(id===2)return false;h.native.set(id,a);return true;});
-  browser.tmHdr.setActionsBulk=vi.fn(async entries=>{for(const e of entries)h.native.set(e.weMsgId,e.action);return entries.length;});
-  h.store[`action:${key}`]='reply';h.native.set(2,'reply');await owner.clearActionByUniqueKey(key);
-  expect(h.native.get(2)).toBe('reply');await vi.advanceTimersByTimeAsync(1000);
-  expect(h.native.get(2)).toBe('');expect(browser.tmHdr.setActionsBulk).toHaveBeenCalledOnce();
+ it('keeps canonical state on projection failure without autonomous scans',async()=>{
+  browser.accounts.list=vi.fn(async()=>[{id:'acc'}]);
+  browser.tmHdr.setAction=vi.fn(async()=>false);
+  await owner.setAction(header,'reply');
+  expect(h.store[`action:${key}`]).toBe('reply');
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(browser.accounts.list).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);
+  browser.tmHdr.setAction=async(id,a)=>{h.native.set(id,a);return true;};
+  await owner.setAction(header,'none');expect([...h.native.values()]).toEqual(['none','none']);
  });
+});
+
+
+describe('mutation boundary regression coverage',()=>{
+ it('wipes non-action storage as well as actions and invalidates earlier work',async()=>{
+  h.store={other:'synthetic', [`action:${key}`]:'reply'};
+  const token=owner.beginAutomaticWork(key);
+  await owner.wipeAll();
+  expect(h.store).toEqual({});expect([...h.native.values()]).toEqual(['','']);
+  expect(await owner.setAction(header,'reply',{token})).toBeNull();
+ });
+ it('rejects invalid action values without committing or projecting',async()=>{
+  expect(await owner.setAction(header,'invalid')).toBeNull();
+  expect(h.store).toEqual({});expect(h.events).toEqual([]);
+ });
+ it('refreshes both chip surfaces after a successful mutation',async()=>{
+  browser.tmMultiMessageChip.refreshAll=vi.fn();
+  await owner.setAction(header,'archive');
+  expect(browser.tmMultiMessageChip.refreshAll).toHaveBeenCalledOnce();
+ });
+ it('excludes non-inbox thread members and projects the changed inbox member',async()=>{
+  const second={...header,id:3,headerMessageId:'second@example.test'};
+  const outside={...header,id:4,headerMessageId:'outside@example.test',folder:{...folder,specialUse:['sent'],path:'/Sent'}};
+  browser.messages.get=async id=>({1:header,3:second,4:outside}[id]);
+  h.query.mockImplementation(async({headerMessageId})=>({messages:[headerMessageId===second.headerMessageId?second:header]}));
+  h.store[`action:${key}`]='archive';h.store['action:acc:/INBOX:second@example.test']='reply';
+  h.store['action:acc:/Sent:outside@example.test']='delete';
+  expect(await owner.applyThreadEffective([1,3,4])).toBe(true);
+  expect(h.native.get(1)).toBe('reply');expect(h.native.has(4)).toBe(false);
+  expect(h.store['action:acc:/Sent:outside@example.test']).toBe('delete');
+ });
+ it('removes the registered account and folder listeners on cleanup',async()=>{
+  browser.accounts.onCreated={addListener:vi.fn(),removeListener:vi.fn()};
+  browser.folders.onCreated={addListener:vi.fn(),removeListener:vi.fn()};
+  await owner.pushAllActionsToExperimentsOnStartup();owner.cleanupActionCache();
+  expect(browser.accounts.onCreated.removeListener).toHaveBeenCalledWith(browser.accounts.onCreated.addListener.mock.calls[0][0]);
+  expect(browser.folders.onCreated.removeListener).toHaveBeenCalledWith(browser.folders.onCreated.addListener.mock.calls[0][0]);
+ });
+ it('backfills every chunk and list page, including query-page twins',async()=>{
+  const messages=Array.from({length:103},(_,i)=>({...header,id:i+10,headerMessageId:`page-${i}@example.test`}));
+  browser.messages.list=vi.fn(async()=>({messages:messages.slice(0,101),id:'inbox-next'}));
+  let inboxPage=0,queryPage=0;
+  browser.messages.continueList=vi.fn(async id=>{
+   if(id==='inbox-next')return ++inboxPage===1?{messages:[messages[101]],id:'inbox-next'}:{messages:[messages[102]],id:null};
+   return ++queryPage===1?{messages:[{...messages[0],id:1000}],id:'query-next'}:{messages:[{...messages[0],id:1001}],id:null};
+  });
+  h.query.mockImplementation(async({headerMessageId})=>{
+   const m=messages.find(m=>m.headerMessageId===headerMessageId);
+   return {messages:[m],...(m===messages[0]?{id:'query-next'}:{})};
+  });
+  h.store['action:acc:/INBOX:page-0@example.test']='reply';
+  browser.tmHdr.setActionsBulk=vi.fn(async entries=>{for(const e of entries)h.native.set(e.weMsgId,e.action);return entries.length;});
+  expect(await owner.backfillAccount('acc')).toBe(true);
+  expect(browser.tmHdr.setActionsBulk.mock.calls.map(([entries])=>entries.length)).toEqual([102,1,1,1]);
+  expect(h.native.get(1000)).toBe('reply');expect(h.native.get(messages[102].id)).toBe('');
+  expect(browser.messages.continueList).toHaveBeenCalledWith('query-next');
+  expect(browser.messages.continueList).toHaveBeenCalledWith('inbox-next');
+ });
+});
+
+it('routes metadata retention through the serialized owner',async()=>{
+ const idb=await import('../agent/modules/idbStorage.js');
+ await owner.purgeMetadataOlderThan(123);
+ expect(idb.purgeOlderThanByPrefixes).toHaveBeenCalledWith(owner.METADATA_PREFIXES,123);
 });

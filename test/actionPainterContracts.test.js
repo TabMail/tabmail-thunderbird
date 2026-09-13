@@ -46,14 +46,4 @@ describe('sort scheduling',()=>{
    scheduleDelayedSort(win,true);expect(applySort).toHaveBeenLastCalledWith(win,true);
   }finally{vi.useRealTimers();}
  });
- it('owns exactly one retry for an immediate request inside the debounce',async()=>{
-  vi.useFakeTimers();vi.setSystemTime(50);try{
-   const getWinSortTimestamp=vi.fn(()=>0);
-   const win={setTimeout,clearTimeout,document:{getElementById:()=>({currentTabInfo:{mode:{name:'other'}}})}};
-   const {applySort}=experimentFunctions(source('tagSort'),['applySort'],{Date,isTagSortEnabled:()=>true,getWinSortTimestamp,SORT_DEBOUNCE_MS:100});
-   applySort(win,true);const timer=win.__tmTagSortImmediateRetry;applySort(win,true);
-   expect(win.__tmTagSortImmediateRetry).toBe(timer);expect(vi.getTimerCount()).toBe(1);
-   await vi.advanceTimersByTimeAsync(100);expect(getWinSortTimestamp).toHaveBeenCalledTimes(3);expect(win.__tmTagSortImmediateRetry).toBeNull();
-  }finally{vi.useRealTimers();}
- });
 });

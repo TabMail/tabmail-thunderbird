@@ -191,6 +191,7 @@ beforeEach(() => {
   mockIsMessageInInboxByUniqueKey.mockResolvedValue(true);
   mockGetRealSubject.mockImplementation(async (header) => header?.subject || "");
   browser.messages.get.mockResolvedValue({ tags: [] });
+  browser.tmHdr.getReplied.mockResolvedValue(false);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -670,4 +671,35 @@ describe('getAction semaphore', () => {
     expect(result1).toBe('reply');
     expect(result2).toBe('reply');
   });
+});
+
+
+describe('generator mutation ownership boundaries',()=>{
+ it('downgrades an already-replied cached reply through native projection',async()=>{
+  idbStore['action:test-unique-key']='reply';browser.tmHdr.getReplied.mockResolvedValue(true);
+  expect(await getAction(makeHeader())).toBe('none');
+  expect(idbStore['action:test-unique-key']).toBe('none');
+  expect(browser.tmHdr.setAction).toHaveBeenCalledWith(1,'none');
+ });
+ it('commits an already-replied generated reply as none in the first transaction',async()=>{
+  browser.tmHdr.getReplied.mockResolvedValue(true);
+  mockSendChat.mockResolvedValue({assistant:'{"action":"reply"}'});mockProcessJSONResponse.mockReturnValue({action:'reply'});
+  expect(await getAction(makeHeader(),{forceRecompute:true})).toBe('none');
+  expect(mockIdbSet.mock.calls.filter(([values])=>'action:test-unique-key' in values).map(([values])=>values['action:test-unique-key'])).toEqual(['none']);
+ });
+ it('commits peer cache actions and original metadata through the owner',async()=>{
+  const {probeAICache}=await import('../agent/modules/deviceSync.js');probeAICache.mockResolvedValueOnce('archive');
+  expect(await getAction(makeHeader())).toBe('archive');
+  expect(idbStore['action:test-unique-key']).toBe('archive');
+  expect(idbStore['action:orig:test-unique-key']).toBe('archive');
+  expect(browser.tmHdr.setAction).toHaveBeenCalledWith(1,'archive');expect(mockSendChat).not.toHaveBeenCalled();
+ });
+ it('preserves the supplied automatic token when generation finishes after a manual edit',async()=>{
+  const owner=await import('../agent/modules/actionCache.js');const token=owner.beginAutomaticWork('test-unique-key');
+  await owner.setAction(makeHeader(),'delete');
+  mockSendChat.mockResolvedValue({assistant:'{"action":"reply"}'});mockProcessJSONResponse.mockReturnValue({action:'reply'});
+  await getAction(makeHeader(),{forceRecompute:true,token});
+  expect(idbStore['action:test-unique-key']).toBe('delete');
+  expect(browser.tmHdr.setAction).not.toHaveBeenCalledWith(1,'reply');
+ });
 });

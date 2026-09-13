@@ -107,16 +107,7 @@ function makeView({
     findIndexOfMsgHdr,
     findIndexForMsgURI,
     FindKey: findKey,
-    NoteChange(index, count, notificationCode) {
-      // Model Thunderbird's critical distinction: structural code 1 shifts
-      // selection, while body-changed code 2 only repaints.
-      if (notificationCode === 1 && index <= this.selection.currentIndex) {
-        this.selection.currentIndex += count;
-      }
-      for (let i = index; i < index + count; i++) {
-        rowsByIndex.get(i)?.fillRow();
-      }
-    },
+
   };
   return view;
 }
@@ -157,6 +148,13 @@ function makeTableDocument(view, renderedIndices) {
   const scheduledFrames = new Map();
   let nextFrameId = 1;
   const tree = {
+    // Thunderbird exposes invalidation on the thread tree, not nsIMsgDBView.
+    invalidateRow(index) {
+      view.rowsByIndex.get(index)?.fillRow();
+    },
+    invalidate() {
+      for (const row of rows) row.fillRow();
+    },
     querySelectorAll() {
       return rows;
     },
@@ -401,6 +399,7 @@ describe("Table-view action repaint integration", () => {
     const Services = makeServices([outerWindow]);
     const { hdrApi } = await startExperiments(Services, new Map([[7001, hdr]]));
 
+    expect(currentView.NoteChange).toBeUndefined();
     expectUnpainted(currentDoc.rows[0]);
     expectUnpainted(backgroundDoc.rows[0]);
     expect(await hdrApi.setAction(7001, "reply")).toBe(true);

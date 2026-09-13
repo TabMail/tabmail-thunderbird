@@ -206,8 +206,6 @@ export const SETTINGS = {
         },
     },
 
-    actionCache: { repairDebounceMs: 1000 },
-
     // TabMail action-tag behavior (Inbox-only).
     // - per-message action is cached through actionCache.payloadKey(uniqueKey)
     // - per-thread tag aggregate (Inbox thread) is cached as idb key: "threadTags:<threadKey>"
