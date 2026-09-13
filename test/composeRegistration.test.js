@@ -11,7 +11,13 @@ vi.mock('../agent/modules/utils.js',()=>({getUniqueMessageKey:vi.fn()}));
 vi.mock('../compose/modules/autocompleteGenerator.js',()=>({generateCorrection:vi.fn()}));
 vi.mock('../compose/modules/edit.js',()=>({runComposeEdit:vi.fn()}));
 
-it.each([{inline:false,repeat:false},{inline:true,repeat:false},{inline:false,repeat:true},{inline:true,repeat:true}])('registered send cleanup preserves preview recovery (inline=$inline, repeat=$repeat)',async({inline,repeat})=>{
+const recoveryCases = ['inline','ime','inline-ime'].flatMap(mode =>
+  [false,true].flatMap(repeat => [20,120].flatMap(delay =>
+    ['none','details','delivery-after-cleanup'].map(failure =>
+      ({mode,inline:mode.startsWith('inline'),repeat,delay,failure})))));
+recoveryCases.push(...[false,true].map(repeat => ({mode:'ordinary',inline:false,repeat,delay:20,failure:'none'})));
+
+it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode=$mode, repeat=$repeat, delay=$delay, failure=$failure)',async({inline,repeat,mode,delay,failure})=>{
   vi.resetModules();
   vi.useFakeTimers();
   const messageListeners = new Set();
@@ -52,7 +58,7 @@ it.each([{inline:false,repeat:false},{inline:true,repeat:false},{inline:false,re
     expect(body.innerHTML).toBe(before);
     expect(w.CSS.highlights.size).toBe(1);
     vi.useFakeTimers();
-    tm.config.DIFF_RESTORE_DELAY_MS = 20;
+    tm.config.DIFF_RESTORE_DELAY_MS = delay;
     tm.config.BEFORE_SEND_CLEANUP_SUPPRESS_MS = 60;
     if(inline){
       body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
@@ -65,6 +71,20 @@ it.each([{inline:false,repeat:false},{inline:true,repeat:false},{inline:false,re
       expect(tm.state.diffRestoreTimer).not.toBeNull();
       expect(body.innerHTML).toBe(before);
     }
+    if(mode.includes('ime')) {
+      body.dispatchEvent(new w.CompositionEvent('compositionstart',{bubbles:true}));
+      expect(tm.state.isIMEComposing).toBe(true);
+      body.dispatchEvent(new w.CompositionEvent('compositionend',{bubbles:true}));
+      expect(tm.state.isIMEComposing).toBe(false);
+      expect(tm.state.diffRestoreTimer).not.toBeNull();
+    }
+    const snapshot=body.innerHTML;
+    const nativeWrite=vi.fn();w.document.execCommand=nativeWrite;
+    if(failure==='details')api.compose.getComposeDetails.mockRejectedValue(new Error('Synthetic details failure'));
+    if(failure==='delivery-after-cleanup')api.tabs.sendMessage.mockImplementation(async(tabId,message)=>{
+      for(const listener of contentMessageListeners)await listener(message,{},()=>{});
+      throw new Error('Synthetic response delivery failure after cleanup');
+    });
     const beforeSend=api.compose.onBeforeSend.addListener.mock.calls[0][0];
     await beforeSend({id:1});
     expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
@@ -90,6 +110,9 @@ it.each([{inline:false,repeat:false},{inline:true,repeat:false},{inline:false,re
       await vi.advanceTimersByTimeAsync(40);
     }
     expect(tm.state.beforeSendCleanupActive).toBe(false);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(body.innerHTML).toBe(snapshot);
+    expect(nativeWrite).not.toHaveBeenCalled();
     body.firstChild.textContent = 'New draft.';
     expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('New draft.');
     tm.setCursorByOffset(body, 3);
@@ -103,6 +126,7 @@ it.each([{inline:false,repeat:false},{inline:true,repeat:false},{inline:false,re
     expect(tm.state.previewModel).not.toBeNull();
     expect(tm.state.previewView.host.querySelector('.content').textContent).toBe('New corrected draft.');
     expect(body.innerHTML).toBe(afterTyping);
+    expect(nativeWrite).not.toHaveBeenCalled();
   } finally {
     dom?.window.close();
     vi.useRealTimers();
