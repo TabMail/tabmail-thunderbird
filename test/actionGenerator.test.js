@@ -77,6 +77,8 @@ const mockSaveChatLog = vi.fn();
 
 vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
+  indexHeader: vi.fn(),
+  resolveUniqueMessageKey: async key => ({status:'resolved',weIds:[],folder:{type:await mockIsMessageInInboxByUniqueKey(key)?'inbox':'archive'}}),
   getUniqueMessageKey: (...args) => mockGetUniqueMessageKey(...args),
   extractBodyFromParts: (...args) => mockExtractBodyFromParts(...args),
   stripHtml: (...args) => mockStripHtml(...args),
@@ -129,9 +131,13 @@ vi.mock('../agent/modules/deviceSync.js', () => ({
 // Browser mock
 globalThis.browser = {
   messages: {
+    query: vi.fn(async()=>({messages:[makeHeader()]})),
     get: vi.fn().mockResolvedValue({ tags: [] }),
   },
   tmHdr: {
+    setAction:vi.fn(async()=>true),
+    getMsgKey:vi.fn(async()=>1),
+    getReplied:vi.fn(async()=>false),
     getFlags: vi.fn().mockResolvedValue({ exists: false }),
   },
   storage: {

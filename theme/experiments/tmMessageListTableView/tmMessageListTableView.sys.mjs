@@ -43,9 +43,6 @@ const CONFIG_MLTV = {
   className: "tm-table-sender-processed",
   maxLogs: 10,
   stripEmail: true,
-  // Thunderbird virtualizes the table, so this bounds self-heal work to the
-  // small rendered row pool rather than the full dbView.
-  selfHealRenderedRowLimit: 200,
   selfHealFallbackDelayMs: 0,
   // Columns to process
   columnSelectors: [
@@ -225,11 +222,8 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
       const tree = doc.getElementById("threadTree");
       if (!tree) return;
       const rows = tree.querySelectorAll('tr[is="thread-row"], [id^="threadTree-row"]');
-      let painted = 0;
       for (const row of rows) {
-        if (painted >= CONFIG_MLTV.selfHealRenderedRowLimit) break;
         paintRenderedTableRow_MLTV(row);
-        painted++;
       }
     }
 
@@ -495,34 +489,14 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
       tm_delete: "delete",
     };
 
-    // @deprecated The IMAP-keyword (`tm_*`) representation of action state
-    // is no longer written by TabMail (Phase 0; see
-    // agent/modules/tagHelper.js header). New surfaces (tmMultiMessageChip)
-    // skip this fallback. It survives here for legacy messages tagged
-    // before Phase 0; remove once those have decayed out of users' inboxes.
-    function _actionFromKeywords_MLTV(hdr) {
-      try {
-        const kw = hdr?.getStringProperty?.("keywords") || "";
-        if (!kw) return null;
-        const keys = kw.split(/\s+/).filter(Boolean);
-        for (const k of TM_ACTION_TAG_KEY_PRIORITY_MLTV) {
-          if (keys.includes(k)) return _KEYWORD_TO_ACTION_MLTV[k] || null;
-        }
-        return null;
-      } catch (_) { return null; }
-    }
-
-    /**
-     * Primary: `tm-action` hdr property. Falls back to the deprecated
-     * `_actionFromKeywords_MLTV` legacy reader for messages tagged before
-     * Phase 0 (see that function's @deprecated note).
-     */
+    // Read only the native projection of canonical action state.
     function _lookupActionForRow_MLTV(hdr) {
+      if (!_isInboxOrUnifiedInboxFolder_MLTV(hdr?.folder)) return null;
       try {
         const prop = hdr?.getStringProperty?.(TM_ACTION_PROP_NAME_MLTV) || "";
         if (prop) return String(prop);
       } catch (_) {}
-      return _actionFromKeywords_MLTV(hdr);
+      return null;
     }
 
     /**
@@ -531,6 +505,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
      * expanded containers and ordinary rows continue to paint their own hdr.
      */
     function _aggregateActionForThread_MLTV(view, rowIndex, rootHdr) {
+      if (!_isInboxOrUnifiedInboxFolder_MLTV(rootHdr?.folder)) return null;
       const fallback = _lookupActionForRow_MLTV(rootHdr);
       try {
         const isContainer = typeof view.isContainer === "function"

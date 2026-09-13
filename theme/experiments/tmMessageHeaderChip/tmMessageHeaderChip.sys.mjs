@@ -8,7 +8,7 @@
  * Paints the iOS-style action chip into the message preview-pane header
  * (#expandedButtonsBox), and (Phase 2) emits an event when the chip is
  * clicked. Passive painter — never writes action state. Reads `tm-action`
- * mork string property (with `_actionFromKeywords_MHC` legacy fallback).
+ * mork string property, scoped to inbox messages.
  *
  * Mirrors the action-painter portion of tmMessageListCardView.sys.mjs but
  * targets the message header DOM (about:message / messageWindow.xhtml)
@@ -103,44 +103,24 @@ const TM_ACTION_PRIORITY_MHC = ["reply", "none", "archive", "delete"];
 // PURE HELPERS (no DOM, no Services — testable)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * @deprecated The IMAP-keyword (`tm_*`) representation of action state is
- * no longer written by TabMail (Phase 0; see `agent/modules/tagHelper.js`
- * file header). New code paths read `tm-action` mork prop only — see
- * `tmMultiMessageChip.sys.mjs` for the cleaner shape. This fallback
- * survives for legacy messages tagged before Phase 0; remove once those
- * have decayed out of users' inboxes.
- *
- * Read AI action from a header. Returns "reply" | "archive" | "delete" |
- * "none" or null. Verbatim port of tmMessageListCardView.sys.mjs:545-558.
- */
-function _actionFromKeywords_MHC(hdr) {
+// Read only the native projection of canonical action state.
+function _isActionInbox(folder) {
   try {
-    const kw = hdr?.getStringProperty?.("keywords") || "";
-    if (!kw) return null;
-    const keys = kw.split(/\s+/).filter(Boolean);
-    for (const a of TM_ACTION_PRIORITY_MHC) {
-      const k = _ACTION_TO_KEYWORD_MHC[a];
-      if (k && keys.includes(k)) return a;
-    }
-    return null;
-  } catch (_) {
-    return null;
-  }
+    const flags = globalThis.Ci?.nsMsgFolderFlags;
+    if (!flags || !folder) return false;
+    const inbox = folder.isSpecialFolder ? folder.isSpecialFolder(flags.Inbox, true) : (folder.flags & flags.Inbox);
+    return !!(inbox || ((folder.flags & flags.Virtual) && /inbox/i.test(folder.prettyName || folder.name || "")));
+  } catch (_) { return false; }
 }
 
-/**
- * Resolve a header's action from native mork `tm-action` prop. Falls back
- * to the deprecated `_actionFromKeywords_MHC` legacy reader for messages
- * tagged before Phase 0 (see that function's @deprecated note).
- */
 function _lookupActionForHdr_MHC(hdr) {
+  if (!_isActionInbox(hdr?.folder)) return null;
   if (!hdr) return null;
   try {
     const prop = hdr?.getStringProperty?.(TM_ACTION_PROP_NAME_MHC) || "";
     if (prop) return String(prop);
   } catch (_) {}
-  return _actionFromKeywords_MHC(hdr);
+  return null;
 }
 
 /**

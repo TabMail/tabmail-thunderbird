@@ -682,8 +682,8 @@ export async function signOut() {
 
     // 3. Clear IndexedDB AI cache (summaries, actions, replies)
     try {
-      const idb = await import("./idbStorage.js");
-      await idb.clear();
+      const { wipeAll } = await import("./actionCache.js");
+      await wipeAll();
       log("[SupabaseAuth] Cleared IndexedDB AI cache");
     } catch (e) {
       log(`[SupabaseAuth] IndexedDB cleanup failed (non-fatal): ${e}`, "error");

@@ -5,9 +5,9 @@
 // tagHelper.test.js — Tests for agent/modules/tagHelper.js
 //
 // Post Phase 0 contracts:
-//   - applyActionTags writes to IDB via actionCache.setAction (NOT via browser.messages.update).
-//   - applyActionTags skips non-inbox messages.
-//   - applyActionTags triggers thread aggregate recompute.
+//   - runThreadAggregation writes to IDB via actionCache.setAction (NOT via browser.messages.update).
+//   - runThreadAggregation skips non-inbox messages.
+//   - runThreadAggregation triggers thread aggregate recompute.
 //   - applyPriorityTag writes to IDB via actionCache.setAction.
 //   - applyPriorityTag skips non-inbox messages.
 //   - applyPriorityTag triggers thread aggregate recompute.
@@ -101,7 +101,7 @@ globalThis.browser = {
   },
 };
 
-const { applyActionTags, applyPriorityTag } = await import('../agent/modules/tagHelper.js');
+const { runThreadAggregation, applyPriorityTag } = await import('../agent/modules/tagHelper.js');
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -114,23 +114,17 @@ beforeEach(() => {
   mockComputeAndStoreThreadTagList.mockResolvedValue({ ok: true, weIds: [], actions: [], allActionsReady: true });
 });
 
-describe('applyActionTags — Phase 0 contracts', () => {
-  it('writes to IDB via actionCache.setAction for inbox messages', async () => {
-    const msg = { id: 1, folder: { isInbox: true, path: 'INBOX', accountId: 'acc1' }, headerMessageId: 'mid1', tags: [] };
-    mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:mid1');
-
-    await applyActionTags([msg], { 'acc1:INBOX:mid1': 'reply' });
-
-    // Passes the header so actionCache can dual-write IDB + hdr property.
-    // uniqueKey derivation happens inside actionCache via getUniqueMessageKey.
-    expect(mockSetAction).toHaveBeenCalledWith(msg, 'reply');
+describe('runThreadAggregation — Phase 0 contracts', () => {
+  it('does not reapply a captured generation result', async () => {
+    await runThreadAggregation([{id:1}], {stale:'reply'});
+    expect(mockSetAction).not.toHaveBeenCalled();
   });
 
   it('does NOT call browser.messages.update with a tag list (ADD path removed)', async () => {
     const msg = { id: 1, folder: { isInbox: true, path: 'INBOX', accountId: 'acc1' }, headerMessageId: 'mid1', tags: [] };
     mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:mid1');
 
-    await applyActionTags([msg], { 'acc1:INBOX:mid1': 'reply' });
+    await runThreadAggregation([msg], { 'acc1:INBOX:mid1': 'reply' });
 
     expect(browser.messages.update).not.toHaveBeenCalled();
   });
@@ -138,7 +132,7 @@ describe('applyActionTags — Phase 0 contracts', () => {
   it('skips messages that are not in inbox', async () => {
     const msg = { id: 2, folder: { isInbox: false, path: 'Archive' }, headerMessageId: 'mid2', tags: [] };
 
-    await applyActionTags([msg], { 'some-key': 'archive' });
+    await runThreadAggregation([msg], { 'some-key': 'archive' });
 
     expect(mockSetAction).not.toHaveBeenCalled();
     expect(browser.messages.update).not.toHaveBeenCalled();
@@ -148,7 +142,7 @@ describe('applyActionTags — Phase 0 contracts', () => {
     const msg = { id: 3, folder: { isInbox: true, path: 'INBOX', accountId: 'acc1' }, headerMessageId: 'mid3', tags: [] };
     mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:mid3');
 
-    await applyActionTags([msg], { 'some-other-key': 'reply' });
+    await runThreadAggregation([msg], { 'some-other-key': 'reply' });
 
     expect(mockSetAction).not.toHaveBeenCalled();
   });
@@ -157,7 +151,7 @@ describe('applyActionTags — Phase 0 contracts', () => {
     const msg = { id: 4, folder: { isInbox: true, path: 'INBOX', accountId: 'acc1' }, headerMessageId: 'mid4', tags: [] };
     mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:mid4');
 
-    await applyActionTags([msg], { 'acc1:INBOX:mid4': 'reply' });
+    await runThreadAggregation([msg], { 'acc1:INBOX:mid4': 'reply' });
 
     expect(mockComputeAndStoreThreadTagList).toHaveBeenCalledWith(4);
   });
@@ -168,7 +162,7 @@ describe('applyActionTags — Phase 0 contracts', () => {
     mockGetTagByThreadEnabled.mockResolvedValue(true);
     mockComputeAndStoreThreadTagList.mockResolvedValue({ ok: true, weIds: [5], actions: ['reply'], allActionsReady: true });
 
-    await applyActionTags([msg], { 'acc1:INBOX:mid5': 'reply' });
+    await runThreadAggregation([msg], { 'acc1:INBOX:mid5': 'reply' });
 
     expect(mockUpdateThreadEffectiveTagsIfNeeded).toHaveBeenCalled();
   });
@@ -178,7 +172,7 @@ describe('applyActionTags — Phase 0 contracts', () => {
     mockGetUniqueMessageKey.mockResolvedValue('acc1:INBOX:mid6');
     mockGetTagByThreadEnabled.mockResolvedValue(false);
 
-    await applyActionTags([msg], { 'acc1:INBOX:mid6': 'reply' });
+    await runThreadAggregation([msg], { 'acc1:INBOX:mid6': 'reply' });
 
     expect(mockUpdateThreadEffectiveTagsIfNeeded).not.toHaveBeenCalled();
   });
@@ -244,7 +238,7 @@ describe('applyPriorityTag — Phase 0 contracts', () => {
     expect(mockComputeAndStoreThreadTagList).toHaveBeenCalledWith(13);
   });
 
-  it('triggers sort refresh after the write', async () => {
+  it('leaves sort scheduling to the mutation owner', async () => {
     browser.messages.get.mockResolvedValue({
       id: 14,
       folder: { isInbox: true, path: 'INBOX', accountId: 'acc1' },
@@ -255,6 +249,6 @@ describe('applyPriorityTag — Phase 0 contracts', () => {
 
     await applyPriorityTag(14, 'reply');
 
-    expect(mockTriggerSortRefresh).toHaveBeenCalled();
+    expect(mockTriggerSortRefresh).not.toHaveBeenCalled();
   });
 });

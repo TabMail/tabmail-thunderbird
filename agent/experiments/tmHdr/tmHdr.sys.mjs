@@ -314,7 +314,7 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
         if (!mm) return false;
         const hdr = mm.get(weMsgId);
         if (!hdr) return false;
-        const valid = action === "reply" || action === "archive" || action === "delete" || action === "none";
+        const valid = action === "" || action === "reply" || action === "archive" || action === "delete" || action === "none";
         if (action && !valid) return false;
         try {
           hdr.setStringProperty(TM_ACTION_PROP_NAME, action ? String(action) : "");
@@ -363,7 +363,7 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
               const hdr = mm.get(e?.weMsgId);
               if (!hdr) continue;
               const action = e?.action;
-              const valid = action === "reply" || action === "archive" || action === "delete" || action === "none";
+              const valid = action === "" || action === "reply" || action === "archive" || action === "delete" || action === "none";
               if (!valid) continue;
               try {
                 hdr.setStringProperty(TM_ACTION_PROP_NAME, String(action));

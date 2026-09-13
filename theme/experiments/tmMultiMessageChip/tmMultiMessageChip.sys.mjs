@@ -134,7 +134,17 @@ const _ACTION_LABELS_MMC = {
  * property (written by actionCache → tmHdr.setAction). No legacy
  * `_actionFromKeywords` fallback — see file header.
  */
+function _isActionInbox(folder) {
+  try {
+    const flags = globalThis.Ci?.nsMsgFolderFlags;
+    if (!flags || !folder) return false;
+    const inbox = folder.isSpecialFolder ? folder.isSpecialFolder(flags.Inbox, true) : (folder.flags & flags.Inbox);
+    return !!(inbox || ((folder.flags & flags.Virtual) && /inbox/i.test(folder.prettyName || folder.name || "")));
+  } catch (_) { return false; }
+}
+
 function _lookupActionForHdr_MMC(hdr) {
+  if (!_isActionInbox(hdr?.folder)) return null;
   if (!hdr) return null;
   try {
     const prop = hdr?.getStringProperty?.(TM_ACTION_PROP_NAME_MMC) || "";

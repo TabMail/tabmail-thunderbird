@@ -10,11 +10,12 @@ import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
 import { getUserActionPrompt } from "./promptGenerator.js";
 import { isInternalSender } from "./senderFilter.js";
 import { getSummary } from "./summaryGenerator.js";
-import { isMessageInInboxByUniqueKey } from "./tagHelper.js";
+import { beginAutomaticWork, payloadKey, purgeExpired, setAction, touchAction } from "./actionCache.js";
 import {
   extractBodyFromParts,
   getRealSubject,
   getUniqueMessageKey,
+  indexHeader,
   log,
   safeGetFull,
   saveChatLog,
@@ -22,8 +23,6 @@ import {
 } from "./utils.js";
 
 const PFX = "[ActionGen] ";
-const ACTION_PREFIX = "action:";
-const ACTION_TS_PREFIX = "action:ts:";
 
 // Per-message semaphores to prevent concurrent action generation for the same message
 const _actionSemaphores = new Map();
@@ -61,142 +60,33 @@ function _releaseActionSemaphore(uniqueKey) {
   }
 }
 
-// Write-once record for the original agent-assigned action.
-// Key format: "action:orig:<uniqueKey>" where <uniqueKey> is the summaryId / header Message-Id.
-// This value should never be updated once written.
-async function recordOriginalActionOnce(uniqueKey, action) {
+export function purgeExpiredActionEntries() {
+  return purgeExpired({ cutoffTs: Date.now() - SETTINGS.actionTTLSeconds * 1000 });
+}
+
+async function _finalAction(header, action) {
+  if (action !== "reply") return action;
   try {
-    if (!uniqueKey) return;
-    const origKey = ACTION_PREFIX + "orig:" + uniqueKey;
-    const existing = await idb.get(origKey);
-    if (!existing[origKey]) {
-      await idb.set({ [origKey]: action });
-      try {
-        log(`${PFX}Wrote original action '${action}' for ${uniqueKey}`);
-      } catch (_) {}
-    }
-  } catch (e) {
-    try {
-      log(
-        `${PFX}Failed to write original action for ${uniqueKey}: ${e}`,
-        "warn"
-      );
-    } catch (_) {}
-  }
+    const folder = header.folder;
+    let nativeKey = -1;
+    try { nativeKey = await browser.tmHdr.getMsgKey(folder.id, header.id, folder.path); } catch (_) {}
+    if (await browser.tmHdr.getReplied(folder.id, nativeKey, folder.path, header.headerMessageId || "")) return "none";
+  } catch (_) {}
+  return action;
 }
 
-// Write-once record for the original user action prompt used during action generation.
-// Key format: "action:userprompt:<uniqueKey>" where <uniqueKey> is the summaryId / header Message-Id.
-// This value should never be updated once written.
-async function recordOriginalUserPromptOnce(uniqueKey, userPrompt) {
-  try {
-    if (!uniqueKey) return;
-    const userPromptKey = ACTION_PREFIX + "userprompt:" + uniqueKey;
-    const existing = await idb.get(userPromptKey);
-    if (!existing[userPromptKey]) {
-      await idb.set({ [userPromptKey]: userPrompt });
-      try {
-        log(`${PFX}Wrote original user prompt for ${uniqueKey}`);
-      } catch (_) {}
-    }
-  } catch (e) {
-    try {
-      log(
-        `${PFX}Failed to write original user prompt for ${uniqueKey}: ${e}`,
-        "warn"
-      );
-    } catch (_) {}
-  }
-}
-
-/**
- * Removes expired action entries from idb.
- *
- * The TTL is taken from SETTINGS.actionTTLSeconds. Any entry whose stored
- * timestamp is older than `now - TTL` will be deleted.
- * 
- * Additionally, for action TTL checks, entries for messages that are no longer
- * in inbox are immediately evicted regardless of TTL. This prevents "dangling"
- * cache entries when messages leave inbox but thread bubbles keep the TTL from
- * expiring naturally.
- */
-export async function purgeExpiredActionEntries() {
-    const ttlMs = SETTINGS.actionTTLSeconds * 1000;
-    const cutoff = Date.now() - ttlMs;
-
-    const allKeys = await idb.getAllKeys();
-    const payloadsToRemove = new Set();
-    const metaToRemove = new Set();
-
-    // Get timestamp entries for action cache
-    const timestampKeys = allKeys.filter(key => key.startsWith(ACTION_TS_PREFIX));
-    const timestampEntries = await idb.get(timestampKeys);
-
-    // Check entries that are expired by TTL
-    for (const [key, val] of Object.entries(timestampEntries)) {
-        const ts = val?.ts ?? 0;
-        if (typeof ts !== "number" || ts < cutoff) {
-            // Derive payload key from meta key
-            const uniqueKey = key.slice(ACTION_TS_PREFIX.length);
-            const payloadKey = ACTION_PREFIX + uniqueKey;
-            payloadsToRemove.add(payloadKey);
-            metaToRemove.add(key);
-        } else {
-            // For action TTL: also check if message is still in inbox, regardless of TTL
-            // This prevents dangling entries when messages leave inbox but thread bubbles
-            // keep the TTL from expiring naturally.
-            const uniqueKey = key.slice(ACTION_TS_PREFIX.length);
-            const isInInbox = await isMessageInInboxByUniqueKey(uniqueKey);
-            if (!isInInbox) {
-                log(`${PFX}Evicting action cache entry (not in inbox): uniqueKey=${uniqueKey}`);
-                const payloadKey = ACTION_PREFIX + uniqueKey;
-                payloadsToRemove.add(payloadKey);
-                metaToRemove.add(key);
-            }
-        }
-    }
-
-    // Robustness: handle legacy/buggy cases where action payload exists but meta ts key is missing.
-    // Only target the main action cache payload keys ("action:<uniqueKey>"), not write-once metadata keys.
-    const payloadKeys = allKeys.filter((key) => {
-        if (!key.startsWith(ACTION_PREFIX)) return false;
-        if (key.startsWith(ACTION_TS_PREFIX)) return false;
-        if (key.startsWith(ACTION_PREFIX + "orig:")) return false;
-        if (key.startsWith(ACTION_PREFIX + "userprompt:")) return false;
-        if (key.startsWith(ACTION_PREFIX + "justification:")) return false;
-        return true;
-    });
-    for (const payloadKey of payloadKeys) {
-        try {
-            const uniqueKey = payloadKey.slice(ACTION_PREFIX.length);
-            const metaKey = ACTION_TS_PREFIX + uniqueKey;
-            if (!timestampEntries || !Object.prototype.hasOwnProperty.call(timestampEntries, metaKey)) {
-                payloadsToRemove.add(payloadKey);
-            } else {
-                // For orphaned payloads with valid meta: also check inbox status
-                const isInInbox = await isMessageInInboxByUniqueKey(uniqueKey);
-                if (!isInInbox) {
-                    log(`${PFX}Evicting orphaned action cache entry (not in inbox): uniqueKey=${uniqueKey}`);
-                    payloadsToRemove.add(payloadKey);
-                    metaToRemove.add(metaKey);
-                }
-            }
-        } catch (_) {}
-    }
-
-    const toRemove = [...payloadsToRemove, ...metaToRemove];
-    if (toRemove.length > 0) {
-        await idb.remove(toRemove);
-        const removedPayload = payloadsToRemove.size;
-        const removedMeta = metaToRemove.size;
-        const orphanedPayload = Math.max(0, removedPayload - removedMeta);
-        log(`${PFX}Purged ${toRemove.length} expired action entries (payload=${removedPayload}, meta=${removedMeta}, payloadWithoutMeta=${orphanedPayload}).`);
-    }
-}
-
-
-export async function getAction(messageHeader, { forceRecompute = false } = {}) {
+export async function getAction(messageHeader, { forceRecompute = false, token } = {}) {
   log(`${PFX}>>> getAction CALLED for message ${messageHeader.id} subject="${messageHeader.subject}" forceRecompute=${forceRecompute}`);
+
+  const uniqueKey = await getUniqueMessageKey(messageHeader);
+  token ??= beginAutomaticWork(uniqueKey);
+  try { indexHeader(messageHeader); } catch (_) {}
+  const cachedResult = async value => {
+    await touchAction(uniqueKey);
+    const finalAction = await _finalAction(messageHeader, value);
+    if (finalAction !== value) await setAction(messageHeader, finalAction, { token });
+    return finalAction;
+  };
 
   // Internal/self-sent messages should never have an action cache entry.
   // We still allow summaries, but skip action generation and skip cache touch/write.
@@ -208,11 +98,9 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
     }
   } catch (_) {}
 
-  const uniqueKey = await getUniqueMessageKey(messageHeader);
   log(`${PFX}UniqueKey for ${messageHeader.id}: ${uniqueKey}`);
 
-  const cacheKey = ACTION_PREFIX + uniqueKey;
-  const metaKey = ACTION_TS_PREFIX + uniqueKey;
+  const cacheKey = payloadKey(uniqueKey);
 
   // Check cache. No IMAP/Gmail "verify remote tag" branch anymore —
   // cross-instance sync is covered by the Device Sync probe below.
@@ -221,8 +109,7 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
     if (existing[cacheKey]) {
       log(`${PFX}>>> Cache HIT for message ${messageHeader.id} (${uniqueKey}): returning cached action="${existing[cacheKey]}" (LLM will NOT run)`);
       // Touch the cache entry by updating its timestamp
-      await idb.set({ [metaKey]: { ts: Date.now() } });
-      return existing[cacheKey];
+      return cachedResult(existing[cacheKey]);
     }
   }
 
@@ -236,8 +123,7 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
       if (existingAfterSemaphore[cacheKey]) {
         log(`${PFX}Cache HIT after semaphore for message ${messageHeader.id} (${uniqueKey}): ${existingAfterSemaphore[cacheKey]}`);
         // Touch the cache entry by updating its timestamp
-        await idb.set({ [metaKey]: { ts: Date.now() } });
-        return existingAfterSemaphore[cacheKey];
+        return cachedResult(existingAfterSemaphore[cacheKey]);
       }
     }
 
@@ -265,9 +151,9 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
         ]);
         if (peerAction) {
           log(`${PFX}Device sync cache HIT for ${uniqueKey} — using peer action="${peerAction}" (LLM skipped)`);
-          await idb.set({ [cacheKey]: peerAction, [metaKey]: { ts: Date.now() } });
-          await recordOriginalActionOnce(uniqueKey, peerAction);
-          return peerAction;
+          const action = await _finalAction(messageHeader, peerAction);
+          await setAction(messageHeader, action, { token, meta: { orig: action } });
+          return action;
         }
       } catch (probeErr) {
         log(`${PFX}Device sync probe failed for ${uniqueKey}: ${probeErr}`, "warn");
@@ -396,15 +282,8 @@ export async function getAction(messageHeader, { forceRecompute = false } = {}) 
     
     log(`${PFX}Action distribution for ${uniqueKey}: ${JSON.stringify(actionCounts)}, selected: ${selectedAction}`);
 
-    // Store the action
-    const action = selectedAction;
-    await idb.set({ [cacheKey]: action, [metaKey]: { ts: Date.now() } });
-    await recordOriginalActionOnce(uniqueKey, action);
-
-    // Store the original user action prompt that was used during generation
-    if (userActionPrompt) {
-      await recordOriginalUserPromptOnce(uniqueKey, userActionPrompt);
-    }
+    const action = await _finalAction(messageHeader, selectedAction);
+    await setAction(messageHeader, action, { token, meta: { orig: action, userprompt: userActionPrompt || undefined } });
 
     // Persist full chat exchange for debugging/auditing.
     // Save all responses for debugging purposes

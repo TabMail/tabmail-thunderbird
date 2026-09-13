@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import { allKeysFor } from "./actionCache.js";
 import * as idb from "./idbStorage.js";
 import { ACTION_TAG_IDS } from "./tagHelper.js";
 import { getUniqueMessageKey, log, safeGetFull } from "./utils.js";
@@ -104,11 +105,7 @@ async function _dumpOneMessageById(weId, headerHint = null, source = "") {
     ? [
         `summary:${uniqueKey}`,
         `summary:ts:${uniqueKey}`,
-        `action:${uniqueKey}`,
-        `action:ts:${uniqueKey}`,
-        `action:orig:${uniqueKey}`,
-        `action:justification:${uniqueKey}`,
-        `action:userprompt:${uniqueKey}`,
+        ...allKeysFor(uniqueKey),
         `reply:${uniqueKey}`,
         `reply:ts:${uniqueKey}`,
         `rootOverride:${uniqueKey}`,

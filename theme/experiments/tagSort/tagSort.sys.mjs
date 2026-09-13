@@ -111,42 +111,18 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
     let _customColumnRegistered = false;
 
     // Primary: `tm-action` hdr string property (synchronously readable, local
-    // mork, not touched by IMAP sync). Fallback: legacy `tm_*` keywords for
-    // pre-backfill rows. No in-memory map needed — hdr is the shared state.
+    // mork, not touched by IMAP sync). No in-memory map is needed.
 
     const TM_ACTION_PROP_NAME = "tm-action";
 
-    // @deprecated The IMAP-keyword (`tm_*`) representation of action state
-    // is no longer written by TabMail (Phase 0; see
-    // agent/modules/tagHelper.js header). New surfaces (tmMultiMessageChip)
-    // skip this fallback. It survives here for legacy messages tagged
-    // before Phase 0; remove once those have decayed out of users' inboxes.
-    function _actionFromKeywords(hdr) {
-      try {
-        const kw = hdr?.getStringProperty?.("keywords") || "";
-        if (!kw) return null;
-        const keys = kw.split(/\s+/).filter(Boolean);
-        for (const a of TM_ACTION_PRIORITY) {
-          const k = _ACTION_TO_KEYWORD[a];
-          if (k && keys.includes(k)) return a;
-        }
-        return null;
-      } catch (_) {
-        return null;
-      }
-    }
-
-    /**
-     * Primary: `tm-action` hdr property. Falls back to the deprecated
-     * `_actionFromKeywords` legacy reader for messages tagged before
-     * Phase 0 (see that function's @deprecated note).
-     */
+    // Read only the native projection of canonical action state.
     function _lookupAction(hdr) {
+      if (!_isInboxOrUnifiedInboxFolder(hdr?.folder)) return null;
       try {
         const prop = hdr?.getStringProperty?.(TM_ACTION_PROP_NAME) || "";
         if (prop) return String(prop);
       } catch (_) {}
-      return _actionFromKeywords(hdr);
+      return null;
     }
 
     function _scoreForAction(action) {
@@ -327,14 +303,14 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
     function scheduleDelayedSort(win, immediate = false) {
       if (!win) return;
       if (immediate) {
-        applySort(win);
+        applySort(win, true);
         return;
       }
       const existingTimer = getWinDelayedSortTimer(win);
       if (existingTimer) win.clearTimeout(existingTimer);
       const timer = win.setTimeout(() => {
         setWinDelayedSortTimer(win, null);
-        applySort(win, true);
+        applySort(win);
       }, DELAYED_SORT_MS);
       setWinDelayedSortTimer(win, timer);
     }
@@ -363,7 +339,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
       return tree?.view?.dbView || null;
     }
 
-    function applySort(win) {
+    function applySort(win, immediate = false) {
       if (!win) return;
 
       if (!isTagSortEnabled()) {
@@ -372,7 +348,19 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
       }
 
       const now = Date.now();
-      if (now - getWinSortTimestamp(win) < SORT_DEBOUNCE_MS) return;
+      if (now - getWinSortTimestamp(win) < SORT_DEBOUNCE_MS) {
+        if (immediate && !win.__tmTagSortImmediateRetry) {
+          win.__tmTagSortImmediateRetry = win.setTimeout(() => {
+            win.__tmTagSortImmediateRetry = null;
+            applySort(win, true);
+          }, SORT_DEBOUNCE_MS);
+        }
+        return;
+      }
+      if (win.__tmTagSortImmediateRetry) {
+        win.clearTimeout(win.__tmTagSortImmediateRetry);
+        win.__tmTagSortImmediateRetry = null;
+      }
 
       const tabmail = win.document.getElementById("tabmail");
       try {
@@ -642,6 +630,8 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
             delete win.__tmTagSortContentWindows;
             delete win.__tmTagSortEnsureListeners;
           }
+          if (win.__tmTagSortImmediateRetry) win.clearTimeout(win.__tmTagSortImmediateRetry);
+          delete win.__tmTagSortImmediateRetry;
           const resortTimer = getWinResortTimer(win);
           if (resortTimer) { win.clearTimeout(resortTimer); setWinResortTimer(win, null); }
           const delayedTimer = getWinDelayedSortTimer(win);

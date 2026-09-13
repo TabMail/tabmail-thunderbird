@@ -546,32 +546,21 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
     // Keep priority order consistent with tagSort / tmMessageListTableView.
     const TM_ACTION_PRIORITY_MLCV = ["reply", "none", "archive", "delete"];
 
-    // @deprecated The IMAP-keyword (`tm_*`) representation of action state
-    // is no longer written by TabMail (Phase 0; see
-    // agent/modules/tagHelper.js header). New surfaces (tmMultiMessageChip)
-    // skip this fallback. It survives here for legacy messages tagged
-    // before Phase 0; remove once those have decayed out of users' inboxes.
-    function _actionFromKeywords_MLCV(hdr) {
+    function _isActionInbox(folder) {
       try {
-        const kw = hdr?.getStringProperty?.("keywords") || "";
-        if (!kw) return null;
-        const keys = kw.split(/\s+/).filter(Boolean);
-        for (const a of TM_ACTION_PRIORITY_MLCV) {
-          const k = _ACTION_TO_KEYWORD_MLCV[a];
-          if (k && keys.includes(k)) return a;
-        }
-        return null;
-      } catch (_) {
-        return null;
-      }
+        const flags = globalThis.Ci?.nsMsgFolderFlags;
+        if (!flags || !folder) return false;
+        const inbox = folder.isSpecialFolder ? folder.isSpecialFolder(flags.Inbox, true) : (folder.flags & flags.Inbox);
+        return !!(inbox || ((folder.flags & flags.Virtual) && /inbox/i.test(folder.prettyName || folder.name || "")));
+      } catch (_) { return false; }
     }
-
     function _lookupActionForCard_MLCV(hdr) {
+      if (!_isActionInbox(hdr?.folder)) return null;
       try {
         const prop = hdr?.getStringProperty?.(TM_ACTION_PROP_NAME_MLCV) || "";
         if (prop) return String(prop);
       } catch (_) {}
-      return _actionFromKeywords_MLCV(hdr);
+      return null;
     }
 
     /**
@@ -589,6 +578,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
      * If no child has an action, fall back to the parent's own action.
      */
     function _aggregateActionForThread_MLCV(tree, rowIndex, parentHdr) {
+      if (!_isActionInbox(parentHdr?.folder)) return { action: null, sourceHdr: parentHdr };
       const fallback = {
         action: _lookupActionForCard_MLCV(parentHdr),
         sourceHdr: parentHdr,
@@ -1253,6 +1243,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           if (existingCard) ThreadCard = existingCard.constructor;
         }
         if (!ThreadCard) return;
+        if (ThreadCard.prototype.fillRow?.__tmCardOwner !== _applyZeroFlickerEnhancements) return;
         // Restore original ROW_HEIGHT
         if (ThreadCard.__tmOrigRowHeight != null) {
           ThreadCard.ROW_HEIGHT = ThreadCard.__tmOrigRowHeight;

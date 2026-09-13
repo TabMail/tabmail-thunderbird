@@ -486,3 +486,16 @@ The following modules remain at 0% or very low coverage due to heavy browser/XPC
 | Experiment `.sys.mjs` files | Require XPCOM/Thunderbird runtime context |
 
 Pure logic modules (utils, parsers, config, CRDT) are well-tested at 15.24% overall. The testable ~50% of the codebase has significantly higher effective coverage.
+
+
+## Action mutation repaint regression (2026-09-12)
+
+- `actionMutationOwner.test.js`: transaction ordering, exact-folder twins, key-only clearing, same-value sort suppression, stale automatic results, wipe epochs, unknown inventory, failed projection repair, metadata, and thread-effective writes.
+- `actionCacheStartupResolution.test.js`: symmetric inbox hydration, native orphan clearing, late inbox creation, partial-bulk repair, and suspend cleanup.
+- `actionPainterContracts.test.js`: production-source reader tests for all five surfaces, inbox scope, absence of legacy-keyword fallback, card wrapper ownership, delayed sort restart and immediate-sort debounce retry.
+- `tableViewActionRepaint.test.js`: real experiment VM integration, background tabs, collapsed children, native bulk clearing, hot reload, and a rendered pool of 250 rows.
+- `actionMutationFence.test.js`: AST census of action key construction and full-cache wipe ownership. Caller tests cover generator, queue, manual tagging, grouping, summary and sign-out routing.
+
+Run `npm test -- --run`. Tests that inspect backend prompt files require the sibling `tabmail-backend` checkout. Install the locked development dependencies with `npm ci --ignore-scripts`.
+
+Live smoke used Thunderbird Beta 156.0 on macOS, a temporary worktree add-on, and a synthetic email in the unified inbox. Before the fix, a key-only clear removed the cached action but left native `reply` and a green row. After reload, symmetric backfill removed that orphan; repeating set/clear produced a null cached action and empty native action (9 ms measured for the clear), and the table was uncolored afterward. This is Beta smoke evidence; Thunderbird 145/ESR 140 and a full real-account mutation matrix were not run. Sorting timing and multi-window/collapsed-thread boundaries are covered programmatically.

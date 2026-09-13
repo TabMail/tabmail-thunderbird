@@ -13,7 +13,7 @@ const showAiSummaries = { value: true };
 const sendMessage = vi.fn(async () => undefined);
 const getSummary = vi.fn(async () => ({ id: 'key-1', blurb: 'Vendor confirmed Friday.', todos: '' }));
 const getAction = vi.fn(async () => 'tm_none');
-const applyActionTags = vi.fn(async () => undefined);
+const runThreadAggregation = vi.fn(async () => undefined);
 const enqueueProcessMessage = vi.fn(async () => undefined);
 
 vi.mock('../agent/modules/config.js', () => ({
@@ -40,7 +40,7 @@ vi.mock('../agent/modules/senderFilter.js', () => ({ isInternalSender: vi.fn(asy
 vi.mock('../agent/modules/supabaseAuth.js', () => ({ getAccessToken: vi.fn(async () => 'token') }));
 vi.mock('../agent/modules/summaryGenerator.js', () => ({ getSummary }));
 vi.mock('../agent/modules/actionGenerator.js', () => ({ getAction }));
-vi.mock('../agent/modules/tagHelper.js', () => ({ applyActionTags }));
+vi.mock('../agent/modules/tagHelper.js', () => ({ runThreadAggregation }));
 vi.mock('../agent/modules/messageProcessorQueue.js', () => ({ enqueueProcessMessage }));
 vi.mock('../agent/modules/summaryDisplaySettings.js', () => ({
   getShowAiSummariesEnabled: vi.fn(async () => showAiSummaries.value),
@@ -82,7 +82,7 @@ describe('Show AI Summaries preference on (default)', () => {
     expect(cmds).toContain('displaySummary');
     expect(cmds).not.toContain('tm-gate-summary-disabled');
     expect(getSummary).toHaveBeenCalled();
-    expect(applyActionTags).toHaveBeenCalledTimes(1);
+    expect(runThreadAggregation).toHaveBeenCalledTimes(1);
     expect(enqueueProcessMessage).toHaveBeenCalledTimes(1);
   });
 });
@@ -102,7 +102,7 @@ describe('Show AI Summaries preference off', () => {
     await displayedListener(tab, { messages: [inboxMessage] });
     expect(getSummary).toHaveBeenCalledTimes(1);
     expect(getAction).toHaveBeenCalledTimes(1);
-    expect(applyActionTags).toHaveBeenCalledTimes(1);
+    expect(runThreadAggregation).toHaveBeenCalledTimes(1);
     expect(enqueueProcessMessage).toHaveBeenCalledTimes(1);
   });
 

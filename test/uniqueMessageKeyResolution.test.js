@@ -122,3 +122,19 @@ describe("live unique-message-key resolution", () => {
     });
   });
 });
+
+describe('all-header resolution status',()=>{
+ it('distinguishes unloaded inventory from confirmed absence',async()=>{
+  browser.folders.query.mockResolvedValue([]);
+  expect((await resolveUniqueMessageKey('account:/Client:mid',{all:true})).status).toBe('unknown');
+  browser.folders.query.mockResolvedValue(folders);browser.messages.query.mockResolvedValue({messages:[]});
+  expect((await resolveUniqueMessageKey('account:/Client:mid',{all:true})).status).toBe('absent');
+ });
+ it('returns every same-folder twin and rejects failed or ambiguous queries',async()=>{
+  browser.messages.query.mockResolvedValue({messages:[{id:1},{id:2}]});
+  expect(await resolveUniqueMessageKey('account:/Client:mid',{all:true})).toEqual({status:'resolved',weIds:[1,2],folder:folders[0]});
+  expect((await resolveUniqueMessageKey('account:/Client:Acme:mid',{all:true})).status).toBe('unknown');
+  browser.messages.query.mockRejectedValue(new Error('synthetic query failure'));
+  expect((await resolveUniqueMessageKey('account:/Client:mid',{all:true})).status).toBe('unknown');
+ });
+});

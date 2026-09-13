@@ -393,3 +393,17 @@ describe("processMessage resolve-failure verify-then-drop", () => {
     expect(SUT.getProcessMessageQueueStatus().pending).toBe(0);
   });
 });
+
+describe('automatic mutation token lifetime',()=>{
+ it('reuses the item token across retries and merges without persisting it',async()=>{
+  mockHeaderIDToWeID.mockResolvedValue(123);
+  mockGet.mockResolvedValue({id:123,folder:{id:'folder-inbox',accountId:'acct1',path:'/INBOX'},headerMessageId:'msgid@x'});
+  mockProcessMessage.mockResolvedValueOnce({ok:false}).mockResolvedValue({ok:true});
+  await enqueueOne({forceRecompute:true});await SUT.drainProcessMessageQueue();
+  const firstToken=mockProcessMessage.mock.calls[0][1].token;expect(firstToken).toEqual({epoch:0,seq:0});
+  await enqueueOne({isPriority:true});await SUT.drainProcessMessageQueue();
+  expect(mockProcessMessage.mock.calls[1][1].token).toBe(firstToken);
+  const snapshots=browser.storage.local.set.mock.calls.map(([value])=>value.agent_processmessage_pending).filter(Boolean).flat();
+  expect(snapshots.some(item=>'token' in item||'token' in (item.opts||{}))).toBe(false);
+ });
+});

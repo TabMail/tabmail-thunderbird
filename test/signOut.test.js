@@ -84,8 +84,8 @@ vi.mock("../agent/modules/deviceSync.js", () => ({
 
 // Mock idbStorage — track calls to clear
 const mockIdbClear = vi.fn(async () => {});
-vi.mock("../agent/modules/idbStorage.js", () => ({
-  clear: mockIdbClear,
+vi.mock("../agent/modules/actionCache.js", () => ({
+  wipeAll: mockIdbClear,
   get: vi.fn(async () => ({})),
   set: vi.fn(async () => {}),
   remove: vi.fn(async () => {}),

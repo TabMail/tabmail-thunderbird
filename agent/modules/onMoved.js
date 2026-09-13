@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { clearActionByUniqueKey } from "./actionCache.js";
+import { clearActions } from "./actionCache.js";
 import { autoUpdateUserPromptOnMove } from "./autoUpdateUserPrompt.js";
 import { SETTINGS } from "./config.js";
 import { logMessageEvent, logMoveEvent } from "./eventLogger.js";
@@ -289,7 +289,7 @@ export async function performLeaveInboxTagCleanup(liveHeader) {
     try {
       const uniqueKey = await getUniqueMessageKey(liveHeader);
       if (uniqueKey) {
-        await clearActionByUniqueKey(uniqueKey);
+        await clearActions([{ header: liveHeader }]);
         log(`[TMDBG onMoved] tagCleanup cleared IDB action for uniqueKey=${uniqueKey}`);
       }
     } catch (eCache) {
@@ -336,12 +336,6 @@ const CACHE_REMAP_PREFIXES = [
   // Summaries
   "summary:",
   "summary:ts:",
-  // Actions
-  "action:",
-  "action:ts:",
-  "action:orig:",
-  "action:justification:",
-  "action:userprompt:",
   // Replies
   "reply:",
   "reply:ts:",
@@ -621,8 +615,8 @@ export function attachOnMovedListeners() {
                     try {
                       const beforeKey = await getUniqueMessageKey(beforeList[i]);
                       if (beforeKey) {
-                        await idb.remove([`action:${beforeKey}`, `action:ts:${beforeKey}`]);
-                        log(`[TMDBG onMoved] Eagerly cleared inbox action cache: action:${beforeKey}`);
+                        await clearActions([{ uniqueKey: beforeKey }]);
+                        log(`[TMDBG onMoved] Eagerly cleared inbox action cache: ${beforeKey}`);
                       }
                     } catch (eCacheEager) {
                       log(`[TMDBG onMoved] Eager cache clear failed (non-critical): ${eCacheEager}`, "info");

@@ -15,6 +15,8 @@ globalThis.browser = {
   },
 };
 
+vi.mock("../agent/modules/actionCache.js", () => ({beginAutomaticWork: vi.fn(()=>({epoch:0,seq:0})),setAction:vi.fn(),getActionForUniqueKey:vi.fn(),purgeMetadataOlderThan:vi.fn()}));
+const {setAction}=await import("../agent/modules/actionCache.js");
 // Mock all imported modules before importing processMessage
 vi.mock("../agent/modules/config.js", () => ({
   SETTINGS: {
@@ -56,7 +58,7 @@ vi.mock("../agent/modules/actionGenerator.js", () => ({
 
 vi.mock("../agent/modules/tagHelper.js", () => ({
   ACTION_TAG_IDS: {},
-  applyActionTags: vi.fn().mockResolvedValue(undefined),
+  runThreadAggregation: vi.fn().mockResolvedValue(undefined),
   applyPriorityTag: vi.fn().mockResolvedValue(undefined),
   importActionFromImapTag: vi.fn(),
 }));
@@ -92,7 +94,7 @@ const { isInternalSender } = await import(
 const { analyzeEmailForReplyFilter } = await import(
   "../agent/modules/messagePrefilter.js"
 );
-const { applyActionTags, applyPriorityTag } = await import(
+const { runThreadAggregation, applyPriorityTag } = await import(
   "../agent/modules/tagHelper.js"
 );
 
@@ -227,7 +229,7 @@ describe("processMessage", () => {
     expect(getSummary).toHaveBeenCalledOnce();
     expect(getAction).not.toHaveBeenCalled();
     expect(createReply).not.toHaveBeenCalled();
-    expect(applyPriorityTag).toHaveBeenCalledWith(1, "none");
+    expect(setAction).toHaveBeenCalledWith(expect.objectContaining({id:1}), "none", {token:expect.any(Object)});
   });
 
   // MARK: - Action Tag Application
@@ -236,7 +238,7 @@ describe("processMessage", () => {
     const result = await processMessage(makeHeader());
 
     expect(result.ok).toBe(true);
-    expect(applyActionTags).toHaveBeenCalledOnce();
+    expect(runThreadAggregation).toHaveBeenCalledOnce();
   });
 
   it("skips tag application when summary fails", async () => {
@@ -244,7 +246,7 @@ describe("processMessage", () => {
 
     await processMessage(makeHeader());
 
-    expect(applyActionTags).not.toHaveBeenCalled();
+    expect(runThreadAggregation).not.toHaveBeenCalled();
   });
 
   // MARK: - Message Gone

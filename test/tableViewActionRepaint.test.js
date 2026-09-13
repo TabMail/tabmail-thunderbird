@@ -67,7 +67,7 @@ function makeHeader(messageKey, folderOverrides = {}) {
   const properties = new Map();
   const folder = {
     URI: "mailbox://account/Inbox",
-    flags: 0,
+    flags: 1,
     getUriForMsg: hdr => `mailbox-message://${hdr.messageKey}`,
     ...folderOverrides,
   };
@@ -601,6 +601,32 @@ describe("Table-view action repaint integration", () => {
     tableDoc.doc.fireInsertion(row);
     tableDoc.doc.flushAnimationFrames();
     expectPainted(row, "none");
+  });
+
+  it("heals the entire rendered pool beyond 200 rows", async () => {
+    const headers = new Map(Array.from({length: 250}, (_, i) => [i, makeHeader(i + 1000)]));
+    const view = makeView({headersByIndex:headers,findIndexOfMsgHdr:()=>-1,findIndexForMsgURI:()=>-1,findKey:()=>-1});
+    const tableDoc = makeTableDocument(view, [...headers.keys()]);
+    const Services = makeServices([makeOuterWindow([tableDoc.contentWindow])]);
+    await startExperiments(Services, new Map());
+    for (const hdr of headers.values()) hdr.setStringProperty("tm-action", "none");
+    tableDoc.doc.fireInsertion(tableDoc.rows[249]);
+    tableDoc.doc.flushAnimationFrames();
+    for (const row of tableDoc.rows) expectPainted(row, "none");
+  });
+
+  it("bulk clear removes tint without restoring legacy action keywords", async () => {
+    const hdr = makeHeader(900);
+    hdr.setStringProperty("tm-action", "reply");
+    hdr.setStringProperty("keywords", "tm_reply");
+    const view = makeView({headersByIndex:new Map([[0,hdr]]),findIndexOfMsgHdr:()=>0});
+    const tableDoc = makeTableDocument(view,[0]);
+    const Services = makeServices([makeOuterWindow([tableDoc.contentWindow])]);
+    const {hdrApi} = await startExperiments(Services,new Map([[9,hdr]]));
+    expectPainted(tableDoc.rows[0],"reply");
+    expect(await hdrApi.setActionsBulk([{weMsgId:9,action:""}])).toBe(1);
+    expectUnpainted(tableDoc.rows[0]);
+    expect(await hdrApi.setActionsBulk([{weMsgId:9,action:"invalid"}])).toBe(0);
   });
 
   it("cancels pending self-heal work and restores the pristine row renderer on shutdown", async () => {

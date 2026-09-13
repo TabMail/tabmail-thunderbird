@@ -4,6 +4,7 @@
 
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
+import { beginAutomaticWork } from "./actionCache.js";
 import { processMessage } from "./messageProcessor.js";
 import {
   getUniqueMessageKey,
@@ -271,6 +272,7 @@ export async function enqueueProcessMessage(messageHeader, opts = {}) {
     const merged = {
       uniqueKey,
       timestamp: prev?.timestamp || now,
+      token: prev?.token,
       opts: { ...(prev?.opts || {}), ...(opts || {}) },
       metadata: {
         ..._durableQueueMetadata(prev?.metadata),
@@ -518,11 +520,12 @@ async function _processOneItem(it) {
   }
 
   // Attempt processing; only remove from queue when processMessage reports ok=true.
+  it.token ??= beginAutomaticWork(key);
   const attemptNo = (Number(it?.attempts) || 0) + 1;
   _pending.set(key, { ...it, attempts: attemptNo });
   try {
     log(`[TMDBG PMQ] Attempting processMessage: weId=${header.id} key=${key} attempt=${attemptNo}`);
-    const res = await processMessage(header, it?.opts || {});
+    const res = await processMessage(header, { ...it?.opts, token: it.token });
     const ok = !!res?.ok;
     if (ok) {
       _pending.delete(key);
@@ -627,25 +630,8 @@ export async function drainProcessMessageQueue() {
 
     log(`[TMDBG PMQ] Drain cycle complete: processed=${processed} dropped=${dropped} remaining=${_pending.size}`);
 
-    // Trigger tagSort refresh if any AI processing items were completed (tags were computed).
-    // Tag cleanup items don't need tagSort refresh or proactive checkin — they only remove tags.
-    // IMPORTANT DESIGN CHOICE: Use debounced refresh() NOT refreshImmediate()!
-    // - refreshImmediate() would cause emails to visually jump around while user is watching
-    // - refresh() uses a 30-second delayed sort from the last change, so sorting only
-    //   happens when the user isn't actively looking (reduces jarring UI experience)
-    // - The 30s timer resets on each call, ensuring we wait for activity to settle
-    // - When user switches views/tabs, immediate sort is triggered by TabSelect/folderURIChanged
     const processedAI = results.filter(r => r.status === "processed" && r.operationType !== "tagCleanupOnLeaveInbox").length;
     if (processedAI > 0) {
-      try {
-        if (browser.tagSort?.refresh) {
-          browser.tagSort.refresh();
-          log(`[TMDBG PMQ] Triggered tagSort.refresh() after processing ${processedAI} AI message(s)`);
-        }
-      } catch (eRefresh) {
-        log(`[TMDBG PMQ] Failed to trigger tagSort.refresh(): ${eRefresh}`, "warn");
-      }
-
       // Check for reminder changes → may trigger proactive check-in
       try {
         const { onInboxUpdated } = await import("./proactiveCheckin.js");
