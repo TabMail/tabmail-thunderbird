@@ -48,6 +48,7 @@ it('the registered scripts and styles produce a passive preview and clean it bef
     expect(w.getComputedStyle(bubble).borderRadius).toBe('8px');
     expect(body.innerHTML).toBe(before);
     expect(w.CSS.highlights.size).toBe(1);
+    tm.config.BEFORE_SEND_CLEANUP_SUPPRESS_MS = 1;
     for(const listener of messageListeners)await listener({command:'cleanupBeforeSend'},{},()=>{});
     expect(w.document.querySelector('.tm-compose-preview')).toBeNull();
     expect(w.CSS.highlights.size).toBe(0);
@@ -55,6 +56,22 @@ it('the registered scripts and styles produce a passive preview and clean it bef
     tm.renderText(true);
     expect(w.document.querySelector('.tm-compose-preview')).toBeNull();
     expect(body.innerHTML).toBe(before);
+    // A canceled/failed send leaves the same compose window open. Successful
+    // subsequent corrections must become visible after the snapshot guard ends.
+    await new Promise(resolve => w.setTimeout(resolve, 5));
+    expect(tm.state.beforeSendCleanupActive).toBe(false);
+    body.firstChild.firstChild.textContent = 'New draft.';
+    tm.setCursorByOffset(body, 3);
+    body.dispatchEvent(new w.KeyboardEvent('keydown', {key:'x', bubbles:true}));
+    body.dispatchEvent(new w.InputEvent('input', {bubbles:true, data:'x'}));
+    const afterTyping = body.innerHTML;
+    tm.getCorrectionFromServer = vi.fn(async()=>({suggestion:'New corrected draft.',usertext:'New draft.'}));
+    tm.state.latestGlobalRequestId = tm._nextRequestId(tm.state.latestGlobalRequestId);
+    await tm.triggerCorrectionBackend(body, 'New draft.', 'Signature', tm.state.latestGlobalRequestId, false);
+    expect(tm.state.correctedText).toBe('New corrected draft.');
+    expect(tm.state.previewModel).not.toBeNull();
+    expect(tm.state.previewView.host.querySelector('.content').textContent).toBe('New corrected draft.');
+    expect(body.innerHTML).toBe(afterTyping);
   } finally {
     dom?.window.close();
     vi.useRealTimers();

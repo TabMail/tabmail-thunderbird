@@ -262,9 +262,6 @@ var TabMail = TabMail || {};
           TM.state.backendTimer = null;
         }
 
-        // Keep diffs hidden during send snapshot window.
-        TM.state.autoHideDiff = true;
-
         console.log("[TabMail CS] cleanupBeforeSend: suppression enabled", {
           autoHideDiff: TM.state.autoHideDiff,
           showDiff: TM.state.showDiff,

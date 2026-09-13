@@ -433,7 +433,8 @@ it('a newer caret action prevents Tab from editing the previous sentence',()=>{
   expect(tm.state.previewModel.replacement.trim()).toBe('First is good.');
   tm.setCursorByOffset(body,20);w.document.dispatchEvent(new w.Event('selectionchange'));
   body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
-  expect(body.textContent.startsWith('First is bad.')).toBe(true);
+  expect(body.textContent).toBe('First is bad. Second is bad.');
+  expect(w.document.execCommand).not.toHaveBeenCalled();
   tm.renderComposePreview();
   body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
   expect(body.textContent).toBe('First is bad. Second is good.');
@@ -528,4 +529,74 @@ it('registered selection changes refresh the sentence preview after a user caret
   w.document.dispatchEvent(new w.Event('selectionchange'));
   await vi.waitFor(()=>expect(tm.state.previewModel.replacement.trim()).toBe('Second is good.'));
   expect(body.textContent).toBe('First is bad. Second is bad.');
+});
+
+it.each(['img','svg','video','audio','iframe','object','embed','input','textarea','select','canvas','hr'])('protects authored %s when a generated replacement crosses it',tag=>{
+ const {w,tm,body}=setup('Hello very <'+tag+'></'+tag+'>bad.');
+ const before=body.innerHTML;
+ const original=tm.indexComposeText(body).text;
+ const edits=tm.composeEditsFromDiff(tm.computeDiff(original,'Hello good.'));
+ expect(edits.length).toBeGreaterThan(0);
+ expect(tm.applyComposeEdits(body,original,edits)).toBe(false);
+ expect(body.innerHTML).toBe(before);expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it.each([false,'throw'])('native command %s leaves retryable draft/selection intact',failure=>{
+ const {w,tm,body}=setup('Hello bad.');tm.setCursorByOffset(body,7);
+ const before=body.innerHTML, saved=w.getSelection().anchorOffset;
+ w.document.execCommand=vi.fn(()=>{if(failure==='throw')throw Error('dependency failure');return false;});
+ tm.state.correctedText='Hello good.';tm.renderComposePreview();
+ expect(tm.acceptComposePreview()).toBe(false);expect(body.innerHTML).toBe(before);
+ expect(w.getSelection().anchorOffset).toBe(saved);expect(tm.state.applyingPreview).toBe(false);
+ expect(tm.state.correctedText).toBe('Hello good.');
+ installNativeModel(w);tm.renderComposePreview();expect(tm.acceptComposePreview()).toBe(true);
+ expect(body.textContent).toBe('Hello good.');
+});
+it.each([true,false])('newer input defeats late local=%s response', async local=>{
+ const {w,tm,body}=setup('Hello.');tm.attachAutocomplete(body);
+ let finish;tm.getCorrectionFromServer=vi.fn(()=>new Promise(r=>finish=r));
+ tm.state.latestLocalRequestId=1;tm.state.latestGlobalRequestId=1;
+ const request=tm.triggerCorrectionBackend(body,'Hello.','',1,local);
+ body.firstChild.textContent='A different message.';body.dispatchEvent(new w.InputEvent('input',{bubbles:true}));
+ finish({suggestion:'Hello older.',usertext:'Hello.'});await request;
+ expect(body.textContent).toBe('A different message.');expect(tm.state.correctedText).toBeNull();
+ expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it('new proposal and newer draft are both rechecked before acceptance',()=>{
+ const {w,tm,body}=setup('Hello bad.');tm.state.correctedText='Hello good.';tm.renderComposePreview();
+ tm.state.correctedText='Hello excellent.';
+ expect(tm.acceptComposePreview()).toBe(false);expect(body.textContent).toBe('Hello bad.');
+ expect(w.document.execCommand).not.toHaveBeenCalled();
+ body.firstChild.textContent='Newer authored message.';
+ expect(tm.acceptComposePreview()).toBe(false);expect(body.textContent).toBe('Newer authored message.');
+});
+it('two windows isolate proposal and acceptance state',()=>{
+ const a=setup('Hello bad.'),b=setup('Hello bad.');
+ a.tm.state.correctedText='Hello good.';a.tm.renderComposePreview();
+ b.tm.state.correctedText='Hello excellent.';b.tm.renderComposePreview();
+ a.tm.acceptComposePreview();
+ expect(a.body.textContent).toBe('Hello good.');expect(b.body.textContent).toBe('Hello bad.');
+ expect(b.tm.state.previewModel.replacement).toBe('Hello excellent.');
+});
+
+it('a range selection suppresses the visible proposal without changing the draft',()=>{
+ const {w,tm,body}=setup('Hello bad.');const before=body.innerHTML;
+ tm.state.correctedText='Hello good.';tm.renderComposePreview();expect(tm.state.previewModel).not.toBeNull();
+ const range=w.document.createRange();range.setStart(body.firstChild,1);range.setEnd(body.firstChild,4);w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ tm.renderComposePreview();expect(w.document.getElementById('tm-compose-preview')).toBeNull();expect(body.innerHTML).toBe(before);
+});
+it('moving the caret into the quote suppresses draft acceptance controls',()=>{
+ const {w,tm,body}=setup('Hello bad.<blockquote type="cite">Quoted text.</blockquote>');const before=body.innerHTML;
+ tm.state.correctedText='Hello good.';tm.renderComposePreview();expect(tm.state.previewModel).not.toBeNull();
+ const range=w.document.createRange();range.setStart(body.querySelector('blockquote').firstChild,3);range.collapse(true);w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ tm.renderComposePreview();expect(w.document.getElementById('tm-compose-preview')).toBeNull();expect(body.innerHTML).toBe(before);
+});
+it.each(['mouse','keyboard'])('%s jump navigates before allowing acceptance',mode=>{
+ const {w,tm,body}=setup('Hello. This is bad.');const before=body.innerHTML;
+ tm.attachAutocomplete(body);tm.state.correctedText='Hello. This is good.';tm.renderComposePreview();
+ expect(tm.state.previewModel).toBeNull();expect(tm.state.previewJumpOffset).toBeGreaterThan(6);
+ if(mode==='mouse')tm.state.previewView.host.querySelector('button').click();
+ else body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+ expect(body.innerHTML).toBe(before);expect(tm.composeCursorOffset(tm.indexComposeText(body))).toBeGreaterThan(6);
+ expect(tm.state.previewModel.replacement).toContain('This is good.');expect(w.document.execCommand).not.toHaveBeenCalled();
+ tm.state.previewView.host.querySelector('button').click();expect(body.textContent).toBe('Hello. This is good.');expect(w.document.execCommand).toHaveBeenCalledTimes(1);
 });
