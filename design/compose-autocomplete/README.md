@@ -8,4 +8,4 @@ Tab or Accept applies the complete displayed suggestion; Esc or Dismiss drops it
 
 `previewModel.js` reuses sentence diff computation. `richText.js` supplies shared text offsets and DOM ranges. `preview.js` renders outside the message body; source highlighting uses CSS highlights without inserting spans into the draft. Acceptance clones the editable region, applies escaped text edits, validates the resulting text projection, and submits one native HTML editor command. Unrepresentable structural edits fail closed.
 
-Native Thunderbird Beta visual, formatting, and undo/redo smoke testing is required before merge. JSDOM checks validate models, payloads, and lifecycle invariants; they do not prove Gecko transaction behavior.
+Thunderbird Beta 156.0 native visual, formatting, and undo/redo smoke checks passed; reproducible guarded probes and limits are documented in `test/manual/README.md`. JSDOM checks validate models, payloads, and lifecycle invariants; they do not prove Gecko transaction behavior.

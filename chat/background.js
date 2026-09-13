@@ -441,7 +441,7 @@ browser.storage.onChanged.addListener((changes, area) => {
 
 // ── Proactive "setup" toolbar warning (issue #12) ────────────────────────────
 // The popup computes the setup warning on open; mirror it proactively so the red
-// dot reflects setup issues (plaintext/calendar/address book) even before the
+// dot reflects setup issues (calendar/address book) even before the
 // popup is opened, and clears the moment they're fixed. All inputs are local —
 // ZERO network. Uses the SAME shared checks the popup uses (setupChecks.js) so
 // the two contexts can't disagree.

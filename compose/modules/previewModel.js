@@ -5,18 +5,11 @@
 var TabMail = TabMail || {};
 
 Object.assign(TabMail, {
-  /**
-   * Project the existing sentence diff onto one atomic preview. Offsets refer
-   * to the unchanged editor, never to preview DOM. Adjacent deletes/inserts
-   * are one replacement; context is not part of the acceptance payload.
-   */
-  buildPreviewModel(original, corrected, cursor) {
-    const diffs = TabMail.computeDiff(original, corrected, cursor);
-    const filtered = TabMail._filterDiffsForSuggestion(diffs, original, corrected, cursor);
+  composeEditsFromDiff(diffs) {
     const edits = [];
     let offset = 0;
     let pending = null;
-    for (const [op, text] of filtered.diffs) {
+    for (const [op, text] of diffs) {
       if (op === 0) {
         if (pending) edits.push(pending);
         pending = null;
@@ -32,6 +25,18 @@ Object.assign(TabMail, {
       }
     }
     if (pending) edits.push(pending);
+    return edits;
+  },
+
+  /**
+   * Project the existing sentence diff onto one atomic preview. Offsets refer
+   * to the unchanged editor, never to preview DOM. Adjacent deletes/inserts
+   * are one replacement; context is not part of the acceptance payload.
+   */
+  buildPreviewModel(original, corrected, cursor) {
+    const diffs = TabMail.computeDiff(original, corrected, cursor);
+    const filtered = TabMail._filterDiffsForSuggestion(diffs, original, corrected, cursor);
+    const edits = TabMail.composeEditsFromDiff(filtered.diffs);
     if (!edits.length) return { edits, jumpOffset: filtered.firstDiffPosition };
 
     const sentences = TabMail.splitIntoSentences(original);
@@ -43,11 +48,11 @@ Object.assign(TabMail, {
     const runs = [];
     let pos = start;
     for (const edit of edits) {
-      if (edit.start > pos) runs.push({ text: original.slice(pos, edit.start), inserted: false });
-      if (edit.text) runs.push({ text: edit.text, inserted: true });
+      if (edit.start > pos) runs.push({ text: original.slice(pos, edit.start), inserted: false, start: pos });
+      if (edit.text) runs.push({ text: edit.text, inserted: true, start: edit.start });
       pos = edit.end;
     }
-    if (pos < end) runs.push({ text: original.slice(pos, end), inserted: false });
+    if (pos < end) runs.push({ text: original.slice(pos, end), inserted: false, start: pos });
     return { original, start, end, edits, runs, replacement: runs.map(run => run.text).join(''), jumpOffset: null };
   },
 });

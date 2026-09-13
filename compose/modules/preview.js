@@ -5,7 +5,7 @@ var TabMail = TabMail || {};
 
 Object.assign(TabMail, {
   hideComposePreview() {
-    document.getElementById('tm-compose-preview')?.remove();
+    TabMail.state.previewView?.host.remove();
     globalThis.CSS?.highlights?.delete('tm-compose-sentence');
     TabMail.state.previewView = null;
     TabMail.state.previewModel = null;
@@ -54,7 +54,7 @@ Object.assign(TabMail, {
     if (!editor || !show || state.autocompleteDisabled || state.inlineEditActive || state.isIMEComposing || state.beforeSendCleanupActive || !sel?.isCollapsed) { TabMail.hideComposePreview(); return; }
     const index = TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor));
     const cursor = TabMail.composeCursorOffset(index);
-    if (cursor === null || typeof state.correctedText !== 'string' || state.correctedText === index.text) { TabMail.hideComposePreview(); return; }
+    if (cursor === null || typeof state.correctedText !== 'string' || !state.correctedText || state.correctedText === index.text) { TabMail.hideComposePreview(); return; }
     const model = TabMail.buildPreviewModel(index.text, state.correctedText, cursor);
     if (!model.edits.length && (model.jumpOffset == null || model.jumpOffset < 0)) { TabMail.hideComposePreview(); return; }
     globalThis.CSS?.highlights?.delete('tm-compose-sentence');
@@ -67,15 +67,11 @@ Object.assign(TabMail, {
       host.id = 'tm-compose-preview';
       host.setAttribute('data-tabmail-ui', '');
       host.contentEditable = 'false';
-      const shadow = host.attachShadow({ mode: 'closed' });
-      const sheet = document.createElement('link');
-      sheet.rel = 'stylesheet';
-      sheet.href = browser.runtime.getURL('compose/preview.css');
-      shadow.appendChild(sheet);
-      view = state.previewView = { host, shadow, sheet };
+      host.className = 'tm-compose-preview';
+      view = state.previewView = { host };
     }
-    const { host, shadow, sheet } = view;
-    shadow.querySelector('.preview')?.remove();
+    const { host } = view;
+    host.querySelector('.preview')?.remove();
     const bubble = document.createElement('div');
     bubble.className = 'preview';
     bubble.setAttribute('role', 'group');
@@ -95,14 +91,28 @@ Object.assign(TabMail, {
     const left = context?.left ?? (rect.height ? rect.left : editorRect.left);
     const top = context?.top ?? (rect.height ? rect.top : editorRect.top);
     const bottom = context?.bottom ?? (rect.height ? rect.bottom : editorRect.top + (parseFloat(style.lineHeight) || parseFloat(style.fontSize) * cfg.lineHeightFactor));
-    const add = (text, className) => {
+    const add = (text, className, offset = null) => {
       const span = document.createElement('span');
       span.className = className;
       span.textContent = text;
+      if (offset !== null) {
+        const point = TabMail.composePointAt(index, offset, true);
+        const element = point.node.nodeType === Node.TEXT_NODE ? point.node.parentElement : point.node;
+        const typography = getComputedStyle(element);
+        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch', 'fontVariant', 'letterSpacing', 'textDecoration']) {
+          span.style[property] = typography[property];
+        }
+      }
       content.appendChild(span);
     };
     if (model.edits.length) {
-      if (context) add(index.text.slice(context.start, model.start), 'context');
+      const addOriginal = (start, end, className) => {
+        for (const entry of index.entries) {
+          const a = Math.max(start, entry.start), b = Math.min(end, entry.end);
+          if (a < b) add(index.text.slice(a, b), className, a);
+        }
+      };
+      if (context) addOriginal(context.start, model.start, 'context');
       const runs = model.runs.map(run => ({ ...run }));
       // Sentence tokens include the paragraph delimiter; it is not an extra
       // preview line. The acceptance payload retains it unchanged.
@@ -111,8 +121,14 @@ Object.assign(TabMail, {
         if (runs[runs.length - 1].text) break;
         runs.pop();
       }
-      for (const run of runs) add(run.text, run.inserted ? 'inserted' : 'unchanged');
-      if (context && context.end > model.end) add((model.replacement.match(/[^\S\n]+$/)?.[0] || '') + index.text.slice(model.end, context.end), 'context');
+      for (const run of runs) {
+        if (run.inserted) add(run.text, 'inserted', run.start);
+        else addOriginal(run.start, run.start + run.text.length, 'unchanged');
+      }
+      if (context && context.end > model.end) {
+        add(model.replacement.match(/[^\S\n]+$/)?.[0] || '', 'context');
+        addOriginal(model.end, context.end, 'context');
+      }
       if (typeof Highlight !== 'undefined' && CSS.highlights && model.end > model.start) {
         CSS.highlights.set('tm-compose-sentence', new Highlight(TabMail.composeRange(index, model.start, model.end)));
       }
@@ -140,8 +156,15 @@ Object.assign(TabMail, {
     action('Dismiss', 'Dismiss suggestion (Esc)', () => TabMail.dismissComposeSuggestion());
     action('Disable suggestions', 'Disable suggestions (Shift+Esc)', () => TabMail.setAutocompleteEnabled(false));
     bubble.appendChild(actions);
-    shadow.appendChild(bubble);
-    Object.assign(host.style, { position: 'fixed', zIndex: String(cfg.zIndex), left: `${Math.max(cfg.margin, left - cfg.padding)}px`, top: `${bottom + cfg.gap}px`, width: `${Math.max(cfg.minWidth, Math.min(editorRect.right - left + cfg.padding * 2, window.innerWidth - Math.max(cfg.margin, left - cfg.padding) - cfg.margin))}px` });
+    host.appendChild(bubble);
+    // At the viewport edge, reduce bubble padding instead of shifting the
+    // preview text away from its corresponding source line.
+    const x = Math.max(0, left - cfg.padding - 1);
+    const availableWidth = Math.max(1, window.innerWidth - x);
+    const width = Math.min(availableWidth, Math.max(cfg.minWidth, editorRect.right - x + cfg.padding + 1));
+    bubble.style.paddingLeft = `${Math.max(0, left - x - 1)}px`;
+    bubble.style.paddingRight = `${Math.max(0, x + width - editorRect.right - 1)}px`;
+    Object.assign(host.style, { position: 'fixed', zIndex: String(cfg.zIndex), left: `${x}px`, top: `${bottom + cfg.gap}px`, width: `${width}px` });
     // Sibling of BODY: the native compose serializer cannot include the preview.
     if (!host.isConnected) document.documentElement.appendChild(host);
     const place = () => {
@@ -150,7 +173,6 @@ Object.assign(TabMail, {
       const y = bottom + cfg.gap + height <= window.innerHeight - cfg.margin ? bottom + cfg.gap : Math.max(cfg.margin, top - cfg.gap - height);
       host.style.top = `${y}px`;
     };
-    sheet.onload = place;
     place();
     state.isDiffActive = !!model.edits.length;
   },

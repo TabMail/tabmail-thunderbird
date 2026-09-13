@@ -233,55 +233,10 @@ async function updateDebugModeIndicator() {
 // Update debug mode indicator on popup open
 updateDebugModeIndicator();
 
-// Setup configuration checks (checkPlaintextComposition / checkDefaultCalendar /
+// Setup configuration checks (checkDefaultCalendar /
 // checkDefaultAddressBook / checkSetupConfiguration) now live in the shared
 // ../agent/modules/setupChecks.js module so the background can compute the
 // "setup" toolbar warning identically to the popup (issue #12).
-
-/**
- * Forces all identities to use plaintext composition.
- * @returns {Promise<{success: number, failed: number, total: number}>}
- */
-async function forceAllIdentitiesPlaintext() {
-  let success = 0;
-  let failed = 0;
-  let total = 0;
-  
-  try {
-    if (!browser.tmPrefs) {
-      console.warn("[Popup] forceAllIdentitiesPlaintext: tmPrefs API not available");
-      return { success: 0, failed: 0, total: 0 };
-    }
-    
-    const accounts = await browser.accounts.list();
-    
-    for (const account of accounts) {
-      if (!account.identities || account.identities.length === 0) continue;
-      
-      for (const identity of account.identities) {
-        total++;
-        const identityId = identity.id;
-        
-        try {
-          const prefName = `mail.identity.${identityId}.compose_html`;
-          // Set to false to force plaintext (false = plaintext, true = HTML)
-          await browser.tmPrefs.setBool(prefName, false);
-          success++;
-          console.log(`[Popup] Set identity ${identityId} to plaintext mode`);
-        } catch (e) {
-          failed++;
-          console.warn(`[Popup] Failed to set plaintext for identity ${identityId}:`, e);
-        }
-      }
-    }
-    
-    console.log(`[Popup] Plaintext enforcement complete: ${success}/${total} identities`);
-    return { success, failed, total };
-  } catch (e) {
-    console.error(`[Popup] forceAllIdentitiesPlaintext failed:`, e);
-    return { success, failed, total };
-  }
-}
 
 async function updateSetupWarning() {
   const warningDiv = document.getElementById("setup-warning");
@@ -302,12 +257,7 @@ async function updateSetupWarning() {
       let issueHtml = `<div style="margin-bottom: 8px;">Please configure the following before using TabMail:</div>`;
       
       for (const issue of setupStatus.issues) {
-        if (issue.includes("Plaintext")) {
-          // Add a "Fix" link for plaintext issues
-          issueHtml += `<div style="margin: 4px 0;">• ${issue} <a href="#" id="fix-plaintext-link" style="color: var(--in-content-accent-color); text-decoration: underline; cursor: pointer; margin-left: 4px;">[Click to fix]</a></div>`;
-        } else {
-          issueHtml += `<div style="margin: 4px 0;">• ${issue}</div>`;
-        }
+        issueHtml += `<div style="margin: 4px 0;">• ${issue}</div>`;
       }
       
       warningItems.innerHTML = issueHtml;
@@ -1261,38 +1211,6 @@ if (!window.__popupClickListener) {
         console.error(`[Auth] Failed to save auto-reauth preference: ${error}`);
         // Revert checkbox on error
         checkbox.checked = !checkbox.checked;
-      }
-      return;
-    }
-
-    if (e.target.id === "fix-plaintext-link") {
-      e.preventDefault();
-      const link = e.target;
-      
-      try {
-        link.textContent = "[Fixing...]";
-        link.style.pointerEvents = "none";
-        
-        const result = await forceAllIdentitiesPlaintext();
-        
-        if (result.success > 0) {
-          link.textContent = `[Fixed ${result.success} identities!]`;
-          link.style.color = "green";
-          
-          // Refresh the setup warning after a short delay
-          setTimeout(async () => {
-            await updateSetupWarning();
-          }, 500);
-        } else if (result.total === 0) {
-          link.textContent = "[No identities found]";
-        } else {
-          link.textContent = "[Fix failed]";
-          link.style.color = "red";
-        }
-      } catch (error) {
-        console.error("[Popup] Fix plaintext failed:", error);
-        link.textContent = "[Fix failed]";
-        link.style.color = "red";
       }
       return;
     }

@@ -220,15 +220,7 @@ Object.assign(TabMail, {
       // Restore the compose host before its native editor transaction.
       if (typeof wrapper._tm_cleanup === "function") wrapper._tm_cleanup("apply");
       const diffs = TabMail.computeDiff(beforeText, afterText);
-      let offset = 0;
-      const edits = [];
-      for (const [op, text] of diffs) {
-        if (op === 1) edits.push({ start: offset, end: offset, text });
-        else {
-          if (op === -1) edits.push({ start: offset, end: offset + text.length, text: '' });
-          offset += text.length;
-        }
-      }
+      const edits = TabMail.composeEditsFromDiff(diffs);
       if (!TabMail.applyComposeEdits(editor, beforeText, edits)) {
         TabMail.log.warn('inlineEdit', 'Editor changed before native edit could be applied');
         return;

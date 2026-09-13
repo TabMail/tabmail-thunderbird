@@ -36,11 +36,20 @@ Object.assign(TabMail, {
       }
     };
     visit(root);
+    // A final block separator is layout, not authored message text.
+    if (entries.at(-1)?.kind === 'block') {
+      text = text.slice(0, -1);
+      entries.pop();
+    }
     return { root, text, entries, boundary };
   },
 
-  composePointAt(index, offset) {
+  composePointAt(index, offset, forward = false) {
     if (!Number.isInteger(offset) || offset < 0 || offset > index.text.length) return null;
+    if (forward) {
+      const entry = index.entries.find(e => e.kind === 'text' && e.start <= offset && offset < e.end);
+      if (entry) return { node: entry.node, offset: offset - entry.start };
+    }
     for (const entry of index.entries) {
       if (entry.kind === 'text' && offset >= entry.start && offset <= entry.end) {
         return { node: entry.node, offset: offset - entry.start };
@@ -57,7 +66,7 @@ Object.assign(TabMail, {
   },
 
   composeRange(index, start, end = start) {
-    const a = TabMail.composePointAt(index, start);
+    const a = TabMail.composePointAt(index, start, start < end);
     const b = TabMail.composePointAt(index, end);
     if (!a || !b) return null;
     const range = document.createRange();
@@ -73,6 +82,12 @@ Object.assign(TabMail, {
     const caret = document.createRange();
     caret.setStart(selection.anchorNode, selection.anchorOffset);
     caret.collapse(true);
+    if (index.boundary) {
+      const boundaryRange = document.createRange();
+      boundaryRange.setStartBefore(index.boundary);
+      boundaryRange.collapse(true);
+      if (caret.compareBoundaryPoints(0, boundaryRange) > 0) return null;
+    }
     for (const entry of index.entries) {
       if (entry.node === selection.anchorNode && entry.kind === 'text') return entry.start + selection.anchorOffset;
       if (entry.kind === 'block' && entry.node.contains(selection.anchorNode)) continue;
@@ -108,6 +123,9 @@ Object.assign(TabMail, {
       const index = TabMail.indexComposeText(fragment);
       const range = TabMail.composeRange(index, edit.start, edit.end);
       if (!range) return false;
+      // Text-only proposals cannot authorize removing authored media or controls.
+      const protectedNodes = fragment.querySelectorAll('img,svg,video,audio,iframe,object,embed,input,textarea,select,canvas,hr');
+      if ([...protectedNodes].some(node => range.intersectsNode(node))) return false;
       range.deleteContents();
       const inserted = document.createDocumentFragment();
       const lines = edit.text.split('\n');
