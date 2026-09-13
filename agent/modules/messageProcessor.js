@@ -62,7 +62,9 @@ export async function processMessage(
       const summaryOk = !!summaryObj;
 
       // Apply tm_none tag to mark as processed
-      await setAction(messageHeader, "none", { token });
+      if (await setAction(messageHeader, "none", { token })) {
+        await runThreadAggregation([messageHeader]);
+      }
 
       log(`[ProcessMessage] Completed internal message ${messageHeader.id} - Summary: ${summaryOk}, Tag: tm_none`);
       return {

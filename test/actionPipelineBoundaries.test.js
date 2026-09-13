@@ -138,3 +138,15 @@ it('an older internal queue item cannot repopulate a completed wipe; fresh work 
  expect(queue.getProcessMessageQueueStatus().pending).toBe(0);
  expect(afterOld).toEqual({durable:undefined,native:undefined});
 });
+
+it('invalid generated action remains retryable and a valid retry writes both stores',async()=>{
+ h.resolve.mockResolvedValue({weID:1,weFolder:folder,headerID:header.headerMessageId});
+ dependencies.chat.mockResolvedValueOnce({assistant:'{"action":"snooze"}'});
+ const queue=await import('../agent/modules/messageProcessorQueue.js');
+ await queue.enqueueProcessMessage(header); await queue.drainProcessMessageQueue();
+ const afterInvalid={pending:queue.getProcessMessageQueueStatus().pending,durable:h.store['action:'+key],native:h.native.get(1)};
+ await queue.drainProcessMessageQueue();
+ expect(afterInvalid).toEqual({pending:1,durable:undefined,native:undefined});
+ expect(dependencies.chat).toHaveBeenCalledTimes(2);
+ expect({pending:queue.getProcessMessageQueueStatus().pending,durable:h.store['action:'+key],native:h.native.get(1)}).toEqual({pending:0,durable:'archive',native:'archive'});
+});

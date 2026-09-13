@@ -246,12 +246,15 @@ export async function getAction(messageHeader, { forceRecompute = false, token }
         return null;
       }
     
-      // Extract actions and normalize them
+      // Priority ranking for tie-breaking: delete < archive < none < reply
+      const priorityOrder = ["delete", "archive", "none", "reply"];
+
+      // Extract supported actions and normalize them
       const actions = validResponses
         .map(parsed => parsed.action)
         .filter(action => typeof action === "string")
         .map(action => action.trim().toLowerCase())
-        .filter(action => action);
+        .filter(action => priorityOrder.includes(action));
     
       if (actions.length === 0) {
         log(`${PFX}No valid actions found in responses for ${uniqueKey}`, "warn");
@@ -269,9 +272,6 @@ export async function getAction(messageHeader, { forceRecompute = false, token }
     
       // Get all actions with the maximum count
       const tiedActions = Object.keys(actionCounts).filter(action => actionCounts[action] === maxCount);
-    
-      // Priority ranking for tie-breaking: delete < archive < none < reply
-      const priorityOrder = ["delete", "archive", "none", "reply"];
     
       let selectedAction;
       if (tiedActions.length === 1) {
