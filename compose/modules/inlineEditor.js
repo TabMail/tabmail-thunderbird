@@ -683,6 +683,7 @@ Object.assign(TabMail, {
         field.setRangeText("\n", field.selectionStart, field.selectionEnd, "end");
         field.dispatchEvent(new Event("input", {bubbles:true}));
       });
+      actionRow.appendChild(TabMail.createComposePlacementToggle());
       wrapper.appendChild(hint);
 
       document.body.appendChild(wrapper);

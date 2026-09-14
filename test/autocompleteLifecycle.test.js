@@ -239,7 +239,7 @@ describe('clickable suggestion controls', () => {
     tm.state.correctedText = 'This is useful.';
     tm.renderComposePreview(); tm.showComposeHintsBanner();
     expect(w.document.getElementById('tm-compose-hints-banner')).toBeNull();
-    const controls = [...tm.state.previewView.root.querySelectorAll('button')];
+    const controls = [...tm.state.previewView.root.querySelectorAll('button:not(.tm-placement-toggle)')];
     expect(controls.map(button => button.textContent)).toEqual(['Tab Accept', 'Esc Dismiss', '⇧Esc Disable suggestions']);
     expect(controls.map(button=>button.getAttribute('aria-keyshortcuts'))).toEqual(['Tab','Escape','Shift+Escape']);
     expect(controls.map(button=>button.querySelector('kbd').getAttribute('aria-hidden'))).toEqual(['true','true','true']);
@@ -557,7 +557,7 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   expect(actionRoot.querySelector('style').textContent).toBe(tm.composeActionCSS);
   expect(wrapper.textContent).not.toContain('Esc');
   expect(actionRoot.querySelector('.tm-compose-actions').getAttribute('contenteditable')).toBe('false');
-  expect(actions.map(b=>b.textContent)).toEqual(['Enter Edit draft','Esc Dismiss','⇧Enter Newline']);
+  expect(actions.map(b=>b.textContent)).toEqual(['Enter Edit draft','Esc Dismiss','⇧Enter Newline','Dock at bottom']);
   expect(actionRoot.querySelector('.tm-compose-actions')).not.toBeNull();
   expect(wrapper.querySelector('.tm-inline-actions').getAttribute('spellcheck')).toBe('false');
   const actionSheet=w.document.getElementById('tm-compose-action-styles').sheet;
@@ -1807,4 +1807,25 @@ describe('HTML paragraph separator normalization', () => {
     const result = model.edits.reduceRight((text, edit) => text.slice(0,edit.start)+edit.text+text.slice(edit.end), original);
     expect(result).toBe('Hello,\n\nI want to check this.');
   });
+});
+
+
+it.each(['cursor','bottom'])('bubble placement toggle persists and repositions from %s', async initial => {
+  const saved={composeBubblePlacement:initial};
+  const {dom,w,tm,body}=setup('This is very useful.');
+  w.browser.storage=storageFor(saved);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+  const filename=resolve('compose/compose-autocomplete.js');
+  runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+  await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+  tm.state.correctedText='This is useful.';tm.renderText(true);
+  const button=tm.state.previewView.root.querySelector('.tm-placement-toggle');
+  expect(button.textContent).toBe(initial==='bottom'?'Follow cursor':'Dock at bottom');
+  button.click();
+  const next=initial==='bottom'?'cursor':'bottom';
+  await vi.waitFor(()=>expect(saved.composeBubblePlacement).toBe(next));
+  expect(tm.state.composeBubblePlacement).toBe(next);
+  expect(tm.state.previewView.root.querySelector('.tm-placement-toggle').textContent).toBe(next==='bottom'?'Follow cursor':'Dock at bottom');
+  expect(tm.state.previewView.host.style.bottom).toBe(next==='bottom'?'8px':'');
+  expect(body.textContent).toBe('This is very useful.');
+  expect(w.document.execCommand).not.toHaveBeenCalled();
 });

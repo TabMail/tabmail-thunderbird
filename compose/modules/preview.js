@@ -10,6 +10,9 @@ TabMail.composeActionCSS = `
 .tm-compose-actions button:disabled { cursor: default; opacity: .5; }
 .tm-compose-actions button:hover, .tm-compose-actions button:focus-visible { background: var(--tm-preview-insert); color: var(--tm-preview-text); }
 
+.tm-compose-actions .tm-placement-toggle { order: -1; margin-right: auto; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.tm-placement-toggle svg { width: 14px; height: 14px; flex: none; }
+
 .tm-compose-actions kbd { display: inline-block; font: 10px/1.3 system-ui; border: 1px solid var(--tm-preview-border); border-radius: 3px; padding: 1px 4px; margin-right: 3px; white-space: nowrap; }
 `;
 
@@ -29,6 +32,44 @@ ${TabMail.composeActionCSS}
 `;
 
 Object.assign(TabMail, {
+  createComposePlacementToggle() {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tm-placement-toggle';
+    button._tm_updatePlacementLabel = () => {
+      const docked = TabMail.state.composeBubblePlacement === 'bottom';
+      const label = docked ? 'Follow cursor' : 'Dock at bottom';
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 20 20');
+      svg.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS(svg.namespaceURI, 'path');
+      path.setAttribute('d', docked ? 'M5 3.5 15 10l-4.5 1-2 4.5Z' : 'M4 3.5h12a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1ZM3 12.5h14');
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', 'currentColor');
+      path.setAttribute('stroke-width', '1.5');
+      path.setAttribute('stroke-linejoin', 'round');
+      svg.appendChild(path);
+      button.replaceChildren(svg, document.createTextNode(label));
+      button.setAttribute('aria-label', label);
+      button.title = label;
+    };
+    button._tm_updatePlacementLabel();
+    button.addEventListener('mousedown', event => event.preventDefault());
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        // Use the existing shared storage listener for live positioning and
+        // persistence, including other compose windows and the Appearance page.
+        await browser.storage.local.set({composeBubblePlacement: TabMail.state.composeBubblePlacement === 'bottom' ? 'cursor' : 'bottom'});
+      } catch (error) {
+        TabMail.log.warn('compose', 'Could not update bubble placement', error);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    return button;
+  },
+
   positionDockedComposeBubble(surface) {
     const margin = TabMail.config.preview.margin;
     Object.assign(surface.style, {
@@ -269,6 +310,7 @@ Object.assign(TabMail, {
     action('Accept', 'Tab', 'Accept suggestion (Tab)', () => TabMail.acceptComposePreview());
     action('Dismiss', 'Esc', 'Dismiss suggestion (Esc)', () => TabMail.dismissComposeSuggestion());
     action('Disable suggestions', '⇧Esc', 'Disable suggestions (Shift+Esc)', () => TabMail.setAutocompleteEnabled(false));
+    actions.appendChild(TabMail.createComposePlacementToggle());
     bubble.appendChild(actions);
     root.appendChild(bubble);
     // Keep the surface inset from both viewport edges, preserving source

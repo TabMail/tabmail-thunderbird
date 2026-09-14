@@ -171,7 +171,9 @@ var TabMail = TabMail || {};
           if (Object.prototype.hasOwnProperty.call(changes, "composeBubblePlacement")) {
             placementChangedDuringInitialization = true;
             TM.state.composeBubblePlacement = changes.composeBubblePlacement.newValue === "bottom" ? "bottom" : "cursor";
-            document.getElementById('tm-inline-edit')?._tm_reposition?.();
+            const inlineEditor = document.getElementById('tm-inline-edit');
+            inlineEditor?.querySelector('.tm-inline-actions')?.shadowRoot.querySelector('.tm-placement-toggle')?._tm_updatePlacementLabel?.();
+            inlineEditor?._tm_reposition?.();
             TM.renderText(TM.state.showDiff && !TM.state.autoHideDiff);
           }
           if (Object.prototype.hasOwnProperty.call(changes, "autocompleteEnabled")) {
