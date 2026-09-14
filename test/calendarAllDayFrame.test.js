@@ -315,6 +315,49 @@ describe('calendar_event_read direct lookup: the DATE endpoints survive the publ
   });
 });
 
+describe('calendar_event_read: multi-day and timed events keep their exact endpoints through both public paths', () => {
+  const THREE_DAYS_OUT = dayDigits(10);
+
+  it('a three-day all-day event reports its exclusive end date, not start + 1 day', async () => {
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('md', 'Retreat', DAY, THREE_DAYS_OUT)] });
+    browser.tmCalendar.queryCalendarItems.mockImplementation((...a) => api.queryCalendarItems(...a));
+    browser.tmCalendar.getCalendarEventDetails.mockImplementation((...a) => api.getCalendarEventDetails(...a));
+    try {
+      const byStart = await calendarEventReadRun({ start_iso: `${DAY}T00:00:00` });
+      expect(byStart.ok).toBe(true);
+      expect(byStart.results).toContain(`start_iso: ${DAY}T00:00:00`);
+      expect(byStart.results).toContain(`end_iso: ${THREE_DAYS_OUT}T00:00:00`);
+      expect(byStart.results).not.toContain(`end_iso: ${NEXT_DAY}T00:00:00`);
+      const byId = await calendarEventReadRun({ event_id: 'md', calendar_id: 'cal1' });
+      expect(byId.ok).toBe(true);
+      expect(byId.results).toContain(`start_iso: ${DAY}T00:00:00`);
+      expect(byId.results).toContain(`end_iso: ${THREE_DAYS_OUT}T00:00:00`);
+      expect(byId.results).toContain('all_day: yes');
+    } finally {
+      browser.tmCalendar.queryCalendarItems.mockReset();
+      browser.tmCalendar.queryCalendarItems.mockResolvedValue([]);
+      browser.tmCalendar.getCalendarEventDetails.mockReset();
+      browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: false, error: 'not found' });
+    }
+  });
+
+  it('a timed event looked up by event_id renders its wall-clock endpoints, never the DATE arm', async () => {
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [timedEvent('t', 'Sync', DAY, 17)] });
+    browser.tmCalendar.getCalendarEventDetails.mockImplementation((...a) => api.getCalendarEventDetails(...a));
+    try {
+      const byId = await calendarEventReadRun({ event_id: 't', calendar_id: 'cal1' });
+      expect(byId.ok).toBe(true);
+      expect(byId.results).toContain(`start_iso: ${DAY}T17:00:00`);
+      expect(byId.results).toContain(`end_iso: ${DAY}T18:00:00`);
+      expect(byId.results).toContain('all_day: no');
+      expect(byId.results).not.toContain('T00:00:00');
+    } finally {
+      browser.tmCalendar.getCalendarEventDetails.mockReset();
+      browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: false, error: 'not found' });
+    }
+  });
+});
+
 describe('calendar_event_read by start_iso: an overlapping all-day item is not a match for a timed start', () => {
   it('a noon lookup returns the noon item and excludes the all-day item the provider also returned', async () => {
     const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('ad', 'Holiday', DAY, NEXT_DAY), timedEvent('t', 'Lunch', DAY, 12)] });
