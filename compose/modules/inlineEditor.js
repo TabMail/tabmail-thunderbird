@@ -39,7 +39,7 @@ Object.assign(TabMail, {
       error.className = 'tm-inline-error';
       error.setAttribute('role', 'alert');
       error.setAttribute('spellcheck', 'false');
-      root.appendChild(error);
+      root.insertBefore(error, root.querySelector('.tm-compose-actions'));
     }
     // Recovery text is UI, not authored mail: keep it out of native serialization.
     error.textContent = message;

@@ -94,6 +94,14 @@
     }
   ],
   "experiment_apis": {
+    "tmComposeRecipients": {
+      "schema": "compose/experiments/tmComposeRecipients/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "script": "compose/experiments/tmComposeRecipients/tmComposeRecipients.sys.mjs",
+        "paths": [["tmComposeRecipients"]]
+      }
+    },
     "tmKeepAlive": {
       "schema": "keepalive/experiments/tmKeepAlive/schema.json",
       "parent": {

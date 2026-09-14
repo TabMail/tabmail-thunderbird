@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { runInContext } from 'node:vm';
+import { runInContext, runInNewContext } from 'node:vm';
 import { JSDOM } from 'jsdom';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
@@ -57,9 +57,25 @@ async function wireBackground(w) {
   const listeners = new Set();
   const current = {to:['first@example.com'],cc:[],bcc:[],subject:'Synthetic',type:'new'};
   const api={runtime:{onMessage:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)},getURL:p=>p},
-    compose:{getComposeDetails:vi.fn(async()=>structuredClone(current)),setComposeDetails:vi.fn(async(id,patch)=>Object.assign(current,structuredClone(patch))),onBeforeSend:{addListener:vi.fn()}},
+    compose:{getComposeDetails:vi.fn(async()=>structuredClone(current)),setComposeDetails:vi.fn((id,patch)=>Object.assign(current,structuredClone(patch))),onBeforeSend:{addListener:vi.fn()}},
     scripting:{compose:{unregisterScripts:vi.fn(async()=>{}),registerScripts:vi.fn(async()=>{})}},
     tabs:{sendMessage:vi.fn(async()=>{}),onRemoved:{addListener:vi.fn(),removeListener:vi.fn()}}};
+  // Execute the real experiment against a native-window boundary model.
+  // Header parsing is supplied by Thunderbird; arrays here represent its output.
+  const parse=value=>{const m=value.match(/^(.*?)\s*<([^<>]+)>$/);return [{name:m?m[1].replace(/^"|"$/g,''):'',email:m?m[2]:value}]};
+  const nativeWindow={closed:false,document:{activeElement:{focus:vi.fn()},querySelector:vi.fn(()=>null)},
+    GetComposeDetails:()=>structuredClone(current),
+    SetComposeDetails:patch=>api.compose.setComposeDetails(1,Object.fromEntries(Object.entries(patch).map(([key,value])=>[key,value?value.split(','):[]])))};
+  let sequence=0;
+  const Experiment=runInNewContext(readFileSync(resolve('compose/experiments/tmComposeRecipients/tmComposeRecipients.sys.mjs'),'utf8')+'\n;tmComposeRecipients;',{
+    ChromeUtils:{importESModule:path=>path.includes('ExtensionCommon')?{ExtensionCommon:{ExtensionAPI:class{}}}:path.includes('MailServices')?{MailServices:{headerParser:{makeFromDisplayAddress:parse,makeMimeAddress:(name,email)=>name?`${name} <${email}>`:email}}}:{parseEncodedAddrHeader:value=>value||[]}},
+    Services:{uuid:{generateUUID:()=>({toString:()=>String(++sequence)})}}
+  }) || undefined;
+  const experiment=new Experiment();
+  const otherWindow={...nativeWindow};
+  const nativeAPI=experiment.getAPI({extension:{tabManager:{get:id=>({type:'messageCompose',nativeTab:id===1?nativeWindow:otherWindow})}}}).tmComposeRecipients;
+  api.tmComposeRecipients={begin:vi.fn(nativeAPI.begin),commit:vi.fn((tabId,id,baseline,patch)=>nativeAPI.commit(tabId,id,baseline,{to:null,cc:null,bcc:null,...patch}))};
+  api._nativeWindow=nativeWindow;api._experiment=experiment;
   globalThis.browser=globalThis.messenger=api;globalThis.window={};
   await import('../compose/background.js');
   w.browser.runtime.sendMessage=vi.fn(message=>[...listeners].map(f=>f(message,{tab:{id:1}})).find(v=>v!==undefined));
@@ -78,6 +94,9 @@ it.each(['empty','whitespace'])('keeps %s recovery visible but outside serialize
  expect(wrapper.isConnected).toBe(true);
  const alert=wrapper.querySelector('[role="alert"]') || wrapper.querySelector('.tm-inline-actions').shadowRoot.querySelector('[role="alert"]');
  expect(alert.textContent).toBe('No usable edit was returned. Please try again.');
+ expect(alert.nextElementSibling.className).toBe('tm-compose-actions');
+ const warningCSS=alert.getRootNode().querySelector('style').textContent;
+ expect(warningCSS).toMatch(/\.tm-inline-error\s*\{[^}]*color:\s*var\(--tag-tm-archive\)/);
  expect(wrapper._tm_container.style.visibility).toBe('');
  expect(wrapper._tm_executing).toBe(false);
  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('A synthetic draft ready to save.');
@@ -189,10 +208,11 @@ it('rejects replay and a superseded commit while native details are pending',asy
  const run=()=>w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Change recipients'});
  const first=await run();
  let release;
- api.compose.getComposeDetails.mockImplementationOnce(()=>new Promise(r=>{release=r}));
+ const nativeCommit=api.tmComposeRecipients.commit.getMockImplementation();
+ api.tmComposeRecipients.commit.mockImplementationOnce((...args)=>new Promise(r=>{release=()=>nativeCommit(...args).then(r)}));
  const commit={type:'commitInlineComposeRecipients',recipientEdit:first.recipientEdit};
  const pending=w.browser.runtime.sendMessage(commit);
- await run();release(structuredClone(current));
+ await run();release();
  await pending;expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
  const last=await run();const lastCommit={type:'commitInlineComposeRecipients',recipientEdit:last.recipientEdit};
  await w.browser.runtime.sendMessage(lastCommit);await w.browser.runtime.sendMessage(lastCommit);
@@ -214,24 +234,24 @@ it.each(['to','cc','bcc'])('preserves delta semantics and rejects newer %s recip
 it.each(['read','write'])('native recipient %s failure does not corrupt body/history or retry the write',async failure=>{
  const {w,tm,body}=setup('<p>Draft.</p>');const {api}=await wireBackground(w);
  runComposeEdit.mockResolvedValue({body:'Expanded.',chatHistory:[{userRequest:'Expand'}],toDelta:{adds:[{email:'new@example.com'}],removes:[]}});
- if(failure==='read')api.compose.getComposeDetails.mockResolvedValueOnce({to:['first@example.com'],cc:[],bcc:[]}).mockRejectedValueOnce(Error('Synthetic read failure'));
- else api.compose.setComposeDetails.mockRejectedValueOnce(Error('Synthetic write failure'));
+ if(failure==='read')api._nativeWindow.GetComposeDetails=()=>{throw Error('Synthetic read failure')};
+ else api.compose.setComposeDetails.mockImplementationOnce(()=>{throw Error('Synthetic write failure')});
  tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Expand',wrapper:w.document.getElementById('tm-inline-edit')});
  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded.');expect(tm.state.editChatHistory).toEqual([{userRequest:'Expand'}]);
  expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(failure==='read'?0:1);
 });
-it('forgets a recipient operation when its native tab closes',async()=>{
+it('forgets recipient operations on extension shutdown',async()=>{
  const {w}=setup('Draft.');const {api}=await wireBackground(w);
  runComposeEdit.mockResolvedValue({body:'Draft.',toDelta:{adds:[{email:'new@example.com'}],removes:[]}});
  const proposal=await w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Update'});
- api.tabs.onRemoved.addListener.mock.calls[0][0](1);
+ api._experiment.onShutdown();
  await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:proposal.recipientEdit});
  expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
 });
 
 it.each(Array.from({length:12},(_,i)=>i+1))('keeps the newest recipient action under seeded delayed results (%s)',async seed=>{
  const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
- let state=seed;const random=()=>{state=(Math.imul(state,1664525)+1013904223)>>>0;return state/4294967296};
+ let state=Math.imul(seed,0x9e3779b9)>>>0;const random=()=>{state=(Math.imul(state,1664525)+1013904223)>>>0;return state/4294967296};
  const pendingResults=[];
  runComposeEdit.mockImplementation(()=>new Promise(resolve=>pendingResults.push(resolve)));
  const start=()=>{tm.showInlineEditDropdown();return tm._runInlineEditInstruction({instruction:'Update',wrapper:w.document.getElementById('tm-inline-edit')})};
@@ -244,4 +264,56 @@ it.each(Array.from({length:12},(_,i)=>i+1))('keeps the newest recipient action u
  expect(current.to).toEqual(manual?['manual@example.com']:['proposal1@example.com']);
  expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(manual?0:1);
  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Draft.');
+});
+
+it.each(['manual','newer-request','closed'])('rejects an obsolete proposal at the actual native commit boundary: %s',async change=>{
+ const {w}=setup('Draft.');const {api,current}=await wireBackground(w);
+ runComposeEdit.mockResolvedValue({body:'Draft.',toDelta:{adds:[{email:'proposal@example.com'}],removes:['*']}});
+ const run=()=>w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Update'});
+ const proposal=await run();
+ const originalCommit=api.tmComposeRecipients.commit.getMockImplementation();let release;
+ api.tmComposeRecipients.commit.mockImplementationOnce((...args)=>new Promise((resolve,reject)=>{release=()=>originalCommit(...args).then(resolve,reject)}));
+ const pending=w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:proposal.recipientEdit});
+ if(change==='manual')current.to=['manual@example.com'];
+ if(change==='newer-request')await run();
+ if(change==='closed')api._nativeWindow.closed=true;
+ release();
+ if(change==='closed')await expect(pending).rejects.toThrow('Invalid compose tab');else await pending;
+ expect(current.to).toEqual(change==='manual'?['manual@example.com']:['first@example.com']);expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+});
+it('does not allow another compose window to consume a proposal',async()=>{
+ const {w}=setup('Draft.');const {api,current}=await wireBackground(w);
+ runComposeEdit.mockResolvedValue({body:'Draft.',toDelta:{adds:[{email:'new@example.com'}],removes:[]}});
+ const result=await w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Update'});
+ const p=result.recipientEdit;
+ expect(await api.tmComposeRecipients.commit(2,p.id,p.baseline,{to:['wrong@example.com']})).toBe(false);
+ await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:p});
+ expect(current.to).toEqual(['first@example.com','new@example.com']);
+});
+it('finishes the native check/write before a queued later user action',async()=>{
+ const {w}=setup('Draft.');const {api,current}=await wireBackground(w);
+ runComposeEdit.mockResolvedValue({body:'Draft.',toDelta:{adds:[{email:'proposal@example.com'}],removes:['*']}});
+ const result=await w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Update'});
+ api._nativeWindow.GetComposeDetails=()=>{const snapshot=structuredClone(current);queueMicrotask(()=>{current.to=['manual@example.com']});return snapshot};
+ await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:result.recipientEdit});
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+ expect(current.to).toEqual(['manual@example.com']);
+});
+
+it.each(['to', 'cc', 'bcc'].flatMap(field => ['input', 'pill'].map(kind => [field, kind])))('preserves unfinished manual %s %s edits', async (field, kind) => {
+ const {w}=setup('Draft.');const {api,current}=await wireBackground(w);
+ runComposeEdit.mockResolvedValue({body:'Draft.',toDelta:{adds:[{email:'proposal@example.com'}],removes:['*']}});
+ const result=await w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Update'});
+ const input={value:kind==='input'?'unfinished@':''};const pill={isEditing:kind==='pill'};
+ api._nativeWindow.document.querySelector.mockImplementation(selector=>selector===`.address-row[data-recipienttype="addr_${field}"]`?{
+  querySelector:selector=>selector==='.address-row-input'?input:null,
+  querySelectorAll:selector=>selector==='mail-address-pill'?[pill]:[]
+ }:null);
+ await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:result.recipientEdit});
+ expect(api.compose.setComposeDetails).not.toHaveBeenCalled();expect(current.to).toEqual(['first@example.com']);
+ expect(input.value).toBe(kind==='input'?'unfinished@':'');expect(pill.isEditing).toBe(kind==='pill');
+ // A refused proposal is consumed, not deferred until the user's input is gone.
+ input.value='';pill.isEditing=false;
+ await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:result.recipientEdit});
+ expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
 });
