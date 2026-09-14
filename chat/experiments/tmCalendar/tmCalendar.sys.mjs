@@ -452,12 +452,20 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
           // Use stable IDs: occurrence.id preserves suffix, master.id sometimes doesn't
           const master = occurrence.parentItem || occurrence;
           const isOccurrence = !!occurrence.recurrenceId;
+          const isAllDay = !!occurrence.startDate?.isDate;
           // Prefer the occurrence's id (Google shows suffix there even when master is bare)
           const seriesId = String(occurrence.id || master.id || "");
           
           const resultItem = {
             id: seriesId,                                   // use occurrence's id to preserve suffix
-            recurrenceId: isOccurrence ? String(occurrence.recurrenceId?.toString() || "") : "",
+            // An all-day RECURRENCE-ID is a DATE; emit it in the naive shape the
+            // edit/delete tools can round-trip (see allDayNaiveIso).
+            recurrenceId: (() => {
+              if (!isOccurrence) return "";
+              const rid = occurrence.recurrenceId;
+              if (rid?.isDate) return allDayNaiveIso(toDayString(rid));
+              return String(rid?.toString() || "");
+            })(),
             isOccurrence,
             calendarId: String(calObj.id || ""),
             title: String(occurrence.title || ""),
@@ -465,7 +473,9 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
             endDate: String(occurrence.endDate?.toString() || ""),
             startMs: toEpochMsUTC(occurrence.startDate),
             endMs: toEpochMsUTC(occurrence.endDate),
-            isAllDay: !!occurrence.startDate?.isDate,
+            isAllDay,
+            startDay: isAllDay ? toDayString(occurrence.startDate) : "",
+            endDay: isAllDay ? toDayString(occurrence.endDate) : "",
             location: String(occurrence.getProperty?.("LOCATION") || ""),
             organizer: org ? String(org.commonName || org.id || "") : "",
             attendees: attendeesArr.length,
@@ -820,6 +830,31 @@ function formatAttendees(attArr) {
   } catch (_) { return []; }
 }
 
+// An all-day value is an RFC 5545 DATE: it has no zone and no instant. ical.js
+// deliberately skips zone conversion for `isDate` values, so `toEpochMsUTC`
+// yields UTC midnight of the calendar date — and every consumer that renders
+// that epoch in the user's zone then names the PREVIOUS day west of UTC (#47).
+// Carry the date's own digits instead; consumers key all-day items by these.
+function toDayString(calDt) {
+  try {
+    if (!calDt) return "";
+    const y = Number(calDt.year);
+    const m = Number(calDt.month) + 1; // calIDateTime months are 0-based
+    const d = Number(calDt.day);
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return "";
+    const pad2 = (n) => String(n).padStart(2, "0");
+    return `${y}-${pad2(m)}-${pad2(d)}`;
+  } catch (_) { return ""; }
+}
+
+// Naive ISO shape the tools expect for an all-day date. `toNaiveIso` in the
+// tool layer re-parses a bare "YYYY-MM-DD" as UTC midnight (JS Date semantics)
+// and would shift it a day west of UTC; the "T00:00:00" suffix parses as a
+// local wall clock and round-trips unchanged through `toCalIDateTime`.
+function allDayNaiveIso(dayStr) {
+  return dayStr ? `${dayStr}T00:00:00` : "";
+}
+
 function toEpochMsUTC(calDt) {
   try {
     if (!calDt) return null;
@@ -1155,6 +1190,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               start: (() => { try { return targetEvent.startDate ? targetEvent.startDate.nativeTime / 1000 : null; } catch { return null; } })(),
               end: (() => { try { return targetEvent.endDate ? targetEvent.endDate.nativeTime / 1000 : null; } catch { return null; } })(),
               isAllDay: !!(targetEvent.startDate && targetEvent.startDate.isDate),
+              startDay: targetEvent.startDate?.isDate ? toDayString(targetEvent.startDate) : "",
+              endDay: targetEvent.endDate?.isDate ? toDayString(targetEvent.endDate) : "",
               location: targetEvent.getProperty ? String(targetEvent.getProperty("LOCATION") || "") : "",
               organizer: (() => { try { return String(targetEvent.organizer ? (targetEvent.organizer.commonName || targetEvent.organizer.id || "") : ""); } catch { return ""; } })(),
               attendees: attendeesCount,

@@ -102,7 +102,9 @@ export async function run(args = {}, options = {}) {
     const matches = [];
     for (const it of allItems) {
       try {
-        const s = normalizeDate(it.startMs);
+        // All-day items match on their own calendar date (local midnight),
+        // not on the UTC-midnight epoch the bridge carries for a DATE (#47).
+        const s = it.isAllDay && it.startDay ? new Date(`${it.startDay}T00:00:00`) : normalizeDate(it.startMs);
         if (!isWithinTolerance(s, start, tol)) continue;
         if (titleFilter && (String(it.title || "").trim() !== titleFilter)) continue;
         // Debug: log raw item shape for filtering
@@ -167,9 +169,12 @@ function formatDetailed(it, cal) {
   }
   
   // Use naive ISO format for consistency with LLM input format
+  // An all-day DATE is frame-free: render its own digits, never the epoch
+  // re-expressed in the user's zone (which names the previous day west of UTC).
+  const allDayFrame = !!(it.isAllDay && it.startDay);
   lines.push(`title: ${it.title || "(No title)"}`,
-    `start_iso: ${toNaiveIso(it.startMs)}`,
-    `end_iso: ${toNaiveIso(it.endMs)}`,
+    `start_iso: ${allDayFrame ? `${it.startDay}T00:00:00` : toNaiveIso(it.startMs)}`,
+    `end_iso: ${allDayFrame ? `${it.endDay || it.startDay}T00:00:00` : toNaiveIso(it.endMs)}`,
     `all_day: ${it.isAllDay ? "yes" : "no"}`);
   if (it.isRecurring) lines.push(`recurring: yes`);
   if (typeof it.recurrenceRRule === "string" && it.recurrenceRRule) {
@@ -274,12 +279,19 @@ function formatFromDetails(details) {
   // Title
   lines.push(`title: ${details.title || "(No title)"}`);
   
-  // Format start/end times (details.start/end are in ms since epoch)
-  if (details.start) {
-    lines.push(`start_iso: ${toNaiveIso(details.start)}`);
-  }
-  if (details.end) {
-    lines.push(`end_iso: ${toNaiveIso(details.end)}`);
+  // Format start/end times (details.start/end are in ms since epoch). An
+  // all-day DATE is frame-free and renders from its own digits (#47).
+  const allDayFrame = !!(details.isAllDay && details.startDay);
+  if (allDayFrame) {
+    lines.push(`start_iso: ${details.startDay}T00:00:00`);
+    lines.push(`end_iso: ${details.endDay || details.startDay}T00:00:00`);
+  } else {
+    if (details.start) {
+      lines.push(`start_iso: ${toNaiveIso(details.start)}`);
+    }
+    if (details.end) {
+      lines.push(`end_iso: ${toNaiveIso(details.end)}`);
+    }
   }
   
   lines.push(`all_day: ${details.isAllDay ? "yes" : "no"}`);
@@ -318,4 +330,4 @@ function formatFromDetails(details) {
   return lines.join("\n");
 }
 
-export const _testExports = { safeGetCalendarName, isWithinTolerance, buildAttendeeLines, formatFromDetails, normalizeDate };
+export const _testExports = { safeGetCalendarName, isWithinTolerance, buildAttendeeLines, formatFromDetails, formatDetailed, normalizeDate };
