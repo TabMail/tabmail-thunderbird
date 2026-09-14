@@ -6,6 +6,7 @@ var TabMail = TabMail || {};
 Object.assign(TabMail, {
   hideComposePreview() {
     TabMail.state.previewView?.host.remove();
+    TabMail.removeJumpOverlay?.();
     TabMail.state.previewView = null;
     TabMail.state.previewModel = null;
     TabMail.state.previewJumpOffset = null;
@@ -69,8 +70,29 @@ Object.assign(TabMail, {
       view = state.previewView = { host };
     }
     const { host } = view;
-    host.querySelector('.preview')?.remove();
-    host.querySelectorAll('.source-underline').forEach(line => line.remove());
+    host.replaceChildren();
+    TabMail.removeJumpOverlay();
+    if (!model.edits.length) {
+      // Keep the established caret/arrow hint instead of a sentence bubble.
+      const caret = TabMail.createFakeCaret(model.jumpOffset);
+      const arrow = TabMail.createArrow(model.jumpOffset, 'down');
+      const range = TabMail.composeRange(index, model.jumpOffset);
+      let rect = range.getBoundingClientRect();
+      if (!rect.height && model.jumpOffset < index.text.length) {
+        rect = TabMail.composeRange(index, model.jumpOffset, model.jumpOffset + 1).getBoundingClientRect();
+      }
+      const offsets = TabMail.config.colors.cursorJump.offsets;
+      for (const [node, x, y] of [[caret, offsets.caretX, offsets.caretY], [arrow, offsets.arrowX, offsets.arrowY]]) {
+        Object.assign(node.style, {position:'fixed',left:`${rect.left + x}px`,top:`${rect.top + y}px`});
+        node.setAttribute('aria-hidden', 'true');
+        host.appendChild(node);
+      }
+      host.style.cssText = `position:fixed;left:0;top:0;pointer-events:none;z-index:${cfg.zIndex}`;
+      if (!host.isConnected) document.documentElement.appendChild(host);
+      TabMail.manageJumpOverlay(editor, caret);
+      state.isDiffActive = false;
+      return;
+    }
     const bubble = document.createElement('div');
     bubble.className = 'preview';
     bubble.setAttribute('role', 'group');
@@ -134,41 +156,45 @@ Object.assign(TabMail, {
       for (const entry of index.entries) {
         const a = Math.max(model.start, entry.start), b = Math.min(model.end, entry.end);
         if (entry.kind !== 'text' || a >= b) continue;
-        const range = document.createRange();
-        range.setStart(entry.node, a - entry.start);
-        range.setEnd(entry.node, b - entry.start);
-        for (const rect of range.getClientRects()) {
-          if (!rect.width || !rect.height) continue;
-          const line = document.createElement('span');
-          line.className = 'source-underline';
-          line.setAttribute('aria-hidden', 'true');
-          Object.assign(line.style, {left: `${rect.left}px`, top: `${rect.bottom - 1}px`, width: `${rect.width}px`});
-          host.appendChild(line);
+        const segments = [{start:a,end:b,deleted:false}, ...model.edits
+          .filter(edit => edit.start < b && edit.end > a)
+          .map(edit => ({start:Math.max(a,edit.start),end:Math.min(b,edit.end),deleted:true}))];
+        for (const segment of segments) {
+          const range = document.createRange();
+          range.setStart(entry.node, segment.start - entry.start);
+          range.setEnd(entry.node, segment.end - entry.start);
+          for (const rect of range.getClientRects()) {
+            if (!rect.width || !rect.height) continue;
+            const line = document.createElement('span');
+            line.className = segment.deleted ? 'source-deletion' : 'source-underline';
+            line.setAttribute('aria-hidden', 'true');
+            Object.assign(line.style, {left: `${rect.left}px`, top: `${rect.bottom - 1}px`, width: `${rect.width}px`});
+            host.appendChild(line);
+          }
         }
       }
-    } else add('Tab to jump to suggestion', 'context');
+    }
     bubble.appendChild(content);
     const actions = document.createElement('div');
     actions.className = 'actions';
-    const action = (label, title, run) => {
+    const action = (label, shortcut, title, run) => {
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = label;
+      const key = document.createElement('kbd');
+      key.textContent = shortcut;
+      key.setAttribute('aria-hidden', 'true');
+      button.append(key, document.createTextNode(` ${label}`));
+      button.setAttribute('aria-label', label);
+      button.setAttribute('aria-keyshortcuts', shortcut === '⇧Esc' ? 'Shift+Escape' : shortcut === 'Esc' ? 'Escape' : shortcut);
       button.title = title;
       // Keep the native compose selection when using the mouse.
       button.addEventListener('mousedown', event => event.preventDefault());
       button.addEventListener('click', run);
       actions.appendChild(button);
     };
-    if (model.edits.length) action('Accept', 'Accept suggestion (Tab)', () => TabMail.acceptComposePreview());
-    else action('Jump to suggestion', 'Jump to suggestion (Tab)', () => {
-      const offset = state.previewJumpOffset;
-      if (offset == null) return;
-      TabMail.setCursorByOffset(editor, offset);
-      TabMail.renderComposePreview();
-    });
-    action('Dismiss', 'Dismiss suggestion (Esc)', () => TabMail.dismissComposeSuggestion());
-    action('Disable suggestions', 'Disable suggestions (Shift+Esc)', () => TabMail.setAutocompleteEnabled(false));
+    action('Accept', 'Tab', 'Accept suggestion (Tab)', () => TabMail.acceptComposePreview());
+    action('Dismiss', 'Esc', 'Dismiss suggestion (Esc)', () => TabMail.dismissComposeSuggestion());
+    action('Disable suggestions', '⇧Esc', 'Disable suggestions (Shift+Esc)', () => TabMail.setAutocompleteEnabled(false));
     bubble.appendChild(actions);
     host.appendChild(bubble);
     // Keep the surface inset from both viewport edges, preserving source
@@ -176,8 +202,8 @@ Object.assign(TabMail, {
     const x = Math.min(Math.max(cfg.margin, left - cfg.padding - 1), Math.max(cfg.margin, window.innerWidth - cfg.margin - cfg.minWidth));
     const availableWidth = Math.max(1, window.innerWidth - x - cfg.margin);
     const width = Math.min(availableWidth, Math.max(cfg.minWidth, editorRect.right - x + cfg.padding + 1));
-    bubble.style.paddingLeft = `${Math.min(cfg.padding, Math.max(0, left - x - 1))}px`;
-    bubble.style.paddingRight = `${Math.max(0, x + width - editorRect.right - 1)}px`;
+    bubble.style.paddingLeft = `${cfg.padding}px`;
+    bubble.style.paddingRight = `${cfg.padding}px`;
     Object.assign(host.style, { position: 'fixed', zIndex: String(cfg.zIndex), left: `${x}px`, top: `${bottom + cfg.gap}px`, width: `${width}px` });
     // Sibling of BODY: the native compose serializer cannot include the preview.
     if (!host.isConnected) document.documentElement.appendChild(host);
@@ -210,9 +236,21 @@ Object.assign(TabMail, {
       TabMail.hideComposePreview();
       return false;
     }
-    TabMail.dismissComposeSuggestion();
-    TabMail.state.originalText = TabMail.extractUserAndQuoteTexts(TabMail.state.editorRef).originalUserMessage;
+    // Acceptance keeps the cached remainder; dismissal alone discards it.
+    TabMail.hideComposePreview();
+    // Preserve processSpanAction's acceptance lifecycle, including its
+    // deferred text sync. LOCAL completion owns the GLOBAL follow-up.
+    TabMail.state.currentIdleTime = TabMail.config.autocompleteDelay.INITIAL_IDLE_MS;
+    TabMail.state.lastSuggestionShownTime = 0;
+    TabMail.state.textLengthAtLastSuggestion = 0;
+    TabMail.cancelPendingBackendRequest();
+    const editor = TabMail.state.editorRef;
+    setTimeout(() => {
+      TabMail.state.originalText = TabMail.extractUserAndQuoteTexts(editor).originalUserMessage;
+    }, 0);
+    TabMail.state.lastAcceptedText = TabMail.extractUserAndQuoteTexts(editor).originalUserMessage;
     TabMail.state.lastActionWasAccept = true;
+    TabMail.renderComposePreview();
     return true;
   },
 });

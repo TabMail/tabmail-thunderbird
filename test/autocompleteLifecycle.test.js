@@ -18,7 +18,7 @@ function setup(html = '') {
     return { left: (this.startOffset % 30) * 8 + 8, right: (this.startOffset % 30) * 8 + 16, top, bottom: top + 20, height: 20, width: 8 };
   };
   w.Range.prototype.getClientRects = function () { return [this.getBoundingClientRect()]; };
-  for (const name of ['libs/jsdiff.min.js', 'libs/diff-match-patch.js', 'modules/config.js', 'modules/logger.js', 'modules/state.js', 'modules/sentences.js', 'modules/tokens.js', 'modules/dom.js', 'modules/core.js', 'modules/diff.js', 'modules/previewModel.js', 'modules/richText.js', 'modules/preview.js', 'modules/events.js', 'modules/caret.js', 'modules/inlineEditor.js']) {
+  for (const name of ['libs/jsdiff.min.js', 'libs/diff-match-patch.js', 'modules/config.js', 'modules/logger.js', 'modules/state.js', 'modules/sentences.js', 'modules/tokens.js', 'modules/dom.js', 'modules/core.js', 'modules/diff.js', 'modules/previewModel.js', 'modules/richText.js', 'modules/preview.js', 'modules/autohideDiff.js', 'modules/events.js', 'modules/caret.js', 'modules/inlineEditor.js']) {
     const filename = resolve('compose', name);
     runInContext(readFileSync(filename, 'utf8'), dom.getInternalVMContext(), { filename });
   }
@@ -240,14 +240,18 @@ describe('clickable suggestion controls', () => {
     tm.renderComposePreview(); tm.showComposeHintsBanner();
     expect(w.document.getElementById('tm-compose-hints-banner')).toBeNull();
     const controls = [...tm.state.previewView.host.querySelectorAll('button')];
-    expect(controls.map(button => button.textContent)).toEqual(['Accept', 'Dismiss', 'Disable suggestions']);
+    expect(controls.map(button => button.textContent)).toEqual(['Tab Accept', 'Esc Dismiss', '⇧Esc Disable suggestions']);
+    expect(controls.map(button=>button.getAttribute('aria-keyshortcuts'))).toEqual(['Tab','Escape','Shift+Escape']);
+    expect(controls.map(button=>button.querySelector('kbd').getAttribute('aria-hidden'))).toEqual(['true','true','true']);
     controls[2].click();
     expect(tm.state.autocompleteDisabled).toBe(true);
     expect(w.browser.storage.local.set).toHaveBeenCalledWith({ autocompleteEnabled: false });
     expect(w.document.getElementById('tm-compose-preview')).toBeNull();
     const banner = w.document.getElementById('tm-compose-hints-banner');
     expect(banner.parentElement).toBe(w.document.documentElement);
-    expect(banner.textContent).toBe('Enable suggestions');
+    expect(banner.textContent).toBe('⇧Esc Enable suggestions');
+    expect(banner.querySelector('button').getAttribute('aria-keyshortcuts')).toBe('Shift+Escape');
+    expect(banner.querySelector('button').style.background).toBe('var(--tm-preview-bg)');
     expect(body.textContent).toBe('This is very useful.');
     banner.querySelector('button').click();
     expect(tm.state.autocompleteDisabled).toBe(false);
@@ -258,7 +262,7 @@ describe('clickable suggestion controls', () => {
     const { tm, body } = setup('This is very useful.');
     tm.state.correctedText = 'This is useful.';
     tm.renderComposePreview();
-    [...tm.state.previewView.host.querySelectorAll('button')].find(button => button.textContent === 'Dismiss').click();
+    [...tm.state.previewView.host.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Dismiss').click();
     expect(body.textContent).toBe('This is very useful.');
     expect(tm.state.correctedText).toBeNull();
     expect(tm.state.previewView).toBeNull();
@@ -589,12 +593,13 @@ it('moving the caret into the quote suppresses draft acceptance controls',()=>{
  const range=w.document.createRange();range.setStart(body.querySelector('blockquote').firstChild,3);range.collapse(true);w.getSelection().removeAllRanges();w.getSelection().addRange(range);
  tm.renderComposePreview();expect(w.document.getElementById('tm-compose-preview')).toBeNull();expect(body.innerHTML).toBe(before);
 });
-it.each(['mouse','keyboard'])('%s jump navigates before allowing acceptance',mode=>{
+it('cursor hint Tab jump navigates before allowing acceptance',()=>{
  const {w,tm,body}=setup('Hello. This is bad.');const before=body.innerHTML;
  tm.attachAutocomplete(body);tm.state.correctedText='Hello. This is good.';tm.renderComposePreview();
  expect(tm.state.previewModel).toBeNull();expect(tm.state.previewJumpOffset).toBeGreaterThan(6);
- if(mode==='mouse')tm.state.previewView.host.querySelector('button').click();
- else body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+ expect(tm.state.previewView.host.querySelector('.preview')).toBeNull();
+ expect(tm.state.previewView.host.querySelector('.tm-fake-caret')).not.toBeNull();
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
  expect(body.innerHTML).toBe(before);expect(tm.composeCursorOffset(tm.indexComposeText(body))).toBeGreaterThan(6);
  expect(tm.state.previewModel.replacement).toContain('This is good.');expect(w.document.execCommand).not.toHaveBeenCalled();
  tm.state.previewView.host.querySelector('button').click();expect(body.textContent).toBe('Hello. This is good.');expect(w.document.execCommand).toHaveBeenCalledTimes(1);
@@ -618,7 +623,7 @@ it('underlines only source text fragments outside the authored DOM without the H
   tm.setCursorByOffset(body,10);tm.state.correctedText='Before. Revised sentence here. After.';tm.renderText(true);
   const lines=[...w.document.querySelectorAll('.source-underline')];
   expect(lines).toHaveLength(3);
-  expect(measured.join('').trim()).toBe('Target sentence here.');
+  expect(measured).toEqual(['Target ', 'Targ', 't', 'sentence', ' here. ']);
   expect(lines.map(line=>[line.style.left,line.style.top,line.style.width])).toEqual([['72px','39px','48px'],['128px','39px','48px'],['8px','59px','48px']]);
   for(const line of lines){
     expect(body.contains(line)).toBe(false);
@@ -677,7 +682,8 @@ it('moving from a proposal to jump-only context clears the previously underlined
  tm.renderText(true);
  expect(tm.state.previewModel).toBeNull();
  expect(tm.state.previewJumpOffset).toBeGreaterThanOrEqual(0);
- expect(w.document.querySelector('.preview .content').textContent).toBe('Tab to jump to suggestion');
+ expect(w.document.querySelector('.preview')).toBeNull();
+ expect(w.document.querySelector('.tm-fake-caret')).not.toBeNull();
  expect(w.document.querySelectorAll('.source-underline')).toHaveLength(0);
  expect(first.every(line=>!line.isConnected)).toBe(true);
  expect(body.innerHTML).toBe(before);
@@ -707,6 +713,7 @@ it.each([[200,'left'],[200,'right'],[1024,'left'],[1024,'right']])('keeps the su
  expect(width).toBeGreaterThan(100);
  expect(left+width).toBeLessThanOrEqual(viewport-8);
  const bubble=host.querySelector('.preview');
+ expect(parseFloat(bubble.style.paddingLeft)).toBe(12);expect(parseFloat(bubble.style.paddingRight)).toBe(12);
  expect(width-parseFloat(bubble.style.paddingLeft)-parseFloat(bubble.style.paddingRight)-2).toBeGreaterThanOrEqual(94);
  expect(body.textContent).toBe('Bad sentence.');
 });
@@ -720,4 +727,170 @@ it('reduces preview typography proportionally while preserving authored emphasis
  expect(bold).toBeDefined();expect(bold.style.fontSize).toBe('21.6px');expect(bold.style.fontWeight).toBe('bold');
  expect(content.querySelector('.inserted').style.fontSize).toBe('18px');
  expect(body.innerHTML).toBe(before);expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+it.each(['This is a test. We','<p>This is a test. We</p>'])('shows and accepts only the next sentence of a continuation: %s',html=>{
+ const {tm,body}=setup(html);
+ const original=tm.extractUserAndQuoteTexts(body).originalUserMessage;
+ tm.setCursorByOffset(body,original.length);
+ tm.state.correctedText=original+' will meet Monday. Bring notes. Thanks.';
+ tm.renderComposePreview();
+ const preview=tm.state.previewView.host.querySelector('.content').textContent;
+ expect(preview).toContain('We will meet Monday.');expect(preview).not.toContain('Bring notes');expect(preview).not.toContain('Thanks.');
+ expect(tm.acceptComposePreview()).toBe(true);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe(original+' will meet Monday. ');
+ expect(tm.state.previewModel.replacement).toContain('Bring notes.');
+ expect(tm.state.previewModel.replacement).not.toContain('Thanks.');
+});
+
+it.each(['keyboard','click'])('continues the cached suggestion immediately after %s acceptance',mode=>{
+ const {w,tm,body}=setup('We');tm.setCursorByOffset(body,2);
+ tm.state.correctedText='We meet Monday. Bring notes. Thanks.';tm.renderComposePreview();
+ const accept=()=>mode==='keyboard'?tm.handleKeyDown(new w.KeyboardEvent('keydown',{key:'Tab',cancelable:true})):tm.state.previewView.host.querySelector('button[aria-label="Accept"]').click();
+ accept();expect(body.textContent).toBe('We meet Monday. ');
+ expect(tm.state.previewModel.replacement).toContain('Bring notes.');expect(tm.state.previewModel.replacement).not.toContain('Thanks.');
+ accept();expect(body.textContent).toBe('We meet Monday. Bring notes. ');
+ expect(tm.state.previewModel.replacement).toContain('Thanks.');
+ accept();expect(body.textContent).toBe('We meet Monday. Bring notes. Thanks.');expect(tm.state.previewView).toBeNull();
+});
+it('retains a Tab cursor jump to the remaining edit after acceptance',()=>{
+ const {w,tm,body}=setup('Bad first. Unchanged middle. Bad last.');
+ tm.state.correctedText='Good first. Unchanged middle. Good last.';tm.renderComposePreview();
+ expect(tm.acceptComposePreview()).toBe(true);
+ expect(body.textContent).toBe('Good first. Unchanged middle. Bad last.');
+ expect(tm.state.previewModel).toBeNull();expect(tm.state.previewJumpOffset).toBeGreaterThan(20);
+ const before=body.innerHTML;tm.handleKeyDown(new w.KeyboardEvent('keydown',{key:'Tab',cancelable:true}));
+ expect(body.innerHTML).toBe(before);expect(tm.state.previewModel.replacement).toContain('Good last.');
+});
+
+it('adds a subtle red underline only over removed source wording and clears it on dismiss',()=>{
+ const {w,tm,body}=setup('This is very useful.');const before=body.innerHTML;
+ w.Range.prototype.getClientRects=function(){return [{left:this.startOffset*8,top:20,bottom:40,width:(this.endOffset-this.startOffset)*8,height:20}];};
+ tm.state.correctedText='This is useful.';tm.renderComposePreview();
+ const style=w.document.createElement('style');style.textContent=readFileSync(resolve('compose/highlight.css'),'utf8');w.document.head.appendChild(style);
+ const blue=w.document.querySelectorAll('.source-underline'),red=w.document.querySelectorAll('.source-deletion');
+ expect(blue).toHaveLength(1);expect(red).toHaveLength(1);
+ expect(w.getComputedStyle(blue[0]).borderBottomWidth).toBe('1px');expect(w.getComputedStyle(red[0]).borderBottomWidth).toBe('2px');
+ expect(red[0].style.left).toBe('64px');expect(red[0].style.width).toBe('40px');expect(red[0].style.top).toBe('39px');
+ expect(body.contains(red[0])).toBe(false);expect(red[0].getAttribute('aria-hidden')).toBe('true');expect(body.innerHTML).toBe(before);
+ tm.state.correctedText='This is very useful indeed.';tm.renderComposePreview();
+ expect(w.document.querySelector('.source-deletion')).toBeNull();
+ tm.dismissComposeSuggestion();expect(w.document.querySelector('.source-underline')).toBeNull();expect(body.innerHTML).toBe(before);
+});
+
+it.each([[-40,'↑'],[1200,'↓']])('keeps the offscreen cursor prompt outside the draft at %ipx',(top,direction)=>{
+ const {w,tm,body}=setup('Hello. This is bad.');const before=body.innerHTML;
+ const originalRect=w.HTMLElement.prototype.getBoundingClientRect;
+ w.HTMLElement.prototype.getBoundingClientRect=function(){return this.classList.contains('tm-fake-caret')?{left:20,right:22,top,bottom:top+20,width:2,height:20}:originalRect.call(this);};
+ tm.state.correctedText='Hello. This is good.';tm.renderComposePreview();
+ const overlay=w.document.getElementById('tm-jump-overlay');
+ expect(overlay?.textContent).toBe(`Press Tab to jump ${direction}`);expect(overlay.parentElement).toBe(w.document.documentElement);
+ expect(overlay.style.background).toBe('var(--tm-preview-bg)');expect(w.document.querySelector('.preview')).toBeNull();expect(body.innerHTML).toBe(before);
+ tm.dismissComposeSuggestion();expect(w.document.getElementById('tm-jump-overlay')).toBeNull();expect(w.document.querySelector('.tm-fake-caret')).toBeNull();
+});
+
+it('accept preserves the baseline idle reset and pending request cancellation', () => {
+ const {tm,body}=setup('Bad.');
+ tm.state.correctedText='Good.';tm.renderComposePreview();
+ tm.state.currentIdleTime=9000;tm.state.lastSuggestionShownTime=123;tm.state.textLengthAtLastSuggestion=4;
+ tm.state.latestLocalRequestId=7;tm.state.latestGlobalRequestId=9;
+ tm.state.isLocalRequestInFlight=true;tm.state.isGlobalRequestInFlight=true;
+ tm.state.hasPendingLocalTrigger=true;tm.state.hasPendingGlobalTrigger=true;
+ const trigger=vi.spyOn(tm,'triggerCorrection');
+ expect(tm.acceptComposePreview()).toBe(true);
+ expect(body.textContent).toBe('Good.');
+ expect(tm.state.currentIdleTime).toBe(tm.config.autocompleteDelay.INITIAL_IDLE_MS);
+ expect(tm.state.lastSuggestionShownTime).toBe(0);
+ expect(tm.state.textLengthAtLastSuggestion).toBe(0);
+ expect(tm.state.latestLocalRequestId).toBe(8);expect(tm.state.latestGlobalRequestId).toBe(10);
+ expect(tm.state.isLocalRequestInFlight).toBe(false);expect(tm.state.isGlobalRequestInFlight).toBe(false);
+ expect(tm.state.hasPendingLocalTrigger).toBe(false);expect(tm.state.hasPendingGlobalTrigger).toBe(false);
+ expect(trigger).not.toHaveBeenCalled();
+});
+
+it('native adherent typing keeps the cached proposal and skips the idle request, like baseline', () => {
+ const {w,tm,body}=setup('Hello');tm.attachAutocomplete(body);
+ tm.setCursorByOffset(body,5);tm.state.correctedText='Hello world.';tm.renderComposePreview();
+ const schedule=vi.spyOn(tm,'scheduleTrigger').mockImplementation(()=>{});
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:' ',bubbles:true}));
+ body.firstChild.textContent='Hello ';tm.setCursorByOffset(body,6);
+ body.dispatchEvent(new w.InputEvent('input',{data:' ',bubbles:true}));
+ expect(tm.state.correctedText).toBe('Hello world.');expect(schedule).not.toHaveBeenCalled();
+ expect(tm.state.previewModel).not.toBeNull();
+});
+
+it('ordinary typing and IME do not invalidate requests ahead of the scheduled LOCAL trigger', () => {
+ const {w,tm,body}=setup('Hello');tm.attachAutocomplete(body);
+ vi.spyOn(tm,'scheduleTrigger').mockImplementation(()=>{});
+ tm.state.latestLocalRequestId=7;tm.state.latestGlobalRequestId=9;
+ tm.state.correctedText='Hello world.';tm.renderComposePreview();
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));
+ body.dispatchEvent(new w.InputEvent('input',{data:'x',bubbles:true}));
+ expect(tm.state.latestLocalRequestId).toBe(7);expect(tm.state.latestGlobalRequestId).toBe(9);
+ body.dispatchEvent(new w.CompositionEvent('compositionstart',{bubbles:true}));
+ expect(tm.state.latestLocalRequestId).toBe(7);expect(tm.state.latestGlobalRequestId).toBe(9);
+});
+
+it('LOCAL completion sends GLOBAL the full assumed-accepted proposal, independent of the sentence preview', async () => {
+ const {w,tm,body}=setup('We meet.');
+ tm.state.originalText='';tm.state.correctedText=null;
+ tm.getCorrectionFromServer=vi.fn(async ({isLocal,userMessage})=>({usertext:userMessage,suggestion:isLocal?'We meet Monday. Bring notes.':'We meet Monday. Bring notes.'}));
+ await tm.triggerCorrection(body);
+ await new Promise(resolve=>w.setTimeout(resolve,20));
+ expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(2);
+ expect(tm.getCorrectionFromServer.mock.calls[0][0]).toMatchObject({isLocal:true,userMessage:'We meet.'});
+ expect(tm.getCorrectionFromServer.mock.calls[1][0]).toMatchObject({isLocal:false,userMessage:'We meet Monday. Bring notes.'});
+ expect(body.textContent).toBe('We meet.');
+});
+
+it('displays and accepts an interior GLOBAL correction when LOCAL returns unchanged text', async () => {
+ const {w,tm,body}=setup('Hello,\n\nEveryone, we are testing the new pograsdasam. Can you please let me know if everything is working as expected?\nCheers,\nExample');
+ tm.setCursorByOffset(body,52);tm.state.originalText='';
+ tm.getCorrectionFromServer=vi.fn(async c=>({usertext:c.userMessage,suggestion:c.isLocal?c.userMessage:c.userMessage.replace('pograsdasam','program')}));
+ tm.triggerCorrection(body);
+ await new Promise(resolve=>w.setTimeout(resolve,20));
+ expect(tm.getCorrectionFromServer.mock.calls.map(([c])=>c.isLocal)).toEqual([true,false]);
+ expect(tm.state.previewView.host.querySelector('.content').textContent).toContain('program.');
+ tm.handleKeyDown(new w.KeyboardEvent('keydown',{key:'Tab',cancelable:true}));
+ expect(body.textContent).toContain('new program. Can you please let me know if everything is working as expected?');
+ expect(body.textContent).not.toContain('pograsdasam');
+});
+
+it('sends only the changed sentence from accepted wording as spelling context', async () => {
+ const {w,tm,body}=setup('Hello. We test the przzogram. Keep the following sentence.');
+ tm.setCursorByOffset(body,20);tm.state.correctedText='Hello. We test the program. Keep the following sentence.';tm.renderComposePreview();
+ expect(tm.acceptComposePreview()).toBe(true);
+ expect(tm.state.lastAcceptedText).toBe('Hello. We test the program. Keep the following sentence.');
+ body.textContent='Hello. We test the pograsdasam. Keep the following sentence.';
+ tm.setCursorByOffset(body,29);
+ expect(tm.previousAcceptedSentence(body.textContent)).toBe('We test the program.');
+ // Let the acceptance text-sync tick complete, then make a native-like edit.
+ await new Promise(resolve=>w.setTimeout(resolve,0));
+ body.textContent='Hello. We test the pasdrogram. Keep the following sentence.';tm.setCursorByOffset(body,28);
+ tm.getCorrectionFromServer=vi.fn(async c=>({usertext:c.userMessage,suggestion:c.userMessage.replace('pasdrogram','program')}));
+ tm.triggerCorrection(body);await new Promise(resolve=>w.setTimeout(resolve,20));
+ expect(tm.getCorrectionFromServer).toHaveBeenCalled();
+ for(const [context] of tm.getCorrectionFromServer.mock.calls) {
+  expect(context.previousAcceptedSentence).toBe('We test the program.');
+  expect(context.previousAcceptedSentence).not.toContain('following');
+ }
+});
+
+it('omits accepted spelling context for empty drafts, broad rewrites, and long sentences', () => {
+ const {tm}=setup('');
+ tm.state.lastAcceptedText='One sentence. Two sentences.';
+ expect(tm.previousAcceptedSentence('')).toBe('');
+ expect(tm.previousAcceptedSentence('One sentence. Two sentences.')).toBe('');
+ expect(tm.previousAcceptedSentence('Other sentence. Three sentences.')).toBe('');
+ expect(tm.previousAcceptedSentence('x'.repeat(100))).toBe('');
+ tm.state.lastAcceptedText='x'.repeat(600)+'.';
+ expect(tm.previousAcceptedSentence('x'.repeat(599)+'y.')).toBe('');
+});
+
+it('does not send prior wording for a new sentence or an intentional whole-word replacement',()=>{
+ const {tm}=setup('');tm.state.lastAcceptedText='We test the program.';
+ expect(tm.previousAcceptedSentence('We test the program. More text.')).toBe('');
+ expect(tm.previousAcceptedSentence('We test the application.')).toBe('');
+ expect(tm.previousAcceptedSentence('We test PostgreSQL.')).toBe('');
+ expect(tm.previousAcceptedSentence('We test the pasdrogram.')).toBe('We test the program.');
 });

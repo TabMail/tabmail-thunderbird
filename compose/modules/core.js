@@ -286,6 +286,7 @@ Object.assign(TabMail, {
         userMessage: originalUserMessage,
         quoteAndSignature: quoteAndSignatureText,
         cursorPosition: TabMail.getCursorOffsetIgnoringInserts(editor),
+        previousAcceptedSentence: TabMail.previousAcceptedSentence?.(originalUserMessage) || "",
         isLocal: isLocal,
         // Note: getCorrectionFromServer reads userMessage from context.userMessage.
         // We pass server message via the same field to avoid adding new background protocol.

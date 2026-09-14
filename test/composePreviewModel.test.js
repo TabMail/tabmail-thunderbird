@@ -69,3 +69,19 @@ it('keeps a next-sentence continuation in the whole suggestion', () => {
   expect(actual).toBe(proposed);
   expect(result.runs.filter(run => run.inserted).map(run => run.text).join('')).toContain('I will be back on Monday.');
 });
+
+it.each([
+ ['The holiday starts tomorrow.',' I return Monday. Call me Tuesday.',' I return Monday. '],
+ ['This is a test. We',' will meet Monday. Bring notes. Thanks.',' will meet Monday. '],
+ ['Hi Alex,\n','\nI return Monday. Call me Tuesday.','\nI return Monday. '],
+])('limits the appended proposal to the next sentence after %s',(original,tail,expected)=>{
+ const tm=load(),result=tm.buildPreviewModel(original,original+tail,original.length);
+ expect(result.edits).toEqual([{start:original.length,end:original.length,text:expected}]);
+ expect(result.runs.filter(run=>run.inserted).map(run=>run.text).join('')).toBe(expected);
+ expect(result.edits.reduceRight((text,edit)=>text.slice(0,edit.start)+edit.text+text.slice(edit.end),original)).toBe(original+expected);
+});
+it('keeps a full initial suggestion when the draft contains only whitespace',()=>{
+ const tm=load(),original='\n',proposed='Hello Alex. Here is the plan. Thank you.';
+ const model=tm.buildPreviewModel(original,proposed,original.length);
+ expect(model.edits.reduceRight((text,edit)=>text.slice(0,edit.start)+edit.text+text.slice(edit.end),original)).toBe(proposed);
+});

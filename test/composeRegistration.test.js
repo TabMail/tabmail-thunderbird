@@ -127,6 +127,9 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     expect(tm.getCorrectionFromServer).toHaveBeenCalled();
     expect(tm.getCorrectionFromServer.mock.calls[0][0]).toMatchObject({userMessage:'New draft.',isLocal:true,quoteAndSignature:'\nSignature'});
     expect(tm.state.correctedText).toBe('New corrected draft.');
+    // The request still completes on the idle clock; visibility follows the
+    // existing independent typing-hide restoration clock.
+    await vi.advanceTimersByTimeAsync(tm.config.DIFF_RESTORE_DELAY_MS);
     expect(tm.state.previewModel).not.toBeNull();
     expect(tm.state.previewView.host.querySelector('.content').textContent).toBe('New corrected draft.');
     expect(body.innerHTML).toBe(afterTyping);

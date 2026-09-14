@@ -29,9 +29,10 @@ export function buildPaletteCSS(P) {
 
   return `
 :root {
-  --tm-preview-bg: color-mix(in srgb, ${THEME.LIGHT.PAGE_BG} 92%, transparent);
+  --tm-preview-bg: color-mix(in srgb, color-mix(in srgb, ${THEME.LIGHT.PAGE_BG} 97%, ${LIGHT.ACCENT_COLOR}) 92%, transparent);
+  --tm-preview-delete: color-mix(in srgb, ${BASE.RED} 70%, transparent);
   --tm-preview-text: ${THEME.LIGHT.TEXT_COLOR};
-  --tm-preview-context: ${BASE.TEXT_READ_LIGHT};
+  --tm-preview-context: color-mix(in srgb, ${THEME.LIGHT.TEXT_COLOR} 48%, ${THEME.LIGHT.PAGE_BG});
   --tm-preview-border: rgba(0,0,0,0.15);
   --tm-preview-shadow: rgba(0,0,0,0.15);
   --tm-preview-insert: color-mix(in srgb, ${LIGHT.ACCENT_COLOR} ${Math.round(OPACITY.SUBTLE_LIGHT * 100)}%, transparent);
@@ -151,9 +152,10 @@ export function buildPaletteCSS(P) {
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --tm-preview-bg: color-mix(in srgb, ${THEME.DARK.BOX_BG} 92%, transparent);
-    --tm-preview-text: ${THEME.DARK.TEXT_COLOR};
-    --tm-preview-context: ${BASE.TEXT_READ_DARK};
+    --tm-preview-bg: color-mix(in srgb, color-mix(in srgb, ${THEME.DARK.BOX_BG} 97%, ${DARK.ACCENT_COLOR}) 92%, transparent);
+    --tm-preview-delete: color-mix(in srgb, ${BASE.RED} 70%, transparent);
+  --tm-preview-text: ${THEME.DARK.TEXT_COLOR};
+    --tm-preview-context: color-mix(in srgb, ${THEME.DARK.TEXT_COLOR} 48%, ${THEME.DARK.BOX_BG});
     --tm-preview-border: rgba(255,255,255,0.18);
     --tm-preview-shadow: rgba(0,0,0,0.35);
     --tm-preview-insert: color-mix(in srgb, ${DARK.ACCENT_COLOR} ${Math.round(OPACITY.SELECTED_DARK * 100)}%, transparent);

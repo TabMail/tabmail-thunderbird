@@ -10,3 +10,5 @@
 
 .tm-compose-preview .actions button { pointer-events: auto; cursor: pointer; font: inherit; color: inherit; background: transparent; border: 0; border-radius: 4px; padding: 3px 6px; }
 .tm-compose-preview .actions button:hover, .tm-compose-preview .actions button:focus-visible { background: var(--tm-preview-insert); color: var(--tm-preview-text); }
+
+.tm-compose-preview .actions kbd, #tm-compose-hints-banner kbd { display: inline-block; font: 10px/1.3 system-ui; border: 1px solid var(--tm-preview-border); border-radius: 3px; padding: 1px 4px; margin-right: 3px; white-space: nowrap; }

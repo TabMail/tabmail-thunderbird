@@ -500,8 +500,9 @@ Object.assign(TabMail, {
           left: 50%;
           transform: translateX(-50%);
           padding: 6px 12px;
-          background: rgba(0, 0, 0, 0.8);
-          color: white;
+          background: var(--tm-preview-bg);
+          border: 1px solid var(--tm-preview-border);
+          color: var(--tm-preview-text);
           font-size: 12px;
           border-radius: 4px;
           z-index: 10000;
@@ -509,7 +510,7 @@ Object.assign(TabMail, {
           user-select: none;
           -moz-user-select: none;
         `;
-        document.body.appendChild(overlay);
+        document.documentElement.appendChild(overlay);
       }
 
       const direction = isAbove ? "up" : "down";
@@ -555,9 +556,14 @@ Object.assign(TabMail, {
     banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;padding:4px 12px;text-align:center;z-index:10000;pointer-events:none';
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = TabMail._composeHintsBannerText();
+    const key = document.createElement('kbd');
+    key.textContent = '⇧Esc';
+    key.setAttribute('aria-hidden', 'true');
+    button.append(key, document.createTextNode(` ${TabMail._composeHintsBannerText()}`));
+    button.setAttribute('aria-label', 'Enable suggestions');
+    button.setAttribute('aria-keyshortcuts', 'Shift+Escape');
     button.title = 'Enable suggestions (Shift+Esc)';
-    button.style.cssText = 'pointer-events:auto;cursor:pointer;padding:3px 12px;border-radius:999px;background:var(--tm-hint-banner-bg);border:1px solid var(--tm-hint-banner-border);color:var(--tm-hint-banner-text);font:11px/1.4 system-ui';
+    button.style.cssText = 'pointer-events:auto;cursor:pointer;padding:3px 12px;border-radius:999px;background:var(--tm-preview-bg);border:1px solid var(--tm-preview-border);color:var(--tm-preview-context);font:11px/1.4 system-ui';
     button.addEventListener('mousedown', event => event.preventDefault());
     button.addEventListener('click', () => TabMail.setAutocompleteEnabled(true));
     banner.appendChild(button);

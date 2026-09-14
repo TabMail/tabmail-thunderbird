@@ -281,6 +281,8 @@ TabMail.config = {
   /**
    * Keybindings
    */
+  correctionContext: { maxSentenceLength: 512, maxEditLength: 64 },
+
   preview: { zIndex: 10001, padding: 12, margin: 8, gap: 6, minWidth: 120, fontScale: 0.9, lineTolerance: 2, lineHeightFactor: 1.2 },
 
   keys: {

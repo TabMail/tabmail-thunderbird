@@ -25,7 +25,7 @@
   tm.state.correctedText = 'This is helpful.';tm.renderComposePreview();
   tm.state.previewView.host.querySelectorAll('button')[2].click();
   const banner = document.getElementById('tm-compose-hints-banner');
-  assert(banner?.textContent === 'Enable suggestions', 'Disabled control missing or redundant');
+  assert(banner?.textContent === '⇧Esc Enable suggestions', 'Disabled control missing or redundant');
   banner.querySelector('button').click();
   assert(!tm.state.autocompleteDisabled && !document.getElementById('tm-compose-hints-banner'), 'Enable failed');
   tm.dismissComposeSuggestion();

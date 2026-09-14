@@ -88,6 +88,7 @@ Object.assign(TabMail, {
         // Reset adherence tracking
         TabMail.state.lastKeystrokeAdheredToSuggestion = false;
         TabMail.state.adherenceInfo = null;
+        TabMail.state.lastAcceptedText = "";
       }
       
       TabMail.log.info('events', "All event listeners cleaned up");
@@ -607,7 +608,7 @@ Object.assign(TabMail, {
         
         // Handle cursor positioning and autohide diffs
         // Preview content is outside the editable body.
-        TabMail.dismissComposeSuggestion();
+        TabMail.handleAutohideDiff(e);
         
         // Cancel any restore timer
         if (TabMail.state.diffRestoreTimer) {
@@ -675,8 +676,17 @@ Object.assign(TabMail, {
       }
       
       if (TabMail.state.applyingPreview) return;
-      TabMail.dismissComposeSuggestion();
-      TabMail.scheduleTrigger(editor);
+      if (TabMail.state.lastKeystrokeAdheredToSuggestion) {
+        TabMail.state.lastKeystrokeAdheredToSuggestion = false;
+        TabMail.state.adherenceInfo = null;
+        // Native editing has already consumed the matching character. Rebuild
+        // the passive preview without scheduling another request, as before.
+        TabMail.renderText(TabMail.state.showDiff && !TabMail.state.autoHideDiff);
+      } else {
+        TabMail.state.correctedText = null;
+        TabMail.hideComposePreview();
+        TabMail.scheduleTrigger(editor);
+      }
 
     };
     editor.addEventListener("input", TabMail._eventListeners.inputHandler);
@@ -905,7 +915,13 @@ Object.assign(TabMail, {
     if (TabMail.handleEscapeKeys(e)) return;
     if (selection.isCollapsed && TabMail.handleCursorMovementKey(e)) return;
     if (selection.isCollapsed && TabMail.handleAcceptRejectKey(e)) return;
-    if (TabMail._isTypingKey(e)) TabMail.hideComposePreview();
+    if (TabMail._isTypingKey(e) || e.key === "Enter") {
+      // Supply the existing adherence detector with native text coordinates;
+      // its timing policy remains independent of the preview renderer.
+      const original = TabMail.extractUserAndQuoteTexts(TabMail.state.editorRef).originalUserMessage;
+      TabMail.state.lastRenderedText = { diffs: TabMail.computeDiff(original, TabMail.state.correctedText || original) };
+      TabMail.handleAutohideDiff(e);
+    }
     // All other editing, selection and history keys belong to Thunderbird.
   },
 
