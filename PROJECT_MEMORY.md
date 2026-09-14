@@ -207,4 +207,4 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 - Action mutation ownership, retry tokens, immediate repaint and delayed sort: [contract](Companion/Decisions/Active/adr-action-mutation-owner.md).
 
 ### Contextual compose preview
-- **[Detail](Companion/Memory/Current/021-contextual-compose-preview.md)** — separate sentence preview, insertion-only highlights, atomic Tab/click acceptance, next-sentence continuation, disabled-only enable control, HTML range projection and native undo validation.
+- **[Detail](Companion/Memory/Current/021-contextual-compose-preview.md)** — separate sentence preview, insertion-only highlights, atomic Tab/click acceptance, next-sentence continuation, disabled-only enable control, HTML range projection, native undo validation, and shared Near cursor/Docked at bottom placement (#44).

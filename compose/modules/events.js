@@ -684,7 +684,7 @@ Object.assign(TabMail, {
         TabMail.renderText(TabMail.state.showDiff && !TabMail.state.autoHideDiff);
       } else {
         TabMail.state.correctedText = null;
-        TabMail.hideComposePreview();
+        if (!TabMail.retainDockedComposePreview()) TabMail.hideComposePreview();
         TabMail.scheduleTrigger(editor);
       }
 

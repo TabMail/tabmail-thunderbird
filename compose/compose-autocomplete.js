@@ -56,6 +56,7 @@ var TabMail = TabMail || {};
         DIFF_RESTORE_DELAY_MS: null,
         AUTOCOMPLETE_IDLE_MS: null,
         autocompleteEnabled: true,
+        composeBubblePlacement: "cursor",
       });
 
       const throttleVal = parseInt(settings.TRIGGER_THROTTLE_MS, 10);
@@ -73,6 +74,7 @@ var TabMail = TabMail || {};
       applyAutocompleteIdleMs(parseInt(settings.AUTOCOMPLETE_IDLE_MS, 10));
 
       // Master autocomplete on/off (default on).
+      TM.state.composeBubblePlacement = settings.composeBubblePlacement === "bottom" ? "bottom" : "cursor";
       TM.state.autocompleteDisabled = settings.autocompleteEnabled === false;
 
       console.log(
@@ -160,6 +162,11 @@ var TabMail = TabMail || {};
             if (!isNaN(v)) {
               console.log(`[TabMail CS] Live config: AUTOCOMPLETE_IDLE_MS -> ${v}ms`);
             }
+          }
+          if (Object.prototype.hasOwnProperty.call(changes, "composeBubblePlacement")) {
+            TM.state.composeBubblePlacement = changes.composeBubblePlacement.newValue === "bottom" ? "bottom" : "cursor";
+            document.getElementById('tm-inline-edit')?._tm_reposition?.();
+            TM.renderText(TM.state.showDiff && !TM.state.autoHideDiff);
           }
           if (Object.prototype.hasOwnProperty.call(changes, "autocompleteEnabled")) {
             const enabled = changes.autocompleteEnabled.newValue !== false;

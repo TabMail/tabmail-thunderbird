@@ -758,6 +758,24 @@ Object.assign(TabMail, {
       wrapper.style.left = `${left}px`;
       wrapper.style.top = `${top}px`;
 
+      const reposition = () => {
+        if (TabMail.state.composeBubblePlacement === 'bottom') {
+          TabMail.positionDockedComposeBubble(wrapper);
+        } else {
+          wrapper.style.bottom = '';
+          wrapper.style.maxHeight = '';
+          wrapper.style.overflowY = '';
+          const bounds = editor.getBoundingClientRect();
+          const x = Math.max(surfaceMargin, bounds.left);
+          wrapper.style.left = `${x}px`;
+          wrapper.style.width = `${Math.max(1, Math.min(window.innerWidth - surfaceMargin, bounds.right || window.innerWidth - surfaceMargin) - x)}px`;
+          wrapper.style.top = `${Math.max(surfaceMargin, Math.min(caretTop + margin, window.innerHeight - wrapper.getBoundingClientRect().height - surfaceMargin))}px`;
+        }
+      };
+      wrapper._tm_reposition = reposition;
+      window.addEventListener('resize', reposition);
+      reposition();
+
       // Initialize iframe document
       try {
         const idoc = iframe.contentDocument;
@@ -872,6 +890,7 @@ Object.assign(TabMail, {
             //   scrolledSticky,
             //   willScroll,
             // });
+            reposition();
             // Reposition wrapper if it overflows viewport after resize
             try {
               const vw = Math.max(
@@ -889,7 +908,7 @@ Object.assign(TabMail, {
                 wrapper.style.left = left2 + "px";
                 didAdjust = true;
               }
-              if (r.bottom > vh - 8) {
+              if (TabMail.state.composeBubblePlacement !== "bottom" && r.bottom > vh - 8) {
                 const top2 = Math.max(8, vh - r.height - 8);
                 wrapper.style.top = top2 + "px";
                 didAdjust = true;
@@ -1172,6 +1191,7 @@ Object.assign(TabMail, {
       document.addEventListener("focusin", onDocFocusIn, true);
 
       const cleanup = (reason = "unknown") => {
+        window.removeEventListener("resize", reposition);
         TabMail.log.debug('inlineEdit', "Cleaning up inline edit.", { reason });
         if (reason === "apply" && document.hasFocus()) {
           // Keep this ordering: existing instruction input -> restored designMode

@@ -7,6 +7,7 @@ TabMail.composeActionCSS = `
 .tm-compose-actions { user-select: none; display: flex; flex-wrap: wrap; justify-content: flex-end; text-align: right; font: 11px/1.4 system-ui; color: var(--tm-preview-context); }
 
 .tm-compose-actions button { pointer-events: auto; cursor: pointer; font: inherit; color: inherit; background: transparent; border: 0; border-radius: 4px; padding: 3px 6px; }
+.tm-compose-actions button:disabled { cursor: default; opacity: .5; }
 .tm-compose-actions button:hover, .tm-compose-actions button:focus-visible { background: var(--tm-preview-insert); color: var(--tm-preview-text); }
 
 .tm-compose-actions kbd { display: inline-block; font: 10px/1.3 system-ui; border: 1px solid var(--tm-preview-border); border-radius: 3px; padding: 1px 4px; margin-right: 3px; white-space: nowrap; }
@@ -28,6 +29,32 @@ ${TabMail.composeActionCSS}
 `;
 
 Object.assign(TabMail, {
+  positionDockedComposeBubble(surface) {
+    const margin = TabMail.config.preview.margin;
+    Object.assign(surface.style, {
+      position: 'fixed', left: `${margin}px`, width: `${Math.max(1, window.innerWidth - margin * 2)}px`,
+      top: 'auto', bottom: `${margin}px`, maxHeight: `${Math.max(1, window.innerHeight - margin * 2)}px`,
+      overflowY: 'auto', boxSizing: 'border-box',
+    });
+  },
+
+  retainDockedComposePreview() {
+    const {state} = TabMail;
+    const view = state.previewView;
+    if (state.composeBubblePlacement !== 'bottom' || !view?.root.querySelector('.preview')) return false;
+    // Retain presentation only. Native typing invalidates the acceptance model
+    // and source geometry immediately; backend scheduling remains unchanged.
+    state.previewModel = null;
+    state.previewJumpOffset = null;
+    state.isDiffActive = false;
+    view.pending = true;
+    view.root.querySelectorAll('.source-underline, .source-deletion').forEach(node => node.remove());
+    const accept = view.root.querySelector('[aria-label="Accept"]');
+    if (accept) accept.disabled = true;
+    TabMail.positionDockedComposeBubble(view.host);
+    return true;
+  },
+
   hideComposePreview() {
     TabMail.state.previewView?.host.remove();
     TabMail.removeJumpOverlay?.();
@@ -75,7 +102,12 @@ Object.assign(TabMail, {
     const state = TabMail.state;
     const editor = state.editorRef;
     const sel = window.getSelection();
-    if (!editor || !show || state.autocompleteDisabled || state.inlineEditActive || state.isIMEComposing || state.beforeSendCleanupActive || !sel?.isCollapsed) { TabMail.hideComposePreview(); return; }
+    if (!editor || state.autocompleteDisabled || state.inlineEditActive || state.isIMEComposing || state.beforeSendCleanupActive || !sel?.isCollapsed) { TabMail.hideComposePreview(); return; }
+    if ((!show || !state.correctedText) && state.previewView?.pending && state.composeBubblePlacement === 'bottom') {
+      TabMail.positionDockedComposeBubble(state.previewView.host);
+      return;
+    }
+    if (!show && state.composeBubblePlacement !== 'bottom') { TabMail.hideComposePreview(); return; }
     const index = TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor));
     const cursor = TabMail.composeCursorOffset(index);
     const anchorElement = sel.anchorNode?.nodeType === Node.ELEMENT_NODE ? sel.anchorNode : sel.anchorNode?.parentElement;
@@ -108,6 +140,7 @@ Object.assign(TabMail, {
       shadow.appendChild(root);
       view = state.previewView = { host, root };
     }
+    view.pending = false;
     const { host, root } = view;
     root.replaceChildren();
     TabMail.removeJumpOverlay();
@@ -254,7 +287,13 @@ Object.assign(TabMail, {
       const y = bottom + cfg.gap + height <= window.innerHeight - cfg.margin ? bottom + cfg.gap : Math.max(cfg.margin, top - cfg.gap - height);
       host.style.top = `${y}px`;
     };
-    place();
+    if (state.composeBubblePlacement === 'bottom') TabMail.positionDockedComposeBubble(host);
+    else {
+      host.style.bottom = '';
+      host.style.maxHeight = '';
+      host.style.overflowY = '';
+      place();
+    }
     state.isDiffActive = !!model.edits.length;
   },
 

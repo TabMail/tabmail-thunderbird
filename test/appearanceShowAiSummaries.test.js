@@ -103,3 +103,14 @@ describe('handleAppearanceChange — Show AI Summaries checkbox', () => {
     expect(setShowAiSummariesEnabled).not.toHaveBeenCalled();
   });
 });
+
+it.each(['cursor','bottom','invalid'])('loads compose placement %s with safe default', async value=>{
+  els['compose-bubble-placement']={value:''};
+  browser.storage.local.get.mockImplementation(async keys=>Array.isArray(keys)?{}:{...keys,composeBubblePlacement:value});
+  await loadAppearanceSettings(SETTINGS);
+  expect(els['compose-bubble-placement'].value).toBe(value==='bottom'?'bottom':'cursor');
+});
+it.each(['cursor','bottom','invalid'])('persists compose placement %s',async value=>{
+  await handleAppearanceChange({target:{id:'compose-bubble-placement',value}},SETTINGS);
+  expect(browser.storage.local.set).toHaveBeenCalledWith({composeBubblePlacement:value==='bottom'?'bottom':'cursor'});
+});

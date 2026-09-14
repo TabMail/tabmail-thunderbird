@@ -176,7 +176,10 @@ export async function loadAppearanceSettings(SETTINGS) {
     const stored = await browser.storage.local.get({
       prioritizeTabMailTags: false,
       appearanceCardSnippetsEnabled: false,
+      composeBubblePlacement: "cursor",
     });
+    const placement = $("compose-bubble-placement");
+    if (placement) placement.value = stored.composeBubblePlacement === "bottom" ? "bottom" : "cursor";
     // Load "Show AI Summaries" display preference (default: enabled, #34)
     const showSummariesCheckbox = $("show-ai-summaries");
     if (showSummariesCheckbox) {
@@ -346,6 +349,11 @@ export async function handleAppearanceChange(e, SETTINGS) {
   // Debug: log all change events
   console.log(`[TMDBG Config] handleAppearanceChange: target.name="${e.target.name}", target.id="${e.target.id}", target.value="${e.target.value}"`);
   
+  if (e.target.id === "compose-bubble-placement") {
+    await browser.storage.local.set({ composeBubblePlacement: e.target.value === "bottom" ? "bottom" : "cursor" });
+    return;
+  }
+
   // Theme radio buttons
   if (
     e.target.name === "theme" ||

@@ -1238,3 +1238,89 @@ it('plaintext manual smoke probe refuses an unmarked draft before any changes',(
  expect(w.document.execCommand).not.toHaveBeenCalled();
  expect(w.browser.storage.local.set).not.toHaveBeenCalled();
 });
+
+it.each(['cursor','bottom'])('placement %s preserves typing scheduling and prevents stale acceptance', placement => {
+  const {w,tm,body}=setup('This is very useful.');
+  tm.state.composeBubblePlacement=placement;
+  tm.attachAutocomplete(body);
+  tm.scheduleTrigger=vi.fn();
+  tm.state.correctedText='This is useful.';
+  tm.renderText(true);
+  const host=tm.state.previewView.host;
+  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));
+  body.firstChild.textContent+='x';
+  body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+  expect(tm.scheduleTrigger).toHaveBeenCalledTimes(1);
+  expect(tm.state.correctedText).toBeNull();
+  expect(tm.acceptComposePreview()).toBe(false);
+  expect(body.textContent).toBe('This is very useful.x');
+  expect(host.isConnected).toBe(placement==='bottom');
+  if(placement==='bottom') {
+    expect(host.style.bottom).toBe('8px');
+    expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(true);
+    expect(tm.state.previewView.root.querySelector('.source-underline')).toBeNull();
+    tm.state.correctedText='This is useful.';
+    tm.renderText(true);
+    expect(tm.state.previewView.host).toBe(host);
+    expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(false);
+  }
+});
+
+it('docked pending preview resizes, dismisses, and never enters serialized mail',()=>{
+  const {w,tm,body}=setup('This is very useful.');
+  tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);
+  tm.state.correctedText='This is useful.';tm.renderText(true);
+  tm.retainDockedComposePreview();tm.state.correctedText=null;
+  w.innerWidth=600;w.innerHeight=400;w.dispatchEvent(new w.Event('resize'));
+  expect(tm.state.previewView.host.style.width).toBe('584px');
+  expect(tm.state.previewView.host.style.maxHeight).toBe('384px');
+  expect(w.document.documentElement.outerHTML).not.toContain('This is useful.');
+  tm.state.previewView.root.querySelector('[aria-label="Dismiss"]').click();
+  expect(tm.state.previewView).toBeNull();expect(body.textContent).toBe('This is very useful.');
+});
+
+it.each(['inlineEditActive','isIMEComposing','beforeSendCleanupActive','autocompleteDisabled'])('pending docked preview respects %s', flag=>{
+  const {tm}=setup('This is very useful.');tm.state.composeBubblePlacement='bottom';
+  tm.state.correctedText='This is useful.';tm.renderText(true);tm.retainDockedComposePreview();tm.state.correctedText=null;
+  tm.state[flag]=true;tm.renderText(false);expect(tm.state.previewView).toBeNull();
+});
+
+it('Cmd-K uses shared docked margins, grows upward, resizes, and removes its listener',()=>{
+  const {w,tm}=setup('A draft.');tm.state.composeBubblePlacement='bottom';tm.showInlineEditDropdown();
+  const wrapper=w.document.getElementById('tm-inline-edit');
+  expect(wrapper.style.bottom).toBe('8px');expect(wrapper.style.top).toBe('auto');expect(wrapper.style.left).toBe('8px');
+  const input=wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
+  Object.defineProperty(input,'scrollHeight',{configurable:true,value:180});
+  input.value='Several\nlines\nof\ninstructions';input.dispatchEvent(new w.Event('input'));
+  expect(wrapper.querySelector('iframe').style.height).not.toBe('0px');
+  expect(wrapper.style.bottom).toBe('8px');expect(wrapper.style.top).toBe('auto');
+  w.innerWidth=500;w.innerHeight=300;w.dispatchEvent(new w.Event('resize'));
+  expect(wrapper.style.width).toBe('484px');expect(wrapper.style.maxHeight).toBe('284px');
+  tm.state.composeBubblePlacement='cursor';wrapper._tm_reposition();
+  expect(wrapper.style.bottom).toBe('');expect(wrapper.style.top).not.toBe('auto');
+  wrapper._tm_cleanup();const width=wrapper.style.width;
+  w.innerWidth=700;w.dispatchEvent(new w.Event('resize'));expect(wrapper.style.width).toBe(width);
+});
+
+it.each(['bottom','cursor','invalid',undefined])('loads placement %s and applies live changes to both surfaces without requesting',async initial=>{
+  const {dom,w,tm}=setup('This is very useful.');
+  const listeners=new Set();
+  w.browser.storage={local:{get:vi.fn(async defaults=>({...defaults,composeBubblePlacement:initial}))},onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+  tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+  const filename=resolve('compose/compose-autocomplete.js');
+  runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+  await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(w.document.body));
+  expect(tm.state.composeBubblePlacement).toBe(initial==='bottom'?'bottom':'cursor');
+  tm.triggerCorrection=vi.fn();tm.scheduleTrigger=vi.fn();
+  tm.state.correctedText='This is useful.';tm.renderText(true);
+  const notify=(value,area='local')=>{for(const f of listeners)f({composeBubblePlacement:{newValue:value}},area)};
+  notify('bottom');expect(tm.state.previewView.host.style.bottom).toBe('8px');
+  notify('cursor','sync');expect(tm.state.composeBubblePlacement).toBe('bottom');
+  tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');
+  expect(tm.state.previewView).toBeNull();expect(wrapper.style.bottom).toBe('8px');
+  notify('cursor');expect(wrapper.style.bottom).toBe('');
+  notify('bottom');expect(wrapper.style.bottom).toBe('8px');
+  notify(undefined);expect(tm.state.composeBubblePlacement).toBe('cursor');expect(wrapper.style.bottom).toBe('');
+  expect(tm.triggerCorrection).not.toHaveBeenCalled();expect(tm.scheduleTrigger).not.toHaveBeenCalled();
+  wrapper._tm_cleanup();w.dispatchEvent(new w.Event('beforeunload'));expect(listeners.size).toBe(0);
+});
