@@ -108,7 +108,10 @@ export function fakeEvent({ id, title, startDate, endDate, recurrenceId = null, 
     ev.recurrenceInfo = {
       occurrences,
       getRecurrenceItems: () => [],
-      getOccurrenceFor: (rid) => occurrences.find((o) => o.recurrenceId.compare(rid) === 0) || null,
+      // CalRecurrenceInfo keys exceptions by icalString: a DATE ("20261007")
+      // and a same-day DATE-TIME ("20261007T000000") are different identities,
+      // so the lookup is type-sensitive, never `compare`.
+      getOccurrenceFor: (rid) => occurrences.find((o) => o.recurrenceId.toString() === rid.toString()) || null,
     };
   }
   return ev;

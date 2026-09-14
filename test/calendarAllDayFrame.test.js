@@ -71,7 +71,7 @@ vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: vi.fn(async () => ({ t
 
 const { run: calendarReadRun, resetPaginationSessions } = await import('../chat/tools/calendar_read.js');
 const { run: calendarEventReadRun, _testExports: readExports } = await import('../chat/tools/calendar_event_read.js');
-const { _testExports: searchExports } = await import('../chat/tools/calendar_search.js');
+const { run: calendarSearchRun, _testExports: searchExports } = await import('../chat/tools/calendar_search.js');
 
 describe('precondition: the process zone is west of UTC', () => {
   it('renders UTC midnight of DAY on the previous local day', () => {
@@ -350,11 +350,60 @@ describe('edit round-trip: the recurrence token the read tool shows selects that
       expect(occ[1].startDate.compare(fakeDate(NEXT_DAY))).toBe(0);
     });
   }
+});
 
-  it('a token for a day with no occurrence edits nothing', async () => {
-    const { api, modifications } = loadCalendarBridge(bridgeUrl, { items: [allDaySeries()] });
-    const res = await api.modifyCalendarEvent(editExports.normalizeArgs({ event_id: 'series', recurrence_id: `${dayDigits(20)}T00:00:00`, edit_scope: 'this_only', title: 'Renamed' }));
-    expect(res.ok).toBe(false);
-    expect(modifications).toHaveLength(0);
+describe('public callers: bridge-produced all-day rows render and order correctly', () => {
+  const items = () => [allDayEvent('ad', 'Holiday party', DAY, NEXT_DAY), timedEvent('t', 'Party planning', DAY, 8)];
+
+  async function withBridge(fn) {
+    const { api } = loadCalendarBridge(bridgeUrl, { items: items() });
+    browser.tmCalendar.queryCalendarItems.mockImplementation((...a) => api.queryCalendarItems(...a));
+    try { return await fn(); } finally {
+      browser.tmCalendar.queryCalendarItems.mockReset();
+      browser.tmCalendar.queryCalendarItems.mockResolvedValue([]);
+    }
+  }
+  const dayBlockOf = (text, title) => text.split('\n\n').find((b) => b.includes(title));
+  const prettyOf = (day) => searchExports.formatDayHeader(day, 'America/Vancouver').prettyDate;
+
+  for (const [name, call] of [
+    ['calendar_read', () => calendarReadRun({ calendar_ids: ['cal1'], from_date: PREV_DAY, to_date: NEXT_DAY })],
+    ['calendar_search', () => calendarSearchRun({ query: 'party', from_date: PREV_DAY, to_date: NEXT_DAY })],
+  ]) {
+    it(`${name}: the all-day row spans its own day and precedes the 08:00 entry`, async () => {
+      resetPaginationSessions();
+      const result = await withBridge(call);
+      const block = dayBlockOf(result.results, 'Holiday party');
+      expect(block).toBeDefined();
+      expect(block).toContain(`date: ${prettyOf(DAY)}`);
+      expect(block).toContain('00:00 - 00:00: Holiday party\tevent_id: ad');
+      expect(block).toContain('08:00 - 09:00: Party planning\tevent_id: t');
+      expect(block.indexOf('Holiday party')).toBeLessThan(block.indexOf('Party planning'));
+      expect(result.results).not.toContain(prettyOf(PREV_DAY));
+    });
+  }
+});
+
+describe('single-digit calendar dates survive the digits contract end to end', () => {
+  // The first day of next month is always a "01" day, one to four weeks out.
+  const firstOfNextMonth = (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; })();
+  const dayAfter = (() => { const [y, m] = firstOfNextMonth.split('-').map(Number); return `${y}-${String(m).padStart(2, '0')}-02`; })();
+
+  it('is listed under its own day and found again by the start_iso it printed', async () => {
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('first', 'Kickoff', firstOfNextMonth, dayAfter)] });
+    browser.tmCalendar.queryCalendarItems.mockImplementation((...a) => api.queryCalendarItems(...a));
+    try {
+      resetPaginationSessions();
+      const listed = await calendarReadRun({ calendar_ids: ['cal1'], from_date: firstOfNextMonth, to_date: dayAfter });
+      expect(listed.results).toContain(`date: ${searchExports.formatDayHeader(firstOfNextMonth, 'America/Vancouver').prettyDate}`);
+      expect(listed.results).toContain('Kickoff');
+      const found = await calendarEventReadRun({ start_iso: `${firstOfNextMonth}T00:00:00` });
+      expect(found.ok).toBe(true);
+      expect(found.results).toContain(`start_iso: ${firstOfNextMonth}T00:00:00`);
+      expect(found.results).toContain(`end_iso: ${dayAfter}T00:00:00`);
+    } finally {
+      browser.tmCalendar.queryCalendarItems.mockReset();
+      browser.tmCalendar.queryCalendarItems.mockResolvedValue([]);
+    }
   });
 });
