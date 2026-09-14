@@ -292,6 +292,18 @@ Object.assign(TabMail, {
 
       TabMail.hideComposePreview();
       TabMail.animateInlineEditApplication(editor);
+      // Dismissal and native refusal return above. Only an accepted operation
+      // may commit its recipient proposal; the background also checks staleness.
+      if (result.recipientEdit) {
+        try {
+          await browser.runtime.sendMessage({
+            type: "commitInlineComposeRecipients", recipientEdit: result.recipientEdit,
+          });
+        } catch (error) {
+          TabMail.log.warn('inlineEdit', 'Recipient proposal could not be applied', error);
+        }
+      }
+
     } catch (err) {
       console.error("[TabMail Edit] Inline edit error:", err);
     } finally {

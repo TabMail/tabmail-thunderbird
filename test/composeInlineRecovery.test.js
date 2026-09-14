@@ -59,7 +59,7 @@ async function wireBackground(w) {
   const api={runtime:{onMessage:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)},getURL:p=>p},
     compose:{getComposeDetails:vi.fn(async()=>structuredClone(current)),setComposeDetails:vi.fn(async(id,patch)=>Object.assign(current,structuredClone(patch))),onBeforeSend:{addListener:vi.fn()}},
     scripting:{compose:{unregisterScripts:vi.fn(async()=>{}),registerScripts:vi.fn(async()=>{})}},
-    tabs:{sendMessage:vi.fn(async()=>{})}};
+    tabs:{sendMessage:vi.fn(async()=>{}),onRemoved:{addListener:vi.fn(),removeListener:vi.fn()}}};
   globalThis.browser=globalThis.messenger=api;globalThis.window={};
   await import('../compose/background.js');
   w.browser.runtime.sendMessage=vi.fn(message=>[...listeners].map(f=>f(message,{tab:{id:1}})).find(v=>v!==undefined));
@@ -155,4 +155,93 @@ it.each(['typing','composition'])('does not reopen old instructions over newer %
  expect(w.document.execCommand).not.toHaveBeenCalled();
  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe(action==='typing'?'Newer draft.':'Draft.');
  expect(tm.state.editChatHistory||[]).toEqual([]);
+});
+
+// Exercise the registered background handler and the actual inline consumer:
+// receiving a proposal is not authorization to write native recipients.
+it.each(['accepted','recipient-only','dismissed','body-refused','body-changed','recipients-changed','empty'])('commits recipient proposals only for accepted current edits: %s',async outcome=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');
+ const {api,current}=await wireBackground(w);
+ const history=[{userRequest:'Earlier'}];tm.state.editChatHistory=history;
+ let resolveResult;
+ runComposeEdit.mockImplementation(()=>new Promise(resolve=>{resolveResult=resolve}));
+ tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');
+ const pending=tm._runInlineEditInstruction({instruction:'Add a recipient',wrapper});
+ await vi.waitFor(()=>expect(resolveResult).toBeTypeOf('function'));
+ expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+ if(outcome==='dismissed')tm.cancelInlineEditDropdown();
+ if(outcome==='body-refused')w.document.execCommand.mockReturnValue(false);
+ if(outcome==='body-changed')body.firstChild.textContent='Newer draft.';
+ if(outcome==='recipients-changed')current.to=['newer@example.com'];
+ resolveResult({body:outcome==='empty'?'':outcome==='recipient-only'?'Draft.':'Expanded draft.',
+   toDelta:{adds:[{name:'Example',email:'added@example.com'}],removes:[]},chatHistory:[...history,{userRequest:'Add a recipient'}]});
+ await pending;
+ const accepted=['accepted','recipient-only','recipients-changed'].includes(outcome);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe(outcome==='body-changed'?'Newer draft.':accepted&&outcome!=='recipient-only'?'Expanded draft.':'Draft.');
+ expect(current.to).toEqual(outcome==='recipients-changed'?['newer@example.com']:accepted?['first@example.com','Example <added@example.com>']:['first@example.com']);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(accepted&&outcome!=='recipients-changed'?1:0);
+ expect(tm.state.editChatHistory).toHaveLength(accepted?2:1);
+});
+
+it('rejects replay and a superseded commit while native details are pending',async()=>{
+ const {w}=setup('Draft.');const {api,current}=await wireBackground(w);
+ runComposeEdit.mockResolvedValue({body:'Draft.',toDelta:{adds:[{email:'added@example.com'}],removes:['*']}});
+ const run=()=>w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Change recipients'});
+ const first=await run();
+ let release;
+ api.compose.getComposeDetails.mockImplementationOnce(()=>new Promise(r=>{release=r}));
+ const commit={type:'commitInlineComposeRecipients',recipientEdit:first.recipientEdit};
+ const pending=w.browser.runtime.sendMessage(commit);
+ await run();release(structuredClone(current));
+ await pending;expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+ const last=await run();const lastCommit={type:'commitInlineComposeRecipients',recipientEdit:last.recipientEdit};
+ await w.browser.runtime.sendMessage(lastCommit);await w.browser.runtime.sendMessage(lastCommit);
+ expect(current.to).toEqual(['added@example.com']);expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+});
+
+it.each(['to','cc','bcc'])('preserves delta semantics and rejects newer %s recipients',async field=>{
+ const {w}=setup('Draft.');const {api,current}=await wireBackground(w);
+ current[field]=['"Example" <keep@example.com>','remove@example.com'];
+ const delta={adds:[{email:'KEEP@example.com'},{name:'New',email:'new@example.com'},{email:'*'}],removes:['REMOVE@example.com']};
+ runComposeEdit.mockResolvedValue({body:'Draft.',[field+'Delta']:delta});
+ const run=()=>w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Update'});
+ const proposal=await run();await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:proposal.recipientEdit});
+ expect(current[field]).toEqual(['Example <keep@example.com>','New <new@example.com>']);
+ const stale=await run();current[field]=['manual@example.com'];
+ await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:stale.recipientEdit});
+ expect(current[field]).toEqual(['manual@example.com']);expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+});
+it.each(['read','write'])('native recipient %s failure does not corrupt body/history or retry the write',async failure=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api}=await wireBackground(w);
+ runComposeEdit.mockResolvedValue({body:'Expanded.',chatHistory:[{userRequest:'Expand'}],toDelta:{adds:[{email:'new@example.com'}],removes:[]}});
+ if(failure==='read')api.compose.getComposeDetails.mockResolvedValueOnce({to:['first@example.com'],cc:[],bcc:[]}).mockRejectedValueOnce(Error('Synthetic read failure'));
+ else api.compose.setComposeDetails.mockRejectedValueOnce(Error('Synthetic write failure'));
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Expand',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded.');expect(tm.state.editChatHistory).toEqual([{userRequest:'Expand'}]);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(failure==='read'?0:1);
+});
+it('forgets a recipient operation when its native tab closes',async()=>{
+ const {w}=setup('Draft.');const {api}=await wireBackground(w);
+ runComposeEdit.mockResolvedValue({body:'Draft.',toDelta:{adds:[{email:'new@example.com'}],removes:[]}});
+ const proposal=await w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Update'});
+ api.tabs.onRemoved.addListener.mock.calls[0][0](1);
+ await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:proposal.recipientEdit});
+ expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+});
+
+it.each(Array.from({length:12},(_,i)=>i+1))('keeps the newest recipient action under seeded delayed results (%s)',async seed=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
+ let state=seed;const random=()=>{state=(Math.imul(state,1664525)+1013904223)>>>0;return state/4294967296};
+ const pendingResults=[];
+ runComposeEdit.mockImplementation(()=>new Promise(resolve=>pendingResults.push(resolve)));
+ const start=()=>{tm.showInlineEditDropdown();return tm._runInlineEditInstruction({instruction:'Update',wrapper:w.document.getElementById('tm-inline-edit')})};
+ const first=start();await vi.waitFor(()=>expect(pendingResults).toHaveLength(1));tm.cancelInlineEditDropdown();
+ const second=start();await vi.waitFor(()=>expect(pendingResults).toHaveLength(2));
+ const manual=random()<0.5;if(manual)current.to=['manual@example.com'];
+ const order=random()<0.5?[0,1]:[1,0];
+ for(const n of order){for(let j=0,count=Math.floor(random()*4);j<count;j++)await Promise.resolve();pendingResults[n]({body:'Draft.',toDelta:{adds:[{email:`proposal${n}@example.com`}],removes:['*']}});await Promise.resolve();}
+ await Promise.all([first,second]);
+ expect(current.to).toEqual(manual?['manual@example.com']:['proposal1@example.com']);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(manual?0:1);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Draft.');
 });
