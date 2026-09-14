@@ -147,7 +147,6 @@ async function handleRuntimeMessage(message, sender) {
           userMessage: message.context.userMessage,
           quoteAndSignature: message.context.quoteAndSignature,
           cursorPosition: message.context.cursorPosition,
-          previousAcceptedSentence: message.context.previousAcceptedSentence || "",
           isLocal: message.context.isLocal,
           subject: composeDetails.subject,
           from: composeDetails.from,

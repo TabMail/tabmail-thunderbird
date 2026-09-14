@@ -11,14 +11,14 @@ import {generateCorrection} from '../compose/modules/autocompleteGenerator.js';
 import {sendChat} from '../agent/modules/llm.js';
 import {set} from '../agent/modules/idbStorage.js';
 beforeEach(()=>vi.clearAllMocks());
-it.each([true,false])('sends accepted reference in mode %s without persisting it in debug history',async isLocal=>{
+it.each([true,false])('ignores obsolete accepted reference in mode %s',async isLocal=>{
  await generateCorrection({userMessage:'We test the pasdrogram.',previousAcceptedSentence:'We test the program.',cursorPosition:20,isLocal,sessionId:123});
  const [messages]=sendChat.mock.calls[0];
- expect(messages[0]).toMatchObject({content:isLocal?'system_prompt_autocomplete_local':'system_prompt_autocomplete',text_to_correct:'We test the pasdrogram.',previous_accepted_sentence:'We test the program.',cursor_position:20,user_composition_prompt:'Use a concise style.'});
+ expect(messages[0]).toMatchObject({content:isLocal?'system_prompt_autocomplete_local':'system_prompt_autocomplete',text_to_correct:'We test the pasdrogram.',cursor_position:20,user_composition_prompt:'Use a concise style.'});
  expect(set).toHaveBeenCalledTimes(1);
  const history=set.mock.calls[0][0]['activeHistory:123'][0];
  expect(history).not.toHaveProperty('previous_accepted_sentence');
  expect(history.text_to_correct).toBe('We test the pasdrogram.');
- // Removing the reference from persisted history must not mutate the request.
- expect(messages[0].previous_accepted_sentence).toBe('We test the program.');
+ // Neither wire requests nor persisted history may carry the retired reference.
+ expect(messages[0]).not.toHaveProperty('previous_accepted_sentence');
 });

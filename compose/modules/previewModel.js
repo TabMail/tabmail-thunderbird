@@ -5,28 +5,6 @@
 var TabMail = TabMail || {};
 
 Object.assign(TabMail, {
-  previousAcceptedSentence(current) {
-    const previous = TabMail.state.lastAcceptedText;
-    if (!previous || !current.trim() || previous === current) return '';
-    let start = 0;
-    while (start < previous.length && start < current.length && previous[start] === current[start]) start++;
-    let oldEnd = previous.length, newEnd = current.length;
-    while (oldEnd > start && newEnd > start && previous[oldEnd - 1] === current[newEnd - 1]) { oldEnd--; newEnd--; }
-    // Only offer history for a small change inside an existing word, never
-    // for new sentences, whole-word replacements, or deleted prose.
-    if (!/[\p{L}\p{M}]/u.test(previous[start - 1] || '') && !/[\p{L}\p{M}]/u.test(previous[oldEnd] || '')) return '';
-    if (!/^[\p{L}\p{M}]*$/u.test(previous.slice(start, oldEnd)) || !/^[\p{L}\p{M}]*$/u.test(current.slice(start, newEnd))) return '';
-    const limits = TabMail.config.correctionContext;
-    if (Math.max(oldEnd - start, newEnd - start) > limits.maxEditLength) return '';
-    const sentences = TabMail.splitIntoSentences(previous);
-    const index = TabMail.findSentenceContainingCursor(sentences, start);
-    if (index < 0) return '';
-    const sentence = sentences[index];
-    const end = TabMail.getSentenceStartOffset(previous, index) + sentence.length;
-    if (oldEnd > end || sentence.length > limits.maxSentenceLength) return '';
-    return sentence.trim();
-  },
-
   composeEditsFromDiff(diffs) {
     const edits = [];
     let offset = 0;
@@ -63,6 +41,16 @@ Object.assign(TabMail, {
       const proposed = TabMail.composeEditsFromDiff(diffs);
       let changed = false;
       for (const edit of proposed) {
+        // A plain-text response commonly spells an existing HTML paragraph gap
+        // as two newlines. The projection already supplies its block separator;
+        // materializing the second one inserts a stray BR between paragraphs.
+        // Consume only that redundant separator, never authored BRs, plaintext
+        // newlines, or multi-newline runs. Those carry intentional extra spacing;
+        // partially consuming them would re-propose it from the cached response.
+        if (edit.start === edit.end && blockBreaks.includes(edit.start - 1) && /^\n$/.test(edit.text)) {
+          edit.text = edit.text.slice(1);
+          changed = true;
+        }
         const boundary = blockBreaks.find(offset => offset >= edit.start && offset < edit.end && /^\s*$/.test(original.slice(offset, edit.end)));
         if (boundary !== undefined && /\s$/.test(edit.text)) {
           edit.end = boundary;

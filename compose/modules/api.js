@@ -20,7 +20,6 @@ Object.assign(TabMail, {
           userMessage: context.userMessage,
           quoteAndSignature: context.quoteAndSignature,
           cursorPosition: context.cursorPosition,
-          previousAcceptedSentence: context.previousAcceptedSentence || "",
           isLocal: isLocal,
         },
       });

@@ -525,6 +525,7 @@ Object.assign(TabMail, {
       TabMail.log.trace('autohideDiff', "Auto-hiding diffs due to user typing."
       );
     }
+    TabMail.retainDockedComposePreview?.();
     TabMail.state.autoHideDiff = true;
     // Properly invalidate previous suggestions to prevent past text lingering
     TabMail.state.correctedText = null;

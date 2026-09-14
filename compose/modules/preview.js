@@ -7,7 +7,11 @@ TabMail.composeActionCSS = `
 .tm-compose-actions { user-select: none; display: flex; flex-wrap: wrap; justify-content: flex-end; text-align: right; font: 11px/1.4 system-ui; color: var(--tm-preview-context); }
 
 .tm-compose-actions button { pointer-events: auto; cursor: pointer; font: inherit; color: inherit; background: transparent; border: 0; border-radius: 4px; padding: 3px 6px; }
+.tm-compose-actions button:disabled { cursor: default; opacity: .5; }
 .tm-compose-actions button:hover, .tm-compose-actions button:focus-visible { background: var(--tm-preview-insert); color: var(--tm-preview-text); }
+
+.tm-compose-actions .tm-placement-toggle { order: -1; margin-right: auto; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.tm-placement-toggle svg { width: 14px; height: 14px; flex: none; }
 
 .tm-compose-actions kbd { display: inline-block; font: 10px/1.3 system-ui; border: 1px solid var(--tm-preview-border); border-radius: 3px; padding: 1px 4px; margin-right: 3px; white-space: nowrap; }
 `;
@@ -28,6 +32,70 @@ ${TabMail.composeActionCSS}
 `;
 
 Object.assign(TabMail, {
+  createComposePlacementToggle() {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tm-placement-toggle';
+    button._tm_updatePlacementLabel = () => {
+      const docked = TabMail.state.composeBubblePlacement === 'bottom';
+      const label = docked ? 'Follow cursor' : 'Dock at bottom';
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 20 20');
+      svg.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS(svg.namespaceURI, 'path');
+      path.setAttribute('d', docked ? 'M5 3.5 15 10l-4.5 1-2 4.5Z' : 'M4 3.5h12a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1ZM3 12.5h14');
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', 'currentColor');
+      path.setAttribute('stroke-width', '1.5');
+      path.setAttribute('stroke-linejoin', 'round');
+      svg.appendChild(path);
+      button.replaceChildren(svg, document.createTextNode(label));
+      button.setAttribute('aria-label', label);
+      button.title = label;
+    };
+    button._tm_updatePlacementLabel();
+    button.addEventListener('mousedown', event => event.preventDefault());
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        // Use the existing shared storage listener for live positioning and
+        // persistence, including other compose windows and the Appearance page.
+        await browser.storage.local.set({composeBubblePlacement: TabMail.state.composeBubblePlacement === 'bottom' ? 'cursor' : 'bottom'});
+      } catch (error) {
+        TabMail.log.warn('compose', 'Could not update bubble placement', error);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    return button;
+  },
+
+  positionDockedComposeBubble(surface) {
+    const margin = TabMail.config.preview.margin;
+    Object.assign(surface.style, {
+      position: 'fixed', left: `${margin}px`, width: `${Math.max(1, window.innerWidth - margin * 2)}px`,
+      top: 'auto', bottom: `${margin}px`, maxHeight: `${Math.max(1, window.innerHeight - margin * 2)}px`,
+      overflowY: 'auto', boxSizing: 'border-box',
+    });
+  },
+
+  retainDockedComposePreview() {
+    const {state} = TabMail;
+    const view = state.previewView;
+    if (state.composeBubblePlacement !== 'bottom' || !view?.root.querySelector('.preview')) return false;
+    // Retain presentation only. Native typing invalidates the acceptance model
+    // and source geometry immediately; backend scheduling remains unchanged.
+    state.previewModel = null;
+    state.previewJumpOffset = null;
+    state.isDiffActive = false;
+    view.pending = true;
+    view.root.querySelectorAll('.source-underline, .source-deletion').forEach(node => node.remove());
+    const accept = view.root.querySelector('[aria-label="Accept"]');
+    if (accept) accept.disabled = true;
+    TabMail.positionDockedComposeBubble(view.host);
+    return true;
+  },
+
   hideComposePreview() {
     TabMail.state.previewView?.host.remove();
     TabMail.removeJumpOverlay?.();
@@ -75,7 +143,12 @@ Object.assign(TabMail, {
     const state = TabMail.state;
     const editor = state.editorRef;
     const sel = window.getSelection();
-    if (!editor || !show || state.autocompleteDisabled || state.inlineEditActive || state.isIMEComposing || state.beforeSendCleanupActive || !sel?.isCollapsed) { TabMail.hideComposePreview(); return; }
+    if (!editor || state.autocompleteDisabled || state.inlineEditActive || state.isIMEComposing || state.beforeSendCleanupActive || !sel?.isCollapsed) { TabMail.hideComposePreview(); return; }
+    if ((!show || !state.correctedText) && state.previewView?.pending && state.composeBubblePlacement === 'bottom') {
+      TabMail.positionDockedComposeBubble(state.previewView.host);
+      return;
+    }
+    if (!show) { TabMail.hideComposePreview(); return; }
     const index = TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor));
     const cursor = TabMail.composeCursorOffset(index);
     const anchorElement = sel.anchorNode?.nodeType === Node.ELEMENT_NODE ? sel.anchorNode : sel.anchorNode?.parentElement;
@@ -108,6 +181,7 @@ Object.assign(TabMail, {
       shadow.appendChild(root);
       view = state.previewView = { host, root };
     }
+    view.pending = false;
     const { host, root } = view;
     root.replaceChildren();
     TabMail.removeJumpOverlay();
@@ -236,6 +310,7 @@ Object.assign(TabMail, {
     action('Accept', 'Tab', 'Accept suggestion (Tab)', () => TabMail.acceptComposePreview());
     action('Dismiss', 'Esc', 'Dismiss suggestion (Esc)', () => TabMail.dismissComposeSuggestion());
     action('Disable suggestions', '⇧Esc', 'Disable suggestions (Shift+Esc)', () => TabMail.setAutocompleteEnabled(false));
+    actions.appendChild(TabMail.createComposePlacementToggle());
     bubble.appendChild(actions);
     root.appendChild(bubble);
     // Keep the surface inset from both viewport edges, preserving source
@@ -254,7 +329,13 @@ Object.assign(TabMail, {
       const y = bottom + cfg.gap + height <= window.innerHeight - cfg.margin ? bottom + cfg.gap : Math.max(cfg.margin, top - cfg.gap - height);
       host.style.top = `${y}px`;
     };
-    place();
+    if (state.composeBubblePlacement === 'bottom') TabMail.positionDockedComposeBubble(host);
+    else {
+      host.style.bottom = '';
+      host.style.maxHeight = '';
+      host.style.overflowY = '';
+      place();
+    }
     state.isDiffActive = !!model.edits.length;
   },
 
@@ -289,7 +370,6 @@ Object.assign(TabMail, {
     setTimeout(() => {
       TabMail.state.originalText = TabMail.extractUserAndQuoteTexts(editor).originalUserMessage;
     }, 0);
-    TabMail.state.lastAcceptedText = TabMail.extractUserAndQuoteTexts(editor).originalUserMessage;
     TabMail.state.lastActionWasAccept = true;
     TabMail.renderComposePreview();
     return true;

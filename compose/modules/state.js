@@ -38,8 +38,6 @@ TabMail.state = {
   latestGlobalRequestId: 0,
   // The user's original, unmodified text.
   originalText: "",
-  // In-memory accepted wording, used only for bounded spelling context.
-  lastAcceptedText: "",
   // The last text that was actually sent to the backend (to prevent duplicate sends).
   // Split by mode because GLOBAL follow-ups may send "assumed accepted" text.
   lastSentLocalText: null,

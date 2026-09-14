@@ -239,7 +239,7 @@ describe('clickable suggestion controls', () => {
     tm.state.correctedText = 'This is useful.';
     tm.renderComposePreview(); tm.showComposeHintsBanner();
     expect(w.document.getElementById('tm-compose-hints-banner')).toBeNull();
-    const controls = [...tm.state.previewView.root.querySelectorAll('button')];
+    const controls = [...tm.state.previewView.root.querySelectorAll('button:not(.tm-placement-toggle)')];
     expect(controls.map(button => button.textContent)).toEqual(['Tab Accept', 'Esc Dismiss', '⇧Esc Disable suggestions']);
     expect(controls.map(button=>button.getAttribute('aria-keyshortcuts'))).toEqual(['Tab','Escape','Shift+Escape']);
     expect(controls.map(button=>button.querySelector('kbd').getAttribute('aria-hidden'))).toEqual(['true','true','true']);
@@ -557,7 +557,7 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   expect(actionRoot.querySelector('style').textContent).toBe(tm.composeActionCSS);
   expect(wrapper.textContent).not.toContain('Esc');
   expect(actionRoot.querySelector('.tm-compose-actions').getAttribute('contenteditable')).toBe('false');
-  expect(actions.map(b=>b.textContent)).toEqual(['Enter Edit draft','Esc Dismiss','⇧Enter Newline']);
+  expect(actions.map(b=>b.textContent)).toEqual(['Enter Edit draft','Esc Dismiss','⇧Enter Newline','Dock at bottom']);
   expect(actionRoot.querySelector('.tm-compose-actions')).not.toBeNull();
   expect(wrapper.querySelector('.tm-inline-actions').getAttribute('spellcheck')).toBe('false');
   const actionSheet=w.document.getElementById('tm-compose-action-styles').sheet;
@@ -928,44 +928,11 @@ it('displays and accepts an interior GLOBAL correction when LOCAL returns unchan
  expect(body.textContent).not.toContain('pograsdasam');
 });
 
-it('sends only the changed sentence from accepted wording as spelling context', async () => {
- const {w,tm,body}=setup('Hello. We test the przzogram. Keep the following sentence.');
- tm.setCursorByOffset(body,20);tm.state.correctedText='Hello. We test the program. Keep the following sentence.';tm.renderComposePreview();
- expect(tm.acceptComposePreview()).toBe(true);
- expect(tm.state.lastAcceptedText).toBe('Hello. We test the program. Keep the following sentence.');
- body.textContent='Hello. We test the pograsdasam. Keep the following sentence.';
- tm.setCursorByOffset(body,29);
- expect(tm.previousAcceptedSentence(body.textContent)).toBe('We test the program.');
- // Let the acceptance text-sync tick complete, then make a native-like edit.
- await new Promise(resolve=>w.setTimeout(resolve,0));
- body.textContent='Hello. We test the pasdrogram. Keep the following sentence.';tm.setCursorByOffset(body,28);
- tm.getCorrectionFromServer=vi.fn(async c=>({usertext:c.userMessage,suggestion:c.userMessage.replace('pasdrogram','program')}));
- tm.triggerCorrection(body);await new Promise(resolve=>w.setTimeout(resolve,20));
- expect(tm.getCorrectionFromServer).toHaveBeenCalled();
- for(const [context] of tm.getCorrectionFromServer.mock.calls) {
-  expect(context.previousAcceptedSentence).toBe('We test the program.');
-  expect(context.previousAcceptedSentence).not.toContain('following');
- }
-});
 
-it('omits accepted spelling context for empty drafts, broad rewrites, and long sentences', () => {
- const {tm}=setup('');
- tm.state.lastAcceptedText='One sentence. Two sentences.';
- expect(tm.previousAcceptedSentence('')).toBe('');
- expect(tm.previousAcceptedSentence('One sentence. Two sentences.')).toBe('');
- expect(tm.previousAcceptedSentence('Other sentence. Three sentences.')).toBe('');
- expect(tm.previousAcceptedSentence('x'.repeat(100))).toBe('');
- tm.state.lastAcceptedText='x'.repeat(600)+'.';
- expect(tm.previousAcceptedSentence('x'.repeat(599)+'y.')).toBe('');
-});
 
-it('does not send prior wording for a new sentence or an intentional whole-word replacement',()=>{
- const {tm}=setup('');tm.state.lastAcceptedText='We test the program.';
- expect(tm.previousAcceptedSentence('We test the program. More text.')).toBe('');
- expect(tm.previousAcceptedSentence('We test the application.')).toBe('');
- expect(tm.previousAcceptedSentence('We test PostgreSQL.')).toBe('');
- expect(tm.previousAcceptedSentence('We test the pasdrogram.')).toBe('We test the program.');
-});
+
+
+
 
 it('replacing selected text must invalidate the old suggestion and request for the new draft', () => {
  const {w,tm,body}=setup('Hello world.');tm.attachAutocomplete(body);
@@ -1104,37 +1071,10 @@ it.each(['success','empty','whitespace','native-failure','dismissed'])('retains 
  if(outcome==='dismissed')expect(w.document.execCommand).not.toHaveBeenCalled();
 });
 
-function acceptReference(tm,body,previous) {
- tm.state.correctedText=previous;tm.renderComposePreview();
- expect(tm.state.previewModel).not.toBeNull();
- expect(tm.acceptComposePreview()).toBe(true);
- expect(tm.state.lastAcceptedText).toBe(previous);
- expect(tm.indexComposeText(body).text).toBe(previous);
-}
-it.each([63,64,65])('accepted wording scopes an internal letter edit of length %i',n=>{
- const {tm,body}=setup('');
- const previous='We use z'+'a'.repeat(n)+'z.';
- acceptReference(tm,body,previous);
- const current='We use z'+'b'.repeat(n)+'z.';
- body.textContent=current;
- expect(tm.previousAcceptedSentence(current)).toBe(n<=64?previous:'');
- expect(body.textContent).toBe(current);
-});
-it.each([512,513])('accepted sentence length boundary %i',n=>{
- const {tm,body}=setup(''),previous='Z'+'a'.repeat(n-2)+'.';
- acceptReference(tm,body,previous);
- const current=previous.slice(0,5)+'b'+previous.slice(6);
- body.textContent=current;
- expect(tm.previousAcceptedSentence(current)).toBe(n<=512?previous:'');
- expect(body.textContent).toBe(current);
-});
-it('intentional punctuation inside an accepted word does not send its former spelling',()=>{
- const {tm,body}=setup(''),previous='We test the program.';
- acceptReference(tm,body,previous);
- body.textContent='We test the prog.ram.';
- expect(tm.previousAcceptedSentence(body.textContent)).toBe('');
- expect(body.textContent).toBe('We test the prog.ram.');
-});
+
+
+
+
 
 it.each([false,true])('pending Cmd-K observes a newer IME composition: %s',async composing=>{
  const {w,tm,body}=setup('<p>Draft.</p>');tm.attachAutocomplete(body);
@@ -1193,23 +1133,7 @@ it.each(['finish','mousedown','resize'])('completed wipe %s leaves no active lis
  expect([...active.values()].reduce((n,s)=>n+s.size,0)).toBe(0);
 });
 
-it('accepted wording is forgotten on cleanup and fresh acceptance restores the feature',async()=>{
- const {w,tm,body}=setup('');tm.attachAutocomplete(body);
- tm.state.correctedText='We use the program.';tm.renderComposePreview();
- expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('We use the program.');
- expect(tm.state.lastAcceptedText).toBe('We use the program.');
- const authored=body.innerHTML;tm.cleanupEventListeners();
- expect(body.innerHTML).toBe(authored);
- expect(tm.state.lastAcceptedText).toBe('');
- tm.attachAutocomplete(body);body.textContent='We use the progrom.';tm.setCursorByOffset(body,15);
- tm.state.originalText='';tm.state.correctedText=null;
- tm.getCorrectionFromServer=vi.fn(async c=>({usertext:c.userMessage,suggestion:c.userMessage}));
- await tm.triggerCorrection(body);await vi.waitFor(()=>expect(tm.getCorrectionFromServer.mock.calls.length).toBeGreaterThan(0));
- for(const [context]of tm.getCorrectionFromServer.mock.calls)expect(context.previousAcceptedSentence).toBe('');
- tm.state.correctedText='We use the program.';tm.renderComposePreview();expect(tm.acceptComposePreview()).toBe(true);
- expect(body.textContent).toBe('We use the program.');
- expect(tm.previousAcceptedSentence('We use the progrom.')).toBe('We use the program.');
-});
+
 
 // Execute the shipped probe to catch DOM-selector drift. This command model
 // checks probe wiring and preference recovery, not native Gecko Undo/painting.
@@ -1237,4 +1161,653 @@ it('plaintext manual smoke probe refuses an unmarked draft before any changes',(
  expect(body.innerHTML).toBe(before);
  expect(w.document.execCommand).not.toHaveBeenCalled();
  expect(w.browser.storage.local.set).not.toHaveBeenCalled();
+});
+
+it.each(['cursor','bottom'])('placement %s preserves typing scheduling and prevents stale acceptance', placement => {
+  const {w,tm,body}=setup('This is very useful.');
+  tm.state.composeBubblePlacement=placement;
+  tm.attachAutocomplete(body);
+  tm.scheduleTrigger=vi.fn();
+  tm.state.correctedText='This is useful.';
+  tm.renderText(true);
+  const host=tm.state.previewView.host;
+  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));
+  body.firstChild.textContent+='x';
+  body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+  expect(tm.scheduleTrigger).toHaveBeenCalledTimes(1);
+  expect(tm.state.correctedText).toBeNull();
+  expect(tm.acceptComposePreview()).toBe(false);
+  expect(body.textContent).toBe('This is very useful.x');
+  expect(host.isConnected).toBe(placement==='bottom');
+  if(placement==='bottom') {
+    expect(host.style.bottom).toBe('8px');
+    expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(true);
+    expect(tm.state.previewView.root.querySelector('.source-underline')).toBeNull();
+    tm.state.correctedText='This is useful.';
+    tm.renderText(true);
+    expect(tm.state.previewView.host).toBe(host);
+    expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(false);
+  }
+});
+
+it('docked pending preview resizes, dismisses, and never enters serialized mail',()=>{
+  const {w,tm,body}=setup('This is very useful.');
+  tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);
+  tm.state.correctedText='This is useful.';tm.renderText(true);
+  tm.retainDockedComposePreview();tm.state.correctedText=null;
+  w.innerWidth=600;w.innerHeight=400;w.dispatchEvent(new w.Event('resize'));
+  expect(tm.state.previewView.host.style.width).toBe('584px');
+  expect(tm.state.previewView.host.style.maxHeight).toBe('384px');
+  expect(w.document.documentElement.outerHTML).not.toContain('This is useful.');
+  tm.state.previewView.root.querySelector('[aria-label="Dismiss"]').click();
+  expect(tm.state.previewView).toBeNull();expect(body.textContent).toBe('This is very useful.');
+});
+
+it.each(['inlineEditActive','isIMEComposing','beforeSendCleanupActive','autocompleteDisabled'])('pending docked preview respects %s', flag=>{
+  const {tm}=setup('This is very useful.');tm.state.composeBubblePlacement='bottom';
+  tm.state.correctedText='This is useful.';tm.renderText(true);tm.retainDockedComposePreview();tm.state.correctedText=null;
+  tm.state[flag]=true;tm.renderText(false);expect(tm.state.previewView).toBeNull();
+});
+
+it('Cmd-K uses shared docked margins, grows upward, resizes, and removes its listener',()=>{
+  const {w,tm}=setup('A draft.');tm.state.composeBubblePlacement='bottom';tm.showInlineEditDropdown();
+  const wrapper=w.document.getElementById('tm-inline-edit');
+  expect(wrapper.style.bottom).toBe('8px');expect(wrapper.style.top).toBe('auto');expect(wrapper.style.left).toBe('8px');
+  const input=wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
+  Object.defineProperty(input,'scrollHeight',{configurable:true,value:180});
+  input.value='Several\nlines\nof\ninstructions';input.dispatchEvent(new w.Event('input'));
+  expect(wrapper.querySelector('iframe').style.height).not.toBe('0px');
+  expect(wrapper.style.bottom).toBe('8px');expect(wrapper.style.top).toBe('auto');
+  w.innerWidth=500;w.innerHeight=300;w.dispatchEvent(new w.Event('resize'));
+  expect(wrapper.style.width).toBe('484px');expect(wrapper.style.maxHeight).toBe('284px');
+  tm.state.composeBubblePlacement='cursor';wrapper._tm_reposition();
+  expect(wrapper.style.bottom).toBe('');expect(wrapper.style.top).not.toBe('auto');
+  wrapper._tm_cleanup();const width=wrapper.style.width;
+  w.innerWidth=700;w.dispatchEvent(new w.Event('resize'));expect(wrapper.style.width).toBe(width);
+});
+
+it.each(['bottom','cursor','invalid',undefined])('loads placement %s and applies live changes to both surfaces without requesting',async initial=>{
+  const {dom,w,tm}=setup('This is very useful.');
+  const listeners=new Set();
+  w.browser.storage={local:storageFor({composeBubblePlacement:initial}).local,onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+  tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+  const filename=resolve('compose/compose-autocomplete.js');
+  runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+  await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(w.document.body));
+  expect(tm.state.composeBubblePlacement).toBe(initial==='bottom'?'bottom':'cursor');
+  tm.triggerCorrection=vi.fn();tm.scheduleTrigger=vi.fn();
+  tm.state.correctedText='This is useful.';tm.renderText(true);
+  const notify=(value,area='local')=>{for(const f of listeners)f({composeBubblePlacement:{newValue:value}},area)};
+  notify('bottom');expect(tm.state.previewView.host.style.bottom).toBe('8px');
+  notify('cursor','sync');expect(tm.state.composeBubblePlacement).toBe('bottom');
+  tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');
+  expect(tm.state.previewView).toBeNull();expect(wrapper.style.bottom).toBe('8px');
+  notify('cursor');expect(wrapper.style.bottom).toBe('');
+  notify('bottom');expect(wrapper.style.bottom).toBe('8px');
+  notify(undefined);expect(tm.state.composeBubblePlacement).toBe('cursor');expect(wrapper.style.bottom).toBe('');
+  expect(tm.triggerCorrection).not.toHaveBeenCalled();expect(tm.scheduleTrigger).not.toHaveBeenCalled();
+  wrapper._tm_cleanup();w.dispatchEvent(new w.Event('beforeunload'));expect(listeners.size).toBe(0);
+});
+
+function typePastPreview(w,tm,body) {
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));
+ body.firstChild.textContent+='x';
+ const range=w.document.createRange();range.setStart(body.firstChild,body.firstChild.length);range.collapse(true);
+ w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+}
+it('placement change removes pending dock and fresh cursor acceptance still works',async()=>{
+ const {dom,w,tm,body}=setup('This is very useful.');
+ const listeners=new Set();
+ w.browser.storage={local:storageFor({composeBubblePlacement:'bottom'}).local,onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+ tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const filename=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));tm.scheduleTrigger=vi.fn();
+ tm.state.correctedText='This is useful.';tm.renderText(true);const host=tm.state.previewView.host;
+ expect(host.style.bottom).toBe('8px');typePastPreview(w,tm,body);expect(host.isConnected).toBe(true);
+ for(const f of listeners)f({composeBubblePlacement:{oldValue:'bottom',newValue:'cursor'}},'local');
+ expect(host.isConnected).toBe(false);expect(body.textContent).toBe('This is very useful.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+ tm.state.correctedText='This is useful.x';tm.renderText(true);
+ expect(tm.state.previewView.host.style.bottom).toBe('');expect(tm.state.previewView.host.style.top).not.toBe('auto');
+ expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('This is useful.x');
+});
+it('typing removes both painted underline kinds without touching draft content',()=>{
+ const {w,tm,body}=setup('This is very useful.');tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ tm.state.correctedText='This is useful.';tm.renderText(true);const root=tm.state.previewView.root;
+ expect(root.querySelectorAll('.source-underline').length).toBeGreaterThan(0);expect(root.querySelectorAll('.source-deletion').length).toBeGreaterThan(0);
+ typePastPreview(w,tm,body);
+ expect(root.querySelectorAll('.source-underline').length).toBe(0);expect(root.querySelectorAll('.source-deletion').length).toBe(0);
+ expect(body.textContent).toBe('This is very useful.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it('instructions grow below the cap and then scroll at the cap',()=>{
+ const {w,tm,body}=setup('A draft.');tm.state.composeBubblePlacement='bottom';tm.showInlineEditDropdown();
+ const wrapper=w.document.getElementById('tm-inline-edit'),frame=wrapper.querySelector('iframe'),input=frame.contentDocument.querySelector('textarea');
+ const change=(text,height)=>{input.value=text;Object.defineProperty(input,'scrollHeight',{configurable:true,value:height});input.dispatchEvent(new w.Event('input'))};
+ change('One line',16);expect(frame.style.height).toBe('16px');
+ change('One\nTwo\nThree',48);expect(frame.style.height).toBe('48px');
+ change('Tall\n'.repeat(12),180);expect(frame.style.height).toBe('64px');expect(input.style.height).toBe('64px');expect(input.style.overflowY).toBe('auto');
+ expect(wrapper.style.bottom).toBe('8px');expect(wrapper.style.top).toBe('auto');
+ wrapper._tm_cleanup();expect(body.textContent).toBe('A draft.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+
+it.each(['Escape','compositionstart'])('pending dock handles the real %s event',event=>{
+ const {w,tm,body}=setup('This is very useful.');
+ tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ tm.state.correctedText='This is useful.';tm.renderText(true);typePastPreview(w,tm,body);
+ const host=tm.state.previewView.host;expect(host.isConnected).toBe(true);
+ const action=event==='Escape'?new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}):new w.CompositionEvent('compositionstart',{bubbles:true});
+ body.dispatchEvent(action);
+ expect(host.isConnected).toBe(false);expect(tm.state.previewModel).toBeNull();
+ expect(body.textContent).toBe('This is very useful.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+ if(event==='Escape')expect(action.defaultPrevented).toBe(true);
+ else expect(tm.state.isIMEComposing).toBe(true);
+});
+
+it('a newer persisted placement survives an older initial storage read', async () => {
+ const {dom,w,tm,body}=setup('This is very useful.');
+ const listeners=new Set(); let finishRead; let saved='cursor';let reads=0;
+ w.browser.storage={local:{get:vi.fn(defaults=>{const snapshot={...defaults,composeBubblePlacement:saved};if(++reads>1)return Promise.resolve(snapshot);return new Promise(resolve=>{finishRead=()=>resolve(snapshot)})}),set:vi.fn(async patch=>{saved=patch.composeBubblePlacement;for(const f of listeners)f({composeBubblePlacement:{newValue:saved}},'local')})},onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+ tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const filename=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+ expect(finishRead).toBeTypeOf('function');
+ const appearance=readFileSync(resolve('config/modules/appearance.js'),'utf8').replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,'');
+ runInContext(appearance,dom.getInternalVMContext(),{filename:'review-appearance-writer.js'});
+ await w.handleAppearanceChange({target:{id:'compose-bubble-placement',value:'bottom'}},{});
+ expect(saved).toBe('bottom');expect(tm.state.composeBubblePlacement).toBe('bottom');
+ finishRead();await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect((await w.browser.storage.local.get({composeBubblePlacement:'cursor'})).composeBubblePlacement).toBe('bottom');expect(tm.state.composeBubblePlacement).toBe('bottom');
+ expect(tm.state.previewView.host.style.bottom).toBe('8px');
+});
+
+it.each(['cursor','bottom'])('editor input in %s reaches LOCAL then GLOBAL and accepts the produced proposal',async placement=>{
+ const {w,tm,body}=setup('Draft');tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);tm.state.currentIdleTime=1;
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:context.isLocal?'Draftx improved.':'Draftx improved globally.'}));
+ expect(tm.state.previewView??null).toBeNull();
+ body.firstChild.textContent+='x';const range=w.document.createRange();range.setStart(body.firstChild,body.firstChild.length);range.collapse(true);w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+ await vi.waitFor(()=>expect(tm.state.correctedText).toBe('Draftx improved globally.'));
+ expect(tm.getCorrectionFromServer.mock.calls.map(([arg])=>[arg.isLocal,arg.userMessage])).toEqual([[true,'Draftx'],[false,'Draftx improved.']]);
+ expect(body.textContent).toBe('Draftx');expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(tm.state.previewView.root.textContent).toContain('Draftx improved globally.');expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('Draftx improved globally.');
+});
+it('real pending Disable persists a value that a later reader sees and preserves authored text',async()=>{
+ const {w,tm,body}=setup('This is very useful.');let saved={autocompleteEnabled:true};
+ w.browser.storage.local={set:vi.fn(async patch=>{Object.assign(saved,patch)}),get:vi.fn(async defaults=>({...defaults,...saved}))};
+ tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();tm.state.correctedText='This is useful.';tm.renderText(true);
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));body.firstChild.textContent+='x';body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+ expect(tm.state.previewView.pending).toBe(true);tm.state.previewView.root.querySelector('[aria-label="Disable suggestions"]').click();
+ expect((await w.browser.storage.local.get({autocompleteEnabled:true})).autocompleteEnabled).toBe(false);expect(tm.state.autocompleteDisabled).toBe(true);expect(tm.state.previewView).toBeNull();expect(body.textContent).toBe('This is very useful.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+it.each(['cursor','bottom'])('fresh %s Escape dismisses without changing the draft', placement=>{
+ const {w,tm,body}=setup('This is very useful.');tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect(tm.state.previewView.pending).toBe(false);const before=body.innerHTML;const event=new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});body.dispatchEvent(event);
+ expect(event.defaultPrevented).toBe(true);expect(tm.state.previewView).toBeNull();expect(tm.state.correctedText).toBeNull();expect(body.innerHTML).toBe(before);expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+it.each(['keyboard','click'])('fresh docked suggestion applies complete rich text through %s', mode => {
+ const {w,tm,body}=setup('<p>This is very useful.</p><div class="moz-signature">Signature</div>');
+ tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.state.correctedText='This is useful.\n';tm.renderText(true);
+ expect(tm.state.previewModel).not.toBeNull();expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(false);
+ if(mode==='click')tm.state.previewView.root.querySelector('[aria-label="Accept"]').click();
+ else body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+ expect(body.querySelector('p').textContent).toBe('This is useful.');expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
+ expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+});
+
+it('cursor Cmd-K remains below its measured caret when space is available',()=>{
+ const {w,tm,body}=setup('A draft.');tm.state.composeBubblePlacement='cursor';
+ w.HTMLElement.prototype.getBoundingClientRect=function(){return this.tagName==='SPAN'?{left:8,right:8,top:80,bottom:100,width:0,height:20}:this.id==='tm-inline-edit'?{left:8,right:700,top:0,bottom:60,width:692,height:60}:{left:8,right:700,top:0,bottom:200,width:692,height:200}};
+ tm.showInlineEditDropdown();const wrap=w.document.getElementById('tm-inline-edit');expect(wrap).not.toBeNull();
+ expect(Number.parseFloat(wrap.style.top)).toBe(100+tm.config.inlineEdit.marginPx);
+ expect(wrap.style.bottom).toBe('');expect(body.textContent).toContain('A draft.');wrap._tm_cleanup();
+});
+
+it('Cmd-K clamps measured geometry during growth, resize, and live placement changes',()=>{
+ const {w,tm,body}=setup('A draft.');
+ tm.state.composeBubblePlacement='cursor';w.innerWidth=500;w.innerHeight=240;
+ let height=60,overflow=false;
+ w.HTMLElement.prototype.getBoundingClientRect=function(){
+  if(this.tagName==='SPAN')return {left:20,right:20,top:180,bottom:200,width:0,height:20};
+  if(this.id==='tm-inline-edit'){
+   const left=parseFloat(this.style.left)||20,top=parseFloat(this.style.top)||0,width=parseFloat(this.style.width)||472;
+   return {left,right:overflow?520:left+width,top,bottom:overflow?260:top+height,width,height};
+  }
+  return {left:20,right:500,top:0,bottom:240,width:480,height:240};
+ };
+ tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');
+ expect(wrapper.style.top).toBe('172px');expect(wrapper.style.left).toBe('20px');expect(wrapper.style.width).toBe('472px');
+ const input=wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
+ height=120;overflow=true;Object.defineProperty(input,'scrollHeight',{configurable:true,value:96});
+ input.value='More\nlines';input.dispatchEvent(new w.Event('input'));overflow=false;
+ expect(wrapper.style.top).toBe('112px');expect(wrapper.style.left).toBe('20px');
+ w.innerHeight=100;w.innerWidth=350;w.dispatchEvent(new w.Event('resize'));
+ expect(wrapper.style.top).toBe('8px');expect(wrapper.style.width).toBe('322px');
+ tm.state.composeBubblePlacement='bottom';wrapper._tm_reposition();
+ expect(wrapper.style.bottom).toBe('8px');expect(wrapper.style.top).toBe('auto');expect(wrapper.style.width).toBe('334px');
+ w.innerHeight=400;tm.state.composeBubblePlacement='cursor';wrapper._tm_reposition();
+ expect(wrapper.style.top).toBe(`${200+tm.config.inlineEdit.marginPx}px`);expect(wrapper.style.bottom).toBe('');
+ wrapper._tm_cleanup();expect(body.textContent).toBe('A draft.');
+});
+
+it.each(['cursor','bottom'])('reflowing %s instructions recalculates height and scrolling without an input edit', async (placement) => {
+ const {w,tm,body}=setup('Draft.');
+ tm.state.composeBubblePlacement=placement;w.innerWidth=1000;tm.showInlineEditDropdown();
+ const wrapper=w.document.getElementById('tm-inline-edit');
+ const frame=wrapper.querySelector('iframe');
+ const input=frame.contentDocument.querySelector('textarea');
+ const text='Please preserve the opening, make the second paragraph more concise, and use a warmer closing. '.repeat(2);
+ Object.defineProperty(input,'scrollHeight',{configurable:true,get(){return parseFloat(wrapper.style.width)>700?32:96;}});
+ input.value=text;input.dispatchEvent(new w.Event('input'));
+ await new Promise(resolve=>w.setTimeout(resolve,50));
+ expect(frame.style.height).toBe('32px');expect(input.style.overflowY).toBe('hidden');
+ w.innerWidth=300;w.dispatchEvent(new w.Event('resize'));
+ await new Promise(resolve=>w.setTimeout(resolve,50));
+ expect(wrapper.style.width).toBe('284px');expect(input.scrollHeight).toBe(96);
+ expect(input.value).toBe(text);expect(body.textContent).toContain('Draft.');
+ expect(frame.style.height).toBe('64px');expect(input.style.overflowY).toBe('auto');
+ wrapper._tm_cleanup();
+});
+
+it.each(['cursor','bottom'])('input-only paste in %s preserves the authored text and the placement visibility policy', placement=>{
+ const {w,tm,body}=setup('This is very useful.');tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ const host=tm.state.previewView.host;
+ expect(host.isConnected).toBe(true);expect(tm.state.previewModel).not.toBeNull();
+ body.firstChild.textContent+=' pasted';
+ const range=w.document.createRange();range.setStart(body.firstChild,body.firstChild.length);range.collapse(true);w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ body.dispatchEvent(new w.InputEvent('input',{inputType:'insertFromPaste',data:' pasted',bubbles:true}));
+ expect(body.textContent).toBe('This is very useful. pasted');expect(tm.scheduleTrigger).toHaveBeenCalledTimes(1);expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(tm.acceptComposePreview()).toBe(false);expect(host.isConnected).toBe(placement==='bottom');
+ if(placement==='bottom')expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(true);
+});
+it.each(['cursor', 'bottom'])('typing in a jump-only context removes stale source guidance in %s mode', placement=>{
+ const {w,tm,body}=setup('Bad sentence. Fine sentence.');tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ const range=w.document.createRange();range.setStart(body.firstChild,20);range.collapse(true);w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ tm.state.correctedText='Good sentence. Fine sentence.';tm.renderText(true);
+ expect(tm.state.previewModel).toBeNull();expect(tm.state.previewJumpOffset).toBeGreaterThanOrEqual(0);
+ const host=tm.state.previewView.host;expect(host.isConnected).toBe(true);expect(tm.state.previewView.root.querySelector('.preview')).toBeNull();
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));
+ body.firstChild.textContent+='x';body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+ expect(body.textContent).toBe('Bad sentence. Fine sentence.x');expect(w.document.execCommand).not.toHaveBeenCalled();expect(tm.scheduleTrigger).toHaveBeenCalledTimes(1);
+ expect(tm.state.previewJumpOffset).toBeNull();expect(host.isConnected).toBe(false);
+});
+it('shrinking instructions moves a previously clamped editor back toward its caret anchor',()=>{
+ const {w,tm,body}=setup('Draft.');tm.state.composeBubblePlacement='cursor';w.innerWidth=500;w.innerHeight=240;
+ let height=80;
+ w.HTMLElement.prototype.getBoundingClientRect=function(){
+  if(this.tagName==='SPAN')return {left:20,right:20,top:180,bottom:200,width:0,height:20};
+  if(this.id==='tm-inline-edit'){const left=parseFloat(this.style.left)||20,top=parseFloat(this.style.top)||0,width=parseFloat(this.style.width)||472;return {left,right:left+width,top,bottom:top+height,width,height};}
+  return {left:20,right:500,top:0,bottom:240,width:480,height:240};
+ };
+ tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');
+ expect(wrapper.style.top).toBe('152px');
+ const input=wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
+ height=40;Object.defineProperty(input,'scrollHeight',{configurable:true,value:16});input.value='Short';input.dispatchEvent(new w.Event('input'));
+ const rect=wrapper.getBoundingClientRect();expect(rect.top).toBe(Math.min(200+tm.config.inlineEdit.marginPx,240-height-tm.config.preview.margin));
+ expect(input.value).toBe('Short');wrapper._tm_cleanup();expect(body.textContent).toBe('Draft.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it('the shipped Appearance control lets a user persist both placement choices',async()=>{
+ const dom=new JSDOM(readFileSync(resolve('config/config.html'),'utf8'),{runScripts:'outside-only'});const w=dom.window;windows.push(w);
+ let saved={};w.browser={storage:{local:{set:async patch=>{Object.assign(saved,patch);},get:async defaults=>({...defaults,...saved})}}};
+ const source=readFileSync(resolve('config/modules/appearance.js'),'utf8').replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,'');
+ runInContext(source,dom.getInternalVMContext(),{filename:'appearance-control-witness.js'});
+ const label=[...w.document.querySelectorAll('label')].find(label=>label.textContent.trim()==='Compose bubble placement');
+ expect(label).toBeDefined();if(!label)return;
+ const control=label.control;expect(control).not.toBeNull();if(!control)return;
+ expect(control.options.length).toBe(2);
+ let changed;
+ control.addEventListener('change', event => { changed = w.handleAppearanceChange(event, {}); });
+ for(const value of ['bottom','cursor']){
+  control.value=value;control.dispatchEvent(new w.Event('change', {bubbles:true}));await changed;
+  expect((await w.browser.storage.local.get({composeBubblePlacement:'cursor'})).composeBubblePlacement).toBe(value);
+ }
+});
+it('a live fresh dock-to-cursor switch accommodates the whole visible suggestion above a low caret',()=>{
+ const {w,tm,body}=setup('This is very useful.');w.innerWidth=500;w.innerHeight=300;
+ const contentHeight=64;
+ w.Range.prototype.getBoundingClientRect=()=>({left:8,right:16,top:250,bottom:270,height:20,width:8});
+ w.HTMLElement.prototype.getBoundingClientRect=function(){
+  if(this.id==='tm-compose-preview'){
+   const top=parseFloat(this.style.top);const bottom=parseFloat(this.style.bottom);
+   const height=Number.isFinite(top)&&Number.isFinite(bottom)?Math.max(0,w.innerHeight-top-bottom):contentHeight;
+   return {left:8,right:492,width:484,top:Number.isFinite(top)?top:w.innerHeight-bottom-height,bottom:w.innerHeight-(Number.isFinite(bottom)?bottom:0),height};
+  }
+  return {left:8,right:492,top:0,bottom:300,width:484,height:300};
+ };
+ tm.state.composeBubblePlacement='bottom';tm.state.correctedText='This is useful.';tm.renderText(true);
+ const host=tm.state.previewView.host;expect(host.isConnected).toBe(true);expect(tm.state.previewModel).not.toBeNull();
+ tm.state.composeBubblePlacement='cursor';tm.renderText(true);
+ expect(tm.state.previewView.host).toBe(host);expect(tm.state.previewModel).not.toBeNull();
+ expect(parseFloat(host.style.top)+contentHeight).toBeLessThanOrEqual(w.innerHeight-tm.config.preview.margin);
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it('a docked editor that exceeds the compose viewport keeps its instruction and controls scrollable',()=>{
+ const {w,tm,body}=setup('Draft.');w.innerWidth=500;w.innerHeight=80;tm.state.composeBubblePlacement='bottom';tm.showInlineEditDropdown();
+ const wrapper=w.document.getElementById('tm-inline-edit'),frame=wrapper.querySelector('iframe'),input=frame.contentDocument.querySelector('textarea');
+ const instruction='One\nTwo\nThree\nFour\nFive\nSix';input.value=instruction;
+ Object.defineProperty(input,'scrollHeight',{configurable:true,value:96});input.dispatchEvent(new w.Event('input'));
+ Object.defineProperty(wrapper,'clientHeight',{get:()=>parseFloat(wrapper.style.maxHeight)});
+ Object.defineProperty(wrapper,'scrollHeight',{get:()=>parseFloat(frame.style.height)+44});
+ expect(wrapper.scrollHeight).toBeGreaterThan(wrapper.clientHeight);
+ expect(['auto','scroll'].includes(w.getComputedStyle(wrapper).overflowY)).toBe(true);
+ expect(input.value).toBe(instruction);wrapper._tm_cleanup();expect(body.textContent).toBe('Draft.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+it.each(['cursor','bottom'])('suppression after Cmd-K cancellation must not show an undismissable suggestion in %s', placement => {
+ const {w,tm,body}=setup('This is very useful.');
+ tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect(tm.state.previewModel).not.toBeNull();
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+ expect(tm.state.inlineEditActive).toBe(true);expect(tm.state.previewView).toBeNull();
+ const wrapper=w.document.getElementById('tm-inline-edit');
+ wrapper._tm_iinput.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+ expect(tm.state.inlineEditActive).toBe(false);expect(tm.state.autoHideDiff).toBe(true);
+ w.dispatchEvent(new w.Event('resize'));
+ const previewVisible=!!tm.state.previewModel;
+ const esc=new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});body.dispatchEvent(esc);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('This is very useful.');
+ expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(previewVisible && !esc.defaultPrevented).toBe(false);
+});
+
+afterEach(()=>vi.useRealTimers());
+it('repeated typing without a correction does not delay a newly produced docked proposal beyond the existing hide deadline',async()=>{
+ vi.useFakeTimers();
+ const {w,tm,body}=setup('Original words.');tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ tm.config.DIFF_RESTORE_DELAY_MS=1000;tm.state.correctedText='Improved words.';tm.renderText(true);
+ expect(tm.state.previewModel).not.toBeNull();
+ const type=()=>{body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));body.firstChild.textContent+='x';tm.setCursorByOffset(body,body.textContent.length);body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));};
+ type();expect(tm.state.previewView.pending).toBe(true);expect(tm.state.correctedText).toBeNull();expect(tm.scheduleTrigger).toHaveBeenCalledTimes(1);
+ await vi.advanceTimersByTimeAsync(500);type();expect(tm.scheduleTrigger).toHaveBeenCalledTimes(2);
+ await vi.advanceTimersByTimeAsync(550);
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'Fresh words.xx'}));
+ await tm.triggerCorrectionBackend(body,'Original words.xx','',tm.state.latestGlobalRequestId,false);
+ expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);expect(body.textContent).toBe('Original words.xx');expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(tm.state.previewView.root.textContent).toContain('Fresh words.xx');expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(false);
+});
+
+function storageFor(saved, listeners = new Set()) {
+ return {local:{
+   async get(keys) {
+     if(keys == null) return {...saved};
+     if(typeof keys === 'string') keys = [keys];
+     if(Array.isArray(keys)) return Object.fromEntries(keys.filter(k=>Object.hasOwn(saved,k)).map(k=>[k,saved[k]]));
+     return Object.fromEntries(Object.entries(keys).map(([k,v])=>[k,Object.hasOwn(saved,k)?saved[k]:v]));
+   },
+   async set(patch){for(const [k,v] of Object.entries(patch)){const oldValue=saved[k];saved[k]=v;for(const listener of listeners)listener({[k]:{oldValue,newValue:v}},'local');}},
+   async remove(keys){for(const k of [].concat(keys))delete saved[k];}
+ },onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+}
+function appearanceWindow(saved) {
+ const d=new JSDOM(readFileSync(resolve('config/config.html'),'utf8'),{runScripts:'outside-only'}),w=d.window;windows.push(w);
+ w.browser={storage:storageFor(saved),tmPrefs:{hasUserValue:async()=>false,getInt:async()=>0}};
+ w.$=id=>w.document.getElementById(id);w.getShowAiSummariesEnabled=async()=>true;
+ const source=readFileSync(resolve('config/modules/appearance.js'),'utf8').replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,'');
+ runInContext(source,d.getInternalVMContext(),{filename:resolve('config/modules/appearance.js')});
+ return w;
+}
+it.each(['bottom','cursor'])('writer to reopened compose preserves persisted %s with key-selective storage', async placement=>{
+ const saved={};const settings=appearanceWindow(saved);
+ await settings.handleAppearanceChange({target:{id:'compose-bubble-placement',value:placement}},{});
+ expect(saved.composeBubblePlacement).toBe(placement);
+ const {dom,w,tm,body}=setup('This is very useful.');w.browser.storage=storageFor(saved);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const filename=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect(tm.state.previewView).not.toBeNull();
+ expect(tm.state.previewView.host.style.bottom).toBe(placement==='bottom'?'8px':'');
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it.each(['bottom','cursor'])('writer to reopened Appearance preserves persisted %s with key-selective storage', async placement=>{
+ const saved={};const writer=appearanceWindow(saved);
+ await writer.handleAppearanceChange({target:{id:'compose-bubble-placement',value:placement}},{});
+ expect(saved.composeBubblePlacement).toBe(placement);
+ const reader=appearanceWindow(saved);const select=reader.document.getElementById('compose-bubble-placement');select.value='';
+ await reader.loadAppearanceSettings({appearance:{prefs:{}},actionTagging:{}});
+ expect(select.value).toBe(placement);expect(saved.composeBubblePlacement).toBe(placement);
+});
+it('a fresh correction arriving during the hide interval keeps the dock connected until it updates',async()=>{
+ vi.useFakeTimers();
+ try {
+  const {w,tm,body}=setup('Original words.');tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+  tm.config.DIFF_RESTORE_DELAY_MS=1000;tm.state.correctedText='Improved words.';tm.renderText(true);
+  const host=tm.state.previewView.host;expect(tm.state.previewModel).not.toBeNull();
+  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));body.firstChild.textContent+='x';tm.setCursorByOffset(body,body.textContent.length);body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+  expect(host.isConnected).toBe(true);expect(tm.state.previewView.pending).toBe(true);expect(tm.acceptComposePreview()).toBe(false);
+  await vi.advanceTimersByTimeAsync(100);
+  tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'Fresh words.x'}));
+  await tm.triggerCorrectionBackend(body,'Original words.x','',tm.state.latestGlobalRequestId,false);
+  expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);expect(tm.state.correctedText).toBe('Fresh words.x');
+  expect(host.isConnected).toBe(true);expect(tm.state.previewView.host).toBe(host);
+  expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(true);
+  expect(body.textContent).toBe('Original words.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(901);
+  expect(tm.state.previewView.host).toBe(host);expect(tm.state.previewView.root.textContent).toContain('Fresh words.x');
+  expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(false);
+  expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('Fresh words.x');
+ } finally {vi.useRealTimers();}
+});
+
+function configSurface(saved, listeners = new Set()) {
+ const w=appearanceWindow(saved);
+ // Supply unrelated feature dependencies at the module boundary, while the real
+ // initConfigPage installs the shipped document listener and invokes both real
+ // Appearance functions. No test-side placement event listener is installed.
+ w.eval(readFileSync(resolve('config/modules/autocompleteSettings.js'),'utf8').replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,''));
+ const source=readFileSync(resolve('config/modules/init.js'),'utf8');
+ for (const match of source.matchAll(/import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];?/g)) {
+  for (const raw of match[1].split(',')) {
+   const name=raw.trim();
+   if (!name || ['handleAppearanceChange','loadAppearanceSettings','handleAutocompleteSettingsChange','loadAutocompleteSettings','$'].includes(name)) continue;
+   w[name]=['createPromptEditorsInputHandler','createPromptsUpdatedRuntimeListener'].includes(name)?()=>()=>{}:async()=>{};
+  }
+ }
+ w.browser.storage=storageFor(saved,listeners);
+ w.browser.runtime={onMessage:{addListener(){},removeListener(){}},sendMessage:vi.fn()};
+ w.eval(source.replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,''));
+ return {w,control:w.document.getElementById('compose-bubble-placement'),async init(){
+  await w.initConfigPage({SETTINGS:{appearance:{prefs:{}},actionTagging:{}},getBackendUrl:()=> 'https://example.com',log(){},getPrivacyOptOutAllAiEnabled:async()=>false,setPrivacyOptOutAllAiEnabled:async()=>{}});
+ }};
+}
+
+it('shipped Appearance change reaches storage and the open compose surface',async()=>{
+ const saved={composeBubblePlacement:'cursor'},listeners=new Set();
+ const settings=configSurface(saved,listeners);await settings.init();
+ const {dom,w,tm,body}=setup('This is very useful.');w.browser.storage=storageFor(saved,listeners);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const file=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect(tm.state.previewModel).not.toBeNull();expect(tm.state.previewView.host.style.bottom).toBe('');
+ settings.control.value='bottom';settings.control.dispatchEvent(new settings.w.Event('change',{bubbles:true}));
+ await vi.waitFor(()=>expect(saved.composeBubblePlacement).toBe('bottom'));
+ expect((await settings.w.browser.storage.local.get({composeBubblePlacement:'cursor'})).composeBubblePlacement).toBe('bottom');
+ expect(tm.state.previewView.host.style.bottom).toBe('8px');
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+it('shipped Appearance startup restores the saved placement',async()=>{
+ const saved={composeBubblePlacement:'bottom'};const settings=configSurface(saved);expect(settings.control.value).toBe('cursor');
+ await settings.init();
+ expect(settings.control.value).toBe('bottom');expect(saved.composeBubblePlacement).toBe('bottom');
+});
+
+it.each(['cursor','bottom'])('live placement preserves suppression after Cmd-K cancellation from %s',async initial=>{
+ const saved={composeBubblePlacement:initial},listeners=new Set();
+ const settings=configSurface(saved,listeners);await settings.init();
+ const {dom,w,tm,body}=setup('This is very useful.');w.browser.storage=storageFor(saved,listeners);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;tm.config.DIFF_RESTORE_DELAY_MS=1000;
+ const file=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'This is useful.'}));
+ await tm.triggerCorrectionBackend(body,'This is very useful.','',tm.state.latestGlobalRequestId,false);
+ expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);expect(tm.state.correctedText).toBe('This is useful.');expect(tm.state.previewModel).not.toBeNull();
+ vi.useFakeTimers();
+ try {
+  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+  const popup=w.document.getElementById('tm-inline-edit');expect(popup).not.toBeNull();
+  popup._tm_iinput.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  expect(tm.state.inlineEditActive).toBe(false);expect(tm.state.autoHideDiff).toBe(true);expect(tm.state.previewView).toBeNull();
+  const next=initial==='cursor'?'bottom':'cursor';settings.control.value=next;
+  settings.control.dispatchEvent(new settings.w.Event('change',{bubbles:true}));
+  await Promise.resolve();await Promise.resolve();
+  expect(saved.composeBubblePlacement).toBe(next);expect(tm.state.composeBubblePlacement).toBe(next);
+  const visible=!!tm.state.previewModel;
+  const esc=new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});body.dispatchEvent(esc);
+  expect(visible && !esc.defaultPrevented).toBe(false);
+  expect(tm.state.previewView).toBeNull();
+  await vi.advanceTimersByTimeAsync(1001);
+  expect(tm.state.previewModel).not.toBeNull();
+  expect(tm.state.previewView.root.textContent).toContain('This is useful.');
+  const freshEsc=new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});body.dispatchEvent(freshEsc);
+  expect(freshEsc.defaultPrevented).toBe(true);expect(tm.state.previewView).toBeNull();
+  expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+ } finally {vi.useRealTimers();}
+});
+
+
+it('a separate Settings disable update reaches an open docked compose window',async()=>{
+ const saved={composeBubblePlacement:'bottom',autocompleteEnabled:true},listeners=new Set();
+ const settings=configSurface(saved,listeners);await settings.init();
+ const {dom,w,tm,body}=setup('This is very useful.');w.browser.storage=storageFor(saved,listeners);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const file=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'This is useful.'}));
+ await tm.triggerCorrectionBackend(body,'This is very useful.','',tm.state.latestGlobalRequestId,false);
+ expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);expect(tm.state.correctedText).toBe('This is useful.');expect(tm.state.previewModel).not.toBeNull();
+ expect(tm.state.autocompleteDisabled).toBe(false);expect(tm.state.previewView.host.style.bottom).toBe('8px');
+ const checkbox=settings.w.document.getElementById('autocomplete-enabled');checkbox.checked=false;
+ checkbox.dispatchEvent(new settings.w.Event('change',{bubbles:true}));
+ await vi.waitFor(()=>expect(saved.autocompleteEnabled).toBe(false));
+ expect((await settings.w.browser.storage.local.get({autocompleteEnabled:true})).autocompleteEnabled).toBe(false);
+ expect(saved.composeBubblePlacement).toBe('bottom');expect(tm.state.composeBubblePlacement).toBe('bottom');
+ expect(tm.state.autocompleteDisabled).toBe(true);expect(tm.state.previewView).toBeNull();
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+ // Positive re-enable makes the guard proof two-sided: the same real writer can
+ // re-arm this compose window and produce a visible new proposal.
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'This is useful.'}));
+ checkbox.checked=true;checkbox.dispatchEvent(new settings.w.Event('change',{bubbles:true}));
+ await vi.waitFor(()=>expect(tm.state.previewModel).not.toBeNull());
+ expect(saved.autocompleteEnabled).toBe(true);expect(tm.state.autocompleteDisabled).toBe(false);
+ expect(tm.getCorrectionFromServer).toHaveBeenCalled();expect(tm.state.previewView.root.textContent).toContain('This is useful.');
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+// Quoted HTML contains source-formatting whitespace; attaching suggestions must
+// not turn it into authored line breaks. Plaintext still needs wrapping.
+describe('native compose whitespace on attachment', () => {
+  it.each(['normal', 'pre-wrap', 'pre'])('preserves whitespace semantics for %s', mode => {
+    const { w, tm, body } = setup('<p>Reply.</p><blockquote>\n\n<div>Quoted text.</div></blockquote><pre>kept\n  spacing</pre>');
+    body.style.whiteSpace = mode;
+    const content = body.innerHTML;
+    tm.attachAutocomplete(body);
+    expect(w.getComputedStyle(body).whiteSpace).toBe(mode === 'pre' ? 'pre-wrap' : mode);
+    expect(body.innerHTML).toBe(content);
+    expect(w.getComputedStyle(body.querySelector('pre')).whiteSpace).toBe('pre');
+    tm.cleanupEventListeners();
+  });
+});
+
+
+describe('HTML paragraph separator normalization', () => {
+  it.each(['keyboard', 'click'])('does not add a BR before the corrected paragraph via %s', mode => {
+    const { w, tm, body } = setup('<p>Hello,</p><p>I want to check&nbsp;<br><br>Best,<br>Example</p>');
+    tm.attachAutocomplete(body);
+    tm.setCursorByOffset(body, 22);
+    tm.state.correctedText = 'Hello,\n\nI want to check the formatting.\n\nBest,\nExample';
+    tm.renderComposePreview();
+    if (mode === 'keyboard') body.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    else tm.state.previewView.root.querySelector('button').click();
+    expect(body.innerHTML).toBe('<p>Hello,</p><p>I want to check the formatting.<br><br>Best,<br>Example</p>');
+    expect(tm.indexComposeText(body).text).toBe('Hello,\nI want to check the formatting.\n\nBest,\nExample');
+    tm.cleanupEventListeners();
+  });
+  it('keeps proposed blank lines when no HTML block boundary exists', () => {
+    const { tm } = setup('Hello,<br>I want to check.');
+    const original = 'Hello,\nI want to check.';
+    const model = tm.buildPreviewModel(original, 'Hello,\n\nI want to check this.', 15, []);
+    const result = model.edits.reduceRight((text, edit) => text.slice(0,edit.start)+edit.text+text.slice(edit.end), original);
+    expect(result).toBe('Hello,\n\nI want to check this.');
+  });
+});
+
+
+it.each(['cursor','bottom'])('bubble placement toggle persists and repositions from %s', async initial => {
+  const saved={composeBubblePlacement:initial};
+  const {dom,w,tm,body}=setup('This is very useful.');
+  w.browser.storage=storageFor(saved);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+  const filename=resolve('compose/compose-autocomplete.js');
+  runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+  await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+  tm.state.correctedText='This is useful.';tm.renderText(true);
+  const button=tm.state.previewView.root.querySelector('.tm-placement-toggle');
+  expect(button.textContent).toBe(initial==='bottom'?'Follow cursor':'Dock at bottom');
+  button.click();
+  const next=initial==='bottom'?'cursor':'bottom';
+  await vi.waitFor(()=>expect(saved.composeBubblePlacement).toBe(next));
+  expect(tm.state.composeBubblePlacement).toBe(next);
+  expect(tm.state.previewView.root.querySelector('.tm-placement-toggle').textContent).toBe(next==='bottom'?'Follow cursor':'Dock at bottom');
+  expect(tm.state.previewView.host.style.bottom).toBe(next==='bottom'?'8px':'');
+  expect(body.textContent).toBe('This is very useful.');
+  expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+it.each([false,true])('Cmd-K placement round trip preserves instruction; first failure=%s',async failFirst=>{
+ const saved={composeBubblePlacement:'cursor'};const shared=storageFor(saved);
+ const {dom,w,tm,body}=setup('Draft.');w.browser.storage=shared;tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ if(failFirst){const set=shared.local.set;let fail=true;shared.local.set=async patch=>{if(fail){fail=false;throw Error('Synthetic write failure');}return set(patch);};}
+ const file=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');wrapper._tm_iinput.value='Preserve the greeting.';
+ const button=wrapper.querySelector('.tm-inline-actions').shadowRoot.querySelector('.tm-placement-toggle');
+ expect(button.textContent).toBe('Dock at bottom');expect(saved.composeBubblePlacement).toBe('cursor');
+ if(failFirst){
+  button.click();await vi.waitFor(()=>expect(button.disabled).toBe(false),{timeout:350});
+  expect(saved.composeBubblePlacement).toBe('cursor');expect(button.textContent).toBe('Dock at bottom');
+ }
+ button.click();await vi.waitFor(()=>expect(saved.composeBubblePlacement).toBe('bottom'),{timeout:350});
+ await vi.waitFor(()=>expect(button.disabled).toBe(false),{timeout:350});
+ expect(button.textContent).toBe('Follow cursor');expect(wrapper.style.bottom).toBe('8px');
+ expect(wrapper._tm_iinput.value).toBe('Preserve the greeting.');
+ button.click();await vi.waitFor(()=>expect(saved.composeBubblePlacement).toBe('cursor'),{timeout:350});
+ expect(button.textContent).toBe('Dock at bottom');expect(wrapper.style.bottom).toBe('');
+ expect(body.textContent).toBe('Draft.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+
+it.each(['cursor','bottom'].flatMap(placement=>['keyboard','click'].flatMap(action=>[2,3,4].map(newlines=>({placement,action,newlines})))))('producer acceptance consumes spacing once: $placement/$action/$newlines',async({placement,action,newlines})=>{
+ const {tm,body,w}=setup('<p>Hello,</p><p>I want to check.</p>');
+ tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);tm.setCursorByOffset(body,15);
+ const proposed='Hello,'+'\n'.repeat(newlines)+'I want to check this.';
+ const original=tm.extractUserAndQuoteTexts(body).originalUserMessage;
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:proposed}));
+ await tm.triggerCorrectionBackend(body,original,'',tm.state.latestGlobalRequestId,false);
+ expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);
+ expect(tm.getCorrectionFromServer.mock.calls[0][0].userMessage).toBe('Hello,\nI want to check.');
+ expect(tm.state.previewModel).not.toBeNull();expect(w.document.execCommand).not.toHaveBeenCalled();
+ const accept=()=>{if(action==='keyboard')body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));else tm.state.previewView?.root.querySelector('[aria-label="Accept"]')?.click();};
+ accept();const accepted=body.innerHTML;
+ expect(tm.indexComposeText(body).text).toBe('Hello,'+'\n'.repeat(newlines===2?1:newlines)+'I want to check this.');
+ expect(body.querySelector('p:last-child').textContent).toBe('I want to check this.');
+ expect(body.querySelectorAll('p').length).toBe(2);expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+ accept();expect(body.innerHTML).toBe(accepted);expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+});
+
+
+it.each(['suggestion','inline'])('active Appearance mirrors the real %s placement writer', async kind=>{
+ const saved={composeBubblePlacement:'cursor'},listeners=new Set();
+ const settings=configSurface(saved,listeners);await settings.init();
+ const {dom,w,tm,body}=setup('This is very useful.');w.browser.storage=storageFor(saved,listeners);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const file=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect(settings.control.value).toBe('cursor');expect(saved.composeBubblePlacement).toBe('cursor');
+ const root=kind==='suggestion'?tm.state.previewView.root:(tm.showInlineEditDropdown(),w.document.querySelector('.tm-inline-actions').shadowRoot);
+ root.querySelector('.tm-placement-toggle').click();
+ await vi.waitFor(()=>expect(saved.composeBubblePlacement).toBe('bottom'));
+ expect(tm.state.composeBubblePlacement).toBe('bottom');
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(settings.control.value).toBe('bottom');
 });

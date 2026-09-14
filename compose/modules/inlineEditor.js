@@ -683,6 +683,7 @@ Object.assign(TabMail, {
         field.setRangeText("\n", field.selectionStart, field.selectionEnd, "end");
         field.dispatchEvent(new Event("input", {bubbles:true}));
       });
+      actionRow.appendChild(TabMail.createComposePlacementToggle());
       wrapper.appendChild(hint);
 
       document.body.appendChild(wrapper);
@@ -757,6 +758,32 @@ Object.assign(TabMail, {
       let top = Math.min(caretTop + margin, vh - rect2.height - 8);
       wrapper.style.left = `${left}px`;
       wrapper.style.top = `${top}px`;
+
+      const reposition = () => {
+        if (TabMail.state.composeBubblePlacement === 'bottom') {
+          TabMail.positionDockedComposeBubble(wrapper);
+        } else {
+          wrapper.style.bottom = '';
+          wrapper.style.maxHeight = '';
+          wrapper.style.overflowY = '';
+          const bounds = editor.getBoundingClientRect();
+          const x = Math.max(surfaceMargin, bounds.left);
+          wrapper.style.left = `${x}px`;
+          wrapper.style.width = `${Math.max(1, Math.min(window.innerWidth - surfaceMargin, bounds.right || window.innerWidth - surfaceMargin) - x)}px`;
+          wrapper.style.top = `${Math.max(surfaceMargin, Math.min(caretTop + margin, window.innerHeight - wrapper.getBoundingClientRect().height - surfaceMargin))}px`;
+        }
+      };
+      let resizeInput;
+      // Width must settle before measuring wrapped instructions. Autosizing then
+      // positions the final height; calling this callback from autoResize would
+      // recurse. Use the same ordering for viewport and live placement changes.
+      const reflow = () => {
+        reposition();
+        resizeInput?.();
+      };
+      wrapper._tm_reposition = reflow;
+      window.addEventListener('resize', reflow);
+      reposition();
 
       // Initialize iframe document
       try {
@@ -872,6 +899,7 @@ Object.assign(TabMail, {
             //   scrolledSticky,
             //   willScroll,
             // });
+            reposition();
             // Reposition wrapper if it overflows viewport after resize
             try {
               const vw = Math.max(
@@ -889,7 +917,7 @@ Object.assign(TabMail, {
                 wrapper.style.left = left2 + "px";
                 didAdjust = true;
               }
-              if (r.bottom > vh - 8) {
+              if (TabMail.state.composeBubblePlacement !== "bottom" && r.bottom > vh - 8) {
                 const top2 = Math.max(8, vh - r.height - 8);
                 wrapper.style.top = top2 + "px";
                 didAdjust = true;
@@ -903,6 +931,7 @@ Object.assign(TabMail, {
             console.warn("[TabMail Edit] Inline textarea resize failed:", e);
           }
         };
+        resizeInput = autoResize;
         // Hide placeholder early on any text-producing input
         iinput.addEventListener(
           "beforeinput",
@@ -1172,6 +1201,7 @@ Object.assign(TabMail, {
       document.addEventListener("focusin", onDocFocusIn, true);
 
       const cleanup = (reason = "unknown") => {
+        window.removeEventListener("resize", reflow);
         TabMail.log.debug('inlineEdit', "Cleaning up inline edit.", { reason });
         if (reason === "apply" && document.hasFocus()) {
           // Keep this ordering: existing instruction input -> restored designMode
