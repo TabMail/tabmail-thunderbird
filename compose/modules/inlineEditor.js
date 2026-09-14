@@ -574,16 +574,40 @@ Object.assign(TabMail, {
       topRow.appendChild(spinner);
       wrapper.appendChild(topRow);
 
-      // Hint row
+      // Match the suggestion's compact bottom-right keyboard/action row.
       const hint = document.createElement("div");
-      hint.textContent = "Enter to edit · Shift+Enter for a new line";
-      hint.style.cssText = [
-        "font-size: 0.85em",
-        "opacity: 0.7",
-        "user-select: none",
-        "padding-left: 2px",
-        "color: currentColor",
-      ].join(";");
+      hint.className = "tm-inline-actions";
+      hint.style.cssText = "display:flex;flex-wrap:wrap;justify-content:flex-end;text-align:right;font:11px/1.4 system-ui;color:var(--tm-preview-context);user-select:none";
+      const action = (symbol, label, shortcut, onClick) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("aria-label", label);
+        button.setAttribute("aria-keyshortcuts", shortcut);
+        button.style.cssText = "cursor:pointer;font:inherit;color:inherit;background:transparent;border:0;border-radius:4px;padding:3px 6px";
+        const key = document.createElement("kbd");
+        key.textContent = symbol;
+        key.setAttribute("aria-hidden", "true");
+        key.style.cssText = "display:inline-block;font:10px/1.3 system-ui;border:1px solid var(--tm-preview-border);border-radius:3px;padding:1px 4px;margin-right:3px;white-space:nowrap";
+        button.append(key, document.createTextNode(` ${label}`));
+        button.addEventListener("mousedown", event => event.preventDefault());
+        button.addEventListener("click", onClick);
+        hint.appendChild(button);
+      };
+      const activeInput = () => wrapper._tm_iinput || input;
+      action("↵", "Edit draft", "Enter", () => {
+        if (wrapper._tm_executing || wrapper._tm_streaming) return;
+        activeInput().dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", bubbles:true, cancelable:true}));
+      });
+      action("Esc", "Dismiss", "Escape", () => {
+        activeInput().dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true, cancelable:true}));
+      });
+      action("⇧↵", "Newline", "Shift+Enter", () => {
+        if (wrapper._tm_executing || wrapper._tm_streaming) return;
+        const field = activeInput();
+        field.focus();
+        field.setRangeText("\n", field.selectionStart, field.selectionEnd, "end");
+        field.dispatchEvent(new Event("input", {bubbles:true}));
+      });
       wrapper.appendChild(hint);
 
       document.body.appendChild(wrapper);

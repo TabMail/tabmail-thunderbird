@@ -503,7 +503,7 @@ it('registered typing and IME handlers invalidate previews and defer requests un
   expect(body.textContent).toBe('Hello.');
 });
 
-it('the real inline editor restores the compose host before applying formatted text', async () => {
+it.each(['keyboard','click'])('the real inline editor restores the compose host before applying formatted text via %s', async mode => {
   const { w, tm, body } = setup('<p>Hello <b>bad</b>.</p><div class="moz-signature">Signature</div>');
   tm.attachAutocomplete(body);
   w.document.designMode = 'on';
@@ -521,6 +521,14 @@ it('the real inline editor restores the compose host before applying formatted t
   expect(parseFloat(wrapper.style.width)).toBe(w.innerWidth - 2 * tm.config.preview.margin);
   const input = wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
   input.value = 'Correct the wording';
+  const actions = [...wrapper.querySelectorAll('.tm-inline-actions button')];
+  expect(actions.map(b=>b.textContent)).toEqual(['↵ Edit draft','Esc Dismiss','⇧↵ Newline']);
+  expect(wrapper.querySelector('.tm-inline-actions').style.justifyContent).toBe('flex-end');
+  if (mode === 'click') {
+    input.setSelectionRange(input.value.length,input.value.length);actions[2].click();
+    expect(input.value).toBe('Correct the wording\n');
+    expect(w.browser.runtime.sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({type:'runInlineComposeEdit'}));
+  }
   const newline = new w.KeyboardEvent('keydown', {key:'Enter',shiftKey:true,bubbles:true,cancelable:true});
   input.dispatchEvent(newline);
   expect(newline.defaultPrevented).toBe(false);
@@ -528,7 +536,8 @@ it('the real inline editor restores the compose host before applying formatted t
   const composing = new w.KeyboardEvent('keydown', {key:'Enter',isComposing:true,bubbles:true,cancelable:true});
   input.dispatchEvent(composing);
   expect(composing.defaultPrevented).toBe(false);
-  input.dispatchEvent(new w.KeyboardEvent('keydown', {key:'Enter',bubbles:true,cancelable:true}));
+  if (mode === 'click') actions[0].click();
+  else input.dispatchEvent(new w.KeyboardEvent('keydown', {key:'Enter',bubbles:true,cancelable:true}));
   await vi.waitFor(() => expect(body.querySelector('b').textContent).toBe('good'));
   expect(w.document.getElementById('tm-inline-edit')).toBeNull();
   expect(w.document.designMode).toBe('on');
@@ -922,7 +931,7 @@ it('replacing selected text must invalidate the old suggestion and request for t
  expect(schedule).toHaveBeenCalledTimes(1);
 });
 
-it('registered inline cancellation unlocks newer typing and late results cannot overwrite it',async()=>{
+it.each(['keyboard','click'])('registered inline cancellation via %s unlocks newer typing and late results cannot overwrite it',async mode=>{
  const {w,tm,body}=setup('<p>Initial text.</p><div class="moz-signature">Signature</div>');
  tm.attachAutocomplete(body);w.document.designMode='on';w.focus=()=>{};
  let finish;w.browser.runtime.sendMessage=vi.fn(()=>new Promise(resolve=>finish=resolve));
@@ -934,7 +943,8 @@ it('registered inline cancellation unlocks newer typing and late results cannot 
  input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
  expect(execution).toHaveBeenCalledTimes(1);expect(w.browser.runtime.sendMessage).toHaveBeenCalledTimes(1);expect(wrapper._tm_executing).toBe(true);
  const pending=execution.mock.results[0].value;
- input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+ if(mode==='click') wrapper.querySelector('button[aria-label="Dismiss"]').click();
+ else input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
  expect(tm.state.inlineEditActive).toBe(false);expect(w.document.designMode).toBe('on');expect(w.document.getElementById('tm-inline-edit')).toBeNull();
  vi.spyOn(tm,'scheduleTrigger').mockImplementation(()=>{});
  body.firstChild.textContent='Newer authored text.';tm.setCursorByOffset(body,5);
