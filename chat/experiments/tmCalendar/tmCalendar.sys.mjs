@@ -428,21 +428,12 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
       try {
         const MAX_COUNT = 100;
         const items = await getItemsPromise(calObj, filter, MAX_COUNT, start, end);
-        let excludedByWindow = 0;
+        // The provider's getItems(filter, count, start, end) is the window
+        // filter. A second compare-based overlap pass here is not equivalent:
+        // calIDateTime.compare treats an all-day DATE as equal to any
+        // date-time on the same day, so a tight window (start_iso ±60s) that
+        // the provider satisfies was dropped again by the bridge (#47).
         for (const occurrence of (items || [])) {
-          // Include any item that OVERLAPS [start, end), not only those starting inside it.
-          let overlaps = true;
-          try {
-            const sd = occurrence.startDate;
-            const ed = occurrence.endDate;
-            if (sd && ed && typeof sd.compare === "function" && typeof ed.compare === "function") {
-              // overlap if start < end && end > start
-              const startsBeforeWindowEnd = sd.compare(end) < 0;
-              const endsAfterWindowStart = ed.compare(start) > 0;
-              overlaps = startsBeforeWindowEnd && endsAfterWindowStart;
-            }
-          } catch (_) {}
-          if (!overlaps) { excludedByWindow += 1; continue; }
           const org = occurrence.organizer || null;
           const attendeesArr = safeGetAttendees(occurrence);
           const attendeesList = formatAttendees(attendeesArr);
@@ -524,9 +515,6 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
             console.log(`[tmCalendar] item cal=${String(calObj.id || "")} id=${resultItem.id} title='${resultItem.title}' att=${attendeesArr.length} descLen=${desc.length} url=${url ? "yes" : "no"}`);
           } catch (_) {}
           allResults.push(resultItem);
-        }
-        if (excludedByWindow) {
-          try { console.log(`[tmCalendar] cal ${String(calObj.id || "")} excluded ${excludedByWindow} items outside window`); } catch (_) {}
         }
       } catch (_) {}
     }
