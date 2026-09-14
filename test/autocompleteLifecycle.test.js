@@ -1467,3 +1467,107 @@ it('Cmd-K clamps measured geometry during growth, resize, and live placement cha
  expect(wrapper.style.top).toBe(`${200+tm.config.inlineEdit.marginPx}px`);expect(wrapper.style.bottom).toBe('');
  wrapper._tm_cleanup();expect(body.textContent).toBe('A draft.');
 });
+
+it.each(['cursor','bottom'])('reflowing %s instructions recalculates height and scrolling without an input edit', async (placement) => {
+ const {w,tm,body}=setup('Draft.');
+ tm.state.composeBubblePlacement=placement;w.innerWidth=1000;tm.showInlineEditDropdown();
+ const wrapper=w.document.getElementById('tm-inline-edit');
+ const frame=wrapper.querySelector('iframe');
+ const input=frame.contentDocument.querySelector('textarea');
+ const text='Please preserve the opening, make the second paragraph more concise, and use a warmer closing. '.repeat(2);
+ Object.defineProperty(input,'scrollHeight',{configurable:true,get(){return parseFloat(wrapper.style.width)>700?32:96;}});
+ input.value=text;input.dispatchEvent(new w.Event('input'));
+ await new Promise(resolve=>w.setTimeout(resolve,50));
+ expect(frame.style.height).toBe('32px');expect(input.style.overflowY).toBe('hidden');
+ w.innerWidth=300;w.dispatchEvent(new w.Event('resize'));
+ await new Promise(resolve=>w.setTimeout(resolve,50));
+ expect(wrapper.style.width).toBe('284px');expect(input.scrollHeight).toBe(96);
+ expect(input.value).toBe(text);expect(body.textContent).toContain('Draft.');
+ expect(frame.style.height).toBe('64px');expect(input.style.overflowY).toBe('auto');
+ wrapper._tm_cleanup();
+});
+
+it.each(['cursor','bottom'])('input-only paste in %s preserves the authored text and the placement visibility policy', placement=>{
+ const {w,tm,body}=setup('This is very useful.');tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ const host=tm.state.previewView.host;
+ expect(host.isConnected).toBe(true);expect(tm.state.previewModel).not.toBeNull();
+ body.firstChild.textContent+=' pasted';
+ const range=w.document.createRange();range.setStart(body.firstChild,body.firstChild.length);range.collapse(true);w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ body.dispatchEvent(new w.InputEvent('input',{inputType:'insertFromPaste',data:' pasted',bubbles:true}));
+ expect(body.textContent).toBe('This is very useful. pasted');expect(tm.scheduleTrigger).toHaveBeenCalledTimes(1);expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(tm.acceptComposePreview()).toBe(false);expect(host.isConnected).toBe(placement==='bottom');
+ if(placement==='bottom')expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(true);
+});
+it.each(['cursor', 'bottom'])('typing in a jump-only context removes stale source guidance in %s mode', placement=>{
+ const {w,tm,body}=setup('Bad sentence. Fine sentence.');tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ const range=w.document.createRange();range.setStart(body.firstChild,20);range.collapse(true);w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ tm.state.correctedText='Good sentence. Fine sentence.';tm.renderText(true);
+ expect(tm.state.previewModel).toBeNull();expect(tm.state.previewJumpOffset).toBeGreaterThanOrEqual(0);
+ const host=tm.state.previewView.host;expect(host.isConnected).toBe(true);expect(tm.state.previewView.root.querySelector('.preview')).toBeNull();
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));
+ body.firstChild.textContent+='x';body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+ expect(body.textContent).toBe('Bad sentence. Fine sentence.x');expect(w.document.execCommand).not.toHaveBeenCalled();expect(tm.scheduleTrigger).toHaveBeenCalledTimes(1);
+ expect(tm.state.previewJumpOffset).toBeNull();expect(host.isConnected).toBe(false);
+});
+it('shrinking instructions moves a previously clamped editor back toward its caret anchor',()=>{
+ const {w,tm,body}=setup('Draft.');tm.state.composeBubblePlacement='cursor';w.innerWidth=500;w.innerHeight=240;
+ let height=80;
+ w.HTMLElement.prototype.getBoundingClientRect=function(){
+  if(this.tagName==='SPAN')return {left:20,right:20,top:180,bottom:200,width:0,height:20};
+  if(this.id==='tm-inline-edit'){const left=parseFloat(this.style.left)||20,top=parseFloat(this.style.top)||0,width=parseFloat(this.style.width)||472;return {left,right:left+width,top,bottom:top+height,width,height};}
+  return {left:20,right:500,top:0,bottom:240,width:480,height:240};
+ };
+ tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');
+ expect(wrapper.style.top).toBe('152px');
+ const input=wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
+ height=40;Object.defineProperty(input,'scrollHeight',{configurable:true,value:16});input.value='Short';input.dispatchEvent(new w.Event('input'));
+ const rect=wrapper.getBoundingClientRect();expect(rect.top).toBe(Math.min(200+tm.config.inlineEdit.marginPx,240-height-tm.config.preview.margin));
+ expect(input.value).toBe('Short');wrapper._tm_cleanup();expect(body.textContent).toBe('Draft.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it('the shipped Appearance control lets a user persist both placement choices',async()=>{
+ const dom=new JSDOM(readFileSync(resolve('config/config.html'),'utf8'),{runScripts:'outside-only'});const w=dom.window;windows.push(w);
+ let saved={};w.browser={storage:{local:{set:async patch=>{Object.assign(saved,patch);},get:async defaults=>({...defaults,...saved})}}};
+ const source=readFileSync(resolve('config/modules/appearance.js'),'utf8').replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,'');
+ runInContext(source,dom.getInternalVMContext(),{filename:'appearance-control-witness.js'});
+ const label=[...w.document.querySelectorAll('label')].find(label=>label.textContent.trim()==='Compose bubble placement');
+ expect(label).toBeDefined();if(!label)return;
+ const control=label.control;expect(control).not.toBeNull();if(!control)return;
+ expect(control.options.length).toBe(2);
+ let changed;
+ control.addEventListener('change', event => { changed = w.handleAppearanceChange(event, {}); });
+ for(const value of ['bottom','cursor']){
+  control.value=value;control.dispatchEvent(new w.Event('change', {bubbles:true}));await changed;
+  expect((await w.browser.storage.local.get({composeBubblePlacement:'cursor'})).composeBubblePlacement).toBe(value);
+ }
+});
+it('a live fresh dock-to-cursor switch accommodates the whole visible suggestion above a low caret',()=>{
+ const {w,tm,body}=setup('This is very useful.');w.innerWidth=500;w.innerHeight=300;
+ const contentHeight=64;
+ w.Range.prototype.getBoundingClientRect=()=>({left:8,right:16,top:250,bottom:270,height:20,width:8});
+ w.HTMLElement.prototype.getBoundingClientRect=function(){
+  if(this.id==='tm-compose-preview'){
+   const top=parseFloat(this.style.top);const bottom=parseFloat(this.style.bottom);
+   const height=Number.isFinite(top)&&Number.isFinite(bottom)?Math.max(0,w.innerHeight-top-bottom):contentHeight;
+   return {left:8,right:492,width:484,top:Number.isFinite(top)?top:w.innerHeight-bottom-height,bottom:w.innerHeight-(Number.isFinite(bottom)?bottom:0),height};
+  }
+  return {left:8,right:492,top:0,bottom:300,width:484,height:300};
+ };
+ tm.state.composeBubblePlacement='bottom';tm.state.correctedText='This is useful.';tm.renderText(true);
+ const host=tm.state.previewView.host;expect(host.isConnected).toBe(true);expect(tm.state.previewModel).not.toBeNull();
+ tm.state.composeBubblePlacement='cursor';tm.renderText(true);
+ expect(tm.state.previewView.host).toBe(host);expect(tm.state.previewModel).not.toBeNull();
+ expect(parseFloat(host.style.top)+contentHeight).toBeLessThanOrEqual(w.innerHeight-tm.config.preview.margin);
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it('a docked editor that exceeds the compose viewport keeps its instruction and controls scrollable',()=>{
+ const {w,tm,body}=setup('Draft.');w.innerWidth=500;w.innerHeight=80;tm.state.composeBubblePlacement='bottom';tm.showInlineEditDropdown();
+ const wrapper=w.document.getElementById('tm-inline-edit'),frame=wrapper.querySelector('iframe'),input=frame.contentDocument.querySelector('textarea');
+ const instruction='One\nTwo\nThree\nFour\nFive\nSix';input.value=instruction;
+ Object.defineProperty(input,'scrollHeight',{configurable:true,value:96});input.dispatchEvent(new w.Event('input'));
+ Object.defineProperty(wrapper,'clientHeight',{get:()=>parseFloat(wrapper.style.maxHeight)});
+ Object.defineProperty(wrapper,'scrollHeight',{get:()=>parseFloat(frame.style.height)+44});
+ expect(wrapper.scrollHeight).toBeGreaterThan(wrapper.clientHeight);
+ expect(['auto','scroll'].includes(w.getComputedStyle(wrapper).overflowY)).toBe(true);
+ expect(input.value).toBe(instruction);wrapper._tm_cleanup();expect(body.textContent).toBe('Draft.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});

@@ -772,8 +772,16 @@ Object.assign(TabMail, {
           wrapper.style.top = `${Math.max(surfaceMargin, Math.min(caretTop + margin, window.innerHeight - wrapper.getBoundingClientRect().height - surfaceMargin))}px`;
         }
       };
-      wrapper._tm_reposition = reposition;
-      window.addEventListener('resize', reposition);
+      let resizeInput;
+      // Width must settle before measuring wrapped instructions. Autosizing then
+      // positions the final height; calling this callback from autoResize would
+      // recurse. Use the same ordering for viewport and live placement changes.
+      const reflow = () => {
+        reposition();
+        resizeInput?.();
+      };
+      wrapper._tm_reposition = reflow;
+      window.addEventListener('resize', reflow);
       reposition();
 
       // Initialize iframe document
@@ -922,6 +930,7 @@ Object.assign(TabMail, {
             console.warn("[TabMail Edit] Inline textarea resize failed:", e);
           }
         };
+        resizeInput = autoResize;
         // Hide placeholder early on any text-producing input
         iinput.addEventListener(
           "beforeinput",
@@ -1191,7 +1200,7 @@ Object.assign(TabMail, {
       document.addEventListener("focusin", onDocFocusIn, true);
 
       const cleanup = (reason = "unknown") => {
-        window.removeEventListener("resize", reposition);
+        window.removeEventListener("resize", reflow);
         TabMail.log.debug('inlineEdit', "Cleaning up inline edit.", { reason });
         if (reason === "apply" && document.hasFocus()) {
           // Keep this ordering: existing instruction input -> restored designMode
