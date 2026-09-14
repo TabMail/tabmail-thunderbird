@@ -4,7 +4,7 @@
 
 // Run with scripting.executeScript ONLY in a disposable compose draft whose
 // initial body is exactly COMPOSE PREVIEW SMOKE. No mail is sent by this probe.
-(() => {
+(async () => {
   const tm = TabMail;
   const body = tm.state.editorRef;
   if (body.textContent.trim() !== 'COMPOSE PREVIEW SMOKE') throw new Error('Disposable smoke draft marker required');
@@ -18,13 +18,16 @@
     getSelection().removeAllRanges();getSelection().addRange(range);
     tm.state.autocompleteDisabled = false;
   };
-  const run = (name, fn) => { try { fn(); results.push({name, pass:true}); } catch (error) { results.push({name, pass:false, error:error.message}); } };
-  const propose = text => { tm.state.correctedText = text;tm.renderComposePreview();assert(tm.state.previewModel, 'No preview'); };
-  run('HTML formatting, native undo/redo, signature and serialization', () => {
+  const run = async (name, fn) => { try { await fn(); results.push({name, pass:true}); } catch (error) { results.push({name, pass:false, error:error.message}); } };
+  const propose = async text => {
+    tm.state.correctedText = text;tm.renderComposePreview();assert(tm.state.previewModel, 'No preview');
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  };
+  await run('HTML formatting, native undo/redo and signature', async () => {
     fixture('<p>Hello <b>bad</b>. <a href="https://example.com/brief">brief</a><img src="cid:synthetic"></p><div class="moz-signature">Synthetic signature</div><blockquote type="cite">Synthetic quote</blockquote>');
-    propose('Hello good. brief');
-    assert(!body.querySelector('#tm-compose-preview'), 'Preview entered serialized body');
-    assert(getComputedStyle(tm.state.previewView.host.querySelector('.preview')).backgroundColor !== 'rgba(0, 0, 0, 0)', 'Preview CSS missing');
+    await propose('Hello good. brief');
+    assert(!body.querySelector('#tm-compose-preview'), 'Preview entered authored body');
+    assert(getComputedStyle(tm.state.previewView.root.querySelector('.preview')).backgroundColor !== 'rgba(0, 0, 0, 0)', 'Preview CSS missing');
     assert(tm.acceptComposePreview(), 'Accept failed');
     assert(body.querySelector('b').textContent === 'good', 'Formatting lost');
     assert(document.execCommand('undo'), 'Undo refused');
@@ -36,43 +39,43 @@
     assert(body.querySelector('img').getAttribute('src') === 'cid:synthetic', 'Image changed');
     assert(body.querySelector('a').getAttribute('href') === 'https://example.com/brief', 'Link changed');
   });
-  run('media crossing refuses without mutation', () => {
+  await run('media crossing refuses without mutation', async () => {
     fixture('Hello very <img src="cid:synthetic">bad.');
     const before = body.innerHTML;
-    propose('Hello good.');
+    await propose('Hello good.');
     assert(!tm.acceptComposePreview(), 'Unsafe media crossing accepted');
     assert(body.innerHTML === before, 'Media or authored HTML changed');
   });
-  run('empty draft is a full proposal until accepted', () => {
+  await run('empty draft is a full proposal until accepted', async () => {
     fixture('<div class="moz-signature">Synthetic signature</div>');
-    propose('Hello Alex.\n\nEnjoy the holiday.');
+    await propose('Hello Alex.\n\nEnjoy the holiday.');
     assert(!body.textContent.includes('Hello'), 'Proposal inserted early');
     assert(tm.acceptComposePreview(), 'Full suggestion refused');
     assert(body.textContent.includes('Enjoy the holiday.'), 'Full suggestion incomplete');
     assert(body.querySelector('.moz-signature'), 'Signature removed');
   });
-  run('next sentence is part of one accepted suggestion', () => {
+  await run('next sentence is part of one accepted suggestion', async () => {
     fixture('The holiday starts tomorrow.');
     tm.setCursorByOffset(body, 27);
-    propose('The holiday starts tomorrow. We will be back Monday.');
+    await propose('The holiday starts tomorrow. We will be back Monday.');
     assert(tm.state.previewModel.replacement.includes('We will be back Monday.'), 'Continuation missing');
     assert(tm.acceptComposePreview(), 'Continuation refused');
     assert(body.textContent === 'The holiday starts tomorrow. We will be back Monday.', 'Continuation incomplete');
   });
-  run('scrolling a long preview preserves reading position', () => {
+  await run('scrolling a long preview preserves reading position', async () => {
     fixture('');
-    propose('A complete proposed paragraph.\n'.repeat(100));
-    const bubble = tm.state.previewView.host.querySelector('.preview');
+    await propose('A complete proposed paragraph.\n'.repeat(100));
+    const bubble = tm.state.previewView.root.querySelector('.preview');
     const beforeScroll = body.innerHTML;
     assert(body.textContent.trim() === '', 'Empty fixture is not empty');
     bubble.scrollTop = 150;
     bubble.dispatchEvent(new Event('scroll'));
-    assert(tm.state.previewView.host.querySelector('.preview') === bubble && bubble.scrollTop === 150, 'Scroll position reset');
+    assert(tm.state.previewView.root.querySelector('.preview') === bubble && bubble.scrollTop === 150, 'Scroll position reset');
     assert(body.innerHTML === beforeScroll, 'Scrolling changed the draft');
   });
-  run('newer caret action cannot accept the previous sentence', () => {
+  await run('newer caret action cannot accept the previous sentence', async () => {
     fixture('First is bad. Second is bad.');
-    propose('First is good. Second is good.');
+    await propose('First is good. Second is good.');
     tm.setCursorByOffset(body, 20);
     document.dispatchEvent(new Event('selectionchange'));
     body.dispatchEvent(new KeyboardEvent('keydown', {key:'Tab',bubbles:true,cancelable:true}));

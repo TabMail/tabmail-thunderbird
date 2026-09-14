@@ -915,7 +915,8 @@ Object.assign(TabMail, {
     if (TabMail.handleEscapeKeys(e)) return;
     if (selection.isCollapsed && TabMail.handleCursorMovementKey(e)) return;
     if (selection.isCollapsed && TabMail.handleAcceptRejectKey(e)) return;
-    if (TabMail._isTypingKey(e) || e.key === "Enter") {
+    if (selection.isCollapsed && (TabMail._isTypingKey(e) || e.key === "Enter")) {
+      // Range replacements must take the ordinary input invalidation path.
       // Supply the existing adherence detector with native text coordinates;
       // its timing policy remains independent of the preview renderer.
       const original = TabMail.extractUserAndQuoteTexts(TabMail.state.editorRef).originalUserMessage;

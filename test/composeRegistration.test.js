@@ -27,7 +27,7 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     runtime,
     storage:{local:{get:vi.fn(async defaults=>defaults),set:vi.fn()},onChanged:{addListener:vi.fn(),removeListener:vi.fn()}},
     tabs:{sendMessage:vi.fn(async(tabId,message)=>{expect(tabId).toBe(1);for(const listener of contentMessageListeners)await listener(message,{},()=>{});})},
-    compose:{onBeforeSend:{addListener:vi.fn()},getComposeDetails:vi.fn(async()=>({body:dom.window.document.body.innerHTML})),setComposeDetails:vi.fn()},
+    compose:{onBeforeSend:{addListener:vi.fn()},getComposeDetails:vi.fn(async()=>({body:dom.window.document.documentElement.outerHTML})),setComposeDetails:vi.fn()},
     scripting:{compose:{unregisterScripts:vi.fn(async()=>{}),registerScripts:vi.fn(async()=>{})}},
   };
   globalThis.browser = globalThis.messenger = api;
@@ -48,15 +48,17 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
       for(const file of registration.js||[])runInContext(readFileSync(resolve(file),'utf8'),dom.getInternalVMContext(),{filename:resolve(file)});
     }
     const tm=w.TabMail,body=w.document.body;
+    // JSDOM does not apply shadow styles in getComputedStyle.
+    const previewStyle=w.document.createElement('style');previewStyle.textContent=tm.composePreviewCSS;w.document.head.appendChild(previewStyle);
     await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
     const range=w.document.createRange();range.setStart(body.firstChild.firstChild,5);range.collapse(true);w.getSelection().addRange(range);
     const before=body.innerHTML;
     tm.state.correctedText='This is useful.';tm.renderText(true);
-    const bubble=w.document.querySelector('.tm-compose-preview .preview');
+    const bubble=(tm.state.previewView?.root.querySelector('.tm-compose-preview .preview') ?? null);
     expect(bubble.querySelector('.content').textContent).toBe('This is useful.');
     expect(w.getComputedStyle(bubble).borderRadius).toBe('8px');
     expect(body.innerHTML).toBe(before);
-    expect(w.document.querySelectorAll('.source-underline')).toHaveLength(1);
+    expect((tm.state.previewView?.root.querySelectorAll('.source-underline') ?? [])).toHaveLength(1);
     vi.useFakeTimers();
     tm.config.DIFF_RESTORE_DELAY_MS = delay;
     tm.config.BEFORE_SEND_CLEANUP_SUPPRESS_MS = 60;
@@ -91,7 +93,7 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     await beforeSend({id:1});
     expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
     expect(w.document.querySelector('.tm-compose-preview')).toBeNull();
-    expect(w.document.querySelector('.source-underline')).toBeNull();
+    expect((tm.state.previewView?.root.querySelector('.source-underline') ?? null)).toBeNull();
     expect(tm.state.beforeSendCleanupActive).toBe(true);
     tm.renderText(true);
     expect(w.document.querySelector('.tm-compose-preview')).toBeNull();
@@ -131,7 +133,7 @@ it.each(recoveryCases)('registered send cleanup preserves preview recovery (mode
     // existing independent typing-hide restoration clock.
     await vi.advanceTimersByTimeAsync(tm.config.DIFF_RESTORE_DELAY_MS);
     expect(tm.state.previewModel).not.toBeNull();
-    expect(tm.state.previewView.host.querySelector('.content').textContent).toBe('New corrected draft.');
+    expect(tm.state.previewView.root.querySelector('.content').textContent).toBe('New corrected draft.');
     expect(body.innerHTML).toBe(afterTyping);
     expect(nativeWrite).not.toHaveBeenCalled();
   } finally {

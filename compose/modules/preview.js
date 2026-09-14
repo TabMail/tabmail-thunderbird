@@ -3,6 +3,25 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 var TabMail = TabMail || {};
 
+// Inline stylesheet text is loaded with the compose script: Thunderbird blocks
+// linked extension stylesheets inside the compose document's shadow tree.
+TabMail.composePreviewCSS = `
+.tm-compose-preview { color-scheme: light dark; pointer-events: none; }
+.tm-compose-preview .preview { position: relative; z-index: 1; box-sizing: border-box; max-height: calc(100vh - 16px); overflow: auto; pointer-events: auto; padding: 10px 12px; border: 1px solid var(--tm-preview-border); border-radius: 8px; background: var(--tm-preview-bg); color: var(--tm-preview-text); box-shadow: 0 4px 16px var(--tm-preview-shadow); }
+.tm-compose-preview .content { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tm-compose-preview .context { color: var(--tm-preview-context); }
+.tm-compose-preview .inserted { background: var(--tm-preview-insert); box-decoration-break: clone; }
+.tm-compose-preview .actions { margin-top: 6px; display: flex; flex-wrap: wrap; justify-content: flex-end; text-align: right; font: 11px/1.4 system-ui; color: var(--tm-preview-context); }
+
+.tm-compose-preview .actions button { pointer-events: auto; cursor: pointer; font: inherit; color: inherit; background: transparent; border: 0; border-radius: 4px; padding: 3px 6px; }
+.tm-compose-preview .actions button:hover, .tm-compose-preview .actions button:focus-visible { background: var(--tm-preview-insert); color: var(--tm-preview-text); }
+
+.tm-compose-preview .actions kbd { display: inline-block; font: 10px/1.3 system-ui; border: 1px solid var(--tm-preview-border); border-radius: 3px; padding: 1px 4px; margin-right: 3px; white-space: nowrap; }
+.tm-compose-preview .source-underline, .tm-compose-preview .source-deletion { position: fixed; z-index: 0; height: 0; border-bottom-style: solid; border-bottom-width: 1px; border-bottom-color: var(--in-content-accent-color); pointer-events: none; }
+
+.tm-compose-preview .source-deletion { border-bottom-width: 2px; border-bottom-color: var(--tm-preview-delete); }
+`;
+
 Object.assign(TabMail, {
   hideComposePreview() {
     TabMail.state.previewView?.host.remove();
@@ -67,14 +86,25 @@ Object.assign(TabMail, {
       host.setAttribute('data-tabmail-ui', '');
       host.contentEditable = 'false';
       host.className = 'tm-compose-preview';
-      view = state.previewView = { host };
+      // Thunderbird encodes the whole compose document, including siblings of
+      // BODY. Keep proposal text in a non-serializable shadow tree.
+      const shadow = host.attachShadow({ mode: 'open' });
+      const style = document.createElement('style');
+      style.textContent = TabMail.composePreviewCSS;
+      shadow.appendChild(style);
+      const root = document.createElement('div');
+      root.className = 'tm-compose-preview';
+      shadow.appendChild(root);
+      view = state.previewView = { host, root };
     }
-    const { host } = view;
-    host.replaceChildren();
+    const { host, root } = view;
+    root.replaceChildren();
     TabMail.removeJumpOverlay();
     if (!model.edits.length) {
       // Keep the established caret/arrow hint instead of a sentence bubble.
       const caret = TabMail.createFakeCaret(model.jumpOffset);
+      const caretStyle = document.getElementById('tm-caret-styles');
+      if (caretStyle) root.appendChild(caretStyle.cloneNode(true));
       const arrow = TabMail.createArrow(model.jumpOffset, 'down');
       const range = TabMail.composeRange(index, model.jumpOffset);
       let rect = range.getBoundingClientRect();
@@ -85,7 +115,7 @@ Object.assign(TabMail, {
       for (const [node, x, y] of [[caret, offsets.caretX, offsets.caretY], [arrow, offsets.arrowX, offsets.arrowY]]) {
         Object.assign(node.style, {position:'fixed',left:`${rect.left + x}px`,top:`${rect.top + y}px`});
         node.setAttribute('aria-hidden', 'true');
-        host.appendChild(node);
+        root.appendChild(node);
       }
       host.style.cssText = `position:fixed;left:0;top:0;pointer-events:none;z-index:${cfg.zIndex}`;
       if (!host.isConnected) document.documentElement.appendChild(host);
@@ -169,7 +199,7 @@ Object.assign(TabMail, {
             line.className = segment.deleted ? 'source-deletion' : 'source-underline';
             line.setAttribute('aria-hidden', 'true');
             Object.assign(line.style, {left: `${rect.left}px`, top: `${rect.bottom - 1}px`, width: `${rect.width}px`});
-            host.appendChild(line);
+            root.appendChild(line);
           }
         }
       }
@@ -196,7 +226,7 @@ Object.assign(TabMail, {
     action('Dismiss', 'Esc', 'Dismiss suggestion (Esc)', () => TabMail.dismissComposeSuggestion());
     action('Disable suggestions', '⇧Esc', 'Disable suggestions (Shift+Esc)', () => TabMail.setAutocompleteEnabled(false));
     bubble.appendChild(actions);
-    host.appendChild(bubble);
+    root.appendChild(bubble);
     // Keep the surface inset from both viewport edges, preserving source
     // alignment wherever the available space permits.
     const x = Math.min(Math.max(cfg.margin, left - cfg.padding - 1), Math.max(cfg.margin, window.innerWidth - cfg.margin - cfg.minWidth));
@@ -205,7 +235,7 @@ Object.assign(TabMail, {
     bubble.style.paddingLeft = `${cfg.padding}px`;
     bubble.style.paddingRight = `${cfg.padding}px`;
     Object.assign(host.style, { position: 'fixed', zIndex: String(cfg.zIndex), left: `${x}px`, top: `${bottom + cfg.gap}px`, width: `${width}px` });
-    // Sibling of BODY: the native compose serializer cannot include the preview.
+    // Keep the surface out of authored BODY; shadow contents are excluded by the encoder.
     if (!host.isConnected) document.documentElement.appendChild(host);
     const place = () => {
       if (!host.isConnected) return;

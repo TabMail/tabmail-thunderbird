@@ -20,10 +20,10 @@
   assert(document.execCommand('redo') && body.textContent === 'This is useful.', 'Native Redo failed');
   tm.setCursorByOffset(body, 5);
   tm.state.correctedText = 'This is helpful.';tm.renderComposePreview();
-  tm.state.previewView.host.querySelectorAll('button')[1].click();
+  tm.state.previewView.root.querySelectorAll('button')[1].click();
   assert(!tm.state.previewModel && body.textContent === 'This is useful.', 'Dismiss changed text');
   tm.state.correctedText = 'This is helpful.';tm.renderComposePreview();
-  tm.state.previewView.host.querySelectorAll('button')[2].click();
+  tm.state.previewView.root.querySelectorAll('button')[2].click();
   const banner = document.getElementById('tm-compose-hints-banner');
   assert(banner?.textContent === '⇧Esc Enable suggestions', 'Disabled control missing or redundant');
   banner.querySelector('button').click();

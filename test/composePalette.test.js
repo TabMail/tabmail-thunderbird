@@ -2,11 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 import {readFileSync} from 'node:fs';
+import {runInNewContext} from 'node:vm';
 import {JSDOM} from 'jsdom';
 import {convert} from '@asamuzakjp/css-color';
 import {it,expect,vi} from 'vitest';
 import {injectPaletteIntoDocument} from '../theme/palette/palette.js';
 
+const previewScope = {};
+runInNewContext(readFileSync(new URL('../compose/modules/preview.js',import.meta.url),'utf8'),previewScope);
 const data=JSON.parse(readFileSync(new URL('../theme/palette/palette.data.json',import.meta.url),'utf8'));
 it.each(['LIGHT','DARK'])('injected %s compose colors tint insertions with the app accent without changing the draft',async mode=>{
   const dom=new JSDOM('<body><p>Authored <b>draft</b>.</p></body>');
@@ -15,7 +18,7 @@ it.each(['LIGHT','DARK'])('injected %s compose colors tint insertions with the a
   try {
     const injected=await injectPaletteIntoDocument(document,'https://example.com/palette');
     const rootRule=mode==='LIGHT'?injected.sheet.cssRules[0]:injected.sheet.cssRules[1].cssRules[0];
-    const css=document.createElement('style');css.textContent=readFileSync(new URL('../compose/preview.css',import.meta.url),'utf8');document.head.appendChild(css);
+    const css=document.createElement('style');css.textContent=previewScope.TabMail.composePreviewCSS;document.head.appendChild(css);
     const bubbleRule=[...css.sheet.cssRules].find(rule=>rule.selectorText==='.tm-compose-preview .preview');
     const surface=bubbleRule.style.getPropertyValue('background').replace(/var\((--[^)]+)\)/g,(_,name)=>rootRule.style.getPropertyValue(name));
     const surfaceColor=convert.colorToRgb(surface);
@@ -39,7 +42,7 @@ it.each(['LIGHT','DARK'])('injected %s compose colors tint insertions with the a
     for(let channel=0;channel<3;channel++)expect(Math.abs(actual[channel]-accent[channel])).toBeLessThan(1);
     expect(actual[3]).toBeGreaterThan(0);expect(actual[3]).toBeLessThan(1);
     expect(actual[3]).toBeCloseTo(mode==='LIGHT'?data.OPACITY.SUBTLE_LIGHT:data.OPACITY.SELECTED_DARK,2);
-    const underlineCSS=document.createElement('style');underlineCSS.textContent=readFileSync(new URL('../compose/highlight.css',import.meta.url),'utf8');document.head.appendChild(underlineCSS);
+    const underlineCSS=document.createElement('style');underlineCSS.textContent=previewScope.TabMail.composePreviewCSS;document.head.appendChild(underlineCSS);
     const underlineRule=[...underlineCSS.sheet.cssRules].find(rule=>rule.selectorText==='.tm-compose-preview .source-underline, .tm-compose-preview .source-deletion');
     const underlineColor=underlineRule.style.getPropertyValue('border-bottom-color').replace(/var\((--[^)]+)\)/g,(_,name)=>rootRule.style.getPropertyValue(name));
     const sourceColor=convert.colorToRgb(underlineColor);

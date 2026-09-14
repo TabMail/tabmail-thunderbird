@@ -174,11 +174,11 @@ describe('preview content and atomic keyboard integration', () => {
     const place = offset => { const r = w.document.createRange(); r.setStart(body.firstChild, offset); r.collapse(true); w.getSelection().removeAllRanges(); w.getSelection().addRange(r); };
     place(25); tm.renderComposePreview();
     const host = tm.state.previewView.host;
-    const content = tm.state.previewView.host.querySelector('.content').textContent;
+    const content = tm.state.previewView.root.querySelector('.content').textContent;
     place(35); tm.renderComposePreview();
     expect(tm.state.previewView.host).toBe(host);
-    expect(tm.state.previewView.host.querySelector('.content').textContent).toBe(content);
-    expect(tm.state.previewView.host.querySelector('.inserted').textContent).toContain('Thursday');
+    expect(tm.state.previewView.root.querySelector('.content').textContent).toBe(content);
+    expect(tm.state.previewView.root.querySelector('.inserted').textContent).toContain('Thursday');
     expect(content).not.toContain('next week');
     expect(body.textContent).toContain('next week');
   });
@@ -191,7 +191,7 @@ describe('preview content and atomic keyboard integration', () => {
     const { tm } = setup('<p>This is very useful.</p><p>Unrelated paragraph.</p>');
     tm.state.correctedText = 'This is useful.\nUnrelated paragraph.\n';
     tm.renderComposePreview();
-    const content = tm.state.previewView.host.querySelector('.content').textContent;
+    const content = tm.state.previewView.root.querySelector('.content').textContent;
     expect(content).toBe('This is useful.');
   });
   it('Tab applies every displayed edit once, preserves the signature, and leaves the caret at the accepted change', () => {
@@ -239,7 +239,7 @@ describe('clickable suggestion controls', () => {
     tm.state.correctedText = 'This is useful.';
     tm.renderComposePreview(); tm.showComposeHintsBanner();
     expect(w.document.getElementById('tm-compose-hints-banner')).toBeNull();
-    const controls = [...tm.state.previewView.host.querySelectorAll('button')];
+    const controls = [...tm.state.previewView.root.querySelectorAll('button')];
     expect(controls.map(button => button.textContent)).toEqual(['Tab Accept', 'Esc Dismiss', '⇧Esc Disable suggestions']);
     expect(controls.map(button=>button.getAttribute('aria-keyshortcuts'))).toEqual(['Tab','Escape','Shift+Escape']);
     expect(controls.map(button=>button.querySelector('kbd').getAttribute('aria-hidden'))).toEqual(['true','true','true']);
@@ -262,7 +262,7 @@ describe('clickable suggestion controls', () => {
     const { tm, body } = setup('This is very useful.');
     tm.state.correctedText = 'This is useful.';
     tm.renderComposePreview();
-    [...tm.state.previewView.host.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Dismiss').click();
+    [...tm.state.previewView.root.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Dismiss').click();
     expect(body.textContent).toBe('This is very useful.');
     expect(tm.state.correctedText).toBeNull();
     expect(tm.state.previewView).toBeNull();
@@ -330,9 +330,9 @@ it('detaches keyboard and layout listeners and removes highlights on cleanup', (
   tm.attachAutocomplete(body);
   tm.state.correctedText = 'This is useful.';
   tm.renderComposePreview();
-  expect(w.document.querySelectorAll('.source-underline').length).toBeGreaterThan(0);
+  expect((tm.state.previewView?.root.querySelectorAll('.source-underline') ?? []).length).toBeGreaterThan(0);
   tm.cleanupEventListeners();
-  expect(w.document.querySelector('.source-underline')).toBeNull();
+  expect((tm.state.previewView?.root.querySelector('.source-underline') ?? null)).toBeNull();
   const render = vi.spyOn(tm, 'renderComposePreview');
   w.dispatchEvent(new w.Event('resize'));
   w.document.dispatchEvent(new w.Event('scroll'));
@@ -363,11 +363,11 @@ it.each([true,false])('dismissal defeats an awaited late response in local mode=
 });
 it('preview renders model markup as literal text',()=>{
  const {tm,body}=setup('Hello.');const before=body.innerHTML;tm.state.correctedText='Hello <em>world</em>.';tm.renderText(true);
- const content=tm.state.previewView.host.querySelector('.content');expect(content.textContent).toContain('<em>world</em>');expect(content.querySelector('em')).toBeNull();expect(body.innerHTML).toBe(before);
+ const content=tm.state.previewView.root.querySelector('.content');expect(content.textContent).toContain('<em>world</em>');expect(content.querySelector('em')).toBeNull();expect(body.innerHTML).toBe(before);
 });
 it('repeated dismissal removes source highlights without draft mutation',()=>{
- const {w,tm,body}=setup('Hello.');const before=body.innerHTML;tm.state.correctedText='Hello there.';tm.renderText(true);expect(w.document.querySelector('.source-underline')).not.toBeNull();
- tm.dismissComposeSuggestion();tm.dismissComposeSuggestion();expect(w.document.querySelector('.source-underline')).toBeNull();expect(body.innerHTML).toBe(before);expect(tm.state.previewView).toBeNull();
+ const {w,tm,body}=setup('Hello.');const before=body.innerHTML;tm.state.correctedText='Hello there.';tm.renderText(true);expect((tm.state.previewView?.root.querySelector('.source-underline') ?? null)).not.toBeNull();
+ tm.dismissComposeSuggestion();tm.dismissComposeSuggestion();expect((tm.state.previewView?.root.querySelector('.source-underline') ?? null)).toBeNull();expect(body.innerHTML).toBe(before);expect(tm.state.previewView).toBeNull();
 });
 it('composition start forbids a previously displayed acceptance',()=>{
  const {w,tm,body}=setup('Hello.');w.document.execCommand=vi.fn();tm.state.correctedText='Hello there.';tm.renderText(true);expect(tm.state.previewModel).not.toBeNull();tm.state.isIMEComposing=true;
@@ -388,7 +388,7 @@ it('a real generated correction can be accepted in a single HTML paragraph',asyn
  const {w,tm,body}=setup('<p>Bad.</p>');nativeDOM(w);
  tm.state.correctedText=await generateCorrection({userMessage:tm.extractUserAndQuoteTexts(body).originalUserMessage});
  expect(tm.state.correctedText).toBe('Good.');tm.renderText(true);
- expect(tm.state.previewView.host.querySelector('.content').textContent).toBe('Good.');
+ expect(tm.state.previewView.root.querySelector('.content').textContent).toBe('Good.');
  expect(tm.acceptComposePreview()).toBe(true);
  expect(body.innerHTML).toBe('<p>Good.</p>');expect(w.document.execCommand).toHaveBeenCalledTimes(1);
 });
@@ -398,10 +398,10 @@ it('preserves same-line inline typography in the preview without cloning authore
   const { tm, body } = setup('<b>Context.</b> This is very useful.');
   tm.state.correctedText = 'Context. This is useful.';
   tm.setCursorByOffset(body, 15);tm.renderComposePreview();
-  const context = tm.state.previewView.host.querySelector('.context');
+  const context = tm.state.previewView.root.querySelector('.context');
   expect(context.textContent).toBe('Context.');
   expect(context.style.fontWeight).toBe('bold');
-  expect(tm.state.previewView.host.querySelector('b')).toBeNull();
+  expect(tm.state.previewView.root.querySelector('b')).toBeNull();
 });
 
 it('scrolling a long empty-draft proposal preserves the visible scroll position and draft',()=>{
@@ -410,13 +410,13 @@ it('scrolling a long empty-draft proposal preserves the visible scroll position 
   tm.attachAutocomplete(body);
   tm.state.correctedText='A complete proposed paragraph.\n'.repeat(100);
   tm.renderComposePreview();
-  const bubble=tm.state.previewView.host.querySelector('.preview');
+  const bubble=tm.state.previewView.root.querySelector('.preview');
   const content=bubble.querySelector('.content').textContent;
   expect(content.length).toBeGreaterThan(2500);
   expect(body.innerHTML).toBe('');
   bubble.scrollTop=150;
   bubble.dispatchEvent(new w.Event('scroll',{bubbles:false}));
-  const current=tm.state.previewView.host.querySelector('.preview');
+  const current=tm.state.previewView.root.querySelector('.preview');
   expect(current.scrollTop).toBe(150);
   expect(current.querySelector('.content').textContent).toBe(content);
   expect(body.innerHTML).toBe('');
@@ -453,7 +453,7 @@ it('a cached precompose reply must remain a proposal until the user accepts it',
   expect(tm.state.correctedText).toBe('Hello Alex.\n\nHere is the proposal.');
   expect(body.innerHTML).toBe('');
   expect(tm.state.isGlobalRequestInFlight).toBe(false);
-  if(tm.state.previewModel){expect(tm.state.previewModel.edits.length).toBeGreaterThan(0);expect(tm.state.previewView.host.querySelector('.content').textContent).toContain('Here is the proposal.');}
+  if(tm.state.previewModel){expect(tm.state.previewModel.edits.length).toBeGreaterThan(0);expect(tm.state.previewView.root.querySelector('.content').textContent).toContain('Here is the proposal.');}
  }finally{w.close();}
 });
 
@@ -475,7 +475,7 @@ it('mouse Accept applies the displayed rich edit through its registered click ha
   tm.attachAutocomplete(body);
   const schedule = vi.spyOn(tm, 'scheduleTrigger');
   tm.state.correctedText = 'Hello good.';tm.renderComposePreview();
-  tm.state.previewView.host.querySelector('button').click();
+  tm.state.previewView.root.querySelector('button').click();
   expect(body.innerHTML).toBe('<p>Hello <b>good</b>.</p>');
   expect(tm.state.previewModel).toBeNull();
   expect(schedule).not.toHaveBeenCalled();
@@ -611,19 +611,19 @@ it('cursor hint Tab jump navigates before allowing acceptance',()=>{
  const {w,tm,body}=setup('Hello. This is bad.');const before=body.innerHTML;
  tm.attachAutocomplete(body);tm.state.correctedText='Hello. This is good.';tm.renderComposePreview();
  expect(tm.state.previewModel).toBeNull();expect(tm.state.previewJumpOffset).toBeGreaterThan(6);
- expect(tm.state.previewView.host.querySelector('.preview')).toBeNull();
- expect(tm.state.previewView.host.querySelector('.tm-fake-caret')).not.toBeNull();
+ expect(tm.state.previewView.root.querySelector('.preview')).toBeNull();
+ expect(tm.state.previewView.root.querySelector('.tm-fake-caret')).not.toBeNull();
  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
  expect(body.innerHTML).toBe(before);expect(tm.composeCursorOffset(tm.indexComposeText(body))).toBeGreaterThan(6);
  expect(tm.state.previewModel.replacement).toContain('This is good.');expect(w.document.execCommand).not.toHaveBeenCalled();
- tm.state.previewView.host.querySelector('button').click();expect(body.textContent).toBe('Hello. This is good.');expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+ tm.state.previewView.root.querySelector('button').click();expect(body.textContent).toBe('Hello. This is good.');expect(w.document.execCommand).toHaveBeenCalledTimes(1);
 });
 
 
 it('underlines only source text fragments outside the authored DOM without the Highlight API', () => {
   const {w,tm,body}=setup('<p>Before. Target <b>sentence</b><img alt="kept" src="cid:fixture"> here. After.</p>');
   w.CSS=undefined;w.Highlight=undefined;
-  const style=w.document.createElement('style');style.textContent=readFileSync(resolve('compose/highlight.css'),'utf8')+readFileSync(resolve('compose/preview.css'),'utf8');w.document.head.appendChild(style);
+  const style=w.document.createElement('style');style.textContent=tm.composePreviewCSS;w.document.head.appendChild(style);
   const before=body.innerHTML,measured=[];
   let shift=0;
   w.Range.prototype.getClientRects=function(){
@@ -635,7 +635,7 @@ it('underlines only source text fragments outside the authored DOM without the H
     return [{left:left+shift,right:left+shift+48,top,bottom:top+20,width:48,height:20},{left:0,top:0,right:0,bottom:20,width:0,height:20},{left:0,top:0,right:48,bottom:0,width:48,height:0}];
   };
   tm.setCursorByOffset(body,10);tm.state.correctedText='Before. Revised sentence here. After.';tm.renderText(true);
-  const lines=[...w.document.querySelectorAll('.source-underline')];
+  const lines=[...(tm.state.previewView?.root.querySelectorAll('.source-underline') ?? [])];
   expect(lines).toHaveLength(3);
   expect(measured).toEqual(['Target ', 'Targ', 't', 'sentence', ' here. ']);
   expect(lines.map(line=>[line.style.left,line.style.top,line.style.width])).toEqual([['72px','39px','48px'],['128px','39px','48px'],['8px','59px','48px']]);
@@ -650,22 +650,22 @@ it('underlines only source text fragments outside the authored DOM without the H
     expect(painted.borderBottomStyle).toBe('solid');
     expect(painted.borderBottomWidth).toBe('1px');
   }
-  expect(w.getComputedStyle(w.document.querySelector('.preview')).position).toBe('relative');
-  expect(w.getComputedStyle(w.document.querySelector('.preview')).zIndex).toBe('1');
+  expect(w.getComputedStyle((tm.state.previewView?.root.querySelector('.preview') ?? null)).position).toBe('relative');
+  expect(w.getComputedStyle((tm.state.previewView?.root.querySelector('.preview') ?? null)).zIndex).toBe('1');
   shift=100;tm.renderText(true);
-  expect(w.document.querySelectorAll('.source-underline')).toHaveLength(3);
+  expect((tm.state.previewView?.root.querySelectorAll('.source-underline') ?? [])).toHaveLength(3);
   expect(lines.every(line=>!line.isConnected)).toBe(true);
-  expect(w.document.querySelector('.source-underline').style.left).toBe('172px');
+  expect((tm.state.previewView?.root.querySelector('.source-underline') ?? null).style.left).toBe('172px');
   expect(body.innerHTML).toBe(before);
   tm.dismissComposeSuggestion();
-  expect(w.document.querySelector('.source-underline')).toBeNull();
+  expect((tm.state.previewView?.root.querySelector('.source-underline') ?? null)).toBeNull();
   expect(body.innerHTML).toBe(before);
 });
 
 it('an empty-draft proposal has no source underline',()=>{
   const {w,tm,body}=setup('');tm.state.correctedText='Hello Alex.';tm.renderText(true);
-  expect(w.document.querySelector('.preview .content').textContent).toBe('Hello Alex.');
-  expect(w.document.querySelector('.source-underline')).toBeNull();
+  expect((tm.state.previewView?.root.querySelector('.preview .content') ?? null).textContent).toBe('Hello Alex.');
+  expect((tm.state.previewView?.root.querySelector('.source-underline') ?? null)).toBeNull();
   expect(body.innerHTML).toBe('');
 });
 
@@ -677,12 +677,12 @@ it('every wrapped source fragment is underlined while authored content is unchan
  tm.state.correctedText='This is a clear sentence that wraps onto another line.';
  tm.renderText(true);
  expect(tm.state.previewModel.replacement).toBe('This is a clear sentence that wraps onto another line.');
- const lines=[...w.document.querySelectorAll('.source-underline')];
+ const lines=[...(tm.state.previewView?.root.querySelectorAll('.source-underline') ?? [])];
  expect(lines.map(line=>[line.style.left,line.style.top,line.style.width])).toEqual([['8px','39px','240px'],['8px','59px','112px']]);
  expect(lines.every(line=>!body.contains(line))).toBe(true);
  expect(body.innerHTML).toBe(before);
  tm.dismissComposeSuggestion();
- expect(w.document.querySelectorAll('.source-underline')).toHaveLength(0);
+ expect((tm.state.previewView?.root.querySelectorAll('.source-underline') ?? [])).toHaveLength(0);
  expect(body.innerHTML).toBe(before);
 });
 it('moving from a proposal to jump-only context clears the previously underlined sentence',()=>{
@@ -690,15 +690,15 @@ it('moving from a proposal to jump-only context clears the previously underlined
  const before=body.innerHTML;
  tm.state.correctedText='First is good. Second is fine.';
  tm.renderText(true);
- const first=[...w.document.querySelectorAll('.source-underline')];
+ const first=[...(tm.state.previewView?.root.querySelectorAll('.source-underline') ?? [])];
  expect(first.length).toBeGreaterThan(0);
  tm.setCursorByOffset(body,20);
  tm.renderText(true);
  expect(tm.state.previewModel).toBeNull();
  expect(tm.state.previewJumpOffset).toBeGreaterThanOrEqual(0);
- expect(w.document.querySelector('.preview')).toBeNull();
- expect(w.document.querySelector('.tm-fake-caret')).not.toBeNull();
- expect(w.document.querySelectorAll('.source-underline')).toHaveLength(0);
+ expect((tm.state.previewView?.root.querySelector('.preview') ?? null)).toBeNull();
+ expect((tm.state.previewView?.root.querySelector('.tm-fake-caret') ?? null)).not.toBeNull();
+ expect((tm.state.previewView?.root.querySelectorAll('.source-underline') ?? [])).toHaveLength(0);
  expect(first.every(line=>!line.isConnected)).toBe(true);
  expect(body.innerHTML).toBe(before);
 });
@@ -711,7 +711,7 @@ it.each(['<p>Target bad.</p><p>After.</p>','Target bad.<br>After.'])('paragraph 
  tm.renderText(true);
  expect(tm.state.previewModel.replacement.trim()).toBe('Target good.');
  expect(tm.state.previewModel.original).toBe('Target bad.\nAfter.');
- expect(w.document.querySelectorAll('.source-underline')).toHaveLength(1);
+ expect((tm.state.previewView?.root.querySelectorAll('.source-underline') ?? [])).toHaveLength(1);
  expect(body.innerHTML).toBe(before);
 });
 
@@ -726,7 +726,7 @@ it.each([[200,'left'],[200,'right'],[1024,'left'],[1024,'right']])('keeps the su
  expect(left).toBeGreaterThanOrEqual(8);
  expect(width).toBeGreaterThan(100);
  expect(left+width).toBeLessThanOrEqual(viewport-8);
- const bubble=host.querySelector('.preview');
+ const bubble=host.shadowRoot.querySelector('.preview');
  expect(parseFloat(bubble.style.paddingLeft)).toBe(12);expect(parseFloat(bubble.style.paddingRight)).toBe(12);
  expect(width-parseFloat(bubble.style.paddingLeft)-parseFloat(bubble.style.paddingRight)-2).toBeGreaterThanOrEqual(94);
  expect(body.textContent).toBe('Bad sentence.');
@@ -735,7 +735,7 @@ it('reduces preview typography proportionally while preserving authored emphasis
  const {w,tm,body}=setup('<p style="font:20px/30px Arial">Bad <b style="font-size:24px">sentence</b>.</p>');
  const before=body.innerHTML;
  tm.state.correctedText='Good sentence.';tm.renderComposePreview();
- const content=tm.state.previewView.host.querySelector('.content');
+ const content=tm.state.previewView.root.querySelector('.content');
  expect(content.style.fontSize).toBe('18px');expect(content.style.lineHeight).toBe('27px');
  const bold=[...content.children].find(span=>span.textContent==='sentence');
  expect(bold).toBeDefined();expect(bold.style.fontSize).toBe('21.6px');expect(bold.style.fontWeight).toBe('bold');
@@ -749,7 +749,7 @@ it.each(['This is a test. We','<p>This is a test. We</p>'])('shows and accepts o
  tm.setCursorByOffset(body,original.length);
  tm.state.correctedText=original+' will meet Monday. Bring notes. Thanks.';
  tm.renderComposePreview();
- const preview=tm.state.previewView.host.querySelector('.content').textContent;
+ const preview=tm.state.previewView.root.querySelector('.content').textContent;
  expect(preview).toContain('We will meet Monday.');expect(preview).not.toContain('Bring notes');expect(preview).not.toContain('Thanks.');
  expect(tm.acceptComposePreview()).toBe(true);
  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe(original+' will meet Monday. ');
@@ -760,7 +760,7 @@ it.each(['This is a test. We','<p>This is a test. We</p>'])('shows and accepts o
 it.each(['keyboard','click'])('continues the cached suggestion immediately after %s acceptance',mode=>{
  const {w,tm,body}=setup('We');tm.setCursorByOffset(body,2);
  tm.state.correctedText='We meet Monday. Bring notes. Thanks.';tm.renderComposePreview();
- const accept=()=>mode==='keyboard'?tm.handleKeyDown(new w.KeyboardEvent('keydown',{key:'Tab',cancelable:true})):tm.state.previewView.host.querySelector('button[aria-label="Accept"]').click();
+ const accept=()=>mode==='keyboard'?tm.handleKeyDown(new w.KeyboardEvent('keydown',{key:'Tab',cancelable:true})):tm.state.previewView.root.querySelector('button[aria-label="Accept"]').click();
  accept();expect(body.textContent).toBe('We meet Monday. ');
  expect(tm.state.previewModel.replacement).toContain('Bring notes.');expect(tm.state.previewModel.replacement).not.toContain('Thanks.');
  accept();expect(body.textContent).toBe('We meet Monday. Bring notes. ');
@@ -781,15 +781,15 @@ it('adds a subtle red underline only over removed source wording and clears it o
  const {w,tm,body}=setup('This is very useful.');const before=body.innerHTML;
  w.Range.prototype.getClientRects=function(){return [{left:this.startOffset*8,top:20,bottom:40,width:(this.endOffset-this.startOffset)*8,height:20}];};
  tm.state.correctedText='This is useful.';tm.renderComposePreview();
- const style=w.document.createElement('style');style.textContent=readFileSync(resolve('compose/highlight.css'),'utf8');w.document.head.appendChild(style);
- const blue=w.document.querySelectorAll('.source-underline'),red=w.document.querySelectorAll('.source-deletion');
+ const style=w.document.createElement('style');style.textContent=tm.composePreviewCSS;w.document.head.appendChild(style);
+ const blue=(tm.state.previewView?.root.querySelectorAll('.source-underline') ?? []),red=(tm.state.previewView?.root.querySelectorAll('.source-deletion') ?? []);
  expect(blue).toHaveLength(1);expect(red).toHaveLength(1);
  expect(w.getComputedStyle(blue[0]).borderBottomWidth).toBe('1px');expect(w.getComputedStyle(red[0]).borderBottomWidth).toBe('2px');
  expect(red[0].style.left).toBe('64px');expect(red[0].style.width).toBe('40px');expect(red[0].style.top).toBe('39px');
  expect(body.contains(red[0])).toBe(false);expect(red[0].getAttribute('aria-hidden')).toBe('true');expect(body.innerHTML).toBe(before);
  tm.state.correctedText='This is very useful indeed.';tm.renderComposePreview();
- expect(w.document.querySelector('.source-deletion')).toBeNull();
- tm.dismissComposeSuggestion();expect(w.document.querySelector('.source-underline')).toBeNull();expect(body.innerHTML).toBe(before);
+ expect((tm.state.previewView?.root.querySelector('.source-deletion') ?? null)).toBeNull();
+ tm.dismissComposeSuggestion();expect((tm.state.previewView?.root.querySelector('.source-underline') ?? null)).toBeNull();expect(body.innerHTML).toBe(before);
 });
 
 it.each([[-40,'↑'],[1200,'↓']])('keeps the offscreen cursor prompt outside the draft at %ipx',(top,direction)=>{
@@ -799,8 +799,8 @@ it.each([[-40,'↑'],[1200,'↓']])('keeps the offscreen cursor prompt outside t
  tm.state.correctedText='Hello. This is good.';tm.renderComposePreview();
  const overlay=w.document.getElementById('tm-jump-overlay');
  expect(overlay?.textContent).toBe(`Press Tab to jump ${direction}`);expect(overlay.parentElement).toBe(w.document.documentElement);
- expect(overlay.style.background).toBe('var(--tm-preview-bg)');expect(w.document.querySelector('.preview')).toBeNull();expect(body.innerHTML).toBe(before);
- tm.dismissComposeSuggestion();expect(w.document.getElementById('tm-jump-overlay')).toBeNull();expect(w.document.querySelector('.tm-fake-caret')).toBeNull();
+ expect(overlay.style.background).toBe('var(--tm-preview-bg)');expect((tm.state.previewView?.root.querySelector('.preview') ?? null)).toBeNull();expect(body.innerHTML).toBe(before);
+ tm.dismissComposeSuggestion();expect(w.document.getElementById('tm-jump-overlay')).toBeNull();expect((tm.state.previewView?.root.querySelector('.tm-fake-caret') ?? null)).toBeNull();
 });
 
 it('accept preserves the baseline idle reset and pending request cancellation', () => {
@@ -864,7 +864,7 @@ it('displays and accepts an interior GLOBAL correction when LOCAL returns unchan
  tm.triggerCorrection(body);
  await new Promise(resolve=>w.setTimeout(resolve,20));
  expect(tm.getCorrectionFromServer.mock.calls.map(([c])=>c.isLocal)).toEqual([true,false]);
- expect(tm.state.previewView.host.querySelector('.content').textContent).toContain('program.');
+ expect(tm.state.previewView.root.querySelector('.content').textContent).toContain('program.');
  tm.handleKeyDown(new w.KeyboardEvent('keydown',{key:'Tab',cancelable:true}));
  expect(body.textContent).toContain('new program. Can you please let me know if everything is working as expected?');
  expect(body.textContent).not.toContain('pograsdasam');
@@ -907,4 +907,50 @@ it('does not send prior wording for a new sentence or an intentional whole-word 
  expect(tm.previousAcceptedSentence('We test the application.')).toBe('');
  expect(tm.previousAcceptedSentence('We test PostgreSQL.')).toBe('');
  expect(tm.previousAcceptedSentence('We test the pasdrogram.')).toBe('We test the program.');
+});
+
+it('replacing selected text must invalidate the old suggestion and request for the new draft', () => {
+ const {w,tm,body}=setup('Hello world.');tm.attachAutocomplete(body);
+ tm.state.correctedText='Hello wonderful world.';
+ const r=w.document.createRange();r.setStart(body.firstChild,6);r.setEnd(body.firstChild,12);w.getSelection().removeAllRanges();w.getSelection().addRange(r);
+ const schedule=vi.spyOn(tm,'scheduleTrigger').mockImplementation(()=>{});
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'w',bubbles:true}));
+ r.deleteContents();r.insertNode(w.document.createTextNode('w'));
+ body.dispatchEvent(new w.InputEvent('input',{data:'w',inputType:'insertText',bubbles:true}));
+ expect(body.textContent).toBe('Hello w');
+ expect(tm.state.correctedText).toBeNull();
+ expect(schedule).toHaveBeenCalledTimes(1);
+});
+
+it('registered inline cancellation unlocks newer typing and late results cannot overwrite it',async()=>{
+ const {w,tm,body}=setup('<p>Initial text.</p><div class="moz-signature">Signature</div>');
+ tm.attachAutocomplete(body);w.document.designMode='on';w.focus=()=>{};
+ let finish;w.browser.runtime.sendMessage=vi.fn(()=>new Promise(resolve=>finish=resolve));
+ const execution=vi.spyOn(tm,'_runInlineEditInstruction');
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+ const wrapper=w.document.getElementById('tm-inline-edit');expect(wrapper).not.toBeNull();expect(tm.state.inlineEditActive).toBe(true);
+ expect(w.document.designMode).toBe('off');
+ const input=wrapper.querySelector('iframe').contentDocument.querySelector('textarea');input.value='Rewrite wording';
+ input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+ expect(execution).toHaveBeenCalledTimes(1);expect(w.browser.runtime.sendMessage).toHaveBeenCalledTimes(1);expect(wrapper._tm_executing).toBe(true);
+ const pending=execution.mock.results[0].value;
+ input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+ expect(tm.state.inlineEditActive).toBe(false);expect(w.document.designMode).toBe('on');expect(w.document.getElementById('tm-inline-edit')).toBeNull();
+ vi.spyOn(tm,'scheduleTrigger').mockImplementation(()=>{});
+ body.firstChild.textContent='Newer authored text.';tm.setCursorByOffset(body,5);
+ body.dispatchEvent(new w.InputEvent('input',{data:'x',inputType:'insertText',bubbles:true}));
+ const expected=body.innerHTML;
+ finish({body:'Earlier edit result.'});await pending;
+ expect(body.innerHTML).toBe(expected);expect(w.document.execCommand).not.toHaveBeenCalled();expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
+});
+
+
+it('unaccepted preview text is excluded from whole-document serialization', () => {
+ const {w,tm,body}=setup('AUTHORED CONTENT ONLY.');
+ tm.state.correctedText='UNACCEPTED PROPOSAL MARKER.';tm.renderComposePreview();
+ expect(tm.state.previewView.root.textContent).toContain('UNACCEPTED PROPOSAL MARKER.');
+ expect(w.document.documentElement.outerHTML).not.toContain('UNACCEPTED PROPOSAL');
+ expect(w.document.documentElement.textContent).not.toContain('UNACCEPTED PROPOSAL');
+ expect(body.textContent).toBe('AUTHORED CONTENT ONLY.');
+ expect(tm.state.previewView.host.shadowRoot.querySelector('style').textContent).toContain('overflow: auto');
 });

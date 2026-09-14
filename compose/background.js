@@ -597,7 +597,7 @@ async function initializeScripts() {
       {
         id: "tabmail-compose-scripts",
         js: composeScriptsArr,
-        css: ["compose/highlight.css", "compose/preview.css"],
+        css: ["compose/preview.css"],
         runAt: "document_idle",
       },
     ]);
