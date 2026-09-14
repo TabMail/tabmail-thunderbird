@@ -98,7 +98,7 @@ Object.assign(TabMail, {
                 "font-weight: 400",
                 "line-height: 1.5",
                 "letter-spacing: 0.3px",
-                `color: ${TabMail.config.inlineEdit.text}`,
+                "color: var(--tm-preview-text)",
                 "text-align: center",
                 "user-select: none",
               ].join(";");
@@ -379,12 +379,14 @@ Object.assign(TabMail, {
   },
   /**
    * Creates and shows a lightweight dropdown near the caret for inline edit instructions.
-   * Disappears on blur. Ctrl/Cmd+Enter triggers the edit pipeline. Enter/Shift+Enter inserts a newline.
+   * Disappears on blur. Enter triggers the edit pipeline. Shift+Enter inserts a newline.
    */
   showInlineEditDropdown: function () {
     try {
       const editor = TabMail.state.editorRef;
       if (!editor) return;
+
+      TabMail.hideComposePreview?.();
 
       // Remove any existing dropdown
       const existing = document.getElementById("tm-inline-edit");
@@ -417,7 +419,6 @@ Object.assign(TabMail, {
         "display:inline-block;width:0;height:1em;overflow:hidden;padding:0;margin:0;border:0;pointer-events:none;";
       range.insertNode(probe);
       const rect = probe.getBoundingClientRect();
-      const caretLeft = rect.left;
       const caretTop = rect.bottom;
       probe.remove();
 
@@ -434,13 +435,13 @@ Object.assign(TabMail, {
       wrapper.style.cssText = [
         "position: fixed",
         `z-index: ${TabMail.config.inlineEdit.zIndex}`,
-        `max-width: ${TabMail.config.inlineEdit.maxWidthPx}px`,
-        `background: ${TabMail.config.inlineEdit.background}`,
-        `color: ${TabMail.config.inlineEdit.text}`,
-        `border: ${TabMail.config.inlineEdit.border}`,
+        "box-sizing: border-box",
+        "background: var(--tm-preview-bg)",
+        "color: var(--tm-preview-text)",
+        "border: 1px solid var(--tm-preview-border)",
         `border-radius: ${TabMail.config.inlineEdit.borderRadiusPx}px`,
-        `box-shadow: ${TabMail.config.inlineEdit.boxShadow}`,
-        `padding: ${TabMail.config.inlineEdit.padding}`,
+        "box-shadow: 0 4px 16px var(--tm-preview-shadow)",
+        `padding: 10px ${TabMail.config.preview.padding}px`,
         `font-size: ${TabMail.config.inlineEdit.fontSizeEm}em`,
         "display: flex",
         "flex-direction: column",
@@ -467,11 +468,11 @@ Object.assign(TabMail, {
       input.setAttribute("tabindex", "0");
       input.style.cssText = [
         "flex:1",
-        "min-width: 240px",
+        "min-width: 0",
         "background: transparent",
         "border: none",
         "outline: none",
-        `color: ${TabMail.config.inlineEdit.text}`,
+        "color: var(--tm-preview-text)",
         "font: inherit",
         "position: relative",
         "z-index: 1",
@@ -550,7 +551,7 @@ Object.assign(TabMail, {
       container.style.cssText = [
         "position: relative",
         "flex: 1",
-        "min-width: 240px",
+        "min-width: 0",
         "display: flex",
         "align-items: stretch",
         // Isolate selection/caret painting from designMode artifacts.
@@ -575,22 +576,7 @@ Object.assign(TabMail, {
 
       // Hint row
       const hint = document.createElement("div");
-      try {
-        const isMac = navigator.platform && /Mac/i.test(navigator.platform);
-        const execCmd = TabMail.config.keys.inlineEditExecuteCmd;
-        const execCtrl = TabMail.config.keys.inlineEditExecuteCtrl;
-        let hintText = "";
-        if (isMac && execCmd && execCmd.key === "Enter") {
-          hintText = "Press ⌘ Enter to edit";
-        } else if (execCtrl && execCtrl.key === "Enter") {
-          hintText = "Press Ctrl Enter to edit";
-        } else {
-          hintText = "Press Enter to edit";
-        }
-        hint.textContent = hintText;
-      } catch (_) {
-        hint.textContent = "Press Enter to edit";
-      }
+      hint.textContent = "Enter to edit · Shift+Enter for a new line";
       hint.style.cssText = [
         "font-size: 0.85em",
         "opacity: 0.7",
@@ -663,8 +649,12 @@ Object.assign(TabMail, {
         document.documentElement.clientHeight,
         window.innerHeight || 0
       );
+      const surfaceMargin = TabMail.config.preview.margin;
+      const editorRect = editor.getBoundingClientRect();
+      const left = Math.max(surfaceMargin, editorRect.left);
+      const right = Math.min(vw - surfaceMargin, editorRect.right || vw - surfaceMargin);
+      wrapper.style.width = `${Math.max(1, right - left)}px`;
       const rect2 = wrapper.getBoundingClientRect();
-      let left = Math.min(Math.max(8, caretLeft), vw - rect2.width - 8);
       let top = Math.min(caretTop + margin, vh - rect2.height - 8);
       wrapper.style.left = `${left}px`;
       wrapper.style.top = `${top}px`;
@@ -690,7 +680,7 @@ Object.assign(TabMail, {
           :root { --tm-inline-text: ${resolvedTextColor}; }
           html, body { margin: 0; padding: 0; background: transparent; color: var(--tm-inline-text); font-size: ${fontSizeEm}em; overflow: hidden; }
           .box { position: relative; display: block; font: inherit; color: var(--tm-inline-text); }
-          textarea { display:block; width:100%; min-width: 240px; background: transparent; border: none; outline: none; color: var(--tm-inline-text); font: inherit; position: relative; z-index: 1; caret-color: currentColor; resize: none; line-height: ${lineH}px; padding: 6px 10px; box-sizing: border-box; height: ${initialH}px; overflow-y: hidden; white-space: pre-wrap; word-break: break-word; scrollbar-gutter: stable both-edges; overscroll-behavior-y: contain; }
+          textarea { display:block; width:100%; min-width: 0; background: transparent; border: none; outline: none; color: var(--tm-inline-text); font: inherit; position: relative; z-index: 1; caret-color: currentColor; resize: none; line-height: ${lineH}px; padding: 6px 10px; box-sizing: border-box; height: ${initialH}px; overflow-y: hidden; white-space: pre-wrap; word-break: break-word; scrollbar-gutter: stable both-edges; overscroll-behavior-y: contain; }
           .ph { position: absolute; pointer-events: none; opacity: 0.6; left: 12px; right: 12px; top: 8px; transform: none; white-space: normal; overflow: hidden; text-overflow: ellipsis; color: var(--tm-inline-text); }
         `;
         idoc.head.appendChild(style);
@@ -839,7 +829,7 @@ Object.assign(TabMail, {
           autoResize();
         });
 
-        // Key handling: Config-driven execute (Cmd/Ctrl+Enter), Enter inserts newline
+        // Enter submits; Shift+Enter retains native textarea newline behavior.
         iinput.addEventListener(
           "keydown",
           (ev) => {
@@ -876,22 +866,13 @@ Object.assign(TabMail, {
               } catch (_) {}
               return;
             }
-            const isExecute = !!(
-              TabMail._isKeyMatch &&
-              (TabMail._isKeyMatch(
-                ev,
-                TabMail.config.keys.inlineEditExecuteCmd
-              ) ||
-                TabMail._isKeyMatch(
-                  ev,
-                  TabMail.config.keys.inlineEditExecuteCtrl
-                ))
-            );
+            const isExecute = TabMail._isKeyMatch(ev, TabMail.config.keys.inlineEditExecute) &&
+              !ev.isComposing && ev.keyCode !== 229;
             if (isExecute) {
               ev.preventDefault();
               ev.stopPropagation();
               const val = (iinput.value || "").trim();
-              TabMail.log.debug('inlineEdit', "Inline execute via Ctrl/Cmd+Enter");
+              TabMail.log.debug('inlineEdit', "Inline execute via Enter");
               TabMail._runInlineEditInstruction({
                 instruction: val,
                 wrapper,
@@ -899,7 +880,7 @@ Object.assign(TabMail, {
               });
               return;
             }
-            // Allow Enter/Shift+Enter to insert newline, but stop propagation to parent
+            // Allow Shift+Enter to insert newline, but stop propagation to parent
             if (ev.key === "Enter") {
               ev.stopPropagation();
               return;
@@ -1228,11 +1209,8 @@ Object.assign(TabMail, {
           cleanup();
           return;
         }
-        const isExecuteTop = !!(
-          TabMail._isKeyMatch &&
-          (TabMail._isKeyMatch(ev, TabMail.config.keys.inlineEditExecuteCmd) ||
-            TabMail._isKeyMatch(ev, TabMail.config.keys.inlineEditExecuteCtrl))
-        );
+        const isExecuteTop = TabMail._isKeyMatch(ev, TabMail.config.keys.inlineEditExecute) &&
+          !ev.isComposing && ev.keyCode !== 229;
         if (isExecuteTop) {
           ev.preventDefault();
           ev.stopPropagation();
@@ -1257,7 +1235,7 @@ Object.assign(TabMail, {
           }
           return;
         }
-        // Allow Enter/Shift+Enter to be a normal newline in the actual textarea (handled inside iframe)
+        // Allow Shift+Enter to be a normal newline in the actual textarea (handled inside iframe)
         if (ev.key === "Enter") {
           ev.stopPropagation();
         }

@@ -70,7 +70,7 @@ describe('TabMail.config', () => {
     expect(config.keys.disableAutocomplete.key).toBe('Escape');
     expect(config.keys.disableAutocomplete.shiftKey).toBe(true);
     expect(config.keys.inlineEditCmd.key).toBe('k');
-    expect(config.keys.inlineEditExecuteCmd.key).toBe('Enter');
+    expect(config.keys.inlineEditExecute.key).toBe('Enter');
   });
 
   it('has color configuration', () => {

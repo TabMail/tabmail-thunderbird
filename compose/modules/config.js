@@ -293,9 +293,8 @@ TabMail.config = {
     // Inline edit shortcuts (platform-specific)
     inlineEditCmd: { key: "k", metaKey: true },
     inlineEditCtrl: { key: "k", ctrlKey: true },
-    // Execute inline edit: Ctrl/Cmd + Enter (platform-specific)
-    inlineEditExecuteCmd: { key: "Enter", metaKey: true },
-    inlineEditExecuteCtrl: { key: "Enter", ctrlKey: true },
+    // Execute inline edit; Shift+Enter retains native newline insertion
+    inlineEditExecute: { key: "Enter" },
   },
 
   /**
