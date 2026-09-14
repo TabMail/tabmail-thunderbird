@@ -609,6 +609,7 @@ Object.assign(TabMail, {
         // Handle cursor positioning and autohide diffs
         // Preview content is outside the editable body.
         TabMail.handleAutohideDiff(e);
+        TabMail.hideComposePreview();
         
         // Cancel any restore timer
         if (TabMail.state.diffRestoreTimer) {
@@ -785,7 +786,7 @@ Object.assign(TabMail, {
     // --- Key handling for plain Esc to hide suggestions ---
     if (e.key === 'Escape' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       // Only handle if we have visible suggestions
-      if (TabMail.state.correctedText && TabMail.state.showDiff && !TabMail.state.autoHideDiff) {
+      if (TabMail.state.previewView?.pending || (TabMail.state.correctedText && TabMail.state.showDiff && !TabMail.state.autoHideDiff)) {
         e.preventDefault();
         e.stopPropagation();
         

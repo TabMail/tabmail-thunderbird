@@ -1324,3 +1324,58 @@ it.each(['bottom','cursor','invalid',undefined])('loads placement %s and applies
   expect(tm.triggerCorrection).not.toHaveBeenCalled();expect(tm.scheduleTrigger).not.toHaveBeenCalled();
   wrapper._tm_cleanup();w.dispatchEvent(new w.Event('beforeunload'));expect(listeners.size).toBe(0);
 });
+
+function typePastPreview(w,tm,body) {
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));
+ body.firstChild.textContent+='x';
+ const range=w.document.createRange();range.setStart(body.firstChild,body.firstChild.length);range.collapse(true);
+ w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+}
+it('placement change removes pending dock and fresh cursor acceptance still works',async()=>{
+ const {dom,w,tm,body}=setup('This is very useful.');
+ const listeners=new Set();
+ w.browser.storage={local:{get:vi.fn(async defaults=>({...defaults,composeBubblePlacement:'bottom'}))},onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+ tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const filename=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));tm.scheduleTrigger=vi.fn();
+ tm.state.correctedText='This is useful.';tm.renderText(true);const host=tm.state.previewView.host;
+ expect(host.style.bottom).toBe('8px');typePastPreview(w,tm,body);expect(host.isConnected).toBe(true);
+ for(const f of listeners)f({composeBubblePlacement:{oldValue:'bottom',newValue:'cursor'}},'local');
+ expect(host.isConnected).toBe(false);expect(body.textContent).toBe('This is very useful.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+ tm.state.correctedText='This is useful.x';tm.renderText(true);
+ expect(tm.state.previewView.host.style.bottom).toBe('');expect(tm.state.previewView.host.style.top).not.toBe('auto');
+ expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('This is useful.x');
+});
+it('typing removes both painted underline kinds without touching draft content',()=>{
+ const {w,tm,body}=setup('This is very useful.');tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ tm.state.correctedText='This is useful.';tm.renderText(true);const root=tm.state.previewView.root;
+ expect(root.querySelectorAll('.source-underline').length).toBeGreaterThan(0);expect(root.querySelectorAll('.source-deletion').length).toBeGreaterThan(0);
+ typePastPreview(w,tm,body);
+ expect(root.querySelectorAll('.source-underline').length).toBe(0);expect(root.querySelectorAll('.source-deletion').length).toBe(0);
+ expect(body.textContent).toBe('This is very useful.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it('instructions grow below the cap and then scroll at the cap',()=>{
+ const {w,tm,body}=setup('A draft.');tm.state.composeBubblePlacement='bottom';tm.showInlineEditDropdown();
+ const wrapper=w.document.getElementById('tm-inline-edit'),frame=wrapper.querySelector('iframe'),input=frame.contentDocument.querySelector('textarea');
+ const change=(text,height)=>{input.value=text;Object.defineProperty(input,'scrollHeight',{configurable:true,value:height});input.dispatchEvent(new w.Event('input'))};
+ change('One line',16);expect(frame.style.height).toBe('16px');
+ change('One\nTwo\nThree',48);expect(frame.style.height).toBe('48px');
+ change('Tall\n'.repeat(12),180);expect(frame.style.height).toBe('64px');expect(input.style.height).toBe('64px');expect(input.style.overflowY).toBe('auto');
+ expect(wrapper.style.bottom).toBe('8px');expect(wrapper.style.top).toBe('auto');
+ wrapper._tm_cleanup();expect(body.textContent).toBe('A draft.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+
+it.each(['Escape','compositionstart'])('pending dock handles the real %s event',event=>{
+ const {w,tm,body}=setup('This is very useful.');
+ tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ tm.state.correctedText='This is useful.';tm.renderText(true);typePastPreview(w,tm,body);
+ const host=tm.state.previewView.host;expect(host.isConnected).toBe(true);
+ const action=event==='Escape'?new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}):new w.CompositionEvent('compositionstart',{bubbles:true});
+ body.dispatchEvent(action);
+ expect(host.isConnected).toBe(false);expect(tm.state.previewModel).toBeNull();
+ expect(body.textContent).toBe('This is very useful.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+ if(event==='Escape')expect(action.defaultPrevented).toBe(true);
+ else expect(tm.state.isIMEComposing).toBe(true);
+});
