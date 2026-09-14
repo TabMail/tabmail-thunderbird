@@ -1155,13 +1155,16 @@ Object.assign(TabMail, {
       const cleanup = (reason = "unknown") => {
         TabMail.log.debug('inlineEdit', "Cleaning up inline edit.", { reason });
         if (reason === "apply" && document.hasFocus()) {
-          // Gecko can leave the native caret disabled when the instruction
-          // iframe is hidden during execution and then removed. A body focus()
-          // after removal does not repair it (switching applications does).
-          // Complete the focus handoff through the EXISTING iframe before its
-          // destruction: make its input focusable without painting it, focus
-          // that input, then the compose window and body. Keep the body caret
-          // transparent until the normal restoration below to avoid two carets.
+          // Keep this ordering: existing instruction input -> restored designMode
+          // -> compose window -> body -> remove popup -> restore body caret color.
+          // On macOS Thunderbird Beta 156, hiding/removing the focused iframe or
+          // focusing the body before restoring designMode can leave a valid DOM
+          // selection but no painted caret after clicking into an HTML paragraph.
+          // Arrow-key/flat-text checks alone missed it; app refocus restored it.
+          // Keep the body caret transparent during handoff to avoid dual carets.
+          // Do not substitute a second iframe, delayed focus, or a per-click repair.
+          // See test/manual/README.md, "Cmd-K caret focus handoff", for the native
+          // paragraph/signature, repeated-edit, mouse-placement and Undo checks.
           try {
             wrapper._tm_container.style.opacity = "0";
             wrapper._tm_container.style.visibility = "visible";
