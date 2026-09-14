@@ -10,8 +10,8 @@ Object.assign(TabMail, {
     const entries = [];
     let text = '';
     let stopped = false;
-    const append = (value, node, kind) => {
-      entries.push({ start: text.length, end: text.length + value.length, node, kind });
+    const append = (value, node, kind, before = false) => {
+      entries.push({ start: text.length, end: text.length + value.length, node, kind, before });
       text += value;
     };
     const visit = node => {
@@ -29,9 +29,14 @@ Object.assign(TabMail, {
         append('\n', node, 'break');
         return;
       }
+      const block = node !== root && /^(DIV|P|LI|BLOCKQUOTE|H[1-6]|TR)$/.test(node.nodeName);
+      // Inline text before a block occupies a separate rendered line. Represent
+      // its separator before the block, so request offsets and native ranges
+      // agree without adding a BR or rewriting the authored DOM.
+      if (block && text && !text.endsWith('\n')) append('\n', node, 'block', true);
       const start = text.length;
       for (const child of node.childNodes) visit(child);
-      if (node !== root && !stopped && /^(DIV|P|LI|BLOCKQUOTE|H[1-6]|TR)$/.test(node.nodeName) && !text.slice(start).endsWith('\n')) {
+      if (block && !stopped && !text.slice(start).endsWith('\n')) {
         append('\n', node, 'block');
       }
     };
@@ -54,6 +59,7 @@ Object.assign(TabMail, {
       if (entry.kind === 'text' && offset >= entry.start && offset <= entry.end) {
         return { node: entry.node, offset: offset - entry.start };
       }
+      if (entry.before && offset === entry.end) return { node: entry.node, offset: 0 };
       if (offset === entry.start || offset === entry.end) {
         const parent = entry.node.parentNode;
         if (!parent) continue;
@@ -90,9 +96,10 @@ Object.assign(TabMail, {
     }
     for (const entry of index.entries) {
       if (entry.node === selection.anchorNode && entry.kind === 'text') return entry.start + selection.anchorOffset;
-      if (entry.kind === 'block' && entry.node.contains(selection.anchorNode)) continue;
+      if (entry.kind === 'block' && !entry.before && entry.node.contains(selection.anchorNode)) continue;
       const end = document.createRange();
       if (entry.kind === 'text') end.setStart(entry.node, entry.node.textContent.length);
+      else if (entry.before) end.setStart(entry.node, 0);
       else end.setStartAfter(entry.node);
       end.collapse(true);
       if (end.compareBoundaryPoints(0, caret) <= 0) offset = entry.end;

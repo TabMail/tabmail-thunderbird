@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 import {beforeEach,it,expect,vi} from 'vitest';
+vi.mock('../agent/modules/config.js',()=>({SETTINGS:{},getBackendUrl:()=> 'https://example.com'}));
 vi.mock('../agent/modules/llm.js',()=>({sendChat:vi.fn(),processEditResponse:vi.fn()}));
 vi.mock('../agent/modules/promptGenerator.js',()=>({getUserCompositionPrompt:async()=>'',getUserKBPrompt:async()=>''}));
 vi.mock('../agent/modules/utils.js',()=>({extractBodyFromParts:vi.fn(),safeGetFull:vi.fn(),saveChatLog:vi.fn(),stripHtml:vi.fn()}));
@@ -35,4 +36,27 @@ it('does not retain a failed retry or attempt a third request',async()=>{
  sendChat.mockResolvedValueOnce({assistant:'missing'}).mockResolvedValueOnce({err:'Unavailable'});
  const result=await runComposeEdit({body:'Draft.',request:'Expand'});
  expect(sendChat).toHaveBeenCalledTimes(2);expect(result.body).toBe('');expect(result.chatHistory).toEqual([]);expect(result.error).toBe('empty_edit_body');
+});
+
+it.each([true, false])('real missing-Body parser response recovers safely: retry succeeds=%s', async succeeds => {
+ const {processEditResponse: parse} = await vi.importActual('../agent/modules/llm.js');
+ processEditResponse.mockImplementation(parse);
+ const malformed = 'Response: Expanded the draft.\n\nSubject: Test update\n\nHello team,\n\nHere is a longer update with additional details.';
+ const valid = 'Subject: Test update\n\nBody:\nHello team,\n\nHere is a longer update with additional details.';
+ expect(parse(malformed).body).toBeUndefined();
+ sendChat.mockResolvedValueOnce({assistant:malformed}).mockResolvedValueOnce({assistant:succeeds?valid:malformed});
+ const result = await runComposeEdit({body:'Hello team,\n\nBrief update.', request:'Make it longer'});
+ expect(sendChat).toHaveBeenCalledTimes(2);
+ expect(sendChat.mock.calls[1][0][0].current_body).toBe('Hello team,\n\nBrief update.');
+ expect(sendChat.mock.calls[1][0][0].edit_conversation_history).toBe('');
+ expect(sendChat.mock.calls[1][1].disableTools).toBe(true);
+ if (succeeds) {
+  expect(result.body).toBe('Hello team,\n\nHere is a longer update with additional details.');
+  expect(result.chatHistory).toHaveLength(1);
+  expect(result.chatHistory[0].assistantResponse).toBe(valid);
+ } else {
+  expect(result.error).toBe('empty_edit_body');
+  expect(result.body).toBe(''); expect(result.subject).toBeUndefined();
+  expect(result.chatHistory).toEqual([]);
+ }
 });
