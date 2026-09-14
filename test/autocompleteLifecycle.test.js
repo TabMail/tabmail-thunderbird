@@ -1571,3 +1571,37 @@ it('a docked editor that exceeds the compose viewport keeps its instruction and 
  expect(['auto','scroll'].includes(w.getComputedStyle(wrapper).overflowY)).toBe(true);
  expect(input.value).toBe(instruction);wrapper._tm_cleanup();expect(body.textContent).toBe('Draft.');expect(w.document.execCommand).not.toHaveBeenCalled();
 });
+
+it.each(['cursor','bottom'])('suppression after Cmd-K cancellation must not show an undismissable suggestion in %s', placement => {
+ const {w,tm,body}=setup('This is very useful.');
+ tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect(tm.state.previewModel).not.toBeNull();
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+ expect(tm.state.inlineEditActive).toBe(true);expect(tm.state.previewView).toBeNull();
+ const wrapper=w.document.getElementById('tm-inline-edit');
+ wrapper._tm_iinput.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+ expect(tm.state.inlineEditActive).toBe(false);expect(tm.state.autoHideDiff).toBe(true);
+ w.dispatchEvent(new w.Event('resize'));
+ const previewVisible=!!tm.state.previewModel;
+ const esc=new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});body.dispatchEvent(esc);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('This is very useful.');
+ expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(previewVisible && !esc.defaultPrevented).toBe(false);
+});
+
+afterEach(()=>vi.useRealTimers());
+it('repeated typing without a correction does not delay a newly produced docked proposal beyond the existing hide deadline',async()=>{
+ vi.useFakeTimers();
+ const {w,tm,body}=setup('Original words.');tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+ tm.config.DIFF_RESTORE_DELAY_MS=1000;tm.state.correctedText='Improved words.';tm.renderText(true);
+ expect(tm.state.previewModel).not.toBeNull();
+ const type=()=>{body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));body.firstChild.textContent+='x';tm.setCursorByOffset(body,body.textContent.length);body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));};
+ type();expect(tm.state.previewView.pending).toBe(true);expect(tm.state.correctedText).toBeNull();expect(tm.scheduleTrigger).toHaveBeenCalledTimes(1);
+ await vi.advanceTimersByTimeAsync(500);type();expect(tm.scheduleTrigger).toHaveBeenCalledTimes(2);
+ await vi.advanceTimersByTimeAsync(550);
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'Fresh words.xx'}));
+ await tm.triggerCorrectionBackend(body,'Original words.xx','',tm.state.latestGlobalRequestId,false);
+ expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);expect(body.textContent).toBe('Original words.xx');expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(tm.state.previewView.root.textContent).toContain('Fresh words.xx');expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(false);
+});

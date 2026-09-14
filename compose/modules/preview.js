@@ -107,7 +107,7 @@ Object.assign(TabMail, {
       TabMail.positionDockedComposeBubble(state.previewView.host);
       return;
     }
-    if (!show && state.composeBubblePlacement !== 'bottom') { TabMail.hideComposePreview(); return; }
+    if (!show) { TabMail.hideComposePreview(); return; }
     const index = TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor));
     const cursor = TabMail.composeCursorOffset(index);
     const anchorElement = sel.anchorNode?.nodeType === Node.ELEMENT_NODE ? sel.anchorNode : sel.anchorNode?.parentElement;
