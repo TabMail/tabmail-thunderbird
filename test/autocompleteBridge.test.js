@@ -27,7 +27,7 @@ beforeAll(async()=>{
 });
 beforeEach(()=>vi.clearAllMocks());
 afterAll(()=>{vi.useRealTimers();delete globalThis.browser;delete globalThis.messenger;});
-it.each([true,false].flatMap(isLocal=>[true,false].map(hasReference=>({isLocal,hasReference}))))('real message bridge preserves spelling reference and current draft: $isLocal/$hasReference',async({isLocal,hasReference})=>{
+it.each([true,false].flatMap(isLocal=>[true,false].map(hasReference=>({isLocal,hasReference}))))('real message bridge ignores obsolete reference and preserves current draft: $isLocal/$hasReference',async({isLocal,hasReference})=>{
  const current='We test the pasdrogram.';
  const contextInput={isLocal,userMessage:current,cursorPosition:20};
  if(hasReference)contextInput.previousAcceptedSentence='We test the program.';
@@ -36,10 +36,10 @@ it.each([true,false].flatMap(isLocal=>[true,false].map(hasReference=>({isLocal,h
  expect(result).toMatchObject({usertext:current,suggestion:'We test the program.'});
  const wire=sendChat.mock.calls[0][0][0];
  expect(wire.content).toBe(isLocal?'system_prompt_autocomplete_local':'system_prompt_autocomplete');
- expect(wire.previous_accepted_sentence).toBe(hasReference?'We test the program.':'');
+ expect(wire).not.toHaveProperty('previous_accepted_sentence');
  expect(wire.text_to_correct).toBe(current);
  expect(set).toHaveBeenCalledTimes(1);
  const stored=set.mock.calls[0][0]['activeHistory:123'][0];
  expect(stored).not.toHaveProperty('previous_accepted_sentence');expect(stored.text_to_correct).toBe(current);
- expect(wire.previous_accepted_sentence).toBe(hasReference?'We test the program.':'');
+ expect(wire).not.toHaveProperty('previous_accepted_sentence');
 });

@@ -88,7 +88,6 @@ Object.assign(TabMail, {
         // Reset adherence tracking
         TabMail.state.lastKeystrokeAdheredToSuggestion = false;
         TabMail.state.adherenceInfo = null;
-        TabMail.state.lastAcceptedText = "";
       }
       
       TabMail.log.info('events', "All event listeners cleaned up");

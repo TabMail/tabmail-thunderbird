@@ -928,44 +928,11 @@ it('displays and accepts an interior GLOBAL correction when LOCAL returns unchan
  expect(body.textContent).not.toContain('pograsdasam');
 });
 
-it('sends only the changed sentence from accepted wording as spelling context', async () => {
- const {w,tm,body}=setup('Hello. We test the przzogram. Keep the following sentence.');
- tm.setCursorByOffset(body,20);tm.state.correctedText='Hello. We test the program. Keep the following sentence.';tm.renderComposePreview();
- expect(tm.acceptComposePreview()).toBe(true);
- expect(tm.state.lastAcceptedText).toBe('Hello. We test the program. Keep the following sentence.');
- body.textContent='Hello. We test the pograsdasam. Keep the following sentence.';
- tm.setCursorByOffset(body,29);
- expect(tm.previousAcceptedSentence(body.textContent)).toBe('We test the program.');
- // Let the acceptance text-sync tick complete, then make a native-like edit.
- await new Promise(resolve=>w.setTimeout(resolve,0));
- body.textContent='Hello. We test the pasdrogram. Keep the following sentence.';tm.setCursorByOffset(body,28);
- tm.getCorrectionFromServer=vi.fn(async c=>({usertext:c.userMessage,suggestion:c.userMessage.replace('pasdrogram','program')}));
- tm.triggerCorrection(body);await new Promise(resolve=>w.setTimeout(resolve,20));
- expect(tm.getCorrectionFromServer).toHaveBeenCalled();
- for(const [context] of tm.getCorrectionFromServer.mock.calls) {
-  expect(context.previousAcceptedSentence).toBe('We test the program.');
-  expect(context.previousAcceptedSentence).not.toContain('following');
- }
-});
 
-it('omits accepted spelling context for empty drafts, broad rewrites, and long sentences', () => {
- const {tm}=setup('');
- tm.state.lastAcceptedText='One sentence. Two sentences.';
- expect(tm.previousAcceptedSentence('')).toBe('');
- expect(tm.previousAcceptedSentence('One sentence. Two sentences.')).toBe('');
- expect(tm.previousAcceptedSentence('Other sentence. Three sentences.')).toBe('');
- expect(tm.previousAcceptedSentence('x'.repeat(100))).toBe('');
- tm.state.lastAcceptedText='x'.repeat(600)+'.';
- expect(tm.previousAcceptedSentence('x'.repeat(599)+'y.')).toBe('');
-});
 
-it('does not send prior wording for a new sentence or an intentional whole-word replacement',()=>{
- const {tm}=setup('');tm.state.lastAcceptedText='We test the program.';
- expect(tm.previousAcceptedSentence('We test the program. More text.')).toBe('');
- expect(tm.previousAcceptedSentence('We test the application.')).toBe('');
- expect(tm.previousAcceptedSentence('We test PostgreSQL.')).toBe('');
- expect(tm.previousAcceptedSentence('We test the pasdrogram.')).toBe('We test the program.');
-});
+
+
+
 
 it('replacing selected text must invalidate the old suggestion and request for the new draft', () => {
  const {w,tm,body}=setup('Hello world.');tm.attachAutocomplete(body);
@@ -1104,37 +1071,10 @@ it.each(['success','empty','whitespace','native-failure','dismissed'])('retains 
  if(outcome==='dismissed')expect(w.document.execCommand).not.toHaveBeenCalled();
 });
 
-function acceptReference(tm,body,previous) {
- tm.state.correctedText=previous;tm.renderComposePreview();
- expect(tm.state.previewModel).not.toBeNull();
- expect(tm.acceptComposePreview()).toBe(true);
- expect(tm.state.lastAcceptedText).toBe(previous);
- expect(tm.indexComposeText(body).text).toBe(previous);
-}
-it.each([63,64,65])('accepted wording scopes an internal letter edit of length %i',n=>{
- const {tm,body}=setup('');
- const previous='We use z'+'a'.repeat(n)+'z.';
- acceptReference(tm,body,previous);
- const current='We use z'+'b'.repeat(n)+'z.';
- body.textContent=current;
- expect(tm.previousAcceptedSentence(current)).toBe(n<=64?previous:'');
- expect(body.textContent).toBe(current);
-});
-it.each([512,513])('accepted sentence length boundary %i',n=>{
- const {tm,body}=setup(''),previous='Z'+'a'.repeat(n-2)+'.';
- acceptReference(tm,body,previous);
- const current=previous.slice(0,5)+'b'+previous.slice(6);
- body.textContent=current;
- expect(tm.previousAcceptedSentence(current)).toBe(n<=512?previous:'');
- expect(body.textContent).toBe(current);
-});
-it('intentional punctuation inside an accepted word does not send its former spelling',()=>{
- const {tm,body}=setup(''),previous='We test the program.';
- acceptReference(tm,body,previous);
- body.textContent='We test the prog.ram.';
- expect(tm.previousAcceptedSentence(body.textContent)).toBe('');
- expect(body.textContent).toBe('We test the prog.ram.');
-});
+
+
+
+
 
 it.each([false,true])('pending Cmd-K observes a newer IME composition: %s',async composing=>{
  const {w,tm,body}=setup('<p>Draft.</p>');tm.attachAutocomplete(body);
@@ -1193,23 +1133,7 @@ it.each(['finish','mousedown','resize'])('completed wipe %s leaves no active lis
  expect([...active.values()].reduce((n,s)=>n+s.size,0)).toBe(0);
 });
 
-it('accepted wording is forgotten on cleanup and fresh acceptance restores the feature',async()=>{
- const {w,tm,body}=setup('');tm.attachAutocomplete(body);
- tm.state.correctedText='We use the program.';tm.renderComposePreview();
- expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('We use the program.');
- expect(tm.state.lastAcceptedText).toBe('We use the program.');
- const authored=body.innerHTML;tm.cleanupEventListeners();
- expect(body.innerHTML).toBe(authored);
- expect(tm.state.lastAcceptedText).toBe('');
- tm.attachAutocomplete(body);body.textContent='We use the progrom.';tm.setCursorByOffset(body,15);
- tm.state.originalText='';tm.state.correctedText=null;
- tm.getCorrectionFromServer=vi.fn(async c=>({usertext:c.userMessage,suggestion:c.userMessage}));
- await tm.triggerCorrection(body);await vi.waitFor(()=>expect(tm.getCorrectionFromServer.mock.calls.length).toBeGreaterThan(0));
- for(const [context]of tm.getCorrectionFromServer.mock.calls)expect(context.previousAcceptedSentence).toBe('');
- tm.state.correctedText='We use the program.';tm.renderComposePreview();expect(tm.acceptComposePreview()).toBe(true);
- expect(body.textContent).toBe('We use the program.');
- expect(tm.previousAcceptedSentence('We use the progrom.')).toBe('We use the program.');
-});
+
 
 // Execute the shipped probe to catch DOM-selector drift. This command model
 // checks probe wiring and preference recovery, not native Gecko Undo/painting.

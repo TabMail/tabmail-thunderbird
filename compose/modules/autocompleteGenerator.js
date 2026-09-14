@@ -15,7 +15,6 @@ export async function generateCorrection(context) {
     userMessage = "",
     quoteAndSignature = "",
     cursorPosition = 0,
-    previousAcceptedSentence = "",
     isLocal = false, // true = local/chunked mode, false = global/full email mode
     subject = "",
     from = "",
@@ -53,7 +52,6 @@ export async function generateCorrection(context) {
     to_info: Array.isArray(to) ? to.join(", ") : to,
     cc_info: Array.isArray(cc) ? cc.join(", ") : cc,
     current_time: formatTimestampForAgent(),
-    previous_accepted_sentence: typeof previousAcceptedSentence === "string" ? previousAcceptedSentence.slice(0, 512) : "",
     cursor_position: typeof cursorPosition === "number" ? cursorPosition : 0,
   };
 
@@ -67,9 +65,7 @@ export async function generateCorrection(context) {
   // Persist system message for debugging (without the final assistant suggestion).
   try {
     if (sessionId !== null) {
-      const historySystemMsg = { ...systemMsg };
-      delete historySystemMsg.previous_accepted_sentence;
-      await idb.set({ ["activeHistory:" + sessionId]: [historySystemMsg] });
+      await idb.set({ ["activeHistory:" + sessionId]: [systemMsg] });
     }
   } catch (_) {/* ignore */}
 

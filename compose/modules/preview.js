@@ -370,7 +370,6 @@ Object.assign(TabMail, {
     setTimeout(() => {
       TabMail.state.originalText = TabMail.extractUserAndQuoteTexts(editor).originalUserMessage;
     }, 0);
-    TabMail.state.lastAcceptedText = TabMail.extractUserAndQuoteTexts(editor).originalUserMessage;
     TabMail.state.lastActionWasAccept = true;
     TabMail.renderComposePreview();
     return true;
