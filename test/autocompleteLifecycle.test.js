@@ -1031,3 +1031,24 @@ it('shows a jump from the signature without including it in editable text',()=>{
  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
  expect(tm.state.previewModel).not.toBeNull();expect(body.innerHTML).toBe(before);
 });
+
+it.each(['plain','html'])('sends the complete body for a %s Cmd-K expansion and applies the result',async format=>{
+ const original='Hello,\n\nWe are testing the new system. Please report issues.\n\nThanks,\n\nExample';
+ const expanded='Hello team,\n\nWe are testing the new system. Please report issues, including delivery delays and formatting problems.\n\nYour feedback will help us prepare the rollout.\n\nThanks,\n\nExample';
+ const html=format==='html'?'<p>Hello,<br><br></p><p>We are testing the new system. Please report issues.</p><p><br>Thanks,<br><br>Example</p>':original;
+ const {w,tm,body}=setup(html+'<pre class="moz-signature">Private signature</pre>');
+ tm.attachAutocomplete(body);w.document.designMode='on';
+ w.browser.runtime.sendMessage.mockImplementation(async message=>{
+  if(message.type!=='runInlineComposeEdit')return;
+  expect(message.body).toBe(original);expect(message.selectedText).toBe('');
+  expect(message.request).toBe('Make it longer');
+  return {body:expanded};
+ });
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+ const input=w.document.getElementById('tm-inline-edit').querySelector('iframe').contentDocument.querySelector('textarea');
+ input.value='Make it longer';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+ await vi.waitFor(()=>expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe(expanded));
+ expect(w.browser.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({type:'runInlineComposeEdit',body:original}));
+ expect(body.querySelector('.moz-signature').textContent).toBe('Private signature');
+ expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+});
