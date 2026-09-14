@@ -297,6 +297,49 @@ describe('bridge producer: the provider range query is the only window filter', 
   });
 });
 
+describe('calendar_event_read direct lookup: the DATE endpoints survive the public event_id path', () => {
+  it('renders the all-day event by event_id + calendar_id with its own date digits', async () => {
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('ad', 'Holiday', DAY, NEXT_DAY)] });
+    browser.tmCalendar.getCalendarEventDetails.mockImplementation((...a) => api.getCalendarEventDetails(...a));
+    try {
+      const result = await calendarEventReadRun({ event_id: 'ad', calendar_id: 'cal1' });
+      expect(result.ok).toBe(true);
+      expect(result.results).toContain('Holiday');
+      expect(result.results).toContain(`start_iso: ${DAY}T00:00:00`);
+      expect(result.results).toContain(`end_iso: ${NEXT_DAY}T00:00:00`);
+      expect(result.results).not.toContain(PREV_DAY);
+    } finally {
+      browser.tmCalendar.getCalendarEventDetails.mockReset();
+      browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: false, error: 'not found' });
+    }
+  });
+});
+
+describe('calendar_event_read by start_iso: an overlapping all-day item is not a match for a timed start', () => {
+  it('a noon lookup returns the noon item and excludes the all-day item the provider also returned', async () => {
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('ad', 'Holiday', DAY, NEXT_DAY), timedEvent('t', 'Lunch', DAY, 12)] });
+    browser.tmCalendar.queryCalendarItems.mockImplementation((...a) => api.queryCalendarItems(...a));
+    try {
+      // The provider legitimately returns BOTH for the tool's tight noon window:
+      // the all-day item spans it. Only the tolerance test separates them.
+      const noon = new Date(`${DAY}T12:00:00`).getTime();
+      const both = await api.queryCalendarItems(new Date(noon - 60000).toISOString(), new Date(noon + 60000).toISOString(), ['cal1']);
+      expect(both.map((it) => it.id).sort()).toEqual(['ad', 't']);
+      const result = await calendarEventReadRun({ start_iso: `${DAY}T12:00:00` });
+      expect(result.ok).toBe(true);
+      expect(result.results).toContain('Lunch');
+      expect(result.results).not.toContain('Holiday');
+      // Positive control: the midnight lookup still finds the all-day item.
+      const midnight = await calendarEventReadRun({ start_iso: `${DAY}T00:00:00` });
+      expect(midnight.ok).toBe(true);
+      expect(midnight.results).toContain('Holiday');
+    } finally {
+      browser.tmCalendar.queryCalendarItems.mockReset();
+      browser.tmCalendar.queryCalendarItems.mockResolvedValue([]);
+    }
+  });
+});
+
 describe('edit round-trip: the recurrence token the read tool shows selects that occurrence in the bridge', () => {
   const field = (text, name) => (text.match(new RegExp(`^${name}: (.*)$`, 'm')) || [])[1];
 
@@ -334,7 +377,10 @@ describe('edit round-trip: the recurrence token the read tool shows selects that
       expect(modifications).toHaveLength(1);
       expect(modifications[0].oldItem.recurrenceId.compare(fakeDate(DAY))).toBe(0);
       const occ = calendar.items[0].recurrenceInfo.occurrences;
+      // Exactly the three original exceptions: a wrongly-typed lookup would have
+      // persisted a fourth (proxy) exception and left the target untouched.
       expect(occ.map((o) => o.title)).toEqual(['Holiday', 'Renamed', 'Holiday']);
+      expect(occ.map((o) => o.recurrenceId.toString())).toEqual([PREV_DAY, DAY, DAY_AFTER_NEXT].map((d) => d.replace(/-/g, '')));
       expect(calendar.items[0].title).toBe('Holiday');
       // The persisted occurrence keeps its DATE frame and RECURRENCE-ID.
       expect(occ[1].startDate.isDate).toBe(true);

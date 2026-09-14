@@ -110,8 +110,18 @@ export function fakeEvent({ id, title, startDate, endDate, recurrenceId = null, 
       getRecurrenceItems: () => [],
       // CalRecurrenceInfo keys exceptions by icalString: a DATE ("20261007")
       // and a same-day DATE-TIME ("20261007T000000") are different identities,
-      // so the lookup is type-sensitive, never `compare`.
-      getOccurrenceFor: (rid) => occurrences.find((o) => o.recurrenceId.toString() === rid.toString()) || null,
+      // so the lookup is type-sensitive, never `compare`. On a miss the native
+      // implementation does NOT return null: it hands back a fresh proxy
+      // occurrence for that RECURRENCE-ID (item.createProxy), which a later
+      // modifyItem persists as a NEW exception. A fake that returned null here
+      // would let the calendar scan repair a wrongly-typed lookup and hide it.
+      getOccurrenceFor: (rid) => {
+        const hit = occurrences.find((o) => o.recurrenceId.toString() === rid.toString());
+        if (hit) return hit;
+        const proxy = fakeEvent({ id: ev.id, title: ev.title, startDate: rid.clone(), endDate: ev.endDate.clone(), recurrenceId: rid.clone(), properties: Object.fromEntries(props) });
+        proxy.parentItem = ev; proxy.calendar = ev.calendar; proxy.recurrenceInfo = null;
+        return proxy;
+      },
     };
   }
   return ev;
@@ -167,11 +177,20 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
     async getItem(id) { return items.find((it) => String(it.id) === String(id)) || null; },
     async modifyItem(newItem, oldItem) {
       modifications.push({ newItem, oldItem });
-      // Persist by identity of the edited target, exactly one row.
-      const list = oldItem.parentItem ? oldItem.parentItem.recurrenceInfo.occurrences : items;
-      const idx = list.indexOf(oldItem);
+      if (oldItem.parentItem) {
+        // An occurrence edit persists through recurrenceInfo.modifyException:
+        // keyed by the RECURRENCE-ID's icalString, replacing the exception with
+        // that key or ADDING one (the proxy-on-miss path above lands here).
+        const list = oldItem.parentItem.recurrenceInfo.occurrences;
+        const key = newItem.recurrenceId.toString();
+        const idx = list.findIndex((o) => o.recurrenceId.toString() === key);
+        if (idx < 0) list.push(newItem); else list[idx] = newItem;
+        return newItem;
+      }
+      // A master/single item is replaced by identity, exactly one row.
+      const idx = items.indexOf(oldItem);
       if (idx < 0) throw new Error('modifyItem: unknown target');
-      list[idx] = newItem;
+      items[idx] = newItem;
       return newItem;
     },
   };
