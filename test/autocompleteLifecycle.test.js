@@ -1785,3 +1785,26 @@ describe('native compose whitespace on attachment', () => {
     tm.cleanupEventListeners();
   });
 });
+
+
+describe('HTML paragraph separator normalization', () => {
+  it.each(['keyboard', 'click'])('does not add a BR before the corrected paragraph via %s', mode => {
+    const { w, tm, body } = setup('<p>Hello,</p><p>I want to check&nbsp;<br><br>Best,<br>Example</p>');
+    tm.attachAutocomplete(body);
+    tm.setCursorByOffset(body, 22);
+    tm.state.correctedText = 'Hello,\n\nI want to check the formatting.\n\nBest,\nExample';
+    tm.renderComposePreview();
+    if (mode === 'keyboard') body.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    else tm.state.previewView.root.querySelector('button').click();
+    expect(body.innerHTML).toBe('<p>Hello,</p><p>I want to check the formatting.<br><br>Best,<br>Example</p>');
+    expect(tm.indexComposeText(body).text).toBe('Hello,\nI want to check the formatting.\n\nBest,\nExample');
+    tm.cleanupEventListeners();
+  });
+  it('keeps proposed blank lines when no HTML block boundary exists', () => {
+    const { tm } = setup('Hello,<br>I want to check.');
+    const original = 'Hello,\nI want to check.';
+    const model = tm.buildPreviewModel(original, 'Hello,\n\nI want to check this.', 15, []);
+    const result = model.edits.reduceRight((text, edit) => text.slice(0,edit.start)+edit.text+text.slice(edit.end), original);
+    expect(result).toBe('Hello,\n\nI want to check this.');
+  });
+});

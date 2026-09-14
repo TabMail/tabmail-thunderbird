@@ -63,6 +63,15 @@ Object.assign(TabMail, {
       const proposed = TabMail.composeEditsFromDiff(diffs);
       let changed = false;
       for (const edit of proposed) {
+        // A plain-text response commonly spells an existing HTML paragraph gap
+        // as two newlines. The projection already supplies its block separator;
+        // materializing the second one inserts a stray BR between paragraphs.
+        // Consume only that redundant separator, never authored BRs, plaintext
+        // newlines, or additional intentional blank lines in the proposal.
+        if (edit.start === edit.end && blockBreaks.includes(edit.start - 1) && /^\n+$/.test(edit.text)) {
+          edit.text = edit.text.slice(1);
+          changed = true;
+        }
         const boundary = blockBreaks.find(offset => offset >= edit.start && offset < edit.end && /^\s*$/.test(original.slice(offset, edit.end)));
         if (boundary !== undefined && /\s$/.test(edit.text)) {
           edit.end = boundary;
