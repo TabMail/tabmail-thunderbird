@@ -883,8 +883,7 @@ it('LOCAL completion sends GLOBAL the full assumed-accepted proposal, independen
  tm.state.originalText='';tm.state.correctedText=null;
  tm.getCorrectionFromServer=vi.fn(async ({isLocal,userMessage})=>({usertext:userMessage,suggestion:isLocal?'We meet Monday. Bring notes.':'We meet Monday. Bring notes.'}));
  await tm.triggerCorrection(body);
- await new Promise(resolve=>w.setTimeout(resolve,20));
- expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(2);
+ await vi.waitFor(()=>expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(2));
  expect(tm.getCorrectionFromServer.mock.calls[0][0]).toMatchObject({isLocal:true,userMessage:'We meet.'});
  expect(tm.getCorrectionFromServer.mock.calls[1][0]).toMatchObject({isLocal:false,userMessage:'We meet Monday. Bring notes.'});
  expect(body.textContent).toBe('We meet.');
@@ -895,8 +894,7 @@ it('displays and accepts an interior GLOBAL correction when LOCAL returns unchan
  tm.setCursorByOffset(body,52);tm.state.originalText='';
  tm.getCorrectionFromServer=vi.fn(async c=>({usertext:c.userMessage,suggestion:c.isLocal?c.userMessage:c.userMessage.replace('pograsdasam','program')}));
  tm.triggerCorrection(body);
- await new Promise(resolve=>w.setTimeout(resolve,20));
- expect(tm.getCorrectionFromServer.mock.calls.map(([c])=>c.isLocal)).toEqual([true,false]);
+ await vi.waitFor(()=>expect(tm.getCorrectionFromServer.mock.calls.map(([c])=>c.isLocal)).toEqual([true,false]));
  expect(tm.state.previewView.root.querySelector('.content').textContent).toContain('program.');
  tm.handleKeyDown(new w.KeyboardEvent('keydown',{key:'Tab',cancelable:true}));
  expect(body.textContent).toContain('new program. Can you please let me know if everything is working as expected?');
