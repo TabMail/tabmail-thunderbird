@@ -1085,8 +1085,8 @@ it.each(['plain','html'])('sends the complete body for a %s Cmd-K expansion and 
 it.each(['success','empty','whitespace','native-failure','dismissed'])('retains inline history only after successful application: %s',async outcome=>{
  const {w,tm,body}=setup('<p>Draft.</p>');
  const previous=[{userRequest:'Earlier'}],candidate=[...previous,{userRequest:'Expand'}];tm.state.editChatHistory=previous;
- const wrapper=w.document.createElement('div');wrapper.id='tm-inline-edit';body.appendChild(wrapper);
- wrapper._tm_cleanup=()=>wrapper.remove();
+ tm.showInlineEditDropdown();
+ const wrapper=w.document.getElementById('tm-inline-edit');
  w.browser.runtime.sendMessage.mockImplementation(async()=>{
   if(outcome==='dismissed')wrapper.remove();
   return {body:outcome==='empty'?'':outcome==='whitespace'?'   ':'Expanded draft.',chatHistory:candidate};
@@ -1095,8 +1095,99 @@ it.each(['success','empty','whitespace','native-failure','dismissed'])('retains 
  await tm._runInlineEditInstruction({instruction:'Expand',wrapper});
  expect(tm.state.editChatHistory).toEqual(outcome==='success'?candidate:previous);
  if(outcome==='empty'||outcome==='whitespace'){
-  expect(wrapper.isConnected).toBe(true);expect(wrapper.querySelector('[role="alert"]').textContent).toContain('Please try again');
+  expect(wrapper.isConnected).toBe(true);expect(wrapper.querySelector('.tm-inline-actions').shadowRoot.querySelector('[role="alert"]').textContent).toContain('Please try again');
+  expect(w.document.documentElement.outerHTML).not.toContain('No usable edit was returned');
+  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Draft.');
   expect(wrapper._tm_executing).toBe(false);expect(w.document.execCommand).not.toHaveBeenCalled();
  }
  if(outcome==='dismissed')expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+function acceptReference(tm,body,previous) {
+ tm.state.correctedText=previous;tm.renderComposePreview();
+ expect(tm.state.previewModel).not.toBeNull();
+ expect(tm.acceptComposePreview()).toBe(true);
+ expect(tm.state.lastAcceptedText).toBe(previous);
+ expect(tm.indexComposeText(body).text).toBe(previous);
+}
+it.each([63,64,65])('accepted wording scopes an internal letter edit of length %i',n=>{
+ const {tm,body}=setup('');
+ const previous='We use z'+'a'.repeat(n)+'z.';
+ acceptReference(tm,body,previous);
+ const current='We use z'+'b'.repeat(n)+'z.';
+ body.textContent=current;
+ expect(tm.previousAcceptedSentence(current)).toBe(n<=64?previous:'');
+ expect(body.textContent).toBe(current);
+});
+it.each([512,513])('accepted sentence length boundary %i',n=>{
+ const {tm,body}=setup(''),previous='Z'+'a'.repeat(n-2)+'.';
+ acceptReference(tm,body,previous);
+ const current=previous.slice(0,5)+'b'+previous.slice(6);
+ body.textContent=current;
+ expect(tm.previousAcceptedSentence(current)).toBe(n<=512?previous:'');
+ expect(body.textContent).toBe(current);
+});
+it('intentional punctuation inside an accepted word does not send its former spelling',()=>{
+ const {tm,body}=setup(''),previous='We test the program.';
+ acceptReference(tm,body,previous);
+ body.textContent='We test the prog.ram.';
+ expect(tm.previousAcceptedSentence(body.textContent)).toBe('');
+ expect(body.textContent).toBe('We test the prog.ram.');
+});
+
+it.each([false,true])('pending Cmd-K observes a newer IME composition: %s',async composing=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');tm.attachAutocomplete(body);
+ tm.state.editChatHistory=[];
+ let done;w.browser.runtime.sendMessage.mockImplementation(message=>message.type==='runInlineComposeEdit'?new Promise(r=>done=r):Promise.resolve({}));
+ tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');
+ const pending=tm._runInlineEditInstruction({instruction:'Expand the draft',wrapper});
+ expect(w.browser.runtime.sendMessage.mock.calls.filter(([m])=>m.type==='runInlineComposeEdit')).toHaveLength(1);
+ if(composing)body.dispatchEvent(new w.CompositionEvent('compositionstart',{bubbles:true}));
+ expect(tm.state.isIMEComposing).toBe(composing);
+ const history=[{userRequest:'Expand the draft'}];
+ done({body:'Expanded draft.',chatHistory:history});
+ await pending;
+ expect(tm.indexComposeText(body).text).toBe(composing?'Draft.':'Expanded draft.');
+ expect(w.document.execCommand.mock.calls.length).toBe(composing?0:1);
+ expect(tm.state.editChatHistory).toEqual(composing?[]:history);
+ expect(tm.state.isIMEComposing).toBe(composing);
+});
+it.each([false,true])('respects reduced-motion preference %s while preserving the draft',reduce=>{
+ const {w,tm,body}=setup('<p>Draft.</p>'),before=body.innerHTML;
+ body.getBoundingClientRect=()=>({top:0,left:0,bottom:100,width:300});
+ w.matchMedia=()=>({matches:reduce});
+ w.HTMLElement.prototype.animate=vi.fn(()=>({finished:new Promise(()=>{}),cancel:vi.fn()}));
+ tm.animateInlineEditApplication(body);
+ expect(w.HTMLElement.prototype.animate.mock.calls.length).toBe(reduce?0:1);
+ expect(w.document.documentElement.querySelectorAll('[data-tabmail-ui]').length).toBe(reduce?0:1);
+ expect(body.innerHTML).toBe(before);
+});
+it.each(['finish','mousedown','resize'])('completed wipe %s leaves no active listeners or callbacks',async ending=>{
+ const {w,tm,body}=setup('<p>Draft.</p>'),before=body.innerHTML;
+ body.getBoundingClientRect=()=>({top:0,left:0,bottom:100,width:300});
+ const watched=new Set(['keydown','input','mousedown','scroll','resize']),active=new Map();
+ const add=w.addEventListener.bind(w),remove=w.removeEventListener.bind(w);
+ w.addEventListener=(type,fn,opts)=>{if(watched.has(type)){if(!active.has(type))active.set(type,new Set());active.get(type).add(fn);}add(type,fn,opts)};
+ w.removeEventListener=(type,fn,opts)=>{active.get(type)?.delete(fn);remove(type,fn,opts)};
+ const animations=[];
+ w.HTMLElement.prototype.animate=vi.fn(()=>{
+  let finish;const animation={finished:new Promise(r=>finish=r),cancel:vi.fn(),finish:()=>finish()};
+  animations.push(animation);return animation;
+ });
+ tm.animateInlineEditApplication(body);
+ expect(animations.length).toBe(1);
+ expect(w.document.documentElement.querySelectorAll('[data-tabmail-ui]').length).toBe(1);
+ expect([...active.values()].reduce((n,s)=>n+s.size,0)).toBe(5);
+ if(ending==='finish')animations[0].finish();else w.dispatchEvent(new w.Event(ending));
+ await Promise.resolve();
+ expect(w.document.documentElement.querySelectorAll('[data-tabmail-ui]').length).toBe(0);
+ expect(animations[0].cancel).toHaveBeenCalledTimes(1);
+ tm.animateInlineEditApplication(body);
+ expect(animations.length).toBe(2);
+ w.dispatchEvent(new w.Event('keydown'));
+ expect(w.document.documentElement.querySelectorAll('[data-tabmail-ui]').length).toBe(0);
+ expect(body.innerHTML).toBe(before);
+ expect(animations[0].cancel).toHaveBeenCalledTimes(1);
+ expect(animations[1].cancel).toHaveBeenCalledTimes(1);
+ expect([...active.values()].reduce((n,s)=>n+s.size,0)).toBe(0);
 });

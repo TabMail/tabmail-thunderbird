@@ -54,7 +54,7 @@ Object.assign(TabMail, {
         return;
       }
 
-      wrapper?.querySelector('.tm-inline-error')?.remove();
+      wrapper?.querySelector('.tm-inline-actions')?.shadowRoot.querySelector('.tm-inline-error')?.remove();
       spinner && (spinner.style.display = "flex");
       // Show initial "Thinking..." status below spinner
       try {
@@ -220,19 +220,21 @@ Object.assign(TabMail, {
         chatHistory: editHistory,
       });
 
-      if (!wrapper?.isConnected) return; // Dismissed requests cannot apply or enter history.
+      if (!wrapper?.isConnected) return; // Dismissed body results cannot apply or enter history.
       const inlineRequestDuration = performance.now() - inlineRequestStartTime;
       
       if (!result || typeof result.body !== "string" || !result.body.trim()) {
         console.warn(`[TabMail InlineEdit] No edit result returned after ${inlineRequestDuration.toFixed(1)}ms`);
         if (wrapper?.isConnected) {
-          let error = wrapper.querySelector('.tm-inline-error');
+          // Recovery text is UI, not authored mail: keep it out of native serialization.
+          const errorRoot = wrapper.querySelector('.tm-inline-actions').shadowRoot;
+          let error = errorRoot.querySelector('.tm-inline-error');
           if (!error) {
             error = document.createElement('div');
             error.className = 'tm-inline-error';
             error.setAttribute('role', 'alert');
             error.setAttribute('spellcheck', 'false');
-            wrapper.appendChild(error);
+            errorRoot.appendChild(error);
           }
           error.textContent = 'No usable edit was returned. Please try again.';
         }

@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 import {readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
 import {createContext,runInContext} from 'node:vm';
 import {beforeAll,afterAll,beforeEach,it,expect,vi} from 'vitest';
 vi.mock('../agent/modules/idbStorage.js',()=>({set:vi.fn(async()=>{}),get:vi.fn(async()=>({}))}));
@@ -21,7 +22,7 @@ beforeAll(async()=>{
  globalThis.browser=globalThis.messenger=api;
  await import('../compose/background.js');await vi.advanceTimersByTimeAsync(500);
  context=createContext({browser:api,TabMail:{state:{},log:{debug(){},warn(){},error(){}}}});
- runInContext(readFileSync('compose/modules/api.js','utf8'),context,{filename:'compose/modules/api.js'});
+ runInContext(readFileSync('compose/modules/api.js','utf8'),context,{filename:resolve('compose/modules/api.js')});
  vi.useRealTimers();
 });
 beforeEach(()=>vi.clearAllMocks());
