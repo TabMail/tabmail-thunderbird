@@ -1013,3 +1013,21 @@ it.each(['div','p'].flatMap(tag=>['keyboard','click'].map(mode=>({tag,mode}))))(
  expect(w.document.execCommand).toHaveBeenCalledTimes(1);
  expect(tm.state.previewModel).toBeNull();expect(tm.state.previewJumpOffset).toBeNull();
 });
+
+// Signature text stays outside every request/edit offset; only navigation is shown.
+it('shows a jump from the signature without including it in editable text',()=>{
+ const {w,tm,body}=setup('<p>This is bad.</p><div class="moz-signature">Private signature</div>');
+ tm.attachAutocomplete(body);
+ const signature=body.querySelector('.moz-signature');
+ const r=w.document.createRange();r.setStart(signature.firstChild,4);r.collapse(true);
+ w.getSelection().removeAllRanges();w.getSelection().addRange(r);
+ const before=body.innerHTML;
+ tm.state.correctedText='This is good.';tm.renderComposePreview();
+ expect(tm.state.previewJumpOffset).toBe(8);expect(tm.state.previewModel).toBeNull();
+ expect(tm.state.previewView.root.querySelector('.tm-fake-caret')).not.toBeNull();
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('This is bad.');
+ expect(tm.composeCursorOffset(tm.indexComposeText(body,tm.getQuoteBoundaryNode(body)))).toBeNull();
+ expect(body.innerHTML).toBe(before);expect(w.document.execCommand).not.toHaveBeenCalled();
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+ expect(tm.state.previewModel).not.toBeNull();expect(body.innerHTML).toBe(before);
+});

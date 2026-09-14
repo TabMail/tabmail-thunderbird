@@ -78,8 +78,14 @@ Object.assign(TabMail, {
     if (!editor || !show || state.autocompleteDisabled || state.inlineEditActive || state.isIMEComposing || state.beforeSendCleanupActive || !sel?.isCollapsed) { TabMail.hideComposePreview(); return; }
     const index = TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor));
     const cursor = TabMail.composeCursorOffset(index);
-    if (cursor === null || typeof state.correctedText !== 'string' || !state.correctedText || state.correctedText === index.text) { TabMail.hideComposePreview(); return; }
-    const model = TabMail.buildPreviewModel(index.text, state.correctedText, cursor, index.entries.filter(entry => entry.kind === 'block').map(entry => entry.start));
+    const anchorElement = sel.anchorNode?.nodeType === Node.ELEMENT_NODE ? sel.anchorNode : sel.anchorNode?.parentElement;
+    const inSignature = cursor === null && editor.contains(sel.anchorNode) && !!anchorElement?.closest('.moz-signature');
+    if ((cursor === null && !inSignature) || typeof state.correctedText !== 'string' || !state.correctedText || state.correctedText === index.text) { TabMail.hideComposePreview(); return; }
+    // A signature cursor may navigate to a body edit, but never becomes an
+    // editable offset or part of the autocomplete request projection.
+    const model = inSignature
+      ? { edits: [], jumpOffset: TabMail.composeEditsFromDiff(TabMail.computeDiff(index.text, state.correctedText))[0]?.start }
+      : TabMail.buildPreviewModel(index.text, state.correctedText, cursor, index.entries.filter(entry => entry.kind === 'block').map(entry => entry.start));
     if (!model.edits.length && (model.jumpOffset == null || model.jumpOffset < 0)) { TabMail.hideComposePreview(); return; }
     state.previewModel = model.edits.length ? model : null;
     state.previewJumpOffset = model.edits.length ? null : model.jumpOffset;

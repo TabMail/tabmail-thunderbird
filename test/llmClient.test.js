@@ -196,6 +196,15 @@ describe('processEditResponse', () => {
     expect(result.body).toBe('Just a body with no subject');
   });
 
+  // Known inherited malformed-response behavior, tracked in #45. This fixture
+  // must be updated alongside a safe recovery strategy, not a generic fallback.
+  it('characterizes missing Body label after a subject and expanded prose (#45)', () => {
+    const result = processEditResponse('Response: Expanded the draft.\n\nSubject: Test update\n\nHello team,\n\nHere is a longer update with additional details.');
+    expect(result.subject).toBe('Test update');
+    expect(result.body).toBeUndefined();
+    expect(result.message).toBeUndefined();
+  });
+
   it('handles subject only (no body)', () => {
     const input = 'Subject: Just a subject';
     const result = processEditResponse(input);
