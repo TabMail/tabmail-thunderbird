@@ -1770,3 +1770,18 @@ it('a separate Settings disable update reaches an open docked compose window',as
  expect(tm.getCorrectionFromServer).toHaveBeenCalled();expect(tm.state.previewView.root.textContent).toContain('This is useful.');
  expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
 });
+
+// Quoted HTML contains source-formatting whitespace; attaching suggestions must
+// not turn it into authored line breaks. Plaintext still needs wrapping.
+describe('native compose whitespace on attachment', () => {
+  it.each(['normal', 'pre-wrap', 'pre'])('preserves whitespace semantics for %s', mode => {
+    const { w, tm, body } = setup('<p>Reply.</p><blockquote>\n\n<div>Quoted text.</div></blockquote><pre>kept\n  spacing</pre>');
+    body.style.whiteSpace = mode;
+    const content = body.innerHTML;
+    tm.attachAutocomplete(body);
+    expect(w.getComputedStyle(body).whiteSpace).toBe(mode === 'pre' ? 'pre-wrap' : mode);
+    expect(body.innerHTML).toBe(content);
+    expect(w.getComputedStyle(body.querySelector('pre')).whiteSpace).toBe('pre');
+    tm.cleanupEventListeners();
+  });
+});

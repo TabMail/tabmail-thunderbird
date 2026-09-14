@@ -512,8 +512,10 @@ Object.assign(TabMail, {
     // In some compose contexts, the editor (often BODY under designMode) inherits
     // `white-space: pre` (no wrapping). Quotes/signatures may wrap because they
     // have their own `white-space: pre-wrap` styles, but user content won't.
-    // Force the editor itself to allow wrapping. Use inline !important so we
-    // win over document styles.
+    // Only change the non-wrapping pre mode. Normal HTML must keep collapsing
+    // source whitespace: forcing pre-wrap exposes formatting newlines in quoted
+    // replies as large blank gaps. Plaintext pre/pre-wrap still preserves authored
+    // newlines, and descendants with explicit whitespace styles remain intact.
     // ------------------------------------------------------------------
     try {
       if (!TabMail.state._tmComposeWrapFixLogged) {
@@ -532,7 +534,9 @@ Object.assign(TabMail, {
       }
 
       if (editor && editor.style && typeof editor.style.setProperty === "function") {
-        editor.style.setProperty("white-space", "pre-wrap", "important");
+        if (window.getComputedStyle(editor).whiteSpace === "pre") {
+          editor.style.setProperty("white-space", "pre-wrap", "important");
+        }
         editor.style.setProperty("overflow-wrap", "anywhere", "important");
         editor.style.setProperty("word-break", "break-word", "important");
 
