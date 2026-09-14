@@ -423,7 +423,12 @@ async function buildCalendarSummary(args) {
         }
       }
       const eventId = it.id || "unknown";
-      const line = `${formatHour(it.normalizedStart)} - ${formatHour(it.normalizedEnd)}: ${title}${recurMark}\tevent_id: ${eventId}`;
+      // All-day entries render as "All day" (iOS parity) — a clock range with
+      // AM/PM cues would be a fabricated time for an item that has none.
+      const timeRange = it.isAllDay
+        ? "All day"
+        : `${formatHour(it.normalizedStart)} - ${formatHour(it.normalizedEnd)}`;
+      const line = `${timeRange}: ${title}${recurMark}\tevent_id: ${eventId}`;
       const result = insertLine(days[dayKey], calId, line);
       days[dayKey] = result;
       
@@ -493,11 +498,25 @@ function insertLine(dayObj, calName, line) {
 
 // ensureDate function removed - replaced by normalizeTimeInput
 
+// Explicit 12-hour cue appended to every timed entry — "05:00 (5 a.m.)",
+// "17:30 (5:30 p.m.)". The 24-hour value stays the primary token (and the
+// `timezone:` header still governs it); the parenthetical exists because the
+// LLM has misread bare 24-hour ranges as the wrong half of the day (#31).
+// Must stay byte-for-byte aligned with iOS `CalendarToolHelpers.twelveHourCue`.
+function formatTwelveHourCue(hours24, minutes) {
+  const meridiem = hours24 < 12 ? "a.m." : "p.m.";
+  const h12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  const mm = minutes === 0 ? "" : `:${String(minutes).padStart(2, "0")}`;
+  return `${h12}${mm} ${meridiem}`;
+}
+
 function formatHour(d) {
   try {
-    const hh = d.getHours().toString().padStart(2, "0");
-    const mm = d.getMinutes().toString().padStart(2, "0");
-    return `${hh}:${mm}`;
+    const hours = d.getHours();
+    const minutes = d.getMinutes();
+    const hh = hours.toString().padStart(2, "0");
+    const mm = minutes.toString().padStart(2, "0");
+    return `${hh}:${mm} (${formatTwelveHourCue(hours, minutes)})`;
   } catch (_) { return ""; }
 }
 
@@ -590,6 +609,7 @@ export const _testExports = {
   formatDayHeader,
   insertLine,
   formatHour,
+  formatTwelveHourCue,
   localMidnightOfDay,
   resolveDateRange,
   normalizeArgs,

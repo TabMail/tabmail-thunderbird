@@ -33,6 +33,7 @@ const {
   formatDayHeader,
   insertLine,
   formatHour,
+  formatTwelveHourCue,
   resolveDateRange,
   normalizeArgs,
 } = _testExports;
@@ -284,34 +285,58 @@ describe('insertLine', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatHour', () => {
-  it('formats midnight as 00:00', () => {
+  // #31 — every timed value keeps its 24-hour form and gains a parenthetical
+  // 12-hour cue so the agent cannot misread morning as evening.
+  it('formats midnight as 00:00 with a 12 a.m. cue', () => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
-    expect(formatHour(d)).toBe('00:00');
+    expect(formatHour(d)).toBe('00:00 (12 a.m.)');
   });
 
-  it('formats noon as 12:00', () => {
+  it('formats noon as 12:00 with a 12 p.m. cue', () => {
     const d = new Date();
     d.setHours(12, 0, 0, 0);
-    expect(formatHour(d)).toBe('12:00');
+    expect(formatHour(d)).toBe('12:00 (12 p.m.)');
   });
 
-  it('formats single-digit hours with leading zero', () => {
+  it('formats a morning time with leading zero and an a.m. cue', () => {
+    const d = new Date();
+    d.setHours(5, 0, 0, 0);
+    expect(formatHour(d)).toBe('05:00 (5 a.m.)');
+  });
+
+  it('formats an afternoon time with a p.m. cue', () => {
+    const d = new Date();
+    d.setHours(17, 0, 0, 0);
+    expect(formatHour(d)).toBe('17:00 (5 p.m.)');
+  });
+
+  it('keeps minutes in both the 24-hour value and the cue', () => {
     const d = new Date();
     d.setHours(9, 5, 0, 0);
-    expect(formatHour(d)).toBe('09:05');
+    expect(formatHour(d)).toBe('09:05 (9:05 a.m.)');
   });
 
-  it('formats end-of-day as 23:59', () => {
+  it('formats end-of-day as 23:59 with an 11:59 p.m. cue', () => {
     const d = new Date();
     d.setHours(23, 59, 0, 0);
-    expect(formatHour(d)).toBe('23:59');
+    expect(formatHour(d)).toBe('23:59 (11:59 p.m.)');
   });
 
   it('returns empty string for invalid input', () => {
     expect(formatHour(null)).toBe('');
     expect(formatHour(undefined)).toBe('');
     expect(formatHour('not a date')).toBe('');
+  });
+});
+
+describe('formatTwelveHourCue', () => {
+  it('maps the 24-hour boundaries onto 12-hour labels', () => {
+    expect(formatTwelveHourCue(0, 0)).toBe('12 a.m.');
+    expect(formatTwelveHourCue(11, 59)).toBe('11:59 a.m.');
+    expect(formatTwelveHourCue(12, 0)).toBe('12 p.m.');
+    expect(formatTwelveHourCue(13, 0)).toBe('1 p.m.');
+    expect(formatTwelveHourCue(23, 0)).toBe('11 p.m.');
   });
 });
 

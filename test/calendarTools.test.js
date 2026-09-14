@@ -98,6 +98,7 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
 }));
 
 vi.mock('../chat/modules/helpers.js', () => ({
+  toIsoNoMs: vi.fn((d = new Date()) => d.toISOString().replace(/\.\d{3}Z$/, 'Z')),
   toNaiveIso: vi.fn((msOrIso) => {
     if (typeof msOrIso === 'number') return new Date(msOrIso).toISOString().replace('Z', '');
     if (typeof msOrIso === 'string') return msOrIso.replace('Z', '');
@@ -313,6 +314,9 @@ describe('calendar_read', () => {
   });
 
   it('returns error on failure', async () => {
+    // Reset the pagination cache so the rejected query is actually consumed
+    // here instead of leaking into the next test's mock queue.
+    calendarReadResetPagination();
     browser.tmCalendar.queryCalendarItems.mockRejectedValueOnce(new Error('calendar error'));
     const result = await calendarReadRun({});
     // Should handle the error gracefully
@@ -321,5 +325,26 @@ describe('calendar_read', () => {
 
   it('resetPaginationSessions does not throw', () => {
     expect(() => calendarReadResetPagination()).not.toThrow();
+  });
+
+  // #31 — timed rows carry an explicit 12-hour cue next to the 24-hour value;
+  // all-day rows stay "All day" and never gain a fabricated clock range.
+  it('renders morning, evening, and all-day rows with AM/PM cues where a time exists', async () => {
+    calendarReadResetPagination();
+    const day = new Date();
+    day.setDate(day.getDate() + 7);
+    day.setHours(0, 0, 0, 0);
+    const at = (h, m = 0) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m, 0, 0).getTime();
+    const dayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    browser.tmCalendar.queryCalendarItems.mockResolvedValueOnce([
+      { id: 'am', calendarId: 'cal1', title: 'Early run', startMs: at(5), endMs: at(6), isAllDay: false, attendeeList: [] },
+      { id: 'pm', calendarId: 'cal1', title: 'Dinner', startMs: at(17, 30), endMs: at(18), isAllDay: false, attendeeList: [] },
+      { id: 'ad', calendarId: 'cal1', title: 'Holiday', startMs: at(0), endMs: at(0) + 86400000, isAllDay: true, attendeeList: [] },
+    ]);
+    const result = await calendarReadRun({ calendar_ids: ["cal1"], from_date: dayKey, to_date: dayKey });
+    expect(result.results).toContain('05:00 (5 a.m.) - 06:00 (6 a.m.): Early run\tevent_id: am');
+    expect(result.results).toContain('17:30 (5:30 p.m.) - 18:00 (6 p.m.): Dinner\tevent_id: pm');
+    expect(result.results).toContain('All day: Holiday\tevent_id: ad');
+    expect(result.results).not.toMatch(/00:00 \(12 a\.m\.\) - 00:00/);
   });
 });
