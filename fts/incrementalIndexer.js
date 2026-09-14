@@ -7216,6 +7216,7 @@ export const _testExports = {
   _getFolderReconWorkingProofTelemetry: _folderReconWorkingProofTelemetry,
   _getFolderReconRuntimeTelemetry: () => _folderReconRuntimeTelemetry,
   _getFolderReconActiveProofKey: () => _folderReconActiveProof?.folderKey || null,
+  _isFolderReconSchedulerActive: () => _folderReconSchedulerOwner !== null,
   _getFolderReconSessionDone: () => new Set(_folderReconSessionDone),
   _getFolderReconEphemeralEvidence: () => ({
     deferred: _folderReconSessionDeferred.size + _folderReconDrainFailureDeferred.size,

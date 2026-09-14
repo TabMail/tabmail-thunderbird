@@ -35,6 +35,10 @@ const realDateNow = Date.now.bind(Date);
 // Stay below Vitest's outer 5s default so a stuck helper reports this explicit
 // scheduler error instead of a generic test timeout.
 const SCHEDULER_SETTLE_REAL_DEADLINE_MS = 4_000;
+// Real thread-pool latency imposed on every membership digest in the retry
+// fixture. Large enough that the bounded real-loop turns granted by virtual
+// advancement alone cannot finish a tick; small enough to keep the test quick.
+const RETRY_DIGEST_REAL_LATENCY_MS = 50;
 
 function yieldToRealEventLoop() {
   return new Promise(resolve => realSetTimeout(resolve, 0));
@@ -508,6 +512,36 @@ function expectOnlyBoundedFolderMembershipReads(fts) {
   expect(fts.listFolderMembershipState.mock.calls.every(
     ([, limit]) => limit > 0 && limit <= 2000,
   )).toBe(true);
+}
+
+// A scheduler tick started by the retry timer callback cannot be awaited by
+// the test. Such a tick awaits WebCrypto digests that settle on the REAL event
+// loop at load-dependent latency, while a finite series of virtual advances
+// grants only a bounded number of real-loop turns (one per advance plus one
+// per fired fake timer). A fixed count of advances is therefore not enough
+// real-time progress for the tick to finish (TB #43). Yield to the real loop
+// until the in-flight tick releases its owner slot, under the same real
+// deadline as the direct helper below; on expiry disable the indexer so the
+// stalled continuation unwinds without committing proof. The caller owns
+// virtual time: this helper drives no fake timers, so a tick that parks on a
+// fake timer (a multi-page folder scan) needs the caller's next advance.
+async function settleInFlightSchedulerTickWithFakeTimers(
+  deadlineMs = SCHEDULER_SETTLE_REAL_DEADLINE_MS,
+  yieldToRealLoop = yieldToRealEventLoop,
+) {
+  const startedAt = realDateNow();
+  while (_testExports._isFolderReconSchedulerActive()) {
+    await yieldToRealLoop();
+    // Re-read ownership AFTER the yield: work that completed during a long
+    // real-loop turn must win over a deadline that elapsed in the same turn.
+    if (_testExports._isFolderReconSchedulerActive()
+        && realDateNow() - startedAt >= deadlineMs) {
+      _testExports._setIsEnabled(false);
+      throw new Error(
+        `In-flight folder reconciliation tick did not settle within ${deadlineMs}ms real time`,
+      );
+    }
+  }
 }
 
 async function settleSchedulerTickWithFakeTimers(fts) {
@@ -3524,33 +3558,163 @@ describe('strict reconciliation lifecycle contracts', () => {
   it('arms one normal in-session retry when the first post-init scheduler seed rejects', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    let digestSpy = null;
     try {
       const fts = installEmptyFolders([['account1', '/A']]);
       globalThis.browser.accounts.list.mockRejectedValueOnce(new Error('inventory unavailable'));
       storageData.fts_reconcile_pending = 123;
       _testExports._setFtsSearch(fts);
+      // Impose real thread-pool latency on every membership digest. In
+      // production the digest settles at load-dependent latency; pinning a
+      // fixed latency makes the fixture deterministic instead of passing only
+      // when each digest happens to land within the bounded real-loop turns
+      // the virtual advances grant.
+      const realDigest = crypto.subtle.digest.bind(crypto.subtle);
+      digestSpy = vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (...args) => {
+        await new Promise(resolve => realSetTimeout(resolve, RETRY_DIGEST_REAL_LATENCY_MS));
+        return realDigest(...args);
+      });
 
       await _testExports.runPostInitReconcile(fts);
+      // A failed seed keeps the durable marker so a restart retries too.
+      expect(storageData.fts_reconcile_pending).toBe(123);
       expect(globalThis.browser.accounts.list).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(reconConfig.errorDelayMs - 1);
       expect(globalThis.browser.accounts.list).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(1);
       // The timer callback intentionally starts a bounded scheduler turn.
-      // Settle its permanent strict storage tail after each small virtual turn
-      // instead of widening the amount of virtual scheduling the test accepts.
+      // Settle the in-flight tick on the real event loop, then its permanent
+      // strict storage tail, after each small virtual turn instead of widening
+      // the amount of virtual scheduling the test accepts.
       for (let turn = 0; turn < 20 && storageData.fts_reconcile_pending; turn++) {
         await vi.advanceTimersByTimeAsync(1000);
+        await settleInFlightSchedulerTickWithFakeTimers();
         await _testExports._reconStorageTransaction(
           _testExports._getFolderReconGeneration(),
           () => {},
         );
       }
+      expect(digestSpy).toHaveBeenCalled();
 
       expect(globalThis.browser.accounts.list.mock.calls.length).toBeGreaterThan(1);
       expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).toHaveBeenCalled();
       expect(storageData.fts_reconcile_pending).toBeUndefined();
     } finally {
+      digestSpy?.mockRestore();
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed when an in-flight tick never settles within the real deadline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    const gate = deferred();
+    let digestSpy = null;
+    let observed = null;
+    try {
+      const fts = installEmptyFolders([['account1', '/A']]);
+      storageData.fts_reconcile_pending = 123;
+      _testExports._setFtsSearch(fts);
+      const realDigest = crypto.subtle.digest.bind(crypto.subtle);
+      digestSpy = vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce(async (...args) => {
+        await gate.promise;
+        return realDigest(...args);
+      });
+
+      _testExports._wakeFolderRecon('stalled-tick', 0);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(digestSpy).toHaveBeenCalledOnce();
+      expect(_testExports._isFolderReconSchedulerActive()).toBe(true);
+      expect(storageData.fts_reconcile_pending).toBe(123);
+      const memoBefore = structuredClone(storageData[_testExports.FOLDER_RECON_STORAGE_KEY] ?? null);
+
+      // Exercise the DEFAULT deadline the retry fixture relies on.
+      const deadlineMs = SCHEDULER_SETTLE_REAL_DEADLINE_MS;
+      const startedAt = realDateNow();
+      observed = settleInFlightSchedulerTickWithFakeTimers().then(
+        () => ({ kind: 'completed' }),
+        error => ({ kind: 'error', message: error.message }),
+      );
+      const outcome = await Promise.race([
+        observed,
+        new Promise(resolve => realSetTimeout(() => resolve({ kind: 'unbounded' }), deadlineMs + 1_000)),
+      ]);
+      const elapsedMs = realDateNow() - startedAt;
+
+      // Release the stalled continuation and let it unwind before asserting.
+      gate.resolve();
+      const cleanupStart = realDateNow();
+      while (_testExports._isFolderReconSchedulerActive()
+          && realDateNow() - cleanupStart < SCHEDULER_SETTLE_REAL_DEADLINE_MS) {
+        await yieldToRealEventLoop();
+      }
+      await observed;
+
+      expect(outcome).toEqual({
+        kind: 'error',
+        message: `In-flight folder reconciliation tick did not settle within ${deadlineMs}ms real time`,
+      });
+      expect(elapsedMs).toBeGreaterThanOrEqual(deadlineMs);
+      expect(_testExports._isFolderReconSchedulerActive()).toBe(false);
+      // The disabled late continuation commits no proof: pending marker, memo
+      // and native rows are untouched and no wake timer is left armed.
+      expect(storageData.fts_reconcile_pending).toBe(123);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY] ?? null).toEqual(memoBefore);
+      expect(fts.removeBatch).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      gate.resolve();
+      digestSpy?.mockRestore();
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  }, SCHEDULER_SETTLE_REAL_DEADLINE_MS + 3_000);
+
+  it('accepts a tick that completes during the last real-loop turn even when the deadline elapsed in it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    const removeStarted = deferred();
+    const releaseRemove = deferred();
+    let tick = null;
+    try {
+      const fts = installEmptyFolders([]);
+      storageData.fts_reconcile_pending = 123;
+      _testExports._setFtsSearch(fts);
+      globalThis.browser.storage.local.remove.mockImplementationOnce(async (key) => {
+        removeStarted.resolve();
+        await releaseRemove.promise;
+        delete storageData[key];
+      });
+      tick = _testExports._runFolderReconSchedulerTick(fts);
+      await removeStarted.promise;
+      expect(_testExports._isFolderReconSchedulerActive()).toBe(true);
+      expect(storageData.fts_reconcile_pending).toBe(123);
+
+      const deadlineMs = 50;
+      let slowYields = 0;
+      // One real-loop turn that outlasts the deadline and during which the
+      // tick durably completes. Completion already observable before the
+      // deadline decision must win.
+      const slowYield = async () => {
+        slowYields++;
+        await new Promise(resolve => realSetTimeout(resolve, deadlineMs + 20));
+        releaseRemove.resolve();
+        await expect(tick).resolves.toMatchObject({ complete: true });
+        await yieldToRealEventLoop();
+      };
+      await expect(settleInFlightSchedulerTickWithFakeTimers(deadlineMs, slowYield))
+        .resolves.toBeUndefined();
+      expect(slowYields).toBe(1);
+      expect(_testExports._isFolderReconSchedulerActive()).toBe(false);
+      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(globalThis.browser.storage.local.remove).toHaveBeenCalledWith('fts_reconcile_pending');
+    } finally {
+      releaseRemove.resolve();
+      if (tick) await tick.catch(() => {});
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
       vi.useRealTimers();
