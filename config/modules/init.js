@@ -186,6 +186,11 @@ export async function initConfigPage({
   // Listen for storage changes to refresh maintenance log
   try {
     configStorageListener = (changes, areaName) => {
+      // Both compose bubbles can change placement while Appearance is open.
+      if (areaName === "local" && changes.composeBubblePlacement) {
+        const placement = $("compose-bubble-placement");
+        if (placement) placement.value = changes.composeBubblePlacement.newValue === "bottom" ? "bottom" : "cursor";
+      }
       if (areaName === "local" && changes.fts_maintenance_log) {
         loadMaintenanceLog().catch((e) => {
           console.warn("[TMDBG Config] Failed to refresh maintenance log:", e);

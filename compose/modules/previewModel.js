@@ -45,8 +45,9 @@ Object.assign(TabMail, {
         // as two newlines. The projection already supplies its block separator;
         // materializing the second one inserts a stray BR between paragraphs.
         // Consume only that redundant separator, never authored BRs, plaintext
-        // newlines, or additional intentional blank lines in the proposal.
-        if (edit.start === edit.end && blockBreaks.includes(edit.start - 1) && /^\n+$/.test(edit.text)) {
+        // newlines, or multi-newline runs. Those carry intentional extra spacing;
+        // partially consuming them would re-propose it from the cached response.
+        if (edit.start === edit.end && blockBreaks.includes(edit.start - 1) && /^\n$/.test(edit.text)) {
           edit.text = edit.text.slice(1);
           changed = true;
         }
