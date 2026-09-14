@@ -539,7 +539,11 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
     }
     inputFocus();
   });
-  vi.spyOn(w, 'focus').mockImplementation(() => handoff.push('window'));
+  vi.spyOn(w, 'focus').mockImplementation(() => {
+    // The native editor must be back in its original mode before focus returns.
+    // A final mode assertion misses the mouse-caret regression in Gecko.
+    handoff.push(`window:${w.document.designMode}`);
+  });
   const removeWrapper = wrapper.remove.bind(wrapper);
   vi.spyOn(wrapper, 'remove').mockImplementation(() => {
     handoff.push('remove');
@@ -587,7 +591,7 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
   expect(w.document.activeElement === body).toBe(true);
   expect(body.style.caretColor).not.toBe('transparent');
-  expect(handoff.slice(0,3)).toEqual(['instruction','window','remove']);
+  expect(handoff.slice(0,3)).toEqual(['instruction','window:on','remove']);
   expect(w.document.querySelector('iframe')).toBeNull();
 });
 

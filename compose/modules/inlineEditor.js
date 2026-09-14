@@ -1166,6 +1166,13 @@ Object.assign(TabMail, {
             wrapper._tm_container.style.opacity = "0";
             wrapper._tm_container.style.visibility = "visible";
             iframeInput.focus();
+            // Restore the native editing mode BEFORE returning focus. Focusing
+            // the body while still in contenteditable mode leaves Gecko's caret
+            // working initially but invisible after a click into an HTML paragraph.
+            if (wrapper.dataset._didToggleDesignMode === "1") {
+              document.designMode = wrapper.dataset._prevDesignMode;
+              wrapper.dataset._didToggleDesignMode = "0";
+            }
             window.focus();
             TabMail.state.editorRef.focus();
           } catch (error) {
