@@ -1379,3 +1379,91 @@ it.each(['Escape','compositionstart'])('pending dock handles the real %s event',
  if(event==='Escape')expect(action.defaultPrevented).toBe(true);
  else expect(tm.state.isIMEComposing).toBe(true);
 });
+
+it('a newer persisted placement survives an older initial storage read', async () => {
+ const {dom,w,tm,body}=setup('This is very useful.');
+ const listeners=new Set(); let finishRead; let saved='cursor';let reads=0;
+ w.browser.storage={local:{get:vi.fn(defaults=>{const snapshot={...defaults,composeBubblePlacement:saved};if(++reads>1)return Promise.resolve(snapshot);return new Promise(resolve=>{finishRead=()=>resolve(snapshot)})}),set:vi.fn(async patch=>{saved=patch.composeBubblePlacement;for(const f of listeners)f({composeBubblePlacement:{newValue:saved}},'local')})},onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+ tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const filename=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+ expect(finishRead).toBeTypeOf('function');
+ const appearance=readFileSync(resolve('config/modules/appearance.js'),'utf8').replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,'');
+ runInContext(appearance,dom.getInternalVMContext(),{filename:'review-appearance-writer.js'});
+ await w.handleAppearanceChange({target:{id:'compose-bubble-placement',value:'bottom'}},{});
+ expect(saved).toBe('bottom');expect(tm.state.composeBubblePlacement).toBe('bottom');
+ finishRead();await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect((await w.browser.storage.local.get({composeBubblePlacement:'cursor'})).composeBubblePlacement).toBe('bottom');expect(tm.state.composeBubblePlacement).toBe('bottom');
+ expect(tm.state.previewView.host.style.bottom).toBe('8px');
+});
+
+it.each(['cursor','bottom'])('editor input in %s reaches LOCAL then GLOBAL and accepts the produced proposal',async placement=>{
+ const {w,tm,body}=setup('Draft');tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);tm.state.currentIdleTime=1;
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:context.isLocal?'Draftx improved.':'Draftx improved globally.'}));
+ expect(tm.state.previewView??null).toBeNull();
+ body.firstChild.textContent+='x';const range=w.document.createRange();range.setStart(body.firstChild,body.firstChild.length);range.collapse(true);w.getSelection().removeAllRanges();w.getSelection().addRange(range);
+ body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+ await vi.waitFor(()=>expect(tm.state.correctedText).toBe('Draftx improved globally.'));
+ expect(tm.getCorrectionFromServer.mock.calls.map(([arg])=>[arg.isLocal,arg.userMessage])).toEqual([[true,'Draftx'],[false,'Draftx improved.']]);
+ expect(body.textContent).toBe('Draftx');expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(tm.state.previewView.root.textContent).toContain('Draftx improved globally.');expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('Draftx improved globally.');
+});
+it('real pending Disable persists a value that a later reader sees and preserves authored text',async()=>{
+ const {w,tm,body}=setup('This is very useful.');let saved={autocompleteEnabled:true};
+ w.browser.storage.local={set:vi.fn(async patch=>{Object.assign(saved,patch)}),get:vi.fn(async defaults=>({...defaults,...saved}))};
+ tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();tm.state.correctedText='This is useful.';tm.renderText(true);
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));body.firstChild.textContent+='x';body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+ expect(tm.state.previewView.pending).toBe(true);tm.state.previewView.root.querySelector('[aria-label="Disable suggestions"]').click();
+ expect((await w.browser.storage.local.get({autocompleteEnabled:true})).autocompleteEnabled).toBe(false);expect(tm.state.autocompleteDisabled).toBe(true);expect(tm.state.previewView).toBeNull();expect(body.textContent).toBe('This is very useful.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+it.each(['cursor','bottom'])('fresh %s Escape dismisses without changing the draft', placement=>{
+ const {w,tm,body}=setup('This is very useful.');tm.state.composeBubblePlacement=placement;tm.attachAutocomplete(body);tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect(tm.state.previewView.pending).toBe(false);const before=body.innerHTML;const event=new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});body.dispatchEvent(event);
+ expect(event.defaultPrevented).toBe(true);expect(tm.state.previewView).toBeNull();expect(tm.state.correctedText).toBeNull();expect(body.innerHTML).toBe(before);expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+it.each(['keyboard','click'])('fresh docked suggestion applies complete rich text through %s', mode => {
+ const {w,tm,body}=setup('<p>This is very useful.</p><div class="moz-signature">Signature</div>');
+ tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.state.correctedText='This is useful.\n';tm.renderText(true);
+ expect(tm.state.previewModel).not.toBeNull();expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(false);
+ if(mode==='click')tm.state.previewView.root.querySelector('[aria-label="Accept"]').click();
+ else body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+ expect(body.querySelector('p').textContent).toBe('This is useful.');expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
+ expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+});
+
+it('cursor Cmd-K remains below its measured caret when space is available',()=>{
+ const {w,tm,body}=setup('A draft.');tm.state.composeBubblePlacement='cursor';
+ w.HTMLElement.prototype.getBoundingClientRect=function(){return this.tagName==='SPAN'?{left:8,right:8,top:80,bottom:100,width:0,height:20}:this.id==='tm-inline-edit'?{left:8,right:700,top:0,bottom:60,width:692,height:60}:{left:8,right:700,top:0,bottom:200,width:692,height:200}};
+ tm.showInlineEditDropdown();const wrap=w.document.getElementById('tm-inline-edit');expect(wrap).not.toBeNull();
+ expect(Number.parseFloat(wrap.style.top)).toBe(100+tm.config.inlineEdit.marginPx);
+ expect(wrap.style.bottom).toBe('');expect(body.textContent).toContain('A draft.');wrap._tm_cleanup();
+});
+
+it('Cmd-K clamps measured geometry during growth, resize, and live placement changes',()=>{
+ const {w,tm,body}=setup('A draft.');
+ tm.state.composeBubblePlacement='cursor';w.innerWidth=500;w.innerHeight=240;
+ let height=60,overflow=false;
+ w.HTMLElement.prototype.getBoundingClientRect=function(){
+  if(this.tagName==='SPAN')return {left:20,right:20,top:180,bottom:200,width:0,height:20};
+  if(this.id==='tm-inline-edit'){
+   const left=parseFloat(this.style.left)||20,top=parseFloat(this.style.top)||0,width=parseFloat(this.style.width)||472;
+   return {left,right:overflow?520:left+width,top,bottom:overflow?260:top+height,width,height};
+  }
+  return {left:20,right:500,top:0,bottom:240,width:480,height:240};
+ };
+ tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');
+ expect(wrapper.style.top).toBe('172px');expect(wrapper.style.left).toBe('20px');expect(wrapper.style.width).toBe('472px');
+ const input=wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
+ height=120;overflow=true;Object.defineProperty(input,'scrollHeight',{configurable:true,value:96});
+ input.value='More\nlines';input.dispatchEvent(new w.Event('input'));overflow=false;
+ expect(wrapper.style.top).toBe('112px');expect(wrapper.style.left).toBe('20px');
+ w.innerHeight=100;w.innerWidth=350;w.dispatchEvent(new w.Event('resize'));
+ expect(wrapper.style.top).toBe('8px');expect(wrapper.style.width).toBe('322px');
+ tm.state.composeBubblePlacement='bottom';wrapper._tm_reposition();
+ expect(wrapper.style.bottom).toBe('8px');expect(wrapper.style.top).toBe('auto');expect(wrapper.style.width).toBe('334px');
+ w.innerHeight=400;tm.state.composeBubblePlacement='cursor';wrapper._tm_reposition();
+ expect(wrapper.style.top).toBe(`${200+tm.config.inlineEdit.marginPx}px`);expect(wrapper.style.bottom).toBe('');
+ wrapper._tm_cleanup();expect(body.textContent).toBe('A draft.');
+});
