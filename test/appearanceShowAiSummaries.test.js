@@ -106,7 +106,7 @@ describe('handleAppearanceChange — Show AI Summaries checkbox', () => {
 
 it.each(['cursor','bottom','invalid'])('loads compose placement %s with safe default', async value=>{
   els['compose-bubble-placement']={value:''};
-  browser.storage.local.get.mockImplementation(async keys=>Array.isArray(keys)?{}:{...keys,composeBubblePlacement:value});
+  browser.storage.local.get.mockImplementation(async keys=>Array.isArray(keys)?{}:Object.fromEntries(Object.entries(keys).map(([key,fallback])=>[key,key==='composeBubblePlacement'?value:fallback])));
   await loadAppearanceSettings(SETTINGS);
   expect(els['compose-bubble-placement'].value).toBe(value==='bottom'?'bottom':'cursor');
 });

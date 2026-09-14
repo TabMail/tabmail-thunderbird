@@ -1305,7 +1305,7 @@ it('Cmd-K uses shared docked margins, grows upward, resizes, and removes its lis
 it.each(['bottom','cursor','invalid',undefined])('loads placement %s and applies live changes to both surfaces without requesting',async initial=>{
   const {dom,w,tm}=setup('This is very useful.');
   const listeners=new Set();
-  w.browser.storage={local:{get:vi.fn(async defaults=>({...defaults,composeBubblePlacement:initial}))},onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+  w.browser.storage={local:storageFor({composeBubblePlacement:initial}).local,onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
   tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
   const filename=resolve('compose/compose-autocomplete.js');
   runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
@@ -1335,7 +1335,7 @@ function typePastPreview(w,tm,body) {
 it('placement change removes pending dock and fresh cursor acceptance still works',async()=>{
  const {dom,w,tm,body}=setup('This is very useful.');
  const listeners=new Set();
- w.browser.storage={local:{get:vi.fn(async defaults=>({...defaults,composeBubblePlacement:'bottom'}))},onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+ w.browser.storage={local:storageFor({composeBubblePlacement:'bottom'}).local,onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
  tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
  const filename=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
  await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));tm.scheduleTrigger=vi.fn();
@@ -1604,4 +1604,66 @@ it('repeated typing without a correction does not delay a newly produced docked 
  await tm.triggerCorrectionBackend(body,'Original words.xx','',tm.state.latestGlobalRequestId,false);
  expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);expect(body.textContent).toBe('Original words.xx');expect(w.document.execCommand).not.toHaveBeenCalled();
  expect(tm.state.previewView.root.textContent).toContain('Fresh words.xx');expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(false);
+});
+
+function storageFor(saved, listeners = new Set()) {
+ return {local:{
+   async get(keys) {
+     if(keys == null) return {...saved};
+     if(typeof keys === 'string') keys = [keys];
+     if(Array.isArray(keys)) return Object.fromEntries(keys.filter(k=>Object.hasOwn(saved,k)).map(k=>[k,saved[k]]));
+     return Object.fromEntries(Object.entries(keys).map(([k,v])=>[k,Object.hasOwn(saved,k)?saved[k]:v]));
+   },
+   async set(patch){for(const [k,v] of Object.entries(patch)){const oldValue=saved[k];saved[k]=v;for(const listener of listeners)listener({[k]:{oldValue,newValue:v}},'local');}},
+   async remove(keys){for(const k of [].concat(keys))delete saved[k];}
+ },onChanged:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}};
+}
+function appearanceWindow(saved) {
+ const d=new JSDOM(readFileSync(resolve('config/config.html'),'utf8'),{runScripts:'outside-only'}),w=d.window;windows.push(w);
+ w.browser={storage:storageFor(saved),tmPrefs:{hasUserValue:async()=>false,getInt:async()=>0}};
+ w.$=id=>w.document.getElementById(id);w.getShowAiSummariesEnabled=async()=>true;
+ const source=readFileSync(resolve('config/modules/appearance.js'),'utf8').replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,'');
+ runInContext(source,d.getInternalVMContext(),{filename:resolve('config/modules/appearance.js')});
+ return w;
+}
+it.each(['bottom','cursor'])('writer to reopened compose preserves persisted %s with key-selective storage', async placement=>{
+ const saved={};const settings=appearanceWindow(saved);
+ await settings.handleAppearanceChange({target:{id:'compose-bubble-placement',value:placement}},{});
+ expect(saved.composeBubblePlacement).toBe(placement);
+ const {dom,w,tm,body}=setup('This is very useful.');w.browser.storage=storageFor(saved);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const filename=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(filename,'utf8'),dom.getInternalVMContext(),{filename});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect(tm.state.previewView).not.toBeNull();
+ expect(tm.state.previewView.host.style.bottom).toBe(placement==='bottom'?'8px':'');
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+it.each(['bottom','cursor'])('writer to reopened Appearance preserves persisted %s with key-selective storage', async placement=>{
+ const saved={};const writer=appearanceWindow(saved);
+ await writer.handleAppearanceChange({target:{id:'compose-bubble-placement',value:placement}},{});
+ expect(saved.composeBubblePlacement).toBe(placement);
+ const reader=appearanceWindow(saved);const select=reader.document.getElementById('compose-bubble-placement');select.value='';
+ await reader.loadAppearanceSettings({appearance:{prefs:{}},actionTagging:{}});
+ expect(select.value).toBe(placement);expect(saved.composeBubblePlacement).toBe(placement);
+});
+it('a fresh correction arriving during the hide interval keeps the dock connected until it updates',async()=>{
+ vi.useFakeTimers();
+ try {
+  const {w,tm,body}=setup('Original words.');tm.state.composeBubblePlacement='bottom';tm.attachAutocomplete(body);tm.scheduleTrigger=vi.fn();
+  tm.config.DIFF_RESTORE_DELAY_MS=1000;tm.state.correctedText='Improved words.';tm.renderText(true);
+  const host=tm.state.previewView.host;expect(tm.state.previewModel).not.toBeNull();
+  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'x',bubbles:true}));body.firstChild.textContent+='x';tm.setCursorByOffset(body,body.textContent.length);body.dispatchEvent(new w.InputEvent('input',{inputType:'insertText',data:'x',bubbles:true}));
+  expect(host.isConnected).toBe(true);expect(tm.state.previewView.pending).toBe(true);expect(tm.acceptComposePreview()).toBe(false);
+  await vi.advanceTimersByTimeAsync(100);
+  tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'Fresh words.x'}));
+  await tm.triggerCorrectionBackend(body,'Original words.x','',tm.state.latestGlobalRequestId,false);
+  expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);expect(tm.state.correctedText).toBe('Fresh words.x');
+  expect(host.isConnected).toBe(true);expect(tm.state.previewView.host).toBe(host);
+  expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(true);
+  expect(body.textContent).toBe('Original words.x');expect(w.document.execCommand).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(901);
+  expect(tm.state.previewView.host).toBe(host);expect(tm.state.previewView.root.textContent).toContain('Fresh words.x');
+  expect(tm.state.previewView.root.querySelector('[aria-label="Accept"]').disabled).toBe(false);
+  expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('Fresh words.x');
+ } finally {vi.useRealTimers();}
 });
