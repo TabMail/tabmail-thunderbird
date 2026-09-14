@@ -13,7 +13,6 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 vi.mock("../agent/modules/utils.js", () => ({ log: vi.fn() }));
 
 const {
-  checkPlaintextComposition,
   checkDefaultCalendar,
   checkDefaultAddressBook,
   checkSetupConfiguration,
@@ -45,56 +44,6 @@ function setupBrowser({ prefs = {}, accounts = [], storage = {}, tmPrefs = true 
     },
   };
 }
-
-describe("checkPlaintextComposition", () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
-
-  it("reports configured when every identity composes plaintext (compose_html=false)", async () => {
-    setupBrowser({
-      accounts: [{ identities: [{ id: "id1", email: "a@example.com" }] }],
-      prefs: { "mail.identity.id1.compose_html": false },
-    });
-    const res = await checkPlaintextComposition();
-    expect(res.configured).toBe(true);
-    expect(res.problematicIdentities).toEqual([]);
-  });
-
-  it("flags identities that compose HTML (compose_html=true)", async () => {
-    setupBrowser({
-      accounts: [{ identities: [{ id: "id1", name: "Work", email: "a@example.com" }] }],
-      prefs: { "mail.identity.id1.compose_html": true },
-    });
-    const res = await checkPlaintextComposition();
-    expect(res.configured).toBe(false);
-    expect(res.problematicIdentities).toEqual(["Work"]);
-  });
-
-  it("defaults to HTML (problematic) when the pref is absent", async () => {
-    setupBrowser({
-      accounts: [{ identities: [{ id: "id1", email: "a@example.com" }] }],
-      prefs: {}, // getBoolSafe returns the fallback (true = HTML) when absent
-    });
-    const res = await checkPlaintextComposition();
-    expect(res.configured).toBe(false);
-    expect(res.problematicIdentities).toEqual(["a@example.com"]);
-  });
-
-  it("returns not-configured with reason when tmPrefs API is unavailable", async () => {
-    setupBrowser({ tmPrefs: false });
-    const res = await checkPlaintextComposition();
-    expect(res.configured).toBe(false);
-    expect(res.reason).toMatch(/tmPrefs/);
-  });
-
-  it("ignores accounts with no identities", async () => {
-    setupBrowser({
-      accounts: [{ identities: [] }, { identities: [{ id: "id2", email: "b@example.com" }] }],
-      prefs: { "mail.identity.id2.compose_html": false },
-    });
-    const res = await checkPlaintextComposition();
-    expect(res.configured).toBe(true);
-  });
-});
 
 describe("checkDefaultCalendar", () => {
   beforeEach(() => { vi.restoreAllMocks(); });
@@ -132,7 +81,7 @@ describe("checkDefaultAddressBook", () => {
 describe("checkSetupConfiguration (aggregate)", () => {
   beforeEach(() => { vi.restoreAllMocks(); });
 
-  it("allConfigured=true only when all three checks pass", async () => {
+  it("allConfigured=true only when both checks pass", async () => {
     setupBrowser({
       accounts: [{ identities: [{ id: "id1", email: "a@example.com" }] }],
       prefs: { "mail.identity.id1.compose_html": false },
@@ -146,25 +95,25 @@ describe("checkSetupConfiguration (aggregate)", () => {
   it("collects one issue per failing check", async () => {
     setupBrowser({
       accounts: [{ identities: [{ id: "id1", name: "Work", email: "a@example.com" }] }],
-      prefs: { "mail.identity.id1.compose_html": true }, // HTML → problematic
+      prefs: { "mail.identity.id1.compose_html": true },
       storage: {}, // no calendar, no address book
     });
     const res = await checkSetupConfiguration();
     expect(res.allConfigured).toBe(false);
-    expect(res.issues).toHaveLength(3);
-    expect(res.issues.some((i) => i.includes("Plaintext"))).toBe(true);
+    expect(res.issues).toHaveLength(2);
     expect(res.issues).toContain("Default calendar not set");
     expect(res.issues).toContain("Default address book not set");
   });
 
-  it("names the problematic identities in the plaintext issue", async () => {
+  it("supports HTML identities without changing their composition preference", async () => {
     setupBrowser({
       accounts: [{ identities: [{ id: "id1", name: "Work", email: "a@example.com" }] }],
       prefs: { "mail.identity.id1.compose_html": true },
       storage: { defaultCalendarId: "cal-1", defaultAddressBookId: "ab-1" },
     });
     const res = await checkSetupConfiguration();
-    expect(res.allConfigured).toBe(false);
-    expect(res.issues).toEqual(["Plaintext composition not set for: Work"]);
+    expect(res.allConfigured).toBe(true);
+    expect(res.issues).toEqual([]);
+    expect(browser.tmPrefs.getBoolSafe).not.toHaveBeenCalled();
   });
 });

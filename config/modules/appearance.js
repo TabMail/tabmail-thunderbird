@@ -173,17 +173,10 @@ export async function loadAppearanceSettings(SETTINGS) {
       );
     }
 
-    // Load compose hints banner setting (default: enabled)
     const stored = await browser.storage.local.get({
-      composeHintsBannerEnabled: true,
       prioritizeTabMailTags: false,
       appearanceCardSnippetsEnabled: false,
     });
-    const hintsCheckbox = $("compose-hints-banner");
-    if (hintsCheckbox) {
-      hintsCheckbox.checked = stored.composeHintsBannerEnabled !== false;
-    }
-
     // Load "Show AI Summaries" display preference (default: enabled, #34)
     const showSummariesCheckbox = $("show-ai-summaries");
     if (showSummariesCheckbox) {
@@ -239,7 +232,7 @@ export async function loadAppearanceSettings(SETTINGS) {
     // NOTE: view mode / inbox sorting / sort order are now controlled by header buttons
     // in the Thunderbird message list header (TB 145 / MV3). Config page is theme-only.
     console.log(
-      `[TMDBG Config] Appearance loaded (theme-only UI). composeHints=${stored.composeHintsBannerEnabled}`,
+      `[TMDBG Config] Appearance loaded (theme-only UI).`,
     );
     
     // Update images based on current theme
@@ -394,24 +387,6 @@ export async function handleAppearanceChange(e, SETTINGS) {
         statusEl.textContent = "Error applying theme";
         statusEl.style.color = "var(--tag-tm-delete)";
       }
-      setTimeout(() => {
-        statusEl.textContent = "";
-      }, 3000);
-    }
-  }
-
-  // Compose hints banner checkbox
-  if (e.target.id === "compose-hints-banner") {
-    const enabled = e.target.checked;
-    await browser.storage.local.set({ composeHintsBannerEnabled: enabled });
-    console.log(
-      `[TMDBG Config] Compose hints banner ${enabled ? "enabled" : "disabled"}`,
-    );
-
-    // Show feedback
-    const statusEl = $("appearance-status-text");
-    if (statusEl) {
-      statusEl.textContent = `✓ Keyboard hints ${enabled ? "enabled" : "disabled"}`;
       setTimeout(() => {
         statusEl.textContent = "";
       }, 3000);

@@ -147,6 +147,7 @@ async function handleRuntimeMessage(message, sender) {
           userMessage: message.context.userMessage,
           quoteAndSignature: message.context.quoteAndSignature,
           cursorPosition: message.context.cursorPosition,
+          previousAcceptedSentence: message.context.previousAcceptedSentence || "",
           isLocal: message.context.isLocal,
           subject: composeDetails.subject,
           from: composeDetails.from,
@@ -554,7 +555,6 @@ async function initializeScripts() {
 
     // === DIAGNOSTICS ===
     const coreScriptsArr = [
-      "compose/libs/undo-manager.js", // load first so state can instantiate
       "compose/modules/config.js",
       "compose/modules/logger.js",   // load after config but before other modules
       "compose/modules/state.js",
@@ -563,7 +563,6 @@ async function initializeScripts() {
       "compose/libs/diff-match-patch.js",
       "compose/libs/patience-diff.js",
       "compose/libs/jsdiff.min.js",
-      // undo-manager already loaded in core scripts
       "compose/modules/core.js",
       "compose/modules/inlineEditor.js",
       "compose/modules/dom.js",
@@ -573,8 +572,10 @@ async function initializeScripts() {
       "compose/modules/caret.js",
       "compose/modules/sentences.js",
       "compose/modules/tokens.js",
-      "compose/modules/undo.js",
       "compose/modules/diff.js",
+      "compose/modules/previewModel.js",
+      "compose/modules/richText.js",
+      "compose/modules/preview.js",
       "compose/compose-autocomplete.js",
     ];
 
@@ -596,6 +597,7 @@ async function initializeScripts() {
       {
         id: "tabmail-compose-scripts",
         js: composeScriptsArr,
+        css: ["compose/preview.css"],
         runAt: "document_idle",
       },
     ]);

@@ -38,7 +38,6 @@ import {
     saveCalendarConfig,
     saveDefaultEventDuration,
 } from "./integrations.js";
-import { forcePlaintextAll, updatePlaintextStatusUI } from "./plaintext.js";
 import { updateQuotaDisplay } from "./planUsage.js";
 import { handlePrivacyChange, loadPrivacySettings } from "./privacy.js";
 import { handleReminderChange, loadReminderSettings, saveReminderSettings } from "./reminders.js";
@@ -346,13 +345,6 @@ export async function initConfigPage({
       await updateFtsStatus();
     }
 
-    // Plaintext composition controls
-    if (e.target.id === "refresh-plaintext-status") {
-      await updatePlaintextStatusUI(log);
-    }
-    if (e.target.id === "force-plaintext-all") {
-      await forcePlaintextAll(log);
-    }
     if (e.target.id === "fts-reindex-all") {
       await ftsReindexAll();
     }
@@ -568,7 +560,6 @@ export async function initConfigPage({
     loadReminderSettings(log),
     loadFtsSettings(),
     fsLoad(),
-    updatePlaintextStatusUI(log),
     updateWelcomeStatusDisplay(log),
     updateDebugStatusDisplay(),
     updateBillingBannerDebugStatus(),

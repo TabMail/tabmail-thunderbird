@@ -5,6 +5,45 @@
 var TabMail = TabMail || {};
 
 Object.assign(TabMail, {
+  /** Presentation-only reveal: never rebuild authored HTML or delay its transaction. */
+  animateInlineEditApplication(editor) {
+    if (typeof editor.animate !== "function" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const rect = editor.getBoundingClientRect();
+    const boundary = TabMail.getQuoteBoundaryNode(editor);
+    const bottom = Math.min(window.innerHeight, boundary ? boundary.getBoundingClientRect().top : rect.bottom);
+    const top = Math.max(0, rect.top);
+    if (bottom <= top) return;
+    const host = document.createElement("div");
+    host.setAttribute("data-tabmail-ui", "");
+    host.contentEditable = "false";
+    const cover = document.createElement("div");
+    const background = getComputedStyle(editor).backgroundColor;
+    cover.style.cssText = `position:fixed;left:${rect.left}px;top:${top}px;width:${rect.width}px;height:${bottom-top}px;background:${!background || background === "rgba(0, 0, 0, 0)" || background === "transparent" ? "Canvas" : background};pointer-events:none;z-index:${TabMail.config.inlineEdit.zIndex}`;
+    host.attachShadow({mode:"open"}).appendChild(cover);
+    document.documentElement.appendChild(host);
+    let animation;
+    try { animation = cover.animate([{clipPath:"inset(0 0 0 0)"},{clipPath:"inset(100% 0 0 0)"}], {duration:TabMail.config.inlineEdit.diffWipeFadeMs,easing:"ease-out"}); } catch (_) { host.remove(); return; }
+    const cleanup = () => {
+      host.remove();
+      animation.cancel();
+      for (const type of ["keydown", "input", "mousedown", "scroll", "resize"]) window.removeEventListener(type, cleanup, true);
+    };
+    for (const type of ["keydown", "input", "mousedown", "scroll", "resize"]) window.addEventListener(type, cleanup, true);
+    animation.finished.then(cleanup, cleanup);
+  },
+  showInlineEditError(wrapper, message) {
+    const root = wrapper.querySelector('.tm-inline-actions').shadowRoot;
+    let error = root.querySelector('.tm-inline-error');
+    if (!error) {
+      error = document.createElement('div');
+      error.className = 'tm-inline-error';
+      error.setAttribute('role', 'alert');
+      error.setAttribute('spellcheck', 'false');
+      root.appendChild(error);
+    }
+    // Recovery text is UI, not authored mail: keep it out of native serialization.
+    error.textContent = message;
+  },
   /**
    * Runs the inline edit instruction using the existing pipeline (was previously
    * in the input keydown Enter handler). Expects wrapper and spinner from the
@@ -28,6 +67,7 @@ Object.assign(TabMail, {
         return;
       }
 
+      wrapper?.querySelector('.tm-inline-actions')?.shadowRoot.querySelector('.tm-inline-error')?.remove();
       spinner && (spinner.style.display = "flex");
       // Show initial "Thinking..." status below spinner
       try {
@@ -39,7 +79,7 @@ Object.assign(TabMail, {
       } catch (_) {}
       try {
         if (wrapper && wrapper._tm_container)
-          wrapper._tm_container.style.filter = "grayscale(0.9) opacity(0.6)";
+          wrapper._tm_container.style.visibility = "hidden";
       } catch (_) {}
 
       // Show throttle message when actual throttling happens
@@ -81,7 +121,7 @@ Object.assign(TabMail, {
               throttleOverlay.style.cssText = [
                 "position: absolute",
                 "inset: 0",
-                "background: rgba(255,255,255,0.6)",
+                "background: transparent",
                 "backdrop-filter: blur(2px)",
                 "border-radius: inherit",
                 "z-index: 3", // Above the spinner overlay
@@ -98,7 +138,7 @@ Object.assign(TabMail, {
                 "font-weight: 400",
                 "line-height: 1.5",
                 "letter-spacing: 0.3px",
-                `color: ${TabMail.config.inlineEdit.text}`,
+                "color: var(--tm-preview-text)",
                 "text-align: center",
                 "user-select: none",
               ].join(";");
@@ -193,17 +233,14 @@ Object.assign(TabMail, {
         chatHistory: editHistory,
       });
 
-      // Update stored chat history with this turn (persists while compose window is open)
-      if (result && result.chatHistory) {
-        TabMail.state.editChatHistory = result.chatHistory;
-      }
-
+      if (!wrapper?.isConnected) return; // Dismissed body results cannot apply or enter history.
       const inlineRequestDuration = performance.now() - inlineRequestStartTime;
       
-      if (!result || !result.body) {
+      if (!result || typeof result.body !== "string" || !result.body.trim()) {
         console.warn(`[TabMail InlineEdit] No edit result returned after ${inlineRequestDuration.toFixed(1)}ms`);
-        if (wrapper && typeof wrapper._tm_cleanup === "function")
-          wrapper._tm_cleanup();
+        if (wrapper?.isConnected) {
+          TabMail.showInlineEditError(wrapper, 'No usable edit was returned. Please try again.');
+        }
         return;
       }
 
@@ -216,379 +253,45 @@ Object.assign(TabMail, {
         );
       } catch (_) {}
 
-      let afterText = result.body;
-      
-      // Note: We no longer add trailing newlines here. setEditorPlainText
-      // will add separator <br>s when there's a quote boundary.
-
-      // Keep the overlay visible during text replacement; do not remove wrapper yet
-      // Ensure diff restore timer is cleared.
-      try {
-        if (TabMail.state.diffRestoreTimer) {
-          clearTimeout(TabMail.state.diffRestoreTimer);
-          TabMail.state.diffRestoreTimer = null;
-        }
-      } catch (_) {}
-
-      // Create click blocker during animation (used by both animation modes)
-      let clickBlocker = null;
-      try {
-        clickBlocker = document.createElement("div");
-        clickBlocker.id = "tm-inline-edit-blocker";
-        clickBlocker.style.cssText = [
-          "position: fixed",
-          "inset: 0",
-          "z-index: 10000",
-          "background: transparent",
-          "cursor: default",
-        ].join(";");
-        document.body.appendChild(clickBlocker);
-        console.log("[TabMail InlineEdit] Click blocker installed");
-      } catch (_) {}
-
-      // Phase 1: Fade out the inline editor UI (spinner/input)
-      const overlayFadeMs = TabMail.config.inlineEdit.diffWipeOverlayFadeMs;
-      try {
-        wrapper.style.transition = `opacity ${overlayFadeMs}ms ease-out`;
-        wrapper.style.opacity = "0";
-        console.log("[TabMail InlineEdit] Fading out inline editor UI");
-      } catch (_) {}
-      await new Promise((r) => setTimeout(r, overlayFadeMs));
-
-      // Choose animation mode based on config
-      const useDiffReplay = TabMail.config.inlineEdit.useDiffReplayAnimation;
-      
-      if (useDiffReplay) {
-        // === DIFF REPLAY ANIMATION ===
-        // Apply diffs one by one by directly manipulating text and re-rendering
-        console.log("[TabMail InlineEdit] Starting diff replay animation");
-        
-        // Compute diffs between old and new text
-        const diffs = TabMail.computeDiff(beforeText, afterText);
-        console.log(`[TabMail InlineEdit] Computed ${diffs.length} diff segments`);
-        
-        const charDelay = TabMail.config.inlineEdit.diffReplayDelayMs;
-        const chunkPause = TabMail.config.inlineEdit.diffReplayPauseMs;
-        
-        // Work with the text directly - start with old text
-        let currentText = beforeText;
-        // Track position in original text (for reading diffs) and current text (for editing)
-        let editPos = 0;
-        
-        for (const diff of diffs) {
-          const op = diff[0];    // -1 = delete, 0 = equal, 1 = insert
-          const text = diff[1];  // the text content
-          
-          if (op === 0) {
-            // EQUAL: just advance position, no visual change
-            editPos += text.length;
-          } else if (op === -1) {
-            // DELETE: remove characters one by one from currentText
-            console.log(`[TabMail InlineEdit] Deleting ${text.length} chars at pos ${editPos}`);
-            
-            for (let i = 0; i < text.length; i++) {
-              // Remove one character at editPos
-              currentText = currentText.slice(0, editPos) + currentText.slice(editPos + 1);
-              
-              // Update editor display
-              try {
-                TabMail.withUndoPaused(() => {
-                  TabMail.setEditorPlainText(editor, currentText);
-                });
-                // Position cursor at the edit point
-                TabMail.setCursorByOffset(editor, editPos);
-              } catch (updateErr) {
-                console.warn("[TabMail Edit] Update failed:", updateErr);
-              }
-              
-              // eslint-disable-next-line no-await-in-loop
-              await new Promise((r) => setTimeout(r, charDelay));
-            }
-            // Position stays the same after deletion
-            
-            // Pause after delete chunk
-            await new Promise((r) => setTimeout(r, chunkPause));
-            
-          } else if (op === 1) {
-            // INSERT: add characters one by one to currentText
-            console.log(`[TabMail InlineEdit] Inserting ${text.length} chars at pos ${editPos}`);
-            
-            for (let i = 0; i < text.length; i++) {
-              // Insert one character at editPos
-              const char = text[i];
-              currentText = currentText.slice(0, editPos) + char + currentText.slice(editPos);
-              editPos++;
-              
-              // Update editor display
-              try {
-                TabMail.withUndoPaused(() => {
-                  TabMail.setEditorPlainText(editor, currentText);
-                });
-                // Position cursor after the inserted character
-                TabMail.setCursorByOffset(editor, editPos);
-              } catch (updateErr) {
-                console.warn("[TabMail Edit] Update failed:", updateErr);
-              }
-              
-              // eslint-disable-next-line no-await-in-loop
-              await new Promise((r) => setTimeout(r, charDelay));
-            }
-            
-            // Pause after insert chunk
-            await new Promise((r) => setTimeout(r, chunkPause));
+      const afterText = result.body;
+      // Restore the compose host before its native editor transaction.
+      if (typeof wrapper._tm_cleanup === "function") wrapper._tm_cleanup("apply");
+      const diffs = TabMail.computeDiff(beforeText, afterText);
+      const edits = TabMail.composeEditsFromDiff(diffs);
+      if (!TabMail.applyComposeEdits(editor, beforeText, edits)) {
+        TabMail.log.warn('inlineEdit', 'Editor changed before native edit could be applied');
+        // Keep the tested native focus handoff intact. If the transaction refused
+        // an unchanged draft, reopen the ordinary editor with the user's input.
+        // A newer body edit or IME composition wins instead of reopening old work.
+        if (!TabMail.state.isIMEComposing &&
+            TabMail.extractUserAndQuoteTexts(editor).originalUserMessage === beforeText) {
+          TabMail.showInlineEditDropdown();
+          const retry = document.getElementById('tm-inline-edit');
+          if (retry) {
+            retry._tm_iinput.value = wrapper._tm_iinput?.value || instruction;
+            retry._tm_selectedText = selectedText;
+            retry._tm_iinput.dispatchEvent(new Event('input', {bubbles: true}));
+            TabMail.showInlineEditError(retry, 'This edit could not be applied. Adjust your instruction and try again.');
           }
         }
-        
-        console.log("[TabMail InlineEdit] Diff replay animation complete");
-        
-      } else {
-        // === TOP-TO-BOTTOM WIPE TRANSITION ===
-        console.log("[TabMail InlineEdit] Starting top-to-bottom wipe transition");
-
-        const editorStyles = window.getComputedStyle(editor);
-        const quoteBoundaryNode = TabMail.getQuoteBoundaryNode(editor);
-        
-        // Get bounds for just the user text region (excluding quote/signature)
-        let editorRect;
-        let quoteStartY = null;
-        if (quoteBoundaryNode) {
-          const userRange = document.createRange();
-          userRange.selectNodeContents(editor);
-          userRange.setEndBefore(quoteBoundaryNode);
-          editorRect = userRange.getBoundingClientRect();
-          // Track where the quote starts for smooth animation
-          quoteStartY = quoteBoundaryNode.getBoundingClientRect().top;
-          console.log("[TabMail InlineEdit] Using user text region bounds, quote starts at:", quoteStartY);
-        } else {
-          editorRect = editor.getBoundingClientRect();
-          console.log("[TabMail InlineEdit] Using full editor bounds (no quote)");
-        }
-
-        // Create overlay with the NEW text (initially clipped/hidden)
-        let newTextOverlay = null;
-        try {
-          newTextOverlay = document.createElement("div");
-          newTextOverlay.id = "tm-inline-text-overlay";
-          
-          // Get a solid opaque background color (computed bg might be transparent)
-          let bgColor = editorStyles.backgroundColor;
-          if (!bgColor || bgColor === "transparent" || bgColor === "rgba(0, 0, 0, 0)") {
-            const bodyBg = window.getComputedStyle(document.body).backgroundColor;
-            if (bodyBg && bodyBg !== "transparent" && bodyBg !== "rgba(0, 0, 0, 0)") {
-              bgColor = bodyBg;
-            } else {
-              const isDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-              bgColor = isDark ? "#1c1b22" : "#ffffff";
-            }
-          }
-          console.log("[TabMail InlineEdit] Overlay background color:", bgColor);
-          
-          // Get blend height for soft edge effect
-          const blendHeight = TabMail.config.inlineEdit.diffWipeBlendHeightPx;
-          const useBlend = blendHeight > 0;
-          console.log(`[TabMail InlineEdit] Blend effect: ${useBlend ? `${blendHeight}px` : "disabled"}`);
-          
-          // Simple approach: use clip-path for reveal, add gradient feather overlay for blend
-          newTextOverlay.style.cssText = [
-            "position: fixed",
-            `top: ${editorRect.top}px`,
-            `left: ${editorRect.left}px`,
-            `width: ${editorRect.width}px`,
-            `height: ${editorRect.height}px`,
-            "overflow: hidden",
-            `background: ${bgColor}`,
-            `color: ${editorStyles.color || "black"}`,
-            `font-family: ${editorStyles.fontFamily}`,
-            `font-size: ${editorStyles.fontSize}`,
-            `line-height: ${editorStyles.lineHeight}`,
-            `padding: ${editorStyles.padding}`,
-            "z-index: 9998",
-            "pointer-events: none",
-            "white-space: pre-wrap",
-            "word-wrap: break-word",
-            "clip-path: inset(0 0 100% 0)",
-          ].join(";");
-          newTextOverlay.textContent = afterText;
-          document.body.appendChild(newTextOverlay);
-          
-          // Create gradient feather element for soft blend edge (follows the wipe line)
-          let featherOverlay = null;
-          if (useBlend) {
-            featherOverlay = document.createElement("div");
-            featherOverlay.id = "tm-inline-feather-overlay";
-            featherOverlay.style.cssText = [
-              "position: fixed",
-              `top: ${editorRect.top}px`,
-              `left: ${editorRect.left}px`,
-              `width: ${editorRect.width}px`,
-              `height: ${blendHeight}px`,
-              `background: linear-gradient(to bottom, ${bgColor} 0%, transparent 100%)`,
-              "z-index: 9999",
-              "pointer-events: none",
-              // Start above the editor (out of view)
-              `transform: translateY(-${blendHeight}px)`,
-            ].join(";");
-            document.body.appendChild(featherOverlay);
-          }
-          
-          // Store blend settings on element for animation
-          newTextOverlay._tm_useBlend = useBlend;
-          newTextOverlay._tm_featherOverlay = featherOverlay;
-          newTextOverlay._tm_editorHeight = editorRect.height;
-          newTextOverlay._tm_blendHeight = blendHeight;
-          // Store quote info for smooth animation
-          newTextOverlay._tm_quoteBoundaryNode = quoteBoundaryNode;
-          newTextOverlay._tm_quoteStartY = quoteStartY;
-          console.log("[TabMail InlineEdit] New text overlay created (clipped)");
-        } catch (overlayErr) {
-          console.warn("[TabMail Edit] Failed to create text overlay:", overlayErr);
-        }
-
-        // Wipe animation
-        const wipeMs = TabMail.config.inlineEdit.diffWipeFadeMs;
-        try {
-          if (newTextOverlay) {
-            // Force reflow to ensure initial styles are applied
-            // eslint-disable-next-line no-unused-expressions
-            newTextOverlay.offsetHeight;
-            if (newTextOverlay._tm_featherOverlay) {
-              // eslint-disable-next-line no-unused-expressions
-              newTextOverlay._tm_featherOverlay.offsetHeight;
-            }
-            
-            // Set up transitions
-            newTextOverlay.style.transition = `clip-path ${wipeMs}ms ease-in-out`;
-            if (newTextOverlay._tm_featherOverlay) {
-              newTextOverlay._tm_featherOverlay.style.transition = `transform ${wipeMs}ms ease-in-out`;
-            }
-            
-            // Force reflow after transition setup
-            // eslint-disable-next-line no-unused-expressions
-            newTextOverlay.offsetHeight;
-            
-            // Animate clip-path to reveal content top-to-bottom
-            newTextOverlay.style.clipPath = "inset(0 0 0 0)";
-            
-            // Animate feather overlay to follow the wipe line
-            if (newTextOverlay._tm_featherOverlay) {
-              const editorHeight = newTextOverlay._tm_editorHeight;
-              newTextOverlay._tm_featherOverlay.style.transform = `translateY(${editorHeight}px)`;
-            }
-            
-            console.log(`[TabMail InlineEdit] Wiping new text down over ${wipeMs}ms${newTextOverlay._tm_useBlend ? " with blend" : ""}`);
-          }
-        } catch (wipeErr) {
-          console.warn("[TabMail Edit] Wipe animation failed:", wipeErr);
-        }
-
-        await new Promise((r) => setTimeout(r, wipeMs));
-
-        // Store quote's original position for FLIP animation
-        const storedQuoteBoundaryNode = newTextOverlay?._tm_quoteBoundaryNode;
-        const oldQuoteY = newTextOverlay?._tm_quoteStartY;
-
-        // Apply text to editor (while still hidden behind overlay)
-        try {
-          TabMail.withUndoPaused(() => {
-            TabMail.setEditorPlainText(editor, afterText);
-          });
-          console.log("[TabMail InlineEdit] New text applied to editor");
-        } catch (applyErr) {
-          console.warn("[TabMail Edit] Failed to apply text:", applyErr);
-        }
-
-        // FLIP animation for quote section: animate from old position to new position
-        const overlayFadeMs = TabMail.config.inlineEdit.diffWipeOverlayFadeMs;
-        if (storedQuoteBoundaryNode && oldQuoteY !== null) {
-          try {
-            const newQuoteY = storedQuoteBoundaryNode.getBoundingClientRect().top;
-            const deltaY = oldQuoteY - newQuoteY;
-            
-            if (Math.abs(deltaY) > 1) {
-              console.log(`[TabMail InlineEdit] Quote moved ${deltaY}px, animating smoothly`);
-              // Invert: move quote back to where it was
-              storedQuoteBoundaryNode.style.transform = `translateY(${deltaY}px)`;
-              storedQuoteBoundaryNode.style.transition = "none";
-              // eslint-disable-next-line no-unused-expressions
-              storedQuoteBoundaryNode.offsetHeight;
-              // Play: animate to final position
-              storedQuoteBoundaryNode.style.transition = `transform ${overlayFadeMs}ms ease-out`;
-              storedQuoteBoundaryNode.style.transform = "translateY(0)";
-            }
-          } catch (flipErr) {
-            console.warn("[TabMail Edit] Quote FLIP animation failed:", flipErr);
-          }
-        }
-
-        // Fade out overlay to smoothly reveal the actual editor underneath
-        try {
-          if (newTextOverlay) {
-            newTextOverlay.style.transition = `opacity ${overlayFadeMs}ms ease-out`;
-            if (newTextOverlay._tm_featherOverlay) {
-              newTextOverlay._tm_featherOverlay.style.transition = `opacity ${overlayFadeMs}ms ease-out`;
-            }
-            // eslint-disable-next-line no-unused-expressions
-            newTextOverlay.offsetHeight;
-            newTextOverlay.style.opacity = "0";
-            if (newTextOverlay._tm_featherOverlay) {
-              newTextOverlay._tm_featherOverlay.style.opacity = "0";
-            }
-            console.log(`[TabMail InlineEdit] Fading out overlay over ${overlayFadeMs}ms`);
-            await new Promise((r) => setTimeout(r, overlayFadeMs));
-          }
-        } catch (_) {}
-
-        // Remove overlays and clean up quote animation
-        try {
-          if (newTextOverlay) {
-            if (newTextOverlay._tm_featherOverlay) {
-              newTextOverlay._tm_featherOverlay.remove();
-            }
-            newTextOverlay.remove();
-            newTextOverlay = null;
-          }
-          // Clean up quote transform styles
-          if (storedQuoteBoundaryNode) {
-            storedQuoteBoundaryNode.style.transform = "";
-            storedQuoteBoundaryNode.style.transition = "";
-          }
-        } catch (_) {}
+        return;
       }
-
-      // Remove click blocker
-      try {
-        if (clickBlocker) {
-          clickBlocker.remove();
-          clickBlocker = null;
-          console.log("[TabMail InlineEdit] Click blocker removed");
-        }
-      } catch (_) {}
-
-      // Finalize state and cursor
-      const afterCursor = Math.min(afterText.length, beforeCursor);
-      TabMail.setCursorByOffset(editor, afterCursor);
-      TabMail.pushUndoSnapshot(
-        beforeText,
-        beforeCursor,
-        afterText,
-        afterCursor,
-        "inline-edit"
-      );
-
+      // Native insertion can reset Gecko's caret painter. Restore focus after
+      // the transaction, as the previous post-stream cleanup did.
+      if (document.hasFocus()) {
+        window.focus();
+        editor.focus();
+      }
+      // Only successfully applied edits become examples for future requests.
+      if (result.chatHistory) TabMail.state.editChatHistory = result.chatHistory;
       // Clean up state - set the new text as the baseline
       TabMail.state.originalText = afterText;
       TabMail.state.correctedText = "";
       TabMail.state.isDiffActive = false;
       TabMail.state.autoHideDiff = true;
 
-      // Final render to ensure clean state
-      console.log("[TabMail RenderText] Final render after crossfade");
-      TabMail.renderText(false);
-      // Exit via the same path as Escape for consistent focus/cleanup behaviour
-      try {
-        if (typeof wrapper._tm_cleanup === "function")
-          wrapper._tm_cleanup("post-stream");
-      } catch (_) {}
+      TabMail.hideComposePreview();
+      TabMail.animateInlineEditApplication(editor);
     } catch (err) {
       console.error("[TabMail Edit] Inline edit error:", err);
     } finally {
@@ -620,8 +323,9 @@ Object.assign(TabMail, {
       } catch (_) {}
       try {
         if (wrapper) wrapper._tm_executing = false;
+        if (wrapper?._tm_container) wrapper._tm_container.style.visibility = "";
       } catch (_) {}
-      // Do not cleanup here; the diff wipe path cleans up after animation.
+      // The native transaction owns cleanup; the visual wipe removes itself.
     }
   },
   /**
@@ -736,12 +440,14 @@ Object.assign(TabMail, {
   },
   /**
    * Creates and shows a lightweight dropdown near the caret for inline edit instructions.
-   * Disappears on blur. Ctrl/Cmd+Enter triggers the edit pipeline. Enter/Shift+Enter inserts a newline.
+   * Disappears on blur. Enter triggers the edit pipeline. Shift+Enter inserts a newline.
    */
   showInlineEditDropdown: function () {
     try {
       const editor = TabMail.state.editorRef;
       if (!editor) return;
+
+      TabMail.hideComposePreview?.();
 
       // Remove any existing dropdown
       const existing = document.getElementById("tm-inline-edit");
@@ -774,7 +480,6 @@ Object.assign(TabMail, {
         "display:inline-block;width:0;height:1em;overflow:hidden;padding:0;margin:0;border:0;pointer-events:none;";
       range.insertNode(probe);
       const rect = probe.getBoundingClientRect();
-      const caretLeft = rect.left;
       const caretTop = rect.bottom;
       probe.remove();
 
@@ -791,13 +496,13 @@ Object.assign(TabMail, {
       wrapper.style.cssText = [
         "position: fixed",
         `z-index: ${TabMail.config.inlineEdit.zIndex}`,
-        `max-width: ${TabMail.config.inlineEdit.maxWidthPx}px`,
-        `background: ${TabMail.config.inlineEdit.background}`,
-        `color: ${TabMail.config.inlineEdit.text}`,
-        `border: ${TabMail.config.inlineEdit.border}`,
+        "box-sizing: border-box",
+        "background: var(--tm-preview-bg)",
+        "color: var(--tm-preview-text)",
+        "border: 1px solid var(--tm-preview-border)",
         `border-radius: ${TabMail.config.inlineEdit.borderRadiusPx}px`,
-        `box-shadow: ${TabMail.config.inlineEdit.boxShadow}`,
-        `padding: ${TabMail.config.inlineEdit.padding}`,
+        "box-shadow: 0 4px 16px var(--tm-preview-shadow)",
+        `padding: 10px ${TabMail.config.preview.padding}px`,
         `font-size: ${TabMail.config.inlineEdit.fontSizeEm}em`,
         "display: flex",
         "flex-direction: column",
@@ -824,11 +529,11 @@ Object.assign(TabMail, {
       input.setAttribute("tabindex", "0");
       input.style.cssText = [
         "flex:1",
-        "min-width: 240px",
+        "min-width: 0",
         "background: transparent",
         "border: none",
         "outline: none",
-        `color: ${TabMail.config.inlineEdit.text}`,
+        "color: var(--tm-preview-text)",
         "font: inherit",
         "position: relative",
         "z-index: 1",
@@ -837,7 +542,6 @@ Object.assign(TabMail, {
       ].join(";");
 
       // Theme-aware spinner overlay, circle, and status text
-      const isDarkMode = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
       const borderR = TabMail.config.inlineEdit.borderRadiusPx || 8;
 
       const spinner = document.createElement("div");
@@ -850,8 +554,7 @@ Object.assign(TabMail, {
         "align-items:center",
         "justify-content:center",
         "gap: 4px",
-        "backdrop-filter: blur(1px)",
-        `background: ${isDarkMode ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.7)"}`,
+        "background: transparent",
         `border-radius: ${borderR}px`,
         "z-index: 2",
       ].join(";");
@@ -861,8 +564,8 @@ Object.assign(TabMail, {
         "width: 28px",
         "height: 28px",
         "border-radius: 50%",
-        `border: 3px solid ${isDarkMode ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)"}`,
-        `border-top-color: ${isDarkMode ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.85)"}`,
+        "border: 3px solid var(--tm-preview-border)",
+        "border-top-color: var(--in-content-accent-color)",
         "animation: tmspin 1s linear infinite",
       ].join(";");
       spinner.appendChild(spinnerInner);
@@ -881,7 +584,7 @@ Object.assign(TabMail, {
         "overflow: hidden",
         "text-overflow: ellipsis",
         "max-width: 90%",
-        `color: ${isDarkMode ? "rgba(255,255,255,0.8)" : "rgba(0,0,0,0.85)"}`,
+        "color: var(--tm-preview-text)",
         "display: none",
       ].join(";");
       spinner.appendChild(statusText);
@@ -893,10 +596,10 @@ Object.assign(TabMail, {
         "position: absolute",
         "pointer-events: none",
         "opacity: 0.6",
-        "left: 12px",
-        "right: 12px",
+        "left: 0",
+        "right: 0",
         // Align to top for multiline
-        "top: 8px",
+        "top: 0",
         "transform: none",
         "white-space: normal",
         "overflow: hidden",
@@ -907,7 +610,7 @@ Object.assign(TabMail, {
       container.style.cssText = [
         "position: relative",
         "flex: 1",
-        "min-width: 240px",
+        "min-width: 0",
         "display: flex",
         "align-items: stretch",
         // Isolate selection/caret painting from designMode artifacts.
@@ -930,31 +633,56 @@ Object.assign(TabMail, {
       topRow.appendChild(spinner);
       wrapper.appendChild(topRow);
 
-      // Hint row
+      // Match the suggestion's compact bottom-right keyboard/action row.
       const hint = document.createElement("div");
-      try {
-        const isMac = navigator.platform && /Mac/i.test(navigator.platform);
-        const execCmd = TabMail.config.keys.inlineEditExecuteCmd;
-        const execCtrl = TabMail.config.keys.inlineEditExecuteCtrl;
-        let hintText = "";
-        if (isMac && execCmd && execCmd.key === "Enter") {
-          hintText = "Press ⌘ Enter to edit";
-        } else if (execCtrl && execCtrl.key === "Enter") {
-          hintText = "Press Ctrl Enter to edit";
-        } else {
-          hintText = "Press Enter to edit";
-        }
-        hint.textContent = hintText;
-      } catch (_) {
-        hint.textContent = "Press Enter to edit";
+      hint.className = "tm-inline-actions";
+      // Gecko may spellcheck labels in the compose document despite the
+      // spellcheck attribute. Isolate them like the suggestion controls.
+      const actionRoot = hint.attachShadow({mode: "open"});
+      const actionStyle = document.createElement("style");
+      actionStyle.textContent = TabMail.composeActionCSS;
+      const actionRow = document.createElement("div");
+      actionRow.className = "tm-compose-actions";
+      actionRow.setAttribute("spellcheck", "false");
+      actionRow.setAttribute("contenteditable", "false");
+      actionRoot.append(actionStyle, actionRow);
+      if (!document.getElementById("tm-compose-action-styles")) {
+        const style = document.createElement("style");
+        style.id = "tm-compose-action-styles";
+        style.textContent = TabMail.composeActionCSS;
+        document.head.appendChild(style);
       }
-      hint.style.cssText = [
-        "font-size: 0.85em",
-        "opacity: 0.7",
-        "user-select: none",
-        "padding-left: 2px",
-        "color: currentColor",
-      ].join(";");
+      hint.spellcheck = false;
+      hint.setAttribute("spellcheck", "false");
+      hint.style.cssText = "position:relative;z-index:3";
+      const action = (symbol, label, shortcut, onClick) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("aria-label", label);
+        button.setAttribute("aria-keyshortcuts", shortcut);
+        const key = document.createElement("kbd");
+        key.textContent = symbol;
+        key.setAttribute("aria-hidden", "true");
+        button.append(key, document.createTextNode(` ${label}`));
+        button.addEventListener("mousedown", event => event.preventDefault());
+        button.addEventListener("click", onClick);
+        actionRow.appendChild(button);
+      };
+      const activeInput = () => wrapper._tm_iinput || input;
+      action("Enter", "Edit draft", "Enter", () => {
+        if (wrapper._tm_executing || wrapper._tm_streaming) return;
+        activeInput().dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", bubbles:true, cancelable:true}));
+      });
+      action("Esc", "Dismiss", "Escape", () => {
+        activeInput().dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true, cancelable:true}));
+      });
+      action("⇧Enter", "Newline", "Shift+Enter", () => {
+        if (wrapper._tm_executing || wrapper._tm_streaming) return;
+        const field = activeInput();
+        field.focus();
+        field.setRangeText("\n", field.selectionStart, field.selectionEnd, "end");
+        field.dispatchEvent(new Event("input", {bubbles:true}));
+      });
       wrapper.appendChild(hint);
 
       document.body.appendChild(wrapper);
@@ -1020,8 +748,12 @@ Object.assign(TabMail, {
         document.documentElement.clientHeight,
         window.innerHeight || 0
       );
+      const surfaceMargin = TabMail.config.preview.margin;
+      const editorRect = editor.getBoundingClientRect();
+      const left = Math.max(surfaceMargin, editorRect.left);
+      const right = Math.min(vw - surfaceMargin, editorRect.right || vw - surfaceMargin);
+      wrapper.style.width = `${Math.max(1, right - left)}px`;
       const rect2 = wrapper.getBoundingClientRect();
-      let left = Math.min(Math.max(8, caretLeft), vw - rect2.width - 8);
       let top = Math.min(caretTop + margin, vh - rect2.height - 8);
       wrapper.style.left = `${left}px`;
       wrapper.style.top = `${top}px`;
@@ -1034,21 +766,22 @@ Object.assign(TabMail, {
         const style = idoc.createElement("style");
         const lineH = TabMail.config.inlineEdit.lineHeightPx;
         const maxLines = TabMail.config.inlineEdit.maxLines;
-        const fontSizeEm = TabMail.config.inlineEdit.fontSizeEm || 1;
+        const editorFont = window.getComputedStyle(editor);
+        const inputFontSize = parseFloat(editorFont.fontSize) * TabMail.config.preview.fontScale;
         // Compute themed colors from wrapper so iframe matches TB theme
         let resolvedTextColor = "#fff";
         try {
           const cs = window.getComputedStyle(wrapper);
           resolvedTextColor = cs.color || resolvedTextColor;
         } catch (_) {}
-        const initialPadV = 12; // sync with textarea padding 6px top/bottom
+        const initialPadV = 0; // wrapper supplies the same padding as the suggestion
         const initialH = lineH + initialPadV; // 1 line + vertical padding
         style.textContent = `
-          :root { --tm-inline-text: ${resolvedTextColor}; }
-          html, body { margin: 0; padding: 0; background: transparent; color: var(--tm-inline-text); font-size: ${fontSizeEm}em; overflow: hidden; }
+          :root { --tm-inline-text: ${resolvedTextColor}; font-size: ${inputFontSize}px; font-family: ${editorFont.fontFamily}; }
+          html, body { margin: 0; padding: 0; background: transparent; color: var(--tm-inline-text); font-size: inherit; overflow: hidden; }
           .box { position: relative; display: block; font: inherit; color: var(--tm-inline-text); }
-          textarea { display:block; width:100%; min-width: 240px; background: transparent; border: none; outline: none; color: var(--tm-inline-text); font: inherit; position: relative; z-index: 1; caret-color: currentColor; resize: none; line-height: ${lineH}px; padding: 6px 10px; box-sizing: border-box; height: ${initialH}px; overflow-y: hidden; white-space: pre-wrap; word-break: break-word; scrollbar-gutter: stable both-edges; overscroll-behavior-y: contain; }
-          .ph { position: absolute; pointer-events: none; opacity: 0.6; left: 12px; right: 12px; top: 8px; transform: none; white-space: normal; overflow: hidden; text-overflow: ellipsis; color: var(--tm-inline-text); }
+          textarea { display:block; width:100%; min-width: 0; background: transparent; border: none; outline: none; color: var(--tm-inline-text); font: inherit; position: relative; z-index: 1; caret-color: currentColor; resize: none; line-height: ${lineH}px; padding: 0; box-sizing: border-box; height: ${initialH}px; overflow-y: hidden; white-space: pre-wrap; word-break: break-word; scrollbar-gutter: auto; overscroll-behavior-y: contain; }
+          .ph { line-height: ${lineH}px; position: absolute; pointer-events: none; opacity: 0.6; left: 0; right: 0; top: 0; transform: none; white-space: normal; overflow: hidden; text-overflow: ellipsis; color: var(--tm-inline-text); }
         `;
         idoc.head.appendChild(style);
         // Inject keyframes for spinner into top document once
@@ -1196,7 +929,7 @@ Object.assign(TabMail, {
           autoResize();
         });
 
-        // Key handling: Config-driven execute (Cmd/Ctrl+Enter), Enter inserts newline
+        // Enter submits; Shift+Enter retains native textarea newline behavior.
         iinput.addEventListener(
           "keydown",
           (ev) => {
@@ -1233,22 +966,13 @@ Object.assign(TabMail, {
               } catch (_) {}
               return;
             }
-            const isExecute = !!(
-              TabMail._isKeyMatch &&
-              (TabMail._isKeyMatch(
-                ev,
-                TabMail.config.keys.inlineEditExecuteCmd
-              ) ||
-                TabMail._isKeyMatch(
-                  ev,
-                  TabMail.config.keys.inlineEditExecuteCtrl
-                ))
-            );
+            const isExecute = TabMail._isKeyMatch(ev, TabMail.config.keys.inlineEditExecute) &&
+              !ev.isComposing && ev.keyCode !== 229;
             if (isExecute) {
               ev.preventDefault();
               ev.stopPropagation();
               const val = (iinput.value || "").trim();
-              TabMail.log.debug('inlineEdit', "Inline execute via Ctrl/Cmd+Enter");
+              TabMail.log.debug('inlineEdit', "Inline execute via Enter");
               TabMail._runInlineEditInstruction({
                 instruction: val,
                 wrapper,
@@ -1256,7 +980,7 @@ Object.assign(TabMail, {
               });
               return;
             }
-            // Allow Enter/Shift+Enter to insert newline, but stop propagation to parent
+            // Allow Shift+Enter to insert newline, but stop propagation to parent
             if (ev.key === "Enter") {
               ev.stopPropagation();
               return;
@@ -1301,7 +1025,7 @@ Object.assign(TabMail, {
       // Second chance focus on next tick.
       setTimeout(() => {
         try {
-          if (iframeInput) {
+          if (iframeInput && wrapper.isConnected) {
             iframeInput.focus();
             const p = iframeInput.value.length;
             iframeInput.setSelectionRange(p, p);
@@ -1311,7 +1035,7 @@ Object.assign(TabMail, {
         // Extra refocus after a short delay to bring back caret if it vanished.
         setTimeout(() => {
           try {
-            if (iframeInput) {
+            if (iframeInput && wrapper.isConnected) {
               iframeInput.focus();
               const p = iframeInput.value.length;
               iframeInput.setSelectionRange(p, p);
@@ -1449,6 +1173,34 @@ Object.assign(TabMail, {
 
       const cleanup = (reason = "unknown") => {
         TabMail.log.debug('inlineEdit', "Cleaning up inline edit.", { reason });
+        if (reason === "apply" && document.hasFocus()) {
+          // Keep this ordering: existing instruction input -> restored designMode
+          // -> compose window -> body -> remove popup -> restore body caret color.
+          // On macOS Thunderbird Beta 156, hiding/removing the focused iframe or
+          // focusing the body before restoring designMode can leave a valid DOM
+          // selection but no painted caret after clicking into an HTML paragraph.
+          // Arrow-key/flat-text checks alone missed it; app refocus restored it.
+          // Keep the body caret transparent during handoff to avoid dual carets.
+          // Do not substitute a second iframe, delayed focus, or a per-click repair.
+          // See test/manual/README.md, "Cmd-K caret focus handoff", for the native
+          // paragraph/signature, repeated-edit, mouse-placement and Undo checks.
+          try {
+            wrapper._tm_container.style.opacity = "0";
+            wrapper._tm_container.style.visibility = "visible";
+            iframeInput.focus();
+            // Restore the native editing mode BEFORE returning focus. Focusing
+            // the body while still in contenteditable mode leaves Gecko's caret
+            // working initially but invisible after a click into an HTML paragraph.
+            if (wrapper.dataset._didToggleDesignMode === "1") {
+              document.designMode = wrapper.dataset._prevDesignMode;
+              wrapper.dataset._didToggleDesignMode = "0";
+            }
+            window.focus();
+            TabMail.state.editorRef.focus();
+          } catch (error) {
+            TabMail.log.warn('inlineEdit', 'Could not hand focus back from the instruction frame');
+          }
+        }
         try {
           wrapper.remove();
         } catch {}
@@ -1585,11 +1337,8 @@ Object.assign(TabMail, {
           cleanup();
           return;
         }
-        const isExecuteTop = !!(
-          TabMail._isKeyMatch &&
-          (TabMail._isKeyMatch(ev, TabMail.config.keys.inlineEditExecuteCmd) ||
-            TabMail._isKeyMatch(ev, TabMail.config.keys.inlineEditExecuteCtrl))
-        );
+        const isExecuteTop = TabMail._isKeyMatch(ev, TabMail.config.keys.inlineEditExecute) &&
+          !ev.isComposing && ev.keyCode !== 229;
         if (isExecuteTop) {
           ev.preventDefault();
           ev.stopPropagation();
@@ -1614,7 +1363,7 @@ Object.assign(TabMail, {
           }
           return;
         }
-        // Allow Enter/Shift+Enter to be a normal newline in the actual textarea (handled inside iframe)
+        // Allow Shift+Enter to be a normal newline in the actual textarea (handled inside iframe)
         if (ev.key === "Enter") {
           ev.stopPropagation();
         }

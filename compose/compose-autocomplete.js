@@ -55,7 +55,6 @@ var TabMail = TabMail || {};
         TRIGGER_THROTTLE_MS: null,
         DIFF_RESTORE_DELAY_MS: null,
         AUTOCOMPLETE_IDLE_MS: null,
-        composeHintsBannerEnabled: true,
         autocompleteEnabled: true,
       });
 
@@ -73,14 +72,11 @@ var TabMail = TabMail || {};
       // suggestion is requested). Feeds the back-off scheduler's baseline.
       applyAutocompleteIdleMs(parseInt(settings.AUTOCOMPLETE_IDLE_MS, 10));
 
-      // Load compose hints banner setting
-      TM.state.composeHintsBannerDisabled = settings.composeHintsBannerEnabled === false;
-
       // Master autocomplete on/off (default on).
       TM.state.autocompleteDisabled = settings.autocompleteEnabled === false;
 
       console.log(
-        `[TabMail CS] Config: Idle delay ${TM.config.autocompleteDelay.INITIAL_IDLE_MS}ms, Diff restore ${TM.config.DIFF_RESTORE_DELAY_MS}ms, Hints banner ${!TM.state.composeHintsBannerDisabled ? 'enabled' : 'disabled'}, Autocomplete ${TM.state.autocompleteDisabled ? 'OFF' : 'on'}`
+        `[TabMail CS] Config: Idle delay ${TM.config.autocompleteDelay.INITIAL_IDLE_MS}ms, Diff restore ${TM.config.DIFF_RESTORE_DELAY_MS}ms, Autocomplete ${TM.state.autocompleteDisabled ? 'OFF' : 'on'}`
       );
     } catch (error) {
       console.error("[TabMail CS] Error loading configuration from storage:", error);
@@ -156,17 +152,6 @@ var TabMail = TabMail || {};
             if (!isNaN(v)) {
               TM.config.DIFF_RESTORE_DELAY_MS = v;
               console.log(`[TabMail CS] Live config: DIFF_RESTORE_DELAY_MS -> ${v}ms`);
-            }
-          }
-          if (Object.prototype.hasOwnProperty.call(changes, "composeHintsBannerEnabled")) {
-            const enabled = changes.composeHintsBannerEnabled.newValue !== false;
-            TM.state.composeHintsBannerDisabled = !enabled;
-            console.log(`[TabMail CS] Live config: composeHintsBannerEnabled -> ${enabled}`);
-            // Hide banner immediately if disabled; otherwise (re)show it.
-            if (!enabled && TM.hideComposeHintsBanner) {
-              TM.hideComposeHintsBanner();
-            } else if (enabled && TM.showComposeHintsBanner) {
-              TM.showComposeHintsBanner();
             }
           }
           if (Object.prototype.hasOwnProperty.call(changes, "AUTOCOMPLETE_IDLE_MS")) {
@@ -259,11 +244,8 @@ var TabMail = TabMail || {};
           TM.state.beforeSendCleanupResetTimer = null;
         }
 
-        // Cancel any pending timers that might re-render diffs or trigger new suggestions.
-        if (TM.state.diffRestoreTimer) {
-          clearTimeout(TM.state.diffRestoreTimer);
-          TM.state.diffRestoreTimer = null;
-        }
+        // Let inline-edit/IME visibility restoration finish under the send guard.
+        // Cancel pending suggestion requests while Thunderbird snapshots the draft.
         if (TM.state.autocompleteIdleTimer) {
           clearTimeout(TM.state.autocompleteIdleTimer);
           TM.state.autocompleteIdleTimer = null;
@@ -276,9 +258,6 @@ var TabMail = TabMail || {};
           clearTimeout(TM.state.backendTimer);
           TM.state.backendTimer = null;
         }
-
-        // Keep diffs hidden during send snapshot window.
-        TM.state.autoHideDiff = true;
 
         console.log("[TabMail CS] cleanupBeforeSend: suppression enabled", {
           autoHideDiff: TM.state.autoHideDiff,
@@ -317,8 +296,8 @@ var TabMail = TabMail || {};
       } catch (e) {
         console.warn("[TabMail CS] cleanupBeforeSend: failed to remove UI hints", e);
       }
-      // A clean render of the original text without suggestions nor fake newline characters.
-      TM.renderText((show_diffs = false), (show_newlines = false), (force = true));
+      // Preview UI is separate from the unchanged compose body.
+      TM.hideComposePreview();
       return Promise.resolve();
     }
   };

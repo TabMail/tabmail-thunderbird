@@ -29,7 +29,6 @@ import { setupLogo } from "./modules/logo.js";
 import { createNavigation } from "./modules/navigation.js";
 import { createPageInitializer } from "./modules/pageInit.js";
 import { createPageLoader } from "./modules/pageLoader.js";
-import { checkPlaintextStatus, setupPlaintextButton } from "./modules/plaintext.js";
 import { generateProgressBubbles } from "./modules/progressBubbles.js";
 import { setupMessageListener } from "./modules/runtimeMessages.js";
 import { createSettings } from "./modules/settings.js";
@@ -77,8 +76,6 @@ const pageInitializer = createPageInitializer({
   loadCalendars,
   loadAddressBooks,
   appearanceHandlers,
-  checkPlaintextStatus,
-  setupPlaintextButton,
   updateInlineEditorShortcut,
   updateThemePageImages: dynamicImages.updateThemePageImages,
   updateViewModePageImages: dynamicImages.updateViewModePageImages,

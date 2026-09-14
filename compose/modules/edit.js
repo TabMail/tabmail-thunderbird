@@ -220,7 +220,7 @@ export async function runComposeEdit({
 
     // Use sendChat with headless tool executor for compose flow
     // Backend will filter tools based on system_prompt_compose_interactive config
-    const response = await sendChat(allMessages, {
+    let response = await sendChat(allMessages, {
       disableTools: false,
       ignoreSemaphore,
       onToolExecution: executeToolsHeadless,
@@ -232,9 +232,22 @@ export async function runComposeEdit({
       return { subject: undefined, body: "", raw: "", messages: [systemMsg], chatHistory, error: response.err };
     }
 
-    const assistantResp = response?.assistant || "";
-    const wasThrottled = response?.wasThrottled || false;
-    const parsed = processEditResponse(assistantResp);
+    let assistantResp = response?.assistant || "";
+    let wasThrottled = response?.wasThrottled || false;
+    let parsed = processEditResponse(assistantResp);
+    const hasBody = value => typeof value === "string" && value.trim().length > 0;
+    if (!hasBody(parsed.body || parsed.message)) {
+      // Retry the original task once, without replaying malformed output as
+      // conversation history or repeating tool side effects.
+      const retryMessage = {...systemMsg, user_request: `${request}\n\nReturn the complete edited draft under an explicit Body: label. The body must not be empty.`};
+      response = await sendChat([retryMessage], {disableTools: true, ignoreSemaphore});
+      assistantResp = response?.assistant || "";
+      wasThrottled ||= response?.wasThrottled || false;
+      parsed = processEditResponse(assistantResp);
+      if (response?.err || !hasBody(parsed.body || parsed.message)) {
+        return {body: "", error: "empty_edit_body", raw: "", messages: [systemMsg], chatHistory, wasThrottled};
+      }
+    }
 
     const duration = performance.now() - startTime;
     try {

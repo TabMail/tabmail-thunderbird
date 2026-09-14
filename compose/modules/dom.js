@@ -326,6 +326,18 @@ Object.assign(TabMail, {
    * @param {number} offset The character offset to place the cursor at.
    */
   setCursorByOffset: function (editor, offset, untilNode = null) {
+    if (TabMail.indexComposeText) {
+      const range = TabMail.composeRange(TabMail.indexComposeText(editor, untilNode || TabMail.getQuoteBoundaryNode(editor)), offset);
+      if (!range) return;
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      const rect = range.getBoundingClientRect();
+      if (rect.height && (rect.top < 0 || rect.bottom > window.innerHeight)) {
+        window.scrollBy(0, rect.top - window.innerHeight / 2);
+      }
+      return;
+    }
     // Call internal implementation below, then ensure visibility.
     const _didScroll = TabMail._setCursorByOffsetInternal(editor, offset, untilNode);
     // After moving the cursor we want to scroll the viewport so that the caret is visible.
@@ -1786,6 +1798,7 @@ Object.assign(TabMail, {
    * @returns {number} Character offset, or -1 if unavailable.
    */
   getCursorOffset: function (editor) {
+    if (TabMail.indexComposeText) return TabMail.composeCursorOffset(TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor))) ?? 0;
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount) return -1;
 
@@ -1809,6 +1822,7 @@ Object.assign(TabMail, {
    * @returns {number} Character offset, or -1 if unavailable.
    */
   getCursorOffsetIgnoringInserts: function (editor) {
+    if (TabMail.indexComposeText) return TabMail.composeCursorOffset(TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor))) ?? 0;
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount) return -1;
 
@@ -1849,6 +1863,12 @@ Object.assign(TabMail, {
    * @returns {{ originalUserMessage: string, quoteAndSignatureText: string, quoteBoundaryNode: Node|null }}
    */
   extractUserAndQuoteTexts: function (editor) {
+    if (editor && TabMail.indexComposeText) {
+      const quoteBoundaryNode = TabMail.getQuoteBoundaryNode(editor);
+      const originalUserMessage = TabMail.indexComposeText(editor, quoteBoundaryNode).text;
+      const whole = TabMail.indexComposeText(editor).text;
+      return { originalUserMessage, quoteBoundaryNode, quoteAndSignatureText: whole.slice(originalUserMessage.length) };
+    }
     if (!editor) {
       return {
         originalUserMessage: "",
