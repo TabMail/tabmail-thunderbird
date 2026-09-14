@@ -608,7 +608,17 @@ Object.assign(TabMail, {
 
       // Match the suggestion's compact bottom-right keyboard/action row.
       const hint = document.createElement("div");
-      hint.className = "tm-inline-actions tm-compose-actions";
+      hint.className = "tm-inline-actions";
+      // Gecko may spellcheck labels in the compose document despite the
+      // spellcheck attribute. Isolate them like the suggestion controls.
+      const actionRoot = hint.attachShadow({mode: "open"});
+      const actionStyle = document.createElement("style");
+      actionStyle.textContent = TabMail.composeActionCSS;
+      const actionRow = document.createElement("div");
+      actionRow.className = "tm-compose-actions";
+      actionRow.setAttribute("spellcheck", "false");
+      actionRow.setAttribute("contenteditable", "false");
+      actionRoot.append(actionStyle, actionRow);
       if (!document.getElementById("tm-compose-action-styles")) {
         const style = document.createElement("style");
         style.id = "tm-compose-action-styles";
@@ -629,7 +639,7 @@ Object.assign(TabMail, {
         button.append(key, document.createTextNode(` ${label}`));
         button.addEventListener("mousedown", event => event.preventDefault());
         button.addEventListener("click", onClick);
-        hint.appendChild(button);
+        actionRow.appendChild(button);
       };
       const activeInput = () => wrapper._tm_iinput || input;
       action("Enter", "Edit draft", "Enter", () => {

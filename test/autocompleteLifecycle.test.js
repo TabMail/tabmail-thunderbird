@@ -526,9 +526,13 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   expect(parseFloat(wrapper.style.width)).toBe(w.innerWidth - 2 * tm.config.preview.margin);
   const input = wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
   input.value = 'Correct the wording';
-  const actions = [...wrapper.querySelectorAll('.tm-inline-actions button')];
+  const actionRoot = wrapper.querySelector('.tm-inline-actions').shadowRoot;
+  const actions = [...actionRoot.querySelectorAll('button')];
+  expect(actionRoot.querySelector('style').textContent).toBe(tm.composeActionCSS);
+  expect(wrapper.textContent).not.toContain('Esc');
+  expect(actionRoot.querySelector('.tm-compose-actions').getAttribute('contenteditable')).toBe('false');
   expect(actions.map(b=>b.textContent)).toEqual(['Enter Edit draft','Esc Dismiss','⇧Enter Newline']);
-  expect(w.getComputedStyle(wrapper.querySelector('.tm-inline-actions')).justifyContent).toBe('flex-end');
+  expect(actionRoot.querySelector('.tm-compose-actions')).not.toBeNull();
   expect(wrapper.querySelector('.tm-inline-actions').getAttribute('spellcheck')).toBe('false');
   const actionSheet=w.document.getElementById('tm-compose-action-styles').sheet;
   const hoverRule=[...actionSheet.cssRules].find(rule=>rule.selectorText?.includes(':hover'));
@@ -962,7 +966,7 @@ it.each(['keyboard','click'])('registered inline cancellation via %s unlocks new
  input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
  expect(execution).toHaveBeenCalledTimes(1);expect(w.browser.runtime.sendMessage).toHaveBeenCalledTimes(1);expect(wrapper._tm_executing).toBe(true);
  const pending=execution.mock.results[0].value;
- if(mode==='click') wrapper.querySelector('button[aria-label="Dismiss"]').click();
+ if(mode==='click') wrapper.querySelector('.tm-inline-actions').shadowRoot.querySelector('button[aria-label="Dismiss"]').click();
  else input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
  expect(tm.state.inlineEditActive).toBe(false);expect(w.document.designMode).toBe('on');expect(w.document.getElementById('tm-inline-edit')).toBeNull();
  vi.spyOn(tm,'scheduleTrigger').mockImplementation(()=>{});
