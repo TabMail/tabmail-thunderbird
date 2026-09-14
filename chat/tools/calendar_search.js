@@ -54,8 +54,9 @@ function normalizeTimeInput(timeInput, userTz = null) {
 }
 
 /**
- * Local midnight of a "YYYY-MM-DD" day string, for ordering all-day items
- * among a day's timed entries. Never rendered — all-day rows print "All day".
+ * Local midnight of a "YYYY-MM-DD" day string, so an all-day item's
+ * normalized start/end sit on its own calendar date (#47). Never rendered —
+ * all-day rows print "All day" and lead their day in the entry sort.
  */
 function localMidnightOfDay(dayStr) {
   const [y, m, d] = String(dayStr).split("-").map((x) => Number(x));
@@ -423,7 +424,12 @@ async function buildCalendarSummary(args) {
         }
       }
       const eventId = it.id || "unknown";
-      const line = `${formatHour(it.normalizedStart)} - ${formatHour(it.normalizedEnd)}: ${title}${recurMark}\tevent_id: ${eventId}`;
+      // All-day entries render as "All day" (iOS parity) — a clock range with
+      // AM/PM cues would be a fabricated time for an item that has none.
+      const timeRange = it.isAllDay
+        ? "All day"
+        : `${formatHour(it.normalizedStart)} - ${formatHour(it.normalizedEnd)}`;
+      const line = `${timeRange}: ${title}${recurMark}\tevent_id: ${eventId}`;
       const result = insertLine(days[dayKey], calId, line);
       days[dayKey] = result;
       
@@ -456,7 +462,12 @@ async function buildCalendarSummary(args) {
       lines.push(`calendar_id: ${calName}`); // calendar id
       lines.push(`date: ${d.prettyDate}`);
       lines.push(`timezone: ${d.timezone}`);
-      entries.sort((a, b) => a.localeCompare(b));
+      // Rows sort by their leading clock token. An all-day row has none: it
+      // renders "All day" and leads its day (iOS parity — the grouped summary
+      // anchors all-day rows at the first instant of their date), so it must
+      // not fall behind "08:00 …" on a character comparison.
+      const allDayFirst = (s) => (s.startsWith("All day:") ? 0 : 1);
+      entries.sort((a, b) => (allDayFirst(a) - allDayFirst(b)) || a.localeCompare(b));
       for (const entry of entries) {
         lines.push(entry);
       }
@@ -493,11 +504,25 @@ function insertLine(dayObj, calName, line) {
 
 // ensureDate function removed - replaced by normalizeTimeInput
 
+// Explicit 12-hour cue appended to every timed entry — "05:00 (5 a.m.)",
+// "17:30 (5:30 p.m.)". The 24-hour value stays the primary token (and the
+// `timezone:` header still governs it); the parenthetical exists because the
+// LLM has misread bare 24-hour ranges as the wrong half of the day (#31).
+// Must stay byte-for-byte aligned with iOS `CalendarToolHelpers.twelveHourCue`.
+function formatTwelveHourCue(hours24, minutes) {
+  const meridiem = hours24 < 12 ? "a.m." : "p.m.";
+  const h12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  const mm = minutes === 0 ? "" : `:${String(minutes).padStart(2, "0")}`;
+  return `${h12}${mm} ${meridiem}`;
+}
+
 function formatHour(d) {
   try {
-    const hh = d.getHours().toString().padStart(2, "0");
-    const mm = d.getMinutes().toString().padStart(2, "0");
-    return `${hh}:${mm}`;
+    const hours = d.getHours();
+    const minutes = d.getMinutes();
+    const hh = hours.toString().padStart(2, "0");
+    const mm = minutes.toString().padStart(2, "0");
+    return `${hh}:${mm} (${formatTwelveHourCue(hours, minutes)})`;
   } catch (_) { return ""; }
 }
 
@@ -590,6 +615,7 @@ export const _testExports = {
   formatDayHeader,
   insertLine,
   formatHour,
+  formatTwelveHourCue,
   localMidnightOfDay,
   resolveDateRange,
   normalizeArgs,
