@@ -30,7 +30,7 @@ function setup(html = '') {
   const node = w.document.body.firstChild || w.document.body;
   const r = w.document.createRange(); r.setStart(node, 0); r.collapse(true);
   w.getSelection().addRange(r);
-  return { w, tm, body: w.document.body };
+  return { dom, w, tm, body: w.document.body };
 }
 afterEach(() => { for (const w of windows.splice(0)) w.close(); });
 
@@ -1209,4 +1209,32 @@ it('accepted wording is forgotten on cleanup and fresh acceptance restores the f
  tm.state.correctedText='We use the program.';tm.renderComposePreview();expect(tm.acceptComposePreview()).toBe(true);
  expect(body.textContent).toBe('We use the program.');
  expect(tm.previousAcceptedSentence('We use the progrom.')).toBe('We use the program.');
+});
+
+// Execute the shipped probe to catch DOM-selector drift. This command model
+// checks probe wiring and preference recovery, not native Gecko Undo/painting.
+it('plaintext manual smoke probe reaches all checks and re-enables suggestions',()=>{
+ const {dom,w,tm,body}=setup('COMPOSE PREVIEW SMOKE');tm.attachAutocomplete(body);
+ const native=w.document.execCommand;let before,after;
+ w.document.execCommand=vi.fn((command,...args)=>{
+  if(command==='undo'){body.innerHTML=before;return true;}
+  if(command==='redo'){body.innerHTML=after;return true;}
+  before=body.innerHTML;const applied=native(command,...args);after=body.innerHTML;return applied;
+ });
+ const file=resolve('test/manual/composePlainSmoke.js');
+ const result=runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file});
+ expect(result).toEqual({pass:true,checks:['registered Tab','native Undo/Redo','click Dismiss','click Disable','disabled-only Enable','click Enable']});
+ expect(w.document.execCommand.mock.calls.map(([command])=>command)).toEqual(['insertHTML','undo','redo']);
+ expect(body.textContent).toBe('This is useful.');
+ expect(w.browser.storage.local.set.mock.calls).toEqual([[{autocompleteEnabled:false}],[{autocompleteEnabled:true}]]);
+ expect(tm.state.autocompleteDisabled).toBe(false);
+ expect(w.document.getElementById('tm-compose-hints-banner')).toBeNull();
+});
+it('plaintext manual smoke probe refuses an unmarked draft before any changes',()=>{
+ const {dom,w,body}=setup('An authored draft.');const before=body.innerHTML;
+ const file=resolve('test/manual/composePlainSmoke.js');
+ expect(()=>runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file})).toThrow('Disposable smoke draft marker required');
+ expect(body.innerHTML).toBe(before);
+ expect(w.document.execCommand).not.toHaveBeenCalled();
+ expect(w.browser.storage.local.set).not.toHaveBeenCalled();
 });
