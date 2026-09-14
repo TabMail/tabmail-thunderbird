@@ -123,7 +123,7 @@ describe('shared HTML text/range projection', () => {
   });
   it('excludes signature and quoted reply from editable offsets', () => {
     const { tm, body } = setup('Draft<div class="moz-signature">Signature</div><blockquote>Quoted text</blockquote>');
-    expect(tm.extractUserAndQuoteTexts(body)).toMatchObject({ originalUserMessage: 'Draft', quoteAndSignatureText: 'Signature\nQuoted text' });
+    expect(tm.extractUserAndQuoteTexts(body)).toMatchObject({ originalUserMessage: 'Draft', quoteAndSignatureText: '\nSignature\nQuoted text' });
   });
   it('keeps list items on distinct lines', () => {
     const { tm, body } = setup('<ul><li>First</li><li>Second</li></ul>');
@@ -1810,4 +1810,39 @@ it.each(['suggestion','inline'])('active Appearance mirrors the real %s placemen
  expect(tm.state.composeBubblePlacement).toBe('bottom');
  expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
  expect(settings.control.value).toBe('bottom');
+});
+
+// Mixed inline/block HTML must use the same boundaries for requests and edits.
+describe('mixed HTML boundaries', () => {
+  it.each([
+    ['Hello<p>world.</p>', 'Hello\nworld.'],
+    ['<span>Hello</span><div><p>world.</p></div>Tail', 'Hello\nworld.\nTail'],
+    ['<div>Hello<p>world.</p>Tail</div>', 'Hello\nworld.\nTail'],
+    ['Hello<br><p>world.</p>', 'Hello\nworld.'],
+    ['<p>Hello</p><p>world.</p>', 'Hello\nworld.'],
+    ['Hello\nworld.', 'Hello\nworld.'],
+  ])('preserves rendered boundaries and caret offsets: %s', (html, expected) => {
+    const {tm, w, body} = setup(html);
+    const index = tm.indexComposeText(body);
+    expect(index.text).toBe(expected);
+    expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe(expected);
+    for (let offset = 0; offset <= expected.length; offset++) {
+      const range = tm.composeRange(index, offset);
+      expect(range).not.toBeNull();
+      w.getSelection().removeAllRanges(); w.getSelection().addRange(range);
+      expect(tm.composeCursorOffset(index)).toBe(offset);
+    }
+    expect(body.innerHTML).toBe(html);
+  });
+  it.each(['keyboard', 'click'])('accepts a correction inside a following paragraph via %s', action => {
+    const {tm, w, body} = setup('Hello<p>wrld.</p><div class="moz-signature">Signature</div>');
+    tm.attachAutocomplete(body); tm.setCursorByOffset(body, 8);
+    tm.state.correctedText = 'Hello\nworld.'; tm.renderComposePreview();
+    expect(tm.state.previewModel).not.toBeNull();
+    if (action === 'keyboard') body.dispatchEvent(new w.KeyboardEvent('keydown', {key:'Tab', bubbles:true, cancelable:true}));
+    else tm.state.previewView.root.querySelector('[aria-label="Accept"]').click();
+    expect(body.innerHTML).toBe('Hello<p>world.</p><div class="moz-signature">Signature</div>');
+    expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Hello\nworld.');
+    expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+  });
 });
