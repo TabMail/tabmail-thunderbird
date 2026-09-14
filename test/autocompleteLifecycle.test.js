@@ -523,7 +523,7 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   input.value = 'Correct the wording';
   const actions = [...wrapper.querySelectorAll('.tm-inline-actions button')];
   expect(actions.map(b=>b.textContent)).toEqual(['Enter Edit draft','Esc Dismiss','⇧Enter Newline']);
-  expect(wrapper.querySelector('.tm-inline-actions').style.justifyContent).toBe('flex-end');
+  expect(w.getComputedStyle(wrapper.querySelector('.tm-inline-actions')).justifyContent).toBe('flex-end');
   expect(wrapper.querySelector('.tm-inline-actions').getAttribute('spellcheck')).toBe('false');
   expect(wrapper.querySelector('.tm-inline-overlay').style.background).toBe('transparent');
   const ph=input.ownerDocument.querySelector('.ph');

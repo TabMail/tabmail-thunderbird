@@ -602,20 +602,24 @@ Object.assign(TabMail, {
 
       // Match the suggestion's compact bottom-right keyboard/action row.
       const hint = document.createElement("div");
-      hint.className = "tm-inline-actions";
+      hint.className = "tm-inline-actions tm-compose-actions";
+      if (!document.getElementById("tm-compose-action-styles")) {
+        const style = document.createElement("style");
+        style.id = "tm-compose-action-styles";
+        style.textContent = TabMail.composeActionCSS;
+        document.head.appendChild(style);
+      }
       hint.spellcheck = false;
       hint.setAttribute("spellcheck", "false");
-      hint.style.cssText = "position:relative;z-index:3;display:flex;flex-wrap:wrap;justify-content:flex-end;text-align:right;font:11px/1.4 system-ui;color:var(--tm-preview-context);user-select:none";
+      hint.style.cssText = "position:relative;z-index:3";
       const action = (symbol, label, shortcut, onClick) => {
         const button = document.createElement("button");
         button.type = "button";
         button.setAttribute("aria-label", label);
         button.setAttribute("aria-keyshortcuts", shortcut);
-        button.style.cssText = "cursor:pointer;font:inherit;color:inherit;background:transparent;border:0;border-radius:4px;padding:3px 6px";
         const key = document.createElement("kbd");
         key.textContent = symbol;
         key.setAttribute("aria-hidden", "true");
-        key.style.cssText = "display:inline-block;font:10px/1.3 system-ui;border:1px solid var(--tm-preview-border);border-radius:3px;padding:1px 4px;margin-right:3px;white-space:nowrap";
         button.append(key, document.createTextNode(` ${label}`));
         button.addEventListener("mousedown", event => event.preventDefault());
         button.addEventListener("click", onClick);
