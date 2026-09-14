@@ -446,9 +446,6 @@ browser.storage.onChanged.addListener((changes, area) => {
 // ZERO network. Uses the SAME shared checks the popup uses (setupChecks.js) so
 // the two contexts can't disagree.
 //
-// Known limitation (accepted): the per-identity compose_html pref has no
-// WebExtension change event, so flipping it directly in TB's Account Settings
-// won't update the dot until the next popup open / identity event / startup.
 // Calendar/address-book defaults and identity add/remove ARE event-driven below.
 async function syncSetupWarning() {
   try {
