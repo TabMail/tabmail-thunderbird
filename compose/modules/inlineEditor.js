@@ -54,6 +54,7 @@ Object.assign(TabMail, {
         return;
       }
 
+      wrapper?.querySelector('.tm-inline-error')?.remove();
       spinner && (spinner.style.display = "flex");
       // Show initial "Thinking..." status below spinner
       try {
@@ -219,17 +220,22 @@ Object.assign(TabMail, {
         chatHistory: editHistory,
       });
 
-      // Update stored chat history with this turn (persists while compose window is open)
-      if (result && result.chatHistory) {
-        TabMail.state.editChatHistory = result.chatHistory;
-      }
-
+      if (!wrapper?.isConnected) return; // Dismissed requests cannot apply or enter history.
       const inlineRequestDuration = performance.now() - inlineRequestStartTime;
       
-      if (!result || !result.body) {
+      if (!result || typeof result.body !== "string" || !result.body.trim()) {
         console.warn(`[TabMail InlineEdit] No edit result returned after ${inlineRequestDuration.toFixed(1)}ms`);
-        if (wrapper && typeof wrapper._tm_cleanup === "function")
-          wrapper._tm_cleanup();
+        if (wrapper?.isConnected) {
+          let error = wrapper.querySelector('.tm-inline-error');
+          if (!error) {
+            error = document.createElement('div');
+            error.className = 'tm-inline-error';
+            error.setAttribute('role', 'alert');
+            error.setAttribute('spellcheck', 'false');
+            wrapper.appendChild(error);
+          }
+          error.textContent = 'No usable edit was returned. Please try again.';
+        }
         return;
       }
 
@@ -257,6 +263,8 @@ Object.assign(TabMail, {
         window.focus();
         editor.focus();
       }
+      // Only successfully applied edits become examples for future requests.
+      if (result.chatHistory) TabMail.state.editChatHistory = result.chatHistory;
       // Clean up state - set the new text as the baseline
       TabMail.state.originalText = afterText;
       TabMail.state.correctedText = "";

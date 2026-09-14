@@ -317,7 +317,8 @@ it('inline editing applies the returned text through the real callback and prese
     return true;
   });
   const wrapper = w.document.createElement('div');
-  wrapper._tm_cleanup = vi.fn();
+  wrapper.id='tm-inline-edit';body.appendChild(wrapper);
+  wrapper._tm_cleanup = vi.fn(()=>wrapper.remove());
   await tm._runInlineEditInstruction({ instruction: 'Correct the wording', wrapper });
   expect(body.querySelector('b').textContent).toBe('good');
   expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
@@ -1055,4 +1056,23 @@ it.each(['plain','html'])('sends the complete body for a %s Cmd-K expansion and 
  expect(w.browser.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({type:'runInlineComposeEdit',body:original}));
  expect(body.querySelector('.moz-signature').textContent).toBe('Private signature');
  expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+});
+
+it.each(['success','empty','whitespace','native-failure','dismissed'])('retains inline history only after successful application: %s',async outcome=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');
+ const previous=[{userRequest:'Earlier'}],candidate=[...previous,{userRequest:'Expand'}];tm.state.editChatHistory=previous;
+ const wrapper=w.document.createElement('div');wrapper.id='tm-inline-edit';body.appendChild(wrapper);
+ wrapper._tm_cleanup=()=>wrapper.remove();
+ w.browser.runtime.sendMessage.mockImplementation(async()=>{
+  if(outcome==='dismissed')wrapper.remove();
+  return {body:outcome==='empty'?'':outcome==='whitespace'?'   ':'Expanded draft.',chatHistory:candidate};
+ });
+ if(outcome==='native-failure')w.document.execCommand.mockReturnValue(false);
+ await tm._runInlineEditInstruction({instruction:'Expand',wrapper});
+ expect(tm.state.editChatHistory).toEqual(outcome==='success'?candidate:previous);
+ if(outcome==='empty'||outcome==='whitespace'){
+  expect(wrapper.isConnected).toBe(true);expect(wrapper.querySelector('[role="alert"]').textContent).toContain('Please try again');
+  expect(wrapper._tm_executing).toBe(false);expect(w.document.execCommand).not.toHaveBeenCalled();
+ }
+ if(outcome==='dismissed')expect(w.document.execCommand).not.toHaveBeenCalled();
 });
