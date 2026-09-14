@@ -25,3 +25,5 @@ Preview content now lives in a shadow tree because Thunderbird encodes more than
 Inline editor labels opt out of spellcheck. Its placeholder and textarea share the suggestion inset without nested padding or a left scrollbar gutter; the busy overlay is transparent over the existing surface. Native edit application triggers a presentation-only wipe above the user-text region, canceled by typing, pointer activity, scrolling, or resizing; it respects reduced motion and never rebuilds authored HTML.
 
 Suggestion and Cmd-K action rows share `composeActionCSS` and the `tm-compose-actions` class, including button hover/focus, keycaps, spacing, typography, and palette. Cmd-K installs the same stylesheet text in its document; the suggestion includes it in its shadow tree.
+
+Cmd-K reapplies the active compose window/editor focus after the native insertion, matching the former post-stream cleanup order. Delayed iframe focus attempts are gated on a connected popup so they cannot outlive it. Native caret painting still requires owner smoke verification.

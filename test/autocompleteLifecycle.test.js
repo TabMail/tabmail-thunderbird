@@ -511,6 +511,11 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   tm.renderComposePreview();
   expect(tm.state.previewView).not.toBeNull();
   w.browser.runtime.sendMessage.mockResolvedValue({body:'Hello good.'});
+  // Native editor transactions can move focus while replacing the selection.
+  body.tabIndex = 0;
+  const focusSink=w.document.createElement('button');w.document.head.appendChild(focusSink);
+  const nativeEdit=w.document.execCommand;
+  w.document.execCommand=vi.fn((...args)=>{const result=nativeEdit(...args);focusSink.focus();return result;});
   body.dispatchEvent(new w.KeyboardEvent('keydown', {key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
   const wrapper = w.document.getElementById('tm-inline-edit');
   expect(wrapper).not.toBeNull();
@@ -548,6 +553,8 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   expect(w.document.designMode).toBe('on');
   expect(tm.state.inlineEditActive).toBe(false);
   expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
+  expect(w.document.activeElement === body).toBe(true);
+  expect(body.style.caretColor).not.toBe('transparent');
 });
 
 it('registered selection changes refresh the sentence preview after a user caret move', async () => {

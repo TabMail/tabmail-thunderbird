@@ -251,6 +251,12 @@ Object.assign(TabMail, {
         TabMail.log.warn('inlineEdit', 'Editor changed before native edit could be applied');
         return;
       }
+      // Native insertion can reset Gecko's caret painter. Restore focus after
+      // the transaction, as the previous post-stream cleanup did.
+      if (document.hasFocus()) {
+        window.focus();
+        editor.focus();
+      }
       // Clean up state - set the new text as the baseline
       TabMail.state.originalText = afterText;
       TabMail.state.correctedText = "";
@@ -982,7 +988,7 @@ Object.assign(TabMail, {
       // Second chance focus on next tick.
       setTimeout(() => {
         try {
-          if (iframeInput) {
+          if (iframeInput && wrapper.isConnected) {
             iframeInput.focus();
             const p = iframeInput.value.length;
             iframeInput.setSelectionRange(p, p);
@@ -992,7 +998,7 @@ Object.assign(TabMail, {
         // Extra refocus after a short delay to bring back caret if it vanished.
         setTimeout(() => {
           try {
-            if (iframeInput) {
+            if (iframeInput && wrapper.isConnected) {
               iframeInput.focus();
               const p = iframeInput.value.length;
               iframeInput.setSelectionRange(p, p);
