@@ -445,7 +445,17 @@ describe('edit round-trip: the recurrence token the read tool shows selects that
 });
 
 describe('public callers: bridge-produced all-day rows render and order correctly', () => {
-  const items = () => [allDayEvent('ad', 'Holiday party', DAY, NEXT_DAY), timedEvent('t', 'Party planning', DAY, 8)];
+  // Provider enumeration order is NOT chronological (CalMemoryCalendar
+  // returns adoption order), so the fixture is deliberately shuffled and one
+  // timed title contains "All day:" to separate prefix detection from a
+  // substring match.
+  const items = () => [
+    timedEvent('late', 'Party wrap-up', DAY, 18),
+    timedEvent('t', 'Party planning', DAY, 8),
+    allDayEvent('ad', 'Holiday party', DAY, NEXT_DAY),
+    timedEvent('mid', 'Party All day: planning review', DAY, 12),
+  ];
+  const idOrder = (block) => [...block.matchAll(/event_id: (\S+)/g)].map((m) => m[1]);
 
   async function withBridge(fn) {
     const { api } = loadCalendarBridge(bridgeUrl, { items: items() });
@@ -471,6 +481,9 @@ describe('public callers: bridge-produced all-day rows render and order correctl
       expect(block).toContain('All day: Holiday party\tevent_id: ad');
       expect(block).toContain('08:00 (8 a.m.) - 09:00 (9 a.m.): Party planning\tevent_id: t');
       expect(block.indexOf('Holiday party')).toBeLessThan(block.indexOf('Party planning'));
+      // The complete order: the all-day row first, then clock order regardless
+      // of provider order or an "All day:" substring in a timed title.
+      expect(idOrder(block)).toEqual(['ad', 't', 'mid', 'late']);
       expect(result.results).not.toContain(prettyOf(PREV_DAY));
     });
   }
