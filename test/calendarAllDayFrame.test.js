@@ -468,8 +468,8 @@ describe('public callers: bridge-produced all-day rows render and order correctl
       const block = dayBlockOf(result.results, 'Holiday party');
       expect(block).toBeDefined();
       expect(block).toContain(`date: ${prettyOf(DAY)}`);
-      expect(block).toContain('00:00 - 00:00: Holiday party\tevent_id: ad');
-      expect(block).toContain('08:00 - 09:00: Party planning\tevent_id: t');
+      expect(block).toContain('All day: Holiday party\tevent_id: ad');
+      expect(block).toContain('08:00 (8 a.m.) - 09:00 (9 a.m.): Party planning\tevent_id: t');
       expect(block.indexOf('Holiday party')).toBeLessThan(block.indexOf('Party planning'));
       expect(result.results).not.toContain(prettyOf(PREV_DAY));
     });

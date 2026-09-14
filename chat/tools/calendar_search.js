@@ -54,8 +54,9 @@ function normalizeTimeInput(timeInput, userTz = null) {
 }
 
 /**
- * Local midnight of a "YYYY-MM-DD" day string, for ordering all-day items
- * among a day's timed entries. Never rendered — all-day rows print "All day".
+ * Local midnight of a "YYYY-MM-DD" day string, so an all-day item's
+ * normalized start/end sit on its own calendar date (#47). Never rendered —
+ * all-day rows print "All day" and lead their day in the entry sort.
  */
 function localMidnightOfDay(dayStr) {
   const [y, m, d] = String(dayStr).split("-").map((x) => Number(x));
@@ -461,7 +462,12 @@ async function buildCalendarSummary(args) {
       lines.push(`calendar_id: ${calName}`); // calendar id
       lines.push(`date: ${d.prettyDate}`);
       lines.push(`timezone: ${d.timezone}`);
-      entries.sort((a, b) => a.localeCompare(b));
+      // Rows sort by their leading clock token. An all-day row has none: it
+      // renders "All day" and leads its day (iOS parity — the grouped summary
+      // anchors all-day rows at the first instant of their date), so it must
+      // not fall behind "08:00 …" on a character comparison.
+      const allDayFirst = (s) => (s.startsWith("All day:") ? 0 : 1);
+      entries.sort((a, b) => (allDayFirst(a) - allDayFirst(b)) || a.localeCompare(b));
       for (const entry of entries) {
         lines.push(entry);
       }
