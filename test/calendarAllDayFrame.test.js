@@ -371,6 +371,9 @@ describe('calendar_event_read by start_iso: an overlapping all-day item is not a
       const result = await calendarEventReadRun({ start_iso: `${DAY}T12:00:00` });
       expect(result.ok).toBe(true);
       expect(result.results).toContain('Lunch');
+      expect(result.results).toContain(`start_iso: ${DAY}T12:00:00`);
+      expect(result.results).toContain(`end_iso: ${DAY}T13:00:00`);
+      expect(result.results).toContain('all_day: no');
       expect(result.results).not.toContain('Holiday');
       // Positive control: the midnight lookup still finds the all-day item.
       const midnight = await calendarEventReadRun({ start_iso: `${DAY}T00:00:00` });
