@@ -168,22 +168,39 @@ describe('calendar_event_read: all-day start_iso/end_iso are the date digits', (
 // Producer side: the REAL bridge, driven end to end in node:vm. A consumer test
 // with a hand-written `startDay` proves nothing about whether the bridge emits
 // one; these pin what queryCalendarItems/getCalendarEventDetails actually
-// carry, and that the provider's range query is the sole window filter.
+// carry, that the provider's bounded range query is the sole window filter,
+// and that the recurrence token the read tool shows selects the same
+// occurrence when it comes back through calendar_event_edit.
 // ---------------------------------------------------------------------------
-const { loadCalendarBridge, fakeDate, fakeDateTime } = await import('./helpers/calendarBridgeHarness.js');
+const { loadCalendarBridge, fakeDate, fakeDateTime, fakeEvent, UTC_ZONE } = await import('./helpers/calendarBridgeHarness.js');
+const { _testExports: editExports } = await import('../chat/tools/calendar_event_edit.js');
 
-function allDayItem(id, startDay, endDay, extra = {}) {
-  return { id, title: 'Holiday', startDate: fakeDate(startDay), endDate: fakeDate(endDay), getProperty: () => '', getAttendees: () => [], ...extra };
+const DAY_AFTER_NEXT = dayDigits(9);
+const allDayEvent = (id, title, startDay, endDay, extra = {}) =>
+  fakeEvent({ id, title, startDate: fakeDate(startDay), endDate: fakeDate(endDay), ...extra });
+const timedEvent = (id, title, day, hour, extra = {}) =>
+  fakeEvent({ id, title, startDate: fakeDateTime(day, hour), endDate: fakeDateTime(day, hour + 1), ...extra });
+// A three-occurrence all-day series; the middle occurrence is the edit target.
+function allDaySeries({ moved = false } = {}) {
+  const occurrences = [
+    allDayEvent('series', 'Holiday', PREV_DAY, DAY, { recurrenceId: fakeDate(PREV_DAY) }),
+    moved
+      ? allDayEvent('series', 'Holiday', NEXT_DAY, DAY_AFTER_NEXT, { recurrenceId: fakeDate(DAY) })
+      : allDayEvent('series', 'Holiday', DAY, NEXT_DAY, { recurrenceId: fakeDate(DAY) }),
+    allDayEvent('series', 'Holiday', DAY_AFTER_NEXT, dayDigits(10), { recurrenceId: fakeDate(DAY_AFTER_NEXT) }),
+  ];
+  return fakeEvent({ id: 'series', title: 'Holiday', startDate: fakeDate(PREV_DAY), endDate: fakeDate(DAY), occurrences });
 }
+const utcComponents = (iso) => { const d = new Date(iso); return [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]; };
+const dtComponents = (dt) => [dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second];
+const tightWindow = () => {
+  const mid = new Date(`${DAY}T00:00:00`).getTime();
+  return { from: new Date(mid - 60000).toISOString(), to: new Date(mid + 60000).toISOString() };
+};
 
 describe('bridge producer: all-day items carry their calendar date, not an instant', () => {
-  const tightWindow = () => {
-    const mid = new Date(`${DAY}T00:00:00`).getTime();
-    return { from: new Date(mid - 60000).toISOString(), to: new Date(mid + 60000).toISOString() };
-  };
-
   it('queryCalendarItems emits startDay/endDay from the DATE digits while startMs stays UTC midnight', async () => {
-    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayItem('ad', DAY, NEXT_DAY)] });
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('ad', 'Holiday', DAY, NEXT_DAY)] });
     const [row] = await api.queryCalendarItems(`${PREV_DAY}T00:00:00`, `${NEXT_DAY}T23:59:59`, ['cal1']);
     expect(row).toMatchObject({ id: 'ad', isAllDay: true, startDay: DAY, endDay: NEXT_DAY, recurrenceId: '', isOccurrence: false });
     expect(row.startMs).toBe(utcMidnight(DAY));
@@ -192,63 +209,80 @@ describe('bridge producer: all-day items carry their calendar date, not an insta
   });
 
   it('a timed item gets no day digits', async () => {
-    const timed = { id: 't', title: 'Sync', startDate: fakeDateTime(DAY, 17), endDate: fakeDateTime(DAY, 18), getProperty: () => '', getAttendees: () => [] };
-    const { api } = loadCalendarBridge(bridgeUrl, { items: [timed] });
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [timedEvent('t', 'Sync', DAY, 17)] });
     const [row] = await api.queryCalendarItems(`${DAY}T00:00:00`, `${NEXT_DAY}T00:00:00`, ['cal1']);
     expect(row).toMatchObject({ isAllDay: false, startDay: '', endDay: '' });
     expect(row.startMs).toBe(new Date(`${DAY}T17:00:00`).getTime());
   });
 
   it('an all-day RECURRENCE-ID is emitted in the naive shape the edit tools round-trip', async () => {
-    const parent = allDayItem('series', DAY, NEXT_DAY, { recurrenceInfo: { getRecurrenceItems: () => [] } });
-    const occ = allDayItem('series#occ', DAY, NEXT_DAY, { recurrenceId: fakeDate(DAY), parentItem: parent });
-    const { api } = loadCalendarBridge(bridgeUrl, { items: [occ] });
-    const [row] = await api.queryCalendarItems(`${PREV_DAY}T00:00:00`, `${NEXT_DAY}T23:59:59`, ['cal1']);
-    expect(row).toMatchObject({ isOccurrence: true, recurrenceId: `${DAY}T00:00:00`, startDay: DAY, isRecurring: true });
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDaySeries()] });
+    const rows = await api.queryCalendarItems(`${DAY}T00:00:00`, `${NEXT_DAY}T00:00:00`, ['cal1']);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: 'series', isOccurrence: true, recurrenceId: `${DAY}T00:00:00`, startDay: DAY, endDay: NEXT_DAY, isRecurring: true });
   });
 
   it('a moved all-day occurrence keeps the original RECURRENCE-ID but reports its new day', async () => {
-    const parent = allDayItem('series', DAY, NEXT_DAY, { recurrenceInfo: { getRecurrenceItems: () => [] } });
-    const moved = allDayItem('series#occ', NEXT_DAY, dayDigits(9), { recurrenceId: fakeDate(DAY), parentItem: parent });
-    const { api } = loadCalendarBridge(bridgeUrl, { items: [moved] });
-    const [row] = await api.queryCalendarItems(`${PREV_DAY}T00:00:00`, `${dayDigits(9)}T23:59:59`, ['cal1']);
-    expect(row.recurrenceId).toBe(`${DAY}T00:00:00`);
-    expect(row.startDay).toBe(NEXT_DAY);
-    expect(row.endDay).toBe(dayDigits(9));
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDaySeries({ moved: true })] });
+    const rows = await api.queryCalendarItems(`${NEXT_DAY}T00:00:00`, `${DAY_AFTER_NEXT}T00:00:00`, ['cal1']);
+    const moved = rows.find((r) => r.recurrenceId === `${DAY}T00:00:00`);
+    expect(moved).toBeDefined();
+    expect(moved).toMatchObject({ startDay: NEXT_DAY, endDay: DAY_AFTER_NEXT });
   });
 
   it('a timed RECURRENCE-ID passes through as the provider renders it', async () => {
-    const parent = { id: 'series', title: 'Standup', startDate: fakeDateTime(DAY, 9), endDate: fakeDateTime(DAY, 9, 30), getProperty: () => '', getAttendees: () => [], recurrenceInfo: { getRecurrenceItems: () => [] } };
-    const occ = { ...parent, id: 'series#occ', recurrenceId: fakeDateTime(DAY, 9), parentItem: parent };
-    const { api } = loadCalendarBridge(bridgeUrl, { items: [occ] });
+    const series = fakeEvent({ id: 'standup', title: 'Standup', startDate: fakeDateTime(DAY, 9), endDate: fakeDateTime(DAY, 9, 30),
+      occurrences: [timedEvent('standup', 'Standup', DAY, 9, { recurrenceId: fakeDateTime(DAY, 9) })] });
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [series] });
     const [row] = await api.queryCalendarItems(`${DAY}T00:00:00`, `${NEXT_DAY}T00:00:00`, ['cal1']);
     expect(row.recurrenceId).toBe(fakeDateTime(DAY, 9).toString());
     expect(row.isAllDay).toBe(false);
   });
 
   it('getCalendarEventDetails carries startDay/endDay for a DATE and blanks for a date-time', async () => {
-    const timed = { id: 't', title: 'Sync', startDate: fakeDateTime(DAY, 17), endDate: fakeDateTime(DAY, 18), getProperty: () => '', getAttendees: () => [] };
-    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayItem('ad', DAY, NEXT_DAY), timed] });
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('ad', 'Holiday', DAY, NEXT_DAY), timedEvent('t', 'Sync', DAY, 17)] });
     const allDay = await api.getCalendarEventDetails('ad', 'cal1');
     expect(allDay).toMatchObject({ ok: true, isAllDay: true, startDay: DAY, endDay: NEXT_DAY, start: utcMidnight(DAY) });
     const details = await api.getCalendarEventDetails('t', 'cal1');
     expect(details).toMatchObject({ ok: true, isAllDay: false, startDay: '', endDay: '' });
   });
+});
 
+describe('bridge producer: the provider range query is the only window filter', () => {
   it('a tight window around the all-day start returns the item the provider returned', async () => {
     const { from, to } = tightWindow();
-    const { api, getItemsCalls } = loadCalendarBridge(bridgeUrl, { items: [allDayItem('ad', DAY, NEXT_DAY)] });
+    const { api, getItemsCalls } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('ad', 'Holiday', DAY, NEXT_DAY)] });
     const rows = await api.queryCalendarItems(from, to, ['cal1']);
-    // The provider is the ONLY window filter: it was asked exactly once with
-    // the bridge's own bounds, and its answer was not re-filtered.
     expect(getItemsCalls).toHaveLength(1);
-    expect(getItemsCalls[0].start.toString()).toBe(new Date(from).toISOString().replace(/[-:]|\.\d{3}/g, ''));
-    expect(getItemsCalls[0].end.toString()).toBe(new Date(to).toISOString().replace(/[-:]|\.\d{3}/g, ''));
+    // The bridge asks for events (with occurrences), bounded, over exactly the
+    // caller's window: a Z-suffixed ISO is carried as UTC components in UTC.
+    expect(getItemsCalls[0].filter & 1).toBe(1);
+    expect(getItemsCalls[0].count).toBeGreaterThan(0);
+    expect(dtComponents(getItemsCalls[0].start)).toEqual(utcComponents(from));
+    expect(dtComponents(getItemsCalls[0].end)).toEqual(utcComponents(to));
+    expect(getItemsCalls[0].start.timezone).toBe(UTC_ZONE);
+    expect(getItemsCalls[0].end.timezone).toBe(UTC_ZONE);
     expect(rows.map((r) => r.id)).toEqual(['ad']);
   });
 
+  it('an item outside the window is not returned', async () => {
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('ad', 'Holiday', DAY, NEXT_DAY), timedEvent('t', 'Sync', DAY, 17)] });
+    const before = await api.queryCalendarItems(`${dayDigits(3)}T00:00:00`, `${dayDigits(5)}T00:00:00`, ['cal1']);
+    expect(before).toEqual([]);
+    const after = await api.queryCalendarItems(`${dayDigits(10)}T00:00:00`, `${dayDigits(12)}T00:00:00`, ['cal1']);
+    expect(after).toEqual([]);
+  });
+
+  it('the query stays bounded: a provider holding more items than the cap returns the cap', async () => {
+    const items = Array.from({ length: 101 }, (_, i) => timedEvent(`t${i}`, `Slot ${i}`, DAY, 0));
+    const { api, getItemsCalls } = loadCalendarBridge(bridgeUrl, { items });
+    const rows = await api.queryCalendarItems(`${DAY}T00:00:00`, `${NEXT_DAY}T00:00:00`, ['cal1']);
+    expect(rows).toHaveLength(getItemsCalls[0].count);
+    expect(rows.length).toBeLessThan(items.length);
+  });
+
   it('calendar_event_read by the all-day start_iso the summary showed finds the item through the real bridge', async () => {
-    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayItem('ad', DAY, NEXT_DAY)] });
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [allDayEvent('ad', 'Holiday', DAY, NEXT_DAY)] });
     browser.tmCalendar.queryCalendarItems.mockImplementation((...a) => api.queryCalendarItems(...a));
     try {
       const result = await calendarEventReadRun({ start_iso: `${DAY}T00:00:00` });
@@ -260,5 +294,67 @@ describe('bridge producer: all-day items carry their calendar date, not an insta
       browser.tmCalendar.queryCalendarItems.mockReset();
       browser.tmCalendar.queryCalendarItems.mockResolvedValue([]);
     }
+  });
+});
+
+describe('edit round-trip: the recurrence token the read tool shows selects that occurrence in the bridge', () => {
+  const field = (text, name) => (text.match(new RegExp(`^${name}: (.*)$`, 'm')) || [])[1];
+
+  async function readThenEdit({ moved, withCalendarHint }) {
+    const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [allDaySeries({ moved })] });
+    browser.tmCalendar.queryCalendarItems.mockImplementation((...a) => api.queryCalendarItems(...a));
+    try {
+      // Read the target by the day it is shown on (a moved occurrence sits on NEXT_DAY).
+      const shownDay = moved ? NEXT_DAY : DAY;
+      const read = await calendarEventReadRun({ start_iso: `${shownDay}T00:00:00` });
+      expect(read.ok).toBe(true);
+      const text = read.results;
+      expect(field(text, 'start_iso')).toBe(`${shownDay}T00:00:00`);
+      expect(field(text, 'recurrence_id')).toBe(`${DAY}T00:00:00`);
+      // Feed the shown fields back through the edit tool's normalizer into the bridge.
+      const args = editExports.normalizeArgs({
+        event_id: field(text, 'event_id'),
+        recurrence_id: field(text, 'recurrence_id'),
+        edit_scope: 'this_only',
+        title: 'Renamed',
+        ...(withCalendarHint ? { calendar_id: field(text, 'calendar_id') } : {}),
+      });
+      const res = await api.modifyCalendarEvent(args);
+      expect(res).toMatchObject({ ok: true, event_id: 'series', title: 'Renamed' });
+    } finally {
+      browser.tmCalendar.queryCalendarItems.mockReset();
+      browser.tmCalendar.queryCalendarItems.mockResolvedValue([]);
+    }
+    return { calendar, modifications };
+  }
+
+  for (const withCalendarHint of [true, false]) {
+    it(`renames only the ordinary occurrence (${withCalendarHint ? 'with' : 'without'} calendar hint)`, async () => {
+      const { calendar, modifications } = await readThenEdit({ moved: false, withCalendarHint });
+      expect(modifications).toHaveLength(1);
+      expect(modifications[0].oldItem.recurrenceId.compare(fakeDate(DAY))).toBe(0);
+      const occ = calendar.items[0].recurrenceInfo.occurrences;
+      expect(occ.map((o) => o.title)).toEqual(['Holiday', 'Renamed', 'Holiday']);
+      expect(calendar.items[0].title).toBe('Holiday');
+      // The persisted occurrence keeps its DATE frame and RECURRENCE-ID.
+      expect(occ[1].startDate.isDate).toBe(true);
+      expect(occ[1].recurrenceId.compare(fakeDate(DAY))).toBe(0);
+    });
+
+    it(`renames only the moved occurrence (${withCalendarHint ? 'with' : 'without'} calendar hint)`, async () => {
+      const { calendar, modifications } = await readThenEdit({ moved: true, withCalendarHint });
+      expect(modifications).toHaveLength(1);
+      const occ = calendar.items[0].recurrenceInfo.occurrences;
+      expect(occ.map((o) => o.title)).toEqual(['Holiday', 'Renamed', 'Holiday']);
+      expect(occ[1].recurrenceId.compare(fakeDate(DAY))).toBe(0);
+      expect(occ[1].startDate.compare(fakeDate(NEXT_DAY))).toBe(0);
+    });
+  }
+
+  it('a token for a day with no occurrence edits nothing', async () => {
+    const { api, modifications } = loadCalendarBridge(bridgeUrl, { items: [allDaySeries()] });
+    const res = await api.modifyCalendarEvent(editExports.normalizeArgs({ event_id: 'series', recurrence_id: `${dayDigits(20)}T00:00:00`, edit_scope: 'this_only', title: 'Renamed' }));
+    expect(res.ok).toBe(false);
+    expect(modifications).toHaveLength(0);
   });
 });
