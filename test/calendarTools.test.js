@@ -138,6 +138,7 @@ import { run as calendarEventReadRun } from '../chat/tools/calendar_event_read.j
 import { run as calendarEventDeleteRun, completeExecution as calendarEventDeleteComplete } from '../chat/tools/calendar_event_delete.js';
 import { run as calendarEventEditRun, completeExecution as calendarEventEditComplete } from '../chat/tools/calendar_event_edit.js';
 import { run as calendarReadRun, resetPaginationSessions as calendarReadResetPagination } from '../chat/tools/calendar_read.js';
+import { run as calendarSearchRun, resetPaginationSessions as calendarSearchResetPagination } from '../chat/tools/calendar_search.js';
 
 describe('calendar_event_read', () => {
   beforeEach(() => {
@@ -335,16 +336,51 @@ describe('calendar_read', () => {
     day.setDate(day.getDate() + 7);
     day.setHours(0, 0, 0, 0);
     const at = (h, m = 0) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m, 0, 0).getTime();
-    const dayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    const keyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const dayKey = keyOf(day);
+    const nextDayKey = keyOf(new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1));
     browser.tmCalendar.queryCalendarItems.mockResolvedValueOnce([
       { id: 'am', calendarId: 'cal1', title: 'Early run', startMs: at(5), endMs: at(6), isAllDay: false, attendeeList: [] },
       { id: 'pm', calendarId: 'cal1', title: 'Dinner', startMs: at(17, 30), endMs: at(18), isAllDay: false, attendeeList: [] },
-      { id: 'ad', calendarId: 'cal1', title: 'Holiday', startMs: at(0), endMs: at(0) + 86400000, isAllDay: true, attendeeList: [] },
+      // Shaped like the bridge's real all-day row: the epoch is UTC midnight of
+      // the date (ical.js skips zone conversion for DATE values) and the date's
+      // own digits travel in startDay/endDay (#47).
+      { id: 'ad', calendarId: 'cal1', title: 'Holiday', startMs: Date.UTC(day.getFullYear(), day.getMonth(), day.getDate()), endMs: Date.UTC(day.getFullYear(), day.getMonth(), day.getDate() + 1), isAllDay: true, startDay: dayKey, endDay: nextDayKey, attendeeList: [] },
     ]);
     const result = await calendarReadRun({ calendar_ids: ["cal1"], from_date: dayKey, to_date: dayKey });
     expect(result.results).toContain('05:00 (5 a.m.) - 06:00 (6 a.m.): Early run\tevent_id: am');
     expect(result.results).toContain('17:30 (5:30 p.m.) - 18:00 (6 p.m.): Dinner\tevent_id: pm');
     expect(result.results).toContain('All day: Holiday\tevent_id: ad');
     expect(result.results).not.toMatch(/00:00 \(12 a\.m\.\) - 00:00/);
+    expect(result.results).toContain(`timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// calendar_search (query path) — the cues, timezone header and recurrence text
+// must survive the query filter, not only the read delegation.
+// ---------------------------------------------------------------------------
+describe('calendar_search query path keeps cues, timezone and recurrence text', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    calendarSearchResetPagination();
+  });
+
+  it('renders matching rows with AM/PM cues, the timezone header and the RRULE, and excludes non-matching rows', async () => {
+    const day = new Date();
+    day.setDate(day.getDate() + 7);
+    day.setHours(0, 0, 0, 0);
+    const at = (h, m = 0) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m, 0, 0).getTime();
+    const dayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    browser.tmCalendar.queryCalendarItems.mockResolvedValueOnce([
+      { id: 'w', calendarId: 'cal1', title: 'Weekly sync', startMs: at(9), endMs: at(9, 30), isAllDay: false, isRecurring: true, recurrenceRRule: 'FREQ=WEEKLY;COUNT=4', attendeeList: [] },
+      { id: 'e', calendarId: 'cal1', title: 'Evening sync', startMs: at(18, 5), endMs: at(19), isAllDay: false, attendeeList: [] },
+      { id: 'x', calendarId: 'cal1', title: 'Dentist', startMs: at(14), endMs: at(15), isAllDay: false, attendeeList: [] },
+    ]);
+    const result = await calendarSearchRun({ query: 'sync', calendar_ids: ['cal1'], from_date: dayKey, to_date: dayKey });
+    expect(result.results).toContain(`timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+    expect(result.results).toContain('09:00 (9 a.m.) - 09:30 (9:30 a.m.): Weekly sync (↻ FREQ=WEEKLY;COUNT=4)\tevent_id: w');
+    expect(result.results).toContain('18:05 (6:05 p.m.) - 19:00 (7 p.m.): Evening sync\tevent_id: e');
+    expect(result.results).not.toContain('Dentist');
   });
 });
