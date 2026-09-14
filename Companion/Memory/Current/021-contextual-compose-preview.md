@@ -27,3 +27,5 @@ Inline editor labels opt out of spellcheck. Its placeholder and textarea share t
 Suggestion and Cmd-K action rows share `composeActionCSS` and the `tm-compose-actions` class, including button hover/focus, keycaps, spacing, typography, and palette. Cmd-K installs the same stylesheet text in its document; the suggestion includes it in its shadow tree.
 
 Cmd-K reapplies the active compose window/editor focus after the native insertion, matching the former post-stream cleanup order. Delayed iframe focus attempts are gated on a connected popup so they cannot outlive it. Native caret painting still requires owner smoke verification.
+
+HTML sentence previews preserve synthetic paragraph boundaries when a correction replaces trailing layout whitespace with a space. Without this normalization, punctuation plus a block separator could be placed outside the paragraph in the detached fragment, fail validation, and silently close the bubble. Tests cover DIV/P paragraphs with keyboard and clicked acceptance, unchanged paragraph structure, and no repeated proposal. This is distinct from the inherited inline-to-block projection issue #42.

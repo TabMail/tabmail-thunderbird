@@ -79,7 +79,7 @@ Object.assign(TabMail, {
     const index = TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor));
     const cursor = TabMail.composeCursorOffset(index);
     if (cursor === null || typeof state.correctedText !== 'string' || !state.correctedText || state.correctedText === index.text) { TabMail.hideComposePreview(); return; }
-    const model = TabMail.buildPreviewModel(index.text, state.correctedText, cursor);
+    const model = TabMail.buildPreviewModel(index.text, state.correctedText, cursor, index.entries.filter(entry => entry.kind === 'block').map(entry => entry.start));
     if (!model.edits.length && (model.jumpOffset == null || model.jumpOffset < 0)) { TabMail.hideComposePreview(); return; }
     state.previewModel = model.edits.length ? model : null;
     state.previewJumpOffset = model.edits.length ? null : model.jumpOffset;

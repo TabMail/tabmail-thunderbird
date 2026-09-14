@@ -55,8 +55,26 @@ Object.assign(TabMail, {
    * to the unchanged editor, never to preview DOM. Adjacent deletes/inserts
    * are one replacement; context is not part of the acceptance payload.
    */
-  buildPreviewModel(original, corrected, cursor) {
-    const diffs = TabMail.computeDiff(original, corrected, cursor);
+  buildPreviewModel(original, corrected, cursor, blockBreaks = []) {
+    let diffs = TabMail.computeDiff(original, corrected, cursor);
+    // A sentence correction may replace trailing layout whitespace with a space.
+    // Preserve HTML paragraph boundaries; they are not editable text characters.
+    if (blockBreaks.length) {
+      const proposed = TabMail.composeEditsFromDiff(diffs);
+      let changed = false;
+      for (const edit of proposed) {
+        const boundary = blockBreaks.find(offset => offset >= edit.start && offset < edit.end && /^\s*$/.test(original.slice(offset, edit.end)));
+        if (boundary !== undefined && /\s$/.test(edit.text)) {
+          edit.end = boundary;
+          edit.text = edit.text.trimEnd();
+          changed = true;
+        }
+      }
+      if (changed) {
+        corrected = proposed.reduceRight((text, edit) => text.slice(0, edit.start) + edit.text + text.slice(edit.end), original);
+        diffs = TabMail.computeDiff(original, corrected, cursor);
+      }
+    }
     const filtered = TabMail._filterDiffsForSuggestion(diffs, original, corrected, cursor);
     const edits = TabMail.composeEditsFromDiff(filtered.diffs);
     if (!edits.length) return { edits, jumpOffset: filtered.firstDiffPosition };

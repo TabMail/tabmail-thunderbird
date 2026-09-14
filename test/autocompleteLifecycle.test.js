@@ -530,10 +530,17 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   expect(actions.map(b=>b.textContent)).toEqual(['Enter Edit draft','Esc Dismiss','⇧Enter Newline']);
   expect(w.getComputedStyle(wrapper.querySelector('.tm-inline-actions')).justifyContent).toBe('flex-end');
   expect(wrapper.querySelector('.tm-inline-actions').getAttribute('spellcheck')).toBe('false');
+  const actionSheet=w.document.getElementById('tm-compose-action-styles').sheet;
+  const hoverRule=[...actionSheet.cssRules].find(rule=>rule.selectorText?.includes(':hover'));
+  expect(hoverRule.style.background).toBe('var(--tm-preview-insert)');
+  expect(hoverRule.style.color).toBe('var(--tm-preview-text)');
+  expect(actions.every(button=>button.matches(hoverRule.selectorText.split(',')[0].replace(':hover','')))).toBe(true);
+  expect(actions.every(button=>!button.style.background && !button.style.color)).toBe(true);
   expect(wrapper.querySelector('.tm-inline-overlay').style.background).toBe('transparent');
   const ph=input.ownerDocument.querySelector('.ph');
   expect(input.ownerDocument.defaultView.getComputedStyle(input).paddingLeft).toBe('0px');
   expect(input.ownerDocument.defaultView.getComputedStyle(ph).left).toBe('0px');
+  expect(input.ownerDocument.defaultView.getComputedStyle(ph).lineHeight).toBe(input.ownerDocument.defaultView.getComputedStyle(input).lineHeight);
   if (mode === 'click') {
     input.setSelectionRange(input.value.length,input.value.length);actions[2].click();
     expect(input.value).toBe('Correct the wording\n');
@@ -993,4 +1000,16 @@ it.each(['finish','typing','scroll'])('inline application wipe leaves authored H
  if(ending==='finish'){finish();await Promise.resolve();}
  else w.dispatchEvent(new w.Event(ending==='typing'?'input':'scroll'));
  expect(host.isConnected).toBe(false);expect(body.innerHTML).toBe(before);expect(animation.cancel).toHaveBeenCalledTimes(1);
+});
+
+it.each(['div','p'].flatMap(tag=>['keyboard','click'].map(mode=>({tag,mode}))))('accepts punctuation and wording at an HTML $tag end via $mode without joining paragraphs',({tag,mode})=>{
+ const {w,tm,body}=setup(`<${tag}>Earlier sentence. No action needed here!</${tag}><${tag}>Another paragraph.</${tag}>`);
+ tm.attachAutocomplete(body);tm.setCursorByOffset(body,28);
+ tm.state.correctedText='Earlier sentence. No action is needed here. Another paragraph.';
+ tm.renderComposePreview();expect(tm.state.previewModel).not.toBeNull();
+ if(mode==='click')tm.state.previewView.root.querySelector('button').click();
+ else body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));
+ expect(body.innerHTML).toBe(`<${tag}>Earlier sentence. No action is needed here.</${tag}><${tag}>Another paragraph.</${tag}>`);
+ expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+ expect(tm.state.previewModel).toBeNull();expect(tm.state.previewJumpOffset).toBeNull();
 });
