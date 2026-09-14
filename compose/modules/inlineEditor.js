@@ -5,6 +5,32 @@
 var TabMail = TabMail || {};
 
 Object.assign(TabMail, {
+  /** Presentation-only reveal: never rebuild authored HTML or delay its transaction. */
+  animateInlineEditApplication(editor) {
+    if (typeof editor.animate !== "function" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const rect = editor.getBoundingClientRect();
+    const boundary = TabMail.getQuoteBoundaryNode(editor);
+    const bottom = Math.min(window.innerHeight, boundary ? boundary.getBoundingClientRect().top : rect.bottom);
+    const top = Math.max(0, rect.top);
+    if (bottom <= top) return;
+    const host = document.createElement("div");
+    host.setAttribute("data-tabmail-ui", "");
+    host.contentEditable = "false";
+    const cover = document.createElement("div");
+    const background = getComputedStyle(editor).backgroundColor;
+    cover.style.cssText = `position:fixed;left:${rect.left}px;top:${top}px;width:${rect.width}px;height:${bottom-top}px;background:${!background || background === "rgba(0, 0, 0, 0)" || background === "transparent" ? "Canvas" : background};pointer-events:none;z-index:${TabMail.config.inlineEdit.zIndex}`;
+    host.attachShadow({mode:"open"}).appendChild(cover);
+    document.documentElement.appendChild(host);
+    let animation;
+    try { animation = cover.animate([{clipPath:"inset(0 0 0 0)"},{clipPath:"inset(100% 0 0 0)"}], {duration:TabMail.config.inlineEdit.diffWipeFadeMs,easing:"ease-out"}); } catch (_) { host.remove(); return; }
+    const cleanup = () => {
+      host.remove();
+      animation.cancel();
+      for (const type of ["keydown", "input", "mousedown", "scroll", "resize"]) window.removeEventListener(type, cleanup, true);
+    };
+    for (const type of ["keydown", "input", "mousedown", "scroll", "resize"]) window.addEventListener(type, cleanup, true);
+    animation.finished.then(cleanup, cleanup);
+  },
   /**
    * Runs the inline edit instruction using the existing pipeline (was previously
    * in the input keydown Enter handler). Expects wrapper and spinner from the
@@ -39,7 +65,7 @@ Object.assign(TabMail, {
       } catch (_) {}
       try {
         if (wrapper && wrapper._tm_container)
-          wrapper._tm_container.style.filter = "grayscale(0.9) opacity(0.6)";
+          wrapper._tm_container.style.visibility = "hidden";
       } catch (_) {}
 
       // Show throttle message when actual throttling happens
@@ -81,7 +107,7 @@ Object.assign(TabMail, {
               throttleOverlay.style.cssText = [
                 "position: absolute",
                 "inset: 0",
-                "background: rgba(255,255,255,0.6)",
+                "background: transparent",
                 "backdrop-filter: blur(2px)",
                 "border-radius: inherit",
                 "z-index: 3", // Above the spinner overlay
@@ -232,6 +258,7 @@ Object.assign(TabMail, {
       TabMail.state.autoHideDiff = true;
 
       TabMail.hideComposePreview();
+      TabMail.animateInlineEditApplication(editor);
     } catch (err) {
       console.error("[TabMail Edit] Inline edit error:", err);
     } finally {
@@ -263,8 +290,9 @@ Object.assign(TabMail, {
       } catch (_) {}
       try {
         if (wrapper) wrapper._tm_executing = false;
+        if (wrapper?._tm_container) wrapper._tm_container.style.visibility = "";
       } catch (_) {}
-      // Do not cleanup here; the diff wipe path cleans up after animation.
+      // The native transaction owns cleanup; the visual wipe removes itself.
     }
   },
   /**
@@ -481,7 +509,6 @@ Object.assign(TabMail, {
       ].join(";");
 
       // Theme-aware spinner overlay, circle, and status text
-      const isDarkMode = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
       const borderR = TabMail.config.inlineEdit.borderRadiusPx || 8;
 
       const spinner = document.createElement("div");
@@ -494,8 +521,7 @@ Object.assign(TabMail, {
         "align-items:center",
         "justify-content:center",
         "gap: 4px",
-        "backdrop-filter: blur(1px)",
-        `background: ${isDarkMode ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.7)"}`,
+        "background: transparent",
         `border-radius: ${borderR}px`,
         "z-index: 2",
       ].join(";");
@@ -505,8 +531,8 @@ Object.assign(TabMail, {
         "width: 28px",
         "height: 28px",
         "border-radius: 50%",
-        `border: 3px solid ${isDarkMode ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)"}`,
-        `border-top-color: ${isDarkMode ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.85)"}`,
+        "border: 3px solid var(--tm-preview-border)",
+        "border-top-color: var(--in-content-accent-color)",
         "animation: tmspin 1s linear infinite",
       ].join(";");
       spinner.appendChild(spinnerInner);
@@ -525,7 +551,7 @@ Object.assign(TabMail, {
         "overflow: hidden",
         "text-overflow: ellipsis",
         "max-width: 90%",
-        `color: ${isDarkMode ? "rgba(255,255,255,0.8)" : "rgba(0,0,0,0.85)"}`,
+        "color: var(--tm-preview-text)",
         "display: none",
       ].join(";");
       spinner.appendChild(statusText);
@@ -537,10 +563,10 @@ Object.assign(TabMail, {
         "position: absolute",
         "pointer-events: none",
         "opacity: 0.6",
-        "left: 12px",
-        "right: 12px",
+        "left: 0",
+        "right: 0",
         // Align to top for multiline
-        "top: 8px",
+        "top: 0",
         "transform: none",
         "white-space: normal",
         "overflow: hidden",
@@ -577,7 +603,9 @@ Object.assign(TabMail, {
       // Match the suggestion's compact bottom-right keyboard/action row.
       const hint = document.createElement("div");
       hint.className = "tm-inline-actions";
-      hint.style.cssText = "display:flex;flex-wrap:wrap;justify-content:flex-end;text-align:right;font:11px/1.4 system-ui;color:var(--tm-preview-context);user-select:none";
+      hint.spellcheck = false;
+      hint.setAttribute("spellcheck", "false");
+      hint.style.cssText = "position:relative;z-index:3;display:flex;flex-wrap:wrap;justify-content:flex-end;text-align:right;font:11px/1.4 system-ui;color:var(--tm-preview-context);user-select:none";
       const action = (symbol, label, shortcut, onClick) => {
         const button = document.createElement("button");
         button.type = "button";
@@ -594,14 +622,14 @@ Object.assign(TabMail, {
         hint.appendChild(button);
       };
       const activeInput = () => wrapper._tm_iinput || input;
-      action("↵", "Edit draft", "Enter", () => {
+      action("Enter", "Edit draft", "Enter", () => {
         if (wrapper._tm_executing || wrapper._tm_streaming) return;
         activeInput().dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", bubbles:true, cancelable:true}));
       });
       action("Esc", "Dismiss", "Escape", () => {
         activeInput().dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true, cancelable:true}));
       });
-      action("⇧↵", "Newline", "Shift+Enter", () => {
+      action("⇧Enter", "Newline", "Shift+Enter", () => {
         if (wrapper._tm_executing || wrapper._tm_streaming) return;
         const field = activeInput();
         field.focus();
@@ -691,21 +719,22 @@ Object.assign(TabMail, {
         const style = idoc.createElement("style");
         const lineH = TabMail.config.inlineEdit.lineHeightPx;
         const maxLines = TabMail.config.inlineEdit.maxLines;
-        const fontSizeEm = TabMail.config.inlineEdit.fontSizeEm || 1;
+        const editorFont = window.getComputedStyle(editor);
+        const inputFontSize = parseFloat(editorFont.fontSize) * TabMail.config.preview.fontScale;
         // Compute themed colors from wrapper so iframe matches TB theme
         let resolvedTextColor = "#fff";
         try {
           const cs = window.getComputedStyle(wrapper);
           resolvedTextColor = cs.color || resolvedTextColor;
         } catch (_) {}
-        const initialPadV = 12; // sync with textarea padding 6px top/bottom
+        const initialPadV = 0; // wrapper supplies the same padding as the suggestion
         const initialH = lineH + initialPadV; // 1 line + vertical padding
         style.textContent = `
-          :root { --tm-inline-text: ${resolvedTextColor}; }
-          html, body { margin: 0; padding: 0; background: transparent; color: var(--tm-inline-text); font-size: ${fontSizeEm}em; overflow: hidden; }
+          :root { --tm-inline-text: ${resolvedTextColor}; font-size: ${inputFontSize}px; font-family: ${editorFont.fontFamily}; }
+          html, body { margin: 0; padding: 0; background: transparent; color: var(--tm-inline-text); font-size: inherit; overflow: hidden; }
           .box { position: relative; display: block; font: inherit; color: var(--tm-inline-text); }
-          textarea { display:block; width:100%; min-width: 0; background: transparent; border: none; outline: none; color: var(--tm-inline-text); font: inherit; position: relative; z-index: 1; caret-color: currentColor; resize: none; line-height: ${lineH}px; padding: 6px 10px; box-sizing: border-box; height: ${initialH}px; overflow-y: hidden; white-space: pre-wrap; word-break: break-word; scrollbar-gutter: stable both-edges; overscroll-behavior-y: contain; }
-          .ph { position: absolute; pointer-events: none; opacity: 0.6; left: 12px; right: 12px; top: 8px; transform: none; white-space: normal; overflow: hidden; text-overflow: ellipsis; color: var(--tm-inline-text); }
+          textarea { display:block; width:100%; min-width: 0; background: transparent; border: none; outline: none; color: var(--tm-inline-text); font: inherit; position: relative; z-index: 1; caret-color: currentColor; resize: none; line-height: ${lineH}px; padding: 0; box-sizing: border-box; height: ${initialH}px; overflow-y: hidden; white-space: pre-wrap; word-break: break-word; scrollbar-gutter: auto; overscroll-behavior-y: contain; }
+          .ph { line-height: ${lineH}px; position: absolute; pointer-events: none; opacity: 0.6; left: 0; right: 0; top: 0; transform: none; white-space: normal; overflow: hidden; text-overflow: ellipsis; color: var(--tm-inline-text); }
         `;
         idoc.head.appendChild(style);
         // Inject keyframes for spinner into top document once

@@ -522,8 +522,13 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   const input = wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
   input.value = 'Correct the wording';
   const actions = [...wrapper.querySelectorAll('.tm-inline-actions button')];
-  expect(actions.map(b=>b.textContent)).toEqual(['↵ Edit draft','Esc Dismiss','⇧↵ Newline']);
+  expect(actions.map(b=>b.textContent)).toEqual(['Enter Edit draft','Esc Dismiss','⇧Enter Newline']);
   expect(wrapper.querySelector('.tm-inline-actions').style.justifyContent).toBe('flex-end');
+  expect(wrapper.querySelector('.tm-inline-actions').getAttribute('spellcheck')).toBe('false');
+  expect(wrapper.querySelector('.tm-inline-overlay').style.background).toBe('transparent');
+  const ph=input.ownerDocument.querySelector('.ph');
+  expect(input.ownerDocument.defaultView.getComputedStyle(input).paddingLeft).toBe('0px');
+  expect(input.ownerDocument.defaultView.getComputedStyle(ph).left).toBe('0px');
   if (mode === 'click') {
     input.setSelectionRange(input.value.length,input.value.length);actions[2].click();
     expect(input.value).toBe('Correct the wording\n');
@@ -963,4 +968,22 @@ it('unaccepted preview text is excluded from whole-document serialization', () =
  expect(w.document.documentElement.textContent).not.toContain('UNACCEPTED PROPOSAL');
  expect(body.textContent).toBe('AUTHORED CONTENT ONLY.');
  expect(tm.state.previewView.host.shadowRoot.querySelector('style').textContent).toContain('overflow: auto');
+});
+
+it.each(['finish','typing','scroll'])('inline application wipe leaves authored HTML intact and clears on %s',async ending=>{
+ const {w,tm,body}=setup('<p>Updated <b>wording</b>.</p><div class="moz-signature">Signature</div>');
+ body.getBoundingClientRect=()=>({left:8,top:20,width:600,bottom:240});
+ body.querySelector('.moz-signature').getBoundingClientRect=()=>({top:180});
+ let finish;
+ const animation={finished:new Promise(resolve=>finish=resolve),cancel:vi.fn()};
+ w.HTMLElement.prototype.animate=vi.fn(()=>animation);
+ const before=body.innerHTML;
+ tm.animateInlineEditApplication(body);
+ const host=w.document.documentElement.lastElementChild;
+ expect(host).not.toBe(body);expect(host.shadowRoot.firstChild.style.height).toBe('160px');
+ expect(body.innerHTML).toBe(before);expect(host.textContent).toBe('');
+ expect(w.HTMLElement.prototype.animate).toHaveBeenCalledWith([{clipPath:'inset(0 0 0 0)'},{clipPath:'inset(100% 0 0 0)'}],expect.objectContaining({duration:tm.config.inlineEdit.diffWipeFadeMs}));
+ if(ending==='finish'){finish();await Promise.resolve();}
+ else w.dispatchEvent(new w.Event(ending==='typing'?'input':'scroll'));
+ expect(host.isConnected).toBe(false);expect(body.innerHTML).toBe(before);expect(animation.cancel).toHaveBeenCalledTimes(1);
 });
