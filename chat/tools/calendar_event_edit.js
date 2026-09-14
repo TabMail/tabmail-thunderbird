@@ -305,3 +305,5 @@ export async function completeExecution(currentState, prevState) {
   log(`[TMDBG Tools] calendar_event_edit.completeExecution: completed`);
   return { ok: true, result: "Edit workflow completed." };
 }
+
+export const _testExports = { normalizeArgs };

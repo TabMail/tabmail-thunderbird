@@ -54,6 +54,15 @@ function normalizeTimeInput(timeInput, userTz = null) {
 }
 
 /**
+ * Local midnight of a "YYYY-MM-DD" day string, for ordering all-day items
+ * among a day's timed entries. Never rendered — all-day rows print "All day".
+ */
+function localMidnightOfDay(dayStr) {
+  const [y, m, d] = String(dayStr).split("-").map((x) => Number(x));
+  return new Date(y, m - 1, d, 0, 0, 0, 0);
+}
+
+/**
  * Create a day key from a normalized Date object.
  * Input MUST be already normalized via normalizeTimeInput().
  * 
@@ -219,9 +228,18 @@ async function buildCalendarSummary(args) {
   // Step 3: Normalize ALL calendar items immediately after retrieval
   const normalizedItems = items.map((item, index) => {
     try {
-      const normalizedStart = normalizeTimeInput(item.startMs, userTz);
-      const normalizedEnd = normalizeTimeInput(item.endMs, userTz);
-      const dayKey = makeDayKeyFromNormalized(normalizedStart);
+      // All-day items carry their own calendar date (`startDay`, #47). Their
+      // `startMs` is UTC midnight of that date, which `normalizeTimeInput`
+      // would place on the previous day for every user west of UTC.
+      const normalizedStart = item.isAllDay && item.startDay
+        ? localMidnightOfDay(item.startDay)
+        : normalizeTimeInput(item.startMs, userTz);
+      const normalizedEnd = item.isAllDay && item.startDay
+        ? localMidnightOfDay(item.endDay || item.startDay)
+        : normalizeTimeInput(item.endMs, userTz);
+      const dayKey = item.isAllDay && item.startDay
+        ? item.startDay
+        : makeDayKeyFromNormalized(normalizedStart);
       
       const normalized = {
         ...item,
@@ -572,6 +590,7 @@ export const _testExports = {
   formatDayHeader,
   insertLine,
   formatHour,
+  localMidnightOfDay,
   resolveDateRange,
   normalizeArgs,
 };
