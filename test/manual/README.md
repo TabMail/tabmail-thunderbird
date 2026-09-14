@@ -29,6 +29,18 @@ Verified on Thunderbird Beta 156.0 on macOS: HTML probe 6/6 and plaintext probe 
 
 Limits: native Undo selects the replaced editable region, and Redo restores Thunderbird's command selection rather than replaying the post-accept caret adjustment. At a window narrower than Thunderbird's own compose document minimum, native chrome can clip the document (including its preview). These probes do not claim testing on every supported Thunderbird version.
 
+### Cmd-K caret focus handoff
+
+On macOS Beta 156.0, applying Cmd-K could leave the native body caret invisible even though typing continued to insert text. Leaving the application and returning, or focusing a compose header and then the body, restored it. A valid DOM selection, a non-transparent computed caret color, and `document.activeElement === body` were **not sufficient proof** that Gecko was painting the caret. Disabling the apply animation did not fix this reproduction.
+
+The verified cleanup sequence in `inlineEditor.js` uses the existing instruction iframe, before removing it: keep its container transparent, make its input focusable again, focus the instruction input, focus the compose content window, focus the body, then remove the popup and restore the body's saved caret color/designMode through normal cleanup. The body caret remains transparent during the handoff to avoid dual carets. The native HTML transaction and its selection placement remain unchanged. Do not replace this with only a body `focus()` after removing the frame, create a second focus iframe, switch applications, or add a delayed focus-stealing timer. The apply handoff is guarded by document focus and runs synchronously while the existing execution guard suppresses popup focus-out cleanup.
+
+Regression procedure: in a disposable HTML draft containing `Please confirm Friday.`, put the caret in the body, open Cmd-K, request a different weekday, and apply with physical Enter. Without clicking the body or switching windows, type a character and inspect the visible caret. Repeat using the clickable Edit draft action. Check that only the instruction caret is shown while Cmd-K is open, Escape returns to the body, and native Undo first removes the typed character and then restores the pre-edit draft. Repeat applications in the same window. DOM tests assert the focus-before-removal sequence and single existing iframe, but do not substitute for this native painter check.
+
+When testing changed source in an already-open disposable draft, verify the loaded function contains the new implementation. Thunderbird can cache `scripting.executeScript` file sources; reloading a cached file is not evidence that the candidate was tested. Use a normal add-on reload for fresh full-session validation, or a cache-busted script URL for a narrowly scoped disposable-draft check without interrupting other open drafts.
+
+Verified with the loaded final implementation on macOS Beta 156.0: physical Enter and clickable Edit draft both left a visible body caret after subsequent typing; only the instruction caret was visible while Cmd-K was open; Escape restored the body caret; two native Undo commands removed the typed character and then restored the pre-edit draft. This was a disposable HTML-draft check, not a claim that every Gecko version was tested.
+
 Surface refinement checked in the existing Beta 156.0 session: HTML probe 6/6; light/dark screenshots inspected; measured 8px left/right insets, 0.92 background alpha, and approximately 16.2px preview text for an 18px draft. Authored content remained unchanged. The disposable draft was discarded and the system theme restored.
 
 

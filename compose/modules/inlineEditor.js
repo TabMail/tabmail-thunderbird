@@ -1154,6 +1154,24 @@ Object.assign(TabMail, {
 
       const cleanup = (reason = "unknown") => {
         TabMail.log.debug('inlineEdit', "Cleaning up inline edit.", { reason });
+        if (reason === "apply" && document.hasFocus()) {
+          // Gecko can leave the native caret disabled when the instruction
+          // iframe is hidden during execution and then removed. A body focus()
+          // after removal does not repair it (switching applications does).
+          // Complete the focus handoff through the EXISTING iframe before its
+          // destruction: make its input focusable without painting it, focus
+          // that input, then the compose window and body. Keep the body caret
+          // transparent until the normal restoration below to avoid two carets.
+          try {
+            wrapper._tm_container.style.opacity = "0";
+            wrapper._tm_container.style.visibility = "visible";
+            iframeInput.focus();
+            window.focus();
+            TabMail.state.editorRef.focus();
+          } catch (error) {
+            TabMail.log.warn('inlineEdit', 'Could not hand focus back from the instruction frame');
+          }
+        }
         try {
           wrapper.remove();
         } catch {}

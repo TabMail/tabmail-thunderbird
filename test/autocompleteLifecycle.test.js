@@ -527,6 +527,26 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   expect(parseFloat(wrapper.style.width)).toBe(w.innerWidth - 2 * tm.config.preview.margin);
   const input = wrapper.querySelector('iframe').contentDocument.querySelector('textarea');
   input.value = 'Correct the wording';
+  const handoff = [];
+  const inputFocus = input.focus.bind(input);
+  vi.spyOn(input, 'focus').mockImplementation(() => {
+    if (wrapper._tm_executing) {
+      expect(wrapper.isConnected).toBe(true);
+      expect(wrapper._tm_container.style.visibility).toBe('visible');
+      expect(wrapper._tm_container.style.opacity).toBe('0');
+      expect(body.style.caretColor).toBe('transparent');
+      handoff.push('instruction');
+    }
+    inputFocus();
+  });
+  vi.spyOn(w, 'focus').mockImplementation(() => handoff.push('window'));
+  const removeWrapper = wrapper.remove.bind(wrapper);
+  vi.spyOn(wrapper, 'remove').mockImplementation(() => {
+    handoff.push('remove');
+    expect(w.document.activeElement).toBe(body);
+    expect(w.document.querySelectorAll('iframe')).toHaveLength(1);
+    removeWrapper();
+  });
   const actionRoot = wrapper.querySelector('.tm-inline-actions').shadowRoot;
   const actions = [...actionRoot.querySelectorAll('button')];
   expect(actionRoot.querySelector('style').textContent).toBe(tm.composeActionCSS);
@@ -567,6 +587,8 @@ it.each(['keyboard','click'])('the real inline editor restores the compose host 
   expect(body.querySelector('.moz-signature').textContent).toBe('Signature');
   expect(w.document.activeElement === body).toBe(true);
   expect(body.style.caretColor).not.toBe('transparent');
+  expect(handoff.slice(0,3)).toEqual(['instruction','window','remove']);
+  expect(w.document.querySelector('iframe')).toBeNull();
 });
 
 it('registered selection changes refresh the sentence preview after a user caret move', async () => {
