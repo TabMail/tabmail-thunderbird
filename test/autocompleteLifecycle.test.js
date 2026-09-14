@@ -1667,3 +1667,106 @@ it('a fresh correction arriving during the hide interval keeps the dock connecte
   expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('Fresh words.x');
  } finally {vi.useRealTimers();}
 });
+
+function configSurface(saved, listeners = new Set()) {
+ const w=appearanceWindow(saved);
+ // Supply unrelated feature dependencies at the module boundary, while the real
+ // initConfigPage installs the shipped document listener and invokes both real
+ // Appearance functions. No test-side placement event listener is installed.
+ w.eval(readFileSync(resolve('config/modules/autocompleteSettings.js'),'utf8').replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,''));
+ const source=readFileSync(resolve('config/modules/init.js'),'utf8');
+ for (const match of source.matchAll(/import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];?/g)) {
+  for (const raw of match[1].split(',')) {
+   const name=raw.trim();
+   if (!name || ['handleAppearanceChange','loadAppearanceSettings','handleAutocompleteSettingsChange','loadAutocompleteSettings','$'].includes(name)) continue;
+   w[name]=['createPromptEditorsInputHandler','createPromptsUpdatedRuntimeListener'].includes(name)?()=>()=>{}:async()=>{};
+  }
+ }
+ w.browser.storage=storageFor(saved,listeners);
+ w.browser.runtime={onMessage:{addListener(){},removeListener(){}},sendMessage:vi.fn()};
+ w.eval(source.replace(/^import[\s\S]*?;\n/gm,'').replace(/^export /gm,''));
+ return {w,control:w.document.getElementById('compose-bubble-placement'),async init(){
+  await w.initConfigPage({SETTINGS:{appearance:{prefs:{}},actionTagging:{}},getBackendUrl:()=> 'https://example.com',log(){},getPrivacyOptOutAllAiEnabled:async()=>false,setPrivacyOptOutAllAiEnabled:async()=>{}});
+ }};
+}
+
+it('shipped Appearance change reaches storage and the open compose surface',async()=>{
+ const saved={composeBubblePlacement:'cursor'},listeners=new Set();
+ const settings=configSurface(saved,listeners);await settings.init();
+ const {dom,w,tm,body}=setup('This is very useful.');w.browser.storage=storageFor(saved,listeners);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const file=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.state.correctedText='This is useful.';tm.renderText(true);
+ expect(tm.state.previewModel).not.toBeNull();expect(tm.state.previewView.host.style.bottom).toBe('');
+ settings.control.value='bottom';settings.control.dispatchEvent(new settings.w.Event('change',{bubbles:true}));
+ await vi.waitFor(()=>expect(saved.composeBubblePlacement).toBe('bottom'));
+ expect((await settings.w.browser.storage.local.get({composeBubblePlacement:'cursor'})).composeBubblePlacement).toBe('bottom');
+ expect(tm.state.previewView.host.style.bottom).toBe('8px');
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
+
+it('shipped Appearance startup restores the saved placement',async()=>{
+ const saved={composeBubblePlacement:'bottom'};const settings=configSurface(saved);expect(settings.control.value).toBe('cursor');
+ await settings.init();
+ expect(settings.control.value).toBe('bottom');expect(saved.composeBubblePlacement).toBe('bottom');
+});
+
+it.each(['cursor','bottom'])('live placement preserves suppression after Cmd-K cancellation from %s',async initial=>{
+ const saved={composeBubblePlacement:initial},listeners=new Set();
+ const settings=configSurface(saved,listeners);await settings.init();
+ const {dom,w,tm,body}=setup('This is very useful.');w.browser.storage=storageFor(saved,listeners);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;tm.config.DIFF_RESTORE_DELAY_MS=1000;
+ const file=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'This is useful.'}));
+ await tm.triggerCorrectionBackend(body,'This is very useful.','',tm.state.latestGlobalRequestId,false);
+ expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);expect(tm.state.correctedText).toBe('This is useful.');expect(tm.state.previewModel).not.toBeNull();
+ vi.useFakeTimers();
+ try {
+  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+  const popup=w.document.getElementById('tm-inline-edit');expect(popup).not.toBeNull();
+  popup._tm_iinput.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  expect(tm.state.inlineEditActive).toBe(false);expect(tm.state.autoHideDiff).toBe(true);expect(tm.state.previewView).toBeNull();
+  const next=initial==='cursor'?'bottom':'cursor';settings.control.value=next;
+  settings.control.dispatchEvent(new settings.w.Event('change',{bubbles:true}));
+  await Promise.resolve();await Promise.resolve();
+  expect(saved.composeBubblePlacement).toBe(next);expect(tm.state.composeBubblePlacement).toBe(next);
+  const visible=!!tm.state.previewModel;
+  const esc=new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});body.dispatchEvent(esc);
+  expect(visible && !esc.defaultPrevented).toBe(false);
+  expect(tm.state.previewView).toBeNull();
+  await vi.advanceTimersByTimeAsync(1001);
+  expect(tm.state.previewModel).not.toBeNull();
+  expect(tm.state.previewView.root.textContent).toContain('This is useful.');
+  const freshEsc=new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});body.dispatchEvent(freshEsc);
+  expect(freshEsc.defaultPrevented).toBe(true);expect(tm.state.previewView).toBeNull();
+  expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+ } finally {vi.useRealTimers();}
+});
+
+
+it('a separate Settings disable update reaches an open docked compose window',async()=>{
+ const saved={composeBubblePlacement:'bottom',autocompleteEnabled:true},listeners=new Set();
+ const settings=configSurface(saved,listeners);await settings.init();
+ const {dom,w,tm,body}=setup('This is very useful.');w.browser.storage=storageFor(saved,listeners);tm.config.COMPOSE_EDITOR_POLL_INTERVAL_MS=1;
+ const file=resolve('compose/compose-autocomplete.js');runInContext(readFileSync(file,'utf8'),dom.getInternalVMContext(),{filename:file});
+ await vi.waitFor(()=>expect(tm._eventListeners.attachedEditor).toBe(body));
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'This is useful.'}));
+ await tm.triggerCorrectionBackend(body,'This is very useful.','',tm.state.latestGlobalRequestId,false);
+ expect(tm.getCorrectionFromServer).toHaveBeenCalledTimes(1);expect(tm.state.correctedText).toBe('This is useful.');expect(tm.state.previewModel).not.toBeNull();
+ expect(tm.state.autocompleteDisabled).toBe(false);expect(tm.state.previewView.host.style.bottom).toBe('8px');
+ const checkbox=settings.w.document.getElementById('autocomplete-enabled');checkbox.checked=false;
+ checkbox.dispatchEvent(new settings.w.Event('change',{bubbles:true}));
+ await vi.waitFor(()=>expect(saved.autocompleteEnabled).toBe(false));
+ expect((await settings.w.browser.storage.local.get({autocompleteEnabled:true})).autocompleteEnabled).toBe(false);
+ expect(saved.composeBubblePlacement).toBe('bottom');expect(tm.state.composeBubblePlacement).toBe('bottom');
+ expect(tm.state.autocompleteDisabled).toBe(true);expect(tm.state.previewView).toBeNull();
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+ // Positive re-enable makes the guard proof two-sided: the same real writer can
+ // re-arm this compose window and produce a visible new proposal.
+ tm.getCorrectionFromServer=vi.fn(async context=>({usertext:context.userMessage,suggestion:'This is useful.'}));
+ checkbox.checked=true;checkbox.dispatchEvent(new settings.w.Event('change',{bubbles:true}));
+ await vi.waitFor(()=>expect(tm.state.previewModel).not.toBeNull());
+ expect(saved.autocompleteEnabled).toBe(true);expect(tm.state.autocompleteDisabled).toBe(false);
+ expect(tm.getCorrectionFromServer).toHaveBeenCalled();expect(tm.state.previewView.root.textContent).toContain('This is useful.');
+ expect(body.textContent).toBe('This is very useful.');expect(w.document.execCommand).not.toHaveBeenCalled();
+});
