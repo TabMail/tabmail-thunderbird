@@ -249,11 +249,12 @@ describe('clickable suggestion controls', () => {
     expect(w.document.getElementById('tm-compose-preview')).toBeNull();
     const banner = w.document.getElementById('tm-compose-hints-banner');
     expect(banner.parentElement).toBe(w.document.documentElement);
-    expect(banner.textContent).toBe('⇧Esc Enable suggestions');
-    expect(banner.querySelector('button').getAttribute('aria-keyshortcuts')).toBe('Shift+Escape');
-    expect(banner.querySelector('button').style.background).toBe('var(--tm-preview-bg)');
+    expect(banner.shadowRoot.textContent).toBe('⇧Esc Enable suggestions');
+    expect(w.document.documentElement.outerHTML).not.toContain('Enable suggestions');
+    expect(banner.shadowRoot.querySelector('button').getAttribute('aria-keyshortcuts')).toBe('Shift+Escape');
+    expect(banner.shadowRoot.querySelector('button').style.background).toBe('var(--tm-preview-bg)');
     expect(body.textContent).toBe('This is very useful.');
-    banner.querySelector('button').click();
+    banner.shadowRoot.querySelector('button').click();
     expect(tm.state.autocompleteDisabled).toBe(false);
     expect(w.browser.storage.local.set).toHaveBeenLastCalledWith({ autocompleteEnabled: true });
     expect(w.document.getElementById('tm-compose-hints-banner')).toBeNull();
@@ -1190,4 +1191,22 @@ it.each(['finish','mousedown','resize'])('completed wipe %s leaves no active lis
  expect(animations[0].cancel).toHaveBeenCalledTimes(1);
  expect(animations[1].cancel).toHaveBeenCalledTimes(1);
  expect([...active.values()].reduce((n,s)=>n+s.size,0)).toBe(0);
+});
+
+it('accepted wording is forgotten on cleanup and fresh acceptance restores the feature',async()=>{
+ const {w,tm,body}=setup('');tm.attachAutocomplete(body);
+ tm.state.correctedText='We use the program.';tm.renderComposePreview();
+ expect(tm.acceptComposePreview()).toBe(true);expect(body.textContent).toBe('We use the program.');
+ expect(tm.state.lastAcceptedText).toBe('We use the program.');
+ const authored=body.innerHTML;tm.cleanupEventListeners();
+ expect(body.innerHTML).toBe(authored);
+ expect(tm.state.lastAcceptedText).toBe('');
+ tm.attachAutocomplete(body);body.textContent='We use the progrom.';tm.setCursorByOffset(body,15);
+ tm.state.originalText='';tm.state.correctedText=null;
+ tm.getCorrectionFromServer=vi.fn(async c=>({usertext:c.userMessage,suggestion:c.userMessage}));
+ await tm.triggerCorrection(body);await vi.waitFor(()=>expect(tm.getCorrectionFromServer.mock.calls.length).toBeGreaterThan(0));
+ for(const [context]of tm.getCorrectionFromServer.mock.calls)expect(context.previousAcceptedSentence).toBe('');
+ tm.state.correctedText='We use the program.';tm.renderComposePreview();expect(tm.acceptComposePreview()).toBe(true);
+ expect(body.textContent).toBe('We use the program.');
+ expect(tm.previousAcceptedSentence('We use the progrom.')).toBe('We use the program.');
 });

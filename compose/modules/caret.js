@@ -566,8 +566,8 @@ Object.assign(TabMail, {
     button.style.cssText = 'pointer-events:auto;cursor:pointer;padding:3px 12px;border-radius:999px;background:var(--tm-preview-bg);border:1px solid var(--tm-preview-border);color:var(--tm-preview-context);font:11px/1.4 system-ui';
     button.addEventListener('mousedown', event => event.preventDefault());
     button.addEventListener('click', () => TabMail.setAutocompleteEnabled(true));
-    banner.appendChild(button);
-    // Keep the control outside the message Thunderbird serializes.
+    banner.attachShadow({mode: 'open'}).appendChild(button);
+    // Thunderbird serializes the document, so UI text must stay in shadow DOM.
     document.documentElement.appendChild(banner);
   },
 

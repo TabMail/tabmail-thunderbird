@@ -31,6 +31,19 @@ Object.assign(TabMail, {
     for (const type of ["keydown", "input", "mousedown", "scroll", "resize"]) window.addEventListener(type, cleanup, true);
     animation.finished.then(cleanup, cleanup);
   },
+  showInlineEditError(wrapper, message) {
+    const root = wrapper.querySelector('.tm-inline-actions').shadowRoot;
+    let error = root.querySelector('.tm-inline-error');
+    if (!error) {
+      error = document.createElement('div');
+      error.className = 'tm-inline-error';
+      error.setAttribute('role', 'alert');
+      error.setAttribute('spellcheck', 'false');
+      root.appendChild(error);
+    }
+    // Recovery text is UI, not authored mail: keep it out of native serialization.
+    error.textContent = message;
+  },
   /**
    * Runs the inline edit instruction using the existing pipeline (was previously
    * in the input keydown Enter handler). Expects wrapper and spinner from the
@@ -226,17 +239,7 @@ Object.assign(TabMail, {
       if (!result || typeof result.body !== "string" || !result.body.trim()) {
         console.warn(`[TabMail InlineEdit] No edit result returned after ${inlineRequestDuration.toFixed(1)}ms`);
         if (wrapper?.isConnected) {
-          // Recovery text is UI, not authored mail: keep it out of native serialization.
-          const errorRoot = wrapper.querySelector('.tm-inline-actions').shadowRoot;
-          let error = errorRoot.querySelector('.tm-inline-error');
-          if (!error) {
-            error = document.createElement('div');
-            error.className = 'tm-inline-error';
-            error.setAttribute('role', 'alert');
-            error.setAttribute('spellcheck', 'false');
-            errorRoot.appendChild(error);
-          }
-          error.textContent = 'No usable edit was returned. Please try again.';
+          TabMail.showInlineEditError(wrapper, 'No usable edit was returned. Please try again.');
         }
         return;
       }
@@ -257,6 +260,20 @@ Object.assign(TabMail, {
       const edits = TabMail.composeEditsFromDiff(diffs);
       if (!TabMail.applyComposeEdits(editor, beforeText, edits)) {
         TabMail.log.warn('inlineEdit', 'Editor changed before native edit could be applied');
+        // Keep the tested native focus handoff intact. If the transaction refused
+        // an unchanged draft, reopen the ordinary editor with the user's input.
+        // A newer body edit or IME composition wins instead of reopening old work.
+        if (!TabMail.state.isIMEComposing &&
+            TabMail.extractUserAndQuoteTexts(editor).originalUserMessage === beforeText) {
+          TabMail.showInlineEditDropdown();
+          const retry = document.getElementById('tm-inline-edit');
+          if (retry) {
+            retry._tm_iinput.value = wrapper._tm_iinput?.value || instruction;
+            retry._tm_selectedText = selectedText;
+            retry._tm_iinput.dispatchEvent(new Event('input', {bubbles: true}));
+            TabMail.showInlineEditError(retry, 'This edit could not be applied. Adjust your instruction and try again.');
+          }
+        }
         return;
       }
       // Native insertion can reset Gecko's caret painter. Restore focus after
