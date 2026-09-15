@@ -318,6 +318,23 @@ Object.assign(TabMail, {
         );
       }
 
+      // Agent-created drafts opt into immediate insertion; ordinary cached replies
+      // remain suggestions. Re-check the live body after the asynchronous request
+      // so a user who started typing never has their work replaced. Use the same
+      // HTML-aware transaction as acceptance to preserve signatures and quotes.
+      if (correctionData?.directReplace && correctedMessage && originalUserMessage.trim() === "") {
+        const liveText = TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor)).text;
+        if (liveText.trim() === "" && !TabMail.state.inlineEditActive &&
+            TabMail.applyComposeEdits(editor, liveText, [{ start: 0, end: liveText.length, text: correctedMessage }])) {
+          TabMail.setCursorByOffset(editor, 0);
+          TabMail.state.originalText = correctedMessage;
+          TabMail.state.correctedText = correctedMessage;
+          TabMail.hideComposePreview();
+          TabMail.log.info('core', 'Inserted agent-created draft into empty compose body');
+          return;
+        }
+      }
+
       // Process the corrected text (normal suggestion flow).
       let isCorrectedTextUpdated = false;
       if (correctedMessage) {

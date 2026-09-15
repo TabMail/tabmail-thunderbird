@@ -446,16 +446,33 @@ it('a newer caret action prevents Tab from editing the previous sentence',()=>{
  } finally {w.close();}
 });
 
-it('a cached precompose reply must remain a proposal until the user accepts it',async()=>{
+it.each(['', '<br><div class="moz-signature">Signature</div>', '<p><br></p><div class="moz-cite-prefix">Original sender wrote:</div><blockquote>Quoted message</blockquote>'])('inserts agent precompose content immediately into an empty draft: %s', async (html)=>{
+ const {w,tm,body}=setup(html);
+ try{
+  tm.state.latestGlobalRequestId=1;
+  const signature=body.querySelector('.moz-signature');
+  const quote=body.querySelector('blockquote');
+  tm.getCorrectionFromServer=async()=>({suggestion:'Hello Alex.\n\nHere is the proposal.',usertext:'',directReplace:true});
+  await tm.triggerCorrectionBackend(body,'','',1,false);
+  expect(tm.indexComposeText(body,tm.getQuoteBoundaryNode(body)).text).toBe('Hello Alex.\n\nHere is the proposal.');
+  expect(w.document.execCommand).toHaveBeenCalled();
+  if(signature) expect(body.querySelector('.moz-signature')).toBe(signature);
+  if(quote) expect(body.querySelector('blockquote')).toBe(quote);
+  expect(tm.state.isGlobalRequestInFlight).toBe(false);
+ }finally{w.close();}
+});
+
+it.each([false,true])('does not automatically overwrite typed text (directReplace=%s)',async(directReplace)=>{
  const {w,tm,body}=setup('');
  try{
   tm.state.latestGlobalRequestId=1;
-  tm.getCorrectionFromServer=async()=>({suggestion:'Hello Alex.\n\nHere is the proposal.',usertext:'',directReplace:true});
+  tm.getCorrectionFromServer=async()=>{
+   if(directReplace) body.textContent='User started typing';
+   return {suggestion:'Hello Alex.',usertext:'',directReplace};
+  };
   await tm.triggerCorrectionBackend(body,'','',1,false);
-  expect(tm.state.correctedText).toBe('Hello Alex.\n\nHere is the proposal.');
-  expect(body.innerHTML).toBe('');
-  expect(tm.state.isGlobalRequestInFlight).toBe(false);
-  if(tm.state.previewModel){expect(tm.state.previewModel.edits.length).toBeGreaterThan(0);expect(tm.state.previewView.root.querySelector('.content').textContent).toContain('Here is the proposal.');}
+  expect(body.textContent).toBe(directReplace?'User started typing':'');
+  expect(w.document.execCommand).not.toHaveBeenCalled();
  }finally{w.close();}
 });
 
