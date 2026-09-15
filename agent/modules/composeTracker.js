@@ -332,7 +332,7 @@ export function initComposeHandlers() {
 
             try {
                 const replyKey = STORAGE_PREFIX + uniqueMessageKey;
-                const replyEntry = await idb.get(replyKey);
+                const replyEntry = await idb.getAndClearFlag(replyKey, "directReplace");
                 if (replyEntry && replyEntry[replyKey]) {
                     log(`Info: Reply for key ${uniqueMessageKey} found. Activating cached reply.`);
                     const replyData = replyEntry[replyKey];
@@ -344,13 +344,7 @@ export function initComposeHandlers() {
                             content: reply,
                             directReplace: directReplace
                         };
-                        // Transfer the one-shot permission, not just the text. Leaving it
-                        // in the reusable reply cache would auto-insert the old agent
-                        // draft again when a later manual reply opens.
-                        await idb.set({
-                            ["activePrecompose:" + tab.id]: precomposeData,
-                            ...(directReplace ? { [replyKey]: { ...replyData, directReplace: false } } : {})
-                        });
+                        await idb.set({ ["activePrecompose:" + tab.id]: precomposeData });
                         log(`Stored cached reply for tab ${tab.id} (key ${formatForLog(uniqueMessageKey)}, directReplace=${directReplace})`);
                     } else {
                         log(`Info: Unexpected type for reply data for key ${uniqueMessageKey}.`);
@@ -360,7 +354,7 @@ export function initComposeHandlers() {
                     log(`Info: Reply for key ${uniqueMessageKey} not found. Triggering reactive, high-priority reply and waiting for completion.`);
                     await createReply(relatedMessageId, true);
                     try {
-                        const postGenEntry = await idb.get(replyKey);
+                        const postGenEntry = await idb.getAndClearFlag(replyKey, "directReplace");
                         const replyData = postGenEntry[replyKey];
                         const rep = replyData?.reply;
                         const directReplace = replyData?.directReplace || false;
@@ -370,11 +364,7 @@ export function initComposeHandlers() {
                                 content: rep,
                                 directReplace: directReplace
                             };
-                            // Consume the reusable flag when handing it to this window.
-                            await idb.set({
-                                ["activePrecompose:" + tab.id]: precomposeData,
-                                ...(directReplace ? { [replyKey]: { ...replyData, directReplace: false } } : {})
-                            });
+                            await idb.set({ ["activePrecompose:" + tab.id]: precomposeData });
                             log(`Stored cached reply (post-gen) for tab ${tab.id} (key ${formatForLog(uniqueMessageKey)}, directReplace=${directReplace})`);
                         } else {
                             log(`WARN: Reply generation finished but no reply found for key ${uniqueMessageKey}.`);

@@ -59,7 +59,7 @@ function loadScript(relative,scope){
 }
 function producerSystem(rows, generatedReply = null){
  const events={};const event=k=>({addListener:fn=>{events[k]=fn},removeListener:()=>{}});
- const idb={get:async k=>({[k]:structuredClone(rows[k])}),set:async values=>Object.assign(rows,structuredClone(values)),remove:async k=>delete rows[k]};
+ const idb={get:async k=>({[k]:structuredClone(rows[k])}),getAndClearFlag:async(k,flag)=>{const value=structuredClone(rows[k]);if(rows[k]?.[flag]===true) rows[k][flag]=false;return {[k]:value};},set:async values=>Object.assign(rows,structuredClone(values)),remove:async k=>delete rows[k]};
  const browser={tabs:{onCreated:event('created'),onRemoved:event('removed')},compose:{getComposeDetails:async()=>({type:'reply',relatedMessageId:7,subject:'Synthetic thread',from:'sender@example.com',to:['reader@example.com'],cc:[]}),onBeforeSend:event('beforeSend'),onAfterSend:event('afterSend')},runtime:{onMessage:event('message'),onSuspend:event('suspend')}};
  const inert={log(){},warn(){},error(){},info(){},debug(){}};
  const common={browser,messenger:browser,idb,console:inert,performance,Date,setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,clearInterval(){},getUniqueMessageKey:async()=> 'synthetic-account:synthetic-message',log(){},formatForLog:x=>x};
@@ -123,4 +123,17 @@ it.each([false, true])('generated reply cache only permits one automatic inserti
   expect(later.body.textContent).toBe('');
   expect(later.w.document.execCommand).not.toHaveBeenCalled();
   expect(later.w.document.getElementById('tm-compose-preview')).not.toBeNull();
+});
+
+it('overlapping reply windows receive insertion permission only once', async () => {
+  const key = 'reply:synthetic-account:synthetic-message';
+  const sys = producerSystem({ [key]: { reply: 'One draft.', directReplace: true } });
+  await Promise.all([sys.created({id: 61}), sys.created({id: 62})]);
+  const drafts = [setup(''), setup('')];
+  for (const [i, draft] of drafts.entries()) {
+    wire(draft, sys, 61 + i);
+    await draft.tm.triggerCorrectionBackend(draft.body, '', '', 0, true);
+  }
+  expect(drafts.map(draft => draft.body.textContent).sort()).toEqual(['', 'One draft.']);
+  expect(sys.rows[key]).toEqual({reply: 'One draft.', directReplace: false});
 });
