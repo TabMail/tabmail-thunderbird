@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 import { parse } from 'acorn';
+import { IDBFactory } from 'fake-indexeddb';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createContext, runInContext } from 'node:vm';
@@ -57,18 +58,21 @@ function loadScript(relative,scope){
  }
  runInContext(text,scope,{filename});
 }
-function producerSystem(rows, generatedReply = null){
+async function producerSystem(rows, generatedReply = null){
  const events={};const event=k=>({addListener:fn=>{events[k]=fn},removeListener:()=>{}});
- const idb={get:async k=>({[k]:structuredClone(rows[k])}),getAndClearFlag:async(k,flag)=>{const value=structuredClone(rows[k]);if(rows[k]?.[flag]===true) rows[k][flag]=false;return {[k]:value};},set:async values=>Object.assign(rows,structuredClone(values)),remove:async k=>delete rows[k]};
+
  const browser={tabs:{onCreated:event('created'),onRemoved:event('removed')},compose:{getComposeDetails:async()=>({type:'reply',relatedMessageId:7,subject:'Synthetic thread',from:'sender@example.com',to:['reader@example.com'],cc:[]}),onBeforeSend:event('beforeSend'),onAfterSend:event('afterSend')},runtime:{onMessage:event('message'),onSuspend:event('suspend')}};
  const inert={log(){},warn(){},error(){},info(){},debug(){}};
+ const idb=createContext({indexedDB:new IDBFactory(),browser,console:inert});
+ loadScript('agent/modules/idbStorage.js',idb);
+ await idb.set(rows);
  const common={browser,messenger:browser,idb,console:inert,performance,Date,setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,clearInterval(){},getUniqueMessageKey:async()=> 'synthetic-account:synthetic-message',log(){},formatForLog:x=>x};
- const tracker=createContext({...common,createReply:async()=>{ if (!generatedReply) throw Error('unexpected generator'); rows['reply:synthetic-account:synthetic-message'] = structuredClone(generatedReply); },STORAGE_PREFIX:'reply:',applyPriorityTag:async()=>{},ACTIONS:{},getActionForWeId:async()=>null,getSentFoldersForAccount:async()=>[]});
+ const tracker=createContext({...common,createReply:async()=>{ if (!generatedReply) throw Error('unexpected generator'); await idb.set({'reply:synthetic-account:synthetic-message': generatedReply}); },STORAGE_PREFIX:'reply:',applyPriorityTag:async()=>{},ACTIONS:{},getActionForWeId:async()=>null,getSentFoldersForAccount:async()=>[]});
  loadScript('agent/modules/composeTracker.js',tracker);tracker.initComposeHandlers();
  const created=events.created,removed=events.removed;
  const bg=createContext({...common,generateCorrection:async()=>{throw Error('unexpected LLM call');},runComposeEdit:async()=>{throw Error('unexpected inline call');}});bg.window=bg;
  loadScript('compose/background.js',bg);
- return {rows,created,removed,request:(tabId,message)=>events.message(message,{tab:{id:tabId}})};
+ return {idb,read:async key=>(await idb.get(key))[key],created,removed,request:(tabId,message)=>events.message(message,{tab:{id:tabId}})};
 }
 function wire(s,sys,id){
  const filename=resolve('compose/modules/api.js');runInContext(readFileSync(filename,'utf8'),s.dom.getInternalVMContext(),{filename});
@@ -77,30 +81,32 @@ function wire(s,sys,id){
 it('real tracker/background/API round trip inserts once in its original window',async()=>{
  const key='reply:synthetic-account:synthetic-message';
  // This exact shape is written by runStateSendEmail before beginReply.
- const sys=producerSystem({[key]:{reply:'Synthetic agent draft.',source:'chat_compose',ts:Date.now(),directReplace:true}});
+ const sys=await producerSystem({[key]:{reply:'Synthetic agent draft.',source:'chat_compose',ts:Date.now(),directReplace:true}});
  await sys.created({id:41});
  const s=setup('');wire(s,sys,41);
  await s.tm.triggerCorrectionBackend(s.body,'','',0,true);
  expect(s.w.browser.runtime.sendMessage).toHaveBeenCalledTimes(1);expect(s.body.textContent).toBe('Synthetic agent draft.');expect(s.w.document.execCommand).toHaveBeenCalledTimes(1);
- expect(sys.rows['activePrecompose:41'].directReplace).toBe(false);
+ expect((await sys.read('activePrecompose:41')).directReplace).toBe(false);
 });
 it('a later manual reply must not re-arm an earlier chat draft insertion',async()=>{
  const key='reply:synthetic-account:synthetic-message';
- const sys=producerSystem({[key]:{reply:'Earlier chat draft.',source:'chat_compose',ts:Date.now(),directReplace:true}});
+ const sys=await producerSystem({[key]:{reply:'Earlier chat draft.',source:'chat_compose',ts:Date.now(),directReplace:true}});
  await sys.created({id:41});const a=setup('');wire(a,sys,41);
  await a.tm.triggerCorrectionBackend(a.body,'','',0,true);
- expect(sys.rows['activePrecompose:41'].directReplace).toBe(false);
- await sys.removed(41);expect(sys.rows['activePrecompose:41']).toBeUndefined();
+ expect((await sys.read('activePrecompose:41')).directReplace).toBe(false);
+ await sys.removed(41);expect(await sys.read('activePrecompose:41')).toBeUndefined();
  await sys.created({id:42});const b=setup('');wire(b,sys,42);
  await b.tm.triggerCorrectionBackend(b.body,'','',0,true);
  expect(b.w.browser.runtime.sendMessage).toHaveBeenCalledTimes(1);
  expect(b.body.textContent).toBe('');expect(b.w.document.execCommand).not.toHaveBeenCalled();
+ expect(b.tm.acceptComposePreview()).toBe(true);expect(b.body.textContent).toBe('Earlier chat draft.');
+ expect((await sys.read(key)).reply).toBe('Earlier chat draft.');
 });
 it('real response cannot replace a newer cleared body',async()=>{
  const key='reply:synthetic-account:synthetic-message';
- const sys=producerSystem({[key]:{reply:'Older agent draft.',source:'chat_compose',ts:Date.now(),directReplace:true}});
+ const sys=await producerSystem({[key]:{reply:'Older agent draft.',source:'chat_compose',ts:Date.now(),directReplace:true}});
  await sys.created({id:41});const s=setup('');wire(s,sys,41);s.tm.attachAutocomplete(s.body);
- let unblock;const response=sys.request;sys.request=async(...args)=>{const value=await response(...args);await new Promise(r=>unblock=r);return value;};
+ let unblock;const response=sys.request;sys.request=async(...args)=>{const value=await response(...args);expect(value.directReplace).toBe(true);expect(value.suggestion).toBe('Older agent draft.');await new Promise(r=>unblock=r);return value;};
  const pending=s.tm.triggerCorrectionBackend(s.body,'','',0,true);await vi.waitFor(()=>expect(unblock).toBeTypeOf('function'));
  s.body.textContent='New wording';s.body.dispatchEvent(new s.w.InputEvent('input',{bubbles:true,inputType:'insertText'}));
  s.body.textContent='';s.body.dispatchEvent(new s.w.InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));
@@ -111,7 +117,7 @@ it('real response cannot replace a newer cleared body',async()=>{
 
 it.each([false, true])('generated reply cache only permits one automatic insertion: %s', async directReplace => {
   const draft = { reply: 'Generated draft.', directReplace };
-  const sys = producerSystem({}, draft);
+  const sys = await producerSystem({}, draft);
   await sys.created({ id: 51 });
   const first = setup(''); wire(first, sys, 51);
   await first.tm.triggerCorrectionBackend(first.body, '', '', 0, true);
@@ -123,11 +129,14 @@ it.each([false, true])('generated reply cache only permits one automatic inserti
   expect(later.body.textContent).toBe('');
   expect(later.w.document.execCommand).not.toHaveBeenCalled();
   expect(later.w.document.getElementById('tm-compose-preview')).not.toBeNull();
+  expect(later.tm.acceptComposePreview()).toBe(true);
+  expect(later.body.textContent).toBe('Generated draft.');
+  expect(await sys.read('reply:synthetic-account:synthetic-message')).toEqual({...draft, directReplace: false});
 });
 
 it('overlapping reply windows receive insertion permission only once', async () => {
   const key = 'reply:synthetic-account:synthetic-message';
-  const sys = producerSystem({ [key]: { reply: 'One draft.', directReplace: true } });
+  const sys = await producerSystem({ [key]: { reply: 'One draft.', directReplace: true } });
   await Promise.all([sys.created({id: 61}), sys.created({id: 62})]);
   const drafts = [setup(''), setup('')];
   for (const [i, draft] of drafts.entries()) {
@@ -135,5 +144,33 @@ it('overlapping reply windows receive insertion permission only once', async () 
     await draft.tm.triggerCorrectionBackend(draft.body, '', '', 0, true);
   }
   expect(drafts.map(draft => draft.body.textContent).sort()).toEqual(['', 'One draft.']);
-  expect(sys.rows[key]).toEqual({reply: 'One draft.', directReplace: false});
+  expect(await sys.read(key)).toEqual({reply: 'One draft.', directReplace: false});
+});
+
+it('a concurrent newer producer write remains the cached proposal', async () => {
+  const key = 'reply:synthetic-account:synthetic-message';
+  const older = {reply: 'Older draft.', directReplace: true, source: 'chat_compose', ts: 1};
+  const newer = {reply: 'Newer draft.', directReplace: true, source: 'chat_compose', ts: 2};
+  const sys = await producerSystem({[key]: older});
+  let newerWrite;
+  for (const name of ['get', 'getAndClearFlag']) {
+    const original = sys.idb[name];
+    sys.idb[name] = (...args) => {
+      const pending = original(...args);
+      // Queue the producer write while the activation's read is pending.
+      if (args[0] === key && !newerWrite) newerWrite = sys.idb.set({[key]: newer});
+      return pending;
+    };
+  }
+  await sys.created({id: 71});
+  expect(newerWrite).toBeDefined();
+  await newerWrite;
+  const cached = await sys.read(key);
+  expect(cached.reply).toBe(newer.reply);
+  expect(cached.source).toBe(newer.source);
+  expect(cached.ts).toBe(newer.ts);
+  const s = setup(''); wire(s, sys, 71);
+  await s.tm.triggerCorrectionBackend(s.body, '', '', 0, true);
+  expect(s.body.textContent).toBe('Older draft.');
+  expect((await sys.read(key)).reply).toBe('Newer draft.');
 });
