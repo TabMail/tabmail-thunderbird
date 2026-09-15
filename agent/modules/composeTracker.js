@@ -344,7 +344,13 @@ export function initComposeHandlers() {
                             content: reply,
                             directReplace: directReplace
                         };
-                        await idb.set({ ["activePrecompose:" + tab.id]: precomposeData });
+                        // Transfer the one-shot permission, not just the text. Leaving it
+                        // in the reusable reply cache would auto-insert the old agent
+                        // draft again when a later manual reply opens.
+                        await idb.set({
+                            ["activePrecompose:" + tab.id]: precomposeData,
+                            ...(directReplace ? { [replyKey]: { ...replyData, directReplace: false } } : {})
+                        });
                         log(`Stored cached reply for tab ${tab.id} (key ${formatForLog(uniqueMessageKey)}, directReplace=${directReplace})`);
                     } else {
                         log(`Info: Unexpected type for reply data for key ${uniqueMessageKey}.`);
@@ -364,7 +370,11 @@ export function initComposeHandlers() {
                                 content: rep,
                                 directReplace: directReplace
                             };
-                            await idb.set({ ["activePrecompose:" + tab.id]: precomposeData });
+                            // Consume the reusable flag when handing it to this window.
+                            await idb.set({
+                                ["activePrecompose:" + tab.id]: precomposeData,
+                                ...(directReplace ? { [replyKey]: { ...replyData, directReplace: false } } : {})
+                            });
                             log(`Stored cached reply (post-gen) for tab ${tab.id} (key ${formatForLog(uniqueMessageKey)}, directReplace=${directReplace})`);
                         } else {
                             log(`WARN: Reply generation finished but no reply found for key ${uniqueMessageKey}.`);

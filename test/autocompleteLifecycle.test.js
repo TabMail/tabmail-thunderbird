@@ -1863,3 +1863,20 @@ describe('mixed HTML boundaries', () => {
     expect(w.document.execCommand).toHaveBeenCalledTimes(1);
   });
 });
+
+// Native refusal must retain a usable proposal rather than claim insertion.
+it.each(['false', 'throw'])('agent draft can be accepted after native insertion %s', async failure => {
+  const { w, tm, body } = setup('');
+  const nativeInsert = w.document.execCommand;
+  w.document.execCommand = vi.fn(() => {
+    if (failure === 'throw') throw new Error('Native edit unavailable');
+    return false;
+  });
+  tm.getCorrectionFromServer = async () => ({ suggestion: 'Synthetic agent draft.', usertext: '', directReplace: true });
+  await tm.triggerCorrectionBackend(body, '', '', 0, true);
+  expect(body.textContent).toBe('');
+  expect(w.document.getElementById('tm-compose-preview')).not.toBeNull();
+  w.document.execCommand = nativeInsert;
+  expect(tm.acceptComposePreview()).toBe(true);
+  expect(body.textContent).toBe('Synthetic agent draft.');
+});
