@@ -71,9 +71,28 @@ async function wireBackground(w, requestedTab = 1) {
   });
   const format=({name,email})=>name?`${name} <${email}>`:email;
   const headerList=(value,emailOnly=false)=>parse(value||'').map(address=>emailOnly?address.email:format(address));
-  const makeWindow=id=>({closed:false,document:{activeElement:{focus:vi.fn()},querySelector:vi.fn(()=>null)},
-    GetComposeDetails:()=>Object.fromEntries(['to','cc','bcc'].map(field=>[field,stores.get(id)[field].join(',')])),
-    SetComposeDetails:patch=>api.compose.setComposeDetails(id,Object.fromEntries(Object.entries(patch).map(([key,value])=>[key,headerList(value)])))});
+  const makeWindow=id=>{
+    const root=w.document.createElement('div');let rendered;
+    // Native recipient writers materialize committed pills and clear row input.
+    // Keep the DOM in sync with this window's independent recipient store.
+    const refreshRows=()=>{
+      const key=JSON.stringify(['to','cc','bcc'].map(field=>stores.get(id)[field]));
+      if(key===rendered)return;
+      rendered=key;root.replaceChildren();
+      for(const field of ['to','cc','bcc']) {
+        const row=w.document.createElement('div');row.className='address-row';row.dataset.recipienttype='addr_'+field;
+        const input=w.document.createElement('input');input.className='address-row-input';row.append(input);
+        for(const address of stores.get(id)[field]) {
+          const pill=w.document.createElement('mail-address-pill');pill.fullAddress=address;pill.isEditing=false;row.append(pill);
+        }
+        root.append(row);
+      }
+    };
+    refreshRows();
+    return {closed:false,document:{activeElement:{focus:vi.fn()},querySelector:vi.fn(selector=>{refreshRows();return root.querySelector(selector)})},
+      GetComposeDetails:()=>Object.fromEntries(['to','cc','bcc'].map(field=>[field,stores.get(id)[field].join(',')])),
+      SetComposeDetails:patch=>{api.compose.setComposeDetails(id,Object.fromEntries(Object.entries(patch).map(([key,value])=>[key,headerList(value)])));refreshRows();}};
+  };
   const nativeWindow=makeWindow(1),otherWindow=makeWindow(2);
   let sequence=0;
   // Use the shipped registration and declared methods, not an API injected
@@ -463,4 +482,39 @@ it.each(['keyboard','click'])('routes a valid recipient edit to its own second c
  expect(current).toEqual(beforeFirst);
  expect(tm.state.editChatHistory).toEqual([{userRequest:'Add recipient'}]);
  expect(tm.state.originalText).toBe('Expanded second draft.');
+});
+
+it.each(['to','cc','bcc'])('a remove and readd applies the requested recipient name in %s',async field=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
+ current[field]=['Old Name <same@example.com>','keep@example.com'];
+ const before=structuredClone(current);
+ const parsed=await actualDeltaProducer(`-${field}: same@example.com\n+${field}: New Name <same@example.com>\nBody: Expanded draft.`);
+ expect(parsed[field+'Delta']).toEqual({removes:['same@example.com'],adds:[{name:'New Name',email:'same@example.com'}]});
+ runComposeEdit.mockResolvedValue({...parsed,chatHistory:[{userRequest:'Update recipient'}]});
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Update recipient',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(current).toEqual({...before,[field]:['keep@example.com','New Name <same@example.com>']});
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Update recipient'}]);
+});
+
+
+it.each(['to','cc','bcc'])('updates committed native rows while preserving unrelated recipients: %s',async field=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
+ current.to=['to@example.com'];current.cc=['cc@example.com'];current.bcc=['bcc@example.com'];
+ const before=structuredClone(current);
+ const row=f=>api._nativeWindow.document.querySelector(`.address-row[data-recipienttype="addr_${f}"]`);
+ for(const f of ['to','cc','bcc']) {
+  expect(row(f).querySelector('.address-row-input').value).toBe('');
+  const pills=Array.from(row(f).querySelectorAll('mail-address-pill'));
+  expect(pills.map(pill=>pill.fullAddress)).toEqual(before[f]);expect(pills.every(pill=>!pill.isEditing)).toBe(true);
+ }
+ const parsed=await actualDeltaProducer(`+${field}: added@example.com\nBody: Expanded draft.`);
+ runComposeEdit.mockResolvedValue({...parsed,chatHistory:[{userRequest:'Add recipient'}]});
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Add recipient',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(current).toEqual({...before,[field]:[...before[field],'added@example.com']});
+ for(const f of ['to','cc','bcc'])expect(Array.from(row(f).querySelectorAll('mail-address-pill'),pill=>pill.fullAddress)).toEqual(current[f]);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Add recipient'}]);
 });
