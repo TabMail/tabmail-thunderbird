@@ -18,22 +18,16 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const RETRIES = 3;
-const REFRESH_TIMEOUT_MS = 5000;
-
-vi.mock("../agent/modules/config.js", () => ({
-  getBackendUrl: vi.fn(async () => "https://test.api"),
-  SETTINGS: {
-    supabaseUrl: "https://auth.example.com",
-    supabaseAnonKey: "test-anon-key",
-    authTokenRefreshRetries: RETRIES,
-    authTokenRefreshTimeoutMs: REFRESH_TIMEOUT_MS,
-    // llm.js settings for the downstream slot-release test
-    sseMaxTimeoutSec: 600,
-    sseToolListenTimeoutSec: 600,
-    maxAgentWorkers: 1,
-  },
-}));
+// The SHIPPED settings drive this suite (retries, per-attempt deadline, SSE
+// timeouts) so that deleting or breaking `authTokenRefreshTimeoutMs` in
+// config.js is caught here. Only the worker bound and backend URL are stubbed.
+vi.mock("../agent/modules/config.js", async () => {
+  const actual = await vi.importActual("../agent/modules/config.js");
+  return {
+    getBackendUrl: vi.fn(async () => "https://test.api"),
+    SETTINGS: { ...actual.SETTINGS, maxAgentWorkers: 1 },
+  };
+});
 vi.mock("../agent/modules/utils.js", () => ({ log: vi.fn(), normalizeUnicode: (s) => s }));
 vi.mock("../agent/modules/thinkBuffer.js", () => ({ setThink: vi.fn() }));
 vi.mock("../chat/modules/privacySettings.js", () => ({ assertAiBackendAllowed: vi.fn(async () => {}) }));
@@ -55,12 +49,17 @@ globalThis.browser = {
       set: vi.fn(async (obj) => { Object.assign(storageData, obj); }),
       remove: vi.fn(async (key) => { delete storageData[key]; }),
     },
+    onChanged: { addListener: vi.fn(), removeListener: vi.fn() },
   },
   runtime: { getManifest: vi.fn(() => ({ version: "9.9.9" })) },
 };
 
+const { SETTINGS } = await import("../agent/modules/config.js");
 const auth = await import("../agent/modules/supabaseAuth.js");
 const llm = await import("../agent/modules/llm.js");
+
+const RETRIES = SETTINGS.authTokenRefreshRetries;
+const REFRESH_TIMEOUT_MS = SETTINGS.authTokenRefreshTimeoutMs;
 
 // ─── Fetch models ────────────────────────────────────────────────────────────
 
@@ -283,6 +282,51 @@ describe("token refresh timeout (issue #55)", () => {
       expect(signals.every((sig) => sig.aborted)).toBe(true);
       expect(storageData.supabaseSession).toEqual(expect.objectContaining({ refresh_token: "synthetic-refresh" }));
       expect(vi.getTimerCount()).toBe(0);
+    });
+  }
+
+  it("shipped configuration is a usable deadline: positive, bounded, and a plain healthy refresh completes under it", () => {
+    expect(Number.isInteger(REFRESH_TIMEOUT_MS)).toBe(true);
+    expect(REFRESH_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(Number.isInteger(RETRIES)).toBe(true);
+    expect(RETRIES).toBeGreaterThan(0);
+  });
+
+  for (const status of [200, 503]) {
+    it(`one deadline spans headers AND body: ${status} headers inside the budget plus a body that overruns it is aborted`, async () => {
+      const next = { access_token: "synthetic-late", refresh_token: "synthetic-rotated", expires_at: Math.floor(Date.now() / 1000) + 3600 };
+      const half = Math.ceil(REFRESH_TIMEOUT_MS / 2);
+      const signals = [];
+      const makeFetch = (headersMs, bodyMs) => vi.fn((_url, { signal }) => {
+        signals.push(signal);
+        const after = (ms, value) => new Promise((resolve, reject) => {
+          const t = setTimeout(() => resolve(value), ms);
+          signal.addEventListener("abort", () => { clearTimeout(t); reject(abortError()); }, { once: true });
+        });
+        return after(headersMs, { ok: status === 200, status, json: () => after(bodyMs, status === 200 ? next : { error: "unavailable" }) });
+      });
+
+      // Each phase alone fits the budget; together they overrun it → aborted, transient, session kept.
+      globalThis.fetch = makeFetch(half, half + 1);
+      const waiters = Array.from({ length: 5 }, () => auth.getAccessToken());
+      await drainRetryBudget();
+      expect(await Promise.all(waiters)).toEqual([null, null, null, null, null]);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(RETRIES);
+      expect(signals.every((sig) => sig.aborted)).toBe(true);
+      expect(storageData.supabaseSession).toEqual(expect.objectContaining({ refresh_token: "synthetic-refresh" }));
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Control: the same two phases that together land just inside the budget complete.
+      if (status === 200) {
+        auth.resetAuthState();
+        resetStorage({ supabaseSession: expiredSession() });
+        globalThis.fetch = makeFetch(half, REFRESH_TIMEOUT_MS - half - 1);
+        const inside = auth.getAccessToken();
+        await vi.advanceTimersByTimeAsync(REFRESH_TIMEOUT_MS - 1);
+        expect(await inside).toBe("synthetic-late");
+        expect(storageData.supabaseSession).toEqual(next);
+        expect(vi.getTimerCount()).toBe(0);
+      }
     });
   }
 
