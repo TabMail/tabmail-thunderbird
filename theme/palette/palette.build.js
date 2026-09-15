@@ -29,7 +29,7 @@ export function buildPaletteCSS(P) {
 
   return `
 :root {
-  --tm-preview-bg: color-mix(in srgb, color-mix(in srgb, ${THEME.LIGHT.PAGE_BG} 97%, ${LIGHT.ACCENT_COLOR}) 92%, transparent);
+  --tm-preview-bg: color-mix(in srgb, color-mix(in srgb, ${THEME.LIGHT.PAGE_BG} 97%, ${LIGHT.ACCENT_COLOR}) 98%, transparent);
   --tm-preview-delete: color-mix(in srgb, ${BASE.RED} 70%, transparent);
   --tm-preview-text: ${THEME.LIGHT.TEXT_COLOR};
   --tm-preview-context: color-mix(in srgb, ${THEME.LIGHT.TEXT_COLOR} 48%, ${THEME.LIGHT.PAGE_BG});
@@ -152,7 +152,7 @@ export function buildPaletteCSS(P) {
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --tm-preview-bg: color-mix(in srgb, color-mix(in srgb, ${THEME.DARK.BOX_BG} 97%, ${DARK.ACCENT_COLOR}) 92%, transparent);
+    --tm-preview-bg: color-mix(in srgb, color-mix(in srgb, ${THEME.DARK.BOX_BG} 97%, ${DARK.ACCENT_COLOR}) 98%, transparent);
     --tm-preview-delete: color-mix(in srgb, ${BASE.RED} 70%, transparent);
   --tm-preview-text: ${THEME.DARK.TEXT_COLOR};
     --tm-preview-context: color-mix(in srgb, ${THEME.DARK.TEXT_COLOR} 48%, ${THEME.DARK.BOX_BG});
