@@ -228,6 +228,135 @@ describe("token refresh timeout (issue #55)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  // ─── Round-1 gate findings T1–T3: stalled error bodies, healthy latency budget,
+  // timeout-then-success, queued caller wakeup, live SSE heartbeat preservation.
+
+  for (const status of [401, 503]) {
+    it(`settles waiters when HTTP ${status} headers arrive but its error body stalls`, async () => {
+      let bodyReads = 0;
+      const signals = [];
+      const originalSession = structuredClone(storageData.supabaseSession);
+      globalThis.fetch = vi.fn(async (_url, { signal }) => {
+        signals.push(signal);
+        return { ok: false, status, json() {
+          bodyReads++;
+          return new Promise((_resolve, reject) => {
+            if (signal?.aborted) return reject(abortError());
+            signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+          });
+        } };
+      });
+      const values = [];
+      const requests = Array.from({ length: 5 }, () => auth.getAccessToken().then(x => { values.push(x); return x; }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(bodyReads).toBe(1);
+      expect(values).toEqual([]);
+      await drainRetryBudget();
+      expect(values).toEqual(Array(5).fill(null));
+      await Promise.all(requests);
+      expect(bodyReads).toBe(RETRIES);
+      expect(signals.every(s => s.aborted)).toBe(true);
+      if (status === 401) expect(storageData.supabaseSession).toBeUndefined();
+      else expect(storageData.supabaseSession).toEqual(originalSession);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  }
+
+  it('allows a healthy response inside the configured deadline and persists its rotated credentials', async () => {
+    let signal;
+    const started = [];
+    const next = { access_token: 'synthetic-new', refresh_token: 'synthetic-rotated', expires_at: Math.floor(Date.now()/1000)+3600 };
+    globalThis.fetch = vi.fn((_url, opts) => {
+      signal = opts.signal; started.push(Date.now());
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ok:true,status:200,json:async()=>next}), 2000);
+        signal?.addEventListener('abort', () => { clearTimeout(timer); reject(abortError()); }, {once:true});
+      });
+    });
+    const promise = auth.getAccessToken();
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(signal?.aborted || false).toBe(false);
+    expect(started).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await promise).toBe('synthetic-new');
+    expect(storageData.supabaseSession).toEqual(next);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('recovers on the second attempt within the same shared refresh', async () => {
+    const signals = [];
+    let attempt = 0;
+    const stalled = stalledFetch('connect', signals);
+    const healthy = healthyFetch('synthetic-after-retry');
+    globalThis.fetch = vi.fn((...args) => ++attempt === 1 ? stalled(...args) : healthy(...args));
+    const promises = Array.from({length:5},()=>auth.getAccessToken());
+    await drainRetryBudget();
+    expect(await Promise.all(promises)).toEqual(Array(5).fill('synthetic-after-retry'));
+    expect(attempt).toBe(2);
+    expect(storageData.supabaseSession.access_token).toBe('synthetic-after-retry');
+    expect(browser.storage.local.remove).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps 60 seconds of live SSE work alive, then releases queued work on silence', async () => {
+    globalThis.window = {};
+    const encoder = new TextEncoder();
+    const reader = { waiting: null, read: vi.fn(() => new Promise(resolve => { reader.waiting = resolve; })), releaseLock: vi.fn(), cancel: vi.fn() };
+    let backendCalls = 0;
+    const healthy = healthyFetch('synthetic-ready');
+    globalThis.fetch = vi.fn((url, ...args) => {
+      if (url.includes('/auth/v1/token')) return healthy(url,...args);
+      backendCalls++;
+      if (backendCalls === 1) return Promise.resolve({ok:true,status:200,headers:{get:()=> 'text/event-stream'},body:{getReader:()=>reader}});
+      return Promise.resolve({ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>({assistant:'synthetic recovered'})});
+    });
+    const settled = [];
+    const first = llm.sendChat([{role:'system',content:'synthetic'}]).then(x=>{settled.push('first');return x;});
+    const second = llm.sendChat([{role:'system',content:'synthetic'}]).then(x=>{settled.push('second');return x;});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(backendCalls).toBe(1);
+    for (let i=0; i<20; i++) {
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(reader.waiting).toBeTypeOf('function');
+      reader.waiting({done:false,value:encoder.encode('event: keepalive\ndata: {}\n\n')});
+      reader.waiting=null;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toEqual([]);
+      expect(backendCalls).toBe(1);
+    }
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(settled).toEqual(['first','second']);
+    expect(await first).toMatchObject({connection_lost:true});
+    expect(await second).toMatchObject({assistant:'synthetic recovered'});
+    expect(reader.releaseLock).toHaveBeenCalledTimes(1);
+    expect(backendCalls).toBe(2);
+  });
+
+  it('wakes a call already queued before the shared refresh times out', async () => {
+    const signals = [];
+    const stalled = stalledFetch('connect', signals);
+    let backendCalls = 0;
+    globalThis.fetch = vi.fn((url, ...args) => {
+      if(url.includes('/auth/v1/token')) return stalled(url,...args);
+      backendCalls++;
+      return Promise.resolve({ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>({assistant:'synthetic recovered'})});
+    });
+    const settled = [];
+    const first = llm.sendChat([{role:'system',content:'synthetic'}]).then(x=>{settled.push('first');return x;});
+    await vi.advanceTimersByTimeAsync(0);
+    const second = llm.sendChat([{role:'system',content:'synthetic'}]).then(x=>{settled.push('second');return x;});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(signals).toHaveLength(1);
+    expect(settled).toEqual([]);
+    expect(backendCalls).toBe(0);
+    storageData.supabaseSession = {access_token:'synthetic-current',refresh_token:'synthetic-current-refresh',expires_at:Math.floor(Date.now()/1000)+3600};
+    await drainRetryBudget();
+    expect(settled).toEqual(['first','second']);
+    expect(await first).toBeNull();
+    expect(await second).toMatchObject({assistant:'synthetic recovered'});
+    expect(backendCalls).toBe(1);
+  });
+
   it("a stalled refresh releases the downstream AI semaphore slot so the next call proceeds", async () => {
     // maxAgentWorkers is 1: if the first sendChat never unwinds, the second can never start.
     const signals = [];
