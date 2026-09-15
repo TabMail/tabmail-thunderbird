@@ -53,12 +53,14 @@ vi.mock('../agent/modules/utils.js',()=>({getUniqueMessageKey:vi.fn()}));
 vi.mock('../compose/modules/autocompleteGenerator.js',()=>({generateCorrection:vi.fn()}));
 vi.mock('../compose/modules/edit.js',()=>({runComposeEdit:vi.fn()}));
 import {runComposeEdit} from '../compose/modules/edit.js';
-async function wireBackground(w) {
+async function wireBackground(w, requestedTab = 1) {
   vi.resetModules();
   const listeners = new Set();
   const current = {to:['first@example.com'],cc:[],bcc:[],subject:'Synthetic',type:'new'};
+  const otherCurrent={to:['other@example.com'],cc:['other-copy@example.com'],bcc:[],subject:'Other window',type:'new'};
+  const stores=new Map([[1,current],[2,otherCurrent]]);
   const api={runtime:{onMessage:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)},getURL:p=>p},
-    compose:{getComposeDetails:vi.fn(async()=>({...structuredClone(current),...Object.fromEntries(['to','cc','bcc'].map(field=>[field,headerList(current[field].join(','))]))})),setComposeDetails:vi.fn((id,patch)=>Object.assign(current,structuredClone(patch))),onBeforeSend:{addListener:vi.fn()}},
+    compose:{getComposeDetails:vi.fn(async id=>{const state=stores.get(id);return {...structuredClone(state),...Object.fromEntries(['to','cc','bcc'].map(field=>[field,headerList(state[field].join(','))]))}}),setComposeDetails:vi.fn((id,patch)=>Object.assign(stores.get(id),structuredClone(patch))),onBeforeSend:{addListener:vi.fn()}},
     scripting:{compose:{unregisterScripts:vi.fn(async()=>{}),registerScripts:vi.fn(async()=>{})}},
     tabs:{sendMessage:vi.fn(async()=>{}),onRemoved:{addListener:vi.fn(),removeListener:vi.fn()}}};
   // Native compose fields are header strings; the public compose API exposes
@@ -69,9 +71,10 @@ async function wireBackground(w) {
   });
   const format=({name,email})=>name?`${name} <${email}>`:email;
   const headerList=(value,emailOnly=false)=>parse(value||'').map(address=>emailOnly?address.email:format(address));
-  const nativeWindow={closed:false,document:{activeElement:{focus:vi.fn()},querySelector:vi.fn(()=>null)},
-    GetComposeDetails:()=>Object.fromEntries(['to','cc','bcc'].map(field=>[field,current[field].join(',')])),
-    SetComposeDetails:patch=>api.compose.setComposeDetails(1,Object.fromEntries(Object.entries(patch).map(([key,value])=>[key,headerList(value)])))};
+  const makeWindow=id=>({closed:false,document:{activeElement:{focus:vi.fn()},querySelector:vi.fn(()=>null)},
+    GetComposeDetails:()=>Object.fromEntries(['to','cc','bcc'].map(field=>[field,stores.get(id)[field].join(',')])),
+    SetComposeDetails:patch=>api.compose.setComposeDetails(id,Object.fromEntries(Object.entries(patch).map(([key,value])=>[key,headerList(value)])))});
+  const nativeWindow=makeWindow(1),otherWindow=makeWindow(2);
   let sequence=0;
   // Use the shipped registration and declared methods, not an API injected
   // regardless of packaging. This is limited to this experiment's boundary.
@@ -81,13 +84,28 @@ async function wireBackground(w) {
     const schema=JSON.parse(readFileSync(resolve(registration.schema),'utf8')).find(entry=>entry.namespace==='tmComposeRecipients');
     const filename=resolve(registration.parent.script);
     const Experiment=runInNewContext(readFileSync(filename,'utf8')+'\n;tmComposeRecipients;',{
-      ChromeUtils:{importESModule:path=>path.includes('ExtensionCommon')?{ExtensionCommon:{ExtensionAPI:class{}}}:path.includes('MailServices')?{MailServices:{headerParser:{makeFromDisplayAddress:parse,makeMimeAddress:(name,email)=>format({name,email})}}}:{parseEncodedAddrHeader:headerList}},
+      ChromeUtils:{importESModule:path=>path==='resource://gre/modules/ExtensionCommon.sys.mjs'?{ExtensionCommon:{ExtensionAPI:class{}}}:path==='resource:///modules/MailServices.sys.mjs'?{MailServices:{headerParser:{makeFromDisplayAddress:parse,makeMimeAddress:(name,email)=>format({name,email})}}}:path==='resource:///modules/ExtensionMessages.sys.mjs'?{parseEncodedAddrHeader:headerList}:(()=>{throw Error('Unknown native module: '+path)})()},
       Services:{uuid:{generateUUID:()=>({toString:()=>String(++sequence)})}}
     },{filename});
     experiment=new Experiment();
-    const otherWindow={...nativeWindow};
     const nativeAPI=experiment.getAPI({extension:{tabManager:{get:id=>({type:'messageCompose',nativeTab:id===1?nativeWindow:otherWindow})}}}).tmComposeRecipients;
+    // Model the schema types used by this API; unknown types fail closed.
+    const validate=(value,definition)=>{
+      if(definition.optional && value==null)return;
+      if(definition.$ref)definition=schema.types.find(type=>type.id===definition.$ref);
+      switch(definition.type) {
+        case 'integer': if(!Number.isInteger(value))throw TypeError('Expected integer');break;
+        case 'string': if(typeof value!=='string')throw TypeError('Expected string');break;
+        case 'array': if(!Array.isArray(value))throw TypeError('Expected array');value.forEach(item=>validate(item,definition.items));break;
+        case 'object':
+          if(!value||typeof value!=='object'||Array.isArray(value))throw TypeError('Expected object');
+          for(const [key,property] of Object.entries(definition.properties))validate(value[key],property);
+          break;
+        default: throw TypeError('Unsupported experiment schema type');
+      }
+    };
     api.tmComposeRecipients=Object.fromEntries((schema?.functions||[]).map(method=>[method.name,vi.fn((...args)=>{
+      method.parameters.forEach((parameter,index)=>validate(args[index],parameter));
       if(method.name==='commit') {
         const patchType=schema.types.find(type=>type.id===method.parameters[3].$ref);
         const defaults=Object.fromEntries(Object.entries(patchType.properties).filter(([,property])=>property.optional).map(([field])=>[field,null]));
@@ -99,8 +117,8 @@ async function wireBackground(w) {
   api._nativeWindow=nativeWindow;api._experiment=experiment;
   globalThis.browser=globalThis.messenger=api;globalThis.window={};
   await import('../compose/background.js');
-  w.browser.runtime.sendMessage=vi.fn(message=>[...listeners].map(f=>f(message,{tab:{id:1}})).find(v=>v!==undefined));
-  return {api,current};
+  w.browser.runtime.sendMessage=vi.fn(message=>[...listeners].map(f=>f(message,{tab:{id:requestedTab}})).find(v=>v!==undefined));
+  return {api,current,otherCurrent};
 }
 afterEach(()=>{delete globalThis.browser;delete globalThis.messenger;delete globalThis.window;runComposeEdit.mockReset()});
 it.each(['empty','whitespace'])('keeps %s recovery visible but outside serialized mail, then applies a retry',async outcome=>{
@@ -410,4 +428,39 @@ it.each(['reply','forward'].flatMap(mode=>['html','plain'].map(format=>[mode,for
  expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
  expect(tm.state.editChatHistory).toEqual([{userRequest:'Add address'}]);
+});
+
+it.each(['to','cc','bcc'].flatMap(field=>['clear-all','remove-last','replace'].map(kind=>[field,kind])))('commits empty recipient rows and preserves unrelated fields: %s %s',async(field,kind)=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
+ current.to=['to@example.com'];current.cc=['cc@example.com'];current.bcc=['bcc@example.com'];
+ const before=structuredClone(current);
+ const raw=`-${field}: ${kind==='remove-last'?field+'@example.com':'*'}\n${kind==='replace'?`+${field}: replacement@example.com\n`:''}Body: Expanded draft.`;
+ const result=await actualDeltaProducer(raw);
+ expect(result[field+'Delta'].removes).toEqual([kind==='remove-last'?field+'@example.com':'*']);
+ expect(result[field+'Delta'].adds.length).toBe(kind==='replace'?1:0);
+ runComposeEdit.mockResolvedValue({...result,chatHistory:[{userRequest:'Update'}]});
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Update',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(current).toEqual({...before,[field]:kind==='replace'?['replacement@example.com']:[]});
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.originalText).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Update'}]);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+});
+it.each(['keyboard','click'])('routes a valid recipient edit to its own second compose window through %s',async action=>{
+ const {w,tm,body}=setup('<p>Second draft.</p>');const {api,current,otherCurrent}=await wireBackground(w,2);
+ const beforeFirst=structuredClone(current),beforeSecond=structuredClone(otherCurrent);
+ const result=await actualDeltaProducer('+To: added@example.com\nBody: Expanded second draft.');
+ runComposeEdit.mockResolvedValue({...result,chatHistory:[{userRequest:'Add recipient'}]});
+ tm.showInlineEditDropdown();const wrapper=w.document.getElementById('tm-inline-edit');
+ wrapper._tm_iinput.value='Add recipient';
+ if(action==='keyboard') wrapper._tm_iinput.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+ else wrapper.querySelector('.tm-inline-actions').shadowRoot.querySelector('button[aria-label="Edit draft"]').click();
+ await vi.waitFor(()=>expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded second draft.'));
+ // Flush completion without a positive-outcome wait that could hide the failed state.
+ await vi.waitFor(()=>expect(api.tmComposeRecipients.commit).toHaveBeenCalledTimes(1));
+ await Promise.resolve();
+ expect(otherCurrent).toEqual({...beforeSecond,to:['other@example.com','added@example.com']});
+ expect(current).toEqual(beforeFirst);
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Add recipient'}]);
+ expect(tm.state.originalText).toBe('Expanded second draft.');
 });
