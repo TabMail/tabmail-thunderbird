@@ -334,11 +334,18 @@ body {
    - Reduce these to crop more from bottom and shorten the page
    ============================================ */
 .view-options .option-preview-large {
-  height: 150px; /* ← ADJUST: Card/Table view preview height (default 180px) */
+  height: 110px;
+  justify-content: flex-start;
 }
 
 .sort-options .option-preview-large {
-  height: 160px; /* ← ADJUST: Sort order preview height (default 180px) */
+  height: 120px;
+}
+
+/* Keep the screenshot scale and top edge stable; crop the excess at the bottom. */
+.view-options .view-preview .asset-image {
+  max-height: none;
+  flex-shrink: 0;
 }
 
 /* Special container for view previews to enable proper zoom/crop */
