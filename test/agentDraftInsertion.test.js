@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 import { parse } from 'acorn';
-import { IDBFactory } from 'fake-indexeddb';
+import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createContext, runInContext } from 'node:vm';
@@ -173,4 +173,33 @@ it('a concurrent newer producer write remains the cached proposal', async () => 
   await s.tm.triggerCorrectionBackend(s.body, '', '', 0, true);
   expect(s.body.textContent).toBe('Older draft.');
   expect((await sys.read(key)).reply).toBe('Newer draft.');
+});
+
+it('an aborted flag transaction cannot activate a draft and remains retryable', async () => {
+  const key = 'reply:synthetic-account:synthetic-message';
+  const payload = {reply: 'Retry this draft.', directReplace: true};
+  const sys = await producerSystem({[key]: payload});
+  const originalPut = IDBObjectStore.prototype.put;
+  let aborted = false;
+  const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (row, ...args) {
+    const result = originalPut.call(this, row, ...args);
+    if (row.key === key && row.value.directReplace === false && !aborted) {
+      aborted = true;
+      queueMicrotask(() => this.transaction.abort());
+    }
+    return result;
+  });
+  try {
+    await sys.created({id: 81});
+    expect(aborted).toBe(true);
+    expect(await sys.read('activePrecompose:81')).toBeUndefined();
+    expect(await sys.read(key)).toEqual(payload);
+  } finally {
+    put.mockRestore();
+  }
+  await sys.created({id: 82});
+  const draft = setup(''); wire(draft, sys, 82);
+  await draft.tm.triggerCorrectionBackend(draft.body, '', '', 0, true);
+  expect(draft.body.textContent).toBe(payload.reply);
+  expect(await sys.read(key)).toEqual({...payload, directReplace: false});
 });
