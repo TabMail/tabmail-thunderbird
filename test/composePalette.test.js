@@ -22,7 +22,7 @@ it.each(['LIGHT','DARK'])('injected %s compose colors tint insertions with the a
     const bubbleRule=[...css.sheet.cssRules].find(rule=>rule.selectorText==='.tm-compose-preview .preview');
     const surface=bubbleRule.style.getPropertyValue('background').replace(/var\((--[^)]+)\)/g,(_,name)=>rootRule.style.getPropertyValue(name));
     const surfaceColor=convert.colorToRgb(surface);
-    expect(surfaceColor).toHaveLength(4);expect(surfaceColor[3]).toBeCloseTo(0.92,2);
+    expect(surfaceColor).toHaveLength(4);expect(surfaceColor[3]).toBeCloseTo(0.98,2);
     const base=convert.colorToRgb(mode==='LIGHT'?data.THEME.LIGHT.PAGE_BG:data.THEME.DARK.BOX_BG);
     const accentSurface=convert.colorToRgb(data.THEME[mode].ACCENT_COLOR);
     for(let channel=0;channel<3;channel++)expect(Math.abs(surfaceColor[channel]-(base[channel]*0.97+accentSurface[channel]*0.03))).toBeLessThan(1);
