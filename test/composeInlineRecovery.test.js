@@ -47,6 +47,7 @@ function installNativeModel(w) {
   });
 }
 
+vi.mock('../agent/modules/config.js',()=>({SETTINGS:{},getBackendUrl:()=> 'https://example.com'}));
 vi.mock('../agent/modules/idbStorage.js',()=>({}));
 vi.mock('../agent/modules/utils.js',()=>({getUniqueMessageKey:vi.fn()}));
 vi.mock('../compose/modules/autocompleteGenerator.js',()=>({generateCorrection:vi.fn()}));
@@ -252,13 +253,16 @@ it.each(['to','cc','bcc'])('preserves delta semantics and rejects newer %s recip
  expect(current[field]).toEqual(['manual@example.com']);expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
 });
 it.each(['read','write'])('native recipient %s failure does not corrupt body/history or retry the write',async failure=>{
- const {w,tm,body}=setup('<p>Draft.</p>');const {api}=await wireBackground(w);
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
+ const baseline=structuredClone(current);
  runComposeEdit.mockResolvedValue({body:'Expanded.',chatHistory:[{userRequest:'Expand'}],toDelta:{adds:[{email:'new@example.com'}],removes:[]}});
  if(failure==='read')api._nativeWindow.GetComposeDetails=()=>{throw Error('Synthetic read failure')};
  else api.compose.setComposeDetails.mockImplementationOnce(()=>{throw Error('Synthetic write failure')});
  tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Expand',wrapper:w.document.getElementById('tm-inline-edit')});
  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded.');expect(tm.state.editChatHistory).toEqual([{userRequest:'Expand'}]);
  expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(failure==='read'?0:1);
+ expect(api.tmComposeRecipients.commit).toHaveBeenCalledTimes(1);
+ expect(current).toEqual(baseline);
 });
 it('forgets recipient operations on extension shutdown',async()=>{
  const {w}=setup('Draft.');const {api}=await wireBackground(w);
@@ -365,4 +369,45 @@ it.each(['first@example.com','First Person <first@example.com>'])('accepts nativ
  expect(current.to).toEqual([address,'added@example.com']);
  expect(current.cc).toEqual(['Copy Person <copy@example.com>']);expect(current.bcc).toEqual(['blind@example.com']);
  expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+});
+
+async function actualDeltaProducer(raw) {
+ const {processEditResponse}=await vi.importActual('../agent/modules/llm.js');
+ return processEditResponse(raw);
+}
+it.each(['to','cc','bcc'])('removes mixed-case committed %s mailboxes from real parsed deltas',async field=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
+ current[field]=['KEEP@example.com','REMOVE@Example.COM'];
+ const parsed=await actualDeltaProducer('-'+field+': remove@example.com\nBody: Expanded draft.');
+ expect(parsed[field+'Delta']).toEqual({adds:[],removes:['remove@example.com']});
+ runComposeEdit.mockResolvedValue({...parsed,chatHistory:[{userRequest:'Remove address'}]});
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Remove address',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(current[field]).toEqual(['KEEP@example.com']);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Remove address'}]);
+});
+it.each(['to','cc','bcc'])('deduplicates newly added %s addresses from the real parser',async field=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
+ const before=[...current[field]];
+ const parsed=await actualDeltaProducer('+'+field+': added@example.com, ADDED@example.com\nBody: Expanded draft.');
+ expect(parsed[field+'Delta'].adds).toHaveLength(2);
+ runComposeEdit.mockResolvedValue({...parsed,chatHistory:[{userRequest:'Add address'}]});
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Add address',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(current[field]).toEqual([...before,'added@example.com']);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Add address'}]);
+});
+it.each(['reply','forward'].flatMap(mode=>['html','plain'].map(format=>[mode,format])))('commits accepted recipients in %s %s mode',async(mode,format)=>{
+ const {w,tm,body}=setup(format==='html'?'<p>Draft.</p>':'Draft.');const {api,current}=await wireBackground(w);
+ current.type=mode;current.relatedMessageId=123;current.isPlainText=format==='plain';
+ const parsed=await actualDeltaProducer('+To: added@example.com\nBody: Expanded draft.');
+ runComposeEdit.mockResolvedValue({...parsed,chatHistory:[{userRequest:'Add address'}]});
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Add address',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(runComposeEdit).toHaveBeenCalledWith(expect.objectContaining({mode,relatedEmailId:'123'}));
+ expect(current.to).toEqual(['first@example.com','added@example.com']);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Add address'}]);
 });
