@@ -385,6 +385,35 @@ describe("token refresh timeout (issue #55)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  for (const [attemptNo, lateAt] of [[2, "headers"], [2, "body"], [3, "headers"], [3, "body"]]) {
+    it(`attempt ${attemptNo} gets its own full deadline: a healthy response with late ${lateAt} after earlier timeouts still succeeds`, async () => {
+      const next = { access_token: "synthetic-late-retry", refresh_token: "synthetic-rotated", expires_at: Math.floor(Date.now() / 1000) + 3600 };
+      const signals = [];
+      let calls = 0;
+      const stalled = stalledFetch("connect", signals);
+      globalThis.fetch = vi.fn((url, opts) => {
+        if (++calls < attemptNo) return stalled(url, opts);
+        const { signal } = opts;
+        signals.push(signal);
+        const after = (ms, value) => new Promise((resolve, reject) => {
+          if (ms === 0) return resolve(value);
+          const t = setTimeout(() => resolve(value), ms);
+          signal.addEventListener("abort", () => { clearTimeout(t); reject(abortError()); }, { once: true });
+        });
+        const late = REFRESH_TIMEOUT_MS - 1;
+        return after(lateAt === "headers" ? late : 0, { ok: true, status: 200, json: () => after(lateAt === "body" ? late : 0, next) });
+      });
+      const waiters = Array.from({ length: 5 }, () => auth.getAccessToken());
+      await drainRetryBudget();
+      expect(await Promise.all(waiters)).toEqual(Array(5).fill("synthetic-late-retry"));
+      expect(calls).toBe(attemptNo);
+      expect(signals[attemptNo - 1].aborted).toBe(false);
+      expect(storageData.supabaseSession).toEqual(next);
+      expect(browser.storage.local.remove).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  }
+
   it('recovers on the second attempt within the same shared refresh', async () => {
     const signals = [];
     let attempt = 0;
