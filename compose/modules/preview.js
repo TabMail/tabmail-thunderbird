@@ -4,6 +4,9 @@
 var TabMail = TabMail || {};
 
 TabMail.composeActionCSS = `
+/* Match chat system-message warnings, inside the non-serialized action root. */
+.tm-inline-error { color: var(--tag-tm-archive); background: transparent; font: italic 11px/1.4 system-ui; text-align: center; padding: 6px 10px; margin: 0 0 6px; white-space: normal; overflow-wrap: anywhere; }
+
 .tm-compose-actions { user-select: none; display: flex; flex-wrap: wrap; justify-content: flex-end; text-align: right; font: 11px/1.4 system-ui; color: var(--tm-preview-context); }
 
 .tm-compose-actions button { pointer-events: auto; cursor: pointer; font: inherit; color: inherit; background: transparent; border: 0; border-radius: 4px; padding: 3px 6px; }

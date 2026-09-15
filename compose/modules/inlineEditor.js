@@ -39,7 +39,7 @@ Object.assign(TabMail, {
       error.className = 'tm-inline-error';
       error.setAttribute('role', 'alert');
       error.setAttribute('spellcheck', 'false');
-      root.appendChild(error);
+      root.insertBefore(error, root.querySelector('.tm-compose-actions'));
     }
     // Recovery text is UI, not authored mail: keep it out of native serialization.
     error.textContent = message;
@@ -292,6 +292,18 @@ Object.assign(TabMail, {
 
       TabMail.hideComposePreview();
       TabMail.animateInlineEditApplication(editor);
+      // Dismissal and native refusal return above. Only an accepted operation
+      // may commit its recipient proposal; the background also checks staleness.
+      if (result.recipientEdit) {
+        try {
+          await browser.runtime.sendMessage({
+            type: "commitInlineComposeRecipients", recipientEdit: result.recipientEdit,
+          });
+        } catch (error) {
+          TabMail.log.warn('inlineEdit', 'Recipient proposal could not be applied', error);
+        }
+      }
+
     } catch (err) {
       console.error("[TabMail Edit] Inline edit error:", err);
     } finally {

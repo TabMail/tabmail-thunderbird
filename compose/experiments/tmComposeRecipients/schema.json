@@ -1,0 +1,101 @@
+[
+  {
+    "namespace": "tmComposeRecipients",
+    "description": "Atomic recipient proposal commit for accepted inline edits.",
+    "types": [
+      {
+        "id": "Recipients",
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "bcc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "id": "Patch",
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "optional": true
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "optional": true
+          },
+          "bcc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "optional": true
+          }
+        }
+      }
+    ],
+    "functions": [
+      {
+        "name": "begin",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "tabId",
+            "type": "integer"
+          }
+        ],
+        "returns": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "commit",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "tabId",
+            "type": "integer"
+          },
+          {
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "name": "baseline",
+            "$ref": "Recipients"
+          },
+          {
+            "name": "patch",
+            "$ref": "Patch"
+          }
+        ],
+        "returns": {
+          "type": "boolean"
+        }
+      }
+    ]
+  }
+]
