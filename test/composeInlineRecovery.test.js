@@ -518,3 +518,95 @@ it.each(['to','cc','bcc'])('updates committed native rows while preserving unrel
  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
  expect(tm.state.editChatHistory).toEqual([{userRequest:'Add recipient'}]);
 });
+
+it.each(['to','cc','bcc'])('deduplicates an addition against committed mixed-case %s',async field=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current,otherCurrent}=await wireBackground(w);
+ api._nativeWindow.SetComposeDetails({[field]:'Existing Person <EXISTING@Example.COM>'});
+ expect(current[field]).toEqual(['Existing Person <EXISTING@Example.COM>']);
+ api.compose.setComposeDetails.mockClear();
+ const before=structuredClone(current),otherBefore=structuredClone(otherCurrent);
+ const parsed=await actualDeltaProducer('+'+field+': existing@example.com, new@example.com\nBody: Expanded draft.');
+ expect(parsed[field+'Delta'].adds.map(x=>x.email)).toEqual(['existing@example.com','new@example.com']);
+ runComposeEdit.mockResolvedValue({...parsed,chatHistory:[{userRequest:'Add addresses'}]});
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Add addresses',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(current).toEqual({...before,[field]:['Existing Person <EXISTING@Example.COM>','new@example.com']});
+ expect(otherCurrent).toEqual(otherBefore);
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Add addresses'}]);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+ const row=api._nativeWindow.document.querySelector(`.address-row[data-recipienttype="addr_${field}"]`);
+ expect([...row.querySelectorAll('mail-address-pill')].map(p=>p.fullAddress)).toEqual(['Existing Person <EXISTING@Example.COM>','new@example.com']);
+});
+
+it.each([false,true])('commits simultaneous recipient rows (include Bcc: %s)',async includeBcc=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current,otherCurrent}=await wireBackground(w);
+ api._nativeWindow.SetComposeDetails({to:'old-to@example.com',cc:'old-copy@example.com',bcc:'old-blind@example.com'});
+ expect([current.to,current.cc,current.bcc]).toEqual([['old-to@example.com'],['old-copy@example.com'],['old-blind@example.com']]);
+ api.compose.setComposeDetails.mockClear();
+ const before=structuredClone(current),otherBefore=structuredClone(otherCurrent);
+ const parsed=await actualDeltaProducer('-To: *\n+To: New To <new-to@example.com>\n-Cc: *\n'+(includeBcc?'+Bcc: New Blind <new-blind@example.com>\n':'')+'Body: Expanded draft.');
+ expect(['to','cc'].every(field=>parsed[field+'Delta']!==undefined)).toBe(true);
+ expect(parsed.bccDelta!==undefined).toBe(includeBcc);
+ let release;runComposeEdit.mockImplementation(()=>new Promise(resolve=>release=resolve));
+ tm.showInlineEditDropdown();const pending=tm._runInlineEditInstruction({instruction:'Update all rows',wrapper:w.document.getElementById('tm-inline-edit')});
+ await vi.waitFor(()=>expect(release).toBeTypeOf('function'));
+ expect(current).toEqual(before);expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+ release({...parsed,chatHistory:[{userRequest:'Update all rows'}]});await pending;
+ const expected={...before,to:['New To <new-to@example.com>'],cc:[],bcc:includeBcc?['old-blind@example.com','New Blind <new-blind@example.com>']:before.bcc};
+ expect(current).toEqual(expected);expect(otherCurrent).toEqual(otherBefore);
+ for(const field of ['to','cc','bcc']){
+  const row=api._nativeWindow.document.querySelector(`.address-row[data-recipienttype="addr_${field}"]`);
+  expect([...row.querySelectorAll('mail-address-pill')].map(p=>p.fullAddress)).toEqual(expected[field]);
+ }
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Update all rows'}]);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+});
+
+it.each(['to','cc','bcc'].flatMap(deltaField=>['to','cc','bcc'].filter(field=>field!==deltaField).map(manualField=>[deltaField,manualField])))('%s proposal respects a newer committed %s edit',async(deltaField,manualField)=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current,otherCurrent}=await wireBackground(w);
+ const before=structuredClone(current),otherBefore=structuredClone(otherCurrent);
+ const parsed=await actualDeltaProducer('+'+deltaField+': proposed@example.com\nBody: Expanded draft.');
+ runComposeEdit.mockResolvedValue({...parsed,chatHistory:[{userRequest:'Add a recipient'}]});
+ let release;const nativeCommit=api.tmComposeRecipients.commit.getMockImplementation();
+ api.tmComposeRecipients.commit.mockImplementationOnce((...args)=>new Promise((resolve,reject)=>{release=()=>nativeCommit(...args).then(resolve,reject)}));
+ tm.showInlineEditDropdown();const pending=tm._runInlineEditInstruction({instruction:'Add a recipient',wrapper:w.document.getElementById('tm-inline-edit')});
+ await vi.waitFor(()=>expect(release).toBeTypeOf('function'));
+ expect(current).toEqual(before);expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Add a recipient'}]);
+ expect(w.document.getElementById('tm-inline-edit')).toBeNull();
+ api._nativeWindow.SetComposeDetails({[manualField]:'newer-user@example.com'});
+ const manual={...before,[manualField]:['newer-user@example.com']};expect(current).toEqual(manual);
+ api.compose.setComposeDetails.mockClear();
+ release();await pending;
+ expect(current).toEqual(manual);expect(otherCurrent).toEqual(otherBefore);
+ expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Add a recipient'}]);
+});
+
+it.each(['to','cc','bcc'])('preserves a newer manual %s recipient order',async field=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current,otherCurrent}=await wireBackground(w);
+ api._nativeWindow.SetComposeDetails({[field]:'alpha@example.com,beta@example.com'});
+ expect(current[field]).toEqual(['alpha@example.com','beta@example.com']);
+ api.compose.setComposeDetails.mockClear();const before=structuredClone(current),otherBefore=structuredClone(otherCurrent);
+ const parsed=await actualDeltaProducer('+'+field+': proposed@example.com\nBody: Expanded draft.');
+ runComposeEdit.mockResolvedValue({...parsed,chatHistory:[{userRequest:'Add a recipient'}]});
+ let release;const nativeCommit=api.tmComposeRecipients.commit.getMockImplementation();
+ api.tmComposeRecipients.commit.mockImplementationOnce((...args)=>new Promise((resolve,reject)=>{release=()=>nativeCommit(...args).then(resolve,reject)}));
+ tm.showInlineEditDropdown();const pending=tm._runInlineEditInstruction({instruction:'Add a recipient',wrapper:w.document.getElementById('tm-inline-edit')});
+ await vi.waitFor(()=>expect(release).toBeTypeOf('function'));
+ expect(current).toEqual(before);expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Add a recipient'}]);
+ expect(w.document.getElementById('tm-inline-edit')).toBeNull();
+ api._nativeWindow.SetComposeDetails({[field]:'beta@example.com,alpha@example.com'});
+ const manual={...before,[field]:['beta@example.com','alpha@example.com']};expect(current).toEqual(manual);
+ api.compose.setComposeDetails.mockClear();
+ release();await pending;
+ expect(current).toEqual(manual);expect(otherCurrent).toEqual(otherBefore);
+ expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Add a recipient'}]);
+});
