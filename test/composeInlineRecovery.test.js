@@ -57,24 +57,44 @@ async function wireBackground(w) {
   const listeners = new Set();
   const current = {to:['first@example.com'],cc:[],bcc:[],subject:'Synthetic',type:'new'};
   const api={runtime:{onMessage:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)},getURL:p=>p},
-    compose:{getComposeDetails:vi.fn(async()=>structuredClone(current)),setComposeDetails:vi.fn((id,patch)=>Object.assign(current,structuredClone(patch))),onBeforeSend:{addListener:vi.fn()}},
+    compose:{getComposeDetails:vi.fn(async()=>({...structuredClone(current),...Object.fromEntries(['to','cc','bcc'].map(field=>[field,headerList(current[field].join(','))]))})),setComposeDetails:vi.fn((id,patch)=>Object.assign(current,structuredClone(patch))),onBeforeSend:{addListener:vi.fn()}},
     scripting:{compose:{unregisterScripts:vi.fn(async()=>{}),registerScripts:vi.fn(async()=>{})}},
     tabs:{sendMessage:vi.fn(async()=>{}),onRemoved:{addListener:vi.fn(),removeListener:vi.fn()}}};
-  // Execute the real experiment against a native-window boundary model.
-  // Header parsing is supplied by Thunderbird; arrays here represent its output.
-  const parse=value=>{const m=value.match(/^(.*?)\s*<([^<>]+)>$/);return [{name:m?m[1].replace(/^"|"$/g,''):'',email:m?m[2]:value}]};
+  // Native compose fields are header strings; the public compose API exposes
+  // parsed arrays. Keep those boundaries distinct so bypassing conversion fails.
+  const parse=value=>String(value).split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).filter(value=>value.trim()).map(value=>{
+    const m=value.trim().match(/^(.*?)\s*<([^<>]+)>$/);
+    return {name:m?m[1].replace(/^"|"$/g,''):'',email:m?m[2]:value.trim()};
+  });
+  const format=({name,email})=>name?`${name} <${email}>`:email;
+  const headerList=(value,emailOnly=false)=>parse(value||'').map(address=>emailOnly?address.email:format(address));
   const nativeWindow={closed:false,document:{activeElement:{focus:vi.fn()},querySelector:vi.fn(()=>null)},
-    GetComposeDetails:()=>structuredClone(current),
-    SetComposeDetails:patch=>api.compose.setComposeDetails(1,Object.fromEntries(Object.entries(patch).map(([key,value])=>[key,value?value.split(','):[]])))};
+    GetComposeDetails:()=>Object.fromEntries(['to','cc','bcc'].map(field=>[field,current[field].join(',')])),
+    SetComposeDetails:patch=>api.compose.setComposeDetails(1,Object.fromEntries(Object.entries(patch).map(([key,value])=>[key,headerList(value)])))};
   let sequence=0;
-  const Experiment=runInNewContext(readFileSync(resolve('compose/experiments/tmComposeRecipients/tmComposeRecipients.sys.mjs'),'utf8')+'\n;tmComposeRecipients;',{
-    ChromeUtils:{importESModule:path=>path.includes('ExtensionCommon')?{ExtensionCommon:{ExtensionAPI:class{}}}:path.includes('MailServices')?{MailServices:{headerParser:{makeFromDisplayAddress:parse,makeMimeAddress:(name,email)=>name?`${name} <${email}>`:email}}}:{parseEncodedAddrHeader:value=>value||[]}},
-    Services:{uuid:{generateUUID:()=>({toString:()=>String(++sequence)})}}
-  }) || undefined;
-  const experiment=new Experiment();
-  const otherWindow={...nativeWindow};
-  const nativeAPI=experiment.getAPI({extension:{tabManager:{get:id=>({type:'messageCompose',nativeTab:id===1?nativeWindow:otherWindow})}}}).tmComposeRecipients;
-  api.tmComposeRecipients={begin:vi.fn(nativeAPI.begin),commit:vi.fn((tabId,id,baseline,patch)=>nativeAPI.commit(tabId,id,baseline,{to:null,cc:null,bcc:null,...patch}))};
+  // Use the shipped registration and declared methods, not an API injected
+  // regardless of packaging. This is limited to this experiment's boundary.
+  const registration=JSON.parse(readFileSync(resolve('manifest.json'),'utf8')).experiment_apis?.tmComposeRecipients;
+  let experiment;
+  if(registration?.parent?.scopes.includes('addon_parent') && registration.parent.paths.some(path=>path.join('.')==='tmComposeRecipients')) {
+    const schema=JSON.parse(readFileSync(resolve(registration.schema),'utf8')).find(entry=>entry.namespace==='tmComposeRecipients');
+    const filename=resolve(registration.parent.script);
+    const Experiment=runInNewContext(readFileSync(filename,'utf8')+'\n;tmComposeRecipients;',{
+      ChromeUtils:{importESModule:path=>path.includes('ExtensionCommon')?{ExtensionCommon:{ExtensionAPI:class{}}}:path.includes('MailServices')?{MailServices:{headerParser:{makeFromDisplayAddress:parse,makeMimeAddress:(name,email)=>format({name,email})}}}:{parseEncodedAddrHeader:headerList}},
+      Services:{uuid:{generateUUID:()=>({toString:()=>String(++sequence)})}}
+    },{filename});
+    experiment=new Experiment();
+    const otherWindow={...nativeWindow};
+    const nativeAPI=experiment.getAPI({extension:{tabManager:{get:id=>({type:'messageCompose',nativeTab:id===1?nativeWindow:otherWindow})}}}).tmComposeRecipients;
+    api.tmComposeRecipients=Object.fromEntries((schema?.functions||[]).map(method=>[method.name,vi.fn((...args)=>{
+      if(method.name==='commit') {
+        const patchType=schema.types.find(type=>type.id===method.parameters[3].$ref);
+        const defaults=Object.fromEntries(Object.entries(patchType.properties).filter(([,property])=>property.optional).map(([field])=>[field,null]));
+        args[3]={...defaults,...args[3]};
+      }
+      return nativeAPI[method.name](...args);
+    })]));
+  }
   api._nativeWindow=nativeWindow;api._experiment=experiment;
   globalThis.browser=globalThis.messenger=api;globalThis.window={};
   await import('../compose/background.js');
@@ -294,7 +314,8 @@ it('finishes the native check/write before a queued later user action',async()=>
  const {w}=setup('Draft.');const {api,current}=await wireBackground(w);
  runComposeEdit.mockResolvedValue({body:'Draft.',toDelta:{adds:[{email:'proposal@example.com'}],removes:['*']}});
  const result=await w.browser.runtime.sendMessage({type:'runInlineComposeEdit',body:'Draft.',request:'Update'});
- api._nativeWindow.GetComposeDetails=()=>{const snapshot=structuredClone(current);queueMicrotask(()=>{current.to=['manual@example.com']});return snapshot};
+ const readNative=api._nativeWindow.GetComposeDetails;
+ api._nativeWindow.GetComposeDetails=()=>{const snapshot=readNative();queueMicrotask(()=>{current.to=['manual@example.com']});return snapshot};
  await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:result.recipientEdit});
  expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
  expect(current.to).toEqual(['manual@example.com']);
@@ -316,4 +337,32 @@ it.each(['to', 'cc', 'bcc'].flatMap(field => ['input', 'pill'].map(kind => [fiel
  input.value='';pill.isEditing=false;
  await w.browser.runtime.sendMessage({type:'commitInlineComposeRecipients',recipientEdit:result.recipientEdit});
  expect(api.compose.setComposeDetails).not.toHaveBeenCalled();
+});
+
+it('keeps newer accepted body, history, baseline and recipients when an older recipient commit completes late', async()=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
+ runComposeEdit.mockImplementation(async args=>({body:args.request==='First'?'First draft.':'Newest draft.',chatHistory:[...args.chatHistory,{userRequest:args.request}],toDelta:{adds:[{email:args.request==='First'?'first-proposal@example.com':'newest@example.com'}],removes:['*']}}));
+ let release;const native=api.tmComposeRecipients.commit.getMockImplementation();
+ api.tmComposeRecipients.commit.mockImplementationOnce((...args)=>new Promise((resolve,reject)=>{release=()=>native(...args).then(resolve,reject)}));
+ const start=instruction=>{tm.showInlineEditDropdown();return tm._runInlineEditInstruction({instruction,wrapper:w.document.getElementById('tm-inline-edit')})};
+ const first=start('First');await vi.waitFor(()=>expect(release).toBeTypeOf('function'));
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('First draft.');expect(current.to).toEqual(['first@example.com']);
+ await start('Second');expect(current.to).toEqual(['newest@example.com']);
+ release();await first;
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Newest draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'First'},{userRequest:'Second'}]);
+ expect(tm.state.originalText).toBe('Newest draft.');
+ expect(current.to).toEqual(['newest@example.com']);expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
+});
+
+it.each(['first@example.com','First Person <first@example.com>'])('accepts native header strings with public array baselines: %s',async address=>{
+ const {w,tm,body}=setup('<p>Draft.</p>');const {api,current}=await wireBackground(w);
+ current.to=[address];current.cc=['Copy Person <copy@example.com>'];current.bcc=['blind@example.com'];
+ runComposeEdit.mockResolvedValue({body:'Expanded draft.',chatHistory:[{userRequest:'Update'}],toDelta:{adds:[{email:'added@example.com'}],removes:[]}});
+ tm.showInlineEditDropdown();await tm._runInlineEditInstruction({instruction:'Update',wrapper:w.document.getElementById('tm-inline-edit')});
+ expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Expanded draft.');
+ expect(tm.state.editChatHistory).toEqual([{userRequest:'Update'}]);
+ expect(current.to).toEqual([address,'added@example.com']);
+ expect(current.cc).toEqual(['Copy Person <copy@example.com>']);expect(current.bcc).toEqual(['blind@example.com']);
+ expect(api.compose.setComposeDetails).toHaveBeenCalledTimes(1);
 });
