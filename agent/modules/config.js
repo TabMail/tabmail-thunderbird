@@ -27,6 +27,7 @@ export const SETTINGS = {
     authSignOutTimeoutMs: 30000, // 30 seconds - after this, show "timeout" page
     authAutoReauthEnabled: true, // Default: auto-reauth enabled (can be changed by user in popup)
     authTokenRefreshRetries: 3, // Number of retry attempts for token refresh before giving up
+    authTokenRefreshTimeoutMs: 15000, // Deadline per refresh HTTP attempt (connect + body read); expiry is a transient failure and follows the retry path (issue #55)
     // Consent gating (post-signin) configuration
     // After sign-in, TabMail requires an explicit 18+ + Terms/Privacy consent before features are enabled.
     authConsentTimeoutMs: 300000, // 5 minutes max to complete consent before we give up

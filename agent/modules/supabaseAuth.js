@@ -168,6 +168,15 @@ const REFRESH_NETWORK_ERROR = Symbol("REFRESH_NETWORK_ERROR");
  *   - REFRESH_NETWORK_ERROR on transient failure (network error, 5xx)
  */
 async function refreshAccessToken(refreshToken) {
+  // Deadline for the whole HTTP attempt — connect, headers AND body read. It is
+  // deliberately NOT cleared at response headers: a body that never arrives is
+  // the same wedge as a connection that never opens (issue #55). Expiry aborts
+  // the fetch itself, which lands in the catch below as a transient failure.
+  const abortController = new AbortController();
+  const deadline = setTimeout(() => {
+    log(`[SupabaseAuth] Token refresh timed out after ${SETTINGS.authTokenRefreshTimeoutMs}ms — aborting`, "warn");
+    abortController.abort();
+  }, SETTINGS.authTokenRefreshTimeoutMs);
   try {
     log("[SupabaseAuth] Refreshing access token...");
     const response = await fetch(`${SETTINGS.supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
@@ -179,6 +188,7 @@ async function refreshAccessToken(refreshToken) {
       body: JSON.stringify({
         refresh_token: refreshToken,
       }),
+      signal: abortController.signal,
     });
 
     if (!response.ok) {
@@ -215,6 +225,8 @@ async function refreshAccessToken(refreshToken) {
   } catch (e) {
     log(`[SupabaseAuth] Token refresh network error: ${e.message || e}`, "error");
     return REFRESH_NETWORK_ERROR;
+  } finally {
+    clearTimeout(deadline);
   }
 }
 

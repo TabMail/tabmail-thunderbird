@@ -206,5 +206,8 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 - Action mutation ownership, retry tokens, immediate repaint and delayed sort: [contract](Companion/Decisions/Active/adr-action-mutation-owner.md).
 
+### Token refresh deadline (issue #55)
+- **[Detail](Companion/Memory/Current/035-token-refresh-per-attempt-deadline.md)** — `refreshAccessToken` fetch had no timeout; pre-SSE `getAccessToken` wait was covered by neither the connect timer nor the SSE watchdog, so a stalled refresh parked every caller on `_refreshInProgress` and wedged the AI queue (`inFlight` stuck). `authTokenRefreshTimeoutMs` + AbortController per attempt, kept through the body read; abort = `REFRESH_NETWORK_ERROR`, session kept, semaphore slot released. Test `supabaseAuthRefreshTimeout.test.js`.
+
 ### Contextual compose preview
 - **[Detail](Companion/Memory/Current/021-contextual-compose-preview.md)** — separate sentence preview, insertion-only highlights, atomic Tab/click acceptance, next-sentence continuation, disabled-only enable control, HTML range projection, native undo validation, shared Near cursor/Docked at bottom placement (#44), and mixed inline/block boundary offsets (#42). Cmd-K recipient proposals commit only after body acceptance, with stale-recipient and operation guards (#49).
