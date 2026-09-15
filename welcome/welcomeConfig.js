@@ -45,7 +45,6 @@ export const WELCOME_CONFIG = {
       label: "Setup",
       steps: [
         { id: "calendar-contacts", title: "Calendar & Contacts", page: "calendar-contacts.html" },
-        { id: "plaintext", title: "Email Format", page: "plaintext.html" },
         { id: "inbox-optimization", title: "Inbox Optimization", page: "inbox-optimization.html" },
       ],
     },
