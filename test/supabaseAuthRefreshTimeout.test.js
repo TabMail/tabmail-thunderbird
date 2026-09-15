@@ -13,7 +13,8 @@
 // semaphore slot so queued AI work stays retryable.
 //
 // Red-before evidence: on pre-fix supabaseAuth.js the stalled fetch has no
-// deadline, so the waiters never settle and every test below times out.
+// deadline, so every stalled-refresh test below never settles its waiters and
+// times out; the healthy/4xx/5xx tests pass on both and pin preserved behaviour.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -202,11 +203,19 @@ describe("token refresh timeout (issue #55)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  /** Backoff-only wall time for RETRIES immediate failures (no deadline ever fires). */
+  function immediateFailureBudgetMs() {
+    let ms = 0;
+    for (let a = 1; a < RETRIES; a++) ms += 1000 * Math.pow(2, a - 1);
+    return ms;
+  }
+
   it("still treats a definitive 4xx rejection as revocation (existing behaviour preserved)", async () => {
     globalThis.fetch = rejectedFetch(401);
     const pending = auth.getAccessToken();
-    // The existing retry loop also backs off after a 4xx; drain it unchanged.
-    await drainRetryBudget();
+    // The existing retry loop also backs off after a 4xx; drain exactly that and no more,
+    // so a deadline forgotten on the error exit would still be armed here.
+    await vi.advanceTimersByTimeAsync(immediateFailureBudgetMs());
     const token = await pending;
     expect(token).toBeNull();
     expect(globalThis.fetch).toHaveBeenCalledTimes(RETRIES);
@@ -221,12 +230,61 @@ describe("token refresh timeout (issue #55)", () => {
       json: async () => ({ error: "unavailable", error_description: "synthetic outage" }),
     }));
     const pending = auth.getAccessToken();
-    await drainRetryBudget();
+    await vi.advanceTimersByTimeAsync(immediateFailureBudgetMs());
     expect(await pending).toBeNull();
     expect(globalThis.fetch).toHaveBeenCalledTimes(RETRIES);
     expect(storageData.supabaseSession).toEqual(expect.objectContaining({ refresh_token: "synthetic-refresh" }));
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("an immediately rejected fetch (network error) settles with the session kept and no deadline left armed", async () => {
+    globalThis.fetch = vi.fn(async () => { throw new TypeError("NetworkError when attempting to fetch resource."); });
+    const pending = auth.getAccessToken();
+    await vi.advanceTimersByTimeAsync(immediateFailureBudgetMs());
+    expect(await pending).toBeNull();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(RETRIES);
+    expect(storageData.supabaseSession).toEqual(expect.objectContaining({ refresh_token: "synthetic-refresh" }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  for (const lateAt of ["headers", "body"]) {
+    it(`a healthy response whose ${lateAt} land just inside the deadline is not aborted; one landing at the deadline is`, async () => {
+      const next = { access_token: "synthetic-late", refresh_token: "synthetic-rotated", expires_at: Math.floor(Date.now() / 1000) + 3600 };
+      const signals = [];
+      const makeFetch = (delayMs) => vi.fn((_url, { signal }) => {
+        signals.push(signal);
+        const after = (ms, value) => new Promise((resolve, reject) => {
+          if (ms === 0) return resolve(value);
+          const t = setTimeout(() => resolve(value), ms);
+          signal.addEventListener("abort", () => { clearTimeout(t); reject(abortError()); }, { once: true });
+        });
+        const body = () => after(lateAt === "body" ? delayMs : 0, next);
+        return after(lateAt === "headers" ? delayMs : 0, { ok: true, status: 200, json: body });
+      });
+
+      // Just inside: completes, credentials persisted, deadline cleared.
+      globalThis.fetch = makeFetch(REFRESH_TIMEOUT_MS - 1);
+      const inside = auth.getAccessToken();
+      await vi.advanceTimersByTimeAsync(REFRESH_TIMEOUT_MS - 1);
+      expect(await inside).toBe("synthetic-late");
+      expect(signals[0].aborted).toBe(false);
+      expect(storageData.supabaseSession).toEqual(next);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // At the deadline: aborted as transient, retried, session from the successful call kept.
+      auth.resetAuthState();
+      resetStorage({ supabaseSession: expiredSession() });
+      signals.length = 0;
+      globalThis.fetch = makeFetch(REFRESH_TIMEOUT_MS);
+      const atDeadline = auth.getAccessToken();
+      await drainRetryBudget();
+      expect(await atDeadline).toBeNull();
+      expect(globalThis.fetch).toHaveBeenCalledTimes(RETRIES);
+      expect(signals.every((sig) => sig.aborted)).toBe(true);
+      expect(storageData.supabaseSession).toEqual(expect.objectContaining({ refresh_token: "synthetic-refresh" }));
+      expect(vi.getTimerCount()).toBe(0);
+    });
+  }
 
   // ─── Round-1 gate findings T1–T3: stalled error bodies, healthy latency budget,
   // timeout-then-success, queued caller wakeup, live SSE heartbeat preservation.
