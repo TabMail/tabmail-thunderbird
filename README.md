@@ -13,9 +13,9 @@ with your calendar from the same assistant.
 
 ## See it in action
 
-[![Watch the TabMail for Thunderbird demo](https://i.ytimg.com/vi/8qf_JukvZuw/maxresdefault.jpg)](https://youtu.be/8qf_JukvZuw)
+https://github.com/user-attachments/assets/556d0df6-31df-4ea3-8263-ffcce20c97ad
 
-[Watch the demo on YouTube](https://youtu.be/8qf_JukvZuw) · [Get TabMail](https://tabmail.ai)
+[Get TabMail](https://tabmail.ai)
 
 This add-on targets **Thunderbird 145+ and Manifest V3**, with Experiment APIs
 for Thunderbird-specific integration.
