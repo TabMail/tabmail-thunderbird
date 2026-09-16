@@ -166,13 +166,16 @@ it('a concurrent newer producer write remains the cached proposal', async () => 
   expect(newerWrite).toBeDefined();
   await newerWrite;
   const cached = await sys.read(key);
-  expect(cached.reply).toBe(newer.reply);
-  expect(cached.source).toBe(newer.source);
-  expect(cached.ts).toBe(newer.ts);
+  expect(cached).toEqual(newer);
   const s = setup(''); wire(s, sys, 71);
   await s.tm.triggerCorrectionBackend(s.body, '', '', 0, true);
   expect(s.body.textContent).toBe('Older draft.');
   expect((await sys.read(key)).reply).toBe('Newer draft.');
+  await sys.created({id: 72});
+  const next = setup(''); wire(next, sys, 72);
+  await next.tm.triggerCorrectionBackend(next.body, '', '', 0, true);
+  expect(next.body.textContent).toBe('Newer draft.');
+  expect(await sys.read(key)).toEqual({...newer, directReplace: false});
 });
 
 it('an aborted flag transaction cannot activate a draft and remains retryable', async () => {
