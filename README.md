@@ -1,11 +1,24 @@
-# TabMail Thunderbird Add-on (MV3, Thunderbird 145+)
+# TabMail for Thunderbird
 
-TabMail is a Thunderbird add-on that adds:
-- A chat-based assistant for email + calendar workflows
-- Smart compose/autocomplete in the composer
-- Local full-text search (native FTS helper) for fast retrieval
+**An open-source AI email assistant for Thunderbird. Tap, Talk, Send.**
 
-This add-on targets **Thunderbird MV3** and uses **experiments sparingly** for Thunderbird-specific integration points.
+[![Get TabMail](https://img.shields.io/badge/Get_TabMail-tabmail.ai-6D28D9)](https://tabmail.ai)
+[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-blue.svg)](./LICENSE)
+![Thunderbird 145+](https://img.shields.io/badge/Thunderbird-145%2B-0A84FF)
+![Manifest V3](https://img.shields.io/badge/Manifest-V3-lightgrey)
+
+Auto replies, email triage, conversational editing, and chat with your inbox.
+Autocomplete helps you finish the thought. Search your email locally and work
+with your calendar from the same assistant.
+
+## See it in action
+
+[![Watch the TabMail for Thunderbird demo](https://i.ytimg.com/vi/8qf_JukvZuw/maxresdefault.jpg)](https://youtu.be/8qf_JukvZuw)
+
+[Watch the demo on YouTube](https://youtu.be/8qf_JukvZuw) · [Get TabMail](https://tabmail.ai)
+
+This add-on targets **Thunderbird 145+ and Manifest V3**, with Experiment APIs
+for Thunderbird-specific integration.
 
 ---
 
