@@ -266,6 +266,12 @@ Object.assign(TabMail, {
       TabMail.state.isGlobalRequestInFlight = true;
     }
 
+    // A body can return to its original text after typing and deleting. Observe
+    // input for this request rather than treating text equality as permission to
+    // write an older agent draft. This does not alter autocomplete scheduling.
+    let bodyEdited = false;
+    const noteBodyEdit = () => { bodyEdited = true; };
+    editor.addEventListener("input", noteBodyEdit);
     try {
       const _tmStartTime = performance.now();
 
@@ -322,7 +328,7 @@ Object.assign(TabMail, {
       // remain suggestions. Re-check the live body after the asynchronous request
       // so a user who started typing never has their work replaced. Use the same
       // HTML-aware transaction as acceptance to preserve signatures and quotes.
-      if (correctionData?.directReplace && correctedMessage && originalUserMessage.trim() === "") {
+      if (correctionData?.directReplace && !bodyEdited && correctedMessage && originalUserMessage.trim() === "") {
         const liveText = TabMail.indexComposeText(editor, TabMail.getQuoteBoundaryNode(editor)).text;
         if (liveText.trim() === "" && !TabMail.state.inlineEditActive &&
             TabMail.applyComposeEdits(editor, liveText, [{ start: 0, end: liveText.length, text: correctedMessage }])) {
@@ -410,6 +416,7 @@ Object.assign(TabMail, {
         }
       }
     } finally {
+      editor.removeEventListener("input", noteBodyEdit);
       // Ensure the in-flight flag is cleared even if we early-return or hit an error.
       if (isLocal) {
         TabMail.state.isLocalRequestInFlight = false;

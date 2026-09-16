@@ -38,25 +38,27 @@ afterEach(() => {
 // Minimal fake indexedDB — just enough for open + get/put transactions.
 // ---------------------------------------------------------------------------
 
-function installFakeIndexedDB() {
+function installFakeIndexedDB({ failWrites = false } = {}) {
   const data = new Map();
   const open = vi.fn(() => {
     const req = {};
     queueMicrotask(() => {
       const db = {
         objectStoreNames: { contains: () => true },
-        transaction() {
+        transaction(_storeName, mode) {
           const store = {
             get(k) {
               const r = {};
               queueMicrotask(() => {
                 r.result = data.get(k);
-                r.onsuccess?.();
+                try { r.onsuccess?.(); }
+                catch (error) { tx.error = error; tx.onerror?.(); }
               });
               return r;
             },
             put(rec) {
-              data.set(rec.key, rec);
+              if (mode !== 'readwrite' || failWrites) throw new Error('Write refused');
+              data.set(rec.key, structuredClone(rec));
             },
           };
           const tx = { objectStore: () => store };
@@ -123,4 +125,46 @@ describe('idbStorage lazy open', () => {
     expect(out).toEqual({ k1: 'v1' });
     expect(open).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('atomic permission consumption', () => {
+  it('gives only one overlapping reader permission without changing content or metadata', async () => {
+    const { data } = installFakeIndexedDB();
+    const row = {key: 'reply:test', value: {reply: 'Draft.', directReplace: true}, version: '1', kind: 'reply', ts: 123};
+    data.set(row.key, structuredClone(row));
+    const idb = await import('../agent/modules/idbStorage.js');
+    const reads = await Promise.all([idb.getAndClearFlag(row.key, 'directReplace'), idb.getAndClearFlag(row.key, 'directReplace')]);
+    expect(reads.map(r => r[row.key].directReplace)).toEqual([true, false]);
+    expect(data.get(row.key)).toEqual({...row, value: {...row.value, directReplace: false}});
+  });
+  it('reads the current record and never rewrites an earlier snapshot', async () => {
+    const { data } = installFakeIndexedDB();
+    const idb = await import('../agent/modules/idbStorage.js');
+    await idb.set({'reply:test': {reply: 'Old draft.', directReplace: true}});
+    const old = await idb.get('reply:test');
+    await idb.set({'reply:test': {reply: 'New draft.', directReplace: true}});
+    const current = await idb.getAndClearFlag('reply:test', 'directReplace');
+    expect(old['reply:test'].reply).toBe('Old draft.');
+    expect(current['reply:test']).toEqual({reply: 'New draft.', directReplace: true});
+    expect(data.get('reply:test').value).toEqual({reply: 'New draft.', directReplace: false});
+  });
+  it('missing and ordinary cache records stay unchanged', async () => {
+    const { data } = installFakeIndexedDB();
+    const idb = await import('../agent/modules/idbStorage.js');
+    expect(await idb.getAndClearFlag('missing', 'directReplace')).toEqual({missing: undefined});
+    const row = {key: 'reply:test', value: {reply: 'Proposal.'}, ts: 1};
+    data.set(row.key, structuredClone(row));
+    expect(await idb.getAndClearFlag(row.key, 'directReplace')).toEqual({[row.key]: row.value});
+    expect(data.get(row.key)).toEqual(row);
+    expect(data.has('missing')).toBe(false);
+  });
+});
+
+it('a refused flag update fails closed without granting permission', async () => {
+  const { data } = installFakeIndexedDB({ failWrites: true });
+  const row = {key: 'reply:test', value: {reply: 'Draft.', directReplace: true}, ts: 1};
+  data.set(row.key, structuredClone(row));
+  const idb = await import('../agent/modules/idbStorage.js');
+  await expect(idb.getAndClearFlag(row.key, 'directReplace')).rejects.toThrow('Write refused');
+  expect(data.get(row.key)).toEqual(row);
 });

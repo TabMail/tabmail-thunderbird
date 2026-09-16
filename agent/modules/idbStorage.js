@@ -154,6 +154,26 @@ export async function get(keys) {
 }
 
 /**
+ * Read a value and consume one boolean permission in the same transaction.
+ * A separate get/set can replay the permission to overlapping readers or write
+ * an old snapshot over a newer value. Preserve the row's content and metadata.
+ */
+export async function getAndClearFlag(key, flag) {
+  let value;
+  await withStore("readwrite", (store) => {
+    const req = store.get(key);
+    req.onsuccess = () => {
+      const row = req.result;
+      value = row?.value;
+      if (value?.[flag] === true) {
+        store.put({ ...row, value: { ...value, [flag]: false } });
+      }
+    };
+  });
+  return { [key]: value };
+}
+
+/**
  * Set multiple key/value pairs.
  * obj: { key1: value1, key2: value2 }
  * opts.kind – optional semantic tag.

@@ -1863,3 +1863,53 @@ describe('mixed HTML boundaries', () => {
     expect(w.document.execCommand).toHaveBeenCalledTimes(1);
   });
 });
+
+// Native refusal must retain a usable proposal rather than claim insertion.
+it.each(['false', 'throw'])('agent draft can be accepted after native insertion %s', async failure => {
+  const { w, tm, body } = setup('');
+  const nativeInsert = w.document.execCommand;
+  w.document.execCommand = vi.fn(() => {
+    if (failure === 'throw') throw new Error('Native edit unavailable');
+    return false;
+  });
+  tm.getCorrectionFromServer = async () => ({ suggestion: 'Synthetic agent draft.', usertext: '', directReplace: true });
+  await tm.triggerCorrectionBackend(body, '', '', 0, true);
+  expect(body.textContent).toBe('');
+  expect(w.document.getElementById('tm-compose-preview')).not.toBeNull();
+  expect(w.document.execCommand).toHaveBeenCalledTimes(1);
+  w.document.execCommand = nativeInsert;
+  expect(tm.acceptComposePreview()).toBe(true);
+  expect(body.textContent).toBe('Synthetic agent draft.');
+});
+
+it.each([
+  ...['insert', 'proposal', 'stale', 'failure'].map(mode => ['LOCAL', mode]),
+  ...['proposal', 'stale', 'failure'].map(mode => ['GLOBAL', mode]),
+])('cleans %s request input listeners after %s', async (requestMode, mode) => {
+  const isLocal = requestMode === 'LOCAL';
+  const originalText = isLocal ? '' : 'Existing draft.';
+  const {tm, body} = setup(originalText);
+  const active = new Set();
+  const add = body.addEventListener.bind(body);
+  const remove = body.removeEventListener.bind(body);
+  vi.spyOn(body, 'addEventListener').mockImplementation((type, fn, options) => {
+    if (type === 'input') active.add(fn);
+    return add(type, fn, options);
+  });
+  vi.spyOn(body, 'removeEventListener').mockImplementation((type, fn, options) => {
+    if (type === 'input') active.delete(fn);
+    return remove(type, fn, options);
+  });
+  for (let i = 0; i < 2; i++) {
+    tm.getCorrectionFromServer = async () => {
+      expect(active.size).toBe(1);
+      if (mode === 'failure') throw new Error('Request failed');
+      if (mode === 'stale') tm.state[isLocal ? 'latestLocalRequestId' : 'latestGlobalRequestId']++;
+      return {suggestion: 'Revised draft.', usertext: originalText, directReplace: mode === 'insert'};
+    };
+    const request = tm.triggerCorrectionBackend(body, originalText, '', tm.state[isLocal ? 'latestLocalRequestId' : 'latestGlobalRequestId'], isLocal);
+    if (mode === 'failure') await expect(request).rejects.toThrow('Request failed');
+    else await request;
+    expect(active.size).toBe(0);
+  }
+});

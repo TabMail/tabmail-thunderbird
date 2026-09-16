@@ -332,7 +332,7 @@ export function initComposeHandlers() {
 
             try {
                 const replyKey = STORAGE_PREFIX + uniqueMessageKey;
-                const replyEntry = await idb.get(replyKey);
+                const replyEntry = await idb.getAndClearFlag(replyKey, "directReplace");
                 if (replyEntry && replyEntry[replyKey]) {
                     log(`Info: Reply for key ${uniqueMessageKey} found. Activating cached reply.`);
                     const replyData = replyEntry[replyKey];
@@ -354,7 +354,7 @@ export function initComposeHandlers() {
                     log(`Info: Reply for key ${uniqueMessageKey} not found. Triggering reactive, high-priority reply and waiting for completion.`);
                     await createReply(relatedMessageId, true);
                     try {
-                        const postGenEntry = await idb.get(replyKey);
+                        const postGenEntry = await idb.getAndClearFlag(replyKey, "directReplace");
                         const replyData = postGenEntry[replyKey];
                         const rep = replyData?.reply;
                         const directReplace = replyData?.directReplace || false;
