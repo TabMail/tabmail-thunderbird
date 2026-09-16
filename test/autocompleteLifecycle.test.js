@@ -1882,8 +1882,13 @@ it.each(['false', 'throw'])('agent draft can be accepted after native insertion 
   expect(body.textContent).toBe('Synthetic agent draft.');
 });
 
-it.each(['insert', 'proposal', 'stale', 'failure'])('cleans request input listeners after %s', async mode => {
-  const {tm, body} = setup('');
+it.each([
+  ...['insert', 'proposal', 'stale', 'failure'].map(mode => ['LOCAL', mode]),
+  ...['proposal', 'stale', 'failure'].map(mode => ['GLOBAL', mode]),
+])('cleans %s request input listeners after %s', async (requestMode, mode) => {
+  const isLocal = requestMode === 'LOCAL';
+  const originalText = isLocal ? '' : 'Existing draft.';
+  const {tm, body} = setup(originalText);
   const active = new Set();
   const add = body.addEventListener.bind(body);
   const remove = body.removeEventListener.bind(body);
@@ -1899,10 +1904,10 @@ it.each(['insert', 'proposal', 'stale', 'failure'])('cleans request input listen
     tm.getCorrectionFromServer = async () => {
       expect(active.size).toBe(1);
       if (mode === 'failure') throw new Error('Request failed');
-      if (mode === 'stale') tm.state.latestLocalRequestId++;
-      return {suggestion: 'Draft.', usertext: '', directReplace: mode === 'insert'};
+      if (mode === 'stale') tm.state[isLocal ? 'latestLocalRequestId' : 'latestGlobalRequestId']++;
+      return {suggestion: 'Revised draft.', usertext: originalText, directReplace: mode === 'insert'};
     };
-    const request = tm.triggerCorrectionBackend(body, '', '', tm.state.latestLocalRequestId, true);
+    const request = tm.triggerCorrectionBackend(body, originalText, '', tm.state[isLocal ? 'latestLocalRequestId' : 'latestGlobalRequestId'], isLocal);
     if (mode === 'failure') await expect(request).rejects.toThrow('Request failed');
     else await request;
     expect(active.size).toBe(0);
