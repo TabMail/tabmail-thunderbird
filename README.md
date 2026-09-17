@@ -15,6 +15,8 @@ with your calendar from the same assistant.
 
 https://github.com/user-attachments/assets/88acff03-d853-4291-973e-35cf0f32a3c6
 
+Can't see the video? [Watch it on YouTube](https://youtu.be/sC7NJ7UX_uc).
+
 [Get TabMail](https://tabmail.ai)
 
 This add-on targets **Thunderbird 145+ and Manifest V3**, with Experiment APIs
