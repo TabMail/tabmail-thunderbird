@@ -13,7 +13,7 @@ with your calendar from the same assistant.
 
 ## See it in action
 
-https://github.com/user-attachments/assets/b4968c71-03ac-414c-8342-76beaeecffd0
+https://github.com/user-attachments/assets/88acff03-d853-4291-973e-35cf0f32a3c6
 
 [Get TabMail](https://tabmail.ai)
 
