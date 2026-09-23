@@ -8,7 +8,7 @@ import { SETTINGS } from "./modules/config.js";
 import * as idb from "./modules/idbStorage.js";
 import { ensureSignedIn, signOut } from "./modules/supabaseAuth.js";
 // Indexing disabled – import removed
-import { cleanupContextMenus, initContextMenus } from "./modules/contextMenus.js";
+import { initContextMenus } from "./modules/contextMenus.js";
 import { isInboxFolder } from "./modules/folderUtils.js";
 import { updateIconBasedOnAuthState } from "./modules/icon.js";
 import { checkAndShowArchivePrompt, setDefaultSortForLargeInbox } from "./modules/inboxArchivePrompt.js";
@@ -19,12 +19,11 @@ import { compactActionRulesNow } from "./modules/autoUpdateUserPrompt.js";
 import { kbCompress, kbUpdate } from "./modules/knowledgebase.js";
 import { scanAllInboxes } from "./modules/messageProcessor.js";
 import { enqueueProcessMessage, initProcessMessageQueue } from "./modules/messageProcessorQueue.js";
-import { attachOnMovedListeners, cleanupOnMovedListeners } from "./modules/onMoved.js";
+import { attachOnMovedListeners } from "./modules/onMoved.js";
 import { purgeExpiredReplyEntries } from "./modules/replyGenerator.js";
 import { purgeExpiredSummaryEntries } from "./modules/summaryGenerator.js";
 // Reminder generation is now integrated into messageProcessor.js
 import {
-  cleanupEventLogger,
   initEventLogger,
   logMessageEvent,
   logMessageEventBatch,
@@ -33,13 +32,11 @@ import {
 import { enforceMailSyncPrefs } from "./modules/startupPrefs.js";
 import { initSummaryFeatures, refreshCurrentMessageSummary, signalBubbleReady } from "./modules/summary.js";
 import { ensureActionTags } from "./modules/tagDefs.js";
-import { clearAllActions, cleanupActionCache, isActionPayloadKey, purgeMetadataOlderThan, getActionForUniqueKey, pushAllActionsToExperimentsOnStartup } from "./modules/actionCache.js";
+import { clearAllActions, isActionPayloadKey, purgeMetadataOlderThan, getActionForUniqueKey, pushAllActionsToExperimentsOnStartup } from "./modules/actionCache.js";
 import { registerTabKeyHandlers } from "./modules/tagActionKey.js";
 import {
   attachTagByThreadListener,
   attachThreadTagWatchers,
-  cleanupTagByThreadListener,
-  cleanupThreadTagWatchers,
 } from "./modules/tagHelper.js";
 import { attachThreadTooltipHandlers } from "./modules/threadTooltip.js";
 import { log, signalChatTyping } from "./modules/utils.js";
@@ -2044,190 +2041,5 @@ init();
 // --- Commands wiring ---
 // Note: perform-tag-action command removed; Tab key is now the primary trigger via keyOverride experiment.
 // Keeping this block for future command additions if needed.
-
-// --- Cleanup on Extension Shutdown ---
-// Handle extension disable/uninstall by cleaning up experiments
-if (typeof browser !== 'undefined' && browser.runtime) {
-  // This fires when the extension is being disabled, uninstalled, or reloaded
-  browser.runtime.onSuspend?.addListener(() => {
-    cleanupActionCache();
-    log("Extension suspending - cleaning up experiments and listeners");
-    try {
-      cleanupContextMenus();
-    } catch (e) {
-      log(`Error during context menus cleanup: ${e}`, "error");
-    }
-    try {
-      // Disabled per MV3 suspend behavior: keep experiments active so their
-      // parent-process listeners continue to generate events that can wake
-      // the background worker (e.g., tooltip hover, chat hotkey).
-      // if (browser.keyOverride?.shutdown) browser.keyOverride.shutdown();
-      // if (browser.threadTooltip?.shutdown) browser.threadTooltip.shutdown();
-      // if (browser.tagSort?.shutdown) browser.tagSort.shutdown();
-    } catch (e) {
-      log(`Error during experiment cleanup: ${e}`, "error");
-    }
-    
-    try {
-      cleanupRuntimeListeners();
-    } catch (e) {
-      log(`Error during runtime listener cleanup: ${e}`, "error");
-    }
-    
-    try {
-      // Cleanup module-level runtime listeners (async to handle dynamic imports)
-      (async () => {
-        try {
-          const { cleanupThreadTooltipHandlers } = await import("./modules/threadTooltip.js");
-          cleanupThreadTooltipHandlers();
-          // Also cleanup move/delete/copied listeners
-          try { cleanupOnMovedListeners(); } catch (e) { log(`Error cleaning onMoved/onDeleted/onCopied listeners: ${e}`, "warn"); }
-          
-          // Cleanup config storage listener
-          try {
-            const { cleanupConfigListeners } = await import("./modules/config.js");
-            cleanupConfigListeners();
-          } catch (e) { log(`Error cleaning config listeners: ${e}`, "warn"); }
-          
-          // Cleanup tag action key listeners
-          try {
-            const { cleanupTagActionKeyListeners } = await import("./modules/tagActionKey.js");
-            cleanupTagActionKeyListeners();
-          } catch (e) { log(`Error cleaning tag action key listeners: ${e}`, "warn"); }
-
-          // Cleanup tag by thread listener
-          try {
-            cleanupTagByThreadListener();
-          } catch (e) { log(`Error cleaning tag-by-thread listener: ${e}`, "warn"); }
-
-          // Cleanup thread tag watchers
-          try {
-            cleanupThreadTagWatchers();
-          } catch (e) { log(`Error cleaning thread tag watchers: ${e}`, "warn"); }
-          
-          // Cleanup compose tracker listeners
-          try {
-            const { cleanupComposeTrackerListeners } = await import("./modules/composeTracker.js");
-            cleanupComposeTrackerListeners();
-          } catch (e) { log(`Error cleaning compose tracker listeners: ${e}`, "warn"); }
-          
-          // Cleanup event logger (persist pending events)
-          try {
-            await cleanupEventLogger();
-          } catch (e) { log(`Error cleaning event logger: ${e}`, "warn"); }
-          
-          log("Module listener cleanup completed");
-        } catch (e) {
-          log(`Error during module listener cleanup: ${e}`, "error");
-        }
-      })();
-    } catch (e) {
-      log(`Error during module listener cleanup setup: ${e}`, "error");
-    }
-    
-    try {
-      // Cleanup inbox activity listeners (onNewMailReceived, onMoved, onCopied)
-      cleanupInboxActivityListeners();
-    } catch (e) {
-      log(`Error during inbox activity listener cleanup: ${e}`, "error");
-    }
-    
-    try {
-      // Cleanup account created listener (for welcome wizard)
-      cleanupAccountCreatedListener();
-    } catch (e) {
-      log(`Error during account created listener cleanup: ${e}`, "error");
-    }
-
-    try {
-      // Cleanup account-change cache invalidation listeners (senderFilter)
-      cleanupAccountChangeCacheInvalidation();
-    } catch (e) {
-      log(`Error during account-change invalidation cleanup: ${e}`, "error");
-    }
-    
-    try {
-      // Cleanup getFull cache timer from utils.js (async to handle dynamic imports)
-      (async () => {
-        try {
-          const { stopGetFullCacheCleanup } = await import("./modules/utils.js");
-          stopGetFullCacheCleanup();
-          
-          log("getFull cache cleanup completed");
-        } catch (e) {
-          log(`Error during getFull cache cleanup: ${e}`, "error");
-        }
-      })();
-    } catch (e) {
-      log(`Error during getFull cache cleanup setup: ${e}`, "error");
-    }
-
-    // Clear any pending cache cleanup timer
-    try {
-      cleanupCacheCleanupTimer();
-    } catch (_) {}
-    
-    // Clear any pending reminder generation timers
-    try {
-      (async () => {
-        try {
-          const { cleanupReminderGeneration } = await import("./modules/reminderGenerator.js");
-          cleanupReminderGeneration();
-          log("Cleared reminder generation timers on suspend");
-        } catch (e) {
-          log(`Error clearing reminder timers: ${e}`, "warn");
-        }
-      })();
-    } catch (_) {}
-
-    // Cleanup proactive check-in (timers + alarm listener + persist state)
-    try {
-      (async () => {
-        try {
-          const { cleanupProactiveCheckin } = await import("./modules/proactiveCheckin.js");
-          cleanupProactiveCheckin();
-          log("[ProactiveCheckin] Proactive check-in cleaned up on suspend");
-        } catch (e) {
-          log(`[ProactiveCheckin] Error cleaning up proactive check-in: ${e}`, "warn");
-        }
-      })();
-    } catch (_) {}
-
-    // Cleanup Device sync (storage listener, debounce timer, WebSocket)
-    try {
-      (async () => {
-        try {
-          const { cleanupDeviceSync } = await import("./modules/deviceSync.js");
-          cleanupDeviceSync();
-          log("[DeviceSync] Device sync cleaned up on suspend");
-        } catch (e) {
-          log(`[DeviceSync] Error cleaning up Device sync: ${e}`, "warn");
-        }
-      })();
-    } catch (_) {}
-
-    // Stop periodic inbox scan
-    try {
-      stopPeriodicInboxScan();
-    } catch (_) {}
-
-    // Cleanup persistent processMessage queue timers (and persist remaining items)
-    try {
-      (async () => {
-        try {
-          const { cleanupProcessMessageQueue } = await import("./modules/messageProcessorQueue.js");
-          await cleanupProcessMessageQueue();
-          log("[TMDBG PMQ] processMessage queue cleaned up on suspend");
-        } catch (e) {
-          log(`[TMDBG PMQ] Error cleaning up processMessage queue: ${e}`, "warn");
-        }
-      })();
-    } catch (_) {}
-    
-    // Reset initialization flag so init() can run again after wake-up
-    _initOnce = false;
-    log("Extension suspend cleanup complete, _initOnce flag reset");
-  });
-}
 
 // Tooltip handlers moved to modules/threadTooltip.js

@@ -338,13 +338,5 @@ const _chatlinkStorageListener = (changes, area) => {
 };
 browser.storage.onChanged.addListener(_chatlinkStorageListener);
 
-// Clean up storage listener on suspend to prevent accumulation on hot-reload
-browser.runtime.onSuspend?.addListener(() => {
-  try {
-    browser.storage.onChanged.removeListener(_chatlinkStorageListener);
-    log("[ChatLink BG] Storage listener removed on suspend");
-  } catch (_) {}
-});
-
 // Export for potential use by other modules
 export { connect, disconnect, isChatLinkEnabled };
