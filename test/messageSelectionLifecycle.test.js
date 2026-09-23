@@ -72,7 +72,7 @@ function harness({ loading = false } = {}) {
   const selectTab = index => { tabmail.currentTabInfo = tabs[index]; tabContainer.emit('TabSelect'); };
   const setMessageId = (index, messageId) => { headers[index] = { ...headers[index], messageId }; };
   const finishLoad = () => { win.document.readyState = 'complete'; win.emit('load'); };
-  return { instance, api, trees, tabContainer, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad };
+  return { instance, api, trees, tabContainer, selection, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad };
 }
 describe('review: native ownership with real window and queued callback shapes', () => {
   it('tracks an existing window that finishes loading after listener registration', () => {
@@ -93,6 +93,17 @@ describe('review: native ownership with real window and queued callback shapes',
     expect(h.notifyObservers).not.toHaveBeenCalled();
     h.finishLoad(); h.flush();
     expect(h.notifyObservers).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(h.notifyObservers.mock.calls[0][2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('does not publish an empty snapshot before a loading mail view has a selection', () => {
+    const h = harness({ loading: true });
+    h.selection.count = 0;
+    h.api.init();
+    h.finishLoad(); h.flush();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    h.selection.count = 1;
+    h.trees[0].emit('select'); h.flush();
     expect(JSON.parse(h.notifyObservers.mock.calls[0][2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
     h.instance.onShutdown(false);
   });

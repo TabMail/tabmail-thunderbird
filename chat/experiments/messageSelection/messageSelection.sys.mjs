@@ -309,7 +309,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
 
       setupWindowTracking(win);
       getCurrentSelection();
-      if (publishOnReady) notifySelectionChange();
+      if (publishOnReady && selectionCount > 0) notifySelectionChange();
       try {
         const tabmail = win.document.getElementById("tabmail");
         const tabContainer = tabmail?.tabContainer || null;
