@@ -37,6 +37,7 @@ const TAG_SORT_ENABLED_DEFAULT = 1;
 
 // Notification topic for sort order changes from TabMail button
 const TAGSORT_ORDER_NOTIFY_TOPIC = "tabmail-sort-order-changed";
+const TM_CUSTOM_SORT_COLUMN_ID = "tmActionSort";
 
 
 // In-memory desired sort order (set by TabMail button, NOT by Date header)
@@ -46,21 +47,71 @@ let _tabMailDesiredSortOrder = null; // null = not yet initialized
 var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
   constructor(extension) {
     super(extension);
-    this._cleanup = null;
+    this._cleanups = new Set();
+    this._extensionShutdown = false;
+  }
+
+  _ensureRefreshCleanup() {
+    if (this._refreshCleanup) return;
+    const cleanup = () => {
+      this._cleanups.delete(cleanup);
+      this._refreshCleanup = null;
+      try {
+        const windows = ServicesTS?.wm?.getEnumerator("mail:3pane");
+        while (windows?.hasMoreElements()) {
+          const win = windows.getNext();
+          const timer = win.__tmTagSortDelayedTimer;
+          if (timer) win.clearTimeout(timer);
+          win.__tmTagSortDelayedTimer = null;
+        }
+      } catch (_) {}
+      try { ThreadPaneColumnsTS.removeCustomColumn(TM_CUSTOM_SORT_COLUMN_ID); } catch (_) {}
+    };
+    this._refreshCleanup = cleanup;
+    this._cleanups.add(cleanup);
   }
 
   onShutdown(isAppShutdown) {
     console.log("[TagSort] onShutdown() called, isAppShutdown:", isAppShutdown);
+    this._extensionShutdown = true;
     try {
-      if (this._cleanup) {
-        this._cleanup();
-      }
+      for (const cleanup of this._cleanups) cleanup();
+      this._cleanups.clear();
     } catch (e) {
       console.error("[TagSort] onShutdown cleanup failed:", e);
     }
   }
 
   getAPI(context) {
+    // ExtensionSupport can notify an already-open messenger window before it is ready.
+    // Keep that one deferred setup owned by this API context and cancel it on unload.
+    const pendingWindowLoads = new Map();
+    function cancelWindowLoad(win) {
+      const pending = pendingWindowLoads.get(win);
+      if (!pending) return;
+      pendingWindowLoads.delete(win);
+      win.removeEventListener("load", pending.onLoad);
+      win.removeEventListener("unload", pending.onUnload);
+    }
+    function setupWhenWindowLoads(win, setup) {
+      if (pendingWindowLoads.has(win)) return;
+      const pending = {
+        onLoad() {
+          if (pendingWindowLoads.get(win) !== pending) return;
+          cancelWindowLoad(win);
+          setup(win);
+        },
+        onUnload() { cancelWindowLoad(win); },
+      };
+      pendingWindowLoads.set(win, pending);
+      win.addEventListener("load", pending.onLoad, { once: true });
+      win.addEventListener("unload", pending.onUnload, { once: true });
+    }
+    function cancelWindowLoads() {
+      for (const win of pendingWindowLoads.keys()) cancelWindowLoad(win);
+    }
+
+    const experimentOwner = this;
     let isInitialized = false;
     let _didCleanup = false;
     let _windowListenerRegistered = false;
@@ -93,7 +144,6 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
     }
 
     // Custom column sort (TB 145): stable TabMail action priority sort.
-    const TM_CUSTOM_SORT_COLUMN_ID = "tmActionSort";
     // Priority ordered highest → lowest. Mirrors TM_ACTION_TAG_KEY_PRIORITY_MLTV.
     const TM_ACTION_PRIORITY = ["reply", "none", "archive", "delete"];
     const _ACTION_TO_KEYWORD = {
@@ -109,6 +159,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
       tm_delete: "delete",
     };
     let _customColumnRegistered = false;
+    let _customColumnOwned = false;
 
     // Primary: `tm-action` hdr string property (synchronously readable, local
     // mork, not touched by IMAP sync). No in-memory map is needed.
@@ -151,6 +202,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
             textCallback(hdr) { return _labelForAction(_lookupAction(hdr)); },
             sortCallback(hdr) { return _scoreForAction(_lookupAction(hdr)); },
           });
+          _customColumnOwned = true;
         } catch (eAdd) {
           if (!String(eAdd).includes("already used")) throw eAdd;
         }
@@ -568,16 +620,58 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
         if (win.document?.readyState === "complete") {
           applySort(win);
         } else {
-          win.addEventListener("load", () => applySort(win), { once: true });
+          setupWhenWindowLoads(win, applySort);
         }
       }
     }
 
     const listenerId = `${context.extension.id}-tagSort-windows`;
 
+    function cleanupWindow(win) {
+      cancelWindowLoad(win);
+      if (win.__tmTagSortFolderListener) {
+        try { MailServicesTagSort.mfn.removeListener(win.__tmTagSortFolderListener); } catch (_) {}
+        delete win.__tmTagSortFolderListener;
+      }
+      if (win.__tmTagSortTabSelectHandler) {
+        try {
+          const tabmail = win.document.getElementById("tabmail");
+          tabmail?.tabContainer?.removeEventListener("TabSelect", win.__tmTagSortTabSelectHandler);
+        } catch (_) {}
+        delete win.__tmTagSortTabSelectHandler;
+      }
+      if (win.__tmTagSortContentWindows) {
+        try {
+          for (const cw of win.__tmTagSortContentWindows) {
+            if (cw.__tmTagSortFolderURIHandler) {
+              cw.removeEventListener("folderURIChanged", cw.__tmTagSortFolderURIHandler);
+              delete cw.__tmTagSortFolderURIHandler;
+            }
+            if (cw.__tmTagSortThreadPaneHandler) {
+              cw.removeEventListener("threadpane-loaded", cw.__tmTagSortThreadPaneHandler);
+              delete cw.__tmTagSortThreadPaneHandler;
+            }
+          }
+          win.__tmTagSortContentWindows.clear();
+        } catch (_) {}
+        delete win.__tmTagSortContentWindows;
+        delete win.__tmTagSortEnsureListeners;
+      }
+      const resortTimer = getWinResortTimer(win);
+      if (resortTimer) { win.clearTimeout(resortTimer); setWinResortTimer(win, null); }
+      const delayedTimer = getWinDelayedSortTimer(win);
+      if (delayedTimer) { win.clearTimeout(delayedTimer); setWinDelayedSortTimer(win, null); }
+      delete win.__tmTagSortLastSortTs;
+      delete win.__tmTagSortLastFolderUri;
+    }
+
     const cleanup = () => {
+      cancelWindowLoads();
       if (_didCleanup) return;
       _didCleanup = true;
+      this._cleanups.delete(cleanup);
+      if (this._activeInitCleanup !== cleanup) return;
+      this._activeInitCleanup = null;
 
       try {
         if (_sortOrderNotifyObserver) {
@@ -590,62 +684,34 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
         }
 
         const enumWin = ServicesTS?.wm?.getEnumerator?.("mail:3pane");
-        while (enumWin?.hasMoreElements()) {
-          const win = enumWin.getNext();
-          if (win.__tmTagSortFolderListener) {
-            try { MailServicesTagSort.mfn.removeListener(win.__tmTagSortFolderListener); } catch (_) {}
-            delete win.__tmTagSortFolderListener;
-          }
-          if (win.__tmTagSortTabSelectHandler) {
-            try {
-              const tabmail = win.document.getElementById("tabmail");
-              tabmail?.tabContainer?.removeEventListener("TabSelect", win.__tmTagSortTabSelectHandler);
-            } catch (_) {}
-            delete win.__tmTagSortTabSelectHandler;
-          }
-          if (win.__tmTagSortContentWindows) {
-            try {
-              for (const cw of win.__tmTagSortContentWindows) {
-                if (cw.__tmTagSortFolderURIHandler) {
-                  cw.removeEventListener("folderURIChanged", cw.__tmTagSortFolderURIHandler);
-                  delete cw.__tmTagSortFolderURIHandler;
-                }
-                if (cw.__tmTagSortThreadPaneHandler) {
-                  cw.removeEventListener("threadpane-loaded", cw.__tmTagSortThreadPaneHandler);
-                  delete cw.__tmTagSortThreadPaneHandler;
-                }
-              }
-              win.__tmTagSortContentWindows.clear();
-            } catch (_) {}
-            delete win.__tmTagSortContentWindows;
-            delete win.__tmTagSortEnsureListeners;
-          }
-          const resortTimer = getWinResortTimer(win);
-          if (resortTimer) { win.clearTimeout(resortTimer); setWinResortTimer(win, null); }
-          const delayedTimer = getWinDelayedSortTimer(win);
-          if (delayedTimer) { win.clearTimeout(delayedTimer); setWinDelayedSortTimer(win, null); }
-          delete win.__tmTagSortLastSortTs;
-          delete win.__tmTagSortLastFolderUri;
-        }
+        while (enumWin?.hasMoreElements()) cleanupWindow(enumWin.getNext());
 
         if (_windowListenerRegistered) {
           try { ExtensionSupportTS.unregisterWindowListener(listenerId); } catch (_) {}
           _windowListenerRegistered = false;
         }
+        if (_customColumnOwned) {
+          try { ThreadPaneColumnsTS.removeCustomColumn(TM_CUSTOM_SORT_COLUMN_ID); } catch (_) {}
+          _customColumnOwned = false;
+        }
+        _customColumnRegistered = false;
         isInitialized = false;
       } catch (e) {
         console.error("[TagSort] cleanup error:", e);
       }
     };
 
-    this._cleanup = cleanup;
-
     return {
       tagSort: {
         init(_opts) {
-          if (isInitialized) return;
+          if (isInitialized || experimentOwner._extensionShutdown) return;
+          if (experimentOwner._activeInitCleanup && experimentOwner._activeInitCleanup !== cleanup) {
+            experimentOwner._activeInitCleanup();
+          }
+          experimentOwner._activeInitCleanup = cleanup;
           isInitialized = true;
           _didCleanup = false;
+          experimentOwner._cleanups.add(cleanup);
           tlog("init: starting");
 
           // Listen for sort order changes from TabMail button (via notification)
@@ -784,6 +850,9 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
                 } catch (_) {}
                 applySort(win);
               },
+              onUnloadWindow(win) {
+                cleanupWindow(win);
+              },
             });
             _windowListenerRegistered = true;
           } catch (e) {
@@ -792,7 +861,10 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
         },
 
         refresh() {
-          if (!ServicesTS?.wm) return;
+          if (_didCleanup || experimentOwner._extensionShutdown || !ServicesTS?.wm) return;
+          // Welcome/config pages use a separate API context and may request a
+          // sort before init() in that context. Own its timer on true shutdown.
+          experimentOwner._ensureRefreshCleanup();
           const enumWin = ServicesTS.wm.getEnumerator("mail:3pane");
           while (enumWin.hasMoreElements()) {
             const win = enumWin.getNext();
@@ -801,7 +873,8 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
         },
 
         refreshImmediate() {
-          if (!ServicesTS?.wm) return;
+          if (_didCleanup || experimentOwner._extensionShutdown || !ServicesTS?.wm) return;
+          experimentOwner._ensureRefreshCleanup();
           const enumWin = ServicesTS.wm.getEnumerator("mail:3pane");
           while (enumWin.hasMoreElements()) {
             const win = enumWin.getNext();

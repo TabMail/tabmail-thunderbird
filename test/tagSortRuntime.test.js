@@ -27,7 +27,9 @@ function runtime(){
 beforeEach(()=>{vi.useFakeTimers();vi.setSystemTime(50);});
 afterEach(()=>vi.useRealTimers());
 it('delayed refresh executes the native date and action sorts after 30 seconds',async()=>{
- const {api,win,view}=runtime();api.refresh();api.refresh();
+ const {api,win,view}=runtime();api.init();
+ await vi.runAllTimersAsync();view.sort.mockClear();
+ api.refresh();api.refresh();
  expect(vi.getTimerCount()).toBe(1);expect(view.sort).not.toHaveBeenCalled();
  await vi.advanceTimersByTimeAsync(30000);
  expect(view.sort.mock.calls).toEqual([[18,2],[99,2]]);
@@ -36,7 +38,9 @@ it('delayed refresh executes the native date and action sorts after 30 seconds',
 });
 function treeVisible(win){return win.document.getElementById('threadTree').style.visibility;}
 it('shutdown cancels delayed sorting before it can run',async()=>{
- const {api,view}=runtime();api.refresh();expect(vi.getTimerCount()).toBe(1);
+ const {api,view}=runtime();api.init();
+ await vi.runAllTimersAsync();view.sort.mockClear();
+ api.refresh();expect(vi.getTimerCount()).toBe(1);
  api.shutdown();expect(vi.getTimerCount()).toBe(0);
  await vi.advanceTimersByTimeAsync(30000);expect(view.sort).not.toHaveBeenCalled();
 });

@@ -50,14 +50,14 @@ let _logCount_SRF = 0;
 var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
   constructor(extension) {
     super(extension);
-    this._cleanup_SRF = null;
+    this._cleanups_SRF = new Set();
   }
 
   onShutdown(isAppShutdown) {
     srfLog("onShutdown() called, isAppShutdown:", isAppShutdown);
     try {
-      if (this._cleanup_SRF) {
-        this._cleanup_SRF();
+      for (const cleanup of this._cleanups_SRF) {
+        cleanup();
         srfLog("✓ Cleanup completed via onShutdown");
       }
     } catch (e) {
@@ -66,10 +66,41 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
   }
 
   getAPI(context) {
+    // ExtensionSupport can notify an already-open messenger window before it is ready.
+    // Keep that one deferred setup owned by this API context and cancel it on unload.
+    const pendingWindowLoads = new Map();
+    function cancelWindowLoad(win) {
+      const pending = pendingWindowLoads.get(win);
+      if (!pending) return;
+      pendingWindowLoads.delete(win);
+      win.removeEventListener("load", pending.onLoad);
+      win.removeEventListener("unload", pending.onUnload);
+    }
+    function setupWhenWindowLoads(win, setup) {
+      if (pendingWindowLoads.has(win)) return;
+      const pending = {
+        onLoad() {
+          if (pendingWindowLoads.get(win) !== pending) return;
+          cancelWindowLoad(win);
+          setup(win);
+        },
+        onUnload() { cancelWindowLoad(win); },
+      };
+      pendingWindowLoads.set(win, pending);
+      win.addEventListener("load", pending.onLoad, { once: true });
+      win.addEventListener("unload", pending.onUnload, { once: true });
+    }
+    function cancelWindowLoads() {
+      for (const win of pendingWindowLoads.keys()) cancelWindowLoad(win);
+    }
+
     const self = this;
     let isInitialized_SRF = false;
     let _didCleanup_SRF = false;
+    let lifecycleGeneration_SRF = 0;
     let _windowListenerRegistered_SRF = false;
+    const ownedDocuments_SRF = new Map();
+    const tabListeners_SRF = new Map();
 
     const listenerId_SRF = `${context.extension.id}-staleRowFilter-windows`;
 
@@ -299,11 +330,38 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
 
     function setupWindow_SRF(win) {
       try {
-        if (!win) return;
+        if (!win || _didCleanup_SRF) return;
         
         const doc = getContentDoc_SRF(win);
         const tree = doc?.getElementById("threadTree");
         if (!tree) return;
+        const contentWin = getCurrentContentWin_SRF(win);
+        for (const [oldDoc, owned] of ownedDocuments_SRF) {
+          if (oldDoc !== doc && owned.contentWin === contentWin) {
+            teardownDocument_SRF(oldDoc, contentWin);
+          }
+        }
+        if (!ownedDocuments_SRF.has(doc)) {
+          const unloadTarget = contentWin || win;
+          const onUnload = () => teardownDocument_SRF(doc, contentWin);
+          unloadTarget.addEventListener?.("unload", onUnload);
+          ownedDocuments_SRF.set(doc, { win, contentWin, unloadTarget, onUnload });
+        }
+        const tabContainer = win.document?.getElementById?.("tabmail")?.tabContainer;
+        if (tabContainer && !tabListeners_SRF.has(win)) {
+          const onTabSelect = () => setupWindow_SRF(win);
+          const onWindowUnload = () => {
+            tabContainer.removeEventListener("TabSelect", onTabSelect);
+            win.removeEventListener("unload", onWindowUnload);
+            tabListeners_SRF.delete(win);
+            for (const [ownedDoc, owned] of ownedDocuments_SRF) {
+              if (owned.win === win) teardownDocument_SRF(ownedDoc, owned.contentWin);
+            }
+          };
+          tabContainer.addEventListener("TabSelect", onTabSelect);
+          win.addEventListener("unload", onWindowUnload);
+          tabListeners_SRF.set(win, { tabContainer, onTabSelect, onWindowUnload });
+        }
 
         // Initial scan
         scanAndProcessStaleRows_SRF(win);
@@ -340,16 +398,27 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
         if (!tree.__tmSRF_selectHandler) {
           tree.__tmSRF_selectHandler = () => {
             // Small delay to let TB finish updating selection state
-            doc.defaultView.setTimeout(() => handleSelectionChange_SRF(win), 10);
+            if (doc.__tmSRF_selectTimer) doc.defaultView.clearTimeout(doc.__tmSRF_selectTimer);
+            const scheduledGeneration = lifecycleGeneration_SRF;
+            doc.__tmSRF_selectTimer = doc.defaultView.setTimeout(() => {
+              if (_didCleanup_SRF || scheduledGeneration !== lifecycleGeneration_SRF) return;
+              doc.__tmSRF_selectTimer = null;
+              handleSelectionChange_SRF(win);
+            }, 10);
           };
           tree.addEventListener("select", tree.__tmSRF_selectHandler);
         }
 
         // Also listen for folder changes to re-setup
-        const contentWin = getCurrentContentWin_SRF(win);
         if (contentWin && !contentWin.__tmSRF_folderHandler) {
           contentWin.__tmSRF_folderHandler = () => {
-            doc.defaultView.setTimeout(() => setupWindow_SRF(win), 50);
+            if (doc.__tmSRF_folderTimer) doc.defaultView.clearTimeout(doc.__tmSRF_folderTimer);
+            const scheduledGeneration = lifecycleGeneration_SRF;
+            doc.__tmSRF_folderTimer = doc.defaultView.setTimeout(() => {
+              if (_didCleanup_SRF || scheduledGeneration !== lifecycleGeneration_SRF) return;
+              doc.__tmSRF_folderTimer = null;
+              setupWindow_SRF(win);
+            }, 50);
           };
           contentWin.addEventListener("folderURIChanged", contentWin.__tmSRF_folderHandler);
         }
@@ -360,11 +429,13 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
       }
     }
 
-    function teardownWindow_SRF(win) {
+    function teardownDocument_SRF(doc, contentWin) {
       try {
-        if (!win) return;
-        
-        const doc = getContentDoc_SRF(win);
+        const owned = ownedDocuments_SRF.get(doc);
+        if (owned) {
+          owned.unloadTarget.removeEventListener?.("unload", owned.onUnload);
+          ownedDocuments_SRF.delete(doc);
+        }
         
         if (doc?.__tmSRF_MO) {
           doc.__tmSRF_MO.disconnect();
@@ -373,6 +444,12 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
         if (doc?.__tmSRF_trailingTimer) {
           try { doc.defaultView.clearTimeout(doc.__tmSRF_trailingTimer); } catch (_) {}
           delete doc.__tmSRF_trailingTimer;
+        }
+        for (const timer of ["__tmSRF_selectTimer", "__tmSRF_folderTimer"]) {
+          if (doc?.[timer]) {
+            try { doc.defaultView.clearTimeout(doc[timer]); } catch (_) {}
+            delete doc[timer];
+          }
         }
         if (doc?.__tmSRF_lastScanTime !== undefined) {
           delete doc.__tmSRF_lastScanTime;
@@ -384,14 +461,18 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
           delete tree.__tmSRF_selectHandler;
         }
 
-        const contentWin = getCurrentContentWin_SRF(win);
         if (contentWin?.__tmSRF_folderHandler) {
           contentWin.removeEventListener("folderURIChanged", contentWin.__tmSRF_folderHandler);
           delete contentWin.__tmSRF_folderHandler;
         }
       } catch (e) {
-        srfLog(`teardownWindow error: ${e}`);
+        srfLog(`teardownDocument error: ${e}`);
       }
+    }
+
+    function teardownWindow_SRF(win) {
+      if (!win) return;
+      teardownDocument_SRF(getContentDoc_SRF(win), getCurrentContentWin_SRF(win));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -399,10 +480,23 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
     // ═══════════════════════════════════════════════════════════════════════
 
     const cleanup_SRF = () => {
+      cancelWindowLoads();
+      self._cleanups_SRF.delete(cleanup_SRF);
       if (_didCleanup_SRF) return;
       _didCleanup_SRF = true;
+      lifecycleGeneration_SRF++;
+      if (self._activeCleanup_SRF !== cleanup_SRF) return;
+      self._activeCleanup_SRF = null;
 
       srfLog("cleanup() called");
+      for (const [win, { tabContainer, onTabSelect, onWindowUnload }] of tabListeners_SRF) {
+        try { tabContainer.removeEventListener("TabSelect", onTabSelect); } catch (_) {}
+        try { win.removeEventListener("unload", onWindowUnload); } catch (_) {}
+        tabListeners_SRF.delete(win);
+      }
+      for (const [doc, { contentWin }] of ownedDocuments_SRF) {
+        teardownDocument_SRF(doc, contentWin);
+      }
       
       try {
         if (Services_SRF?.wm) {
@@ -426,8 +520,6 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
       srfLog("cleanup() complete");
     };
 
-    self._cleanup_SRF = cleanup_SRF;
-
     return {
       staleRowFilter: {
         init() {
@@ -442,9 +534,14 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
             srfLog("Already initialized, skipping");
             return;
           }
+          if (self._activeCleanup_SRF && self._activeCleanup_SRF !== cleanup_SRF) {
+            self._activeCleanup_SRF();
+          }
+          self._activeCleanup_SRF = cleanup_SRF;
           
           isInitialized_SRF = true;
           _didCleanup_SRF = false;
+          self._cleanups_SRF.add(cleanup_SRF);
           
           // Setup existing windows
           const enumWin = Services_SRF.wm.getEnumerator("mail:3pane");
@@ -453,7 +550,7 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
             if (win.document.readyState === "complete") {
               setupWindow_SRF(win);
             } else {
-              win.addEventListener("load", () => setupWindow_SRF(win), { once: true });
+              setupWhenWindowLoads(win, setupWindow_SRF);
             }
           }
           

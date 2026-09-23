@@ -276,8 +276,8 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
   onShutdown(isAppShutdown) {
     console.log(`${LOG_PREFIX_MLCV} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
     try {
-      if (this._tmCleanup) {
-        this._tmCleanup();
+      for (const cleanup of this._tmCleanups || []) {
+        cleanup();
         console.log(`${LOG_PREFIX_MLCV} ✓ Cleanup completed via onShutdown`);
       }
     } catch (e) {
@@ -286,6 +286,36 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
   }
 
   getAPI(context) {
+    // ExtensionSupport can notify an already-open messenger window before it is ready.
+    // Keep that one deferred setup owned by this API context and cancel it on unload.
+    const pendingWindowLoads = new Map();
+    function cancelWindowLoad(win) {
+      const pending = pendingWindowLoads.get(win);
+      if (!pending) return;
+      pendingWindowLoads.delete(win);
+      win.removeEventListener("load", pending.onLoad);
+      win.removeEventListener("unload", pending.onUnload);
+    }
+    function setupWhenWindowLoads(win, setup) {
+      if (pendingWindowLoads.has(win)) return;
+      const pending = {
+        onLoad() {
+          if (pendingWindowLoads.get(win) !== pending) return;
+          cancelWindowLoad(win);
+          setup(win);
+        },
+        onUnload() { cancelWindowLoad(win); },
+      };
+      pendingWindowLoads.set(win, pending);
+      win.addEventListener("load", pending.onLoad, { once: true });
+      win.addEventListener("unload", pending.onUnload, { once: true });
+    }
+    function cancelWindowLoads() {
+      for (const win of pendingWindowLoads.keys()) cancelWindowLoad(win);
+    }
+
+    const owner = this;
+    owner._tmCleanups ??= new Set();
     let windowListenerId = null;
     let isInitialized = false;
 
@@ -1411,6 +1441,9 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         console.log(`${LOG_PREFIX_MLCV} Already initialized, skipping`);
         return;
       }
+      if (owner._activeCleanup && owner._activeCleanup !== cleanup) owner._activeCleanup();
+      owner._activeCleanup = cleanup;
+      owner._tmCleanups.add(cleanup);
       isInitialized = true;
 
       // Patch ROW_HEIGHT on all existing windows immediately.
@@ -1442,10 +1475,10 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           ensureCardSnippetEnhancements(win);
           attachMessageListEventHooks(win, "init-existing");
         } else {
-          win.addEventListener("load", () => {
-            ensureCardSnippetEnhancements(win);
-            attachMessageListEventHooks(win, "init-load");
-          }, { once: true });
+          setupWhenWindowLoads(win, loadedWin => {
+            ensureCardSnippetEnhancements(loadedWin);
+            attachMessageListEventHooks(loadedWin, "init-load");
+          });
         }
       }
       windowListenerId = context.extension.id + "-tmMessageListCardView";
@@ -1461,6 +1494,10 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
     }
 
     function cleanup() {
+      cancelWindowLoads();
+      owner._tmCleanups.delete(cleanup);
+      if (owner._activeCleanup !== cleanup) return;
+      owner._activeCleanup = null;
       console.log(`${LOG_PREFIX_MLCV} cleanup() called`);
       try {
         if (windowListenerId && context.__tmCardSnippetsWindowListenerRegistered) {
@@ -1517,7 +1554,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
       console.log(`${LOG_PREFIX_MLCV} cleanup() complete`);
     }
 
-    this._tmCleanup = cleanup;
+
 
     async function shutdown() {
       console.log(`${LOG_PREFIX_MLCV} shutdown() called from WebExtension API`);

@@ -12,7 +12,25 @@ const { ExtensionCommon: ExtensionCommonMS } = ChromeUtils.importESModule(
 var ServicesMS = globalThis.Services;
 
 var messageSelection = class extends ExtensionCommonMS.ExtensionAPI {
+  constructor(extension) {
+    super(extension);
+    this._shutdownHandlers = new Set();
+  }
+
+  onShutdown(isAppShutdown) {
+    if (isAppShutdown) return;
+    for (const shutdown of this._shutdownHandlers) {
+      try {
+        shutdown();
+      } catch (e) {
+        console.error("[MessageSelection] Shutdown cleanup failed:", e);
+      }
+    }
+    this._shutdownHandlers.clear();
+  }
+
   getAPI(context) {
+    const owner = this;
     let currentSelection = [];
     let selectionCount = 0;
     let isInitialized = false;
@@ -211,18 +229,8 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPI {
           }
           
           const selectHandler = () => {
-            // Use Services.tm timer for privileged context
-            try {
-              ServicesMS.tm.dispatchToMainThread(() => {
-                getCurrentSelection();
-                // Notify chat windows of selection change
-                notifySelectionChange();
-              });
-            } catch (e) {
-              // Fallback: immediate execution without delay
-              getCurrentSelection();
-              notifySelectionChange();
-            }
+            getCurrentSelection();
+            notifySelectionChange();
           };
           
           // Store handler for cleanup (fixes hot reload leak)
@@ -255,6 +263,52 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPI {
     }
 
     const listenerId = `${context.extension.id}-messageSelection-windows`;
+    const pendingWindowLoads = new Map();
+
+    function cancelPendingWindowLoads() {
+      for (const cancel of pendingWindowLoads.values()) cancel();
+      pendingWindowLoads.clear();
+    }
+
+    function trackWindow(win) {
+      if (!isInitialized || win.closed) return;
+      if (win.document?.readyState !== "complete") {
+        if (pendingWindowLoads.has(win)) return;
+        const cancel = () => {
+          win.removeEventListener("load", onLoad);
+          win.removeEventListener("unload", onUnload);
+          pendingWindowLoads.delete(win);
+        };
+        const onLoad = () => {
+          cancel();
+          trackWindow(win);
+        };
+        const onUnload = () => cancel();
+        pendingWindowLoads.set(win, cancel);
+        win.addEventListener("load", onLoad);
+        win.addEventListener("unload", onUnload);
+        return;
+      }
+
+      setupWindowTracking(win);
+      getCurrentSelection();
+      try {
+        const tabmail = win.document.getElementById("tabmail");
+        const tabContainer = tabmail?.tabContainer || null;
+        if (tabContainer && typeof tabContainer.addEventListener === "function" &&
+            !tabContainer.__messageSelectionTabSelectHandler) {
+          const tabSelectHandler = () => {
+            setupWindowTracking(win);
+            getCurrentSelection();
+          };
+          tabContainer.__messageSelectionTabSelectHandler = tabSelectHandler;
+          tabContainer.addEventListener("TabSelect", tabSelectHandler);
+          tlog("TabSelect listener registered for messageSelection");
+        }
+      } catch (e) {
+        tlog("Failed to add TabSelect listener:", e);
+      }
+    }
 
     const apiObj = {
       messageSelection: {
@@ -280,6 +334,11 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPI {
             tlog("Already initialized, skipping");
             return;
           }
+          if (owner._activeShutdown && owner._activeShutdown !== apiObj.messageSelection.shutdown) {
+            owner._activeShutdown();
+          }
+          owner._activeShutdown = apiObj.messageSelection.shutdown;
+          owner._shutdownHandlers.add(apiObj.messageSelection.shutdown);
           
           isInitialized = true;
           
@@ -295,40 +354,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPI {
             ExtensionSupportMS.registerWindowListener(listenerId, {
               chromeURLs: ["chrome://messenger/content/messenger.xhtml"],
               onLoadWindow(win) {
-                // Try immediate setup
-                setupWindowTracking(win);
-                getCurrentSelection();
-                
-                // Add TabSelect listener for DOM retry (co-exists fine with tagSort)
-                try {
-                  const tabmail = win.document.getElementById("tabmail");
-                  const tabContainer = tabmail?.tabContainer || null;
-                  if (tabContainer && typeof tabContainer.addEventListener === "function") {
-                    // Check if we already added our specific listener to avoid duplicates
-                    if (!tabContainer.__messageSelectionTabSelectHandler) {
-                      const tabSelectHandler = () => {
-                        setupWindowTracking(win);
-                        getCurrentSelection();
-                      };
-                      // Store handler for cleanup (fixes hot reload leak)
-                      tabContainer.__messageSelectionTabSelectHandler = tabSelectHandler;
-                      tabContainer.addEventListener("TabSelect", tabSelectHandler);
-                      tlog("TabSelect listener registered for messageSelection");
-                    }
-                  }
-                } catch (e) {
-                  tlog("Failed to add TabSelect listener:", e);
-                }
-                
-                // Also try a delayed setup for DOM readiness
-                try {
-                  ServicesMS.tm.dispatchToMainThread(() => {
-                    setupWindowTracking(win);
-                    getCurrentSelection();
-                  });
-                } catch (e) {
-                  tlog("Failed delayed setup:", e);
-                }
+                trackWindow(win);
               },
             });
           } catch (e) {
@@ -492,6 +518,10 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPI {
         },
         shutdown() {
           try {
+            cancelPendingWindowLoads();
+            owner._shutdownHandlers.delete(apiObj.messageSelection.shutdown);
+            if (owner._activeShutdown !== apiObj.messageSelection.shutdown) return;
+            owner._activeShutdown = null;
             // Unregister window listener (may already be unregistered from init)
             try {
               ExtensionSupportMS.unregisterWindowListener(listenerId);
@@ -517,10 +547,10 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPI {
                   }
                   
                   // Clean up threadTree select listener
-                  const contentWin = tabmail?.currentAbout3Pane || 
-                                    tabmail?.currentTabInfo?.chromeBrowser?.contentWindow ||
-                                    tabmail?.currentTabInfo?.browser?.contentWindow || null;
-                  if (contentWin) {
+                  const contentWindows = (tabmail?.tabInfo || [])
+                    .map(tab => tab.chromeBrowser?.contentWindow || tab.browser?.contentWindow)
+                    .filter(Boolean);
+                  for (const contentWin of contentWindows) {
                     const innerDoc = contentWin.document;
                     const mailList = innerDoc.querySelector("mail-message-list");
                     const threadTree = innerDoc.getElementById("threadTree") || 
