@@ -1,11 +1,13 @@
 import { expect, it, vi } from 'vitest';
 import { experimentFunctions } from './helpers/experimentFunctions.js';
+const CHAT_SETTINGS = { messageSelectionBootstrapMaxRetries: 3, messageSelectionBootstrapRetryDelayMs: 250 };
 
 it('does not let an older startup reply replace a newer selection event', async () => {
   let resolveReply;
   let onMessage;
   const updates = [];
   const globals = {
+    CHAT_SETTINGS,
     browser: { runtime: {
       onMessage: { addListener: fn => { onMessage = fn; } },
       sendMessage: () => new Promise(resolve => { resolveReply = resolve; }),
@@ -33,6 +35,7 @@ it('rechecks an initially empty selection while the mail window finishes loading
     .mockResolvedValueOnce({ ok: true, selectedMessageIds: [], selectionCount: 0 })
     .mockResolvedValueOnce({ ok: true, selectedMessageIds: ['ready'], selectionCount: 1 });
   const globals = {
+    CHAT_SETTINGS,
     browser: { runtime: { onMessage: { addListener: vi.fn() }, sendMessage } },
     messageSelectionListener: null,
     cleanupMessageSelectionListener: vi.fn(),
@@ -63,6 +66,7 @@ it('retries an unanswered startup request and applies the selected identity from
     .mockResolvedValueOnce(undefined)
     .mockResolvedValueOnce(response);
   const globals = {
+    CHAT_SETTINGS,
     browser: {
       runtime: {
         onMessage: { addListener: vi.fn() },
@@ -87,4 +91,91 @@ it('retries an unanswered startup request and applies the selected identity from
   await vi.waitFor(() => expect(updates).toHaveLength(1));
   expect(sendMessage).toHaveBeenCalledTimes(2);
   expect(updates).toEqual([response]);
+  expect(timers).toHaveLength(0);
+});
+
+it('bounds failed startup requests, retries rejected transport, and logs exhaustion', async () => {
+  const timers = [];
+  const log = vi.fn();
+  const sendMessage = vi.fn()
+    .mockRejectedValueOnce(new Error('background unavailable'))
+    .mockResolvedValue({ ok: false, error: 'not ready' });
+  const globals = {
+    CHAT_SETTINGS,
+    browser: { runtime: { onMessage: { addListener: vi.fn() }, sendMessage } },
+    messageSelectionListener: null,
+    cleanupMessageSelectionListener: vi.fn(),
+    updateSelectionFromMessage: vi.fn(),
+    log,
+    setTimeout: fn => { timers.push(fn); },
+  };
+  const { initMessageSelectionTracking } = experimentFunctions(
+    new URL('../chat/chat.js', import.meta.url), ['initMessageSelectionTracking'], globals,
+  );
+  await initMessageSelectionTracking();
+  for (let attempt = 0; attempt < CHAT_SETTINGS.messageSelectionBootstrapMaxRetries; attempt++) {
+    await vi.waitFor(() => expect(timers).toHaveLength(1));
+    timers.shift()();
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(attempt + 2));
+    await Promise.resolve();
+  }
+  expect(timers).toHaveLength(0);
+  expect(sendMessage).toHaveBeenCalledTimes(CHAT_SETTINGS.messageSelectionBootstrapMaxRetries + 1);
+  await vi.waitFor(() => expect(log).toHaveBeenCalledWith(
+    expect.stringContaining('unavailable after startup retries'), 'warn',
+  ));
+});
+
+it('does not apply or retry a response that arrives after Chat listener cleanup', async () => {
+  let resolveReply;
+  const sendMessage = vi.fn(() => new Promise(resolve => { resolveReply = resolve; }));
+  const updates = vi.fn();
+  const timers = [];
+  const globals = {
+    CHAT_SETTINGS,
+    browser: { runtime: { onMessage: { addListener: vi.fn(), removeListener: vi.fn() }, sendMessage } },
+    messageSelectionListener: null,
+    updateSelectionFromMessage: updates,
+    log: vi.fn(),
+    setTimeout: fn => { timers.push(fn); },
+  };
+  const { initMessageSelectionTracking, cleanupMessageSelectionListener } = experimentFunctions(
+    new URL('../chat/chat.js', import.meta.url),
+    ['initMessageSelectionTracking', 'cleanupMessageSelectionListener'], globals,
+  );
+  const startup = initMessageSelectionTracking();
+  cleanupMessageSelectionListener();
+  resolveReply({ ok: true, selectedMessageIds: ['stale'], selectionCount: 1 });
+  await startup;
+  expect(updates).not.toHaveBeenCalled();
+  expect(timers).toHaveLength(0);
+  expect(sendMessage).toHaveBeenCalledTimes(1);
+});
+
+it('updates the real Chat mention selection state from a successful reply', async () => {
+  const ctx = { selectedMessageIds: [] };
+  const order = [];
+  const globals = {
+    CHAT_SETTINGS,
+    browser: { runtime: {
+      onMessage: { addListener: () => order.push('listen') },
+      sendMessage: async () => {
+        order.push('request');
+        return { ok: true, selectedMessageIds: ['synthetic-a', 'synthetic-b'], selectionCount: 2 };
+      },
+    } },
+    ctx,
+    currentSelectionCount: 0,
+    messageSelectionListener: null,
+    cleanupMessageSelectionListener: vi.fn(),
+    log: vi.fn(),
+    setTimeout: vi.fn(),
+  };
+  const { initMessageSelectionTracking } = experimentFunctions(
+    new URL('../chat/chat.js', import.meta.url),
+    ['initMessageSelectionTracking', 'updateSelectionFromMessage'], globals,
+  );
+  await initMessageSelectionTracking();
+  expect(order).toEqual(['listen', 'request']);
+  expect(ctx.selectedMessageIds).toEqual(['synthetic-a', 'synthetic-b']);
 });

@@ -525,13 +525,15 @@ async function initMessageSelectionTracking() {
         if (messageSelectionListener !== listener || selectionRevision !== requestRevision) return;
         if (response?.ok && Array.isArray(response.selectedMessageIds)) {
           updateSelectionFromMessage(response);
-          if (response.selectedMessageIds.length || attempt === 3) return;
+          if (response.selectedMessageIds.length || attempt === CHAT_SETTINGS.messageSelectionBootstrapMaxRetries) return;
         }
       } catch (e) {
         log(`[MessageSelection] Failed to request current selection: ${e}`, "warn");
       }
-      if (messageSelectionListener === listener && selectionRevision === requestRevision && attempt < 3) {
-        setTimeout(() => { void requestSelection(attempt + 1); }, 250 * (attempt + 1));
+      if (messageSelectionListener === listener && selectionRevision === requestRevision && attempt < CHAT_SETTINGS.messageSelectionBootstrapMaxRetries) {
+        setTimeout(() => { void requestSelection(attempt + 1); }, CHAT_SETTINGS.messageSelectionBootstrapRetryDelayMs * (attempt + 1));
+      } else if (messageSelectionListener === listener && selectionRevision === requestRevision) {
+        log("[MessageSelection] Current selection unavailable after startup retries", "warn");
       }
     };
     await requestSelection();
