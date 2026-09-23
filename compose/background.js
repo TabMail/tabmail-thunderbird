@@ -676,20 +676,6 @@ function setupRuntimeMessageListener() {
 // Initialize the runtime message listener
 setupRuntimeMessageListener();
 
-// --- Cleanup on Extension Shutdown ---
-// Handle extension disable/uninstall by cleaning up listeners
-if (typeof browser !== 'undefined' && browser.runtime) {
-  // This fires when the extension is being disabled, uninstalled, or reloaded
-  browser.runtime.onSuspend?.addListener(() => {
-    console.log("[TabMail Compose] Extension suspending - cleaning up listeners");
-    try {
-      cleanupRuntimeListeners();
-    } catch (e) {
-      console.error(`[TabMail Compose] Error during runtime listener cleanup: ${e}`);
-    }
-  });
-}
-
 // On reload, there's a race condition within Thunderbird's scripting API.
 // Waiting a moment before unregistering and re-registering our scripts
 // has proven to be the most stable solution.

@@ -730,55 +730,5 @@ function attachProactiveMessageDisplayInjector() {
 
 attachProactiveMessageDisplayInjector();
 
-// Cleanup on suspend/reload
-browser.runtime.onSuspend?.addListener(async () => {
-    console.log("[TabMail Theme] Extension suspending");
-
-    try { _stopCardSnippetProvider("onSuspend"); } catch (_) {}
-    try { _stopActionChipClickListener("onSuspend"); } catch (_) {}
-    try { _stopHeaderChipClickListener("onSuspend"); } catch (_) {}
-    try { _stopMultiMessageChipClickListener("onSuspend"); } catch (_) {}
-
-    // Call experiment shutdown to clean up listeners and observers
-    // This is a safety net in case Thunderbird doesn't call onShutdown during hot reload
-    try {
-        if (browser.tmTheme?.shutdown) {
-            await browser.tmTheme.shutdown();
-            console.log("[TabMail Theme] ✓ tmTheme.shutdown() called on suspend");
-        }
-        if (browser.tmPreviewGate?.shutdown) {
-            await browser.tmPreviewGate.shutdown();
-            console.log("[TabMail PreviewGate] ✓ tmPreviewGate.shutdown() called on suspend");
-        }
-        if (browser.staleRowFilter?.shutdown) {
-            await browser.staleRowFilter.shutdown();
-            console.log("[TabMail StaleRowFilter] ✓ staleRowFilter.shutdown() called on suspend");
-        }
-        if (browser.tmMessageHeaderChip?.shutdown) {
-            await browser.tmMessageHeaderChip.shutdown();
-            console.log("[TabMail HeaderChip] ✓ tmMessageHeaderChip.shutdown() called on suspend");
-        }
-        if (browser.tmMultiMessageChip?.shutdown) {
-            await browser.tmMultiMessageChip.shutdown();
-            console.log("[TabMail MultiMsgChip] ✓ tmMultiMessageChip.shutdown() called on suspend");
-        }
-    } catch (e) {
-        console.error("[TabMail Theme] experiment shutdown on suspend failed:", e);
-    }
-    
-    // Reset content script registration flags so scripts can be re-registered after reload
-    // (messageDisplayScripts registrations are automatically cleared by Thunderbird on suspend)
-    try {
-        const { resetBubblesRegistrationFlag } = await import("./modules/bubblesRegistry.js");
-        resetBubblesRegistrationFlag();
-    } catch (e) {
-        console.error("[TabMail Theme] Error resetting bubbles registration flag:", e);
-    }
-    
-    console.log("[TabMail Theme] Cleanup complete");
-
-    try {
-        _lastProactiveInjectUrlByTabId.clear();
-    } catch (_) {}
-});
-
+// Background suspension may be canceled; native UI owners are released by
+// their Experiment onShutdown hooks when the extension actually shuts down.
