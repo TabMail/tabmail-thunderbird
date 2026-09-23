@@ -36,6 +36,18 @@ function debugLog(...args) {
   }
 }
 
+function notifySubscribers(subscribers, info, eventName) {
+  for (const fire of subscribers) {
+    try {
+      Promise.resolve(fire.async(info)).catch(error => {
+        console.error(`[tmMsgNotify] ${eventName} subscriber failed:`, error);
+      });
+    } catch (error) {
+      console.error(`[tmMsgNotify] ${eventName} subscriber failed:`, error);
+    }
+  }
+}
+
 const FOLDER_SCAN_MAX_PAGE_ITEMS = 1000;
 const FOLDER_SCAN_MAX_LIVE = 8;
 const FOLDER_SCAN_IDLE_TTL_MS = 5 * 60 * 1000;
@@ -199,8 +211,8 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
   constructor(extension) {
     super(extension);
     this._listener = null;
-    this._onAddedFire = null;
-    this._onRemovedFire = null;
+    this._onAddedFires = new Set();
+    this._onRemovedFires = new Set();
   }
   
   onShutdown(isAppShutdown) {
@@ -209,6 +221,8 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
       folderMessageScanSweepTimer = null;
     }
     folderMessageScans.clear();
+    this._onAddedFires.clear();
+    this._onRemovedFires.clear();
     if (isAppShutdown) return;
     this._removeListener();
   }
@@ -243,13 +257,13 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
           name: "tmMsgNotify.onMessageAdded",
           register: (fire) => {
             debugLog("onMessageAdded listener registered");
-            self._onAddedFire = fire;
+            self._onAddedFires.add(fire);
             self._ensureListener(folderManager, messageManager);
             
             return () => {
               debugLog("onMessageAdded listener unregistered");
-              self._onAddedFire = null;
-              if (!self._onRemovedFire) {
+              self._onAddedFires.delete(fire);
+              if (!self._onAddedFires.size && !self._onRemovedFires.size) {
                 self._removeListener();
               }
             };
@@ -261,13 +275,13 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
           name: "tmMsgNotify.onMessageRemoved",
           register: (fire) => {
             debugLog("onMessageRemoved listener registered");
-            self._onRemovedFire = fire;
+            self._onRemovedFires.add(fire);
             self._ensureListener(folderManager, messageManager);
             
             return () => {
               debugLog("onMessageRemoved listener unregistered");
-              self._onRemovedFire = null;
-              if (!self._onAddedFire) {
+              self._onRemovedFires.delete(fire);
+              if (!self._onAddedFires.size && !self._onRemovedFires.size) {
                 self._removeListener();
               }
             };
@@ -552,12 +566,12 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
       // Called when messages are added to a folder
       msgAdded(hdr) {
         debugLog("msgAdded:", hdr?.messageId?.substring(0, 50));
-        if (!self._onAddedFire) return;
+        if (!self._onAddedFires.size) return;
         
         const info = extractMessageInfo(hdr, folderManager, messageManager, "added");
         if (info) {
           try {
-            self._onAddedFire.async(info);
+            notifySubscribers(self._onAddedFires, info, "msgAdded");
           } catch (e) {
             console.error("[tmMsgNotify] msgAdded fire failed:", e);
           }
@@ -567,14 +581,14 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
       // Called when messages are classified by filters
       msgsClassified(messages, junkProcessed, traitProcessed) {
         debugLog("msgsClassified: count=", messages?.length || 0);
-        if (!self._onAddedFire) return;
+        if (!self._onAddedFires.size) return;
         
         // messages is an array of nsIMsgDBHdr
         for (const hdr of messages || []) {
           const info = extractMessageInfo(hdr, folderManager, messageManager, "classified");
           if (info) {
             try {
-              self._onAddedFire.async(info);
+              notifySubscribers(self._onAddedFires, info, "msgsClassified");
             } catch (e) {
               console.error("[tmMsgNotify] msgsClassified fire failed:", e);
             }
@@ -585,13 +599,13 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
       // Called when messages are deleted
       msgsDeleted(messages) {
         debugLog("msgsDeleted: count=", messages?.length || 0);
-        if (!self._onRemovedFire) return;
+        if (!self._onRemovedFires.size) return;
         
         for (const hdr of messages || []) {
           const info = extractRemovedInfo(hdr, folderManager, "deleted");
           if (info) {
             try {
-              self._onRemovedFire.async(info);
+              notifySubscribers(self._onRemovedFires, info, "msgsDeleted");
             } catch (e) {
               console.error("[tmMsgNotify] msgsDeleted fire failed:", e);
             }
@@ -605,12 +619,12 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
         debugLog(eventType, ": srcCount=", srcMessages?.length || 0, "destCount=", destMessages?.length || 0);
         
         // Fire removed events for source messages (if move)
-        if (move && self._onRemovedFire) {
+        if (move && self._onRemovedFires.size) {
           for (const hdr of srcMessages || []) {
             const info = extractRemovedInfo(hdr, folderManager, "moveCompleted");
             if (info) {
               try {
-                self._onRemovedFire.async(info);
+                notifySubscribers(self._onRemovedFires, info, "msgsMoveCopyCompleted remove");
               } catch (e) {
                 console.error("[tmMsgNotify] msgsMoveCopyCompleted remove fire failed:", e);
               }
@@ -619,12 +633,12 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
         }
         
         // Fire added events for destination messages
-        if (self._onAddedFire) {
+        if (self._onAddedFires.size) {
           for (const hdr of destMessages || []) {
             const info = extractMessageInfo(hdr, folderManager, messageManager, eventType);
             if (info) {
               try {
-                self._onAddedFire.async(info);
+                notifySubscribers(self._onAddedFires, info, "msgsMoveCopyCompleted add");
               } catch (e) {
                 console.error("[tmMsgNotify] msgsMoveCopyCompleted add fire failed:", e);
               }
