@@ -152,8 +152,8 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
   onShutdown(isAppShutdown) {
     console.log(`${LOG_PREFIX_MHC} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
     try {
-      if (this._tmCleanup) {
-        this._tmCleanup();
+      for (const cleanup of this._tmCleanups || []) {
+        cleanup();
         console.log(`${LOG_PREFIX_MHC} ✓ Cleanup completed via onShutdown`);
       }
     } catch (e) {
@@ -162,6 +162,36 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
   }
 
   getAPI(context) {
+    // ExtensionSupport can notify an already-open messenger window before it is ready.
+    // Keep that one deferred setup owned by this API context and cancel it on unload.
+    const pendingWindowLoads = new Map();
+    function cancelWindowLoad(win) {
+      const pending = pendingWindowLoads.get(win);
+      if (!pending) return;
+      pendingWindowLoads.delete(win);
+      win.removeEventListener("load", pending.onLoad);
+      win.removeEventListener("unload", pending.onUnload);
+    }
+    function setupWhenWindowLoads(win, setup) {
+      if (pendingWindowLoads.has(win)) return;
+      const pending = {
+        onLoad() {
+          if (pendingWindowLoads.get(win) !== pending) return;
+          cancelWindowLoad(win);
+          setup(win);
+        },
+        onUnload() { cancelWindowLoad(win); },
+      };
+      pendingWindowLoads.set(win, pending);
+      win.addEventListener("load", pending.onLoad, { once: true });
+      win.addEventListener("unload", pending.onUnload, { once: true });
+    }
+    function cancelWindowLoads() {
+      for (const win of pendingWindowLoads.keys()) cancelWindowLoad(win);
+    }
+
+    const owner = this;
+    owner._tmCleanups ??= new Set();
     const mm = context?.extension?.messageManager;
     let windowListenerId = null;
     let isInitialized = false;
@@ -525,6 +555,9 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
         console.log(`${LOG_PREFIX_MHC} Already initialized, skipping`);
         return;
       }
+      if (owner._activeCleanup && owner._activeCleanup !== cleanup) owner._activeCleanup();
+      owner._activeCleanup = cleanup;
+      owner._tmCleanups.add(cleanup);
       isInitialized = true;
 
       // Attach to existing matching windows.
@@ -536,7 +569,7 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
           if (win.document?.readyState === "complete") {
             attachToWindow(win);
           } else {
-            win.addEventListener("load", () => attachToWindow(win), { once: true });
+            setupWhenWindowLoads(win, attachToWindow);
           }
         } catch (_) {}
       }
@@ -553,6 +586,10 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
     }
 
     function cleanup() {
+      cancelWindowLoads();
+      owner._tmCleanups.delete(cleanup);
+      if (owner._activeCleanup !== cleanup) return;
+      owner._activeCleanup = null;
       console.log(`${LOG_PREFIX_MHC} cleanup() called`);
       try {
         if (windowListenerId && context.__tmHeaderChipWindowListenerRegistered) {
@@ -580,7 +617,7 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
       console.log(`${LOG_PREFIX_MHC} cleanup() complete`);
     }
 
-    this._tmCleanup = cleanup;
+
 
     async function shutdown() {
       console.log(`${LOG_PREFIX_MHC} shutdown() called from WebExtension API`);
@@ -588,6 +625,9 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
     }
 
     async function refreshAll() {
+      // A refresh may arrive before init() has registered shutdown ownership.
+      // init() repaints every open window after that ownership is established.
+      if (!isInitialized) return;
       _repaintAll();
     }
 

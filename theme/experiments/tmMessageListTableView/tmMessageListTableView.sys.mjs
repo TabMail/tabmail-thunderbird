@@ -72,7 +72,7 @@ const UNTAGGED_COVERAGE_CONFIG_MLTV = {
 var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
   constructor(extension) {
     super(extension);
-    this._tmCleanup_MLTV = null;
+    this._tmCleanups_MLTV = new Set();
     this._onUntaggedFire_MLTV = null; // EventManager fire for onUntaggedInboxMessages
     this._messageManager_MLTV = null; // Convert native hdr → WE message ID
   }
@@ -80,8 +80,8 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
   onShutdown(isAppShutdown) {
     console.log(`${LOG_PREFIX_MLTV} onShutdown() called, isAppShutdown:`, isAppShutdown);
     try {
-      if (this._tmCleanup_MLTV) {
-        this._tmCleanup_MLTV();
+      for (const cleanup of this._tmCleanups_MLTV) {
+        cleanup();
         console.log(`${LOG_PREFIX_MLTV} ✓ Cleanup completed via onShutdown`);
       }
       this._onUntaggedFire_MLTV = null;
@@ -91,6 +91,34 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
   }
 
   getAPI(context) {
+    // ExtensionSupport can notify an already-open messenger window before it is ready.
+    // Keep that one deferred setup owned by this API context and cancel it on unload.
+    const pendingWindowLoads = new Map();
+    function cancelWindowLoad(win) {
+      const pending = pendingWindowLoads.get(win);
+      if (!pending) return;
+      pendingWindowLoads.delete(win);
+      win.removeEventListener("load", pending.onLoad);
+      win.removeEventListener("unload", pending.onUnload);
+    }
+    function setupWhenWindowLoads(win, setup) {
+      if (pendingWindowLoads.has(win)) return;
+      const pending = {
+        onLoad() {
+          if (pendingWindowLoads.get(win) !== pending) return;
+          cancelWindowLoad(win);
+          setup(win);
+        },
+        onUnload() { cancelWindowLoad(win); },
+      };
+      pendingWindowLoads.set(win, pending);
+      win.addEventListener("load", pending.onLoad, { once: true });
+      win.addEventListener("unload", pending.onUnload, { once: true });
+    }
+    function cancelWindowLoads() {
+      for (const win of pendingWindowLoads.keys()) cancelWindowLoad(win);
+    }
+
     const self = this;
     let windowListenerId_MLTV = null;
     let isInitialized_MLTV = false;
@@ -767,7 +795,12 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
         console.log(`${LOG_PREFIX_MLTV} Already initialized, skipping`);
         return;
       }
+      if (self._activeCleanup_MLTV && self._activeCleanup_MLTV !== cleanup_MLTV) {
+        self._activeCleanup_MLTV();
+      }
+      self._activeCleanup_MLTV = cleanup_MLTV;
       isInitialized_MLTV = true;
+      self._tmCleanups_MLTV.add(cleanup_MLTV);
 
       const enumWin = Services_MLTV.wm.getEnumerator("mail:3pane");
       while (enumWin.hasMoreElements()) {
@@ -776,10 +809,10 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
           ensureTableEnhancements_MLTV(win);
           attachEventHooks_MLTV(win);
         } else {
-          win.addEventListener("load", () => {
-            ensureTableEnhancements_MLTV(win);
-            attachEventHooks_MLTV(win);
-          }, { once: true });
+          setupWhenWindowLoads(win, loadedWin => {
+            ensureTableEnhancements_MLTV(loadedWin);
+            attachEventHooks_MLTV(loadedWin);
+          });
         }
       }
 
@@ -796,6 +829,10 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
     }
 
     function cleanup_MLTV() {
+      cancelWindowLoads();
+      self._tmCleanups_MLTV.delete(cleanup_MLTV);
+      if (self._activeCleanup_MLTV !== cleanup_MLTV) return;
+      self._activeCleanup_MLTV = null;
       console.log(`${LOG_PREFIX_MLTV} cleanup() called`);
       try {
         if (windowListenerId_MLTV) {
@@ -818,8 +855,6 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
       isInitialized_MLTV = false;
       console.log(`${LOG_PREFIX_MLTV} cleanup() complete`);
     }
-
-    this._tmCleanup_MLTV = cleanup_MLTV;
 
     async function shutdown_MLTV() {
       console.log(`${LOG_PREFIX_MLTV} shutdown() called from WebExtension API`);

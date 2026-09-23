@@ -41,9 +41,11 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       "[TabMail PreviewGate] onShutdown() called by Thunderbird, isAppShutdown:",
       isAppShutdown
     );
+    this._tmShutdown = true;
+    if (this._tmPreviewGateState) this._tmPreviewGateState.activeContext = null;
     try {
-      if (this._tmCleanup) {
-        this._tmCleanup();
+      for (const cleanup of this._tmCleanups || []) {
+        cleanup();
         pgLog("[TabMail PreviewGate] ✓ Cleanup completed via onShutdown");
       }
     } catch (e) {
@@ -52,12 +54,51 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
   }
 
   getAPI(context) {
+    // ExtensionSupport can notify an already-open messenger window before it is ready.
+    // Keep that one deferred setup owned by this API context and cancel it on unload.
+    const pendingWindowLoads = new Map();
+    function cancelWindowLoad(win) {
+      const pending = pendingWindowLoads.get(win);
+      if (!pending) return;
+      pendingWindowLoads.delete(win);
+      win.removeEventListener("load", pending.onLoad);
+      win.removeEventListener("unload", pending.onUnload);
+    }
+    function setupWhenWindowLoads(win, setup) {
+      if (pendingWindowLoads.has(win)) return;
+      const pending = {
+        onLoad() {
+          if (pendingWindowLoads.get(win) !== pending) return;
+          cancelWindowLoad(win);
+          setup(win);
+        },
+        onUnload() { cancelWindowLoad(win); },
+      };
+      pendingWindowLoads.set(win, pending);
+      win.addEventListener("load", pending.onLoad, { once: true });
+      win.addEventListener("unload", pending.onUnload, { once: true });
+    }
+    function cancelWindowLoads() {
+      for (const win of pendingWindowLoads.keys()) cancelWindowLoad(win);
+    }
+
+    const owner = this;
+    owner._tmCleanups ??= new Set();
+    // Keep global sheet and gate state across background context restarts.
+    const previewState = owner._tmPreviewGateState ??= {};
     const listenerId = context.extension.id + "-tmPreviewGate";
     let windowListenerId = null;
     let isInitialized = false;
+    let generation = 0;
+    function retireContext() {
+      cancelWindowLoads();
+      generation++;
+      if (previewState.activeContext === context) previewState.activeContext = null;
+      owner._tmCleanups.delete(cleanup);
+    }
 
     // Experiment-side toggle: preemptively gate the message preview on navigation.
-    let previewAutoGateEnabled = false;
+    previewState.autoGateEnabled ??= false;
 
     // Module config (avoid scattering magic values)
     const PREVIEW_GATE_CONFIG = {
@@ -72,15 +113,17 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
     // don't interleave and leave us in a confused state.
     function withAgentSheetLock(ctx, fn, label) {
       try {
-        ctx.__tmPreviewGate = ctx.__tmPreviewGate || {};
-        const prev = ctx.__tmPreviewGate._agentSheetLock || Promise.resolve();
+        const scheduledGeneration = generation;
+        const prev = previewState.agentSheetLock || Promise.resolve();
         const next = prev
           .catch(() => {})
-          .then(() => fn())
+          .then(() => {
+            if (!owner._tmShutdown && previewState.activeContext === ctx && scheduledGeneration === generation) return fn();
+          })
           .catch((e) => {
             pgErr(`[TabMail PreviewGate] AGENT_SHEET op failed (${label || "unknown"}):`, e);
           });
-        ctx.__tmPreviewGate._agentSheetLock = next;
+        previewState.agentSheetLock = next;
         return next;
       } catch (e) {
         pgErr("[TabMail PreviewGate] withAgentSheetLock failed:", e);
@@ -126,6 +169,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
     }
 
     async function registerAgentSheet(context) {
+      const startedGeneration = generation;
       const sss = Cc["@mozilla.org/content/style-sheet-service;1"].getService(
         Ci.nsIStyleSheetService
       );
@@ -133,16 +177,16 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
 
       // IMPORTANT: don't unregister-first. Keep current working gate sheet until the
       // replacement is registered successfully (atomic swap).
-      const oldUri = context?.__tmPreviewGate?.agentSheetURI || null;
+      const oldUri = previewState.agentSheetURI || null;
 
       const css = await loadPreviewGateCSS(context);
-      const cacheBuster = Date.now();
+      if (owner._tmShutdown || previewState.activeContext !== context || startedGeneration !== generation) return;
+      const cacheBuster = `${Date.now()}-${previewState.sheetVersion = (previewState.sheetVersion || 0) + 1}`;
       const completeCSS = `/* TabMail PreviewGate - Generated: ${cacheBuster} */\n${css}`;
       const dataURL =
         "data:text/css;charset=utf-8," + encodeURIComponent(completeCSS);
       const uri = io.newURI(dataURL);
 
-      context.__tmPreviewGate = context.__tmPreviewGate || {};
       try {
         sss.loadAndRegisterSheet(uri, sss.AGENT_SHEET);
       } catch (e) {
@@ -160,7 +204,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       } catch (_) {}
 
       // Swap stored URI only after successful registration, then unregister old.
-      context.__tmPreviewGate.agentSheetURI = uri;
+      previewState.agentSheetURI = uri;
       if (oldUri && oldUri !== uri) {
         try {
           if (sss.sheetRegistered(oldUri, sss.AGENT_SHEET)) {
@@ -177,7 +221,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       const sss = Cc["@mozilla.org/content/style-sheet-service;1"].getService(
         Ci.nsIStyleSheetService
       );
-      const uri = ctx?.__tmPreviewGate?.agentSheetURI || null;
+      const uri = previewState.agentSheetURI || null;
       let stillRegistered = false;
       try {
         if (uri) stillRegistered = sss.sheetRegistered(uri, sss.AGENT_SHEET);
@@ -194,11 +238,11 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       const sss = Cc["@mozilla.org/content/style-sheet-service;1"].getService(
         Ci.nsIStyleSheetService
       );
-      const uri = context?.__tmPreviewGate?.agentSheetURI;
+      const uri = previewState.agentSheetURI;
       if (uri && sss.sheetRegistered(uri, sss.AGENT_SHEET)) {
         sss.unregisterSheet(uri, sss.AGENT_SHEET);
         pgLog("[TabMail PreviewGate] ✓ Unregistered AGENT_SHEET");
-        delete context.__tmPreviewGate.agentSheetURI;
+        delete previewState.agentSheetURI;
       }
     }
 
@@ -305,7 +349,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
         };
 
         const maybeGateNow = (why) => {
-          if (!previewAutoGateEnabled) return;
+          if (!previewState.autoGateEnabled) return;
           try {
             _setDocPreviewGated(doc, true, `auto:${why}`);
           } catch (_) {}
@@ -316,7 +360,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           try {
             const mo = new doc.defaultView.MutationObserver((muts) => {
               try {
-                if (!previewAutoGateEnabled) return;
+                if (!previewState.autoGateEnabled) return;
                 for (const m of muts || []) {
                   if (m.type === "attributes") {
                     try {
@@ -392,7 +436,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
                 );
                 // If auto-gate is enabled, gate immediately when the pane appears.
                 try {
-                  if (previewAutoGateEnabled) {
+                  if (previewState.autoGateEnabled) {
                     _setDocPreviewGated(doc, true, "auto:messagepane-appeared");
                   }
                 } catch (_) {}
@@ -457,7 +501,6 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             if (!doc || !doc.defaultView) return;
             const shared = doc.__tmPreviewGateInteraction || (doc.__tmPreviewGateInteraction = {});
             if (shared.installed) return;
-            shared.installed = true;
 
             const getDocHref = () => {
               try { return String(doc.location?.href || ""); } catch (_) { return ""; }
@@ -470,6 +513,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
               );
                     return;
                   }
+            shared.installed = true;
 
             // IMPORTANT:
             // Pre-gating on generic clicks (mousedown) can leave the preview masked indefinitely if the
@@ -477,7 +521,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             // changes from the thread tree.
             shared.onSelect = (ev) => {
               try {
-                if (!previewAutoGateEnabled) return;
+                if (!previewState.autoGateEnabled) return;
                 setPreviewGatedForWindow(true, `user:threadTree-select doc="${getDocHref()}"`);
               } catch (_) {}
             };
@@ -515,16 +559,20 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
         pgErr("[TabMail PreviewGate] Services.wm not available!");
         return;
       }
-
-      // Clean up any previous registrations before initializing (hot reload safety).
-      try {
-        ExtensionSupportTMPreviewGate.unregisterWindowListener(listenerId);
-      } catch (_) {}
+      if (owner._tmShutdown) return;
+      if (previewState.retireContext && previewState.retireContext !== retireContext) {
+        previewState.retireContext();
+      }
+      previewState.retireContext = retireContext;
+      previewState.activeContext = context;
+      owner._tmCleanups.add(cleanup);
+      const startedGeneration = generation;
 
       if (isInitialized) {
         pgLog("[TabMail PreviewGate] Already initialized; ensuring AGENT_SHEET + watchers exist");
         try {
           await withAgentSheetLock(context, () => ensureAgentSheetRegistered(context, "init:alreadyInitialized"), "init:alreadyInitialized");
+          if (startedGeneration !== generation) return;
         } catch (_) {}
         try {
           const enumWin = ServicesTMPreviewGate.wm.getEnumerator("mail:3pane");
@@ -541,6 +589,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
 
       try {
         await withAgentSheetLock(context, () => ensureAgentSheetRegistered(context, "init:first"), "init:first");
+        if (startedGeneration !== generation) return;
       } catch (e) {
         pgErr("[TabMail PreviewGate] Failed to register AGENT_SHEET:", e);
       }
@@ -552,8 +601,9 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
           if (win.document.readyState === "complete") {
             ensurePreviewGateWatchers(win);
           } else {
-            win.addEventListener("load", () => ensurePreviewGateWatchers(win), {
-              once: true,
+            setupWhenWindowLoads(win, loadedWin => {
+              _docCacheByWin.delete(loadedWin);
+              ensurePreviewGateWatchers(loadedWin);
             });
           }
         }
@@ -563,6 +613,8 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
 
       try {
         windowListenerId = listenerId;
+        // A new background context takes over the same extension's window id.
+        ExtensionSupportTMPreviewGate.unregisterWindowListener(windowListenerId);
         ExtensionSupportTMPreviewGate.registerWindowListener(windowListenerId, {
           chromeURLs: ["chrome://messenger/content/messenger.xhtml"],
           onLoadWindow: (win) => ensurePreviewGateWatchers(win),
@@ -637,7 +689,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       try {
         const enabled = !!opts?.enabled;
         const reason = String(opts?.reason || "");
-        previewAutoGateEnabled = enabled;
+        previewState.autoGateEnabled = enabled;
         pgLog(
           `[TabMail PreviewGate] setPreviewAutoGateEnabled enabled=${enabled} reason="${reason}"`
         );
@@ -661,6 +713,12 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
     }
 
     function cleanup() {
+      cancelWindowLoads();
+      owner._tmCleanups.delete(cleanup);
+      generation++;
+      if (previewState.retireContext !== retireContext) return;
+      delete previewState.retireContext;
+      if (previewState.activeContext === context) previewState.activeContext = null;
       pgLog(
         "[TabMail PreviewGate] cleanup() called - cleaning up all resources."
       );
@@ -672,12 +730,9 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       }
 
       try {
-        if (windowListenerId) {
-          try {
-            ExtensionSupportTMPreviewGate.unregisterWindowListener(windowListenerId);
-            windowListenerId = null;
-          } catch (_) {}
-        }
+        // A replacement context may shut down before it assigns its local ID.
+        try { ExtensionSupportTMPreviewGate.unregisterWindowListener(listenerId); } catch (_) {}
+        windowListenerId = null;
       } catch (e) {
         pgErr("[TabMail PreviewGate] Error unregistering window listener:", e);
       }
@@ -797,7 +852,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
       pgLog("[TabMail PreviewGate] cleanup() complete");
     }
 
-    this._tmCleanup = cleanup;
+
 
     async function shutdown() {
       pgLog("[TabMail PreviewGate] shutdown() called from WebExtension API");
@@ -814,5 +869,3 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
     };
   }
 };
-
-
