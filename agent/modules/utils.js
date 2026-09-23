@@ -263,6 +263,7 @@ export async function clearAlarm(name) {
 // getFull cache – in-memory storage with TTL based on uniqueHeaderID
 const getFullCache = new Map(); // Map<uniqueKey, { data, timestamp }>
 let getFullCacheCleanupAlarmName = "agent-getfull-cleanup";
+let getFullCacheCleanupStarted = false;
 
 function enforceGetFullCacheMaxEntries(reason = "unknown") {
   try {
@@ -316,6 +317,8 @@ function cleanupGetFullCache() {
  * Safe to call multiple times.
  */
 function startGetFullCacheCleanup() {
+  if (getFullCacheCleanupStarted) return;
+  getFullCacheCleanupStarted = true;
   const minutes = Math.max(1, Math.ceil(Number(SETTINGS.getFullCleanupIntervalMinutes || 5)));
   ensureAlarm({
     name: getFullCacheCleanupAlarmName,
@@ -325,6 +328,7 @@ function startGetFullCacheCleanup() {
       try { cleanupGetFullCache(); } catch (e) { log(`[Alarms] getFull cleanup exception: ${e}`, 'error'); }
     },
   }).catch((e) => {
+    getFullCacheCleanupStarted = false;
     log(`[Alarms] getFull cleanup ensureAlarm failed: ${e}`, 'error');
   });
 }
@@ -334,6 +338,7 @@ function startGetFullCacheCleanup() {
  * Called during extension shutdown/suspension.
  */
 export function stopGetFullCacheCleanup() {
+  getFullCacheCleanupStarted = false;
   try { clearAlarm(getFullCacheCleanupAlarmName); } catch (_) {}
 }
 
