@@ -25,11 +25,17 @@ const expected = {
   selectedMessageIds: ['synthetic-account:/Inbox:message-1'],
   selectionCount: 1,
 };
+const expectedFor = (...keys) => ({
+  ...expected,
+  selectedMessageIds: keys.map(key => `synthetic-account:/Inbox:message-${key}`),
+  selectionCount: keys.length,
+});
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 it('delivers a usable selected-message identity before sleep, while primed, and after conversion', async () => {
   const w = makeWindow();
   const x = experiment('chat/experiments/messageSelection/messageSelection.sys.mjs', 'messageSelection', { windows: [w.win] });
+  x.instance.extension.messageManager.convert = hdr => ({ id: hdr.messageKey });
   const deliveries = [];
   let consumer;
   const addListener = x.api.onSelectionChanged.addListener;
@@ -55,22 +61,34 @@ it('delivers a usable selected-message identity before sleep, while primed, and 
     }, [], false);
     expect(primed).toBeTruthy();
     try {
+      w.hdr.messageKey = 2;
       w.tree.dispatch('select');
       expect(queued).toHaveLength(1);
       await consumer(queued[0]);
-      expect(deliveries).toEqual([expected, expected]);
+      expect(deliveries).toEqual([expected, expectedFor(2)]);
 
       primed.convert({ async: value => consumer(value) });
+      w.hdr.messageKey = 3;
+      w.view.selection.count = 2;
+      w.view.selection.getRangeAt = (_range, start, end) => { start.value = 0; end.value = 1; };
+      w.view.hdrForRow = row => row === 0 ? w.hdr : {
+        ...w.hdr, messageKey: 4, messageId: 'second@synthetic.test',
+      };
       w.tree.dispatch('select');
       await settle();
-      expect(deliveries).toEqual([expected, expected, expected]);
+      expect(deliveries).toEqual([expected, expectedFor(2), expectedFor(3, 4)]);
+
+      w.view.selection.count = 0;
+      w.tree.dispatch('select');
+      await settle();
+      expect(deliveries).toEqual([expected, expectedFor(2), expectedFor(3, 4), expectedFor()]);
     } finally {
       primed.unregister();
     }
 
     w.tree.dispatch('select');
     await settle();
-    expect(deliveries).toHaveLength(3);
+    expect(deliveries).toHaveLength(4);
   } finally {
     x.instance.onShutdown(false);
   }
