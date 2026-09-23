@@ -497,6 +497,10 @@ browser.storage.onChanged.addListener((changes, area) => {
 // Initialize selection listener on startup
 initMessageSelectionListener();
 
+// Register this request at startup so an already-open Chat window can recover
+// its selection when the background wakes. The general chat handler is delayed.
+browser.runtime.onMessage.addListener(handleMessageSelectionRequest);
+
 // Store runtime message listener reference for cleanup
 let chatRuntimeMessageListener = null;
 let chatHotkeyListener = null;
@@ -537,12 +541,6 @@ function setupRuntimeMessageListener() {
         log(`[Chat Background] Failed to open chat window: ${e}`, "error");
         return { ok: false, error: e.message };
       }
-    }
-    
-    // Handle message selection requests using the dedicated module
-    const selectionResponse = handleMessageSelectionRequest(message);
-    if (selectionResponse !== undefined) {
-      return selectionResponse;
     }
     
     // FTS commands are now handled by engine.js attachCommandInterface()

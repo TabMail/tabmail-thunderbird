@@ -516,20 +516,25 @@ async function initMessageSelectionTracking() {
 
     browser.runtime.onMessage.addListener(messageSelectionListener);
 
-    // Request current selection from background script
-    try {
-      browser.runtime.sendMessage({ command: "get-current-selection" });
-      log("[MessageSelection] Requested current selection from background", 'debug');
-    } catch (e) {
-      log(
-        `[MessageSelection] Failed to request current selection: ${e}`,
-        "warn"
-      );
-      // Fallback to direct query with delay
-      setTimeout(async () => {
-        await updateSelectionIndicator();
-      }, 500);
-    }
+    // A persisted Chat window can start before the background is ready. Apply
+    // the reply directly and retry a bounded number of unanswered requests.
+    const listener = messageSelectionListener;
+    const requestSelection = async (attempt = 0) => {
+      try {
+        const response = await browser.runtime.sendMessage({ command: "get-current-selection" });
+        if (messageSelectionListener !== listener) return;
+        if (response?.ok && Array.isArray(response.selectedMessageIds)) {
+          updateSelectionFromMessage(response);
+          return;
+        }
+      } catch (e) {
+        log(`[MessageSelection] Failed to request current selection: ${e}`, "warn");
+      }
+      if (messageSelectionListener === listener && attempt < 3) {
+        setTimeout(() => { void requestSelection(attempt + 1); }, 250 * (attempt + 1));
+      }
+    };
+    await requestSelection();
 
     log("[MessageSelection] Initialized message selection tracking", 'debug');
   } catch (e) {

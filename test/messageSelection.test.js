@@ -124,10 +124,10 @@ describe('messageSelection', () => {
       expect(typeof result.then).toBe('function');
     });
 
-    it('should resolve with ok:true for valid selection request', async () => {
+    it('should return the current IDs directly for a valid selection request', async () => {
       browser.messageSelection.getSelectedMessages.mockResolvedValueOnce('[]');
       const result = await handleMessageSelectionRequest({ command: 'get-current-selection' });
-      expect(result).toEqual({ ok: true });
+      expect(result).toEqual({ ok: true, selectedMessageIds: [], selectionCount: 0 });
     });
 
     it('should handle JSON parse errors gracefully', async () => {
@@ -149,7 +149,8 @@ describe('messageSelection', () => {
       browser.messageSelection.getSelectedMessages.mockResolvedValueOnce(
         JSON.stringify([{ weMsgId: 42 }])
       );
-      await handleMessageSelectionRequest({ command: 'get-current-selection' });
+      const response = await handleMessageSelectionRequest({ command: 'get-current-selection' });
+      expect(response).toEqual({ ok: true, selectedMessageIds: ['unique-42'], selectionCount: 1 });
       expect(browser.runtime.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           command: 'current-selection',

@@ -129,7 +129,7 @@ async function handleCurrentSelectionRequest() {
       // Ignore errors - chat window might not be open
     });
     
-    return { ok: true };
+    return { ok: true, selectedMessageIds: uniqueIds, selectionCount: uniqueIds.length };
   } catch (e) {
     log(`[MessageSelection] Failed to get current selection: ${e}`, "error");
     return { ok: false, error: e.message };
