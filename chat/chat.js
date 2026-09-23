@@ -505,12 +505,11 @@ async function initMessageSelectionTracking() {
     cleanupMessageSelectionListener();
 
     // Listen for selection change messages from background script
+    let selectionRevision = 0;
     messageSelectionListener = (message, sender, sendResponse) => {
       if (message.command === "selection-changed") {
+        selectionRevision++;
         updateSelectionFromMessage(message);
-      } else if (message.command === "current-selection") {
-        updateSelectionFromMessage(message);
-        log("[MessageSelection] Received current selection from background", 'debug');
       }
     };
 
@@ -520,17 +519,18 @@ async function initMessageSelectionTracking() {
     // the reply directly and retry a bounded number of unanswered requests.
     const listener = messageSelectionListener;
     const requestSelection = async (attempt = 0) => {
+      const requestRevision = selectionRevision;
       try {
         const response = await browser.runtime.sendMessage({ command: "get-current-selection" });
-        if (messageSelectionListener !== listener) return;
+        if (messageSelectionListener !== listener || selectionRevision !== requestRevision) return;
         if (response?.ok && Array.isArray(response.selectedMessageIds)) {
           updateSelectionFromMessage(response);
-          return;
+          if (response.selectedMessageIds.length || attempt === 3) return;
         }
       } catch (e) {
         log(`[MessageSelection] Failed to request current selection: ${e}`, "warn");
       }
-      if (messageSelectionListener === listener && attempt < 3) {
+      if (messageSelectionListener === listener && selectionRevision === requestRevision && attempt < 3) {
         setTimeout(() => { void requestSelection(attempt + 1); }, 250 * (attempt + 1));
       }
     };

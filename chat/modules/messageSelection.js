@@ -120,15 +120,6 @@ async function handleCurrentSelectionRequest() {
     
     if (SETTINGS.debugLogging) console.log(`[MessageSelection] Current selection: ${selectedMessages.length} -> ${uniqueIds.length} unique IDs`);
     
-    // Send current selection to all chat windows
-    browser.runtime.sendMessage({
-      command: "current-selection",
-      selectedMessageIds: uniqueIds,
-      selectionCount: uniqueIds.length
-    }).catch(() => {
-      // Ignore errors - chat window might not be open
-    });
-    
     return { ok: true, selectedMessageIds: uniqueIds, selectionCount: uniqueIds.length };
   } catch (e) {
     log(`[MessageSelection] Failed to get current selection: ${e}`, "error");

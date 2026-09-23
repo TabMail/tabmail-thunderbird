@@ -145,18 +145,13 @@ describe('messageSelection', () => {
       browser.messageSelection.getSelectedMessages = orig;
     });
 
-    it('should forward unique IDs via runtime messaging', async () => {
+    it('should return unique IDs only to the requesting Chat window', async () => {
       browser.messageSelection.getSelectedMessages.mockResolvedValueOnce(
         JSON.stringify([{ weMsgId: 42 }])
       );
       const response = await handleMessageSelectionRequest({ command: 'get-current-selection' });
       expect(response).toEqual({ ok: true, selectedMessageIds: ['unique-42'], selectionCount: 1 });
-      expect(browser.runtime.sendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: 'current-selection',
-          selectionCount: 1,
-        })
-      );
+      expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
     });
   });
 

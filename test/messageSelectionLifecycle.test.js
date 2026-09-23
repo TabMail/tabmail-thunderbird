@@ -87,6 +87,15 @@ describe('review: native ownership with real window and queued callback shapes',
     h.instance.onShutdown(false);
     expect(h.trees[0].count('select')).toBe(0);
   });
+  it('publishes the existing selection when a loading mail window becomes ready', () => {
+    const h = harness({ loading: true });
+    h.api.init();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    h.finishLoad(); h.flush();
+    expect(h.notifyObservers).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(h.notifyObservers.mock.calls[0][2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
+    h.instance.onShutdown(false);
+  });
   it('cancels loading-window setup on close and true shutdown', () => {
     for (const close of [false, true]) {
       const h = harness({ loading: true }); h.api.init();

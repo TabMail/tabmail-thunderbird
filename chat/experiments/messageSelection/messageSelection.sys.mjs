@@ -287,7 +287,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
       pendingWindowLoads.clear();
     }
 
-    function trackWindow(win) {
+    function trackWindow(win, publishOnReady = false) {
       if (!isInitialized || win.closed) return;
       if (win.document?.readyState !== "complete") {
         if (pendingWindowLoads.has(win)) return;
@@ -298,7 +298,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
         };
         const onLoad = () => {
           cancel();
-          trackWindow(win);
+          trackWindow(win, true);
         };
         const onUnload = () => cancel();
         pendingWindowLoads.set(win, cancel);
@@ -309,6 +309,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
 
       setupWindowTracking(win);
       getCurrentSelection();
+      if (publishOnReady) notifySelectionChange();
       try {
         const tabmail = win.document.getElementById("tabmail");
         const tabContainer = tabmail?.tabContainer || null;
