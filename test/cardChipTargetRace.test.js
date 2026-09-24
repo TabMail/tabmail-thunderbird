@@ -14,16 +14,28 @@ describe('card chip target across background wake', () => {
     expect(node).toBeTruthy();
     const acted = [];
     let selectedId = 1;
+    const getMessage = vi.fn(async id => ({ id }));
     const context = {
       console: { log() {}, error() {} },
-      browser: { messages: { get: vi.fn(async id => ({ id })) } },
+      browser: { messages: { get: getMessage } },
       performTaggedAction: vi.fn(async message => acted.push(message.id)),
       triggerTagActionKey: vi.fn(async () => acted.push(selectedId)),
     };
     vm.runInNewContext(`${source.slice(node.start, node.end)}\nthis.handle = _onActionChipClick`, context);
+    for (const invalid of [undefined, null, {}, { source: 'click' },
+      { weMsgId: 0 }, { weMsgId: '1' }, { weMsgId: 1.5 }]) {
+      await context.handle(invalid);
+    }
+    expect(getMessage).not.toHaveBeenCalled();
+    expect(context.performTaggedAction).not.toHaveBeenCalled();
+    getMessage.mockResolvedValueOnce(null);
+    await context.handle({ source: 'click', weMsgId: 3 });
+    expect(context.performTaggedAction).not.toHaveBeenCalled();
+    getMessage.mockClear();
     selectedId = 2;
     await context.handle({ source: 'click', weMsgId: 1 });
     expect(acted).toEqual([1]);
+    expect(getMessage).toHaveBeenCalledExactlyOnceWith(1);
   });
 
   it('captures the chip source message identity before the event crosses a wake', async () => {
@@ -176,6 +188,12 @@ describe('card chip target across background wake', () => {
       expect(row.querySelectorAll('.tm-action-chip')).toHaveLength(1);
       chip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
       expect(seen).toEqual([7, 9]);
+      delete chip.dataset.tmWeMsgId;
+      chip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      expect(seen).toEqual([7, 9]);
+      x.context.extension.messageManager.convert = () => ({ id: 0 });
+      context.paint(row, 'delete', doc, hdr);
+      expect(row.querySelector('.tm-action-chip')).toBeNull();
     } finally {
       x.instance.onShutdown(false);
       dom.window.close();
