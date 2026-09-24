@@ -59,7 +59,20 @@ describe('card chip target across background wake', () => {
       x.context.extension.messageManager.convert = header => ({ id: header.id });
       try {
         await x.api.init();
-        const seen = vi.fn();
+        const acted = [];
+        let selectedId = 1;
+        const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
+        const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+        const handler = ast.body.find(entry => entry.type === 'FunctionDeclaration'
+          && entry.id?.name === '_onActionChipClick');
+        const context = {
+          console: { log() {}, error() {} },
+          browser: { messages: { get: vi.fn(async id => ({ id })) } },
+          performTaggedAction: vi.fn(async message => acted.push(message.id)),
+          triggerTagActionKey: vi.fn(async () => acted.push(selectedId)),
+        };
+        vm.runInNewContext(`${source.slice(handler.start, handler.end)}\nthis.handle = _onActionChipClick`, context);
+        const seen = vi.fn(info => context.handle(info));
         x.api.onActionChipClick.addListener(seen);
         const row = doc.createElement('tr');
         row.id = 'threadTree-row0';
@@ -69,10 +82,13 @@ describe('card chip target across background wake', () => {
         const chip = row.querySelector('.tm-action-chip');
         expect(chip?.textContent).toBe('Delete');
         chip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+        selectedId = 99;
+        await vi.waitFor(() => expect(acted).toEqual([1]));
         expect(seen).toHaveBeenCalledWith(expect.objectContaining({ weMsgId: 1 }));
         currentHdr = { ...hdr, id: 2 };
         Row.prototype.fillRow.call(row, 0, null, {}, tree.view);
         row.querySelector('.tm-action-chip').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+        await vi.waitFor(() => expect(acted).toEqual([1, 2]));
         expect(seen).toHaveBeenLastCalledWith(expect.objectContaining({ weMsgId: 2 }));
         currentHdr = { ...hdr, id: 3 };
         const child = {
@@ -90,6 +106,7 @@ describe('card chip target across background wake', () => {
         Row.prototype.fillRow.call(row, 0, null, {}, tree.view);
         expect(row.querySelector('.tm-action-chip')?.textContent).toBe('Reply');
         row.querySelector('.tm-action-chip').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+        await vi.waitFor(() => expect(acted).toEqual([1, 2, 4]));
         expect(seen).toHaveBeenLastCalledWith(expect.objectContaining({ weMsgId: 4 }));
       } finally {
         x.instance.onShutdown(false);

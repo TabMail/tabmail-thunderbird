@@ -155,6 +155,14 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
     api() {
       const handlers = new Map();
       return {
+        // Expose registration metadata to lifecycle tests: Gecko only primes
+        // events declared with a module/event pair.
+        testPersistentRegistration: () => {
+          const { module, event, extensionApi } = this.options;
+          return module && event && extensionApi?.PERSISTENT_EVENTS?.[event]
+            ? { module, event, prime: fire => extensionApi.primeListener(event, fire, [], false) }
+            : null;
+        },
         addListener: callback => {
           if (!handlers.has(callback)) {
             const fire = { async: (...args) => Promise.resolve(callback(...args)) };

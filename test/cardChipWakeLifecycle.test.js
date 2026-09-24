@@ -74,9 +74,10 @@ describe('card chip first-click wake contract', () => {
       x.api.onActionChipClick.removeListener(live);
 
       const wake = vi.fn();
-      const registration = x.instance.primeListener('onActionChipClick', {
-        async: wake,
-      });
+      const persisted = x.api.onActionChipClick.testPersistentRegistration();
+      expect(persisted?.module).toBe('tmMessageListCardView');
+      expect(persisted?.event).toBe('onActionChipClick');
+      const registration = persisted.prime({ async: wake });
       expect(registration?.convert).toBeTypeOf('function');
       click();
       expect(wake).toHaveBeenCalledTimes(1);
@@ -96,6 +97,17 @@ describe('card chip first-click wake contract', () => {
       x.instance.onShutdown(false);
       dom.window.close();
     }
+  });
+
+  it('detaches a still-live card subscriber on experiment shutdown', async () => {
+    const x = experiment(cardExperiment, 'tmMessageListCardView');
+    const seen = vi.fn();
+    x.api.onActionChipClick.addListener(seen);
+    expect(x.instance._chipClickSubscriptions.size).toBe(1);
+    x.instance.onShutdown(false);
+    expect(x.instance._chipClickSubscriptions.size).toBe(0);
+    x.context.extension.emit('onActionChipClick', { source: 'click', weMsgId: 1 });
+    expect(seen).not.toHaveBeenCalled();
   });
 
   it('forwards the snippet-needs payload after the emitter event name', async () => {
