@@ -2630,6 +2630,171 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
+  it('advances a mismatched exact-membership stale cursor across page-budget slices', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const headerMessageIds = Array.from(
+        { length: reconConfig.stalePageKeys + 2 },
+        (_, index) => `stale-page-${String(index).padStart(4, '0')}@example.com`,
+      );
+      const folderKey = 'account1:/PagedMismatch';
+      const folderId = makeFolderMembershipId('account1', '/PagedMismatch');
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/PagedMismatch', folderId: 'opaque-paged-mismatch', headerMessageIds,
+      }]);
+      for (const msgId of nativeRows.keys()) nativeRows.set(msgId, folderId);
+      // The final local header is absent from native FTS. The stale pass must
+      // traverse a nonterminal 100-key page before missing-direction repair.
+      nativeRows.delete(`${folderKey}:${headerMessageIds.at(-1)}`);
+      const staleGhost = `${folderKey}:zzzz-stale@example.com`;
+      nativeRows.set(staleGhost, folderId);
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (_uri, ids) => ({
+        missing: ids.filter(id => id === 'zzzz-stale@example.com'),
+      }));
+      headerIDToWeID.mockImplementation(async id => headerMessageIds.indexOf(id) + 1);
+      globalThis.browser.messages.get = vi.fn(async id => ({
+        id,
+        headerMessageId: headerMessageIds[id - 1],
+        folder: { accountId: 'account1', path: '/PagedMismatch' },
+      }));
+      getUniqueMessageKey.mockImplementation(async h => `${folderKey}:${h.headerMessageId}`);
+      buildBatchHeader.mockImplementation(async headers => headers.map(h => ({
+        msgId: `${folderKey}:${h.headerMessageId}`, folderId,
+      })));
+      populateBatchBody.mockImplementation(async rows => ({
+        successfulRows: rows, failedMsgIds: [],
+      }));
+      fts.indexBatch = vi.fn(async rows => runFtsMembershipMutation(async () => {
+        for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+        return { count: rows.length };
+      }));
+      const callsPerTurn = [];
+      for (let turn = 0; turn < 35 && !storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        ?.folders?.[folderKey]?.staleAfterKey; turn++) {
+        const before = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        await settleSchedulerTickWithFakeTimers(fts);
+        const after = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        callsPerTurn.push(after - before);
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      expect(callsPerTurn.every(count => count <= 1)).toBe(true);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        .folders[folderKey].staleAfterKey)
+        .toBe(`${folderKey}:${headerMessageIds[99]}`);
+      expect(fts.filterNewMessages).toHaveBeenCalled();
+
+      for (let turn = 0; turn < 100 && !_testExports._getFolderReconSessionDone().has(folderKey); turn++) {
+        const before = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        await settleSchedulerTickWithFakeTimers(fts);
+        const after = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        callsPerTurn.push(after - before);
+        if (_testExports._getPendingUpdates().size > 0) {
+          _testExports._setFtsSearch(fts);
+          await flushPendingUpdates();
+          _testExports._setFtsSearch(null);
+        }
+        vi.setSystemTime(Date.now() + 1000);
+      }
+
+      expect(callsPerTurn.every(count => count <= 1)).toBe(true);
+      expect(fts.listFolderMembership.mock.calls.some(
+        ([id, after, limit]) => id === folderId && after !== null
+          && limit === reconConfig.stalePageKeys,
+      )).toBe(true);
+      expect(fts.removeBatch).toHaveBeenCalledWith([staleGhost], expect.anything());
+      expect(fts.indexBatch).toHaveBeenCalled();
+      expect([...nativeRows.keys()].sort()).toEqual(
+        headerMessageIds.map(id => `${folderKey}:${id}`).sort(),
+      );
+      expect(_testExports._getPendingUpdates().size).toBe(0);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        .folders[folderKey]).toMatchObject({ verified: true, expectedCount: 102, ftsCount: 102 });
+      expect(_testExports._getFolderReconSessionDone()).toContain(folderKey);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('finishes terminal verification within the one-page native budget', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const folderKey = 'account1:/TerminalBudget';
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/TerminalBudget', headerMessageIds: ['missing@example.com'],
+      }]);
+      nativeRows.clear();
+      // A false-negative filter still needs a completed terminal comparison,
+      // so the checkpoint can record a retry instead of failing on page budget.
+      fts.filterNewMessages.mockResolvedValue({ newMsgIds: [] });
+      const pagesPerTurn = [];
+      for (let turn = 0; turn < 35 && !storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        ?.folders?.[folderKey]?.partialPostVerifyFailureCount; turn++) {
+        const before = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        await settleSchedulerTickWithFakeTimers(fts);
+        pagesPerTurn.push(fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length - before);
+        vi.setSystemTime(Date.now() + 1000);
+      }
+      expect(pagesPerTurn.every(count => count <= 1)).toBe(true);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        .folders[folderKey]).toMatchObject({
+        verified: false,
+        partialPostVerifyFailureCount: 1,
+      });
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not bind a stale cursor to a native digest from before a removal', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const headerMessageIds = Array.from(
+        { length: reconConfig.stalePageKeys + 2 },
+        (_, index) => `live-${String(index).padStart(4, '0')}@example.com`,
+      );
+      const folderKey = 'account1:/PagedGhost';
+      const folderId = makeFolderMembershipId('account1', '/PagedGhost');
+      const ghost = `${folderKey}:000-ghost@example.com`;
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/PagedGhost', headerMessageIds,
+      }]);
+      for (const msgId of nativeRows.keys()) nativeRows.set(msgId, folderId);
+      nativeRows.set(ghost, folderId);
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (_uri, ids) => ({
+        missing: ids.filter(id => id === '000-ghost@example.com'),
+      }));
+
+      let removalSlice;
+      for (let turn = 0; turn < 35 && fts.removeBatch.mock.calls.length === 0; turn++) {
+        removalSlice = await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+      expect(fts.removeBatch).toHaveBeenCalledWith([ghost], expect.anything());
+      expect(nativeRows.has(ghost)).toBe(false);
+      expect(removalSlice.foldersLocalDrift).toBe(1);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        ?.folders?.[folderKey]?.staleAfterKey).toBeUndefined();
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it('cancels a metadata-only scan at a pressure boundary without minting cutover', async () => {
     const { fts } = installExactMembershipFolders([
       {
