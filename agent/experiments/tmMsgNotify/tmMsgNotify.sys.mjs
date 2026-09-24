@@ -37,9 +37,9 @@ function debugLog(...args) {
 }
 
 function notifySubscribers(subscribers, info, eventName) {
-  for (const fire of subscribers) {
+  for (const subscription of subscribers) {
     try {
-      Promise.resolve(fire.async(info)).catch(error => {
+      Promise.resolve(subscription.fire.async(info)).catch(error => {
         console.error(`[tmMsgNotify] ${eventName} subscriber failed:`, error);
       });
     } catch (error) {
@@ -207,12 +207,31 @@ function extractRemovedInfo(hdr, folderManager, eventType) {
   }
 }
 
-var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
+var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent {
   constructor(extension) {
     super(extension);
     this._listener = null;
     this._onAddedFires = new Set();
     this._onRemovedFires = new Set();
+    this.PERSISTENT_EVENTS = {
+      onMessageAdded: ({ fire }) => this._registerFire(this._onAddedFires, fire),
+      onMessageRemoved: ({ fire }) => this._registerFire(this._onRemovedFires, fire),
+    };
+  }
+
+  _registerFire(subscribers, fire) {
+    const subscription = { fire };
+    subscribers.add(subscription);
+    this._ensureListener(this.extension.folderManager, this.extension.messageManager);
+    return {
+      unregister: () => {
+        subscribers.delete(subscription);
+        if (!this._onAddedFires.size && !this._onRemovedFires.size) {
+          this._removeListener();
+        }
+      },
+      convert: newFire => { subscription.fire = newFire; },
+    };
   }
   
   onShutdown(isAppShutdown) {
@@ -254,38 +273,18 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPI {
       tmMsgNotify: {
         onMessageAdded: new ExtensionCommonMsgNotify.EventManager({
           context,
+          module: "tmMsgNotify",
+          event: "onMessageAdded",
           name: "tmMsgNotify.onMessageAdded",
-          register: (fire) => {
-            debugLog("onMessageAdded listener registered");
-            self._onAddedFires.add(fire);
-            self._ensureListener(folderManager, messageManager);
-            
-            return () => {
-              debugLog("onMessageAdded listener unregistered");
-              self._onAddedFires.delete(fire);
-              if (!self._onAddedFires.size && !self._onRemovedFires.size) {
-                self._removeListener();
-              }
-            };
-          },
+          extensionApi: self,
         }).api(),
         
         onMessageRemoved: new ExtensionCommonMsgNotify.EventManager({
           context,
+          module: "tmMsgNotify",
+          event: "onMessageRemoved",
           name: "tmMsgNotify.onMessageRemoved",
-          register: (fire) => {
-            debugLog("onMessageRemoved listener registered");
-            self._onRemovedFires.add(fire);
-            self._ensureListener(folderManager, messageManager);
-            
-            return () => {
-              debugLog("onMessageRemoved listener unregistered");
-              self._onRemovedFires.delete(fire);
-              if (!self._onAddedFires.size && !self._onRemovedFires.size) {
-                self._removeListener();
-              }
-            };
-          },
+          extensionApi: self,
         }).api(),
         
         async isListenerActive() {
