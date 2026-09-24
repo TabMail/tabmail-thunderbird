@@ -144,7 +144,8 @@ describe('tmMsgNotify persistent background lifecycle', () => {
     const agent = vi.fn();
     initialApi.onMessageAdded.addListener(agent);
     const initialSetup = lifecycle.sandbox.setup();
-    // Gecko stops persisting listeners at the first asynchronous startup step.
+    // Gecko closes listener persistence after document load and pending
+    // registrations settle; this stricter cutoff catches an added early await.
     lifecycle.closeStartup();
     expect(await initialSetup, JSON.stringify(lifecycle.logs)).toBe(true);
     expect(lifecycle.extension.startupData.persistentListeners.map(entry => entry.event).sort()).toEqual([
