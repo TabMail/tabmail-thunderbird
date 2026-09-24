@@ -1,0 +1,144 @@
+import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+import { parse } from 'acorn';
+import { JSDOM } from 'jsdom';
+import { experiment } from './helpers/nativeLifecycleHarness.js';
+
+const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+const quietConsole = { log() {}, warn() {}, error() {} };
+
+function pane() {
+  const dom = new JSDOM('<html><body></body></html>', { url: 'https://example.test/' });
+  dom.window.document.createXULElement = tag => dom.window.document.createElement(tag);
+  return {
+    dom,
+    win: {
+      document: dom.window.document,
+      location: { href: 'chrome://messenger/content/messenger.xhtml' },
+      closed: false,
+    },
+  };
+}
+
+function selectedFunction(path, name) {
+  const source = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+  const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const declaration = ast.body.map(node => node.type === 'ExportNamedDeclaration' ? node.declaration : node)
+    .find(node => node?.type === 'FunctionDeclaration' && node.id?.name === name);
+  if (!declaration) throw Error(`Missing ${name} in ${path}`);
+  return source.slice(declaration.start, declaration.end);
+}
+
+function startFromManifest(parent) {
+  const paths = manifest.background.scripts.filter(path => path === 'updates/background.js');
+  expect(paths).toEqual(['updates/background.js']);
+  expect(manifest.background.scripts.indexOf(paths[0])).toBeGreaterThan(
+    manifest.background.scripts.indexOf('keepalive/background.js'));
+  const source = readFileSync(new URL(`../${paths[0]}`, import.meta.url), 'utf8');
+  const listeners = {};
+  const browser = {
+    tmUpdates: parent,
+    runtime: {
+      getManifest: () => manifest,
+      onUpdateAvailable: { addListener: listener => { listeners.update = listener; } },
+      onMessage: { addListener: listener => { listeners.message = listener; } },
+      sendMessage: async message => {
+        const result = listeners.message(message);
+        return result === false ? undefined : await result;
+      },
+    },
+  };
+  vm.runInNewContext(source, { browser, console: quietConsole }, { filename: paths[0] });
+  expect(listeners.update).toBeTypeOf('function');
+  expect(listeners.message).toBeTypeOf('function');
+  const unrelated = listeners.message({ command: 'unrelated' });
+  expect(unrelated).toBe(false);
+  expect(unrelated?.then).toBeUndefined(); // An async listener would steal other messages.
+  return { browser, listeners };
+}
+
+describe('manifest-selected update wake contract', () => {
+  it('keeps a real native-FTS bar out of the popup while preserving an add-on update', async () => {
+    const p = pane();
+    const popup = new JSDOM('<div id="version-status-banner"></div><span id="version-text"></span><a id="check-updates-link"></a>');
+    try {
+      const x = experiment('gui/experiments/tmUpdates/tmUpdates.sys.mjs', 'tmUpdates', { windows: [p.win] });
+      const restart = vi.fn(async () => ({ ok: true }));
+      x.api.restartThunderbird = restart;
+      const { browser, listeners } = startFromManifest(x.api);
+      const nativeScope = { browser, log: () => {}, console: quietConsole };
+      vm.runInNewContext(`${selectedFunction('fts/nativeEngine.js', 'showNativeUpdateBanner')}\nglobalThis.showNativeUpdateBanner = showNativeUpdateBanner;`, nativeScope);
+      const popupScope = { browser, document: popup.window.document, console: quietConsole };
+      vm.runInNewContext(`${selectedFunction('popup/popup.js', 'updateVersionStatus')}\nglobalThis.updateVersionStatus = updateVersionStatus;`, popupScope);
+
+      await nativeScope.showNativeUpdateBanner('0.11.3');
+      expect(p.win.document.getElementById('tabmail-update-notification-bar')).not.toBeNull();
+      await popupScope.updateVersionStatus();
+      expect(popup.window.document.getElementById('version-text').textContent).toBe(`v${manifest.version}`);
+      expect(popup.window.document.getElementById('check-updates-link').classList.contains('hidden')).toBe(false);
+      expect(restart).not.toHaveBeenCalled();
+
+      await listeners.update({ version: '1.8.4' });
+      await nativeScope.showNativeUpdateBanner('0.11.4');
+      await popupScope.updateVersionStatus();
+      expect(popup.window.document.getElementById('version-text').textContent)
+        .toBe('Restart Thunderbird to update to v1.8.4');
+      expect(popup.window.document.getElementById('check-updates-link').classList.contains('hidden')).toBe(true);
+      const later = [...p.win.document.querySelectorAll('button')]
+        .find(button => button.textContent === 'Later');
+      later.click();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(p.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
+      expect(await listeners.message({ command: 'getUpdateState' })).toMatchObject({
+        updateState: 'pending', pendingVersion: '1.8.4',
+      });
+      expect(restart).not.toHaveBeenCalled();
+      popup.window.document.getElementById('version-text').click();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(restart).toHaveBeenCalledTimes(1);
+      x.instance.onShutdown(false);
+    } finally {
+      p.dom.window.close();
+      popup.window.close();
+    }
+  });
+
+  it('routes the debug simulator through the manager and clears a visible bar in every window', async () => {
+    const first = pane();
+    const second = pane();
+    const third = pane();
+    const config = new JSDOM('<div id="status"></div><span id="update-debug-state"></span>');
+    try {
+      const x = experiment('gui/experiments/tmUpdates/tmUpdates.sys.mjs', 'tmUpdates', { windows: [first.win] });
+      const { browser, listeners } = startFromManifest(x.api);
+      const scope = { browser, console: quietConsole, SIMULATED_VERSION: '99.0.0',
+        $: id => config.window.document.getElementById(id) };
+      const functions = ['updateDebugStatusDisplay', 'simulateUpdateAvailable', 'clearUpdateState']
+        .map(name => selectedFunction('config/modules/updateDebug.js', name)).join('\n');
+      vm.runInNewContext(`${functions}\nglobalThis.runDebug = { simulateUpdateAvailable, clearUpdateState };`, scope);
+      await scope.runDebug.simulateUpdateAvailable();
+      x.openWindow(second.win);
+      expect(first.win.document.getElementById('tabmail-update-notification-bar')).not.toBeNull();
+      expect(second.win.document.getElementById('tabmail-update-notification-bar')).not.toBeNull();
+      expect(await listeners.message({ command: 'getUpdateState' })).toMatchObject({
+        updateState: 'pending', pendingVersion: '99.0.0',
+      });
+      await scope.runDebug.clearUpdateState();
+      expect(first.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
+      expect(second.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
+      expect(await x.api.isUpdateBarVisible()).toBe(false);
+      expect(await listeners.message({ command: 'getUpdateState' })).toMatchObject({
+        updateState: null, pendingVersion: null,
+      });
+      x.openWindow(third.win);
+      expect(third.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
+      x.instance.onShutdown(false);
+    } finally {
+      first.dom.window.close();
+      second.dom.window.close();
+      third.dom.window.close();
+      config.window.close();
+    }
+  });
+});
