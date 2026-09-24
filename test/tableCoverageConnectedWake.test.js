@@ -141,7 +141,7 @@ it('replays one suspended native paint into durable work for its original messag
   expect(native.instance._untaggedSubscriptions_MLTV.size).toBe(0);
 });
 
-for (const mode of ['cached', 'non-inbox', 'missing-message-id', 'no-subscriber']) {
+for (const mode of ['cached', 'non-inbox', 'missing-message-id', 'no-subscriber', 'already-classified']) {
   it(`does not queue ${mode} table-row work`, async () => {
     const { native, row, hdr } = startNativeRow();
     await native.api.init();
@@ -151,6 +151,8 @@ for (const mode of ['cached', 'non-inbox', 'missing-message-id', 'no-subscriber'
         .prime({ wakeup: vi.fn(async () => {}), async: async info => { pending.push(info); } });
     if (mode === 'non-inbox') hdr.folder.flags = 0;
     if (mode === 'missing-message-id') hdr.messageId = '';
+    if (mode === 'already-classified') hdr.getStringProperty = name =>
+      name === 'tm-action' ? 'reply' : '';
     if (mode === 'cached') state.cached.add(701);
     row.fillRow();
     if (mode === 'cached') {
