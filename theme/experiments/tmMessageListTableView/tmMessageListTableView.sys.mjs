@@ -69,12 +69,38 @@ const UNTAGGED_COVERAGE_CONFIG_MLTV = {
 // MAIN CLASS
 // ═══════════════════════════════════════════════════════════════════════════
 
-var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
+var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPersistent {
   constructor(extension) {
     super(extension);
     this._tmCleanups_MLTV = new Set();
-    this._onUntaggedFire_MLTV = null; // EventManager fire for onUntaggedInboxMessages
+    this._untaggedSubscriptions_MLTV = new Set();
     this._messageManager_MLTV = null; // Convert native hdr → WE message ID
+    this.PERSISTENT_EVENTS = {
+      onUntaggedInboxMessages: ({ fire }) => this._registerUntaggedListener_MLTV(fire),
+    };
+  }
+
+  _registerUntaggedListener_MLTV(fire) {
+    const subscription = { fire };
+    const listener = (_event, messages) => {
+      try {
+        Promise.resolve(subscription.fire.async(messages)).catch(error => {
+          console.error(`${LOG_PREFIX_MLTV} untagged subscriber failed:`, error);
+        });
+      } catch (error) {
+        console.error(`${LOG_PREFIX_MLTV} untagged subscriber failed:`, error);
+      }
+    };
+    subscription.listener = listener;
+    this._untaggedSubscriptions_MLTV.add(subscription);
+    this.extension.on("onUntaggedInboxMessages", listener);
+    return {
+      unregister: () => {
+        this.extension.off("onUntaggedInboxMessages", listener);
+        this._untaggedSubscriptions_MLTV.delete(subscription);
+      },
+      convert: newFire => { subscription.fire = newFire; },
+    };
   }
 
   onShutdown(isAppShutdown) {
@@ -84,7 +110,10 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
         cleanup();
         console.log(`${LOG_PREFIX_MLTV} ✓ Cleanup completed via onShutdown`);
       }
-      this._onUntaggedFire_MLTV = null;
+      for (const subscription of this._untaggedSubscriptions_MLTV) {
+        try { this.extension.off("onUntaggedInboxMessages", subscription.listener); } catch (_) {}
+      }
+      this._untaggedSubscriptions_MLTV.clear();
     } catch (e) {
       console.error(`${LOG_PREFIX_MLTV} onShutdown cleanup failed:`, e);
     }
@@ -234,7 +263,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
 
         // Coverage detection: if this is an inbox row with no action, fire the
         // event so MV3 can enqueue it for classification.
-        if (!action && UNTAGGED_COVERAGE_CONFIG_MLTV.enabled && self._onUntaggedFire_MLTV) {
+        if (!action && UNTAGGED_COVERAGE_CONFIG_MLTV.enabled && self._untaggedSubscriptions_MLTV.size) {
           try {
             const folder = hdr.folder;
             if (folder && _isInboxOrUnifiedInboxFolder_MLTV(folder)) {
@@ -616,7 +645,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
     function _fireUntaggedMessage_MLTV(hdr, rowIndex, folderUri) {
       try {
         if (!UNTAGGED_COVERAGE_CONFIG_MLTV.enabled) return;
-        if (!self._onUntaggedFire_MLTV) return;
+        if (!self._untaggedSubscriptions_MLTV.size) return;
 
         const messageId = hdr?.messageId || "";
         if (!messageId) return;
@@ -644,7 +673,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
         }
 
         try {
-          self._onUntaggedFire_MLTV.async([info]);
+          self.extension.emit("onUntaggedInboxMessages", [info]);
         } catch (eFire) {
           console.log(`${LOG_PREFIX_MLTV} Failed to fire onUntaggedInboxMessages event:`, eFire);
         }
@@ -870,15 +899,10 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPI {
         // action — signals MV3 to enqueue for classification.
         onUntaggedInboxMessages: new ExtensionCommon_MLTV.EventManager({
           context,
+          module: "tmMessageListTableView",
+          event: "onUntaggedInboxMessages",
           name: "tmMessageListTableView.onUntaggedInboxMessages",
-          register: (fire) => {
-            console.log(`${LOG_PREFIX_MLTV} onUntaggedInboxMessages listener registered`);
-            self._onUntaggedFire_MLTV = fire;
-            return () => {
-              console.log(`${LOG_PREFIX_MLTV} onUntaggedInboxMessages listener unregistered`);
-              self._onUntaggedFire_MLTV = null;
-            };
-          },
+          extensionApi: self,
         }).api(),
       },
     };
