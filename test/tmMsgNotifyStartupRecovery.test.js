@@ -393,3 +393,84 @@ it('a native deletion arriving during restore keeps precedence over an older dur
     state.instance.onShutdown(false);
   }
 });
+
+for (const restart of [false, true]) {
+  it(`${restart ? 'restored' : 'live'} native deletion drains without a later mail event`, async () => {
+    const deleted = 'synthetic:/Inbox:removed@example.test';
+    const live = 'synthetic:/Inbox:live@example.test';
+    const engine = makeFtsStore([deleted, live]);
+    stored.chat_ftsIncrementalEnabled = true;
+    stored.chat_ftsIncrementalBatchDelay = 5000;
+    let state = bridge();
+    await indexer.initIncrementalIndexer(engine);
+    state.getListener().msgsDeleted([{ ...header, messageId: 'removed@example.test' }]);
+    await Promise.all(work);
+    expect(indexer._testExports._getPendingUpdates().get(deleted)?.type).toBe('deleted');
+
+    if (restart) {
+      await indexer.disposeIncrementalIndexer();
+      state.instance.onShutdown(false);
+      expect(stored.fts_pending_updates).toEqual([
+        expect.objectContaining({ uniqueKey: deleted, type: 'deleted' }),
+      ]);
+      expect(indexer._testExports._getPendingUpdates().size).toBe(0);
+      state = bridge();
+      await indexer.initIncrementalIndexer(engine);
+      expect(indexer._testExports._getPendingUpdates().get(deleted)?.type).toBe('deleted');
+    }
+
+    await vi.advanceTimersByTimeAsync(5001);
+    expect([...engine._keys]).toEqual([live]);
+    expect(engine.removeBatch.mock.calls.flatMap(([keys]) => keys)).toEqual([deleted]);
+    expect(indexer._testExports._getPendingUpdates().size).toBe(0);
+    expect(stored.fts_pending_updates).toBeUndefined();
+    state.instance.onShutdown(false);
+  });
+}
+
+it('a restored deletion burst drains without a later native event', async () => {
+  const live = 'synthetic:/Inbox:live@example.test';
+  const count = indexer._testExports.FOLDER_RECON_PENDING_HIGH_WATER;
+  const dead = Array.from(
+    { length: count }, (_, i) => `synthetic:/Inbox:removed-${i}@example.test`,
+  );
+  const engine = makeFtsStore([...dead, live]);
+  stored.chat_ftsIncrementalEnabled = true;
+  stored.chat_ftsIncrementalBatchDelay = 5000;
+  stored.fts_initial_scan_complete = true;
+  let state = bridge();
+  await indexer.initIncrementalIndexer(engine);
+  state.getListener().msgsDeleted(dead.map((key, i) => ({
+    ...header, messageKey: i + 17, messageId: `removed-${i}@example.test`,
+  })));
+  await Promise.all(work);
+  expect(indexer._testExports._getPendingUpdates().size).toBe(count);
+
+  await indexer.disposeIncrementalIndexer();
+  expect(stored.fts_pending_updates).toHaveLength(count);
+  state.instance.onShutdown(false);
+  state = bridge();
+  const events = browser.tmMsgNotify;
+  browser.accounts = { list: vi.fn() };
+  const folder = {
+    accountId: 'synthetic', folderPath: '/Inbox', folderURI: header.folder.URI,
+    serverType: 'imap', stableUidKeys: true, uidValidity: 7,
+  };
+  const api = mockNotify([folder], {
+    actualKeysByURI: { [folder.folderURI]: [live] },
+    msgDbByURI: { [folder.folderURI]: new Set(['live@example.test']) },
+  });
+  Object.assign(events, api);
+  browser.tmMsgNotify = events;
+  await indexer.initIncrementalIndexer(engine);
+  expect(indexer._testExports._getPendingUpdates().size).toBe(count);
+
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect([...engine._keys]).toEqual([live]);
+  expect(indexer._testExports._getPendingUpdates().size).toBe(0);
+  expect(stored.fts_pending_updates).toBeUndefined();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect([...engine._keys]).toEqual([live]);
+  expect(indexer._testExports._getPendingUpdates().size).toBe(0);
+  state.instance.onShutdown(false);
+});
