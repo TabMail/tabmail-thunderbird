@@ -56,6 +56,7 @@ const f=experimentFunctions(source('tmMessageListCardView'),names,{
  TM_ACTION_CLASSES_MLCV:actions.map(a=>'tm-action-'+a),_ACTION_TO_KEYWORD_MLCV:Object.fromEntries(actions.map(a=>[a,'tm_'+a])),
  _ACTION_LABELS_MLCV:{reply:'Reply',none:'None',archive:'Archive',delete:'Delete'},CHIP_CLASS_MLCV:'tm-action-chip',
  MailServices_MLCV:{tags:{getColorForKey:()=> '#123456'}},
+ context:{extension:{messageManager:{convert:hdr=>({id:hdr.id})}}},
 });
 const makeHdr=(id,flags,action)=>({id,folder:{flags},getStringProperty:p=>p==='tm-action'?action:''});
 const makeRow=()=>{
@@ -65,7 +66,7 @@ const makeRow=()=>{
  appendChild(c){c.parentNode=row;row.children.push(c);},removeChild(c){row.children=row.children.filter(x=>x!==c);}};
  return row;
 };
-const doc={createElement:()=>({attrs:{},setAttribute(k,v){this.attrs[k]=v;},getAttribute(k){return this.attrs[k];}})};
+const doc={createElement:()=>({attrs:{},dataset:{},setAttribute(k,v){this.attrs[k]=v;},getAttribute(k){return this.attrs[k];}})};
 it('recycled collapsed card outside inbox loses its prior chip and tint, while an inbox card still paints',()=>{
  const outside=makeHdr(1,0,''),inbox=makeHdr(2,1,'reply');
  const tree={view:{dbView:{isContainer:()=>true,isContainerOpen:()=>false,getThreadContainingIndex:()=>({numChildren:2,getChildHdrAt:i=>[outside,inbox][i]})}}};

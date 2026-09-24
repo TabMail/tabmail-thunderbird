@@ -7,7 +7,6 @@ async function startTheme({ failFirstCardRegistration = false } = {}) {
   const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
-  const triggerTagActionKey = vi.fn(async () => {});
   const performTaggedAction = vi.fn(async () => {});
   const snippetStart = vi.fn();
   const snippetStop = vi.fn();
@@ -27,7 +26,6 @@ async function startTheme({ failFirstCardRegistration = false } = {}) {
       + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
       + script.slice(entry.end);
   }
-  globals.triggerTagActionKey = triggerTagActionKey;
   globals.performTaggedAction = performTaggedAction;
   const events = new Map();
   let cardRegistrationFailurePending = failFirstCardRegistration;
@@ -69,7 +67,7 @@ async function startTheme({ failFirstCardRegistration = false } = {}) {
     '// Immediate init for hot-reloads\nglobalThis.__initPromise = initTheme();');
   vm.runInNewContext(script, globals, { filename: 'theme/background.js' });
   await globals.__initPromise;
-  return { event, calls, triggerTagActionKey, performTaggedAction, snippetStart, snippetStop };
+  return { event, calls, performTaggedAction, snippetStart, snippetStop };
 }
 
 describe('theme background startup and canceled suspend', () => {
@@ -77,8 +75,8 @@ describe('theme background startup and canceled suspend', () => {
     const app = await startTheme({ failFirstCardRegistration: true });
     const chip = app.event('browser.tmMessageListCardView.onActionChipClick');
     expect(chip.listeners.size).toBe(1);
-    await chip.emit({ source: 'synthetic' });
-    expect(app.triggerTagActionKey).toHaveBeenCalledTimes(1);
+    await chip.emit({ source: 'synthetic', weMsgId: 1 });
+    expect(app.performTaggedAction).toHaveBeenCalledTimes(1);
   });
 
   it('keeps native theme and action-chip delivery active in the same generation', async () => {
@@ -93,19 +91,17 @@ describe('theme background startup and canceled suspend', () => {
     expect(headerChip.listeners.size).toBe(1);
     expect(multiChip.listeners.size).toBe(1);
     expect(app.snippetStart).toHaveBeenCalled();
-    await chip.emit({ source: 'synthetic' });
+    await chip.emit({ source: 'synthetic', weMsgId: 3 });
     await headerChip.emit({ weMsgId: 1, source: 'synthetic' });
     await multiChip.emit({ weMsgId: 2, source: 'synthetic' });
     await Promise.resolve();
-    expect(app.triggerTagActionKey).toHaveBeenCalledTimes(1);
-    expect(app.performTaggedAction).toHaveBeenCalledTimes(2);
+    expect(app.performTaggedAction).toHaveBeenCalledTimes(3);
     await suspend.emit();
-    await chip.emit({ source: 'synthetic' });
+    await chip.emit({ source: 'synthetic', weMsgId: 3 });
     await headerChip.emit({ weMsgId: 1, source: 'synthetic' });
     await multiChip.emit({ weMsgId: 2, source: 'synthetic' });
     await Promise.resolve();
-    expect(app.triggerTagActionKey).toHaveBeenCalledTimes(2);
-    expect(app.performTaggedAction).toHaveBeenCalledTimes(4);
+    expect(app.performTaggedAction).toHaveBeenCalledTimes(6);
     expect(chip.listeners.size).toBe(1);
     expect(headerChip.listeners.size).toBe(1);
     expect(multiChip.listeners.size).toBe(1);

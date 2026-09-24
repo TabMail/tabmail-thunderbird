@@ -772,11 +772,8 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
      * on selection (fillRow fires on state changes → chip briefly absent
      * → content height shifts → chip re-appears → shifts back).
      *
-     * Click behavior: the click handler explicitly selects the chip's row
-     * via `tree.view.selection.select(rowIndex)` (TB's mousedown selection
-     * doesn't fire reliably for spans inside a card), then emits
-     * `onActionChipClick`. MV3 then runs the *exact* Tab-key pathway:
-     * `mailTabs.getSelectedMessages` → `performTaggedAction` for each.
+     * Click behavior: the chip carries its source message's WebExtension ID
+     * so the action stays bound to that message across a background wake.
      */
     function _paintChipOnCard_MLCV(cardRow, action, doc, hdr) {
       try {
@@ -793,6 +790,13 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
           if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
           return;
         }
+        let weMsgId = 0;
+        try { weMsgId = hdr ? (context.extension.messageManager?.convert?.(hdr)?.id ?? 0) : 0; } catch (_) {}
+        if (!Number.isSafeInteger(weMsgId) || weMsgId <= 0) {
+          if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+          return;
+        }
+        const weIdAttr = String(weMsgId);
         const expectedCls = `${CHIP_CLASS_MLCV} tm-action-${action}`;
         const titleText = `${label} — click to apply`;
 
@@ -800,12 +804,14 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
           if (existing.className !== expectedCls) existing.className = expectedCls;
           if (existing.textContent !== label) existing.textContent = label;
           if (existing.getAttribute("title") !== titleText) existing.setAttribute("title", titleText);
+          if (existing.dataset.tmWeMsgId !== weIdAttr) existing.dataset.tmWeMsgId = weIdAttr;
           return;
         }
 
         const chip = doc.createElement("span");
         chip.className = expectedCls;
         chip.textContent = label;
+        chip.dataset.tmWeMsgId = weIdAttr;
         try { chip.setAttribute("role", "button"); } catch (_) {}
         try { chip.setAttribute("tabindex", "0"); } catch (_) {}
         try { chip.setAttribute("title", titleText); } catch (_) {}
@@ -898,7 +904,9 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
             }
           }
         } catch (_) {}
-        _fireActionChipClick({ source });
+        const weMsgId = Number(chip.dataset?.tmWeMsgId || 0);
+        if (!Number.isSafeInteger(weMsgId) || weMsgId <= 0) return false;
+        _fireActionChipClick({ source, weMsgId });
         return true;
       } catch (_) {
         return false;
