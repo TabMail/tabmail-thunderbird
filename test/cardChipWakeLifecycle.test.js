@@ -37,6 +37,19 @@ function renderedChip() {
 }
 
 describe('card chip first-click wake contract', () => {
+  it('registers the snippet consumer before asynchronous theme initialization', () => {
+    const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+    const calls = ast.body.filter(node => node.type === 'ExpressionStatement'
+      && node.expression?.type === 'CallExpression')
+      .map(node => ({ name: node.expression.callee?.name, at: node.start }));
+    const register = calls.find(call => call.name === '_ensureCardSnippetProvider');
+    const init = calls.find(call => call.name === 'initTheme');
+    expect(register).toBeDefined();
+    expect(init).toBeDefined();
+    expect(register.at).toBeLessThan(init.at);
+  });
+
   it('delivers the first native chip click through a primed listener and converts without duplication', async () => {
     const fixture = renderedChip();
     const { dom, w, doc, tree, Row, selected } = fixture;
@@ -299,15 +312,48 @@ describe('card chip first-click wake contract', () => {
     }
   });
 
-  it('forwards the snippet-needs payload after the emitter event name', async () => {
-    const x = experiment(cardExperiment, 'tmMessageListCardView');
+  it('wakes for the first native uncached card need, converts, and releases the subscription', async () => {
+    const { dom, w, doc, tree, Row } = renderedChip();
+    const x = experiment(cardExperiment, 'tmMessageListCardView', { windows: [w.win] });
     try {
-      const seen = vi.fn();
-      x.api.onSnippetsNeeded.addListener(seen);
+      await x.api.init();
+      const persisted = x.api.onSnippetsNeeded.testPersistentRegistration();
+      expect(persisted).toMatchObject({ module: 'tmMessageListCardView', event: 'onSnippetsNeeded' });
+      const wake = vi.fn();
+      const registration = persisted.prime({ async: wake });
+      const row = doc.createElement('tr');
+      row.id = 'threadTree-row0';
+      row.setAttribute('is', 'thread-card');
+      doc.querySelector('tbody').appendChild(row);
+      const timerCount = x.timers.length;
+      Row.prototype.fillRow.call(row, 0, null, {}, tree.view);
+      expect(x.timers.length).toBeGreaterThan(timerCount);
+      x.timers.at(-1).notify();
+      expect(wake).toHaveBeenCalledExactlyOnceWith({ count: 1 });
+
+      const resumed = vi.fn();
+      registration.convert({ async: resumed });
       x.context.extension.emit('onSnippetsNeeded', { count: 2 });
-      expect(seen).toHaveBeenCalledWith({ count: 2 });
+      expect(wake).toHaveBeenCalledTimes(1);
+      expect(resumed).toHaveBeenCalledExactlyOnceWith({ count: 2 });
+      registration.unregister();
+      x.context.extension.emit('onSnippetsNeeded', { count: 3 });
+      expect(resumed).toHaveBeenCalledTimes(1);
+      expect(x.instance._snippetNeedSubscriptions.size).toBe(0);
     } finally {
       x.instance.onShutdown(false);
+      dom.window.close();
     }
+  });
+
+  it('detaches a live snippet subscriber on experiment shutdown', () => {
+    const x = experiment(cardExperiment, 'tmMessageListCardView');
+    const seen = vi.fn();
+    x.api.onSnippetsNeeded.addListener(seen);
+    expect(x.instance._snippetNeedSubscriptions.size).toBe(1);
+    x.instance.onShutdown(false);
+    expect(x.instance._snippetNeedSubscriptions.size).toBe(0);
+    x.context.extension.emit('onSnippetsNeeded', { count: 1 });
+    expect(seen).not.toHaveBeenCalled();
   });
 });

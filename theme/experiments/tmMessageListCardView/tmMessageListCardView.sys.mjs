@@ -276,8 +276,33 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
   constructor(extension) {
     super(extension);
     this._chipClickSubscriptions = new Set();
+    this._snippetNeedSubscriptions = new Set();
     this.PERSISTENT_EVENTS = {
       onActionChipClick: ({ fire }) => this._registerChipClick(fire),
+      onSnippetsNeeded: ({ fire }) => this._registerSnippetNeed(fire),
+    };
+  }
+
+  _registerSnippetNeed(fire) {
+    const subscription = { fire };
+    const listener = (_event, info) => {
+      try {
+        Promise.resolve(subscription.fire.async(info)).catch(error => {
+          console.error(`${LOG_PREFIX_MLCV} snippet need subscriber failed:`, error);
+        });
+      } catch (error) {
+        console.error(`${LOG_PREFIX_MLCV} snippet need subscriber failed:`, error);
+      }
+    };
+    subscription.listener = listener;
+    this._snippetNeedSubscriptions.add(subscription);
+    this.extension.on("onSnippetsNeeded", listener);
+    return {
+      unregister: () => {
+        this.extension.off("onSnippetsNeeded", listener);
+        this._snippetNeedSubscriptions.delete(subscription);
+      },
+      convert: newFire => { subscription.fire = newFire; },
     };
   }
 
@@ -306,6 +331,10 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
 
   onShutdown(isAppShutdown) {
     console.log(`${LOG_PREFIX_MLCV} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
+    for (const subscription of this._snippetNeedSubscriptions) {
+      try { this.extension.off("onSnippetsNeeded", subscription.listener); } catch (_) {}
+    }
+    this._snippetNeedSubscriptions.clear();
     for (const subscription of this._chipClickSubscriptions) {
       try { this.extension.off("onActionChipClick", subscription.listener); } catch (_) {}
     }
@@ -2007,16 +2036,10 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         // Event: onSnippetsNeeded - MV3 can listen with browser.tmMessageListCardView.onSnippetsNeeded.addListener()
         onSnippetsNeeded: new ExtensionCommon_MLCV.EventManager({
           context,
+          module: "tmMessageListCardView",
+          event: "onSnippetsNeeded",
           name: "tmMessageListCardView.onSnippetsNeeded",
-          register: (fire) => {
-            const listener = (_event, info) => {
-              fire.async(info);
-            };
-            context.extension.on("onSnippetsNeeded", listener);
-            return () => {
-              context.extension.off("onSnippetsNeeded", listener);
-            };
-          },
+          extensionApi: owner,
         }).api(),
         // Event: onActionChipClick - fired when the user clicks an action chip on a card row.
         // MV3 resolves the chip's WebExtension message ID before applying its action.

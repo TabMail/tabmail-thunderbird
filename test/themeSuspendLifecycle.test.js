@@ -10,6 +10,7 @@ async function startTheme({ failFirstCardRegistration = false, holdValidation = 
   const performTaggedAction = vi.fn(async () => {});
   const snippetStart = vi.fn();
   const snippetStop = vi.fn();
+  const snippetTick = vi.fn(async () => {});
   const calls = [];
   let releaseValidation;
   let firstAsyncCardListeners;
@@ -24,7 +25,7 @@ async function startTheme({ failFirstCardRegistration = false, holdValidation = 
     for (const specifier of entry.specifiers) {
       const name = specifier.local.name;
       globals[name] = name === 'SETTINGS' ? {}
-        : name === 'createCardSnippetProvider' ? () => ({ start: snippetStart, stop: snippetStop })
+        : name === 'createCardSnippetProvider' ? () => ({ start: snippetStart, stop: snippetStop, tick: snippetTick })
           : name === 'validateThunderbirdThemeIds' && holdValidation ? () => {
             firstAsyncCardListeners = event('browser.tmMessageListCardView.onActionChipClick').listeners.size;
             return validation;
@@ -76,7 +77,7 @@ async function startTheme({ failFirstCardRegistration = false, holdValidation = 
     '// Immediate init for hot-reloads\nglobalThis.__initPromise = initTheme();');
   vm.runInNewContext(script, globals, { filename: 'theme/background.js' });
   if (!holdValidation) await globals.__initPromise;
-  return { event, calls, performTaggedAction, snippetStart, snippetStop,
+  return { event, calls, performTaggedAction, snippetStart, snippetStop, snippetTick,
     get firstAsyncCardListeners() { return firstAsyncCardListeners; },
     releaseValidation, initPromise: globals.__initPromise };
 }
@@ -86,6 +87,7 @@ describe('theme background startup and canceled suspend', () => {
     const app = await startTheme({ holdValidation: true });
     try {
       expect(app.firstAsyncCardListeners).toBe(1);
+      expect(app.snippetStart).toHaveBeenCalledTimes(1);
       const chip = app.event('browser.tmMessageListCardView.onActionChipClick');
       await chip.emit({ source: 'click', weMsgId: 17 });
       expect(app.performTaggedAction).toHaveBeenCalledExactlyOnceWith({});
@@ -116,6 +118,7 @@ describe('theme background startup and canceled suspend', () => {
     expect(headerChip.listeners.size).toBe(1);
     expect(multiChip.listeners.size).toBe(1);
     expect(app.snippetStart).toHaveBeenCalled();
+    expect(app.snippetTick).toHaveBeenCalledTimes(1);
     await chip.emit({ source: 'synthetic', weMsgId: 3 });
     await headerChip.emit({ weMsgId: 1, source: 'synthetic' });
     await multiChip.emit({ weMsgId: 2, source: 'synthetic' });
