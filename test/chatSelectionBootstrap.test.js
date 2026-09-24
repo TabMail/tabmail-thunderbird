@@ -1,6 +1,52 @@
 import { expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { parse } from 'acorn';
 import { experimentFunctions } from './helpers/experimentFunctions.js';
-const CHAT_SETTINGS = { messageSelectionBootstrapMaxRetries: 3, messageSelectionBootstrapRetryDelayMs: 250 };
+import { CHAT_SETTINGS } from '../chat/modules/chatConfig.js';
+
+it('starts selection recovery from the registered Chat DOMContentLoaded callback', async () => {
+  const source = readFileSync(new URL('../chat/chat.js', import.meta.url), 'utf8');
+  const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const initializer = ast.body.find(node => node.type === 'FunctionDeclaration' && node.id.name === 'initMessageSelectionTracking');
+  const registration = ast.body.find(node => node.type === 'ExpressionStatement'
+    && node.expression.callee?.object?.name === 'window'
+    && node.expression.arguments?.[0]?.value === 'DOMContentLoaded');
+  const startupCall = registration?.expression.arguments[1].body.body.find(node => node.type === 'ExpressionStatement'
+    && node.expression.callee?.name === 'initMessageSelectionTracking');
+  expect(initializer).toBeDefined();
+  expect(startupCall).toBeDefined();
+
+  // Execute the real startup callback through its selection call. The earlier
+  // setup blocks are retained; later unrelated Chat UI setup is omitted.
+  const startupSource = `${source.slice(initializer.start, initializer.end)}\n${source.slice(registration.start, startupCall.end)}\n});`;
+  const timers = [];
+  const updates = [];
+  let onReady;
+  const response = { ok: true, selectedMessageIds: ['synthetic:ready'], selectionCount: 1 };
+  const sendMessage = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(response);
+  const globals = {
+    CHAT_SETTINGS,
+    ctx: {},
+    messageSelectionListener: null,
+    cleanupMessageSelectionListener: vi.fn(),
+    updateSelectionFromMessage: message => updates.push(message.selectedMessageIds),
+    browser: { runtime: { onMessage: { addListener: vi.fn() }, sendMessage } },
+    window: { addEventListener: (name, callback) => { if (name === 'DOMContentLoaded') onReady = callback; } },
+    document: { getElementById: () => null, addEventListener: vi.fn() },
+    setTimeout: callback => { timers.push(callback); },
+    log: vi.fn(),
+  };
+  runInNewContext(startupSource, globals);
+  expect(onReady).toBeTypeOf('function');
+  await onReady();
+  expect(sendMessage).toHaveBeenCalledTimes(1);
+  expect(timers).toHaveLength(1);
+  timers.shift()();
+  await vi.waitFor(() => expect(updates.at(-1)).toEqual(['synthetic:ready']));
+  expect(sendMessage).toHaveBeenCalledTimes(2);
+  expect(timers).toHaveLength(0);
+});
 
 it('does not let an older startup reply replace a newer selection event', async () => {
   let resolveReply;
