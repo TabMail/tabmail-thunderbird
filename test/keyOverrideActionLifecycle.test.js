@@ -207,16 +207,16 @@ it('acts on 100 original messages during a suppressed context selection and refu
   const headers = Array.from({ length: 102 }, (_, index) => ({
     ...selected.hdr, messageKey: index + 1,
   }));
-  const originalIndices = [
+  const originalIndices = new Set([
     ...Array.from({ length: 100 }, (_, index) => index),
     100, // Thunderbird also records the temporary context row in the invalid set.
-  ];
+  ]);
   selected.cw.threadTree.selectedIndices = [100]; // Temporary context-menu selection.
   selected.cw.threadTree._selection = {
     _selectEventsSuppressed: true, _invalidIndices: originalIndices,
   };
   selected.cw.gDBView.selection.count = 1;
-  const getActualSelectedMessages = vi.fn(pane => pane.threadTree._selection._invalidIndices
+  const getActualSelectedMessages = vi.fn(pane => [...pane.threadTree._selection._invalidIndices]
     .filter(index => !pane.threadTree.selectedIndices.includes(index))
     .map(index => headers[index]));
   x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
@@ -237,7 +237,7 @@ it('acts on 100 original messages during a suppressed context selection and refu
   expect(rows.get(101).folder.id).toBe('inbox'); // Context row is not an original target.
 
   effects.length = 0;
-  selected.cw.threadTree._selection._invalidIndices.push(101);
+  selected.cw.threadTree._selection._invalidIndices.add(101);
   const oversized = key(); selected.win.dispatch('keydown', oversized); await settled();
   expect(oversized.preventDefault).not.toHaveBeenCalled();
   expect(getActualSelectedMessages).toHaveBeenCalledOnce();
