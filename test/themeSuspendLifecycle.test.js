@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
 
-async function startTheme() {
+async function startTheme({ failFirstCardRegistration = false } = {}) {
   const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
@@ -30,12 +30,20 @@ async function startTheme() {
   globals.triggerTagActionKey = triggerTagActionKey;
   globals.performTaggedAction = performTaggedAction;
   const events = new Map();
+  let cardRegistrationFailurePending = failFirstCardRegistration;
   function event(path) {
     if (!events.has(path)) {
       const listeners = new Set();
       events.set(path, {
         listeners,
-        addListener: callback => listeners.add(callback),
+        addListener: callback => {
+          if (path === 'browser.tmMessageListCardView.onActionChipClick'
+              && cardRegistrationFailurePending) {
+            cardRegistrationFailurePending = false;
+            throw new Error('synthetic startup registration failure');
+          }
+          listeners.add(callback);
+        },
         removeListener: callback => listeners.delete(callback),
         emit: (...args) => Promise.all([...listeners].map(callback => callback(...args))),
       });
@@ -65,6 +73,14 @@ async function startTheme() {
 }
 
 describe('theme background startup and canceled suspend', () => {
+  it('retries a failed synchronous card-listener registration during theme init', async () => {
+    const app = await startTheme({ failFirstCardRegistration: true });
+    const chip = app.event('browser.tmMessageListCardView.onActionChipClick');
+    expect(chip.listeners.size).toBe(1);
+    await chip.emit({ source: 'synthetic' });
+    expect(app.triggerTagActionKey).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps native theme and action-chip delivery active in the same generation', async () => {
     const app = await startTheme();
     expect(app.calls).toContain('browser.tmTheme.init');

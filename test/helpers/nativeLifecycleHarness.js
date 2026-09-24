@@ -170,13 +170,21 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
       };
     }
   }
+  const extensionEvents = new Map();
   const extension = {
     id: 'synthetic@example.test',
     getURL: relative => `moz-extension://synthetic/${relative}`,
     baseURI: { resolve: relative => `moz-extension://synthetic/${relative}` },
     messageManager: { convert: () => ({ id: 1 }) },
     folderManager: { convert: () => ({ id: 'synthetic', accountId: 'synthetic', path: '/Inbox' }) },
-    on() {}, off() {}, emit() {},
+    on(name, callback) {
+      if (!extensionEvents.has(name)) extensionEvents.set(name, new Set());
+      extensionEvents.get(name).add(callback);
+    },
+    off(name, callback) { extensionEvents.get(name)?.delete(callback); },
+    emit(name, ...args) {
+      for (const callback of [...(extensionEvents.get(name) || [])]) callback(...args);
+    },
   };
   const context = { extension };
   const styleService = {

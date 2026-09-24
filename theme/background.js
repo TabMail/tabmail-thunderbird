@@ -46,8 +46,9 @@ function _ensureActionChipClickListener(reason) {
             return;
         }
         if (_tmActionChipClickListener) return; // already registered
-        _tmActionChipClickListener = (info) => { _onActionChipClick(info); };
-        browser.tmMessageListCardView.onActionChipClick.addListener(_tmActionChipClickListener);
+        const listener = (info) => _onActionChipClick(info);
+        browser.tmMessageListCardView.onActionChipClick.addListener(listener);
+        _tmActionChipClickListener = listener;
         console.log(`[TabMail Theme] onActionChipClick listener registered (${reason})`);
     } catch (e) {
         console.error(`[TabMail Theme] Failed to register onActionChipClick listener (${reason}):`, e);
@@ -357,6 +358,10 @@ async function initTheme() {
 
     console.log(`[TabMail Theme] initTheme() complete after ${Date.now() - t0}ms`);
 }
+
+// Register the click event before the first asynchronous theme-init step, so
+// Thunderbird can prime it and wake this background for the first chip click.
+_ensureActionChipClickListener("background-load");
 
 // Initialise on startup and install/update
 browser.runtime.onStartup.addListener(() => {

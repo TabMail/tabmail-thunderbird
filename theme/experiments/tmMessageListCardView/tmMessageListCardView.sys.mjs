@@ -272,9 +272,44 @@ const CARD_SENDER_CONFIG_MLCV = {
 // MAIN CLASS
 // ═══════════════════════════════════════════════════════════════════════════
 
-var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
+var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersistent {
+  constructor(extension) {
+    super(extension);
+    this._chipClickSubscriptions = new Set();
+    this.PERSISTENT_EVENTS = {
+      onActionChipClick: ({ fire }) => this._registerChipClick(fire),
+    };
+  }
+
+  _registerChipClick(fire) {
+    const subscription = { fire };
+    const listener = info => {
+      try {
+        Promise.resolve(subscription.fire.async(info)).catch(error => {
+          console.error(`${LOG_PREFIX_MLCV} chip click subscriber failed:`, error);
+        });
+      } catch (error) {
+        console.error(`${LOG_PREFIX_MLCV} chip click subscriber failed:`, error);
+      }
+    };
+    subscription.listener = listener;
+    this._chipClickSubscriptions.add(subscription);
+    this.extension.on("onActionChipClick", listener);
+    return {
+      unregister: () => {
+        this.extension.off("onActionChipClick", listener);
+        this._chipClickSubscriptions.delete(subscription);
+      },
+      convert: newFire => { subscription.fire = newFire; },
+    };
+  }
+
   onShutdown(isAppShutdown) {
     console.log(`${LOG_PREFIX_MLCV} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
+    for (const subscription of this._chipClickSubscriptions) {
+      try { this.extension.off("onActionChipClick", subscription.listener); } catch (_) {}
+    }
+    this._chipClickSubscriptions.clear();
     try {
       for (const cleanup of this._tmCleanups || []) {
         cleanup();
@@ -1977,16 +2012,11 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
         // as the Tab key (performTaggedAction).
         onActionChipClick: new ExtensionCommon_MLCV.EventManager({
           context,
+          module: "tmMessageListCardView",
+          event: "onActionChipClick",
           name: "tmMessageListCardView.onActionChipClick",
-          register: (fire) => {
-            const listener = (info) => {
-              fire.async(info);
-            };
-            context.extension.on("onActionChipClick", listener);
-            return () => {
-              context.extension.off("onActionChipClick", listener);
-            };
-          },
+          extensionApi: owner,
+          inputHandling: true,
         }).api(),
       },
     };
