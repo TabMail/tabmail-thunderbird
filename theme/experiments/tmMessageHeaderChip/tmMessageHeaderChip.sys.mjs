@@ -44,6 +44,7 @@ const TM_ACTION_PROP_NAME_MHC = "tm-action";
 // delegation (Phase 2) can scope to header chips and never accidentally
 // fire on a card chip if the two ever end up in the same document.
 const HEADER_CHIP_MARKER_CLASS_MHC = "tm-header-action-chip";
+const HEADER_CHIP_EXTENSION_EVENT_MHC = "tmMessageHeaderChipActionClick";
 const CHIP_BASE_CLASS_MHC = "tm-action-chip";
 
 // Selector used by the (Phase 2) document-level click delegation.
@@ -148,9 +149,44 @@ function _colorForAction_MHC(action) {
 // MAIN CLASS
 // ═══════════════════════════════════════════════════════════════════════════
 
-var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
+var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPIPersistent {
+  constructor(extension) {
+    super(extension);
+    this._chipClickSubscriptions = new Set();
+    this.PERSISTENT_EVENTS = {
+      onActionChipClick: ({ fire }) => this._registerChipClick(fire),
+    };
+  }
+
+  _registerChipClick(fire) {
+    const subscription = { fire };
+    const listener = (_event, info) => {
+      try {
+        Promise.resolve(subscription.fire.async(info)).catch(error => {
+          console.error(`${LOG_PREFIX_MHC} chip click subscriber failed:`, error);
+        });
+      } catch (error) {
+        console.error(`${LOG_PREFIX_MHC} chip click subscriber failed:`, error);
+      }
+    };
+    subscription.listener = listener;
+    this._chipClickSubscriptions.add(subscription);
+    this.extension.on(HEADER_CHIP_EXTENSION_EVENT_MHC, listener);
+    return {
+      unregister: () => {
+        this.extension.off(HEADER_CHIP_EXTENSION_EVENT_MHC, listener);
+        this._chipClickSubscriptions.delete(subscription);
+      },
+      convert: newFire => { subscription.fire = newFire; },
+    };
+  }
+
   onShutdown(isAppShutdown) {
     console.log(`${LOG_PREFIX_MHC} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
+    for (const subscription of this._chipClickSubscriptions) {
+      try { this.extension.off(HEADER_CHIP_EXTENSION_EVENT_MHC, subscription.listener); } catch (_) {}
+    }
+    this._chipClickSubscriptions.clear();
     try {
       for (const cleanup of this._tmCleanups || []) {
         cleanup();
@@ -196,14 +232,11 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
     let windowListenerId = null;
     let isInitialized = false;
 
-    // Set by the schema's EventManager.register; fires the
-    // `onActionChipClick` event with `{source, weMsgId}` to MV3.
-    let _actionChipClickEventFire = null;
+    // Native delegation remains after the background context suspends. Emit
+    // through the extension so Thunderbird's primed listener can wake it.
     function _fireActionChipClick(info) {
       try {
-        if (typeof _actionChipClickEventFire === "function") {
-          _actionChipClickEventFire(info);
-        }
+        owner.extension.emit(HEADER_CHIP_EXTENSION_EVENT_MHC, info);
       } catch (_) {}
     }
 
@@ -638,18 +671,11 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPI {
         refreshAll,
         onActionChipClick: new ExtensionCommon_MHC.EventManager({
           context,
+          module: "tmMessageHeaderChip",
+          event: "onActionChipClick",
           name: "tmMessageHeaderChip.onActionChipClick",
-          register: (fire) => {
-            // Capture the fire function so _activateChipFromEvent_MHC can
-            // dispatch into MV3. Same pattern as
-            // tmMessageListCardView.sys.mjs:1876-1888.
-            _actionChipClickEventFire = (info) => {
-              try { fire.async(info); } catch (_) {}
-            };
-            return () => {
-              _actionChipClickEventFire = null;
-            };
-          },
+          extensionApi: owner,
+          inputHandling: true,
         }).api(),
       },
     };

@@ -54,6 +54,19 @@ describe('card chip first-click wake contract', () => {
 
       const live = vi.fn();
       x.api.onActionChipClick.addListener(live);
+      for (const marker of ['tm-header-action-chip', 'tm-multi-action-chip']) {
+        const foreignChip = doc.createElement('span');
+        foreignChip.className = `tm-action-chip ${marker}`;
+        foreignChip.dataset.tmWeMsgId = '2';
+        doc.body.appendChild(foreignChip);
+        const mousedownReached = vi.fn();
+        foreignChip.addEventListener('mousedown', mousedownReached);
+        foreignChip.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+        foreignChip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+        expect(mousedownReached).toHaveBeenCalledTimes(1);
+        expect(live).not.toHaveBeenCalled();
+        foreignChip.remove();
+      }
       click();
       expect(selected).toHaveBeenCalledWith(0);
       expect(live).toHaveBeenCalledTimes(1);

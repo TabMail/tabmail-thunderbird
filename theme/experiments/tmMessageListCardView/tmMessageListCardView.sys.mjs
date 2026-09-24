@@ -886,6 +886,10 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
       try {
         const chip = e.target?.closest?.(`.${CHIP_CLASS_MLCV}`);
         if (!chip) return false;
+        // Header and multi-message chips share the base class. Only a chip
+        // inside a card row belongs to this experiment's wake event.
+        const rowEl = chip.closest?.('[is="thread-card"]');
+        if (!rowEl) return false;
         try { e.stopPropagation(); } catch (_) {}
         try { e.preventDefault(); } catch (_) {}
         // Resolve the chip's row, programmatically select it (TB's row
@@ -893,7 +897,6 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         // child span), then fire the event MV3 listens to.
         try {
           const ownerDoc = chip.ownerDocument;
-          const rowEl = chip.closest?.('[is="thread-card"]');
           const rowIndex = _rowIndexFromRowId(rowEl?.id || "");
           if (rowIndex >= 0) {
             const tree = ownerDoc?.getElementById?.("threadTree")
@@ -925,7 +928,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
           // race with our explicit selection in the click activate path.
           try {
             const chip = e.target?.closest?.(`.${CHIP_CLASS_MLCV}`);
-            if (chip) e.stopPropagation();
+            if (chip?.closest?.('[is="thread-card"]')) e.stopPropagation();
           } catch (_) {}
         };
         const onClick = (e) => { _activateChipFromEvent_MLCV(e, "click"); };
