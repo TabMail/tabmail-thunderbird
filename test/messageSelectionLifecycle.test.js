@@ -19,9 +19,9 @@ function harness({ loading = false } = {}) {
   const headers = [header, { ...header, messageId: 'second@example.test' }];
   const selection = { count: 1, getRangeCount: () => 1, getRangeAt(_i, a, b) { a.value = 0; b.value = 0; } };
   const trees = [target(), target()];
-  const tabs = trees.map((tree, index) => ({ mode: { name: 'mail3PaneTab' }, chromeBrowser: { contentWindow: {
+  const tabs = trees.map((tree, index) => ({ mode: { name: 'mail3PaneTab' }, chromeBrowser: { ...target(), contentWindow: {
     gDBView: { selection, hdrForRow: () => headers[index] },
-    document: { getElementById: id => id === 'threadTree' ? tree : null, querySelector: () => null },
+    document: { readyState: 'complete', getElementById: id => id === 'threadTree' && tabs[index]?.chromeBrowser.contentWindow.document.readyState === 'complete' ? tree : null, querySelector: () => null },
   } } }));
   const tabmail = { tabInfo: tabs, tabContainer, currentTabInfo: tabs[0], get currentAbout3Pane() { return this.currentTabInfo.chromeBrowser.contentWindow; } };
   const win = { ...target(), document: { readyState: loading ? 'loading' : 'complete', getElementById: id => win.document.readyState === 'complete' && id === 'tabmail' ? tabmail : null, querySelector: () => null } };
@@ -72,7 +72,10 @@ function harness({ loading = false } = {}) {
   const selectTab = index => { tabmail.currentTabInfo = tabs[index]; tabContainer.emit('TabSelect'); };
   const setMessageId = (index, messageId) => { headers[index] = { ...headers[index], messageId }; };
   const finishLoad = () => { win.document.readyState = 'complete'; win.emit('load'); };
-  return { instance, api, trees, tabContainer, selection, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad };
+  const loadedViews = tabs.map(tab => tab.chromeBrowser.contentWindow.gDBView);
+  const setTabLoading = index => { tabs[index].chromeBrowser.contentWindow.document.readyState = 'loading'; tabs[index].chromeBrowser.contentWindow.gDBView = null; };
+  const finishTabLoad = index => { tabs[index].chromeBrowser.contentWindow.document.readyState = 'complete'; tabs[index].chromeBrowser.contentWindow.gDBView = loadedViews[index]; tabs[index].chromeBrowser.emit('load'); };
+  return { instance, api, trees, tabs, tabContainer, selection, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad, setTabLoading, finishTabLoad };
 }
 describe('review: native ownership with real window and queued callback shapes', () => {
   it('tracks an existing window that finishes loading after listener registration', () => {
@@ -148,6 +151,47 @@ describe('review: native ownership with real window and queued callback shapes',
     h.selectTab(0); h.trees[0].emit('select'); h.flush();
     expect(h.notifyObservers).not.toHaveBeenCalled();
     expect(h.trees.map(t => t.count('select'))).toEqual([0, 0]);
+  });
+  it('waits for a newly selected 3-pane tab to load before publishing and attaching its tree', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.trees[0].emit('select'); h.flush();
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
+    h.notifyObservers.mockClear();
+
+    h.setTabLoading(1); h.selectTab(1); h.flush();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(1);
+    expect(h.notifyObservers).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('second@example.test');
+    h.setMessageId(1, 'after-load@example.test');
+    h.trees[1].emit('select'); h.flush();
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('after-load@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('cancels a pending tab load when selection moves away', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.setTabLoading(1); h.selectTab(1);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    h.selectTab(0); h.notifyObservers.mockClear();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(0);
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    h.instance.onShutdown(false);
+  });
+  it('cancels a pending tab load on true shutdown', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.setTabLoading(1); h.selectTab(1); h.notifyObservers.mockClear();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    h.instance.onShutdown(false);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(0);
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.notifyObservers).not.toHaveBeenCalled();
   });
   it('does not reattach a tree when deferred window setup runs after shutdown', () => {
     const h = harness(); h.api.init();

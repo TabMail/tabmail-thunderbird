@@ -41,6 +41,7 @@ export function makeWindow() {
   const cw = target();
   const doc = {
     ...target(),
+    readyState: 'complete',
     location: { href: 'about:3pane' },
     documentElement: { classList: { add() {}, remove() {} }, setAttribute() {}, removeAttribute() {} },
     getElementById: id => id === 'threadTree' ? tree : id === 'messageBrowser' ? pane : null,
