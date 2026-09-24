@@ -531,7 +531,13 @@ async function initMessageSelectionTracking() {
         log(`[MessageSelection] Failed to request current selection: ${e}`, "warn");
       }
       if (messageSelectionListener === listener && selectionRevision === requestRevision && attempt < CHAT_SETTINGS.messageSelectionBootstrapMaxRetries) {
-        setTimeout(() => { void requestSelection(attempt + 1); }, CHAT_SETTINGS.messageSelectionBootstrapRetryDelayMs * (attempt + 1));
+        setTimeout(() => {
+          // A live selection received while this retry was waiting owns Chat's
+          // context, even if the next snapshot would be empty on a message tab.
+          if (messageSelectionListener === listener && selectionRevision === requestRevision) {
+            void requestSelection(attempt + 1);
+          }
+        }, CHAT_SETTINGS.messageSelectionBootstrapRetryDelayMs * (attempt + 1));
       } else if (messageSelectionListener === listener && selectionRevision === requestRevision) {
         log("[MessageSelection] Current selection unavailable after startup retries", "warn");
       }
