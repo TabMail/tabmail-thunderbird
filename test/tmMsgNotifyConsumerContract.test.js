@@ -173,3 +173,48 @@ it('native addition reaches the production agent queue with its Thunderbird mess
   expect(browser.messages.get.mock.calls).toEqual([[17]]);
   state.instance.onShutdown(false);
 });
+
+for (const readiness of ['not initialized', 'disabled in settings']) {
+  it(`native removal received ${readiness} leaves no pending or persisted FTS work`, async () => {
+    const state = bridge();
+    await indexer.setupExperimentListeners();
+    const engine = { removeBatch: vi.fn(async () => ({ count: 1 })) };
+    if (readiness === 'disabled in settings') {
+      stored.chat_ftsIncrementalEnabled = false;
+      await indexer.initIncrementalIndexer(engine);
+    }
+    expect(state.native.size).toBe(1);
+
+    state.getListener().msgsDeleted([{ ...header, messageId: 'disabled@example.test' }]);
+    await Promise.all(work);
+    expect(work.length).toBe(1);
+    expect(indexer._testExports._getPendingUpdates().size).toBe(0);
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(stored.fts_pending_updates).toBeUndefined();
+    expect(engine.removeBatch).not.toHaveBeenCalled();
+    state.instance.onShutdown(false);
+  });
+}
+
+it('a native removal persists its intention before the ordinary batch timer runs', async () => {
+  const state = bridge();
+  await indexer.setupExperimentListeners();
+  stored.chat_ftsIncrementalEnabled = true;
+  stored.chat_ftsIncrementalBatchDelay = 5000;
+  const engine = { removeBatch: vi.fn(async () => ({ count: 1 })) };
+  await indexer.initIncrementalIndexer(engine);
+  expect(state.native.size).toBe(1);
+
+  state.getListener().msgsDeleted([{ ...header, messageId: 'removal-only@example.test' }]);
+  await Promise.all(work);
+  expect(work.length).toBe(1);
+  expect(indexer._testExports._getPendingUpdates().get(
+    'synthetic:/Inbox:removal-only@example.test',
+  ).type).toBe('deleted');
+  await vi.advanceTimersByTimeAsync(2100);
+  expect(engine.removeBatch).not.toHaveBeenCalled();
+  expect(stored.fts_pending_updates?.map(row => [row.uniqueKey, row.type, row.folderKey])).toEqual([
+    ['synthetic:/Inbox:removal-only@example.test', 'deleted', 'synthetic:/Inbox'],
+  ]);
+  state.instance.onShutdown(false);
+});

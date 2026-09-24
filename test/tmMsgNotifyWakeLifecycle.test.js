@@ -15,12 +15,12 @@ function makeLifecycle() {
   const added = vi.fn();
   const removed = vi.fn();
   const extension = {
-    startupData: { persistentListeners: {} },
+    startupData: { persistentListeners: [] },
     folderManager: { convert: folder => ({ id: folder.URI, path: '/Inbox', accountId: 'synthetic' }) },
     messageManager: { convert: () => ({ id: 17 }) },
   };
   let startupOpen = true;
-  let primed = null;
+  const primed = [];
 
   class EventManager {
     constructor(options) { this.options = options; }
@@ -29,15 +29,22 @@ function makeLifecycle() {
       const callbacks = new Map();
       return {
         addListener(callback) {
+          if (callbacks.has(callback)) return;
           const fire = { async: payload => callback(payload) };
-          if (primed?.event === event) {
-            primed.registration.convert(fire);
-            for (const payload of primed.payloads) fire.async(payload);
-            primed = null;
+          const waiting = primed.find(entry => entry.event === event && !entry.converted);
+          let registration;
+          if (waiting) {
+            waiting.converted = true;
+            waiting.registration.convert(fire);
+            for (const payload of waiting.payloads) fire.async(payload);
+            registration = waiting.registration;
           } else {
-            callbacks.set(callback, extensionApi.PERSISTENT_EVENTS[event]({ fire }));
+            registration = extensionApi.PERSISTENT_EVENTS[event]({ fire });
           }
-          if (startupOpen) extension.startupData.persistentListeners[event] = { module, event };
+          callbacks.set(callback, registration);
+          if (startupOpen && !waiting) {
+            extension.startupData.persistentListeners.push({ module, event });
+          }
         },
         removeListener(callback) {
           callbacks.get(callback)?.unregister();
@@ -80,7 +87,7 @@ function makeLifecycle() {
     node.type === 'ExportNamedDeclaration' && node.declaration?.id?.name === 'setupExperimentListeners'
   )?.declaration;
   expect(setup).toBeTruthy();
-  vm.runInContext(`let _experimentListenersActive = false;\n${indexerSource.slice(setup.start, setup.end)}\nthis.setup = setupExperimentListeners;`, sandbox);
+  vm.runInContext(`let _experimentListenersActive = false;\n${indexerSource.slice(setup.start, setup.end)}\nthis.setup = setupExperimentListeners;\nthis.resetSetup = () => { _experimentListenersActive = false; };`, sandbox);
 
   function api(instance) {
     const value = instance.getAPI({ extension }).tmMsgNotify;
@@ -99,7 +106,9 @@ function makeLifecycle() {
       },
     };
     const registration = instance.primeListener(event, fire);
-    primed = { event, payloads, registration };
+    const entry = { event, payloads, registration, converted: false };
+    primed.push(entry);
+    return entry;
   }
   return { sandbox, extension, nativeListeners, pending, wakeups, logs, added, removed, api, prime,
     closeStartup() { startupOpen = false; },
@@ -128,39 +137,76 @@ describe('tmMsgNotify persistent background lifecycle', () => {
     expect(firstAsyncStart).toBeGreaterThan(setupCall);
   });
 
-  it('persists both production event families and replays a cold deletion before getAPI', async () => {
+  it('persists both event families before the first yield and owns every subscriber across wakes', async () => {
     const lifecycle = makeLifecycle();
     const first = lifecycle.newInstance();
     const initialApi = lifecycle.api(first);
     const agent = vi.fn();
     initialApi.onMessageAdded.addListener(agent);
-    expect(await lifecycle.sandbox.setup(), JSON.stringify(lifecycle.logs)).toBe(true);
-    expect(Object.keys(lifecycle.extension.startupData.persistentListeners).sort()).toEqual([
-      'onMessageAdded', 'onMessageRemoved',
-    ]);
+    const initialSetup = lifecycle.sandbox.setup();
+    // Gecko stops persisting listeners at the first asynchronous startup step.
     lifecycle.closeStartup();
-    initialApi.onMessageAdded.removeListener(agent);
+    expect(await initialSetup, JSON.stringify(lifecycle.logs)).toBe(true);
+    expect(lifecycle.extension.startupData.persistentListeners.map(entry => entry.event).sort()).toEqual([
+      'onMessageAdded', 'onMessageAdded', 'onMessageRemoved',
+    ]);
     initialApi.onMessageAdded.close();
     initialApi.onMessageRemoved.close();
     expect(lifecycle.nativeListeners.size).toBe(0);
 
-    // A new parent experiment instance primes from the saved registration
-    // before the background module has called getAPI().
+    // Gecko primes each saved listener independently before getAPI runs.
     const cold = lifecycle.newInstance();
+    lifecycle.prime('onMessageAdded', cold);
+    lifecycle.prime('onMessageAdded', cold);
     lifecycle.prime('onMessageRemoved', cold);
     expect(lifecycle.nativeListeners.size).toBe(1);
+    expect(cold._onAddedFires.size).toBe(2);
+    expect(cold._onRemovedFires.size).toBe(1);
     const coldNative = [...lifecycle.nativeListeners][0];
+    coldNative.msgAdded(header);
     coldNative.msgsDeleted([header]);
-    expect(lifecycle.wakeups).toEqual(['onMessageRemoved']);
-    expect(lifecycle.pending).toEqual(['onMessageRemoved']);
+    expect(lifecycle.wakeups).toEqual([
+      'onMessageAdded', 'onMessageAdded', 'onMessageRemoved',
+    ]);
+    expect(lifecycle.pending).toEqual(lifecycle.wakeups);
 
     const resumed = lifecycle.api(cold);
-    resumed.onMessageRemoved.addListener(lifecycle.removed);
+    const resumedAgent = vi.fn();
+    resumed.onMessageAdded.addListener(resumedAgent);
+    lifecycle.sandbox.resetSetup();
+    expect(await lifecycle.sandbox.setup()).toBe(true);
+    expect(resumedAgent).toHaveBeenCalledTimes(1);
+    expect(lifecycle.added).toHaveBeenCalledTimes(1);
     expect(lifecycle.removed).toHaveBeenCalledTimes(1);
     expect(lifecycle.removed.mock.calls[0][0].headerMessageId).toBe(header.messageId);
-    cold.onShutdown(false);
-    expect(lifecycle.nativeListeners.size).toBe(0);
+
+    coldNative.msgAdded(header);
     coldNative.msgsDeleted([header]);
-    expect(lifecycle.removed).toHaveBeenCalledTimes(1);
+    expect(resumedAgent).toHaveBeenCalledTimes(2);
+    expect(lifecycle.added).toHaveBeenCalledTimes(2);
+    expect(lifecycle.removed).toHaveBeenCalledTimes(2);
+    resumed.onMessageAdded.close();
+    resumed.onMessageRemoved.close();
+    expect(lifecycle.nativeListeners.size).toBe(0);
+    expect(cold._onAddedFires.size).toBe(0);
+    expect(cold._onRemovedFires.size).toBe(0);
+
+    // A later suspension primes all three again; clearing primed ownership
+    // must remove the shared native listener without leaving a retained fire.
+    const next = lifecycle.newInstance();
+    const nextRegistrations = [
+      lifecycle.prime('onMessageAdded', next),
+      lifecycle.prime('onMessageAdded', next),
+      lifecycle.prime('onMessageRemoved', next),
+    ];
+    expect(lifecycle.nativeListeners.size).toBe(1);
+    for (const entry of nextRegistrations) entry.registration.unregister();
+    expect(lifecycle.nativeListeners.size).toBe(0);
+    expect(next._onAddedFires.size).toBe(0);
+    expect(next._onRemovedFires.size).toBe(0);
+
+    cold.onShutdown(false);
+    coldNative.msgsDeleted([header]);
+    expect(lifecycle.removed).toHaveBeenCalledTimes(2);
   });
 });

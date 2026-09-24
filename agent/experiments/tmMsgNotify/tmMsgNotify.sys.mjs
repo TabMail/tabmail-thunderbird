@@ -214,23 +214,28 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
     this._onAddedFires = new Set();
     this._onRemovedFires = new Set();
     this.PERSISTENT_EVENTS = {
-      onMessageAdded: ({ fire }) => this._registerFire(this._onAddedFires, fire),
-      onMessageRemoved: ({ fire }) => this._registerFire(this._onRemovedFires, fire),
+      onMessageAdded: ({ fire }) => this._registerFire(this._onAddedFires, fire, "onMessageAdded"),
+      onMessageRemoved: ({ fire }) => this._registerFire(this._onRemovedFires, fire, "onMessageRemoved"),
     };
   }
 
-  _registerFire(subscribers, fire) {
+  _registerFire(subscribers, fire, eventName) {
     const subscription = { fire };
     subscribers.add(subscription);
+    debugLog(`${eventName} listener registered`);
     this._ensureListener(this.extension.folderManager, this.extension.messageManager);
     return {
       unregister: () => {
+        debugLog(`${eventName} listener unregistered`);
         subscribers.delete(subscription);
         if (!this._onAddedFires.size && !this._onRemovedFires.size) {
           this._removeListener();
         }
       },
-      convert: newFire => { subscription.fire = newFire; },
+      convert: newFire => {
+        debugLog(`${eventName} listener converted`);
+        subscription.fire = newFire;
+      },
     };
   }
   
