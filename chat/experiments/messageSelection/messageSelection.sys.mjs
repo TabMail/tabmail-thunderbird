@@ -403,6 +403,10 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
               onLoadWindow(win) {
                 trackWindow(win);
               },
+              onUnloadWindow(win) {
+                cancelPendingTabLoad(win);
+                pendingWindowLoads.get(win)?.();
+              },
             });
           } catch (e) {
             tlog("Failed to register window listener:", e);

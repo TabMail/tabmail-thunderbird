@@ -199,6 +199,49 @@ describe('review: native ownership with real window and queued callback shapes',
     expect(h.trees[1].count('select')).toBe(0);
     expect(h.notifyObservers).not.toHaveBeenCalled();
   });
+  it('releases a pending tab load when its mail window closes', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.setTabLoading(1); h.selectTab(1); h.notifyObservers.mockClear();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    for (const listener of h.registered.values()) listener.onUnloadWindow?.(h.win);
+    h.win.closed = true;
+    h.win.emit('unload');
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(0);
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    h.instance.onShutdown(false);
+  });
+  it('waits for a complete document even if its thread tree already exists', () => {
+    const h = harness(); h.api.init(); h.flush(); h.notifyObservers.mockClear();
+    const doc = h.tabs[1].chromeBrowser.contentWindow.document;
+    doc.readyState = 'interactive';
+    doc.getElementById = id => id === 'threadTree' ? h.trees[1] : null;
+    h.selectTab(1); h.flush();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    doc.readyState = 'complete';
+    h.tabs[1].chromeBrowser.emitCaptured('load', { target: doc }); h.flush();
+    expect(h.trees[1].count('select')).toBe(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('second@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('waits for a thread tree even if the selected document reports complete', () => {
+    const h = harness(); h.api.init(); h.flush(); h.notifyObservers.mockClear();
+    const doc = h.tabs[1].chromeBrowser.contentWindow.document;
+    const originalGetElementById = doc.getElementById;
+    doc.getElementById = () => null;
+    h.selectTab(1); h.flush();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    doc.getElementById = originalGetElementById;
+    h.tabs[1].chromeBrowser.emitCaptured('load', { target: doc }); h.flush();
+    expect(h.trees[1].count('select')).toBe(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('second@example.test');
+    h.instance.onShutdown(false);
+  });
   it('does not reattach a tree when deferred window setup runs after shutdown', () => {
     const h = harness(); h.api.init();
     expect(h.trees[0].count('select')).toBe(1);
