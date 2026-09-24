@@ -207,6 +207,20 @@ describe('card chip target across background wake', () => {
       context.paint(row, 'delete', doc, hdr);
       row.querySelector('.tm-action-chip').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
       expect(seen).toEqual([7, 9, 11]);
+
+      const recoveredChip = row.querySelector('.tm-action-chip');
+      hdr = { ...hdr, id: 12 };
+      const throwingConversion = vi.fn(() => { throw new Error('synthetic header invalidated'); });
+      x.context.extension.messageManager.convert = throwingConversion;
+      context.paint(row, 'delete', doc, hdr);
+      expect(throwingConversion).toHaveBeenCalledExactlyOnceWith(hdr);
+      expect(row.querySelector('.tm-action-chip') === null).toBe(true);
+      recoveredChip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      expect(seen).toEqual([7, 9, 11]);
+      x.context.extension.messageManager.convert = header => ({ id: header.id });
+      context.paint(row, 'delete', doc, hdr);
+      row.querySelector('.tm-action-chip').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      expect(seen).toEqual([7, 9, 11, 12]);
     } finally {
       x.instance.onShutdown(false);
       dom.window.close();
