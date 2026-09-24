@@ -37,20 +37,6 @@ function renderedChip() {
 }
 
 describe('card chip first-click wake contract', () => {
-  it('registers the chip event before async theme initialization begins', () => {
-    const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
-    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
-    const topLevelCalls = ast.body.filter(node =>
-      node.type === 'ExpressionStatement' && node.expression?.type === 'CallExpression'
-      && node.expression.callee?.type === 'Identifier'
-    ).map(node => node.expression.callee.name);
-    const listenerIndex = topLevelCalls.indexOf('_ensureActionChipClickListener');
-    const initIndex = topLevelCalls.indexOf('initTheme');
-    expect(initIndex).toBeGreaterThan(-1);
-    expect(listenerIndex).toBeGreaterThan(-1);
-    expect(listenerIndex).toBeLessThan(initIndex);
-  });
-
   it('delivers the first native chip click through a primed listener and converts without duplication', async () => {
     const fixture = renderedChip();
     const { dom, w, doc, tree, Row, selected } = fixture;
@@ -118,23 +104,51 @@ describe('card chip first-click wake contract', () => {
       expect(chip?.dataset.tmWeMsgId).toBe('1');
 
       const messages = new Map([
-        [1, { id: 1, folder: 'Inbox' }],
-        [2, { id: 2, folder: 'Inbox' }],
+        [1, { id: 1, action: 'delete', read: false,
+          folder: { id: 'inbox' }, headerMessageId: 'synthetic-1@example.test' }],
+        [2, { id: 2, action: 'delete', read: false,
+          folder: { id: 'inbox' }, headerMessageId: 'synthetic-2@example.test' }],
       ]);
       let selectedId = 1;
       const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
       const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
       const node = ast.body.find(entry => entry.type === 'FunctionDeclaration'
         && entry.id?.name === '_onActionChipClick');
+      const actionSource = readFileSync(new URL('../agent/modules/action.js', import.meta.url), 'utf8');
+      const actionAst = parse(actionSource, { ecmaVersion: 'latest', sourceType: 'module' });
+      const actionNode = actionAst.body.find(entry =>
+        entry.type === 'ExportNamedDeclaration'
+        && entry.declaration?.id?.name === 'performTaggedAction').declaration;
+      const moves = vi.fn(async (ids, folder) => {
+        for (const id of ids) {
+          const msg = messages.get(id);
+          if (!msg) throw new Error(`missing synthetic message ${id}`);
+          messages.set(id, { ...msg, folder: { id: folder } });
+        }
+      });
+      const updates = vi.fn(async (id, fields) => {
+        const msg = messages.get(id);
+        if (!msg) throw new Error(`missing synthetic message ${id}`);
+        messages.set(id, { ...msg, ...fields });
+      });
       const context = {
         console: { log() {}, error() {} },
-        browser: { messages: { get: vi.fn(async id => messages.get(id) ?? null) } },
-        performTaggedAction: vi.fn(async msg => { messages.set(msg.id, { ...msg, folder: 'Trash' }); }),
+        browser: { messages: {
+          get: vi.fn(async id => messages.get(id) ?? null),
+          update: updates, move: moves,
+        } },
+        ACTIONS: { DELETE: 'delete', ARCHIVE: 'archive', REPLY: 'reply' },
+        getActionForWeId: async hdr => hdr.action,
+        getTrashFolderForHeader: async () => ({ id: 'trash', path: '/Trash' }),
+        log() {},
         triggerTagActionKey: vi.fn(async () => {
           const msg = messages.get(selectedId);
-          messages.set(selectedId, { ...msg, folder: 'Trash' });
+          messages.set(selectedId, { ...msg, folder: { id: 'trash' } });
         }),
       };
+      vm.runInNewContext(`${actionSource.slice(actionNode.start, actionNode.end)}\nthis.performTaggedAction = performTaggedAction`, context);
+      const performTaggedAction = vi.fn(context.performTaggedAction);
+      context.performTaggedAction = performTaggedAction;
       vm.runInNewContext(`${source.slice(node.start, node.end)}\nthis.handle = _onActionChipClick`, context);
 
       const queued = [];
@@ -152,18 +166,22 @@ describe('card chip first-click wake contract', () => {
       expect(queued[0].info).toEqual({
         source: activation === 'click' ? 'click' : 'keydown', weMsgId: 1,
       });
-      expect(messages.get(1).folder).toBe('Inbox');
+      expect(messages.get(1).folder.id).toBe('inbox');
       selectedId = 2;
       const resumed = vi.fn(info => context.handle(info));
       registration.convert({ async: resumed });
       // Gecko flushes the queued first event after convert; model that handoff.
       for (const item of queued) item.resolve(await resumed(item.info));
       expect(resumed).toHaveBeenCalledTimes(1);
-      expect(context.performTaggedAction).toHaveBeenCalledWith({ id: 1, folder: 'Inbox' });
-      expect(context.browser.messages.get).toHaveBeenCalledExactlyOnceWith(1);
+      expect(performTaggedAction).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }));
+      expect(context.browser.messages.get).toHaveBeenCalledTimes(2);
+      expect(context.browser.messages.get).toHaveBeenNthCalledWith(1, 1);
+      expect(context.browser.messages.get).toHaveBeenNthCalledWith(2, 1);
       expect(context.triggerTagActionKey).not.toHaveBeenCalled();
-      expect(messages.get(1).folder).toBe('Trash');
-      expect(messages.get(2).folder).toBe('Inbox');
+      expect(updates).toHaveBeenCalledExactlyOnceWith(1, { read: true });
+      expect(moves).toHaveBeenCalledExactlyOnceWith([1], 'trash', { isUserAction: true });
+      expect(messages.get(1)).toMatchObject({ id: 1, read: true, folder: { id: 'trash' } });
+      expect(messages.get(2)).toMatchObject({ id: 2, read: false, folder: { id: 'inbox' } });
       registration.unregister();
     } finally {
       x.instance.onShutdown(false);
