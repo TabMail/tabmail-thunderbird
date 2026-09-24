@@ -200,6 +200,38 @@ it('executes all 100 selected actions at the bound and refuses 101', async () =>
   expect(rows.get(101).folder.id).toBe('inbox');
 });
 
+it('acts only on a selected expanded thread head even when the thread has 101 children', async () => {
+  cleanupTagActionKeyListeners();
+  x.instance.onShutdown(false);
+  const selected = makeWindow();
+  const headers = Array.from({ length: 102 }, (_, index) => ({
+    ...selected.hdr, messageKey: index + 1,
+  }));
+  selected.cw.threadTree.selectedIndices = [0];
+  selected.cw.gDBView.selection.count = 1;
+  selected.cw.gDBView.isContainer = index => index === 0;
+  selected.cw.gDBView.isContainerOpen = index => index === 0;
+  selected.cw.gDBView.getThreadContainingIndex = () => ({ numChildren: 101 });
+  const getActualSelectedMessages = vi.fn(pane =>
+    pane.threadTree.selectedIndices.map(index => headers[index]));
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [selected.win], moduleOverrides: { getActualSelectedMessages },
+  });
+  x.context.extension.messageManager.convert = header => ({ id: header.messageKey });
+  browser.keyOverride = x.api;
+  rows = new Map(headers.map(header => [header.messageKey, {
+    ...fresh(), id: header.messageKey,
+  }]));
+  registerTabKeyHandlers(); x.api.init();
+
+  const pressed = key(); selected.win.dispatch('keydown', pressed); await settled();
+  expect(pressed.preventDefault).toHaveBeenCalledOnce();
+  expect(getActualSelectedMessages).toHaveBeenCalledOnce();
+  expect(effects).toEqual([['read', 1], ['move', 1, 'archive']]);
+  expect(rows.get(1).folder.id).toBe('archive');
+  expect([...rows.values()].slice(1).every(row => row.folder.id === 'inbox')).toBe(true);
+});
+
 it('acts on 100 original messages during a suppressed context selection and refuses 101', async () => {
   cleanupTagActionKeyListeners();
   x.instance.onShutdown(false);
