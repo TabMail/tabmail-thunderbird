@@ -8,7 +8,12 @@ import { CHAT_SETTINGS } from '../chat/modules/chatConfig.js';
 import { initMessageSelectionListener, cleanupMessageSelectionListener, handleMessageSelectionRequest } from '../chat/modules/messageSelection.js';
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
 afterEach(() => { cleanupMessageSelectionListener(); delete globalThis.browser; });
-it.each(['mailMessageTab', 'contentTab'])('a queued bootstrap retry must not erase live mail selection on %s', async mode => {
+it.each([
+ ['mailMessageTab', undefined],
+ ['contentTab', undefined],
+ ['mailMessageTab', { ok: true, selectedMessageIds: [], selectionCount: 0 }],
+ ['contentTab', { ok: true, selectedMessageIds: [], selectionCount: 0 }],
+])('a queued bootstrap retry must not erase live mail selection on %s after %j startup reply', async (mode, firstReply) => {
  const w=makeWindow();
  const x=experiment('chat/experiments/messageSelection/messageSelection.sys.mjs', 'messageSelection', {windows:[w.win]});
  x.instance.extension.messageManager.convert=hdr=>({id:hdr.messageKey});
@@ -18,7 +23,7 @@ it.each(['mailMessageTab', 'contentTab'])('a queued bootstrap retry must not era
   onMessage:{addListener:fn=>listeners.add(fn),removeListener:fn=>listeners.delete(fn)},
   sendMessage:vi.fn(async message=>{
    if(message.command==='get-current-selection') {
-    if(firstRequest) {firstRequest=false;return undefined;}
+    if(firstRequest) {firstRequest=false;return firstReply;}
     return handleMessageSelectionRequest(message);
    }
    history.push(message.selectedMessageIds);

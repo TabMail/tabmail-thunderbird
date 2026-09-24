@@ -77,6 +77,72 @@ it('does not let an older startup reply replace a newer selection event', async 
   expect(updates).toEqual([['new']]);
 });
 
+it('does not schedule another startup retry when a rejected request follows a newer selection', async () => {
+  let rejectReply;
+  let onMessage;
+  const updates = [];
+  const timers = [];
+  const sendMessage = vi.fn(() => new Promise((resolve, reject) => { rejectReply = reject; }));
+  const globals = {
+    CHAT_SETTINGS,
+    browser: { runtime: {
+      onMessage: { addListener: fn => { onMessage = fn; } },
+      sendMessage,
+    } },
+    messageSelectionListener: null,
+    cleanupMessageSelectionListener: vi.fn(),
+    updateSelectionFromMessage: message => updates.push(message.selectedMessageIds),
+    log: vi.fn(),
+    setTimeout: fn => { timers.push(fn); },
+  };
+  const { initMessageSelectionTracking } = experimentFunctions(
+    new URL('../chat/chat.js', import.meta.url), ['initMessageSelectionTracking'], globals,
+  );
+  const startup = initMessageSelectionTracking();
+  onMessage({ command: 'selection-changed', selectedMessageIds: ['new'], selectionCount: 1 });
+  rejectReply(new Error('background restarted'));
+  await startup;
+  expect(updates).toEqual([['new']]);
+  expect(timers).toHaveLength(0);
+  expect(sendMessage).toHaveBeenCalledTimes(1);
+  onMessage({ command: 'selection-changed', selectedMessageIds: ['newer'], selectionCount: 1 });
+  expect(updates).toEqual([['new'], ['newer']]);
+});
+
+it('does not schedule a rejected startup retry after cleanup and accepts a fresh lifecycle', async () => {
+  let rejectReply;
+  const updates = [];
+  const timers = [];
+  const sendMessage = vi.fn(() => new Promise((resolve, reject) => { rejectReply = reject; }));
+  const globals = {
+    CHAT_SETTINGS,
+    browser: { runtime: {
+      onMessage: { addListener: vi.fn(), removeListener: vi.fn() },
+      sendMessage,
+    } },
+    messageSelectionListener: null,
+    updateSelectionFromMessage: message => updates.push(message.selectedMessageIds),
+    log: vi.fn(),
+    setTimeout: fn => { timers.push(fn); },
+  };
+  const { initMessageSelectionTracking, cleanupMessageSelectionListener } = experimentFunctions(
+    new URL('../chat/chat.js', import.meta.url),
+    ['initMessageSelectionTracking', 'cleanupMessageSelectionListener'], globals,
+  );
+  const startup = initMessageSelectionTracking();
+  cleanupMessageSelectionListener();
+  rejectReply(new Error('background restarted'));
+  await startup;
+  expect(updates).toEqual([]);
+  expect(timers).toHaveLength(0);
+  expect(sendMessage).toHaveBeenCalledTimes(1);
+
+  sendMessage.mockResolvedValueOnce({ ok: true, selectedMessageIds: ['fresh'], selectionCount: 1 });
+  await initMessageSelectionTracking();
+  expect(updates).toEqual([['fresh']]);
+  expect(sendMessage).toHaveBeenCalledTimes(2);
+});
+
 it('rechecks an initially empty selection while the mail window finishes loading', async () => {
   const timers = [];
   const updates = [];
