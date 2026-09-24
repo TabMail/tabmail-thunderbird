@@ -16,7 +16,7 @@
 **Tier B — possible but needs generalization/negotiation:**
 - `tmHdr` action portion (`setAction`/`getAction` = mork string props) — needs a generic `messages.{get,set}CustomProperty` (persisted per-message annotation). Widely wanted; must be generic, not `tm-action`.
 - `tmPrefs` (gui/) — raw `Services.prefs` bridge is a NON-STARTER upstream (security). Only the intent-level bits are candidates: per-server check interval → accounts API; threaded/unthreaded → `mailTabs` view settings.
-- `keyOverride` (theme/) — mail-window Tab/Shift+Tab/hotkey capture; partial overlap with stock `commands` API.
+- `keyOverride` (theme/) — mail-window bare-Tab action capture; Shift+Tab uses native focus navigation. The chat-hotkey event has no active native producer; partial overlap with stock `commands` API.
 
 **Tier C — poor upstream candidates (TabMail-specific UI/CSS, workarounds, or platform issues):**
 - Passive painters / chrome-DOM injection: `tmTheme`, `tmMessageListCardView`, `tmMessageListTableView`, `tmMessageHeaderChip`, `tmMultiMessageChip`, `tmPreviewGate`, `threadTooltip`, `threadPaneDisplayToggle` — the legitimate generic need underneath (row tint, chips, snippets, card/table toggle) maps to a **"message-list custom column / row decoration" API**; `tagSort` already rides `ThreadPaneColumns.addCustomColumn`, so a WebExtension custom-column API is the realistic (large) generalization.

@@ -85,10 +85,17 @@ describe('registerTabKeyHandlers', () => {
         key('KeyA'), key('Enter'), key('KeyL', { altKey: true, metaKey: true }),
         key('Tab', { ctrlKey: true }), key('Tab', { shiftKey: true }),
       ]) {
+        const queries = browser.mailTabs.query.mock.calls.length;
+        const selections = browser.mailTabs.getSelectedMessages.mock.calls.length;
         win.dispatch('keydown', event);
+        // A stray notification can start selection/action work asynchronously.
+        await new Promise(resolve => setImmediate(resolve));
         expect(event.preventDefault).not.toHaveBeenCalled();
         expect(event.stopPropagation).not.toHaveBeenCalled();
         expect(event.stopImmediatePropagation).not.toHaveBeenCalled();
+        expect(browser.mailTabs.query).toHaveBeenCalledTimes(queries);
+        expect(browser.mailTabs.getSelectedMessages).toHaveBeenCalledTimes(selections);
+        expect(mockPerformTaggedAction).toHaveBeenCalledTimes(1);
       }
       expect(mockPerformTaggedAction).toHaveBeenCalledTimes(1);
     } finally {

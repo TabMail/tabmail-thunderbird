@@ -23,16 +23,24 @@ describe('keyOverride parent experiment lifecycle', () => {
       const source = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
       const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'script' });
       const declared = [];
+      const loadable = [];
       for (const node of ast.body) {
         if (node.type === 'VariableDeclaration') {
-          for (const declarator of node.declarations) bindings(declarator.id, declared);
+          for (const declarator of node.declarations) {
+            bindings(declarator.id, declared);
+            if (node.kind === 'var') bindings(declarator.id, loadable);
+          }
         } else if (node.type === 'ClassDeclaration' || node.type === 'FunctionDeclaration') {
           if (node.id) declared.push(node.id.name);
+          if (node.type === 'FunctionDeclaration' && node.id) loadable.push(node.id.name);
         }
       }
+      // Gecko retrieves the API constructor from the classic-script global.
+      // Lexical const/let/class bindings load but do not become properties there.
+      expect(loadable).toContain(apiName);
       names.set(apiName, declared);
     }
-    expect(names.size).toBe(24);
+    expect(names.size).toBe(Object.keys(manifest.experiment_apis).length);
     const own = names.get('keyOverride');
     expect(own).toEqual(expect.arrayContaining([
       'ExtensionSupportKO', 'ExtensionCommonKO', 'EventManagerKO', 'ServicesKO', 'keyOverride',
@@ -96,9 +104,21 @@ describe('keyOverride parent experiment lifecycle', () => {
       expect(chord.stopPropagation).not.toHaveBeenCalled();
       expect(chord.stopImmediatePropagation).not.toHaveBeenCalled();
     }
+    const openedWhileEnabled = makeWindow().win;
+    x.openWindow(openedWhileEnabled);
+    const laterTab = {
+      ...event,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+    };
+    openedWhileEnabled.dispatch('keydown', laterTab);
+    expect(received).toHaveBeenCalledTimes(2);
+    expect(laterTab.preventDefault).toHaveBeenCalledTimes(1);
+    expect(laterTab.stopPropagation).toHaveBeenCalledTimes(1);
+    expect(laterTab.stopImmediatePropagation).toHaveBeenCalledTimes(1);
     x.instance.onShutdown(false);
     win.dispatch('keydown', event);
-    expect(received).toHaveBeenCalledTimes(1);
+    openedWhileEnabled.dispatch('keydown', laterTab);
+    expect(received).toHaveBeenCalledTimes(2);
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     x.api.onTabPressed.removeListener(received);
     expect(x.observers.get('keyOverride-tabPressed')?.size).toBe(0);
