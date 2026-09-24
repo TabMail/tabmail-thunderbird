@@ -133,6 +133,18 @@ describe('registerTabKeyHandlers', () => {
     expect(browser.messages.get).not.toHaveBeenCalled();
     expect(mockPerformTaggedAction).not.toHaveBeenCalled();
   });
+
+  it('treats an empty native payload as pass-through without querying the current selection', async () => {
+    registerTabKeyHandlers();
+    const listener = browser.keyOverride.onTabPressed.addListener.mock.lastCall[0];
+    browser.mailTabs.query.mockResolvedValue([{ id: 99 }]);
+    browser.mailTabs.getSelectedMessages.mockResolvedValue({ messages: [{ id: 2 }] });
+    await listener({ messageIds: [] });
+    expect(browser.mailTabs.query).not.toHaveBeenCalled();
+    expect(browser.mailTabs.getSelectedMessages).not.toHaveBeenCalled();
+    expect(browser.messages.get).not.toHaveBeenCalled();
+    expect(mockPerformTaggedAction).not.toHaveBeenCalled();
+  });
 });
 
 describe('cleanupTagActionKeyListeners', () => {
