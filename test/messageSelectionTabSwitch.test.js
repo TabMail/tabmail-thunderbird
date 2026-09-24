@@ -90,8 +90,12 @@ it('a newer foreground mail tab snapshot stays selected after an old window-read
   }
 });
 
-it.each(['empty mail tab', 'non-mail tab'])(
-  'switching to %s clears the previous selection in Chat mentions', async target => {
+it.each([
+  { target: 'empty mail tab', mode: 'mail3PaneTab', shouldClear: true },
+  { target: 'message tab', mode: 'mailMessageTab', shouldClear: false },
+  { target: 'content tab', mode: 'contentTab', shouldClear: false },
+])(
+  'switching to $target preserves the correct Chat selection', async ({ mode, shouldClear }) => {
     const first = makeWindow();
     const other = makeWindow();
     first.cw.gDBView = first.view;
@@ -102,7 +106,7 @@ it.each(['empty mail tab', 'non-mail tab'])(
     const currentTab = tabmail.tabInfo[0];
     currentTab.mode = { name: 'mail3PaneTab' };
     const nextTab = {
-      mode: { name: target === 'empty mail tab' ? 'mail3PaneTab' : 'contentTab' },
+      mode: { name: mode },
       chromeBrowser: { contentWindow: other.cw },
     };
     tabmail.tabInfo.push(nextTab);
@@ -145,13 +149,19 @@ it.each(['empty mail tab', 'non-mail tab'])(
       expect(autocompleteState.matches[0]).toMatchObject({ type: 'selected', label: 'Synthetic synthetic:1' });
 
       tabmail.currentTabInfo = nextTab;
-      tabmail.currentAbout3Pane = target === 'empty mail tab' ? other.cw : null;
+      tabmail.currentAbout3Pane = shouldClear ? other.cw : null;
+      const deliveriesBeforeSwitch = deliveries.length;
       first.tabContainer.dispatch('TabSelect');
       await settle();
-      expect(ctx.selectedMessageIds).toEqual([]);
+      expect(ctx.selectedMessageIds).toEqual(shouldClear ? [] : ['synthetic:1']);
       await mention.updateMatches('');
-      expect(autocompleteState.matches).toEqual([]);
-      expect(deliveries.at(-1)).toMatchObject({ selectedMessageIds: [], selectionCount: 0 });
+      if (shouldClear) {
+        expect(autocompleteState.matches).toEqual([]);
+        expect(deliveries.at(-1)).toMatchObject({ selectedMessageIds: [], selectionCount: 0 });
+      } else {
+        expect(autocompleteState.matches[0]).toMatchObject({ type: 'selected', label: 'Synthetic synthetic:1' });
+        expect(deliveries).toHaveLength(deliveriesBeforeSwitch);
+      }
     } finally {
       chat.cleanupMessageSelectionListener();
       cleanupMessageSelectionListener();

@@ -316,6 +316,9 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
         if (tabContainer && typeof tabContainer.addEventListener === "function" &&
             !tabContainer.__messageSelectionTabSelectHandler) {
           const tabSelectHandler = () => {
+            // Only a 3-pane tab has a readable thread selection. Switching to
+            // a message or content tab must not clear the last mail selection.
+            if (tabmail.currentTabInfo?.mode?.name !== "mail3PaneTab") return;
             setupWindowTracking(win);
             getCurrentSelection();
             notifySelectionChange();
