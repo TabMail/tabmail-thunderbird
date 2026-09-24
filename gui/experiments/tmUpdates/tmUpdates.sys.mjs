@@ -435,15 +435,6 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPIPersistent {
           return { ok: true };
         },
 
-        async dismissUpdateBar() {
-          updateBarVisible = false;
-          hideUpdateBarFromAllWindows();
-          try {
-            ExtensionSupportTMUpdates.unregisterWindowListener(listenerId);
-          } catch (_) {}
-          return { ok: true };
-        },
-
         async getPendingUpdateVersion() {
           return addonPendingVersion;
         },

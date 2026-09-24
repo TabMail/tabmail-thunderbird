@@ -56,7 +56,7 @@ describe('update notification wake lifecycle', () => {
       const x = experiment(script, 'tmUpdates', { windows: [win] });
       await x.api.setPendingUpdateVersion('99.0.0');
       await x.api.showUpdateBar({ version: '99.0.0', message: 'Synthetic update' });
-      await x.api.dismissUpdateBar();
+      await x.api.hideUpdateBar();
       expect(await x.api.isUpdateBarVisible()).toBe(false);
       expect(await x.api.getPendingUpdateVersion()).toBe('99.0.0');
       await x.api.hideUpdateBar();
@@ -79,7 +79,7 @@ describe('update notification wake lifecycle', () => {
       await x.api.showUpdateBar({ version: '99.0.0', message: 'Synthetic update' });
       x.openWindow(second.win);
       expect(second.win.document.getElementById('tabmail-update-notification-bar')).not.toBeNull();
-      await x.api.dismissUpdateBar();
+      await x.api.hideUpdateBar();
       expect(first.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
       expect(second.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
       x.openWindow(third.win);

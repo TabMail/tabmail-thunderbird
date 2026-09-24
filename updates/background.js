@@ -11,12 +11,21 @@
 // The experiment retains the pending version for this Thunderbird process.
 // Background module state is discarded when Thunderbird suspends it.
 
+// Keep operations from the update event, popup, and debug controls in arrival
+// order. The queue is transient: completed state lives in the parent process.
+let updateOperation = Promise.resolve();
+function enqueueUpdateOperation(operation) {
+  const result = updateOperation.then(operation);
+  updateOperation = result.catch(() => {});
+  return result;
+}
+
 /**
  * Handle addon update available event.
  * By listening to this and NOT calling runtime.reload(), we defer the update
  * until Thunderbird restarts.
  */
-browser.runtime.onUpdateAvailable.addListener(async (details) => {
+browser.runtime.onUpdateAvailable.addListener((details) => enqueueUpdateOperation(async () => {
   console.log(`[TMDBG Updates] Update available: v${details.version}, deferring until restart`);
 
   // Show notification bar in all windows
@@ -36,19 +45,19 @@ browser.runtime.onUpdateAvailable.addListener(async (details) => {
   }
 
   // DO NOT call browser.runtime.reload() - this is what blocks auto-reload!
-});
+}));
 
 /**
  * Handle notification bar actions
  */
 if (browser.tmUpdates?.onNotificationAction) {
-  browser.tmUpdates.onNotificationAction.addListener(async (event) => {
+  browser.tmUpdates.onNotificationAction.addListener((event) => enqueueUpdateOperation(async () => {
     console.log("[TMDBG Updates] Notification action:", event.action);
 
     if (event.action === "dismiss") {
       // User clicked Later - hide the bar but keep process-lifetime state for popup
       console.log("[TMDBG Updates] User dismissed update notification");
-      await browser.tmUpdates.dismissUpdateBar();
+      await browser.tmUpdates.hideUpdateBar();
     } else if (event.action === "restart") {
       // User clicked Restart Thunderbird
       console.log("[TMDBG Updates] User requested restart");
@@ -58,7 +67,7 @@ if (browser.tmUpdates?.onNotificationAction) {
         console.error("[TMDBG Updates] Failed to restart:", e);
       }
     }
-  });
+  }));
 }
 
 /**
@@ -66,11 +75,14 @@ if (browser.tmUpdates?.onNotificationAction) {
  */
 browser.runtime.onMessage.addListener((message) => {
   if (message && message.command === "getUpdateState") {
-    return Promise.resolve(browser.tmUpdates?.getPendingUpdateVersion?.() ?? null).then(pendingVersion => ({
-      updateState: pendingVersion ? "pending" : null,
-      pendingVersion,
-      currentVersion: browser.runtime.getManifest().version,
-    }));
+    return enqueueUpdateOperation(async () => {
+      const pendingVersion = await browser.tmUpdates?.getPendingUpdateVersion?.() ?? null;
+      return {
+        updateState: pendingVersion ? "pending" : null,
+        pendingVersion,
+        currentVersion: browser.runtime.getManifest().version,
+      };
+    });
   }
 
   if (message && message.command === "setPendingUpdate" && message.version) {
@@ -78,16 +90,18 @@ browser.runtime.onMessage.addListener((message) => {
     console.log("[TMDBG Updates] Setting pending update from manual check:", message.version);
     // Show notification bar immediately
     if (browser.tmUpdates?.showUpdateBar && browser.tmUpdates?.setPendingUpdateVersion) {
-      return browser.tmUpdates.setPendingUpdateVersion(message.version).then(() =>
-        browser.tmUpdates.showUpdateBar({
-          message: `TabMail v${message.version} ready — restart Thunderbird to apply`,
-          version: message.version,
-        })
-      ).then(() => {
-        console.log("[TMDBG Updates] Update notification bar shown from manual check");
-      }).catch((e) => {
-        console.error("[TMDBG Updates] Failed to show update bar:", e);
-        throw e;
+      return enqueueUpdateOperation(async () => {
+        try {
+          await browser.tmUpdates.setPendingUpdateVersion(message.version);
+          await browser.tmUpdates.showUpdateBar({
+            message: `TabMail v${message.version} ready — restart Thunderbird to apply`,
+            version: message.version,
+          });
+          console.log("[TMDBG Updates] Update notification bar shown from manual check");
+        } catch (e) {
+          console.error("[TMDBG Updates] Failed to show update bar:", e);
+          throw e;
+        }
       });
     }
     return false;
@@ -95,7 +109,10 @@ browser.runtime.onMessage.addListener((message) => {
 
   if (message && message.command === "clearPendingUpdate") {
     if (!browser.tmUpdates?.hideUpdateBar || !browser.tmUpdates?.clearPendingUpdateVersion) return false;
-    return browser.tmUpdates.hideUpdateBar().then(() => browser.tmUpdates.clearPendingUpdateVersion());
+    return enqueueUpdateOperation(async () => {
+      await browser.tmUpdates.hideUpdateBar();
+      await browser.tmUpdates.clearPendingUpdateVersion();
+    });
   }
 
   if (message && message.command === "restartForUpdate") {

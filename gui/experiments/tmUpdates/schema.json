@@ -51,13 +51,6 @@
         "async": true
       },
       {
-        "name": "dismissUpdateBar",
-        "type": "function",
-        "description": "Hide the update notification while retaining the pending update until Thunderbird restarts.",
-        "parameters": [],
-        "async": true
-      },
-      {
         "name": "getPendingUpdateVersion",
         "type": "function",
         "description": "Return the pending TabMail add-on update version retained for this Thunderbird process.",
