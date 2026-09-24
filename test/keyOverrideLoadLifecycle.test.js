@@ -266,13 +266,20 @@ describe('keyOverride parent experiment lifecycle', () => {
       code: 'Tab', key: 'Tab', shiftKey: false,
       preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
     });
-    cw.threadTree.selectedIndices = Array.from({ length: 101 }, (_, index) => index);
+    let selectedIndices = Array.from({ length: 101 }, (_, index) => index);
+    const readIndices = vi.fn(() => selectedIndices);
+    Object.defineProperty(cw.threadTree, 'selectedIndices', {
+      configurable: true, get: readIndices, set: value => { selectedIndices = value; },
+    });
+    cw.gDBView.selection.count = 101;
     const oversizedSelection = press();
     win.dispatch('keydown', oversizedSelection);
+    expect(readIndices).not.toHaveBeenCalled();
     expect(select).not.toHaveBeenCalled();
     expect(convert).not.toHaveBeenCalled();
     expect(oversizedSelection.preventDefault).not.toHaveBeenCalled();
 
+    cw.gDBView.selection.count = 1;
     cw.threadTree.selectedIndices = [0]; // A collapsed thread can expand past the selection count.
     cw.gDBView.isContainer = () => true;
     cw.gDBView.isContainerOpen = () => false;
@@ -288,6 +295,7 @@ describe('keyOverride parent experiment lifecycle', () => {
     headers.pop();
     const atLimit = press();
     win.dispatch('keydown', atLimit);
+    expect(readIndices).toHaveBeenCalledTimes(3); // Guard, then native selection.
     expect(getChildHdrAt).toHaveBeenCalledTimes(100);
     expect(convert).toHaveBeenCalledTimes(100);
     expect(received).toHaveBeenCalledExactlyOnceWith({

@@ -175,6 +175,7 @@ it('executes all 100 selected actions at the bound and refuses 101', async () =>
     ...selected.hdr, messageKey: index + 1,
   }));
   selected.cw.threadTree.selectedIndices = Array.from({ length: 100 }, (_, index) => index);
+  selected.cw.gDBView.selection.count = 100;
   x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
     windows: [selected.win],
     moduleOverrides: { getActualSelectedMessages: pane =>
@@ -192,10 +193,53 @@ it('executes all 100 selected actions at the bound and refuses 101', async () =>
   expect([...rows.values()].slice(0, 100).every(row => row.folder.id === 'archive')).toBe(true);
   effects.length = 0;
   selected.cw.threadTree.selectedIndices.push(100);
+  selected.cw.gDBView.selection.count = 101;
   const oversized = key(); selected.win.dispatch('keydown', oversized); await settled();
   expect(oversized.preventDefault).not.toHaveBeenCalled();
   expect(effects).toEqual([]);
   expect(rows.get(101).folder.id).toBe('inbox');
+});
+
+it('acts on 100 original messages during a suppressed context selection and refuses 101', async () => {
+  cleanupTagActionKeyListeners();
+  x.instance.onShutdown(false);
+  const selected = makeWindow();
+  const headers = Array.from({ length: 102 }, (_, index) => ({
+    ...selected.hdr, messageKey: index + 1,
+  }));
+  const originalIndices = Array.from({ length: 100 }, (_, index) => index);
+  selected.cw.threadTree.selectedIndices = [100]; // Temporary context-menu selection.
+  selected.cw.threadTree._selection = {
+    _selectEventsSuppressed: true, _invalidIndices: originalIndices,
+  };
+  selected.cw.gDBView.selection.count = 1;
+  const getActualSelectedMessages = vi.fn(pane => pane.threadTree._selection._invalidIndices
+    .filter(index => !pane.threadTree.selectedIndices.includes(index))
+    .map(index => headers[index]));
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [selected.win], moduleOverrides: { getActualSelectedMessages },
+  });
+  x.context.extension.messageManager.convert = header => ({ id: header.messageKey });
+  browser.keyOverride = x.api;
+  rows = new Map(headers.map(header => [header.messageKey, {
+    ...fresh(), id: header.messageKey,
+  }]));
+  registerTabKeyHandlers(); x.api.init();
+
+  const atLimit = key(); selected.win.dispatch('keydown', atLimit); await settled();
+  expect(atLimit.preventDefault).toHaveBeenCalledOnce();
+  expect(getActualSelectedMessages).toHaveBeenCalledOnce();
+  expect(effects.filter(effect => effect[0] === 'move').map(effect => effect[1]))
+    .toEqual(Array.from({ length: 100 }, (_, index) => index + 1));
+  expect(rows.get(101).folder.id).toBe('inbox'); // Context row is not an original target.
+
+  effects.length = 0;
+  selected.cw.threadTree._selection._invalidIndices.push(101);
+  const oversized = key(); selected.win.dispatch('keydown', oversized); await settled();
+  expect(oversized.preventDefault).not.toHaveBeenCalled();
+  expect(getActualSelectedMessages).toHaveBeenCalledOnce();
+  expect(effects).toEqual([]);
+  expect(rows.get(102).folder.id).toBe('inbox');
 });
 
 it('keeps the action promise pending until a deferred move completes', async () => {

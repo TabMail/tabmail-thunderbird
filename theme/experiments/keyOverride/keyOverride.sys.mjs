@@ -80,6 +80,9 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
         if (!pane) return [];
         const view = pane.gDBView;
         const tree = pane.threadTree;
+        // selectedIndices is a computed array over every selected row.
+        // Check the stored count before asking Thunderbird to materialize it.
+        if (view?.selection?.count > MAX_TAB_ACTION_MESSAGES_KO) return [];
         const selected = tree?.selectedIndices;
         if (!view || !selected || selected.length > MAX_TAB_ACTION_MESSAGES_KO) return [];
         // Thunderbird expands selected collapsed threads inside
