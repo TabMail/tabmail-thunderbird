@@ -5,6 +5,7 @@
 // tagActionKey.test.js — Tests for agent/modules/tagActionKey.js
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { experiment, makeWindow } from './helpers/nativeLifecycleHarness.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -19,10 +20,6 @@ vi.mock('../agent/modules/action.js', () => ({
 globalThis.browser = {
   keyOverride: {
     onTabPressed: {
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-    },
-    onShiftTabPressed: {
       addListener: vi.fn(),
       removeListener: vi.fn(),
     },
@@ -48,10 +45,9 @@ beforeEach(() => {
 });
 
 describe('registerTabKeyHandlers', () => {
-  it('registers onTabPressed and onShiftTabPressed listeners', () => {
+  it('registers the active Tab listener', () => {
     registerTabKeyHandlers();
     expect(browser.keyOverride.onTabPressed.addListener).toHaveBeenCalled();
-    expect(browser.keyOverride.onShiftTabPressed.addListener).toHaveBeenCalled();
   });
 
   it('handles missing keyOverride API', () => {
@@ -60,6 +56,47 @@ describe('registerTabKeyHandlers', () => {
     expect(() => registerTabKeyHandlers()).not.toThrow();
     browser.keyOverride = orig;
   });
+
+  it('connects only bare native Tab to the selected-message action', async () => {
+    const { win } = makeWindow();
+    const x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+      windows: [win],
+    });
+    const ordinaryApi = browser.keyOverride;
+    try {
+      browser.keyOverride = x.api;
+      const message = { id: 1, subject: 'Synthetic' };
+      browser.mailTabs.query.mockResolvedValue([{ id: 7 }]);
+      browser.mailTabs.getSelectedMessages.mockResolvedValue({ messages: [message] });
+      registerTabKeyHandlers();
+      x.api.init();
+      const key = (code, modifiers = {}) => ({
+        code, key: code, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false,
+        ...modifiers,
+        preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+      });
+      const tab = key('Tab');
+      win.dispatch('keydown', tab);
+      await vi.waitFor(() => expect(mockPerformTaggedAction).toHaveBeenCalledExactlyOnceWith(message));
+      expect(tab.preventDefault).toHaveBeenCalledTimes(1);
+      expect(tab.stopPropagation).toHaveBeenCalledTimes(1);
+      expect(tab.stopImmediatePropagation).toHaveBeenCalledTimes(1);
+      for (const event of [
+        key('KeyA'), key('Enter'), key('KeyL', { altKey: true, metaKey: true }),
+        key('Tab', { ctrlKey: true }), key('Tab', { shiftKey: true }),
+      ]) {
+        win.dispatch('keydown', event);
+        expect(event.preventDefault).not.toHaveBeenCalled();
+        expect(event.stopPropagation).not.toHaveBeenCalled();
+        expect(event.stopImmediatePropagation).not.toHaveBeenCalled();
+      }
+      expect(mockPerformTaggedAction).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanupTagActionKeyListeners();
+      x.instance.onShutdown(false);
+      browser.keyOverride = ordinaryApi;
+    }
+  });
 });
 
 describe('cleanupTagActionKeyListeners', () => {
@@ -67,7 +104,6 @@ describe('cleanupTagActionKeyListeners', () => {
     registerTabKeyHandlers();
     cleanupTagActionKeyListeners();
     expect(browser.keyOverride.onTabPressed.removeListener).toHaveBeenCalled();
-    expect(browser.keyOverride.onShiftTabPressed.removeListener).toHaveBeenCalled();
   });
 
   it('handles case when no listeners registered', () => {
