@@ -283,7 +283,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
 
   _registerChipClick(fire) {
     const subscription = { fire };
-    const listener = info => {
+    const listener = (_event, info) => {
       try {
         Promise.resolve(subscription.fire.async(info)).catch(error => {
           console.error(`${LOG_PREFIX_MLCV} chip click subscriber failed:`, error);
@@ -2006,7 +2006,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
           context,
           name: "tmMessageListCardView.onSnippetsNeeded",
           register: (fire) => {
-            const listener = (info) => {
+            const listener = (_event, info) => {
               fire.async(info);
             };
             context.extension.on("onSnippetsNeeded", listener);
@@ -2016,8 +2016,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
           },
         }).api(),
         // Event: onActionChipClick - fired when the user clicks an action chip on a card row.
-        // MV3 should resolve the message via headerMessageId and run the same pathway
-        // as the Tab key (performTaggedAction).
+        // MV3 resolves the chip's WebExtension message ID before applying its action.
         onActionChipClick: new ExtensionCommon_MLCV.EventManager({
           context,
           module: "tmMessageListCardView",

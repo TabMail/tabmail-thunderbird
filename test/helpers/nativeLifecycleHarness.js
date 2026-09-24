@@ -183,7 +183,7 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
     },
     off(name, callback) { extensionEvents.get(name)?.delete(callback); },
     emit(name, ...args) {
-      for (const callback of [...(extensionEvents.get(name) || [])]) callback(...args);
+      for (const callback of [...(extensionEvents.get(name) || [])]) callback(name, ...args);
     },
   };
   const context = { extension };

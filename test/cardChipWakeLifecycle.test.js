@@ -70,6 +70,7 @@ describe('card chip first-click wake contract', () => {
       click();
       expect(selected).toHaveBeenCalledWith(0);
       expect(live).toHaveBeenCalledTimes(1);
+      expect(live).toHaveBeenCalledWith({ source: 'click', weMsgId: 1 });
       x.api.onActionChipClick.removeListener(live);
 
       const wake = vi.fn();
@@ -79,6 +80,7 @@ describe('card chip first-click wake contract', () => {
       expect(registration?.convert).toBeTypeOf('function');
       click();
       expect(wake).toHaveBeenCalledTimes(1);
+      expect(wake).toHaveBeenCalledWith({ source: 'click', weMsgId: 1 });
       expect(live).toHaveBeenCalledTimes(1);
 
       const resumed = vi.fn();
@@ -89,9 +91,22 @@ describe('card chip first-click wake contract', () => {
       registration.unregister();
       click();
       expect(resumed).toHaveBeenCalledTimes(1);
+      expect(resumed).toHaveBeenCalledWith({ source: 'click', weMsgId: 1 });
     } finally {
       x.instance.onShutdown(false);
       dom.window.close();
+    }
+  });
+
+  it('forwards the snippet-needs payload after the emitter event name', async () => {
+    const x = experiment(cardExperiment, 'tmMessageListCardView');
+    try {
+      const seen = vi.fn();
+      x.api.onSnippetsNeeded.addListener(seen);
+      x.context.extension.emit('onSnippetsNeeded', { count: 2 });
+      expect(seen).toHaveBeenCalledWith({ count: 2 });
+    } finally {
+      x.instance.onShutdown(false);
     }
   });
 });
