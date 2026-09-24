@@ -68,7 +68,8 @@ function harness({ loading = false } = {}) {
   };
   vm.runInNewContext(`${source}\nglobalThis.Experiment = messageSelection;`, sandbox, { filename });
   const instance = new sandbox.Experiment();
-  const api = instance.getAPI({ extension: { id: 'synthetic@example.test', messageManager: { convert: () => ({ id: 1 }) } } }).messageSelection;
+  const context = { extension: { id: 'synthetic@example.test', messageManager: { convert: () => ({ id: 1 }) } } };
+  const api = instance.getAPI(context).messageSelection;
   const flush = () => { while (pending.length) pending.shift()(); };
   const selectTab = index => { tabmail.currentTabInfo = tabs[index]; tabContainer.emit('TabSelect'); };
   const setMessageId = (index, messageId) => { headers[index] = { ...headers[index], messageId }; };
@@ -77,7 +78,7 @@ function harness({ loading = false } = {}) {
   const setTabLoading = index => { tabs[index].chromeBrowser.contentWindow.document.readyState = 'loading'; tabs[index].chromeBrowser.contentWindow.gDBView = null; };
   // A content document's non-bubbling load reaches its <browser> only in capture.
   const finishTabLoad = index => { tabs[index].chromeBrowser.contentWindow.document.readyState = 'complete'; tabs[index].chromeBrowser.contentWindow.gDBView = loadedViews[index]; tabs[index].chromeBrowser.emitCaptured('load', { target: tabs[index].chromeBrowser.contentDocument }); };
-  return { instance, api, trees, tabs, tabContainer, selection, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad, setTabLoading, finishTabLoad };
+  return { instance, context, api, trees, tabs, tabContainer, selection, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad, setTabLoading, finishTabLoad };
 }
 describe('review: native ownership with real window and queued callback shapes', () => {
   it('tracks an existing window that finishes loading after listener registration', () => {
@@ -240,6 +241,30 @@ describe('review: native ownership with real window and queued callback shapes',
     h.tabs[1].chromeBrowser.emitCaptured('load', { target: doc }); h.flush();
     expect(h.trees[1].count('select')).toBe(1);
     expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('second@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('re-arms the current loading tab after background API recreation', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.setTabLoading(1); h.selectTab(1); h.notifyObservers.mockClear();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+
+    const recreated = h.instance.getAPI(h.context).messageSelection;
+    recreated.init(); h.flush();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('second@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('arms an already-selected loading tab during initial background setup', () => {
+    const h = harness();
+    h.setTabLoading(0);
+    h.api.init(); h.flush();
+    expect(h.tabs[0].chromeBrowser.count('load')).toBe(1);
+    expect(h.trees[0].count('select')).toBe(0);
+    h.finishTabLoad(0); h.flush();
+    expect(h.trees[0].count('select')).toBe(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
     h.instance.onShutdown(false);
   });
   it('does not reattach a tree when deferred window setup runs after shutdown', () => {

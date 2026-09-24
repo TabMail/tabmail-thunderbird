@@ -77,6 +77,34 @@ it('does not let an older startup reply replace a newer selection event', async 
   expect(updates).toEqual([['new']]);
 });
 
+it('ignores unrelated runtime traffic during selection bootstrap', async () => {
+  let resolveReply;
+  let onMessage;
+  const updates = [];
+  const globals = {
+    CHAT_SETTINGS,
+    browser: { runtime: {
+      onMessage: { addListener: fn => { onMessage = fn; } },
+      sendMessage: () => new Promise(resolve => { resolveReply = resolve; }),
+    } },
+    messageSelectionListener: null,
+    cleanupMessageSelectionListener: vi.fn(),
+    updateSelectionFromMessage: message => updates.push(message.selectedMessageIds),
+    log: vi.fn(),
+    setTimeout: vi.fn(),
+  };
+  const { initMessageSelectionTracking } = experimentFunctions(
+    new URL('../chat/chat.js', import.meta.url), ['initMessageSelectionTracking'], globals,
+  );
+  const startup = initMessageSelectionTracking();
+  onMessage({ type: 'theme-scripts-ready' });
+  resolveReply({ ok: true, selectedMessageIds: ['initial'], selectionCount: 1 });
+  await startup;
+  expect(updates).toEqual([['initial']]);
+  onMessage({ command: 'selection-changed', selectedMessageIds: ['new'], selectionCount: 1 });
+  expect(updates).toEqual([['initial'], ['new']]);
+});
+
 it('does not schedule another startup retry when a rejected request follows a newer selection', async () => {
   let rejectReply;
   let onMessage;

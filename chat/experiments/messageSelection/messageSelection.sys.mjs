@@ -325,7 +325,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
         const tabContainer = tabmail?.tabContainer || null;
         if (tabContainer && typeof tabContainer.addEventListener === "function" &&
             !tabContainer.__messageSelectionTabSelectHandler) {
-          const tabSelectHandler = () => {
+          const tabSelectHandler = (_event, publish = true) => {
             cancelPendingTabLoad(win);
             // Only a 3-pane tab has a readable thread selection. Switching to
             // a message or content tab must not clear the last mail selection.
@@ -355,11 +355,15 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
             }
             setupWindowTracking(win);
             getCurrentSelection();
-            notifySelectionChange();
+            if (publish) notifySelectionChange();
           };
           tabContainer.__messageSelectionTabSelectHandler = tabSelectHandler;
           tabContainer.addEventListener("TabSelect", tabSelectHandler);
           tlog("TabSelect listener registered for messageSelection");
+          // A fresh background can attach while the current 3-pane tab is
+          // still loading, after its TabSelect event has already fired.
+          // Re-arm that tab without publishing a duplicate ready snapshot.
+          tabSelectHandler(null, false);
         }
       } catch (e) {
         tlog("Failed to add TabSelect listener:", e);
