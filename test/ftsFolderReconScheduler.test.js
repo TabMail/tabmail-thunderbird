@@ -2769,10 +2769,12 @@ describe('cooperative folder reconcile production contracts', () => {
       const folderKey = 'account1:/PagedGhost';
       const folderId = makeFolderMembershipId('account1', '/PagedGhost');
       const ghost = `${folderKey}:000-ghost@example.com`;
+      const missing = `${folderKey}:${headerMessageIds.at(-1)}`;
       const { nativeRows, fts } = installExactMembershipFolders([{
         folderPath: '/PagedGhost', headerMessageIds,
       }]);
       for (const msgId of nativeRows.keys()) nativeRows.set(msgId, folderId);
+      nativeRows.delete(missing);
       nativeRows.set(ghost, folderId);
       globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (_uri, ids) => ({
         missing: ids.filter(id => id === '000-ghost@example.com'),
@@ -2784,6 +2786,12 @@ describe('cooperative folder reconcile production contracts', () => {
       }
       expect(fts.removeBatch).toHaveBeenCalledWith([ghost], expect.anything());
       expect(nativeRows.has(ghost)).toBe(false);
+      // The native deletion changed the native proof, not the local headers.
+      // The missing-direction pass can still admit the real local row now.
+      expect(fts.filterNewMessages).toHaveBeenCalledWith(
+        expect.arrayContaining([{ msgId: missing }]));
+      expect(_testExports._getPendingUpdates().get(missing)).toMatchObject({ type: 'new' });
+      expect(_testExports._getFolderReconActiveProofKey()).toBe(folderKey);
       const checkpoint = storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
         ?.folders?.[folderKey];
       expect(checkpoint?.verified).not.toBe(true);

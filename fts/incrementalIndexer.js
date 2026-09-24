@@ -5133,30 +5133,29 @@ async function _runFolderReconcile(
         // slice. The stale list just spent it; a second fingerprint here would
         // fail on every retry before the cursor could ever be saved. Reuse the
         // initial fingerprint only while its membership epoch is unchanged.
-        // A local stale removal changes the epoch, so restart from a fresh
-        // proof on the next slice instead of binding a cursor to old data.
-        if (_useExactFolderMembership(ftsSearch)
-            && staleCursorEpoch !== nativeFingerprintEpoch) {
-          stats.foldersLocalDrift++;
-          continue;
+        // A local stale removal changes the epoch. Leave the stale cursor
+        // unbound so the next slice starts from a fresh native proof, while
+        // this slice can still admit missing local rows below.
+        if (!_useExactFolderMembership(ftsSearch)
+            || staleCursorEpoch === nativeFingerprintEpoch) {
+          const staleFingerprint = _useExactFolderMembership(ftsSearch)
+            ? nativeFingerprint
+            : await _fingerprintFolderNative(
+              ftsSearch, f, startKey, endKey, "stale_checkpoint",
+            );
+          _assertFolderReconLease(reconcileLease, generation);
+          _assertNoFolderReconForegroundPressure();
+          if (staleCursorEpoch !== getFtsMembershipEpoch()) {
+            throw new Error("membership_epoch_changed");
+          }
+          folderMembershipEpoch = staleCursorEpoch;
+          nextStaleState = {
+            afterKey: stalePass.cursor,
+            count: staleFingerprint.count,
+            sha256: staleFingerprint.sha256,
+            membershipEpoch: staleCursorEpoch,
+          };
         }
-        const staleFingerprint = _useExactFolderMembership(ftsSearch)
-          ? nativeFingerprint
-          : await _fingerprintFolderNative(
-            ftsSearch, f, startKey, endKey, "stale_checkpoint",
-          );
-        _assertFolderReconLease(reconcileLease, generation);
-        _assertNoFolderReconForegroundPressure();
-        if (staleCursorEpoch !== getFtsMembershipEpoch()) {
-          throw new Error("membership_epoch_changed");
-        }
-        folderMembershipEpoch = staleCursorEpoch;
-        nextStaleState = {
-          afterKey: stalePass.cursor,
-          count: staleFingerprint.count,
-          sha256: staleFingerprint.sha256,
-          membershipEpoch: staleCursorEpoch,
-        };
       } catch (e) {
         _throwIfFolderReconInterrupted(e);
         stats.foldersFailed++;
