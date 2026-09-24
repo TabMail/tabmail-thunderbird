@@ -93,8 +93,10 @@ describe('multi-message chip first-click wake contract', () => {
   });
 
   it.each([
-    ['mouse', 'click'], ['Enter', 'Enter'], ['Space', ' '],
-  ])('replays the first %s action on its original message during startup', async (_name, key) => {
+    ...['available', 'missing', 'lookup error'].flatMap(target => [
+      ['mouse', 'click', target], ['Enter', 'Enter', target], ['Space', ' ', target],
+    ]),
+  ])('replays the first %s (%s) action with original target %s', async (_name, key, target) => {
     const { dom, w, moduleOverrides } = renderedMultiMessageChip('delete');
     const x = experiment(multiExperiment, 'tmMultiMessageChip', { windows: [w.win], moduleOverrides });
     try {
@@ -119,7 +121,11 @@ describe('multi-message chip first-click wake contract', () => {
         id, action: 'delete', read: false, folder: { id: 'inbox' },
         headerMessageId: `synthetic-${id}@example.test`,
       }]));
-      const get = vi.fn(async id => messages.get(id) ?? null);
+      if (target === 'missing') messages.delete(1);
+      const get = vi.fn(async id => {
+        if (id === 1 && target === 'lookup error') throw new Error('synthetic lookup failure');
+        return messages.get(id) ?? null;
+      });
       const update = vi.fn(async (id, fields) => {
         messages.set(id, { ...messages.get(id), ...fields });
       });
@@ -156,6 +162,7 @@ describe('multi-message chip first-click wake contract', () => {
       globals.browser = new Proxy(generic, {
         get: (_target, name) => name === 'tmMultiMessageChip'
           ? { onActionChipClick: event }
+          : name === 'mailTabs' ? { getSelectedMessages: async () => ({ messages: [messages.get(2)] }) }
           : name === 'messages' ? { get, update, move } : generic[name],
       });
       let script = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
@@ -181,15 +188,33 @@ describe('multi-message chip first-click wake contract', () => {
       registration.convert({ async: resumed });
       await resumed(queued[0].info);
       queued[0].resolve();
-      await vi.waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(target === 'available' ? 2 : 1));
+      await new Promise(resolve => setImmediate(resolve));
       expect(resumed).toHaveBeenCalledTimes(1);
       expect(get).toHaveBeenNthCalledWith(1, 1);
-      expect(get).toHaveBeenNthCalledWith(2, 1);
-      expect(update).toHaveBeenCalledExactlyOnceWith(1, { read: true });
-      expect(move).toHaveBeenCalledExactlyOnceWith([1], 'trash', { isUserAction: true });
-      expect(performTaggedAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 1 }));
-      expect(messages.get(1)).toMatchObject({ read: true, folder: { id: 'trash' } });
-      expect(messages.get(2)).toMatchObject({ read: false, folder: { id: 'inbox' } });
+      if (target !== 'available') {
+        expect(update).not.toHaveBeenCalled();
+        expect(move).not.toHaveBeenCalled();
+        expect(performTaggedAction).not.toHaveBeenCalled();
+        // The missing original must not strand the converted listener.
+        chip.dispatchEvent(key === 'click'
+          ? new dom.window.MouseEvent('click', { bubbles: true })
+          : new dom.window.KeyboardEvent('keydown', { key, bubbles: true }));
+        await vi.waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+        expect(get).toHaveBeenNthCalledWith(2, 2);
+        expect(update).toHaveBeenCalledExactlyOnceWith(2, { read: true });
+        expect(move).toHaveBeenCalledExactlyOnceWith([2], 'trash', { isUserAction: true });
+        expect(performTaggedAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 2 }));
+      } else {
+        expect(get).toHaveBeenNthCalledWith(2, 1);
+        expect(update).toHaveBeenCalledExactlyOnceWith(1, { read: true });
+        expect(move).toHaveBeenCalledExactlyOnceWith([1], 'trash', { isUserAction: true });
+        expect(performTaggedAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 1 }));
+        expect(messages.get(1)).toMatchObject({ read: true, folder: { id: 'trash' } });
+      }
+      expect(messages.get(2)).toMatchObject(target !== 'available'
+        ? { read: true, folder: { id: 'trash' } }
+        : { read: false, folder: { id: 'inbox' } });
       releaseValidation();
       registration.unregister();
     } finally {
