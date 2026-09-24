@@ -181,8 +181,110 @@ describe('keyOverride parent experiment lifecycle', () => {
     win.dispatch('keydown', { ...event, preventDefault: vi.fn() });
     expect(resumed).toHaveBeenNthCalledWith(2, { messageIds: [2] });
     registration.unregister();
-    win.dispatch('keydown', { ...event, preventDefault: vi.fn() });
+    const noSubscriber = {
+      ...event,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+    };
+    win.dispatch('keydown', noSubscriber);
     expect(resumed).toHaveBeenCalledTimes(2);
+    expect(noSubscriber.preventDefault).not.toHaveBeenCalled();
+    expect(noSubscriber.stopPropagation).not.toHaveBeenCalled();
+    expect(noSubscriber.stopImmediatePropagation).not.toHaveBeenCalled();
+    x.instance.onShutdown(false);
+  });
+
+  it('independently releases subscriptions and native hooks across repeated owners', () => {
+    const { win, hdr } = makeWindow();
+    for (let generation = 0; generation < 3; generation++) {
+      const x = experiment(keyOverrideExperiment, 'keyOverride', {
+        windows: [win],
+        moduleOverrides: { getActualSelectedMessages: pane =>
+          pane === win.document.getElementById('tabmail').currentAbout3Pane ? [hdr] : [] },
+      });
+      const received = vi.fn();
+      x.context.extension.messageManager.convert = header => ({ id: header.messageKey });
+      x.api.onTabPressed.addListener(received);
+      x.api.init();
+      expect(x.instance._tabSubscriptions.size).toBe(1);
+      expect(x.extensionEvents.get('keyOverrideTabPressed')?.size).toBe(1);
+      expect(win.handlers.get('keydown')?.size).toBe(1);
+      expect(x.windowListeners.size).toBe(1);
+      const event = {
+        code: 'Tab', key: 'Tab', shiftKey: false,
+        preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+      };
+      win.dispatch('keydown', event);
+      expect(received).toHaveBeenCalledExactlyOnceWith({ messageIds: [1] });
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+
+      x.api.onTabPressed.removeListener(received);
+      expect(x.instance._tabSubscriptions.size).toBe(0);
+      expect(x.extensionEvents.get('keyOverrideTabPressed')?.size).toBe(0);
+      // Removing the background subscriber must not conceal a leaked hook.
+      expect(win.handlers.get('keydown')?.size).toBe(1);
+      x.instance.onShutdown(false);
+      expect(win.handlers.get('keydown')?.size).toBe(0);
+      expect(win.__keyOverrideHandler).toBeUndefined();
+      expect(x.windowListeners.size).toBe(0);
+    }
+
+    const interrupted = experiment(keyOverrideExperiment, 'keyOverride', {
+      windows: [win], moduleOverrides: { getActualSelectedMessages: () => [hdr] },
+    });
+    const stale = vi.fn();
+    interrupted.api.onTabPressed.addListener(stale);
+    interrupted.api.init();
+    expect(interrupted.extensionEvents.get('keyOverrideTabPressed')?.size).toBe(1);
+    interrupted.instance.onShutdown(false);
+    expect(interrupted.instance._tabSubscriptions.size).toBe(0);
+    expect(interrupted.extensionEvents.get('keyOverrideTabPressed')?.size).toBe(0);
+    expect(win.handlers.get('keydown')?.size).toBe(0);
+    interrupted.api.onTabPressed.removeListener(stale);
+  });
+
+  it('refuses an oversized Tab action before synchronous conversion or partial dispatch', () => {
+    const { win, cw, hdr } = makeWindow();
+    const headers = Array.from({ length: 101 }, (_, index) => ({
+      ...hdr, messageKey: index + 1,
+    }));
+    const select = vi.fn(() => headers);
+    const x = experiment(keyOverrideExperiment, 'keyOverride', {
+      windows: [win],
+      moduleOverrides: { getActualSelectedMessages: select },
+    });
+    const convert = vi.fn(header => ({ id: header.messageKey }));
+    x.context.extension.messageManager.convert = convert;
+    const received = vi.fn();
+    x.api.onTabPressed.addListener(received);
+    x.api.init();
+    const press = () => ({
+      code: 'Tab', key: 'Tab', shiftKey: false,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+    });
+    cw.gDBView = { selection: { count: 101 } };
+    const oversizedSelection = press();
+    win.dispatch('keydown', oversizedSelection);
+    expect(select).not.toHaveBeenCalled();
+    expect(convert).not.toHaveBeenCalled();
+    expect(oversizedSelection.preventDefault).not.toHaveBeenCalled();
+
+    cw.gDBView.selection.count = 1; // A collapsed thread can expand past the selection count.
+    const oversizedThread = press();
+    win.dispatch('keydown', oversizedThread);
+    expect(select).toHaveBeenCalledOnce();
+    expect(convert).not.toHaveBeenCalled();
+    expect(received).not.toHaveBeenCalled();
+    expect(oversizedThread.preventDefault).not.toHaveBeenCalled();
+
+    headers.pop();
+    const atLimit = press();
+    win.dispatch('keydown', atLimit);
+    expect(convert).toHaveBeenCalledTimes(100);
+    expect(received).toHaveBeenCalledExactlyOnceWith({
+      messageIds: Array.from({ length: 100 }, (_, index) => index + 1),
+    });
+    expect(atLimit.preventDefault).toHaveBeenCalledOnce();
+    x.api.onTabPressed.removeListener(received);
     x.instance.onShutdown(false);
   });
 });

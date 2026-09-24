@@ -245,7 +245,7 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
   const instance = new sandbox.Experiment(extension);
   const api = instance.getAPI(context)[name];
   return {
-    api, instance, context, windows, windowListeners, mfn, columns, observers, logs, queued, sheets, Services, sandbox,
+    api, instance, context, extensionEvents, windows, windowListeners, mfn, columns, observers, logs, queued, sheets, Services, sandbox,
     openWindow(win) {
       windows.push(win);
       for (const listener of windowListeners.values()) listener.onLoadWindow?.(win);

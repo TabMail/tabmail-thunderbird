@@ -15,6 +15,9 @@ const { getActualSelectedMessages: getActualSelectedMessagesKO } = ChromeUtils.i
 
 const ServicesKO = globalThis.Services;
 const TAB_EVENT_KO = "keyOverrideTabPressed";
+// Thunderbird's old getSelectedMessages consumer handled one 100-message page.
+// Refuse larger actions as a whole instead of stalling keydown or acting partially.
+const MAX_TAB_ACTION_MESSAGES_KO = 100;
 
 console.log("[TabMail keyOverride] experiment parent script loaded. Services present?", typeof ServicesKO !== "undefined");
 
@@ -75,8 +78,9 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
       try {
         const pane = win.document.getElementById("tabmail")?.currentAbout3Pane;
         if (!pane) return [];
+        if (pane.gDBView?.selection?.count > MAX_TAB_ACTION_MESSAGES_KO) return [];
         const headers = getActualSelectedMessagesKO(pane);
-        if (!headers?.length) return [];
+        if (!headers?.length || headers.length > MAX_TAB_ACTION_MESSAGES_KO) return [];
         const ids = headers.map(hdr => context.extension.messageManager?.convert?.(hdr)?.id);
         // Do not consume a key unless every press-time target is addressable.
         return ids.every(id => Number.isInteger(id) && id > 0) ? [...new Set(ids)] : [];

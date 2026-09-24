@@ -4,6 +4,8 @@
 
 import { performTaggedAction } from "./action.js";
 
+// Keep this bound aligned with the parent keyOverride experiment.
+const MAX_TAB_ACTION_MESSAGES = 100;
 let _tabKeyRegistered = false;
 let _onTabPressedListener = null;
 
@@ -55,6 +57,7 @@ async function handleTagActionKey(pressedMessageIds) {
     let messages;
     if (pressedMessageIds !== undefined) {
       if (!Array.isArray(pressedMessageIds) || !pressedMessageIds.length
+          || pressedMessageIds.length > MAX_TAB_ACTION_MESSAGES
           || pressedMessageIds.some(id => !Number.isInteger(id) || id <= 0)) return;
       // The background may have slept since keydown. Never substitute the
       // current selection if a press-time target was deleted or moved.

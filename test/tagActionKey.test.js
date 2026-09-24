@@ -119,11 +119,19 @@ describe('registerTabKeyHandlers', () => {
     expect(browser.mailTabs.getSelectedMessages).not.toHaveBeenCalled();
 
     mockPerformTaggedAction.mockClear();
-    browser.messages.get.mockResolvedValue(null);
+    browser.messages.get.mockRejectedValue(new Error('Message not found'));
     await listener({ messageIds: [1] });
     await listener();
     expect(mockPerformTaggedAction).not.toHaveBeenCalled();
     expect(browser.mailTabs.getSelectedMessages).not.toHaveBeenCalled();
+  });
+
+  it('refuses an oversized native payload without fetching or acting on a partial selection', async () => {
+    registerTabKeyHandlers();
+    const listener = browser.keyOverride.onTabPressed.addListener.mock.lastCall[0];
+    await listener({ messageIds: Array.from({ length: 101 }, (_, index) => index + 1) });
+    expect(browser.messages.get).not.toHaveBeenCalled();
+    expect(mockPerformTaggedAction).not.toHaveBeenCalled();
   });
 });
 

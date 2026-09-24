@@ -1799,8 +1799,6 @@ async function init() {
         log(`[SenderFilter] Failed to attach account-change invalidation: ${e}`, "warn");
     }
 
-    // 2b. Listen for Tab key events via experiment API (delegated to modules/tabKey.js)
-
     // 3. Register manual compose handlers and thread tooltip handlers.
     initComposeHandlers();
     
