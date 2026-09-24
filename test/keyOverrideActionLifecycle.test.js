@@ -207,7 +207,10 @@ it('acts on 100 original messages during a suppressed context selection and refu
   const headers = Array.from({ length: 102 }, (_, index) => ({
     ...selected.hdr, messageKey: index + 1,
   }));
-  const originalIndices = Array.from({ length: 100 }, (_, index) => index);
+  const originalIndices = [
+    ...Array.from({ length: 100 }, (_, index) => index),
+    100, // Thunderbird also records the temporary context row in the invalid set.
+  ];
   selected.cw.threadTree.selectedIndices = [100]; // Temporary context-menu selection.
   selected.cw.threadTree._selection = {
     _selectEventsSuppressed: true, _invalidIndices: originalIndices,
