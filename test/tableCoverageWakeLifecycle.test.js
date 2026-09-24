@@ -34,13 +34,16 @@ describe('table coverage event lifecycle', () => {
   it('keeps independent subscribers and releases them on shutdown', async () => {
     const x = experiment(tableExperiment, 'tmMessageListTableView');
     const failing = vi.fn(async () => { throw new Error('synthetic subscriber failure'); });
+    const syncFailing = vi.fn(() => { throw new Error('synthetic synchronous failure'); });
     const healthy = vi.fn(async () => {});
     x.api.onUntaggedInboxMessages.addListener(failing);
+    x.api.onUntaggedInboxMessages.addListener(syncFailing);
     x.api.onUntaggedInboxMessages.addListener(healthy);
     const payload = [{ messageKey: 8, messageId: '<another@example.test>' }];
     expect(() => x.context.extension.emit('onUntaggedInboxMessages', payload)).not.toThrow();
     await new Promise(resolve => setImmediate(resolve));
     expect(failing).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(syncFailing).toHaveBeenCalledExactlyOnceWith(payload);
     expect(healthy).toHaveBeenCalledExactlyOnceWith(payload);
     expect(x.logs.some(args => args.some(value =>
       String(value).includes('untagged subscriber failed')))).toBe(true);
@@ -49,6 +52,7 @@ describe('table coverage event lifecycle', () => {
     x.context.extension.emit('onUntaggedInboxMessages', payload);
     await new Promise(resolve => setImmediate(resolve));
     expect(failing).toHaveBeenCalledTimes(1);
+    expect(syncFailing).toHaveBeenCalledTimes(2);
     expect(healthy).toHaveBeenCalledTimes(2);
     x.instance.onShutdown(false);
     expect(x.extensionEvents.get('onUntaggedInboxMessages')?.size).toBe(0);

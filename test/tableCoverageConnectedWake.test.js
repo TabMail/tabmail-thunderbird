@@ -131,6 +131,7 @@ it('replays one suspended native paint into durable work for its original messag
     opts: { isPriority: false, source: 'tagSort:coverage' },
   }]);
   row._index = 2; row.fillRow(); await settle();
+  expect(browser.messages.get).toHaveBeenCalledTimes(2);
   expect(state.stored.agent_processmessage_pending).toHaveLength(1);
   expect(state.processed).toEqual([]);
   vi.useFakeTimers();
@@ -146,6 +147,7 @@ for (const mode of ['cached', 'non-inbox', 'missing-message-id', 'no-subscriber'
   it(`does not queue ${mode} table-row work`, async () => {
     const { native, row, hdr } = startNativeRow();
     await native.api.init();
+    const nativeEmission = vi.spyOn(native.context.extension, 'emit');
     const pending = [];
     const registration = mode === 'no-subscriber' ? null
       : native.api.onUntaggedInboxMessages.testPersistentRegistration()
@@ -158,6 +160,7 @@ for (const mode of ['cached', 'non-inbox', 'missing-message-id', 'no-subscriber'
     row.fillRow();
     if (mode === 'cached') {
       expect(pending).toHaveLength(1);
+      expect(nativeEmission).toHaveBeenCalledOnce();
       const folder = { id: 'folder-opaque', accountId: 'synthetic', path: '/Inbox', type: 'inbox' };
       const message = { id: 701, headerMessageId: hdr.messageId, folder, subject: 'Synthetic' };
       const consumer = startRealCoverageConsumer(message, { ...message, id: 1 });
@@ -165,6 +168,7 @@ for (const mode of ['cached', 'non-inbox', 'missing-message-id', 'no-subscriber'
       expect(browser.messages.get).toHaveBeenCalledExactlyOnceWith(701);
     } else {
       expect(pending).toHaveLength(0);
+      expect(nativeEmission).not.toHaveBeenCalled();
     }
     await settle();
     expect(queue.getProcessMessageQueueStatus().pending).toBe(0);
