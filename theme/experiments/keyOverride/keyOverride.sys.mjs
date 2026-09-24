@@ -78,7 +78,27 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
       try {
         const pane = win.document.getElementById("tabmail")?.currentAbout3Pane;
         if (!pane) return [];
-        if (pane.gDBView?.selection?.count > MAX_TAB_ACTION_MESSAGES_KO) return [];
+        const view = pane.gDBView;
+        const tree = pane.threadTree;
+        const selected = tree?.selectedIndices;
+        if (!view || !selected || selected.length > MAX_TAB_ACTION_MESSAGES_KO) return [];
+        // Thunderbird expands selected collapsed threads inside
+        // getActualSelectedMessages. Count their children before calling it:
+        // a single selected row can otherwise synchronously enumerate thousands.
+        let count = 0;
+        const countIndex = index => {
+          count += view.isContainer(index) && !view.isContainerOpen(index)
+            ? view.getThreadContainingIndex(index).numChildren : 1;
+          return count <= MAX_TAB_ACTION_MESSAGES_KO;
+        };
+        if (tree._selection?._selectEventsSuppressed) {
+          for (const index of tree._selection._invalidIndices) {
+            if (!selected.includes(index) && !countIndex(index)) return [];
+          }
+        } else {
+          for (const index of selected) if (!countIndex(index)) return [];
+        }
+        if (!count) return [];
         const headers = getActualSelectedMessagesKO(pane);
         if (!headers?.length || headers.length > MAX_TAB_ACTION_MESSAGES_KO) return [];
         const ids = headers.map(hdr => context.extension.messageManager?.convert?.(hdr)?.id);
@@ -109,8 +129,9 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
         }
         // Only bare Tab is an action. Thunderbird owns navigation chords.
         if (evt.code === "Tab" && !evt.shiftKey && !evt.ctrlKey && !evt.altKey && !evt.metaKey) {
+          if (!extensionApi._tabSubscriptions.size) return;
           const messageIds = selectedMessageIds(win);
-          if (!messageIds.length || !extensionApi._tabSubscriptions.size) return;
+          if (!messageIds.length) return;
           console.log("[TabMail KeyOverride] Tab detected");
           extensionApi.extension.emit(TAB_EVENT_KO, { messageIds });
           evt.preventDefault();

@@ -11,7 +11,7 @@ vi.mock('../agent/modules/utils.js', () => ({
   getIdentityForMessage: async () => ({}), getUniqueMessageKey: async () => 'synthetic@example.test',
   log() {},
 }));
-import { registerTabKeyHandlers, cleanupTagActionKeyListeners } from '../agent/modules/tagActionKey.js';
+import { registerTabKeyHandlers, cleanupTagActionKeyListeners, triggerTagActionKey } from '../agent/modules/tagActionKey.js';
 let x, win, rows, effects;
 const settled = () => new Promise(resolve => setImmediate(resolve));
 const key = (code = 'Tab', modifiers = {}) => ({
@@ -165,4 +165,48 @@ it('does not consume Tab when one of several native targets cannot be converted'
   expect(convert).toHaveBeenCalledTimes(2);
   expect(pressed.preventDefault).not.toHaveBeenCalled();
   expect(effects).toEqual([]);
+});
+
+it('executes all 100 selected actions at the bound and refuses 101', async () => {
+  cleanupTagActionKeyListeners();
+  x.instance.onShutdown(false);
+  const selected = makeWindow();
+  const headers = Array.from({ length: 101 }, (_, index) => ({
+    ...selected.hdr, messageKey: index + 1,
+  }));
+  selected.cw.threadTree.selectedIndices = Array.from({ length: 100 }, (_, index) => index);
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [selected.win],
+    moduleOverrides: { getActualSelectedMessages: pane =>
+      pane.threadTree.selectedIndices.map(index => headers[index]) },
+  });
+  x.context.extension.messageManager.convert = header => ({ id: header.messageKey });
+  browser.keyOverride = x.api;
+  rows = new Map(headers.map(header => [header.messageKey, {
+    ...fresh(), id: header.messageKey,
+  }]));
+  registerTabKeyHandlers(); x.api.init();
+  const atLimit = key(); selected.win.dispatch('keydown', atLimit); await settled();
+  expect(atLimit.preventDefault).toHaveBeenCalledOnce();
+  expect(effects.filter(effect => effect[0] === 'move')).toHaveLength(100);
+  expect([...rows.values()].slice(0, 100).every(row => row.folder.id === 'archive')).toBe(true);
+  effects.length = 0;
+  selected.cw.threadTree.selectedIndices.push(100);
+  const oversized = key(); selected.win.dispatch('keydown', oversized); await settled();
+  expect(oversized.preventDefault).not.toHaveBeenCalled();
+  expect(effects).toEqual([]);
+  expect(rows.get(101).folder.id).toBe('inbox');
+});
+
+it('keeps the action promise pending until a deferred move completes', async () => {
+  let finishMove;
+  browser.messages.move = vi.fn(() => new Promise(resolve => { finishMove = resolve; }));
+  let completed = false;
+  const action = triggerTagActionKey().then(() => { completed = true; });
+  await settled();
+  expect(browser.messages.move).toHaveBeenCalledOnce();
+  expect(completed).toBe(false);
+  finishMove();
+  await action;
+  expect(completed).toBe(true);
 });

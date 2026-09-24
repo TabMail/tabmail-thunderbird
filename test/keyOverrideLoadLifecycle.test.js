@@ -247,7 +247,12 @@ describe('keyOverride parent experiment lifecycle', () => {
     const headers = Array.from({ length: 101 }, (_, index) => ({
       ...hdr, messageKey: index + 1,
     }));
-    const select = vi.fn(() => headers);
+    const getChildHdrAt = vi.fn(index => headers[index]);
+    const select = vi.fn(pane => pane.threadTree.selectedIndices.flatMap(index =>
+      pane.gDBView.isContainer(index) && !pane.gDBView.isContainerOpen(index)
+        ? Array.from({ length: pane.gDBView.getThreadContainingIndex(index).numChildren },
+          (_, child) => pane.gDBView.getThreadContainingIndex(index).getChildHdrAt(child))
+        : [headers[index]]));
     const x = experiment(keyOverrideExperiment, 'keyOverride', {
       windows: [win],
       moduleOverrides: { getActualSelectedMessages: select },
@@ -261,17 +266,21 @@ describe('keyOverride parent experiment lifecycle', () => {
       code: 'Tab', key: 'Tab', shiftKey: false,
       preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
     });
-    cw.gDBView = { selection: { count: 101 } };
+    cw.threadTree.selectedIndices = Array.from({ length: 101 }, (_, index) => index);
     const oversizedSelection = press();
     win.dispatch('keydown', oversizedSelection);
     expect(select).not.toHaveBeenCalled();
     expect(convert).not.toHaveBeenCalled();
     expect(oversizedSelection.preventDefault).not.toHaveBeenCalled();
 
-    cw.gDBView.selection.count = 1; // A collapsed thread can expand past the selection count.
+    cw.threadTree.selectedIndices = [0]; // A collapsed thread can expand past the selection count.
+    cw.gDBView.isContainer = () => true;
+    cw.gDBView.isContainerOpen = () => false;
+    cw.gDBView.getThreadContainingIndex = () => ({ numChildren: headers.length, getChildHdrAt });
     const oversizedThread = press();
     win.dispatch('keydown', oversizedThread);
-    expect(select).toHaveBeenCalledOnce();
+    expect(select).not.toHaveBeenCalled();
+    expect(getChildHdrAt).not.toHaveBeenCalled();
     expect(convert).not.toHaveBeenCalled();
     expect(received).not.toHaveBeenCalled();
     expect(oversizedThread.preventDefault).not.toHaveBeenCalled();
@@ -279,12 +288,82 @@ describe('keyOverride parent experiment lifecycle', () => {
     headers.pop();
     const atLimit = press();
     win.dispatch('keydown', atLimit);
+    expect(getChildHdrAt).toHaveBeenCalledTimes(100);
     expect(convert).toHaveBeenCalledTimes(100);
     expect(received).toHaveBeenCalledExactlyOnceWith({
       messageIds: Array.from({ length: 100 }, (_, index) => index + 1),
     });
     expect(atLimit.preventDefault).toHaveBeenCalledOnce();
     x.api.onTabPressed.removeListener(received);
+    x.instance.onShutdown(false);
+  });
+
+  it('does not enumerate selected messages without a subscriber', () => {
+    const { win } = makeWindow();
+    const select = vi.fn(() => { throw new Error('selection must stay untouched'); });
+    const x = experiment(keyOverrideExperiment, 'keyOverride', {
+      windows: [win], moduleOverrides: { getActualSelectedMessages: select },
+    });
+    x.api.init();
+    const event = {
+      code: 'Tab', key: 'Tab', shiftKey: false,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+    };
+    win.dispatch('keydown', event);
+    expect(select).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    x.instance.onShutdown(false);
+  });
+
+  it('bounds Thunderbird’s suppressed-selection path before native enumeration', () => {
+    const { win, cw } = makeWindow();
+    cw.threadTree.selectedIndices = [0];
+    cw.threadTree._selection = {
+      _selectEventsSuppressed: true,
+      _invalidIndices: Array.from({ length: 102 }, (_, index) => index + 1),
+    };
+    const select = vi.fn(() => []);
+    const x = experiment(keyOverrideExperiment, 'keyOverride', {
+      windows: [win], moduleOverrides: { getActualSelectedMessages: select },
+    });
+    const received = vi.fn();
+    x.api.onTabPressed.addListener(received);
+    x.api.init();
+    const event = {
+      code: 'Tab', key: 'Tab', shiftKey: false,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+    };
+    win.dispatch('keydown', event);
+    expect(select).not.toHaveBeenCalled();
+    expect(received).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    x.instance.onShutdown(false);
+  });
+
+  it('contains an asynchronous primed-listener failure and accepts the next press', async () => {
+    const { win, hdr } = makeWindow();
+    const x = experiment(keyOverrideExperiment, 'keyOverride', {
+      windows: [win], moduleOverrides: { getActualSelectedMessages: () => [hdr] },
+    });
+    const resumed = vi.fn(async () => {});
+    const registration = x.api.onTabPressed.testPersistentRegistration().prime({
+      async: () => Promise.reject(new Error('synthetic wake failure')),
+    });
+    x.api.init();
+    const press = () => ({
+      code: 'Tab', key: 'Tab', shiftKey: false,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+    });
+    const first = press(); win.dispatch('keydown', first);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(first.preventDefault).toHaveBeenCalledOnce();
+    expect(x.logs.some(args => args.some(arg => String(arg).includes('Tab subscriber failed')))).toBe(true);
+    registration.convert({ async: resumed });
+    const second = press(); win.dispatch('keydown', second);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(second.preventDefault).toHaveBeenCalledOnce();
+    expect(resumed).toHaveBeenCalledExactlyOnceWith({ messageIds: [1] });
+    registration.unregister();
     x.instance.onShutdown(false);
   });
 });

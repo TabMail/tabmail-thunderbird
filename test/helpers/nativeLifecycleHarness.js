@@ -69,9 +69,12 @@ export function makeWindow() {
   };
   const view = {
     selection, hdrForRow: () => hdr,
+    isContainer: () => false, isContainerOpen: () => true,
     msgFolder: { flags: 1, URI: 'mailbox://synthetic/Inbox' },
     rowCount: 2, sort() {}, addColumnHandler() {}, getColumnHandler() { return null; },
   };
+  cw.gDBView = view;
+  cw.threadTree = { selectedIndices: [0], _selection: { _selectEventsSuppressed: false } };
   const media = target();
   const tabmail = {
     currentAbout3Pane: cw,
