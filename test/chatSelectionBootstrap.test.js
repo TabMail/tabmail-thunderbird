@@ -8,6 +8,9 @@ import { CHAT_SETTINGS } from '../chat/modules/chatConfig.js';
 it('starts selection recovery from the registered Chat DOMContentLoaded callback', async () => {
   const source = readFileSync(new URL('../chat/chat.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const configImport = ast.body.find(node => node.type === 'ImportDeclaration'
+    && node.source.value === './modules/chatConfig.js');
+  expect(configImport?.specifiers.some(specifier => specifier.imported?.name === 'CHAT_SETTINGS')).toBe(true);
   const initializer = ast.body.find(node => node.type === 'FunctionDeclaration' && node.id.name === 'initMessageSelectionTracking');
   const registration = ast.body.find(node => node.type === 'ExpressionStatement'
     && node.expression.callee?.object?.name === 'window'

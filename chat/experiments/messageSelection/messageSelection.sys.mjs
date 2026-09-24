@@ -318,6 +318,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
           const tabSelectHandler = () => {
             setupWindowTracking(win);
             getCurrentSelection();
+            notifySelectionChange();
           };
           tabContainer.__messageSelectionTabSelectHandler = tabSelectHandler;
           tabContainer.addEventListener("TabSelect", tabSelectHandler);

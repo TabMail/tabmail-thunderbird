@@ -18,19 +18,23 @@ function startChat({ runDelayed = true } = {}) {
   for (const entry of ast.body.filter(node => node.type === 'ImportDeclaration').reverse()) {
     for (const specifier of entry.specifiers) {
       const name = specifier.local.name;
-      globals[name] = name === 'CHAT_SETTINGS'
-        ? { openChatHotkeyEnabled: true }
-        : () => Promise.resolve({});
+      if (entry.source.value === './modules/messageSelection.js' && name === 'handleMessageSelectionRequest') {
+        globals[name] = message => message?.command === 'get-current-selection'
+          ? { ok: true, selectedMessageIds: ['synthetic-selected'], selectionCount: 1 }
+          : undefined;
+      } else if (entry.source.value === './modules/messageSelection.js' && name === 'initMessageSelectionListener') {
+        globals[name] = initMessageSelectionListener;
+      } else {
+        globals[name] = name === 'CHAT_SETTINGS'
+          ? { openChatHotkeyEnabled: true }
+          : () => Promise.resolve({});
+      }
     }
     script = script.slice(0, entry.start)
       + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
       + script.slice(entry.end);
   }
   globals.openOrFocusChatWindow = openOrFocusChatWindow;
-  globals.initMessageSelectionListener = initMessageSelectionListener;
-  globals.handleMessageSelectionRequest = message => message?.command === 'get-current-selection'
-    ? { ok: true, selectedMessageIds: ['synthetic-selected'], selectionCount: 1 }
-    : undefined;
   const events = new Map();
   function event(path) {
     if (!events.has(path)) {

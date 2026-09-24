@@ -141,6 +141,8 @@ describe('review: native ownership with real window and queued callback shapes',
   it('cleans every previously visited mail tab, including inactive tabs', () => {
     const h = harness(); h.api.init(); h.flush(); h.selectTab(1);
     expect(h.trees.map(t => t.count('select'))).toEqual([1, 1]);
+    expect(h.notifyObservers).toHaveBeenCalledTimes(1);
+    h.notifyObservers.mockClear();
     h.instance.onShutdown(false);
     expect(h.registered.size).toBe(0);
     h.selectTab(0); h.trees[0].emit('select'); h.flush();
