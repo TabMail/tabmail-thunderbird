@@ -51,6 +51,20 @@
         "async": true
       },
       {
+        "name": "dismissUpdateBar",
+        "type": "function",
+        "description": "Hide the update notification while retaining the pending update until Thunderbird restarts.",
+        "parameters": [],
+        "async": true
+      },
+      {
+        "name": "getPendingUpdateVersion",
+        "type": "function",
+        "description": "Return the pending update version retained for this Thunderbird process.",
+        "parameters": [],
+        "async": true
+      },
+      {
         "name": "restartThunderbird",
         "type": "function",
         "description": "Restart Thunderbird application.",

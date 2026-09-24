@@ -104,11 +104,12 @@ tabmail-thunderbird/
 
 From `manifest.json`, these background scripts initialize in order:
 1. `keepalive/background.js` — Keeps service worker alive
-2. `theme/background.js` — Theme system
-3. `agent/background.js` — Email agent
-4. `compose/background.js` — Compose features
-5. `chat/background.js` — Chat interface
-6. `chatlink/background.js` — Chat linking
+2. `updates/background.js` — Update notification and restart actions
+3. `theme/background.js` — Theme system
+4. `agent/background.js` — Email agent
+5. `compose/background.js` — Compose features
+6. `chat/background.js` — Chat interface
+7. `chatlink/background.js` — Chat linking
 
 ---
 

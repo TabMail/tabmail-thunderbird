@@ -4,10 +4,6 @@
 
 import { $ } from "./dom.js";
 
-// Storage keys - must match keepalive/background.js
-const UPDATE_STATE_KEY = "tm_updateState";
-const PENDING_VERSION_KEY = "tm_pendingUpdateVersion";
-
 // Simulated version for testing
 const SIMULATED_VERSION = "99.0.0";
 
@@ -36,28 +32,13 @@ export async function updateDebugStatusDisplay() {
 }
 
 /**
- * Simulate an update available (sets storage state)
+ * Simulate an update available through the same update manager as the popup.
  */
 export async function simulateUpdateAvailable() {
   try {
     console.log(`[TMDBG UpdateDebug] Simulating update to v${SIMULATED_VERSION}`);
     
-    // Set storage state
-    await browser.storage.local.set({
-      [UPDATE_STATE_KEY]: "pending",
-      [PENDING_VERSION_KEY]: SIMULATED_VERSION,
-    });
-    
-    // Show notification bar via experiment
-    if (browser.tmUpdates?.showUpdateBar) {
-      await browser.tmUpdates.showUpdateBar({
-        message: `TabMail v${SIMULATED_VERSION} ready — restart Thunderbird to apply`,
-        version: SIMULATED_VERSION,
-      });
-      console.log("[TMDBG UpdateDebug] Update bar shown");
-    } else {
-      console.warn("[TMDBG UpdateDebug] tmUpdates experiment not available");
-    }
+    await browser.runtime.sendMessage({ command: "setPendingUpdate", version: SIMULATED_VERSION });
     
     $("status").textContent = `Simulated update to v${SIMULATED_VERSION}`;
     await updateDebugStatusDisplay();
@@ -68,18 +49,13 @@ export async function simulateUpdateAvailable() {
 }
 
 /**
- * Clear update state from storage
+ * Clear simulated update state and its notification bar.
  */
 export async function clearUpdateState() {
   try {
     console.log("[TMDBG UpdateDebug] Clearing update state");
     
-    await browser.storage.local.remove([UPDATE_STATE_KEY, PENDING_VERSION_KEY]);
-    
-    // Hide notification bar
-    if (browser.tmUpdates?.hideUpdateBar) {
-      await browser.tmUpdates.hideUpdateBar();
-    }
+    await browser.runtime.sendMessage({ command: "clearPendingUpdate" });
     
     $("status").textContent = "Update state cleared";
     await updateDebugStatusDisplay();
@@ -94,8 +70,7 @@ export async function clearUpdateState() {
  */
 export async function showUpdateBar() {
   try {
-    const stored = await browser.storage.local.get([UPDATE_STATE_KEY, PENDING_VERSION_KEY]);
-    const version = stored[PENDING_VERSION_KEY] || SIMULATED_VERSION;
+    const version = await browser.tmUpdates?.getPendingUpdateVersion() || SIMULATED_VERSION;
     
     if (browser.tmUpdates?.showUpdateBar) {
       await browser.tmUpdates.showUpdateBar({
