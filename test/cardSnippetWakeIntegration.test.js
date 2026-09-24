@@ -26,7 +26,7 @@ function setup(){
  let current=messages[0];tree.view={getMsgHdrAt:()=>current};
  const tabmail=w.win.document.getElementById('tabmail');tabmail.currentAbout3Pane=dom.window;
  tabmail.tabInfo[0].chromeBrowser={contentDocument:doc,contentWindow:dom.window};
- class Row { fillRow(){this.innerHTML='<td class="card-container"><span class="sender">Synthetic</span><span class="subject">Synthetic</span><div class="thread-card-dynamic-row"></div></td>';} }
+ class Row { fillRow(){if(!this.querySelector('.card-container'))this.innerHTML='<td class="card-container"><span class="sender">Synthetic</span><span class="subject">Synthetic</span><div class="thread-card-dynamic-row"></div></td>';} }
  Row.ROW_HEIGHT=46;Object.defineProperty(dom.window,'customElements',{value:{get:n=>n==='thread-card'?Row:undefined}});
  const x=experiment('theme/experiments/tmMessageListCardView/tmMessageListCardView.sys.mjs','tmMessageListCardView',{windows:[w.win]});
  x.context.extension.messageManager.convert=hdr=>({id:hdr.messageKey});
@@ -57,7 +57,10 @@ describe('independent rendered snippet contracts',()=>{
   expect(deps.full).toHaveBeenCalledExactlyOnceWith(1);
   expect(deps.set).toHaveBeenCalledExactlyOnceWith('synthetic:/Inbox:1','message-1');
   expect(f.doc.__tmMsgList.__tmCardSnippetPending.size).toBe(0);
+  const snippetNode=f.row.querySelector('.tm-card-snippet');
   p.stop();f.swap();f.fill();f.x.timers.at(-1).notify();
+  expect(f.row.querySelector('.tm-card-snippet')).toBe(snippetNode);
+  expect(snippetNode.getAttribute('data-tm-hdr-key')).toContain('::2');
   expect(f.snippet()).toBe('');expect(deps.full).toHaveBeenCalledTimes(1);
  });
  it('does not paint a recycled row with the old message after a slow fetch',async()=>{
