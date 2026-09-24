@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import { parse } from 'acorn';
+import vm from 'node:vm';
 import { experiment, makeWindow } from './helpers/nativeLifecycleHarness.js';
 
 const cardExperiment = 'theme/experiments/tmMessageListCardView/tmMessageListCardView.sys.mjs';
@@ -93,6 +94,77 @@ describe('card chip first-click wake contract', () => {
       click();
       expect(resumed).toHaveBeenCalledTimes(1);
       expect(resumed).toHaveBeenCalledWith({ source: 'click', weMsgId: 1 });
+    } finally {
+      x.instance.onShutdown(false);
+      dom.window.close();
+    }
+  });
+
+  it.each([
+    ['mouse click', 'click'],
+    ['Enter', 'Enter'],
+    ['Space', ' '],
+  ])('replays the first %s action on its original message after wake', async (_name, activation) => {
+    const { dom, w, doc, tree, Row } = renderedChip();
+    const x = experiment(cardExperiment, 'tmMessageListCardView', { windows: [w.win] });
+    try {
+      await x.api.init();
+      const row = doc.createElement('tr');
+      row.id = 'threadTree-row0';
+      row.setAttribute('is', 'thread-card');
+      doc.querySelector('tbody').appendChild(row);
+      Row.prototype.fillRow.call(row, 0, null, {}, tree.view);
+      const chip = row.querySelector('.tm-action-chip');
+      expect(chip?.dataset.tmWeMsgId).toBe('1');
+
+      const messages = new Map([
+        [1, { id: 1, folder: 'Inbox' }],
+        [2, { id: 2, folder: 'Inbox' }],
+      ]);
+      let selectedId = 1;
+      const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
+      const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+      const node = ast.body.find(entry => entry.type === 'FunctionDeclaration'
+        && entry.id?.name === '_onActionChipClick');
+      const context = {
+        console: { log() {}, error() {} },
+        browser: { messages: { get: vi.fn(async id => messages.get(id) ?? null) } },
+        performTaggedAction: vi.fn(async msg => { messages.set(msg.id, { ...msg, folder: 'Trash' }); }),
+        triggerTagActionKey: vi.fn(async () => {
+          const msg = messages.get(selectedId);
+          messages.set(selectedId, { ...msg, folder: 'Trash' });
+        }),
+      };
+      vm.runInNewContext(`${source.slice(node.start, node.end)}\nthis.handle = _onActionChipClick`, context);
+
+      const queued = [];
+      const persisted = x.api.onActionChipClick.testPersistentRegistration();
+      const registration = persisted.prime({
+        wakeup: vi.fn(async () => {}),
+        async: info => new Promise(resolve => queued.push({ info, resolve })),
+      });
+      if (activation === 'click') {
+        chip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      } else {
+        chip.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: activation, bubbles: true }));
+      }
+      expect(queued).toHaveLength(1);
+      expect(queued[0].info).toEqual({
+        source: activation === 'click' ? 'click' : 'keydown', weMsgId: 1,
+      });
+      expect(messages.get(1).folder).toBe('Inbox');
+      selectedId = 2;
+      const resumed = vi.fn(info => context.handle(info));
+      registration.convert({ async: resumed });
+      // Gecko flushes the queued first event after convert; model that handoff.
+      for (const item of queued) item.resolve(await resumed(item.info));
+      expect(resumed).toHaveBeenCalledTimes(1);
+      expect(context.performTaggedAction).toHaveBeenCalledWith({ id: 1, folder: 'Inbox' });
+      expect(context.browser.messages.get).toHaveBeenCalledExactlyOnceWith(1);
+      expect(context.triggerTagActionKey).not.toHaveBeenCalled();
+      expect(messages.get(1).folder).toBe('Trash');
+      expect(messages.get(2).folder).toBe('Inbox');
+      registration.unregister();
     } finally {
       x.instance.onShutdown(false);
       dom.window.close();

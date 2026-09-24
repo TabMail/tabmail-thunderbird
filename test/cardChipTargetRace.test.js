@@ -31,8 +31,12 @@ describe('card chip target across background wake', () => {
     getMessage.mockResolvedValueOnce(null);
     await context.handle({ source: 'click', weMsgId: 3 });
     expect(context.performTaggedAction).not.toHaveBeenCalled();
-    getMessage.mockClear();
+    getMessage.mockRejectedValueOnce(new Error('synthetic message removed before wake'));
     selectedId = 2;
+    await context.handle({ source: 'click', weMsgId: 3 });
+    expect(context.performTaggedAction).not.toHaveBeenCalled();
+    expect(context.triggerTagActionKey).not.toHaveBeenCalled();
+    getMessage.mockClear();
     await context.handle({ source: 'click', weMsgId: 1 });
     expect(acted).toEqual([1]);
     expect(getMessage).toHaveBeenCalledExactlyOnceWith(1);
@@ -191,9 +195,18 @@ describe('card chip target across background wake', () => {
       delete chip.dataset.tmWeMsgId;
       chip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
       expect(seen).toEqual([7, 9]);
-      x.context.extension.messageManager.convert = () => ({ id: 0 });
+      hdr = { ...hdr, id: 11 };
+      const failedConversion = vi.fn(() => ({ id: 0 }));
+      x.context.extension.messageManager.convert = failedConversion;
       context.paint(row, 'delete', doc, hdr);
+      expect(failedConversion).toHaveBeenCalledExactlyOnceWith(hdr);
       expect(row.querySelector('.tm-action-chip')).toBeNull();
+      chip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      expect(seen).toEqual([7, 9]);
+      x.context.extension.messageManager.convert = header => ({ id: header.id });
+      context.paint(row, 'delete', doc, hdr);
+      row.querySelector('.tm-action-chip').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      expect(seen).toEqual([7, 9, 11]);
     } finally {
       x.instance.onShutdown(false);
       dom.window.close();
