@@ -18,7 +18,7 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 import { registerTabKeyHandlers, cleanupTagActionKeyListeners } from '../agent/modules/tagActionKey.js';
 
-function startAgent({ welcome = false, tabKeyRegistrar } = {}) {
+function startAgent({ welcome = false, tabKeyRegistrar, coverageMessage } = {}) {
   const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
@@ -70,6 +70,8 @@ function startAgent({ welcome = false, tabKeyRegistrar } = {}) {
         if (welcome && next === 'browser.storage.local.get') return async () => ({ tabmailWelcomeCompleted: false });
         if (welcome && next === 'browser.windows.getAll') return async () => [];
         if (welcome && next === 'browser.windows.create') return async options => { createdWindows.push(options); return { id: 7 }; };
+        if (coverageMessage && next === 'browser.messages.get') return async id =>
+          id === coverageMessage.id ? structuredClone(coverageMessage) : null;
         if (welcome && next === 'browser.runtime.getURL') return path => `moz-extension://synthetic/${path}`;
         if (key === 'getManifest') return () => ({ version: 'synthetic' });
         return api(next);
@@ -83,6 +85,38 @@ function startAgent({ welcome = false, tabKeyRegistrar } = {}) {
 }
 
 describe('agent background startup and canceled suspend', () => {
+  it('registers table coverage before async startup and enqueues the event identity after suspend', async () => {
+    const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+    const calls = ast.body.filter(node => node.type === 'ExpressionStatement'
+      && node.expression?.type === 'CallExpression')
+      .map(node => ({ name: node.expression.callee?.name, at: node.start }));
+    expect(calls.find(call => call.name === 'attachUntaggedCoverageListener')?.at)
+      .toBeLessThan(calls.find(call => call.name === 'init')?.at);
+
+    const message = { id: 91, subject: 'Synthetic coverage',
+      folder: { id: 'inbox', accountId: 'synthetic', path: '/Inbox' } };
+    const app = startAgent({ coverageMessage: message });
+    const coverage = app.event('browser.tmMessageListTableView.onUntaggedInboxMessages');
+    expect(coverage.listeners.size).toBe(1);
+    const payload = [{ weMsgId: 91, messageId: '<synthetic-coverage@example.test>',
+      messageKey: 7, folderUri: 'mailbox://synthetic/Inbox', rowIndex: 2 }];
+    await coverage.emit(payload);
+    expect(app.enqueueProcessMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 91, subject: 'Synthetic coverage' }),
+      { isPriority: false, source: 'tagSort:coverage' }
+    );
+    expect(app.enqueueProcessMessage).toHaveBeenCalledTimes(1);
+
+    await app.event('browser.runtime.onSuspend').emit();
+    expect(coverage.listeners.size).toBe(1);
+    await coverage.emit(payload);
+    expect(app.enqueueProcessMessage).toHaveBeenCalledTimes(2);
+    expect(app.enqueueProcessMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 91 }), { isPriority: false, source: 'tagSort:coverage' }
+    );
+  });
+
   it('registers the Tab listener at module load before asynchronous initialization', () => {
     const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
     const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
