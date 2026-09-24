@@ -41,6 +41,9 @@ import {
 import { attachThreadTooltipHandlers } from "./modules/threadTooltip.js";
 import { log, signalChatTyping } from "./modules/utils.js";
 
+// Thunderbird only primes persistent events registered during background startup.
+registerTabKeyHandlers();
+
 log("TabMail Agent background script loaded.");
 // log('[TMDBG Summary] agent.js debug build reloaded – timestamp ' + (new Date()).toISOString());
 
@@ -1797,7 +1800,6 @@ async function init() {
     }
 
     // 2b. Listen for Tab key events via experiment API (delegated to modules/tabKey.js)
-    registerTabKeyHandlers();
 
     // 3. Register manual compose handlers and thread tooltip handlers.
     initComposeHandlers();

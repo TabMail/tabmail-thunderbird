@@ -28,6 +28,7 @@ globalThis.browser = {
     query: vi.fn(async () => []),
     getSelectedMessages: vi.fn(async () => ({ messages: [] })),
   },
+  messages: { get: vi.fn(async () => null) },
 };
 
 const {
@@ -57,17 +58,16 @@ describe('registerTabKeyHandlers', () => {
     browser.keyOverride = orig;
   });
 
-  it('connects only bare native Tab to the selected-message action', async () => {
-    const { win } = makeWindow();
+  it('connects only bare native Tab to the press-time message action', async () => {
+    const { win, hdr } = makeWindow();
     const x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
-      windows: [win],
+      windows: [win], moduleOverrides: { getActualSelectedMessages: () => [hdr] },
     });
     const ordinaryApi = browser.keyOverride;
     try {
       browser.keyOverride = x.api;
       const message = { id: 1, subject: 'Synthetic' };
-      browser.mailTabs.query.mockResolvedValue([{ id: 7 }]);
-      browser.mailTabs.getSelectedMessages.mockResolvedValue({ messages: [message] });
+      browser.messages.get.mockResolvedValue(message);
       registerTabKeyHandlers();
       x.api.init();
       const key = (code, modifiers = {}) => ({
@@ -85,24 +85,45 @@ describe('registerTabKeyHandlers', () => {
         key('KeyA'), key('Enter'), key('KeyL', { altKey: true, metaKey: true }),
         key('Tab', { ctrlKey: true }), key('Tab', { shiftKey: true }),
       ]) {
-        const queries = browser.mailTabs.query.mock.calls.length;
-        const selections = browser.mailTabs.getSelectedMessages.mock.calls.length;
+        const lookups = browser.messages.get.mock.calls.length;
         win.dispatch('keydown', event);
         // A stray notification can start selection/action work asynchronously.
         await new Promise(resolve => setImmediate(resolve));
         expect(event.preventDefault).not.toHaveBeenCalled();
         expect(event.stopPropagation).not.toHaveBeenCalled();
         expect(event.stopImmediatePropagation).not.toHaveBeenCalled();
-        expect(browser.mailTabs.query).toHaveBeenCalledTimes(queries);
-        expect(browser.mailTabs.getSelectedMessages).toHaveBeenCalledTimes(selections);
+        expect(browser.messages.get).toHaveBeenCalledTimes(lookups);
         expect(mockPerformTaggedAction).toHaveBeenCalledTimes(1);
       }
+      expect(browser.mailTabs.query).not.toHaveBeenCalled();
+      expect(browser.mailTabs.getSelectedMessages).not.toHaveBeenCalled();
       expect(mockPerformTaggedAction).toHaveBeenCalledTimes(1);
     } finally {
       cleanupTagActionKeyListeners();
       x.instance.onShutdown(false);
       browser.keyOverride = ordinaryApi;
     }
+  });
+
+  it('acts on the press-time ID after selection drifts and fails closed if it disappeared', async () => {
+    registerTabKeyHandlers();
+    const listener = browser.keyOverride.onTabPressed.addListener.mock.lastCall[0];
+    const original = { id: 1, subject: 'Original' };
+    const newlySelected = { id: 2, subject: 'New selection' };
+    browser.mailTabs.query.mockResolvedValue([{ id: 99 }]);
+    browser.mailTabs.getSelectedMessages.mockResolvedValue({ messages: [newlySelected] });
+    browser.messages.get.mockImplementation(async id => id === 1 ? original : newlySelected);
+    await listener({ messageIds: [1] });
+    expect(browser.messages.get).toHaveBeenCalledExactlyOnceWith(1);
+    expect(mockPerformTaggedAction).toHaveBeenCalledExactlyOnceWith(original);
+    expect(browser.mailTabs.getSelectedMessages).not.toHaveBeenCalled();
+
+    mockPerformTaggedAction.mockClear();
+    browser.messages.get.mockResolvedValue(null);
+    await listener({ messageIds: [1] });
+    await listener();
+    expect(mockPerformTaggedAction).not.toHaveBeenCalled();
+    expect(browser.mailTabs.getSelectedMessages).not.toHaveBeenCalled();
   });
 });
 

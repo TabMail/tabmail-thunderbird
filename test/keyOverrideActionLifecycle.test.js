@@ -20,9 +20,12 @@ const key = (code = 'Tab', modifiers = {}) => ({
 });
 const fresh = () => ({ id: 1, read: false, folder: { id: 'inbox', accountId: 'synthetic' } });
 beforeEach(() => {
-  win = makeWindow().win;
+  const initial = makeWindow();
+  win = initial.win;
   rows = new Map([[1, fresh()], [2, { ...fresh(), id: 2 }]]); effects = [];
-  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', { windows: [win] });
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [win], moduleOverrides: { getActualSelectedMessages: () => [initial.hdr] },
+  });
   globalThis.browser = {
     keyOverride: x.api,
     mailTabs: {

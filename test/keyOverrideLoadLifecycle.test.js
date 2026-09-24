@@ -70,10 +70,16 @@ describe('keyOverride parent experiment lifecycle', () => {
   });
 
   it('captures Tab once and removes its native hook on shutdown', () => {
-    const { win } = makeWindow();
-    const x = experiment(keyOverrideExperiment, 'keyOverride', { windows: [win] });
+    const { win, hdr } = makeWindow();
+    let selected = [hdr];
+    const x = experiment(keyOverrideExperiment, 'keyOverride', {
+      windows: [win], moduleOverrides: { getActualSelectedMessages: () => selected },
+    });
     const received = vi.fn();
     x.api.onTabPressed.addListener(received);
+    const persisted = x.api.onTabPressed.testPersistentRegistration();
+    expect(persisted?.module).toBe('keyOverride');
+    expect(persisted?.event).toBe('onTabPressed');
     x.api.init();
     const event = {
       code: 'Tab', key: 'Tab', shiftKey: false,
@@ -81,9 +87,15 @@ describe('keyOverride parent experiment lifecycle', () => {
     };
     win.dispatch('keydown', event);
     expect(received).toHaveBeenCalledTimes(1);
+    expect(received).toHaveBeenCalledWith({ messageIds: [1] });
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(event.stopPropagation).toHaveBeenCalledTimes(1);
     expect(event.stopImmediatePropagation).toHaveBeenCalledTimes(1);
+    selected = [];
+    const empty = { ...event, preventDefault: vi.fn() };
+    win.dispatch('keydown', empty);
+    expect(empty.preventDefault).not.toHaveBeenCalled();
+    selected = [hdr];
     const reverse = {
       ...event, shiftKey: true,
       preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
@@ -121,12 +133,14 @@ describe('keyOverride parent experiment lifecycle', () => {
     expect(received).toHaveBeenCalledTimes(2);
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     x.api.onTabPressed.removeListener(received);
-    expect(x.observers.get('keyOverride-tabPressed')?.size).toBe(0);
+    expect(x.instance._tabSubscriptions.size).toBe(0);
     const later = makeWindow().win;
     x.openWindow(later);
     expect(later.__keyOverrideHandler).toBeUndefined();
 
-    const reopened = experiment(keyOverrideExperiment, 'keyOverride', { windows: [win] });
+    const reopened = experiment(keyOverrideExperiment, 'keyOverride', {
+      windows: [win], moduleOverrides: { getActualSelectedMessages: () => [hdr] },
+    });
     const again = vi.fn();
     reopened.api.onTabPressed.addListener(again);
     reopened.api.init();
@@ -136,5 +150,39 @@ describe('keyOverride parent experiment lifecycle', () => {
     expect(again).toHaveBeenCalledTimes(1);
     reopened.instance.onShutdown(false);
     reopened.api.onTabPressed.removeListener(again);
+  });
+
+  it('queues the press-time target through a primed listener and converts once', async () => {
+    const { win, hdr } = makeWindow();
+    let selected = [hdr];
+    const x = experiment(keyOverrideExperiment, 'keyOverride', {
+      windows: [win], moduleOverrides: { getActualSelectedMessages: () => selected },
+    });
+    x.context.extension.messageManager.convert = message => ({ id: message.messageKey });
+    x.api.init();
+    const queued = [];
+    const registration = x.api.onTabPressed.testPersistentRegistration().prime({
+      wakeup: vi.fn(async () => {}),
+      async: info => new Promise(resolve => queued.push({ info, resolve })),
+    });
+    const event = {
+      code: 'Tab', key: 'Tab', shiftKey: false,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+    };
+    win.dispatch('keydown', event);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(queued).toHaveLength(1);
+    expect(queued[0].info).toEqual({ messageIds: [1] });
+    selected = [{ ...hdr, messageKey: 2 }];
+    const resumed = vi.fn(async () => {});
+    registration.convert({ async: resumed });
+    for (const item of queued) item.resolve(await resumed(item.info));
+    expect(resumed).toHaveBeenCalledExactlyOnceWith({ messageIds: [1] });
+    win.dispatch('keydown', { ...event, preventDefault: vi.fn() });
+    expect(resumed).toHaveBeenNthCalledWith(2, { messageIds: [2] });
+    registration.unregister();
+    win.dispatch('keydown', { ...event, preventDefault: vi.fn() });
+    expect(resumed).toHaveBeenCalledTimes(2);
+    x.instance.onShutdown(false);
   });
 });
