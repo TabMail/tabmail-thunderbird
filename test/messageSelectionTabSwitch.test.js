@@ -89,3 +89,74 @@ it('a newer foreground mail tab snapshot stays selected after an old window-read
     delete globalThis.browser;
   }
 });
+
+it.each(['empty mail tab', 'non-mail tab'])(
+  'switching to %s clears the previous selection in Chat mentions', async target => {
+    const first = makeWindow();
+    const other = makeWindow();
+    first.cw.gDBView = first.view;
+    other.cw.gDBView = other.view;
+    other.view.selection.count = 0;
+    delete first.win.gDBView;
+    const tabmail = first.win.document.getElementById('tabmail');
+    const currentTab = tabmail.tabInfo[0];
+    currentTab.mode = { name: 'mail3PaneTab' };
+    const nextTab = {
+      mode: { name: target === 'empty mail tab' ? 'mail3PaneTab' : 'contentTab' },
+      chromeBrowser: { contentWindow: other.cw },
+    };
+    tabmail.tabInfo.push(nextTab);
+    tabmail.currentTabInfo = currentTab;
+    tabmail.currentAbout3Pane = first.cw;
+    const x = experiment('chat/experiments/messageSelection/messageSelection.sys.mjs',
+      'messageSelection', { windows: [first.win] });
+    x.instance.extension.messageManager.convert = hdr => ({ id: hdr.messageKey });
+    getUniqueMessageKey.mockImplementation(async id => `synthetic:${id}`);
+    const listeners = new Set();
+    const deliveries = [];
+    const ctx = { selectedMessageIds: [] };
+    globalThis.browser = {
+      messageSelection: x.api,
+      runtime: {
+        onMessage: { addListener: fn => listeners.add(fn), removeListener: fn => listeners.delete(fn) },
+        sendMessage: vi.fn(async message => {
+          if (message.command === 'get-current-selection') return handleMessageSelectionRequest(message);
+          deliveries.push(message);
+          for (const fn of listeners) fn(message);
+        }),
+      },
+    };
+    const chat = experimentFunctions(new URL('../chat/chat.js', import.meta.url),
+      ['initMessageSelectionTracking', 'updateSelectionFromMessage', 'cleanupMessageSelectionListener'], {
+        CHAT_SETTINGS, browser, ctx, currentSelectionCount: 0, messageSelectionListener: null,
+        log: vi.fn(), setTimeout,
+      });
+    const autocompleteState = { matches: [] };
+    const mention = experimentFunctions(new URL('../chat/modules/mentionAutocomplete.js', import.meta.url),
+      ['updateMatches'], {
+        ctx, autocompleteState, emailCache: [], templateCache: [], log: vi.fn(),
+        getEmailById: async id => ({ subject: `Synthetic ${id}`, from: 'sender@example.test' }),
+      });
+    try {
+      await initMessageSelectionListener();
+      await chat.initMessageSelectionTracking();
+      expect(ctx.selectedMessageIds).toEqual(['synthetic:1']);
+      await mention.updateMatches('');
+      expect(autocompleteState.matches[0]).toMatchObject({ type: 'selected', label: 'Synthetic synthetic:1' });
+
+      tabmail.currentTabInfo = nextTab;
+      tabmail.currentAbout3Pane = target === 'empty mail tab' ? other.cw : null;
+      first.tabContainer.dispatch('TabSelect');
+      await settle();
+      expect(ctx.selectedMessageIds).toEqual([]);
+      await mention.updateMatches('');
+      expect(autocompleteState.matches).toEqual([]);
+      expect(deliveries.at(-1)).toMatchObject({ selectedMessageIds: [], selectionCount: 0 });
+    } finally {
+      chat.cleanupMessageSelectionListener();
+      cleanupMessageSelectionListener();
+      x.instance.onShutdown(false);
+      delete globalThis.browser;
+    }
+  },
+);

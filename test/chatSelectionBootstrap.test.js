@@ -143,6 +143,42 @@ it('retries an unanswered startup request and applies the selected identity from
   expect(timers).toHaveLength(0);
 });
 
+it('waits through a transient background startup delay before retrying selection', async () => {
+  vi.useFakeTimers();
+  try {
+    let backgroundReady = false;
+    setTimeout(() => { backgroundReady = true; }, 100);
+    const ctx = { selectedMessageIds: [] };
+    const sendMessage = vi.fn(async () => backgroundReady
+      ? { ok: true, selectedMessageIds: ['synthetic:ready'], selectionCount: 1 }
+      : undefined);
+    const { initMessageSelectionTracking } = experimentFunctions(
+      new URL('../chat/chat.js', import.meta.url),
+      ['initMessageSelectionTracking', 'updateSelectionFromMessage'], {
+        CHAT_SETTINGS,
+        browser: { runtime: { onMessage: { addListener: vi.fn() }, sendMessage } },
+        ctx,
+        currentSelectionCount: 0,
+        messageSelectionListener: null,
+        cleanupMessageSelectionListener: vi.fn(),
+        log: vi.fn(),
+        setTimeout,
+      },
+    );
+    await initMessageSelectionTracking();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(ctx.selectedMessageIds).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(backgroundReady).toBe(true);
+    expect(ctx.selectedMessageIds).toEqual(['synthetic:ready']);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('bounds failed startup requests, retries rejected transport, and logs exhaustion', async () => {
   const timers = [];
   const log = vi.fn();
