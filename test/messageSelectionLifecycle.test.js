@@ -6,9 +6,10 @@ const source = readFileSync(filename, 'utf8');
 function target() {
   const events = new Map();
   return {
-    addEventListener(name, fn) { if (!events.has(name)) events.set(name, new Set()); events.get(name).add(fn); },
-    removeEventListener(name, fn) { events.get(name)?.delete(fn); },
-    emit(name) { for (const fn of [...(events.get(name) || [])]) fn(); },
+    addEventListener(name, fn, options) { if (!events.has(name)) events.set(name, new Set()); events.get(name).add({ fn, capture: options === true || !!options?.capture }); },
+    removeEventListener(name, fn, options) { for (const listener of events.get(name) || []) if (listener.fn === fn && listener.capture === (options === true || !!options?.capture)) events.get(name).delete(listener); },
+    emit(name) { for (const { fn } of [...(events.get(name) || [])]) fn(); },
+    emitCaptured(name, event) { for (const { fn, capture } of [...(events.get(name) || [])]) if (capture) fn(event); },
     count(name) { return events.get(name)?.size || 0; },
   };
 }
@@ -19,7 +20,7 @@ function harness({ loading = false } = {}) {
   const headers = [header, { ...header, messageId: 'second@example.test' }];
   const selection = { count: 1, getRangeCount: () => 1, getRangeAt(_i, a, b) { a.value = 0; b.value = 0; } };
   const trees = [target(), target()];
-  const tabs = trees.map((tree, index) => ({ mode: { name: 'mail3PaneTab' }, chromeBrowser: { ...target(), contentWindow: {
+  const tabs = trees.map((tree, index) => ({ mode: { name: 'mail3PaneTab' }, chromeBrowser: { ...target(), get contentDocument() { return this.contentWindow.document; }, contentWindow: {
     gDBView: { selection, hdrForRow: () => headers[index] },
     document: { readyState: 'complete', getElementById: id => id === 'threadTree' && tabs[index]?.chromeBrowser.contentWindow.document.readyState === 'complete' ? tree : null, querySelector: () => null },
   } } }));
@@ -74,7 +75,8 @@ function harness({ loading = false } = {}) {
   const finishLoad = () => { win.document.readyState = 'complete'; win.emit('load'); };
   const loadedViews = tabs.map(tab => tab.chromeBrowser.contentWindow.gDBView);
   const setTabLoading = index => { tabs[index].chromeBrowser.contentWindow.document.readyState = 'loading'; tabs[index].chromeBrowser.contentWindow.gDBView = null; };
-  const finishTabLoad = index => { tabs[index].chromeBrowser.contentWindow.document.readyState = 'complete'; tabs[index].chromeBrowser.contentWindow.gDBView = loadedViews[index]; tabs[index].chromeBrowser.emit('load'); };
+  // A content document's non-bubbling load reaches its <browser> only in capture.
+  const finishTabLoad = index => { tabs[index].chromeBrowser.contentWindow.document.readyState = 'complete'; tabs[index].chromeBrowser.contentWindow.gDBView = loadedViews[index]; tabs[index].chromeBrowser.emitCaptured('load', { target: tabs[index].chromeBrowser.contentDocument }); };
   return { instance, api, trees, tabs, tabContainer, selection, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad, setTabLoading, finishTabLoad };
 }
 describe('review: native ownership with real window and queued callback shapes', () => {
@@ -162,6 +164,10 @@ describe('review: native ownership with real window and queued callback shapes',
     expect(h.notifyObservers).not.toHaveBeenCalled();
     expect(h.trees[1].count('select')).toBe(0);
     expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+
+    h.tabs[1].chromeBrowser.emitCaptured('load', { target: {} });
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    expect(h.notifyObservers).not.toHaveBeenCalled();
 
     h.finishTabLoad(1); h.flush();
     expect(h.trees[1].count('select')).toBe(1);

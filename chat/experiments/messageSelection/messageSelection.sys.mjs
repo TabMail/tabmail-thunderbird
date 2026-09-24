@@ -339,15 +339,18 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
             if (innerDoc?.readyState !== "complete" || !threadTree) {
               if (!browser?.addEventListener) return;
               const cancel = () => {
-                browser.removeEventListener("load", onLoad);
+                browser.removeEventListener("load", onLoad, true);
                 pendingTabLoads.delete(win);
               };
-              const onLoad = () => {
+              const onLoad = event => {
+                // A nested message browser can also load within about:3pane.
+                if (event.target !== browser.contentDocument) return;
                 cancel();
                 if (isInitialized && tabmail.currentTabInfo === selectedTab) tabSelectHandler();
               };
               pendingTabLoads.set(win, cancel);
-              browser.addEventListener("load", onLoad);
+              // Content document load does not bubble to the XUL browser.
+              browser.addEventListener("load", onLoad, true);
               return;
             }
             setupWindowTracking(win);
