@@ -110,6 +110,24 @@ describe('card chip first-click wake contract', () => {
     expect(seen).not.toHaveBeenCalled();
   });
 
+  it('releases retired subscriptions across repeated wake registrations', () => {
+    const x = experiment(cardExperiment, 'tmMessageListCardView');
+    const seen = vi.fn();
+    try {
+      for (let i = 0; i < 100; i++) {
+        const registration = x.instance.primeListener('onActionChipClick', { async: seen });
+        x.context.extension.emit('onActionChipClick', { source: 'click', weMsgId: i + 1 });
+        registration.unregister();
+        expect(x.instance._chipClickSubscriptions.size).toBe(0);
+      }
+      expect(seen).toHaveBeenCalledTimes(100);
+      x.context.extension.emit('onActionChipClick', { source: 'click', weMsgId: 101 });
+      expect(seen).toHaveBeenCalledTimes(100);
+    } finally {
+      x.instance.onShutdown(false);
+    }
+  });
+
   it('forwards the snippet-needs payload after the emitter event name', async () => {
     const x = experiment(cardExperiment, 'tmMessageListCardView');
     try {
