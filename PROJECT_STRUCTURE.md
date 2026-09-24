@@ -2,7 +2,7 @@
 
 > **Directory tree, entry points, and sub-component map.** Update when the structure changes.
 
-**Last updated:** 2026-02-16
+**Last updated:** 2026-09-24
 
 ---
 
@@ -63,6 +63,9 @@ tabmail-thunderbird/
 │   ├── relay.html / .js        # Relay page
 │   ├── content/                # Content scripts
 │   └── experiments/            # tmKeepAlive experiment
+│
+├── updates/                     # Add-on update manager
+│   └── background.js           # Pending update state, bar actions, and popup requests
 │
 ├── popup/                       # Action popup UI
 │   ├── popup.html / .js / .css # Popup interface

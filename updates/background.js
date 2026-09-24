@@ -22,6 +22,7 @@ browser.runtime.onUpdateAvailable.addListener(async (details) => {
   // Show notification bar in all windows
   try {
     if (browser.tmUpdates?.showUpdateBar) {
+      await browser.tmUpdates.setPendingUpdateVersion(details.version);
       await browser.tmUpdates.showUpdateBar({
         message: `TabMail v${details.version} ready — restart Thunderbird to apply`,
         version: details.version,
@@ -65,7 +66,7 @@ if (browser.tmUpdates?.onNotificationAction) {
  */
 browser.runtime.onMessage.addListener((message) => {
   if (message && message.command === "getUpdateState") {
-    return browser.tmUpdates.getPendingUpdateVersion().then(pendingVersion => ({
+    return Promise.resolve(browser.tmUpdates?.getPendingUpdateVersion?.() ?? null).then(pendingVersion => ({
       updateState: pendingVersion ? "pending" : null,
       pendingVersion,
       currentVersion: browser.runtime.getManifest().version,
@@ -76,11 +77,13 @@ browser.runtime.onMessage.addListener((message) => {
     // Set pending update from manual check (before onUpdateAvailable fires)
     console.log("[TMDBG Updates] Setting pending update from manual check:", message.version);
     // Show notification bar immediately
-    if (browser.tmUpdates?.showUpdateBar) {
-      return browser.tmUpdates.showUpdateBar({
-        message: `TabMail v${message.version} ready — restart Thunderbird to apply`,
-        version: message.version,
-      }).then(() => {
+    if (browser.tmUpdates?.showUpdateBar && browser.tmUpdates?.setPendingUpdateVersion) {
+      return browser.tmUpdates.setPendingUpdateVersion(message.version).then(() =>
+        browser.tmUpdates.showUpdateBar({
+          message: `TabMail v${message.version} ready — restart Thunderbird to apply`,
+          version: message.version,
+        })
+      ).then(() => {
         console.log("[TMDBG Updates] Update notification bar shown from manual check");
       }).catch((e) => {
         console.error("[TMDBG Updates] Failed to show update bar:", e);
@@ -91,7 +94,8 @@ browser.runtime.onMessage.addListener((message) => {
   }
 
   if (message && message.command === "clearPendingUpdate") {
-    return browser.tmUpdates.hideUpdateBar();
+    if (!browser.tmUpdates?.hideUpdateBar || !browser.tmUpdates?.clearPendingUpdateVersion) return false;
+    return browser.tmUpdates.hideUpdateBar().then(() => browser.tmUpdates.clearPendingUpdateVersion());
   }
 
   if (message && message.command === "restartForUpdate") {

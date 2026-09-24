@@ -60,7 +60,21 @@
       {
         "name": "getPendingUpdateVersion",
         "type": "function",
-        "description": "Return the pending update version retained for this Thunderbird process.",
+        "description": "Return the pending TabMail add-on update version retained for this Thunderbird process.",
+        "parameters": [],
+        "async": true
+      },
+      {
+        "name": "setPendingUpdateVersion",
+        "type": "function",
+        "description": "Record a pending TabMail add-on update for this Thunderbird process.",
+        "parameters": [{ "name": "version", "type": "string" }],
+        "async": true
+      },
+      {
+        "name": "clearPendingUpdateVersion",
+        "type": "function",
+        "description": "Clear the pending TabMail add-on update version.",
         "parameters": [],
         "async": true
       },

@@ -42,8 +42,10 @@ function tmErr(...args) {
   console.error(TMUPDATES_CONFIG.logPrefix, ...args);
 }
 
-// Track current pending update version
+// The visible bar is shared with the native FTS update prompt. Only the
+// add-on update manager writes the separate pending add-on version.
 let pendingVersion = null;
+let addonPendingVersion = null;
 let updateBarVisible = false;
 
 /**
@@ -376,6 +378,7 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPIPersistent {
         
         // Clear state
         pendingVersion = null;
+        addonPendingVersion = null;
         updateBarVisible = false;
         
         tmLog("Cleanup complete");
@@ -442,7 +445,15 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPIPersistent {
         },
 
         async getPendingUpdateVersion() {
-          return pendingVersion;
+          return addonPendingVersion;
+        },
+
+        async setPendingUpdateVersion(version) {
+          addonPendingVersion = version;
+        },
+
+        async clearPendingUpdateVersion() {
+          addonPendingVersion = null;
         },
 
         async restartThunderbird() {
