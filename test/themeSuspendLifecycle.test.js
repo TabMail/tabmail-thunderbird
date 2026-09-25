@@ -3,15 +3,19 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
 
-async function startTheme() {
+async function startTheme({ failFirstCardRegistration = false, holdValidation = false } = {}) {
   const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
-  const triggerTagActionKey = vi.fn(async () => {});
   const performTaggedAction = vi.fn(async () => {});
   const snippetStart = vi.fn();
   const snippetStop = vi.fn();
   const calls = [];
+  let releaseValidation;
+  let firstAsyncCardListeners;
+  const validation = holdValidation
+    ? new Promise(resolve => { releaseValidation = resolve; })
+    : null;
   const globals = {
     console: { log() {}, error() {}, warn() {} }, Date, performance, URL,
     setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
@@ -21,21 +25,32 @@ async function startTheme() {
       const name = specifier.local.name;
       globals[name] = name === 'SETTINGS' ? {}
         : name === 'createCardSnippetProvider' ? () => ({ start: snippetStart, stop: snippetStop })
+          : name === 'validateThunderbirdThemeIds' && holdValidation ? () => {
+            firstAsyncCardListeners = event('browser.tmMessageListCardView.onActionChipClick').listeners.size;
+            return validation;
+          }
           : () => Promise.resolve({});
     }
     script = script.slice(0, entry.start)
       + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
       + script.slice(entry.end);
   }
-  globals.triggerTagActionKey = triggerTagActionKey;
   globals.performTaggedAction = performTaggedAction;
   const events = new Map();
+  let cardRegistrationFailurePending = failFirstCardRegistration;
   function event(path) {
     if (!events.has(path)) {
       const listeners = new Set();
       events.set(path, {
         listeners,
-        addListener: callback => listeners.add(callback),
+        addListener: callback => {
+          if (path === 'browser.tmMessageListCardView.onActionChipClick'
+              && cardRegistrationFailurePending) {
+            cardRegistrationFailurePending = false;
+            throw new Error('synthetic startup registration failure');
+          }
+          listeners.add(callback);
+        },
         removeListener: callback => listeners.delete(callback),
         emit: (...args) => Promise.all([...listeners].map(callback => callback(...args))),
       });
@@ -60,11 +75,35 @@ async function startTheme() {
   script = script.replace('// Immediate init for hot-reloads\ninitTheme();',
     '// Immediate init for hot-reloads\nglobalThis.__initPromise = initTheme();');
   vm.runInNewContext(script, globals, { filename: 'theme/background.js' });
-  await globals.__initPromise;
-  return { event, calls, triggerTagActionKey, performTaggedAction, snippetStart, snippetStop };
+  if (!holdValidation) await globals.__initPromise;
+  return { event, calls, performTaggedAction, snippetStart, snippetStop,
+    get firstAsyncCardListeners() { return firstAsyncCardListeners; },
+    releaseValidation, initPromise: globals.__initPromise };
 }
 
 describe('theme background startup and canceled suspend', () => {
+  it('delivers a first card click before asynchronous theme initialization completes', async () => {
+    const app = await startTheme({ holdValidation: true });
+    try {
+      expect(app.firstAsyncCardListeners).toBe(1);
+      const chip = app.event('browser.tmMessageListCardView.onActionChipClick');
+      await chip.emit({ source: 'click', weMsgId: 17 });
+      expect(app.performTaggedAction).toHaveBeenCalledExactlyOnceWith({});
+      expect(app.calls).not.toContain('browser.tmPreviewGate.init');
+    } finally {
+      app.releaseValidation();
+      await app.initPromise;
+    }
+  });
+
+  it('retries a failed synchronous card-listener registration during theme init', async () => {
+    const app = await startTheme({ failFirstCardRegistration: true });
+    const chip = app.event('browser.tmMessageListCardView.onActionChipClick');
+    expect(chip.listeners.size).toBe(1);
+    await chip.emit({ source: 'synthetic', weMsgId: 1 });
+    expect(app.performTaggedAction).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps native theme and action-chip delivery active in the same generation', async () => {
     const app = await startTheme();
     expect(app.calls).toContain('browser.tmTheme.init');
@@ -77,19 +116,17 @@ describe('theme background startup and canceled suspend', () => {
     expect(headerChip.listeners.size).toBe(1);
     expect(multiChip.listeners.size).toBe(1);
     expect(app.snippetStart).toHaveBeenCalled();
-    await chip.emit({ source: 'synthetic' });
+    await chip.emit({ source: 'synthetic', weMsgId: 3 });
     await headerChip.emit({ weMsgId: 1, source: 'synthetic' });
     await multiChip.emit({ weMsgId: 2, source: 'synthetic' });
     await Promise.resolve();
-    expect(app.triggerTagActionKey).toHaveBeenCalledTimes(1);
-    expect(app.performTaggedAction).toHaveBeenCalledTimes(2);
+    expect(app.performTaggedAction).toHaveBeenCalledTimes(3);
     await suspend.emit();
-    await chip.emit({ source: 'synthetic' });
+    await chip.emit({ source: 'synthetic', weMsgId: 3 });
     await headerChip.emit({ weMsgId: 1, source: 'synthetic' });
     await multiChip.emit({ weMsgId: 2, source: 'synthetic' });
     await Promise.resolve();
-    expect(app.triggerTagActionKey).toHaveBeenCalledTimes(2);
-    expect(app.performTaggedAction).toHaveBeenCalledTimes(4);
+    expect(app.performTaggedAction).toHaveBeenCalledTimes(6);
     expect(chip.listeners.size).toBe(1);
     expect(headerChip.listeners.size).toBe(1);
     expect(multiChip.listeners.size).toBe(1);

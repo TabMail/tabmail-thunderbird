@@ -155,6 +155,14 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
     api() {
       const handlers = new Map();
       return {
+        // Expose registration metadata to lifecycle tests: Gecko only primes
+        // events declared with a module/event pair.
+        testPersistentRegistration: () => {
+          const { module, event, extensionApi } = this.options;
+          return module && event && extensionApi?.PERSISTENT_EVENTS?.[event]
+            ? { module, event, prime: fire => extensionApi.primeListener(event, fire, [], false) }
+            : null;
+        },
         addListener: callback => {
           if (!handlers.has(callback)) {
             const fire = { async: (...args) => Promise.resolve(callback(...args)) };
@@ -170,13 +178,21 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
       };
     }
   }
+  const extensionEvents = new Map();
   const extension = {
     id: 'synthetic@example.test',
     getURL: relative => `moz-extension://synthetic/${relative}`,
     baseURI: { resolve: relative => `moz-extension://synthetic/${relative}` },
     messageManager: { convert: () => ({ id: 1 }) },
     folderManager: { convert: () => ({ id: 'synthetic', accountId: 'synthetic', path: '/Inbox' }) },
-    on() {}, off() {}, emit() {},
+    on(name, callback) {
+      if (!extensionEvents.has(name)) extensionEvents.set(name, new Set());
+      extensionEvents.get(name).add(callback);
+    },
+    off(name, callback) { extensionEvents.get(name)?.delete(callback); },
+    emit(name, ...args) {
+      for (const callback of [...(extensionEvents.get(name) || [])]) callback(name, ...args);
+    },
   };
   const context = { extension };
   const styleService = {

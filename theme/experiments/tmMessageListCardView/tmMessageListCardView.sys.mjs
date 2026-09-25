@@ -272,9 +272,44 @@ const CARD_SENDER_CONFIG_MLCV = {
 // MAIN CLASS
 // ═══════════════════════════════════════════════════════════════════════════
 
-var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
+var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersistent {
+  constructor(extension) {
+    super(extension);
+    this._chipClickSubscriptions = new Set();
+    this.PERSISTENT_EVENTS = {
+      onActionChipClick: ({ fire }) => this._registerChipClick(fire),
+    };
+  }
+
+  _registerChipClick(fire) {
+    const subscription = { fire };
+    const listener = (_event, info) => {
+      try {
+        Promise.resolve(subscription.fire.async(info)).catch(error => {
+          console.error(`${LOG_PREFIX_MLCV} chip click subscriber failed:`, error);
+        });
+      } catch (error) {
+        console.error(`${LOG_PREFIX_MLCV} chip click subscriber failed:`, error);
+      }
+    };
+    subscription.listener = listener;
+    this._chipClickSubscriptions.add(subscription);
+    this.extension.on("onActionChipClick", listener);
+    return {
+      unregister: () => {
+        this.extension.off("onActionChipClick", listener);
+        this._chipClickSubscriptions.delete(subscription);
+      },
+      convert: newFire => { subscription.fire = newFire; },
+    };
+  }
+
   onShutdown(isAppShutdown) {
     console.log(`${LOG_PREFIX_MLCV} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
+    for (const subscription of this._chipClickSubscriptions) {
+      try { this.extension.off("onActionChipClick", subscription.listener); } catch (_) {}
+    }
+    this._chipClickSubscriptions.clear();
     try {
       for (const cleanup of this._tmCleanups || []) {
         cleanup();
@@ -737,11 +772,8 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
      * on selection (fillRow fires on state changes → chip briefly absent
      * → content height shifts → chip re-appears → shifts back).
      *
-     * Click behavior: the click handler explicitly selects the chip's row
-     * via `tree.view.selection.select(rowIndex)` (TB's mousedown selection
-     * doesn't fire reliably for spans inside a card), then emits
-     * `onActionChipClick`. MV3 then runs the *exact* Tab-key pathway:
-     * `mailTabs.getSelectedMessages` → `performTaggedAction` for each.
+     * Click behavior: the chip carries its source message's WebExtension ID
+     * so the action stays bound to that message across a background wake.
      */
     function _paintChipOnCard_MLCV(cardRow, action, doc, hdr) {
       try {
@@ -758,6 +790,13 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
           return;
         }
+        let weMsgId = 0;
+        try { weMsgId = hdr ? (context.extension.messageManager?.convert?.(hdr)?.id ?? 0) : 0; } catch (_) {}
+        if (!Number.isSafeInteger(weMsgId) || weMsgId <= 0) {
+          if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+          return;
+        }
+        const weIdAttr = String(weMsgId);
         const expectedCls = `${CHIP_CLASS_MLCV} tm-action-${action}`;
         const titleText = `${label} — click to apply`;
 
@@ -765,12 +804,14 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           if (existing.className !== expectedCls) existing.className = expectedCls;
           if (existing.textContent !== label) existing.textContent = label;
           if (existing.getAttribute("title") !== titleText) existing.setAttribute("title", titleText);
+          if (existing.dataset.tmWeMsgId !== weIdAttr) existing.dataset.tmWeMsgId = weIdAttr;
           return;
         }
 
         const chip = doc.createElement("span");
         chip.className = expectedCls;
         chip.textContent = label;
+        chip.dataset.tmWeMsgId = weIdAttr;
         try { chip.setAttribute("role", "button"); } catch (_) {}
         try { chip.setAttribute("tabindex", "0"); } catch (_) {}
         try { chip.setAttribute("title", titleText); } catch (_) {}
@@ -863,7 +904,9 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
             }
           }
         } catch (_) {}
-        _fireActionChipClick({ source });
+        const weMsgId = Number(chip.dataset?.tmWeMsgId || 0);
+        if (!Number.isSafeInteger(weMsgId) || weMsgId <= 0) return false;
+        _fireActionChipClick({ source, weMsgId });
         return true;
       } catch (_) {
         return false;
@@ -1963,7 +2006,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           context,
           name: "tmMessageListCardView.onSnippetsNeeded",
           register: (fire) => {
-            const listener = (info) => {
+            const listener = (_event, info) => {
               fire.async(info);
             };
             context.extension.on("onSnippetsNeeded", listener);
@@ -1973,20 +2016,14 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPI {
           },
         }).api(),
         // Event: onActionChipClick - fired when the user clicks an action chip on a card row.
-        // MV3 should resolve the message via headerMessageId and run the same pathway
-        // as the Tab key (performTaggedAction).
+        // MV3 resolves the chip's WebExtension message ID before applying its action.
         onActionChipClick: new ExtensionCommon_MLCV.EventManager({
           context,
+          module: "tmMessageListCardView",
+          event: "onActionChipClick",
           name: "tmMessageListCardView.onActionChipClick",
-          register: (fire) => {
-            const listener = (info) => {
-              fire.async(info);
-            };
-            context.extension.on("onActionChipClick", listener);
-            return () => {
-              context.extension.off("onActionChipClick", listener);
-            };
-          },
+          extensionApi: owner,
+          inputHandling: true,
         }).api(),
       },
     };

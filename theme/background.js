@@ -9,7 +9,6 @@ console.log("[TabMail Theme] ═════════════════
 import { performTaggedAction } from "../agent/modules/action.js";
 import { SETTINGS } from "../agent/modules/config.js";
 import { isInboxFolder } from "../agent/modules/folderUtils.js";
-import { triggerTagActionKey } from "../agent/modules/tagActionKey.js";
 import { injectBubblesIntoTab, registerBubblesScripts } from "./modules/bubblesRegistry.js";
 import { createCardSnippetProvider } from "./modules/cardSnippetProvider.js";
 import { injectMessageDisplayGateIntoTab } from "./modules/messageDisplayGateRegistry.js";
@@ -28,12 +27,12 @@ let _tmMultiMessageChipClickListener = null;
 
 async function _onActionChipClick(info) {
     try {
-        // Literally invoke the Tab-key path. The experiment's chip click
-        // handler already called `tree.view.selection.select(rowIndex)` on
-        // the chip's row, so `mailTabs.getSelectedMessages` (called inside
-        // triggerTagActionKey) will return that row's message.
-        console.log(`[TabMail Theme] onActionChipClick (${info?.source || "?"}) → triggerTagActionKey`);
-        await triggerTagActionKey();
+        const weMsgId = Number.isInteger(info?.weMsgId) ? info.weMsgId : 0;
+        console.log(`[TabMail Theme] onActionChipClick (${info?.source || "?"}) weMsgId=${weMsgId}`);
+        if (!weMsgId) return;
+        const msg = await browser.messages.get(weMsgId);
+        if (!msg) return;
+        await performTaggedAction(msg);
     } catch (e) {
         console.error("[TabMail Theme] onActionChipClick handler failed:", e);
     }
@@ -46,8 +45,9 @@ function _ensureActionChipClickListener(reason) {
             return;
         }
         if (_tmActionChipClickListener) return; // already registered
-        _tmActionChipClickListener = (info) => { _onActionChipClick(info); };
-        browser.tmMessageListCardView.onActionChipClick.addListener(_tmActionChipClickListener);
+        const listener = (info) => _onActionChipClick(info);
+        browser.tmMessageListCardView.onActionChipClick.addListener(listener);
+        _tmActionChipClickListener = listener;
         console.log(`[TabMail Theme] onActionChipClick listener registered (${reason})`);
     } catch (e) {
         console.error(`[TabMail Theme] Failed to register onActionChipClick listener (${reason}):`, e);
@@ -357,6 +357,10 @@ async function initTheme() {
 
     console.log(`[TabMail Theme] initTheme() complete after ${Date.now() - t0}ms`);
 }
+
+// Register the click event before the first asynchronous theme-init step, so
+// Thunderbird can prime it and wake this background for the first chip click.
+_ensureActionChipClickListener("background-load");
 
 // Initialise on startup and install/update
 browser.runtime.onStartup.addListener(() => {
