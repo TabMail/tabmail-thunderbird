@@ -262,8 +262,7 @@ export async function clearAlarm(name) {
 
 // getFull cache – in-memory storage with TTL based on uniqueHeaderID
 const getFullCache = new Map(); // Map<uniqueKey, { data, timestamp }>
-let getFullCacheCleanupAlarmName = "agent-getfull-cleanup";
-let getFullCacheCleanupStarted = false;
+let getFullCacheCleanupTimer = null;
 
 function enforceGetFullCacheMaxEntries(reason = "unknown") {
   try {
@@ -317,29 +316,21 @@ function cleanupGetFullCache() {
  * Safe to call multiple times.
  */
 function startGetFullCacheCleanup() {
-  if (getFullCacheCleanupStarted) return;
-  getFullCacheCleanupStarted = true;
+  if (getFullCacheCleanupTimer !== null) return;
   const minutes = Math.max(1, Math.ceil(Number(SETTINGS.getFullCleanupIntervalMinutes || 5)));
-  ensureAlarm({
-    name: getFullCacheCleanupAlarmName,
-    periodMinutes: minutes,
-    delayMinutes: minutes,
-    onAlarm: () => {
-      try { cleanupGetFullCache(); } catch (e) { log(`[Alarms] getFull cleanup exception: ${e}`, 'error'); }
-    },
-  }).catch((e) => {
-    getFullCacheCleanupStarted = false;
-    log(`[Alarms] getFull cleanup ensureAlarm failed: ${e}`, 'error');
-  });
+  // The cache disappears with this background generation, so its cleanup
+  // should have the same lifetime.
+  getFullCacheCleanupTimer = setInterval(() => {
+    try { cleanupGetFullCache(); } catch (e) { log(`[GetFull] cache cleanup exception: ${e}`, 'error'); }
+  }, minutes * 60_000);
 }
 
-/**
- * Stops the periodic cleanup timer for the getFull cache.
- * Called during extension shutdown/suspension.
- */
+/** Stops the periodic cleanup timer for the getFull cache. */
 export function stopGetFullCacheCleanup() {
-  getFullCacheCleanupStarted = false;
-  try { clearAlarm(getFullCacheCleanupAlarmName); } catch (_) {}
+  if (getFullCacheCleanupTimer !== null) {
+    clearInterval(getFullCacheCleanupTimer);
+    getFullCacheCleanupTimer = null;
+  }
 }
 
 /**

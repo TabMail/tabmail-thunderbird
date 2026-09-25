@@ -20,17 +20,20 @@ vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
 const ftsGet = vi.hoisted(() => vi.fn(async () => null));
 vi.mock('../fts/engine.js', () => ({ ftsSearch: { getMessageByMsgId: (...args) => ftsGet(...args) } }));
 
-const alarmName = 'agent-getfull-cleanup';
 const key = id => `test-account:/Inbox:message-${id}`;
 
 function setupBrowser() {
-  const listeners = new Set();
   const fullCalls = new Map();
-  const schedules = new Map();
-  const clear = vi.fn(async name => schedules.delete(name));
-  const create = vi.fn(async (name, options) => {
-    schedules.set(name, { nextAt: Date.now() + options.delayInMinutes * 60_000, periodMs: options.periodInMinutes * 60_000 });
+  const clear = vi.fn(async () => true);
+  const create = vi.fn(async () => {});
+  const timers = new Map();
+  let nextTimerId = 0;
+  const setTimer = vi.spyOn(globalThis, 'setInterval').mockImplementation((callback, delay) => {
+    const id = ++nextTimerId;
+    timers.set(id, { callback, delay });
+    return id;
   });
+  const clearTimer = vi.spyOn(globalThis, 'clearInterval').mockImplementation(id => timers.delete(id));
   const getFull = vi.fn(async id => {
     const count = (fullCalls.get(id) ?? 0) + 1;
     fullCalls.set(id, count);
@@ -39,8 +42,8 @@ function setupBrowser() {
   globalThis.browser = {
     alarms: {
       onAlarm: {
-        addListener: vi.fn(listener => listeners.add(listener)),
-        removeListener: vi.fn(listener => listeners.delete(listener)),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
       },
       clear,
       create,
@@ -55,21 +58,12 @@ function setupBrowser() {
     },
   };
   return {
-    listeners, fullCalls, clear, create, schedules,
-    fireDue() {
-      for (const [name, schedule] of schedules) {
-        if (schedule.nextAt > Date.now()) continue;
-        schedule.nextAt += schedule.periodMs;
-        for (const listener of [...listeners]) listener({ name });
-      }
-    },
-    fire(name = alarmName) {
-      for (const listener of [...listeners]) listener({ name });
-    },
+    fullCalls, clear, create, timers, setTimer, clearTimer,
+    tick() { for (const { callback } of [...timers.values()]) callback(); },
   };
 }
 
-describe('safeGetFull cleanup alarm', () => {
+describe('safeGetFull process-local cleanup', () => {
   let now;
 
   beforeEach(() => {
@@ -94,9 +88,8 @@ describe('safeGetFull cleanup alarm', () => {
     now += 245_000;
     expect(await safeGetFull(102)).toEqual({ body: 'Synthetic message 102, fetch 1' });
     now += 25_001;
-    h.fire('unrelated-alarm');
     expect(_testCacheInternals.getFullCache.has(key(101))).toBe(true);
-    h.fireDue();
+    h.tick();
 
     expect(_testCacheInternals.getFullCache.has(key(101))).toBe(false);
     expect(_testCacheInternals.getFullCache.has(key(102))).toBe(true);
@@ -104,31 +97,10 @@ describe('safeGetFull cleanup alarm', () => {
     expect(await safeGetFull(101)).toEqual({ body: 'Synthetic message 101, fetch 2' });
     expect(h.fullCalls.get(101)).toBe(2);
     expect(h.fullCalls.get(102)).toBe(1);
-    expect(globalThis.browser.alarms.onAlarm.addListener).toHaveBeenCalledTimes(1);
-    expect(h.clear).toHaveBeenCalledTimes(1);
-    expect(h.create).toHaveBeenCalledTimes(1);
-    expect(h.create).toHaveBeenCalledWith(alarmName, {
-      delayInMinutes: 5,
-      periodInMinutes: 5,
-    });
-  });
-
-  it('retries failed setup on the next cached read and still expires that body', async () => {
-    const h = setupBrowser();
-    h.create.mockRejectedValueOnce(new Error('Synthetic alarm failure'));
-    const { safeGetFull, _testCacheInternals } = await import('../agent/modules/utils.js');
-
-    expect(await safeGetFull(201)).toEqual({ body: 'Synthetic message 201, fetch 1' });
-    expect(await safeGetFull(201)).toEqual({ body: 'Synthetic message 201, fetch 1' });
-    expect(h.create).toHaveBeenCalledTimes(2);
-    expect(h.listeners.size).toBe(1);
-    expect(h.schedules.has(alarmName)).toBe(true);
-    expect(_testCacheInternals.getFullCache.has(key(201))).toBe(true);
-    now += 300_001;
-    h.fireDue();
-    expect(_testCacheInternals.getFullCache.has(key(201))).toBe(false);
-    expect(await safeGetFull(201)).toEqual({ body: 'Synthetic message 201, fetch 2' });
-    expect(h.fullCalls.get(201)).toBe(2);
+    expect(h.setTimer).toHaveBeenCalledTimes(1);
+    expect(h.setTimer).toHaveBeenCalledWith(expect.any(Function), 5 * 60_000);
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.clear).not.toHaveBeenCalled();
   });
 
   it('coalesces concurrent cache misses and cleans up both bodies', async () => {
@@ -139,9 +111,9 @@ describe('safeGetFull cleanup alarm', () => {
       { body: 'Synthetic message 301, fetch 1' },
       { body: 'Synthetic message 302, fetch 1' },
     ]);
-    expect(h.create).toHaveBeenCalledTimes(1);
+    expect(h.setTimer).toHaveBeenCalledTimes(1);
     now += 60_001;
-    h.fire();
+    h.tick();
     expect(_testCacheInternals.getFullCache.has(key(301))).toBe(false);
     expect(_testCacheInternals.getFullCache.has(key(302))).toBe(false);
   });
@@ -153,12 +125,12 @@ describe('safeGetFull cleanup alarm', () => {
 
     await safeGetFull(401);
     stopGetFullCacheCleanup();
-    await vi.waitFor(() => expect(h.listeners.size).toBe(0));
+    expect(h.timers.size).toBe(0);
     expect(await safeGetFull(401)).toEqual({ body: 'Synthetic message 401, fetch 1' });
-    expect(h.create).toHaveBeenCalledTimes(2);
-    expect(h.listeners.size).toBe(1);
+    expect(h.setTimer).toHaveBeenCalledTimes(2);
+    expect(h.timers.size).toBe(1);
     now += 60_001;
-    h.fire();
+    h.tick();
     expect(_testCacheInternals.getFullCache.has(key(401))).toBe(false);
   });
 });
@@ -202,12 +174,12 @@ describe('safeGetFull cleanup across body sources and callers', () => {
     expect(globalThis.browser.messages.get).toHaveBeenCalledTimes(preheader ? 0 : 2);
     expect(_testCacheInternals.getFullCache.has(key(501))).toBe(true);
     now += 10_001;
-    h.fireDue();
+    h.tick();
     expect(_testCacheInternals.getFullCache.has(key(501))).toBe(false);
     expect(_testCacheInternals.getFullCache.has(key(502))).toBe(true);
     expect(await safeGetFull(501, preheader ? fixtureHeader(501) : null)).toMatchObject({ body: 'Synthetic FTS body 3' });
     expect(globalThis.browser.messages.getFull).not.toHaveBeenCalled();
-    expect(h.create).toHaveBeenCalledTimes(1);
+    expect(h.setTimer).toHaveBeenCalledTimes(1);
   });
 
   it('retains the schedule after a body-fetch failure while later bodies still expire', async () => {
@@ -220,10 +192,10 @@ describe('safeGetFull cleanup across body sources and callers', () => {
     now += 200_000;
     expect(await safeGetFull(602)).toEqual({ body: 'Synthetic message 602, fetch 1' });
     now += 100_001;
-    h.fireDue();
+    h.tick();
     expect(_testCacheInternals.getFullCache.has(key(602))).toBe(false);
     expect(await safeGetFull(602)).toEqual({ body: 'Synthetic message 602, fetch 2' });
-    expect(h.create).toHaveBeenCalledTimes(1);
+    expect(h.setTimer).toHaveBeenCalledTimes(1);
   });
 
   it('the production reply filter supplies its header and keeps cleanup active', async () => {
@@ -243,10 +215,10 @@ describe('safeGetFull cleanup across body sources and callers', () => {
     expect(globalThis.browser.messages.get).not.toHaveBeenCalled();
     expect(globalThis.browser.messages.getFull).toHaveBeenCalledTimes(2);
     now += 300_001;
-    h.fireDue();
+    h.tick();
     expect(_testCacheInternals.getFullCache.has(key(701))).toBe(false);
     expect(_testCacheInternals.getFullCache.has(key(702))).toBe(false);
-    expect(h.create).toHaveBeenCalledTimes(1);
+    expect(h.setTimer).toHaveBeenCalledTimes(1);
   });
 
   it('a concurrent reader that resumes after another fills the cache refreshes idle expiry', async () => {
@@ -264,12 +236,12 @@ describe('safeGetFull cleanup across body sources and callers', () => {
     expect(globalThis.browser.messages.get).toHaveBeenCalledTimes(2);
     expect(globalThis.browser.messages.getFull).toHaveBeenCalledTimes(1);
     now += 20_001;
-    h.fire();
+    h.tick();
     expect(_testCacheInternals.getFullCache.has(key(801))).toBe(true);
     expect(await safeGetFull(801)).toBe(first);
     expect(globalThis.browser.messages.getFull).toHaveBeenCalledTimes(1);
     now += 60_001;
-    h.fire();
+    h.tick();
     expect(_testCacheInternals.getFullCache.has(key(801))).toBe(false);
     expect(await safeGetFull(801)).toEqual({ body: 'Synthetic message 801, fetch 2' });
   });
