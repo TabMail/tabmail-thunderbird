@@ -42,9 +42,11 @@ function tmErr(...args) {
   console.error(TMUPDATES_CONFIG.logPrefix, ...args);
 }
 
-// Track current pending update version
+// The visible bar is shared with the native FTS update prompt. Only the
+// add-on update manager writes the separate pending add-on version.
 let pendingVersion = null;
-let eventEmitter = null;
+let addonPendingVersion = null;
+let updateBarVisible = false;
 
 /**
  * Create the update notification bar element for a window
@@ -146,9 +148,7 @@ function createUpdateBar(win, context, version) {
   dismissBtn.addEventListener("click", () => {
     tmLog("User clicked Later");
     hideUpdateBarFromWindow(win);
-    if (eventEmitter) {
-      eventEmitter.emit("onNotificationAction", { action: "dismiss" });
-    }
+    context.extension.emit("onNotificationAction", { action: "dismiss" });
   });
   btnContainer.appendChild(dismissBtn);
   
@@ -167,9 +167,7 @@ function createUpdateBar(win, context, version) {
   `;
   restartBtn.addEventListener("click", () => {
     tmLog("User clicked Restart Thunderbird");
-    if (eventEmitter) {
-      eventEmitter.emit("onNotificationAction", { action: "restart" });
-    }
+    context.extension.emit("onNotificationAction", { action: "restart" });
     // Restart will be triggered by the WebExtension handler
   });
   btnContainer.appendChild(restartBtn);
@@ -316,9 +314,44 @@ try {
   );
 } catch (_) {}
 
-var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPI {
+var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPIPersistent {
+  constructor(extension) {
+    super(extension);
+    this._actionSubscriptions = new Set();
+    this.PERSISTENT_EVENTS = {
+      onNotificationAction: ({ fire }) => this._registerNotificationAction(fire),
+    };
+  }
+
+  _registerNotificationAction(fire) {
+    const subscription = { fire };
+    const listener = (_event, action) => {
+      try {
+        Promise.resolve(subscription.fire.async(action)).catch(error => {
+          tmErr("Notification action subscriber failed:", error);
+        });
+      } catch (error) {
+        tmErr("Notification action subscriber failed:", error);
+      }
+    };
+    subscription.listener = listener;
+    this._actionSubscriptions.add(subscription);
+    this.extension.on("onNotificationAction", listener);
+    return {
+      unregister: () => {
+        this.extension.off("onNotificationAction", listener);
+        this._actionSubscriptions.delete(subscription);
+      },
+      convert: newFire => { subscription.fire = newFire; },
+    };
+  }
+
   onShutdown(isAppShutdown) {
     console.log("[TabMail tmUpdates] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
+    for (const subscription of this._actionSubscriptions) {
+      try { this.extension.off("onNotificationAction", subscription.listener); } catch (_) {}
+    }
+    this._actionSubscriptions.clear();
     try {
       if (this._cleanup) {
         this._cleanup();
@@ -345,7 +378,8 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPI {
         
         // Clear state
         pendingVersion = null;
-        eventEmitter = null;
+        addonPendingVersion = null;
+        updateBarVisible = false;
         
         tmLog("Cleanup complete");
       } catch (e) {
@@ -362,6 +396,7 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPI {
           
           const version = options?.version || null;
           pendingVersion = version;
+          updateBarVisible = true;
           
           // Register window listener for new windows
           try {
@@ -388,6 +423,7 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPI {
           tmLog("═══ hideUpdateBar() START ═══");
           
           pendingVersion = null;
+          updateBarVisible = false;
           hideUpdateBarFromAllWindows();
           
           // Unregister window listener
@@ -399,6 +435,18 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPI {
           return { ok: true };
         },
 
+        async getPendingUpdateVersion() {
+          return addonPendingVersion;
+        },
+
+        async setPendingUpdateVersion(version) {
+          addonPendingVersion = version;
+        },
+
+        async clearPendingUpdateVersion() {
+          addonPendingVersion = null;
+        },
+
         async restartThunderbird() {
           tmLog("═══ restartThunderbird() START ═══");
           const result = doRestartThunderbird();
@@ -407,7 +455,7 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPI {
         },
 
         async isUpdateBarVisible() {
-          return pendingVersion !== null;
+          return updateBarVisible;
         },
 
         async checkForUpdates() {
@@ -518,19 +566,11 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPI {
 
         onNotificationAction: new ExtensionCommonTMUpdates.EventManager({
           context,
+          module: "tmUpdates",
+          event: "onNotificationAction",
           name: "tmUpdates.onNotificationAction",
-          register: (fire) => {
-            eventEmitter = {
-              emit: (eventName, data) => {
-                if (eventName === "onNotificationAction") {
-                  fire.async(data);
-                }
-              },
-            };
-            return () => {
-              eventEmitter = null;
-            };
-          },
+          extensionApi: this,
+          inputHandling: true,
         }).api(),
       },
     };

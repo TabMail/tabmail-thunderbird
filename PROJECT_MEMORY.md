@@ -2,7 +2,7 @@
 
 > **Thunderbird add-on specific knowledge.** Claude reads this before every task and updates it when discovering something new. For cross-cutting knowledge, see `../PROJECT_MEMORY.md`.
 
-**Last updated:** 2026-02-16
+**Last updated:** 2026-09-24
 
 ---
 
@@ -65,6 +65,7 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 - Auto-formatter may reorder imports — this is expected, don't fight it
 - Hot-reloading requires proper listener/timer cleanup
 - `runtime.onMessage` with async handlers breaks other listeners in Thunderbird — never use async there
+- **[Update notification wake and state](Companion/Memory/Current/034-update-notification-wake.md)** — the native bar action is persistent; the experiment retains process-lifetime add-on update state separately from the shared FTS update bar; Later hides the bar without clearing the add-on version.
 - **Every KB operation must call `saveChatLog`** — Any function in `knowledgebase.js` that makes an LLM call (via `sendChatRaw`) must call `saveChatLog()` with the systemMsg and response afterward (and on error). This is the debug log mechanism.
 - **[Caret dead-zone before `tm-quote-separator`](Companion/Memory/Current/002-caret-dead-zone-before-quote-separator.md)** — Gecko fires `beforeinput` but no `input`, silently dropping keystrokes; fixed by an editable `<br class="tm-edit-anchor">` via the shared `TabMail._appendQuoteSeparatorWithAnchor()`. Do NOT relax the separator's `contenteditable="false"` — it prevents the older text-wipe bug.
 - **[Quote-collapse false positive on newsletter `>>` links](Companion/Memory/Current/003-quote-collapse-false-positive-newsletter-links.md)** — the bare-`>` fallback fired on a SINGLE line, so one `›› Read the full story` link collapsed the email; now needs a run of `quotedFallbackMinConsecutiveLines` (=2), iOS parity.

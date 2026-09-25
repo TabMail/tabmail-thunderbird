@@ -14,6 +14,7 @@
   "background": {
     "scripts": [
     "keepalive/background.js",
+    "updates/background.js",
     "theme/background.js",
     "agent/background.js",
     "compose/background.js",
