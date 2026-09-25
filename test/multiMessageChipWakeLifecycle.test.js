@@ -1,0 +1,262 @@
+import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { JSDOM } from 'jsdom';
+import { parse } from 'acorn';
+import vm from 'node:vm';
+import { experiment, makeWindow } from './helpers/nativeLifecycleHarness.js';
+
+const multiExperiment = 'theme/experiments/tmMultiMessageChip/tmMultiMessageChip.sys.mjs';
+
+function renderedMultiMessageChip(action = 'reply') {
+  const dom = new JSDOM(`
+    <div id="content"><ul id="messageList">
+      <li data-message-id="synthetic@example.test"><div class="item-header"></div></li>
+    </ul></div>
+  `, { url: 'chrome://messenger/content/multimessageview.xhtml' });
+  const w = makeWindow();
+  const hdr = {
+    ...w.hdr,
+    folder: { ...w.hdr.folder, flags: 1 },
+    getStringProperty: key => key === 'tm-action' ? action : '',
+  };
+  const li = dom.window.document.querySelector('#messageList li');
+  dom.window.gMessageSummary = {
+    _msgNodes: { [`${hdr.messageKey}${hdr.folder.URI}`]: li },
+  };
+  w.win.document.getElementById('tabmail').tabInfo[0].chromeBrowser = {
+    contentDocument: dom.window.document,
+    contentWindow: dom.window,
+  };
+  const moduleOverrides = {
+    MailUtils: { getExistingFolder: () => ({ GetMessageHeader: () => hdr }) },
+  };
+  return { dom, w, moduleOverrides };
+}
+
+describe('multi-message chip first-click wake contract', () => {
+  it('registers its consumer before asynchronous theme initialization', () => {
+    const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+    const calls = ast.body.filter(node => node.type === 'ExpressionStatement'
+      && node.expression?.type === 'CallExpression')
+      .map(node => ({ name: node.expression.callee?.name, at: node.start }));
+    const register = calls.find(call => call.name === '_ensureMultiMessageChipClickListener');
+    const init = calls.find(call => call.name === 'initTheme');
+    expect(register).toBeDefined();
+    expect(init).toBeDefined();
+    expect(register.at).toBeLessThan(init.at);
+  });
+
+  it.each([
+    ['click', event => new event.view.MouseEvent('click', { bubbles: true })],
+    ['Enter', event => new event.view.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })],
+    ['Space', event => new event.view.KeyboardEvent('keydown', { key: ' ', bubbles: true })],
+  ])('delivers the first %s through a primed native listener without duplication', async (source, makeEvent) => {
+    const { dom, w, moduleOverrides } = renderedMultiMessageChip();
+    const x = experiment(multiExperiment, 'tmMultiMessageChip', { windows: [w.win], moduleOverrides });
+    try {
+      await x.api.init();
+      const chip = dom.window.document.querySelector('.tm-multi-action-chip');
+      expect(chip?.textContent).toBe('Reply');
+      expect(chip?.dataset.tmWeMsgId).toBe('1');
+      const activate = () => chip.dispatchEvent(makeEvent({ view: dom.window }));
+
+      const live = vi.fn();
+      x.api.onActionChipClick.addListener(live);
+      activate();
+      expect(live).toHaveBeenCalledExactlyOnceWith({
+        source: source === 'click' ? 'click' : 'keydown', weMsgId: 1,
+      });
+      x.api.onActionChipClick.removeListener(live);
+
+      const wake = vi.fn();
+      const persisted = x.api.onActionChipClick.testPersistentRegistration();
+      expect(persisted).toMatchObject({ module: 'tmMultiMessageChip', event: 'onActionChipClick' });
+      const registration = persisted.prime({ async: wake });
+      activate();
+      expect(wake).toHaveBeenCalledExactlyOnceWith({
+        source: source === 'click' ? 'click' : 'keydown', weMsgId: 1,
+      });
+      const resumed = vi.fn();
+      registration.convert({ async: resumed });
+      activate();
+      expect(wake).toHaveBeenCalledTimes(1);
+      expect(resumed).toHaveBeenCalledTimes(1);
+      registration.unregister();
+      activate();
+      expect(resumed).toHaveBeenCalledTimes(1);
+      expect(x.instance._chipClickSubscriptions.size).toBe(0);
+    } finally {
+      x.instance.onShutdown(false);
+      dom.window.close();
+    }
+  });
+
+  it.each([
+    ...['available', 'missing', 'lookup error'].flatMap(target => [
+      ['mouse', 'click', target], ['Enter', 'Enter', target], ['Space', ' ', target],
+    ]),
+  ])('replays the first %s (%s) action with original target %s', async (_name, key, target) => {
+    const { dom, w, moduleOverrides } = renderedMultiMessageChip('delete');
+    const x = experiment(multiExperiment, 'tmMultiMessageChip', { windows: [w.win], moduleOverrides });
+    try {
+      await x.api.init();
+      const chip = dom.window.document.querySelector('.tm-multi-action-chip');
+      const queued = [];
+      const registration = x.api.onActionChipClick.testPersistentRegistration().prime({
+        async: info => new Promise(resolve => queued.push({ info, resolve })),
+      });
+      chip.dispatchEvent(key === 'click'
+        ? new dom.window.MouseEvent('click', { bubbles: true })
+        : new dom.window.KeyboardEvent('keydown', { key, bubbles: true }));
+      expect(queued).toHaveLength(1);
+      expect(queued[0].info).toEqual({
+        source: key === 'click' ? 'click' : 'keydown', weMsgId: 1,
+      });
+
+      // The displayed message changes while the first native event is queued.
+      // The native row remains visible, but its current identity has advanced.
+      chip.dataset.tmWeMsgId = '2';
+      const messages = new Map([1, 2].map(id => [id, {
+        id, action: 'delete', read: false, folder: { id: 'inbox' },
+        headerMessageId: `synthetic-${id}@example.test`,
+      }]));
+      if (target === 'missing') messages.delete(1);
+      const get = vi.fn(async id => {
+        if (id === 1 && target === 'lookup error') throw new Error('synthetic lookup failure');
+        return messages.get(id) ?? null;
+      });
+      const update = vi.fn(async (id, fields) => {
+        messages.set(id, { ...messages.get(id), ...fields });
+      });
+      const move = vi.fn(async (ids, folder) => {
+        for (const id of ids) messages.set(id, { ...messages.get(id), folder: { id: folder } });
+      });
+      const actionSource = readFileSync(new URL('../agent/modules/action.js', import.meta.url), 'utf8');
+      const actionAst = parse(actionSource, { ecmaVersion: 'latest', sourceType: 'module' });
+      const actionNode = actionAst.body.find(node => node.type === 'ExportNamedDeclaration'
+        && node.declaration?.id?.name === 'performTaggedAction').declaration;
+      const globals = {
+        console: { log() {}, warn() {}, error() {} }, Date, URL, performance,
+        setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+        ACTIONS: { DELETE: 'delete', ARCHIVE: 'archive', REPLY: 'reply' },
+        getActionForWeId: async message => message.action,
+        getTrashFolderForHeader: async () => ({ id: 'trash', path: '/Trash' }),
+        log() {},
+      };
+      vm.runInNewContext(`${actionSource.slice(actionNode.start, actionNode.end)}\nthis.performTaggedAction = performTaggedAction`, globals);
+      const performTaggedAction = vi.fn(globals.performTaggedAction);
+      globals.performTaggedAction = performTaggedAction;
+
+      const listeners = new Set();
+      let listenersAtFirstAwait;
+      let releaseValidation;
+      const validation = new Promise(resolve => { releaseValidation = resolve; });
+      const event = { addListener: callback => listeners.add(callback),
+        removeListener: callback => listeners.delete(callback) };
+      const noOpEvent = { addListener() {}, removeListener() {} };
+      const generic = new Proxy(() => Promise.resolve({}), {
+        get: (_target, name) => name === 'then' ? undefined
+          : String(name).startsWith('on') ? noOpEvent : generic,
+      });
+      globals.browser = new Proxy(generic, {
+        get: (_target, name) => name === 'tmMultiMessageChip'
+          ? { onActionChipClick: event }
+          : name === 'mailTabs' ? { getSelectedMessages: async () => ({ messages: [messages.get(2)] }) }
+          : name === 'messages' ? { get, update, move } : generic[name],
+      });
+      let script = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
+      const ast = parse(script, { ecmaVersion: 'latest', sourceType: 'module' });
+      for (const entry of ast.body.filter(node => node.type === 'ImportDeclaration').reverse()) {
+        for (const specifier of entry.specifiers) {
+          const name = specifier.local.name;
+          globals[name] = name === 'SETTINGS' ? {}
+            : name === 'validateThunderbirdThemeIds' ? () => {
+              listenersAtFirstAwait = listeners.size;
+              return validation;
+            } : name === 'performTaggedAction' ? performTaggedAction
+              : () => Promise.resolve({});
+        }
+        script = script.slice(0, entry.start)
+          + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
+          + script.slice(entry.end);
+      }
+      vm.runInNewContext(script, globals, { filename: 'theme/background.js' });
+      expect(listenersAtFirstAwait).toBe(1);
+      expect(listeners.size).toBe(1);
+      const resumed = vi.fn(info => Promise.all([...listeners].map(listener => listener(info))));
+      registration.convert({ async: resumed });
+      await resumed(queued[0].info);
+      queued[0].resolve();
+      await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(target === 'available' ? 2 : 1));
+      await new Promise(resolve => setImmediate(resolve));
+      expect(resumed).toHaveBeenCalledTimes(1);
+      expect(get).toHaveBeenNthCalledWith(1, 1);
+      if (target !== 'available') {
+        expect(update).not.toHaveBeenCalled();
+        expect(move).not.toHaveBeenCalled();
+        expect(performTaggedAction).not.toHaveBeenCalled();
+        // The missing original must not strand the converted listener.
+        chip.dispatchEvent(key === 'click'
+          ? new dom.window.MouseEvent('click', { bubbles: true })
+          : new dom.window.KeyboardEvent('keydown', { key, bubbles: true }));
+        await vi.waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+        expect(get).toHaveBeenNthCalledWith(2, 2);
+        expect(update).toHaveBeenCalledExactlyOnceWith(2, { read: true });
+        expect(move).toHaveBeenCalledExactlyOnceWith([2], 'trash', { isUserAction: true });
+        expect(performTaggedAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 2 }));
+      } else {
+        expect(get).toHaveBeenNthCalledWith(2, 1);
+        expect(update).toHaveBeenCalledExactlyOnceWith(1, { read: true });
+        expect(move).toHaveBeenCalledExactlyOnceWith([1], 'trash', { isUserAction: true });
+        expect(performTaggedAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 1 }));
+        expect(messages.get(1)).toMatchObject({ read: true, folder: { id: 'trash' } });
+      }
+      expect(messages.get(2)).toMatchObject(target !== 'available'
+        ? { read: true, folder: { id: 'trash' } }
+        : { read: false, folder: { id: 'inbox' } });
+      releaseValidation();
+      registration.unregister();
+    } finally {
+      x.instance.onShutdown(false);
+      dom.window.close();
+    }
+  });
+
+  it.each(['synchronous', 'asynchronous'])('recovers after %s primed delivery failure', async failure => {
+    const x = experiment(multiExperiment, 'tmMultiMessageChip');
+    try {
+      const registration = x.instance.primeListener('onActionChipClick', {
+        async: () => {
+          if (failure === 'synchronous') throw new Error('synthetic delivery failure');
+          return Promise.reject(new Error('synthetic delivery failure'));
+        },
+      });
+      x.context.extension.emit('tmMultiMessageChipActionClick', { source: 'click', weMsgId: 1 });
+      await vi.waitFor(() => expect(x.logs.some(row => row.some(value =>
+        String(value).includes('subscriber failed')))).toBe(true));
+      const resumed = vi.fn();
+      registration.convert({ async: resumed });
+      x.context.extension.emit('tmMultiMessageChipActionClick', { source: 'click', weMsgId: 1 });
+      expect(resumed).toHaveBeenCalledExactlyOnceWith({ source: 'click', weMsgId: 1 });
+      registration.unregister();
+      expect(x.instance._chipClickSubscriptions.size).toBe(0);
+    } finally {
+      x.instance.onShutdown(false);
+    }
+  });
+
+  it('isolates its internal event and detaches subscribers on shutdown', () => {
+    const x = experiment(multiExperiment, 'tmMultiMessageChip');
+    const seen = vi.fn();
+    x.api.onActionChipClick.addListener(seen);
+    expect(x.instance._chipClickSubscriptions.size).toBe(1);
+    x.context.extension.emit('onActionChipClick', { source: 'click', weMsgId: 1 });
+    x.context.extension.emit('tmMessageHeaderChipActionClick', { source: 'click', weMsgId: 1 });
+    expect(seen).not.toHaveBeenCalled();
+    x.instance.onShutdown(false);
+    expect(x.instance._chipClickSubscriptions.size).toBe(0);
+    x.context.extension.emit('tmMultiMessageChipActionClick', { source: 'click', weMsgId: 1 });
+    expect(seen).not.toHaveBeenCalled();
+  });
+});

@@ -64,6 +64,7 @@ const TM_ACTION_PROP_NAME_MMC = "tm-action";
 // this surface uses `.tm-action-chip.tm-multi-action-chip`. Click delegation
 // scopes to the marker so events never leak across surfaces.
 const MULTI_MSG_CHIP_MARKER_CLASS_MMC = "tm-multi-action-chip";
+const MULTI_MSG_CHIP_EXTENSION_EVENT_MMC = "tmMultiMessageChipActionClick";
 const CHIP_BASE_CLASS_MMC = "tm-action-chip";
 
 // Selector used by the document-level click delegation.
@@ -178,9 +179,44 @@ function _colorForAction_MMC(action) {
 // MAIN CLASS
 // ═══════════════════════════════════════════════════════════════════════════
 
-var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPI {
+var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersistent {
+  constructor(extension) {
+    super(extension);
+    this._chipClickSubscriptions = new Set();
+    this.PERSISTENT_EVENTS = {
+      onActionChipClick: ({ fire }) => this._registerChipClick(fire),
+    };
+  }
+
+  _registerChipClick(fire) {
+    const subscription = { fire };
+    const listener = (_event, info) => {
+      try {
+        Promise.resolve(subscription.fire.async(info)).catch(error => {
+          console.error(`${LOG_PREFIX_MMC} chip click subscriber failed:`, error);
+        });
+      } catch (error) {
+        console.error(`${LOG_PREFIX_MMC} chip click subscriber failed:`, error);
+      }
+    };
+    subscription.listener = listener;
+    this._chipClickSubscriptions.add(subscription);
+    this.extension.on(MULTI_MSG_CHIP_EXTENSION_EVENT_MMC, listener);
+    return {
+      unregister: () => {
+        this.extension.off(MULTI_MSG_CHIP_EXTENSION_EVENT_MMC, listener);
+        this._chipClickSubscriptions.delete(subscription);
+      },
+      convert: newFire => { subscription.fire = newFire; },
+    };
+  }
+
   onShutdown(isAppShutdown) {
     console.log(`${LOG_PREFIX_MMC} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
+    for (const subscription of this._chipClickSubscriptions) {
+      try { this.extension.off(MULTI_MSG_CHIP_EXTENSION_EVENT_MMC, subscription.listener); } catch (_) {}
+    }
+    this._chipClickSubscriptions.clear();
     this._tmShutdown = true;
     try {
       for (const cleanup of this._tmCleanups || []) {
@@ -227,14 +263,11 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPI {
     let windowListenerId = null;
     let isInitialized = false;
 
-    // Set by the schema's EventManager.register; fires the
-    // `onActionChipClick` event with `{source, weMsgId}` to MV3.
-    let _actionChipClickEventFire = null;
+    // Native delegation survives background suspension. Emit through the
+    // extension so Thunderbird's primed listener can wake the background.
     function _fireActionChipClick(info) {
       try {
-        if (typeof _actionChipClickEventFire === "function") {
-          _actionChipClickEventFire(info);
-        }
+        owner.extension.emit(MULTI_MSG_CHIP_EXTENSION_EVENT_MMC, info);
       } catch (_) {}
     }
 
@@ -769,15 +802,11 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPI {
         refreshAll,
         onActionChipClick: new ExtensionCommon_MMC.EventManager({
           context,
+          module: "tmMultiMessageChip",
+          event: "onActionChipClick",
           name: "tmMultiMessageChip.onActionChipClick",
-          register: (fire) => {
-            _actionChipClickEventFire = (info) => {
-              try { fire.async(info); } catch (_) {}
-            };
-            return () => {
-              _actionChipClickEventFire = null;
-            };
-          },
+          extensionApi: owner,
+          inputHandling: true,
         }).api(),
       },
     };
