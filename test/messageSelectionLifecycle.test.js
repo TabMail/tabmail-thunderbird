@@ -26,11 +26,22 @@ function harness({ loading = false } = {}) {
   const tabmail = { tabInfo: tabs, tabContainer, currentTabInfo: tabs[0], get currentAbout3Pane() { return this.currentTabInfo.chromeBrowser.contentWindow; } };
   const win = { ...target(), document: { readyState: loading ? 'loading' : 'complete', getElementById: id => win.document.readyState === 'complete' && id === 'tabmail' ? tabmail : null, querySelector: () => null } };
   const registered = new Map();
-  const notifyObservers = vi.fn();
+  const observers = new Map();
+  const notifyObservers = vi.fn((subject, topic, data) => {
+    for (const observer of [...(observers.get(topic) || [])]) observer(subject, topic, data);
+  });
+  const eventManagers = [];
   const services = {
     wm: { getEnumerator() { let index = 0; return { hasMoreElements: () => index === 0, getNext: () => { index++; return win; } }; } },
     tm: { dispatchToMainThread: fn => pending.push(fn) },
-    obs: { addObserver() {}, removeObserver() {}, notifyObservers },
+    obs: {
+      addObserver(observer, topic) {
+        if (!observers.has(topic)) observers.set(topic, new Set());
+        observers.get(topic).add(observer);
+      },
+      removeObserver(observer, topic) { observers.get(topic)?.delete(observer); },
+      notifyObservers,
+    },
   };
   const sandbox = {
     Services: services, console: { log() {}, error() {} },
@@ -39,7 +50,18 @@ function harness({ loading = false } = {}) {
         registerWindowListener(id, listener) { registered.set(id, listener); listener.onLoadWindow(win); },
         unregisterWindowListener(id) { registered.delete(id); },
       } };
-      if (path.includes('ExtensionCommon')) return { ExtensionCommon: { ExtensionAPI: class { onShutdown() {} }, EventManager: class { api() { return {}; } } } };
+      if (path.includes('ExtensionCommon')) return { ExtensionCommon: {
+        ExtensionAPI: class { onShutdown() {} },
+        ExtensionAPIPersistent: class {
+          primeListener(event, fire, params, isInStartup) {
+            return this.PERSISTENT_EVENTS?.[event]?.({ fire, isInStartup }, params);
+          }
+        },
+        EventManager: class {
+          constructor(options) { eventManagers.push(options); }
+          api() { return {}; }
+        },
+      } };
       throw Error(path);
     } },
   };
@@ -50,7 +72,7 @@ function harness({ loading = false } = {}) {
   const selectTab = index => { tabmail.currentTabInfo = tabs[index]; tabContainer.emit('TabSelect'); };
   const setMessageId = (index, messageId) => { headers[index] = { ...headers[index], messageId }; };
   const finishLoad = () => { win.document.readyState = 'complete'; win.emit('load'); };
-  return { instance, api, trees, tabContainer, pending, notifyObservers, registered, flush, selectTab, setMessageId, win, finishLoad };
+  return { instance, api, trees, tabContainer, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad };
 }
 describe('review: native ownership with real window and queued callback shapes', () => {
   it('tracks an existing window that finishes loading after listener registration', () => {
@@ -119,5 +141,43 @@ describe('review: native ownership with real window and queued callback shapes',
     const sentBeforeShutdown = h.notifyObservers.mock.calls.length;
     h.instance.onShutdown(false); h.flush();
     expect(h.notifyObservers).toHaveBeenCalledTimes(sentBeforeShutdown);
+  });
+  it('primes a selection event during sleep, preserves its payload, and converts exactly one native observer', () => {
+    const h = harness();
+    const event = h.eventManagers.find(options => options.name === 'messageSelection.onSelectionChanged');
+    expect(event).toMatchObject({ module: 'messageSelection', event: 'onSelectionChanged' });
+    expect(event.extensionApi).toBe(h.instance);
+    h.api.init(); h.flush();
+
+    const before = [];
+    const active = h.instance.PERSISTENT_EVENTS.onSelectionChanged({ fire: { async: value => before.push(value) } }, []);
+    h.trees[0].emit('select'); h.flush();
+    expect(before.map(value => value.selectedMessages[0].messageId)).toEqual(['synthetic@example.test']);
+    active.unregister();
+    expect(h.observers.get('messageSelection-changed').size).toBe(0);
+
+    const queued = [];
+    const wake = vi.fn();
+    const primed = h.instance.primeListener('onSelectionChanged', {
+      async(value) { queued.push(value); wake(); },
+    }, [], false);
+    h.setMessageId(0, 'selected-during-sleep@example.test');
+    h.trees[0].emit('select'); h.flush();
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(queued.map(value => value.selectedMessages[0].messageId)).toEqual(['selected-during-sleep@example.test']);
+    expect(h.observers.get('messageSelection-changed').size).toBe(1);
+
+    const after = [];
+    primed.convert({ async: value => after.push(value) });
+    for (const value of queued) after.push(value);
+    expect(after.map(value => value.selectedMessages[0].messageId)).toEqual(['selected-during-sleep@example.test']);
+    h.setMessageId(0, 'selected-after-wake@example.test');
+    h.trees[0].emit('select'); h.flush();
+    expect(after.map(value => value.selectedMessages[0].messageId)).toEqual([
+      'selected-during-sleep@example.test', 'selected-after-wake@example.test',
+    ]);
+    primed.unregister();
+    expect(h.observers.get('messageSelection-changed').size).toBe(0);
+    h.instance.onShutdown(false);
   });
 });

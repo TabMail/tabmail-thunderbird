@@ -11,10 +11,27 @@ const { ExtensionCommon: ExtensionCommonMS } = ChromeUtils.importESModule(
 
 var ServicesMS = globalThis.Services;
 
-var messageSelection = class extends ExtensionCommonMS.ExtensionAPI {
+var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
   constructor(extension) {
     super(extension);
     this._shutdownHandlers = new Set();
+    this.PERSISTENT_EVENTS = {
+      onSelectionChanged: ({ fire }) => {
+        let currentFire = fire;
+        const observer = (_subject, _topic, data) => {
+          try {
+            currentFire.async(JSON.parse(data));
+          } catch (e) {
+            console.error("[MessageSelection] Failed to parse selection data:", e);
+          }
+        };
+        ServicesMS.obs.addObserver(observer, "messageSelection-changed");
+        return {
+          unregister: () => ServicesMS.obs.removeObserver(observer, "messageSelection-changed"),
+          convert: (newFire) => { currentFire = newFire; },
+        };
+      },
+    };
   }
 
   onShutdown(isAppShutdown) {
@@ -314,19 +331,10 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPI {
       messageSelection: {
         onSelectionChanged: new ExtensionCommonMS.EventManager({
           context,
+          module: "messageSelection",
+          event: "onSelectionChanged",
           name: "messageSelection.onSelectionChanged",
-          register: (fire) => {
-            const obs = (subject, topic, data) => {
-              try {
-                const parsed = JSON.parse(data);
-                fire.async(parsed);
-              } catch (e) {
-                tlog("Failed to parse selection data:", e);
-              }
-            };
-            ServicesMS.obs.addObserver(obs, "messageSelection-changed");
-            return () => ServicesMS.obs.removeObserver(obs, "messageSelection-changed");
-          },
+          extensionApi: owner,
         }).api(),
         init() {
           // Guard against multiple initializations (prevents duplicate window listeners)

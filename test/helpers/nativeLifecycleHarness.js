@@ -144,6 +144,11 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
     constructor(extension) { this.extension = extension; }
     onShutdown() {}
   }
+  class ExtensionAPIPersistent extends ExtensionAPI {
+    primeListener(event, fire, params, isInStartup) {
+      return this.PERSISTENT_EVENTS?.[event]?.({ fire, isInStartup }, params);
+    }
+  }
   class EventManager {
     constructor(options) { this.options = options; }
     api() {
@@ -151,7 +156,11 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
       return {
         addListener: callback => {
           if (!handlers.has(callback)) {
-            handlers.set(callback, this.options.register({ async: (...args) => Promise.resolve(callback(...args)) }));
+            const fire = { async: (...args) => Promise.resolve(callback(...args)) };
+            const unregister = this.options.register
+              ? this.options.register(fire)
+              : this.options.extensionApi.PERSISTENT_EVENTS[this.options.event]({ fire }, []).unregister;
+            handlers.set(callback, unregister);
           }
         },
         removeListener: callback => { handlers.get(callback)?.(); handlers.delete(callback); },
@@ -176,7 +185,7 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
     unregisterSheet: uri => sheets.delete(uri.spec),
   };
   const modules = {
-    ExtensionCommon: { ExtensionAPI, EventManager }, ExtensionSupport,
+    ExtensionCommon: { ExtensionAPI, ExtensionAPIPersistent, EventManager }, ExtensionSupport,
     NetUtil: {
       asyncFetch(options, callback) {
         const url = typeof options.uri === 'string' ? options.uri : options.uri.spec;
