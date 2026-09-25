@@ -79,6 +79,9 @@ it('primes stock move, copy, and permanent-delete consumers without starting the
   for (const name of ['onMoved', 'onCopied', 'onDeleted']) expect(events[name].listeners.size).toBe(1);
   expect(browser.alarms.onAlarm.listeners.size).toBe(1);
   expect(browser.alarms.create).not.toHaveBeenCalled();
+  await [...browser.alarms.onAlarm.listeners][0]({ name: 'agent-stale-tag-sweep' });
+  expect(browser.accounts.list).toHaveBeenCalledOnce();
+  browser.accounts.list.mockClear();
 
   // Deliver the first event while init() is still pending. The early listener
   // must perform its work without relying on the later sweep setup call.
