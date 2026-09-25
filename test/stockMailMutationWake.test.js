@@ -5,7 +5,9 @@ import { parse } from 'acorn';
 vi.mock('../agent/modules/actionCache.js', () => ({ clearActions: vi.fn() }));
 vi.mock('../agent/modules/autoUpdateUserPrompt.js', () => ({ autoUpdateUserPromptOnMove: vi.fn() }));
 vi.mock('../agent/modules/config.js', () => ({
-  SETTINGS: { agentQueues: { ftsIncremental: {} }, onMoved: { staleTagSweep: { enabled: true, intervalMinutes: 15 } } },
+  SETTINGS: { agentQueues: { ftsIncremental: {} }, onMoved: { staleTagSweep: {
+    enabled: true, intervalMinutes: 15, maxFolders: 1, maxMessagesPerSweep: 1,
+  } } },
 }));
 vi.mock('../agent/modules/eventLogger.js', () => ({
   logMessageEvent: vi.fn(), logMoveEvent: vi.fn(), logMessageEventBatch: vi.fn(),
@@ -17,7 +19,6 @@ vi.mock('../agent/modules/idbStorage.js', () => ({}));
 vi.mock('../agent/modules/inboxContext.js', () => ({ getInboxForAccount: vi.fn() }));
 vi.mock('../agent/modules/tagHelper.js', () => ({ ACTION_TAG_IDS: {}, recomputeThreadForInboxMessage: vi.fn() }));
 vi.mock('../agent/modules/utils.js', () => ({
-  clearAlarm: vi.fn(async () => {}), ensureAlarm: vi.fn(async () => {}),
   getArchiveFolderForHeader: vi.fn(), getTrashFolderForHeader: vi.fn(),
   getUniqueMessageKey: vi.fn(async msg => `${msg.folder.accountId}:${msg.folder.path}:${msg.headerMessageId}`),
   indexHeader: vi.fn(), log: vi.fn(), removeHeaderIndexForDeletedMessage: vi.fn(),
@@ -31,7 +32,7 @@ vi.mock('../theme/modules/snippetCache.js', () => ({ moveSnippet: vi.fn(async ()
 
 import { attachOnMovedListeners, cleanupOnMovedListeners } from '../agent/modules/onMoved.js';
 import { _testExports } from '../fts/incrementalIndexer.js';
-import { ensureAlarm, removeHeaderIndexForDeletedMessage } from '../agent/modules/utils.js';
+import { log, removeHeaderIndexForDeletedMessage } from '../agent/modules/utils.js';
 import { moveSnippet, removeSnippet } from '../theme/modules/snippetCache.js';
 
 const folder = path => ({ id: path, accountId: 'synthetic', path });
@@ -46,9 +47,19 @@ beforeEach(() => {
     const listeners = new Set();
     return [name, { listeners, addListener: vi.fn(fn => listeners.add(fn)), removeListener: vi.fn(fn => listeners.delete(fn)) }];
   }));
+  const alarms = new Map();
+  const alarmListeners = new Set();
   globalThis.browser = {
     messages: { ...events, get: vi.fn(async () => null), update: vi.fn(), move: vi.fn(), delete: vi.fn() },
     storage: { local: { get: vi.fn(async () => ({})), set: vi.fn(async () => {}) } },
+    accounts: { list: vi.fn(async () => []) },
+    alarms: {
+      entries: alarms,
+      onAlarm: { listeners: alarmListeners, addListener: vi.fn(fn => alarmListeners.add(fn)), removeListener: vi.fn(fn => alarmListeners.delete(fn)) },
+      get: vi.fn(async name => alarms.get(name)),
+      create: vi.fn(async (name, info) => { alarms.set(name, { name, ...info }); }),
+      clear: vi.fn(async name => alarms.delete(name)),
+    },
   };
   _testExports._setIsEnabled(true);
   _testExports._setFtsSearch({});
@@ -66,7 +77,8 @@ afterEach(() => {
 it('primes stock move, copy, and permanent-delete consumers without starting the sweep alarm', async () => {
   attachOnMovedListeners({ scheduleSweep: false });
   for (const name of ['onMoved', 'onCopied', 'onDeleted']) expect(events[name].listeners.size).toBe(1);
-  expect(ensureAlarm).not.toHaveBeenCalled();
+  expect(browser.alarms.onAlarm.listeners.size).toBe(1);
+  expect(browser.alarms.create).not.toHaveBeenCalled();
 
   // Deliver the first event while init() is still pending. The early listener
   // must perform its work without relying on the later sweep setup call.
@@ -102,8 +114,37 @@ it('primes stock move, copy, and permanent-delete consumers without starting the
   expect(browser.messages.delete).not.toHaveBeenCalled();
 
   attachOnMovedListeners();
+  await settle();
   for (const name of ['onMoved', 'onCopied', 'onDeleted']) expect(events[name].listeners.size).toBe(1);
-  expect(ensureAlarm).toHaveBeenCalledOnce();
+  expect(browser.alarms.onAlarm.listeners.size).toBe(1);
+  expect(browser.alarms.create).toHaveBeenCalledOnce();
+  attachOnMovedListeners();
+  await settle();
+  expect(browser.alarms.onAlarm.listeners.size).toBe(1);
+  expect(browser.alarms.create).toHaveBeenCalledOnce();
+  await [...browser.alarms.onAlarm.listeners][0]({ name: 'unrelated' });
+  expect(browser.accounts.list).not.toHaveBeenCalled();
+  await [...browser.alarms.onAlarm.listeners][0]({ name: 'agent-stale-tag-sweep' });
+  expect(browser.accounts.list).toHaveBeenCalledOnce();
+});
+
+it('retries failed early alarm registration without stacking after a failed removal', async () => {
+  browser.alarms.onAlarm.addListener.mockImplementationOnce(() => { throw new Error('synthetic add failure'); });
+  attachOnMovedListeners({ scheduleSweep: false });
+  expect(browser.alarms.onAlarm.listeners.size).toBe(0);
+  attachOnMovedListeners();
+  await settle();
+  expect(browser.alarms.onAlarm.listeners.size).toBe(1);
+  expect(browser.alarms.onAlarm.addListener).toHaveBeenCalledTimes(2);
+  expect(browser.alarms.create).toHaveBeenCalledOnce();
+
+  browser.alarms.onAlarm.removeListener.mockImplementationOnce(() => { throw new Error('synthetic remove failure'); });
+  cleanupOnMovedListeners();
+  attachOnMovedListeners({ scheduleSweep: false });
+  expect(browser.alarms.onAlarm.listeners.size).toBe(1);
+  expect(browser.alarms.onAlarm.addListener).toHaveBeenCalledTimes(2);
+  cleanupOnMovedListeners();
+  expect(browser.alarms.onAlarm.listeners.size).toBe(0);
 });
 
 it('places stock mutation registration before asynchronous agent initialization', () => {
@@ -127,7 +168,7 @@ it.each(['onMoved', 'onCopied', 'onDeleted'])('retries a failed %s subscription 
   events[name].addListener.mockImplementationOnce(() => { throw new Error('synthetic addListener failure'); });
   attachOnMovedListeners({ scheduleSweep: false });
   expect(events[name].listeners.size).toBe(0);
-  expect(ensureAlarm).not.toHaveBeenCalled();
+  expect(browser.alarms.create).not.toHaveBeenCalled();
 
   attachOnMovedListeners();
   expect(events.onMoved.listeners.size).toBe(1);

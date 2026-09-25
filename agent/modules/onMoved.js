@@ -12,8 +12,6 @@ import * as idb from "./idbStorage.js";
 import { getInboxForAccount } from "./inboxContext.js";
 import { ACTION_TAG_IDS, recomputeThreadForInboxMessage } from "./tagHelper.js";
 import {
-    clearAlarm,
-    ensureAlarm,
     getArchiveFolderForHeader,
     getTrashFolderForHeader,
     getUniqueMessageKey,
@@ -24,6 +22,40 @@ import {
 } from "./utils.js";
 
 const STALE_TAG_SWEEP_ALARM_NAME = "agent-stale-tag-sweep";
+let _staleTagSweepAlarmAttached = false;
+let _staleTagSweepSchedule = Promise.resolve();
+
+const _onStaleTagSweepAlarm = (alarm) => {
+  if (alarm?.name !== STALE_TAG_SWEEP_ALARM_NAME) return;
+  return runStaleTagSweep().catch((e) => {
+    log(`[TMDBG onMoved] staleTagSweep alarm handler error: ${e}`, "warn");
+  });
+};
+
+function _attachStaleTagSweepAlarmListener() {
+  if (_staleTagSweepAlarmAttached || SETTINGS?.onMoved?.staleTagSweep?.enabled !== true) return;
+  if (!browser.alarms?.onAlarm) return;
+  try {
+    browser.alarms.onAlarm.addListener(_onStaleTagSweepAlarm);
+    _staleTagSweepAlarmAttached = true;
+  } catch (e) {
+    log(`[TMDBG onMoved] staleTagSweep alarm listener attach failed: ${e}`, "warn");
+  }
+}
+
+function _scheduleStaleTagSweepAlarm(intervalMinutes) {
+  _staleTagSweepSchedule = _staleTagSweepSchedule.catch(() => {}).then(async () => {
+    if (!_staleTagSweepAlarmAttached) throw new Error("alarm listener unavailable");
+    const existing = await browser.alarms.get(STALE_TAG_SWEEP_ALARM_NAME);
+    if (existing?.periodInMinutes === intervalMinutes) return;
+    if (existing) await browser.alarms.clear(STALE_TAG_SWEEP_ALARM_NAME);
+    await browser.alarms.create(STALE_TAG_SWEEP_ALARM_NAME, {
+      delayInMinutes: intervalMinutes,
+      periodInMinutes: intervalMinutes,
+    });
+  });
+  return _staleTagSweepSchedule;
+}
 
 /**
  * Sanitize stale TabMail action tags on a single message.
@@ -564,6 +596,9 @@ export function attachOnUpdatedListener() {
  * and never changes tags.
  */
 export function attachOnMovedListeners({ scheduleSweep = true } = {}) {
+  // This first call runs before agent/background.js reaches its startup awaits.
+  // Register the stock alarm listener now so its first post-suspend event wakes us.
+  _attachStaleTagSweepAlarmListener();
   try {
     if (browser.messages && browser.messages.onMoved && !_onMovedHandler) {
       const handler = async (...args) => {
@@ -990,16 +1025,7 @@ export function attachOnMovedListeners({ scheduleSweep = true } = {}) {
       if (cfg?.enabled === true) {
         const intervalMinutes = Number(cfg.intervalMinutes);
         if (Number.isFinite(intervalMinutes) && intervalMinutes >= 1) {
-          ensureAlarm({
-            name: STALE_TAG_SWEEP_ALARM_NAME,
-            periodMinutes: intervalMinutes,
-            delayMinutes: intervalMinutes,
-            onAlarm: () => {
-              runStaleTagSweep().catch((e) => {
-                log(`[TMDBG onMoved] staleTagSweep alarm handler error: ${e}`, "warn");
-              });
-            },
-          }).then(() => {
+          _scheduleStaleTagSweepAlarm(intervalMinutes).then(() => {
             log(`[TMDBG onMoved] staleTagSweep alarm scheduled every ${intervalMinutes} minute(s)`);
           }).catch((e) => {
             log(`[TMDBG onMoved] staleTagSweep alarm setup failed: ${e}`, "warn");
@@ -1021,8 +1047,16 @@ export function attachOnMovedListeners({ scheduleSweep = true } = {}) {
  */
 export function cleanupOnMovedListeners() {
   try {
-    clearAlarm(STALE_TAG_SWEEP_ALARM_NAME).catch(() => {});
+    browser.alarms?.clear(STALE_TAG_SWEEP_ALARM_NAME).catch(() => {});
   } catch (_) {}
+  if (_staleTagSweepAlarmAttached && browser.alarms?.onAlarm) {
+    try {
+      browser.alarms.onAlarm.removeListener(_onStaleTagSweepAlarm);
+      _staleTagSweepAlarmAttached = false;
+    } catch (e) {
+      log(`[TMDBG onMoved] staleTagSweep alarm listener removal failed: ${e}`, "warn");
+    }
+  }
   try {
     if (_onMessageUpdatedHandler && browser.messages?.onUpdated) {
       browser.messages.onUpdated.removeListener(_onMessageUpdatedHandler);
