@@ -16,20 +16,22 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 vi.mock('../fts/indexer.js', () => ({buildBatchHeader:vi.fn(),populateBatchBody:vi.fn()}));
 import * as moved from '../agent/modules/onMoved.js';
-const { attachOnUpdatedListener, attachOnMovedListeners, cleanupOnMovedListeners } = moved;
-import { _testExports } from '../fts/incrementalIndexer.js';
-import { log } from '../agent/modules/utils.js';
+const { attachOnUpdatedListener, cleanupOnMovedListeners } = moved;
+import { _testExports, disposeIncrementalIndexer } from '../fts/incrementalIndexer.js';
 const settle=async()=>{for(let i=0;i<10;i++)await new Promise(resolve=>setImmediate(resolve));};
 let listeners,stored,rows;
 const folder={id:'inbox',accountId:'synthetic-account',path:'/INBOX'};
 const virtual={id:'starred',accountId:'synthetic-account',path:'/[Gmail]/Starred',name:'Starred'};
+const indexKey='synthetic-account:/[Gmail]/Starred:second@example.test';
 beforeEach(()=>{
  vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});vi.clearAllMocks();
  listeners=new Set();stored={};rows=new Map([[41,{id:41,folder,headerMessageId:'first@example.test'}],[42,{id:42,folder,headerMessageId:'second@example.test'}]]);
+ const folderRows=[...rows.values(),{id:142,folder:virtual,headerMessageId:'second@example.test'}];
  globalThis.browser={messages:{
   onUpdated:{addListener:vi.fn(fn=>listeners.add(fn)),removeListener:vi.fn(fn=>listeners.delete(fn))},
   get:vi.fn(async id=>structuredClone(rows.get(id))),
-  query:vi.fn(async q=>({messages:[{id:q.headerMessageId==='first@example.test'?141:142,folder:virtual,headerMessageId:q.headerMessageId}]})),
+  query:vi.fn(async q=>({messages:folderRows.filter(msg=>
+   msg.headerMessageId===q.headerMessageId && q.folderId?.includes(msg.folder.id))})),
   update:vi.fn(),move:vi.fn(),delete:vi.fn()
  },accounts:{list:vi.fn(async()=>[{id:folder.accountId,rootFolder:{id:'root'}}])},
  folders:{getSubFolders:vi.fn(async id=>id==='root'?[{id:'gmail',name:'[Gmail]'}]:[virtual])},
@@ -42,7 +44,9 @@ async function emit(value={id:41},changed={flagged:true}){for(const fn of listen
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
-it('a message update is subscribed before startup resolves and reaches durable FTS work',async()=>{
+function startActualAgent(){
+ let releaseStartup;
+ const startupGate=new Promise(resolve=>{releaseStartup=resolve;});
  const originalBrowser=globalThis.browser;
  const source=readFileSync(new URL('../agent/background.js',import.meta.url),'utf8');
  const ast=parse(source,{ecmaVersion:'latest',sourceType:'module'});
@@ -51,7 +55,7 @@ it('a message update is subscribed before startup resolves and reaches durable F
  for(const entry of ast.body.filter(n=>n.type==='ImportDeclaration').reverse()){
   for(const specifier of entry.specifiers){
    const name=specifier.local.name;
-   globals[name]=entry.source.value==='./modules/onMoved.js'?moved[name]:name==='SETTINGS'?{}:name==='idb'?{}:name==='ensureActionTags'?()=>new Promise(()=>{}):()=>Promise.resolve({});
+   globals[name]=entry.source.value==='./modules/onMoved.js'?moved[name]:name==='SETTINGS'?{}:name==='idb'?{}:name==='ensureActionTags'?()=>startupGate:()=>Promise.resolve({});
   }
   script=script.slice(0,entry.start)+script.slice(entry.start,entry.end).replace(/[^\r\n]/g,' ')+script.slice(entry.end);
  }
@@ -67,35 +71,59 @@ it('a message update is subscribed before startup resolves and reaches durable F
  }
  globals.browser=api();globalThis.browser=globals.browser;
  vm.runInNewContext(script,globals,{filename:'review-agent-startup.js'});
+ return {releaseStartup,originalBrowser};
+}
+
+it('primes the listener before agent startup and queues a Gmail member with ready FTS',async()=>{
+ const app=startActualAgent();
  expect(listeners.size).toBe(1);
  await emit({id:41},{flagged:true});
- expect([..._testExports._getPendingUpdates().keys()]).toEqual(['synthetic-account:/[Gmail]/Starred:first@example.test']);
+ expect([..._testExports._getPendingUpdates().keys()]).toEqual([]);
+ await emit({id:42},{flagged:true});
+ expect([..._testExports._getPendingUpdates().keys()]).toEqual([indexKey]);
  await vi.advanceTimersByTimeAsync(2000);
- expect(stored.fts_pending_updates.map(x=>x.uniqueKey)).toEqual(['synthetic-account:/[Gmail]/Starred:first@example.test']);
- expect(originalBrowser.messages.update).not.toHaveBeenCalled();
- expect(originalBrowser.messages.move).not.toHaveBeenCalled();
- expect(originalBrowser.messages.delete).not.toHaveBeenCalled();
- globalThis.browser=originalBrowser;
+ expect(stored.fts_pending_updates).toEqual([expect.objectContaining({
+  uniqueKey:indexKey,type:'new',folderKey:'synthetic-account:/[Gmail]/Starred',
+ })]);
+ expect(app.originalBrowser.messages.get).toHaveBeenCalledWith(42);
+ expect(app.originalBrowser.messages.update).not.toHaveBeenCalled();
+ expect(app.originalBrowser.messages.move).not.toHaveBeenCalled();
+ expect(app.originalBrowser.messages.delete).not.toHaveBeenCalled();
+ globalThis.browser=app.originalBrowser;
 });
 
-it('late initialization retries a failed primed registration and processes the next update', async () => {
+it('real late initialization retries a failed primed registration', async () => {
   browser.messages.onUpdated.addListener.mockImplementationOnce(() => {
     throw new Error('synthetic registration failure');
   });
-  attachOnUpdatedListener();
+  const app=startActualAgent();
   expect(listeners.size).toBe(0);
-
-  attachOnMovedListeners();
+  app.releaseStartup();
+  await settle();
   expect(listeners.size).toBe(1);
-  await emit({ id: 41 }, { flagged: true });
-  expect([..._testExports._getPendingUpdates().keys()]).toEqual([
-    'synthetic-account:/[Gmail]/Starred:first@example.test',
-  ]);
+  expect(app.originalBrowser.messages.onUpdated.addListener).toHaveBeenCalledTimes(2);
+  await emit({ id: 42 }, { flagged: true });
+  expect([..._testExports._getPendingUpdates().keys()]).toEqual([indexKey]);
   await vi.advanceTimersByTimeAsync(2000);
-  expect(stored.fts_pending_updates.map(item => item.uniqueKey)).toEqual([
-    'synthetic-account:/[Gmail]/Starred:first@example.test',
-  ]);
-  expect(browser.messages.update).not.toHaveBeenCalled();
-  expect(browser.messages.move).not.toHaveBeenCalled();
-  expect(browser.messages.delete).not.toHaveBeenCalled();
+  expect(stored.fts_pending_updates).toEqual([expect.objectContaining({uniqueKey:indexKey,type:'new'})]);
+  expect(app.originalBrowser.messages.update).not.toHaveBeenCalled();
+  expect(app.originalBrowser.messages.move).not.toHaveBeenCalled();
+  expect(app.originalBrowser.messages.delete).not.toHaveBeenCalled();
+  globalThis.browser=app.originalBrowser;
+});
+
+it('retains failed indexing work when the same member is updated again',async()=>{
+  attachOnUpdatedListener();
+  await emit({id:42});
+  const failed=_testExports._markResolveFailed(_testExports._getPendingUpdates().get(indexKey));
+  expect(failed.hasFailed).toBe(true);
+  await emit({id:42});
+  expect(_testExports._getPendingUpdates().get(indexKey)).toMatchObject({
+    type:'new',hasFailed:true,lastFailedAt:failed.lastFailedAt,
+  });
+  await disposeIncrementalIndexer();
+  expect(stored.fts_pending_updates).toEqual([expect.objectContaining({
+    uniqueKey:indexKey,type:'new',folderKey:'synthetic-account:/[Gmail]/Starred',
+    hasFailed:true,lastFailedAt:failed.lastFailedAt,
+  })]);
 });
