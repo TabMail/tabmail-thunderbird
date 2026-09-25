@@ -163,6 +163,11 @@ describe('manifest-selected update wake contract', () => {
         .map(name => selectedFunction('config/modules/updateDebug.js', name)).join('\n');
       vm.runInNewContext(`${functions}\nglobalThis.runDebug = { simulateUpdateAvailable, clearUpdateState, showUpdateBar };`, scope);
       await scope.runDebug.simulateUpdateAvailable();
+      expect(await listeners.message({ command: 'getUpdateState' })).toMatchObject({
+        updateState: 'pending', pendingVersion: '99.0.0',
+      });
+      expect(first.win.document.querySelector('.tm-update-message-line2')?.textContent)
+        .toContain('v99.0.0');
       await x.api.setPendingUpdateVersion('1.8.4');
       await scope.runDebug.showUpdateBar();
       expect(first.win.document.querySelector('.tm-update-message-line2')?.textContent).toContain('v1.8.4');
@@ -197,7 +202,7 @@ describe('manifest-selected update wake contract', () => {
 
   it('passes the popup manual update result through the manager to the native bar', async () => {
     const p = pane();
-    const popup = new JSDOM('<a id="check-updates-link">Check for updates</a><span id="version-text"></span>');
+    const popup = new JSDOM('<div id="version-status-banner"></div><a id="check-updates-link">Check for updates</a><span id="version-text"></span>');
     try {
       const x = experiment(updatesDeclaration.parent.script, 'tmUpdates', { windows: [p.win] });
       const { browser, listeners } = startFromManifest(x.api);
@@ -211,10 +216,13 @@ describe('manifest-selected update wake contract', () => {
       expect(p.win.document.querySelector('.tm-update-message-line2')?.textContent).toContain('v1.8.4');
       expect(popup.window.document.getElementById('version-text').textContent)
         .toBe('Restart Thunderbird to update to v1.8.4');
+      popup.window.document.getElementById('version-text').textContent = '';
+      popup.window.document.getElementById('check-updates-link').classList.remove('hidden');
       vm.runInNewContext(`${selectedFunction('popup/popup.js', 'updateVersionStatus')}\nglobalThis.refresh = updateVersionStatus;`, scope);
       await scope.refresh();
       expect(popup.window.document.getElementById('version-text').textContent)
         .toBe('Restart Thunderbird to update to v1.8.4');
+      expect(popup.window.document.getElementById('check-updates-link').classList.contains('hidden')).toBe(true);
       x.instance.onShutdown(false);
     } finally {
       p.dom.window.close();
