@@ -123,6 +123,27 @@ describe('getUserEmailSetCached', () => {
     expect(result.has('old@example.test')).toBe(false);
     expect((await getUserEmailSetCached()).has('new@example.test')).toBe(true);
   });
+
+  it.each(['resolve', 'reject'])('keeps the newer identity when an older load later %ss', async completion => {
+    let resolveOld, rejectOld;
+    const oldLoad = new Promise((resolve, reject) => { resolveOld = resolve; rejectOld = reject; });
+    browser.accounts.list.mockImplementationOnce(() => oldLoad)
+      .mockResolvedValue([{ type: 'imap', identities: [{ email: 'new@example.test' }] }]);
+    const oldReader = getUserEmailSetCached();
+    invalidateUserEmailCache();
+    const newReader = await getUserEmailSetCached();
+    expect(newReader.has('new@example.test')).toBe(true);
+    if (completion === 'resolve') {
+      resolveOld([{ type: 'imap', identities: [{ email: 'old@example.test' }] }]);
+    } else {
+      rejectOld(new Error('synthetic old load failure'));
+    }
+    expect((await oldReader).has('new@example.test')).toBe(true);
+    expect((await getUserEmailSetCached()).has('old@example.test')).toBe(false);
+    expect(await isInternalSender({ author: 'new@example.test' })).toBe(true);
+    expect(await isInternalSender({ author: 'old@example.test' })).toBe(false);
+    expect(browser.accounts.list).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
