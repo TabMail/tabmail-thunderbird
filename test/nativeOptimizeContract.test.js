@@ -221,7 +221,7 @@ describe('native optimize maintenance contract', () => {
       needsReindex: true, lastSchemaVersion: 1, currentSchemaVersion: 2,
     });
     mockRebuildEmbeddings
-      .mockResolvedValueOnce({ ok: false, error: 'synthetic rebuild failure' })
+      .mockRejectedValueOnce(new Error('synthetic rebuild failure'))
       .mockResolvedValueOnce({ ok: true, emailEmbedded: 0, emailTotal: 0, memoryEmbedded: 0, memoryTotal: 0 });
     vi.mocked(initIncrementalIndexer).mockRejectedValueOnce(new Error('marker write failed'));
     runtimeEngine = await import('../fts/engine.js');
