@@ -33,7 +33,7 @@ import {
 import { enforceMailSyncPrefs } from "./modules/startupPrefs.js";
 import { initSummaryFeatures, refreshCurrentMessageSummary, signalBubbleReady } from "./modules/summary.js";
 import { ensureActionTags } from "./modules/tagDefs.js";
-import { clearAllActions, isActionPayloadKey, purgeMetadataOlderThan, getActionForUniqueKey, pushAllActionsToExperimentsOnStartup } from "./modules/actionCache.js";
+import { attachActionCacheBackfillListeners, clearAllActions, isActionPayloadKey, purgeMetadataOlderThan, getActionForUniqueKey, pushAllActionsToExperimentsOnStartup } from "./modules/actionCache.js";
 import { registerTabKeyHandlers } from "./modules/tagActionKey.js";
 import {
   attachTagByThreadListener,
@@ -2062,6 +2062,9 @@ attachTagByThreadListener();
 // A first tag change after suspend must reach the thread-effective-action watcher.
 // Its later init() call retries failed registration without adding a second owner.
 attachThreadTagWatchers();
+// Account and folder creation must still repair native action paint on the first
+// event after an idle suspension; the startup backfill retries failed adds.
+attachActionCacheBackfillListeners();
 // Prime move/copy/delete consumers now; leave the stale-tag sweep alarm for
 // init(), after its setup work completes.
 attachOnMovedListeners({ scheduleSweep: false });
