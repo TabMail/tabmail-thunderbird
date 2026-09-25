@@ -6,20 +6,26 @@ const source = readFileSync(new URL('../agent/experiments/tmMsgNotify/tmMsgNotif
 
 function createExperiment() {
   const listeners = new Set();
+  const eventManagers = [];
   const addListener = vi.fn(listener => listeners.add(listener));
   const removeListener = vi.fn(listener => listeners.delete(listener));
   class EventManager {
-    constructor({ register }) { this.register = register; }
+    constructor(options) { this.options = options; eventManagers.push(options); }
     api() {
       const manager = this;
       const subscriptions = new Map();
       return {
         addListener(callback) {
           const fire = { async: vi.fn(payload => callback(payload)) };
-          subscriptions.set(callback, manager.register(fire));
+          const { register, extensionApi, event } = manager.options;
+          subscriptions.set(callback, register
+            ? register(fire)
+            : extensionApi.PERSISTENT_EVENTS[event]({ fire }));
         },
         removeListener(callback) {
-          subscriptions.get(callback)?.();
+          const subscription = subscriptions.get(callback);
+          if (typeof subscription === 'function') subscription();
+          else subscription?.unregister();
           subscriptions.delete(callback);
         },
       };
@@ -27,7 +33,14 @@ function createExperiment() {
   }
   const sandbox = {
     ChromeUtils: { importESModule(path) {
-      if (path.includes('ExtensionCommon')) return { ExtensionCommon: { ExtensionAPI: class {}, EventManager } };
+      if (path.includes('ExtensionCommon')) return { ExtensionCommon: {
+        ExtensionAPI: class {},
+        ExtensionAPIPersistent: class {
+          constructor(extension) { this.extension = extension; }
+          primeListener(event, fire) { return this.PERSISTENT_EVENTS[event]({ fire }); }
+        },
+        EventManager,
+      } };
       if (path.includes('Timer')) return { clearInterval: vi.fn(), setInterval: vi.fn(() => 1) };
       if (path.includes('MailServices')) return { MailServices: { mfn: { addListener, removeListener } } };
       if (path.includes('MailUtils')) return { MailUtils: {} };
@@ -37,12 +50,13 @@ function createExperiment() {
     Ci: { nsMsgMessageFlags: { IMAPDeleted: 1, Expunged: 2 } },
   };
   vm.runInNewContext(`${source}\nglobalThis.Experiment = tmMsgNotify;`, sandbox);
-  const instance = new sandbox.Experiment();
-  const api = instance.getAPI({ extension: {
+  const extension = {
     folderManager: { convert: folder => ({ id: folder.URI, path: `/${folder.URI.split('/').at(-1)}`, accountId: 'test' }) },
     messageManager: { convert: () => ({ id: 1 }) },
-  } }).tmMsgNotify;
-  return { api, instance, listeners, addListener, removeListener, errorLog: sandbox.console.error };
+  };
+  const instance = new sandbox.Experiment(extension);
+  const api = instance.getAPI({ extension }).tmMsgNotify;
+  return { api, instance, listeners, eventManagers, addListener, removeListener, errorLog: sandbox.console.error };
 }
 
 const header = {
@@ -52,6 +66,65 @@ const header = {
 };
 
 describe('tmMsgNotify independent event subscriptions', () => {
+  it('primes each native event family and converts its fire without adding another native listener', () => {
+    const { api, instance, listeners, eventManagers, addListener, removeListener } = createExperiment();
+    expect(eventManagers.map(({ module, event, extensionApi }) => [module, event, extensionApi === instance])).toEqual([
+      ['tmMsgNotify', 'onMessageAdded', true],
+      ['tmMsgNotify', 'onMessageRemoved', true],
+    ]);
+    const agent = vi.fn();
+    api.onMessageAdded.addListener(agent);
+    const addedWake = vi.fn();
+    const removedWake = vi.fn();
+    const added = instance.primeListener('onMessageAdded', { async: addedWake });
+    const removed = instance.primeListener('onMessageRemoved', { async: removedWake });
+    expect(addListener).toHaveBeenCalledTimes(1);
+    expect(listeners.size).toBe(1);
+    const native = [...listeners][0];
+    native.msgAdded(header);
+    native.msgsDeleted([header]);
+    expect(agent).toHaveBeenCalledTimes(1);
+    expect(addedWake).toHaveBeenCalledTimes(1);
+    expect(removedWake).toHaveBeenCalledTimes(1);
+
+    const addedAfterWake = vi.fn();
+    const removedAfterWake = vi.fn();
+    added.convert({ async: addedAfterWake });
+    removed.convert({ async: removedAfterWake });
+    native.msgsClassified([header]);
+    native.msgsMoveCopyCompleted(true, [header], header.folder, [header]);
+    expect(addedWake).toHaveBeenCalledTimes(1);
+    expect(removedWake).toHaveBeenCalledTimes(1);
+    expect(addedAfterWake).toHaveBeenCalledTimes(2);
+    expect(removedAfterWake).toHaveBeenCalledTimes(1);
+    expect(agent).toHaveBeenCalledTimes(3);
+
+    added.unregister();
+    native.msgAdded(header);
+    native.msgsDeleted([header]);
+    expect(addedAfterWake).toHaveBeenCalledTimes(2);
+    expect(removedAfterWake).toHaveBeenCalledTimes(2);
+    expect(agent).toHaveBeenCalledTimes(4);
+    removed.unregister();
+    api.onMessageAdded.removeListener(agent);
+    expect(removeListener).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes a primed native registration on true extension shutdown', () => {
+    const { instance, listeners, removeListener } = createExperiment();
+    const added = vi.fn();
+    const removed = vi.fn();
+    instance.primeListener('onMessageAdded', { async: added });
+    instance.primeListener('onMessageRemoved', { async: removed });
+    const native = [...listeners][0];
+    instance.onShutdown(false);
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    native.msgAdded(header);
+    native.msgsDeleted([header]);
+    expect(added).not.toHaveBeenCalled();
+    expect(removed).not.toHaveBeenCalled();
+  });
+
   it.each(['first', 'second'])('delivers to both consumers and survives removing the %s subscriber', removed => {
     const { api, listeners, addListener, removeListener } = createExperiment();
     const first = vi.fn();

@@ -17,11 +17,18 @@ import {
   clearOwnedFtsScanStatus,
   writeOwnedFtsScanStatus,
 } from "../fts/operationCoordinator.js";
+import { setupExperimentListeners } from "../fts/incrementalIndexer.js";
 import { setWarning } from "../agent/modules/icon.js";
 import { checkSetupConfiguration } from "../agent/modules/setupChecks.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
 import { openOrFocusChatWindow } from "./modules/chatWindowUtils.js";
 import { handleMessageSelectionRequest, initMessageSelectionListener } from "./modules/messageSelection.js";
+
+// Gecko persists only listeners registered during background script startup.
+// Register FTS mail notifications before storage/native-helper initialization;
+// initIncrementalIndexer calls this again after readiness, and the guard keeps
+// the same subscriptions. Startup reconciliation covers events before readiness.
+setupExperimentListeners();
 
 // Navigation handlers for special TabMail links
 // --- EMAIL: precise MV3 navigation to a message in thread pane ---
