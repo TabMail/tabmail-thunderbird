@@ -18,7 +18,7 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 import { registerTabKeyHandlers, cleanupTagActionKeyListeners } from '../agent/modules/tagActionKey.js';
 
-function startAgent({ welcome = false, tabKeyRegistrar, coverageMessage } = {}) {
+function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, coverageMessage } = {}) {
   const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
@@ -35,6 +35,7 @@ function startAgent({ welcome = false, tabKeyRegistrar, coverageMessage } = {}) 
       globals[name] = name === 'SETTINGS' ? {} : name === 'idb' ? {}
         : name === 'registerTabKeyHandlers' && tabKeyRegistrar
           ? tabKeyRegistrar : () => Promise.resolve({});
+      if (name === 'attachOnUpdatedListener' && updatedRegistrar) globals[name] = updatedRegistrar;
     }
     script = script.slice(0, entry.start)
       + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
@@ -85,6 +86,19 @@ function startAgent({ welcome = false, tabKeyRegistrar, coverageMessage } = {}) 
 }
 
 describe('agent background startup and canceled suspend', () => {
+  it('registers the stock message-update wake listener before async startup', () => {
+    const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+    const calls = ast.body.filter(node => node.type === 'ExpressionStatement'
+      && node.expression?.type === 'CallExpression')
+      .map(node => ({ name: node.expression.callee?.name, at: node.start }));
+    expect(calls.find(call => call.name === 'attachOnUpdatedListener')?.at)
+      .toBeLessThan(calls.find(call => call.name === 'init')?.at);
+    const register = vi.fn();
+    startAgent({ updatedRegistrar: register });
+    expect(register).toHaveBeenCalledOnce();
+  });
+
   it('registers table coverage before async startup and enqueues the event identity after suspend', async () => {
     const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
     const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
