@@ -20,7 +20,11 @@ function recoveryHarness() {
     onAlarm: { addListener: vi.fn(callback => { alarmListener = callback; }) },
   };
   const sandbox = {
-    browser: { alarms },
+    browser: {
+      alarms,
+      storage: { local: { get: vi.fn(async () => ({ chat_useFtsSearch: true })) } },
+      runtime: { sendMessage: vi.fn(async () => ({})) },
+    },
     getFtsHelperAvailable: () => available,
     getFtsHelperStatus: () => ({ status: available ? 'available' : 'missing' }),
     recheckFtsHelperAvailable,
@@ -33,6 +37,14 @@ function recoveryHarness() {
   vm.runInContext(`${source.slice(start, end)}\nthis.probe = probeFtsAvailability;`, sandbox);
   return { sandbox, alarms, initFtsEngine, recheckFtsHelperAvailable,
     checkAndRunInitialFtsScan, probe: sandbox.probe,
+    setAvailable: value => { available = value; },
+    startStartup: () => {
+      const startupStart = source.indexOf('browser.storage.local.get({ chat_useFtsSearch: true })', end);
+      const startupEnd = source.indexOf('// Reflect "consent required"', startupStart);
+      expect(startupStart).toBeGreaterThan(end);
+      expect(startupEnd).toBeGreaterThan(startupStart);
+      vm.runInContext(source.slice(startupStart, startupEnd), sandbox);
+    },
     fireAlarm: () => alarmListener({ name: 'tabmail-fts-helper-recheck' }) };
 }
 
@@ -61,5 +73,20 @@ describe('FTS helper recovery', () => {
     await vi.waitFor(() => expect(app.initFtsEngine).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(app.checkAndRunInitialFtsScan).toHaveBeenCalledTimes(1));
     expect(app.alarms.clear).toHaveBeenCalledWith('tabmail-fts-helper-recheck');
+  });
+
+  it('retries a failed startup even when the native port already reconnected', async () => {
+    const app = recoveryHarness();
+    app.setAvailable(true);
+    app.initFtsEngine.mockRejectedValueOnce(new Error('indexer failed'));
+    app.startStartup();
+
+    await vi.waitFor(() => expect(app.alarms.create).toHaveBeenCalledWith(
+      'tabmail-fts-helper-recheck', { periodInMinutes: 1 },
+    ));
+    app.fireAlarm();
+    await vi.waitFor(() => expect(app.initFtsEngine).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(app.checkAndRunInitialFtsScan).toHaveBeenCalledTimes(1));
+    expect(app.recheckFtsHelperAvailable).not.toHaveBeenCalled();
   });
 });

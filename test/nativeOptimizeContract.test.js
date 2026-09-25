@@ -158,6 +158,12 @@ describe('native optimize maintenance contract', () => {
     pending.resolve(true);
     await Promise.all([first, second]);
     expect(initIncrementalIndexer).toHaveBeenCalledTimes(1);
+
+    // A later UI/alarm probe must reuse the completed engine, not reattach
+    // listeners or restart the boot reconciliation.
+    await expect(runtimeEngine.initFtsEngine()).resolves.toBe(runtimeEngine.ftsSearch);
+    expect(initNativeFts).toHaveBeenCalledTimes(1);
+    expect(initIncrementalIndexer).toHaveBeenCalledTimes(1);
   });
 
   it('retries engine initialization after the native helper was missing', async () => {
