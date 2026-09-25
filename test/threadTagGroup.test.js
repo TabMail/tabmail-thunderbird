@@ -284,3 +284,77 @@ describe('thread tag update listener ownership', () => {
     expect(browser.messages.onUpdated.addListener).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('tag-by-thread setting listener ownership', () => {
+  let listeners;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    idbStore = {};
+    listeners = new Set();
+    browser.storage.onChanged.addListener.mockImplementation(listener => listeners.add(listener));
+    browser.storage.onChanged.removeListener.mockImplementation(listener => listeners.delete(listener));
+    browser.accounts.list.mockResolvedValue([{ id: 'test-account' }]);
+    browser.messages.list.mockResolvedValue({ messages: [{ id: 101 }] });
+    browser.messages.get.mockResolvedValue({ id: 101, folder: { accountId: 'test-account', path: 'INBOX' } });
+    mockFindInboxFolderForAccount.mockResolvedValue({ id: 'test-inbox', path: 'INBOX' });
+    mockGetConversationForWeMsgId.mockResolvedValue({ ok: true, conversationId: 'test-thread', headerMessageIds: ['synthetic-id'] });
+    mockGetInboxWeIdsForConversation.mockResolvedValue([101]);
+    mockReadCachedActionForWeId.mockResolvedValue('reply');
+  });
+
+  it.each([true, false])('handles the first local toggle with an empty cache (%s)', async enabled => {
+    const { attachTagByThreadListener, getTagByThreadEnabled } = await import('../agent/modules/threadTagGroup.js');
+    attachTagByThreadListener();
+
+    await [...listeners][0]({ tagByThreadEnabled: { newValue: enabled } }, 'local');
+
+    expect(await getTagByThreadEnabled()).toBe(enabled);
+    expect(idbStore['threadTags:test-account:INBOX:glodaConv:test-thread']?.messageActions).toEqual({ 101: 'reply' });
+    expect(mockSetAction).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(mockSetAction).toHaveBeenCalledWith([101]);
+  });
+
+  it('processes the first toggle once and ignores unrelated storage changes', async () => {
+    const { attachTagByThreadListener, getTagByThreadEnabled } = await import('../agent/modules/threadTagGroup.js');
+    browser.storage.local.get.mockResolvedValue({ tagByThreadEnabled: false });
+    expect(await getTagByThreadEnabled()).toBe(false);
+    attachTagByThreadListener();
+    attachTagByThreadListener();
+    expect(listeners.size).toBe(1);
+    expect(browser.storage.onChanged.addListener).toHaveBeenCalledTimes(1);
+
+    const listener = [...listeners][0];
+    await listener({ tagByThreadEnabled: { newValue: true } }, 'local');
+    expect(await getTagByThreadEnabled()).toBe(true);
+    expect(idbStore['threadTags:test-account:INBOX:glodaConv:test-thread']?.messageActions).toEqual({ 101: 'reply' });
+    expect(mockSetAction).toHaveBeenCalledExactlyOnceWith([101]);
+
+    await listener({ tagByThreadEnabled: { newValue: false } }, 'local');
+    expect(await getTagByThreadEnabled()).toBe(false);
+    expect(mockGetConversationForWeMsgId).toHaveBeenCalledTimes(2);
+    expect(mockSetAction).toHaveBeenCalledTimes(1);
+
+    await listener({ tagByThreadEnabled: { newValue: true } }, 'sync');
+    await listener({ otherSetting: { newValue: true } }, 'local');
+    expect(await getTagByThreadEnabled()).toBe(false);
+    expect(browser.storage.local.get).toHaveBeenCalledTimes(1);
+    expect(mockSetAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries failed attachment without stacking after failed removal', async () => {
+    const { attachTagByThreadListener, cleanupTagByThreadListener } = await import('../agent/modules/threadTagGroup.js');
+    browser.storage.onChanged.addListener.mockImplementationOnce(() => { throw new Error('synthetic add failure'); });
+    attachTagByThreadListener();
+    expect(listeners.size).toBe(0);
+    attachTagByThreadListener();
+    expect(listeners.size).toBe(1);
+
+    browser.storage.onChanged.removeListener.mockImplementationOnce(() => { throw new Error('synthetic remove failure'); });
+    cleanupTagByThreadListener();
+    attachTagByThreadListener();
+    expect(listeners.size).toBe(1);
+    expect(browser.storage.onChanged.addListener).toHaveBeenCalledTimes(2);
+  });
+});

@@ -2056,6 +2056,9 @@ try {
 // Register the FTS message-update consumer before init() first awaits, so
 // Thunderbird can prime this stock event while the background is suspended.
 attachOnUpdatedListener();
+// The tag-by-thread setting must reach its retag consumer on the first wake.
+// init() retries a failed early registration without replacing a live owner.
+attachTagByThreadListener();
 // A first tag change after suspend must reach the thread-effective-action watcher.
 // Its later init() call retries failed registration without adding a second owner.
 attachThreadTagWatchers();

@@ -120,6 +120,17 @@ describe('agent background startup and canceled suspend', () => {
     expect(attached).toBe(true);
   });
 
+  it('places tag-by-thread setting registration before async startup', () => {
+    const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+    const calls = ast.body.filter(node => node.type === 'ExpressionStatement'
+      && node.expression?.type === 'CallExpression')
+      .map(node => ({ name: node.expression.callee?.name, at: node.start }));
+    expect(calls.find(call => call.name === 'attachTagByThreadListener')?.at)
+      .toBeLessThan(calls.find(call => call.name === 'init')?.at);
+
+  });
+
   it('registers table coverage before async startup and enqueues the event identity after suspend', async () => {
     const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
     const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });

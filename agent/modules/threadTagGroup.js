@@ -116,22 +116,23 @@ export function cleanupTagByThreadListener() {
 }
 
 export function attachTagByThreadListener() {
-  cleanupTagByThreadListener();
+  if (_tagByThreadListener) return;
   try {
-    _tagByThreadListener = (changes, area) => {
+    const listener = (changes, area) => {
       try {
         if (area !== "local") return;
         if (!changes || !changes.tagByThreadEnabled) return;
         const newVal = changes.tagByThreadEnabled.newValue === true;
         _tagByThreadEnabledCache = newVal;
-        retagAllInboxesForTagByThreadToggle(newVal).catch((e) => {
+        return retagAllInboxesForTagByThreadToggle(newVal).catch((e) => {
           console.log(`[TMDBG Tag] Retag on toggle failed: ${e}`);
         });
       } catch (e) {
         console.log(`[TMDBG Tag] tagByThreadEnabled onChanged handler failed: ${e}`);
       }
     };
-    browser.storage.onChanged.addListener(_tagByThreadListener);
+    browser.storage.onChanged.addListener(listener);
+    _tagByThreadListener = listener;
   } catch (e) {
     console.log(`[TMDBG Tag] Failed to attach tag-by-thread listener: ${e}`);
   }
