@@ -475,13 +475,17 @@ export async function runStaleTagSweep(options = {}) {
 
         // Find Inbox folder for this account to check if a message also exists there.
         // Use centralized helper from inboxContext.js to avoid duplication.
-        let inboxFolderIds = [];
+        let inbox = null;
         try {
-          const inbox = await getInboxForAccount(acc.id);
-          if (inbox?.id) {
-            inboxFolderIds = [inbox.id];
-          }
+          inbox = await getInboxForAccount(acc.id);
         } catch (_) {}
+        if (!inbox?.id) {
+          // A cold alarm wake can race account/folder discovery. Without an
+          // Inbox identity, an All Mail copy could be mistaken for a stale tag.
+          log(`[TMDBG onMoved] staleTagSweep skipped account=${acc.id}: Inbox unavailable`, "warn");
+          continue;
+        }
+        const inboxFolderIds = [inbox.id];
 
         log(`[TMDBG onMoved] staleTagSweep account=${acc.id} targetFolders=[${targetFolders.map(f => f.path || f.name).join(", ")}]`);
 
@@ -511,19 +515,21 @@ export async function runStaleTagSweep(options = {}) {
                 // Before stripping, check if this message also exists in Inbox (e.g., All Mail view of Inbox message).
                 // If it does, skip — the tag is legitimate.
                 const headerMessageId = msg.headerMessageId ? String(msg.headerMessageId).replace(/[<>]/g, "") : null;
-                if (headerMessageId && inboxFolderIds.length > 0) {
-                  try {
-                    const inboxQuery = await browser.messages.query({ folderId: inboxFolderIds, headerMessageId });
-                    if (inboxQuery?.messages?.length > 0) {
-                      // Message exists in Inbox — skip stripping, tag is valid.
-                      log(`[TMDBG onMoved] staleTagSweep skipped (exists in Inbox) id=${msg.id} headerMessageId=${headerMessageId}`);
-                      continue;
-                    }
-                  } catch (eInboxCheck) {
-                    // If query fails, err on the side of caution: skip stripping.
-                    log(`[TMDBG onMoved] staleTagSweep inbox check failed id=${msg.id}: ${eInboxCheck}`, "info");
+                if (!headerMessageId) {
+                  // No stable identity means we cannot prove it is absent from Inbox.
+                  continue;
+                }
+                try {
+                  const inboxQuery = await browser.messages.query({ folderId: inboxFolderIds, headerMessageId });
+                  if (inboxQuery?.messages?.length > 0) {
+                    // Message exists in Inbox — skip stripping, tag is valid.
+                    log(`[TMDBG onMoved] staleTagSweep skipped (exists in Inbox) id=${msg.id} headerMessageId=${headerMessageId}`);
                     continue;
                   }
+                } catch (eInboxCheck) {
+                  // If query fails, err on the side of caution: skip stripping.
+                  log(`[TMDBG onMoved] staleTagSweep inbox check failed id=${msg.id}: ${eInboxCheck}`, "info");
+                  continue;
                 }
 
                 // This message has a stale TabMail action tag and is NOT in Inbox — strip it.

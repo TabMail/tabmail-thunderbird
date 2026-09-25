@@ -17,7 +17,7 @@ vi.mock('../agent/modules/folderUtils.js', () => ({ getAllFoldersForAccount: vi.
 vi.mock('../agent/modules/gmailLabelSync.js', () => ({ removeTmLabelsFromGmailMessage: vi.fn() }));
 vi.mock('../agent/modules/idbStorage.js', () => ({}));
 vi.mock('../agent/modules/inboxContext.js', () => ({ getInboxForAccount: vi.fn() }));
-vi.mock('../agent/modules/tagHelper.js', () => ({ ACTION_TAG_IDS: {}, recomputeThreadForInboxMessage: vi.fn() }));
+vi.mock('../agent/modules/tagHelper.js', () => ({ ACTION_TAG_IDS: { delete: 'tm-delete' }, recomputeThreadForInboxMessage: vi.fn() }));
 vi.mock('../agent/modules/utils.js', () => ({
   getArchiveFolderForHeader: vi.fn(), getTrashFolderForHeader: vi.fn(),
   getUniqueMessageKey: vi.fn(async msg => `${msg.folder.accountId}:${msg.folder.path}:${msg.headerMessageId}`),
@@ -30,9 +30,11 @@ vi.mock('../agent/modules/utils.js', () => ({
 vi.mock('../fts/indexer.js', () => ({ buildBatchHeader: vi.fn(), populateBatchBody: vi.fn() }));
 vi.mock('../theme/modules/snippetCache.js', () => ({ moveSnippet: vi.fn(async () => {}), removeSnippet: vi.fn(async () => {}) }));
 
-import { attachOnMovedListeners, cleanupOnMovedListeners } from '../agent/modules/onMoved.js';
+import { attachOnMovedListeners, cleanupOnMovedListeners, runStaleTagSweep } from '../agent/modules/onMoved.js';
 import { _testExports } from '../fts/incrementalIndexer.js';
 import { log, removeHeaderIndexForDeletedMessage } from '../agent/modules/utils.js';
+import { getAllFoldersForAccount } from '../agent/modules/folderUtils.js';
+import { getInboxForAccount } from '../agent/modules/inboxContext.js';
 import { moveSnippet, removeSnippet } from '../theme/modules/snippetCache.js';
 
 const folder = path => ({ id: path, accountId: 'synthetic', path });
@@ -50,7 +52,7 @@ beforeEach(() => {
   const alarms = new Map();
   const alarmListeners = new Set();
   globalThis.browser = {
-    messages: { ...events, get: vi.fn(async () => null), update: vi.fn(), move: vi.fn(), delete: vi.fn() },
+    messages: { ...events, get: vi.fn(async () => null), list: vi.fn(), query: vi.fn(), update: vi.fn(), move: vi.fn(), delete: vi.fn() },
     storage: { local: { get: vi.fn(async () => ({})), set: vi.fn(async () => {}) } },
     accounts: { list: vi.fn(async () => []) },
     alarms: {
@@ -148,6 +150,31 @@ it('retries failed early alarm registration without stacking after a failed remo
   expect(browser.alarms.onAlarm.addListener).toHaveBeenCalledTimes(2);
   cleanupOnMovedListeners();
   expect(browser.alarms.onAlarm.listeners.size).toBe(0);
+});
+
+it('never strips a tag until Inbox lookup and message identity permit the Inbox check', async () => {
+  const allMail = { id: 'all', accountId: 'acct', path: '/All Mail', specialUse: ['all'] };
+  const tagged = { id: 99, folder: allMail, tags: ['tm-delete'], headerMessageId: 'synthetic@example.test' };
+  browser.accounts.list.mockResolvedValue([{ id: 'acct', rootFolder: { id: 'root' } }]);
+  getAllFoldersForAccount.mockResolvedValue([allMail]);
+  browser.messages.list.mockResolvedValue({ messages: [tagged] });
+  browser.messages.query.mockResolvedValue({ messages: [] });
+
+  getInboxForAccount.mockResolvedValue(null);
+  await runStaleTagSweep();
+  expect(browser.messages.list).not.toHaveBeenCalled();
+  expect(browser.messages.update).not.toHaveBeenCalled();
+
+  getInboxForAccount.mockResolvedValue({ id: 'inbox' });
+  browser.messages.list.mockResolvedValue({ messages: [{ ...tagged, headerMessageId: null }] });
+  await runStaleTagSweep();
+  expect(browser.messages.query).not.toHaveBeenCalled();
+  expect(browser.messages.update).not.toHaveBeenCalled();
+
+  browser.messages.list.mockResolvedValue({ messages: [tagged] });
+  await runStaleTagSweep();
+  expect(browser.messages.query).toHaveBeenCalledWith({ folderId: ['inbox'], headerMessageId: 'synthetic@example.test' });
+  expect(browser.messages.update).toHaveBeenCalledExactlyOnceWith(99, { tags: [] });
 });
 
 it('places stock mutation registration before asynchronous agent initialization', () => {
