@@ -103,15 +103,52 @@ describe('sender identity cache after canceled background suspension', () => {
     for (const name of invalidationEvents) expect(app.event(name).listeners.size).toBe(1);
   });
 
+  it.each(invalidationEvents)('%s invalidates the cached identity while startup is held', async name => {
+    const app = startAgent();
+    const previous = globalThis.browser;
+    globalThis.browser = app.browser;
+    try {
+      senderFilter.invalidateUserEmailCache();
+      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(true);
+      app.setEmail('new@example.test');
+      await app.event(name).emit('synthetic', {});
+      await drain();
+      expect(await senderFilter.isInternalSender({ author: 'new@example.test' })).toBe(true);
+      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(false);
+    } finally {
+      app.releaseStartup();
+      await drain();
+      senderFilter.invalidateUserEmailCache();
+      if (previous === undefined) delete globalThis.browser;
+      else globalThis.browser = previous;
+    }
+  });
+
   it('retries only an event whose early subscription failed', async () => {
     const failedEvent = 'browser.identities.onUpdated';
     const app = startAgent({ failedEvent });
-    for (const name of invalidationEvents) {
-      expect(app.event(name).listeners.size).toBe(name === failedEvent ? 0 : 1);
+    const previous = globalThis.browser;
+    globalThis.browser = app.browser;
+    try {
+      for (const name of invalidationEvents) {
+        expect(app.event(name).listeners.size).toBe(name === failedEvent ? 0 : 1);
+      }
+      senderFilter.invalidateUserEmailCache();
+      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(true);
+      app.releaseStartup();
+      await drain();
+      for (const name of invalidationEvents) expect(app.event(name).listeners.size).toBe(1);
+      app.setEmail('retried@example.test');
+      await app.event(failedEvent).emit('synthetic', {});
+      await drain();
+      expect(await senderFilter.isInternalSender({ author: 'retried@example.test' })).toBe(true);
+      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(false);
+    } finally {
+      app.releaseStartup();
+      senderFilter.invalidateUserEmailCache();
+      if (previous === undefined) delete globalThis.browser;
+      else globalThis.browser = previous;
     }
-    app.releaseStartup();
-    await drain();
-    for (const name of invalidationEvents) expect(app.event(name).listeners.size).toBe(1);
   });
 
   it('classifies the newest account identity after successive edits', async () => {
