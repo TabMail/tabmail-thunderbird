@@ -389,6 +389,10 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPIPersiste
             try {
               if (win?.location?.href !== url) continue;
               for (const doc of enumerateMessageHeaderDocs(win)) {
+                // A message tab can open after the window's initial attach.
+                // Its chip is painted by refreshAll, so give that new document
+                // the same click delegation before making the chip visible.
+                if (!doc[PROP_CLICK_MHC]) attachChipDelegation_MHC(doc);
                 _repaintDoc(doc);
               }
             } catch (_) {}
