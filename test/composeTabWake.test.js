@@ -58,7 +58,7 @@ it('registers the compose-tab consumer before startup can await', () => {
 
 // Exercise the real tracker through the real background startup. The simpler
 // test above pins timing; this one pins recovery and its durable reply effect.
-async function startWithRealTracker(failFirstAdd) {
+async function startWithRealTracker(failFirstAdd, { secondReply = false, deferredGeneration = false } = {}) {
   const events = new Map();
   let addAttempts = 0;
   const details = new Map([
@@ -66,6 +66,7 @@ async function startWithRealTracker(failFirstAdd) {
     [42, { type: 'reply', relatedMessageId: 7 }],
     [43, { type: 'forward', relatedMessageId: 7 }],
     [44, {}],
+    [45, { type: 'reply', relatedMessageId: 8 }],
   ]);
   const event = path => {
     if (!events.has(path)) {
@@ -140,14 +141,25 @@ async function startWithRealTracker(failFirstAdd) {
     indexedDB: new IDBFactory(), browser, console: quietConsole,
   });
   const replyKey = 'reply:synthetic-account:/Inbox:thread@example.test';
-  await idb.set({ [replyKey]: { reply: 'Synthetic reply.', directReplace: true } });
+  const otherReplyKey = 'reply:synthetic-account:/Inbox:other@example.test';
+  if (!deferredGeneration) {
+    await idb.set({ [replyKey]: { reply: 'Synthetic reply.', directReplace: true } });
+  }
+  if (secondReply) {
+    await idb.set({ [otherReplyKey]: { reply: 'Unrelated draft.', directReplace: true } });
+  }
   let now = 0;
-  const createReply = vi.fn(async () => { throw new Error('cached reply should be used'); });
+  let releaseGeneration;
+  const createReply = vi.fn(async () => {
+    if (!deferredGeneration) throw new Error('cached reply should be used');
+    await new Promise(resolve => { releaseGeneration = resolve; });
+    await idb.set({ [replyKey]: { reply: 'Generated reply.', directReplace: false } });
+  });
   const tracker = evaluate('agent/modules/composeTracker.js', {
     browser, idb, console: quietConsole, Date, performance: { now: () => now },
     setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); return 1; },
     log() {}, formatForLog: value => value,
-    getUniqueMessageKey: async () => replyKey.slice(6),
+    getUniqueMessageKey: async id => (id === 7 ? replyKey : otherReplyKey).slice(6),
     createReply,
     STORAGE_PREFIX: 'reply:', ACTIONS: { REPLY: 'reply' },
     getActionForWeId: async () => null, getSentFoldersForAccount: async () => [],
@@ -173,7 +185,11 @@ async function startWithRealTracker(failFirstAdd) {
       for (let i = 0; i < 100; i++) await Promise.resolve();
       await new Promise(resolve => setImmediate(resolve));
     },
-    replyKey,
+    replyKey, otherReplyKey,
+    releaseGeneration() {
+      if (!releaseGeneration) throw new Error('generation has not started');
+      releaseGeneration();
+    },
   };
 }
 
@@ -238,4 +254,34 @@ it('does not activate a cached reply for a forward or ordinary tab', async () =>
   await created.emit({ id: 41 });
   expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41'].content).toBe('Synthetic reply.');
   expect((await run.idb.get(run.replyKey))[run.replyKey].directReplace).toBe(false);
+});
+
+it('activates only the draft belonging to each message on first wake', async () => {
+  const run = await startWithRealTracker(false, { secondReply: true });
+  const created = run.event('browser.tabs.onCreated');
+  await created.emit({ id: 41 });
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41'].content).toBe('Synthetic reply.');
+  expect((await run.idb.get(run.replyKey))[run.replyKey].directReplace).toBe(false);
+  expect((await run.idb.get(run.otherReplyKey))[run.otherReplyKey]).toEqual({
+    reply: 'Unrelated draft.', directReplace: true,
+  });
+  await created.emit({ id: 45 });
+  expect((await run.idb.get('activePrecompose:45'))['activePrecompose:45'].content).toBe('Unrelated draft.');
+  expect((await run.idb.get(run.otherReplyKey))[run.otherReplyKey].directReplace).toBe(false);
+  expect(run.createReply).not.toHaveBeenCalled();
+});
+
+it('waits for a cache-miss reply before activating the compose tab', async () => {
+  const run = await startWithRealTracker(false, { deferredGeneration: true });
+  const created = run.event('browser.tabs.onCreated');
+  const delivery = created.emit({ id: 41 });
+  await vi.waitFor(() => expect(run.createReply).toHaveBeenCalledWith(7, true));
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toBeUndefined();
+  await run.finishStartup();
+  run.releaseGeneration();
+  await delivery;
+  expect((await run.idb.get(run.replyKey))[run.replyKey].reply).toBe('Generated reply.');
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toEqual({
+    content: 'Generated reply.', directReplace: false,
+  });
 });
