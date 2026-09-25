@@ -62,18 +62,31 @@ function startChat({ runDelayed = true } = {}) {
   globals.browser = api();
   vm.runInNewContext(script, globals, { filename: 'chat/background.js' });
   if (runDelayed) for (const timer of timers.filter(item => item.delay === 100)) timer.fn();
-  return { event, timers, openOrFocusChatWindow, initMessageSelectionListener };
+  return { event, timers, openOrFocusChatWindow, initMessageSelectionListener,
+    setupRuntimeMessageListener: globals.setupRuntimeMessageListener };
 }
 
-it('registers current-selection request handling before delayed chat setup and answers only once', async () => {
+it('registers both runtime consumers before startup timers and keeps one owner', async () => {
   const app = startChat({ runDelayed: false });
   const runtime = app.event('browser.runtime.onMessage');
-  expect(runtime.listeners.size).toBe(1);
-  expect(await runtime.emit({ command: 'get-current-selection' })).toEqual([
+  expect(runtime.listeners.size).toBe(2);
+  expect(app.timers.some(item => item.delay === 100)).toBe(false);
+  expect((await runtime.emit({ command: 'get-current-selection' })).filter(Boolean)).toEqual([
     { ok: true, selectedMessageIds: ['synthetic-selected'], selectionCount: 1 },
   ]);
-  for (const timer of app.timers.filter(item => item.delay === 100)) timer.fn();
-  expect((await runtime.emit({ command: 'get-current-selection' })).filter(Boolean)).toHaveLength(1);
+  const ftsConsumer = vi.fn(message => message?.type === 'fts' ? { source: 'fts' } : undefined);
+  runtime.addListener(ftsConsumer);
+  expect((await runtime.emit({ type: 'fts', cmd: 'stats' })).filter(Boolean)).toEqual([{ source: 'fts' }]);
+  expect(ftsConsumer).toHaveBeenCalledTimes(1);
+  expect((await runtime.emit({ command: 'getFtsScanStatus' })).filter(Boolean)[0]).toMatchObject({
+    initialComplete: false, isScanning: false, scanType: 'none',
+  });
+  expect((await runtime.emit({ command: 'open-chat-window' })).filter(Boolean)).toEqual([{ ok: true }]);
+  expect(app.openOrFocusChatWindow).toHaveBeenCalledTimes(1);
+  app.setupRuntimeMessageListener();
+  expect(runtime.listeners.size).toBe(3);
+  expect((await runtime.emit({ command: 'open-chat-window' })).filter(Boolean)).toEqual([{ ok: true }]);
+  expect(app.openOrFocusChatWindow).toHaveBeenCalledTimes(2);
 });
 
 describe('chat background startup and canceled suspend', () => {

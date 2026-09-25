@@ -505,40 +505,17 @@ browser.storage.onChanged.addListener((changes, area) => {
 initMessageSelectionListener();
 
 // Register this request at startup so an already-open Chat window can recover
-// its selection when the background wakes. The general chat handler is delayed.
+// its selection when the background wakes.
 browser.runtime.onMessage.addListener(handleMessageSelectionRequest);
 
-// Store runtime message listener reference for cleanup
-let chatRuntimeMessageListener = null;
+let _chatRuntimeMessageListenerAttached = false;
 let chatHotkeyListener = null;
 let chatCommandsListener = null;
 
-/**
- * Remove any existing runtime message listener to prevent accumulation on reload
- */
-function cleanupRuntimeListeners() {
-  if (chatRuntimeMessageListener) {
-    try {
-      browser.runtime.onMessage.removeListener(chatRuntimeMessageListener);
-      chatRuntimeMessageListener = null;
-      log("Chat runtime message listener cleaned up");
-    } catch (e) {
-      log(`Failed to remove chat runtime message listener: ${e}`, "error");
-    }
-  }
-}
-
-/**
- * Setup runtime message listener with proper cleanup tracking
- */
-function setupRuntimeMessageListener() {
-  // Clean up any existing listener first
-  cleanupRuntimeListeners();
-  
+function chatRuntimeMessageListener(message) {
   // Chat listener handles ONLY chat-specific commands and MUST NOT interfere with agent commands
   // Forward only chat messages to avoid returning a Promise for unrelated messages.
   // For non-chat messages, do nothing so other listeners can respond.
-  chatRuntimeMessageListener = (message) => {
     // Only handle messages that are specifically for chat functionality
     if (message && message.command === "open-chat-window") {
       try {
@@ -633,19 +610,22 @@ function setupRuntimeMessageListener() {
     // No runtime message handlers needed!
     
     // No return here for non-chat messages - let other listeners handle them
-  };
-  
-  // Register the listener
-  browser.runtime.onMessage.addListener(chatRuntimeMessageListener);
-  log("Chat runtime message listener setup complete");
 }
 
-// Initialize the runtime message listener AFTER FTS engine
-// Small delay to ensure FTS listener is attached first
-// THIS MUST NEVER BE CHANGED!
-setTimeout(() => {
-  setupRuntimeMessageListener();
-}, 100);
+function setupRuntimeMessageListener() {
+  if (_chatRuntimeMessageListenerAttached) return;
+  try {
+    browser.runtime.onMessage.addListener(chatRuntimeMessageListener);
+    _chatRuntimeMessageListenerAttached = true;
+    log("Chat runtime message listener setup complete");
+  } catch (e) {
+    log(`Failed to register chat runtime message listener: ${e}`, "error");
+  }
+}
+
+// Gecko primes only startup-time listeners for wake. The FTS listener accepts
+// type:"fts" messages; this handler returns undefined for those messages.
+setupRuntimeMessageListener();
 
 // --- Hotkey integration via keyOverride experiment ---
 function setupChatHotkeyListener() {
