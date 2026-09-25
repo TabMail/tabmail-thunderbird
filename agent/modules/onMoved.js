@@ -563,10 +563,10 @@ export function attachOnUpdatedListener() {
  * This module classifies manual moves and deletes, logs via autoUpdateUserPromptOnMove,
  * and never changes tags.
  */
-export function attachOnMovedListeners() {
+export function attachOnMovedListeners({ scheduleSweep = true } = {}) {
   try {
     if (browser.messages && browser.messages.onMoved && !_onMovedHandler) {
-      _onMovedHandler = async (...args) => {
+      const handler = async (...args) => {
         try {
           const { details, items, hasTwoLists, beforeList, afterList } = _extractListsFromArgs(args);
 
@@ -806,7 +806,8 @@ export function attachOnMovedListeners() {
           log(`[TMDBG MessageActions] messages.onMoved handler error: ${eMove}`);
         }
       };
-      browser.messages.onMoved.addListener(_onMovedHandler);
+      browser.messages.onMoved.addListener(handler);
+      _onMovedHandler = handler;
       log("[TMDBG MessageActions] messages.onMoved listener attached");
     }
   } catch (e) {
@@ -817,7 +818,7 @@ export function attachOnMovedListeners() {
 
   try {
     if (browser.messages && browser.messages.onDeleted && !_onDeletedHandler) {
-      _onDeletedHandler = async (details) => {
+      const handler = async (details) => {
         try {
           // IMMEDIATELY log to persistent storage for debugging race conditions
           if (details.messages && details.messages.length > 0) {
@@ -911,7 +912,8 @@ export function attachOnMovedListeners() {
           log(`[TMDBG MessageActions] messages.onDeleted handler error: ${eDel}`);
         }
       };
-      browser.messages.onDeleted.addListener(_onDeletedHandler);
+      browser.messages.onDeleted.addListener(handler);
+      _onDeletedHandler = handler;
       log("[TMDBG MessageActions] messages.onDeleted listener attached");
     }
   } catch (e) {
@@ -921,7 +923,7 @@ export function attachOnMovedListeners() {
   // Attach onCopied to catch Sent copies immediately
   try {
     if (browser.messages && browser.messages.onCopied && !_onCopiedHandler) {
-      _onCopiedHandler = async (...args) => {
+      const handler = async (...args) => {
         try {
           const { details, hasTwoLists, beforeList, afterList } = _extractListsFromArgs(args);
 
@@ -972,39 +974,43 @@ export function attachOnMovedListeners() {
           log(`[TMDBG MessageActions] messages.onCopied handler error: ${eCopy}`);
         }
       };
-      browser.messages.onCopied.addListener(_onCopiedHandler);
+      browser.messages.onCopied.addListener(handler);
+      _onCopiedHandler = handler;
       log("[TMDBG MessageActions] messages.onCopied listener attached");
     }
   } catch (e) {
     log(`[TMDBG MessageActions] Failed to attach messages.onCopied: ${e}`);
   }
 
-  // Set up the stale-tag sweep alarm (safety net for late IMAP reasserts).
-  try {
-    const cfg = SETTINGS?.onMoved?.staleTagSweep || null;
-    if (cfg?.enabled === true) {
-      const intervalMinutes = Number(cfg.intervalMinutes);
-      if (Number.isFinite(intervalMinutes) && intervalMinutes >= 1) {
-        ensureAlarm({
-          name: STALE_TAG_SWEEP_ALARM_NAME,
-          periodMinutes: intervalMinutes,
-          delayMinutes: intervalMinutes,
-          onAlarm: () => {
-            runStaleTagSweep().catch((e) => {
-              log(`[TMDBG onMoved] staleTagSweep alarm handler error: ${e}`, "warn");
-            });
-          },
-        }).then(() => {
-          log(`[TMDBG onMoved] staleTagSweep alarm scheduled every ${intervalMinutes} minute(s)`);
-        }).catch((e) => {
-          log(`[TMDBG onMoved] staleTagSweep alarm setup failed: ${e}`, "warn");
-        });
-      } else {
-        log(`[TMDBG onMoved] staleTagSweep config invalid intervalMinutes=${cfg.intervalMinutes}`, "warn");
+  // The alarm is initialized after the agent's async startup work. Listener
+  // registration itself must happen before that work so stock events can wake it.
+  if (scheduleSweep) {
+    try {
+      const cfg = SETTINGS?.onMoved?.staleTagSweep || null;
+      if (cfg?.enabled === true) {
+        const intervalMinutes = Number(cfg.intervalMinutes);
+        if (Number.isFinite(intervalMinutes) && intervalMinutes >= 1) {
+          ensureAlarm({
+            name: STALE_TAG_SWEEP_ALARM_NAME,
+            periodMinutes: intervalMinutes,
+            delayMinutes: intervalMinutes,
+            onAlarm: () => {
+              runStaleTagSweep().catch((e) => {
+                log(`[TMDBG onMoved] staleTagSweep alarm handler error: ${e}`, "warn");
+              });
+            },
+          }).then(() => {
+            log(`[TMDBG onMoved] staleTagSweep alarm scheduled every ${intervalMinutes} minute(s)`);
+          }).catch((e) => {
+            log(`[TMDBG onMoved] staleTagSweep alarm setup failed: ${e}`, "warn");
+          });
+        } else {
+          log(`[TMDBG onMoved] staleTagSweep config invalid intervalMinutes=${cfg.intervalMinutes}`, "warn");
+        }
       }
+    } catch (e) {
+      log(`[TMDBG onMoved] staleTagSweep alarm attach failed: ${e}`, "warn");
     }
-  } catch (e) {
-    log(`[TMDBG onMoved] staleTagSweep alarm attach failed: ${e}`, "warn");
   }
 
 }

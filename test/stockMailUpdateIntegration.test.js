@@ -92,12 +92,13 @@ it('primes the listener before agent startup and queues a Gmail member with read
  globalThis.browser=app.originalBrowser;
 });
 
-it('real late initialization retries a failed primed registration', async () => {
+it('startup fallback retries a failed update registration without late duplicates', async () => {
   browser.messages.onUpdated.addListener.mockImplementationOnce(() => {
     throw new Error('synthetic registration failure');
   });
   const app=startActualAgent();
-  expect(listeners.size).toBe(0);
+  expect(listeners.size).toBe(1);
+  expect(app.originalBrowser.messages.onUpdated.addListener).toHaveBeenCalledTimes(2);
   app.releaseStartup();
   await settle();
   expect(listeners.size).toBe(1);
