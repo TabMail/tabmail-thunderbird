@@ -126,4 +126,7 @@ it('retains failed indexing work when the same member is updated again',async()=
     uniqueKey:indexKey,type:'new',folderKey:'synthetic-account:/[Gmail]/Starred',
     hasFailed:true,lastFailedAt:failed.lastFailedAt,
   })]);
+  expect(browser.messages.update).not.toHaveBeenCalled();
+  expect(browser.messages.move).not.toHaveBeenCalled();
+  expect(browser.messages.delete).not.toHaveBeenCalled();
 });
