@@ -106,6 +106,7 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
   const observers = new Map();
   const logs = [];
   const queued = [];
+  const timers = [];
   const sheets = new Set();
   const enumerator = items => {
     let index = 0;
@@ -231,7 +232,9 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
     Services,
     ChromeUtils: { importESModule: () => modules, generateQI: () => () => {} },
     console: Object.fromEntries(['log', 'warn', 'error', 'debug'].map(level => [level, (...args) => logs.push(args)])),
-    Cc: new Proxy({}, { get: () => ({ getService: () => styleService, createInstance: () => ({ initWithCallback() {}, cancel() {} }) }) }),
+    Cc: new Proxy({}, { get: () => ({ getService: () => styleService, createInstance: () => ({
+      initWithCallback(callback) { timers.push(callback); }, cancel() {},
+    }) }) }),
     Cu: { Sandbox: () => ({}), evalInSandbox: (source, scope) => vm.runInNewContext(source, scope) },
     Ci: {
       nsILoadInfo: { SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL: 0 },
@@ -248,7 +251,7 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
   const instance = new sandbox.Experiment(extension);
   const api = instance.getAPI(context)[name];
   return {
-    api, instance, context, extensionEvents, windows, windowListeners, mfn, columns, observers, logs, queued, sheets, Services, sandbox,
+    api, instance, context, extensionEvents, windows, windowListeners, mfn, columns, observers, logs, queued, timers, sheets, Services, sandbox,
     openWindow(win) {
       windows.push(win);
       for (const listener of windowListeners.values()) listener.onLoadWindow?.(win);

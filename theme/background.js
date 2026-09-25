@@ -279,6 +279,9 @@ async function initTheme() {
             console.log("[TabMail Theme] ✓ tmMessageListCardView initialised");
             _ensureCardSnippetProvider("initTheme");
             _ensureActionChipClickListener("initTheme");
+            // The listener is already registered at background load. Recheck
+            // rows painted while the experiment was finishing its startup.
+            Promise.resolve(_tmCardSnippetProvider?.tick?.()).catch(() => {});
         } else {
             console.warn("[TabMail Theme] tmMessageListCardView experiment NOT available – card view enhancements disabled.");
         }
@@ -363,6 +366,7 @@ async function initTheme() {
 _ensureActionChipClickListener("background-load");
 _ensureHeaderChipClickListener("background-load");
 _ensureMultiMessageChipClickListener("background-load");
+_ensureCardSnippetProvider("background-load");
 
 // Initialise on startup and install/update
 browser.runtime.onStartup.addListener(() => {
