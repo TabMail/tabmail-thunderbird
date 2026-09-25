@@ -6,10 +6,12 @@ import { parse } from 'acorn';
 vi.mock('../agent/modules/utils.js', () => ({ log() {} }));
 import * as senderFilter from '../agent/modules/senderFilter.js';
 
-function startAgent() {
+function startAgent({ failedEvent } = {}) {
   let source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   const edits = [];
+  let releaseStartup;
+  const heldStartup = new Promise(resolve => { releaseStartup = resolve; });
   const globals = {
     console: { log() {}, error() {}, warn() {} }, Date, performance,
     window: {}, navigator: {}, setTimeout: () => 1, clearTimeout() {},
@@ -19,7 +21,8 @@ function startAgent() {
     if (node.type !== 'ImportDeclaration') continue;
     for (const specifier of node.specifiers) {
       const name = specifier.local.name;
-      globals[name] = name === 'SETTINGS' ? {} : name === 'idb' ? {} : () => Promise.resolve({});
+      globals[name] = name === 'SETTINGS' ? {} : name === 'idb' ? {}
+        : name === 'ensureActionTags' ? () => heldStartup : () => Promise.resolve({});
     }
     edits.push({ start: node.start, end: node.end,
       text: source.slice(node.start, node.end).replace(/[^\r\n]/g, ' ') });
@@ -45,9 +48,13 @@ function startAgent() {
   function event(path) {
     if (!events.has(path)) {
       const listeners = new Set();
+      let failOnce = path === failedEvent;
       events.set(path, {
         listeners,
-        addListener: fn => listeners.add(fn),
+        addListener: fn => {
+          if (failOnce) { failOnce = false; throw new Error('synthetic add failure'); }
+          listeners.add(fn);
+        },
         removeListener: fn => listeners.delete(fn),
         hasListener: fn => listeners.has(fn),
         emit: async (...args) => { for (const fn of [...listeners]) await fn(...args); },
@@ -72,7 +79,7 @@ function startAgent() {
   globals.browser = api();
   vm.runInNewContext(source, globals, { filename: 'agent/background.js' });
   return {
-    browser: globals.browser, event,
+    browser: globals.browser, event, releaseStartup,
     setEmail: email => { accounts = [{ id: 'synthetic', type: 'imap', identities: [{ email }] }]; },
   };
 }
@@ -83,11 +90,36 @@ async function drain() {
 }
 
 describe('sender identity cache after canceled background suspension', () => {
+  const invalidationEvents = [
+    'browser.accounts.onCreated', 'browser.accounts.onDeleted', 'browser.accounts.onUpdated',
+    'browser.identities.onCreated', 'browser.identities.onUpdated', 'browser.identities.onDeleted',
+  ];
+
+  it('registers every stock invalidation listener before the first startup await, then does not stack them', async () => {
+    const app = startAgent();
+    for (const name of invalidationEvents) expect(app.event(name).listeners.size).toBe(1);
+    app.releaseStartup();
+    await drain();
+    for (const name of invalidationEvents) expect(app.event(name).listeners.size).toBe(1);
+  });
+
+  it('retries only an event whose early subscription failed', async () => {
+    const failedEvent = 'browser.identities.onUpdated';
+    const app = startAgent({ failedEvent });
+    for (const name of invalidationEvents) {
+      expect(app.event(name).listeners.size).toBe(name === failedEvent ? 0 : 1);
+    }
+    app.releaseStartup();
+    await drain();
+    for (const name of invalidationEvents) expect(app.event(name).listeners.size).toBe(1);
+  });
+
   it('classifies the newest account identity after successive edits', async () => {
     const app = startAgent();
     const previous = globalThis.browser;
     globalThis.browser = app.browser;
     try {
+      app.releaseStartup();
       await drain();
       senderFilter.invalidateUserEmailCache();
       expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(true);
