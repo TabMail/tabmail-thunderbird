@@ -527,6 +527,37 @@ export async function runStaleTagSweep(options = {}) {
   }
 }
 
+/** Register the stock update listener while Thunderbird can still prime it. */
+export function attachOnUpdatedListener() {
+  // FTS incremental indexing on message updates (Gmail label detection etc.).
+  try {
+    if (browser.messages?.onUpdated && !_onMessageUpdatedHandler) {
+      const handler = (...args) => {
+        (async () => {
+          try {
+            const a0 = args?.[0] ?? null;
+            const a1 = args?.[1] ?? null;
+            const changedProps = a1 && typeof a1 === "object" ? a1 : null;
+
+            const { onMessageUpdated: ftsOnUpdated } = await import("../../fts/incrementalIndexer.js");
+            const msgId = typeof a0 === "number" ? a0 : Number(a0?.id || 0);
+            if (msgId) {
+              const msg = await browser.messages.get(msgId);
+              if (msg) await ftsOnUpdated(msg, changedProps);
+            }
+          } catch (eFts) {
+            log(`[TMDBG onMoved] FTS onUpdated integration failed: ${eFts}`, "info");
+          }
+        })();
+      };
+      browser.messages.onUpdated.addListener(handler);
+      _onMessageUpdatedHandler = handler;
+    }
+  } catch (e) {
+    log(`[TMDBG onMoved] Failed attaching messages.onUpdated listener: ${e}`, "warn");
+  }
+}
+
 /**
  * Attach listeners for post-move/delete events.
  * This module classifies manual moves and deletes, logs via autoUpdateUserPromptOnMove,
@@ -782,32 +813,7 @@ export function attachOnMovedListeners() {
     log(`[TMDBG MessageActions] Failed to attach messages.onMoved: ${e}`);
   }
 
-  // FTS incremental indexing on message updates (Gmail label detection etc.).
-  try {
-    if (browser.messages?.onUpdated && !_onMessageUpdatedHandler) {
-      _onMessageUpdatedHandler = (...args) => {
-        (async () => {
-          try {
-            const a0 = args?.[0] ?? null;
-            const a1 = args?.[1] ?? null;
-            const changedProps = a1 && typeof a1 === "object" ? a1 : null;
-
-            const { onMessageUpdated: ftsOnUpdated } = await import("../../fts/incrementalIndexer.js");
-            const msgId = typeof a0 === "number" ? a0 : Number(a0?.id || 0);
-            if (msgId) {
-              const msg = await browser.messages.get(msgId);
-              if (msg) await ftsOnUpdated(msg, changedProps);
-            }
-          } catch (eFts) {
-            log(`[TMDBG onMoved] FTS onUpdated integration failed: ${eFts}`, "info");
-          }
-        })();
-      };
-      browser.messages.onUpdated.addListener(_onMessageUpdatedHandler);
-    }
-  } catch (e) {
-    log(`[TMDBG onMoved] Failed attaching messages.onUpdated listener: ${e}`, "warn");
-  }
+  attachOnUpdatedListener();
 
   try {
     if (browser.messages && browser.messages.onDeleted && !_onDeletedHandler) {

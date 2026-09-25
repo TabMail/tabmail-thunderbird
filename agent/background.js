@@ -19,7 +19,7 @@ import { compactActionRulesNow } from "./modules/autoUpdateUserPrompt.js";
 import { kbCompress, kbUpdate } from "./modules/knowledgebase.js";
 import { scanAllInboxes } from "./modules/messageProcessor.js";
 import { enqueueProcessMessage, initProcessMessageQueue } from "./modules/messageProcessorQueue.js";
-import { attachOnMovedListeners } from "./modules/onMoved.js";
+import { attachOnMovedListeners, attachOnUpdatedListener } from "./modules/onMoved.js";
 import { purgeExpiredReplyEntries } from "./modules/replyGenerator.js";
 import { purgeExpiredSummaryEntries } from "./modules/summaryGenerator.js";
 // Reminder generation is now integrated into messageProcessor.js
@@ -2036,6 +2036,9 @@ async function autoDetectDefaultCalendar() {
 
 // Kick-off initialisation immediately, but let onInstalled fall back to it if this load
 // happened before the event fires.
+// Register the FTS message-update consumer before init() first awaits, so
+// Thunderbird can prime this stock event while the background is suspended.
+attachOnUpdatedListener();
 init();
 
 // --- Commands wiring ---

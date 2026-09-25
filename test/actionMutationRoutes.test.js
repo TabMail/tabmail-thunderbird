@@ -33,7 +33,7 @@ describe('action mutation entry routes',()=>{
   const after={...before,id:2,folder:{type:'archive'}};
   let listener;const clearActions=vi.fn();
   const {attachOnMovedListeners}=experimentFunctions(source('agent/modules/onMoved.js'),['attachOnMovedListeners'],{
-   _onMovedHandler:null,log:noop,logMoveEvent:noop,logMessageEvent:noop,_warmIndex:noop,
+   _onMovedHandler:null,attachOnUpdatedListener:noop,log:noop,logMoveEvent:noop,logMessageEvent:noop,_warmIndex:noop,
    _extractListsFromArgs:()=>({details:{},items:[],hasTwoLists:true,beforeList:[before],afterList:[after]}),
    updateHeaderIndexForMovedMessage:async()=>{},isInboxFolder:f=>f.type==='inbox',
    getUniqueMessageKey:async h=>h===before?'account:/INBOX:synthetic@example.test':'account:/Archive:synthetic@example.test',
