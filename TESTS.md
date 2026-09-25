@@ -14,6 +14,7 @@
 | `test/utils.test.js` | 59 | normalizeUnicode, date formatting, isInboxFolder, email extraction, escapeHtml |
 | `test/chatTools.test.js` | 46 | Chat tool interface, validation, specific tool behavior |
 | `test/deviceSync.test.js` | 31 | State merge, CRDT, echo prevention, virgin device detection |
+| `test/ftsFolderReconScheduler.test.js` | 103 | Bounded folder membership reconciliation, epoch-fenced verification, stale/missing repair, interruption and retry |
 | `test/llmClient.test.js` | 29 | JSON/SSE response parsing, tool call parsing, conversation state |
 
 ---

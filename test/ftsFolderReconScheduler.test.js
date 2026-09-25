@@ -2630,6 +2630,182 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
+  it('advances a mismatched exact-membership stale cursor across page-budget slices', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const headerMessageIds = Array.from(
+        { length: reconConfig.stalePageKeys + 2 },
+        (_, index) => `stale-page-${String(index).padStart(4, '0')}@example.com`,
+      );
+      const folderKey = 'account1:/PagedMismatch';
+      const folderId = makeFolderMembershipId('account1', '/PagedMismatch');
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/PagedMismatch', folderId: 'opaque-paged-mismatch', headerMessageIds,
+      }]);
+      for (const msgId of nativeRows.keys()) nativeRows.set(msgId, folderId);
+      // The final local header is absent from native FTS. The stale pass must
+      // traverse a nonterminal 100-key page before missing-direction repair.
+      nativeRows.delete(`${folderKey}:${headerMessageIds.at(-1)}`);
+      const staleGhost = `${folderKey}:zzzz-stale@example.com`;
+      nativeRows.set(staleGhost, folderId);
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (_uri, ids) => ({
+        missing: ids.filter(id => id === 'zzzz-stale@example.com'),
+      }));
+      headerIDToWeID.mockImplementation(async id => headerMessageIds.indexOf(id) + 1);
+      globalThis.browser.messages.get = vi.fn(async id => ({
+        id,
+        headerMessageId: headerMessageIds[id - 1],
+        folder: { accountId: 'account1', path: '/PagedMismatch' },
+      }));
+      getUniqueMessageKey.mockImplementation(async h => `${folderKey}:${h.headerMessageId}`);
+      buildBatchHeader.mockImplementation(async headers => headers.map(h => ({
+        msgId: `${folderKey}:${h.headerMessageId}`, folderId,
+      })));
+      populateBatchBody.mockImplementation(async rows => ({
+        successfulRows: rows, failedMsgIds: [],
+      }));
+      fts.indexBatch = vi.fn(async rows => runFtsMembershipMutation(async () => {
+        for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+        return { count: rows.length };
+      }));
+      const callsPerTurn = [];
+      for (let turn = 0; turn < 35 && !storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        ?.folders?.[folderKey]?.staleAfterKey; turn++) {
+        const before = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        await settleSchedulerTickWithFakeTimers(fts);
+        const after = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        callsPerTurn.push(after - before);
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      expect(callsPerTurn.every(count => count <= 1)).toBe(true);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        .folders[folderKey].staleAfterKey)
+        .toBe(`${folderKey}:${headerMessageIds[99]}`);
+      expect(fts.filterNewMessages).toHaveBeenCalled();
+
+      for (let turn = 0; turn < 100 && !_testExports._getFolderReconSessionDone().has(folderKey); turn++) {
+        const before = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        await settleSchedulerTickWithFakeTimers(fts);
+        const after = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        callsPerTurn.push(after - before);
+        if (_testExports._getPendingUpdates().size > 0) {
+          _testExports._setFtsSearch(fts);
+          await flushPendingUpdates();
+          _testExports._setFtsSearch(null);
+        }
+        vi.setSystemTime(Date.now() + 1000);
+      }
+
+      expect(callsPerTurn.every(count => count <= 1)).toBe(true);
+      expect(fts.listFolderMembership.mock.calls.some(
+        ([id, after, limit]) => id === folderId && after !== null
+          && limit === reconConfig.stalePageKeys,
+      )).toBe(true);
+      expect(fts.removeBatch).toHaveBeenCalledWith([staleGhost], expect.anything());
+      expect(fts.indexBatch).toHaveBeenCalled();
+      expect([...nativeRows.keys()].sort()).toEqual(
+        headerMessageIds.map(id => `${folderKey}:${id}`).sort(),
+      );
+      expect(_testExports._getPendingUpdates().size).toBe(0);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        .folders[folderKey]).toMatchObject({ verified: true, expectedCount: 102, ftsCount: 102 });
+      expect(_testExports._getFolderReconSessionDone()).toContain(folderKey);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('finishes terminal verification within the one-page native budget', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const folderKey = 'account1:/TerminalBudget';
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/TerminalBudget', headerMessageIds: ['missing@example.com'],
+      }]);
+      nativeRows.clear();
+      // A false-negative filter still needs a completed terminal comparison,
+      // so the checkpoint can record a retry instead of failing on page budget.
+      fts.filterNewMessages.mockResolvedValue({ newMsgIds: [] });
+      const pagesPerTurn = [];
+      for (let turn = 0; turn < 35 && !storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        ?.folders?.[folderKey]?.partialPostVerifyFailureCount; turn++) {
+        const before = fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length;
+        await settleSchedulerTickWithFakeTimers(fts);
+        pagesPerTurn.push(fts.listFolderMembership.mock.calls.length
+          + fts.listFolderMembershipState.mock.calls.length - before);
+        vi.setSystemTime(Date.now() + 1000);
+      }
+      expect(pagesPerTurn.every(count => count <= 1)).toBe(true);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        .folders[folderKey]).toMatchObject({
+        verified: false,
+        partialPostVerifyFailureCount: 1,
+      });
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not bind a stale cursor to a native digest from before a removal', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const headerMessageIds = Array.from(
+        { length: reconConfig.stalePageKeys + 2 },
+        (_, index) => `live-${String(index).padStart(4, '0')}@example.com`,
+      );
+      const folderKey = 'account1:/PagedGhost';
+      const folderId = makeFolderMembershipId('account1', '/PagedGhost');
+      const ghost = `${folderKey}:000-ghost@example.com`;
+      const missing = `${folderKey}:${headerMessageIds.at(-1)}`;
+      const { nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/PagedGhost', headerMessageIds,
+      }]);
+      for (const msgId of nativeRows.keys()) nativeRows.set(msgId, folderId);
+      nativeRows.delete(missing);
+      nativeRows.set(ghost, folderId);
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (_uri, ids) => ({
+        missing: ids.filter(id => id === '000-ghost@example.com'),
+      }));
+
+      for (let turn = 0; turn < 35 && fts.removeBatch.mock.calls.length === 0; turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+      expect(fts.removeBatch).toHaveBeenCalledWith([ghost], expect.anything());
+      expect(nativeRows.has(ghost)).toBe(false);
+      // The native deletion changed the native proof, not the local headers.
+      // The missing-direction pass can still admit the real local row now.
+      expect(fts.filterNewMessages).toHaveBeenCalledWith(
+        expect.arrayContaining([{ msgId: missing }]));
+      expect(_testExports._getPendingUpdates().get(missing)).toMatchObject({ type: 'new' });
+      expect(_testExports._getFolderReconActiveProofKey()).toBe(folderKey);
+      const checkpoint = storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        ?.folders?.[folderKey];
+      expect(checkpoint?.verified).not.toBe(true);
+      if (typeof checkpoint?.staleAfterKey === 'string') {
+        expect(checkpoint.partialStaleFtsCount).toBe(nativeRows.size);
+        expect(checkpoint.partialStaleFtsSha256).toBe(framedDigest([...nativeRows.keys()]));
+      }
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it('cancels a metadata-only scan at a pressure boundary without minting cutover', async () => {
     const { fts } = installExactMembershipFolders([
       {
@@ -3899,4 +4075,116 @@ describe('strict reconciliation lifecycle contracts', () => {
       state.memo.roundRobinCursor = 'account1:/A';
     })).rejects.toThrow('write failed');
   });
+});
+
+describe('terminal verification membership epoch', () => {
+  it.each([false, true])('matches current native membership after terminal local refresh: concurrentRemove=%s', async (concurrentRemove) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+    try {
+      const folderKey = 'account1:/TerminalRace';
+      const folderId = makeFolderMembershipId('account1', '/TerminalRace');
+      const oldKey = `${folderKey}:old@example.com`;
+      const newKey = `${folderKey}:current@example.com`;
+      const { folders, rowsByURI, nativeRows, fts } = installExactMembershipFolders([{
+        folderPath: '/TerminalRace', headerMessageIds: ['old@example.com'],
+      }]);
+      nativeRows.clear();
+      nativeRows.set(newKey, folderId);
+      let terminalArmed = false;
+      let refreshed = false;
+      let concurrentWrites = 0;
+      fts.filterNewMessages.mockImplementation(async () => {
+        terminalArmed = true;
+        return { newMsgIds: [] };
+      });
+      const realBegin = browser.tmMsgNotify.beginFolderMessageScan.getMockImplementation();
+      browser.tmMsgNotify.beginFolderMessageScan.mockImplementation(async (...args) => {
+        if (terminalArmed && !refreshed) {
+          refreshed = true;
+          rowsByURI.set(folders[0].folderURI, [{ msgKey: 2, headerMessageId: 'current@example.com' }]);
+        }
+        return realBegin(...args);
+      });
+      const realPage = browser.tmMsgNotify.readFolderMessageScanPage.getMockImplementation();
+      browser.tmMsgNotify.readFolderMessageScanPage.mockImplementation(async (...args) => {
+        const result = await realPage(...args);
+        if (terminalArmed && concurrentRemove && concurrentWrites === 0) {
+          await runFtsMembershipMutation(async () => {
+            nativeRows.delete(newKey);
+            concurrentWrites++;
+          });
+        }
+        return result;
+      });
+      for (let turn = 0; turn < 35 && !refreshed; turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 1000);
+      }
+      expect(refreshed).toBe(true);
+      expect(fts.filterNewMessages).toHaveBeenCalledWith([{ msgId: oldKey }]);
+      expect(concurrentWrites).toBe(concurrentRemove ? 1 : 0);
+      expect(rowsByURI.get(folders[0].folderURI)).toEqual([{ msgKey: 2, headerMessageId: 'current@example.com' }]);
+      const checkpoint = storageData[_testExports.FOLDER_RECON_STORAGE_KEY]?.folders?.[folderKey];
+      if (concurrentRemove) {
+        expect(nativeRows.size).toBe(0);
+        expect(checkpoint?.verified).not.toBe(true);
+        expect(checkpoint).toMatchObject({ missingBackfillKey: 0, missingBackfillStarted: false });
+        expect(_testExports._getFolderReconSessionDone().has(folderKey)).toBe(false);
+        expect(checkpoint?.partialPostVerifyFailureCount).toBeUndefined();
+      } else {
+        expect([...nativeRows.keys()]).toEqual([newKey]);
+        expect(checkpoint).toMatchObject({ verified: true, expectedCount: 1, ftsCount: 1,
+          expectedSha256: framedDigest([newKey]), ftsSha256: framedDigest([newKey]) });
+        expect(_testExports._getFolderReconSessionDone().has(folderKey)).toBe(true);
+      }
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+});
+it('stale removal cannot verify a rediscovered local row using its old native digest', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
+  try {
+    const folderKey = 'account1:/Rediscovery';
+    const folderId = makeFolderMembershipId('account1', '/Rediscovery');
+    const liveKey = `${folderKey}:rediscovered@example.com`;
+    const { folders, rowsByURI, nativeRows, fts } = installExactMembershipFolders([{
+      folderPath: '/Rediscovery', headerMessageIds: [],
+    }]);
+    nativeRows.set(liveKey, folderId);
+    browser.tmMsgNotify.probeMessageIds.mockImplementation(async (_uri, ids) => ({ missing: ids }));
+    const realBegin = browser.tmMsgNotify.beginFolderMessageScan.getMockImplementation();
+    let rediscovered = false;
+    browser.tmMsgNotify.beginFolderMessageScan.mockImplementation(async (...args) => {
+      if (fts.removeBatch.mock.calls.length > 0 && !rediscovered) {
+        rediscovered = true;
+        rowsByURI.set(folders[0].folderURI, [{ msgKey: 1, headerMessageId: 'rediscovered@example.com' }]);
+      }
+      return realBegin(...args);
+    });
+    for (let turn = 0; turn < 35 && !rediscovered; turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      vi.setSystemTime(Date.now() + 1000);
+    }
+    expect(rediscovered).toBe(true);
+    expect(fts.removeBatch).toHaveBeenCalledWith([liveKey], expect.anything());
+    expect(nativeRows.has(liveKey)).toBe(false);
+    expect(rowsByURI.get(folders[0].folderURI)).toEqual([{ msgKey: 1, headerMessageId: 'rediscovered@example.com' }]);
+    expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]?.folders?.[folderKey]?.verified).not.toBe(true);
+    expect(_testExports._getFolderReconSessionDone().has(folderKey)).toBe(false);
+    for (let turn = 0; turn < 15 && !_testExports._getPendingUpdates().has(liveKey); turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      vi.setSystemTime(Date.now() + 1000);
+    }
+    expect(_testExports._getPendingUpdates().has(liveKey)).toBe(true);
+    expect(nativeRows.has(liveKey)).toBe(false);
+  } finally {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
 });

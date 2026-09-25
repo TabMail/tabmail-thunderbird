@@ -5100,6 +5100,7 @@ async function _runFolderReconcile(
       && persistedStaleState?.sha256 === nativeFingerprint.sha256
       ? persistedStaleState.afterKey
       : null;
+    const nativeFingerprintEpoch = folderMembershipEpoch;
     const stalePass = await _folderReconStaleDirection(
       ftsSearch,
       f,
@@ -5128,21 +5129,33 @@ async function _runFolderReconcile(
         // the membership mutex, then bind the cursor only if its earning epoch
         // is still current. A later storage commit fences the same epoch.
         _assertNoFolderReconForegroundPressure();
-        const staleFingerprint = await _fingerprintFolderNative(
-          ftsSearch, f, startKey, endKey, "stale_checkpoint",
-        );
-        _assertFolderReconLease(reconcileLease, generation);
-        _assertNoFolderReconForegroundPressure();
-        if (staleCursorEpoch !== getFtsMembershipEpoch()) {
-          throw new Error("membership_epoch_changed");
+        // Exact membership has only one native page allowance per scheduler
+        // slice. The stale list just spent it; a second fingerprint here would
+        // fail on every retry before the cursor could ever be saved. Reuse the
+        // initial fingerprint only while its membership epoch is unchanged.
+        // A local stale removal changes the epoch. Leave the stale cursor
+        // unbound so the next slice starts from a fresh native proof, while
+        // this slice can still admit missing local rows below.
+        if (!_useExactFolderMembership(ftsSearch)
+            || staleCursorEpoch === nativeFingerprintEpoch) {
+          const staleFingerprint = _useExactFolderMembership(ftsSearch)
+            ? nativeFingerprint
+            : await _fingerprintFolderNative(
+              ftsSearch, f, startKey, endKey, "stale_checkpoint",
+            );
+          _assertFolderReconLease(reconcileLease, generation);
+          _assertNoFolderReconForegroundPressure();
+          if (staleCursorEpoch !== getFtsMembershipEpoch()) {
+            throw new Error("membership_epoch_changed");
+          }
+          folderMembershipEpoch = staleCursorEpoch;
+          nextStaleState = {
+            afterKey: stalePass.cursor,
+            count: staleFingerprint.count,
+            sha256: staleFingerprint.sha256,
+            membershipEpoch: staleCursorEpoch,
+          };
         }
-        folderMembershipEpoch = staleCursorEpoch;
-        nextStaleState = {
-          afterKey: stalePass.cursor,
-          count: staleFingerprint.count,
-          sha256: staleFingerprint.sha256,
-          membershipEpoch: staleCursorEpoch,
-        };
       } catch (e) {
         _throwIfFolderReconInterrupted(e);
         stats.foldersFailed++;
@@ -5240,9 +5253,20 @@ async function _runFolderReconcile(
         const freshGuard = _folderReconGuardForFreshProof(folderKey, freshEntry, freshExpected);
         folderMembershipEpoch = getFtsMembershipEpoch();
         _assertNoFolderReconForegroundPressure();
-        const ftsNow = await _fingerprintFolderNative(
-          ftsSearch, f, startKey, endKey, "terminal",
-        );
+        // Exact membership already spent its native page allowance during
+        // the stale pass. Its initial digest is still a terminal proof if no
+        // membership mutation crossed the epoch fence during the local scan.
+        if (_useExactFolderMembership(ftsSearch)
+            && folderMembershipEpoch !== nativeFingerprintEpoch) {
+          writePartialCheckpoint(0, false, null, null);
+          stats.foldersLocalDrift++;
+          continue;
+        }
+        const ftsNow = _useExactFolderMembership(ftsSearch)
+          ? nativeFingerprint
+          : await _fingerprintFolderNative(
+            ftsSearch, f, startKey, endKey, "terminal",
+          );
         _assertFolderReconLease(reconcileLease, generation);
         _assertNoFolderReconForegroundPressure();
         if (folderMembershipEpoch !== getFtsMembershipEpoch()) {

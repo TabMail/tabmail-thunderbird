@@ -6,6 +6,8 @@
 
 > **2026-09-11:** "empty inventories still clean orphans" is REVOKED by the ADR-024 amendment — a row is removable on inventory absence only when its account is present in the inventory; an empty or partial cold-start inventory removes nothing for the missing accounts.
 
+> **2026-09-24:** For helpers with exact opaque membership, the one-native-page-per-slice budget in ADR-024 permits reuse of the initial terminal native digest after the fresh local verification scan only while the membership epoch remains unchanged. A stale removal or concurrent native write invalidates that digest and leaves the folder unverified for another bounded slice. The legacy helper path still takes a fresh terminal native fingerprint. This qualifies the "fresh native fingerprint" wording below; the accepted exact-mode proof is an epoch-fenced native fingerprint from earlier in the same slice.
+
 **Context:** Weekly scans in July/August 2026 repeatedly removed old ghosts from Gmail Bin even after ADR-020/021. The count design had two unsound assumptions: `getTotalMessages(false)` is cached state, and equal cardinality does not imply equal membership (one ghost plus one missing key cancels). A highest UID alone detects additions but not arbitrary deletions; HIGHESTMODSEQ detects change but also advances for flag-only changes and does not identify the changed UID.
 
 **Decision:** Make reconciliation an exact, collision-resistant membership proof that is continuously and cooperatively scheduled after startup:
