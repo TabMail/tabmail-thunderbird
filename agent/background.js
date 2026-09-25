@@ -19,6 +19,7 @@ import { purgeOlderThanByPrefixes } from "./modules/idbStorage.js";
 import { compactActionRulesNow } from "./modules/autoUpdateUserPrompt.js";
 import { kbCompress, kbUpdate } from "./modules/knowledgebase.js";
 import { scanAllInboxes } from "./modules/messageProcessor.js";
+import { invalidateUserEmailCache } from "./modules/senderFilter.js";
 import { enqueueProcessMessage, initProcessMessageQueue } from "./modules/messageProcessorQueue.js";
 import { attachOnMovedListeners, attachOnUpdatedListener } from "./modules/onMoved.js";
 import { purgeExpiredReplyEntries } from "./modules/replyGenerator.js";
@@ -1455,35 +1456,43 @@ function cleanupAccountCreatedListener() {
 // ── Account-change invalidation for senderFilter's email-set cache ─────────
 // Without this, an account added/removed mid-session is invisible to the
 // recipient-status suppress checks until the MV3 worker restarts.
-let _onAccountChangedInvalidator = null;
+const _onAccountChangedInvalidator = () => {
+    invalidateUserEmailCache();
+};
+const _accountChangeInvalidationOwners = new Map();
+
+function accountChangeInvalidationEvents() {
+    return [
+        ["accounts.onCreated", browser.accounts?.onCreated],
+        ["accounts.onDeleted", browser.accounts?.onDeleted],
+        ["accounts.onUpdated", browser.accounts?.onUpdated],
+        ["identities.onCreated", browser.identities?.onCreated],
+        ["identities.onUpdated", browser.identities?.onUpdated],
+        ["identities.onDeleted", browser.identities?.onDeleted],
+    ];
+}
 
 function setupAccountChangeCacheInvalidation() {
-    if (_onAccountChangedInvalidator || !browser.accounts?.onCreated) return;
-    _onAccountChangedInvalidator = () => {
-        import("./modules/senderFilter.js")
-            .then((m) => m.invalidateUserEmailCache())
-            .catch(() => {});
-    };
-    browser.accounts.onCreated.addListener(_onAccountChangedInvalidator);
-    browser.accounts.onDeleted?.addListener(_onAccountChangedInvalidator);
-    browser.accounts.onUpdated?.addListener(_onAccountChangedInvalidator);
-    // Identity edits don't necessarily raise accounts.onUpdated — watch them too.
-    browser.identities?.onCreated?.addListener(_onAccountChangedInvalidator);
-    browser.identities?.onUpdated?.addListener(_onAccountChangedInvalidator);
-    browser.identities?.onDeleted?.addListener(_onAccountChangedInvalidator);
-    log("[SenderFilter] Account-change cache invalidation listeners attached");
+    for (const [name, event] of accountChangeInvalidationEvents()) {
+        if (!event || _accountChangeInvalidationOwners.has(name)) continue;
+        try {
+            event.addListener(_onAccountChangedInvalidator);
+            _accountChangeInvalidationOwners.set(name, event);
+        } catch (e) {
+            log(`[SenderFilter] Failed to attach ${name} cache invalidator: ${e}`, "warn");
+        }
+    }
 }
 
 function cleanupAccountChangeCacheInvalidation() {
-    if (!_onAccountChangedInvalidator) return;
-    browser.accounts?.onCreated?.removeListener(_onAccountChangedInvalidator);
-    browser.accounts?.onDeleted?.removeListener(_onAccountChangedInvalidator);
-    browser.accounts?.onUpdated?.removeListener(_onAccountChangedInvalidator);
-    browser.identities?.onCreated?.removeListener(_onAccountChangedInvalidator);
-    browser.identities?.onUpdated?.removeListener(_onAccountChangedInvalidator);
-    browser.identities?.onDeleted?.removeListener(_onAccountChangedInvalidator);
-    _onAccountChangedInvalidator = null;
-    log("[SenderFilter] Account-change cache invalidation listeners removed");
+    for (const [name, event] of _accountChangeInvalidationOwners) {
+        try {
+            event.removeListener(_onAccountChangedInvalidator);
+            _accountChangeInvalidationOwners.delete(name);
+        } catch (e) {
+            log(`[SenderFilter] Failed to remove ${name} cache invalidator: ${e}`, "warn");
+        }
+    }
 }
 
 /**
@@ -2065,6 +2074,9 @@ attachThreadTagWatchers();
 // Account and folder creation must still repair native action paint on the first
 // event after an idle suspension; the startup backfill retries failed adds.
 attachActionCacheBackfillListeners();
+// Sender identity changes must invalidate the address cache on the first event
+// after an idle wake; the later init() call retries any failed registration.
+setupAccountChangeCacheInvalidation();
 // Prime move/copy/delete consumers now; leave the stale-tag sweep alarm for
 // init(), after its setup work completes.
 attachOnMovedListeners({ scheduleSweep: false });

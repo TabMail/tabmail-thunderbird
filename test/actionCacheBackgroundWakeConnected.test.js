@@ -86,7 +86,8 @@ describe('action-cache backfill on real background startup',()=>{
   accounts=[{id:'account'}];visible=false;
   folderEvent.addListener.mockImplementationOnce(()=>{throw new Error('synthetic add failure');});
   const app=startBackground();
-  expect(accountEvent.addListener).toHaveBeenCalledOnce();
+  // Action backfill and sender-address invalidation each own one early callback.
+  expect(accountEvent.addListener).toHaveBeenCalledTimes(2);
   expect(folderEvent.addListener).toHaveBeenCalledOnce();
   expect(folderEvent.listeners.size).toBe(0);
   app.releaseStartup();
