@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const TM_HDR_SOURCE = new URL(
   "../agent/experiments/tmHdr/tmHdr.sys.mjs",
@@ -277,7 +277,7 @@ function makeExperimentSandbox(Services) {
       return {};
     }
   }
-  const ExtensionCommon = { ExtensionAPI, EventManager };
+  const ExtensionCommon = { ExtensionAPI, ExtensionAPIPersistent: ExtensionAPI, EventManager };
   const ExtensionSupport = {
     registerWindowListener() {},
     unregisterWindowListener() {},
@@ -330,8 +330,17 @@ function loadExperiment(sourceUrl, className, sandbox) {
 }
 
 async function startExperiments(Services, headersByWebExtensionId) {
+  const listeners = new Map();
   const extension = {
     id: "table-repaint-test@example.test",
+    on(name, callback) {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      listeners.get(name).add(callback);
+    },
+    off(name, callback) { listeners.get(name)?.delete(callback); },
+    emit(name, ...args) {
+      for (const callback of listeners.get(name) || []) callback(name, ...args);
+    },
     messageManager: {
       get(id) {
         return headersByWebExtensionId.get(id) || null;
@@ -374,6 +383,36 @@ function expectUnpainted(row) {
 }
 
 describe("Table-view action repaint integration", () => {
+  it("emits an untagged Inbox row's identity from the native table painter", async () => {
+    const hdr = makeHeader(103);
+    const view = makeView({
+      headersByIndex: new Map([[0, hdr]]),
+      findIndexOfMsgHdr: candidate => candidate === hdr ? 0 : -1,
+      findIndexForMsgURI: () => -1,
+      findKey: () => -1,
+    });
+    const doc = makeTableDocument(view, [0]);
+    const { tableExperiment } = await startExperiments(
+      makeServices([makeOuterWindow([doc.contentWindow])]), new Map([[103, hdr]])
+    );
+    const received = vi.fn(async () => {});
+    const subscription = tableExperiment._registerUntaggedListener_MLTV({ async: received });
+    doc.rows[0].fillRow();
+    await Promise.resolve();
+    expect(received).toHaveBeenCalledOnce();
+    expect(received.mock.calls[0][0]).toEqual([{
+      messageKey: 103,
+      messageId: '<message-103@example.test>',
+      weMsgId: 103,
+      folderUri: 'mailbox://account/Inbox',
+      rowIndex: 0,
+    }]);
+    subscription.unregister();
+    doc.rows[0].fillRow();
+    expect(received).toHaveBeenCalledOnce();
+    tableExperiment.onShutdown(false);
+  });
+
   it("paints and clears the rendered row in every open 3-pane tab without moving selection", async () => {
     const hdr = makeHeader(101);
     const currentView = makeView({
