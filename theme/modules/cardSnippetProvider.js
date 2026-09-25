@@ -303,19 +303,20 @@ export function createCardSnippetProvider({ getNeeds, provideSnippets }) {
   }
 
   function start() {
-    if (state.running) return;
+    if (state.running && state.eventListener) return;
     state.running = true;
     
     // Event-driven mode - listen for onSnippetsNeeded event from experiment
     try {
       if (typeof browser !== "undefined" && browser.tmMessageListCardView?.onSnippetsNeeded?.addListener) {
-        state.eventListener = (info) => {
+        const listener = (info) => {
           _plog("[SnippetDiag] eventReceived:", info);
           tick().catch((e) => {
             _perr("tick failed after event:", e);
           });
         };
-        browser.tmMessageListCardView.onSnippetsNeeded.addListener(state.eventListener);
+        browser.tmMessageListCardView.onSnippetsNeeded.addListener(listener);
+        state.eventListener = listener;
         _plog("[SnippetDiag] listenerRegistered");
         // Run an initial tick to handle any existing needs
         tick().catch(() => {});
@@ -330,21 +331,25 @@ export function createCardSnippetProvider({ getNeeds, provideSnippets }) {
 
   function stop() {
     if (!state.running) return;
-    state.running = false;
     
     // Remove event listener
     if (state.eventListener) {
       try {
         if (typeof browser !== "undefined" && browser.tmMessageListCardView?.onSnippetsNeeded?.removeListener) {
           browser.tmMessageListCardView.onSnippetsNeeded.removeListener(state.eventListener);
+          state.eventListener = null;
+        } else {
+          return;
         }
-      } catch (_) {}
-      state.eventListener = null;
+      } catch (e) {
+        _perr("Failed to remove event listener:", e);
+        return;
+      }
     }
+    state.running = false;
     
     _plog("stop");
   }
 
   return { start, stop, tick };
 }
-

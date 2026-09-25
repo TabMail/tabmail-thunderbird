@@ -105,6 +105,33 @@ function startRealCoverageConsumer(message, decoy) {
   return { event, messages };
 }
 
+it('retries a failed early table subscriber without stacking it during init', () => {
+  const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
+  const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const attach = ast.body.find(node => node.type === 'FunctionDeclaration'
+    && node.id?.name === 'attachUntaggedCoverageListener');
+  const init = ast.body.find(node => node.type === 'FunctionDeclaration' && node.id?.name === 'init');
+  expect(source.slice(init.start, init.end)).toContain('attachUntaggedCoverageListener();');
+  const listeners = new Set();
+  let fail = true;
+  const event = { addListener: vi.fn(listener => {
+    if (fail) { fail = false; throw new Error('synthetic registration failure'); }
+    listeners.add(listener);
+  }) };
+  const context = {
+    browser: { tmMessageListTableView: { onUntaggedInboxMessages: event } },
+    handleUntaggedInboxMessages: vi.fn(), log: vi.fn(),
+  };
+  vm.createContext(context);
+  vm.runInContext(`let _untaggedCoverageListener = null;\n${source.slice(attach.start, attach.end)}\nthis.attach = attachUntaggedCoverageListener;`, context);
+  context.attach();
+  expect(listeners.size).toBe(0);
+  context.attach();
+  context.attach();
+  expect(listeners.size).toBe(1);
+  expect(event.addListener).toHaveBeenCalledTimes(2);
+});
+
 it('replays one suspended native paint into durable work for its original message', async () => {
   const { native, row, hdr } = startNativeRow();
   await native.api.init();

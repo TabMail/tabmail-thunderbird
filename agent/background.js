@@ -1378,8 +1378,8 @@ function attachUntaggedCoverageListener() {
 
   try {
     if (browser.tmMessageListTableView?.onUntaggedInboxMessages) {
+      browser.tmMessageListTableView.onUntaggedInboxMessages.addListener(handleUntaggedInboxMessages);
       _untaggedCoverageListener = handleUntaggedInboxMessages;
-      browser.tmMessageListTableView.onUntaggedInboxMessages.addListener(_untaggedCoverageListener);
       log("[TMDBG Agent] tmMessageListTableView.onUntaggedInboxMessages listener attached");
     } else {
       log("[Coverage] tmMessageListTableView.onUntaggedInboxMessages not available - coverage listener not attached", "warn");
@@ -1810,6 +1810,8 @@ async function init() {
 
     // 4. Manual move/delete listeners (classification + logging only)
     attachOnMovedListeners();
+    // Retry a failed startup subscription without adding a second listener.
+    attachUntaggedCoverageListener();
 
 
     // 0a. Reset auth state and update toolbar icon based on authentication state
