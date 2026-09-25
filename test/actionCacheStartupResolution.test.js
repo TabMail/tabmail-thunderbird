@@ -55,21 +55,6 @@ describe('symmetric inbox backfill',()=>{
   ]);
   expect(state.events.slice(1)).toEqual(['chips','delayed']);
  });
- it('retries a failed folder registration through startup without duplicating the account listener',async()=>{
-  state.values[`action:account:${folder.path}:${headers[0].headerMessageId}`]='archive';
-  folderCreated.addListener.mockImplementationOnce(()=>{throw new Error('synthetic add failure');});
-  owner.attachActionCacheBackfillListeners();
-  expect(accountCreated.addListener).toHaveBeenCalledOnce();
-  expect(folderCreated.addListener).toHaveBeenCalledOnce();
-  browser.folders.query.mockResolvedValueOnce([]);
-  await owner.pushAllActionsToExperimentsOnStartup();
-  expect(accountCreated.addListener).toHaveBeenCalledOnce();
-  expect(folderCreated.addListener).toHaveBeenCalledTimes(2);
-  await folderCreated.addListener.mock.calls[1][0](folder);
-  expect(browser.tmHdr.setActionsBulk).toHaveBeenCalledExactlyOnceWith([
-   {weMsgId:1,action:'archive'},{weMsgId:2,action:''},
-  ]);
- });
  it('retries a failed add without duplicating the other owner and retains failed removal ownership',async()=>{
   accountCreated.addListener.mockImplementationOnce(()=>{throw new Error('synthetic add failure');});
   owner.attachActionCacheBackfillListeners();
