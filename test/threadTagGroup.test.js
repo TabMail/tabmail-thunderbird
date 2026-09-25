@@ -305,7 +305,9 @@ describe('tag-by-thread setting listener ownership', () => {
   });
 
   it('processes the first toggle once and ignores unrelated storage changes', async () => {
-    const { attachTagByThreadListener } = await import('../agent/modules/threadTagGroup.js');
+    const { attachTagByThreadListener, getTagByThreadEnabled } = await import('../agent/modules/threadTagGroup.js');
+    browser.storage.local.get.mockResolvedValue({ tagByThreadEnabled: false });
+    expect(await getTagByThreadEnabled()).toBe(false);
     attachTagByThreadListener();
     attachTagByThreadListener();
     expect(listeners.size).toBe(1);
@@ -313,11 +315,19 @@ describe('tag-by-thread setting listener ownership', () => {
 
     const listener = [...listeners][0];
     await listener({ tagByThreadEnabled: { newValue: true } }, 'local');
+    expect(await getTagByThreadEnabled()).toBe(true);
     expect(idbStore['threadTags:test-account:INBOX:glodaConv:test-thread']?.messageActions).toEqual({ 101: 'reply' });
     expect(mockSetAction).toHaveBeenCalledExactlyOnceWith([101]);
 
-    await listener({ tagByThreadEnabled: { newValue: false } }, 'sync');
+    await listener({ tagByThreadEnabled: { newValue: false } }, 'local');
+    expect(await getTagByThreadEnabled()).toBe(false);
+    expect(mockGetConversationForWeMsgId).toHaveBeenCalledTimes(2);
+    expect(mockSetAction).toHaveBeenCalledTimes(1);
+
+    await listener({ tagByThreadEnabled: { newValue: true } }, 'sync');
     await listener({ otherSetting: { newValue: true } }, 'local');
+    expect(await getTagByThreadEnabled()).toBe(false);
+    expect(browser.storage.local.get).toHaveBeenCalledTimes(1);
     expect(mockSetAction).toHaveBeenCalledTimes(1);
   });
 
