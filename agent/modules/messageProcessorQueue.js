@@ -46,6 +46,7 @@ let _kickTimer = null;
 let _isProcessing = false;
 const _inFlight = new Map(); // uniqueKey -> startedAtMs — items with _processOneItem still running
 let _inited = false;
+let _restorePromise = null;
 
 function _cfg() {
   return SETTINGS?.agentQueues?.processMessage || {};
@@ -185,7 +186,18 @@ async function _restoreFromStorage() {
     if (sanitizedQueue) await _persistNow();
   } catch (e) {
     log(`[TMDBG PMQ] Failed to restore queue from storage: ${e}`, "error");
+    throw e;
   }
+}
+
+function _ensureRestored() {
+  if (!_restorePromise) {
+    _restorePromise = _restoreFromStorage().catch((e) => {
+      _restorePromise = null;
+      throw e;
+    });
+  }
+  return _restorePromise;
 }
 
 async function _clearPersisted() {
@@ -249,10 +261,11 @@ function _scheduleKick() {
  */
 export async function initProcessMessageQueue() {
   if (_inited) return;
-  _inited = true;
 
   log("[TMDBG PMQ] initProcessMessageQueue()");
-  await _restoreFromStorage();
+  await _ensureRestored();
+  if (_inited) return;
+  _inited = true;
   _ensureWatchdog();
 
   if (_pending.size > 0) {
@@ -268,6 +281,10 @@ export async function initProcessMessageQueue() {
 export async function enqueueProcessMessage(messageHeader, opts = {}) {
   try {
     if (!messageHeader) return { ok: false, error: "missing messageHeader" };
+
+    // A stock event can arrive before init() restores pending work. Never
+    // persist an early item over the previous background's durable queue.
+    await _ensureRestored();
 
     const uniqueKey = await getUniqueMessageKey(messageHeader);
     if (!uniqueKey) {

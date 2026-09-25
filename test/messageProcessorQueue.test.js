@@ -161,6 +161,39 @@ function enqueueOne(opts = {}) {
 // ---------------------------------------------------------------------------
 
 describe("processMessage resolve-failure verify-then-drop", () => {
+  it("restores durable work before an early wake event can persist a new item", async () => {
+    let resolveRead;
+    browser.storage.local.get.mockImplementationOnce(() => new Promise(resolve => { resolveRead = resolve; }));
+    mockGetUniqueMessageKey.mockResolvedValueOnce("acct1:/INBOX:new@x");
+
+    const enqueue = enqueueOne();
+    await vi.waitFor(() => expect(browser.storage.local.get).toHaveBeenCalledOnce());
+    expect(browser.storage.local.set).not.toHaveBeenCalled();
+
+    resolveRead({ agent_processmessage_pending: [{
+      uniqueKey: "acct1:/INBOX:old@x", timestamp: 1, opts: {}, metadata: { accountId: "acct1", folderPath: "/INBOX" },
+    }] });
+    expect((await enqueue).ok).toBe(true);
+    await SUT.initProcessMessageQueue();
+    await vi.waitFor(() => expect(browser.storage.local.set).toHaveBeenCalled());
+
+    const keys = browser.storage.local.set.mock.calls.at(-1)[0].agent_processmessage_pending.map(item => item.uniqueKey);
+    expect(keys).toEqual(["acct1:/INBOX:old@x", "acct1:/INBOX:new@x"]);
+    expect(browser.storage.local.get).toHaveBeenCalledOnce();
+    expect(SUT.getProcessMessageQueueStatus().pending).toBe(2);
+  });
+
+  it("refuses an early enqueue when restore fails and retries the read later", async () => {
+    browser.storage.local.get.mockRejectedValueOnce(new Error("synthetic read failure"));
+    expect((await enqueueOne()).ok).toBe(false);
+    expect(browser.storage.local.set).not.toHaveBeenCalled();
+
+    browser.storage.local.get.mockResolvedValueOnce({ agent_processmessage_pending: [] });
+    expect((await enqueueOne()).ok).toBe(true);
+    await vi.waitFor(() => expect(browser.storage.local.set).toHaveBeenCalledOnce());
+    expect(browser.storage.local.get).toHaveBeenCalledTimes(2);
+  });
+
   it("persists exact account/path recovery evidence without a session MailFolder.id", async () => {
     await enqueueOne();
     await vi.waitFor(() => expect(browser.storage.local.set).toHaveBeenCalled());

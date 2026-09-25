@@ -29,6 +29,9 @@ beforeEach(()=>{
  const folderRows=[...rows.values(),{id:142,folder:virtual,headerMessageId:'second@example.test'}];
  globalThis.browser={messages:{
   onUpdated:{addListener:vi.fn(fn=>listeners.add(fn)),removeListener:vi.fn(fn=>listeners.delete(fn))},
+  onMoved:{addListener:vi.fn(),removeListener:vi.fn()},
+  onCopied:{addListener:vi.fn(),removeListener:vi.fn()},
+  onDeleted:{addListener:vi.fn(),removeListener:vi.fn()},
   get:vi.fn(async id=>structuredClone(rows.get(id))),
   query:vi.fn(async q=>({messages:folderRows.filter(msg=>
    msg.headerMessageId===q.headerMessageId && q.folderId?.includes(msg.folder.id))})),
@@ -92,12 +95,13 @@ it('primes the listener before agent startup and queues a Gmail member with read
  globalThis.browser=app.originalBrowser;
 });
 
-it('real late initialization retries a failed primed registration', async () => {
+it('startup fallback retries a failed update registration without late duplicates', async () => {
   browser.messages.onUpdated.addListener.mockImplementationOnce(() => {
     throw new Error('synthetic registration failure');
   });
   const app=startActualAgent();
-  expect(listeners.size).toBe(0);
+  expect(listeners.size).toBe(1);
+  expect(app.originalBrowser.messages.onUpdated.addListener).toHaveBeenCalledTimes(2);
   app.releaseStartup();
   await settle();
   expect(listeners.size).toBe(1);
