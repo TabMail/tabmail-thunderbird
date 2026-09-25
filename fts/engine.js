@@ -18,6 +18,7 @@ import {
 } from "./operationCoordinator.js";
 
 let _inited = false;
+let _initializationPromise = null;
 let _runtimeMessageHandler = null;
 
 const FTS_ENGINE_DIAG = {
@@ -375,11 +376,23 @@ function attachCommandInterface() {
 }
 
 // Initialize FTS engine
-export async function initFtsEngine() {
+export function initFtsEngine() {
   if (_inited) {
     log("[TMDBG FTS] Already initialized");
-    return ftsSearch;
+    return Promise.resolve(ftsSearch);
   }
+  if (_initializationPromise) return _initializationPromise;
+
+  const initialization = _initFtsEngineOnce();
+  _initializationPromise = initialization;
+  initialization.then(
+    () => { if (_initializationPromise === initialization) _initializationPromise = null; },
+    () => { if (_initializationPromise === initialization) _initializationPromise = null; },
+  );
+  return initialization;
+}
+
+async function _initFtsEngineOnce() {
 
   log("[TMDBG FTS] Starting FTS engine initialization");
   log("[TMDBG FTS] Using NATIVE FTS HELPER (not worker.js)");
@@ -466,6 +479,9 @@ export async function initFtsEngine() {
       log("[TMDBG FTS] Incremental indexer initialized");
     } catch (e) {
       log(`[TMDBG FTS] Failed to initialize incremental indexer: ${e}`, "error");
+      // Without this indexer there is no startup reconciliation. Keep engine
+      // initialization retryable instead of reporting a healthy FTS startup.
+      throw e;
     }
 
     // Initialize maintenance scheduler for periodic scans

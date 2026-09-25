@@ -143,6 +143,47 @@ afterEach(async () => {
 });
 
 describe('native optimize maintenance contract', () => {
+  it('shares one engine initialization across concurrent recovery callers', async () => {
+    const pending = deferred();
+    const { initNativeFts } = await import('../fts/nativeEngine.js');
+    const { initIncrementalIndexer } = await import('../fts/incrementalIndexer.js');
+    vi.mocked(initNativeFts).mockImplementationOnce(() => pending.promise);
+    runtimeEngine = await import('../fts/engine.js');
+
+    const first = runtimeEngine.initFtsEngine();
+    const second = runtimeEngine.initFtsEngine();
+    expect(second).toBe(first);
+    expect(initNativeFts).toHaveBeenCalledTimes(1);
+
+    pending.resolve(true);
+    await Promise.all([first, second]);
+    expect(initIncrementalIndexer).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries engine initialization after the native helper was missing', async () => {
+    const { initNativeFts } = await import('../fts/nativeEngine.js');
+    const { initIncrementalIndexer } = await import('../fts/incrementalIndexer.js');
+    vi.mocked(initNativeFts).mockRejectedValueOnce(new Error('helper missing'));
+    runtimeEngine = await import('../fts/engine.js');
+
+    await expect(runtimeEngine.initFtsEngine()).rejects.toThrow('helper missing');
+    await expect(runtimeEngine.initFtsEngine()).resolves.toBe(runtimeEngine.ftsSearch);
+    expect(initNativeFts).toHaveBeenCalledTimes(2);
+    expect(initIncrementalIndexer).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report startup complete when incremental reconciliation failed to start', async () => {
+    const { initIncrementalIndexer } = await import('../fts/incrementalIndexer.js');
+    vi.mocked(initIncrementalIndexer).mockRejectedValueOnce(new Error('marker write failed'));
+    runtimeEngine = await import('../fts/engine.js');
+
+    await expect(runtimeEngine.initFtsEngine()).rejects.toThrow('marker write failed');
+    await expect(runtimeEngine.initFtsEngine()).resolves.toBe(runtimeEngine.ftsSearch);
+    expect(initIncrementalIndexer).toHaveBeenCalledTimes(2);
+    expect(browser.runtime.onMessage.addListener).toHaveBeenCalledTimes(2);
+    expect(browser.runtime.onMessage.removeListener).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['daily', 'weekly', 'monthly'])(
     'treats exact {ok:true} as one full call without invented progress telemetry for %s maintenance',
     async scheduleType => {
