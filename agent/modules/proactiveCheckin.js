@@ -73,6 +73,7 @@ const LEGACY_KEYS = {
 let _debounceTimer = null;
 let _alarmListener = null;
 let _isInitialized = false;
+let _initializationPromise = null;
 let _lastReachoutTime = 0;
 let _openingChatWindow = false;
 
@@ -1187,50 +1188,58 @@ export async function consumePendingProactiveMessage() {
 // Lifecycle: init / cleanup
 // ─────────────────────────────────────────────────────────────
 
-export async function initProactiveCheckin() {
-  if (_isInitialized) return;
-  _isInitialized = true;
-
-  const enabledAtInit = await _isEnabled();
-  log(`[ProActReach] INIT enabled=${enabledAtInit}`);
-
-  // One-time migration from legacy storage keys
-  await _migrateLegacyKeys();
-
-  // Restore persisted state
-  await _restoreState();
-
-  // Register alarm listener
-  if (!_alarmListener) {
-    _alarmListener = (alarm) => {
+export function primeProactiveAlarmListener() {
+  if (_alarmListener) return;
+  const listener = (alarm) => {
+    if (alarm.name !== ALARM_NAME && alarm.name !== TASK_ALARM_NAME) return;
+    // An alarm can be the first event after suspend, before async state restore.
+    // Wait for that restore before executing either handler.
+    return initProactiveCheckin().then(() => {
       if (alarm.name === ALARM_NAME) {
         log(`[ProActReach] Alarm fired: ${ALARM_NAME}`);
-        _handleAlarmFired().catch(e => {
-          log(`[ProActReach] Alarm handler failed: ${e}`, "warn");
-        });
-      } else if (alarm.name === TASK_ALARM_NAME) {
-        log(`[ProActReach] Task eval alarm fired`);
-        _handleTaskEvaluation().catch(e => {
-          log(`[ProActReach] Task eval handler failed: ${e}`, "warn");
-        });
+        return _handleAlarmFired();
       }
-    };
-    browser.alarms.onAlarm.addListener(_alarmListener);
-    log(`[ProActReach] Alarm listener registered`);
-  }
+      log(`[ProActReach] Task eval alarm fired`);
+      return _handleTaskEvaluation();
+    }).catch(e => {
+      log(`[ProActReach] Alarm handler failed: ${e}`, "warn");
+    });
+  };
+  browser.alarms.onAlarm.addListener(listener);
+  _alarmListener = listener;
+  log(`[ProActReach] Alarm listener registered`);
+}
 
-  // Schedule initial alarm if enabled
-  if (enabledAtInit) {
-    await _scheduleNextAlarm();
-  }
+export async function initProactiveCheckin() {
+  if (_isInitialized) return;
+  if (_initializationPromise) return _initializationPromise;
+  _initializationPromise = (async () => {
+    primeProactiveAlarmListener();
+    const enabledAtInit = await _isEnabled();
+    log(`[ProActReach] INIT enabled=${enabledAtInit}`);
 
-  // Schedule periodic task evaluation alarm (runs regardless of proactive enabled,
-  // since tasks have their own task.enabled setting)
+    // One-time migration from legacy storage keys
+    await _migrateLegacyKeys();
+
+    // Restore persisted state before a pending alarm handler proceeds.
+    await _restoreState();
+
+    if (enabledAtInit) await _scheduleNextAlarm();
+    // Tasks have their own task.enabled setting, so evaluate them regardless
+    // of the proactive-reachout preference.
+    try {
+      await browser.alarms.create(TASK_ALARM_NAME, { periodInMinutes: TASK_EVAL_INTERVAL_MINUTES });
+      log(`[ProActReach] Task eval alarm scheduled (every ${TASK_EVAL_INTERVAL_MINUTES} min)`);
+    } catch (e) {
+      log(`[ProActReach] Failed to schedule task eval alarm: ${e}`, "warn");
+    }
+  })();
   try {
-    await browser.alarms.create(TASK_ALARM_NAME, { periodInMinutes: TASK_EVAL_INTERVAL_MINUTES });
-    log(`[ProActReach] Task eval alarm scheduled (every ${TASK_EVAL_INTERVAL_MINUTES} min)`);
+    await _initializationPromise;
+    _isInitialized = true;
   } catch (e) {
-    log(`[ProActReach] Failed to schedule task eval alarm: ${e}`, "warn");
+    _initializationPromise = null;
+    throw e;
   }
 }
 
@@ -1245,10 +1254,10 @@ export function cleanupProactiveCheckin() {
   if (_alarmListener) {
     try {
       browser.alarms.onAlarm.removeListener(_alarmListener);
+      _alarmListener = null;
     } catch (e) {
       log(`[ProActReach] Failed to remove alarm listener: ${e}`, "warn");
     }
-    _alarmListener = null;
   }
 
   // Clear task eval alarm
@@ -1259,6 +1268,7 @@ export function cleanupProactiveCheckin() {
   }
 
   _isInitialized = false;
+  _initializationPromise = null;
 }
 
 // ─────────────────────────────────────────────────────────────

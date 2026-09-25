@@ -4,6 +4,7 @@
 
 // Main agent file.
 import { initComposeHandlers, isAnyComposeOpen } from "./modules/composeTracker.js";
+import { primeProactiveAlarmListener } from "./modules/proactiveCheckin.js";
 import { SETTINGS } from "./modules/config.js";
 import * as idb from "./modules/idbStorage.js";
 import { ensureSignedIn, signOut } from "./modules/supabaseAuth.js";
@@ -2044,6 +2045,13 @@ try {
     initComposeHandlers();
 } catch (e) {
     log(`[ComposeTracker] Early tabs.onCreated registration failed: ${e}`, "warn");
+}
+// Alarm callbacks must exist during startup to wake this background after idle suspend.
+// initProactiveCheckin() still restores state and schedules alarms later in init().
+try {
+    primeProactiveAlarmListener();
+} catch (e) {
+    log(`[ProactiveCheckin] Early alarm registration failed: ${e}`, "warn");
 }
 // Register the FTS message-update consumer before init() first awaits, so
 // Thunderbird can prime this stock event while the background is suspended.
