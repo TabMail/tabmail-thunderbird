@@ -90,6 +90,8 @@ vi.mock("../agent/modules/onMoved.js", () => ({
 const mockQuery = vi.fn();
 const mockContinueList = vi.fn();
 const mockGet = vi.fn();
+const alarms = new Map();
+let alarmListener;
 
 globalThis.browser = {
   storage: {
@@ -109,6 +111,12 @@ globalThis.browser = {
       id: "folder-inbox", accountId: "acct1", path: "/INBOX",
     }]),
   },
+  alarms: {
+    create: vi.fn(async (name, info) => { alarms.set(name, { name, ...info }); }),
+    get: vi.fn(async name => alarms.get(name) || null),
+    clear: vi.fn(async name => alarms.delete(name)),
+    onAlarm: { addListener: vi.fn(listener => { alarmListener = listener; }) },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -119,6 +127,8 @@ let SUT;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  alarms.clear();
+  alarmListener = null;
   pmCfg.maxResolveAttempts = 3;
   mockGetUniqueMessageKey.mockResolvedValue("acct1:/INBOX:msgid@x");
   mockResolveUniqueMessageKey.mockImplementation(async () => {
@@ -155,6 +165,84 @@ function enqueueOne(opts = {}) {
     opts
   );
 }
+
+describe("durable retry alarm", () => {
+  it("keeps no alarm or watchdog when the restored queue is empty", async () => {
+    await SUT.initProcessMessageQueue();
+
+    expect(alarms.size).toBe(0);
+    expect(SUT.getProcessMessageQueueStatus()).toMatchObject({
+      pending: 0, hasWatchTimer: false, hasRetryTimer: false, hasRetryAlarm: false,
+    });
+  });
+
+  it("keeps one named alarm while work is pending and clears it after success", async () => {
+    mockHeaderIDToWeID.mockResolvedValue(123);
+    mockGet.mockResolvedValue({ id: 123, folder: { accountId: "acct1", path: "/INBOX" } });
+    await enqueueOne();
+    await enqueueOne();
+
+    expect(alarms.size).toBe(1);
+    expect(alarms.get("agent-process-message-retry").periodInMinutes).toBe(1);
+    expect(browser.alarms.create).toHaveBeenCalledTimes(1);
+    await SUT.drainProcessMessageQueue();
+    expect(alarms.size).toBe(0);
+    expect(SUT.getProcessMessageQueueStatus().pending).toBe(0);
+  });
+
+  it("retains the alarm when a new enqueue overlaps a completed drain", async () => {
+    mockHeaderIDToWeID.mockResolvedValue(123);
+    mockGet.mockResolvedValue({ id: 123, folder: { accountId: "acct1", path: "/INBOX" } });
+    await enqueueOne();
+    let releaseClear;
+    browser.alarms.clear.mockImplementationOnce(async name => {
+      await new Promise(resolve => { releaseClear = resolve; });
+      return alarms.delete(name);
+    });
+
+    const drain = SUT.drainProcessMessageQueue();
+    await vi.waitFor(() => expect(releaseClear).toBeTypeOf("function"));
+    const enqueue = enqueueOne();
+    releaseClear();
+    await Promise.all([drain, enqueue]);
+
+    expect(SUT.getProcessMessageQueueStatus().pending).toBe(1);
+    expect(alarms.size).toBe(1);
+    expect(browser.alarms.create).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(SUT.getProcessMessageQueueStatus().pending).toBe(0));
+  });
+
+  it("restores and retries durable work on the first alarm after background restart", async () => {
+    const disk = {};
+    const originalStorage = browser.storage.local;
+    browser.storage.local = {
+      get: vi.fn(async key => ({ [key]: structuredClone(disk[key] || []) })),
+      set: vi.fn(async values => Object.assign(disk, structuredClone(values))),
+      remove: vi.fn(async key => { delete disk[key]; }),
+    };
+    try {
+      mockHeaderIDToWeID.mockResolvedValue(123);
+      mockGet.mockResolvedValue({ id: 123, folder: { accountId: "acct1", path: "/INBOX" } });
+      mockProcessMessage.mockResolvedValueOnce({ ok: false }).mockResolvedValue({ ok: true });
+      await enqueueOne();
+      await SUT.drainProcessMessageQueue();
+      expect(disk.agent_processmessage_pending).toHaveLength(1);
+      expect(alarms.has("agent-process-message-retry")).toBe(true);
+
+      vi.resetModules();
+      SUT = await import("../agent/modules/messageProcessorQueue.js");
+      await alarmListener({ name: "some-other-alarm" });
+      expect(mockProcessMessage).toHaveBeenCalledTimes(1);
+      await alarmListener({ name: "agent-process-message-retry" });
+
+      expect(mockProcessMessage).toHaveBeenCalledTimes(2);
+      expect(SUT.getProcessMessageQueueStatus().pending).toBe(0);
+      expect(alarms.size).toBe(0);
+    } finally {
+      browser.storage.local = originalStorage;
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Tests
