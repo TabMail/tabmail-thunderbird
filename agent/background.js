@@ -19,6 +19,7 @@ import { purgeOlderThanByPrefixes } from "./modules/idbStorage.js";
 import { compactActionRulesNow } from "./modules/autoUpdateUserPrompt.js";
 import { kbCompress, kbUpdate } from "./modules/knowledgebase.js";
 import { scanAllInboxes } from "./modules/messageProcessor.js";
+import { invalidateUserEmailCache } from "./modules/senderFilter.js";
 import { enqueueProcessMessage, initProcessMessageQueue } from "./modules/messageProcessorQueue.js";
 import { attachOnMovedListeners, attachOnUpdatedListener } from "./modules/onMoved.js";
 import { purgeExpiredReplyEntries } from "./modules/replyGenerator.js";
@@ -1456,9 +1457,7 @@ function cleanupAccountCreatedListener() {
 // Without this, an account added/removed mid-session is invisible to the
 // recipient-status suppress checks until the MV3 worker restarts.
 const _onAccountChangedInvalidator = () => {
-    import("./modules/senderFilter.js")
-        .then((m) => m.invalidateUserEmailCache())
-        .catch(() => {});
+    invalidateUserEmailCache();
 };
 const _accountChangeInvalidationOwners = new Map();
 

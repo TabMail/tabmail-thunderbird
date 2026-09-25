@@ -22,7 +22,9 @@ function startAgent({ failedEvent } = {}) {
     for (const specifier of node.specifiers) {
       const name = specifier.local.name;
       globals[name] = name === 'SETTINGS' ? {} : name === 'idb' ? {}
-        : name === 'ensureActionTags' ? () => heldStartup : () => Promise.resolve({});
+        : name === 'ensureActionTags' ? () => heldStartup
+        : name === 'invalidateUserEmailCache' ? senderFilter.invalidateUserEmailCache
+        : () => Promise.resolve({});
     }
     edits.push({ start: node.start, end: node.end,
       text: source.slice(node.start, node.end).replace(/[^\r\n]/g, ' ') });
@@ -57,6 +59,7 @@ function startAgent({ failedEvent } = {}) {
         },
         removeListener: fn => listeners.delete(fn),
         hasListener: fn => listeners.has(fn),
+        emitNow: (...args) => { for (const fn of [...listeners]) fn(...args); },
         emit: async (...args) => { for (const fn of [...listeners]) await fn(...args); },
       });
     }
@@ -113,6 +116,26 @@ describe('sender identity cache after canceled background suspension', () => {
       app.setEmail('new@example.test');
       await app.event(name).emit('synthetic', {});
       await drain();
+      expect(await senderFilter.isInternalSender({ author: 'new@example.test' })).toBe(true);
+      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(false);
+    } finally {
+      app.releaseStartup();
+      await drain();
+      senderFilter.invalidateUserEmailCache();
+      if (previous === undefined) delete globalThis.browser;
+      else globalThis.browser = previous;
+    }
+  });
+
+  it('invalidates synchronously when an identity event races a cache read', async () => {
+    const app = startAgent();
+    const previous = globalThis.browser;
+    globalThis.browser = app.browser;
+    try {
+      senderFilter.invalidateUserEmailCache();
+      expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(true);
+      app.setEmail('new@example.test');
+      app.event('browser.identities.onUpdated').emitNow('synthetic', {});
       expect(await senderFilter.isInternalSender({ author: 'new@example.test' })).toBe(true);
       expect(await senderFilter.isInternalSender({ author: 'one@example.test' })).toBe(false);
     } finally {
