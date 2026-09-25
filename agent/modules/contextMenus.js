@@ -15,15 +15,103 @@ import { applyPriorityTag } from "./tagHelper.js";
 import { notifyCannotTagSelf } from "./userNotice.js";
 import { getUniqueMessageKey, log } from "./utils.js";
 
-// Keep references to listeners so we can clean them up on suspend/hot-reload
-let _onClickedListener = null;
+// The action event must be registered during module evaluation so a click can
+// wake a suspended background before asynchronous menu reconstruction completes.
+let _clickListenerAttached = false;
 let _onShownListener = null;
+
+// Click handler for menu items.
+async function _onClickedListener(info, tab) {
+    try {
+        log(`[TMDBG ContextMenus] onClicked id=${info.menuItemId} tabId=${tab?.id ?? "<none>"}`);
+    } catch(_) {}
+    if (!info.menuItemId.startsWith("tabmail-agent-")) {
+        return; // Not one of ours.
+    }
+
+    // Attempt to obtain the MessageHeader objects of the current selection.
+    let messageHeaders = [];
+    if (info.selectedMessages && info.selectedMessages.messages) {
+        messageHeaders = info.selectedMessages.messages;
+        try { log(`[TMDBG ContextMenus] selectedMessages(messages) path count=${messageHeaders.length}`); } catch(_) {}
+    } else if (tab && tab.id !== undefined) {
+        try {
+            const list = await browser.mailTabs.getSelectedMessages(tab.id);
+            if (list && Array.isArray(list.messages)) {
+                messageHeaders = list.messages;
+            }
+            try { log(`[TMDBG ContextMenus] getSelectedMessages(tab.id) path count=${messageHeaders.length}`); } catch(_) {}
+        } catch (e) {
+            try { log(`[TMDBG ContextMenus] getSelectedMessages failed: ${e}`, "warn"); } catch(_) {}
+        }
+    }
+
+    // Some debug actions don't require message selection.
+    if (info.menuItemId === "tabmail-agent-run-stale-sweep") {
+        try {
+            log(`[TMDBG ContextMenus] Running stale tag sweep (manual trigger, unlimited)`);
+            const { runStaleTagSweep } = await import("./onMoved.js");
+            // Manual debug runs use unlimited mode to clear all stale tags.
+            await runStaleTagSweep({ unlimited: true });
+            log(`[TMDBG ContextMenus] Stale tag sweep completed`);
+        } catch (e) {
+            log(`[TMDBG ContextMenus] Stale tag sweep failed: ${e}`, "warn");
+        }
+        return;
+    }
+
+    if (messageHeaders.length === 0) {
+        // log("[TMDBG ContextMenus] No messages found for context-menu operation.");
+        try { log(`[TMDBG ContextMenus] No messageHeaders resolved; aborting click for ${info.menuItemId}`); } catch(_) {}
+        return;
+    }
+
+    if (info.menuItemId === "tabmail-agent-recompute-summary") {
+        await recomputeSummary(messageHeaders);
+    } else if (info.menuItemId === "tabmail-agent-recompute-action") {
+        await recomputeAction(messageHeaders);
+    } else if (info.menuItemId === "tabmail-agent-recompute-reply") {
+        await recomputeReply(messageHeaders);
+    } else if (info.menuItemId === "tabmail-agent-tag-archive") {
+        try { log(`[TMDBG ContextMenus] Applying manual tag action=archive to ${messageHeaders.length} messages`); } catch(_) {}
+        await applyManualTags(messageHeaders, "archive");
+        // try { await performTaggedActions(messageHeaders); } catch (e) {}
+    } else if (info.menuItemId === "tabmail-agent-tag-delete") {
+        try { log(`[TMDBG ContextMenus] Applying manual tag action=delete to ${messageHeaders.length} messages`); } catch(_) {}
+        await applyManualTags(messageHeaders, "delete");
+        // try { await performTaggedActions(messageHeaders); } catch (e) {}
+    } else if (info.menuItemId === "tabmail-agent-tag-reply") {
+        try { log(`[TMDBG ContextMenus] Applying manual tag action=reply to ${messageHeaders.length} messages`); } catch(_) {}
+        await applyManualTags(messageHeaders, "reply");
+    } else if (info.menuItemId === "tabmail-agent-remove-tag") {
+        try { log(`[TMDBG ContextMenus] Removing action tags from ${messageHeaders.length} messages`); } catch(_) {}
+        await removeActionTags(messageHeaders);
+    } else if (info.menuItemId === "tabmail-agent-debug-dump") {
+        try { log(`[TMDBG ContextMenus] Debug dump requested count=${messageHeaders.length}`); } catch(_) {}
+        await debugDumpSelectedMessages(messageHeaders, { source: "context-menu" });
+    }
+}
+
+function ensureMenuListeners() {
+    const menus = globalThis.browser?.menus;
+    if (!_clickListenerAttached && menus?.onClicked?.addListener) {
+        try {
+            menus.onClicked.addListener(_onClickedListener);
+            _clickListenerAttached = true;
+        } catch (e) {
+            try { log(`[TMDBG ContextMenus] Failed to register onClicked listener: ${e}`, "warn"); } catch (_) {}
+        }
+    }
+}
+
+ensureMenuListeners();
 
 /**
  * Initialise right-click context menus under a dedicated "TabMail Agent" submenu.
  * This should be called once during addon startup.
  */
 export async function initContextMenus() {
+    ensureMenuListeners();
     // Avoid duplicate registration when the background script is reloaded.
     if (initContextMenus._registered) {
         try { log("[TMDBG ContextMenus] initContextMenus called but already registered; skipping."); } catch(_) {}
@@ -107,79 +195,6 @@ export async function initContextMenus() {
             contexts: ["message_list"],
         });
     }
-
-    // Click handler for menu items.
-    _onClickedListener = async (info, tab) => {
-        try {
-            log(`[TMDBG ContextMenus] onClicked id=${info.menuItemId} tabId=${tab?.id ?? "<none>"}`);
-        } catch(_) {}
-        if (!info.menuItemId.startsWith("tabmail-agent-")) {
-            return; // Not one of ours.
-        }
-
-        // Attempt to obtain the MessageHeader objects of the current selection.
-        let messageHeaders = [];
-        if (info.selectedMessages && info.selectedMessages.messages) {
-            messageHeaders = info.selectedMessages.messages;
-            try { log(`[TMDBG ContextMenus] selectedMessages(messages) path count=${messageHeaders.length}`); } catch(_) {}
-        } else if (tab && tab.id !== undefined) {
-            try {
-                const list = await browser.mailTabs.getSelectedMessages(tab.id);
-                if (list && Array.isArray(list.messages)) {
-                    messageHeaders = list.messages;
-                }
-                try { log(`[TMDBG ContextMenus] getSelectedMessages(tab.id) path count=${messageHeaders.length}`); } catch(_) {}
-            } catch (e) {
-                try { log(`[TMDBG ContextMenus] getSelectedMessages failed: ${e}`, "warn"); } catch(_) {}
-            }
-        }
-
-        // Some debug actions don't require message selection.
-        if (info.menuItemId === "tabmail-agent-run-stale-sweep") {
-            try {
-                log(`[TMDBG ContextMenus] Running stale tag sweep (manual trigger, unlimited)`);
-                const { runStaleTagSweep } = await import("./onMoved.js");
-                // Manual debug runs use unlimited mode to clear all stale tags.
-                await runStaleTagSweep({ unlimited: true });
-                log(`[TMDBG ContextMenus] Stale tag sweep completed`);
-            } catch (e) {
-                log(`[TMDBG ContextMenus] Stale tag sweep failed: ${e}`, "warn");
-            }
-            return;
-        }
-
-        if (messageHeaders.length === 0) {
-            // log("[TMDBG ContextMenus] No messages found for context-menu operation.");
-            try { log(`[TMDBG ContextMenus] No messageHeaders resolved; aborting click for ${info.menuItemId}`); } catch(_) {}
-            return;
-        }
-
-        if (info.menuItemId === "tabmail-agent-recompute-summary") {
-            await recomputeSummary(messageHeaders);
-        } else if (info.menuItemId === "tabmail-agent-recompute-action") {
-            await recomputeAction(messageHeaders);
-        } else if (info.menuItemId === "tabmail-agent-recompute-reply") {
-            await recomputeReply(messageHeaders);
-        } else if (info.menuItemId === "tabmail-agent-tag-archive") {
-            try { log(`[TMDBG ContextMenus] Applying manual tag action=archive to ${messageHeaders.length} messages`); } catch(_) {}
-            await applyManualTags(messageHeaders, "archive");
-            // try { await performTaggedActions(messageHeaders); } catch (e) {}
-        } else if (info.menuItemId === "tabmail-agent-tag-delete") {
-            try { log(`[TMDBG ContextMenus] Applying manual tag action=delete to ${messageHeaders.length} messages`); } catch(_) {}
-            await applyManualTags(messageHeaders, "delete");
-            // try { await performTaggedActions(messageHeaders); } catch (e) {}
-        } else if (info.menuItemId === "tabmail-agent-tag-reply") {
-            try { log(`[TMDBG ContextMenus] Applying manual tag action=reply to ${messageHeaders.length} messages`); } catch(_) {}
-            await applyManualTags(messageHeaders, "reply");
-        } else if (info.menuItemId === "tabmail-agent-remove-tag") {
-            try { log(`[TMDBG ContextMenus] Removing action tags from ${messageHeaders.length} messages`); } catch(_) {}
-            await removeActionTags(messageHeaders);
-        } else if (info.menuItemId === "tabmail-agent-debug-dump") {
-            try { log(`[TMDBG ContextMenus] Debug dump requested count=${messageHeaders.length}`); } catch(_) {}
-            await debugDumpSelectedMessages(messageHeaders, { source: "context-menu" });
-        }
-    };
-    browser.menus.onClicked.addListener(_onClickedListener);
 
     // Shown handler for diagnostics – helps detect visibility/context issues
     _onShownListener = (info, tab) => {
@@ -406,9 +421,9 @@ async function removeActionTags(messageHeaders) {
  */
 export function cleanupContextMenus() {
     try {
-        if (_onClickedListener) {
+        if (_clickListenerAttached) {
             browser.menus.onClicked.removeListener(_onClickedListener);
-            _onClickedListener = null;
+            _clickListenerAttached = false;
         }
     } catch (e) {
         try { log(`[TMDBG ContextMenus] Failed to remove onClicked listener: ${e}`, "warn"); } catch(_) {}
