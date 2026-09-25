@@ -29,6 +29,9 @@ beforeEach(()=>{
  const folderRows=[...rows.values(),{id:142,folder:virtual,headerMessageId:'second@example.test'}];
  globalThis.browser={messages:{
   onUpdated:{addListener:vi.fn(fn=>listeners.add(fn)),removeListener:vi.fn(fn=>listeners.delete(fn))},
+  onMoved:{addListener:vi.fn(),removeListener:vi.fn()},
+  onCopied:{addListener:vi.fn(),removeListener:vi.fn()},
+  onDeleted:{addListener:vi.fn(),removeListener:vi.fn()},
   get:vi.fn(async id=>structuredClone(rows.get(id))),
   query:vi.fn(async q=>({messages:folderRows.filter(msg=>
    msg.headerMessageId===q.headerMessageId && q.folderId?.includes(msg.folder.id))})),

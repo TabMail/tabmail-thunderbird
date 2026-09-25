@@ -67,10 +67,9 @@ it('primes stock move, copy, and permanent-delete consumers without starting the
   attachOnMovedListeners({ scheduleSweep: false });
   for (const name of ['onMoved', 'onCopied', 'onDeleted']) expect(events[name].listeners.size).toBe(1);
   expect(ensureAlarm).not.toHaveBeenCalled();
-  attachOnMovedListeners();
-  for (const name of ['onMoved', 'onCopied', 'onDeleted']) expect(events[name].listeners.size).toBe(1);
-  expect(ensureAlarm).toHaveBeenCalledOnce();
 
+  // Deliver the first event while init() is still pending. The early listener
+  // must perform its work without relying on the later sweep setup call.
   const before = header(51, '/Source');
   const after = header(52, '/Destination');
   await [...events.onMoved.listeners][0]({ messages: [before] }, { messages: [after] });
@@ -101,6 +100,10 @@ it('primes stock move, copy, and permanent-delete consumers without starting the
   expect(browser.messages.update).not.toHaveBeenCalled();
   expect(browser.messages.move).not.toHaveBeenCalled();
   expect(browser.messages.delete).not.toHaveBeenCalled();
+
+  attachOnMovedListeners();
+  for (const name of ['onMoved', 'onCopied', 'onDeleted']) expect(events[name].listeners.size).toBe(1);
+  expect(ensureAlarm).toHaveBeenCalledOnce();
 });
 
 it('places stock mutation registration before asynchronous agent initialization', () => {
@@ -113,6 +116,11 @@ it('places stock mutation registration before asynchronous agent initialization'
   expect(prime?.at).toBeLessThan(init?.at);
   expect(prime?.args?.[0]?.properties?.[0]?.key?.name).toBe('scheduleSweep');
   expect(prime?.args?.[0]?.properties?.[0]?.value?.value).toBe(false);
+
+  const initBody = ast.body.find(node => node.type === 'FunctionDeclaration' && node.id?.name === 'init')?.body?.body || [];
+  const late = initBody.find(node => node.type === 'ExpressionStatement' &&
+    node.expression?.callee?.name === 'attachOnMovedListeners');
+  expect(late?.expression?.arguments).toHaveLength(0);
 });
 
 it.each(['onMoved', 'onCopied', 'onDeleted'])('retries a failed %s subscription during late initialization', async name => {
