@@ -56,6 +56,8 @@ globalThis.browser = {
 };
 
 const { initSummaryFeatures } = await import('../agent/modules/summary.js');
+const displayedListenerAtImport = displayedListener;
+const registrationCountAtImport = browser.messageDisplay.onMessagesDisplayed.addListener.mock.calls.length;
 initSummaryFeatures();
 
 const tab = { id: 7 };
@@ -73,6 +75,16 @@ function sentCommands() {
 beforeEach(() => {
   vi.clearAllMocks();
   showAiSummaries.value = true;
+});
+
+it('registers one summary display listener before asynchronous feature setup', async () => {
+  expect(registrationCountAtImport).toBe(1);
+  expect(displayedListenerAtImport).toBeTypeOf('function');
+  initSummaryFeatures();
+  expect(browser.messageDisplay.onMessagesDisplayed.addListener).not.toHaveBeenCalled();
+  await displayedListenerAtImport(tab, { messages: [inboxMessage] });
+  expect(sentCommands()).toContain('displaySummary');
+  expect(getSummary).toHaveBeenCalled();
 });
 
 describe('Show AI Summaries preference on (default)', () => {
@@ -134,4 +146,20 @@ describe('Show AI Summaries preference off', () => {
     await displayedListener(tab, { messages: [inboxMessage] });
     expect(sentCommands()).toContain('displaySummary');
   });
+});
+
+it('retries a failed early listener add without accumulating owners', async () => {
+  const listeners = new Set();
+  const addListener = vi.fn()
+    .mockImplementationOnce(() => { throw new Error('synthetic registration failure'); })
+    .mockImplementation((fn) => listeners.add(fn));
+  browser.messageDisplay.onMessagesDisplayed.addListener = addListener;
+  vi.resetModules();
+  const fresh = await import('../agent/modules/summary.js');
+  expect(addListener).toHaveBeenCalledTimes(1);
+  expect(listeners.size).toBe(0);
+  fresh.initSummaryFeatures();
+  fresh.initSummaryFeatures();
+  expect(addListener).toHaveBeenCalledTimes(2);
+  expect(listeners.size).toBe(1);
 });
