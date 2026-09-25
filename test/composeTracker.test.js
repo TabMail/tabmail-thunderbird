@@ -40,6 +40,7 @@ vi.mock('../agent/modules/tagHelper.js', () => ({
 globalThis.browser = {
   tabs: {
     onRemoved: { addListener: vi.fn(), removeListener: vi.fn() },
+    onCreated: { addListener: vi.fn(), removeListener: vi.fn() },
   },
   compose: {
     onBeforeSend: { addListener: vi.fn(), removeListener: vi.fn() },
@@ -68,6 +69,8 @@ const {
   isAnyComposeOpen,
   trackSendInitiated,
   consumeSendInitiated,
+  initComposeHandlers,
+  cleanupComposeTrackerListeners,
 } = await import('../agent/modules/composeTracker.js');
 
 // ---------------------------------------------------------------------------
@@ -101,4 +104,17 @@ describe('trackSendInitiated / consumeSendInitiated', () => {
   it('returns false for untracked tab', () => {
     expect(consumeSendInitiated(999)).toBe(false);
   });
+});
+
+it('retries a failed tab-created registration and retains one listener', () => {
+  const add = browser.tabs.onCreated.addListener;
+  add.mockImplementationOnce(() => { throw new Error('synthetic add failure'); });
+  expect(() => initComposeHandlers()).toThrow('synthetic add failure');
+  initComposeHandlers();
+  const listener = add.mock.calls.at(-1)[0];
+  expect(add).toHaveBeenCalledTimes(2);
+  initComposeHandlers();
+  expect(add).toHaveBeenCalledTimes(2);
+  cleanupComposeTrackerListeners();
+  expect(browser.tabs.onCreated.removeListener).toHaveBeenCalledWith(listener);
 });
