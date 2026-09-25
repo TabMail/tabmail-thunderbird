@@ -6,6 +6,7 @@ import { log } from "./utils.js";
 
 // In-memory cache for this MV3 service worker lifetime.
 let _cachedUserEmailSet = null; // Set<string>
+let _emailCacheGeneration = 0;
 
 async function _loadUserEmailSet() {
   try {
@@ -47,15 +48,22 @@ async function _loadUserEmailSet() {
 
 export async function getUserEmailSetCached() {
   if (_cachedUserEmailSet) return _cachedUserEmailSet;
-  _cachedUserEmailSet = await _loadUserEmailSet();
+  // An identity event may invalidate the cache while accounts.list() is pending.
+  // Never publish the snapshot from before that event.
+  while (!_cachedUserEmailSet) {
+    const generation = _emailCacheGeneration;
+    const loaded = await _loadUserEmailSet();
+    if (generation === _emailCacheGeneration) _cachedUserEmailSet = loaded;
+  }
   return _cachedUserEmailSet;
 }
 
 /** Drop the cached account/identity email set so the next call reloads it.
- * Wired to accounts.onCreated/onDeleted/onUpdated in background.js — without
+ * Wired to account and identity change events in background.js — without
  * this, an account added mid-session is invisible to the recipient-status
  * suppress checks until the MV3 worker restarts. */
 export function invalidateUserEmailCache() {
+  _emailCacheGeneration++;
   _cachedUserEmailSet = null;
 }
 

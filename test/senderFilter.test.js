@@ -38,7 +38,7 @@ globalThis.browser = {
 // Import
 // ---------------------------------------------------------------------------
 
-const { extractEmailFromAuthor, getUserEmailSetCached, isInternalSender, classifyRecipientStatus, computeRecipientStatus } = await import('../agent/modules/senderFilter.js');
+const { extractEmailFromAuthor, getUserEmailSetCached, invalidateUserEmailCache, isInternalSender, classifyRecipientStatus, computeRecipientStatus } = await import('../agent/modules/senderFilter.js');
 
 // ---------------------------------------------------------------------------
 // extractEmailFromAuthor (pure function)
@@ -102,12 +102,26 @@ describe('extractEmailFromAuthor', () => {
 describe('getUserEmailSetCached', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    invalidateUserEmailCache();
   });
 
   it('returns a Set', async () => {
     browser.accounts.list.mockResolvedValue([]);
     const result = await getUserEmailSetCached();
     expect(result).toBeInstanceOf(Set);
+  });
+
+  it('does not install a stale account snapshot when an identity changes during loading', async () => {
+    let releaseOld;
+    browser.accounts.list.mockImplementationOnce(() => new Promise(resolve => { releaseOld = resolve; }))
+      .mockResolvedValue([{ type: 'imap', identities: [{ email: 'new@example.test' }] }]);
+    const pending = getUserEmailSetCached();
+    invalidateUserEmailCache();
+    releaseOld([{ type: 'imap', identities: [{ email: 'old@example.test' }] }]);
+    const result = await pending;
+    expect(result.has('new@example.test')).toBe(true);
+    expect(result.has('old@example.test')).toBe(false);
+    expect((await getUserEmailSetCached()).has('new@example.test')).toBe(true);
   });
 });
 
