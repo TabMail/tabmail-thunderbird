@@ -361,6 +361,7 @@ async function initTheme() {
 // Register the click event before the first asynchronous theme-init step, so
 // Thunderbird can prime it and wake this background for the first chip click.
 _ensureActionChipClickListener("background-load");
+_ensureHeaderChipClickListener("background-load");
 
 // Initialise on startup and install/update
 browser.runtime.onStartup.addListener(() => {

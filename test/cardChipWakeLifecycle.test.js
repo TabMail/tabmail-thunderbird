@@ -52,8 +52,26 @@ describe('card chip first-click wake contract', () => {
       expect(chip?.textContent).toBe('Delete');
       const click = () => chip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
 
+      const cardMousedownReached = vi.fn();
+      chip.addEventListener('mousedown', cardMousedownReached);
+      chip.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+      expect(cardMousedownReached).not.toHaveBeenCalled();
+
       const live = vi.fn();
       x.api.onActionChipClick.addListener(live);
+      for (const marker of ['tm-header-action-chip', 'tm-multi-action-chip']) {
+        const foreignChip = doc.createElement('span');
+        foreignChip.className = `tm-action-chip ${marker}`;
+        foreignChip.dataset.tmWeMsgId = '2';
+        doc.body.appendChild(foreignChip);
+        const mousedownReached = vi.fn();
+        foreignChip.addEventListener('mousedown', mousedownReached);
+        foreignChip.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
+        foreignChip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+        expect(mousedownReached).toHaveBeenCalledTimes(1);
+        expect(live).not.toHaveBeenCalled();
+        foreignChip.remove();
+      }
       click();
       expect(selected).toHaveBeenCalledWith(0);
       expect(live).toHaveBeenCalledTimes(1);
@@ -182,6 +200,69 @@ describe('card chip first-click wake contract', () => {
       expect(moves).toHaveBeenCalledExactlyOnceWith([1], 'trash', { isUserAction: true });
       expect(messages.get(1)).toMatchObject({ id: 1, read: true, folder: { id: 'trash' } });
       expect(messages.get(2)).toMatchObject({ id: 2, read: false, folder: { id: 'inbox' } });
+      registration.unregister();
+    } finally {
+      x.instance.onShutdown(false);
+      dom.window.close();
+    }
+  });
+
+  it.each([
+    ['mouse click', 'click'],
+    ['Enter', 'Enter'],
+    ['Space', ' '],
+  ])('does not act on a new selection when the queued %s target disappeared', async (_name, activation) => {
+    const { dom, w, doc, tree, Row } = renderedChip();
+    const x = experiment(cardExperiment, 'tmMessageListCardView', { windows: [w.win] });
+    try {
+      await x.api.init();
+      const row = doc.createElement('tr');
+      row.id = 'threadTree-row0';
+      row.setAttribute('is', 'thread-card');
+      doc.querySelector('tbody').appendChild(row);
+      Row.prototype.fillRow.call(row, 0, null, {}, tree.view);
+      const chip = row.querySelector('.tm-action-chip');
+      expect(chip?.dataset.tmWeMsgId).toBe('1');
+
+      const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
+      const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+      const node = ast.body.find(entry => entry.type === 'FunctionDeclaration'
+        && entry.id?.name === '_onActionChipClick');
+      const remaining = { id: 2, subject: 'New selection' };
+      const messages = new Map([[1, { id: 1 }], [2, remaining]]);
+      const context = {
+        console: { log() {}, error() {} },
+        browser: { messages: { get: vi.fn(async id => messages.get(id) ?? null) } },
+        performTaggedAction: vi.fn(async () => {}),
+        triggerTagActionKey: vi.fn(async () => {}),
+      };
+      vm.runInNewContext(`${source.slice(node.start, node.end)}\nthis.handle = _onActionChipClick`, context);
+
+      const queued = [];
+      const persisted = x.api.onActionChipClick.testPersistentRegistration();
+      const registration = persisted.prime({
+        wakeup: vi.fn(async () => {}),
+        async: info => new Promise(resolve => queued.push({ info, resolve })),
+      });
+      if (activation === 'click') {
+        chip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      } else {
+        chip.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: activation, bubbles: true }));
+      }
+      expect(queued).toHaveLength(1);
+      expect(queued[0].info.weMsgId).toBe(1);
+      messages.delete(1); // Original target vanished while the background was waking.
+      const resumed = vi.fn(info => context.handle(info));
+      registration.convert({ async: resumed });
+      for (const item of queued) item.resolve(await resumed(item.info));
+      expect(context.browser.messages.get).toHaveBeenCalledExactlyOnceWith(1);
+      expect(context.performTaggedAction).not.toHaveBeenCalled();
+      expect(context.triggerTagActionKey).not.toHaveBeenCalled();
+      expect(messages.get(2)).toBe(remaining);
+
+      // A failed first delivery must not strand the converted subscription.
+      x.context.extension.emit('onActionChipClick', { source: 'click', weMsgId: 2 });
+      await vi.waitFor(() => expect(context.performTaggedAction).toHaveBeenCalledExactlyOnceWith(remaining));
       registration.unregister();
     } finally {
       x.instance.onShutdown(false);
