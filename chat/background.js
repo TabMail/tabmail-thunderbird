@@ -330,8 +330,10 @@ let ftsProbePromise = null;
 // Sync the toolbar "fts" warning to current availability, and arm/disarm the
 // periodic recheck alarm (armed while the helper needs installation/reinstall).
 async function syncFtsWarning() {
+  try { await setWarning("fts", getFtsHelperAvailable() === false); } catch (_) {}
+  // The helper can disconnect while the toolbar update awaits. Decide whether
+  // to clear its recovery alarm from the current status, not that stale view.
   const avail = getFtsHelperAvailable();
-  try { await setWarning("fts", avail === false); } catch (_) {}
   try {
     if (avail === false || ftsInitializationPending) {
       browser.alarms.create(FTS_RECHECK_ALARM, { periodInMinutes: 1 });
