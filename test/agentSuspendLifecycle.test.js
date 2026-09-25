@@ -18,7 +18,7 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 import { registerTabKeyHandlers, cleanupTagActionKeyListeners } from '../agent/modules/tagActionKey.js';
 
-function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, coverageMessage } = {}) {
+function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, threadTagRegistrar, coverageMessage } = {}) {
   const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
@@ -36,6 +36,7 @@ function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, covera
         : name === 'registerTabKeyHandlers' && tabKeyRegistrar
           ? tabKeyRegistrar : () => Promise.resolve({});
       if (name === 'attachOnUpdatedListener' && updatedRegistrar) globals[name] = updatedRegistrar;
+      if (name === 'attachThreadTagWatchers' && threadTagRegistrar) globals[name] = threadTagRegistrar;
     }
     script = script.slice(0, entry.start)
       + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
@@ -97,6 +98,26 @@ describe('agent background startup and canceled suspend', () => {
     const register = vi.fn();
     startAgent({ updatedRegistrar: register });
     expect(register).toHaveBeenCalledOnce();
+  });
+
+  it('registers the thread-tag watcher before startup and retries a failed early add later', async () => {
+    const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+    const calls = ast.body.filter(node => node.type === 'ExpressionStatement'
+      && node.expression?.type === 'CallExpression')
+      .map(node => ({ name: node.expression.callee?.name, at: node.start }));
+    expect(calls.find(call => call.name === 'attachThreadTagWatchers')?.at)
+      .toBeLessThan(calls.find(call => call.name === 'init')?.at);
+
+    let attached = false;
+    const register = vi.fn(() => {
+      if (register.mock.calls.length > 1) attached = true;
+    });
+    startAgent({ threadTagRegistrar: register });
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(attached).toBe(false);
+    await vi.waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+    expect(attached).toBe(true);
   });
 
   it('registers table coverage before async startup and enqueues the event identity after suspend', async () => {
