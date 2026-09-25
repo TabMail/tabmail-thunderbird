@@ -288,6 +288,7 @@ describe("native folder-membership v1 contract", () => {
     app.port.disconnect();
     expect(app.nativeFtsSearch.getHostAvailability()).toBe(false);
     expect(app.armed.has("tabmail-fts-helper-recheck")).toBe(true);
+    expect(app.armed.get("tabmail-fts-helper-recheck")).toEqual({ periodInMinutes: 1 });
     expect(browser.alarms.create).toHaveBeenCalledTimes(1);
 
     const replacement = makeNativePort(true);
