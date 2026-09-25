@@ -63,6 +63,42 @@ function startFromManifest(parent) {
 }
 
 describe('manifest-selected update wake contract', () => {
+  it('retains a pending update across listener teardown and background recreation', async () => {
+    const first = pane();
+    const second = pane();
+    try {
+      const x = experiment(updatesDeclaration.parent.script, 'tmUpdates', { windows: [first.win] });
+      const quit = vi.fn();
+      x.Services.startup = { quit };
+      const firstGeneration = startFromManifest(x.api);
+      await firstGeneration.listeners.message({ command: 'setPendingUpdate', version: '99.0.3' });
+      x.openWindow(second.win);
+      expect(second.win.document.getElementById('tabmail-update-notification-bar')).not.toBeNull();
+
+      firstGeneration.browser.tmUpdates.onNotificationAction.close();
+      const recreated = x.instance.getAPI(x.context).tmUpdates;
+      const secondGeneration = startFromManifest(recreated);
+      expect(await secondGeneration.listeners.message({ command: 'getUpdateState' })).toMatchObject({
+        updateState: 'pending', pendingVersion: '99.0.3',
+      });
+      const later = [...first.win.document.querySelectorAll('button')]
+        .find(button => button.textContent === 'Later');
+      later.click();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(first.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
+      expect(second.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
+      expect(await recreated.isUpdateBarVisible()).toBe(false);
+      expect(await secondGeneration.listeners.message({ command: 'getUpdateState' })).toMatchObject({
+        updateState: 'pending', pendingVersion: '99.0.3',
+      });
+      expect(quit).not.toHaveBeenCalled();
+      x.instance.onShutdown(false);
+    } finally {
+      first.dom.window.close();
+      second.dom.window.close();
+    }
+  });
+
   it('keeps a real native-FTS bar out of the popup while preserving an add-on update', async () => {
     const p = pane();
     const popup = new JSDOM('<div id="version-status-banner"></div><span id="version-text"></span><a id="check-updates-link"></a>');
@@ -97,6 +133,8 @@ describe('manifest-selected update wake contract', () => {
       later.click();
       await new Promise(resolve => setImmediate(resolve));
       expect(p.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
+      expect(await x.api.isUpdateBarVisible()).toBe(false);
+      expect(x.windowListeners.size).toBe(0);
       expect(await listeners.message({ command: 'getUpdateState' })).toMatchObject({
         updateState: 'pending', pendingVersion: '1.8.4',
       });
@@ -121,10 +159,14 @@ describe('manifest-selected update wake contract', () => {
       const { browser, listeners } = startFromManifest(x.api);
       const scope = { browser, console: quietConsole, SIMULATED_VERSION: '99.0.0',
         $: id => config.window.document.getElementById(id) };
-      const functions = ['updateDebugStatusDisplay', 'simulateUpdateAvailable', 'clearUpdateState']
+      const functions = ['updateDebugStatusDisplay', 'simulateUpdateAvailable', 'clearUpdateState', 'showUpdateBar']
         .map(name => selectedFunction('config/modules/updateDebug.js', name)).join('\n');
-      vm.runInNewContext(`${functions}\nglobalThis.runDebug = { simulateUpdateAvailable, clearUpdateState };`, scope);
+      vm.runInNewContext(`${functions}\nglobalThis.runDebug = { simulateUpdateAvailable, clearUpdateState, showUpdateBar };`, scope);
       await scope.runDebug.simulateUpdateAvailable();
+      await x.api.setPendingUpdateVersion('1.8.4');
+      await scope.runDebug.showUpdateBar();
+      expect(first.win.document.querySelector('.tm-update-message-line2')?.textContent).toContain('v1.8.4');
+      await x.api.setPendingUpdateVersion('99.0.0');
       x.openWindow(second.win);
       expect(first.win.document.getElementById('tabmail-update-notification-bar')).not.toBeNull();
       expect(second.win.document.getElementById('tabmail-update-notification-bar')).not.toBeNull();
@@ -138,6 +180,10 @@ describe('manifest-selected update wake contract', () => {
       expect(await listeners.message({ command: 'getUpdateState' })).toMatchObject({
         updateState: null, pendingVersion: null,
       });
+      await scope.runDebug.showUpdateBar();
+      expect(first.win.document.querySelector('.tm-update-message-line2')?.textContent)
+        .toContain('v99.0.0');
+      await x.api.hideUpdateBar();
       x.openWindow(third.win);
       expect(third.win.document.getElementById('tabmail-update-notification-bar')).toBeNull();
       x.instance.onShutdown(false);
@@ -146,6 +192,33 @@ describe('manifest-selected update wake contract', () => {
       second.dom.window.close();
       third.dom.window.close();
       config.window.close();
+    }
+  });
+
+  it('passes the popup manual update result through the manager to the native bar', async () => {
+    const p = pane();
+    const popup = new JSDOM('<a id="check-updates-link">Check for updates</a><span id="version-text"></span>');
+    try {
+      const x = experiment(updatesDeclaration.parent.script, 'tmUpdates', { windows: [p.win] });
+      const { browser, listeners } = startFromManifest(x.api);
+      browser.tmUpdates.checkForUpdates = async () => ({ status: 'update_available', version: '1.8.4' });
+      const scope = { browser, document: popup.window.document, console: quietConsole };
+      vm.runInNewContext(`${selectedFunction('popup/popup.js', 'handleCheckForUpdates')}\nglobalThis.check = handleCheckForUpdates;`, scope);
+      await scope.check();
+      expect(await listeners.message({ command: 'getUpdateState' })).toMatchObject({
+        updateState: 'pending', pendingVersion: '1.8.4',
+      });
+      expect(p.win.document.querySelector('.tm-update-message-line2')?.textContent).toContain('v1.8.4');
+      expect(popup.window.document.getElementById('version-text').textContent)
+        .toBe('Restart Thunderbird to update to v1.8.4');
+      vm.runInNewContext(`${selectedFunction('popup/popup.js', 'updateVersionStatus')}\nglobalThis.refresh = updateVersionStatus;`, scope);
+      await scope.refresh();
+      expect(popup.window.document.getElementById('version-text').textContent)
+        .toBe('Restart Thunderbird to update to v1.8.4');
+      x.instance.onShutdown(false);
+    } finally {
+      p.dom.window.close();
+      popup.window.close();
     }
   });
 
