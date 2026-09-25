@@ -12,8 +12,6 @@ import * as idb from "./idbStorage.js";
 import { getInboxForAccount } from "./inboxContext.js";
 import { ACTION_TAG_IDS, recomputeThreadForInboxMessage } from "./tagHelper.js";
 import {
-    clearAlarm,
-    ensureAlarm,
     getArchiveFolderForHeader,
     getTrashFolderForHeader,
     getUniqueMessageKey,
@@ -24,6 +22,40 @@ import {
 } from "./utils.js";
 
 const STALE_TAG_SWEEP_ALARM_NAME = "agent-stale-tag-sweep";
+let _staleTagSweepAlarmAttached = false;
+let _staleTagSweepSchedule = Promise.resolve();
+
+const _onStaleTagSweepAlarm = (alarm) => {
+  if (alarm?.name !== STALE_TAG_SWEEP_ALARM_NAME) return;
+  return runStaleTagSweep().catch((e) => {
+    log(`[TMDBG onMoved] staleTagSweep alarm handler error: ${e}`, "warn");
+  });
+};
+
+function _attachStaleTagSweepAlarmListener() {
+  if (_staleTagSweepAlarmAttached || SETTINGS?.onMoved?.staleTagSweep?.enabled !== true) return;
+  if (!browser.alarms?.onAlarm) return;
+  try {
+    browser.alarms.onAlarm.addListener(_onStaleTagSweepAlarm);
+    _staleTagSweepAlarmAttached = true;
+  } catch (e) {
+    log(`[TMDBG onMoved] staleTagSweep alarm listener attach failed: ${e}`, "warn");
+  }
+}
+
+function _scheduleStaleTagSweepAlarm(intervalMinutes) {
+  _staleTagSweepSchedule = _staleTagSweepSchedule.catch(() => {}).then(async () => {
+    if (!_staleTagSweepAlarmAttached) throw new Error("alarm listener unavailable");
+    const existing = await browser.alarms.get(STALE_TAG_SWEEP_ALARM_NAME);
+    if (existing?.periodInMinutes === intervalMinutes) return;
+    if (existing) await browser.alarms.clear(STALE_TAG_SWEEP_ALARM_NAME);
+    await browser.alarms.create(STALE_TAG_SWEEP_ALARM_NAME, {
+      delayInMinutes: intervalMinutes,
+      periodInMinutes: intervalMinutes,
+    });
+  });
+  return _staleTagSweepSchedule;
+}
 
 /**
  * Sanitize stale TabMail action tags on a single message.
@@ -443,13 +475,17 @@ export async function runStaleTagSweep(options = {}) {
 
         // Find Inbox folder for this account to check if a message also exists there.
         // Use centralized helper from inboxContext.js to avoid duplication.
-        let inboxFolderIds = [];
+        let inbox = null;
         try {
-          const inbox = await getInboxForAccount(acc.id);
-          if (inbox?.id) {
-            inboxFolderIds = [inbox.id];
-          }
+          inbox = await getInboxForAccount(acc.id);
         } catch (_) {}
+        if (!inbox?.id) {
+          // A cold alarm wake can race account/folder discovery. Without an
+          // Inbox identity, an All Mail copy could be mistaken for a stale tag.
+          log(`[TMDBG onMoved] staleTagSweep skipped account=${acc.id}: Inbox unavailable`, "warn");
+          continue;
+        }
+        const inboxFolderIds = [inbox.id];
 
         log(`[TMDBG onMoved] staleTagSweep account=${acc.id} targetFolders=[${targetFolders.map(f => f.path || f.name).join(", ")}]`);
 
@@ -479,19 +515,21 @@ export async function runStaleTagSweep(options = {}) {
                 // Before stripping, check if this message also exists in Inbox (e.g., All Mail view of Inbox message).
                 // If it does, skip — the tag is legitimate.
                 const headerMessageId = msg.headerMessageId ? String(msg.headerMessageId).replace(/[<>]/g, "") : null;
-                if (headerMessageId && inboxFolderIds.length > 0) {
-                  try {
-                    const inboxQuery = await browser.messages.query({ folderId: inboxFolderIds, headerMessageId });
-                    if (inboxQuery?.messages?.length > 0) {
-                      // Message exists in Inbox — skip stripping, tag is valid.
-                      log(`[TMDBG onMoved] staleTagSweep skipped (exists in Inbox) id=${msg.id} headerMessageId=${headerMessageId}`);
-                      continue;
-                    }
-                  } catch (eInboxCheck) {
-                    // If query fails, err on the side of caution: skip stripping.
-                    log(`[TMDBG onMoved] staleTagSweep inbox check failed id=${msg.id}: ${eInboxCheck}`, "info");
+                if (!headerMessageId) {
+                  // No stable identity means we cannot prove it is absent from Inbox.
+                  continue;
+                }
+                try {
+                  const inboxQuery = await browser.messages.query({ folderId: inboxFolderIds, headerMessageId });
+                  if (inboxQuery?.messages?.length > 0) {
+                    // Message exists in Inbox — skip stripping, tag is valid.
+                    log(`[TMDBG onMoved] staleTagSweep skipped (exists in Inbox) id=${msg.id} headerMessageId=${headerMessageId}`);
                     continue;
                   }
+                } catch (eInboxCheck) {
+                  // If query fails, err on the side of caution: skip stripping.
+                  log(`[TMDBG onMoved] staleTagSweep inbox check failed id=${msg.id}: ${eInboxCheck}`, "info");
+                  continue;
                 }
 
                 // This message has a stale TabMail action tag and is NOT in Inbox — strip it.
@@ -564,6 +602,9 @@ export function attachOnUpdatedListener() {
  * and never changes tags.
  */
 export function attachOnMovedListeners({ scheduleSweep = true } = {}) {
+  // This first call runs before agent/background.js reaches its startup awaits.
+  // Register the stock alarm listener now so its first post-suspend event wakes us.
+  _attachStaleTagSweepAlarmListener();
   try {
     if (browser.messages && browser.messages.onMoved && !_onMovedHandler) {
       const handler = async (...args) => {
@@ -990,16 +1031,7 @@ export function attachOnMovedListeners({ scheduleSweep = true } = {}) {
       if (cfg?.enabled === true) {
         const intervalMinutes = Number(cfg.intervalMinutes);
         if (Number.isFinite(intervalMinutes) && intervalMinutes >= 1) {
-          ensureAlarm({
-            name: STALE_TAG_SWEEP_ALARM_NAME,
-            periodMinutes: intervalMinutes,
-            delayMinutes: intervalMinutes,
-            onAlarm: () => {
-              runStaleTagSweep().catch((e) => {
-                log(`[TMDBG onMoved] staleTagSweep alarm handler error: ${e}`, "warn");
-              });
-            },
-          }).then(() => {
+          _scheduleStaleTagSweepAlarm(intervalMinutes).then(() => {
             log(`[TMDBG onMoved] staleTagSweep alarm scheduled every ${intervalMinutes} minute(s)`);
           }).catch((e) => {
             log(`[TMDBG onMoved] staleTagSweep alarm setup failed: ${e}`, "warn");
@@ -1021,8 +1053,16 @@ export function attachOnMovedListeners({ scheduleSweep = true } = {}) {
  */
 export function cleanupOnMovedListeners() {
   try {
-    clearAlarm(STALE_TAG_SWEEP_ALARM_NAME).catch(() => {});
+    browser.alarms?.clear(STALE_TAG_SWEEP_ALARM_NAME).catch(() => {});
   } catch (_) {}
+  if (_staleTagSweepAlarmAttached && browser.alarms?.onAlarm) {
+    try {
+      browser.alarms.onAlarm.removeListener(_onStaleTagSweepAlarm);
+      _staleTagSweepAlarmAttached = false;
+    } catch (e) {
+      log(`[TMDBG onMoved] staleTagSweep alarm listener removal failed: ${e}`, "warn");
+    }
+  }
   try {
     if (_onMessageUpdatedHandler && browser.messages?.onUpdated) {
       browser.messages.onUpdated.removeListener(_onMessageUpdatedHandler);
