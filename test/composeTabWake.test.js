@@ -61,6 +61,12 @@ it('registers the compose-tab consumer before startup can await', () => {
 async function startWithRealTracker(failFirstAdd) {
   const events = new Map();
   let addAttempts = 0;
+  const details = new Map([
+    [41, { type: 'reply', relatedMessageId: 7 }],
+    [42, { type: 'reply', relatedMessageId: 7 }],
+    [43, { type: 'forward', relatedMessageId: 7 }],
+    [44, {}],
+  ]);
   const event = path => {
     if (!events.has(path)) {
       const listeners = new Set();
@@ -82,7 +88,7 @@ async function startWithRealTracker(failFirstAdd) {
   };
   const overrides = {
     'browser.runtime.getManifest': () => ({ version: 'synthetic' }),
-    'browser.compose.getComposeDetails': async () => ({ type: 'reply', relatedMessageId: 7 }),
+    'browser.compose.getComposeDetails': async id => details.get(id) || {},
     'browser.accounts.list': async () => [],
     'browser.storage.local.get': async value => value,
     'browser.windows.getAll': async () => [],
@@ -136,28 +142,32 @@ async function startWithRealTracker(failFirstAdd) {
   const replyKey = 'reply:synthetic-account:/Inbox:thread@example.test';
   await idb.set({ [replyKey]: { reply: 'Synthetic reply.', directReplace: true } });
   let now = 0;
+  const createReply = vi.fn(async () => { throw new Error('cached reply should be used'); });
   const tracker = evaluate('agent/modules/composeTracker.js', {
     browser, idb, console: quietConsole, Date, performance: { now: () => now },
     setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); return 1; },
     log() {}, formatForLog: value => value,
     getUniqueMessageKey: async () => replyKey.slice(6),
-    createReply: async () => { throw new Error('cached reply should be used'); },
+    createReply,
     STORAGE_PREFIX: 'reply:', ACTIONS: { REPLY: 'reply' },
     getActionForWeId: async () => null, getSentFoldersForAccount: async () => [],
     applyPriorityTag: async () => {},
   });
   let releaseStartup;
+  const scanAllInboxes = vi.fn(async () => {});
   evaluate('agent/background.js', {
     browser, idb, console: quietConsole, Date, performance, window: {}, navigator: {},
     setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
     initComposeHandlers: tracker.initComposeHandlers,
     isAnyComposeOpen: tracker.isAnyComposeOpen,
     ensureActionTags: () => new Promise(resolve => { releaseStartup = resolve; }),
+    scanAllInboxes,
     __loadModule: async () => new Proxy({}, { get: (_, key) => key === 'then' ? undefined : () => Promise.resolve({}) }),
     log() {},
   });
   return {
-    idb, tracker, event, get addAttempts() { return addAttempts; },
+    idb, tracker, event, createReply, scanAllInboxes,
+    get addAttempts() { return addAttempts; },
     async finishStartup() {
       releaseStartup();
       for (let i = 0; i < 100; i++) await Promise.resolve();
@@ -187,7 +197,45 @@ it('recovers a failed early add through init without stacking or losing the repl
 
 it('retains one real compose-tab consumer across normal startup', async () => {
   const run = await startWithRealTracker(false);
+  await run.event('browser.tabs.onCreated').emit({ id: 41 });
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toEqual({
+    content: 'Synthetic reply.', directReplace: true,
+  });
+  expect((await run.idb.get(run.replyKey))[run.replyKey].directReplace).toBe(false);
+  expect(run.tracker.isAnyComposeOpen()).toBe(true);
   await run.finishStartup();
+  expect(run.scanAllInboxes).not.toHaveBeenCalled();
   expect(run.addAttempts).toBe(1);
   expect(run.event('browser.tabs.onCreated').listeners.size).toBe(1);
+  await run.event('browser.tabs.onCreated').emit({ id: 42 });
+  expect((await run.idb.get('activePrecompose:42'))['activePrecompose:42'].directReplace).toBe(false);
+  await run.event('browser.tabs.onRemoved').emit(41);
+  await run.event('browser.tabs.onRemoved').emit(42);
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toBeUndefined();
+  expect((await run.idb.get('activePrecompose:42'))['activePrecompose:42']).toBeUndefined();
+  expect(run.tracker.isAnyComposeOpen()).toBe(false);
+});
+
+it('scans when no compose window opened during startup', async () => {
+  const run = await startWithRealTracker(false);
+  await run.finishStartup();
+  expect(run.scanAllInboxes).toHaveBeenCalledTimes(1);
+  expect(run.tracker.isAnyComposeOpen()).toBe(false);
+});
+
+it('does not activate a cached reply for a forward or ordinary tab', async () => {
+  const run = await startWithRealTracker(false);
+  const created = run.event('browser.tabs.onCreated');
+  await created.emit({ id: 43 });
+  await created.emit({ id: 44 });
+  for (const id of [43, 44]) {
+    expect((await run.idb.get(`activePrecompose:${id}`))[`activePrecompose:${id}`]).toBeUndefined();
+  }
+  expect((await run.idb.get(run.replyKey))[run.replyKey].directReplace).toBe(true);
+  expect(run.tracker.isAnyComposeOpen()).toBe(false);
+  expect(run.createReply).not.toHaveBeenCalled();
+  // The same cached proposal must still activate a genuine reply.
+  await created.emit({ id: 41 });
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41'].content).toBe('Synthetic reply.');
+  expect((await run.idb.get(run.replyKey))[run.replyKey].directReplace).toBe(false);
 });
