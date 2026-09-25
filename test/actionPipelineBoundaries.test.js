@@ -36,7 +36,7 @@ vi.mock('../agent/modules/summaryGenerator.js',()=>({getSummary:(...a)=>dependen
 vi.mock('../agent/modules/messagePrefilter.js',()=>({analyzeEmailForReplyFilter:async()=>({skipCachedReply:false})}));
 vi.mock('../agent/modules/senderFilter.js',()=>({isInternalSender:(...a)=>dependencies.internal(...a)}));
 vi.mock('../agent/modules/replyGenerator.js',()=>({createReply:(...args)=>dependencies.reply(...args),purgeExpiredReplyEntries:async()=>{}}));
-vi.mock('../agent/modules/tagHelper.js',()=>({runThreadAggregation:async()=>{}}));
+vi.mock('../agent/modules/tagHelper.js',()=>({runThreadAggregation:async()=>{},applyPriorityTag:async(_id,action)=>owner.setAction(header,action)}));
 vi.mock('../agent/modules/promptGenerator.js',()=>({getUserActionPrompt:async()=>''}));
 vi.mock('../agent/modules/deviceSync.js',()=>({probeAICache:(...a)=>dependencies.peer(...a)}));
 vi.mock('../agent/modules/llm.js',()=>({sendChat:(...args)=>dependencies.chat(...args),processJSONResponse:JSON.parse}));
@@ -163,14 +163,59 @@ it('actual recompute menu clears selected state before creating durable fresh wo
  await owner.setAction(header,'reply',{meta:{orig:'reply',userprompt:'synthetic old prompt'}});
  h.store.unrelated='keep';h.native.set(999,'none');
  const menus=await import('../agent/modules/contextMenus.js');const queue=await import('../agent/modules/messageProcessorQueue.js');
- await menus.initContextMenus();expect(created.some(m=>m.id==='tabmail-agent-recompute-action')).toBe(true);
+ expect(listener).toBeTypeOf('function'); // Primed before asynchronous menu reconstruction.
  await listener({menuItemId:'tabmail-agent-recompute-action',selectedMessages:{messages:[header]}});
+ await menus.initContextMenus();expect(created.some(m=>m.id==='tabmail-agent-recompute-action')).toBe(true);
  expect(h.store['action:'+key]).toBeUndefined();expect(h.store['action:orig:'+key]).toBeUndefined();expect(h.native.get(1)).toBe('');
  expect(queue.getProcessMessageQueueStatus().pending).toBe(1);expect(disk.agent_processmessage_pending).toHaveLength(1);
  await queue.drainProcessMessageQueue();
  expect({action:h.store['action:'+key],native:h.native.get(1),orig:h.store['action:orig:'+key],pending:queue.getProcessMessageQueueStatus().pending}).toEqual({action:'archive',native:'archive',orig:'archive',pending:0});
  expect(h.store.unrelated).toBe('keep');expect(h.native.get(999)).toBe('none');expect(disk.agent_processmessage_pending).toBeUndefined();
  await queue.cleanupProcessMessageQueue();menus.cleanupContextMenus();
+});
+it('ordinary menu clicks work before and during menu reconstruction without stacking listeners',async()=>{
+ const clicked=new Set(),created=[];
+ let releaseRemove;
+ browser.menus={removeAll:vi.fn(()=>new Promise(resolve=>{releaseRemove=resolve;})),create:item=>created.push(item.id),refresh:async()=>{},
+  onClicked:{addListener:fn=>clicked.add(fn),removeListener:fn=>clicked.delete(fn)},
+  onShown:{addListener:()=>{},removeListener:()=>{}}};
+ browser.storage.local.get=async()=>({debugMode:false});
+ h.native.set(999,'archive');h.store.unrelated='keep';
+ const menus=await import('../agent/modules/contextMenus.js');
+ expect(clicked.size).toBe(1);
+ const click=[...clicked][0];
+ const commands=[['tabmail-agent-tag-reply','reply'],['tabmail-agent-tag-archive','archive'],['tabmail-agent-tag-delete','delete'],['tabmail-agent-remove-tag','none']];
+ await click({menuItemId:commands[0][0],selectedMessages:{messages:[header]}});
+ expect(h.store['action:'+key]).toBe('reply');expect(h.native.get(1)).toBe('reply');
+ const initializing=menus.initContextMenus();
+ expect(browser.menus.removeAll).toHaveBeenCalledTimes(1);
+ for(const [menuItemId,action] of commands.slice(1)){
+  await click({menuItemId,selectedMessages:{messages:[header]}});
+  expect(h.store['action:'+key]).toBe(action);expect(h.native.get(1)).toBe(action);
+ }
+ expect(h.store.unrelated).toBe('keep');expect(h.native.get(999)).toBe('archive');
+ releaseRemove();await initializing;
+ expect(created).toEqual(expect.arrayContaining(commands.map(([id])=>id)));
+ expect([...clicked]).toEqual([click]);
+ menus.cleanupContextMenus();expect(clicked.size).toBe(0);
+});
+it('menu events keep one stable owner across repeated init and cleanup',async()=>{
+ const clicked=new Set(),shown=new Set();
+ const addClicked=vi.fn(fn=>clicked.add(fn)),addShown=vi.fn(fn=>shown.add(fn));
+ browser.menus={removeAll:async()=>{},create:()=>{},refresh:async()=>{},
+  onClicked:{addListener:addClicked,removeListener:fn=>clicked.delete(fn)},
+  onShown:{addListener:addShown,removeListener:fn=>shown.delete(fn)}};
+ const menus=await import('../agent/modules/contextMenus.js');
+ expect(clicked.size).toBe(1);expect(shown.size).toBe(0);
+ const click=[...clicked][0];
+ await menus.initContextMenus();await menus.initContextMenus();
+ expect(shown.size).toBe(1);
+ expect(addClicked).toHaveBeenCalledTimes(1);expect(addShown).toHaveBeenCalledTimes(1);
+ menus.cleanupContextMenus();expect(clicked.size).toBe(0);expect(shown.size).toBe(0);
+ await menus.initContextMenus();
+ expect([...clicked]).toEqual([click]);expect(shown.size).toBe(1);
+ expect(addClicked).toHaveBeenCalledTimes(2);expect(addShown).toHaveBeenCalledTimes(2);
+ menus.cleanupContextMenus();
 });
 it('unknown member lookup prevents partial thread writes while a complete retry succeeds',async()=>{
  const other={...header,id:3,headerMessageId:'other@example.test'};
