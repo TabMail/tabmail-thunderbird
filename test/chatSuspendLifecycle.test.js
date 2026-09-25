@@ -74,6 +74,9 @@ it('registers both runtime consumers before startup timers and keeps one owner',
   expect((await runtime.emit({ command: 'get-current-selection' })).filter(Boolean)).toEqual([
     { ok: true, selectedMessageIds: ['synthetic-selected'], selectionCount: 1 },
   ]);
+  const chatListener = [...runtime.listeners].find(listener => listener.name === 'chatRuntimeMessageListener');
+  // A Promise resolving to undefined still claims a runtime response in Gecko.
+  expect(chatListener({ type: 'fts', cmd: 'stats' })).toBeUndefined();
   const ftsConsumer = vi.fn(message => message?.type === 'fts' ? { source: 'fts' } : undefined);
   runtime.addListener(ftsConsumer);
   expect((await runtime.emit({ type: 'fts', cmd: 'stats' })).filter(Boolean)).toEqual([{ source: 'fts' }]);
