@@ -28,6 +28,36 @@ function renderedHeaderChip() {
 }
 
 describe('header chip first-click wake contract', () => {
+  it('wires a message tab opened after initialization without stacking on refresh', async () => {
+    const w = makeWindow();
+    const x = experiment(headerExperiment, 'tmMessageHeaderChip', { windows: [w.win] });
+    const dom = new JSDOM('<div id="messageHeader"><div id="headerSubjectSecurityContainer"><div id="expandedButtonsBox"></div></div></div>');
+    try {
+      await x.api.init();
+      dom.window.gMessage = {
+        ...w.hdr,
+        folder: { ...w.hdr.folder, flags: 1 },
+        getStringProperty: key => key === 'tm-action' ? 'reply' : '',
+      };
+      w.win.document.getElementById('tabmail').tabInfo.push({ chromeBrowser: {
+        contentDocument: dom.window.document,
+        contentWindow: dom.window,
+      } });
+      const received = vi.fn();
+      x.api.onActionChipClick.addListener(received);
+
+      await x.api.refreshAll();
+      await x.api.refreshAll();
+      const chip = dom.window.document.querySelector('.tm-header-action-chip');
+      expect(chip).not.toBeNull();
+      chip.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      expect(received).toHaveBeenCalledExactlyOnceWith({ source: 'click', weMsgId: 1 });
+    } finally {
+      x.instance.onShutdown(false);
+      dom.window.close();
+    }
+  });
+
   it('registers its consumer before the first asynchronous theme initialization', () => {
     const source = readFileSync(new URL('../theme/background.js', import.meta.url), 'utf8');
     const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
