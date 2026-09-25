@@ -4,19 +4,17 @@ import vm from 'node:vm';
 import { parse } from 'acorn';
 import { IDBFactory } from 'fake-indexeddb';
 
-it('registers compose-tab and proactive-alarm consumers before startup can await', () => {
+it('registers the compose-tab consumer before startup can await', () => {
   let source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   const tabsCreated = new Set();
   const received = [];
   const composeListener = tab => received.push(tab.id);
   const initComposeHandlers = vi.fn(() => tabsCreated.add(composeListener));
-  const primeProactiveAlarmListener = vi.fn();
   const globals = {
     console: { log() {}, warn() {}, error() {} }, Date, performance,
     window: {}, navigator: {}, setTimeout: () => 1, clearTimeout() {},
     setInterval: () => 1, clearInterval() {}, initComposeHandlers,
-    primeProactiveAlarmListener,
     // Hold the first awaited startup dependency. A late registration cannot
     // receive an event while a new background generation is starting.
     ensureActionTags: () => new Promise(() => {}),
@@ -24,7 +22,7 @@ it('registers compose-tab and proactive-alarm consumers before startup can await
   for (const entry of ast.body.filter(node => node.type === 'ImportDeclaration').reverse()) {
     for (const specifier of entry.specifiers) {
       const name = specifier.local.name;
-      if (name === 'initComposeHandlers' || name === 'primeProactiveAlarmListener' || name === 'ensureActionTags') continue;
+      if (name === 'initComposeHandlers' || name === 'ensureActionTags') continue;
       globals[name] = name === 'SETTINGS' ? {} : name === 'idb' ? {} : () => Promise.resolve({});
     }
     source = source.slice(0, entry.start)
@@ -53,7 +51,6 @@ it('registers compose-tab and proactive-alarm consumers before startup can await
   vm.runInNewContext(source, globals, { filename: 'agent/background.js' });
 
   expect(initComposeHandlers).toHaveBeenCalledTimes(1);
-  expect(primeProactiveAlarmListener).toHaveBeenCalledTimes(1);
   expect(tabsCreated.size).toBe(1);
   for (const listener of tabsCreated) listener({ id: 41 });
   expect(received).toEqual([41]);
