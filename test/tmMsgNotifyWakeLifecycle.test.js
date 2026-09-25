@@ -87,7 +87,7 @@ function makeLifecycle() {
     node.type === 'ExportNamedDeclaration' && node.declaration?.id?.name === 'setupExperimentListeners'
   )?.declaration;
   expect(setup).toBeTruthy();
-  vm.runInContext(`let _experimentListenersActive = false;\n${indexerSource.slice(setup.start, setup.end)}\nthis.setup = setupExperimentListeners;\nthis.resetSetup = () => { _experimentListenersActive = false; };`, sandbox);
+  vm.runInContext(`let _experimentListenersActive = false; let _addedListenerRegistered = false; let _removedListenerRegistered = false;\n${indexerSource.slice(setup.start, setup.end)}\nthis.setup = setupExperimentListeners;\nthis.resetSetup = () => { _experimentListenersActive = false; _addedListenerRegistered = false; _removedListenerRegistered = false; };`, sandbox);
 
   function api(instance) {
     const value = instance.getAPI({ extension }).tmMsgNotify;
@@ -122,6 +122,85 @@ const header = {
 };
 
 describe('tmMsgNotify persistent background lifecycle', () => {
+  it('retries a partial FTS subscription without stacking either event family', async () => {
+    const ast = parse(indexerSource, { ecmaVersion: 'latest', sourceType: 'module' });
+    const declaration = name => ast.body.find(node =>
+      node.type === 'ExportNamedDeclaration' && node.declaration?.id?.name === name
+    )?.declaration;
+    const setup = declaration('setupExperimentListeners');
+    const remove = declaration('removeExperimentListeners');
+    const added = new Set();
+    const removed = new Set();
+    let failRemovedAdd = true;
+    let failAddedRemove = true;
+    let failRemovedRemove = false;
+    const sandbox = {
+      browser: { tmMsgNotify: {
+        onMessageAdded: {
+          addListener: vi.fn(fn => added.add(fn)),
+          removeListener: vi.fn(fn => {
+            if (failAddedRemove) { failAddedRemove = false; throw new Error('synthetic remove failure'); }
+            added.delete(fn);
+          }),
+        },
+        onMessageRemoved: {
+          addListener: vi.fn(fn => {
+            if (failRemovedAdd) { failRemovedAdd = false; throw new Error('synthetic add failure'); }
+            removed.add(fn);
+          }),
+          removeListener: vi.fn(fn => {
+            if (failRemovedRemove) { failRemovedRemove = false; throw new Error('synthetic second removal failure'); }
+            removed.delete(fn);
+          }),
+        },
+      } },
+      log: vi.fn(),
+      onExperimentMessageAdded: vi.fn(),
+      onExperimentMessageRemoved: vi.fn(),
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(`let _experimentListenersActive = false; let _addedListenerRegistered = false; let _removedListenerRegistered = false;\n${indexerSource.slice(setup.start, setup.end)}\n${indexerSource.slice(remove.start, remove.end)}\nthis.setup = setupExperimentListeners; this.remove = removeExperimentListeners;`, sandbox);
+    expect(await sandbox.setup()).toBe(false);
+    expect(added.size).toBe(1);
+    expect(removed.size).toBe(0);
+    failAddedRemove = false;
+    await sandbox.remove();
+    expect(added.size).toBe(0);
+    expect(removed.size).toBe(0);
+    expect(await sandbox.setup()).toBe(true);
+    expect(added.size).toBe(1);
+    expect(removed.size).toBe(1);
+    expect(sandbox.browser.tmMsgNotify.onMessageAdded.addListener).toHaveBeenCalledTimes(2);
+    expect(await sandbox.setup()).toBe(true);
+    expect(sandbox.browser.tmMsgNotify.onMessageRemoved.addListener).toHaveBeenCalledTimes(2);
+    failAddedRemove = true;
+    await sandbox.remove();
+    expect(added.size).toBe(1);
+    expect(await sandbox.setup()).toBe(true);
+    expect(added.size).toBe(1);
+    failRemovedRemove = true;
+    await sandbox.remove();
+    expect(added.size).toBe(0);
+    expect(removed.size).toBe(1);
+    expect(await sandbox.setup()).toBe(true);
+    expect(added.size).toBe(1);
+    expect(removed.size).toBe(1);
+    expect(sandbox.browser.tmMsgNotify.onMessageAdded.addListener).toHaveBeenCalledTimes(3);
+    for (const listener of added) listener({});
+    for (const listener of removed) listener({});
+    expect(sandbox.onExperimentMessageAdded).toHaveBeenCalledTimes(1);
+    expect(sandbox.onExperimentMessageRemoved).toHaveBeenCalledTimes(1);
+    await sandbox.remove();
+    expect(added.size).toBe(0);
+    expect(removed.size).toBe(0);
+    expect(await sandbox.setup()).toBe(true);
+    expect(added.size).toBe(1);
+    expect(removed.size).toBe(1);
+    await sandbox.remove();
+    expect(added.size).toBe(0);
+    expect(removed.size).toBe(0);
+  });
+
   it('registers FTS listeners synchronously in the background entry point', () => {
     const source = read('../chat/background.js');
     const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });

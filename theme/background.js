@@ -57,13 +57,13 @@ function _ensureActionChipClickListener(reason) {
 function _stopActionChipClickListener(reason) {
     try {
         if (_tmActionChipClickListener && browser.tmMessageListCardView?.onActionChipClick) {
-            try {
-                browser.tmMessageListCardView.onActionChipClick.removeListener(_tmActionChipClickListener);
-            } catch (_) {}
+            browser.tmMessageListCardView.onActionChipClick.removeListener(_tmActionChipClickListener);
+            _tmActionChipClickListener = null;
         }
-        _tmActionChipClickListener = null;
         console.log(`[TabMail Theme] onActionChipClick listener removed (${reason})`);
-    } catch (_) {}
+    } catch (e) {
+        console.error(`[TabMail Theme] Failed to remove onActionChipClick listener (${reason}):`, e);
+    }
 }
 
 // ─── Header chip (preview pane) click handling ───
@@ -92,8 +92,9 @@ function _ensureHeaderChipClickListener(reason) {
             return;
         }
         if (_tmHeaderChipClickListener) return; // already registered
-        _tmHeaderChipClickListener = (info) => { _onHeaderChipClick(info); };
-        browser.tmMessageHeaderChip.onActionChipClick.addListener(_tmHeaderChipClickListener);
+        const listener = (info) => { _onHeaderChipClick(info); };
+        browser.tmMessageHeaderChip.onActionChipClick.addListener(listener);
+        _tmHeaderChipClickListener = listener;
         console.log(`[TabMail Theme] header chip click listener registered (${reason})`);
     } catch (e) {
         console.error(`[TabMail Theme] failed to register header chip click listener (${reason}):`, e);
@@ -103,13 +104,13 @@ function _ensureHeaderChipClickListener(reason) {
 function _stopHeaderChipClickListener(reason) {
     try {
         if (_tmHeaderChipClickListener && browser.tmMessageHeaderChip?.onActionChipClick) {
-            try {
-                browser.tmMessageHeaderChip.onActionChipClick.removeListener(_tmHeaderChipClickListener);
-            } catch (_) {}
+            browser.tmMessageHeaderChip.onActionChipClick.removeListener(_tmHeaderChipClickListener);
+            _tmHeaderChipClickListener = null;
         }
-        _tmHeaderChipClickListener = null;
         console.log(`[TabMail Theme] header chip click listener removed (${reason})`);
-    } catch (_) {}
+    } catch (e) {
+        console.error(`[TabMail Theme] Failed to remove header chip click listener (${reason}):`, e);
+    }
 }
 
 // ─── Multi-message-view chip (collapsed-thread / multi-select) click handling ───
@@ -136,8 +137,9 @@ function _ensureMultiMessageChipClickListener(reason) {
             return;
         }
         if (_tmMultiMessageChipClickListener) return; // already registered
-        _tmMultiMessageChipClickListener = (info) => { _onMultiMessageChipClick(info); };
-        browser.tmMultiMessageChip.onActionChipClick.addListener(_tmMultiMessageChipClickListener);
+        const listener = (info) => { _onMultiMessageChipClick(info); };
+        browser.tmMultiMessageChip.onActionChipClick.addListener(listener);
+        _tmMultiMessageChipClickListener = listener;
         console.log(`[TabMail Theme] multi-msg chip click listener registered (${reason})`);
     } catch (e) {
         console.error(`[TabMail Theme] failed to register multi-msg chip click listener (${reason}):`, e);
@@ -147,13 +149,13 @@ function _ensureMultiMessageChipClickListener(reason) {
 function _stopMultiMessageChipClickListener(reason) {
     try {
         if (_tmMultiMessageChipClickListener && browser.tmMultiMessageChip?.onActionChipClick) {
-            try {
-                browser.tmMultiMessageChip.onActionChipClick.removeListener(_tmMultiMessageChipClickListener);
-            } catch (_) {}
+            browser.tmMultiMessageChip.onActionChipClick.removeListener(_tmMultiMessageChipClickListener);
+            _tmMultiMessageChipClickListener = null;
         }
-        _tmMultiMessageChipClickListener = null;
         console.log(`[TabMail Theme] multi-msg chip click listener removed (${reason})`);
-    } catch (_) {}
+    } catch (e) {
+        console.error(`[TabMail Theme] Failed to remove multi-msg chip click listener (${reason}):`, e);
+    }
 }
 
 function _ensureCardSnippetProvider(reason) {

@@ -1528,6 +1528,8 @@ export async function onExperimentMessageRemoved(messageInfo) {
 
 // Track experiment listener state
 let _experimentListenersActive = false;
+let _addedListenerRegistered = false;
+let _removedListenerRegistered = false;
 
 /**
  * Set up listeners for experiment API events.
@@ -1545,13 +1547,16 @@ export async function setupExperimentListeners() {
   }
   
   try {
-    // Register for message added events
-    browser.tmMsgNotify.onMessageAdded.addListener(onExperimentMessageAdded);
-    
-    // Register for message removed events
-    browser.tmMsgNotify.onMessageRemoved.addListener(onExperimentMessageRemoved);
-    
-    _experimentListenersActive = true;
+    if (!_addedListenerRegistered) {
+      browser.tmMsgNotify.onMessageAdded.addListener(onExperimentMessageAdded);
+      _addedListenerRegistered = true;
+    }
+    if (!_removedListenerRegistered) {
+      browser.tmMsgNotify.onMessageRemoved.addListener(onExperimentMessageRemoved);
+      _removedListenerRegistered = true;
+    }
+
+    _experimentListenersActive = _addedListenerRegistered && _removedListenerRegistered;
     log("[TMDBG FTS] Experiment listeners registered successfully");
     return true;
   } catch (e) {
@@ -1564,17 +1569,24 @@ export async function setupExperimentListeners() {
  * Remove experiment listeners.
  */
 export async function removeExperimentListeners() {
-  if (!_experimentListenersActive) return;
+  if (!_addedListenerRegistered && !_removedListenerRegistered) return;
   
   try {
     if (browser.tmMsgNotify) {
-      browser.tmMsgNotify.onMessageAdded.removeListener(onExperimentMessageAdded);
-      browser.tmMsgNotify.onMessageRemoved.removeListener(onExperimentMessageRemoved);
+      if (_addedListenerRegistered) {
+        browser.tmMsgNotify.onMessageAdded.removeListener(onExperimentMessageAdded);
+        _addedListenerRegistered = false;
+      }
+      if (_removedListenerRegistered) {
+        browser.tmMsgNotify.onMessageRemoved.removeListener(onExperimentMessageRemoved);
+        _removedListenerRegistered = false;
+      }
     }
-    _experimentListenersActive = false;
     log("[TMDBG FTS] Experiment listeners removed");
   } catch (e) {
     log(`[TMDBG FTS] Error removing experiment listeners: ${e}`, "warn");
+  } finally {
+    _experimentListenersActive = _addedListenerRegistered && _removedListenerRegistered;
   }
 }
 

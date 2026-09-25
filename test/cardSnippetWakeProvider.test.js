@@ -27,6 +27,36 @@ afterEach(() => {
 });
 
 describe('card snippet wake consumer', () => {
+  it('retries failed event registration and retains ownership after failed removal', () => {
+    const listeners = new Set();
+    let failAdd = true;
+    let failRemove = true;
+    const event = {
+      addListener: vi.fn(listener => {
+        if (failAdd) { failAdd = false; throw new Error('synthetic add failure'); }
+        listeners.add(listener);
+      }),
+      removeListener: vi.fn(listener => {
+        if (failRemove) { failRemove = false; throw new Error('synthetic remove failure'); }
+        listeners.delete(listener);
+      }),
+    };
+    vi.stubGlobal('browser', { tmMessageListCardView: { onSnippetsNeeded: event } });
+    const provider = createCardSnippetProvider({ getNeeds: vi.fn(async () => []), provideSnippets: vi.fn() });
+    provider.start();
+    expect(listeners.size).toBe(0);
+    provider.start();
+    provider.start();
+    expect(listeners.size).toBe(1);
+    expect(event.addListener).toHaveBeenCalledTimes(2);
+    provider.stop();
+    provider.start();
+    expect(listeners.size).toBe(1);
+    expect(event.addListener).toHaveBeenCalledTimes(2);
+    provider.stop();
+    expect(listeners.size).toBe(0);
+  });
+
   it('handles a new uncached need after background load and detaches cleanly', async () => {
     const listeners = new Set();
     const event = {
