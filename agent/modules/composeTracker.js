@@ -298,7 +298,7 @@ async function waitForComposeDetails(tabId, maxWait = 400, step = 50) {
 
 export function initComposeHandlers() {
     if (!_onCreatedListener) {
-        _onCreatedListener = async (tab) => {
+        const onCreatedListener = async (tab) => {
         let immediateDetails = {};
         try {
             immediateDetails = await browser.compose.getComposeDetails(tab.id);
@@ -378,7 +378,7 @@ export function initComposeHandlers() {
             }
         }
         };
-        browser.tabs.onCreated.addListener(_onCreatedListener);
+        browser.tabs.onCreated.addListener(onCreatedListener);
+        _onCreatedListener = onCreatedListener;
     }
 }
- 

@@ -2038,6 +2038,13 @@ async function autoDetectDefaultCalendar() {
 
 // Kick-off initialisation immediately, but let onInstalled fall back to it if this load
 // happened before the event fires.
+// Attach the stock tab-created listener before init() reaches its first await.
+// Its call inside init() retries a failed early registration without stacking.
+try {
+    initComposeHandlers();
+} catch (e) {
+    log(`[ComposeTracker] Early tabs.onCreated registration failed: ${e}`, "warn");
+}
 // Register the FTS message-update consumer before init() first awaits, so
 // Thunderbird can prime this stock event while the background is suspended.
 attachOnUpdatedListener();
