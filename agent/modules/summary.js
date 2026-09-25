@@ -523,8 +523,26 @@ async function onMessagesDisplayed(tab, messageList) {
   log(`[Summary] Completed processing visible messages in tab ${tab.id}`);
 }
 
+let _summaryDisplayListenerAttached = false;
+
+function ensureSummaryDisplayListener() {
+  if (_summaryDisplayListenerAttached) return;
+  const event = globalThis.browser?.messageDisplay?.onMessagesDisplayed;
+  if (!event?.addListener) return;
+  try {
+    event.addListener(onMessagesDisplayed);
+    _summaryDisplayListenerAttached = true;
+  } catch (e) {
+    log(`[Summary] Failed to register onMessagesDisplayed: ${e}`, "warn");
+  }
+}
+
+// Thunderbird can only wake a suspended background for listeners added while
+// its scripts load; the later feature init retries if this early add failed.
+ensureSummaryDisplayListener();
+
 export function initSummaryFeatures() {
-  browser.messageDisplay.onMessagesDisplayed.addListener(onMessagesDisplayed);
+  ensureSummaryDisplayListener();
   log("Summary features initialized.");
   // Banner registration is now handled in theme/background.js
 }
