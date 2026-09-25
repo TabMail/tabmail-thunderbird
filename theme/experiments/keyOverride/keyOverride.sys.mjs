@@ -2,19 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-const { ExtensionSupport } = ChromeUtils.importESModule(
+const { ExtensionSupport: ExtensionSupportKO } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
-const { ExtensionCommon } = ChromeUtils.importESModule(
+const { ExtensionCommon: ExtensionCommonKO } = ChromeUtils.importESModule(
   "resource://gre/modules/ExtensionCommon.sys.mjs"
 );
-const { EventManager } = ExtensionCommon;
+const { EventManager: EventManagerKO } = ExtensionCommonKO;
 
-const Services = globalThis.Services;
+const ServicesKO = globalThis.Services;
 
-console.log("[TabMail keyOverride] experiment parent script loaded. Services present?", typeof Services !== "undefined");
+console.log("[TabMail keyOverride] experiment parent script loaded. Services present?", typeof ServicesKO !== "undefined");
 
-var keyOverride = class extends ExtensionCommon.ExtensionAPI {
+var keyOverride = class extends ExtensionCommonKO.ExtensionAPI {
   onShutdown(isAppShutdown) {
     // This is called by Thunderbird on disable/update/uninstall/app shutdown
     console.log("[TabMail KeyOverride] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
@@ -48,17 +48,10 @@ var keyOverride = class extends ExtensionCommon.ExtensionAPI {
           console.log("[TabMail KeyOverride] Chat hotkey detected (MV3 commands will handle); not intercepting");
           // Intentionally not preventing default so MV3 commands receives this.
         }
-        if (evt.code === "Tab" && evt.shiftKey) {
-          console.log("[TabMail KeyOverride] Shift+Tab detected");
-          Services.obs.notifyObservers(null, "keyOverride-shiftTabPressed");
-          evt.preventDefault();
-          evt.stopPropagation();
-          evt.stopImmediatePropagation();
-          return false;
-        }
-        if (evt.code === "Tab") {
+        // Only bare Tab is an action. Thunderbird owns navigation chords.
+        if (evt.code === "Tab" && !evt.shiftKey && !evt.ctrlKey && !evt.altKey && !evt.metaKey) {
           console.log("[TabMail KeyOverride] Tab detected");
-          Services.obs.notifyObservers(null, "keyOverride-tabPressed");
+          ServicesKO.obs.notifyObservers(null, "keyOverride-tabPressed");
           evt.preventDefault();
           evt.stopPropagation();
           evt.stopImmediatePropagation();
@@ -77,14 +70,14 @@ var keyOverride = class extends ExtensionCommon.ExtensionAPI {
       
       // Unregister window listener (may already be unregistered from init)
       try {
-        ExtensionSupport.unregisterWindowListener(listenerId);
+        ExtensionSupportKO.unregisterWindowListener(listenerId);
         console.log("[TabMail keyOverride] Unregistered window listener:", listenerId);
       } catch (e) {
         // Already unregistered, ignore
       }
       try {
-        if (Services && Services.wm) {
-          const enumr = Services.wm.getEnumerator(null);
+        if (ServicesKO && ServicesKO.wm) {
+          const enumr = ServicesKO.wm.getEnumerator(null);
           while (enumr && enumr.hasMoreElements()) {
             const win = enumr.getNext();
             try {
@@ -111,31 +104,22 @@ var keyOverride = class extends ExtensionCommon.ExtensionAPI {
 
     return {
       keyOverride: {
-        onTabPressed: new EventManager({
+        onTabPressed: new EventManagerKO({
           context,
           name: "keyOverride.onTabPressed",
           register: (fire) => {
             const obs = () => fire.async();
-            Services.obs.addObserver(obs, "keyOverride-tabPressed");
-            return () => Services.obs.removeObserver(obs, "keyOverride-tabPressed");
+            ServicesKO.obs.addObserver(obs, "keyOverride-tabPressed");
+            return () => ServicesKO.obs.removeObserver(obs, "keyOverride-tabPressed");
           },
         }).api(),
-            onShiftTabPressed: new EventManager({
-              context,
-              name: "keyOverride.onShiftTabPressed",
-              register: (fire) => {
-                const obs = () => fire.async();
-                Services.obs.addObserver(obs, "keyOverride-shiftTabPressed");
-                return () => Services.obs.removeObserver(obs, "keyOverride-shiftTabPressed");
-              },
-            }).api(),
-            onChatHotkey: new EventManager({
+            onChatHotkey: new EventManagerKO({
               context,
               name: "keyOverride.onChatHotkey",
               register: (fire) => {
                 const obs = () => fire.async();
-                Services.obs.addObserver(obs, "keyOverride-chatHotkey");
-                return () => Services.obs.removeObserver(obs, "keyOverride-chatHotkey");
+                ServicesKO.obs.addObserver(obs, "keyOverride-chatHotkey");
+                return () => ServicesKO.obs.removeObserver(obs, "keyOverride-chatHotkey");
               },
             }).api(),
         init() {
@@ -145,9 +129,9 @@ var keyOverride = class extends ExtensionCommon.ExtensionAPI {
             return;
           }
           
-          console.log("[TabMail keyOverride] init() called. Services is", Services);
+          console.log("[TabMail keyOverride] init() called. Services is", ServicesKO);
 
-          if (!Services || !Services.wm) {
+          if (!ServicesKO || !ServicesKO.wm) {
             console.error("[TabMail keyOverride] Services or window mediator not available!");
             return;
           }
@@ -156,14 +140,14 @@ var keyOverride = class extends ExtensionCommon.ExtensionAPI {
 
           // Clean up any previous registrations before initializing
           try {
-            ExtensionSupport.unregisterWindowListener(listenerId);
+            ExtensionSupportKO.unregisterWindowListener(listenerId);
           } catch (e) {
             // Expected to fail if no previous listener was registered
           }
 
           // ExtensionSupport.registerWindowListener handles both existing AND new windows
           // Future windows
-          ExtensionSupport.registerWindowListener(listenerId, {
+          ExtensionSupportKO.registerWindowListener(listenerId, {
             chromeURLs: ["chrome://messenger/content/messenger.xhtml"],
             onLoadWindow: (win) => {
               console.log("[TabMail keyOverride] onLoadWindow fired for", win.location.href);
@@ -181,5 +165,3 @@ var keyOverride = class extends ExtensionCommon.ExtensionAPI {
     };
   }
 }; 
-
-

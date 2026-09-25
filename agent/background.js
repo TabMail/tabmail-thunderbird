@@ -1648,7 +1648,7 @@ async function init() {
     try {
         if (browser.keyOverride && browser.keyOverride.init) {
             browser.keyOverride.init();
-            log("[KeyOverride] Experiment initialised – Tab/Shift+Tab key capture active.");
+            log("[KeyOverride] Experiment initialised – bare Tab action active.");
         } else {
             log("[KeyOverride] Experiment NOT available – Tab actions disabled.", "warn");
         }

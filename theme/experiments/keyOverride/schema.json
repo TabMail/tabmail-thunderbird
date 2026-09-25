@@ -26,13 +26,6 @@
         "parameters": []
       },
       {
-        "name": "onShiftTabPressed",
-        "type": "function",
-        "description": "Fired when Shift+Tab is pressed in the message list.",
-        "parameters": []
-      }
-      ,
-      {
         "name": "onChatHotkey",
         "type": "function",
         "description": "Fired when the configured chat hotkey (Cmd+Alt+L) is pressed in a 3-pane window.",
@@ -42,4 +35,3 @@
   }
 ]
  
-
