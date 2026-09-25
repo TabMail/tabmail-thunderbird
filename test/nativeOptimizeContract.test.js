@@ -214,6 +214,26 @@ describe('native optimize maintenance contract', () => {
     await vi.waitFor(() => expect(nativeFtsSearch.markVersionAsIndexed).toHaveBeenCalledTimes(1));
   });
 
+  it('retries an embedding rebuild after its failed attempt releases ownership', async () => {
+    const { nativeFtsSearch } = await import('../fts/nativeEngine.js');
+    const { initIncrementalIndexer } = await import('../fts/incrementalIndexer.js');
+    vi.mocked(nativeFtsSearch.checkReindexNeeded).mockResolvedValue({
+      needsReindex: true, lastSchemaVersion: 1, currentSchemaVersion: 2,
+    });
+    mockRebuildEmbeddings
+      .mockResolvedValueOnce({ ok: false, error: 'synthetic rebuild failure' })
+      .mockResolvedValueOnce({ ok: true, emailEmbedded: 0, emailTotal: 0, memoryEmbedded: 0, memoryTotal: 0 });
+    vi.mocked(initIncrementalIndexer).mockRejectedValueOnce(new Error('marker write failed'));
+    runtimeEngine = await import('../fts/engine.js');
+
+    await expect(runtimeEngine.initFtsEngine()).rejects.toThrow('marker write failed');
+    await vi.waitFor(() => expect(mockRebuildEmbeddings).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(getFtsOperationState().exclusive).toBe(false));
+    await runtimeEngine.initFtsEngine();
+    await vi.waitFor(() => expect(mockRebuildEmbeddings).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(nativeFtsSearch.markVersionAsIndexed).toHaveBeenCalledTimes(1));
+  });
+
   it.each(['daily', 'weekly', 'monthly'])(
     'treats exact {ok:true} as one full call without invented progress telemetry for %s maintenance',
     async scheduleType => {
