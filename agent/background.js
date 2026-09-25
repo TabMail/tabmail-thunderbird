@@ -2056,6 +2056,9 @@ try {
 // Register the FTS message-update consumer before init() first awaits, so
 // Thunderbird can prime this stock event while the background is suspended.
 attachOnUpdatedListener();
+// A first tag change after suspend must reach the thread-effective-action watcher.
+// Its later init() call retries failed registration without adding a second owner.
+attachThreadTagWatchers();
 // Prime move/copy/delete consumers now; leave the stale-tag sweep alarm for
 // init(), after its setup work completes.
 attachOnMovedListeners({ scheduleSweep: false });

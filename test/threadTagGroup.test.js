@@ -234,3 +234,53 @@ describe('getTagByThreadEnabled', () => {
     expect(v).toBe(true);
   });
 });
+
+describe('thread tag update listener ownership', () => {
+  let listeners;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    idbStore = {};
+    listeners = new Set();
+    browser.messages.onUpdated.addListener.mockImplementation((listener) => listeners.add(listener));
+    browser.messages.onUpdated.removeListener.mockImplementation((listener) => listeners.delete(listener));
+    browser.messages.get.mockResolvedValue({ id: 101, folder: { accountId: 'test-account', path: 'INBOX' } });
+    browser.storage.local.get.mockResolvedValue({ tagByThreadEnabled: true });
+    mockGetConversationForWeMsgId.mockResolvedValue({ ok: true, conversationId: 'test-thread', headerMessageIds: ['synthetic-id'] });
+    mockFindInboxFolderForAccount.mockResolvedValue({ id: 'test-inbox', path: 'INBOX' });
+    mockGetInboxWeIdsForConversation.mockResolvedValue([101]);
+    mockReadCachedActionForWeId.mockResolvedValue('reply');
+  });
+
+  it('handles the first tag update and keeps one owner when late init repeats', async () => {
+    const { attachThreadTagWatchers } = await import('../agent/modules/threadTagGroup.js');
+    attachThreadTagWatchers();
+    attachThreadTagWatchers();
+    expect(listeners.size).toBe(1);
+    expect(browser.messages.onUpdated.addListener).toHaveBeenCalledTimes(1);
+
+    const listener = [...listeners][0];
+    await listener({ id: 101 }, { tags: ['tm_reply'] });
+    expect(idbStore['threadTags:test-account:INBOX:glodaConv:test-thread']?.messageActions).toEqual({ 101: 'reply' });
+    expect(mockSetAction).toHaveBeenCalledExactlyOnceWith([101]);
+
+    await listener({ id: 101 }, { read: true });
+    expect(mockSetAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a failed add without stacking and retains ownership on failed remove', async () => {
+    const { attachThreadTagWatchers, cleanupThreadTagWatchers } = await import('../agent/modules/threadTagGroup.js');
+    browser.messages.onUpdated.addListener.mockImplementationOnce(() => { throw new Error('synthetic add failure'); });
+    attachThreadTagWatchers();
+    expect(listeners.size).toBe(0);
+    attachThreadTagWatchers();
+    expect(listeners.size).toBe(1);
+
+    browser.messages.onUpdated.removeListener.mockImplementationOnce(() => { throw new Error('synthetic remove failure'); });
+    cleanupThreadTagWatchers();
+    attachThreadTagWatchers();
+    expect(listeners.size).toBe(1);
+    expect(browser.messages.onUpdated.addListener).toHaveBeenCalledTimes(2);
+  });
+});

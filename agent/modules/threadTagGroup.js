@@ -350,7 +350,7 @@ export function cleanupThreadTagWatchers() {
 }
 
 export function attachThreadTagWatchers() {
-  cleanupThreadTagWatchers();
+  if (_threadTagWatchListener) return;
   try {
     if (!browser.messages?.onUpdated) return;
 
@@ -360,8 +360,8 @@ export function attachThreadTagWatchers() {
     // TB UI). Aggregate uses the IDB actions we wrote, not the server tags —
     // so the listener is mostly a no-op; retained in case other code paths
     // still surface action-level changes via onUpdated.
-    _threadTagWatchListener = (...args) => {
-      (async () => {
+    const listener = (...args) => {
+      return (async () => {
         try {
           const a0 = args?.[0] ?? null;
           const a1 = args?.[1] ?? null;
@@ -382,7 +382,8 @@ export function attachThreadTagWatchers() {
       })();
     };
 
-    browser.messages.onUpdated.addListener(_threadTagWatchListener);
+    browser.messages.onUpdated.addListener(listener);
+    _threadTagWatchListener = listener;
   } catch (e) {
     console.log(`[TMDBG Tag] Failed to attach thread tag watcher: ${e}`);
   }
