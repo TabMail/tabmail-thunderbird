@@ -304,6 +304,18 @@ describe('tag-by-thread setting listener ownership', () => {
     mockReadCachedActionForWeId.mockResolvedValue('reply');
   });
 
+  it.each([true, false])('handles the first local toggle with an empty cache (%s)', async enabled => {
+    const { attachTagByThreadListener, getTagByThreadEnabled } = await import('../agent/modules/threadTagGroup.js');
+    attachTagByThreadListener();
+
+    await [...listeners][0]({ tagByThreadEnabled: { newValue: enabled } }, 'local');
+
+    expect(await getTagByThreadEnabled()).toBe(enabled);
+    expect(idbStore['threadTags:test-account:INBOX:glodaConv:test-thread']?.messageActions).toEqual({ 101: 'reply' });
+    expect(mockSetAction).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(mockSetAction).toHaveBeenCalledWith([101]);
+  });
+
   it('processes the first toggle once and ignores unrelated storage changes', async () => {
     const { attachTagByThreadListener, getTagByThreadEnabled } = await import('../agent/modules/threadTagGroup.js');
     browser.storage.local.get.mockResolvedValue({ tagByThreadEnabled: false });
