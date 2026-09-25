@@ -138,6 +138,26 @@ it('completing general startup creates both schedules without a synthetic alarm'
  expect(alarms.get('tabmail-proactive-reachout')).toEqual({when:new Date(`${r.dueDate}T${r.dueTime}:00`).getTime()-30*60000});
  expect(data.proactiveCheckin_pendingMessage).toBeUndefined();
 });
+it('early alarm registration failure still reaches normal startup and delivers',async()=>{
+ data['notifications.proactive_enabled']=true;
+ const {buildReminderList}=await import('../agent/modules/reminderBuilder.js');
+ const upcoming=due(90,'future');
+ buildReminderList.mockResolvedValue({reminders:[due(10),upcoming]});
+ browser.alarms.onAlarm.addListener.mockImplementationOnce(()=>{throw new Error('Synthetic early subscription failure');});
+ const imports=await startCompletingBackground();
+ expect(browser.alarms.onAlarm.addListener).toHaveBeenCalledTimes(2);
+ expect(imports).toContain('./modules/supabaseAuth.js');
+ expect(listeners.size).toBe(1);
+ expect(alarms.get('tabmail-task-eval')).toEqual({periodInMinutes:5});
+ expect(alarms.get('tabmail-proactive-reachout')).toEqual({when:new Date(`${upcoming.dueDate}T${upcoming.dueTime}:00`).getTime()-30*60000});
+ const listener=[...listeners][0];
+ expect(listener).toBeTypeOf('function');
+ await listener({name:'tabmail-proactive-reachout'});
+ expect(data.proactiveCheckin_pendingMessage?.message).toContain('Synthetic due');
+ expect(data['notifications.reached_out_ids']?.due?.trigger).toBe('due_approaching');
+ const {openOrFocusChatWindow}=await import('../chat/modules/chatWindowUtils.js');
+ expect(openOrFocusChatWindow).toHaveBeenCalledTimes(1);
+});
 it('disabled task wake preserves state and later enabled wake executes',async()=>{
  data['notifications.proactive_enabled']=false;data['task.enabled']=false;
  const {hash,date}=await setDueTaskText();
