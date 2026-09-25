@@ -203,6 +203,7 @@ describe("durable retry alarm", () => {
     const drain = SUT.drainProcessMessageQueue();
     await vi.waitFor(() => expect(releaseClear).toBeTypeOf("function"));
     const enqueue = enqueueOne();
+    await vi.waitFor(() => expect(SUT.getProcessMessageQueueStatus().pending).toBe(1));
     releaseClear();
     await Promise.all([drain, enqueue]);
 
