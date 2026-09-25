@@ -58,7 +58,9 @@ it('registers the compose-tab consumer before startup can await', () => {
 
 // Exercise the real tracker through the real background startup. The simpler
 // test above pins timing; this one pins recovery and its durable reply effect.
-async function startWithRealTracker(failFirstAdd, { secondReply = false, deferredGeneration = false } = {}) {
+async function startWithRealTracker(failFirstAdd, {
+  secondReply = false, deferredGeneration = false, holdCacheRead = false,
+} = {}) {
   const events = new Map();
   let addAttempts = 0;
   const details = new Map([
@@ -148,6 +150,16 @@ async function startWithRealTracker(failFirstAdd, { secondReply = false, deferre
   if (secondReply) {
     await idb.set({ [otherReplyKey]: { reply: 'Unrelated draft.', directReplace: true } });
   }
+  let releaseCacheRead;
+  const cacheReadStarted = vi.fn();
+  if (holdCacheRead) {
+    const getAndClearFlag = idb.getAndClearFlag;
+    idb.getAndClearFlag = async (...args) => {
+      cacheReadStarted();
+      await new Promise(resolve => { releaseCacheRead = resolve; });
+      return getAndClearFlag(...args);
+    };
+  }
   let now = 0;
   let releaseGeneration;
   const createReply = vi.fn(async () => {
@@ -178,7 +190,7 @@ async function startWithRealTracker(failFirstAdd, { secondReply = false, deferre
     log() {},
   });
   return {
-    idb, tracker, event, createReply, scanAllInboxes,
+    idb, tracker, event, createReply, scanAllInboxes, cacheReadStarted,
     get addAttempts() { return addAttempts; },
     async finishStartup() {
       releaseStartup();
@@ -189,6 +201,10 @@ async function startWithRealTracker(failFirstAdd, { secondReply = false, deferre
     releaseGeneration() {
       if (!releaseGeneration) throw new Error('generation has not started');
       releaseGeneration();
+    },
+    releaseCacheRead() {
+      if (!releaseCacheRead) throw new Error('cache read has not started');
+      releaseCacheRead();
     },
   };
 }
@@ -277,11 +293,29 @@ it('waits for a cache-miss reply before activating the compose tab', async () =>
   const delivery = created.emit({ id: 41 });
   await vi.waitFor(() => expect(run.createReply).toHaveBeenCalledWith(7, true));
   expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toBeUndefined();
+  expect(run.tracker.isAnyComposeOpen()).toBe(true);
   await run.finishStartup();
+  expect(run.scanAllInboxes).not.toHaveBeenCalled();
   run.releaseGeneration();
   await delivery;
   expect((await run.idb.get(run.replyKey))[run.replyKey].reply).toBe('Generated reply.');
   expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toEqual({
     content: 'Generated reply.', directReplace: false,
   });
+});
+
+it('tracks an early reply while the real cache read is pending', async () => {
+  const run = await startWithRealTracker(false, { holdCacheRead: true });
+  const delivery = run.event('browser.tabs.onCreated').emit({ id: 41 });
+  await vi.waitFor(() => expect(run.cacheReadStarted).toHaveBeenCalledTimes(1));
+  expect(run.tracker.isAnyComposeOpen()).toBe(true);
+  await run.finishStartup();
+  expect(run.scanAllInboxes).not.toHaveBeenCalled();
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toBeUndefined();
+  run.releaseCacheRead();
+  await delivery;
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toEqual({
+    content: 'Synthetic reply.', directReplace: true,
+  });
+  expect((await run.idb.get(run.replyKey))[run.replyKey].directReplace).toBe(false);
 });
