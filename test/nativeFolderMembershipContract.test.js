@@ -245,6 +245,19 @@ afterEach(() => {
 });
 
 describe("native folder-membership v1 contract", () => {
+  it("arms the existing recovery alarm when a healthy helper disconnects", async () => {
+    const { port } = await initialized(true);
+    browser.alarms = { create: vi.fn() };
+
+    port.disconnect();
+    port.disconnect();
+
+    expect(browser.alarms.create).toHaveBeenCalledTimes(1);
+    expect(browser.alarms.create).toHaveBeenCalledWith(
+      "tabmail-fts-helper-recheck", { periodInMinutes: 1 },
+    );
+  });
+
   it("injects opaque folderId on fresh writes only when hello advertises the capability", async () => {
     const supported = await initialized(true);
     await supported.nativeFtsSearch.indexBatch([{

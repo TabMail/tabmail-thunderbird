@@ -167,6 +167,14 @@ function setFtsHostStatus(status, details = {}) {
   ftsHostStatus = nextStatus;
   if (changed) {
     log(`[TMDBG FTS] Helper status → ${status}${details.hostVersion ? ` (v${details.hostVersion})` : ""}`);
+    // A healthy port can disappear after startup, when chat/background has
+    // already cleared its recovery alarm. Arm it before rejecting in-flight
+    // RPCs so a suspended background can retry without a UI probe.
+    if (status === "missing" && typeof browser !== "undefined") {
+      try {
+        browser.alarms?.create("tabmail-fts-helper-recheck", { periodInMinutes: 1 })?.catch?.(() => {});
+      } catch (_) {}
+    }
   }
 }
 
