@@ -51,8 +51,14 @@ function recoveryHarness() {
 describe('FTS helper recovery', () => {
   it('starts the engine and incremental startup path after a missing helper returns', async () => {
     const app = recoveryHarness();
+    let releaseRecheck;
+    app.recheckFtsHelperAvailable.mockImplementationOnce(() => new Promise(resolve => {
+      releaseRecheck = () => { app.setAvailable(true); resolve(true); };
+    }));
     const first = app.probe();
     const second = app.probe();
+    expect(app.recheckFtsHelperAvailable).toHaveBeenCalledTimes(1);
+    releaseRecheck();
     await Promise.all([first, second]);
 
     expect(app.recheckFtsHelperAvailable).toHaveBeenCalledTimes(1);

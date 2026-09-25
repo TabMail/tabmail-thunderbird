@@ -4,10 +4,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockIndexMessages, mockLog, mockNativeOptimize } = vi.hoisted(() => ({
+const { mockIndexMessages, mockLog, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
   mockIndexMessages: vi.fn(),
   mockLog: vi.fn(),
   mockNativeOptimize: vi.fn(),
+  mockRebuildEmbeddings: vi.fn(),
 }));
 
 vi.mock('../fts/indexer.js', () => ({
@@ -45,6 +46,7 @@ vi.mock('../fts/nativeEngine.js', () => ({
     getHostStatus: vi.fn(() => ({ status: 'available' })),
     markVersionAsIndexed: vi.fn(async () => {}),
     optimize: (...args) => mockNativeOptimize(...args),
+    rebuildEmbeddings: (...args) => mockRebuildEmbeddings(...args),
     stats: vi.fn(async () => ({ docs: 0, vecDocs: 0 })),
   },
   nativeMemorySearch: {},
@@ -127,6 +129,7 @@ beforeEach(() => {
   for (const key of Object.keys(storageData)) delete storageData[key];
   _resetFtsOperationCoordinatorForTests();
   mockNativeOptimize.mockReset();
+  mockRebuildEmbeddings.mockReset();
   mockIndexMessages.mockResolvedValue({
     scanned: 0,
     newlyIndexed: 0,
@@ -188,6 +191,27 @@ describe('native optimize maintenance contract', () => {
     expect(initIncrementalIndexer).toHaveBeenCalledTimes(2);
     expect(browser.runtime.onMessage.addListener).toHaveBeenCalledTimes(2);
     expect(browser.runtime.onMessage.removeListener).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not queue a second embedding rebuild when indexer startup retries', async () => {
+    const { nativeFtsSearch } = await import('../fts/nativeEngine.js');
+    const { initIncrementalIndexer } = await import('../fts/incrementalIndexer.js');
+    const pending = deferred();
+    vi.mocked(nativeFtsSearch.checkReindexNeeded).mockResolvedValue({
+      needsReindex: true, lastSchemaVersion: 1, currentSchemaVersion: 2,
+    });
+    mockRebuildEmbeddings.mockImplementationOnce(() => pending.promise);
+    vi.mocked(initIncrementalIndexer).mockRejectedValueOnce(new Error('marker write failed'));
+    runtimeEngine = await import('../fts/engine.js');
+
+    await expect(runtimeEngine.initFtsEngine()).rejects.toThrow('marker write failed');
+    await vi.waitFor(() => expect(mockRebuildEmbeddings).toHaveBeenCalledTimes(1));
+    await runtimeEngine.initFtsEngine();
+    expect(getFtsOperationState().foregroundWaiting).toBe(0);
+    expect(mockRebuildEmbeddings).toHaveBeenCalledTimes(1);
+
+    pending.resolve({ ok: true, emailEmbedded: 0, emailTotal: 0, memoryEmbedded: 0, memoryTotal: 0 });
+    await vi.waitFor(() => expect(nativeFtsSearch.markVersionAsIndexed).toHaveBeenCalledTimes(1));
   });
 
   it.each(['daily', 'weekly', 'monthly'])(

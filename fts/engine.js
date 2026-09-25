@@ -19,6 +19,7 @@ import {
 
 let _inited = false;
 let _initializationPromise = null;
+let _embeddingRebuildPromise = null;
 let _runtimeMessageHandler = null;
 
 const FTS_ENGINE_DIAG = {
@@ -439,13 +440,13 @@ async function _initFtsEngineOnce() {
         } catch (_) {}
       }
 
-      if (needsRebuild) {
+      if (needsRebuild && !_embeddingRebuildPromise) {
         log(`[TMDBG FTS] 🔄 Embedding rebuild needed: ${rebuildReason}`);
         log(`[TMDBG FTS] Auto-rebuilding embeddings (non-destructive, FTS5 index preserved)`);
 
         // Non-destructive: rebuild embeddings from existing FTS data via native RPC.
         // Uses batch-based RPC so FTS search remains accessible during rebuild.
-        _runOwnedFtsScan("embedding", { scanType: "embeddingRebuild" }, async (lease) => {
+        const rebuild = _runOwnedFtsScan("embedding", { scanType: "embeddingRebuild" }, async (lease) => {
           const rebuildProgress = (p) => {
             writeOwnedFtsScanStatus(lease, {
               scanType: "embeddingRebuild",
@@ -466,6 +467,10 @@ async function _initFtsEngineOnce() {
           }
         }).catch(async (e) => {
           log(`[TMDBG FTS] ❌ Embedding rebuild error: ${e.message}`, "error");
+        });
+        _embeddingRebuildPromise = rebuild;
+        rebuild.then(() => {
+          if (_embeddingRebuildPromise === rebuild) _embeddingRebuildPromise = null;
         });
       }
     } catch (e) {
