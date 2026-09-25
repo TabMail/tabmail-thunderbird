@@ -505,31 +505,44 @@ async function initMessageSelectionTracking() {
     cleanupMessageSelectionListener();
 
     // Listen for selection change messages from background script
+    let selectionRevision = 0;
     messageSelectionListener = (message, sender, sendResponse) => {
       if (message.command === "selection-changed") {
+        selectionRevision++;
         updateSelectionFromMessage(message);
-      } else if (message.command === "current-selection") {
-        updateSelectionFromMessage(message);
-        log("[MessageSelection] Received current selection from background", 'debug');
       }
     };
 
     browser.runtime.onMessage.addListener(messageSelectionListener);
 
-    // Request current selection from background script
-    try {
-      browser.runtime.sendMessage({ command: "get-current-selection" });
-      log("[MessageSelection] Requested current selection from background", 'debug');
-    } catch (e) {
-      log(
-        `[MessageSelection] Failed to request current selection: ${e}`,
-        "warn"
-      );
-      // Fallback to direct query with delay
-      setTimeout(async () => {
-        await updateSelectionIndicator();
-      }, 500);
-    }
+    // A persisted Chat window can start before the background is ready. Apply
+    // the reply directly and retry a bounded number of unanswered requests.
+    const listener = messageSelectionListener;
+    const requestSelection = async (attempt = 0) => {
+      const requestRevision = selectionRevision;
+      try {
+        const response = await browser.runtime.sendMessage({ command: "get-current-selection" });
+        if (messageSelectionListener !== listener || selectionRevision !== requestRevision) return;
+        if (response?.ok && Array.isArray(response.selectedMessageIds)) {
+          updateSelectionFromMessage(response);
+          if (response.selectedMessageIds.length || attempt === CHAT_SETTINGS.messageSelectionBootstrapMaxRetries) return;
+        }
+      } catch (e) {
+        log(`[MessageSelection] Failed to request current selection: ${e}`, "warn");
+      }
+      if (messageSelectionListener === listener && selectionRevision === requestRevision && attempt < CHAT_SETTINGS.messageSelectionBootstrapMaxRetries) {
+        setTimeout(() => {
+          // A live selection received while this retry was waiting owns Chat's
+          // context, even if the next snapshot would be empty on a message tab.
+          if (messageSelectionListener === listener && selectionRevision === requestRevision) {
+            void requestSelection(attempt + 1);
+          }
+        }, CHAT_SETTINGS.messageSelectionBootstrapRetryDelayMs * (attempt + 1));
+      } else if (messageSelectionListener === listener && selectionRevision === requestRevision) {
+        log("[MessageSelection] Current selection unavailable after startup retries", "warn");
+      }
+    };
+    await requestSelection();
 
     log("[MessageSelection] Initialized message selection tracking", 'debug');
   } catch (e) {

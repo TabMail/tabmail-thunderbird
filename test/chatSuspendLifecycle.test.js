@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
 
-function startChat() {
+function startChat({ runDelayed = true } = {}) {
   const source = readFileSync(new URL('../chat/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
@@ -18,17 +18,23 @@ function startChat() {
   for (const entry of ast.body.filter(node => node.type === 'ImportDeclaration').reverse()) {
     for (const specifier of entry.specifiers) {
       const name = specifier.local.name;
-      globals[name] = name === 'CHAT_SETTINGS'
-        ? { openChatHotkeyEnabled: true }
-        : () => Promise.resolve({});
+      if (entry.source.value === './modules/messageSelection.js' && name === 'handleMessageSelectionRequest') {
+        globals[name] = message => message?.command === 'get-current-selection'
+          ? { ok: true, selectedMessageIds: ['synthetic-selected'], selectionCount: 1 }
+          : undefined;
+      } else if (entry.source.value === './modules/messageSelection.js' && name === 'initMessageSelectionListener') {
+        globals[name] = initMessageSelectionListener;
+      } else {
+        globals[name] = name === 'CHAT_SETTINGS'
+          ? { openChatHotkeyEnabled: true }
+          : () => Promise.resolve({});
+      }
     }
     script = script.slice(0, entry.start)
       + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
       + script.slice(entry.end);
   }
   globals.openOrFocusChatWindow = openOrFocusChatWindow;
-  globals.initMessageSelectionListener = initMessageSelectionListener;
-  globals.handleMessageSelectionRequest = () => undefined;
   const events = new Map();
   function event(path) {
     if (!events.has(path)) {
@@ -55,9 +61,20 @@ function startChat() {
   }
   globals.browser = api();
   vm.runInNewContext(script, globals, { filename: 'chat/background.js' });
-  for (const timer of timers.filter(item => item.delay === 100)) timer.fn();
-  return { event, openOrFocusChatWindow, initMessageSelectionListener };
+  if (runDelayed) for (const timer of timers.filter(item => item.delay === 100)) timer.fn();
+  return { event, timers, openOrFocusChatWindow, initMessageSelectionListener };
 }
+
+it('registers current-selection request handling before delayed chat setup and answers only once', async () => {
+  const app = startChat({ runDelayed: false });
+  const runtime = app.event('browser.runtime.onMessage');
+  expect(runtime.listeners.size).toBe(1);
+  expect(await runtime.emit({ command: 'get-current-selection' })).toEqual([
+    { ok: true, selectedMessageIds: ['synthetic-selected'], selectionCount: 1 },
+  ]);
+  for (const timer of app.timers.filter(item => item.delay === 100)) timer.fn();
+  expect((await runtime.emit({ command: 'get-current-selection' })).filter(Boolean)).toHaveLength(1);
+});
 
 describe('chat background startup and canceled suspend', () => {
   it('preserves command, runtime and selection startup behavior', async () => {
@@ -69,18 +86,18 @@ describe('chat background startup and canceled suspend', () => {
     const suspend = app.event('browser.runtime.onSuspend');
     expect(command.listeners.size).toBe(1);
     expect(hotkey.listeners.size).toBe(1);
-    expect(runtime.listeners.size).toBe(1);
+    expect(runtime.listeners.size).toBe(2);
     await command.emit('open-chat-window');
     await hotkey.emit();
     expect(app.openOrFocusChatWindow).toHaveBeenCalledTimes(2);
-    expect((await runtime.emit({ type: 'restart-thunderbird' }, {}))[0]).toMatchObject({ ok: true });
+    expect((await runtime.emit({ type: 'restart-thunderbird' }, {})).filter(Boolean)[0]).toMatchObject({ ok: true });
     await suspend.emit();
     await command.emit('open-chat-window');
     await hotkey.emit();
     expect(app.openOrFocusChatWindow).toHaveBeenCalledTimes(4);
-    expect((await runtime.emit({ type: 'restart-thunderbird' }, {}))[0]).toMatchObject({ ok: true });
+    expect((await runtime.emit({ type: 'restart-thunderbird' }, {})).filter(Boolean)[0]).toMatchObject({ ok: true });
     expect(command.listeners.size).toBe(1);
     expect(hotkey.listeners.size).toBe(1);
-    expect(runtime.listeners.size).toBe(1);
+    expect(runtime.listeners.size).toBe(2);
   });
 });

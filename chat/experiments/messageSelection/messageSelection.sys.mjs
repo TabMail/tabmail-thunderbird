@@ -281,13 +281,23 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
 
     const listenerId = `${context.extension.id}-messageSelection-windows`;
     const pendingWindowLoads = new Map();
+    const pendingTabLoads = new Map();
 
     function cancelPendingWindowLoads() {
       for (const cancel of pendingWindowLoads.values()) cancel();
       pendingWindowLoads.clear();
     }
 
-    function trackWindow(win) {
+    function cancelPendingTabLoad(win) {
+      pendingTabLoads.get(win)?.();
+      pendingTabLoads.delete(win);
+    }
+
+    function cancelPendingTabLoads() {
+      for (const win of pendingTabLoads.keys()) cancelPendingTabLoad(win);
+    }
+
+    function trackWindow(win, publishOnReady = false) {
       if (!isInitialized || win.closed) return;
       if (win.document?.readyState !== "complete") {
         if (pendingWindowLoads.has(win)) return;
@@ -298,7 +308,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
         };
         const onLoad = () => {
           cancel();
-          trackWindow(win);
+          trackWindow(win, true);
         };
         const onUnload = () => cancel();
         pendingWindowLoads.set(win, cancel);
@@ -309,18 +319,51 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
 
       setupWindowTracking(win);
       getCurrentSelection();
+      if (publishOnReady && selectionCount > 0) notifySelectionChange();
       try {
         const tabmail = win.document.getElementById("tabmail");
         const tabContainer = tabmail?.tabContainer || null;
         if (tabContainer && typeof tabContainer.addEventListener === "function" &&
             !tabContainer.__messageSelectionTabSelectHandler) {
-          const tabSelectHandler = () => {
+          const tabSelectHandler = (_event, publish = true) => {
+            cancelPendingTabLoad(win);
+            // Only a 3-pane tab has a readable thread selection. Switching to
+            // a message or content tab must not clear the last mail selection.
+            if (tabmail.currentTabInfo?.mode?.name !== "mail3PaneTab") return;
+            const selectedTab = tabmail.currentTabInfo;
+            const browser = selectedTab.chromeBrowser || selectedTab.browser;
+            const innerDoc = browser?.contentWindow?.document;
+            const mailList = innerDoc?.querySelector("mail-message-list");
+            const threadTree = innerDoc?.getElementById("threadTree") ||
+              mailList?.shadowRoot?.getElementById("threadTree");
+            if (innerDoc?.readyState !== "complete" || !threadTree) {
+              if (!browser?.addEventListener) return;
+              const cancel = () => {
+                browser.removeEventListener("load", onLoad, true);
+                pendingTabLoads.delete(win);
+              };
+              const onLoad = event => {
+                // A nested message browser can also load within about:3pane.
+                if (event.target !== browser.contentDocument) return;
+                cancel();
+                if (isInitialized && tabmail.currentTabInfo === selectedTab) tabSelectHandler();
+              };
+              pendingTabLoads.set(win, cancel);
+              // Content document load does not bubble to the XUL browser.
+              browser.addEventListener("load", onLoad, true);
+              return;
+            }
             setupWindowTracking(win);
             getCurrentSelection();
+            if (publish) notifySelectionChange();
           };
           tabContainer.__messageSelectionTabSelectHandler = tabSelectHandler;
           tabContainer.addEventListener("TabSelect", tabSelectHandler);
           tlog("TabSelect listener registered for messageSelection");
+          // A fresh background can attach while the current 3-pane tab is
+          // still loading, after its TabSelect event has already fired.
+          // Re-arm that tab without publishing a duplicate ready snapshot.
+          tabSelectHandler(null, false);
         }
       } catch (e) {
         tlog("Failed to add TabSelect listener:", e);
@@ -363,6 +406,10 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
               chromeURLs: ["chrome://messenger/content/messenger.xhtml"],
               onLoadWindow(win) {
                 trackWindow(win);
+              },
+              onUnloadWindow(win) {
+                cancelPendingTabLoad(win);
+                pendingWindowLoads.get(win)?.();
               },
             });
           } catch (e) {
@@ -527,6 +574,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
         shutdown() {
           try {
             cancelPendingWindowLoads();
+            cancelPendingTabLoads();
             owner._shutdownHandlers.delete(apiObj.messageSelection.shutdown);
             if (owner._activeShutdown !== apiObj.messageSelection.shutdown) return;
             owner._activeShutdown = null;

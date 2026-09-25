@@ -114,6 +114,9 @@ export const CHAT_SETTINGS = {
   ftsReadinessTimeoutMs: 30000,
   // Delay between readiness retries.
   ftsReadinessRetryDelayMs: 250,
+  // Briefly recheck selection while a cold mail view or background starts.
+  messageSelectionBootstrapMaxRetries: 3,
+  messageSelectionBootstrapRetryDelayMs: 250,
   // --- Hotkeys ---
   // Enable opening chat via the tabOverride experiment's hotkey
   openChatHotkeyEnabled: true,
@@ -147,5 +150,4 @@ export const CHAT_SETTINGS = {
   // Set to 0 to disable. Default: 5 minutes (300000ms)
   chatLinkFsmTimeoutMs: 300000,
 };
-
 

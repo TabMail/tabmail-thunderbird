@@ -11,6 +11,7 @@ import { log } from "../../agent/modules/utils.js";
 
 // Store listener references for cleanup
 let _onSelectionChangedListener = null;
+let _selectionRevision = 0;
 
 /**
  * Generate unique ID for a message, preferring weMsgId when available
@@ -49,6 +50,7 @@ async function generateUniqueId(msg) {
  * @param {Object} selectionData - Raw selection data from experiment
  */
 async function handleSelectionChange(selectionData) {
+  const revision = ++_selectionRevision;
   if (SETTINGS.debugLogging) console.log(`[MessageSelection-DEBUG] handleSelectionChange called with:`, selectionData);
 
   const selectedMessages = selectionData.selectedMessages || [];
@@ -66,6 +68,10 @@ async function handleSelectionChange(selectionData) {
       log(`[MessageSelection] Failed to generate unique ID: ${e}`, "warn");
     }
   }
+
+  // Identity lookups can finish out of order. Only the newest native selection
+  // may update Chat, including after a pending mail window finishes loading.
+  if (revision !== _selectionRevision) return;
   
   // Forward unique IDs to all chat windows via runtime messaging
   if (SETTINGS.debugLogging) console.log(`[MessageSelection] Forwarding ${selectedMessages.length} -> ${uniqueIds.length} unique IDs`);
@@ -120,16 +126,7 @@ async function handleCurrentSelectionRequest() {
     
     if (SETTINGS.debugLogging) console.log(`[MessageSelection] Current selection: ${selectedMessages.length} -> ${uniqueIds.length} unique IDs`);
     
-    // Send current selection to all chat windows
-    browser.runtime.sendMessage({
-      command: "current-selection",
-      selectedMessageIds: uniqueIds,
-      selectionCount: uniqueIds.length
-    }).catch(() => {
-      // Ignore errors - chat window might not be open
-    });
-    
-    return { ok: true };
+    return { ok: true, selectedMessageIds: uniqueIds, selectionCount: uniqueIds.length };
   } catch (e) {
     log(`[MessageSelection] Failed to get current selection: ${e}`, "error");
     return { ok: false, error: e.message };
@@ -140,6 +137,7 @@ async function handleCurrentSelectionRequest() {
  * Cleanup message selection listeners to prevent accumulation
  */
 export function cleanupMessageSelectionListener() {
+  _selectionRevision++;
   if (_onSelectionChangedListener && browser.messageSelection?.onSelectionChanged) {
     try {
       browser.messageSelection.onSelectionChanged.removeListener(_onSelectionChangedListener);

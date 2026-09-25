@@ -124,10 +124,10 @@ describe('messageSelection', () => {
       expect(typeof result.then).toBe('function');
     });
 
-    it('should resolve with ok:true for valid selection request', async () => {
+    it('should return the current IDs directly for a valid selection request', async () => {
       browser.messageSelection.getSelectedMessages.mockResolvedValueOnce('[]');
       const result = await handleMessageSelectionRequest({ command: 'get-current-selection' });
-      expect(result).toEqual({ ok: true });
+      expect(result).toEqual({ ok: true, selectedMessageIds: [], selectionCount: 0 });
     });
 
     it('should handle JSON parse errors gracefully', async () => {
@@ -145,17 +145,13 @@ describe('messageSelection', () => {
       browser.messageSelection.getSelectedMessages = orig;
     });
 
-    it('should forward unique IDs via runtime messaging', async () => {
+    it('should return unique IDs only to the requesting Chat window', async () => {
       browser.messageSelection.getSelectedMessages.mockResolvedValueOnce(
-        JSON.stringify([{ weMsgId: 42 }])
+        JSON.stringify([{ weMsgId: 42 }, { weMsgId: 43 }])
       );
-      await handleMessageSelectionRequest({ command: 'get-current-selection' });
-      expect(browser.runtime.sendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: 'current-selection',
-          selectionCount: 1,
-        })
-      );
+      const response = await handleMessageSelectionRequest({ command: 'get-current-selection' });
+      expect(response).toEqual({ ok: true, selectedMessageIds: ['unique-42', 'unique-43'], selectionCount: 2 });
+      expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
     });
   });
 

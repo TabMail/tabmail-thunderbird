@@ -6,9 +6,10 @@ const source = readFileSync(filename, 'utf8');
 function target() {
   const events = new Map();
   return {
-    addEventListener(name, fn) { if (!events.has(name)) events.set(name, new Set()); events.get(name).add(fn); },
-    removeEventListener(name, fn) { events.get(name)?.delete(fn); },
-    emit(name) { for (const fn of [...(events.get(name) || [])]) fn(); },
+    addEventListener(name, fn, options) { if (!events.has(name)) events.set(name, new Set()); events.get(name).add({ fn, capture: options === true || !!options?.capture }); },
+    removeEventListener(name, fn, options) { for (const listener of events.get(name) || []) if (listener.fn === fn && listener.capture === (options === true || !!options?.capture)) events.get(name).delete(listener); },
+    emit(name) { for (const { fn } of [...(events.get(name) || [])]) fn(); },
+    emitCaptured(name, event) { for (const { fn, capture } of [...(events.get(name) || [])]) if (capture) fn(event); },
     count(name) { return events.get(name)?.size || 0; },
   };
 }
@@ -19,9 +20,9 @@ function harness({ loading = false } = {}) {
   const headers = [header, { ...header, messageId: 'second@example.test' }];
   const selection = { count: 1, getRangeCount: () => 1, getRangeAt(_i, a, b) { a.value = 0; b.value = 0; } };
   const trees = [target(), target()];
-  const tabs = trees.map((tree, index) => ({ mode: { name: 'mail3PaneTab' }, chromeBrowser: { contentWindow: {
+  const tabs = trees.map((tree, index) => ({ mode: { name: 'mail3PaneTab' }, chromeBrowser: { ...target(), get contentDocument() { return this.contentWindow.document; }, contentWindow: {
     gDBView: { selection, hdrForRow: () => headers[index] },
-    document: { getElementById: id => id === 'threadTree' ? tree : null, querySelector: () => null },
+    document: { readyState: 'complete', getElementById: id => id === 'threadTree' && tabs[index]?.chromeBrowser.contentWindow.document.readyState === 'complete' ? tree : null, querySelector: () => null },
   } } }));
   const tabmail = { tabInfo: tabs, tabContainer, currentTabInfo: tabs[0], get currentAbout3Pane() { return this.currentTabInfo.chromeBrowser.contentWindow; } };
   const win = { ...target(), document: { readyState: loading ? 'loading' : 'complete', getElementById: id => win.document.readyState === 'complete' && id === 'tabmail' ? tabmail : null, querySelector: () => null } };
@@ -67,12 +68,17 @@ function harness({ loading = false } = {}) {
   };
   vm.runInNewContext(`${source}\nglobalThis.Experiment = messageSelection;`, sandbox, { filename });
   const instance = new sandbox.Experiment();
-  const api = instance.getAPI({ extension: { id: 'synthetic@example.test', messageManager: { convert: () => ({ id: 1 }) } } }).messageSelection;
+  const context = { extension: { id: 'synthetic@example.test', messageManager: { convert: () => ({ id: 1 }) } } };
+  const api = instance.getAPI(context).messageSelection;
   const flush = () => { while (pending.length) pending.shift()(); };
   const selectTab = index => { tabmail.currentTabInfo = tabs[index]; tabContainer.emit('TabSelect'); };
   const setMessageId = (index, messageId) => { headers[index] = { ...headers[index], messageId }; };
   const finishLoad = () => { win.document.readyState = 'complete'; win.emit('load'); };
-  return { instance, api, trees, tabContainer, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad };
+  const loadedViews = tabs.map(tab => tab.chromeBrowser.contentWindow.gDBView);
+  const setTabLoading = index => { tabs[index].chromeBrowser.contentWindow.document.readyState = 'loading'; tabs[index].chromeBrowser.contentWindow.gDBView = null; };
+  // A content document's non-bubbling load reaches its <browser> only in capture.
+  const finishTabLoad = index => { tabs[index].chromeBrowser.contentWindow.document.readyState = 'complete'; tabs[index].chromeBrowser.contentWindow.gDBView = loadedViews[index]; tabs[index].chromeBrowser.emitCaptured('load', { target: tabs[index].chromeBrowser.contentDocument }); };
+  return { instance, context, api, trees, tabs, tabContainer, selection, pending, notifyObservers, observers, eventManagers, registered, flush, selectTab, setMessageId, win, finishLoad, setTabLoading, finishTabLoad };
 }
 describe('review: native ownership with real window and queued callback shapes', () => {
   it('tracks an existing window that finishes loading after listener registration', () => {
@@ -86,6 +92,26 @@ describe('review: native ownership with real window and queued callback shapes',
     expect(JSON.parse(h.notifyObservers.mock.calls[0][2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
     h.instance.onShutdown(false);
     expect(h.trees[0].count('select')).toBe(0);
+  });
+  it('publishes the existing selection when a loading mail window becomes ready', () => {
+    const h = harness({ loading: true });
+    h.api.init();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    h.finishLoad(); h.flush();
+    expect(h.notifyObservers).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(h.notifyObservers.mock.calls[0][2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('does not publish an empty snapshot before a loading mail view has a selection', () => {
+    const h = harness({ loading: true });
+    h.selection.count = 0;
+    h.api.init();
+    h.finishLoad(); h.flush();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    h.selection.count = 1;
+    h.trees[0].emit('select'); h.flush();
+    expect(JSON.parse(h.notifyObservers.mock.calls[0][2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
+    h.instance.onShutdown(false);
   });
   it('cancels loading-window setup on close and true shutdown', () => {
     for (const close of [false, true]) {
@@ -121,11 +147,125 @@ describe('review: native ownership with real window and queued callback shapes',
   it('cleans every previously visited mail tab, including inactive tabs', () => {
     const h = harness(); h.api.init(); h.flush(); h.selectTab(1);
     expect(h.trees.map(t => t.count('select'))).toEqual([1, 1]);
+    expect(h.notifyObservers).toHaveBeenCalledTimes(1);
+    h.notifyObservers.mockClear();
     h.instance.onShutdown(false);
     expect(h.registered.size).toBe(0);
     h.selectTab(0); h.trees[0].emit('select'); h.flush();
     expect(h.notifyObservers).not.toHaveBeenCalled();
     expect(h.trees.map(t => t.count('select'))).toEqual([0, 0]);
+  });
+  it('waits for a newly selected 3-pane tab to load before publishing and attaching its tree', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.trees[0].emit('select'); h.flush();
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
+    h.notifyObservers.mockClear();
+
+    h.setTabLoading(1); h.selectTab(1); h.flush();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+
+    h.tabs[1].chromeBrowser.emitCaptured('load', { target: {} });
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(1);
+    expect(h.notifyObservers).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('second@example.test');
+    h.setMessageId(1, 'after-load@example.test');
+    h.trees[1].emit('select'); h.flush();
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('after-load@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('cancels a pending tab load when selection moves away', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.setTabLoading(1); h.selectTab(1);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    h.selectTab(0); h.notifyObservers.mockClear();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(0);
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    h.instance.onShutdown(false);
+  });
+  it('cancels a pending tab load on true shutdown', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.setTabLoading(1); h.selectTab(1); h.notifyObservers.mockClear();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    h.instance.onShutdown(false);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(0);
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+  });
+  it('releases a pending tab load when its mail window closes', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.setTabLoading(1); h.selectTab(1); h.notifyObservers.mockClear();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    for (const listener of h.registered.values()) listener.onUnloadWindow?.(h.win);
+    h.win.closed = true;
+    h.win.emit('unload');
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(0);
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    h.instance.onShutdown(false);
+  });
+  it('waits for a complete document even if its thread tree already exists', () => {
+    const h = harness(); h.api.init(); h.flush(); h.notifyObservers.mockClear();
+    const doc = h.tabs[1].chromeBrowser.contentWindow.document;
+    doc.readyState = 'interactive';
+    doc.getElementById = id => id === 'threadTree' ? h.trees[1] : null;
+    h.selectTab(1); h.flush();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    doc.readyState = 'complete';
+    h.tabs[1].chromeBrowser.emitCaptured('load', { target: doc }); h.flush();
+    expect(h.trees[1].count('select')).toBe(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('second@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('waits for a thread tree even if the selected document reports complete', () => {
+    const h = harness(); h.api.init(); h.flush(); h.notifyObservers.mockClear();
+    const doc = h.tabs[1].chromeBrowser.contentWindow.document;
+    const originalGetElementById = doc.getElementById;
+    doc.getElementById = () => null;
+    h.selectTab(1); h.flush();
+    expect(h.notifyObservers).not.toHaveBeenCalled();
+    expect(h.trees[1].count('select')).toBe(0);
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    doc.getElementById = originalGetElementById;
+    h.tabs[1].chromeBrowser.emitCaptured('load', { target: doc }); h.flush();
+    expect(h.trees[1].count('select')).toBe(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('second@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('re-arms the current loading tab after background API recreation', () => {
+    const h = harness(); h.api.init(); h.flush();
+    h.setTabLoading(1); h.selectTab(1); h.notifyObservers.mockClear();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+
+    const recreated = h.instance.getAPI(h.context).messageSelection;
+    recreated.init(); h.flush();
+    expect(h.tabs[1].chromeBrowser.count('load')).toBe(1);
+    h.finishTabLoad(1); h.flush();
+    expect(h.trees[1].count('select')).toBe(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('second@example.test');
+    h.instance.onShutdown(false);
+  });
+  it('arms an already-selected loading tab during initial background setup', () => {
+    const h = harness();
+    h.setTabLoading(0);
+    h.api.init(); h.flush();
+    expect(h.tabs[0].chromeBrowser.count('load')).toBe(1);
+    expect(h.trees[0].count('select')).toBe(0);
+    h.finishTabLoad(0); h.flush();
+    expect(h.trees[0].count('select')).toBe(1);
+    expect(JSON.parse(h.notifyObservers.mock.lastCall[2]).selectedMessages[0].messageId).toBe('synthetic@example.test');
+    h.instance.onShutdown(false);
   });
   it('does not reattach a tree when deferred window setup runs after shutdown', () => {
     const h = harness(); h.api.init();
