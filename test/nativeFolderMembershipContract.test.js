@@ -3,6 +3,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 
 vi.mock("../agent/modules/utils.js", () => ({ log: vi.fn() }));
 vi.mock("../agent/modules/config.js", () => ({
@@ -238,6 +240,38 @@ async function initialized(folderMembershipV1, assignmentResult = null) {
   return { nativeFtsSearch, port };
 }
 
+async function connectedRecoveryHarness() {
+  const { nativeFtsSearch, port } = await initialized(true);
+  const armed = new Map();
+  let alarmListener;
+  browser.alarms = {
+    create: vi.fn((name, details) => { armed.set(name, details); }),
+    clear: vi.fn(name => { armed.delete(name); }),
+    onAlarm: { addListener: listener => { alarmListener = listener; } },
+  };
+  const source = readFileSync(new URL("../chat/background.js", import.meta.url), "utf8");
+  const start = source.indexOf("const FTS_RECHECK_ALARM =");
+  const end = source.indexOf("// Initialize FTS engine FIRST", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const context = {
+    browser,
+    log: vi.fn(),
+    setWarning: vi.fn(async () => {}),
+    getFtsHelperAvailable: () => nativeFtsSearch.getHostAvailability(),
+    getFtsHelperStatus: () => nativeFtsSearch.getHostStatus(),
+    recheckFtsHelperAvailable: () => nativeFtsSearch.recheckAvailability(),
+    initFtsEngine: vi.fn(async () => {}),
+    checkAndRunInitialFtsScan: vi.fn(async () => {}),
+  };
+  vm.createContext(context);
+  vm.runInContext(`${source.slice(start, end)}\nthis.syncWarning = syncFtsWarning; this.probe = probeFtsAvailability;`, context);
+  return {
+    port, nativeFtsSearch, armed, context,
+    fireAlarm: () => alarmListener({ name: "tabmail-fts-helper-recheck" }),
+  };
+}
+
 afterEach(() => {
   delete globalThis.browser;
   vi.useRealTimers();
@@ -245,6 +279,81 @@ afterEach(() => {
 });
 
 describe("native folder-membership v1 contract", () => {
+  it("retains one recovery alarm after late disconnect and clears it only after reconnect", async () => {
+    const app = await connectedRecoveryHarness();
+    await app.context.syncWarning();
+    expect(app.armed.size).toBe(0);
+
+    app.port.disconnect();
+    app.port.disconnect();
+    expect(app.nativeFtsSearch.getHostAvailability()).toBe(false);
+    expect(app.armed.has("tabmail-fts-helper-recheck")).toBe(true);
+    expect(app.armed.get("tabmail-fts-helper-recheck")).toEqual({ periodInMinutes: 1 });
+    expect(browser.alarms.create).toHaveBeenCalledTimes(1);
+
+    const replacement = makeNativePort(true);
+    browser.runtime.connectNative.mockReturnValue(replacement);
+    app.fireAlarm();
+    await vi.waitFor(() => expect(app.context.checkAndRunInitialFtsScan).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(app.armed.size).toBe(0));
+    expect(app.nativeFtsSearch.getHostAvailability()).toBe(true);
+
+    replacement.disconnect();
+    expect(app.nativeFtsSearch.getHostAvailability()).toBe(false);
+    expect(app.armed.has("tabmail-fts-helper-recheck")).toBe(true);
+    expect(browser.alarms.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a newer disconnect alarm when an older warning update finishes", async () => {
+    const app = await connectedRecoveryHarness();
+    app.port.disconnect();
+    await app.context.syncWarning();
+    let finishWarning;
+    app.context.setWarning.mockImplementationOnce(() => new Promise(resolve => {
+      finishWarning = resolve;
+    }));
+    const replacement = makeNativePort(true);
+    browser.runtime.connectNative.mockReturnValue(replacement);
+    app.fireAlarm();
+    await vi.waitFor(() => expect(typeof finishWarning).toBe("function"));
+    replacement.disconnect();
+    expect(app.armed.has("tabmail-fts-helper-recheck")).toBe(true);
+    const recovery = app.context.probe();
+    finishWarning();
+    await recovery;
+    expect(app.nativeFtsSearch.getHostAvailability()).toBe(false);
+    expect(app.armed.has("tabmail-fts-helper-recheck")).toBe(true);
+  });
+
+  it.each(["throw", "reject"])("cleans up pending native work when alarm creation %ss", async mode => {
+    const app = await connectedRecoveryHarness();
+    browser.alarms.create.mockImplementation(() => {
+      if (mode === "throw") throw new Error("alarm unavailable");
+      return Promise.reject(new Error("alarm unavailable"));
+    });
+    const originalPost = app.port.postMessage;
+    app.port.postMessage = message => {
+      if (message.method === "indexBatch") {
+        app.port.messages.push(message);
+        return;
+      }
+      originalPost(message);
+    };
+    const pending = app.nativeFtsSearch.indexBatch([{
+      msgId: "account:/Inbox:synthetic@example.invalid",
+      folderId: "folder-1", body: "",
+    }]);
+    const failure = pending.catch(error => error);
+    await vi.waitFor(() => expect(app.port.messages.some(message => message.method === "indexBatch")).toBe(true));
+    expect(() => app.port.disconnect()).not.toThrow();
+    expect((await failure).message).toBe("Native helper disconnected");
+    expect(app.nativeFtsSearch.getHostAvailability()).toBe(false);
+
+    const replacement = makeNativePort(true);
+    browser.runtime.connectNative.mockReturnValue(replacement);
+    expect(await app.nativeFtsSearch.recheckAvailability()).toBe(true);
+  });
+
   it("injects opaque folderId on fresh writes only when hello advertises the capability", async () => {
     const supported = await initialized(true);
     await supported.nativeFtsSearch.indexBatch([{
