@@ -371,7 +371,7 @@ export const SETTINGS = {
         // Event-driven email pipeline (summary → action → reply) queue.
         // Used to ensure messages are retried when network/backend is unavailable.
         processMessage: {
-            // How often the queue watchdog tries to drain pending work while the worker is awake.
+            // Legacy fallback for retryDelayMs; no watchdog interval is started.
             watchIntervalMs: 10000,
             // Delay used when we want to “kick” processing soon after enqueue (debounced).
             kickDelayMs: 0,
@@ -380,7 +380,7 @@ export const SETTINGS = {
             // How many queued messages to attempt per drain cycle.
             // High value to process backlog quickly.
             batchSize: 100,
-            // If a processing attempt fails (e.g., backend/network), wait this long before retrying.
+            // Retry delay request; event-page alarm uses at least one minute so it can idle.
             retryDelayMs: 10000,
             // Max attempts to resolve a message (headerIDToWeID / messages.get) before dropping.
             // Transient IMAP/Gmail sync can cause temporary resolve failures; retry a few times.

@@ -17,6 +17,8 @@ import {
 let _performLeaveInboxTagCleanup = null;
 
 const QUEUE_STORAGE_KEY = "agent_processmessage_pending";
+const RETRY_ALARM = "agent-process-message-retry";
+const MIN_RETRY_ALARM_MS = 60_000;
 
 // EVICTION POLICY: Items are ONLY removed from the queue when:
 //   For processMessage (AI pipeline):
@@ -40,9 +42,9 @@ const QUEUE_STORAGE_KEY = "agent_processmessage_pending";
 // query is treated as transient and retried.
 let _pending = new Map(); // Map<uniqueKey, { uniqueKey, timestamp, opts, metadata, attempts, lastErrorAtMs }>
 let _persistTimer = null;
-let _watchTimer = null;
-let _retryTimer = null;
 let _kickTimer = null;
+let _alarmSync = Promise.resolve();
+let _retryAlarmArmed = false;
 let _isProcessing = false;
 const _inFlight = new Map(); // uniqueKey -> startedAtMs — items with _processOneItem still running
 let _inited = false;
@@ -86,14 +88,6 @@ function _clearTimer(refName) {
     if (refName === "persist" && _persistTimer) {
       clearTimeout(_persistTimer);
       _persistTimer = null;
-    }
-    if (refName === "watch" && _watchTimer) {
-      clearInterval(_watchTimer);
-      _watchTimer = null;
-    }
-    if (refName === "retry" && _retryTimer) {
-      clearTimeout(_retryTimer);
-      _retryTimer = null;
     }
     if (refName === "kick" && _kickTimer) {
       clearTimeout(_kickTimer);
@@ -209,39 +203,39 @@ async function _clearPersisted() {
   }
 }
 
-function _ensureWatchdog() {
-  const intervalMs = _watchIntervalMs();
-  if (intervalMs <= 0) {
-    log("[TMDBG PMQ] Watchdog disabled (watchIntervalMs<=0)");
-    return;
+function _syncRetryAlarm() {
+  if (!browser.alarms) {
+    if (_pending.size > 0) log("[TMDBG PMQ] Retry alarm unavailable; pending work waits for another event", "warn");
+    return Promise.resolve();
   }
-  if (_watchTimer) return;
-  _watchTimer = setInterval(() => {
-    try {
-      if (_pending.size > 0) {
-        log(`[TMDBG PMQ] Watchdog tick: pending=${_pending.size} processing=${_isProcessing}`);
-      }
-      drainProcessMessageQueue().catch((e) => {
-        log(`[TMDBG PMQ] Watchdog drain error: ${e}`, "warn");
-      });
-    } catch (_) {}
-  }, intervalMs);
-  log(`[TMDBG PMQ] Watchdog started: intervalMs=${intervalMs}`);
+  // Serialize create/clear so a drain reaching empty cannot clear an alarm
+  // requested by an overlapping enqueue. Read the current queue at execution.
+  _alarmSync = _alarmSync.catch(() => {}).then(async () => {
+    if (_pending.size === 0 || _retryDelayMs() <= 0) {
+      await browser.alarms.clear(RETRY_ALARM);
+      _retryAlarmArmed = false;
+      return;
+    }
+    if (await browser.alarms.get(RETRY_ALARM)) {
+      _retryAlarmArmed = true;
+      return;
+    }
+    const periodInMinutes = Math.max(_retryDelayMs(), MIN_RETRY_ALARM_MS) / 60_000;
+    await browser.alarms.create(RETRY_ALARM, { periodInMinutes });
+    _retryAlarmArmed = true;
+  });
+  return _alarmSync;
 }
 
-function _scheduleRetrySoon(reason = "unknown") {
-  const delayMs = _retryDelayMs();
-  if (delayMs <= 0) {
-    log(`[TMDBG PMQ] Retry scheduling disabled (retryDelayMs<=0). reason=${reason}`, "warn");
-    return;
-  }
-  if (_retryTimer) return; // keep the earliest scheduled retry
-  _retryTimer = setTimeout(() => {
-    _retryTimer = null;
-    drainProcessMessageQueue().catch(() => {});
-  }, delayMs);
-  log(`[TMDBG PMQ] Scheduled retry in ${delayMs}ms (reason=${reason})`);
-}
+// Imported by agent/background.js before startup awaits. A named stock alarm
+// wakes a suspended background; an in-memory timer cannot.
+browser.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm?.name !== RETRY_ALARM) return;
+  return _ensureRestored().then(async () => {
+    await drainProcessMessageQueue();
+    await _syncRetryAlarm();
+  }).catch((e) => log(`[TMDBG PMQ] Retry alarm drain error: ${e}`, "warn"));
+});
 
 function _scheduleKick() {
   const delayMs = _kickDelayMs();
@@ -257,7 +251,7 @@ function _scheduleKick() {
 /**
  * Initialize persistent processMessage queue:
  * - restores pending items from storage.local
- * - starts watchdog timer (while worker is awake)
+ * - arms a named alarm while durable work is pending
  */
 export async function initProcessMessageQueue() {
   if (_inited) return;
@@ -266,7 +260,7 @@ export async function initProcessMessageQueue() {
   await _ensureRestored();
   if (_inited) return;
   _inited = true;
-  _ensureWatchdog();
+  await _syncRetryAlarm();
 
   if (_pending.size > 0) {
     log(`[TMDBG PMQ] Pending items on init: ${_pending.size} (kicking drain)`);
@@ -318,7 +312,7 @@ export async function enqueueProcessMessage(messageHeader, opts = {}) {
     );
 
     _schedulePersist();
-    _ensureWatchdog();
+    await _syncRetryAlarm();
     _scheduleKick();
     return { ok: true, uniqueKey };
   } catch (e) {
@@ -673,6 +667,7 @@ export async function drainProcessMessageQueue() {
     } else {
       await _persistNow();
     }
+    await _syncRetryAlarm();
 
     log(`[TMDBG PMQ] Drain cycle complete: processed=${processed} dropped=${dropped} remaining=${_pending.size}`);
 
@@ -687,15 +682,10 @@ export async function drainProcessMessageQueue() {
       }
     }
 
-    if (_pending.size > 0) {
-      if (needsRetry) {
-        // Some items failed - wait before retrying to avoid tight loops.
-        _scheduleRetrySoon("processing-incomplete");
-      } else {
-        // All processed items succeeded but more remain - continue immediately.
-        // Use setImmediate-style scheduling to yield but not delay.
-        setTimeout(() => drainProcessMessageQueue().catch(() => {}), 0);
-      }
+    if (_pending.size > 0 && !needsRetry) {
+      // All processed items succeeded but more remain - continue immediately.
+      // Failed work waits for the named alarm so the background can idle.
+      setTimeout(() => drainProcessMessageQueue().catch(() => {}), 0);
     }
   } finally {
     _isProcessing = false;
@@ -703,8 +693,8 @@ export async function drainProcessMessageQueue() {
 }
 
 /**
- * Cleanup timers and persist remaining queue state.
- * Call this on runtime.onSuspend to avoid leaks during hot reload.
+ * Cleanup in-memory timers and persist remaining queue state.
+ * The named retry alarm stays armed if work remains after hot reload.
  */
 export async function cleanupProcessMessageQueue() {
   log("[TMDBG PMQ] cleanupProcessMessageQueue()");
@@ -723,8 +713,6 @@ export async function cleanupProcessMessageQueue() {
   }
 
   // Clear all timers
-  _clearTimer("watch");
-  _clearTimer("retry");
   _clearTimer("persist");
   _clearTimer("kick");
 
@@ -734,6 +722,7 @@ export async function cleanupProcessMessageQueue() {
       await _persistNow();
     }
   } catch (_) {}
+  await _syncRetryAlarm();
 
   for (const item of _pending.values()) {
     finishAutomaticWork(item.token);
@@ -750,8 +739,9 @@ export function getProcessMessageQueueStatus() {
     pending: _pending.size,
     inFlight: _inFlight.size,
     isProcessing: _isProcessing,
-    hasWatchTimer: !!_watchTimer,
-    hasRetryTimer: !!_retryTimer,
+    hasWatchTimer: false,
+    hasRetryTimer: false,
+    hasRetryAlarm: _retryAlarmArmed,
     hasPersistTimer: !!_persistTimer,
     hasKickTimer: !!_kickTimer,
     cfg: {
