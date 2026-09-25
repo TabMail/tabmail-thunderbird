@@ -36,7 +36,7 @@ it('starts selection recovery from the registered Chat DOMContentLoaded callback
     updateSelectionFromMessage: message => updates.push(message.selectedMessageIds),
     browser: { runtime: { onMessage: { addListener: vi.fn() }, sendMessage } },
     window: { addEventListener: (name, callback) => { if (name === 'DOMContentLoaded') onReady = callback; } },
-    document: { getElementById: () => null, addEventListener: vi.fn() },
+    document: { getElementById: id => id === 'chat-container' ? {} : null, addEventListener: vi.fn() },
     setTimeout: callback => { timers.push(callback); },
     log: vi.fn(),
   };
@@ -49,6 +49,26 @@ it('starts selection recovery from the registered Chat DOMContentLoaded callback
   await vi.waitFor(() => expect(updates.at(-1)).toEqual(['synthetic:ready']));
   expect(sendMessage).toHaveBeenCalledTimes(2);
   expect(timers).toHaveLength(0);
+});
+
+it('does not start chat UI listeners in a background document', async () => {
+  const source = readFileSync(new URL('../chat/chat.js', import.meta.url), 'utf8');
+  const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const registration = ast.body.find(node => node.type === 'ExpressionStatement'
+    && node.expression.callee?.object?.name === 'window'
+    && node.expression.arguments?.[0]?.value === 'DOMContentLoaded');
+  expect(registration).toBeDefined();
+
+  let onReady;
+  const addRuntimeListener = vi.fn();
+  runInNewContext(source.slice(registration.start, registration.end), {
+    window: { addEventListener: (name, callback) => { if (name === 'DOMContentLoaded') onReady = callback; } },
+    document: { getElementById: () => null, addEventListener: vi.fn() },
+    browser: { runtime: { onMessage: { addListener: addRuntimeListener } } },
+    log: vi.fn(),
+  });
+  await expect(onReady()).resolves.toBeUndefined();
+  expect(addRuntimeListener).not.toHaveBeenCalled();
 });
 
 it('does not let an older startup reply replace a newer selection event', async () => {

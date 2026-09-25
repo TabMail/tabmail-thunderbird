@@ -577,6 +577,10 @@ function updateSelectionFromMessage(message) {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  // Tool modules also import this file in the background page. Only the chat
+  // document owns its UI listeners and greeting lifecycle.
+  if (!document.getElementById("chat-container")) return;
+
   // Inject TabMail palette CSS
   try {
     await injectPaletteIntoDocument(document);
