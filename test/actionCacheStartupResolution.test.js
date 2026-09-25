@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { parse } from 'acorn';
 const state=vi.hoisted(()=>({values:{},events:[]}));
 vi.mock('../agent/modules/idbStorage.js',()=>({
  get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>k in state.values).map(k=>[k,state.values[k]])),
@@ -22,6 +24,52 @@ beforeEach(async()=>{
 });
 afterEach(()=>{owner.cleanupActionCache();vi.useRealTimers();});
 describe('symmetric inbox backfill',()=>{
+ it('registers the real backfill owner before background startup and handles a first folder event once',async()=>{
+  const source=readFileSync(new URL('../agent/background.js',import.meta.url),'utf8');
+  const calls=parse(source,{ecmaVersion:'latest',sourceType:'module'}).body
+   .filter(node=>node.type==='ExpressionStatement'&&node.expression?.type==='CallExpression')
+   .map(node=>({name:node.expression.callee?.name,at:node.start}));
+  expect(calls.find(call=>call.name==='attachActionCacheBackfillListeners')?.at)
+   .toBeLessThan(calls.find(call=>call.name==='init')?.at);
+
+  state.values[`action:account:${folder.path}:${headers[0].headerMessageId}`]='archive';
+  owner.attachActionCacheBackfillListeners();
+  owner.attachActionCacheBackfillListeners();
+  expect(accountCreated.addListener).toHaveBeenCalledOnce();
+  expect(folderCreated.addListener).toHaveBeenCalledOnce();
+
+  await folderCreated.addListener.mock.calls[0][0]();
+  expect(state.events).toEqual([[{weMsgId:1,action:'archive'},{weMsgId:2,action:''}],'chips','delayed']);
+  await owner.pushAllActionsToExperimentsOnStartup();
+  expect(accountCreated.addListener).toHaveBeenCalledOnce();
+  expect(folderCreated.addListener).toHaveBeenCalledOnce();
+  expect(browser.tmHdr.setActionsBulk).toHaveBeenCalledOnce();
+ });
+ it('repairs cached and orphan actions on the first account-created event',async()=>{
+  state.values[`action:account:${folder.path}:${headers[0].headerMessageId}`]='archive';
+  owner.attachActionCacheBackfillListeners();
+  expect(browser.accounts.list).not.toHaveBeenCalled();
+  await accountCreated.addListener.mock.calls[0][0]('account',{id:'account'});
+  expect(browser.tmHdr.setActionsBulk).toHaveBeenCalledExactlyOnceWith([
+   {weMsgId:1,action:'archive'},{weMsgId:2,action:''},
+  ]);
+  expect(state.events.slice(1)).toEqual(['chips','delayed']);
+ });
+ it('retries a failed add without duplicating the other owner and retains failed removal ownership',async()=>{
+  accountCreated.addListener.mockImplementationOnce(()=>{throw new Error('synthetic add failure');});
+  owner.attachActionCacheBackfillListeners();
+  expect(accountCreated.addListener).toHaveBeenCalledOnce();
+  expect(folderCreated.addListener).toHaveBeenCalledOnce();
+  owner.attachActionCacheBackfillListeners();
+  expect(accountCreated.addListener).toHaveBeenCalledTimes(2);
+  expect(folderCreated.addListener).toHaveBeenCalledOnce();
+
+  folderCreated.removeListener.mockImplementationOnce(()=>{throw new Error('synthetic remove failure');});
+  owner.cleanupActionCache();
+  owner.attachActionCacheBackfillListeners();
+  expect(accountCreated.addListener).toHaveBeenCalledTimes(3);
+  expect(folderCreated.addListener).toHaveBeenCalledOnce();
+ });
  it('preserves colon-bearing folder and Message-ID while clearing native orphans',async()=>{
   state.values[`action:account:${folder.path}:${headers[0].headerMessageId}`]='archive';
   await owner.pushAllActionsToExperimentsOnStartup();

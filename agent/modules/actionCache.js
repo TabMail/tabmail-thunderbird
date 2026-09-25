@@ -25,7 +25,10 @@ let _queue = Promise.resolve();
 let _epoch = 0;
 const _workTokens = new Map();
 const _backfilledAccounts = new Set();
-let _listeners = null;
+const _lateBackfill = () => backfillLoadedAccounts({ reason: "late" })
+  .catch(() => log("[actionCache] late account backfill failed", "debug"));
+let _accountCreatedAttached = false;
+let _folderCreatedAttached = false;
 
 function _enqueue(fn) {
   const result = _queue.then(fn);
@@ -312,21 +315,37 @@ export async function backfillLoadedAccounts({ reason = "startup" } = {}) {
     });
   }
 }
-export function pushAllActionsToExperimentsOnStartup() {
-  if (!_listeners) {
-    const late = () => backfillLoadedAccounts({ reason: "late" }).catch(() => log("[actionCache] late account backfill failed", "debug"));
-    browser.accounts.onCreated?.addListener(late);
-    browser.folders.onCreated?.addListener(late);
-    _listeners = late;
+export function attachActionCacheBackfillListeners() {
+  if (!_accountCreatedAttached && browser.accounts?.onCreated) {
+    try {
+      browser.accounts.onCreated.addListener(_lateBackfill);
+      _accountCreatedAttached = true;
+    } catch (_) { log("[actionCache] account listener registration failed", "debug"); }
   }
+  if (!_folderCreatedAttached && browser.folders?.onCreated) {
+    try {
+      browser.folders.onCreated.addListener(_lateBackfill);
+      _folderCreatedAttached = true;
+    } catch (_) { log("[actionCache] folder listener registration failed", "debug"); }
+  }
+}
+export function pushAllActionsToExperimentsOnStartup() {
+  attachActionCacheBackfillListeners();
   return backfillLoadedAccounts({ reason: "startup" });
 }
 export function cleanupActionCache() {
   _epoch++;
   _workTokens.clear();
-  if (_listeners) {
-    browser.accounts?.onCreated?.removeListener(_listeners);
-    browser.folders?.onCreated?.removeListener(_listeners);
-    _listeners = null;
+  if (_accountCreatedAttached && browser.accounts?.onCreated) {
+    try {
+      browser.accounts.onCreated.removeListener(_lateBackfill);
+      _accountCreatedAttached = false;
+    } catch (_) { log("[actionCache] account listener cleanup failed", "debug"); }
+  }
+  if (_folderCreatedAttached && browser.folders?.onCreated) {
+    try {
+      browser.folders.onCreated.removeListener(_lateBackfill);
+      _folderCreatedAttached = false;
+    } catch (_) { log("[actionCache] folder listener cleanup failed", "debug"); }
   }
 }
