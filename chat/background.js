@@ -324,6 +324,8 @@ async function getFtsScanStatus() {
 // asks "is FTS available?" and (b) a 1-min alarm that re-probes while the helper
 // needs install/reinstall and clears the red dot once it becomes usable.
 const FTS_RECHECK_ALARM = "tabmail-fts-helper-recheck";
+let ftsInitializationPending = false;
+let ftsProbePromise = null;
 
 // Sync the toolbar "fts" warning to current availability, and arm/disarm the
 // periodic recheck alarm (armed while the helper needs installation/reinstall).
@@ -331,7 +333,7 @@ async function syncFtsWarning() {
   const avail = getFtsHelperAvailable();
   try { await setWarning("fts", avail === false); } catch (_) {}
   try {
-    if (avail === false) {
+    if (avail === false || ftsInitializationPending) {
       browser.alarms.create(FTS_RECHECK_ALARM, { periodInMinutes: 1 });
     } else if (avail === true) {
       browser.alarms.clear(FTS_RECHECK_ALARM);
@@ -345,14 +347,32 @@ async function syncFtsWarning() {
 // the startup path does so indexing kicks in without a restart. Returns fresh
 // availability and keeps the toolbar warning in sync.
 async function probeFtsAvailability() {
+  if (ftsProbePromise) return ftsProbePromise;
+  const probe = _probeFtsAvailabilityOnce();
+  ftsProbePromise = probe;
+  probe.then(
+    () => { if (ftsProbePromise === probe) ftsProbePromise = null; },
+    () => { if (ftsProbePromise === probe) ftsProbePromise = null; },
+  );
+  return probe;
+}
+
+async function _probeFtsAvailabilityOnce() {
   let available = getFtsHelperAvailable();
-  if (available === false) {
+  if (available === false || ftsInitializationPending) {
     try {
-      available = await recheckFtsHelperAvailable();
+      if (available === false) available = await recheckFtsHelperAvailable();
       if (available) {
-        try { await checkAndRunInitialFtsScan(); } catch (_) {}
+        // A native reconnect alone does not start the incremental indexer or
+        // its durable startup reconciliation after an earlier init failure.
+        await initFtsEngine();
+        ftsInitializationPending = false;
+        await checkAndRunInitialFtsScan();
       }
-    } catch (_) {}
+    } catch (e) {
+      ftsInitializationPending = true;
+      log(`[TMDBG FTS] Helper recovery initialization failed: ${e}`, "warn");
+    }
   }
   await syncFtsWarning();
   return { available, ...getFtsHelperStatus() };
@@ -362,7 +382,7 @@ async function probeFtsAvailability() {
 // guards on alarm name + known-unavailable, and self-disarms once usable.
 browser.alarms.onAlarm.addListener((alarm) => {
   if (!alarm || alarm.name !== FTS_RECHECK_ALARM) return;
-  if (getFtsHelperAvailable() !== false) {
+  if (getFtsHelperAvailable() !== false && !ftsInitializationPending) {
     try { browser.alarms.clear(FTS_RECHECK_ALARM); } catch (_) {}
     return;
   }
@@ -374,6 +394,7 @@ browser.storage.local.get({ chat_useFtsSearch: true }).then(async (stored) => {
   if (stored.chat_useFtsSearch) {
     try {
       await initFtsEngine();
+      ftsInitializationPending = false;
       log("[TMDBG Chat] FTS engine initialization started (priority listener)");
       try {
         const stats = await browser.runtime.sendMessage({
@@ -410,6 +431,7 @@ browser.storage.local.get({ chat_useFtsSearch: true }).then(async (stored) => {
       // installed, and arm the periodic auto-detect so it clears without a restart.
       await syncFtsWarning();
     } catch (e) {
+      ftsInitializationPending = true;
       log(`[TMDBG Chat] FTS engine initialization failed: ${e}`, "error");
       // init threw — helper is missing or unsupported; flag it + arm auto-detect.
       await syncFtsWarning();
