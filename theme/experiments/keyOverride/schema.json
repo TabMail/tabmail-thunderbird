@@ -22,8 +22,20 @@
       {
         "name": "onTabPressed",
         "type": "function",
-        "description": "Fired when the Tab key is pressed in the message list.",
-        "parameters": []
+        "description": "Fired when Tab is pressed with a valid press-time message selection.",
+        "parameters": [
+          {
+            "name": "info",
+            "type": "object",
+            "properties": {
+              "messageIds": {
+                "type": "array",
+                "items": { "type": "integer" },
+                "description": "WebExtension IDs selected at keydown, before background wakeup."
+              }
+            }
+          }
+        ]
       },
       {
         "name": "onChatHotkey",

@@ -69,9 +69,12 @@ export function makeWindow() {
   };
   const view = {
     selection, hdrForRow: () => hdr,
+    isContainer: () => false, isContainerOpen: () => true,
     msgFolder: { flags: 1, URI: 'mailbox://synthetic/Inbox' },
     rowCount: 2, sort() {}, addColumnHandler() {}, getColumnHandler() { return null; },
   };
+  cw.gDBView = view;
+  cw.threadTree = { selectedIndices: [0], _selection: { _selectEventsSuppressed: false } };
   const media = target();
   const tabmail = {
     currentAbout3Pane: cw,
@@ -245,7 +248,7 @@ export function experiment(relativePath, name, { windows = [], holdFetch = false
   const instance = new sandbox.Experiment(extension);
   const api = instance.getAPI(context)[name];
   return {
-    api, instance, context, windows, windowListeners, mfn, columns, observers, logs, queued, sheets, Services, sandbox,
+    api, instance, context, extensionEvents, windows, windowListeners, mfn, columns, observers, logs, queued, sheets, Services, sandbox,
     openWindow(win) {
       windows.push(win);
       for (const listener of windowListeners.values()) listener.onLoadWindow?.(win);

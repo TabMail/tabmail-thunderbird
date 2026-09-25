@@ -2,8 +2,23 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
+import { experiment, makeWindow } from './helpers/nativeLifecycleHarness.js';
 
-function startAgent({ welcome = false } = {}) {
+vi.mock('../agent/modules/actionCache.js', () => ({
+  ACTIONS: { DELETE: 'delete', ARCHIVE: 'archive', REPLY: 'reply' },
+  getActionForWeId: async () => 'archive',
+}));
+vi.mock('../agent/modules/composeTracker.js', () => ({ trackComposeWindow() {} }));
+vi.mock('../agent/modules/utils.js', () => ({
+  getArchiveFolderForHeader: async () => ({ id: 'archive', path: '/Archive' }),
+  getTrashFolderForHeader: async () => ({ id: 'trash', path: '/Trash' }),
+  getIdentityForMessage: async () => ({}),
+  getUniqueMessageKey: async () => 'synthetic@example.test',
+  log() {},
+}));
+import { registerTabKeyHandlers, cleanupTagActionKeyListeners } from '../agent/modules/tagActionKey.js';
+
+function startAgent({ welcome = false, tabKeyRegistrar } = {}) {
   const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
@@ -17,7 +32,9 @@ function startAgent({ welcome = false } = {}) {
   for (const entry of ast.body.filter(node => node.type === 'ImportDeclaration').reverse()) {
     for (const specifier of entry.specifiers) {
       const name = specifier.local.name;
-      globals[name] = name === 'SETTINGS' ? {} : name === 'idb' ? {} : () => Promise.resolve({});
+      globals[name] = name === 'SETTINGS' ? {} : name === 'idb' ? {}
+        : name === 'registerTabKeyHandlers' && tabKeyRegistrar
+          ? tabKeyRegistrar : () => Promise.resolve({});
     }
     script = script.slice(0, entry.start)
       + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
@@ -66,6 +83,68 @@ function startAgent({ welcome = false } = {}) {
 }
 
 describe('agent background startup and canceled suspend', () => {
+  it('registers the Tab listener at module load before asynchronous initialization', () => {
+    const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+    const calls = ast.body.filter(node => node.type === 'ExpressionStatement'
+      && node.expression?.type === 'CallExpression')
+      .map(node => ({ name: node.expression.callee?.name, at: node.start }));
+    const register = calls.find(call => call.name === 'registerTabKeyHandlers');
+    const init = calls.find(call => call.name === 'init');
+    expect(register).toBeDefined();
+    expect(init).toBeDefined();
+    expect(register.at).toBeLessThan(init.at);
+  });
+
+  it('registers the real Tab consumer before async startup and acts on the pressed target', async () => {
+    const first = makeWindow();
+    const second = makeWindow();
+    const native = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+      windows: [first.win, second.win],
+      moduleOverrides: {
+        getActualSelectedMessages: pane => pane === first.cw ? [first.hdr] : [second.hdr],
+      },
+    });
+    native.context.extension.messageManager.convert = header => ({
+      id: header === first.hdr ? 1 : 2,
+    });
+    const rows = new Map([1, 2].map(id => [id, {
+      id, read: false, folder: { id: 'inbox', accountId: 'synthetic' },
+    }]));
+    globalThis.browser = {
+      keyOverride: native.api,
+      messages: {
+        get: vi.fn(async id => structuredClone(rows.get(id))),
+        update: vi.fn(async (id, fields) => Object.assign(rows.get(id), fields)),
+        move: vi.fn(async (ids, folder) => {
+          for (const id of ids) rows.get(id).folder.id = folder;
+        }),
+      },
+      mailTabs: {
+        query: vi.fn(async () => [{ id: 7 }]),
+        getSelectedMessages: vi.fn(async () => ({ messages: [rows.get(2)] })),
+      },
+    };
+    try {
+      startAgent({ tabKeyRegistrar: registerTabKeyHandlers });
+      expect(native.instance._tabSubscriptions.size).toBe(1);
+      native.api.init();
+      const event = {
+        code: 'Tab', key: 'Tab', shiftKey: false,
+        preventDefault: vi.fn(), stopPropagation: vi.fn(), stopImmediatePropagation: vi.fn(),
+      };
+      first.win.dispatch('keydown', event);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(rows.get(1).folder.id).toBe('archive');
+      expect(rows.get(2).folder.id).toBe('inbox');
+      expect(browser.mailTabs.query).not.toHaveBeenCalled();
+    } finally {
+      cleanupTagActionKeyListeners();
+      native.instance.onShutdown(false);
+      delete globalThis.browser;
+    }
+  });
   it('opens onboarding when the first account arrives after a canceled suspend', async () => {
     for (const cancelSuspend of [false, true]) {
       const app = startAgent({ welcome: true });

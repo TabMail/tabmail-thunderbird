@@ -11,7 +11,7 @@ vi.mock('../agent/modules/utils.js', () => ({
   getIdentityForMessage: async () => ({}), getUniqueMessageKey: async () => 'synthetic@example.test',
   log() {},
 }));
-import { registerTabKeyHandlers, cleanupTagActionKeyListeners } from '../agent/modules/tagActionKey.js';
+import { registerTabKeyHandlers, cleanupTagActionKeyListeners, triggerTagActionKey } from '../agent/modules/tagActionKey.js';
 let x, win, rows, effects;
 const settled = () => new Promise(resolve => setImmediate(resolve));
 const key = (code = 'Tab', modifiers = {}) => ({
@@ -20,9 +20,12 @@ const key = (code = 'Tab', modifiers = {}) => ({
 });
 const fresh = () => ({ id: 1, read: false, folder: { id: 'inbox', accountId: 'synthetic' } });
 beforeEach(() => {
-  win = makeWindow().win;
+  const initial = makeWindow();
+  win = initial.win;
   rows = new Map([[1, fresh()], [2, { ...fresh(), id: 2 }]]); effects = [];
-  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', { windows: [win] });
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [win], moduleOverrides: { getActualSelectedMessages: () => [initial.hdr] },
+  });
   globalThis.browser = {
     keyOverride: x.api,
     mailTabs: {
@@ -79,4 +82,210 @@ it('new windows retain bare Tab actions and shutdown restores pass-through', asy
   const future = makeWindow().win; x.openWindow(future);
   const after = key(); future.dispatch('keydown', after); await settled();
   expect(rows.get(1)).toEqual(fresh()); expect(effects).toEqual([]); expect(after.preventDefault).not.toHaveBeenCalled();
+});
+
+it('uses the pressed window and every selected message, not another window or later selection', async () => {
+  cleanupTagActionKeyListeners();
+  x.instance.onShutdown(false);
+  const first = makeWindow();
+  const other = makeWindow();
+  const selectedByPane = new Map([
+    [first.cw, [{ ...first.hdr, messageKey: 1 }, { ...first.hdr, messageKey: 2 }]],
+    [other.cw, [{ ...other.hdr, messageKey: 3 }]],
+  ]);
+  rows.set(3, { ...fresh(), id: 3 });
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [first.win, other.win],
+    moduleOverrides: { getActualSelectedMessages: pane => selectedByPane.get(pane) || [] },
+  });
+  x.context.extension.messageManager.convert = header => ({ id: header.messageKey });
+  browser.keyOverride = x.api;
+  registerTabKeyHandlers();
+  x.api.init();
+  const pressed = key();
+  first.win.dispatch('keydown', pressed);
+  selectedByPane.set(first.cw, [{ ...first.hdr, messageKey: 3 }]);
+  await settled();
+  expect(pressed.preventDefault).toHaveBeenCalledOnce();
+  expect(effects.filter(effect => effect[0] === 'move').map(effect => effect[1]).sort()).toEqual([1, 2]);
+  expect(rows.get(1).folder.id).toBe('archive');
+  expect(rows.get(2).folder.id).toBe('archive');
+  expect(rows.get(3).folder.id).toBe('inbox');
+  expect(browser.mailTabs.query).not.toHaveBeenCalled();
+});
+
+it('refuses a missing pressed target without acting on the rest, then recovers', async () => {
+  cleanupTagActionKeyListeners();
+  x.instance.onShutdown(false);
+  const selected = makeWindow();
+  selected.cw.gDBView = selected.view;
+  const headers = [{ ...selected.hdr, messageKey: 1 }, { ...selected.hdr, messageKey: 2 }];
+  let current = headers;
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [selected.win],
+    moduleOverrides: { getActualSelectedMessages: pane => pane === selected.cw ? current : [] },
+  });
+  x.context.extension.messageManager.convert = header => ({ id: header.messageKey });
+  browser.keyOverride = x.api;
+  browser.messages.get = vi.fn(async id => {
+    if (id === 2) throw new Error('Synthetic deleted target');
+    return structuredClone(rows.get(id));
+  });
+  registerTabKeyHandlers();
+  x.api.init();
+  selected.win.dispatch('keydown', key());
+  await settled();
+  expect(browser.messages.get.mock.calls.map(call => call[0])).toEqual([1, 2]);
+  expect(effects).toEqual([]);
+  current = headers.slice(0, 1);
+  selected.win.dispatch('keydown', key());
+  await settled();
+  expect(effects).toEqual([['read', 1], ['move', 1, 'archive']]);
+});
+
+it('does not consume Tab when one of several native targets cannot be converted', async () => {
+  cleanupTagActionKeyListeners();
+  x.instance.onShutdown(false);
+  const selected = makeWindow();
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [selected.win],
+    moduleOverrides: {
+      getActualSelectedMessages: pane => pane === selected.cw
+        ? [{ ...selected.hdr, messageKey: 1 }, { ...selected.hdr, messageKey: 2 }] : [],
+    },
+  });
+  const convert = vi.fn(header => header.messageKey === 2 ? null : { id: header.messageKey });
+  x.context.extension.messageManager.convert = convert;
+  browser.keyOverride = x.api;
+  registerTabKeyHandlers();
+  x.api.init();
+  const pressed = key();
+  selected.win.dispatch('keydown', pressed);
+  await settled();
+  expect(convert).toHaveBeenCalledTimes(2);
+  expect(pressed.preventDefault).not.toHaveBeenCalled();
+  expect(effects).toEqual([]);
+});
+
+it('executes all 100 selected actions at the bound and refuses 101', async () => {
+  cleanupTagActionKeyListeners();
+  x.instance.onShutdown(false);
+  const selected = makeWindow();
+  const headers = Array.from({ length: 101 }, (_, index) => ({
+    ...selected.hdr, messageKey: index + 1,
+  }));
+  selected.cw.threadTree.selectedIndices = Array.from({ length: 100 }, (_, index) => index);
+  selected.cw.gDBView.selection.count = 100;
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [selected.win],
+    moduleOverrides: { getActualSelectedMessages: pane =>
+      pane.threadTree.selectedIndices.map(index => headers[index]) },
+  });
+  x.context.extension.messageManager.convert = header => ({ id: header.messageKey });
+  browser.keyOverride = x.api;
+  rows = new Map(headers.map(header => [header.messageKey, {
+    ...fresh(), id: header.messageKey,
+  }]));
+  registerTabKeyHandlers(); x.api.init();
+  const atLimit = key(); selected.win.dispatch('keydown', atLimit); await settled();
+  expect(atLimit.preventDefault).toHaveBeenCalledOnce();
+  expect(effects.filter(effect => effect[0] === 'move')).toHaveLength(100);
+  expect([...rows.values()].slice(0, 100).every(row => row.folder.id === 'archive')).toBe(true);
+  effects.length = 0;
+  selected.cw.threadTree.selectedIndices.push(100);
+  selected.cw.gDBView.selection.count = 101;
+  const oversized = key(); selected.win.dispatch('keydown', oversized); await settled();
+  expect(oversized.preventDefault).not.toHaveBeenCalled();
+  expect(effects).toEqual([]);
+  expect(rows.get(101).folder.id).toBe('inbox');
+});
+
+it('acts only on a selected expanded thread head even when the thread has 101 children', async () => {
+  cleanupTagActionKeyListeners();
+  x.instance.onShutdown(false);
+  const selected = makeWindow();
+  const headers = Array.from({ length: 102 }, (_, index) => ({
+    ...selected.hdr, messageKey: index + 1,
+  }));
+  selected.cw.threadTree.selectedIndices = [0];
+  selected.cw.gDBView.selection.count = 1;
+  selected.cw.gDBView.isContainer = index => index === 0;
+  selected.cw.gDBView.isContainerOpen = index => index === 0;
+  selected.cw.gDBView.getThreadContainingIndex = () => ({ numChildren: 101 });
+  const getActualSelectedMessages = vi.fn(pane =>
+    pane.threadTree.selectedIndices.map(index => headers[index]));
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [selected.win], moduleOverrides: { getActualSelectedMessages },
+  });
+  x.context.extension.messageManager.convert = header => ({ id: header.messageKey });
+  browser.keyOverride = x.api;
+  rows = new Map(headers.map(header => [header.messageKey, {
+    ...fresh(), id: header.messageKey,
+  }]));
+  registerTabKeyHandlers(); x.api.init();
+
+  const pressed = key(); selected.win.dispatch('keydown', pressed); await settled();
+  expect(pressed.preventDefault).toHaveBeenCalledOnce();
+  expect(getActualSelectedMessages).toHaveBeenCalledOnce();
+  expect(effects).toEqual([['read', 1], ['move', 1, 'archive']]);
+  expect(rows.get(1).folder.id).toBe('archive');
+  expect([...rows.values()].slice(1).every(row => row.folder.id === 'inbox')).toBe(true);
+});
+
+it('acts on 100 original messages during a suppressed context selection and refuses 101', async () => {
+  cleanupTagActionKeyListeners();
+  x.instance.onShutdown(false);
+  const selected = makeWindow();
+  const headers = Array.from({ length: 102 }, (_, index) => ({
+    ...selected.hdr, messageKey: index + 1,
+  }));
+  const originalIndices = new Set([
+    ...Array.from({ length: 100 }, (_, index) => index),
+    100, // Thunderbird also records the temporary context row in the invalid set.
+  ]);
+  selected.cw.threadTree.selectedIndices = [100]; // Temporary context-menu selection.
+  selected.cw.threadTree._selection = {
+    _selectEventsSuppressed: true, _invalidIndices: originalIndices,
+  };
+  selected.cw.gDBView.selection.count = 1;
+  const getActualSelectedMessages = vi.fn(pane => [...pane.threadTree._selection._invalidIndices]
+    .filter(index => !pane.threadTree.selectedIndices.includes(index))
+    .map(index => headers[index]));
+  x = experiment('theme/experiments/keyOverride/keyOverride.sys.mjs', 'keyOverride', {
+    windows: [selected.win], moduleOverrides: { getActualSelectedMessages },
+  });
+  x.context.extension.messageManager.convert = header => ({ id: header.messageKey });
+  browser.keyOverride = x.api;
+  rows = new Map(headers.map(header => [header.messageKey, {
+    ...fresh(), id: header.messageKey,
+  }]));
+  registerTabKeyHandlers(); x.api.init();
+
+  const atLimit = key(); selected.win.dispatch('keydown', atLimit); await settled();
+  expect(atLimit.preventDefault).toHaveBeenCalledOnce();
+  expect(getActualSelectedMessages).toHaveBeenCalledOnce();
+  expect(effects.filter(effect => effect[0] === 'move').map(effect => effect[1]))
+    .toEqual(Array.from({ length: 100 }, (_, index) => index + 1));
+  expect(rows.get(101).folder.id).toBe('inbox'); // Context row is not an original target.
+
+  effects.length = 0;
+  selected.cw.threadTree._selection._invalidIndices.add(101);
+  const oversized = key(); selected.win.dispatch('keydown', oversized); await settled();
+  expect(oversized.preventDefault).not.toHaveBeenCalled();
+  expect(getActualSelectedMessages).toHaveBeenCalledOnce();
+  expect(effects).toEqual([]);
+  expect(rows.get(102).folder.id).toBe('inbox');
+});
+
+it('keeps the action promise pending until a deferred move completes', async () => {
+  let finishMove;
+  browser.messages.move = vi.fn(() => new Promise(resolve => { finishMove = resolve; }));
+  let completed = false;
+  const action = triggerTagActionKey().then(() => { completed = true; });
+  await settled();
+  expect(browser.messages.move).toHaveBeenCalledOnce();
+  expect(completed).toBe(false);
+  finishMove();
+  await action;
+  expect(completed).toBe(true);
 });
