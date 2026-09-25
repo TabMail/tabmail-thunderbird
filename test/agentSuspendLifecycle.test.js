@@ -18,7 +18,7 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 import { registerTabKeyHandlers, cleanupTagActionKeyListeners } from '../agent/modules/tagActionKey.js';
 
-function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, threadTagRegistrar, coverageMessage } = {}) {
+function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, threadTagRegistrar, threadToggleRegistrar, coverageMessage } = {}) {
   const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
@@ -37,6 +37,7 @@ function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, thread
           ? tabKeyRegistrar : () => Promise.resolve({});
       if (name === 'attachOnUpdatedListener' && updatedRegistrar) globals[name] = updatedRegistrar;
       if (name === 'attachThreadTagWatchers' && threadTagRegistrar) globals[name] = threadTagRegistrar;
+      if (name === 'attachTagByThreadListener' && threadToggleRegistrar) globals[name] = threadToggleRegistrar;
     }
     script = script.slice(0, entry.start)
       + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
@@ -114,6 +115,26 @@ describe('agent background startup and canceled suspend', () => {
       if (register.mock.calls.length > 1) attached = true;
     });
     startAgent({ threadTagRegistrar: register });
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(attached).toBe(false);
+    await vi.waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+    expect(attached).toBe(true);
+  });
+
+  it('registers the tag-by-thread setting listener before startup and retries later', async () => {
+    const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+    const calls = ast.body.filter(node => node.type === 'ExpressionStatement'
+      && node.expression?.type === 'CallExpression')
+      .map(node => ({ name: node.expression.callee?.name, at: node.start }));
+    expect(calls.find(call => call.name === 'attachTagByThreadListener')?.at)
+      .toBeLessThan(calls.find(call => call.name === 'init')?.at);
+
+    let attached = false;
+    const register = vi.fn(() => {
+      if (register.mock.calls.length > 1) attached = true;
+    });
+    startAgent({ threadToggleRegistrar: register });
     expect(register).toHaveBeenCalledTimes(1);
     expect(attached).toBe(false);
     await vi.waitFor(() => expect(register).toHaveBeenCalledTimes(2));
