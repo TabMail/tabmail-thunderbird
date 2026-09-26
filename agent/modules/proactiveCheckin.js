@@ -819,6 +819,7 @@ async function _deliverTaskResult(task, taskHash, content, sessionId) {
     scheduleLabel = `${task.scheduleDays} at ${task.scheduleTime}`;
   }
   const message = `**Scheduled Task** _(${scheduleLabel})_\n\n${content}`;
+  const taskTurns = [];
 
   log(`[ProActReach] Delivering task result for ${taskHash} (${content.length} chars)`);
 
@@ -842,6 +843,7 @@ async function _deliverTaskResult(task, taskHash, content, sessionId) {
           _chars: 0,
         };
         await appendTurn(breakTurn, turns, meta);
+        taskTurns.push(breakTurn);
       }
 
       // Persist the task result as a proper assistant turn
@@ -864,6 +866,7 @@ async function _deliverTaskResult(task, taskHash, content, sessionId) {
       }
 
       await appendTurn(taskTurn, turns, meta);
+      taskTurns.push(taskTurn);
       // appendTurn debounces its write. Chat must read the new result when it
       // opens below, rather than load and later save the previous history.
       await Promise.all([saveTurnsImmediate(turns), saveMetaImmediate(meta)]);
@@ -885,6 +888,7 @@ async function _deliverTaskResult(task, taskHash, content, sessionId) {
         message,
         idMapEntries: [],
         isTaskResult: true,
+        taskTurns,
       });
       log(`[ProActReach] Injected task result bubble into open chat`);
     } else {

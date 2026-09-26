@@ -11,7 +11,11 @@ vi.mock('../agent/modules/config.js', () => ({ SETTINGS: { notifications: {} } }
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
 vi.mock('../agent/modules/reminderStateStore.js', () => ({ hashReminder: r => r.hash, getDisabledHashes: async () => new Set() }));
 vi.mock('../agent/modules/reminderBuilder.js', () => ({ buildReminderList: vi.fn(async () => ({ reminders: [] })) }));
-vi.mock('../chat/modules/helpers.js', () => ({ getUserName: async () => 'Reader' }));
+vi.mock('../chat/modules/helpers.js', () => ({ getUserName: async () => 'Reader', streamText: vi.fn() }));
+vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: vi.fn(async () => ({ classList: { remove() {}, add() {} } })) }));
+vi.mock('../chat/modules/converse.js', () => ({ awaitUserInput: vi.fn() }));
+vi.mock('../chat/modules/mentionAutocomplete.js', () => ({ updateEmailCacheForMentions: vi.fn() }));
+vi.mock('../chat/modules/idTranslator.js', () => ({ cleanupEvictedIds: vi.fn() }));
 vi.mock('../chat/modules/chatWindowUtils.js', () => ({ isChatWindowOpen: vi.fn(async () => false), openOrFocusChatWindow: vi.fn(async () => {}) }));
 vi.mock('../agent/modules/promptGenerator.js', () => ({ getUserKBPrompt: vi.fn(async () => '') }));
 vi.mock('../chat/modules/markdown.js', () => ({ renderMarkdown: async s => s }));
@@ -176,6 +180,49 @@ it('commits a task result before opening chat to read its initial history', asyn
   await [...listeners][0]({ name: 'tabmail-task-eval' });
   expect(sendChat).toHaveBeenCalledTimes(1);
   expect((await store.loadTurns()).filter(t => t._taskHash === hash)).toHaveLength(1);
+});
+it('live task delivery survives an open chat save and duplicate notification', async () => {
+  data['task.enabled'] = true;
+  data.chat_turns = [{ role: 'assistant', content: 'Earlier', _id: 'earlier', _chars: 7 }];
+  const { hash } = await setDueTaskText();
+  const { sendChat } = await import('../agent/modules/llm.js');
+  sendChat.mockResolvedValue({ assistant: 'Live task result' });
+  const { isChatWindowOpen } = await import('../chat/modules/chatWindowUtils.js');
+  isChatWindowOpen.mockResolvedValueOnce(true);
+  const store = await import('../chat/modules/persistentChatStore.js');
+  const { ctx } = await import('../chat/modules/context.js');
+  ctx.persistedTurns = [...await store.loadTurns(), { role: 'user', _id: 'local', _chars: 5, content: 'Local' }];
+  ctx.chatMeta = { totalChars: 12 };
+  ctx.agentConverseMessages = [];
+  const { insertTaskResultBubble } = await import('../chat/modules/init.js');
+  // Run the actual live-message consumer so the producer/consumer payload is covered.
+  const source = readFileSync(new URL('../chat/chat.js', import.meta.url), 'utf8');
+  let handler;
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'VariableDeclarator' && node.id.name === 'onProactiveCheckinMessage') handler = node.init;
+    for (const value of Object.values(node)) if (value && typeof value === 'object') {
+      if (Array.isArray(value)) value.forEach(visit); else visit(value);
+    }
+  }
+  visit(parse(source, { ecmaVersion: 'latest', sourceType: 'module' }));
+  const receive = vm.runInNewContext(`(${source.slice(handler.start, handler.end)})`, { insertTaskResultBubble, log() {} });
+  browser.runtime.sendMessage.mockImplementation(async message => receive(message));
+  await startRealBackground();
+  await Promise.all([...listeners].map(fn => fn({ name: 'tabmail-task-eval' })));
+  await settle();
+  const message = browser.runtime.sendMessage.mock.calls.map(([m]) => m).find(m => m.isTaskResult);
+  expect(message).toBeDefined();
+  receive(message);
+  await settle();
+  // The same write used by chat's unload must retain the live task and local work.
+  await store.saveTurnsImmediate(ctx.persistedTurns);
+  const saved = await store.loadTurns();
+  expect(saved.filter(t => t._taskHash === hash)).toHaveLength(1);
+  expect(saved.some(t => t._id === 'local')).toBe(true);
+  expect(ctx.chatMeta.totalChars).toBe(saved.reduce((sum, t) => sum + (t._chars || 0), 0));
+  const { createNewAgentBubble } = await import('../chat/chat.js');
+  expect(createNewAgentBubble).toHaveBeenCalledTimes(1);
 });
 it('task quota refusal preserves retry state until a later alarm succeeds',async()=>{
   data['notifications.proactive_enabled']=false; data['task.enabled']=true;

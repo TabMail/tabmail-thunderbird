@@ -645,9 +645,9 @@ window.addEventListener("DOMContentLoaded", async () => {
 
           if (isTaskResult) {
             // Task results are PERMANENT — not replaced by welcome-back.
-            // Already persisted via appendTurn; this just renders the live bubble.
+            // Merge the persisted task turns into this window before rendering.
             // insertTaskResultBubble imported statically at top (dynamic import fails in TB sidebar)
-            await insertTaskResultBubble(displayMessage);
+            await insertTaskResultBubble(displayMessage, message.taskTurns);
             log(`[TMDBG Chat] Injected task result bubble into open chat`);
           } else {
             // Regular proactive nudge — replaces welcome-back if present
