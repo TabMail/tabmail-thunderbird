@@ -33,7 +33,8 @@ globalThis.browser = {
   },
   windows: {
     create: vi.fn(async (opts) => ({ id: 99 })),
-    get: vi.fn(async () => ({})),
+    getAll: vi.fn(async () => []),
+    get: vi.fn(async () => { throw new Error("closed"); }),
     update: vi.fn(async () => {}),
   },
   notifications: {
@@ -49,6 +50,7 @@ const { notifyCannotTagSelf } = await import('../agent/modules/userNotice.js');
 
 beforeEach(() => {
   vi.clearAllMocks();
+  browser.windows.getAll.mockResolvedValue([]);
 });
 
 describe('notifyCannotTagSelf', () => {
@@ -99,14 +101,11 @@ describe('notifyCannotTagSelf', () => {
   });
 
   it('reuses window if already open', async () => {
-    // First call creates window (or reuses from prior test state)
+    browser.windows.getAll.mockResolvedValue([
+      { id: 99, type: 'popup', tabs: [{ url: 'moz-extension://fake/agent/cannot-tag-self.html?count=1' }] },
+    ]);
     await notifyCannotTagSelf({ count: 1 });
-
-    // Second call should try to get existing window and focus it
-    vi.clearAllMocks();
-    await notifyCannotTagSelf({ count: 1 });
-    // Since window 99 was cached from first call, second call should try to focus it
-    expect(browser.windows.get).toHaveBeenCalledWith(99);
+    expect(browser.windows.getAll).toHaveBeenCalledWith({ populate: true, windowTypes: ['popup'] });
     expect(browser.windows.update).toHaveBeenCalledWith(99, { focused: true });
     // Should NOT create a new window
     expect(browser.windows.create).not.toHaveBeenCalled();
