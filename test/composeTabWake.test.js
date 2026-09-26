@@ -60,8 +60,10 @@ it('registers the compose-tab consumer before startup can await', () => {
 // test above pins timing; this one pins recovery and its durable reply effect.
 async function startWithRealTracker(failFirstAdd, {
   secondReply = false, deferredGeneration = false, holdCacheRead = false,
+  existingComposeTabs = [], composeQueryError = false,
 } = {}) {
   const events = new Map();
+  const openComposeTabs = new Set(existingComposeTabs);
   let addAttempts = 0;
   const details = new Map([
     [41, { type: 'reply', relatedMessageId: 7 }],
@@ -83,6 +85,8 @@ async function startWithRealTracker(failFirstAdd, {
         },
         removeListener: fn => listeners.delete(fn),
         emit: async (...args) => {
+          if (path === 'browser.tabs.onCreated' && details.get(args[0].id)?.type) openComposeTabs.add(args[0].id);
+          if (path === 'browser.tabs.onRemoved') openComposeTabs.delete(args[0]);
           for (const fn of [...listeners]) await fn(...args);
         },
       });
@@ -95,6 +99,11 @@ async function startWithRealTracker(failFirstAdd, {
     'browser.accounts.list': async () => [],
     'browser.storage.local.get': async value => value,
     'browser.windows.getAll': async () => [],
+    'browser.tabs.query': async query => {
+      expect(query).toEqual({ type: 'messageCompose' });
+      if (composeQueryError) throw new Error('synthetic native tab query failure');
+      return [...openComposeTabs].map(id => ({ id, type: 'messageCompose' }));
+    },
   };
   function api(path = 'browser') {
     return new Proxy(() => Promise.resolve({}), {
@@ -337,4 +346,25 @@ it('tracks an early reply while the real cache read is pending', async () => {
     content: 'Synthetic reply.', directReplace: true,
   });
   expect((await run.idb.get(run.replyKey))[run.replyKey].directReplace).toBe(false);
+});
+
+
+it('defers the initial scan for a compose tab retained across background restart', async () => {
+  const run = await startWithRealTracker(false, { existingComposeTabs: [71] });
+  expect(run.tracker.isAnyComposeOpen()).toBe(false);
+  await run.finishStartup();
+  expect(run.scanAllInboxes).not.toHaveBeenCalled();
+});
+
+it('runs the initial scan when Thunderbird has no compose tabs', async () => {
+  const run = await startWithRealTracker(false);
+  await run.finishStartup();
+  expect(run.scanAllInboxes).toHaveBeenCalledTimes(1);
+});
+
+it('defers only the startup scan when native compose presence cannot be read', async () => {
+  const run = await startWithRealTracker(false, { composeQueryError: true });
+  await run.finishStartup();
+  expect(run.scanAllInboxes).not.toHaveBeenCalled();
+  expect(run.event('browser.tabs.onCreated').listeners.size).toBe(1);
 });

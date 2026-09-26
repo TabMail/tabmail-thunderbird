@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // Main agent file.
-import { initComposeHandlers, isAnyComposeOpen } from "./modules/composeTracker.js";
+import { initComposeHandlers } from "./modules/composeTracker.js";
 import { primeProactiveAlarmListener } from "./modules/proactiveCheckin.js";
 import { SETTINGS } from "./modules/config.js";
 import * as idb from "./modules/idbStorage.js";
@@ -1841,7 +1841,15 @@ async function init() {
     //    onMoved, and onCopied event listeners. Only initial startup scan is needed.
 
     // 6. Initial scan on startup. Skip if a compose window is already open.
-    const initialComposeOpen = isAnyComposeOpen();
+    // The tracker is generation-local; existing compose tabs survive a wake.
+    // If the native query fails, defer this optional scan rather than interrupt
+    // composition. Normal mail events continue to process incoming messages.
+    let initialComposeOpen = true;
+    try {
+        initialComposeOpen = (await browser.tabs.query({ type: "messageCompose" })).length > 0;
+    } catch (e) {
+        log(`[Startup] Could not check open compose tabs; deferring initial scan: ${e}`, "warn");
+    }
     log(`[Startup] Initial scan check - compose windows open: ${initialComposeOpen}`);
     
     if (!initialComposeOpen) {
