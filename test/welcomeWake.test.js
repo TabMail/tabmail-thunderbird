@@ -10,8 +10,13 @@ const functionSource = source.slice(declaration.start, declaration.end);
 const url = 'moz-extension://synthetic/welcome/welcome.html';
 
 function registry({ existing = true, completed = false } = {}) {
-  const windows = existing ? [{ id: 1, tabs: [{ id: 10, url }] }] : [];
-  const created = [], focused = [], messages = [];
+  // A wake always has the main 3-pane window; the chat popup is another extension page.
+  const windows = [
+    { id: 1, type: 'normal', tabs: [{ id: 5, url: 'about:3pane' }] },
+    { id: 2, type: 'popup', tabs: [{ id: 6, url: 'moz-extension://synthetic/chat/chat.html' }] },
+  ];
+  if (existing) windows.push({ id: 3, type: 'popup', tabs: [{ id: 10, url }] });
+  const created = [], updates = [], messages = [];
   async function wake() {
     const timers = [];
     const context = vm.createContext({
@@ -22,12 +27,13 @@ function registry({ existing = true, completed = false } = {}) {
         storage: { local: { get: async () => ({ tabmailWelcomeCompleted: completed }) } },
         runtime: { getURL: () => url },
         windows: {
-          // The real API omits tabs unless population is requested.
-          getAll: async options => windows.map(window => options?.populate ? window : { id: window.id }),
-          update: async id => focused.push(id),
+          getAll: async (options = {}) => windows
+            .filter(window => !options.windowTypes || options.windowTypes.includes(window.type))
+            .map(window => options.populate ? window : { id: window.id, type: window.type }),
+          update: async (id, info) => updates.push([id, info]),
           create: async options => {
             created.push(options);
-            windows.push({ id: windows.length + 1, tabs: [{ id: 20, url: options.url }] });
+            windows.push({ id: windows.length + 1, type: options.type, tabs: [{ id: 20, url: options.url }] });
           },
         },
         tabs: { sendMessage: async (...args) => messages.push(args) },
@@ -37,36 +43,38 @@ function registry({ existing = true, completed = false } = {}) {
     await context.checkAndShowWelcomeWizard();
     for (const timer of timers) await timer();
   }
-  return { wake, windows, created, focused, messages };
+  return { wake, windows, created, updates, messages };
 }
 
-it('reuses a retained wizard across fresh background generations', async () => {
+it('reuses the retained wizard, not another window, across fresh generations', async () => {
   const h = registry();
   await h.wake();
   await h.wake();
   expect(h.created).toEqual([]);
-  expect(h.windows).toHaveLength(1);
-  expect(h.focused).toEqual([1, 1]);
+  expect(h.windows).toHaveLength(3);
+  expect(h.updates).toEqual([[3, { focused: true }], [3, { focused: true }]]);
   expect(h.messages).toEqual([
     [10, { command: 'welcome-reset-to-initial' }],
     [10, { command: 'welcome-reset-to-initial' }],
   ]);
 });
 
-it('creates the missing wizard once and finds it on the next wake', async () => {
+it('creates the wizard when only non-wizard windows exist, then reuses it', async () => {
   const h = registry({ existing: false });
   await h.wake();
+  expect(h.created).toHaveLength(1);
+  expect(h.updates).toEqual([]);
+  expect(h.messages).toEqual([]);
   await h.wake();
   expect(h.created).toHaveLength(1);
-  expect(h.created[0]).toMatchObject({ url, type: 'popup' });
-  expect(h.windows).toHaveLength(1);
-  expect(h.focused).toEqual([1]);
+  expect(h.updates).toEqual([[3, { focused: true }]]);
+  expect(h.messages).toEqual([[20, { command: 'welcome-reset-to-initial' }]]);
 });
 
 it('does not open or focus a wizard after onboarding is complete', async () => {
   const h = registry({ completed: true });
   await h.wake();
   expect(h.created).toEqual([]);
-  expect(h.focused).toEqual([]);
+  expect(h.updates).toEqual([]);
   expect(h.messages).toEqual([]);
 });
