@@ -1040,7 +1040,13 @@ export async function getSentFoldersForAccount(accountId) {
       consider(account.rootFolder);
       try {
         const sub = await browser.folders.getSubFolders(account.rootFolder.id, true);
-        for (const f of sub) consider(f);
+        // getSubFolders(..., true) returns a nested tree, not a flat list.
+        const stack = [...sub];
+        while (stack.length) {
+          const f = stack.pop();
+          consider(f);
+          if (Array.isArray(f?.subFolders)) stack.push(...f.subFolders);
+        }
       } catch (e) {
         log(`[Utils] getSentFoldersForAccount: subfolder enumeration failed for account ${accountId}: ${e}`, "warn");
       }

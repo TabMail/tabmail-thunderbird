@@ -1,0 +1,5 @@
+# Nested Sent-folder resolution
+
+In Manifest V3, account objects expose `rootFolder`. `folders.getSubFolders(rootId, true)` returns a nested tree, so after-send Sent lookup must traverse descendants, just as the older `account.folders` path does. A provider container can otherwise hide the actual Sent folder and silently skip the FTS handoff. Use special-use/type metadata rather than localized names and keep enumeration scoped to the sending account.
+
+A real Beta ordinary-send control reproduced an empty lookup despite a saved Sent copy. The corrected lookup found that copy, handed it to the indexer, and its synthetic token became searchable. A separate controlled relay/helper-off send after observed background termination delivered both pre-send callbacks, stripped the compose hint, cleared the synthetic reply action, and found the Sent copy in the after-send callback. Helper-masked handoff is not proof of completed indexing; catch-up after helper restoration remains a separate check.

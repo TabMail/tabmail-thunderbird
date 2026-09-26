@@ -1332,6 +1332,28 @@ describe('getSentFoldersForAccount', () => {
     expect(result).toEqual([]);
   });
 
+  it.each([false, true])('finds nested Sent folders from an MV3 root (account fallback: %s)', async fallback => {
+    const account = { id: 'synthetic-account', rootFolder: { id: 'synthetic-root' } };
+    if (fallback) {
+      browser.accounts.get.mockRejectedValue(new Error('synthetic unsupported'));
+      browser.accounts.list.mockResolvedValue([account]);
+    } else {
+      browser.accounts.get.mockResolvedValue(account);
+    }
+    const sent = { id: 'nested-sent', name: 'Outgoing', specialUse: ['sent'], subFolders: [] };
+    const deeperSent = { id: 'deep-sent', name: 'Copies', specialUse: ['SENT'] };
+    browser.folders.getSubFolders.mockResolvedValue([
+      { id: 'inbox', specialUse: ['inbox'] },
+      { id: 'container', subFolders: [sent, { id: 'nested-container', subFolders: [deeperSent] }] },
+    ]);
+    const { getSentFoldersForAccount } = await import('../agent/modules/utils.js');
+    const result = await getSentFoldersForAccount(account.id);
+    expect(result).toHaveLength(2);
+    expect(result).toEqual(expect.arrayContaining([sent, deeperSent]));
+    expect(browser.folders.getSubFolders).toHaveBeenCalledExactlyOnceWith('synthetic-root', true);
+    expect(browser.folders.query).not.toHaveBeenCalled();
+  });
+
   it('uses fallback enumeration when accounts.get fails', async () => {
     globalThis.browser.accounts.get.mockRejectedValue(new Error('not supported'));
     globalThis.browser.accounts.list.mockResolvedValue([
