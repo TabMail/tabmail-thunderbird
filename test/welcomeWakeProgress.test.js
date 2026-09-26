@@ -11,15 +11,15 @@ async function wakeWithSelection(navigate) {
  const dom=new JSDOM(readFileSync(resolve(repo,'welcome/welcome.html'),'utf8'),{url:'https://example.invalid/welcome/'});
  const url='moz-extension://synthetic/welcome/welcome.html';
  const registry=[{id:1,type:'normal',tabs:[{id:1,url:'about:3pane'}]},{id:3,type:'popup',tabs:[{id:10,url}]}];
- let pageListener; let failWelcomeWrite=true;
+ let failWelcomeWrite=true;
  const browser={
   storage:{local:{get:async defaults=>({...defaults,...store}),set:async fields=>{events.push(['storage.set',Object.keys(fields)]);if(failWelcomeWrite&&fields.tabmailWelcomeCompleted){failWelcomeWrite=false;throw Error('synthetic storage failure');}Object.assign(store,fields);}}},
-  runtime:{getURL:()=>url,onMessage:{addListener:fn=>{pageListener=fn;}}},
+  runtime:{getURL:()=>url},
   windows:{getAll:async (o={})=>registry.map(w=>o.populate?structuredClone(w):{id:w.id,type:w.type}),update:async (id,info)=>{events.push(['focus',id]);Object.assign(registry.find(w=>w.id===id),info);},create:async options=>{events.push(['create',options.url]);registry.push({id:4,type:'popup',tabs:[{id:20,url:options.url}]});}},
-  tabs:{sendMessage:async (id,message)=>{events.push(['sendMessage',id,message.command]);return new Promise(resolve=>pageListener(message,{},resolve));}}
+  tabs:{sendMessage:async (id,message)=>{events.push(['sendMessage',id,message.command]);}}
  };
  const ctx=vm.createContext({browser,document:dom.window.document,window:dom.window,console:{log:(...a)=>logs.push(a),warn:(...a)=>logs.push(a),error:(...a)=>logs.push(a)},fetch:async page=>({ok:true,text:async()=>readFileSync(resolve(repo,'welcome',page),'utf8')}),setTimeout:(fn,delay)=>{timers.push({fn,delay});return timers.length;},SETTINGS:{},log(){},_welcomeWizardCheckInProgress:false,hasEmailAccounts:async()=>true,cleanupAccountCreatedListener(){},injectPaletteIntoDocument:async()=>{},generateProgressBubbles(){}});
- for(const file of ['welcome/welcomeConfig.js','welcome/modules/settings.js','welcome/modules/navigation.js','welcome/modules/pageLoader.js','welcome/modules/runtimeMessages.js']){
+ for(const file of ['welcome/welcomeConfig.js','welcome/modules/settings.js','welcome/modules/navigation.js','welcome/modules/pageLoader.js']){
   vm.runInContext(readFileSync(resolve(repo,file),'utf8').replace(/^export /gm,''),ctx,{filename:resolve(repo,file)});
  }
  vm.runInContext(`let currentStep=0;
@@ -40,14 +40,13 @@ async function wakeWithSelection(navigate) {
  let bg=readFileSync(resolve(repo,'agent/background.js'),'utf8');
  vm.runInContext(declaration(bg,'checkAndShowWelcomeWizard'),ctx);
  await vm.runInContext('checkAndShowWelcomeWizard()',ctx);
- const atReturn={step:vm.runInContext('getCurrentStep()',ctx),windows:registry.length};
  if (navigate) dom.window.document.getElementById('btn-next').click();
  for(let i=0;i<30;i++) await Promise.resolve();
  const afterNewerNext={step:vm.runInContext('getCurrentStep()',ctx),persistedCalendar:store.defaultCalendarId??null};
  for(const {fn} of timers) await fn();
  const after={step:vm.runInContext('getCurrentStep()',ctx),selection:dom.window.document.getElementById('default-calendar')?.value??null,persistedCalendar:store.defaultCalendarId??null,windows:registry.length};
  dom.window.close();
- return {before,atReturn,afterNewerNext,after,events};
+ return {before,afterNewerNext,after};
 }
 
 it('preserves a retained wizard page and unsaved selection after a wake', async () => {

@@ -9,6 +9,21 @@ const declaration = parse(source, { ecmaVersion: 'latest', sourceType: 'module' 
 const functionSource = source.slice(declaration.start, declaration.end);
 const url = 'moz-extension://synthetic/welcome/welcome.html';
 
+// Record unknown calls too: the production catch must not hide a destructive API
+// merely because the fixture omitted it.
+function recordAPI(value, calls, path = 'browser') {
+  return new Proxy(typeof value === 'function' ? value : {}, {
+    get(_target, key) {
+      if (key === 'then') return undefined;
+      return recordAPI(value?.[key] ?? (() => undefined), calls, `${path}.${String(key)}`);
+    },
+    apply(_target, _this, args) {
+      calls.push([path, ...args]);
+      return value(...args);
+    },
+  });
+}
+
 function registry({ existing = true, completed = false } = {}) {
   // A wake always has the main 3-pane window; the chat popup is another extension page.
   const windows = [
@@ -16,14 +31,14 @@ function registry({ existing = true, completed = false } = {}) {
     { id: 2, type: 'popup', tabs: [{ id: 6, url: 'moz-extension://synthetic/chat/chat.html' }] },
   ];
   if (existing) windows.push({ id: 3, type: 'popup', tabs: [{ id: 10, url }] });
-  const created = [], updates = [], messages = [];
+  const created = [], updates = [], messages = [], calls = [];
   async function wake() {
     const timers = [];
     const context = vm.createContext({
       _welcomeWizardCheckInProgress: false, SETTINGS: {}, log() {},
       hasEmailAccounts: async () => true, cleanupAccountCreatedListener() {},
       setTimeout: fn => timers.push(fn),
-      browser: {
+      browser: recordAPI({
         storage: { local: { get: async () => ({ tabmailWelcomeCompleted: completed }) } },
         runtime: { getURL: () => url },
         windows: {
@@ -37,13 +52,13 @@ function registry({ existing = true, completed = false } = {}) {
           },
         },
         tabs: { sendMessage: async (...args) => messages.push(args) },
-      },
+      }, calls),
     });
     vm.runInContext(functionSource, context);
     await context.checkAndShowWelcomeWizard();
     for (const timer of timers) await timer();
   }
-  return { wake, windows, created, updates, messages };
+  return { wake, windows, created, updates, messages, calls };
 }
 
 it('reuses the retained wizard, not another window, across fresh generations', async () => {
@@ -54,6 +69,13 @@ it('reuses the retained wizard, not another window, across fresh generations', a
   expect(h.windows).toHaveLength(3);
   expect(h.updates).toEqual([[3, { focused: true }], [3, { focused: true }]]);
   expect(h.messages).toEqual([]);
+  const focusOnly = [
+    ['browser.storage.local.get', { tabmailWelcomeCompleted: false }],
+    ['browser.runtime.getURL', 'welcome/welcome.html'],
+    ['browser.windows.getAll', expect.objectContaining({ populate: true })],
+    ['browser.windows.update', 3, { focused: true }],
+  ];
+  expect(h.calls).toEqual([...focusOnly, ...focusOnly]);
 });
 
 it('creates the wizard when only non-wizard windows exist, then reuses it', async () => {
