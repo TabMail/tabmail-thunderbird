@@ -28,6 +28,8 @@ import {
   loadMeta,
   saveMeta,
   saveTurns,
+  saveTurnsImmediate,
+  saveMetaImmediate,
   turnsToLLMMessages,
   migrateFromSessions,
   generateTurnId,
@@ -721,13 +723,33 @@ async function _insertNudge(meta, text, type) {
  * Insert a task result bubble into the chat. Unlike nudges, task result bubbles
  * are PERMANENT — they are NOT replaced by subsequent welcome-back or proactive
  * messages. The turn is already persisted via appendTurn in proactiveCheckin.js;
- * this just renders the live bubble in the open chat window.
+ * merge those turns into this window too, so its next save retains the result.
  */
-export async function insertTaskResultBubble(text) {
+export async function insertTaskResultBubble(text, taskTurns) {
   if (!ctx.chatMeta) {
     log(`[TMDBG Init] Cannot insert task result: no chatMeta`, "warn");
     return;
   }
+
+  const result = Array.isArray(taskTurns) && taskTurns.find(t => t?._type === "task_result" && t._id);
+  if (!result) {
+    log(`[TMDBG Init] Cannot insert task result: missing persisted turn`, "warn");
+    return;
+  }
+  if (ctx.persistedTurns.some(t => t._id === result._id)) return;
+
+  // Merge synchronously before any await: preserve this window's local turns and
+  // let repeated notifications recognize the same result while a save is pending.
+  const knownIds = new Set(ctx.persistedTurns.map(t => t._id));
+  for (const turn of taskTurns) {
+    if (!turn?._id || knownIds.has(turn._id)) continue;
+    if (turn._type !== "session_break" && turn._type !== "task_result") continue;
+    ctx.persistedTurns.push(turn);
+    knownIds.add(turn._id);
+    ctx.chatMeta.totalChars = (ctx.chatMeta.totalChars || 0) + (turn._chars || 0);
+  }
+  cleanupEvictedIds(enforceBudget(ctx.persistedTurns, ctx.chatMeta));
+  await Promise.all([saveTurnsImmediate(ctx.persistedTurns), saveMetaImmediate(ctx.chatMeta)]);
 
   log(`[TMDBG Init] Inserting task result bubble`);
 
