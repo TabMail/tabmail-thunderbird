@@ -1,0 +1,7 @@
+# Headless tool IDs after background restart
+
+The background starts with an empty interactive chat ID map. A headless tool call using that global map can schedule a save that replaces the persisted chat map, losing earlier references. Scheduled tasks and compose edits must create one isolated ID context per operation and reuse it across their tool turns. Reply generation already follows this contract.
+
+A task must resolve its final numeric references with that context before returning content for caching and delivery. The existing response translator accepts an optional context; scoped translation leaves interactive autocomplete entities alone. Cached task results then contain durable references that the renderer can use after the task context disappears. No new storage schema is needed.
+
+The connected task regression executes the actual task loop, executor, translator and storage writer with synthetic service boundaries. It verifies tool-argument round trips, the saved map remaining unchanged, and rendering after clearing the numeric map. Compose tests verify scope reuse within an edit and separation across edits. Matched Thunderbird Beta packages reproduced a saved-map overwrite after actual suspension before the fix and preservation afterward, with a resolved result reference. Live task inputs and storage keys were isolated; compose UI behavior and rendered links were verified programmatically.

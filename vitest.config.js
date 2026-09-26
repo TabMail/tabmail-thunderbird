@@ -8,5 +8,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
+    // Connected background tests load isolated ES modules with node:vm.
+    poolOptions: { forks: { execArgv: ['--experimental-vm-modules'] } },
   },
 });
