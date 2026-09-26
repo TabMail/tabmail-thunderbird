@@ -69,6 +69,8 @@ globalThis.WebSocket = class MockWebSocket {
   }
   static get CONNECTING() { return 0; }
   static get OPEN() { return 1; }
+  static get CLOSING() { return 2; }
+  static get CLOSED() { return 3; }
   send(data) { this.sent.push(data); }
   close() {
     this.readyState = 3;
@@ -2172,16 +2174,46 @@ describe('Device Sync', () => {
       } finally { vi.useRealTimers(); }
     });
 
-    it('a CLOSING socket replaced without disconnect cannot disrupt its replacement', async () => {
-      const a = await establishConnection();
-      a.readyState = 2; // CLOSING: server-initiated close handshake still in progress
-      await deviceSync.connect();
-      const b = mockWebSocketInstances.at(-1);
-      expect(b).not.toBe(a);
-      b.readyState = WebSocket.OPEN;
-      b.onopen();
-      a.onclose({ code: 1006, reason: 'late close of retired socket' });
-      expect(deviceSync.isConnected()).toBe(true);
+    it.each(['closing', 'disconnected'])('a retired %s socket leaves replacement traffic active until cleanup', async (mode) => {
+      vi.useFakeTimers();
+      try {
+        const old = await establishConnection();
+        if (mode === 'closing') old.readyState = WebSocket.CLOSING;
+        else deviceSync.disconnect();
+        await deviceSync.connect();
+        expect(mockWebSocketInstances).toHaveLength(2);
+        const current = mockWebSocketInstances.at(-1);
+        expect(current).not.toBe(old);
+        current.readyState = WebSocket.OPEN;
+        current.onopen();
+        old.onclose({ code: 1006, reason: 'delayed retired close' });
+        expect(deviceSync.isConnected()).toBe(true);
+
+        setStorage({ [FIELD_KEYS.kb]: 'Local before peer repair' });
+        await vi.advanceTimersByTimeAsync(300000);
+        const frames = current.sent.map((frame) => JSON.parse(frame));
+        expect(frames.filter((frame) => frame.type === 'ping')).toHaveLength(10);
+        expect(frames.filter((frame) => frame.type === 'request_state')).toHaveLength(1);
+        expect(frames.find((frame) => frame.type === 'request_state').fields).toContain('kb');
+        expect(old.sent).toHaveLength(0);
+        current.onmessage({ data: JSON.stringify({ type: 'prompt_state', data: {
+          kb: 'Current peer repair', kb_updated_at: new Date().toISOString(),
+        } }) });
+        await vi.waitFor(() => expect(storageData[FIELD_KEYS.kb]).toBe('Current peer repair'));
+        expect(storageData[PEER_BASE_KEYS.kb]).toBe('Current peer repair');
+        expect((storageData.prompt_history || []).at(-1).kb).toBe('Local before peer repair');
+
+        deviceSync.cleanupDeviceSync();
+        expect(current.readyState).toBe(WebSocket.CLOSED);
+        expect(deviceSync.isConnected()).toBe(false);
+        const sentBeforeCleanup = current.sent.length;
+        await vi.advanceTimersByTimeAsync(600000);
+        expect(current.sent).toHaveLength(sentBeforeCleanup);
+        expect(mockWebSocketInstances).toHaveLength(2);
+      } finally {
+        deviceSync.cleanupDeviceSync();
+        vi.useRealTimers();
+      }
     });
     it('cancels a pending URL lookup when disconnected', async () => {
       const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
@@ -2194,16 +2226,6 @@ describe('Device Sync', () => {
       release('https://sync.example.test');
       await attempt;
       expect(mockWebSocketInstances).toHaveLength(0);
-    });
-
-    it('ignores a retired socket close after a replacement connects', async () => {
-      const old = await establishConnection();
-      const lateClose = old.onclose;
-      deviceSync.disconnect();
-      const current = await establishConnection();
-      lateClose({ code: 1000, reason: 'delayed close' });
-      expect(deviceSync.isConnected()).toBe(true);
-      expect(current.readyState).toBe(WebSocket.OPEN);
     });
 
     it('does not replace a socket while its handshake is pending', async () => {
