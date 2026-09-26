@@ -1641,3 +1641,17 @@ describe('persistIdMap — freeIds fallback', () => {
     expect(mockCtx.idTranslation.idMap.get(1)).toBe('trigger-persist');
   });
 });
+
+describe('headless response scope', () => {
+  it('resolves task references without changing the chat map or autocomplete entities', () => {
+    seedGlobalCtx([[1, 'chat-message'], [2, 'chat-other']]);
+    const scope = createIsolatedContext();
+    ['task-message', 'task-other', 'task-calendar', 'task-event', 'task-book', 'task-contact'].forEach(id => toNumericId(id, scope));
+    const input = '[Email](1), unique_id 1 and 2, [Event](3:4), [Contact](5:6)';
+    expect(processLLMResponseLLMtoTB(input, scope)).toBe('[Email](task-message), [Email](task-message) and [Email](task-other), [Event](task-calendar:task-event), [Contact](task-book:task-contact)');
+    expect([...mockCtx.idTranslation.idMap]).toEqual([[1, 'chat-message'], [2, 'chat-other']]);
+    expect(mockCtx.entityMap.size).toBe(0);
+    expect(processLLMResponseLLMtoTB({assistant:'[Email](1)'}, scope).assistant).toBe('[Email](task-message)');
+    expect(processLLMResponseLLMtoTB('[Email](1)')).toBe('[Email](chat-message)');
+  });
+});
