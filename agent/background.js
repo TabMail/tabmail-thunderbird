@@ -6,7 +6,7 @@
 import { initComposeHandlers } from "./modules/composeTracker.js";
 import { primeProactiveAlarmListener } from "./modules/proactiveCheckin.js";
 import { SETTINGS } from "./modules/config.js";
-import { attachDeviceSyncTransportListener, setAICacheProbeHandler } from "./modules/deviceSync.js";
+import { attachDeviceSyncTransportListener, setAICacheProbeHandler, setupStorageListener } from "./modules/deviceSync.js";
 import * as idb from "./modules/idbStorage.js";
 import { ensureSignedIn, signOut } from "./modules/supabaseAuth.js";
 // Indexing disabled – import removed
@@ -94,6 +94,7 @@ setAICacheProbeHandler(async (probeKeys, fields) => {
     return results;
 });
 attachDeviceSyncTransportListener();
+setupStorageListener();
 
 log("TabMail Agent background script loaded.");
 // log('[TMDBG Summary] agent.js debug build reloaded – timestamp ' + (new Date()).toISOString());

@@ -483,13 +483,15 @@ export async function resetFieldToDefault(field, defaultValue) {
 
 /**
  * Set up storage.onChanged listener for auto-broadcasting local edits.
- * Must be called once during init. Uses debounce to avoid flooding during rapid typing.
+ * Register synchronously during background startup; repeated initialization is harmless.
+ * Uses debounce to avoid flooding during rapid typing.
  */
 export function setupStorageListener() {
   if (_storageChangeListener) return; // Already set up
 
-  _storageChangeListener = (changes, area) => {
-    if (area !== "local" || suppressBroadcast) return;
+  const listener = async (changes, area) => {
+    // Capture remote-echo suppression before yielding to the enabled check.
+    if (area !== "local" || suppressBroadcast || transportDisconnected) return;
 
     // Check if any prompt-related key changed
     const changedFields = [];
@@ -499,6 +501,9 @@ export function setupStorageListener() {
       }
     }
     if (changedFields.length === 0) return;
+    const generation = connectionGeneration;
+    if (!await isAutoEnabled() || _storageChangeListener !== listener ||
+        transportDisconnected || generation !== connectionGeneration) return;
 
     // Update per-field timestamps for changed fields (these are local edits)
     const now = new Date().toISOString();
@@ -519,18 +524,30 @@ export function setupStorageListener() {
 
     // Debounce broadcast: reset timer, broadcast after quiet period
     if (_broadcastDebounceTimer) clearTimeout(_broadcastDebounceTimer);
-    _broadcastDebounceTimer = setTimeout(() => {
+    _broadcastDebounceTimer = setTimeout(async () => {
       _broadcastDebounceTimer = null;
       const fields = [..._broadcastPendingFields];
       _broadcastPendingFields.clear();
-      broadcastState(fields).catch((e) => {
+      if (transportDisconnected || generation !== connectionGeneration) return;
+      try {
+        // A first wake may reach this debounce before late startup reconnects
+        // the module to the already-open parent transport.
+        if (!connected) await connect();
+        if (transportDisconnected || generation !== connectionGeneration) return;
+        await broadcastState(fields);
+      } catch (e) {
         log(`${PFX}Debounced broadcast failed: ${e}`, "warn");
-      });
+      }
     }, BROADCAST_DEBOUNCE_MS);
   };
 
-  browser.storage.onChanged.addListener(_storageChangeListener);
-  log(`${PFX}Storage change listener registered (auto-broadcast on edit)`);
+  try {
+    browser.storage.onChanged.addListener(listener);
+    _storageChangeListener = listener;
+    log(`${PFX}Storage change listener registered (auto-broadcast on edit)`);
+  } catch (e) {
+    log(`${PFX}Storage listener registration failed: ${e}`, "warn");
+  }
 }
 
 // ─── Handle Incoming Prompt State (Per-Field Merge) ─────────────────────
