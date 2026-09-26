@@ -5,9 +5,10 @@ import {beforeEach,it,expect,vi} from 'vitest';
 vi.mock('../agent/modules/config.js',()=>({SETTINGS:{},getBackendUrl:()=> 'https://example.com'}));
 vi.mock('../agent/modules/llm.js',()=>({sendChat:vi.fn(),processEditResponse:vi.fn()}));
 vi.mock('../agent/modules/promptGenerator.js',()=>({getUserCompositionPrompt:async()=>'',getUserKBPrompt:async()=>''}));
-vi.mock('../agent/modules/utils.js',()=>({extractBodyFromParts:vi.fn(),safeGetFull:vi.fn(),saveChatLog:vi.fn(),stripHtml:vi.fn()}));
+vi.mock('../agent/modules/utils.js',()=>({extractBodyFromParts:vi.fn(),safeGetFull:vi.fn(),saveChatLog:vi.fn(),stripHtml:vi.fn(),log:vi.fn()}));
 vi.mock('../chat/modules/helpers.js',()=>({getUserName:async()=>'Example',formatTimestampForAgent:()=> '2026-09-13'}));
 vi.mock('../chat/tools/core.js',()=>({executeToolsHeadless:vi.fn()}));
+vi.mock('../chat/modules/persistentChatStore.js',()=>({loadIdMap:vi.fn(),saveIdMap:vi.fn(),saveIdMapImmediate:vi.fn()}));
 import {sendChat,processEditResponse} from '../agent/modules/llm.js';
 import {runComposeEdit} from '../compose/modules/edit.js';
 beforeEach(()=>{vi.clearAllMocks();processEditResponse.mockImplementation(raw=>raw==='valid'?{body:'Expanded draft.'}:{body:raw==='whitespace'?'   ':undefined,subject:'Update'});});
@@ -59,4 +60,34 @@ it.each([true, false])('real missing-Body parser response recovers safely: retry
   expect(result.body).toBe(''); expect(result.subject).toBeUndefined();
   expect(result.chatHistory).toEqual([]);
  }
+});
+
+
+it('keeps tool IDs scoped across one edit and separate from other edits and chat', async () => {
+ const {executeToolsHeadless} = await import('../chat/tools/core.js');
+ const {processToolResultTBtoLLM, processToolCallLLMtoTB} = await import('../chat/modules/idTranslator.js');
+ const {ctx} = await import('../chat/modules/context.js');
+ const {saveIdMap} = await import('../chat/modules/persistentChatStore.js');
+ ctx.idTranslation.idMap.clear(); ctx.idTranslation.idMap.set(7, 'synthetic-existing-chat');
+ const scopes = [], results = [];
+ executeToolsHeadless.mockImplementation(async (calls, usage, scope) => {
+  scopes.push(scope);
+  const numeric = processToolResultTBtoLLM({unique_id: calls[0]}, scope).unique_id;
+  results.push(processToolCallLLMtoTB('email_read', {unique_id:numeric}, scope).unique_id);
+  return [];
+ });
+ let edit = 0;
+ sendChat.mockImplementation(async (_messages, options) => {
+  const id = `synthetic-edit-${++edit}`;
+  await options.onToolExecution([id]);
+  await options.onToolExecution([id]);
+  return {assistant:'valid'};
+ });
+ await runComposeEdit({body:'Draft one.'});
+ await runComposeEdit({body:'Draft two.'});
+ expect(results).toEqual(['synthetic-edit-1','synthetic-edit-1','synthetic-edit-2','synthetic-edit-2']);
+ expect.soft([...ctx.idTranslation.idMap]).toEqual([[7,'synthetic-existing-chat']]);
+ expect.soft(saveIdMap).not.toHaveBeenCalled();
+ expect(scopes[0]).toBeDefined(); expect(scopes[0]).toBe(scopes[1]);
+ expect(scopes[2]).toBe(scopes[3]); expect(scopes[0]).not.toBe(scopes[2]);
 });

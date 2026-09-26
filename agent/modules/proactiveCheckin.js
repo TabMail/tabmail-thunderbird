@@ -712,6 +712,8 @@ async function _executeTask(task, taskHash) {
   try {
     const { sendChat } = await import("./llm.js");
     const { executeToolsHeadless } = await import("../../chat/tools/core.js");
+    const { createIsolatedContext, processLLMResponseLLMtoTB } = await import("../../chat/modules/idTranslator.js");
+    const idContext = createIsolatedContext();
     const { getUserKBPrompt } = await import("./promptGenerator.js");
     const { buildReminderList } = await import("./reminderBuilder.js");
 
@@ -776,7 +778,7 @@ async function _executeTask(task, taskHash) {
         log(`[ProActReach] Task ${taskHash} turn ${turn}: ${response.tool_calls.length} tool call(s)`);
         messages.push({ role: "assistant", content: response.assistant || "", tool_calls: response.tool_calls });
 
-        const toolResults = await executeToolsHeadless(response.tool_calls, response.token_usage);
+        const toolResults = await executeToolsHeadless(response.tool_calls, response.token_usage, idContext);
         for (const tr of toolResults) {
           messages.push({ role: "tool", tool_call_id: tr.call_id, content: tr.output });
         }
@@ -790,7 +792,8 @@ async function _executeTask(task, taskHash) {
 
     if (finalResponse) {
       log(`[ProActReach] Task ${taskHash} executed successfully (${finalResponse.length} chars)`);
-      return { content: finalResponse, sessionId };
+      // Cache durable references before this task-local ID map disappears.
+      return { content: processLLMResponseLLMtoTB(finalResponse, idContext), sessionId };
     }
 
     log(`[ProActReach] Task ${taskHash} returned no assistant response`, "warn");
