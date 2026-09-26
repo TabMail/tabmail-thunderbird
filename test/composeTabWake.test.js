@@ -189,18 +189,20 @@ async function startWithRealTracker(failFirstAdd, {
   const tracker = evaluate('agent/modules/composeTracker.js', { ...trackerScope });
   let releaseStartup;
   const scanAllInboxes = vi.fn(async () => {});
+  const loadModule = vi.fn(async () => new Proxy({}, { get: (_, key) => key === 'then' ? undefined : () => Promise.resolve({}) }));
+  const startTimer = vi.fn(() => 1);
   evaluate('agent/background.js', {
     browser, idb, console: quietConsole, Date, performance, window: {}, navigator: {},
-    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+    setTimeout: () => 1, clearTimeout() {}, setInterval: startTimer, clearInterval() {},
     initComposeHandlers: tracker.initComposeHandlers,
     isAnyComposeOpen: tracker.isAnyComposeOpen,
     ensureActionTags: () => new Promise(resolve => { releaseStartup = resolve; }),
     scanAllInboxes,
-    __loadModule: async () => new Proxy({}, { get: (_, key) => key === 'then' ? undefined : () => Promise.resolve({}) }),
+    __loadModule: loadModule,
     log() {},
   });
   return {
-    idb, tracker, event, createReply, scanAllInboxes, cacheReadStarted,
+    idb, tracker, event, createReply, scanAllInboxes, cacheReadStarted, loadModule, startTimer,
     restartTracker: () => evaluate('agent/modules/composeTracker.js', { ...trackerScope }),
     get addAttempts() { return addAttempts; },
     async finishStartup() {
@@ -367,4 +369,6 @@ it('defers only the startup scan when native compose presence cannot be read', a
   await run.finishStartup();
   expect(run.scanAllInboxes).not.toHaveBeenCalled();
   expect(run.event('browser.tabs.onCreated').listeners.size).toBe(1);
+  expect(run.loadModule).toHaveBeenCalledWith('./modules/deviceSync.js');
+  expect(run.startTimer).toHaveBeenCalledTimes(1);
 });
