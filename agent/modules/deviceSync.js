@@ -489,9 +489,9 @@ export async function resetFieldToDefault(field, defaultValue) {
 export function setupStorageListener() {
   if (_storageChangeListener) return; // Already set up
 
-  const listener = async (changes, area) => {
-    // Capture remote-echo suppression before yielding to the enabled check.
-    if (area !== "local" || suppressBroadcast || transportDisconnected) return;
+  const listener = (changes, area) => {
+    // Local edit timestamps must advance even while transport is paused.
+    if (area !== "local" || suppressBroadcast) return;
 
     // Check if any prompt-related key changed
     const changedFields = [];
@@ -501,9 +501,6 @@ export function setupStorageListener() {
       }
     }
     if (changedFields.length === 0) return;
-    const generation = connectionGeneration;
-    if (!await isAutoEnabled() || _storageChangeListener !== listener ||
-        transportDisconnected || generation !== connectionGeneration) return;
 
     // Update per-field timestamps for changed fields (these are local edits)
     const now = new Date().toISOString();
@@ -528,12 +525,11 @@ export function setupStorageListener() {
       _broadcastDebounceTimer = null;
       const fields = [..._broadcastPendingFields];
       _broadcastPendingFields.clear();
-      if (transportDisconnected || generation !== connectionGeneration) return;
+      if (transportDisconnected) return;
       try {
         // A first wake may reach this debounce before late startup reconnects
         // the module to the already-open parent transport.
         if (!connected) await connect();
-        if (transportDisconnected || generation !== connectionGeneration) return;
         await broadcastState(fields);
       } catch (e) {
         log(`${PFX}Debounced broadcast failed: ${e}`, "warn");
