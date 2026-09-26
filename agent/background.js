@@ -1605,7 +1605,7 @@ async function checkAndShowWelcomeWizard() {
             
             // Check if a welcome wizard window already exists
             try {
-                const allWindows = await browser.windows.getAll();
+                const allWindows = await browser.windows.getAll({ populate: true });
                 const welcomeWindow = allWindows.find(win => {
                     // Check if this window has the welcome URL
                     return win.tabs && win.tabs.some(tab => tab.url === url);
