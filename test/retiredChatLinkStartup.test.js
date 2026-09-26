@@ -6,7 +6,6 @@ describe('retired ChatLink startup', () => {
     const manifestUrl = new URL('../manifest.json', import.meta.url);
     const manifest = JSON.parse(readFileSync(manifestUrl, 'utf8'));
     const activeScripts = [
-      'keepalive/background.js',
       'updates/background.js',
       'theme/background.js',
       'agent/background.js',

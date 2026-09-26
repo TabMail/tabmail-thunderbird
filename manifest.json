@@ -13,7 +13,6 @@
   },
   "background": {
     "scripts": [
-    "keepalive/background.js",
     "updates/background.js",
     "theme/background.js",
     "agent/background.js",
@@ -108,14 +107,6 @@
         "scopes": ["addon_parent"],
         "script": "compose/experiments/tmComposeRecipients/tmComposeRecipients.sys.mjs",
         "paths": [["tmComposeRecipients"]]
-      }
-    },
-    "tmKeepAlive": {
-      "schema": "keepalive/experiments/tmKeepAlive/schema.json",
-      "parent": {
-        "scopes": ["addon_parent"],
-        "script": "keepalive/experiments/tmKeepAlive/tmKeepAlive.sys.mjs",
-        "paths": [["tmKeepAlive"]]
       }
     },
     "tmCalendar": {
@@ -334,8 +325,6 @@
         "theme/palette/palette.js",
         "theme/palette/palette.build.js",
         "theme/palette/palette.data.json",
-        "keepalive/relay.html",
-        "keepalive/relay.js",
         "welcome/welcome.html",
         "welcome/welcome.js",
         "welcome/welcome.css",
