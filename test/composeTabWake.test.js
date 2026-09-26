@@ -351,11 +351,13 @@ it('tracks an early reply while the real cache read is pending', async () => {
 });
 
 
-it('defers the initial scan for a compose tab retained across background restart', async () => {
-  const run = await startWithRealTracker(false, { existingComposeTabs: [71] });
+it.each([{ existingComposeTabs: [71] }, { existingComposeTabs: [71, 72] }])('defers only the initial scan for retained compose tabs $existingComposeTabs', async ({ existingComposeTabs }) => {
+  const run = await startWithRealTracker(false, { existingComposeTabs });
   expect(run.tracker.isAnyComposeOpen()).toBe(false);
   await run.finishStartup();
   expect(run.scanAllInboxes).not.toHaveBeenCalled();
+  expect(run.loadModule).toHaveBeenCalledWith('./modules/deviceSync.js');
+  expect(run.startTimer).toHaveBeenCalledTimes(1);
 });
 
 it('runs the initial scan when Thunderbird has no compose tabs', async () => {
