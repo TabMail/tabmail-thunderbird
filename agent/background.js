@@ -830,8 +830,9 @@ function setupRuntimeMessageListener() {
     if (message.command === "device-sync-status") {
         (async () => {
             try {
-                const { isConnected } = await import("./modules/deviceSync.js");
-                sendResponse({ ok: true, connected: isConnected() });
+                // The parent socket survives suspension; the local status mirror does not.
+                const state = await browser.tmDeviceSync.getState();
+                sendResponse({ ok: true, connected: state === "open" });
             } catch (e) {
                 sendResponse({ ok: true, connected: false });
             }
