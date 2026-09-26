@@ -102,6 +102,8 @@ let userId = null;
 let connected = false;
 let pingTimer = null;
 let probeTimer = null;
+let connectPromise = null;
+let connectionGeneration = 0;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 
@@ -1011,7 +1013,20 @@ async function handleMessage(rawData) {
  * Connect to device sync worker via WebSocket.
  * Called automatically on startup (always-on sync).
  */
-export async function connect() {
+export function connect() {
+  if (connectPromise) return connectPromise;
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+    return Promise.resolve();
+  }
+  const generation = connectionGeneration;
+  const pending = connectOnce(generation).finally(() => {
+    if (connectPromise === pending) connectPromise = null;
+  });
+  connectPromise = pending;
+  return pending;
+}
+
+async function connectOnce(generation) {
   // Reset intentional disconnect flag — this connect() call is intentional,
   // so any prior disconnect()'s flag should not block us.
   intentionalDisconnect = false;
@@ -1030,6 +1045,7 @@ export async function connect() {
 
   // Get access token for authentication
   let accessToken;
+  let authenticatedUserId = null;
   try {
     const { getAccessToken, getSession } = await import("./supabaseAuth.js");
     accessToken = await getAccessToken();
@@ -1045,7 +1061,7 @@ export async function connect() {
       const b64url = session.access_token.split(".")[1];
       const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/") + "==".slice(0, (4 - (b64url.length % 4)) % 4);
       const payload = JSON.parse(atob(b64));
-      userId = payload.sub;
+      authenticatedUserId = payload.sub;
     }
   } catch (e) {
     log(`${PFX}Failed to get access token: ${e}`);
@@ -1058,21 +1074,25 @@ export async function connect() {
   // Re-check auto-enabled after async operations — user may have disabled while
   // we were awaiting the access token (race between connect/disconnect).
   const stillEnabled = await isAutoEnabled();
-  if (!stillEnabled || intentionalDisconnect) {
+  if (!stillEnabled || intentionalDisconnect || generation !== connectionGeneration) {
     log(`${PFX}Aborting connect — sync was disabled during auth`);
     return;
   }
 
-  log(`${PFX}Connecting to WebSocket for user ${userId?.substring(0, 8)}...`);
+  log(`${PFX}Connecting to WebSocket`);
 
   // Build WebSocket URL with token for auth
   const workerUrl = await getDeviceSyncUrl();
+  if (intentionalDisconnect || generation !== connectionGeneration) return;
   const wsUrl = `${workerUrl.replace("https://", "wss://")}/ws?token=${encodeURIComponent(accessToken)}`;
 
   try {
-    socket = new WebSocket(wsUrl);
+    const ownedSocket = new WebSocket(wsUrl);
+    socket = ownedSocket;
+    userId = authenticatedUserId;
 
     socket.onopen = () => {
+      if (socket !== ownedSocket || generation !== connectionGeneration) return;
       log(`${PFX}WebSocket connected`);
       connected = true;
       reconnectAttempts = 0;
@@ -1088,14 +1108,17 @@ export async function connect() {
     };
 
     socket.onmessage = (event) => {
+      if (socket !== ownedSocket || generation !== connectionGeneration) return;
       handleMessage(event.data);
     };
 
     socket.onerror = (e) => {
+      if (socket !== ownedSocket || generation !== connectionGeneration) return;
       log(`${PFX}WebSocket error: ${e.type}`, "warn");
     };
 
     socket.onclose = (e) => {
+      if (socket !== ownedSocket || generation !== connectionGeneration) return;
       log(`${PFX}WebSocket closed: code=${e.code}, reason=${e.reason}`);
       connected = false;
       notifyStatusListeners();
@@ -1136,6 +1159,8 @@ export async function connect() {
  * Disconnect from WebSocket
  */
 export function disconnect() {
+  ++connectionGeneration;
+  connectPromise = null;
   intentionalDisconnect = true;
   if (pingTimer) {
     clearInterval(pingTimer);

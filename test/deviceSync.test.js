@@ -67,6 +67,7 @@ globalThis.WebSocket = class MockWebSocket {
     this.onclose = null;
     mockWebSocketInstances.push(this);
   }
+  static get CONNECTING() { return 0; }
   static get OPEN() { return 1; }
   send(data) { this.sent.push(data); }
   close() {
@@ -2042,6 +2043,59 @@ describe('Device Sync', () => {
   // Connect / Disconnect
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Connect / Disconnect', () => {
+    it('cancels a pending URL lookup when disconnected', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let release;
+      getDeviceSyncUrl.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const attempt = deviceSync.connect();
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      release('https://sync.example.test');
+      await attempt;
+      expect(mockWebSocketInstances).toHaveLength(0);
+    });
+
+    it('ignores a retired socket close after a replacement connects', async () => {
+      const old = await establishConnection();
+      const lateClose = old.onclose;
+      deviceSync.disconnect();
+      const current = await establishConnection();
+      lateClose({ code: 1000, reason: 'delayed close' });
+      expect(deviceSync.isConnected()).toBe(true);
+      expect(current.readyState).toBe(WebSocket.OPEN);
+    });
+
+    it('does not replace a socket while its handshake is pending', async () => {
+      setStorage({ device_sync_auto_enabled: true });
+      await deviceSync.connect();
+      const ws = mockWebSocketInstances.at(-1);
+      ws.readyState = WebSocket.CONNECTING;
+      const before = mockWebSocketInstances.length;
+      await deviceSync.connect();
+      const created = [...mockWebSocketInstances];
+      try { expect(created).toHaveLength(before); }
+      finally { for (const item of created) { item.onclose = null; item.close(); } }
+    });
+
+    it('coalesces overlapping connection attempts into one socket', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let release;
+      getDeviceSyncUrl.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const first = deviceSync.connect();
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      const second = deviceSync.connect();
+      release('https://sync.example.test');
+      await Promise.all([first, second]);
+      const created = [...mockWebSocketInstances];
+      try {
+        expect(created).toHaveLength(1);
+      } finally {
+        for (const ws of created) { ws.onclose = null; ws.close(); }
+      }
+    });
+
     it('connect skips when auto-sync is disabled', async () => {
       setStorage({ 'device_sync_auto_enabled': false });
       const beforeCount = mockWebSocketInstances.length;
