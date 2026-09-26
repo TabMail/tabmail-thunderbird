@@ -86,31 +86,34 @@ const LEGACY_BASE_KEYS = [
   "device_sync_base:kb",
 ];
 
-// Config
-const SYNC_CONFIG = {
-  pingIntervalMs: 30000,
-  reconnectBaseDelayMs: 5000,
-  reconnectMaxDelayMs: 300000, // 5 minutes
-  maxReconnectAttempts: 10,
-};
-
-const PROBE_INTERVAL_MS = 300000; // 5 minutes
-
-// Connection state
-let socket = null;
+// The experiment owns the socket across background generations.
 let connected = false;
-let pingTimer = null;
-let probeTimer = null;
 let connectPromise = null;
 let connectionGeneration = 0;
-let reconnectTimer = null;
-let reconnectAttempts = 0;
+let transportListener = null;
+
+export function attachDeviceSyncTransportListener() {
+  if (transportListener) return;
+  const listener = async event => {
+    if (event.type === "close") { connected = false; notifyStatusListeners(); return; }
+    if (event.type === "reconnect") return connect();
+    if (event.type === "open") { connected = true; notifyStatusListeners(); return; }
+    if (event.type === "probe") { connected = true; return probeAllFields(); }
+    if (event.type === "message") {
+      connected = true;
+      return handleMessage(event.data);
+    }
+  };
+  browser.tmDeviceSync.onEvent.addListener(listener);
+  transportListener = listener;
+}
+
+function sendTransport(data) {
+  return browser.tmDeviceSync.send(data);
+}
 
 // Suppress broadcast flag — set true when applying incoming sync to avoid echo
 let suppressBroadcast = false;
-
-// When true, onclose should NOT schedule a reconnect
-let intentionalDisconnect = false;
 
 // Debounce timer for auto-broadcast on local edits
 let _broadcastDebounceTimer = null;
@@ -330,14 +333,6 @@ export function removeStatusListener(callback) {
   statusListeners.delete(callback);
 }
 
-// ─── Ping ───────────────────────────────────────────────────────────────
-
-function sendPing() {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "ping" }));
-  }
-}
-
 // ─── Read / Broadcast State ─────────────────────────────────────────────
 
 /**
@@ -389,13 +384,13 @@ export async function broadcastState(fields = null) {
     return;
   }
 
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (!connected) {
     return;
   }
 
   try {
     const state = await readLocalState(fields);
-    socket.send(JSON.stringify({ type: "prompt_state", data: state }));
+    await sendTransport(JSON.stringify({ type: "prompt_state", data: state }));
     log(`${PFX}Broadcast prompt_state (fields=${fields || "all"})`);
   } catch (e) {
     log(`${PFX}Error broadcasting state: ${e}`, "error");
@@ -409,9 +404,9 @@ export async function broadcastState(fields = null) {
  * Peers respond with their current state and timestamps; the existing
  * per-field merge logic handles conflict resolution automatically.
  */
-function probeAllFields() {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({ type: "request_state", fields: VALID_FIELDS }));
+async function probeAllFields() {
+  if (!connected) return;
+  await sendTransport(JSON.stringify({ type: "request_state", fields: VALID_FIELDS }));
   log(`${PFX}Probe: requested all fields from peers`);
 }
 
@@ -420,13 +415,13 @@ function probeAllFields() {
  * Used by manual sync buttons.
  */
 export async function syncNow() {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (!connected) {
     log(`${PFX}syncNow: not connected, attempting connect first`);
     await connect();
     return; // connect will broadcastAllFields on success
   }
   await broadcastState();
-  probeAllFields();
+  await probeAllFields();
 }
 
 // ─── Reset Field to Default (Epoch-Zero Timestamp) ──────────────────────
@@ -460,8 +455,8 @@ export async function resetFieldToDefault(field, defaultValue) {
   }
 
   // Request state from peers — if they have newer (customized) data, it syncs back
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "request_state", fields: [field] }));
+  if (connected) {
+    await sendTransport(JSON.stringify({ type: "request_state", fields: [field] }));
     log(`${PFX}Requested state from peers for field '${field}'`);
   }
 }
@@ -839,7 +834,7 @@ async function handlePromptState(data) {
  */
 export function probeAndWait(keys, timeoutMs = 2000, fields = undefined) {
   return new Promise((resolve) => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    if (!connected) {
       resolve(null);
       return;
     }
@@ -855,7 +850,11 @@ export function probeAndWait(keys, timeoutMs = 2000, fields = undefined) {
     try {
       const msg = { type: "ai_cache_probe", keys, probeId };
       if (fields) msg.fields = fields;
-      socket.send(JSON.stringify(msg));
+      sendTransport(JSON.stringify(msg)).catch(() => {
+        clearTimeout(timer);
+        _pendingProbes.delete(probeId);
+        resolve(null);
+      });
       log(`${PFX}Sent ai_cache_probe for [${keys.join(", ")}] fields=${fields || "all"} (probeId=${probeId.substring(0, 8)})`);
     } catch (e) {
       clearTimeout(timer);
@@ -901,8 +900,8 @@ async function handleAICacheProbe(parsed) {
   try {
     const results = await _aiCacheProbeHandler(parsed.keys, parsed.fields);
     // Always respond (even with empty results) so the peer knows we're connected
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
+    if (connected) {
+      await sendTransport(JSON.stringify({
         type: "ai_cache_response",
         results: results || {},
         probeId: parsed.probeId,
@@ -959,7 +958,7 @@ async function handleMessage(rawData) {
           const allEpochZero = Object.values(timestamps).every((ts) => ts === EPOCH_ZERO);
           if (allEpochZero) {
             log(`${PFX}Virgin device — skipping broadcast, probing peers instead`);
-            probeAllFields();
+            await probeAllFields();
           } else {
             broadcastState().catch((e) => {
               log(`${PFX}Auto-broadcast on connect failed: ${e}`, "warn");
@@ -1014,9 +1013,6 @@ async function handleMessage(rawData) {
  */
 export function connect() {
   if (connectPromise) return connectPromise;
-  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-    return Promise.resolve();
-  }
   const generation = connectionGeneration;
   const pending = connectOnce(generation).finally(() => {
     if (connectPromise === pending) connectPromise = null;
@@ -1026,157 +1022,41 @@ export function connect() {
 }
 
 async function connectOnce(generation) {
-  // Reset intentional disconnect flag — this connect() call is intentional,
-  // so any prior disconnect()'s flag should not block us.
-  intentionalDisconnect = false;
-
-  // Don't connect if auto-sync is disabled
-  const autoEnabled = await isAutoEnabled();
-  if (!autoEnabled) {
-    log(`${PFX}Auto-sync disabled, skipping connect`);
+  if (!await isAutoEnabled() || generation !== connectionGeneration) return;
+  const state = await browser.tmDeviceSync.getState();
+  if (generation !== connectionGeneration) return;
+  if (state === "open" || state === "connecting" || state === "retrying") {
+    connected = state === "open";
+    notifyStatusListeners();
     return;
   }
-
-  // Don't connect if already connected
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    return;
-  }
-
-  // Get access token for authentication
-  let accessToken;
-  try {
-    const { getAccessToken } = await import("./supabaseAuth.js");
-    accessToken = await getAccessToken();
-
-    if (!accessToken) {
-      log(`${PFX}No access token, cannot connect`);
-      return;
-    }
-  } catch (e) {
-    log(`${PFX}Failed to get access token: ${e}`);
-    return;
-  }
-
-  // Initialize per-field timestamps for new devices (epoch 0)
+  const { getAccessToken } = await import("./supabaseAuth.js");
+  const accessToken = await getAccessToken();
+  if (!accessToken || generation !== connectionGeneration) return;
   await initTimestampsIfNeeded();
-
-  // Re-check auto-enabled after async operations — user may have disabled while
-  // we were awaiting the access token (race between connect/disconnect).
-  const stillEnabled = await isAutoEnabled();
-  if (!stillEnabled || intentionalDisconnect || generation !== connectionGeneration) {
-    log(`${PFX}Aborting connect — sync was disabled during auth`);
-    return;
-  }
-
-  log(`${PFX}Connecting to WebSocket`);
-
-  // Build WebSocket URL with token for auth
+  const enabled = await isAutoEnabled();
   const workerUrl = await getDeviceSyncUrl();
-  if (intentionalDisconnect || generation !== connectionGeneration) return;
-  const wsUrl = `${workerUrl.replace("https://", "wss://")}/ws?token=${encodeURIComponent(accessToken)}`;
-
-  try {
-    const ownedSocket = new WebSocket(wsUrl);
-    socket = ownedSocket;
-
-    socket.onopen = () => {
-      if (socket !== ownedSocket || generation !== connectionGeneration) return;
-      log(`${PFX}WebSocket connected`);
-      connected = true;
-      reconnectAttempts = 0;
-      notifyStatusListeners();
-
-      // Start ping interval
-      if (pingTimer) clearInterval(pingTimer);
-      pingTimer = setInterval(sendPing, SYNC_CONFIG.pingIntervalMs);
-
-      // Start probe interval — periodically request state from peers (every 5 min)
-      if (probeTimer) clearInterval(probeTimer);
-      probeTimer = setInterval(probeAllFields, PROBE_INTERVAL_MS);
-    };
-
-    socket.onmessage = (event) => {
-      if (socket !== ownedSocket || generation !== connectionGeneration) return;
-      handleMessage(event.data);
-    };
-
-    socket.onerror = (e) => {
-      if (socket !== ownedSocket || generation !== connectionGeneration) return;
-      log(`${PFX}WebSocket error: ${e.type}`, "warn");
-    };
-
-    socket.onclose = (e) => {
-      if (socket !== ownedSocket || generation !== connectionGeneration) return;
-      log(`${PFX}WebSocket closed: code=${e.code}, reason=${e.reason}`);
-      connected = false;
-      notifyStatusListeners();
-
-      if (pingTimer) {
-        clearInterval(pingTimer);
-        pingTimer = null;
-      }
-      if (probeTimer) {
-        clearInterval(probeTimer);
-        probeTimer = null;
-      }
-
-      // Always reconnect unless intentionally disconnected
-      if (!reconnectTimer && !intentionalDisconnect) {
-        if (reconnectAttempts >= SYNC_CONFIG.maxReconnectAttempts) {
-          log(`${PFX}Max reconnect attempts (${SYNC_CONFIG.maxReconnectAttempts}) reached — giving up`);
-          return;
-        }
-        const delay = Math.min(
-          SYNC_CONFIG.reconnectBaseDelayMs * Math.pow(2, reconnectAttempts),
-          SYNC_CONFIG.reconnectMaxDelayMs
-        );
-        reconnectAttempts++;
-        log(`${PFX}Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${SYNC_CONFIG.maxReconnectAttempts})`);
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          connect();
-        }, delay);
-      }
-    };
-  } catch (e) {
-    log(`${PFX}WebSocket creation failed: ${e}`, "error");
-  }
+  if (!enabled || generation !== connectionGeneration) return;
+  const result = await browser.tmDeviceSync.connect(`${workerUrl.replace("https://", "wss://")}/ws?token=${encodeURIComponent(accessToken)}`);
+  if (generation !== connectionGeneration) return;
+  connected = result === "open";
+  notifyStatusListeners();
 }
 
-/**
- * Disconnect from WebSocket
- */
+/** Explicit sync-off/signout disconnect. Idle suspension leaves the parent socket intact. */
 export function disconnect() {
   ++connectionGeneration;
   connectPromise = null;
-  intentionalDisconnect = true;
-  if (pingTimer) {
-    clearInterval(pingTimer);
-    pingTimer = null;
-  }
-  if (probeTimer) {
-    clearInterval(probeTimer);
-    probeTimer = null;
-  }
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  if (socket) {
-    socket.close();
-    socket = null;
-  }
   connected = false;
-  reconnectAttempts = 0;
   notifyStatusListeners();
-  log(`${PFX}Disconnected from WebSocket`);
+  return browser.tmDeviceSync.disconnect();
 }
 
 /**
  * Full cleanup — removes storage listener, clears timers, disconnects.
- * Called on extension suspend.
+ * Used for explicit cleanup; idle suspension must retain the parent transport.
  */
-export function cleanupDeviceSync() {
+export async function cleanupDeviceSync() {
   if (_storageChangeListener) {
     browser.storage.onChanged.removeListener(_storageChangeListener);
     _storageChangeListener = null;
@@ -1194,7 +1074,7 @@ export function cleanupDeviceSync() {
   }
   _pendingProbes.clear();
 
-  disconnect();
+  await disconnect();
   log(`${PFX}Device sync cleaned up`);
 }
 
@@ -1229,6 +1109,6 @@ export async function setAutoEnabled(enabled) {
   if (enabled) {
     await connect();
   } else {
-    disconnect();
+    await disconnect();
   }
 }

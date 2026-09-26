@@ -12,6 +12,8 @@
 // or test exported functions that exercise the merge logic.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 
 // ─── Browser Mock ────────────────────────────────────────────────────────────
 
@@ -79,6 +81,28 @@ globalThis.WebSocket = class MockWebSocket {
   }
 };
 globalThis.atob = (str) => Buffer.from(str, 'base64').toString('binary');
+
+// Exercise the real parent transport, with only the Gecko host/network mocked.
+const parentSource = readFileSync(new URL('../agent/experiments/tmDeviceSync/tmDeviceSync.sys.mjs', import.meta.url), 'utf8');
+const ParentTransport = runInNewContext(parentSource + '\n tmDeviceSync;', {
+  ChromeUtils: { importESModule: path => path.includes('Timer')
+    ? { setTimeout: (...args) => setTimeout(...args), clearTimeout: (...args) => clearTimeout(...args), setInterval: (...args) => setInterval(...args), clearInterval: (...args) => clearInterval(...args) }
+    : { ExtensionCommon: { ExtensionAPIPersistent: class {}, ExtensionError: Error, EventManager: class { api() { return {}; } } } } },
+  Services: {
+    appShell: { createWindowlessBrowser: () => ({ document: { documentGlobal: { WebSocket: globalThis.WebSocket } }, close() {} }) },
+    io: { newURI: raw => { const u = new URL(raw); return { scheme: u.protocol.slice(0, -1), host: u.hostname, filePath: u.pathname, userPass: u.username }; } },
+  },
+});
+const parentTransport = new ParentTransport({});
+const transportApi = parentTransport.getAPI({}).tmDeviceSync;
+browserMock.tmDeviceSync = {
+  connect: async url => transportApi.connect(url),
+  getState: async () => transportApi.getState(),
+  send: async data => transportApi.send(data),
+  disconnect: async () => transportApi.disconnect(),
+  onEvent: { addListener: listener => parentTransport.PERSISTENT_EVENTS.onEvent({ fire: { async: event => Promise.resolve(listener(event)) } }) },
+};
+
 
 // ─── Module Mocks ────────────────────────────────────────────────────────────
 
@@ -268,6 +292,7 @@ async function sendSocketMessage(ws, msg) {
 
 // We import after mocks are set up
 const deviceSync = await import('../agent/modules/deviceSync.js');
+deviceSync.attachDeviceSyncTransportListener();
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -473,7 +498,10 @@ describe('Device Sync', () => {
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
 
       // Trigger onopen
-      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
+      if (ws && ws.onopen) {
+        ws.readyState = WebSocket.OPEN;
+        ws.onopen();
+      }
 
       // Simulate the server responding with "connected"
       await sendSocketMessage(ws, { type: 'connected', userId: 'test-user-id' });
@@ -498,7 +526,10 @@ describe('Device Sync', () => {
 
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
+      if (ws && ws.onopen) {
+        ws.readyState = WebSocket.OPEN;
+        ws.onopen();
+      }
 
       // Simulate the server responding with "connected"
       await sendSocketMessage(ws, { type: 'connected', userId: 'test-user-id' });
@@ -2053,7 +2084,7 @@ describe('Device Sync', () => {
       await vi.waitFor(() => expect(releaseOld).toBeTypeOf('function'));
       deviceSync.disconnect();
       const fresh = deviceSync.connect();
-      releaseOld('https://sync.example.test');
+      releaseOld('https://sync.tabmail.ai');
       await Promise.all([stale, fresh]);
       expect(mockWebSocketInstances).toHaveLength(1);
       mockWebSocketInstances[0].readyState = 1;
@@ -2061,14 +2092,15 @@ describe('Device Sync', () => {
       expect(deviceSync.isConnected()).toBe(true);
     });
 
-    it('after the live socket drops, a later connect() opens a new socket', async () => {
+    it('startup connect preserves the parent reconnect delay after a live drop', async () => {
       const ws = await establishConnection();
       ws.readyState = 3;
       ws.onclose({ code: 1006, reason: 'network drop' });
       expect(deviceSync.isConnected()).toBe(false);
       const before = mockWebSocketInstances.length;
       await deviceSync.connect();
-      expect(mockWebSocketInstances.length).toBe(before + 1);
+      expect(mockWebSocketInstances.length).toBe(before);
+      expect(parentTransport.state()).toBe('retrying');
     });
 
     it('after the live socket drops, the reconnect timer opens a new socket', async () => {
@@ -2095,6 +2127,7 @@ describe('Device Sync', () => {
       a.onclose({ code: 1006, reason: 'late close of retired socket' });
       expect(deviceSync.isConnected()).toBe(true);
     });
+
     it('cancels a pending URL lookup when disconnected', async () => {
       const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
       let release;
@@ -2103,7 +2136,7 @@ describe('Device Sync', () => {
       const attempt = deviceSync.connect();
       await vi.waitFor(() => expect(release).toBeTypeOf('function'));
       deviceSync.disconnect();
-      release('https://sync.example.test');
+      release('https://sync.tabmail.ai');
       await attempt;
       expect(mockWebSocketInstances).toHaveLength(0);
     });
@@ -2138,7 +2171,7 @@ describe('Device Sync', () => {
       const first = deviceSync.connect();
       await vi.waitFor(() => expect(release).toBeTypeOf('function'));
       const second = deviceSync.connect();
-      release('https://sync.example.test');
+      release('https://sync.tabmail.ai');
       await Promise.all([first, second]);
       const created = [...mockWebSocketInstances];
       try {
@@ -2385,7 +2418,10 @@ describe('Device Sync', () => {
 
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
+      if (ws && ws.onopen) {
+        ws.readyState = WebSocket.OPEN;
+        ws.onopen();
+      }
 
       // Peer base keys should now be populated from legacy
       expect(storageData[PEER_BASE_KEYS.composition]).toBe('legacy comp base');
@@ -2406,7 +2442,10 @@ describe('Device Sync', () => {
 
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
+      if (ws && ws.onopen) {
+        ws.readyState = WebSocket.OPEN;
+        ws.onopen();
+      }
 
       // All timestamp keys should now exist with epoch-zero
       expect(storageData[TIMESTAMP_KEYS.composition]).toBe(EPOCH_ZERO);

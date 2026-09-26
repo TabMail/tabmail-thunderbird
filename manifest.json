@@ -94,6 +94,14 @@
     }
   ],
   "experiment_apis": {
+    "tmDeviceSync": {
+      "schema": "agent/experiments/tmDeviceSync/schema.json",
+      "parent": {
+        "scopes": ["addon_parent"],
+        "paths": [["tmDeviceSync"]],
+        "script": "agent/experiments/tmDeviceSync/tmDeviceSync.sys.mjs"
+      }
+    },
     "tmComposeRecipients": {
       "schema": "compose/experiments/tmComposeRecipients/schema.json",
       "parent": {

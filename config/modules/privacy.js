@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { $ } from "./dom.js";
-import { isAutoEnabled, setAutoEnabled } from "../../agent/modules/deviceSync.js";
 
 export function updatePrivacyOptOutUI(enabled) {
   const warning = $("privacy-opt-out-warning");
@@ -26,7 +25,8 @@ export async function loadPrivacySettings(getPrivacyOptOutAllAiEnabled, log) {
     if (cb) cb.checked = enabled;
     updatePrivacyOptOutUI(enabled);
 
-    const syncEnabled = await isAutoEnabled();
+    const stored = await browser.storage.local.get({ device_sync_auto_enabled: true });
+    const syncEnabled = !!stored.device_sync_auto_enabled;
     const syncCb = $("privacy-device-sync");
     if (syncCb) syncCb.checked = syncEnabled;
     updateDeviceSyncUI(syncEnabled);
@@ -57,7 +57,10 @@ export async function handlePrivacyChange(e, setPrivacyOptOutAllAiEnabled) {
   if (e.target.id === "privacy-device-sync") {
     const enabled = e.target.checked === true;
     updateDeviceSyncUI(enabled);
-    await setAutoEnabled(enabled);
+    const result = await browser.runtime.sendMessage({
+      command: enabled ? "device-sync-enable" : "device-sync-disable",
+    });
+    if (!result?.ok) throw new Error(result?.error || "Could not change Device Sync");
     console.log(`[TMDBG Config] Device sync ${enabled ? "enabled" : "disabled"}`);
     $("status").textContent = enabled
       ? "Device sync enabled."

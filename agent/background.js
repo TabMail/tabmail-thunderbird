@@ -6,6 +6,7 @@
 import { initComposeHandlers, isAnyComposeOpen } from "./modules/composeTracker.js";
 import { primeProactiveAlarmListener } from "./modules/proactiveCheckin.js";
 import { SETTINGS } from "./modules/config.js";
+import { attachDeviceSyncTransportListener, setAICacheProbeHandler } from "./modules/deviceSync.js";
 import * as idb from "./modules/idbStorage.js";
 import { ensureSignedIn, signOut } from "./modules/supabaseAuth.js";
 // Indexing disabled – import removed
@@ -45,6 +46,54 @@ import { log, signalChatTyping } from "./modules/utils.js";
 
 // Thunderbird only primes persistent events registered during background startup.
 registerTabKeyHandlers();
+// Install the cache responder before remote events can arrive on an idle wake.
+// Register AI cache probe handler — responds to peer probes with local IDB cache.
+// Probe keys are headerMessageIds (cross-device stable), but IDB keys use
+// full uniqueKey format: "summary:<accountId>:<folderPath>:<headerMessageId>".
+// We search all IDB keys for suffix matches.
+setAICacheProbeHandler(async (probeKeys, fields) => {
+    const results = {};
+    const wantSummary = !fields || fields.includes("summary");
+    const wantAction = !fields || fields.includes("action");
+    const wantReply = !fields || fields.includes("reply");
+    const allIdbKeys = await idb.getAllKeys();
+    for (const probeKey of probeKeys) {
+        // Find matching IDB keys by headerMessageId suffix.
+        // Exclude metadata keys (ts:, orig:, userprompt:, justification:) that share
+        // the same prefix — matching them returns timestamps/metadata instead of data.
+        const suffix = `:${probeKey}`;
+        const summaryMatch = wantSummary ? allIdbKeys.find(k => k.startsWith("summary:") && !k.startsWith("summary:ts:") && k.endsWith(suffix)) : null;
+        const actionMatch = wantAction ? allIdbKeys.find(k => isActionPayloadKey(k) && k.endsWith(suffix)) : null;
+        const replyMatch = wantReply ? allIdbKeys.find(k => k.startsWith("reply:") && !k.startsWith("reply:ts:") && k.endsWith(suffix)) : null;
+        if (!summaryMatch && !actionMatch && !replyMatch) continue;
+
+        const fetches = await idb.get([summaryMatch, actionMatch, replyMatch].filter(Boolean));
+        const summary = summaryMatch ? fetches[summaryMatch] : null;
+        const action = actionMatch ? fetches[actionMatch] : null;
+        const replyEntry = replyMatch ? fetches[replyMatch] : null;
+        if (summary || action || replyEntry) {
+            results[probeKey] = {};
+            if (summary) {
+                results[probeKey].summary = {
+                    blurb: summary.blurb || "",
+                    todos: summary.todos || "",
+                    detailed: summary.detailed || "",
+                    reminderDate: summary.reminder?.date || null,
+                    reminderTime: summary.reminder?.time || null,
+                    reminderContent: summary.reminder?.content || null,
+                };
+            }
+            if (action) {
+                results[probeKey].action = action;
+            }
+            if (replyEntry?.reply) {
+                results[probeKey].reply = replyEntry.reply;
+            }
+        }
+    }
+    return results;
+});
+attachDeviceSyncTransportListener();
 
 log("TabMail Agent background script loaded.");
 // log('[TMDBG Summary] agent.js debug build reloaded – timestamp ' + (new Date()).toISOString());
@@ -1911,54 +1960,9 @@ async function init() {
 
     // 10. Device sync — auto-connect and start storage listener for always-on Device sync.
     try {
-        const { connect: connectDeviceSync, setupStorageListener, isAutoEnabled, setAICacheProbeHandler } = await import("./modules/deviceSync.js");
+        const { connect: connectDeviceSync, setupStorageListener, isAutoEnabled } = await import("./modules/deviceSync.js");
 
-        // Register AI cache probe handler — responds to peer probes with local IDB cache.
-        // Probe keys are headerMessageIds (cross-device stable), but IDB keys use
-        // full uniqueKey format: "summary:<accountId>:<folderPath>:<headerMessageId>".
-        // We search all IDB keys for suffix matches.
-        setAICacheProbeHandler(async (probeKeys, fields) => {
-            const results = {};
-            const wantSummary = !fields || fields.includes("summary");
-            const wantAction = !fields || fields.includes("action");
-            const wantReply = !fields || fields.includes("reply");
-            const allIdbKeys = await idb.getAllKeys();
-            for (const probeKey of probeKeys) {
-                // Find matching IDB keys by headerMessageId suffix.
-                // Exclude metadata keys (ts:, orig:, userprompt:, justification:) that share
-                // the same prefix — matching them returns timestamps/metadata instead of data.
-                const suffix = `:${probeKey}`;
-                const summaryMatch = wantSummary ? allIdbKeys.find(k => k.startsWith("summary:") && !k.startsWith("summary:ts:") && k.endsWith(suffix)) : null;
-                const actionMatch = wantAction ? allIdbKeys.find(k => isActionPayloadKey(k) && k.endsWith(suffix)) : null;
-                const replyMatch = wantReply ? allIdbKeys.find(k => k.startsWith("reply:") && !k.startsWith("reply:ts:") && k.endsWith(suffix)) : null;
-                if (!summaryMatch && !actionMatch && !replyMatch) continue;
 
-                const fetches = await idb.get([summaryMatch, actionMatch, replyMatch].filter(Boolean));
-                const summary = summaryMatch ? fetches[summaryMatch] : null;
-                const action = actionMatch ? fetches[actionMatch] : null;
-                const replyEntry = replyMatch ? fetches[replyMatch] : null;
-                if (summary || action || replyEntry) {
-                    results[probeKey] = {};
-                    if (summary) {
-                        results[probeKey].summary = {
-                            blurb: summary.blurb || "",
-                            todos: summary.todos || "",
-                            detailed: summary.detailed || "",
-                            reminderDate: summary.reminder?.date || null,
-                            reminderTime: summary.reminder?.time || null,
-                            reminderContent: summary.reminder?.content || null,
-                        };
-                    }
-                    if (action) {
-                        results[probeKey].action = action;
-                    }
-                    if (replyEntry?.reply) {
-                        results[probeKey].reply = replyEntry.reply;
-                    }
-                }
-            }
-            return results;
-        });
 
         const autoSyncEnabled = await isAutoEnabled();
         if (autoSyncEnabled) {
