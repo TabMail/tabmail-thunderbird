@@ -858,7 +858,7 @@ function setupRuntimeMessageListener() {
     if (message.command === "device-sync-add-listener") {
         (async () => {
             try {
-                const { addStatusListener, isConnected } = await import("./modules/deviceSync.js");
+                const { addStatusListener } = await import("./modules/deviceSync.js");
                 if (!globalThis._deviceSyncStorageListenerAdded) {
                     globalThis._deviceSyncStorageListenerAdded = true;
                     addStatusListener((isConn) => {
@@ -866,7 +866,8 @@ function setupRuntimeMessageListener() {
                     });
                     log("Registered device-sync storage broadcast listener");
                 }
-                sendResponse({ ok: true, connected: isConnected() });
+                const state = await browser.tmDeviceSync.getState();
+                sendResponse({ ok: true, connected: state === "open" });
             } catch (e) {
                 sendResponse({ ok: true, connected: false });
             }

@@ -335,7 +335,7 @@ function notifyStatusListeners() {
 
 export function addStatusListener(callback) {
   statusListeners.add(callback);
-  try { callback(connected); } catch (_) {}
+  // New consumers read the parent transport; this mirror resets on background wake.
 }
 
 export function removeStatusListener(callback) {
