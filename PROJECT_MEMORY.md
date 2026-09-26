@@ -224,3 +224,6 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ### Welcome window lifecycle
 - **[Welcome background wake](Companion/Memory/Current/welcome-background-wake.md)** — If the completion flag is unset while a wizard remains open, reuse requires `windows.getAll({ populate: true })`; the wizard normally sets that flag on opening.
+
+### Nested Sent-folder lookup
+- **[Detail](Companion/Memory/Current/038-nested-sent-folder-resolution.md)** — MV3 root-folder enumeration returns a nested tree; traverse provider containers for after-send FTS handoff, preserving account scope and metadata matching.
