@@ -167,7 +167,7 @@ async function startWithRealTracker(failFirstAdd, {
     await new Promise(resolve => { releaseGeneration = resolve; });
     await idb.set({ [replyKey]: { reply: 'Generated reply.', directReplace: false } });
   });
-  const tracker = evaluate('agent/modules/composeTracker.js', {
+  const trackerScope = {
     browser, idb, console: quietConsole, Date, performance: { now: () => now },
     setTimeout: (fn, ms) => { now += ms; queueMicrotask(fn); return 1; },
     log() {}, formatForLog: value => value,
@@ -176,7 +176,8 @@ async function startWithRealTracker(failFirstAdd, {
     STORAGE_PREFIX: 'reply:', ACTIONS: { REPLY: 'reply' },
     getActionForWeId: async () => null, getSentFoldersForAccount: async () => [],
     applyPriorityTag: async () => {},
-  });
+  };
+  const tracker = evaluate('agent/modules/composeTracker.js', { ...trackerScope });
   let releaseStartup;
   const scanAllInboxes = vi.fn(async () => {});
   evaluate('agent/background.js', {
@@ -191,6 +192,7 @@ async function startWithRealTracker(failFirstAdd, {
   });
   return {
     idb, tracker, event, createReply, scanAllInboxes, cacheReadStarted,
+    restartTracker: () => evaluate('agent/modules/composeTracker.js', { ...trackerScope }),
     get addAttempts() { return addAttempts; },
     async finishStartup() {
       releaseStartup();
@@ -225,6 +227,23 @@ it('recovers a failed early add through init without stacking or losing the repl
   run.tracker.initComposeHandlers();
   expect(run.addAttempts).toBe(2);
   expect(created.listeners.size).toBe(1);
+});
+
+it('clears a cached reply when its tab closes after the background restarts', async () => {
+  const run = await startWithRealTracker(false);
+  await run.event('browser.tabs.onCreated').emit({ id: 41 });
+  await run.event('browser.tabs.onCreated').emit({ id: 42 });
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toBeDefined();
+  run.tracker.cleanupComposeTrackerListeners();
+  const restarted = run.restartTracker();
+  expect(restarted.isAnyComposeOpen()).toBe(false);
+  expect(run.event('browser.tabs.onRemoved').listeners.size).toBe(1);
+  await run.event('browser.tabs.onRemoved').emit(41);
+  expect((await run.idb.get('activePrecompose:41'))['activePrecompose:41']).toBeUndefined();
+  await run.event('browser.tabs.onRemoved').emit(41);
+  await run.event('browser.tabs.onRemoved').emit(44);
+  expect((await run.idb.get('activePrecompose:42'))['activePrecompose:42']).toBeDefined();
+  expect(run.event('browser.tabs.onRemoved').listeners.size).toBe(1);
 });
 
 it('retains one real compose-tab consumer across normal startup', async () => {
