@@ -59,7 +59,7 @@ let mockWebSocketInstances = [];
 globalThis.WebSocket = class MockWebSocket {
   constructor(url) {
     this.url = url;
-    this.readyState = 1; // OPEN
+    this.readyState = 0; // CONNECTING
     this.sent = [];
     this.onopen = null;
     this.onmessage = null;
@@ -67,7 +67,10 @@ globalThis.WebSocket = class MockWebSocket {
     this.onclose = null;
     mockWebSocketInstances.push(this);
   }
+  static get CONNECTING() { return 0; }
   static get OPEN() { return 1; }
+  static get CLOSING() { return 2; }
+  static get CLOSED() { return 3; }
   send(data) { this.sent.push(data); }
   close() {
     this.readyState = 3;
@@ -243,6 +246,7 @@ async function establishConnection() {
 
   // Trigger onopen to complete the connection
   if (ws && ws.onopen) {
+    ws.readyState = WebSocket.OPEN;
     ws.onopen();
   }
 
@@ -471,7 +475,7 @@ describe('Device Sync', () => {
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
 
       // Trigger onopen
-      if (ws && ws.onopen) ws.onopen();
+      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
 
       // Simulate the server responding with "connected"
       await sendSocketMessage(ws, { type: 'connected', userId: 'test-user-id' });
@@ -496,7 +500,7 @@ describe('Device Sync', () => {
 
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) ws.onopen();
+      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
 
       // Simulate the server responding with "connected"
       await sendSocketMessage(ws, { type: 'connected', userId: 'test-user-id' });
@@ -2042,6 +2046,218 @@ describe('Device Sync', () => {
   // Connect / Disconnect
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Connect / Disconnect', () => {
+
+    it('a settled stale attempt does not un-coalesce the current attempt', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let releaseStale, releaseFresh;
+      getDeviceSyncUrl
+        .mockImplementationOnce(() => new Promise(r => { releaseStale = r; }))
+        .mockImplementationOnce(() => new Promise(r => { releaseFresh = r; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseStale).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseFresh).toBeTypeOf('function'));
+      releaseStale('https://stale.example.test');
+      await stale;
+      const third = deviceSync.connect();
+      releaseFresh('https://fresh.example.test');
+      await Promise.all([fresh, third]);
+      expect(mockWebSocketInstances).toHaveLength(1);
+      expect(mockWebSocketInstances[0].url).toContain('fresh.example.test');
+    });
+
+    it('a stale attempt that rejects does not un-coalesce the current attempt', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let rejectStale, releaseFresh;
+      browserMock.storage.local.remove.mockImplementationOnce(() => new Promise((_, reject) => { rejectStale = reject; }));
+      getDeviceSyncUrl.mockImplementationOnce(() => new Promise(r => { releaseFresh = r; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(rejectStale).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseFresh).toBeTypeOf('function'));
+      rejectStale(new Error('storage unavailable'));
+      await expect(stale).rejects.toThrow('storage unavailable');
+      const third = deviceSync.connect();
+      releaseFresh('https://fresh.example.test');
+      await Promise.all([fresh, third]);
+      expect(mockWebSocketInstances).toHaveLength(1);
+      expect(mockWebSocketInstances[0].url).toContain('fresh.example.test');
+    });
+
+    it('disable and re-enable while the access token is pending leaves one socket', async () => {
+      const { getAccessToken } = await import('../agent/modules/supabaseAuth.js');
+      let releaseToken;
+      getAccessToken.mockImplementationOnce(() => new Promise(r => { releaseToken = r; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseToken).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      await fresh;
+      releaseToken('stale-token');
+      await stale;
+      expect(mockWebSocketInstances).toHaveLength(1);
+      expect(mockWebSocketInstances[0].url).not.toContain('stale-token');
+      mockWebSocketInstances[0].readyState = WebSocket.OPEN;
+      mockWebSocketInstances[0].onopen();
+      expect(deviceSync.isConnected()).toBe(true);
+    });
+
+    it('disable and re-enable while the enabled check is pending leaves one socket', async () => {
+      const realGet = browserMock.storage.local.get.getMockImplementation();
+      let releaseGet;
+      browserMock.storage.local.get.mockImplementationOnce((keys) => new Promise(r => { releaseGet = () => r(realGet(keys)); }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseGet).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      await fresh;
+      releaseGet();
+      await stale;
+      expect(mockWebSocketInstances).toHaveLength(1);
+      mockWebSocketInstances[0].readyState = WebSocket.OPEN;
+      mockWebSocketInstances[0].onopen();
+      expect(deviceSync.isConnected()).toBe(true);
+    });
+
+    it('a rejected attempt releases the single-flight so the next connect() retries', async () => {
+      browserMock.storage.local.remove.mockImplementationOnce(async () => { throw new Error('storage unavailable'); });
+      setStorage({ device_sync_auto_enabled: true });
+      await expect(deviceSync.connect()).rejects.toThrow('storage unavailable');
+      expect(mockWebSocketInstances).toHaveLength(0);
+      await deviceSync.connect();
+      expect(mockWebSocketInstances).toHaveLength(1);
+    });
+
+    it('disconnect then reconnect: stale in-flight attempt adds no socket and the re-enable is not lost', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let releaseOld;
+      getDeviceSyncUrl.mockImplementationOnce(() => new Promise(r => { releaseOld = r; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseOld).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      releaseOld('https://sync.example.test');
+      await Promise.all([stale, fresh]);
+      expect(mockWebSocketInstances).toHaveLength(1);
+      mockWebSocketInstances[0].readyState = 1;
+      mockWebSocketInstances[0].onopen();
+      expect(deviceSync.isConnected()).toBe(true);
+    });
+
+    it('after the live socket drops, a later connect() opens a new socket', async () => {
+      const ws = await establishConnection();
+      ws.readyState = 3;
+      ws.onclose({ code: 1006, reason: 'network drop' });
+      expect(deviceSync.isConnected()).toBe(false);
+      const before = mockWebSocketInstances.length;
+      await deviceSync.connect();
+      expect(mockWebSocketInstances.length).toBe(before + 1);
+    });
+
+    it('after the live socket drops, the reconnect timer opens a new socket', async () => {
+      vi.useFakeTimers();
+      try {
+        const ws = await establishConnection();
+        ws.readyState = 3;
+        ws.onclose({ code: 1006, reason: 'network drop' });
+        const before = mockWebSocketInstances.length;
+        await vi.advanceTimersByTimeAsync(5000);
+        for (let i = 0; i < 50; i++) await Promise.resolve();
+        expect(mockWebSocketInstances.length).toBe(before + 1);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each(['closing', 'disconnected'])('a retired %s socket leaves replacement traffic active until cleanup', async (mode) => {
+      vi.useFakeTimers();
+      try {
+        const old = await establishConnection();
+        if (mode === 'closing') old.readyState = WebSocket.CLOSING;
+        else deviceSync.disconnect();
+        await deviceSync.connect();
+        expect(mockWebSocketInstances).toHaveLength(2);
+        const current = mockWebSocketInstances.at(-1);
+        expect(current).not.toBe(old);
+        current.readyState = WebSocket.OPEN;
+        current.onopen();
+        old.onclose({ code: 1006, reason: 'delayed retired close' });
+        expect(deviceSync.isConnected()).toBe(true);
+
+        setStorage({ [FIELD_KEYS.kb]: 'Local before peer repair' });
+        await vi.advanceTimersByTimeAsync(300000);
+        const frames = current.sent.map((frame) => JSON.parse(frame));
+        expect(frames.filter((frame) => frame.type === 'ping')).toHaveLength(10);
+        expect(frames.filter((frame) => frame.type === 'request_state')).toHaveLength(1);
+        expect(frames.find((frame) => frame.type === 'request_state').fields).toContain('kb');
+        expect(old.sent).toHaveLength(0);
+        current.onmessage({ data: JSON.stringify({ type: 'prompt_state', data: {
+          kb: 'Current peer repair', kb_updated_at: new Date().toISOString(),
+        } }) });
+        await vi.waitFor(() => expect(storageData[FIELD_KEYS.kb]).toBe('Current peer repair'));
+        expect(storageData[PEER_BASE_KEYS.kb]).toBe('Current peer repair');
+        expect((storageData.prompt_history || []).at(-1).kb).toBe('Local before peer repair');
+
+        deviceSync.cleanupDeviceSync();
+        expect(current.readyState).toBe(WebSocket.CLOSED);
+        expect(deviceSync.isConnected()).toBe(false);
+        const sentBeforeCleanup = current.sent.length;
+        await vi.advanceTimersByTimeAsync(600000);
+        expect(current.sent).toHaveLength(sentBeforeCleanup);
+        expect(mockWebSocketInstances).toHaveLength(2);
+      } finally {
+        deviceSync.cleanupDeviceSync();
+        vi.useRealTimers();
+      }
+    });
+    it('cancels a pending URL lookup when disconnected', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let release;
+      getDeviceSyncUrl.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const attempt = deviceSync.connect();
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      release('https://sync.example.test');
+      await attempt;
+      expect(mockWebSocketInstances).toHaveLength(0);
+    });
+
+    it('does not replace a socket while its handshake is pending', async () => {
+      setStorage({ device_sync_auto_enabled: true });
+      await deviceSync.connect();
+      const ws = mockWebSocketInstances.at(-1);
+      ws.readyState = WebSocket.CONNECTING;
+      const before = mockWebSocketInstances.length;
+      await deviceSync.connect();
+      const created = [...mockWebSocketInstances];
+      try { expect(created).toHaveLength(before); }
+      finally { for (const item of created) { item.onclose = null; item.close(); } }
+    });
+
+    it('coalesces overlapping connection attempts into one socket', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let release;
+      getDeviceSyncUrl.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const first = deviceSync.connect();
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      const second = deviceSync.connect();
+      release('https://sync.example.test');
+      await Promise.all([first, second]);
+      const created = [...mockWebSocketInstances];
+      try {
+        expect(created).toHaveLength(1);
+      } finally {
+        for (const ws of created) { ws.onclose = null; ws.close(); }
+      }
+    });
+
     it('connect skips when auto-sync is disabled', async () => {
       setStorage({ 'device_sync_auto_enabled': false });
       const beforeCount = mockWebSocketInstances.length;
@@ -2279,7 +2495,7 @@ describe('Device Sync', () => {
 
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) ws.onopen();
+      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
 
       // Peer base keys should now be populated from legacy
       expect(storageData[PEER_BASE_KEYS.composition]).toBe('legacy comp base');
@@ -2300,7 +2516,7 @@ describe('Device Sync', () => {
 
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) ws.onopen();
+      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
 
       // All timestamp keys should now exist with epoch-zero
       expect(storageData[TIMESTAMP_KEYS.composition]).toBe(EPOCH_ZERO);
