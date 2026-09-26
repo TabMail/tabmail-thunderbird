@@ -33,7 +33,7 @@ function registry({ existing = true, completed = false } = {}) {
           update: async (id, info) => updates.push([id, info]),
           create: async options => {
             created.push(options);
-            windows.push({ id: windows.length + 1, type: options.type, tabs: [{ id: 20, url: options.url }] });
+            windows.push({ id: windows.length + 1, type: options.type, tabs: options.type === 'popup' ? [{ id: 20, url: options.url }] : [{ id: 20, url: 'about:3pane' }] });
           },
         },
         tabs: { sendMessage: async (...args) => messages.push(args) },
@@ -53,22 +53,20 @@ it('reuses the retained wizard, not another window, across fresh generations', a
   expect(h.created).toEqual([]);
   expect(h.windows).toHaveLength(3);
   expect(h.updates).toEqual([[3, { focused: true }], [3, { focused: true }]]);
-  expect(h.messages).toEqual([
-    [10, { command: 'welcome-reset-to-initial' }],
-    [10, { command: 'welcome-reset-to-initial' }],
-  ]);
+  expect(h.messages).toEqual([]);
 });
 
 it('creates the wizard when only non-wizard windows exist, then reuses it', async () => {
   const h = registry({ existing: false });
   await h.wake();
   expect(h.created).toHaveLength(1);
+  expect(h.windows.at(-1)).toMatchObject({ type: 'popup', tabs: [{ url }] });
   expect(h.updates).toEqual([]);
   expect(h.messages).toEqual([]);
   await h.wake();
   expect(h.created).toHaveLength(1);
   expect(h.updates).toEqual([[3, { focused: true }]]);
-  expect(h.messages).toEqual([[20, { command: 'welcome-reset-to-initial' }]]);
+  expect(h.messages).toEqual([]);
 });
 
 it('does not open or focus a wizard after onboarding is complete', async () => {

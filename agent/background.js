@@ -1612,26 +1612,10 @@ async function checkAndShowWelcomeWizard() {
                 });
                 
                 if (welcomeWindow) {
-                    // Window already exists - focus it and reset to initial page
-                    log("[Welcome] Welcome wizard window already open - focusing and resetting");
+                    // Preserve the retained page and any unsaved selections.
+                    log("[Welcome] Welcome wizard window already open - focusing");
                     await browser.windows.update(welcomeWindow.id, { focused: true });
                     
-                    // Small delay to ensure page is ready to receive messages
-                    setTimeout(async () => {
-                        try {
-                            // Find the tab with the welcome URL
-                            const welcomeTab = welcomeWindow.tabs.find(tab => tab.url === url);
-                            if (welcomeTab) {
-                                await browser.tabs.sendMessage(welcomeTab.id, {
-                                    command: "welcome-reset-to-initial"
-                                });
-                                log("[Welcome] Reset message sent successfully");
-                            }
-                        } catch (msgError) {
-                            // Message might fail if page still isn't ready - log and continue
-                            log(`[Welcome] Could not send reset message: ${msgError.message}`, "warn");
-                        }
-                    }, 500);
                     // Reset guard flag before returning
                     _welcomeWizardCheckInProgress = false;
                     return;
