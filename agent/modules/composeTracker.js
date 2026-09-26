@@ -80,24 +80,19 @@ if (!_onRemovedListener) {
         if (composeWindowIds.has(tabId)) {
             composeWindowIds.delete(tabId);
             log(`[ComposeTracker] Removed compose window ${tabId}. Remaining compose windows: ${composeWindowIds.size}`, 'debug');
-            
-            // Clear any cached reply associated with this compose tab to avoid mis-association
-            try {
-                const key = "activePrecompose:" + tabId;
-                await idb.remove(key);
-                log(`[ComposeTracker] Cleared cached reply key ${key} on compose window close.`, 'debug');
-            } catch (e) {
-                console.warn(`[ComposeTracker] Failed to clear activeReply for tab ${tabId}:`, e);
-            }
-
-            // Clear any cached send context
-            try { 
-                sendCtxByTabId.delete(tabId); 
-                log(`[ComposeTracker] Cleared send context for tab ${tabId}`, 'debug');
-            } catch (_) {}
         } else {
             log(`[ComposeTracker] Tab ${tabId} was not tracked as compose window`, 'debug');
         }
+        // The background may have restarted while this tab stayed open, losing
+        // composeWindowIds. The durable reply must still be cleared on close.
+        try {
+            const key = "activePrecompose:" + tabId;
+            await idb.remove(key);
+            log(`[ComposeTracker] Cleared cached reply key ${key} on tab close.`, 'debug');
+        } catch (e) {
+            console.warn(`[ComposeTracker] Failed to clear activeReply for tab ${tabId}:`, e);
+        }
+        sendCtxByTabId.delete(tabId);
     };
     browser.tabs.onRemoved.addListener(_onRemovedListener);
 }
