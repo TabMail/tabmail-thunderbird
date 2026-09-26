@@ -4,11 +4,11 @@ import vm from 'node:vm';
 import { parse } from 'acorn';
 
 afterEach(() => vi.useRealTimers());
-async function harness({ enabled = true, connectEarly = true, failFirstAdd = false, fullStartup = false } = {}) {
+async function harness({ enabled = true, connectEarly = true, failFirstAdd = false, fullStartup = false, asyncDelivery = false } = {}) {
   vi.useFakeTimers();
   const listeners = new Set(), stored = { device_sync_auto_enabled: enabled }, sent = [];
   let adds = 0;
-  const startupLogs = [];
+  const startupLogs = [], syncLogs = [];
   let finishStartup;
   const startupDone = new Promise(resolve => { finishStartup = resolve; });
   const onChanged = { addListener: fn => { if (failFirstAdd && ++adds === 1) throw new Error("synthetic registration failure"); listeners.add(fn); }, removeListener: fn => listeners.delete(fn) };
@@ -20,7 +20,7 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
     'browser.storage.local.set': async values => {
       const changes = Object.fromEntries(Object.entries(values).map(([key,value]) => [key,{oldValue:stored[key],newValue:value}]));
       Object.assign(stored, values);
-      if (fullStartup) setTimeout(() => { for (const listener of [...listeners]) listener(changes,'local'); }, 0);
+      if (fullStartup || asyncDelivery) setTimeout(() => { for (const listener of [...listeners]) listener(changes,'local'); }, 0);
     },
     'browser.tmDeviceSync.getState': async () => 'open',
     'browser.tmDeviceSync.send': async data => sent.push(JSON.parse(data)),
@@ -42,7 +42,7 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
         throw new Error(`Unexpected fixture import: ${path}`);
       },
       window: {}, navigator: {}, setTimeout, clearTimeout, setInterval, clearInterval,
-      log(){}, SETTINGS: {}, ...supplied };
+      log(message){ syncLogs.push(message); }, SETTINGS: {}, ...supplied };
     const ast = parse(source, {ecmaVersion:'latest',sourceType:'module'});
     const edits = [];
     for (const node of ast.body) {
@@ -83,7 +83,7 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
     await startupDone;
     await vi.advanceTimersByTimeAsync(1);
   }
-  return {sync,stored,sent,listeners,evaluate,startupLogs,async writeKB(value) {
+  return {sync,stored,sent,listeners,evaluate,startupLogs,syncLogs,overrides,async writeKB(value) {
     stored["user_prompts:user_kb.md"] = value;
     for (const listener of [...listeners]) listener({"user_prompts:user_kb.md":{newValue:value}}, "local");
   },async edit() {
@@ -130,7 +130,7 @@ it('retries a failed registration without duplicating the successful owner', asy
   expect(h.listeners.size).toBe(1);
   expect(h.sent).toHaveLength(1);
 });
-it('does not echo a remotely applied storage event after suppression is released', async () => {
+it('ignores an event delivered while suppression is still active', async () => {
   const h = await harness();
   vm.runInContext('suppressBroadcast = true', h.sync);
   const work = h.edit();
@@ -230,4 +230,53 @@ it('retries a failed early subscription through completed startup with one owner
   await vi.advanceTimersByTimeAsync(500);
   expect(h.sent).toHaveLength(1);
   expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{kb:'Edit after startup retry'}});
+});
+
+it('keeps remote timestamps under asynchronous delivery and preserves a newer paused peer edit', async () => {
+  const local = await harness({asyncDelivery:true});
+  const peer = await harness({enabled:false});
+  const now = Date.now();
+  const incoming = new Date(now - 60000).toISOString();
+  vi.setSystemTime(now + 10000);
+  await peer.writeKB('Newer synthetic peer edit');
+  await vi.advanceTimersByTimeAsync(600);
+  vi.setSystemTime(now + 20000);
+  await local.sync.handleMessage(JSON.stringify({type:'prompt_state',data:{kb:'Older synthetic peer edit',kb_updated_at:incoming}}));
+  await vi.advanceTimersByTimeAsync(2500);
+  expect(local.stored['device_sync_ts:kb']).toBe(incoming);
+  expect(local.sent.filter(m=>m.type==='prompt_state')).toEqual([]);
+  expect((local.stored.prompt_history || []).map(h=>h.source)).toEqual(['sync_receive']);
+  await peer.sync.setAutoEnabled(true);
+  await local.sync.handleMessage(JSON.stringify({type:'request_state',fields:['kb']}));
+  const response=local.sent.filter(m=>m.type==='prompt_state').at(-1);
+  expect(response).toBeDefined();
+  await peer.sync.handleMessage(JSON.stringify(response));
+  expect(peer.stored['user_prompts:user_kb.md']).toBe('Newer synthetic peer edit');
+});
+
+it('keeps reset at epoch zero without broadcasting defaults over peer customization', async () => {
+  const local=await harness({asyncDelivery:true});
+  const peer=await harness();
+  const timestamp=new Date(Date.now()-3600000).toISOString();
+  Object.assign(peer.stored,{'user_prompts:user_kb.md':'- Synthetic custom rule','device_sync_ts:kb':timestamp,'device_peer_base:kb':'- Synthetic custom rule','device_peer_base_ts:kb':timestamp});
+  await local.sync.resetFieldToDefault('kb','Synthetic bundled default');
+  await vi.advanceTimersByTimeAsync(2500);
+  expect(local.stored['device_sync_ts:kb']).toBe(new Date(0).toISOString());
+  expect(local.sent.map(m=>m.type)).toEqual(['request_state']);
+  expect((local.stored.prompt_history || []).some(h=>h.source==='local_edit')).toBe(false);
+  for(const message of local.sent.filter(m=>m.type==='prompt_state')) await peer.sync.handleMessage(JSON.stringify(message));
+  expect(peer.stored['user_prompts:user_kb.md']).toBe('- Synthetic custom rule');
+});
+
+it('contains a first-wake reconnect failure and publishes the preserved edit after reconnect', async () => {
+  const h=await harness({connectEarly:false});
+  h.overrides['browser.tmDeviceSync.getState']=async()=>{throw new Error('synthetic transport failure');};
+  const value=await h.edit();
+  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.sent).toEqual([]);
+  expect(h.syncLogs.some(m=>m.includes('Debounced broadcast failed'))).toBe(true);
+  h.overrides['browser.tmDeviceSync.getState']=async()=> 'open';
+  await h.sync.connect();
+  await h.sync.handleMessage(JSON.stringify({type:'connected',userId:'synthetic'}));
+  expect(h.sent.find(m=>m.type==='prompt_state')?.data?.templates).toEqual(value);
 });

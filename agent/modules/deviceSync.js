@@ -496,7 +496,8 @@ export function setupStorageListener() {
     // Check if any prompt-related key changed
     const changedFields = [];
     for (const [field, storageKey] of Object.entries(FIELD_KEYS)) {
-      if (changes[storageKey]) {
+      // Sync-owned writes carry their timestamp in the same change event.
+      if (changes[storageKey] && !changes[TIMESTAMP_KEYS[field]]) {
         changedFields.push(field);
       }
     }
