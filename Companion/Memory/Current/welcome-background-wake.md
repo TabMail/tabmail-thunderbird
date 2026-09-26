@@ -1,0 +1,11 @@
+# Reuse the Welcome window on background wake
+
+The background checks the onboarding completion flag on each startup. The wizard normally sets that flag on opening. An existing wizard can coexist with an unset flag after a failed completion write, failed page initialization, or a debug reset. Its window lookup must call `browser.windows.getAll({ populate: true })`: without population, returned windows omit `tabs`, so searching those tabs cannot find an already-open wizard. This can open another wizard after background suspension.
+
+The lookup requests populated windows and focuses the retained wizard without resetting it. The delayed automatic reset is removed: it discarded unsaved selections and could override newer navigation. No new listener, timer, persistence key, or experiment is added. Completed onboarding remains a no-op.
+
+`test/welcomeWake.test.js` executes the current startup-check function with the API's optional-tabs contract and a retained window registry across fresh contexts. It covers reuse, creation when absent followed by reuse, and completed onboarding. The creation fixture models the popup-only URL contract. `test/welcomeWakeProgress.test.js` exercises the real page loader, navigation and settings to verify unsaved selections and newer navigation survive a background check.
+
+A controlled Thunderbird Beta smoke disabled relay/native-message retention and used an incomplete-onboarding test key plus a stock alarm. After actual background closure, the baseline found one existing wizard but attempted another creation. The fix found and reused one wizard across two subsequent background generations. That evidence validates window reuse. A separate matched Beta smoke started the real Calendar & Contacts page with an unsaved synthetic dropdown selection. The reset-enabled build returned to the initial page after background closure and alarm wake. Removing the reset preserved the selection through two such wake cycles while reusing one wizard. This does not certify every onboarding interaction; newer-navigation ordering is covered programmatically.
+
+The retired wake-reset receiver is removed with its sender; retained pages register no reset listener. The startup fixture records all browser API calls, including unexpected calls, so a swallowed API error cannot hide a reload, navigation or close attempt.

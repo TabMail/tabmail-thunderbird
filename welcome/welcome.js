@@ -30,7 +30,6 @@ import { createNavigation } from "./modules/navigation.js";
 import { createPageInitializer } from "./modules/pageInit.js";
 import { createPageLoader } from "./modules/pageLoader.js";
 import { generateProgressBubbles } from "./modules/progressBubbles.js";
-import { setupMessageListener } from "./modules/runtimeMessages.js";
 import { createSettings } from "./modules/settings.js";
 import { setupInboxOptimizationHandlers } from "./modules/inboxOptimizationHandlers.js";
 
@@ -135,9 +134,6 @@ async function init() {
 
   // Setup progress bubbles
   navigation.setupProgressBubbles();
-
-  // Setup message listener for reset command
-  setupMessageListener({ goToStep: navigation.goToStep });
 
   // Load initial page
   await pageLoader.loadPage(0);
