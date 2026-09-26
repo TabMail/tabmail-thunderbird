@@ -91,10 +91,13 @@ let connected = false;
 let connectPromise = null;
 let connectionGeneration = 0;
 let transportListener = null;
+// Fresh wake generations accept the parent's replay; explicit disconnect does not.
+let transportDisconnected = false;
+const pendingTransportEvents = new Set();
 
 export function attachDeviceSyncTransportListener() {
   if (transportListener) return;
-  const listener = async event => {
+  const handleEvent = async event => {
     if (event.type === "close") { connected = false; notifyStatusListeners(); return; }
     if (event.type === "reconnect") return connect();
     if (event.type === "open") { connected = true; notifyStatusListeners(); return; }
@@ -103,6 +106,12 @@ export function attachDeviceSyncTransportListener() {
       connected = true;
       return handleMessage(event.data);
     }
+  };
+  const listener = event => {
+    if (transportDisconnected) return;
+    const pending = handleEvent(event).finally(() => pendingTransportEvents.delete(pending));
+    pendingTransportEvents.add(pending);
+    return pending;
   };
   browser.tmDeviceSync.onEvent.addListener(listener);
   transportListener = listener;
@@ -406,8 +415,12 @@ export async function broadcastState(fields = null) {
  */
 async function probeAllFields() {
   if (!connected) return;
-  await sendTransport(JSON.stringify({ type: "request_state", fields: VALID_FIELDS }));
-  log(`${PFX}Probe: requested all fields from peers`);
+  try {
+    await sendTransport(JSON.stringify({ type: "request_state", fields: VALID_FIELDS }));
+    log(`${PFX}Probe: requested all fields from peers`);
+  } catch (e) {
+    log(`${PFX}Peer probe could not be sent: ${e}`, "warn");
+  }
 }
 
 /**
@@ -417,6 +430,7 @@ async function probeAllFields() {
 export async function syncNow() {
   if (!connected) {
     log(`${PFX}syncNow: not connected, attempting connect first`);
+    await disconnect(); // Explicit user retry may bypass the parent's backoff.
     await connect();
     return; // connect will broadcastAllFields on success
   }
@@ -456,8 +470,12 @@ export async function resetFieldToDefault(field, defaultValue) {
 
   // Request state from peers — if they have newer (customized) data, it syncs back
   if (connected) {
-    await sendTransport(JSON.stringify({ type: "request_state", fields: [field] }));
-    log(`${PFX}Requested state from peers for field '${field}'`);
+    try {
+      await sendTransport(JSON.stringify({ type: "request_state", fields: [field] }));
+      log(`${PFX}Requested state from peers for field '${field}'`);
+    } catch (e) {
+      log(`${PFX}Reset completed locally; peer request could not be sent: ${e}`, "warn");
+    }
   }
 }
 
@@ -960,7 +978,7 @@ async function handleMessage(rawData) {
             log(`${PFX}Virgin device — skipping broadcast, probing peers instead`);
             await probeAllFields();
           } else {
-            broadcastState().catch((e) => {
+            await broadcastState().catch((e) => {
               log(`${PFX}Auto-broadcast on connect failed: ${e}`, "warn");
             });
           }
@@ -1012,6 +1030,7 @@ async function handleMessage(rawData) {
  * Called automatically on startup (always-on sync).
  */
 export function connect() {
+  transportDisconnected = false;
   if (connectPromise) return connectPromise;
   const generation = connectionGeneration;
   const pending = connectOnce(generation).finally(() => {
@@ -1044,12 +1063,19 @@ async function connectOnce(generation) {
 }
 
 /** Explicit sync-off/signout disconnect. Idle suspension leaves the parent socket intact. */
-export function disconnect() {
+export async function disconnect() {
+  transportDisconnected = true;
   ++connectionGeneration;
   connectPromise = null;
   connected = false;
   notifyStatusListeners();
-  return browser.tmDeviceSync.disconnect();
+  try {
+    await browser.tmDeviceSync.disconnect();
+  } finally {
+    // Sign-out wipes storage after cleanup resolves. Finish already-started
+    // incoming writes first; queued events are rejected by the flag above.
+    await Promise.allSettled([...pendingTransportEvents]);
+  }
 }
 
 /**

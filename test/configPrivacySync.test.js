@@ -26,9 +26,16 @@ describe("Settings Device Sync ownership", () => {
     await expect(handlePrivacyChange({ target: { id: "privacy-device-sync", checked: true } })).rejects.toThrow("synthetic failure");
     expect(nodes.get("status").textContent).toBe("");
   });
+  it("defaults sync to enabled when no preference has been stored", async () => {
+    await loadPrivacySettings(async () => false, vi.fn());
+    expect(browser.storage.local.get).toHaveBeenCalledWith({ device_sync_auto_enabled: true });
+    expect(nodes.get("privacy-device-sync").checked).toBe(true);
+    expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
+  });
   it("reads the preference without starting a connection", async () => {
     browser.storage.local.get.mockResolvedValue({ device_sync_auto_enabled: false });
     await loadPrivacySettings(async () => false, vi.fn());
+    expect(browser.storage.local.get).toHaveBeenCalledWith({ device_sync_auto_enabled: true });
     expect(nodes.get("privacy-device-sync").checked).toBe(false);
     expect(browser.runtime.sendMessage).not.toHaveBeenCalled();
   });

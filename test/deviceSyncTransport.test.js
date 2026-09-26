@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 const source = readFileSync(new URL('../agent/experiments/tmDeviceSync/tmDeviceSync.sys.mjs', import.meta.url), 'utf8');
-let api, sockets, events, host;
+let api, sockets, events, host, createHost;
 beforeEach(() => {
   vi.useFakeTimers(); sockets = []; events = [];
   class Socket {
@@ -14,17 +14,56 @@ beforeEach(() => {
     open() { this.readyState = 1; this.onopen(); }
     close() { this.readyState = 3; this.onclose?.(); }
   }
-  host = { document: { documentGlobal: { WebSocket: Socket } }, close: vi.fn() };
+  host = { document: { defaultView: { WebSocket: Socket } }, close: vi.fn() };
+  createHost = vi.fn(() => host);
   const common = { ExtensionAPIPersistent: class {}, ExtensionError: Error, EventManager: class {} };
   const Api = runInNewContext('const ExtensionCommon = {};\n' + source + '\n tmDeviceSync;', {
     ChromeUtils: { importESModule: path => path.includes('Timer') ? { setTimeout, clearTimeout, setInterval, clearInterval } : { ExtensionCommon: common } },
-    Services: { appShell: { createWindowlessBrowser: () => host }, io: { newURI: raw => { const u = new URL(raw); return { scheme: u.protocol.slice(0, -1), host: u.hostname, filePath: u.pathname, userPass: u.username }; } } },
+    Services: { appShell: { createWindowlessBrowser: createHost }, io: { newURI: raw => { const u = new URL(raw); return { scheme: u.protocol.slice(0, -1), host: u.hostname, filePath: u.pathname, userPass: u.username }; } } },
   });
   api = new Api({});
   api.PERSISTENT_EVENTS.onEvent({ fire: { async: async event => { events.push(event); } } });
 });
 afterEach(() => { api.onShutdown(); vi.useRealTimers(); });
 describe('parent Device Sync transport', () => {
+  it('probes every five minutes and stops probing after the socket closes', () => {
+    api.connect('wss://sync.tabmail.ai/ws?token=synthetic'); sockets[0].open();
+    events.length = 0;
+    vi.advanceTimersByTime(299999);
+    expect(events.filter(event => event.type === 'probe')).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(events.filter(event => event.type === 'probe')).toEqual([{ type: 'probe' }]);
+    sockets[0].close(); events.length = 0;
+    vi.advanceTimersByTime(600000);
+    expect(events.filter(event => event.type === 'probe')).toEqual([]);
+  });
+  it('resets retry history on a successful open and reuses one host', () => {
+    for (let i = 0; i < 10; i++) {
+      api.connect('wss://sync.tabmail.ai/ws?token=synthetic');
+      sockets.at(-1).close();
+      vi.advanceTimersByTime(Math.min(5000 * 2 ** i, 300000));
+    }
+    api.connect('wss://sync.tabmail.ai/ws?token=synthetic');
+    sockets.at(-1).open(); sockets.at(-1).close(); events.length = 0;
+    vi.advanceTimersByTime(4999);
+    expect(events).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(events).toEqual([{ type: 'reconnect' }]);
+    expect(createHost).toHaveBeenCalledTimes(1);
+    api.disconnect();
+    expect(host.close).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    'ws://sync.tabmail.ai/ws',
+    'wss://sync.tabmail.ai/other',
+    'wss://user@sync.tabmail.ai/ws',
+    'wss://example.invalid/ws',
+  ])('refuses invalid endpoint %s before allocating a host', url => {
+    expect(() => api.connect(url)).toThrow('Invalid Device Sync endpoint');
+    expect(createHost).not.toHaveBeenCalled();
+    expect(sockets).toEqual([]);
+  });
+
   it('keeps one socket and handles heartbeat without waking the consumer', () => {
     api.connect('wss://sync.tabmail.ai/ws?token=synthetic');
     api.connect('wss://sync.tabmail.ai/ws?token=synthetic');

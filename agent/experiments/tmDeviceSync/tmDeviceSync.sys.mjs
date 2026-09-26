@@ -5,6 +5,13 @@ const { ExtensionCommon: DeviceSyncExtensionCommon } = ChromeUtils.importESModul
 const { setTimeout: syncSetTimeout, clearTimeout: syncClearTimeout, setInterval: syncSetInterval, clearInterval: syncClearInterval } = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
 
 var tmDeviceSync = class extends DeviceSyncExtensionCommon.ExtensionAPIPersistent {
+  static CONFIG = {
+    pingIntervalMs: 30000,
+    probeIntervalMs: 300000,
+    retryBaseMs: 5000,
+    retryMaxMs: 300000,
+    maxRetryAttempts: 10,
+  };
   constructor(extension) {
     super(extension);
     this.socket = null;
@@ -52,7 +59,7 @@ var tmDeviceSync = class extends DeviceSyncExtensionCommon.ExtensionAPIPersisten
     if (this.state() !== "closed") return this.state();
     this.clearTimers();
     if (!this.host) this.host = Services.appShell.createWindowlessBrowser(true);
-    const Socket = this.host.document.documentGlobal.WebSocket;
+    const Socket = this.host.document.defaultView.WebSocket;
     const socket = new Socket(url);
     this.socket = socket;
     socket.onopen = () => {
@@ -60,8 +67,8 @@ var tmDeviceSync = class extends DeviceSyncExtensionCommon.ExtensionAPIPersisten
       this.attempts = 0;
       this.ping = syncSetInterval(() => {
         if (socket.readyState === Socket.OPEN) socket.send(JSON.stringify({ type: "ping" }));
-      }, 30000);
-      this.probe = syncSetInterval(() => this.emit({ type: "probe" }), 300000);
+      }, tmDeviceSync.CONFIG.pingIntervalMs);
+      this.probe = syncSetInterval(() => this.emit({ type: "probe" }), tmDeviceSync.CONFIG.probeIntervalMs);
       this.emit({ type: "open" });
     };
     socket.onmessage = event => {
@@ -75,8 +82,8 @@ var tmDeviceSync = class extends DeviceSyncExtensionCommon.ExtensionAPIPersisten
       this.clearTimers();
       // Failed handshakes already report disconnected. Do not wake startup
       // again after exhausting retries, which would start an unbounded loop.
-      if (this.attempts >= 10) return;
-      const delay = Math.min(5000 * 2 ** this.attempts++, 300000);
+      if (this.attempts >= tmDeviceSync.CONFIG.maxRetryAttempts) return;
+      const delay = Math.min(tmDeviceSync.CONFIG.retryBaseMs * 2 ** this.attempts++, tmDeviceSync.CONFIG.retryMaxMs);
       this.retry = syncSetTimeout(() => {
         this.retry = null;
         // The background obtains fresh credentials for each reconnect.

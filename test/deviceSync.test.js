@@ -89,7 +89,7 @@ const ParentTransport = runInNewContext(parentSource + '\n tmDeviceSync;', {
     ? { setTimeout: (...args) => setTimeout(...args), clearTimeout: (...args) => clearTimeout(...args), setInterval: (...args) => setInterval(...args), clearInterval: (...args) => clearInterval(...args) }
     : { ExtensionCommon: { ExtensionAPIPersistent: class {}, ExtensionError: Error, EventManager: class { api() { return {}; } } } } },
   Services: {
-    appShell: { createWindowlessBrowser: () => ({ document: { documentGlobal: { WebSocket: globalThis.WebSocket } }, close() {} }) },
+    appShell: { createWindowlessBrowser: () => ({ document: { defaultView: { WebSocket: globalThis.WebSocket } }, close() {} }) },
     io: { newURI: raw => { const u = new URL(raw); return { scheme: u.protocol.slice(0, -1), host: u.hostname, filePath: u.pathname, userPass: u.username }; } },
   },
 });
@@ -303,9 +303,9 @@ describe('Device Sync', () => {
     mockWebSocketInstances = [];
   });
 
-  afterEach(() => {
-    // Ensure we disconnect after each test to reset module state
-    deviceSync.disconnect();
+  afterEach(async () => {
+    // Ensure incoming work is settled before resetting the next fixture.
+    await deviceSync.disconnect();
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2075,6 +2075,164 @@ describe('Device Sync', () => {
   // Connect / Disconnect
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Connect / Disconnect', () => {
+    it('a fresh background accepts a replayed message before connecting again', async () => {
+      const oldListeners = new Set(parentTransport.listeners);
+      parentTransport.listeners.clear();
+      const fresh = await import('../agent/modules/deviceSync.js?freshWake');
+      try {
+        fresh.attachDeviceSyncTransportListener();
+        fresh.attachDeviceSyncTransportListener();
+        expect(parentTransport.listeners.size).toBe(1);
+        await Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async({
+          type: 'message', data: JSON.stringify({ type: 'prompt_state', data: {
+            composition: 'Synthetic replay', composition_updated_at: '2026-09-20T00:00:00Z',
+          } }),
+        })));
+        expect(fresh.isConnected()).toBe(true);
+        expect(storageData[FIELD_KEYS.composition]).toBe('Synthetic replay');
+      } finally {
+        await fresh.cleanupDeviceSync();
+        parentTransport.listeners = oldListeners;
+      }
+    });
+
+    it('forwards periodic probes and tolerates a parent send failure', async () => {
+      const ws = await establishConnection();
+      ws.sent.length = 0;
+      const deliver = () => Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async({ type: 'probe' })));
+      await deliver();
+      expect(ws.sent.map(raw => JSON.parse(raw))).toContainEqual({ type: 'request_state', fields: expect.arrayContaining(['composition', 'action', 'kb']) });
+      parentTransport.disconnect();
+      await expect(deliver()).resolves.toBeDefined();
+    });
+
+    it('cleanup also waits for the connected handshake broadcast to settle', async () => {
+      await establishConnection();
+      const realGet = browserMock.storage.local.get.getMockImplementation();
+      let releaseRead;
+      browserMock.storage.local.get.mockImplementation(keys => {
+        if (!releaseRead && Array.isArray(keys) && keys.includes(FIELD_KEYS.composition)) {
+          return new Promise(resolve => { releaseRead = async () => resolve(await realGet(keys)); });
+        }
+        return realGet(keys);
+      });
+      try {
+        const incoming = Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async({
+          type: 'message', data: JSON.stringify({ type: 'connected' }),
+        })));
+        await vi.waitFor(() => expect(releaseRead).toBeTypeOf('function'));
+        let cleaned = false;
+        const cleanup = deviceSync.cleanupDeviceSync().then(() => { cleaned = true; });
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        const returnedBeforeBroadcast = cleaned;
+        await releaseRead();
+        await Promise.all([incoming, cleanup]);
+        expect(returnedBeforeBroadcast).toBe(false);
+      } finally { browserMock.storage.local.get.mockImplementation(realGet); }
+    });
+
+    it('cleanup waits for the parent disconnect acknowledgement', async () => {
+      await establishConnection();
+      const original = browserMock.tmDeviceSync.disconnect;
+      let release;
+      browserMock.tmDeviceSync.disconnect = () => new Promise(resolve => { release = resolve; });
+      let finished = false;
+      try {
+        const pending = deviceSync.cleanupDeviceSync().then(() => { finished = true; });
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        expect(finished).toBe(false);
+        release();
+        await pending;
+        expect(finished).toBe(true);
+      } finally {
+        release?.();
+        browserMock.tmDeviceSync.disconnect = original;
+        await original();
+      }
+    });
+
+    it('failed cache-probe send resolves before its timeout', async () => {
+      await establishConnection();
+      parentTransport.disconnect();
+      vi.useFakeTimers();
+      try {
+        const result = deviceSync.probeAndWait(['synthetic@example.test'], 60000);
+        await expect(result).resolves.toBeNull();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it('ignores queued parent events after disconnect but accepts them while enabled', async () => {
+      const deliver = event => Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async(event)));
+      await establishConnection();
+      const message = { type: 'message', data: JSON.stringify({ type: 'prompt_state', data: {
+        composition: 'Synthetic peer rule', composition_updated_at: '2026-09-20T00:00:00Z',
+      } }) };
+      await deliver(message);
+      expect(storageData[FIELD_KEYS.composition]).toBe('Synthetic peer rule');
+      await deviceSync.disconnect();
+      clearStorage();
+      const socketsBefore = mockWebSocketInstances.length;
+      for (const event of [{ type: 'open' }, { type: 'probe' }, { type: 'reconnect' }, message, { type: 'close' }]) {
+        await deliver(event);
+        expect(deviceSync.isConnected()).toBe(false);
+      }
+      expect(storageData).toEqual({});
+      expect(mockWebSocketInstances).toHaveLength(socketsBefore);
+    });
+
+    it('cleanup waits for an incoming write before the caller clears account data', async () => {
+      await establishConnection();
+      const realGet = browserMock.storage.local.get.getMockImplementation();
+      let releaseRead;
+      browserMock.storage.local.get.mockImplementationOnce(keys => new Promise(resolve => {
+        releaseRead = async () => resolve(await realGet(keys));
+      }));
+      const incoming = Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async({
+        type: 'message', data: JSON.stringify({ type: 'prompt_state', data: {
+          composition: 'Synthetic old-account rule', composition_updated_at: '2026-09-20T00:00:00Z',
+        } }),
+      })));
+      await vi.waitFor(() => expect(releaseRead).toBeTypeOf('function'));
+      let cleaned = false;
+      const cleanup = deviceSync.cleanupDeviceSync().then(() => { cleaned = true; });
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      const returnedBeforeWrite = cleaned;
+      await releaseRead();
+      await Promise.all([incoming, cleanup]);
+      expect(returnedBeforeWrite).toBe(false);
+      expect(storageData[FIELD_KEYS.composition]).toBe('Synthetic old-account rule');
+      clearStorage();
+      await Promise.resolve();
+      expect(storageData).toEqual({});
+    });
+
+    it('finishes both local resets when the parent disconnected before the close event arrives', async () => {
+      await establishConnection();
+      parentTransport.disconnect();
+      expect(deviceSync.isConnected()).toBe(true);
+      await expect(deviceSync.resetFieldToDefault('action', 'Action default')).resolves.toBeUndefined();
+      await expect(deviceSync.resetFieldToDefault('composition', 'Composition default')).resolves.toBeUndefined();
+      expect(storageData[FIELD_KEYS.action]).toBe('Action default');
+      expect(storageData[FIELD_KEYS.composition]).toBe('Composition default');
+      expect(storageData[TIMESTAMP_KEYS.action]).toBe(EPOCH_ZERO);
+      expect(storageData[TIMESTAMP_KEYS.composition]).toBe(EPOCH_ZERO);
+    });
+
+    it('explicit Sync Now reconnects immediately while startup respects the retry delay', async () => {
+      const ws = await establishConnection();
+      ws.close();
+      expect(parentTransport.state()).toBe('retrying');
+      await deviceSync.connect();
+      expect(mockWebSocketInstances).toHaveLength(1);
+      await deviceSync.syncNow();
+      expect(mockWebSocketInstances).toHaveLength(2);
+      expect(parentTransport.state()).toBe('connecting');
+      mockWebSocketInstances[1].readyState = WebSocket.OPEN;
+      mockWebSocketInstances[1].onopen();
+      expect(deviceSync.isConnected()).toBe(true);
+    });
+
     it('disconnect then reconnect: stale in-flight attempt adds no socket and the re-enable is not lost', async () => {
       const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
       let releaseOld;
