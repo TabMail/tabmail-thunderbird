@@ -1,0 +1,5 @@
+# Retained notice windows after background suspension
+
+A native notice popup can remain open after the background loses its module state. `userNotice.js` rediscovers the exact extension page through populated popup inventory when its generation-local window ID is absent. The same-generation ID also covers the short interval before a newly created tab exposes its URL. One in-flight promise coalesces concurrent opening requests and releases on completion or failure. Existing notice content is preserved when focused.
+
+Focused tests cover fresh generations, concurrent requests, unrelated URL rejection, close/reopen, retry after a creation failure, and sequential requests before the new tab URL is available. A controlled Thunderbird Beta comparison observed the baseline create a duplicate after background closure. The final candidate retained one popup for back-to-back requests and reused that same native window after observed background closure and an alarm wake. An added observation-only settling delay confirmed the count stayed one. This validates the popup function; the full context-menu and OS notification paths were not exercised by this smoke.

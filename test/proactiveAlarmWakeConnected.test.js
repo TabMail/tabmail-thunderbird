@@ -15,7 +15,7 @@ vi.mock('../chat/modules/helpers.js', () => ({ getUserName: async () => 'Reader'
 vi.mock('../chat/chat.js', () => ({ createNewAgentBubble: vi.fn(async () => ({ classList: { remove() {}, add() {} } })) }));
 vi.mock('../chat/modules/converse.js', () => ({ awaitUserInput: vi.fn() }));
 vi.mock('../chat/modules/mentionAutocomplete.js', () => ({ updateEmailCacheForMentions: vi.fn() }));
-vi.mock('../chat/modules/idTranslator.js', () => ({ cleanupEvictedIds: vi.fn() }));
+vi.mock('../chat/modules/idTranslator.js', async importOriginal => ({ ...await importOriginal(), cleanupEvictedIds: vi.fn() }));
 vi.mock('../chat/modules/chatWindowUtils.js', () => ({ isChatWindowOpen: vi.fn(async () => false), openOrFocusChatWindow: vi.fn(async () => {}) }));
 vi.mock('../agent/modules/promptGenerator.js', () => ({ getUserKBPrompt: vi.fn(async () => '') }));
 vi.mock('../chat/modules/markdown.js', () => ({ renderMarkdown: async s => s }));

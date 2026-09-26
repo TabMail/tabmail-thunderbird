@@ -275,7 +275,7 @@ export function processToolCallLLMtoTB(toolName, args, overrideCtx) {
 }
 
 // Process string content to convert LLM numeric IDs back to Thunderbird real IDs (for display)
-function processStringLLMtoTB(str) {
+function processStringLLMtoTB(str, overrideCtx) {
   if (typeof str !== 'string') return str;
 
   let processed = str;
@@ -288,12 +288,12 @@ function processStringLLMtoTB(str) {
 
   // FIRST: Handle exception patterns (malformed ID references) before normal patterns
   // This catches patterns like "unique_id 4 and 6" and converts them to "[Email](4) and [Email](6)"
-  processed = handleIdExceptions(processed);
+  processed = handleIdExceptions(processed, overrideCtx);
 
   // Handle [Email xx] patterns (square brackets with space) - convert to [Email](realId)
   processed = processed.replace(/\[(Email|email)\s+(\d+)\]/g, (match, type, numericId) => {
     log(`[TMDBG IDTranslator] Found [Email xx] pattern: ${match} -> type: ${type}, numericId: ${numericId}`);
-    const realId = toRealId(Number(numericId));
+    const realId = toRealId(Number(numericId), overrideCtx);
     const result = realId ? `[${type}](${realId})` : match;
     log(`[TMDBG IDTranslator] [Email xx] translation result: ${result}`);
     return result;
@@ -302,7 +302,7 @@ function processStringLLMtoTB(str) {
   // Handle (Email xx) patterns (parentheses with space) - convert to [Email](realId)
   processed = processed.replace(/\((Email|email)\s+(\d+)\)/g, (match, type, numericId) => {
     log(`[TMDBG IDTranslator] Found (Email xx) pattern: ${match} -> type: ${type}, numericId: ${numericId}`);
-    const realId = toRealId(Number(numericId));
+    const realId = toRealId(Number(numericId), overrideCtx);
     const result = realId ? `[${type}](${realId})` : match;
     log(`[TMDBG IDTranslator] (Email xx) translation result: ${result}`);
     return result;
@@ -311,7 +311,7 @@ function processStringLLMtoTB(str) {
   // Handle "Email xx" patterns (no brackets or parentheses) - convert to [Email](realId)
   processed = processed.replace(/\b(Email|email)\s+(\d+)\b/g, (match, type, numericId) => {
     log(`[TMDBG IDTranslator] Found "Email xx" pattern: ${match} -> type: ${type}, numericId: ${numericId}`);
-    const realId = toRealId(Number(numericId));
+    const realId = toRealId(Number(numericId), overrideCtx);
     const result = realId ? `[${type}](${realId})` : match;
     log(`[TMDBG IDTranslator] "Email xx" translation result: ${result}`);
     return result;
@@ -321,7 +321,7 @@ function processStringLLMtoTB(str) {
   // Handle both formats: [Email](14) and [Email](unique_id:14)
   processed = processed.replace(/\[(Email|email)\]\((?:unique_id:)?(\d+)\)/g, (match, type, numericId) => {
     log(`[TMDBG IDTranslator] Found markdown pattern: ${match} -> type: ${type}, numericId: ${numericId}`);
-    const realId = toRealId(Number(numericId));
+    const realId = toRealId(Number(numericId), overrideCtx);
     const result = realId ? `[${type}](${realId})` : match;
     log(`[TMDBG IDTranslator] Markdown translation result: ${result}`);
     return result;
@@ -330,11 +330,11 @@ function processStringLLMtoTB(str) {
   // Handle calendar events with compound IDs (numeric_calendar_id:numeric_event_id)
   processed = processed.replace(/\[(Event|event)\]\((\d+:\d+)\)/g, (match, type, compoundId) => {
     const [numericCalendarId, numericEventId] = compoundId.split(':');
-    const realCalendarId = toRealId(Number(numericCalendarId));
-    const realEventId = toRealId(Number(numericEventId));
+    const realCalendarId = toRealId(Number(numericCalendarId), overrideCtx);
+    const realEventId = toRealId(Number(numericEventId), overrideCtx);
     if (realCalendarId && realEventId) {
       // Store in entityMap for autocomplete (LLM→TB is when we see compound links)
-      ctx.entityMap.set(compoundId, {
+      if (!overrideCtx) ctx.entityMap.set(compoundId, {
         type: 'event',
         compoundNumericId: compoundId,
         realEventId: realEventId,
@@ -349,11 +349,11 @@ function processStringLLMtoTB(str) {
   // Handle contacts with compound IDs (numeric_addressbook_id:numeric_contact_id)
   processed = processed.replace(/\[(Contact|contact)\]\((\d+:\d+)\)/g, (match, type, compoundId) => {
     const [numericAddressbookId, numericContactId] = compoundId.split(':');
-    const realAddressbookId = toRealId(Number(numericAddressbookId));
-    const realContactId = toRealId(Number(numericContactId));
+    const realAddressbookId = toRealId(Number(numericAddressbookId), overrideCtx);
+    const realContactId = toRealId(Number(numericContactId), overrideCtx);
     if (realAddressbookId && realContactId) {
       // Store in entityMap for autocomplete (LLM→TB is when we see compound links)
-      ctx.entityMap.set(compoundId, {
+      if (!overrideCtx) ctx.entityMap.set(compoundId, {
         type: 'contact',
         compoundNumericId: compoundId,
         realContactId: realContactId,
@@ -406,7 +406,7 @@ function processStringLLMtoTB(str) {
     patterns.forEach(({ regex, name }) => {
       processed = processed.replace(regex, (match, numericId) => {
         log(`[TMDBG IDTranslator] Found ${idType} pattern (${name}): ${match} -> numericId: ${numericId}`);
-        const realId = toRealId(Number(numericId));
+        const realId = toRealId(Number(numericId), overrideCtx);
         const result = realId ? `[${linkType}](${realId})` : match;
         log(`[TMDBG IDTranslator] ${idType} pattern translation result: ${result}`);
         return result;
@@ -419,8 +419,8 @@ function processStringLLMtoTB(str) {
     patterns.forEach(({ regex, name }) => {
       processed = processed.replace(regex, (match, id1, id2) => {
         log(`[TMDBG IDTranslator] Found ${idType} compound pattern (${name}): ${match} -> id1: ${id1}, id2: ${id2}`);
-        const realId1 = toRealId(Number(id1));
-        const realId2 = toRealId(Number(id2));
+        const realId1 = toRealId(Number(id1), overrideCtx);
+        const realId2 = toRealId(Number(id2), overrideCtx);
         const result = (realId1 && realId2) ? `[${linkType}](${realId1}:${realId2})` : match;
         log(`[TMDBG IDTranslator] ${idType} compound pattern translation result: ${result}`);
         return result;
@@ -526,7 +526,7 @@ function processStringTBtoLLM(str, overrideCtx) {
  * @param {string} str - The input string to process
  * @returns {string} - The processed string with corrected ID references
  */
-function handleIdExceptions(str) {
+function handleIdExceptions(str, overrideCtx) {
   if (typeof str !== 'string') return str;
   
   let processed = str;
@@ -535,8 +535,8 @@ function handleIdExceptions(str) {
   // Pattern 1: "unique_id X and Y" -> "[Email](X) and [Email](Y)"
   processed = processed.replace(/\bunique_id\s+(\d+)\s+and\s+(\d+)\b/g, (match, id1, id2) => {
     log(`[TMDBG IDTranslator Exception] Found "unique_id X and Y" pattern: ${match}`);
-    const realId1 = toRealId(Number(id1));
-    const realId2 = toRealId(Number(id2));
+    const realId1 = toRealId(Number(id1), overrideCtx);
+    const realId2 = toRealId(Number(id2), overrideCtx);
     if (realId1 && realId2) {
       const result = `[Email](${realId1}) and [Email](${realId2})`;
       log(`[TMDBG IDTranslator Exception] Converted to: ${result}`);
@@ -548,8 +548,8 @@ function handleIdExceptions(str) {
   // Pattern 2: "(unique_id X and Y)" -> "([Email](X) and [Email](Y))"
   processed = processed.replace(/\(unique_id\s+(\d+)\s+and\s+(\d+)\)/g, (match, id1, id2) => {
     log(`[TMDBG IDTranslator Exception] Found "(unique_id X and Y)" pattern: ${match}`);
-    const realId1 = toRealId(Number(id1));
-    const realId2 = toRealId(Number(id2));
+    const realId1 = toRealId(Number(id1), overrideCtx);
+    const realId2 = toRealId(Number(id2), overrideCtx);
     if (realId1 && realId2) {
       const result = `([Email](${realId1}) and [Email](${realId2}))`;
       log(`[TMDBG IDTranslator Exception] Converted to: ${result}`);
@@ -561,8 +561,8 @@ function handleIdExceptions(str) {
   // Pattern 3: "unique_id X, Y" -> "[Email](X), [Email](Y)"
   processed = processed.replace(/\bunique_id\s+(\d+),\s*(\d+)\b/g, (match, id1, id2) => {
     log(`[TMDBG IDTranslator Exception] Found "unique_id X, Y" pattern: ${match}`);
-    const realId1 = toRealId(Number(id1));
-    const realId2 = toRealId(Number(id2));
+    const realId1 = toRealId(Number(id1), overrideCtx);
+    const realId2 = toRealId(Number(id2), overrideCtx);
     if (realId1 && realId2) {
       const result = `[Email](${realId1}), [Email](${realId2})`;
       log(`[TMDBG IDTranslator Exception] Converted to: ${result}`);
@@ -574,8 +574,8 @@ function handleIdExceptions(str) {
   // Pattern 4: "(unique_id X, Y)" -> "([Email](X), [Email](Y))"
   processed = processed.replace(/\(unique_id\s+(\d+),\s*(\d+)\)/g, (match, id1, id2) => {
     log(`[TMDBG IDTranslator Exception] Found "(unique_id X, Y)" pattern: ${match}`);
-    const realId1 = toRealId(Number(id1));
-    const realId2 = toRealId(Number(id2));
+    const realId1 = toRealId(Number(id1), overrideCtx);
+    const realId2 = toRealId(Number(id2), overrideCtx);
     if (realId1 && realId2) {
       const result = `([Email](${realId1}), [Email](${realId2}))`;
       log(`[TMDBG IDTranslator Exception] Converted to: ${result}`);
@@ -587,9 +587,9 @@ function handleIdExceptions(str) {
   // Pattern 5: "unique_id X, Y, and Z" -> "[Email](X), [Email](Y), and [Email](Z)"
   processed = processed.replace(/\bunique_id\s+(\d+),\s*(\d+),\s*and\s+(\d+)\b/g, (match, id1, id2, id3) => {
     log(`[TMDBG IDTranslator Exception] Found "unique_id X, Y, and Z" pattern: ${match}`);
-    const realId1 = toRealId(Number(id1));
-    const realId2 = toRealId(Number(id2));
-    const realId3 = toRealId(Number(id3));
+    const realId1 = toRealId(Number(id1), overrideCtx);
+    const realId2 = toRealId(Number(id2), overrideCtx);
+    const realId3 = toRealId(Number(id3), overrideCtx);
     if (realId1 && realId2 && realId3) {
       const result = `[Email](${realId1}), [Email](${realId2}), and [Email](${realId3})`;
       log(`[TMDBG IDTranslator Exception] Converted to: ${result}`);
@@ -602,8 +602,8 @@ function handleIdExceptions(str) {
   // Pattern 1: "contact_id X and Y" -> "[Contact](X) and [Contact](Y)"
   processed = processed.replace(/\bcontact_id\s+(\d+)\s+and\s+(\d+)\b/g, (match, id1, id2) => {
     log(`[TMDBG IDTranslator Exception] Found "contact_id X and Y" pattern: ${match}`);
-    const realId1 = toRealId(Number(id1));
-    const realId2 = toRealId(Number(id2));
+    const realId1 = toRealId(Number(id1), overrideCtx);
+    const realId2 = toRealId(Number(id2), overrideCtx);
     if (realId1 && realId2) {
       const result = `[Contact](${realId1}) and [Contact](${realId2})`;
       log(`[TMDBG IDTranslator Exception] Converted to: ${result}`);
@@ -615,8 +615,8 @@ function handleIdExceptions(str) {
   // Pattern 2: "contact_id X, Y" -> "[Contact](X), [Contact](Y)"
   processed = processed.replace(/\bcontact_id\s+(\d+),\s*(\d+)\b/g, (match, id1, id2) => {
     log(`[TMDBG IDTranslator Exception] Found "contact_id X, Y" pattern: ${match}`);
-    const realId1 = toRealId(Number(id1));
-    const realId2 = toRealId(Number(id2));
+    const realId1 = toRealId(Number(id1), overrideCtx);
+    const realId2 = toRealId(Number(id2), overrideCtx);
     if (realId1 && realId2) {
       const result = `[Contact](${realId1}), [Contact](${realId2})`;
       log(`[TMDBG IDTranslator Exception] Converted to: ${result}`);
@@ -629,8 +629,8 @@ function handleIdExceptions(str) {
   // Pattern 1: "event_id X and Y" (assumes same calendar) -> "[Event](cal:X) and [Event](cal:Y)"
   processed = processed.replace(/\bevent_id\s+(\d+)\s+and\s+(\d+)\b/g, (match, id1, id2) => {
     log(`[TMDBG IDTranslator Exception] Found "event_id X and Y" pattern: ${match}`);
-    const realId1 = toRealId(Number(id1));
-    const realId2 = toRealId(Number(id2));
+    const realId1 = toRealId(Number(id1), overrideCtx);
+    const realId2 = toRealId(Number(id2), overrideCtx);
     if (realId1 && realId2) {
       const result = `[Event](${realId1}) and [Event](${realId2})`;
       log(`[TMDBG IDTranslator Exception] Converted to: ${result}`);
@@ -642,8 +642,8 @@ function handleIdExceptions(str) {
   // Pattern 2: "event_id X, Y" -> "[Event](X), [Event](Y)"
   processed = processed.replace(/\bevent_id\s+(\d+),\s*(\d+)\b/g, (match, id1, id2) => {
     log(`[TMDBG IDTranslator Exception] Found "event_id X, Y" pattern: ${match}`);
-    const realId1 = toRealId(Number(id1));
-    const realId2 = toRealId(Number(id2));
+    const realId1 = toRealId(Number(id1), overrideCtx);
+    const realId2 = toRealId(Number(id2), overrideCtx);
     if (realId1 && realId2) {
       const result = `[Event](${realId1}), [Event](${realId2})`;
       log(`[TMDBG IDTranslator Exception] Converted to: ${result}`);
@@ -713,16 +713,16 @@ export function processToolResultTBtoLLM(result, overrideCtx) {
 }
 
 // Process LLM response to convert numeric IDs back to Thunderbird real IDs for display
-export function processLLMResponseLLMtoTB(response) {
+export function processLLMResponseLLMtoTB(response, overrideCtx) {
   if (!response) return response;
   
   try {
     if (typeof response === 'string') {
-      return processStringLLMtoTB(response);
+      return processStringLLMtoTB(response, overrideCtx);
     } else if (typeof response === 'object' && response !== null) {
       const processed = { ...response };
       if (processed.assistant && typeof processed.assistant === 'string') {
-        processed.assistant = processStringLLMtoTB(processed.assistant);
+        processed.assistant = processStringLLMtoTB(processed.assistant, overrideCtx);
       }
       return processed;
     }

@@ -216,3 +216,11 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 ### Device Sync local-edit wake
 
 - Device Sync local-edit wake registration, timestamp ownership, and remote-echo suppression: [contract](Companion/Memory/Current/device-sync-local-edit-wake.md).
+
+- Retained self-message notices: rediscover native popup windows after background wake and coalesce concurrent opens; [ownership and verification](Companion/Memory/Current/037-notice-window-wake.md).
+
+### Headless task ID ownership
+- **[Detail](Companion/Memory/Current/036-headless-task-id-scope.md)** — task/compose tool IDs use per-operation scopes; resolve task result references before caching so a restarted background cannot overwrite the persisted chat ID map.
+
+### Welcome window lifecycle
+- **[Welcome background wake](Companion/Memory/Current/welcome-background-wake.md)** — If the completion flag is unset while a wizard remains open, reuse requires `windows.getAll({ populate: true })`; the wizard normally sets that flag on opening.

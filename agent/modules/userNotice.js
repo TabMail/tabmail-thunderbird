@@ -14,10 +14,21 @@ function _notifId(prefix) {
 }
 
 let _cannotTagSelfWindowId = null;
+let _cannotTagSelfPopupPromise = null;
 
-async function showCannotTagSelfPopup(count) {
+function showCannotTagSelfPopup(count) {
+  if (_cannotTagSelfPopupPromise) return _cannotTagSelfPopupPromise;
+  const pending = openCannotTagSelfPopup(count).finally(() => {
+    if (_cannotTagSelfPopupPromise === pending) _cannotTagSelfPopupPromise = null;
+  });
+  _cannotTagSelfPopupPromise = pending;
+  return pending;
+}
+
+async function openCannotTagSelfPopup(count) {
   try {
-    // Reuse window if already open
+    // Newly created tabs may not expose their URL yet. Keep the same-generation
+    // handle, but rediscover retained windows when a fresh background has none.
     if (_cannotTagSelfWindowId != null) {
       try {
         await browser.windows.get(_cannotTagSelfWindowId);
@@ -27,8 +38,17 @@ async function showCannotTagSelfPopup(count) {
         _cannotTagSelfWindowId = null;
       }
     }
+    const pageUrl = browser.runtime.getURL("agent/cannot-tag-self.html");
+    const windows = await browser.windows.getAll({ populate: true, windowTypes: ["popup"] });
+    const existing = windows.find(win => win.tabs?.some(tab =>
+      typeof tab.url === "string" && tab.url.split(/[?#]/, 1)[0] === pageUrl));
+    if (existing) {
+      _cannotTagSelfWindowId = existing.id;
+      await browser.windows.update(existing.id, { focused: true });
+      return;
+    }
 
-    const url = browser.runtime.getURL(`agent/cannot-tag-self.html?count=${encodeURIComponent(String(count || 1))}`);
+    const url = `${pageUrl}?count=${encodeURIComponent(String(count || 1))}`;
     const w = SETTINGS?.userNotice?.cannotTagSelf?.width || 420;
     const h = SETTINGS?.userNotice?.cannotTagSelf?.height || 240;
     const win = await browser.windows.create({
@@ -38,7 +58,7 @@ async function showCannotTagSelfPopup(count) {
       height: h,
     });
     _cannotTagSelfWindowId = win?.id ?? null;
-    try { log(`[UserNotice] cannotTagSelf popup opened windowId=${_cannotTagSelfWindowId}`); } catch (_) {}
+    try { log(`[UserNotice] cannotTagSelf popup opened windowId=${win?.id ?? null}`); } catch (_) {}
   } catch (e) {
     try { log(`[UserNotice] cannotTagSelf popup failed: ${e}`, "warn"); } catch (_) {}
   }

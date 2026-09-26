@@ -7,6 +7,7 @@ import { getUserCompositionPrompt, getUserKBPrompt } from "../../agent/modules/p
 import { extractBodyFromParts, safeGetFull, saveChatLog, stripHtml } from "../../agent/modules/utils.js";
 import { getUserName } from "../../chat/modules/helpers.js";
 import { executeToolsHeadless } from "../../chat/tools/core.js";
+import { createIsolatedContext } from "../../chat/modules/idTranslator.js";
 
 
 /**
@@ -218,12 +219,14 @@ export async function runComposeEdit({
 
     const allMessages = [systemMsg];
 
+    const idContext = createIsolatedContext();
+
     // Use sendChat with headless tool executor for compose flow
     // Backend will filter tools based on system_prompt_compose_interactive config
     let response = await sendChat(allMessages, {
       disableTools: false,
       ignoreSemaphore,
-      onToolExecution: executeToolsHeadless,
+      onToolExecution: (calls, usage) => executeToolsHeadless(calls, usage, idContext),
     });
 
     // Handle error response
