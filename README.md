@@ -80,7 +80,7 @@ The add-on is split into several MV3 “background modules” (see `manifest.jso
 
 ### Support
 
-- **`keepalive/`**: Keep-alive and lifecycle helpers (via experiment `tmKeepAlive`).
+- **`updates/`**: Add-on update notification and restart actions.
 - **`icons/`**: SVG icons used by the add-on (tab icon, sort icons, view mode icons).
 
 ---
@@ -95,7 +95,6 @@ Current experiments by module:
 
 | Module | Experiments |
 |--------|-------------|
-| `keepalive/` | `tmKeepAlive` |
 | `chat/` | `tmCalendar`, `glodaSearch`, `messageSelection`, `tmWebFetch` |
 | `agent/` | `tmMsgNotify`, `tmHdr` |
 | `theme/` | `keyOverride`, `threadTooltip`, `tagSort`, `threadPaneDisplayToggle`, `tmTheme`, `tmMessageListCardView`, `tmMessageListTableView`, `tmPreviewGate`, `threadMessages` |

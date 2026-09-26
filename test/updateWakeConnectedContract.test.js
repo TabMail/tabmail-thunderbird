@@ -35,8 +35,7 @@ function selectedFunction(path, name) {
 function startFromManifest(parent) {
   const paths = manifest.background.scripts.filter(path => path === 'updates/background.js');
   expect(paths).toEqual(['updates/background.js']);
-  expect(manifest.background.scripts.indexOf(paths[0])).toBeGreaterThan(
-    manifest.background.scripts.indexOf('keepalive/background.js'));
+  expect(manifest.background.scripts[0]).toBe('updates/background.js');
   const source = readFileSync(new URL(`../${paths[0]}`, import.meta.url), 'utf8');
   const listeners = {};
   const publicUpdates = Object.fromEntries([...updatesSchema.functions, ...updatesSchema.events]

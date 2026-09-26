@@ -2,7 +2,7 @@
 
 > **Directory tree, entry points, and sub-component map.** Update when the structure changes.
 
-**Last updated:** 2026-09-24
+**Last updated:** 2026-09-26
 
 ---
 
@@ -58,12 +58,6 @@ tabmail-thunderbird/
 │   ├── experiments/            # Experiment APIs (tmPrefs, tmTweaks, tmUpdates)
 │   └── modules/                # 10 GUI modules
 │
-├── keepalive/                   # Background keepalive mechanism
-│   ├── background.js           # Keepalive service
-│   ├── relay.html / .js        # Relay page
-│   ├── content/                # Content scripts
-│   └── experiments/            # tmKeepAlive experiment
-│
 ├── updates/                     # Add-on update manager
 │   └── background.js           # Pending update state, bar actions, and popup requests
 │
@@ -106,13 +100,11 @@ tabmail-thunderbird/
 ## Background Script Load Order
 
 From `manifest.json`, these background scripts initialize in order:
-1. `keepalive/background.js` — Keeps service worker alive
-2. `updates/background.js` — Update notification and restart actions
-3. `theme/background.js` — Theme system
-4. `agent/background.js` — Email agent
-5. `compose/background.js` — Compose features
-6. `chat/background.js` — Chat interface
-7. `chatlink/background.js` — Chat linking
+1. `updates/background.js` — Update notification and restart actions
+2. `theme/background.js` — Theme system
+3. `agent/background.js` — Email agent
+4. `compose/background.js` — Compose features
+5. `chat/background.js` — Chat interface
 
 ---
 

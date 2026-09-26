@@ -2,6 +2,8 @@
 
 > Routed out of `PROJECT_MEMORY.md` § Experiment API Inventory (24 APIs) + Upstream Candidacy by the `companion-compact` skill on 2026-08-05. The block between the markers below is the inline text **byte-for-byte** — nothing was reworded, merged, reordered or truncated. Index line: `PROJECT_MEMORY.md`.
 
+Current lifecycle update (2026-09-26): `tmKeepAlive` and its hidden relay have been removed. The inventory below is historical; `tmUpdates` remains independently owned by `updates/background.js`. Native FTS connections and parent-owned Device Sync transport retain their own lifetimes.
+
 <!-- BEGIN PRESERVED BLOCK -->
 > Full inventory of `experiment_apis` in `manifest.json` (each = `<area>/experiments/<name>/{schema.json,*.sys.mjs}`). Compiled 2026-06-18 for the "can these become real upstream MV3 APIs?" question. Upstream process: prototype as experiment → file issue + contribute generalized version to `github.com/thunderbird/webext-experiments` (MPL2, **design principles: high-level, NO Thunderbird-specific details, no magic numbers**, lint) → on accept, Bugzilla bug in product **Thunderbird / component "Add-Ons: Extensions API"** with schema+impl → land in comm-central via Phabricator → "Since Thunderbird NN" → deprecate experiment. The design-principle filter is the real gate: most of ours are TabMail-specific (`tm-action`, action chips, 108px row height) and must be generalized to the *capability primitive* underneath before they'd be accepted.
 
