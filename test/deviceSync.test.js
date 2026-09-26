@@ -814,7 +814,9 @@ describe('Device Sync', () => {
     it('status listeners are notified', () => {
       const listener = vi.fn();
       deviceSync.addStatusListener(listener);
-      // listener should be called immediately with current status
+      // Registration must not publish a fresh generation's reset status.
+      expect(listener).not.toHaveBeenCalled();
+      deviceSync.disconnect();
       expect(listener).toHaveBeenCalledWith(false);
 
       deviceSync.removeStatusListener(listener);
@@ -848,7 +850,9 @@ describe('Device Sync', () => {
       deviceSync.addStatusListener(listener1);
       deviceSync.addStatusListener(listener2);
 
-      // Both should be called immediately with current status
+      expect(listener1).not.toHaveBeenCalled();
+      expect(listener2).not.toHaveBeenCalled();
+      deviceSync.disconnect();
       expect(listener1).toHaveBeenCalledWith(false);
       expect(listener2).toHaveBeenCalledWith(false);
 

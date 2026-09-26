@@ -50,14 +50,8 @@ async function _getBaseCompositionPrompt() {
         if (obj && typeof obj[key] === "string" && obj[key].trim()) {
             content = normalizeUnicode(obj[key].trim());
         } else {
-            log(`${PFX}${name} not present in storage.local – initializing from bundled template.`);
+            log(`${PFX}${name} not present in storage.local – using bundled template.`);
             const bundled = (await _loadTemplateFile(name)) || "";
-            try {
-                await browser.storage.local.set({ [key]: bundled });
-                log(`${PFX}Initialized ${name} in storage.local (${bundled.length} chars).`);
-            } catch (e) {
-                log(`${PFX}Failed to persist ${name} in storage.local: ${e}`, "error");
-            }
             content = bundled;
         }
 
@@ -165,14 +159,8 @@ export async function getUserActionPrompt() {
         if (obj && typeof obj[key] === "string" && obj[key].trim()) {
             return normalizeUnicode(obj[key].trim());
         }
-        log(`${PFX}${name} not present in storage.local – initializing from bundled template.`);
+        log(`${PFX}${name} not present in storage.local – using bundled template.`);
         const bundled = (await _loadTemplateFile(name)) || "";
-        try {
-            await browser.storage.local.set({ [key]: bundled });
-            log(`${PFX}Initialized ${name} in storage.local (${bundled.length} chars).`);
-        } catch (e) {
-            log(`${PFX}Failed to persist ${name} in storage.local: ${e}`, "error");
-        }
         return bundled;
     } catch (e) {
         log(`${PFX}Error accessing storage.local for ${name}: ${e}`, "error");
@@ -188,14 +176,8 @@ export async function getUserKBPrompt() {
         if (obj && typeof obj[key] === "string" && obj[key].trim()) {
             return normalizeUnicode(obj[key].trim());
         }
-        log(`${PFX}${name} not present in storage.local – initializing from bundled template.`);
+        log(`${PFX}${name} not present in storage.local – using bundled template.`);
         const bundled = (await _loadTemplateFile(name)) || "";
-        try {
-            await browser.storage.local.set({ [key]: bundled });
-            log(`${PFX}Initialized ${name} in storage.local (${bundled.length} chars).`);
-        } catch (e) {
-            log(`${PFX}Failed to persist ${name} in storage.local: ${e}`, "error");
-        }
         return bundled;
     } catch (e) {
         log(`${PFX}Error accessing storage.local for ${name}: ${e}`, "error");
