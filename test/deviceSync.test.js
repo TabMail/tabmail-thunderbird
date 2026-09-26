@@ -2806,3 +2806,112 @@ describe('Device Sync', () => {
     });
   });
 });
+
+
+describe('real Settings owner boundary',()=>{
+  beforeEach(()=>{clearStorage();resetMockCalls();mockWebSocketInstances=[];});
+  afterEach(async()=>{await deviceSync.disconnect();delete browserMock.runtime;delete globalThis.document;});
+  it('persists off and closes transport before the real Settings success response, then enables again',async()=>{
+    const { parse }=await import('acorn');
+    const source=readFileSync(new URL('../agent/background.js',import.meta.url),'utf8');
+    const tree=parse(source,{ecmaVersion:'latest',sourceType:'module'});
+    const functions=tree.body.filter(n=>n.type==='FunctionDeclaration' && ['cleanupRuntimeListeners','setupRuntimeMessageListener'].includes(n.id.name));
+    let listener;
+    browserMock.runtime={onMessage:{addListener:fn=>{listener=fn;},removeListener(){}}};
+    runInNewContext('let agentRuntimeMessageListener=null;\n'+functions.map(n=>source.slice(n.start,n.end)).join('\n').replaceAll('await import(', 'await loadModule(')+'\nsetupRuntimeMessageListener();',{
+      browser:browserMock,log(){},loadModule:async path=>{expect(path).toBe('./modules/deviceSync.js');return deviceSync;},
+    });
+    browserMock.runtime.sendMessage=message=>new Promise(resolve=>{expect(listener(message,{},resolve)).toBe(true);});
+    const nodes=new Map(['status','privacy-device-sync-warning'].map(id=>[id,{textContent:'',style:{}}]));
+    globalThis.document={getElementById:id=>nodes.get(id)};
+    const {handlePrivacyChange}=await import('../config/modules/privacy.js');
+    const old=await establishConnection();
+    await deviceSync.broadcastState(['kb']);expect(old.sent.length).toBeGreaterThan(0);expect(deviceSync.isConnected()).toBe(true);
+    await handlePrivacyChange({target:{id:'privacy-device-sync',checked:false}});
+    expect(storageData.device_sync_auto_enabled).toBe(false);
+    expect(parentTransport.state()).toBe('closed');expect(old.readyState).toBe(3);expect(deviceSync.isConnected()).toBe(false);
+    const stopped=old.sent.length;await deviceSync.broadcastState(['kb']);expect(old.sent).toHaveLength(stopped);
+    expect(nodes.get('status').textContent).toContain('Device sync disabled');
+    await handlePrivacyChange({target:{id:'privacy-device-sync',checked:true}});
+    expect(storageData.device_sync_auto_enabled).toBe(true);expect(mockWebSocketInstances).toHaveLength(2);
+    const fresh=mockWebSocketInstances.at(-1);fresh.readyState=1;fresh.onopen();await deviceSync.broadcastState(['kb']);
+    expect(fresh.sent.length).toBeGreaterThan(0);expect(deviceSync.isConnected()).toBe(true);
+  });
+  it('seeded delayed state acknowledgements cannot reverse a newer off action',async()=>{
+    let seed=0x64d033;let beforeOff=0,afterOff=0;
+    const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed;};
+    for(let cycle=0;cycle<64;cycle++) {
+      await establishConnection();
+      const original=browserMock.tmDeviceSync.getState; let release;let seenResolve;
+      const seen=new Promise(resolve=>{seenResolve=resolve;});
+      browserMock.tmDeviceSync.getState=()=>{const observed=parentTransport.state();seenResolve();return new Promise(resolve=>{release=()=>resolve(observed);});};
+      const pending=deviceSync.connect();await seen;
+      for(let jitter=random()%9;jitter>0;jitter--)await Promise.resolve();
+      const stateFirst=((random()>>>8)%2)===0; if(stateFirst)beforeOff++;else afterOff++;
+      try {
+        if(stateFirst){release();await pending;expect(deviceSync.isConnected()).toBe(true);}
+        await deviceSync.setAutoEnabled(false);
+        expect(parentTransport.state()).toBe('closed');expect(storageData.device_sync_auto_enabled).toBe(false);
+        if(!stateFirst){release();await pending;}
+        expect(deviceSync.isConnected()).toBe(false);
+      } finally {release();await pending;browserMock.tmDeviceSync.getState=original;await deviceSync.disconnect();}
+    }
+    expect(beforeOff).toBeGreaterThan(0);expect(afterOff).toBeGreaterThan(0);
+  });
+});
+
+
+describe('bounded transient sync resources',()=>{
+  beforeEach(()=>{clearStorage();resetMockCalls();mockWebSocketInstances=[];});
+  afterEach(async()=>{await deviceSync.cleanupDeviceSync();vi.useRealTimers();});
+  it('settled incoming work leaves no retained event records after writing data',async()=>{
+    await establishConnection();
+    const sizes=[];
+    for(let n=1;n<=12;n++) {
+      const value=`Synthetic revision ${n}`;
+      const added = [];
+      const originalAdd = Set.prototype.add;
+      const addSpy = vi.spyOn(Set.prototype, 'add').mockImplementation(function(value) {
+        added.push({ owner: this, value }); return originalAdd.call(this, value);
+      });
+      let work;
+      try { work = [...parentTransport.listeners].map(({fire})=>fire.async({type:'message',data:JSON.stringify({type:'prompt_state',data:{
+        composition:value,composition_updated_at:`2027-01-${String(n).padStart(2,'0')}T00:00:00Z`,
+      }})})); } finally { addSpy.mockRestore(); }
+      await Promise.all(work);
+      expect(storageData[FIELD_KEYS.composition]).toBe(value);
+      const owned = added.filter(entry => work.includes(entry.value));
+      expect(owned).toHaveLength(1);
+      sizes.push(owned[0].owner.size);
+    }
+    expect(sizes).toEqual(Array(12).fill(0));
+  });
+  it('successful probes return peer data and rejected sends release request records and timers',async()=>{
+    vi.useFakeTimers();const ws=await establishConnection();
+    const original=browserMock.tmDeviceSync.send;
+    try {
+      const success=deviceSync.probeAndWait(['synthetic@example.invalid'],900000);
+      const request=JSON.parse(ws.sent.at(-1));expect(request.type).toBe('ai_cache_probe');
+      const payload={'synthetic@example.invalid':{action:'archive'}};
+      await Promise.all([...parentTransport.listeners].map(({fire})=>fire.async({type:'message',data:JSON.stringify({type:'ai_cache_response',probeId:request.probeId,results:payload})})));
+      expect(await success).toEqual(payload);
+      const baselineTimers=vi.getTimerCount();const counts=[];
+      browserMock.tmDeviceSync.send=vi.fn(async()=>{throw new Error('synthetic parent refusal');});
+      for(let n=0;n<12;n++) {
+        const keys = ['synthetic@example.invalid'];
+        let requests;
+        const originalSet = Map.prototype.set;
+        const setSpy = vi.spyOn(Map.prototype, 'set').mockImplementation(function(key, value) {
+          if (value?.keys === keys) requests = this;
+          return originalSet.call(this, key, value);
+        });
+        try { expect(await deviceSync.probeAndWait(keys,900000)).toBeNull(); }
+        finally { setSpy.mockRestore(); }
+        expect(requests).toBeDefined();
+        counts.push({records:requests.size,timers:vi.getTimerCount()-baselineTimers});
+      }
+      expect(browserMock.tmDeviceSync.send).toHaveBeenCalledTimes(12);
+      expect(counts).toEqual(Array.from({length:12},()=>({records:0,timers:0})));
+    } finally {browserMock.tmDeviceSync.send=original;}
+  });
+});
