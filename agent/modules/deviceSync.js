@@ -98,7 +98,6 @@ const PROBE_INTERVAL_MS = 300000; // 5 minutes
 
 // Connection state
 let socket = null;
-let userId = null;
 let connected = false;
 let pingTimer = null;
 let probeTimer = null;
@@ -1045,23 +1044,13 @@ async function connectOnce(generation) {
 
   // Get access token for authentication
   let accessToken;
-  let authenticatedUserId = null;
   try {
-    const { getAccessToken, getSession } = await import("./supabaseAuth.js");
+    const { getAccessToken } = await import("./supabaseAuth.js");
     accessToken = await getAccessToken();
 
     if (!accessToken) {
       log(`${PFX}No access token, cannot connect`);
       return;
-    }
-
-    // Decode JWT to get user ID (for logging)
-    const session = await getSession();
-    if (session?.access_token) {
-      const b64url = session.access_token.split(".")[1];
-      const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/") + "==".slice(0, (4 - (b64url.length % 4)) % 4);
-      const payload = JSON.parse(atob(b64));
-      authenticatedUserId = payload.sub;
     }
   } catch (e) {
     log(`${PFX}Failed to get access token: ${e}`);
@@ -1089,7 +1078,6 @@ async function connectOnce(generation) {
   try {
     const ownedSocket = new WebSocket(wsUrl);
     socket = ownedSocket;
-    userId = authenticatedUserId;
 
     socket.onopen = () => {
       if (socket !== ownedSocket || generation !== connectionGeneration) return;
@@ -1180,7 +1168,6 @@ export function disconnect() {
   }
   connected = false;
   reconnectAttempts = 0;
-  userId = null; // SECURITY: clear userId to prevent stale identity on reconnect
   notifyStatusListeners();
   log(`${PFX}Disconnected from WebSocket`);
 }

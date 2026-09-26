@@ -59,7 +59,7 @@ let mockWebSocketInstances = [];
 globalThis.WebSocket = class MockWebSocket {
   constructor(url) {
     this.url = url;
-    this.readyState = 1; // OPEN
+    this.readyState = 0; // CONNECTING
     this.sent = [];
     this.onopen = null;
     this.onmessage = null;
@@ -244,6 +244,7 @@ async function establishConnection() {
 
   // Trigger onopen to complete the connection
   if (ws && ws.onopen) {
+    ws.readyState = WebSocket.OPEN;
     ws.onopen();
   }
 
@@ -472,7 +473,7 @@ describe('Device Sync', () => {
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
 
       // Trigger onopen
-      if (ws && ws.onopen) ws.onopen();
+      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
 
       // Simulate the server responding with "connected"
       await sendSocketMessage(ws, { type: 'connected', userId: 'test-user-id' });
@@ -497,7 +498,7 @@ describe('Device Sync', () => {
 
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) ws.onopen();
+      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
 
       // Simulate the server responding with "connected"
       await sendSocketMessage(ws, { type: 'connected', userId: 'test-user-id' });
@@ -2043,6 +2044,57 @@ describe('Device Sync', () => {
   // Connect / Disconnect
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Connect / Disconnect', () => {
+    it('disconnect then reconnect: stale in-flight attempt adds no socket and the re-enable is not lost', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let releaseOld;
+      getDeviceSyncUrl.mockImplementationOnce(() => new Promise(r => { releaseOld = r; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseOld).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      releaseOld('https://sync.example.test');
+      await Promise.all([stale, fresh]);
+      expect(mockWebSocketInstances).toHaveLength(1);
+      mockWebSocketInstances[0].readyState = 1;
+      mockWebSocketInstances[0].onopen();
+      expect(deviceSync.isConnected()).toBe(true);
+    });
+
+    it('after the live socket drops, a later connect() opens a new socket', async () => {
+      const ws = await establishConnection();
+      ws.readyState = 3;
+      ws.onclose({ code: 1006, reason: 'network drop' });
+      expect(deviceSync.isConnected()).toBe(false);
+      const before = mockWebSocketInstances.length;
+      await deviceSync.connect();
+      expect(mockWebSocketInstances.length).toBe(before + 1);
+    });
+
+    it('after the live socket drops, the reconnect timer opens a new socket', async () => {
+      vi.useFakeTimers();
+      try {
+        const ws = await establishConnection();
+        ws.readyState = 3;
+        ws.onclose({ code: 1006, reason: 'network drop' });
+        const before = mockWebSocketInstances.length;
+        await vi.advanceTimersByTimeAsync(5000);
+        for (let i = 0; i < 50; i++) await Promise.resolve();
+        expect(mockWebSocketInstances.length).toBe(before + 1);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it('a CLOSING socket replaced without disconnect cannot disrupt its replacement', async () => {
+      const a = await establishConnection();
+      a.readyState = 2; // CLOSING: server-initiated close handshake still in progress
+      await deviceSync.connect();
+      const b = mockWebSocketInstances.at(-1);
+      expect(b).not.toBe(a);
+      b.readyState = WebSocket.OPEN;
+      b.onopen();
+      a.onclose({ code: 1006, reason: 'late close of retired socket' });
+      expect(deviceSync.isConnected()).toBe(true);
+    });
     it('cancels a pending URL lookup when disconnected', async () => {
       const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
       let release;
@@ -2333,7 +2385,7 @@ describe('Device Sync', () => {
 
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) ws.onopen();
+      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
 
       // Peer base keys should now be populated from legacy
       expect(storageData[PEER_BASE_KEYS.composition]).toBe('legacy comp base');
@@ -2354,7 +2406,7 @@ describe('Device Sync', () => {
 
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) ws.onopen();
+      if (ws && ws.onopen) { ws.readyState = WebSocket.OPEN; ws.onopen(); }
 
       // All timestamp keys should now exist with epoch-zero
       expect(storageData[TIMESTAMP_KEYS.composition]).toBe(EPOCH_ZERO);
