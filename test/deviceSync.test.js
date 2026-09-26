@@ -2044,6 +2044,68 @@ describe('Device Sync', () => {
   // Connect / Disconnect
   // ═══════════════════════════════════════════════════════════════════════════
   describe('Connect / Disconnect', () => {
+
+    it('a settled stale attempt does not un-coalesce the current attempt', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let releaseStale, releaseFresh;
+      getDeviceSyncUrl
+        .mockImplementationOnce(() => new Promise(r => { releaseStale = r; }))
+        .mockImplementationOnce(() => new Promise(r => { releaseFresh = r; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseStale).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseFresh).toBeTypeOf('function'));
+      releaseStale('https://stale.example.test');
+      await stale;
+      const third = deviceSync.connect();
+      releaseFresh('https://fresh.example.test');
+      await Promise.all([fresh, third]);
+      expect(mockWebSocketInstances).toHaveLength(1);
+      expect(mockWebSocketInstances[0].url).toContain('fresh.example.test');
+    });
+
+    it('disable and re-enable while the access token is pending leaves one socket', async () => {
+      const { getAccessToken } = await import('../agent/modules/supabaseAuth.js');
+      let releaseToken;
+      getAccessToken.mockImplementationOnce(() => new Promise(r => { releaseToken = r; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseToken).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      await fresh;
+      releaseToken('stale-token');
+      await stale;
+      expect(mockWebSocketInstances).toHaveLength(1);
+      expect(mockWebSocketInstances[0].url).not.toContain('stale-token');
+    });
+
+    it('disable and re-enable while the enabled check is pending leaves one socket', async () => {
+      const realGet = browserMock.storage.local.get.getMockImplementation();
+      let releaseGet;
+      browserMock.storage.local.get.mockImplementationOnce((keys) => new Promise(r => { releaseGet = () => r(realGet(keys)); }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseGet).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      await fresh;
+      releaseGet();
+      await stale;
+      expect(mockWebSocketInstances).toHaveLength(1);
+    });
+
+    it('a rejected attempt releases the single-flight so the next connect() retries', async () => {
+      browserMock.storage.local.remove.mockImplementationOnce(async () => { throw new Error('storage unavailable'); });
+      setStorage({ device_sync_auto_enabled: true });
+      await expect(deviceSync.connect()).rejects.toThrow('storage unavailable');
+      expect(mockWebSocketInstances).toHaveLength(0);
+      await deviceSync.connect();
+      expect(mockWebSocketInstances).toHaveLength(1);
+    });
+
     it('disconnect then reconnect: stale in-flight attempt adds no socket and the re-enable is not lost', async () => {
       const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
       let releaseOld;
