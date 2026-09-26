@@ -2066,6 +2066,26 @@ describe('Device Sync', () => {
       expect(mockWebSocketInstances[0].url).toContain('fresh.example.test');
     });
 
+    it('a stale attempt that rejects does not un-coalesce the current attempt', async () => {
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      let rejectStale, releaseFresh;
+      browserMock.storage.local.remove.mockImplementationOnce(() => new Promise((_, reject) => { rejectStale = reject; }));
+      getDeviceSyncUrl.mockImplementationOnce(() => new Promise(r => { releaseFresh = r; }));
+      setStorage({ device_sync_auto_enabled: true });
+      const stale = deviceSync.connect();
+      await vi.waitFor(() => expect(rejectStale).toBeTypeOf('function'));
+      deviceSync.disconnect();
+      const fresh = deviceSync.connect();
+      await vi.waitFor(() => expect(releaseFresh).toBeTypeOf('function'));
+      rejectStale(new Error('storage unavailable'));
+      await expect(stale).rejects.toThrow('storage unavailable');
+      const third = deviceSync.connect();
+      releaseFresh('https://fresh.example.test');
+      await Promise.all([fresh, third]);
+      expect(mockWebSocketInstances).toHaveLength(1);
+      expect(mockWebSocketInstances[0].url).toContain('fresh.example.test');
+    });
+
     it('disable and re-enable while the access token is pending leaves one socket', async () => {
       const { getAccessToken } = await import('../agent/modules/supabaseAuth.js');
       let releaseToken;
@@ -2080,6 +2100,9 @@ describe('Device Sync', () => {
       await stale;
       expect(mockWebSocketInstances).toHaveLength(1);
       expect(mockWebSocketInstances[0].url).not.toContain('stale-token');
+      mockWebSocketInstances[0].readyState = WebSocket.OPEN;
+      mockWebSocketInstances[0].onopen();
+      expect(deviceSync.isConnected()).toBe(true);
     });
 
     it('disable and re-enable while the enabled check is pending leaves one socket', async () => {
@@ -2095,6 +2118,9 @@ describe('Device Sync', () => {
       releaseGet();
       await stale;
       expect(mockWebSocketInstances).toHaveLength(1);
+      mockWebSocketInstances[0].readyState = WebSocket.OPEN;
+      mockWebSocketInstances[0].onopen();
+      expect(deviceSync.isConnected()).toBe(true);
     });
 
     it('a rejected attempt releases the single-flight so the next connect() retries', async () => {
