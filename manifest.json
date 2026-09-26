@@ -18,8 +18,7 @@
     "theme/background.js",
     "agent/background.js",
     "compose/background.js",
-    "chat/background.js",
-    "chatlink/background.js"
+    "chat/background.js"
   ],
     "type": "module"
   },
