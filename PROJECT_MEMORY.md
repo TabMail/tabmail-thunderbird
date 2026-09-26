@@ -212,3 +212,6 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ### Contextual compose preview
 - **[Detail](Companion/Memory/Current/021-contextual-compose-preview.md)** — separate sentence preview, insertion-only highlights, atomic Tab/click acceptance, next-sentence continuation, disabled-only enable control, HTML range projection, native undo validation, shared Near cursor/Docked at bottom placement (#44), and mixed inline/block boundary offsets (#42). Cmd-K recipient proposals commit only after body acceptance, with stale-recipient and operation guards (#49).
+
+### Headless task ID ownership
+- **[Detail](Companion/Memory/Current/036-headless-task-id-scope.md)** — task/compose tool IDs use per-operation scopes; resolve task result references before caching so a restarted background cannot overwrite the persisted chat ID map.
