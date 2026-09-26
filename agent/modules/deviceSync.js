@@ -483,18 +483,21 @@ export async function resetFieldToDefault(field, defaultValue) {
 
 /**
  * Set up storage.onChanged listener for auto-broadcasting local edits.
- * Must be called once during init. Uses debounce to avoid flooding during rapid typing.
+ * Register synchronously during background startup; repeated initialization is harmless.
+ * Uses debounce to avoid flooding during rapid typing.
  */
 export function setupStorageListener() {
   if (_storageChangeListener) return; // Already set up
 
-  _storageChangeListener = (changes, area) => {
+  const listener = (changes, area) => {
+    // Local edit timestamps must advance even while transport is paused.
     if (area !== "local" || suppressBroadcast) return;
 
     // Check if any prompt-related key changed
     const changedFields = [];
     for (const [field, storageKey] of Object.entries(FIELD_KEYS)) {
-      if (changes[storageKey]) {
+      // Sync-owned writes carry their timestamp in the same change event.
+      if (changes[storageKey] && !changes[TIMESTAMP_KEYS[field]]) {
         changedFields.push(field);
       }
     }
@@ -519,18 +522,29 @@ export function setupStorageListener() {
 
     // Debounce broadcast: reset timer, broadcast after quiet period
     if (_broadcastDebounceTimer) clearTimeout(_broadcastDebounceTimer);
-    _broadcastDebounceTimer = setTimeout(() => {
+    _broadcastDebounceTimer = setTimeout(async () => {
       _broadcastDebounceTimer = null;
       const fields = [..._broadcastPendingFields];
       _broadcastPendingFields.clear();
-      broadcastState(fields).catch((e) => {
+      if (transportDisconnected) return;
+      try {
+        // A first wake may reach this debounce before late startup reconnects
+        // the module to the already-open parent transport.
+        if (!connected) await connect();
+        await broadcastState(fields);
+      } catch (e) {
         log(`${PFX}Debounced broadcast failed: ${e}`, "warn");
-      });
+      }
     }, BROADCAST_DEBOUNCE_MS);
   };
 
-  browser.storage.onChanged.addListener(_storageChangeListener);
-  log(`${PFX}Storage change listener registered (auto-broadcast on edit)`);
+  try {
+    browser.storage.onChanged.addListener(listener);
+    _storageChangeListener = listener;
+    log(`${PFX}Storage change listener registered (auto-broadcast on edit)`);
+  } catch (e) {
+    log(`${PFX}Storage listener registration failed: ${e}`, "warn");
+  }
 }
 
 // ─── Handle Incoming Prompt State (Per-Field Merge) ─────────────────────

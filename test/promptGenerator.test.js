@@ -114,3 +114,10 @@ describe('getUserKBPrompt', () => {
     expect(typeof result).toBe('string');
   });
 });
+
+it.each([getUserCompositionPrompt, getUserActionPrompt, getUserKBPrompt])('returns bundled defaults without publishing a synthetic local edit (%#)', async getter => {
+  const result = await getter();
+  expect(result).toContain('Default prompt content');
+  expect(browser.storage.local.set).not.toHaveBeenCalled();
+  expect(storageData).toEqual({});
+});
