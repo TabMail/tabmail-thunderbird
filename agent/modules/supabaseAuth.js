@@ -638,10 +638,10 @@ export async function signOut() {
 
     // --- SECURITY: Clear all user-specific data to prevent leaking to next user ---
 
-    // 1. Disconnect Device Sync (closes WebSocket, clears userId)
+    // 1. Close the parent-owned Device Sync transport before clearing synced data.
     try {
       const { cleanupDeviceSync } = await import("./deviceSync.js");
-      cleanupDeviceSync();
+      await cleanupDeviceSync();
       log("[SupabaseAuth] Device sync disconnected");
     } catch (e) {
       log(`[SupabaseAuth] Device sync cleanup failed (non-fatal): ${e}`, "error");

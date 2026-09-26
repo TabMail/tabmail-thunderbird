@@ -18,7 +18,7 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 import { registerTabKeyHandlers, cleanupTagActionKeyListeners } from '../agent/modules/tagActionKey.js';
 
-function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, threadTagRegistrar, coverageMessage } = {}) {
+function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, threadTagRegistrar, coverageMessage, syncRegistrar, syncProbeRegistrar, syncIdb } = {}) {
   const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
   const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
   let script = source;
@@ -37,6 +37,9 @@ function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, thread
           ? tabKeyRegistrar : () => Promise.resolve({});
       if (name === 'attachOnUpdatedListener' && updatedRegistrar) globals[name] = updatedRegistrar;
       if (name === 'attachThreadTagWatchers' && threadTagRegistrar) globals[name] = threadTagRegistrar;
+      if (name === 'attachDeviceSyncTransportListener' && syncRegistrar) globals[name] = syncRegistrar;
+      if (name === 'setAICacheProbeHandler' && syncProbeRegistrar) globals[name] = syncProbeRegistrar;
+      if (name === 'idb' && syncIdb) globals[name] = syncIdb;
     }
     script = script.slice(0, entry.start)
       + script.slice(entry.start, entry.end).replace(/[^\r\n]/g, ' ')
@@ -45,6 +48,7 @@ function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, thread
   globals.enqueueProcessMessage = enqueueProcessMessage;
   globals.signalChatTyping = signalChatTyping;
   globals.isInboxFolder = () => true;
+  globals.isActionPayloadKey = key => key.startsWith('action:');
   const events = new Map();
   let accounts = [];
   const createdWindows = [];
@@ -87,6 +91,42 @@ function startAgent({ welcome = false, tabKeyRegistrar, updatedRegistrar, thread
 }
 
 describe('agent background startup and canceled suspend', () => {
+  it('installs the real cache responder before the remote wake consumer', async () => {
+    let responder;
+    let pendingResponse;
+    const syncIdb = {
+      getAllKeys: async () => ['action:synthetic:/Inbox:probe@example.invalid'],
+      get: async () => ({ 'action:synthetic:/Inbox:probe@example.invalid': 'archive' }),
+    };
+    const syncRegistrar = vi.fn(() => {
+      expect(responder).toBeTypeOf('function');
+      pendingResponse = responder(['probe@example.invalid'], ['action']);
+    });
+    startAgent({ syncIdb, syncRegistrar, syncProbeRegistrar: handler => { responder = handler; } });
+    expect(syncRegistrar).toHaveBeenCalledOnce();
+    expect(await pendingResponse).toEqual({ 'probe@example.invalid': { action: 'archive' } });
+  });
+
+  it('the early cache responder returns summary and reply payloads, excluding metadata', async () => {
+    let responder;
+    const suffix = 'synthetic:/Inbox:probe@example.invalid';
+    const stored = {
+      [`summary:ts:${suffix}`]: 99,
+      [`reply:ts:${suffix}`]: 99,
+      [`summary:${suffix}`]: { blurb: 'Synthetic summary', todos: 'Synthetic todo', detailed: 'Synthetic detail', reminder: { date: '2026-10-01', time: '09:00', content: 'Synthetic reminder' } },
+      [`reply:${suffix}`]: { reply: 'Synthetic reply' },
+    };
+    startAgent({ syncProbeRegistrar: handler => { responder = handler; }, syncIdb: {
+      getAllKeys: async () => Object.keys(stored),
+      get: async keys => Object.fromEntries(keys.map(key => [key, stored[key]])),
+    } });
+    expect(await responder(['probe@example.invalid'], ['summary', 'reply'])).toEqual({
+      'probe@example.invalid': { summary: { blurb: 'Synthetic summary', todos: 'Synthetic todo', detailed: 'Synthetic detail', reminderDate: '2026-10-01', reminderTime: '09:00', reminderContent: 'Synthetic reminder' }, reply: 'Synthetic reply' },
+    });
+    expect(await responder(['probe@example.invalid'], ['reply'])).toEqual({ 'probe@example.invalid': { reply: 'Synthetic reply' } });
+    expect(await responder(['missing@example.invalid'])).toEqual({});
+  });
+
   it('registers the stock message-update wake listener before async startup', () => {
     const source = readFileSync(new URL('../agent/background.js', import.meta.url), 'utf8');
     const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });

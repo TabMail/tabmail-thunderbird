@@ -1,0 +1,61 @@
+[
+  {
+    "namespace": "tmDeviceSync",
+    "description": "Device Sync transport owned by the addon lifetime.",
+    "functions": [
+      {
+        "name": "connect",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "url",
+            "type": "string"
+          }
+        ],
+        "returns": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "getState",
+        "type": "function",
+        "async": true,
+        "parameters": [],
+        "returns": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "send",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "data",
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "name": "disconnect",
+        "type": "function",
+        "async": true,
+        "parameters": []
+      }
+    ],
+    "events": [
+      {
+        "name": "onEvent",
+        "type": "function",
+        "parameters": [
+          {
+            "name": "event",
+            "type": "object",
+            "additionalProperties": true
+          }
+        ]
+      }
+    ]
+  }
+]

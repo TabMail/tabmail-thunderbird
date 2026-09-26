@@ -6,7 +6,7 @@
 //
 // Verifies that signing out clears ALL user-specific data:
 // - Supabase session token
-// - Device sync connection + userId
+// - Device sync transport
 // - User prompts, templates, task cache
 // - Device sync state (timestamps, peer base, auto-enabled)
 // - Prompt history
@@ -115,12 +115,27 @@ describe("signOut security cleanup", () => {
     expect(session).toBeNull();
   });
 
-  it("calls cleanupDeviceSync to disconnect WebSocket and clear userId", async () => {
+  it("calls cleanupDeviceSync to disconnect the transport", async () => {
     setStorage({ supabaseSession: { access_token: "tok" } });
 
     await signOut();
 
     expect(mockCleanupDeviceSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for parent transport cleanup before clearing synced data", async () => {
+    let release;
+    const key = "user_prompts:user_action.md";
+    setStorage({ [key]: "synthetic rules" });
+    mockCleanupDeviceSync.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const pending = signOut();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect(storageData[key]).toBe("synthetic rules");
+    expect(mockIdbClear).not.toHaveBeenCalled();
+    release();
+    expect(await pending).toBe(true);
+    expect(storageData[key]).toBeUndefined();
+    expect(mockIdbClear).toHaveBeenCalledOnce();
   });
 
   it("clears IndexedDB AI cache", async () => {
