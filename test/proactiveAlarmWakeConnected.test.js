@@ -151,6 +151,32 @@ it('task wake executes an uncached task and durably delivers its result',async()
   expect(browser.notifications.create).toHaveBeenCalledTimes(1);
   expect(data.proactiveCheckin_pendingMessage).toBeUndefined();
 });
+it('commits a task result before opening chat to read its initial history', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  data['task.enabled'] = true;
+  data.chat_turns = [{ role: 'assistant', content: 'Existing history', _id: 'existing', _chars: 16 }];
+  const { hash } = await setDueTaskText();
+  const { sendChat } = await import('../agent/modules/llm.js');
+  sendChat.mockResolvedValue({ assistant: 'Synthetic wake result' });
+  const store = await import('../chat/modules/persistentChatStore.js');
+  const { openOrFocusChatWindow } = await import('../chat/modules/chatWindowUtils.js');
+  let initialHistory;
+  openOrFocusChatWindow.mockImplementationOnce(async () => {
+    // A newly opened chat reads storage before the background's debounce fires.
+    initialHistory = await store.loadTurns();
+  });
+  await startRealBackground();
+  await Promise.all([...listeners].map(fn => fn({ name: 'tabmail-task-eval' })));
+  expect(openOrFocusChatWindow).toHaveBeenCalledTimes(1);
+  expect(initialHistory.some(t => t._id === 'existing')).toBe(true);
+  expect(initialHistory.filter(t => t._taskHash === hash)).toEqual([
+    expect.objectContaining({ _type: 'task_result', content: expect.stringContaining('Synthetic wake result') }),
+  ]);
+  await vi.advanceTimersByTimeAsync(500);
+  await [...listeners][0]({ name: 'tabmail-task-eval' });
+  expect(sendChat).toHaveBeenCalledTimes(1);
+  expect((await store.loadTurns()).filter(t => t._taskHash === hash)).toHaveLength(1);
+});
 it('task quota refusal preserves retry state until a later alarm succeeds',async()=>{
   data['notifications.proactive_enabled']=false; data['task.enabled']=true;
   const {hash,date,getExecutionState}=await setDueTaskText();

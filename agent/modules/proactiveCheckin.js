@@ -824,7 +824,7 @@ async function _deliverTaskResult(task, taskHash, content, sessionId) {
 
   // Persist as proper chat turns (not ephemeral nudge) — survives window close
   try {
-    const { appendTurn, loadTurns, loadMeta, generateTurnId } = await import("../../chat/modules/persistentChatStore.js");
+    const { appendTurn, loadTurns, loadMeta, generateTurnId, saveTurnsImmediate, saveMetaImmediate } = await import("../../chat/modules/persistentChatStore.js");
 
     const turns = await loadTurns();
     const meta = await loadMeta();
@@ -864,6 +864,9 @@ async function _deliverTaskResult(task, taskHash, content, sessionId) {
       }
 
       await appendTurn(taskTurn, turns, meta);
+      // appendTurn debounces its write. Chat must read the new result when it
+      // opens below, rather than load and later save the previous history.
+      await Promise.all([saveTurnsImmediate(turns), saveMetaImmediate(meta)]);
       log(`[ProActReach] Persisted task result as chat turn (${message.length} chars)`);
     }
   } catch (e) {
