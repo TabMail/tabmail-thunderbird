@@ -230,7 +230,7 @@ async function readSSEStream(response, abortSignal = null, onToolExecution = nul
                 call_id: eventData.call_id,
                 display_label: eventData.display_label,
                 state: "running", // lowercase to match UI expectations
-                tool_name: eventData.tool_name, // Available in dev mode
+                tool_name: eventData.tool_name, // Sent in every build
                 arguments: eventData.arguments, // Available in dev mode
                 started_at: Date.now(),
               });
@@ -260,7 +260,7 @@ async function readSSEStream(response, abortSignal = null, onToolExecution = nul
                 status.result = eventData.result; // Available in dev mode
                 
                 // Save comprehensive tool call log (matches client-side tool format)
-                // Only saves in dev mode (when tool_name is available)
+                // Only saves in dev mode (when the arguments are sent)
                 if (status.tool_name && status.arguments) {
                   try {
                     const { saveToolCallLog } = await import("./utils.js");
@@ -312,7 +312,7 @@ async function readSSEStream(response, abortSignal = null, onToolExecution = nul
                 const elapsed_ms = Date.now() - status.started_at;
                 
                 // Save comprehensive tool call log for failed tools
-                // Only saves in dev mode (when tool_name is available)
+                // Only saves in dev mode (when the arguments are sent)
                 if (status.tool_name && status.arguments) {
                   try {
                     const { saveToolCallLog } = await import("./utils.js");
