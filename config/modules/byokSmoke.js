@@ -56,8 +56,9 @@ export function smokeUserMessage(fixture) {
 /**
  * Pure: turn a completion result into a failure string (or null on success).
  * Success = routed to BYOK + non-empty response + the expected fragment present.
- * Tool stages are intentionally NOT checked — production strips `tool_name` from
- * the SSE stream, so the fragment is the real verification (matches iOS §10.4b).
+ * Tool stages are intentionally NOT checked — a tool event names the tool and
+ * whether it succeeded, not what it returned (production sends no result), so the
+ * fragment is the real verification (matches iOS §10.4b).
  *
  * @param {Object|null} result  the object returned by sendChatCompletions
  * @param {string} expectedFragment  case-insensitive substring that must appear
