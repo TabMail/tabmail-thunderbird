@@ -1906,10 +1906,13 @@ describe('gating and drain coordination', () => {
     expect(await _runFolderReconcile(fts)).toMatchObject({ skipped: true, reason: 'native_unsupported' });
   });
 
-  it('never latches a transient native probe failure as unsupported', async () => {
+  it.each([
+    'Native helper disconnected',
+    "Must call 'init' first",
+  ])('never latches a transient native probe failure as unsupported (%s)', async (nativeError) => {
     const fts = makeFtsStore([]);
     fts.getConnectionGeneration = vi.fn(() => 1);
-    fts.fingerprintMsgIdRange.mockRejectedValueOnce(new Error('Native helper disconnected'));
+    fts.fingerprintMsgIdRange.mockRejectedValueOnce(new Error(nativeError));
     mockNotify([folderA()]);
     expect(await _runFolderReconcile(fts)).toMatchObject({
       skipped: true, reason: 'native_probe_failed', retryDelayMs: expect.any(Number),

@@ -2762,6 +2762,93 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
+
+  it.each([
+    ['a rename lands while the terminal page is read', 'page'],
+    ['a rename lands right after the inventory snapshot', 'inventory'],
+    ['the inventory is unchanged (control)', null],
+  ])('publishes cutover from a terminal state page only when no topology change overtook it: %s', async (_label, renameAt) => {
+    const rename = renameAt !== null;
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const renameListeners = new Set();
+    globalThis.browser.folders = {
+      onRenamed: {
+        addListener: listener => renameListeners.add(listener),
+        removeListener: listener => renameListeners.delete(listener),
+      },
+    };
+    incrementalIndexer.setupFolderTopologyListeners();
+    try {
+      const { fts, nativeRows, folders } = installExactMembershipFolders([{
+        folderPath: '/Z', headerMessageIds: ['zz-1@example.com'],
+      }]);
+      await settleSchedulerTickWithFakeTimers(fts); // folder scan assigns every row
+      vi.setSystemTime(Date.now() + 100);
+      const ownerPath = rename ? '/A' : '/Z';
+      const ownedWrite = `account1:${ownerPath}:aa-new@example.com`;
+      const renameZToA = () => {
+        folders[0].folderPath = '/A';
+        folders[0].folderId = makeFolderMembershipId('account1', '/A');
+        globalThis.browser.accounts.list.mockResolvedValue([{
+          id: 'account1', type: 'none',
+          rootFolder: {
+            path: '/', isRoot: true,
+            subFolders: [{ id: folders[0].weFolderId, path: '/A', subFolders: [] }],
+          },
+        }]);
+        for (const listener of [...renameListeners]) {
+          listener({ accountId: 'account1', path: '/Z' }, { accountId: 'account1', path: '/A' });
+        }
+      };
+      if (renameAt === 'inventory') {
+        // The snapshot still lists /Z; the rename completes just after it.
+        const oldInventory = await globalThis.browser.accounts.list();
+        globalThis.browser.accounts.list.mockImplementationOnce(async () => {
+          renameZToA();
+          return oldInventory;
+        });
+      }
+      fts.listFolderMembershipState.mockImplementationOnce(async (after, limit) => {
+        const page = await fts.listFolderMembershipState.getMockImplementation()(after, limit);
+        if (renameAt === 'page') renameZToA();
+        // The drain commits a correctly owned row behind the cursor through
+        // the real membership coordinator.
+        await runFtsMembershipMutation(async () => {
+          nativeRows.set(ownedWrite, makeFolderMembershipId('account1', ownerPath));
+        });
+        return page;
+      });
+      const epochBefore = getFtsMembershipEpoch();
+
+      await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(getFtsMembershipEpoch()).toBeGreaterThan(epochBefore);
+      expect(nativeRows.get(ownedWrite)).toBe(makeFolderMembershipId('account1', ownerPath));
+      if (!rename) {
+        // Ownership-preserving drift alone never restarts the pass.
+        expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+        return;
+      }
+      // The pass judged an inventory the rename overtook: no cutover from it.
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      const stateReadsBefore = fts.listFolderMembershipState.mock.calls.length;
+      for (let turn = 0; turn < 12 && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+        vi.setSystemTime(Date.now() + 1000);
+        await settleSchedulerTickWithFakeTimers(fts);
+      }
+      // A fresh pass over the new inventory earns it and drops the old owner.
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect(fts.listFolderMembershipState.mock.calls[stateReadsBefore][0]).toBeNull();
+      expect(nativeRows.has('account1:/Z:zz-1@example.com')).toBe(false);
+      expect(nativeRows.get(ownedWrite)).toBe(makeFolderMembershipId('account1', '/A'));
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      delete globalThis.browser.folders;
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
   it('does not bind a stale cursor to a native digest from before a removal', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
@@ -5121,6 +5208,69 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
     } finally {
       await incrementalIndexer.disposeIncrementalIndexer();
       uninstallTopologyEvents();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    // Control: an operation that STARTS without exact mode applies the
+    // legacy overlap refusal to both folders.
+    ['before the folder operation captures its mode', 'notify', 'getFolderState'],
+    ['while the folder operation\'s local proof is in flight', 'notify', 'beginFolderMessageScan'],
+    ['while the folder operation reads its native digest', 'fts', 'listFolderMembership'],
+  ])('never switches an in-flight folder operation to legacy key ranges when the helper reconnects %s', async (_label, owner, seam) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      // `/F` and `/F:Child` overlap as legacy key ranges: the child's raw key
+      // lies inside the parent's range and would strip to a wrong Message-ID.
+      const { fts, nativeRows, rowsByURI } = installExactMembershipFolders([
+        { folderPath: '/F', headerMessageIds: [] },
+        { folderPath: '/F:Child', headerMessageIds: ['child@example.com'] },
+      ]);
+      const childRow = 'account1:/F:Child:child@example.com';
+      const parentId = makeFolderMembershipId('account1', '/F');
+      // A stale row in the parent sends its operation through the stale direction.
+      const ghostRow = 'account1:/F:ghost@example.com';
+      nativeRows.set(ghostRow, parentId);
+      const helper = withReconnectableHelper(fts);
+      const notify = globalThis.browser.tmMsgNotify;
+      notify.probeMessageIds.mockImplementation(async (uri, ids) => ({
+        missing: ids.filter(id => !rowsByURI.get(uri).some(row => row.headerMessageId === id)),
+      }));
+      const target = owner === 'fts' ? fts : notify;
+      const original = target[seam].getMockImplementation();
+      let reconnected = false;
+      target[seam].mockImplementation(async (...args) => {
+        const result = await original(...args);
+        const parent = seam === 'getFolderState' ? args[1] === '/F'
+          : seam === 'listFolderMembership' ? args[0] === parentId
+            : result.folderPath === '/F';
+        // The helper reconnects (still capable) during the parent's first
+        // post-cutover folder operation.
+        if (!reconnected && parent && _testExports._getFolderMembershipCutoverProven()) {
+          reconnected = true;
+          helper.reconnect();
+        }
+        return result;
+      });
+      await incrementalIndexer.initIncrementalIndexer(fts);
+
+      expect(await driveTimersUntil(() => reconnected && reconciliationIdle())).toBe(true);
+      expect(nativeRows.get(childRow)).toBe(makeFolderMembershipId('account1', '/F:Child'));
+      expect(fts.removeBatch.mock.calls.flat(2)).not.toContain(childRow);
+      expect(nativeRows.has(ghostRow)).toBe(false);
+      expect(fts.listMsgIdRange).not.toHaveBeenCalled();
+      expect(fts.fingerprintMsgIdRange.mock.calls.filter(([start, end]) => start !== '' || end !== ''))
+        .toEqual([]);
+      // Recovery re-earned exact cutover on the new connection and verified both folders.
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      const memoFolders = storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders;
+      expect(memoFolders['account1:/F']).toMatchObject({ verified: true, ftsCount: 0 });
+      expect(memoFolders['account1:/F:Child']).toMatchObject({ verified: true, ftsCount: 1 });
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
       vi.clearAllTimers();
       vi.useRealTimers();
     }

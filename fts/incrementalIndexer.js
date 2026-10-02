@@ -1597,8 +1597,14 @@ export async function removeExperimentListeners() {
 // start runs the startup reconciliation. Registered from the background
 // entry point before any await so Gecko can prime the persistent events.
 const _folderTopologyListenerOwners = new Map();
+// Bumped synchronously by every topology event. A membership-state pass binds
+// the value read before its inventory snapshot, so a pass judged against an
+// inventory that a rename/move/delete has since overtaken never publishes
+// cutover.
+let _folderReconTopologySerial = 0;
 
 function _onFolderReconTopologyChanged() {
+  _folderReconTopologySerial++;
   if (!_isEnabled || _indexerDisposed) return;
   _ensureFolderReconPendingMarker().catch((e) => {
     log(`[FTS FolderRecon] Topology marker write failed: ${e}`, "warn");
@@ -3701,6 +3707,17 @@ function _useExactFolderMembership(ftsSearch) {
     && pass.connectionGeneration === _folderMembershipConnectionGeneration(ftsSearch);
 }
 
+// Exact or legacy membership is chosen ONCE per operation and never re-decided
+// after an await. The operation's overlap refusal is computed for the mode it
+// starts in, so a mid-operation switch to legacy key ranges (a reconnect or
+// revocation ending exact mode) would read colon-overlapping folders without
+// it. A captured mode stays sound for the whole operation: exact reads use the
+// durable owner relation whatever connection serves them, and legacy ranges
+// keep the refusal computed at the start.
+function _captureFolderMembershipMode(ftsSearch) {
+  return { exact: _useExactFolderMembership(ftsSearch) };
+}
+
 // The only way to withdraw exact-membership cutover. The session-local pass
 // that earned it goes with it, so cutover can be re-earned only by a new pass
 // that starts before the first native row.
@@ -3908,8 +3925,8 @@ async function _fingerprintFolderMembershipStatePages(
   return result;
 }
 
-async function _fingerprintFolderNative(ftsSearch, folder, startKey, endKey, proofSlot = null) {
-  if (_useExactFolderMembership(ftsSearch)) {
+async function _fingerprintFolderNative(ftsSearch, folder, startKey, endKey, proofSlot, membershipMode) {
+  if (membershipMode.exact) {
     return _fingerprintFolderMembershipPages(
       ftsSearch,
       folder?.folderId,
@@ -3920,8 +3937,8 @@ async function _fingerprintFolderNative(ftsSearch, folder, startKey, endKey, pro
   return ftsSearch.fingerprintMsgIdRange(startKey, endKey);
 }
 
-async function _listFolderNative(ftsSearch, folder, startKey, endKey, afterKey, limit) {
-  if (_useExactFolderMembership(ftsSearch)) {
+async function _listFolderNative(ftsSearch, folder, startKey, endKey, afterKey, limit, membershipMode) {
+  if (membershipMode.exact) {
     if (!folder?.folderId) throw new Error("folder_membership_id_missing");
     _consumeFolderMembershipPageBudget();
     return ftsSearch.listFolderMembership(folder.folderId, afterKey, limit);
@@ -4032,8 +4049,9 @@ async function _folderReconStaleDirection(
   endKey,
   stats,
   budget,
-  resumeAfterKey = null,
-  expectedMembershipEpoch = getFtsMembershipEpoch(),
+  resumeAfterKey,
+  expectedMembershipEpoch,
+  membershipMode,
 ) {
   const generation = _folderReconGeneration;
   const reconcileLease = _folderReconInProgressOwner?.reconcileLease
@@ -4062,6 +4080,7 @@ async function _folderReconStaleDirection(
         endKey,
         afterKey,
         FOLDER_RECON_STALE_PAGE_KEYS,
+        membershipMode,
       );
       assertCurrent();
     } catch (e) {
@@ -4464,8 +4483,9 @@ async function _folderReconOrphanSweep(
   totalKnownFtsCount,
   stats,
   budget,
-  resume = null,
-  basisProof = null,
+  resume,
+  basisProof,
+  membershipMode,
 ) {
   const generation = _folderReconGeneration;
   const reconcileLease = _folderReconSchedulerOwner?.reconcileLease
@@ -4475,7 +4495,7 @@ async function _folderReconOrphanSweep(
     _assertNoFolderReconForegroundPressure();
   };
   const basisEpoch = basisProof?.membershipEpoch ?? getFtsMembershipEpoch();
-  const exactMembership = _useExactFolderMembership(ftsSearch);
+  const exactMembership = membershipMode.exact;
   assertCurrent();
   const nativeAll = basisProof?.nativeAll
     || (exactMembership
@@ -4820,7 +4840,8 @@ async function _runFolderReconcile(
     return { skipped: true, reason: "folder_inventory_failed" };
   }
 
-  const directAmbiguity = _useExactFolderMembership(ftsSearch)
+  const membershipMode = _captureFolderMembershipMode(ftsSearch);
+  const directAmbiguity = membershipMode.exact
     ? { folderKeys: new Set(), groups: 0 }
     : _folderReconAmbiguousKeyspaces(currentIdentities || folders);
   if (directAmbiguity.groups > 0) {
@@ -4938,7 +4959,7 @@ async function _runFolderReconcile(
         folderMembershipEpoch = getFtsMembershipEpoch();
         _assertNoFolderReconForegroundPressure();
         const uidNative = await _fingerprintFolderNative(
-          ftsSearch, f, startKey, endKey, "uid_checkpoint",
+          ftsSearch, f, startKey, endKey, "uid_checkpoint", membershipMode,
         );
         _assertFolderReconLease(reconcileLease, generation);
         _assertNoFolderReconForegroundPressure();
@@ -4994,7 +5015,7 @@ async function _runFolderReconcile(
       folderMembershipEpoch = getFtsMembershipEpoch();
       _assertNoFolderReconForegroundPressure();
       nativeFingerprint = await _fingerprintFolderNative(
-        ftsSearch, f, startKey, endKey, "initial",
+        ftsSearch, f, startKey, endKey, "initial", membershipMode,
       );
       _assertFolderReconLease(reconcileLease, generation);
       _assertNoFolderReconForegroundPressure();
@@ -5018,7 +5039,7 @@ async function _runFolderReconcile(
         folderMembershipEpoch = getFtsMembershipEpoch();
         _assertNoFolderReconForegroundPressure();
         nativeFingerprint = await _fingerprintFolderNative(
-          ftsSearch, f, startKey, endKey, "fresh_after_working",
+          ftsSearch, f, startKey, endKey, "fresh_after_working", membershipMode,
         );
         _assertFolderReconLease(reconcileLease, generation);
         _assertNoFolderReconForegroundPressure();
@@ -5250,6 +5271,7 @@ async function _runFolderReconcile(
       budget,
       staleResumeKey,
       folderMembershipEpoch,
+      membershipMode,
     );
     if (stalePass.membershipEpoch !== undefined) folderMembershipEpoch = stalePass.membershipEpoch;
     const staleBudgetPartial = stalePass.budgetPartial;
@@ -5276,12 +5298,12 @@ async function _runFolderReconcile(
         // A local stale removal changes the epoch. Leave the stale cursor
         // unbound so the next slice starts from a fresh native proof, while
         // this slice can still admit missing local rows below.
-        if (!_useExactFolderMembership(ftsSearch)
+        if (!membershipMode.exact
             || staleCursorEpoch === nativeFingerprintEpoch) {
-          const staleFingerprint = _useExactFolderMembership(ftsSearch)
+          const staleFingerprint = membershipMode.exact
             ? nativeFingerprint
             : await _fingerprintFolderNative(
-              ftsSearch, f, startKey, endKey, "stale_checkpoint",
+              ftsSearch, f, startKey, endKey, "stale_checkpoint", membershipMode,
             );
           _assertFolderReconLease(reconcileLease, generation);
           _assertNoFolderReconForegroundPressure();
@@ -5396,16 +5418,16 @@ async function _runFolderReconcile(
         // Exact membership already spent its native page allowance during
         // the stale pass. Its initial digest is still a terminal proof if no
         // membership mutation crossed the epoch fence during the local scan.
-        if (_useExactFolderMembership(ftsSearch)
+        if (membershipMode.exact
             && folderMembershipEpoch !== nativeFingerprintEpoch) {
           writePartialCheckpoint(0, false, null, null);
           stats.foldersLocalDrift++;
           continue;
         }
-        const ftsNow = _useExactFolderMembership(ftsSearch)
+        const ftsNow = membershipMode.exact
           ? nativeFingerprint
           : await _fingerprintFolderNative(
-            ftsSearch, f, startKey, endKey, "terminal",
+            ftsSearch, f, startKey, endKey, "terminal", membershipMode,
           );
         _assertFolderReconLease(reconcileLease, generation);
         _assertNoFolderReconForegroundPressure();
@@ -5578,7 +5600,8 @@ async function _runFolderReconOrphanSlice(ftsSearch, identities, memo) {
     if (reconcileLease) _assertFolderReconLease(reconcileLease, generation);
     if (_hasFolderReconForegroundPressure()) throw new Error("folder_recon_pressure");
   };
-  const exactMembership = _useExactFolderMembership(ftsSearch);
+  const membershipMode = _captureFolderMembershipMode(ftsSearch);
+  const exactMembership = membershipMode.exact;
   const inventory = await _fingerprintStringsCooperatively(
     exactMembership
       ? identities.map(identity =>
@@ -5662,6 +5685,7 @@ async function _runFolderReconOrphanSlice(ftsSearch, identities, memo) {
     { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE },
     memo.orphanSweep || null,
     basis,
+    membershipMode,
   );
   if (result.complete || result.restart) {
     delete memo.orphanSweep;
@@ -5806,12 +5830,13 @@ const FOLDER_MEMBERSHIP_STATE_RESTART_TELEMETRY = Object.freeze({
   page_invalid: "membershipStateRestartPageInvalid",
 });
 
-function _folderMembershipStatePassBinding(inventory, ftsSearch) {
+function _folderMembershipStatePassBinding(inventory, ftsSearch, topologySerial = _folderReconTopologySerial) {
   return {
     generation: _folderReconGeneration,
     inventoryCount: inventory.count,
     inventorySha256: inventory.sha256,
     connectionGeneration: _folderMembershipConnectionGeneration(ftsSearch),
+    topologySerial,
   };
 }
 
@@ -5820,7 +5845,8 @@ function _folderMembershipStatePassBound(pass, binding) {
     && pass.generation === binding.generation
     && pass.inventoryCount === binding.inventoryCount
     && pass.inventorySha256 === binding.inventorySha256
-    && pass.connectionGeneration === binding.connectionGeneration;
+    && pass.connectionGeneration === binding.connectionGeneration
+    && pass.topologySerial === binding.topologySerial;
 }
 
 function _startFolderMembershipStatePass(binding, restartReason = null) {
@@ -5832,6 +5858,7 @@ function _startFolderMembershipStatePass(binding, restartReason = null) {
     inventoryCount: binding.inventoryCount,
     inventorySha256: binding.inventorySha256,
     connectionGeneration: binding.connectionGeneration,
+    topologySerial: binding.topologySerial,
     startedBeforeFirst: true,
     afterMsgId: null,
     passMutated: false,
@@ -6007,6 +6034,7 @@ async function _runFolderMembershipMigrationSlice(
   generation,
   syncStartedAt,
   inventoryMembershipEpoch,
+  inventoryTopologySerial = _folderReconTopologySerial,
 ) {
   if (ftsSearch?.supportsFolderMembership?.() !== true) {
     _revokeFolderMembershipCutover();
@@ -6062,7 +6090,7 @@ async function _runFolderMembershipMigrationSlice(
   } else {
     memo.folderMembershipMigration = migration;
   }
-  const binding = _folderMembershipStatePassBinding(inventory, ftsSearch);
+  const binding = _folderMembershipStatePassBinding(inventory, ftsSearch, inventoryTopologySerial);
   if (_folderMembershipCutoverProven) {
     // Checked before the page budget is spent: a completed migration leaves
     // this slice's native page to per-folder work.
@@ -6358,6 +6386,7 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
     // this inventory is fenced on it, so a row indexed into a folder created
     // after the snapshot can never be mistaken for a deleted folder's row.
     const inventoryMembershipEpoch = getFtsMembershipEpoch();
+    const inventoryTopologySerial = _folderReconTopologySerial;
     const identities = await _getFolderReconInventory(reconcileLease, generation, syncStartedAt);
     const keys = identities.map(i => `${i.accountId}:${i.folderPath}`);
     const currentFolderKeys = new Set(keys);
@@ -6375,6 +6404,7 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
           generation,
           syncStartedAt,
           inventoryMembershipEpoch,
+          inventoryTopologySerial,
         );
       } catch (error) {
         if (!String(error?.message || error).includes("folder_recon_pressure")) throw error;
