@@ -2559,7 +2559,12 @@ let _folderReconNativeSupported = null;
 // have durably completed.
 let _folderMembershipCutoverProven = false;
 let _folderMembershipScanSession = null;
-let _folderMembershipMigrationSessionStarted = false;
+// Session-local global membership-state pass, bound to the reconciliation
+// generation, the live-folder inventory digest and the native connection
+// generation. It is never persisted: a restart or any binding change starts a
+// new pass from before-first, and only its in-process completion can grant
+// cutover. Persisting it rewrote the whole folder memo per state page.
+let _folderMembershipStatePass = null;
 let _folderMembershipCapabilityState = null;
 let _folderMembershipPageBudget = 0;
 let _folderMembershipDigestSessions = new Map();
@@ -2692,8 +2697,7 @@ function _handleExclusiveFtsMembershipChange() {
   _folderReconDrainFailureCounts.clear();
   _folderReconOrphanDone = false;
   _folderReconOrphanBasis = null;
-  _folderMembershipCutoverProven = false;
-  _folderMembershipMigrationSessionStarted = false;
+  _revokeFolderMembershipCutover();
   _cancelFolderMembershipScanSession();
   _resetFolderMembershipVolatileProof();
   _releaseFolderReconActiveProof(null, "invalidation");
@@ -2723,6 +2727,18 @@ function _newFolderReconRuntimeTelemetry() {
     ambiguousGroups: 0,
     ambiguousFolders: 0,
     unloadedAccountRowsKept: 0,
+    membershipStatePages: 0,
+    membershipStateRestartEpochChanged: 0,
+    membershipStateRestartAfterReadEpoch: 0,
+    membershipStateRestartMutatedReplay: 0,
+    membershipStateRestartUnresolvedReplay: 0,
+    membershipStateRestartRevoked: 0,
+    membershipStateRestartBindingChanged: 0,
+    membershipStateRestartPageInvalid: 0,
+    membershipStateRestartMutationFailed: 0,
+    membershipCutovers: 0,
+    membershipInventoryResets: 0,
+    membershipLastPassSlices: 0,
   };
 }
 
@@ -3602,8 +3618,28 @@ async function _checkFolderReconNativeSupport(ftsSearch) {
 }
 
 function _useExactFolderMembership(ftsSearch) {
+  const pass = _folderMembershipStatePass;
   return _folderMembershipCutoverProven
-    && ftsSearch?.supportsFolderMembership?.() === true;
+    && pass?.completed === true
+    && pass.generation === _folderReconGeneration
+    && ftsSearch?.supportsFolderMembership?.() === true
+    && pass.connectionGeneration === _folderMembershipConnectionGeneration(ftsSearch);
+}
+
+// The only way to withdraw exact-membership cutover. The session-local pass
+// that earned it goes with it, so cutover can be re-earned only by a new pass
+// that starts before the first native row.
+function _revokeFolderMembershipCutover() {
+  if (_folderMembershipCutoverProven || _folderMembershipStatePass) {
+    _bumpFolderReconTelemetry("membershipStateRestartRevoked");
+  }
+  _folderMembershipCutoverProven = false;
+  _folderMembershipStatePass = null;
+}
+
+function _folderMembershipConnectionGeneration(ftsSearch) {
+  const generation = ftsSearch?.getConnectionGeneration?.();
+  return Number.isSafeInteger(generation) ? generation : null;
 }
 
 function _resetFolderMembershipVolatileProof() {
@@ -3613,16 +3649,22 @@ function _resetFolderMembershipVolatileProof() {
 }
 
 function _observeFolderMembershipCapability(ftsSearch) {
-  const capable = ftsSearch?.supportsFolderMembership?.() === true;
-  if (_folderMembershipCapabilityState !== capable) {
-    _folderMembershipCapabilityState = capable;
-    _folderMembershipCutoverProven = false;
-    _folderMembershipMigrationSessionStarted = false;
+  const connectionGeneration = _folderMembershipConnectionGeneration(ftsSearch);
+  // A reconnect can let an unobserved legacy helper write ownerless rows even
+  // when the capability reads true on both sides, so a new native connection
+  // generation invalidates session proof exactly like a capability flip. A
+  // capable helper without a readable generation cannot bind proof: legacy.
+  const capable = ftsSearch?.supportsFolderMembership?.() === true
+    && connectionGeneration !== null;
+  if (_folderMembershipCapabilityState?.capable !== capable
+      || _folderMembershipCapabilityState?.connectionGeneration !== connectionGeneration) {
+    _folderMembershipCapabilityState = { capable, connectionGeneration };
+    _revokeFolderMembershipCutover();
     _cancelFolderMembershipScanSession();
     _resetFolderMembershipVolatileProof();
   }
   if (!capable) {
-    _folderMembershipMigrationSessionStarted = false;
+    _folderMembershipStatePass = null;
     _cancelFolderMembershipScanSession();
     _resetFolderMembershipVolatileProof();
   }
@@ -3776,7 +3818,7 @@ async function _fingerprintFolderMembershipStatePages(
   for (const entry of entries) {
     _assertStrictMembershipCursor(session.afterMsgId, entry?.msgId);
     if (typeof entry.folderId !== "string" || entry.folderId.length === 0) {
-      _folderMembershipCutoverProven = false;
+      _revokeFolderMembershipCutover();
       _folderMembershipDigestSessions.delete(key);
       throw new Error("folder_membership_state_incomplete");
     }
@@ -4433,7 +4475,7 @@ async function _folderReconOrphanSweep(
     if (exactMembership) {
       const membershipFolderId = exactEntries[i]?.folderId;
       if (typeof membershipFolderId !== "string" || membershipFolderId.length === 0) {
-        _folderMembershipCutoverProven = false;
+        _revokeFolderMembershipCutover();
         stats.orphanKeysKept++;
         return { complete: false, failed: true, cursor: afterKey, nativeAll };
       }
@@ -5643,22 +5685,92 @@ function _newFolderMembershipMigration(inventory) {
     inventoryCount: inventory.count,
     inventorySha256: inventory.sha256,
     completedFolderIds: {},
-    stateAfterMsgId: null,
-    passMembershipEpoch: null,
-    passMutated: false,
-    passUnresolved: 0,
-    cutoverProven: false,
-    updatedAtMs: Date.now(),
   };
 }
 
-function _resetFolderMembershipStatePass(migration) {
-  migration.stateAfterMsgId = null;
-  migration.passMembershipEpoch = null;
-  migration.passMutated = false;
-  migration.passUnresolved = 0;
-  migration.cutoverProven = false;
-  migration.updatedAtMs = Date.now();
+// The durable migration record holds only facts a later session may reuse:
+// the inventory it describes and which folders' live headers were assigned.
+// Pre-2026-10 per-pass fields (cursor, epoch, cutover) are dropped on read and
+// vanish on the next migration write; nothing stored can resume a state pass
+// or imply cutover.
+function _durableFolderMembershipMigration(value) {
+  if (value?.version !== 1
+      || !Number.isSafeInteger(value.inventoryCount)
+      || typeof value.inventorySha256 !== "string"
+      || !value.completedFolderIds
+      || typeof value.completedFolderIds !== "object") {
+    return null;
+  }
+  const completedFolderIds = {};
+  for (const [folderId, completed] of Object.entries(value.completedFolderIds)) {
+    if (completed === true) completedFolderIds[folderId] = true;
+  }
+  return {
+    version: 1,
+    inventoryCount: value.inventoryCount,
+    inventorySha256: value.inventorySha256,
+    completedFolderIds,
+  };
+}
+
+const FOLDER_MEMBERSHIP_STATE_RESTART_TELEMETRY = Object.freeze({
+  epoch_changed: "membershipStateRestartEpochChanged",
+  after_read_epoch: "membershipStateRestartAfterReadEpoch",
+  mutated_replay: "membershipStateRestartMutatedReplay",
+  unresolved_replay: "membershipStateRestartUnresolvedReplay",
+  binding_changed: "membershipStateRestartBindingChanged",
+  page_invalid: "membershipStateRestartPageInvalid",
+  mutation_failed: "membershipStateRestartMutationFailed",
+});
+
+function _folderMembershipStatePassBinding(inventory, ftsSearch) {
+  return {
+    generation: _folderReconGeneration,
+    inventoryCount: inventory.count,
+    inventorySha256: inventory.sha256,
+    connectionGeneration: _folderMembershipConnectionGeneration(ftsSearch),
+  };
+}
+
+function _folderMembershipStatePassBound(pass, binding) {
+  return !!pass
+    && pass.generation === binding.generation
+    && pass.inventoryCount === binding.inventoryCount
+    && pass.inventorySha256 === binding.inventorySha256
+    && pass.connectionGeneration === binding.connectionGeneration;
+}
+
+function _startFolderMembershipStatePass(binding, restartReason = null) {
+  if (restartReason) {
+    _bumpFolderReconTelemetry(FOLDER_MEMBERSHIP_STATE_RESTART_TELEMETRY[restartReason]);
+  }
+  _folderMembershipStatePass = {
+    generation: binding.generation,
+    inventoryCount: binding.inventoryCount,
+    inventorySha256: binding.inventorySha256,
+    connectionGeneration: binding.connectionGeneration,
+    startedBeforeFirst: true,
+    afterMsgId: null,
+    passMembershipEpoch: null,
+    passMutated: false,
+    passUnresolved: 0,
+    slices: 0,
+    completed: false,
+  };
+  return _folderMembershipStatePass;
+}
+
+function _currentFolderMembershipStatePass(binding) {
+  const pass = _folderMembershipStatePass;
+  if (_folderMembershipStatePassBound(pass, binding)) return pass;
+  return _startFolderMembershipStatePass(binding, pass ? "binding_changed" : null);
+}
+
+// Restart from before-first. A continuation whose pass was already replaced
+// (revocation, binding change) leaves the newer pass alone.
+function _restartFolderMembershipStatePass(pass, reason) {
+  if (_folderMembershipStatePass !== pass) return;
+  _startFolderMembershipStatePass(pass, reason);
 }
 
 async function _persistFolderMembershipMigration(
@@ -5788,8 +5900,8 @@ async function _runFolderMembershipScanSlice(
     if (page?.done === true) {
       _folderMembershipScanSession = null;
       migration.completedFolderIds[folder.folderId] = true;
-      _resetFolderMembershipStatePass(migration);
-      migration.updatedAtMs = Date.now();
+      // The scan assigned owners, so any state pass must start over.
+      _folderMembershipStatePass = null;
       return { complete: true, expectedEpoch };
     }
     return { complete: false, expectedEpoch };
@@ -5814,7 +5926,7 @@ async function _runFolderMembershipMigrationSlice(
   syncStartedAt,
 ) {
   if (ftsSearch?.supportsFolderMembership?.() !== true) {
-    _folderMembershipCutoverProven = false;
+    _revokeFolderMembershipCutover();
     _cancelFolderMembershipScanSession();
     return { complete: true, legacy: true };
   }
@@ -5827,7 +5939,7 @@ async function _runFolderMembershipMigrationSlice(
   const distinctFolderIds = new Set(validIdentities.map(identity => identity.folderId));
   if (validIdentities.length !== identities.length
       || distinctFolderIds.size !== validIdentities.length) {
-    _folderMembershipCutoverProven = false;
+    _revokeFolderMembershipCutover();
     _cancelFolderMembershipScanSession();
     return { complete: false, failed: true, reason: "folder_id_inventory_invalid" };
   }
@@ -5838,19 +5950,35 @@ async function _runFolderMembershipMigrationSlice(
     assertCurrent,
   );
   assertCurrent();
-  let migration = memo.folderMembershipMigration;
-  if (migration?.version !== 1
+  let migration = _durableFolderMembershipMigration(memo.folderMembershipMigration);
+  if (!migration
       || migration.inventoryCount !== inventory.count
-      || migration.inventorySha256 !== inventory.sha256
-      || !migration.completedFolderIds
-      || typeof migration.completedFolderIds !== "object") {
+      || migration.inventorySha256 !== inventory.sha256) {
     migration = _newFolderMembershipMigration(inventory);
     memo.folderMembershipMigration = migration;
-    _folderMembershipCutoverProven = false;
+    _revokeFolderMembershipCutover();
     _cancelFolderMembershipScanSession();
+    _bumpFolderReconTelemetry("membershipInventoryResets");
+    // Persist the new inventory before any assignment page relies on it, so a
+    // later tick never reads the old digest and cancels this live scan.
+    await _writeFolderReconMemo(memo, {
+      generation,
+      folderKeys: [],
+      membershipMigration: true,
+    });
+    assertCurrent();
+  } else {
+    memo.folderMembershipMigration = migration;
   }
-  if (_folderMembershipCutoverProven && migration.cutoverProven === true) {
-    return { complete: true, cutover: true };
+  const binding = _folderMembershipStatePassBinding(inventory, ftsSearch);
+  if (_folderMembershipCutoverProven) {
+    // Checked before the page budget is spent: a completed migration leaves
+    // this slice's native page to per-folder work.
+    if (_folderMembershipStatePass?.completed === true
+        && _folderMembershipStatePassBound(_folderMembershipStatePass, binding)) {
+      return { complete: true, cutover: true };
+    }
+    _revokeFolderMembershipCutover();
   }
 
   const incompleteIdentity = validIdentities.find(identity =>
@@ -5881,65 +6009,51 @@ async function _runFolderMembershipMigrationSlice(
         migration,
         assertCurrent,
       );
-      await _persistFolderMembershipMigration(
-        memo,
-        result.expectedEpoch,
-        reconcileLease,
-        generation,
-      );
+      // Only completion is reusable. A partial scan lives in its session
+      // token, which no later session can resume anyway.
+      if (result.complete) {
+        await _persistFolderMembershipMigration(
+          memo,
+          result.expectedEpoch,
+          reconcileLease,
+          generation,
+        );
+      }
       return { complete: false, folderProgress: true, folderComplete: result.complete };
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
-      _resetFolderMembershipStatePass(migration);
       return { complete: false, failed: true, reason: "folder_assignment_failed", error: String(error) };
     }
   }
 
-  if (!_folderMembershipMigrationSessionStarted) {
-    // A durable folder completion marker is reusable because all subsequent
-    // writes are capability-gated. A partially enumerated native pass is not:
-    // durably restart it before reading page one so an interruption cannot
-    // accidentally resume at a prior session's terminal cursor.
-    _resetFolderMembershipStatePass(migration);
-    const resetEpoch = getFtsMembershipEpoch();
-    await _persistFolderMembershipMigration(
-      memo,
-      resetEpoch,
-      reconcileLease,
-      generation,
-    );
-    _folderMembershipMigrationSessionStarted = true;
-    return { complete: false, restart: true, reason: "session_membership_state_reset" };
+  // A durable folder completion marker is reusable because all subsequent
+  // writes are capability-gated. The native pass is not: it lives only in
+  // this process, so a new session always starts it before the first row.
+  const pass = _currentFolderMembershipStatePass(binding);
+  if (!Number.isSafeInteger(pass.passMembershipEpoch)) {
+    pass.passMembershipEpoch = getFtsMembershipEpoch();
   }
-
-  if (!Number.isSafeInteger(migration.passMembershipEpoch)) {
-    migration.passMembershipEpoch = getFtsMembershipEpoch();
-  }
-  if (migration.passMembershipEpoch !== getFtsMembershipEpoch()) {
-    _resetFolderMembershipStatePass(migration);
-    await _persistFolderMembershipMigration(
-      memo,
-      getFtsMembershipEpoch(),
-      reconcileLease,
-      generation,
-    );
+  if (pass.passMembershipEpoch !== getFtsMembershipEpoch()) {
+    _restartFolderMembershipStatePass(pass, "epoch_changed");
     return { complete: false, restart: true, reason: "membership_epoch_changed" };
   }
-  const pageEpoch = migration.passMembershipEpoch;
+  const pageEpoch = pass.passMembershipEpoch;
   assertCurrent();
   let page;
   try {
     _consumeFolderMembershipPageBudget();
     page = await ftsSearch.listFolderMembershipState(
-      migration.stateAfterMsgId,
+      pass.afterMsgId,
       FOLDER_MEMBERSHIP_STATE_PAGE_SIZE,
     );
   } catch (error) {
     return { complete: false, failed: true, reason: "membership_state_list_failed", error: String(error) };
   }
   assertCurrent();
+  pass.slices++;
+  _bumpFolderReconTelemetry("membershipStatePages");
   if (pageEpoch !== getFtsMembershipEpoch()) {
-    _resetFolderMembershipStatePass(migration);
+    _restartFolderMembershipStatePass(pass, "after_read_epoch");
     return { complete: false, restart: true, reason: "membership_epoch_changed" };
   }
 
@@ -5953,16 +6067,16 @@ async function _runFolderMembershipMigrationSlice(
   const trustedAccountIds = _folderReconTrustedAccountIds(validIdentities);
   if ((page.entries || []).length > FOLDER_MEMBERSHIP_STATE_PAGE_SIZE
       || (page.done !== true && (page.entries || []).length === 0)) {
-    _resetFolderMembershipStatePass(migration);
+    _restartFolderMembershipStatePass(pass, "page_invalid");
     return { complete: false, failed: true, reason: "membership_state_page_invalid" };
   }
-  let previousMsgId = migration.stateAfterMsgId;
+  let previousMsgId = pass.afterMsgId;
   for (const entry of page.entries || []) {
     const msgId = entry?.msgId;
     try {
       _assertStrictMembershipCursor(previousMsgId, msgId);
     } catch (error) {
-      _resetFolderMembershipStatePass(migration);
+      _restartFolderMembershipStatePass(pass, "page_invalid");
       return {
         complete: false,
         failed: true,
@@ -5973,7 +6087,7 @@ async function _runFolderMembershipMigrationSlice(
     previousMsgId = msgId;
     if (entry.folderId !== null
         && (typeof entry.folderId !== "string" || entry.folderId.length === 0)) {
-      _resetFolderMembershipStatePass(migration);
+      _restartFolderMembershipStatePass(pass, "page_invalid");
       return { complete: false, failed: true, reason: "membership_state_folder_id_invalid" };
     }
     if (entry.folderId !== null) {
@@ -6026,11 +6140,11 @@ async function _runFolderMembershipMigrationSlice(
         }
       }, { mutation: true });
       expectedEpoch = getFtsMembershipEpoch();
-      migration.passMembershipEpoch = expectedEpoch;
-      migration.passMutated = true;
+      pass.passMembershipEpoch = expectedEpoch;
+      pass.passMutated = true;
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
-      _resetFolderMembershipStatePass(migration);
+      _restartFolderMembershipStatePass(pass, "mutation_failed");
       return { complete: false, failed: true, reason: "stale_folder_remove_failed", error: String(error) };
     }
   }
@@ -6046,28 +6160,24 @@ async function _runFolderMembershipMigrationSlice(
         }, { mutation: true });
         expectedEpoch = getFtsMembershipEpoch();
       }
-      migration.passMembershipEpoch = expectedEpoch;
-      migration.passMutated = true;
+      pass.passMembershipEpoch = expectedEpoch;
+      pass.passMutated = true;
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
-      _resetFolderMembershipStatePass(migration);
+      _restartFolderMembershipStatePass(pass, "mutation_failed");
       return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
     }
   }
-  migration.passUnresolved += unresolved;
-  migration.stateAfterMsgId = (page.entries || []).length > 0
+  pass.passUnresolved += unresolved;
+  pass.afterMsgId = (page.entries || []).length > 0
     ? page.entries[page.entries.length - 1].msgId
-    : migration.stateAfterMsgId;
-  migration.updatedAtMs = Date.now();
+    : pass.afterMsgId;
   if (page.done === true) {
-    if (migration.passMutated || migration.passUnresolved > 0) {
-      const passUnresolved = migration.passUnresolved;
-      _resetFolderMembershipStatePass(migration);
-      await _persistFolderMembershipMigration(
-        memo,
-        expectedEpoch,
-        reconcileLease,
-        generation,
+    if (pass.passMutated || pass.passUnresolved > 0) {
+      const passUnresolved = pass.passUnresolved;
+      _restartFolderMembershipStatePass(
+        pass,
+        passUnresolved > 0 ? "unresolved_replay" : "mutated_replay",
       );
       return {
         complete: false,
@@ -6075,23 +6185,25 @@ async function _runFolderMembershipMigrationSlice(
         ...(passUnresolved > 0 ? { failed: true, reason: "unresolved_legacy_rows" } : {}),
       };
     }
-    migration.cutoverProven = true;
-    migration.updatedAtMs = Date.now();
-    await _persistFolderMembershipMigration(
-      memo,
-      expectedEpoch,
-      reconcileLease,
-      generation,
-    );
+    await _assertFolderReconMembershipEpoch(expectedEpoch, reconcileLease, generation);
+    assertCurrent();
+    // Cutover is earned only by this process's own unbroken pass: one that
+    // started before the first row under the binding that is still current.
+    if (_folderMembershipStatePass !== pass
+        || pass.startedBeforeFirst !== true
+        || ftsSearch?.supportsFolderMembership?.() !== true
+        || !_folderMembershipStatePassBound(
+          pass,
+          _folderMembershipStatePassBinding(inventory, ftsSearch),
+        )) {
+      return { complete: false, restart: true, reason: "membership_state_binding_changed" };
+    }
+    pass.completed = true;
     _folderMembershipCutoverProven = true;
+    _bumpFolderReconTelemetry("membershipCutovers");
+    _folderReconRuntimeTelemetry.membershipLastPassSlices = pass.slices;
     return { complete: true, cutover: true };
   }
-  await _persistFolderMembershipMigration(
-    memo,
-    expectedEpoch,
-    reconcileLease,
-    generation,
-  );
   return { complete: false, membershipStateProgress: true };
 }
 
@@ -6782,8 +6894,7 @@ export async function initIncrementalIndexer(ftsSearch) {
   _folderReconRequestedDueMs = Infinity;
   _folderReconHardNotBeforeMs = 0;
   _folderReconNativeSupported = null;
-  _folderMembershipCutoverProven = false;
-  _folderMembershipMigrationSessionStarted = false;
+  _revokeFolderMembershipCutover();
   _folderMembershipCapabilityState = null;
   _cancelFolderMembershipScanSession();
   _resetFolderMembershipVolatileProof();
@@ -6920,8 +7031,7 @@ export async function disposeIncrementalIndexer() {
   _cancelExclusiveMarkerRetry();
   _folderReconInProgressOwner = null;
   _folderReconSchedulerOwner = null;
-  _folderMembershipCutoverProven = false;
-  _folderMembershipMigrationSessionStarted = false;
+  _revokeFolderMembershipCutover();
   _folderMembershipCapabilityState = null;
   _cancelFolderMembershipScanSession();
   _resetFolderMembershipVolatileProof();
@@ -7018,6 +7128,9 @@ export async function updateIncrementalIndexerSettings() {
     // explicitly retire any private marker retry (including an in-flight
     // owner's authority to wake after its storage await settles).
     _cancelExclusiveMarkerRetry();
+    // Cutover is session proof; a disabled indexer observes no events, so it
+    // must be re-earned by a fresh pass after re-enable.
+    _revokeFolderMembershipCutover();
   } else if (!wasEnabled && _isEnabled && _folderReconDirty.has("__all__")) {
     // Exclusive membership invalidation is retained in-memory while disabled.
     // Re-arm its durable marker in the same generation before normal work can
@@ -7200,8 +7313,7 @@ export const _testExports = {
   _resetFolderReconState: () => {
     _resetFtsOperationCoordinatorForTests();
     _folderReconNativeSupported = null;
-    _folderMembershipCutoverProven = false;
-    _folderMembershipMigrationSessionStarted = false;
+    _revokeFolderMembershipCutover();
     _folderMembershipCapabilityState = null;
     _cancelFolderMembershipScanSession();
     _resetFolderMembershipVolatileProof();

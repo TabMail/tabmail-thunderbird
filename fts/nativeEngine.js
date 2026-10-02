@@ -187,6 +187,13 @@ function getFtsHostAvailability() {
 function supportsFolderMembership() {
   return hostInfo?.capabilities?.folderMembershipV1 === true;
 }
+
+// Monotonic per native port. Reconciliation binds session-local membership
+// proof to it: a reconnect may have let an unobserved legacy helper write
+// ownerless rows even when the capability reads true on both sides.
+function getConnectionGeneration() {
+  return nativeConnectionGeneration;
+}
 // Circuit breaker: when the helper is confirmed unavailable, don't re-attempt
 // connectNative on every RPC (it spams "disconnected"/"update check failed").
 // Re-attempt at most once per cooldown so a helper installed before the next
@@ -843,6 +850,8 @@ export const nativeFtsSearch = {
   },
 
   supportsFolderMembership,
+
+  getConnectionGeneration,
 
   async listFolderMembership(folderId, afterMsgId, limit) {
     const params = { folderId, limit };

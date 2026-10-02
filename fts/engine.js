@@ -663,6 +663,10 @@ export const ftsSearch = {
     return nativeFtsSearch.supportsFolderMembership();
   },
 
+  getConnectionGeneration() {
+    return nativeFtsSearch.getConnectionGeneration();
+  },
+
   async listFolderMembership(folderId, afterMsgId, limit) {
     return await nativeFtsSearch.listFolderMembership(folderId, afterMsgId, limit);
   },
