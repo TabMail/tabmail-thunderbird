@@ -5300,6 +5300,39 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
     }
   });
 
+  it('keeps transient probe retries within the backoff ceiling on one connection and still verifies once the probe recovers', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const fts = installEmptyFolders([['account1', '/A']]);
+      withReconnectableHelper(fts);
+      const probeTimes = [];
+      fts.fingerprintMsgIdRange.mockImplementation(async (start, end) => {
+        if (start === '' && end === '') {
+          probeTimes.push(Date.now());
+          if (probeTimes.length <= 10) throw new Error('synthetic transient native read failure');
+        }
+        return { count: 0, sha256: emptyDigest() };
+      });
+      await incrementalIndexer.initIncrementalIndexer(fts);
+      expect(await driveTimersUntil(reconciliationIdle, { stepMs: 10_000, maxVirtualMs: 2_000_000 })).toBe(true);
+      expect(probeTimes).toHaveLength(11);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders['account1:/A'])
+        .toMatchObject({ verified: true });
+      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      const intervals = probeTimes.slice(1).map((time, index) => time - probeTimes[index]);
+      const ceilingMs = 5 * 60 * 1000;
+      // Ten failures outgrow the ceiling, so the later retries sit at it; one
+      // fake-clock step of slack covers settlement.
+      expect(Math.max(...intervals)).toBeGreaterThanOrEqual(ceilingMs);
+      expect(Math.max(...intervals)).toBeLessThanOrEqual(ceilingMs + 10_000);
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps one connection subscription per indexer lifetime and drops it on dispose', async () => {
     vi.useFakeTimers();
     try {
