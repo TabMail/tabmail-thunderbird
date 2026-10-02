@@ -5213,6 +5213,146 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
     }
   });
 
+  // `/A` -> `/Temp`, `/B` -> `/A`, `/Temp` -> `/B`: every event fires but the
+  // final account/path inventory is identical, so only per-folder
+  // re-verification can see that the two folders' contents traded places.
+  it.each([
+    ['legacy', 'idle', true],
+    ['legacy', 'during the last folder verification', true],
+    ['legacy', 'idle', false],
+    ['exact', 'idle', true],
+    ['exact', 'during the last folder verification', true],
+    ['exact', 'idle', false],
+  ])('re-verifies every folder after a same-inventory topology change (%s mode, %s, contents swapped=%s)', async (mode, when, swapped) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const events = installTopologyEvents();
+    try {
+      const fixture = mode === 'exact'
+        ? installExactMembershipFolders([
+          { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+          { folderPath: '/B', headerMessageIds: ['b@example.com'] },
+        ])
+        : installRepairFolders([{ folderPath: '/A', rows: 1 }, { folderPath: '/B', rows: 1 }]);
+      const { fts, rowsByURI } = fixture;
+      const native = mode === 'exact' ? fixture.nativeRows : fixture.nativeKeys;
+      const [uriA, uriB] = [...rowsByURI.keys()];
+      const [idA] = rowsByURI.get(uriA).map(row => row.headerMessageId);
+      const [idB] = rowsByURI.get(uriB).map(row => row.headerMessageId);
+      if (mode !== 'exact') {
+        native.add(`account1:/A:${idA}`);
+        native.add(`account1:/B:${idB}`);
+      }
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => ({
+        missing: ids.filter(id => !rowsByURI.get(uri).some(row => row.headerMessageId === id)),
+      }));
+      const inventory = await globalThis.browser.accounts.list();
+      const swapTopology = () => {
+        if (swapped) {
+          const rowsA = rowsByURI.get(uriA);
+          rowsByURI.set(uriA, rowsByURI.get(uriB));
+          rowsByURI.set(uriB, rowsA);
+        }
+        events.folders.onRenamed.emit({ accountId: 'account1', path: '/A' }, { accountId: 'account1', path: '/Temp' });
+        events.folders.onRenamed.emit({ accountId: 'account1', path: '/B' }, { accountId: 'account1', path: '/A' });
+        events.folders.onRenamed.emit({ accountId: 'account1', path: '/Temp' }, { accountId: 'account1', path: '/B' });
+      };
+      const scan = globalThis.browser.tmMsgNotify.beginFolderMessageScan;
+      let fired = false;
+      if (when !== 'idle') {
+        const original = scan.getMockImplementation();
+        scan.mockImplementation(async (...args) => {
+          const result = await original(...args);
+          // /A is already session-done when /B's first verification starts
+          // (in exact mode: the first one after cutover, not the assignment scan).
+          if (!fired && args[0] === uriB
+              && (mode !== 'exact' || _testExports._getFolderMembershipCutoverProven())) {
+            fired = true;
+            swapTopology();
+          }
+          return result;
+        });
+      }
+      // Re-verification admits each folder's new row to missing-row repair.
+      const missingFound = async () => {
+        const found = new Set();
+        for (const { value } of fts.filterNewMessages.mock.results) {
+          for (const msgId of (await value).newMsgIds) found.add(msgId);
+        }
+        return found.has(`account1:/A:${idB}`) && found.has(`account1:/B:${idA}`);
+      };
+      const staleGone = () => !native.has(`account1:/A:${idA}`) && !native.has(`account1:/B:${idB}`);
+      await incrementalIndexer.initIncrementalIndexer(fts);
+
+      if (when === 'idle') {
+        expect(await driveTimersUntil(reconciliationIdle)).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+        fired = true;
+        swapTopology();
+      }
+      const scansBefore = when === 'idle' ? scan.mock.calls.length : 0;
+      // The inventory the scheduler reads afterwards is the one it verified.
+      expect(await globalThis.browser.accounts.list()).toEqual(inventory);
+
+      if (swapped) {
+        const ok = await driveTimersUntil(async () => fired && staleGone() && await missingFound());
+        expect(ok).toBe(true);
+        expect(storageData.fts_reconcile_pending).toBeDefined();
+      } else {
+        expect(await driveTimersUntil(() => fired && reconciliationIdle()
+          && scan.mock.calls.slice(scansBefore).some(([uri]) => uri === uriA)
+          && scan.mock.calls.slice(scansBefore).some(([uri]) => uri === uriB))).toBe(true);
+        expect(native.has(`account1:/A:${idA}`)).toBe(true);
+        expect(native.has(`account1:/B:${idB}`)).toBe(true);
+        expect(_testExports._getPendingUpdates().size).toBe(0);
+      }
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      uninstallTopologyEvents();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['legacy', 'exact'])('re-verifies a folder removed and recreated at the same path while reconciliation is idle (%s mode)', async (mode) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const events = installTopologyEvents();
+    try {
+      const fixture = mode === 'exact'
+        ? installExactMembershipFolders([{ folderPath: '/A', headerMessageIds: ['old@example.com'] }])
+        : installRepairFolders([{ folderPath: '/A', rows: 1 }]);
+      const { folders, rowsByURI, fts } = fixture;
+      const nativeKeys = mode === 'exact' ? fixture.nativeRows : fixture.nativeKeys;
+      const uri = folders[0].folderURI;
+      const oldKey = `account1:/A:${rowsByURI.get(uri)[0].headerMessageId}`;
+      if (mode !== 'exact') nativeKeys.add(oldKey);
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (probeUri, ids) => ({
+        missing: ids.filter(id => !rowsByURI.get(probeUri).some(row => row.headerMessageId === id)),
+      }));
+      await incrementalIndexer.initIncrementalIndexer(fts);
+      expect(await driveTimersUntil(reconciliationIdle)).toBe(true);
+      if (mode === 'exact') expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+
+      rowsByURI.set(uri, [{ msgKey: 1, headerMessageId: 'new@example.com' }]);
+      events.folders.onDeleted.emit({ accountId: 'account1', path: '/A' });
+      events.folders.onCreated.emit({ accountId: 'account1', path: '/A' });
+
+      const newKeyFound = async () => {
+        for (const { value } of fts.filterNewMessages.mock.results) {
+          if ((await value).newMsgIds.includes('account1:/A:new@example.com')) return true;
+        }
+        return false;
+      };
+      expect(await driveTimersUntil(async () => !nativeKeys.has(oldKey) && await newKeyFound())).toBe(true);
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      uninstallTopologyEvents();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     // Control: an operation that STARTS without exact mode applies the
     // legacy overlap refusal to both folders.

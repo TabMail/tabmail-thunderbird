@@ -1606,6 +1606,11 @@ let _folderReconTopologySerial = 0;
 function _onFolderReconTopologyChanged() {
   _folderReconTopologySerial++;
   if (!_isEnabled || _indexerDisposed) return;
+  // A swap or remove/recreate can leave the final inventory unchanged, so no
+  // folder's earlier verification survives a topology event. `__all__` stays
+  // dirty until the next tick starts, so an operation this event overtakes
+  // cannot keep its folder done or clear the pending marker.
+  _folderReconDirty.add("__all__");
   _ensureFolderReconPendingMarker().catch((e) => {
     log(`[FTS FolderRecon] Topology marker write failed: ${e}`, "warn");
   });
