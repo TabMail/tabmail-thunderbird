@@ -2728,14 +2728,12 @@ function _newFolderReconRuntimeTelemetry() {
     ambiguousFolders: 0,
     unloadedAccountRowsKept: 0,
     membershipStatePages: 0,
-    membershipStateRestartEpochChanged: 0,
-    membershipStateRestartAfterReadEpoch: 0,
+    membershipStatePageRetries: 0,
     membershipStateRestartMutatedReplay: 0,
     membershipStateRestartUnresolvedReplay: 0,
     membershipStateRestartRevoked: 0,
     membershipStateRestartBindingChanged: 0,
     membershipStateRestartPageInvalid: 0,
-    membershipStateRestartMutationFailed: 0,
     membershipCutovers: 0,
     membershipInventoryResets: 0,
     membershipLastPassSlices: 0,
@@ -5714,13 +5712,10 @@ function _durableFolderMembershipMigration(value) {
 }
 
 const FOLDER_MEMBERSHIP_STATE_RESTART_TELEMETRY = Object.freeze({
-  epoch_changed: "membershipStateRestartEpochChanged",
-  after_read_epoch: "membershipStateRestartAfterReadEpoch",
   mutated_replay: "membershipStateRestartMutatedReplay",
   unresolved_replay: "membershipStateRestartUnresolvedReplay",
   binding_changed: "membershipStateRestartBindingChanged",
   page_invalid: "membershipStateRestartPageInvalid",
-  mutation_failed: "membershipStateRestartMutationFailed",
 });
 
 function _folderMembershipStatePassBinding(inventory, ftsSearch) {
@@ -5751,7 +5746,6 @@ function _startFolderMembershipStatePass(binding, restartReason = null) {
     connectionGeneration: binding.connectionGeneration,
     startedBeforeFirst: true,
     afterMsgId: null,
-    passMembershipEpoch: null,
     passMutated: false,
     passUnresolved: 0,
     slices: 0,
@@ -5924,6 +5918,7 @@ async function _runFolderMembershipMigrationSlice(
   reconcileLease,
   generation,
   syncStartedAt,
+  inventoryMembershipEpoch,
 ) {
   if (ftsSearch?.supportsFolderMembership?.() !== true) {
     _revokeFolderMembershipCutover();
@@ -5950,11 +5945,20 @@ async function _runFolderMembershipMigrationSlice(
     assertCurrent,
   );
   assertCurrent();
-  let migration = _durableFolderMembershipMigration(memo.folderMembershipMigration);
+  const stored = _durableFolderMembershipMigration(memo.folderMembershipMigration);
+  let migration = stored;
   if (!migration
       || migration.inventoryCount !== inventory.count
       || migration.inventorySha256 !== inventory.sha256) {
     migration = _newFolderMembershipMigration(inventory);
+    // Keep completions only for folders still present: their live headers
+    // were assigned and every later capable write carries its owner. A
+    // removed folder's completion is dropped, so re-adding it rescans.
+    for (const identity of validIdentities) {
+      if (stored?.completedFolderIds[identity.folderId] === true) {
+        migration.completedFolderIds[identity.folderId] = true;
+      }
+    }
     memo.folderMembershipMigration = migration;
     _revokeFolderMembershipCutover();
     _cancelFolderMembershipScanSession();
@@ -6029,15 +6033,17 @@ async function _runFolderMembershipMigrationSlice(
   // A durable folder completion marker is reusable because all subsequent
   // writes are capability-gated. The native pass is not: it lives only in
   // this process, so a new session always starts it before the first row.
+  //
+  // The pass certifies property P: every native row has a non-null owner that
+  // structurally prefixes its raw msgId, and that owner is in the inventory
+  // or its account is not loaded. Concurrent capable writes preserve P (one
+  // derivation site for msgId and owner, the adapter refuses ownerless rows,
+  // native never reassigns an owner), so the pass tolerates membership-epoch
+  // drift between pages instead of restarting on every indexed message. What
+  // can break P restarts it through the binding or revocation instead: a
+  // legacy write needs a new native connection, a folder deletion changes
+  // the inventory.
   const pass = _currentFolderMembershipStatePass(binding);
-  if (!Number.isSafeInteger(pass.passMembershipEpoch)) {
-    pass.passMembershipEpoch = getFtsMembershipEpoch();
-  }
-  if (pass.passMembershipEpoch !== getFtsMembershipEpoch()) {
-    _restartFolderMembershipStatePass(pass, "epoch_changed");
-    return { complete: false, restart: true, reason: "membership_epoch_changed" };
-  }
-  const pageEpoch = pass.passMembershipEpoch;
   assertCurrent();
   let page;
   try {
@@ -6052,12 +6058,8 @@ async function _runFolderMembershipMigrationSlice(
   assertCurrent();
   pass.slices++;
   _bumpFolderReconTelemetry("membershipStatePages");
-  if (pageEpoch !== getFtsMembershipEpoch()) {
-    _restartFolderMembershipStatePass(pass, "after_read_epoch");
-    return { complete: false, restart: true, reason: "membership_epoch_changed" };
-  }
 
-  const assignments = [];
+  const nullMsgIds = [];
   const staleOrphanMsgIds = [];
   let unresolved = 0;
   let unloadedAccountRowsKept = 0;
@@ -6113,23 +6115,24 @@ async function _runFolderMembershipMigrationSlice(
       }
       continue;
     }
-    const assignment = await _resolveFolderMembershipAssignment(
-      msgId,
-      validIdentities,
-      assertCurrent,
-    );
-    if (assignment) assignments.push(assignment);
-    else unresolved++;
+    nullMsgIds.push(msgId);
   }
   if (unloadedAccountRowsKept > 0) {
     _bumpFolderReconTelemetry("unloadedAccountRowsKept", unloadedAccountRowsKept);
     // Aggregate-only: no account, folder, or Message-ID values.
     log(`[FTS FolderRecon] Membership pass kept ${unloadedAccountRowsKept} row(s) whose account is absent from the current inventory — not loaded yet, not deletion evidence`, "warn");
   }
-  let expectedEpoch = pageEpoch;
+  // Stale owners are judged against this tick's inventory, so the removal is
+  // fenced on the epoch read before that inventory snapshot. Any membership
+  // write since then (a row indexed into a folder created after the snapshot
+  // looks exactly like a deleted folder's row) rejects the fence before the
+  // mutator runs, and the same page is retried on a later slice.
   if (staleOrphanMsgIds.length > 0) {
     try {
-      await withFtsMembershipFence(expectedEpoch, async (membershipFenceToken) => {
+      await withFtsMembershipFence(inventoryMembershipEpoch, async (membershipFenceToken) => {
+        // Sticky before the mutator: an interrupted or uncertain removal
+        // still forces a full replay before cutover.
+        pass.passMutated = true;
         assertCurrent();
         await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
         assertCurrent();
@@ -6139,32 +6142,39 @@ async function _runFolderMembershipMigrationSlice(
           if (remaining?.msgId === msgId) throw new Error("stale_folder_remove_verify_failed");
         }
       }, { mutation: true });
-      expectedEpoch = getFtsMembershipEpoch();
-      pass.passMembershipEpoch = expectedEpoch;
-      pass.passMutated = true;
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
-      _restartFolderMembershipStatePass(pass, "mutation_failed");
+      if (String(error?.message || error).includes("membership_epoch_changed")) {
+        _bumpFolderReconTelemetry("membershipStatePageRetries");
+        return { complete: false, retry: true, reason: "stale_folder_remove_fence_lost" };
+      }
       return { complete: false, failed: true, reason: "stale_folder_remove_failed", error: String(error) };
     }
   }
+  const assignments = [];
+  for (const msgId of nullMsgIds) {
+    const assignment = await _resolveFolderMembershipAssignment(
+      msgId,
+      validIdentities,
+      assertCurrent,
+    );
+    if (assignment) assignments.push(assignment);
+    else unresolved++;
+  }
+  // Unfenced: native only fills a NULL owner, accepts an equal one and rolls
+  // back a conflict (thrown: same-page retry), and a vanished row is a no-op.
   if (assignments.length > 0) {
     try {
       for (let offset = 0; offset < assignments.length;
         offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
         const batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
-        await withFtsMembershipFence(expectedEpoch, async (membershipFenceToken) => {
-          assertCurrent();
-          await ftsSearch.assignFolderMembershipBatch(batch, membershipFenceToken);
-          assertCurrent();
-        }, { mutation: true });
-        expectedEpoch = getFtsMembershipEpoch();
+        pass.passMutated = true;
+        assertCurrent();
+        await ftsSearch.assignFolderMembershipBatch(batch);
+        assertCurrent();
       }
-      pass.passMembershipEpoch = expectedEpoch;
-      pass.passMutated = true;
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
-      _restartFolderMembershipStatePass(pass, "mutation_failed");
       return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
     }
   }
@@ -6185,8 +6195,6 @@ async function _runFolderMembershipMigrationSlice(
         ...(passUnresolved > 0 ? { failed: true, reason: "unresolved_legacy_rows" } : {}),
       };
     }
-    await _assertFolderReconMembershipEpoch(expectedEpoch, reconcileLease, generation);
-    assertCurrent();
     // Cutover is earned only by this process's own unbroken pass: one that
     // started before the first row under the binding that is still current.
     if (_folderMembershipStatePass !== pass
@@ -6258,6 +6266,10 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
       _wakeFolderRecon(scanGate.reason, FOLDER_RECON_ERROR_DELAY_MS);
       return { skipped: true, reason: scanGate.reason };
     }
+    // Read BEFORE the inventory snapshot: a stale-owner removal judged against
+    // this inventory is fenced on it, so a row indexed into a folder created
+    // after the snapshot can never be mistaken for a deleted folder's row.
+    const inventoryMembershipEpoch = getFtsMembershipEpoch();
     const identities = await _getFolderReconInventory(reconcileLease, generation, syncStartedAt);
     const keys = identities.map(i => `${i.accountId}:${i.folderPath}`);
     const currentFolderKeys = new Set(keys);
@@ -6274,6 +6286,7 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
           reconcileLease,
           generation,
           syncStartedAt,
+          inventoryMembershipEpoch,
         );
       } catch (error) {
         if (!String(error?.message || error).includes("folder_recon_pressure")) throw error;

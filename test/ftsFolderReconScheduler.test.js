@@ -123,6 +123,7 @@ const { buildBatchHeader, populateBatchBody } = await import('../fts/indexer.js'
 const {
   acquireFtsExclusiveOperation,
   clearOwnedFtsScanStatus,
+  getFtsMembershipEpoch,
   runFtsMembershipMutation,
   writeOwnedFtsScanStatus,
 } = await import('../fts/operationCoordinator.js');
@@ -2838,29 +2839,45 @@ describe('cooperative folder reconcile production contracts', () => {
     expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
   });
 
-  it('restarts the global membership-state proof when its epoch changes mid-page', async () => {
+  // INVARIANT (2026-10-02): the pass certifies that every row has a live,
+  // structurally prefixing owner. Capable writes preserve that, so new mail
+  // indexed while the pass runs must neither restart nor skip it; before this
+  // the pass reset to page one on every membership epoch change and could
+  // never finish under steady mail.
+  it('keeps the global membership-state pass across an ownership-preserving write mid-page', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
     try {
-      const { fts } = installExactMembershipFolders([{
-        folderPath: '/F',
-        folderId: 'opaque-parent',
-        headerMessageIds: [],
+      const headerMessageIds = Array.from(
+        { length: reconConfig.membershipStatePageSize + 1 },
+        (_, index) => `drift-${String(index).padStart(4, '0')}@example.com`,
+      );
+      const { fts, nativeRows } = installExactMembershipFolders([{
+        folderPath: '/F', headerMessageIds,
       }]);
-      await _testExports._runFolderReconSchedulerTick(fts); // durable empty folder scan
+      const folderId = makeFolderMembershipId('account1', '/F');
+      await settleSchedulerTickWithFakeTimers(fts); // folder scan assigns every row
       vi.setSystemTime(Date.now() + 100);
-      fts.listFolderMembershipState.mockImplementationOnce(async () => {
-        await runFtsMembershipMutation(async () => ({ ok: true }));
-        return { ok: true, entries: [], done: true };
+      const behindCursor = 'account1:/F:drift-0000-new@example.com';
+      fts.listFolderMembershipState.mockImplementationOnce(async (after, limit) => {
+        const page = await fts.listFolderMembershipState.getMockImplementation()(after, limit);
+        // New mail, indexed with its owner, lands behind the cursor.
+        await runFtsMembershipMutation(async () => { nativeRows.set(behindCursor, folderId); });
+        return page;
       });
 
-      const result = await _testExports._runFolderReconSchedulerTick(fts);
+      const first = await _testExports._runFolderReconSchedulerTick(fts);
+      vi.setSystemTime(Date.now() + 100);
+      const second = await _testExports._runFolderReconSchedulerTick(fts);
 
-      expect(result).toMatchObject({
-        complete: false,
-        migration: { restart: true, reason: 'membership_epoch_changed' },
-      });
-      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expect(first).toMatchObject({ complete: false, migration: { membershipStateProgress: true } });
+      expect(second.migration).toBeUndefined();
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      const cursors = fts.listFolderMembershipState.mock.calls.map(([after]) => after);
+      expect(cursors).toHaveLength(2);
+      expect(cursors[0]).toBeNull();
+      expect(cursors[1]).toBe(`account1:/F:${headerMessageIds[reconConfig.membershipStatePageSize - 1]}`);
+      expect(nativeRows.get(behindCursor)).toBe(folderId);
       expectOnlyBoundedFolderMembershipReads(fts);
     } finally {
       _testExports._setIsEnabled(false);
@@ -2910,51 +2927,48 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
-  it('sets volatile cutover only after the terminal epoch fence passes', async () => {
+  // A stale owner is judged against the tick's inventory snapshot. A row
+  // indexed after that snapshot into a just-created folder is
+  // indistinguishable from a deleted folder's row, so the removal is fenced
+  // on the epoch read before the snapshot and retried on the SAME page when
+  // that fence loses: nothing is removed on stale evidence, nothing skipped.
+  it('retries a stale-owner removal on the same page when its inventory fence loses', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
     try {
-      const { fts } = installExactMembershipFolders([{
-        folderPath: '/F', folderId: 'opaque-parent', headerMessageIds: [],
+      const { fts, nativeRows } = installExactMembershipFolders([{
+        folderPath: '/Keep', headerMessageIds: ['keep@example.com'],
       }]);
-      await _testExports._runFolderReconSchedulerTick(fts); // folder scan
+      const stale = 'account1:/Deleted:stale@example.com';
+      nativeRows.set(stale, makeFolderMembershipId('account1', '/Deleted'));
+      await settleSchedulerTickWithFakeTimers(fts); // folder scan
       vi.setSystemTime(Date.now() + 100);
-      // A mutation already holding the membership mutex when the terminal
-      // page returns: it commits only after the after-read epoch check, so
-      // only the terminal fence can see it.
-      const gate = deferred();
-      fts.listFolderMembershipState.mockImplementationOnce(async () => {
-        runFtsMembershipMutation(() => gate.promise);
-        return { ok: true, entries: [], done: true };
+      fts.listFolderMembershipState.mockImplementationOnce(async (after, limit) => {
+        await runFtsMembershipMutation(async () => ({ ok: true }));
+        return fts.listFolderMembershipState.getMockImplementation()(after, limit);
       });
-      let settled = false;
-      const terminal = _testExports._runFolderReconSchedulerTick(fts).then(
-        value => { settled = true; return value; },
-        error => { settled = true; throw error; },
-      );
-      const startedAt = realDateNow();
-      while (fts.listFolderMembershipState.mock.calls.length === 0
-          && realDateNow() - startedAt < SCHEDULER_SETTLE_REAL_DEADLINE_MS) {
-        await yieldToRealEventLoop();
+
+      const lost = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(lost).toMatchObject({
+        complete: false,
+        migration: { retry: true, reason: 'stale_folder_remove_fence_lost' },
+      });
+      expect(fts.removeBatch).not.toHaveBeenCalled();
+      expect(nativeRows.has(stale)).toBe(true);
+      expect(_testExports._getFolderReconRuntimeTelemetry().membershipStatePageRetries).toBe(1);
+
+      for (let turn = 0; turn < 10 && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+        vi.setSystemTime(Date.now() + 100);
+        await _testExports._runFolderReconSchedulerTick(fts);
       }
-      await yieldToRealEventLoop();
-      expect(settled, 'terminal tick waits on the membership fence').toBe(false);
-      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
-      gate.resolve();
 
-      await expect(terminal).rejects.toThrow('membership_epoch_changed');
-      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
-
-      // The pass that saw the moved epoch is not reusable; a fresh one earns it.
-      vi.setSystemTime(Date.now() + 100);
-      await expect(_testExports._runFolderReconSchedulerTick(fts)).resolves.toMatchObject({
-        migration: { restart: true, reason: 'membership_epoch_changed' },
-      });
-      vi.setSystemTime(Date.now() + 100);
-      await _testExports._runFolderReconSchedulerTick(fts);
+      expect(nativeRows.has(stale)).toBe(false);
+      expect(fts.removeBatch).toHaveBeenCalledWith([stale], expect.anything());
       expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      // Same page retried (null), then a full replay after the removal (null).
       expect(fts.listFolderMembershipState.mock.calls.map(([after]) => after))
-        .toEqual([null, null]);
+        .toEqual([null, null, null]);
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
@@ -4355,9 +4369,12 @@ describe('volatile membership-state pass (memo storage churn)', () => {
             folders: {},
             folderMembershipMigration: {
               version: 1,
-              inventoryCount: 2,
-              inventorySha256: 'f'.repeat(64),
-              completedFolderIds: { [folderId]: true },
+              inventoryCount: 1,
+              inventorySha256: framedDigest([
+                `${makeFolderMembershipId('account1', '/Gone')}\u0000account1\u0000/Gone`,
+              ]),
+              // A removed folder's completion is pruned, never reused.
+              completedFolderIds: { [makeFolderMembershipId('account1', '/Gone')]: true },
             },
           };
         }
@@ -4400,6 +4417,291 @@ describe('volatile membership-state pass (memo storage churn)', () => {
       }
     },
   );
+
+  it('keeps completions of present folders across an inventory change and rescans a re-added folder', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts } = installExactMembershipFolders([
+        { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+        { folderPath: '/B', headerMessageIds: ['b@example.com'] },
+      ]);
+      const idA = makeFolderMembershipId('account1', '/A');
+      const idB = makeFolderMembershipId('account1', '/B');
+      const accounts = await globalThis.browser.accounts.list();
+      const subFolders = accounts[0].rootFolder.subFolders;
+      const folderB = subFolders.find(folder => folder.path === '/B');
+      const migrationRecord = () =>
+        storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folderMembershipMigration;
+      // Metadata-only scans (second argument true) are the migration's
+      // assignment scans; per-folder reconciliation scans are not.
+      const scannedURIs = () => globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls
+        .filter(([, metadataOnly]) => metadataOnly === true)
+        .map(([uri]) => uri);
+      const untilCutover = async () => {
+        for (let turn = 0; turn < 20 && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+          await settleSchedulerTickWithFakeTimers(fts);
+          vi.setSystemTime(Date.now() + 100);
+        }
+        expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      };
+      await untilCutover();
+      expect(migrationRecord().completedFolderIds).toEqual({ [idA]: true, [idB]: true });
+
+      // /B removed: its completion is pruned, /A's is kept and written at once.
+      subFolders.splice(subFolders.indexOf(folderB), 1);
+      globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockClear();
+      await settleSchedulerTickWithFakeTimers(fts);
+      expect(migrationRecord().completedFolderIds).toEqual({ [idA]: true });
+      expect(migrationRecord().inventoryCount).toBe(1);
+
+      // Restart, then /B re-added: only /B is rescanned.
+      _testExports._resetFolderReconState();
+      _testExports._setIsEnabled(true);
+      subFolders.push(folderB);
+      vi.setSystemTime(Date.now() + 100);
+      globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockClear();
+      const rescan = await settleSchedulerTickWithFakeTimers(fts);
+      expect(rescan.migration).toMatchObject({ folderProgress: true, folderComplete: true });
+      expect(scannedURIs()).toEqual(['none://membership-1']);
+      vi.setSystemTime(Date.now() + 100);
+      await untilCutover();
+      expect(migrationRecord().completedFolderIds).toEqual({ [idA]: true, [idB]: true });
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  // Seeded PRNG so a failing fuzz seed replays exactly.
+  function seededRandom(seed) {
+    let state = seed >>> 0;
+    return () => {
+      state = (state + 0x6D2B79F5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Oracle on the fake native table itself, not on the code under test:
+  // every row has an owner in the inventory that prefixes its raw key.
+  function expectEveryRowOwnedByAPresentFolder(nativeRows, inventory) {
+    for (const [msgId, owner] of nativeRows) {
+      const folder = inventory.find(item => item.folderId === owner);
+      expect(folder, `row ${msgId} has a present owner`).toBeTruthy();
+      expect(msgId.startsWith(`${folder.accountId}:${folder.folderPath}:`)).toBe(true);
+    }
+  }
+
+  // Testing rule 11: concurrency-heavy proof, seeded fault + latency
+  // injection with real coordinator mutations and explicit quiet windows.
+  it.each([
+    ...[11, 23, 37, 41, 53, 67, 79, 97].map(seed => ({ seed, writeRate: 0.6 })),
+    { seed: 5, writeRate: 1 }, // steady: a write between every pair of slices
+    { seed: 7, writeRate: 0 }, // quiet positive control
+  ])('converges under ownership-preserving live writes (seed $seed, rate $writeRate)', async ({ seed, writeRate }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const random = seededRandom(seed);
+      const rowCount = P * 3 + 7;
+      const { fts, nativeRows, folders } = seedCompletedAssignedFolder(rowCount);
+      const folderId = folders[0].folderId;
+      let nextNew = 0;
+      const ownedWrite = async () => {
+        if (random() < 0.7 || nativeRows.size === 0) {
+          // New mail, indexed with its owner by the one derivation site.
+          const msgId = `account1:/F:live-${seed}-${nextNew++}@example.com`;
+          await runFtsMembershipMutation(async () => { nativeRows.set(msgId, folderId); });
+        } else {
+          const keys = [...nativeRows.keys()];
+          const victim = keys[Math.floor(random() * keys.length)];
+          await runFtsMembershipMutation(async () => { nativeRows.delete(victim); });
+        }
+      };
+      const read = fts.listFolderMembershipState.getMockImplementation();
+      fts.listFolderMembershipState.mockImplementation(async (after, limit) => {
+        if (random() < 0.5) await yieldToRealEventLoop(); // latency jitter
+        const page = await read(after, limit);
+        if (random() < writeRate / 2) await ownedWrite(); // write during the read
+        if (random() < 0.5) await Promise.resolve();
+        return page;
+      });
+      const epochBefore = getFtsMembershipEpoch();
+      const sliceBudget = 2 * (Math.floor(rowCount / P) + 2);
+      let slices = 0;
+      while (!_testExports._getFolderMembershipCutoverProven() && slices < sliceBudget) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        slices++;
+        if (random() < writeRate || writeRate === 1) await ownedWrite();
+        if (random() < writeRate / 3) {
+          // A local message event: the scheduler waits out the quiet window.
+          _testExports._invalidateFolderReconProofForEvent('account1', '/F');
+          vi.setSystemTime(Date.now() + reconConfig.syncQuietMs + 1);
+        } else {
+          vi.setSystemTime(Date.now() + 100);
+        }
+      }
+
+      expect(_testExports._getFolderMembershipCutoverProven(),
+        `cutover within ${sliceBudget} slices`).toBe(true);
+      if (writeRate > 0) {
+        expect(getFtsMembershipEpoch(), 'the seed really moved the epoch')
+          .toBeGreaterThan(epochBefore);
+      }
+      expectEveryRowOwnedByAPresentFolder(nativeRows, folders);
+      expect(fts.listFolderMembershipState.mock.calls[0][0]).toBeNull();
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('replays the pass when a NULL row appears ahead of the cursor', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts, nativeRows, rowsByURI, folders } = seedCompletedAssignedFolder(P + 1);
+      const ahead = 'account1:/F:zz-late@example.com';
+      const read = fts.listFolderMembershipState.getMockImplementation();
+      fts.listFolderMembershipState.mockImplementationOnce(async (after, limit) => {
+        const page = await read(after, limit);
+        // A legacy-shaped row lands AHEAD of the cursor (forced fake).
+        nativeRows.set(ahead, null);
+        rowsByURI.get(folders[0].folderURI).push({ msgKey: 999, headerMessageId: 'zz-late@example.com' });
+        return page;
+      });
+
+      const results = [];
+      for (let turn = 0; turn < 10 && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+        results.push((await _testExports._runFolderReconSchedulerTick(fts))?.migration);
+        vi.setSystemTime(Date.now() + 100);
+      }
+
+      // Page two sees the NULL row and assigns it; that pass replays.
+      expect(results[1]).toMatchObject({ restart: true });
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect(nativeRows.get(ahead)).toBe(folders[0].folderId);
+      expect(fts.listFolderMembershipState.mock.calls.map(([after]) => after))
+        .toEqual([null, `account1:/F:state-${String(P - 1).padStart(5, '0')}@example.com`, null,
+          `account1:/F:state-${String(P - 1).padStart(5, '0')}@example.com`]);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('resets before cutover when a legacy connection wrote a NULL row behind the cursor', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts, nativeRows } = seedCompletedAssignedFolder(P + 1);
+      await _testExports._runFolderReconSchedulerTick(fts); // page one
+      vi.setSystemTime(Date.now() + 100);
+      // G1 capable -> G2 legacy writes an ownerless row behind the cursor,
+      // no tick observes it -> G3 capable.
+      nativeRows.set('account1:/F:aaa-legacy@example.com', null);
+      fts.getConnectionGeneration.mockReturnValue(3);
+
+      await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expect(fts.listFolderMembershipState.mock.calls.map(([after]) => after))
+        .toEqual([null, null]);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('revokes on the first exact read when a NULL row appeared behind the cursor with no producer', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts, nativeRows } = seedCompletedAssignedFolder(P + 1);
+      const orphan = 'account1:/F:aaa-unowned@example.com';
+      await _testExports._runFolderReconSchedulerTick(fts); // page one
+      vi.setSystemTime(Date.now() + 100);
+      nativeRows.set(orphan, null); // forced fake: no production producer exists
+      await _testExports._runFolderReconSchedulerTick(fts); // terminal page
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      fts.listFolderMembershipState.mockClear();
+
+      for (let turn = 0; turn < 20 && _testExports._getFolderMembershipCutoverProven(); turn++) {
+        vi.setSystemTime(Date.now() + 100);
+        await settleSchedulerTickWithFakeTimers(fts);
+        expect(fts.removeBatch.mock.calls.flat(2)).not.toContain(orphan);
+      }
+
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expect(nativeRows.has(orphan)).toBe(true);
+      vi.setSystemTime(Date.now() + 100);
+      fts.listFolderMembershipState.mockClear();
+      await _testExports._runFolderReconSchedulerTick(fts);
+      expect(fts.listFolderMembershipState.mock.calls[0][0]).toBeNull();
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['pressure after a committed stale removal', 'remove', 'pressure'],
+    ['a removal that throws after committing', 'remove', 'throw'],
+    ['pressure after a committed assignment', 'assign', 'pressure'],
+    ['an assignment that throws after committing', 'assign', 'throw'],
+  ])('requires a full replay before cutover after %s', async (_name, mutator, fault) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts, nativeRows, rowsByURI, folders } = seedCompletedAssignedFolder(P + 1);
+      const target = mutator === 'remove'
+        ? 'account1:/Deleted:gone@example.com'
+        : 'account1:/F:aaa-unassigned@example.com';
+      if (mutator === 'remove') {
+        nativeRows.set(target, makeFolderMembershipId('account1', '/Deleted'));
+      } else {
+        nativeRows.set(target, null);
+        rowsByURI.get(folders[0].folderURI).push({ msgKey: 998, headerMessageId: 'aaa-unassigned@example.com' });
+      }
+      const method = mutator === 'remove' ? 'removeBatch' : 'assignFolderMembershipBatch';
+      const real = fts[method].getMockImplementation();
+      fts[method].mockImplementationOnce(async (...args) => {
+        const result = await real(...args);
+        if (fault === 'throw') throw new Error('uncertain_native_write');
+        getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false });
+        return result;
+      });
+
+      const faulted = await _testExports._runFolderReconSchedulerTick(fts);
+      getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
+      expect(faulted.skipped === true || faulted.migration?.failed === true).toBe(true);
+
+      for (let turn = 0; turn < 10 && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+        vi.setSystemTime(Date.now() + 100);
+        await _testExports._runFolderReconSchedulerTick(fts);
+      }
+
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      const cursors = fts.listFolderMembershipState.mock.calls.map(([after]) => after);
+      // Faulted page one, its same-page retry, page two, then a full replay.
+      expect(cursors.filter(after => after === null).length).toBeGreaterThanOrEqual(3);
+      expect(cursors.at(-2)).toBeNull();
+      if (mutator === 'remove') expect(nativeRows.has(target)).toBe(false);
+      else expect(nativeRows.get(target)).toBe(folders[0].folderId);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
 
   it('re-scans after an interrupted inventory write and never skips the folder', async () => {
     vi.useFakeTimers();
