@@ -1876,15 +1876,49 @@ describe('gating and drain coordination', () => {
     expect(api.getFolderState).not.toHaveBeenCalled();
   });
 
-  it('feature-detects native helper 0.11 once and then stays disabled', async () => {
+  it.each([
+    'Unknown reader method: fingerprintMsgIdRange',
+    'Unknown method: fingerprintMsgIdRange',
+  ])('feature-detects native helper 0.11 once per native connection (%s)', async (nativeError) => {
     const fts = makeFtsStore([]);
-    fts.fingerprintMsgIdRange.mockRejectedValue(new Error('Unknown reader method'));
+    let connectionGeneration = 1;
+    fts.getConnectionGeneration = vi.fn(() => connectionGeneration);
+    fts.fingerprintMsgIdRange.mockRejectedValue(new Error(nativeError));
     const api = mockNotify([folderA()]);
     expect(await _runFolderReconcile(fts)).toMatchObject({ skipped: true, reason: 'native_unsupported' });
     expect(await _runFolderReconcile(fts)).toMatchObject({ skipped: true, reason: 'native_unsupported' });
     expect(fts.fingerprintMsgIdRange).toHaveBeenCalledOnce();
     expect(api.getFolderState).not.toHaveBeenCalled();
     expect(logFtsBatchOperation.mock.calls.filter(([op, state]) => op === 'folder_recon' && state === 'unsupported')).toHaveLength(1);
+
+    // An upgraded helper is a new connection: the verdict does not carry over.
+    connectionGeneration = 2;
+    fts.fingerprintMsgIdRange.mockResolvedValue({ count: 0, sha256: 'unused' });
+    expect(await _runFolderReconcile(fts)).not.toMatchObject({ reason: 'native_unsupported' });
+    expect(fts.fingerprintMsgIdRange.mock.calls[1]).toEqual(['', '']);
+    expect(api.getFolderState).toHaveBeenCalled();
+  });
+
+  it('recognises a bare-string unknown-method rejection from the native port', async () => {
+    const fts = makeFtsStore([]);
+    fts.fingerprintMsgIdRange.mockRejectedValue('Unknown method: fingerprintMsgIdRange');
+    mockNotify([folderA()]);
+    expect(await _runFolderReconcile(fts)).toMatchObject({ skipped: true, reason: 'native_unsupported' });
+  });
+
+  it.each([
+    'Native helper disconnected',
+    "Must call 'init' first",
+  ])('never latches a transient native probe failure as unsupported (%s)', async (nativeError) => {
+    const fts = makeFtsStore([]);
+    fts.getConnectionGeneration = vi.fn(() => 1);
+    fts.fingerprintMsgIdRange.mockRejectedValueOnce(new Error(nativeError));
+    mockNotify([folderA()]);
+    expect(await _runFolderReconcile(fts)).toMatchObject({
+      skipped: true, reason: 'native_probe_failed', retryDelayMs: expect.any(Number),
+    });
+    expect(logFtsBatchOperation.mock.calls.filter(([op, state]) => op === 'folder_recon' && state === 'unsupported')).toHaveLength(0);
+    expect(await _runFolderReconcile(fts)).not.toMatchObject({ skipped: true });
   });
 
   it('requires the new experiment fingerprint methods', async () => {

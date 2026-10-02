@@ -45,6 +45,7 @@ let messageId = 0;
 let pendingRPCs = new Map();
 let hostInfo = null; // Stores host version and capabilities
 let nativeConnectionGeneration = 0;
+const nativeConnectionListeners = new Set();
 let nativeReadyState = null;
 let nativeInitializationPromise = null;
 let nativeInitializationState = null;
@@ -186,6 +187,30 @@ function getFtsHostAvailability() {
 
 function supportsFolderMembership() {
   return hostInfo?.capabilities?.folderMembershipV1 === true;
+}
+
+// Monotonic per native port. Reconciliation binds session-local membership
+// proof to it: a reconnect may have let an unobserved legacy helper write
+// ownerless rows even when the capability reads true on both sides.
+function getConnectionGeneration() {
+  return nativeConnectionGeneration;
+}
+
+// Reconciliation that stopped on a helper without the needed RPCs has no
+// other wake: every successful (re)connection must let it re-probe.
+function addConnectionListener(listener) {
+  nativeConnectionListeners.add(listener);
+  return () => { nativeConnectionListeners.delete(listener); };
+}
+
+function _notifyNativeConnectionListeners(generation) {
+  for (const listener of [...nativeConnectionListeners]) {
+    try {
+      listener(generation);
+    } catch (e) {
+      log(`[TMDBG FTS] Native connection listener failed: ${e}`, "warn");
+    }
+  }
 }
 // Circuit breaker: when the helper is confirmed unavailable, don't re-attempt
 // connectNative on every RPC (it spams "disconnected"/"update check failed").
@@ -751,6 +776,7 @@ async function nativeRPC(
         || !_resolveNativeOperational(rpcReadyState, result)) {
       throw new Error("Native FTS init completed for a stale connection generation");
     }
+    _notifyNativeConnectionListeners(rpcReadyState.generation);
   }
   return result;
 }
@@ -843,6 +869,9 @@ export const nativeFtsSearch = {
   },
 
   supportsFolderMembership,
+
+  getConnectionGeneration,
+  addConnectionListener,
 
   async listFolderMembership(folderId, afterMsgId, limit) {
     const params = { folderId, limit };

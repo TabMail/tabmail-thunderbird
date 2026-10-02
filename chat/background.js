@@ -17,7 +17,7 @@ import {
   clearOwnedFtsScanStatus,
   writeOwnedFtsScanStatus,
 } from "../fts/operationCoordinator.js";
-import { setupExperimentListeners } from "../fts/incrementalIndexer.js";
+import { setupExperimentListeners, setupFolderTopologyListeners } from "../fts/incrementalIndexer.js";
 import { setWarning } from "../agent/modules/icon.js";
 import { checkSetupConfiguration } from "../agent/modules/setupChecks.js";
 import { CHAT_SETTINGS } from "./modules/chatConfig.js";
@@ -29,6 +29,8 @@ import { handleMessageSelectionRequest, initMessageSelectionListener } from "./m
 // initIncrementalIndexer calls this again after readiness, and the guard keeps
 // the same subscriptions. Startup reconciliation covers events before readiness.
 setupExperimentListeners();
+// Folder/account topology changes must wake an idle reconciliation.
+setupFolderTopologyListeners();
 
 // Navigation handlers for special TabMail links
 // --- EMAIL: precise MV3 navigation to a message in thread pane ---
