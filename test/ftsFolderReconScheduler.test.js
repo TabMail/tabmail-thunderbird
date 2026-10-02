@@ -4972,6 +4972,72 @@ describe('volatile membership-state pass (memo storage churn)', () => {
     }
   });
 
+  it('restarts a pre-cutover pass from before-first when a topology change lands mid-pass and still cuts over', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const renameListeners = new Set();
+    globalThis.browser.folders = {
+      onRenamed: {
+        addListener: listener => renameListeners.add(listener),
+        removeListener: listener => renameListeners.delete(listener),
+      },
+    };
+    incrementalIndexer.setupFolderTopologyListeners();
+    try {
+      const { fts } = seedCompletedAssignedFolder(P * 2 + 1);
+      await _testExports._runFolderReconSchedulerTick(fts);
+      expect(fts.listFolderMembershipState.mock.calls.map(([after]) => after)).toEqual([null]);
+      // A rename and its reversal: the inventory the next tick reads is unchanged.
+      for (const listener of [...renameListeners]) {
+        listener({ accountId: 'account1', path: '/F' }, { accountId: 'account1', path: '/F' });
+      }
+      for (let turn = 0; turn < 8 && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+        vi.setSystemTime(Date.now() + 100);
+        await _testExports._runFolderReconSchedulerTick(fts);
+      }
+
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      const cursors = fts.listFolderMembershipState.mock.calls.map(([after]) => after);
+      expect(cursors[1]).toBeNull();
+      expect(cursors.slice(1).filter(after => after === null)).toHaveLength(1);
+      expect(_testExports._getFolderReconRuntimeTelemetry().membershipStateRestartBindingChanged).toBe(1);
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      delete globalThis.browser.folders;
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a row indexed into a folder created while the inventory is read', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts, nativeRows } = seedCompletedAssignedFolder(1);
+      const newFolderId = makeFolderMembershipId('account1', '/G');
+      const newRow = 'account1:/G:g-new@example.com';
+      const snapshot = await globalThis.browser.accounts.list();
+      // Thunderbird creates /G after this listing was taken, and the drain
+      // indexes a correctly owned row into it before the state page is read.
+      globalThis.browser.accounts.list.mockImplementationOnce(async () => {
+        await runFtsMembershipMutation(async () => { nativeRows.set(newRow, newFolderId); });
+        return snapshot;
+      });
+
+      await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(nativeRows.get(newRow)).toBe(newFolderId);
+      expect(fts.removeBatch.mock.calls.some(([ids]) => ids.includes(newRow))).toBe(false);
+      expect(_testExports._getFolderReconRuntimeTelemetry().membershipStatePageRetries).toBe(1);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ['oversized', 'membership_state_page_invalid',
       () => ({ ok: true, entries: Array.from({ length: P + 1 }, (_, i) => ({ msgId: `account1:/F:z${String(i).padStart(6, '0')}`, folderId: null })), done: false })],
