@@ -48,6 +48,9 @@ vi.mock('../fts/nativeEngine.js', () => ({
     optimize: (...args) => mockNativeOptimize(...args),
     rebuildEmbeddings: (...args) => mockRebuildEmbeddings(...args),
     stats: vi.fn(async () => ({ docs: 0, vecDocs: 0 })),
+    supportsFolderMembership: vi.fn(() => true),
+    getConnectionGeneration: vi.fn(() => 7),
+    addConnectionListener: vi.fn(() => 'unsubscribe'),
   },
   nativeMemorySearch: {},
 }));
@@ -146,6 +149,17 @@ afterEach(async () => {
 });
 
 describe('native optimize maintenance contract', () => {
+  it('exposes the native connection contract that reconciliation binds its proofs to', async () => {
+    const { nativeFtsSearch } = await import('../fts/nativeEngine.js');
+    const { ftsSearch } = await import('../fts/engine.js');
+    const listener = () => {};
+
+    expect(ftsSearch.supportsFolderMembership()).toBe(true);
+    expect(ftsSearch.getConnectionGeneration()).toBe(7);
+    expect(ftsSearch.addConnectionListener(listener)).toBe('unsubscribe');
+    expect(nativeFtsSearch.addConnectionListener).toHaveBeenCalledWith(listener);
+  });
+
   it('shares one engine initialization across concurrent recovery callers', async () => {
     const pending = deferred();
     const { initNativeFts } = await import('../fts/nativeEngine.js');

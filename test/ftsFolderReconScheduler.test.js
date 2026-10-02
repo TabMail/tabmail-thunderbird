@@ -4972,6 +4972,127 @@ describe('volatile membership-state pass (memo storage churn)', () => {
     }
   });
 
+  it.each([
+    ['oversized', 'membership_state_page_invalid',
+      () => ({ ok: true, entries: Array.from({ length: P + 1 }, (_, i) => ({ msgId: `account1:/F:z${String(i).padStart(6, '0')}`, folderId: null })), done: false })],
+    ['empty but not terminal', 'membership_state_page_invalid', () => ({ ok: true, entries: [], done: false })],
+    ['out of cursor order', 'membership_state_order_invalid',
+      () => ({ ok: true, entries: [{ msgId: 'account1:/F:a@example.com', folderId: null }], done: true })],
+    ['carrying an empty owner', 'membership_state_folder_id_invalid',
+      () => ({ ok: true, entries: [{ msgId: 'account1:/F:zz@example.com', folderId: '' }], done: true })],
+  ])('restarts the pass from before-first after a state page %s and earns no cutover from it', async (_label, reason, page) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts } = seedCompletedAssignedFolder(P + 1);
+      await _testExports._runFolderReconSchedulerTick(fts);
+      vi.setSystemTime(Date.now() + 100);
+      expect(fts.listFolderMembershipState.mock.calls.at(-1)[0]).toBeNull();
+      fts.listFolderMembershipState.mockImplementationOnce(async () => page());
+
+      const result = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(result).toMatchObject({ complete: false, migration: { failed: true, reason } });
+      expect(fts.listFolderMembershipState.mock.calls.at(-1)[0]).not.toBeNull();
+      expect(_testExports._getFolderReconRuntimeTelemetry().membershipStateRestartPageInvalid).toBe(1);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      vi.setSystemTime(Date.now() + 100);
+      await _testExports._runFolderReconSchedulerTick(fts);
+      expect(fts.listFolderMembershipState.mock.calls.at(-1)[0]).toBeNull();
+      for (let turn = 0; turn < 4 && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+        vi.setSystemTime(Date.now() + 100);
+        await _testExports._runFolderReconSchedulerTick(fts);
+      }
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries the same state page after a stale-owner removal fails without a lost fence', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts, nativeRows } = seedCompletedAssignedFolder(1);
+      const staleRow = 'account1:/Gone:gone@example.com';
+      nativeRows.set(staleRow, makeFolderMembershipId('account1', '/Gone'));
+      const removeBatch = fts.removeBatch.getMockImplementation();
+      fts.removeBatch.mockImplementationOnce(async () => { throw new Error('disk I/O error'); });
+
+      const result = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(result).toMatchObject({
+        complete: false,
+        migration: { failed: true, reason: 'stale_folder_remove_failed' },
+      });
+      expect(nativeRows.has(staleRow)).toBe(true);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      fts.removeBatch.mockImplementation(removeBatch);
+      for (let turn = 0; turn < 4 && !_testExports._getFolderMembershipCutoverProven(); turn++) {
+        vi.setSystemTime(Date.now() + 100);
+        await _testExports._runFolderReconSchedulerTick(fts);
+      }
+      expect(nativeRows.has(staleRow)).toBe(false);
+      // Same page retried, then the sticky replay pass that earns cutover.
+      expect(fts.listFolderMembershipState.mock.calls.map(([after]) => after)).toEqual([null, null, null]);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('revokes cutover and keeps the row when the post-cutover orphan sweep meets an ownerless row', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts, nativeRows } = seedCompletedAssignedFolder(1);
+      await earnCutover(fts);
+      // No production writer leaves a NULL owner on a capable helper; the
+      // orphan sweep must still fail closed rather than judge the row.
+      const ownerless = 'account1:/F:zz-ownerless@example.com';
+      nativeRows.set(ownerless, null);
+      for (let turn = 0; turn < 10 && _testExports._getFolderMembershipCutoverProven(); turn++) {
+        await _testExports._runFolderReconSchedulerTick(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expect(nativeRows.has(ownerless)).toBe(true);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('revokes cutover when the inventory carries a folder without a session id', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts } = seedCompletedAssignedFolder(1);
+      await earnCutover(fts);
+      globalThis.browser.accounts.list.mockResolvedValue([{
+        id: 'account1', type: 'none',
+        rootFolder: { path: '/', isRoot: true, subFolders: [{ path: '/F', subFolders: [] }] },
+      }]);
+
+      const result = await _testExports._runFolderReconSchedulerTick(fts);
+
+      expect(result).toMatchObject({
+        complete: false,
+        migration: { failed: true, reason: 'folder_id_inventory_invalid' },
+      });
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it('reads no further state page after cutover and leaves the page budget to folder work', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
@@ -5306,6 +5427,31 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
         expect(native.has(`account1:/B:${idB}`)).toBe(true);
         expect(_testExports._getPendingUpdates().size).toBe(0);
       }
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      uninstallTopologyEvents();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('still re-verifies every folder when the topology marker write fails', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const events = installTopologyEvents();
+    try {
+      const fts = installEmptyFolders([['account1', '/A'], ['account1', '/B']]);
+      await incrementalIndexer.initIncrementalIndexer(fts);
+      expect(await driveTimersUntil(reconciliationIdle)).toBe(true);
+      const scan = globalThis.browser.tmMsgNotify.beginFolderMessageScan;
+      const scansBefore = scan.mock.calls.length;
+      globalThis.browser.storage.local.set.mockRejectedValueOnce(new Error('storage unavailable'));
+
+      events.folders.onRenamed.emit({ accountId: 'account1', path: '/A' }, { accountId: 'account1', path: '/A' });
+
+      expect(await driveTimersUntil(() => reconciliationIdle()
+        && scan.mock.calls.length >= scansBefore + 2)).toBe(true);
+      expect(new Set(scan.mock.calls.slice(scansBefore).map(([uri]) => uri)).size).toBe(2);
     } finally {
       await incrementalIndexer.disposeIncrementalIndexer();
       uninstallTopologyEvents();

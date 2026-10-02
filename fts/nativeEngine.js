@@ -199,7 +199,6 @@ function getConnectionGeneration() {
 // Reconciliation that stopped on a helper without the needed RPCs has no
 // other wake: every successful (re)connection must let it re-probe.
 function addConnectionListener(listener) {
-  if (typeof listener !== "function") throw new TypeError("listener must be a function");
   nativeConnectionListeners.add(listener);
   return () => { nativeConnectionListeners.delete(listener); };
 }
