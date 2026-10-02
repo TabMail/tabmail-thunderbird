@@ -4908,3 +4908,276 @@ describe('volatile membership-state pass (memo storage churn)', () => {
     }
   });
 });
+
+describe('reconciliation recovery wakes (native reconnect, folder topology)', () => {
+  // Drives ONLY timers already armed by production code: no manual tick.
+  async function driveTimersUntil(predicate, { stepMs = 250, maxVirtualMs = 180_000 } = {}) {
+    const startedAt = realDateNow();
+    for (let virtualMs = 0; !(await predicate()); virtualMs += stepMs) {
+      if (virtualMs >= maxVirtualMs || realDateNow() - startedAt >= 15_000) return false;
+      await vi.advanceTimersByTimeAsync(stepMs);
+      await yieldToRealEventLoop();
+    }
+    return true;
+  }
+  const reconciliationIdle = () => storageData.fts_reconcile_pending === undefined
+    && !_testExports._isFolderReconSchedulerActive();
+
+  function withReconnectableHelper(fts) {
+    let generation = 1;
+    const connectionListeners = new Set();
+    fts.getConnectionGeneration = vi.fn(() => generation);
+    fts.addConnectionListener = vi.fn((listener) => {
+      connectionListeners.add(listener);
+      return () => { connectionListeners.delete(listener); };
+    });
+    return {
+      connectionListeners,
+      reconnect() {
+        generation++;
+        for (const listener of [...connectionListeners]) listener(generation);
+      },
+    };
+  }
+
+  function makeEvent() {
+    const listeners = new Set();
+    return {
+      listeners,
+      addListener: vi.fn(listener => listeners.add(listener)),
+      removeListener: vi.fn(listener => listeners.delete(listener)),
+      emit: (...args) => { for (const listener of [...listeners]) listener(...args); },
+    };
+  }
+
+  function installTopologyEvents() {
+    const events = {
+      folders: Object.fromEntries(['onCreated', 'onDeleted', 'onRenamed', 'onMoved', 'onCopied']
+        .map(name => [name, makeEvent()])),
+      accounts: Object.fromEntries(['onCreated', 'onDeleted'].map(name => [name, makeEvent()])),
+    };
+    globalThis.browser.folders = events.folders;
+    Object.assign(globalThis.browser.accounts, events.accounts);
+    return events;
+  }
+
+  function uninstallTopologyEvents() {
+    delete globalThis.browser.folders;
+    delete globalThis.browser.accounts.onCreated;
+    delete globalThis.browser.accounts.onDeleted;
+  }
+
+  it('re-probes and finishes after a helper reconnect that follows an unknown-method verdict', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const fts = installEmptyFolders([['account1', '/A']]);
+      const helper = withReconnectableHelper(fts);
+      fts.fingerprintMsgIdRange.mockRejectedValue(new Error('Unknown reader method: fingerprintMsgIdRange'));
+      await incrementalIndexer.initIncrementalIndexer(fts);
+
+      expect(await driveTimersUntil(() => fts.fingerprintMsgIdRange.mock.calls.length > 0
+        && !_testExports._isFolderReconSchedulerActive())).toBe(true);
+      // Confirmed unsupported on this connection: no further turn is armed and
+      // more time does not re-probe.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(fts.fingerprintMsgIdRange).toHaveBeenCalledOnce();
+      expect(storageData.fts_reconcile_pending).toBeDefined();
+      expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).not.toHaveBeenCalled();
+
+      fts.fingerprintMsgIdRange.mockReset();
+      fts.fingerprintMsgIdRange.mockResolvedValue({ count: 0, sha256: emptyDigest() });
+      helper.reconnect();
+
+      expect(await driveTimersUntil(reconciliationIdle)).toBe(true);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders['account1:/A'])
+        .toMatchObject({ verified: true });
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries a transient native probe failure with growing delay instead of latching', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const fts = installEmptyFolders([['account1', '/A']]);
+      withReconnectableHelper(fts);
+      const probeTimes = [];
+      fts.fingerprintMsgIdRange.mockImplementation(async () => {
+        probeTimes.push(Date.now());
+        if (probeTimes.length <= 2) throw new Error('Native helper disconnected');
+        return { count: 0, sha256: emptyDigest() };
+      });
+      await incrementalIndexer.initIncrementalIndexer(fts);
+
+      expect(await driveTimersUntil(reconciliationIdle, { stepMs: 100 })).toBe(true);
+      expect(probeTimes.length).toBeGreaterThanOrEqual(3);
+      expect(probeTimes[1] - probeTimes[0]).toBeGreaterThanOrEqual(reconConfig.errorDelayMs);
+      expect(probeTimes[2] - probeTimes[1]).toBeGreaterThanOrEqual(2 * reconConfig.errorDelayMs);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders['account1:/A'])
+        .toMatchObject({ verified: true });
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps one connection subscription per indexer lifetime and drops it on dispose', async () => {
+    vi.useFakeTimers();
+    try {
+      const fts = installEmptyFolders([['account1', '/A']]);
+      const helper = withReconnectableHelper(fts);
+      await incrementalIndexer.initIncrementalIndexer(fts);
+      await incrementalIndexer.initIncrementalIndexer(fts);
+      expect(helper.connectionListeners.size).toBe(1);
+      await incrementalIndexer.disposeIncrementalIndexer();
+      expect(helper.connectionListeners.size).toBe(0);
+      helper.reconnect();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['folders', 'onDeleted'],
+    ['folders', 'onRenamed'],
+    ['folders', 'onMoved'],
+    ['accounts', 'onDeleted'],
+  ])('wakes idle legacy reconciliation on %s.%s and removes the departed folder rows', async (family, name) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const events = installTopologyEvents();
+    try {
+      const { folders, rowsByURI, nativeKeys, fts } = installRepairFolders([
+        { folderPath: '/A', rows: 2 },
+        { folderPath: '/B', rows: 2 },
+      ]);
+      for (const folder of folders) {
+        for (const row of rowsByURI.get(folder.folderURI)) {
+          nativeKeys.add(`account1:${folder.folderPath}:${row.headerMessageId}`);
+        }
+      }
+      await incrementalIndexer.initIncrementalIndexer(fts);
+      expect(await driveTimersUntil(reconciliationIdle)).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // /B disappears from Thunderbird while reconciliation is idle.
+      globalThis.browser.accounts.list.mockResolvedValue([{
+        id: 'account1', type: 'none',
+        rootFolder: { path: '/', isRoot: true, subFolders: [{ path: '/A', subFolders: [] }] },
+      }]);
+      events[family][name].emit({ accountId: 'account1', path: '/B' });
+      await _testExports._reconStorageTransaction(_testExports._getFolderReconGeneration(), () => {});
+      expect(storageData.fts_reconcile_pending).toBeDefined();
+
+      expect(await driveTimersUntil(() => reconciliationIdle()
+        && ![...nativeKeys].some(key => key.startsWith('account1:/B:')))).toBe(true);
+      expect([...nativeKeys].filter(key => key.startsWith('account1:/A:'))).toHaveLength(2);
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      uninstallTopologyEvents();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts a fresh exact-mode pass after an idle folder deletion and drops its stale owners', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const events = installTopologyEvents();
+    try {
+      const { nativeRows, fts } = installExactMembershipFolders([
+        { folderPath: '/Keep', headerMessageIds: ['keep@example.com'] },
+        { folderPath: '/Gone', headerMessageIds: ['gone@example.com'] },
+      ]);
+      await incrementalIndexer.initIncrementalIndexer(fts);
+      expect(await driveTimersUntil(reconciliationIdle)).toBe(true);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+
+      globalThis.browser.accounts.list.mockResolvedValue([{
+        id: 'account1', type: 'none',
+        rootFolder: {
+          path: '/', isRoot: true,
+          subFolders: [{ id: 'session-folder-0', path: '/Keep', subFolders: [] }],
+        },
+      }]);
+      const statePagesBefore = fts.listFolderMembershipState.mock.calls.length;
+      events.folders.onDeleted.emit({ accountId: 'account1', path: '/Gone' });
+
+      expect(await driveTimersUntil(() => reconciliationIdle()
+        && !nativeRows.has('account1:/Gone:gone@example.com'))).toBe(true);
+      expect(fts.listFolderMembershipState.mock.calls.slice(statePagesBefore)[0][0]).toBeNull();
+      expect(nativeRows.get('account1:/Keep:keep@example.com'))
+        .toBe(makeFolderMembershipId('account1', '/Keep'));
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      uninstallTopologyEvents();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('attaches and detaches every other topology wake when one event API throws', async () => {
+    const events = installTopologyEvents();
+    try {
+      events.folders.onMoved.addListener.mockImplementationOnce(() => { throw new Error('attach refused'); });
+      incrementalIndexer.setupFolderTopologyListeners();
+      expect(events.folders.onMoved.listeners.size).toBe(0);
+      expect(events.folders.onCopied.listeners.size).toBe(1);
+      expect(events.accounts.onDeleted.listeners.size).toBe(1);
+      // A failed attach is retried by the next registration.
+      incrementalIndexer.setupFolderTopologyListeners();
+      expect(events.folders.onMoved.listeners.size).toBe(1);
+
+      events.folders.onCreated.removeListener.mockImplementationOnce(() => { throw new Error('detach refused'); });
+      await incrementalIndexer.disposeIncrementalIndexer();
+      expect(events.folders.onRenamed.listeners.size).toBe(0);
+      expect(events.accounts.onDeleted.listeners.size).toBe(0);
+      // Ownership is released even when the API refused the removal.
+      incrementalIndexer.setupFolderTopologyListeners();
+      expect(events.folders.onCreated.addListener).toHaveBeenCalledTimes(2);
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      uninstallTopologyEvents();
+    }
+  });
+
+  it('ignores topology events while disabled and keeps one owner per event', async () => {
+    const events = installTopologyEvents();
+    try {
+      incrementalIndexer.setupFolderTopologyListeners();
+      incrementalIndexer.setupFolderTopologyListeners();
+      for (const event of [...Object.values(events.folders), ...Object.values(events.accounts)]) {
+        expect(event.listeners.size).toBe(1);
+      }
+      _testExports._setIsEnabled(false);
+      events.folders.onDeleted.emit({ accountId: 'account1', path: '/B' });
+      for (let turn = 0; turn < 5; turn++) await yieldToRealEventLoop();
+      expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+      expect(storageData.fts_reconcile_pending).toBeUndefined();
+
+      // Positive control: the same event on an enabled indexer persists intent.
+      _testExports._setIsEnabled(true);
+      _testExports._setFtsSearch(installEmptyFolders([['account1', '/A']]));
+      events.folders.onDeleted.emit({ accountId: 'account1', path: '/B' });
+      for (let turn = 0; turn < 5; turn++) await yieldToRealEventLoop();
+      expect(storageData.fts_reconcile_pending).toBeDefined();
+      _testExports._setIsEnabled(false);
+      await incrementalIndexer.disposeIncrementalIndexer();
+      for (const event of [...Object.values(events.folders), ...Object.values(events.accounts)]) {
+        expect(event.listeners.size).toBe(0);
+      }
+    } finally {
+      uninstallTopologyEvents();
+    }
+  });
+});

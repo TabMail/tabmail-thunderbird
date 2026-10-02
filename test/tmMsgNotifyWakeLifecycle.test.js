@@ -216,6 +216,21 @@ describe('tmMsgNotify persistent background lifecycle', () => {
     expect(firstAsyncStart).toBeGreaterThan(setupCall);
   });
 
+  it('registers folder topology wakes synchronously in the background entry point', () => {
+    const source = read('../chat/background.js');
+    const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+    expect(ast.body.some(node => node.type === 'ImportDeclaration' &&
+      node.source.value === '../fts/incrementalIndexer.js' &&
+      node.specifiers.some(spec => spec.imported?.name === 'setupFolderTopologyListeners'))).toBe(true);
+    const setupCall = ast.body.findIndex(node => node.type === 'ExpressionStatement' &&
+      node.expression?.type === 'CallExpression' &&
+      node.expression.callee?.name === 'setupFolderTopologyListeners');
+    expect(setupCall).toBeGreaterThan(-1);
+    const firstAsyncStart = ast.body.findIndex(node => node.type === 'ExpressionStatement' &&
+      source.slice(node.start, node.end).startsWith('browser.storage.local.get('));
+    expect(firstAsyncStart).toBeGreaterThan(setupCall);
+  });
+
   it('persists both event families before the first yield and owns every subscriber across wakes', async () => {
     const lifecycle = makeLifecycle();
     const first = lifecycle.newInstance();

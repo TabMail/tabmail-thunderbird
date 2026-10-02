@@ -552,6 +552,72 @@ describe("native folder-membership v1 contract", () => {
     },
   );
 
+  it("wakes connection listeners once per operational generation until unsubscribed", async () => {
+    vi.resetModules();
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const legacy = makeNativePort(false);
+    const capable = makeNativePort(true);
+    const later = makeNativePort(true);
+    globalThis.browser = {
+      runtime: {
+        connectNative: vi.fn()
+          .mockReturnValueOnce(legacy)
+          .mockReturnValueOnce(capable)
+          .mockReturnValueOnce(later),
+        getManifest: vi.fn(() => ({
+          version: "1.7.3",
+          browser_specific_settings: { gecko: { id: "thunderbird@tabmail.ai" } },
+        })),
+      },
+    };
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+    const seen = [];
+    nativeFtsSearch.addConnectionListener(() => { throw new Error("listener_failure"); });
+    const unsubscribe = nativeFtsSearch.addConnectionListener(generation => seen.push(generation));
+
+    await initNativeFts();
+    expect(seen).toEqual([nativeFtsSearch.getConnectionGeneration()]);
+    expect(nativeFtsSearch.supportsFolderMembership()).toBe(false);
+
+    legacy.disconnect();
+    now.mockReturnValue(62_000);
+    await nativeFtsSearch.indexBatch([{ msgId: "account:/Client:message@example.com", folderId: "f", body: "" }]);
+    expect(nativeFtsSearch.supportsFolderMembership()).toBe(true);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBeGreaterThan(seen[0]);
+    expect(seen[1]).toBe(nativeFtsSearch.getConnectionGeneration());
+
+    unsubscribe();
+    capable.disconnect();
+    now.mockReturnValue(123_000);
+    await nativeFtsSearch.indexBatch([{ msgId: "account:/Client:message@example.com", folderId: "f", body: "" }]);
+    expect(later.messages.map(message => message.method)).toContain("init");
+    expect(seen).toHaveLength(2);
+    now.mockRestore();
+  });
+
+  it("does not wake connection listeners when native init fails", async () => {
+    vi.resetModules();
+    const port = makeDeferredHelloPort(true, { failInit: true });
+    globalThis.browser = {
+      runtime: {
+        connectNative: vi.fn(() => port),
+        getManifest: vi.fn(() => ({
+          version: "1.7.3",
+          browser_specific_settings: { gecko: { id: "thunderbird@tabmail.ai" } },
+        })),
+      },
+    };
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+    const listener = vi.fn();
+    nativeFtsSearch.addConnectionListener(listener);
+    const initializing = initNativeFts();
+    await Promise.resolve();
+    await port.releaseHello();
+    await expect(initializing).rejects.toThrow();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
   it("coalesces concurrent initialization onto one native port generation", async () => {
     vi.resetModules();
     const first = makeDeferredHelloPort(true);

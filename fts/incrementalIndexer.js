@@ -1590,6 +1590,57 @@ export async function removeExperimentListeners() {
   }
 }
 
+// Folder/account topology changes alter the inventory every reconciliation
+// stage compares against (exact-mode cutover, legacy orphan basis). A tick
+// re-reads it, but an idle scheduler has no tick: wake it and re-arm the
+// durable marker. Correctness never depends on delivery — every event-page
+// start runs the startup reconciliation. Registered from the background
+// entry point before any await so Gecko can prime the persistent events.
+const _folderTopologyListenerOwners = new Map();
+
+function _onFolderReconTopologyChanged() {
+  if (!_isEnabled || _indexerDisposed) return;
+  _ensureFolderReconPendingMarker().catch((e) => {
+    log(`[FTS FolderRecon] Topology marker write failed: ${e}`, "warn");
+  });
+  _wakeFolderRecon("folder_topology");
+}
+
+function _folderTopologyEvents() {
+  return [
+    ["folders.onCreated", browser.folders?.onCreated],
+    ["folders.onDeleted", browser.folders?.onDeleted],
+    ["folders.onRenamed", browser.folders?.onRenamed],
+    ["folders.onMoved", browser.folders?.onMoved],
+    ["folders.onCopied", browser.folders?.onCopied],
+    ["accounts.onCreated", browser.accounts?.onCreated],
+    ["accounts.onDeleted", browser.accounts?.onDeleted],
+  ];
+}
+
+export function setupFolderTopologyListeners() {
+  for (const [name, event] of _folderTopologyEvents()) {
+    if (!event || _folderTopologyListenerOwners.has(name)) continue;
+    try {
+      event.addListener(_onFolderReconTopologyChanged);
+      _folderTopologyListenerOwners.set(name, event);
+    } catch (e) {
+      log(`[FTS FolderRecon] Failed to attach ${name} topology wake: ${e}`, "warn");
+    }
+  }
+}
+
+function _removeFolderTopologyListeners() {
+  for (const [name, event] of _folderTopologyListenerOwners) {
+    try {
+      event.removeListener(_onFolderReconTopologyChanged);
+    } catch (e) {
+      log(`[FTS FolderRecon] Failed to remove ${name} topology wake: ${e}`, "warn");
+    }
+    _folderTopologyListenerOwners.delete(name);
+  }
+}
+
 // =====================================================================
 // Post-init reconciliation
 // =====================================================================
@@ -2550,9 +2601,14 @@ function _sanitizeFolderReconRetryNotBeforeMs(value, nowMs) {
 }
 
 // Feature detection for the native fingerprint/range RPCs (helper ≥ 0.11.0).
-// null = not probed yet this session; false = old deployed helper → the whole
-// phase no-ops and the user must upgrade or use an explicit manual repair.
-let _folderReconNativeSupported = null;
+// null = not probed on the current native connection; otherwise
+// {connectionGeneration, supported}. A "method unknown" verdict describes one
+// helper process only: a reconnect (helper upgrade) re-probes, and the
+// connection listener wakes the otherwise idle scheduler to do so.
+let _folderReconNativeSupport = null;
+// Transient probe failures on the current connection; drives retry backoff.
+let _folderReconNativeProbeFailures = { connectionGeneration: null, count: 0 };
+let _folderReconConnectionUnsubscribe = null;
 // The additive relation is never trusted merely because a durable marker
 // exists. Every add-on session earns cutover from a stable bounded global
 // membership-state pass with no null row after the live-folder metadata scans
@@ -3595,24 +3651,45 @@ function _folderKeyRange(accountId, folderPath) {
  * RPC error marks the helper unsupported for the whole session and logs it
  * ONCE — old deployed helpers must degrade to today's behavior.
  */
+// Native dispatch answers for an RPC the helper does not implement, across
+// every helper version (tabmail-native-fts main.rs). Anything else is transient.
+const FOLDER_RECON_NATIVE_UNKNOWN_METHOD = /\bUnknown (?:reader )?method\b/;
+
+/** @returns {Promise<"supported"|"unsupported"|"probe_failed">} */
 async function _checkFolderReconNativeSupport(ftsSearch) {
-  if (_folderReconNativeSupported !== null) return _folderReconNativeSupported;
+  const connectionGeneration = _folderMembershipConnectionGeneration(ftsSearch);
+  if (_folderReconNativeSupport?.connectionGeneration !== connectionGeneration) {
+    _folderReconNativeSupport = null;
+  }
+  if (_folderReconNativeProbeFailures.connectionGeneration !== connectionGeneration) {
+    _folderReconNativeProbeFailures = { connectionGeneration, count: 0 };
+  }
+  if (_folderReconNativeSupport) {
+    return _folderReconNativeSupport.supported ? "supported" : "unsupported";
+  }
   if (ftsSearch?.supportsFolderMembership?.() === true) {
-    _folderReconNativeSupported = true;
-    return true;
+    _folderReconNativeSupport = { connectionGeneration, supported: true };
+    return "supported";
   }
   try {
     // Equal bounds exercise method dispatch/validation without scanning the
     // user's index; real per-folder fingerprints follow immediately.
     await ftsSearch.fingerprintMsgIdRange("", "");
-    _folderReconNativeSupported = true;
+    _folderReconNativeSupport = { connectionGeneration, supported: true };
+    _folderReconNativeProbeFailures.count = 0;
+    return "supported";
   } catch (e) {
-    _folderReconNativeSupported = false;
+    if (!FOLDER_RECON_NATIVE_UNKNOWN_METHOD.test(String(e?.message || e))) {
+      _folderReconNativeProbeFailures.count++;
+      log(`[FTS FolderRecon] Native fingerprint probe failed (${e}) — retrying`, "warn");
+      return "probe_failed";
+    }
+    _folderReconNativeSupport = { connectionGeneration, supported: false };
     log(`[FTS FolderRecon] Native helper lacks fingerprint RPCs (${e}) — startup consistency proof disabled until helper upgrade; manual repair remains available`, "warn");
     logFtsBatchOperation("folder_recon", "unsupported", { error: String(e) });
     _writeReconSnapshot("fts_folder_recon_last", { skipped: true, reason: "native_unsupported", error: String(e) });
+    return "unsupported";
   }
-  return _folderReconNativeSupported;
 }
 
 function _useExactFolderMembership(ftsSearch) {
@@ -4692,7 +4769,18 @@ async function _runFolderReconcile(
       log(`[FTS FolderRecon] Scan gate read failed: ${e} — deferred`, "warn");
       return { skipped: true, reason: "scan_gate_read_failed" };
     }
-    if (!(await _checkFolderReconNativeSupport(ftsSearch))) {
+    const nativeSupport = await _checkFolderReconNativeSupport(ftsSearch);
+    if (nativeSupport === "probe_failed") {
+      return {
+        skipped: true,
+        reason: "native_probe_failed",
+        retryDelayMs: Math.min(
+          FOLDER_RECON_ERROR_DELAY_MS * (2 ** Math.min(_folderReconNativeProbeFailures.count - 1, 30)),
+          FOLDER_RECON_GENERIC_FAILURE_BACKOFF_MAX_MS,
+        ),
+      };
+    }
+    if (nativeSupport !== "supported") {
       return { skipped: true, reason: "native_unsupported" };
     }
     _assertFolderReconLease(reconcileLease, generation);
@@ -6473,8 +6561,10 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
     }
     _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
     if (stats?.skipped) {
+      // A helper without the RPCs is retried only after a reconnect, which
+      // the native connection listener turns into a wake.
       if (stats.reason !== "native_unsupported") {
-        _wakeFolderRecon("skipped_retry", FOLDER_RECON_ERROR_DELAY_MS);
+        _wakeFolderRecon("skipped_retry", stats.retryDelayMs ?? FOLDER_RECON_ERROR_DELAY_MS);
       }
       return stats;
     }
@@ -6906,7 +6996,12 @@ export async function initIncrementalIndexer(ftsSearch) {
   _folderReconTimerDueMs = 0;
   _folderReconRequestedDueMs = Infinity;
   _folderReconHardNotBeforeMs = 0;
-  _folderReconNativeSupported = null;
+  _folderReconNativeSupport = null;
+  _folderReconNativeProbeFailures = { connectionGeneration: null, count: 0 };
+  _folderReconConnectionUnsubscribe?.();
+  _folderReconConnectionUnsubscribe = ftsSearch.addConnectionListener?.(
+    () => _wakeFolderRecon("native_reconnect"),
+  ) || null;
   _revokeFolderMembershipCutover();
   _folderMembershipCapabilityState = null;
   _cancelFolderMembershipScanSession();
@@ -6939,6 +7034,8 @@ export async function initIncrementalIndexer(ftsSearch) {
   await restorePendingUpdates();
 
   log("[TMDBG FTS] Incremental indexer initialized");
+
+  setupFolderTopologyListeners();
 
   // Try to set up experiment listeners for reliable message notifications
   const experimentAvailable = await setupExperimentListeners();
@@ -7042,6 +7139,8 @@ export async function disposeIncrementalIndexer() {
   _isEnabled = false;
   _folderReconGeneration++;
   _cancelExclusiveMarkerRetry();
+  _folderReconConnectionUnsubscribe?.();
+  _folderReconConnectionUnsubscribe = null;
   _folderReconInProgressOwner = null;
   _folderReconSchedulerOwner = null;
   _revokeFolderMembershipCutover();
@@ -7064,6 +7163,7 @@ export async function disposeIncrementalIndexer() {
   _stopWatermarkHeartbeat();
 
   // Remove experiment listeners first
+  _removeFolderTopologyListeners();
   await removeExperimentListeners();
   
   // Wait for any ongoing processing to complete
@@ -7320,12 +7420,12 @@ export const _testExports = {
   _getFolderReconMemo,
   _maybeScheduleFolderReconRerun,
   _getFolderReconDrainSkipped: () => _folderReconDrainSkipped,
-  _getFolderReconNativeSupported: () => _folderReconNativeSupported,
   _getFolderMembershipCutoverProven: () => _folderMembershipCutoverProven,
   _runFolderMembershipMigrationSlice,
   _resetFolderReconState: () => {
     _resetFtsOperationCoordinatorForTests();
-    _folderReconNativeSupported = null;
+    _folderReconNativeSupport = null;
+    _folderReconNativeProbeFailures = { connectionGeneration: null, count: 0 };
     _revokeFolderMembershipCutover();
     _folderMembershipCapabilityState = null;
     _cancelFolderMembershipScanSession();
