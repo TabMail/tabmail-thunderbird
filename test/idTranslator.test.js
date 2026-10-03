@@ -260,6 +260,23 @@ describe('processToolCallLLMtoTB', () => {
       expect(result.unique_ids).toEqual(['msg-a', 'msg-b', 'msg-c']);
     });
 
+    // attachment_read_pdf names its email by unique_id but is not an email_* tool; without
+    // translation the tool receives the model's number and never finds the message.
+    it('translates unique_id for attachment_read_pdf, keeping its other arguments', () => {
+      const ctx = createIsolatedContext();
+      const numId = toNumericId('msg-pdf-1', ctx);
+      const result = processToolCallLLMtoTB('attachment_read_pdf', { unique_id: numId, attachment_name: 'a.pdf', start_page: 3 }, ctx);
+      expect(result).toEqual({ unique_id: 'msg-pdf-1', attachment_name: 'a.pdf', start_page: 3 });
+    });
+
+    it('turns the real id in an attachment_read_pdf result back into the numeric id', () => {
+      const ctx = createIsolatedContext();
+      const numId = toNumericId('msg-pdf-2', ctx);
+      const out = processToolResultTBtoLLM('unique_id: msg-pdf-2\nattachment: a.pdf\ntotal_pages: 1', ctx);
+      expect(out).toContain(`unique_id: ${numId}`);
+      expect(out).not.toContain('msg-pdf-2');
+    });
+
     it('keeps unmapped IDs in unique_ids array', () => {
       const ctx = createIsolatedContext();
       const id1 = toNumericId('msg-a', ctx);

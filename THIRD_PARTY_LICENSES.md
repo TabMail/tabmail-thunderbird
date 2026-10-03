@@ -2,8 +2,8 @@
 
 The TabMail Thunderbird add-on bundles the following third-party components.
 These are **not** covered by the add-on's MPL-2.0 license; each retains its own
-license as noted below. They live under `compose/libs/` and keep their original
-copyright/license headers.
+license as noted below. They live under `compose/libs/` and `chat/libs/` and keep
+their original copyright/license headers.
 
 ---
 
@@ -27,6 +27,16 @@ copyright/license headers.
 - **License:** MIT License
 - **Copyright:** Arthur Clemens
 - **Usage:** Lightweight undo/redo stack in the composer (trimmed copy).
+
+## PDF.js (`chat/libs/pdfjs/`)
+
+- **Source:** https://github.com/mozilla/pdf.js — the `pdfjs-dist` 6.3.289 npm release,
+  copied unmodified: `legacy/build/pdf.min.mjs`, `legacy/build/pdf.worker.min.mjs`,
+  `cmaps/` and `LICENSE`.
+- **License:** Apache License 2.0 (`chat/libs/pdfjs/LICENSE`)
+- **Copyright:** Mozilla Foundation
+- **Usage:** Extracts the text of PDF attachments for the chat agent's
+  `attachment_read_pdf` tool, in its own worker. Text only: no rendering, scripting or forms.
 
 ## patience-diff (`compose/libs/patience-diff.js`)
 

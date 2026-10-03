@@ -227,3 +227,6 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ### Nested Sent-folder lookup
 - **[Detail](Companion/Memory/Current/038-nested-sent-folder-resolution.md)** — MV3 root-folder enumeration returns a nested tree; traverse provider containers for after-send FTS handoff, preserving account scope and metadata matching.
+
+### PDF attachment text (attachment_read_pdf, pdf.js)
+- **[Detail](Companion/Memory/Current/039-pdf-attachment-text-bundled-pdfjs.md)** — bundled pdfjs-dist LEGACY build (modern build needs `Uint8Array.toHex`, absent in Node → tests fail); CMaps required for CJK (`UniJIS-UCS2-H` extracts empty without `cMapUrl`); pdf.js drops off-page text; `isEvalSupported:false`; worker destroyed at the deadline; idTranslator translates `unique_id` only for `email_*` + an explicit `attachment_read_pdf` arm.
