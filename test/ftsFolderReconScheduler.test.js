@@ -8672,6 +8672,41 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
       await tickUntilFired(installed.fts, fired);
       expect(_testExports._getFolderReconSessionDone().has('account1:/A')).toBe(true);
     });
+
+    // A native write (the real engine wrapper) during the memo reload moves
+    // the global membership epoch. Only a write to /A's own key range may
+    // withhold /A's earned completion.
+    it.each(['/A', '/B'])('a native write in %s during the memo reload withholds only its own folder\'s completion', async (writerPath) => {
+      const installed = seedTwoFolders();
+      installRealDrain(installed);
+      _testExports._setFtsSearch(installed.fts);
+      const writer = installed.folders.find(folder => folder.folderPath === writerPath);
+      const headerMessageId = 'late-native@example.com';
+      const msgId = `account1:${writerPath}:${headerMessageId}`;
+      const fired = { tick: null };
+      const storage = globalThis.browser.storage.local;
+      const get = storage.get.getMockImplementation();
+      storage.get.mockImplementation(async (keys) => {
+        if (fired.tick === null && aVerifiedIn(storageData)
+            && JSON.stringify(keys ?? null).includes(memoKey())) {
+          fired.tick = 'pending';
+          installed.rowsByURI.get(writer.folderURI).push({ msgKey: 100, headerMessageId });
+          await installed.fts.indexBatch([{ msgId, folderId: writer.folderId }]);
+        }
+        return get(keys);
+      });
+
+      await tickUntilFired(installed.fts, fired);
+      expect(installed.nativeRows.get(msgId)).toBe(writer.folderId);
+      expect(_testExports._getPendingUpdates().size).toBe(0);
+      expect(_testExports._getFolderReconSessionDone().has('account1:/A')).toBe(writerPath === '/B');
+
+      // The withheld folder is proved again and completes.
+      const result = await tickUntil(installed.fts, value => value?.complete === true, 60);
+      expect(result).toMatchObject({ complete: true });
+      expect(_testExports._getFolderReconSessionDone().has('account1:/A')).toBe(true);
+      expect(installed.nativeRows.get(msgId)).toBe(writer.folderId);
+    });
   });
 });
 
