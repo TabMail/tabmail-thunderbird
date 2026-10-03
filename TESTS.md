@@ -16,6 +16,8 @@
 | `test/deviceSync.test.js` | 31 | State merge, CRDT, echo prevention, virgin device detection |
 | `test/ftsFolderReconScheduler.test.js` | 174 | Bounded folder membership reconciliation, epoch-fenced verification, stale/missing repair, interruption and retry, volatile drift-tolerant membership-state pass (no per-page memo writes, convergence under live mail), recovery wakes after native reconnect and folder/account topology changes |
 | `test/llmClient.test.js` | 29 | JSON/SSE response parsing, tool call parsing, conversation state |
+| `test/pdfText.test.js` | 25 | Bundled pdf.js text extraction from generated PDFs: page ranges and caps, output-limit stop/cut (surrogate-safe), CJK via packed CMaps, encrypted/owner-only/malformed, per-call worker terminated at the deadline even when it never acknowledges |
+| `test/attachmentReadPdf.test.js` | 35 | `attachment_read_pdf` tool: argument validation, attachment choice and refusals, size limits (inclusive boundary), output format and notes, unreadable pages, production pdf.js + CMap wiring, core.js registration |
 
 ---
 
@@ -106,6 +108,8 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-064 | kb_add → append to existing KB | Content added | Mutation |
 | TB-065 | kb_del → remove specific entry | Content removed | Mutation |
 | TB-066 | memory_read → format memory entries | Correct output | Formatting |
+| TB-067 | attachment_read_pdf → page range, limits and refusals on generated PDFs | Text or a clear error | Business rule |
+| TB-068 | attachment_read_pdf → parse deadline bounds the call | Timeout at the deadline, worker terminated | Robustness |
 
 ---
 

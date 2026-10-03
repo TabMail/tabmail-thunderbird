@@ -25,6 +25,16 @@ const extract = (data, range, limits = LIMITS) =>
   extractPdfText(data, { startPage: 1, endPage: null, ...range }, { pdfjs, cMapUrl, limits });
 const pageTexts = (result) => result.pages.map((p) => p.text);
 
+// Stand-in for pdfjs.PDFWorker in mocked libraries; records each instance.
+function fakeWorkerClass() {
+  const instances = [];
+  class FakePDFWorker {
+    constructor() { instances.push(this); }
+    destroy = vi.fn();
+  }
+  return Object.assign(FakePDFWorker, { instances });
+}
+
 describe('hasPdfSignature', () => {
   const bytes = (s) => new TextEncoder().encode(s);
 
@@ -150,35 +160,53 @@ describe('extractPdfText — refusals', () => {
 });
 
 describe('extractPdfText — deadline', () => {
+  // A worker stuck in one long step never acknowledges, so the task's destroy() never settles.
   function stalledPdfjs() {
-    const destroy = vi.fn(async () => {});
+    const destroy = vi.fn(() => new Promise(() => {}));
+    const PDFWorker = fakeWorkerClass();
     return {
       destroy,
-      lib: { getDocument: vi.fn(() => ({ promise: new Promise(() => {}), destroy })) },
+      PDFWorker,
+      lib: { PDFWorker, getDocument: vi.fn(() => ({ promise: new Promise(() => {}), destroy })) },
     };
   }
 
-  it('stops at the deadline and destroys the loading task (terminating its worker)', async () => {
-    const { lib, destroy } = stalledPdfjs();
-    const r = await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: lib, cMapUrl, limits: { ...LIMITS, timeoutMs: 5 } });
-    expect(r).toEqual({ outcome: PDF_TEXT_OUTCOME.TIMEOUT });
+  it('returns at the deadline even when the worker never acknowledges, and terminates the worker', async () => {
+    const { lib, destroy, PDFWorker } = stalledPdfjs();
+    const timeoutMs = 20;
+    const started = Date.now();
+    const outcome = await Promise.race([
+      extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: lib, cMapUrl, limits: { ...LIMITS, timeoutMs } }),
+      new Promise((resolve) => setTimeout(() => resolve('still pending'), 1000)),
+    ]);
+    expect(outcome).toEqual({ outcome: PDF_TEXT_OUTCOME.TIMEOUT });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(PDFWorker.instances).toHaveLength(1);
+    expect(PDFWorker.instances[0].destroy).toHaveBeenCalledTimes(1);
     expect(destroy).toHaveBeenCalledTimes(1);
   });
 
-  it('destroys the loading task after a successful read too', async () => {
-    const destroySpy = vi.spyOn(pdfjs, 'getDocument');
-    const r = await extract(buildPdf({ pages: ['ok'] }));
-    expect(r.outcome).toBe(PDF_TEXT_OUTCOME.OK);
-    const task = destroySpy.mock.results[0].value;
-    expect(task.destroyed).toBe(true);
-    destroySpy.mockRestore();
+  it('uses a worker of its own per call and destroys it and the task after a successful read', async () => {
+    const getDocumentSpy = vi.spyOn(pdfjs, 'getDocument');
+    try {
+      const r = await extract(buildPdf({ pages: ['ok'] }));
+      expect(r.outcome).toBe(PDF_TEXT_OUTCOME.OK);
+      await extract(buildPdf({ pages: ['again'] }));
+      const [first, second] = getDocumentSpy.mock.calls.map(([params]) => params.worker);
+      expect(first).toBeInstanceOf(pdfjs.PDFWorker);
+      expect(second).not.toBe(first);
+      expect(first.destroyed).toBe(true);
+      expect(getDocumentSpy.mock.results[0].value.destroyed).toBe(true);
+    } finally {
+      getDocumentSpy.mockRestore();
+    }
   });
 
   it('passes the text-only safety options to pdf.js', async () => {
     const { lib } = stalledPdfjs();
     await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: lib, cMapUrl, limits: { ...LIMITS, timeoutMs: 1 } });
     expect(lib.getDocument).toHaveBeenCalledWith(expect.objectContaining({
-      isEvalSupported: false,
+      worker: lib.PDFWorker.instances[0],
       enableXfa: false,
       disableFontFace: true,
       cMapUrl,
@@ -197,7 +225,7 @@ describe('extractPdfText — a damaged page', () => {
         return { getTextContent: async () => ({ items: [{ str: pages[n], hasEOL: false }] }), cleanup: vi.fn() };
       }),
     };
-    const lib = { getDocument: () => ({ promise: Promise.resolve(doc), destroy: vi.fn(async () => {}) }) };
+    const lib = { PDFWorker: fakeWorkerClass(), getDocument: () => ({ promise: Promise.resolve(doc), destroy: vi.fn(async () => {}) }) };
     const r = await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: lib, cMapUrl, limits: LIMITS });
     expect(r.pages).toEqual([
       { page: 1, text: 'first', unreadable: false },
@@ -227,19 +255,29 @@ describe('loadBundledPdfjs / bundledCMapUrl', () => {
 });
 
 describe('extractPdfText — edge cases', () => {
-  const fakeLib = (doc, destroy = vi.fn(async () => {})) => ({ getDocument: () => ({ promise: Promise.resolve(doc), destroy }) });
+  const fakeLib = (doc, destroy = vi.fn(async () => {})) => ({ PDFWorker: fakeWorkerClass(), getDocument: () => ({ promise: Promise.resolve(doc), destroy }) });
 
   it('treats a document that reports no pages as malformed', async () => {
     const r = await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: fakeLib({ numPages: 0 }), cMapUrl, limits: LIMITS });
     expect(r).toEqual({ outcome: PDF_TEXT_OUTCOME.MALFORMED });
   });
 
-  it('still returns the result when destroying the task fails', async () => {
+  it('still returns the result, and still terminates the worker, when destroying the task fails', async () => {
     const doc = { numPages: 1, getPage: async () => ({ getTextContent: async () => ({ items: [{ str: 'ok' }] }), cleanup() {} }) };
-    const r = await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, {
-      pdfjs: fakeLib(doc, vi.fn(async () => { throw new Error('already gone'); })), cMapUrl, limits: LIMITS,
-    });
+    const lib = fakeLib(doc, vi.fn(async () => { throw new Error('already gone'); }));
+    const r = await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: lib, cMapUrl, limits: LIMITS });
     expect(r.pages).toEqual([{ page: 1, text: 'ok', unreadable: false }]);
+    expect(lib.PDFWorker.instances[0].destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('ends a page exactly at the output limit without stopping or cutting', async () => {
+    const pages = { 1: 'a'.repeat(6), 2: 'b'.repeat(4), 3: 'c' };
+    const doc = { numPages: 3, getPage: async (n) => ({ getTextContent: async () => ({ items: [{ str: pages[n] }] }), cleanup() {} }) };
+    const r = await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: fakeLib(doc), cMapUrl, limits: { ...LIMITS, maxOutputChars: 10 } });
+    expect(r.pages.map((p) => p.page)).toEqual([1, 2]);
+    expect(r.cutPage).toBeNull();
+    expect(r.stoppedAtOutputLimit).toBe(true);
+    expect(r.nextStartPage).toBe(3);
   });
 
   it('does not split a surrogate pair when cutting a page at the limit', async () => {

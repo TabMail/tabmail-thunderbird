@@ -33,8 +33,9 @@ their original copyright/license headers.
 - **Source:** https://github.com/mozilla/pdf.js — the `pdfjs-dist` 6.3.289 npm release,
   copied unmodified: `legacy/build/pdf.min.mjs`, `legacy/build/pdf.worker.min.mjs`,
   `cmaps/` and `LICENSE`.
-- **License:** Apache License 2.0 (`chat/libs/pdfjs/LICENSE`)
-- **Copyright:** Mozilla Foundation
+- **License:** Apache License 2.0 (`chat/libs/pdfjs/LICENSE`); the CMaps in `cmaps/` are
+  BSD-3-Clause (`chat/libs/pdfjs/cmaps/LICENSE`)
+- **Copyright:** Mozilla Foundation; CMaps © Adobe Systems Incorporated
 - **Usage:** Extracts the text of PDF attachments for the chat agent's
   `attachment_read_pdf` tool, in its own worker. Text only: no rendering, scripting or forms.
 

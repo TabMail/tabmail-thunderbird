@@ -46,6 +46,13 @@ function setMessage(attachments, bytesByPart = {}) {
 
 const read = (args = {}) => tool.run({ unique_id: UNIQUE_ID, ...args }, {}, deps);
 
+// A pdf.js stand-in whose document is `doc` (or never loads), with a worker class of its own.
+function fakePdfjs(promise, destroy = vi.fn(async () => {})) {
+  class PDFWorker { destroy = vi.fn(); }
+  return { PDFWorker, getDocument: vi.fn(() => ({ promise, destroy })) };
+}
+const textPage = (str) => ({ getTextContent: async () => ({ items: [{ str }] }), cleanup() {} });
+
 beforeEach(() => {
   deps = { loadPdfjs: vi.fn(async () => pdfjs), cMapUrl: () => cMapUrl };
 });
@@ -156,6 +163,17 @@ describe('attachment_read_pdf — size, download and type', () => {
     expect(deps.loadPdfjs).not.toHaveBeenCalled();
   });
 
+  it('reads a file of exactly the size limit, by listing and by bytes', async () => {
+    const exact = new Uint8Array(CONFIG.MAX_FILE_BYTES);
+    exact.set(new TextEncoder().encode('%PDF-1.4'));
+    setMessage([att('edge.pdf', 'application/pdf', '1.2', CONFIG.MAX_FILE_BYTES)], { '1.2': exact });
+    deps.loadPdfjs = async () => fakePdfjs(Promise.resolve({ numPages: 1, getPage: async () => textPage('edge') }));
+    const out = await read();
+    expect(out).toContain('attachment: edge.pdf');
+    expect(out).toContain('edge');
+    expect(browser.messages.getAttachmentFile).toHaveBeenCalledTimes(1);
+  });
+
   it('reports a failed download', async () => {
     setMessage([att('a.pdf', 'application/pdf', '1.2')], {});
     expect(await read()).toEqual({ error: 'could not download the attachment' });
@@ -230,8 +248,8 @@ describe('attachment_read_pdf — outcomes from the parser', () => {
 
   it('stops a parse that runs past the deadline', async () => {
     withPdf(buildPdf({ pages: ['x'] }));
-    const destroy = vi.fn(async () => {});
-    deps.loadPdfjs = async () => ({ getDocument: () => ({ promise: new Promise(() => {}), destroy }) });
+    const destroy = vi.fn(() => new Promise(() => {}));
+    deps.loadPdfjs = async () => fakePdfjs(new Promise(() => {}), destroy);
     vi.useFakeTimers();
     const pending = read();
     await vi.advanceTimersByTimeAsync(CONFIG.PARSE_TIMEOUT_MS);
@@ -241,8 +259,29 @@ describe('attachment_read_pdf — outcomes from the parser', () => {
 
   it('reports a parser that could not run at all', async () => {
     withPdf(buildPdf({ pages: ['x'] }));
-    deps.loadPdfjs = async () => ({ getDocument: () => ({ promise: Promise.reject(new Error('worker failed')), destroy: async () => {} }) });
+    deps.loadPdfjs = async () => fakePdfjs(Promise.reject(new Error('worker failed')));
     expect(await read()).toEqual({ error: 'the PDF could not be read' });
+  });
+
+  it('marks a damaged page as unreadable, and does not call the PDF scanned', async () => {
+    withPdf(buildPdf({ pages: ['x'] }));
+    const getPage = async (n) => {
+      if (n === 2) throw Object.assign(new Error('bad page'), { name: 'FormatError' });
+      return textPage(n === 1 ? '' : 'Last words');
+    };
+    deps.loadPdfjs = async () => fakePdfjs(Promise.resolve({ numPages: 3, getPage }));
+    const out = await read();
+    expect(out).toContain('[page 1]\n(no text on this page)\n[page 2]\n(this page could not be read)\n[page 3]\nLast words');
+    expect(out).not.toContain('note:');
+  });
+
+  it('does not call a PDF scanned when no page could be read at all', async () => {
+    withPdf(buildPdf({ pages: ['x'] }));
+    const getPage = async () => { throw Object.assign(new Error('bad page'), { name: 'FormatError' }); };
+    deps.loadPdfjs = async () => fakePdfjs(Promise.resolve({ numPages: 2, getPage }));
+    const out = await read();
+    expect(out).toContain('[page 1]\n(this page could not be read)\n[page 2]\n(this page could not be read)');
+    expect(out).not.toContain('scanned');
   });
 
   it('notes a page cut at the output limit and one call stopped at it', async () => {
@@ -276,6 +315,25 @@ describe('attachment_read_pdf — registration in chat/tools/core.js', () => {
     const toolImpl = src.slice(src.indexOf('const TOOL_IMPL = {'), src.indexOf('};', src.indexOf('const TOOL_IMPL = {')));
     expect(toolImpl).toContain(`attachment_read_pdf: ${binding},`);
     expect(src).toContain('case "attachment_read_pdf": {');
+  });
+});
+
+describe('attachment_read_pdf — the shipped pdf.js and CMaps (production deps)', () => {
+  it('loads the bundled parser and CMaps by extension URL and decodes a CJK page', async () => {
+    const realWorkerSrc = pdfjs.GlobalWorkerOptions.workerSrc;
+    setMessage([att('jp.pdf', 'application/pdf', '1.2')], { '1.2': buildPdf({ pages: [{ cjk: '日本語のテキスト' }] }) });
+    // Node reads the worker by file URL and the CMaps by filesystem path.
+    const root = path.resolve(import.meta.dirname, '..');
+    globalThis.browser.runtime = {
+      getURL: vi.fn((p) => (p.endsWith('/') ? path.join(root, p) + path.sep : pathToFileURL(path.join(root, p)).href)),
+    };
+    try {
+      const out = await tool.run({ unique_id: UNIQUE_ID }, {});
+      expect(out).toContain('日本語のテキスト');
+      expect(browser.runtime.getURL).toHaveBeenCalledWith('chat/libs/pdfjs/cmaps/');
+    } finally {
+      pdfjs.GlobalWorkerOptions.workerSrc = realWorkerSrc;
+    }
   });
 });
 

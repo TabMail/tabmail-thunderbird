@@ -6,8 +6,8 @@
 //
 // Uses the bundled pdf.js (chat/libs/pdfjs, see THIRD_PARTY_LICENSES.md). pdf.js parses in its
 // own Web Worker, so a heavy PDF cannot block the page running the chat. Only the text layer is
-// read: no rendering, no fonts, no forms or XFA, no scripting (that lives in pdf.js's viewer
-// sandbox, which is not bundled), and eval-based font compilation is turned off.
+// read: no rendering, no fonts, no forms or XFA, and no scripting (that lives in pdf.js's viewer
+// sandbox, which is not bundled). pdf.js 6 has no eval path, and the add-on CSP forbids eval.
 
 import { log } from "../../agent/modules/utils.js";
 
@@ -88,19 +88,22 @@ function cutToLength(text, max) {
  * page of the call, which is cut at the limit so every call makes progress. This cap bounds
  * what is handed to the model's context window; nothing is stored either way.
  *
- * The whole call shares one deadline, `limits.timeoutMs`; on expiry the loading task is
- * destroyed, which terminates the pdf.js worker.
+ * The whole call shares one deadline, `limits.timeoutMs`. Each call gets its own pdf.js worker,
+ * which is terminated outright at the deadline: `loadingTask.destroy()` waits for the worker to
+ * acknowledge, and a worker busy in one long step (a small stream that inflates to a huge one)
+ * answers only when that step ends.
  *
  * @param {Uint8Array} data  PDF bytes. pdf.js transfers the buffer to its worker.
  * @param {{ startPage: number, endPage: number|null }} range
  * @param {{ pdfjs: object, cMapUrl: string, limits: { maxPages: number, maxOutputChars: number, timeoutMs: number } }} deps
  */
 export async function extractPdfText(data, range, { pdfjs, cMapUrl, limits }) {
+  const worker = new pdfjs.PDFWorker();
   const loadingTask = pdfjs.getDocument({
     data,
+    worker,
     cMapUrl,
     cMapPacked: true,
-    isEvalSupported: false,
     disableFontFace: true,
     useSystemFonts: false,
     enableXfa: false,
@@ -117,16 +120,20 @@ export async function extractPdfText(data, range, { pdfjs, cMapUrl, limits }) {
   // rejection is expected and must not surface as unhandled.
   const work = readPages(loadingTask, range, limits).catch(classifyError);
 
-  try {
-    return await Promise.race([work, deadline]);
-  } finally {
-    clearTimeout(timer);
-    try {
-      await loadingTask.destroy();
-    } catch (e) {
-      log(`[pdfText] destroy failed: ${e}`, "warn");
-    }
+  const result = await Promise.race([work, deadline]);
+  clearTimeout(timer);
+  if (result.outcome === PDF_TEXT_OUTCOME.TIMEOUT) {
+    worker.destroy();
+    loadingTask.destroy().catch(() => {});
+    return result;
   }
+  try {
+    await loadingTask.destroy();
+  } catch (e) {
+    log(`[pdfText] destroy failed: ${e}`, "warn");
+  }
+  worker.destroy();
+  return result;
 }
 
 function classifyError(e) {

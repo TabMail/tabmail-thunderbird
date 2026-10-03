@@ -15,13 +15,20 @@ Facts measured while building it (2026-10-03, pdfjs-dist 6.3.289, Node 24):
   URL is a filesystem path; in the add-on it is `browser.runtime.getURL("chat/libs/pdfjs/cmaps/")`.
 - **pdf.js drops text that runs off the page.** A 150-character single line on a 612pt page extracts
   as 81 characters. Test fixtures that need long pages must use several short lines.
-- **Safety options**: `isEvalSupported: false` (no `new Function` font compilation; the add-on CSP
-  forbids eval anyway), `enableXfa: false`, `disableFontFace: true`. PDF JavaScript only runs in the
+- **Safety options**: `enableXfa: false`, `disableFontFace: true`. pdf.js 6.3.289 has no eval path
+  at all (its `isEvalSupported` option is gone, so passing it is a no-op), and the add-on CSP has no
+  `unsafe-eval`. PDF JavaScript only runs in the
   viewer's scripting sandbox (`pdf.sandbox.mjs`), which is not bundled (CVE-2026-16633 needed
   `enableScripting` in the viewer).
 - **Parsing runs in pdf.js's own Worker** (`GlobalWorkerOptions.workerSrc` = bundled worker; CSP
-  `worker-src 'self'`). The per-call deadline destroys the loading task, which terminates the worker;
-  each call starts a fresh one.
+  `worker-src 'self'`). Each call creates its own `pdfjs.PDFWorker` and passes it as `worker`.
+- **At the deadline, terminate the worker; never await `loadingTask.destroy()`.** That call
+  waits for the worker to acknowledge "Terminate" (and for setup). A worker busy in one long
+  synchronous step answers only when the step ends. Review measured a 195 KB PDF whose stream
+  inflates to a 200 MB operand: a 300 ms deadline returned after 4 s. `PDFWorker.destroy()`
+  calls `Worker.terminate()` synchronously, so the timeout path calls it, then fires
+  `loadingTask.destroy()` without awaiting. The success path awaits the task's destroy, then
+  destroys the worker.
 - **Encryption**: a user password → `PasswordException` (refused); owner-password-only PDFs open and
   are read. Garbage, truncated and empty input → `InvalidPDFException`.
 - **ID translation**: `idTranslator.processToolCallLLMtoTB` translates `unique_id` only for
