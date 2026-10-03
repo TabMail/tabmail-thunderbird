@@ -14,7 +14,7 @@
 | `test/utils.test.js` | 59 | normalizeUnicode, date formatting, isInboxFolder, email extraction, escapeHtml |
 | `test/chatTools.test.js` | 46 | Chat tool interface, validation, specific tool behavior |
 | `test/deviceSync.test.js` | 31 | State merge, CRDT, echo prevention, virgin device detection |
-| `test/ftsFolderReconScheduler.test.js` | 211 | Bounded folder membership reconciliation, epoch-fenced verification, stale/missing repair, interruption and retry, volatile drift-tolerant membership-state pass (no per-page memo writes, convergence under live mail), recovery wakes after native reconnect and folder/account topology changes, total ownerless-row classifier (ghost removal, budget, interrupted terminal page), unloaded-account rows and capped `inventory_retry`, orphan completion across ticks in both modes, legacy orphan reset triggers, zero storage writes on a no-change startup |
+| `test/ftsFolderReconScheduler.test.js` | 216 | Bounded folder membership reconciliation, epoch-fenced verification, stale/missing repair, interruption and retry, volatile drift-tolerant membership-state pass (no per-page memo writes, convergence under live mail), recovery wakes after native reconnect and folder/account topology changes, total ownerless-row classifier (ghost removal, budget, interrupted terminal page), unloaded-account rows and capped `inventory_retry`, orphan completion across ticks in both modes, legacy orphan reset triggers, zero storage writes on a no-change startup, removal vs racing re-add ordering, interrupted legacy basis count |
 | `test/llmClient.test.js` | 29 | JSON/SSE response parsing, tool call parsing, conversation state |
 
 ---

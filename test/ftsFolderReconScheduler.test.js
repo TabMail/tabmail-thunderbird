@@ -6208,6 +6208,31 @@ describe('orphan completion across ticks', () => {
     expect(keys.has(ghost)).toBe(false);
   });
 
+  it('retries a legacy basis interrupted at its global count instead of walking a clean index', async () => {
+    const { fts } = installLegacyKeyIndex(['/Keep'], []);
+    storageData[RECON_PENDING_KEY] = 123;
+    const count = fts.countMsgIdRange.getMockImplementation();
+    let pressured = false;
+    fts.countMsgIdRange.mockImplementation(async (start, end) => {
+      if (start === '' && !pressured) {
+        pressured = true;
+        getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false });
+      }
+      return count(start, end);
+    });
+
+    const interrupted = await tickUntil(fts, value => value?.reason === 'pressure');
+    expect(interrupted).toMatchObject({ skipped: true, reason: 'pressure' });
+    getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
+    const result = await tickUntil(fts, value => value?.complete === true);
+
+    expect(result).toMatchObject({ complete: true });
+    // The basis retried its global count; no orphan walk page was read.
+    expect(fts.countMsgIdRange.mock.calls.filter(([start]) => start === '')).toHaveLength(2);
+    expect(fts.listMsgIdRange.mock.calls.filter(([start]) => start === '')).toHaveLength(0);
+    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+  });
+
   it.each([
     ['an equal count basis', []],
     ['a walk after a count mismatch', ['account1:/Gone:x@example.com']],
@@ -6684,3 +6709,123 @@ describe('no-change startup writes nothing but the marker', () => {
     expect(removed).toEqual([RECON_PENDING_KEY]);
   }, 30_000);
 });
+
+describe('reconciliation removal vs a racing re-add', () => {
+  const LIVE = 'account1:/F:live@example.com';
+
+  afterEach(() => {
+    _testExports._setIsEnabled(false);
+    _testExports._getPendingUpdates().clear();
+    delete storageData.fts_pending_updates;
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('withholds a ghost removal when a message event arrives after classification began', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { rowsByURI, nativeRows, fts, folders } = seedMigratedExactFolders([
+      { folderPath: '/F', headerMessageIds: [] },
+    ]);
+    const localRows = rowsByURI.get(folders[0].folderURI);
+    nativeRows.set(LIVE, null);
+    recheckMessageInFolder.mockImplementationOnce(async () => {
+      // The scoped query missed; the message is re-added before the removal.
+      localRows.push({ msgKey: 1, headerMessageId: 'live@example.com' });
+      _testExports._invalidateFolderReconProofForEvent('account1', '/F');
+      return 'absent';
+    });
+
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+
+    expect(fts.removeBatch.mock.calls.flat(2)).not.toContain(LIVE);
+    expect(nativeRows.get(LIVE)).toBe(folders[0].folderId);
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+  });
+
+  it('removes the same ghost when no message event intervenes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { nativeRows, fts } = seedMigratedExactFolders([
+      { folderPath: '/F', headerMessageIds: [] },
+    ]);
+    nativeRows.set(LIVE, null);
+    recheckMessageInFolder.mockResolvedValue('absent');
+
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+
+    expect(fts.removeBatch.mock.calls.flat(2)).toContain(LIVE);
+    expect(nativeRows.has(LIVE)).toBe(false);
+  });
+
+  function startDrain(indexed) {
+    _testExports._getPendingUpdates().set(LIVE, {
+      type: 'new', uniqueKey: LIVE, timestamp: Date.now(),
+      folderKey: 'account1:/F', hasFailed: false, lastFailedAt: 0, metadata: {},
+    });
+    headerIDToWeID.mockImplementation(async () => 100);
+    globalThis.browser.messages = {
+      get: vi.fn(async weId => ({
+        id: weId,
+        headerMessageId: 'live@example.com',
+        folder: { accountId: 'account1', path: '/F' },
+      })),
+    };
+    buildBatchHeader.mockImplementation(async headers => headers.map(header => ({
+      msgId: `account1:/F:${header.headerMessageId}`,
+    })));
+    getUniqueMessageKey.mockImplementation(async header => `account1:/F:${header.headerMessageId}`);
+    populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+    const fts = {
+      filterNewMessages: vi.fn(async rows => ({
+        newMsgIds: rows.map(row => row.msgId).filter(msgId => !indexed.has(msgId)),
+      })),
+      getMessageByMsgId: vi.fn(async msgId => (indexed.has(msgId) ? { msgId } : null)),
+      indexBatch: vi.fn(async rows => {
+        for (const row of rows) indexed.add(row.msgId);
+        return { count: rows.length };
+      }),
+      stats: vi.fn(async () => ({})),
+    };
+    _testExports._setFtsSearch(fts);
+    return { fts, drained: flushPendingUpdates() };
+  }
+
+  it('re-indexes a re-add whose drain overlaps an in-flight removal of the old row', async () => {
+    const indexed = new Set([LIVE]);
+    const removalMayCommit = deferred();
+    const removal = runFtsMembershipMutation(async () => {
+      await removalMayCommit.promise;
+      indexed.delete(LIVE);
+      return { count: 1 };
+    });
+
+    const { fts, drained } = startDrain(indexed);
+    await yieldToRealEventLoop();
+    // The "already indexed?" read waits for the removal instead of seeing the
+    // row it is about to delete.
+    expect(fts.filterNewMessages).not.toHaveBeenCalled();
+    removalMayCommit.resolve();
+    await removal;
+    await drained;
+
+    expect(fts.indexBatch).toHaveBeenCalledOnce();
+    expect(indexed.has(LIVE)).toBe(true);
+    expect(populateBatchBody).toHaveBeenCalledOnce();
+    expect(_testExports._getPendingUpdates().size).toBe(0);
+  });
+
+  it('consumes an already-indexed add without a body fetch when no removal is in flight', async () => {
+    const indexed = new Set([LIVE]);
+
+    const { fts, drained } = startDrain(indexed);
+    await drained;
+
+    expect(fts.filterNewMessages).toHaveBeenCalledOnce();
+    expect(fts.indexBatch).not.toHaveBeenCalled();
+    expect(populateBatchBody).not.toHaveBeenCalled();
+    expect(indexed.has(LIVE)).toBe(true);
+    expect(_testExports._getPendingUpdates().size).toBe(0);
+  });
+});
+

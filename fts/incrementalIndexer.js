@@ -26,6 +26,7 @@ import {
   normalizeInterruptedFtsScanStatus,
   tryAcquireFtsReconcileLease,
   withFtsMembershipFence,
+  runFtsMembershipRead,
 } from "./operationCoordinator.js";
 
 // Incremental indexing state
@@ -886,23 +887,29 @@ async function processPendingUpdates() {
             }
           }
           
-          // Step 2: Filter to find messages that need indexing
-          const filterResult = await _ftsSearch.filterNewMessages(headerBatch);
-          const newMsgIds = filterResult.newMsgIds || [];
+          // Step 2: Filter to find messages that need indexing. The
+          // "already indexed" decision runs under the membership mutex: a
+          // reconciliation removal in flight would otherwise let this read see
+          // a row that is about to be deleted and dequeue the add for good.
           const batchKeys = headerBatch.map(row => row.msgId);
-          
-          // Log filterNewMessages results
-          logFtsBatchOperation("filter", "complete", {
-            total: headerBatch.length,
-            newCount: newMsgIds.length,
-            existingCount: headerBatch.length - newMsgIds.length,
+          let newMsgIds = [];
+          let alreadyIndexedKeys = [];
+          let verifiedExisting = 0;
+          let existingVerifyFailed = 0;
+          await runFtsMembershipRead(async () => {
+            const filterResult = await _ftsSearch.filterNewMessages(headerBatch);
+            newMsgIds = filterResult.newMsgIds || [];
+
+            // Log filterNewMessages results
+            logFtsBatchOperation("filter", "complete", {
+              total: headerBatch.length,
+              newCount: newMsgIds.length,
+              existingCount: headerBatch.length - newMsgIds.length,
           });
           
           // Messages reported as already indexed - VERIFY they actually exist in FTS
           // This catches cases where filterNewMessages incorrectly reports messages as indexed
-          const alreadyIndexedKeys = batchKeys.filter(key => !newMsgIds.includes(key));
-          let verifiedExisting = 0;
-          let existingVerifyFailed = 0;
+          alreadyIndexedKeys = batchKeys.filter(key => !newMsgIds.includes(key));
           
           for (const key of alreadyIndexedKeys) {
             try {
@@ -940,6 +947,7 @@ async function processPendingUpdates() {
               existingVerifyFailed++;
             }
           }
+          });
           
           if (existingVerifyFailed > 0) {
             log(`[TMDBG FTS] Existing verification: ${verifiedExisting}/${alreadyIndexedKeys.length} confirmed in FTS, ${existingVerifyFailed} need indexing`);
@@ -5529,10 +5537,12 @@ async function _runFolderReconOrphanSlice(
       if (basis.nextFolderIndex < identities.length) {
         return { complete: false, deferred: true, basisProgress: true, ...stats };
       }
-      pass.basisTried = true;
       assertCurrent();
       const global = await ftsSearch.countMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
       assertCurrent();
+      // Spent only once the global count is in hand: an interruption before
+      // this point retries the count on the next slice instead of walking.
+      pass.basisTried = true;
       if (Number(global?.count) === basis.knownCount) {
         // Through the mutex: waits out an in-flight drain mutation whose
         // native commit a count may already have seen.
@@ -6086,6 +6096,10 @@ async function _runFolderMembershipMigrationSlice(
   const staleOrphanMsgIds = [];
   const assignments = [];
   const budget = { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE };
+  // Every message add/remove event bumps this synchronously. A removal judged
+  // before an event for the same key would race its re-add, so any event
+  // since classification began withholds this page's removals (retry below).
+  const eventSerialAtClassification = _folderReconMutationSerial;
   let unresolved = 0;
   let unloadedAccountRowsKept = 0;
   let processed = 0;
@@ -6144,6 +6158,9 @@ async function _runFolderMembershipMigrationSlice(
       await withFtsMembershipFence(inventoryMembershipEpoch, async (membershipFenceToken) => {
         // Sticky before the mutator: an interrupted or uncertain removal
         // still forces a full replay before cutover.
+        if (_folderReconMutationSerial !== eventSerialAtClassification) {
+          throw new Error("membership_epoch_changed");
+        }
         pass.passMutated = true;
         assertCurrent();
         await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
@@ -6432,10 +6449,6 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
           );
         } catch (e) {
           const message = String(e?.message || e);
-          if (message.includes("folder_membership_page_pending")) {
-            _wakeFolderRecon("orphan_membership_page", cooperativeDelay());
-            return { complete: false, orphan: { deferred: true, pageProgress: true } };
-          }
           if (!message.includes("folder_recon_pressure")) throw e;
           _bumpFolderReconTelemetry("schedulerPressureSkips");
           _wakeFolderRecon("orphan_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
@@ -7348,7 +7361,6 @@ export const _testExports = {
   _getFolderMembershipCutoverProven: () => _folderMembershipCutoverProven,
   _getFolderMembershipStatePass: () => _folderMembershipStatePass,
   _getFolderReconOrphanPass: () => _folderReconOrphanPass,
-  _getFolderReconTimerDueMs: () => _folderReconTimerDueMs,
   _runFolderMembershipMigrationSlice,
   _resetFolderReconState: () => {
     _resetFtsOperationCoordinatorForTests();
