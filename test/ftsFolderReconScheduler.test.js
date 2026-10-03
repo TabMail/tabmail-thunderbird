@@ -7196,6 +7196,82 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     await expectRepairedNextSession(fts, lateKey);
   });
 
+  it('certifies nothing on a failed closing read and certifies on the next pass', async () => {
+    const { fts } = installGateFolders(specs);
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let failed = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
+      if (!failed && folderPath === '/A' && options === undefined) {
+        failed = true;
+        throw new Error('msgDB unavailable');
+      }
+      return state(accountId, folderPath, options);
+    });
+
+    const first = await tickUntil(fts, () => failed, 60);
+    expect(first.foldersLocalDrift).toBe(1);
+    expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders['account1:/A']).toBeUndefined();
+    await finishSession(fts);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, rangeCount: 2 });
+  });
+
+  it('verifies without gate fields when the pre-proof range sample fails, then earns them', async () => {
+    const { fts } = installGateFolders(specs);
+    const fingerprint = fts.fingerprintMsgIdRange.getMockImplementation();
+    let failed = false;
+    fts.fingerprintMsgIdRange.mockImplementation(async (start, end) => {
+      if (!failed && start.startsWith('account1:/A:')) {
+        failed = true;
+        throw new Error('native busy');
+      }
+      return fingerprint(start, end);
+    });
+    await finishSession(fts);
+    expect(failed).toBe(true);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true });
+    expect(memoFor('account1:/A')).not.toHaveProperty('rangeSha256');
+
+    restartSession();
+    await finishSession(fts);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, rangeCount: 2 });
+  });
+
+  it('errors a UID-tier hit whose closing read shows another msgDB, then re-projects it', async () => {
+    const { fts, folders, tokens } = installGateFolders(specs);
+    await finishSession(fts);
+    folders[0].highestModSeq = '101';
+    const uriA = folders[0].folderURI;
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let replaced = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
+      if (!replaced && folderPath === '/A' && options === undefined) {
+        replaced = true;
+        tokens.set(uriA, 'replacement-incarnation');
+      }
+      return state(accountId, folderPath, options);
+    });
+
+    restartSession();
+    await finishSession(fts);
+    expect(replaced).toBe(true);
+    const scansOfA = globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls
+      .filter(([uri]) => uri === uriA).map(([, full]) => full);
+    expect(scansOfA[0]).toBe(false);
+    expect(scansOfA).toContain(true);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, incarnationToken: 'replacement-incarnation', highestModSeq: '101' });
+  });
+
+  it('keeps a multi-slice attempt pre-proof sample across page yields', async () => {
+    const many = Array.from({ length: 3 * reconConfig.membershipListPageSize }, (_, i) => `m-${i}@example.com`);
+    const { fts } = installGateFolders([{ folderPath: '/Big', headerMessageIds: many }]);
+    await finishSession(fts);
+    const listCalls = fts.listFolderMembership.mock.calls.length;
+    expect(listCalls).toBeGreaterThan(1);
+    // One raw sample per attempt, however many slices its proof took.
+    expect(fts.fingerprintMsgIdRange.mock.calls.length).toBeLessThan(listCalls);
+    expect(memoFor('account1:/Big')).toMatchObject({ verified: true, rangeCount: many.length });
+  });
+
   describe('periodic re-verification deadline', () => {
     const intervalMs = reconConfig.reverifyIntervalMs;
     const dueMs = () => _testExports._getFolderReconReverifyDueMs();
