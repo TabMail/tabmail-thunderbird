@@ -1593,9 +1593,9 @@ function _markFolderReconPending() {
   _folderReconPendingThisSession = true;
 }
 
-function _clearFolderReconPendingIfCurrent(generation, syncStartedAt) {
+function _clearFolderReconPendingIfCurrent(generation, eventSerial) {
   if (generation !== _folderReconGeneration
-      || _lastSyncEventMs > syncStartedAt
+      || _folderReconMutationSerial !== eventSerial
       || _folderReconDirty.size > 0
       || _pendingUpdates.size > 0) {
     return false;
@@ -3113,21 +3113,21 @@ async function _fingerprintMsgKeysCooperatively(keys, assertActive = () => {}) {
   return { count: orderedHex.length, sha256: _bytesToHex(digest), sorted };
 }
 
-function _assertFolderReconGeneration(generation, syncStartedAt, mutationSerial = null) {
+// `eventSerial` is `_folderReconMutationSerial` captured when the guarded work
+// began. Message events are detected by that serial, never by
+// `_lastSyncEventMs`: two events can share a millisecond.
+function _assertFolderReconGeneration(generation, eventSerial = null) {
   if (!_isEnabled || generation !== _folderReconGeneration) {
     throw new Error("folder_recon_cancelled");
   }
-  if (_lastSyncEventMs > syncStartedAt) {
-    throw new Error("folder_changed_during_scan");
-  }
-  if (mutationSerial !== null && mutationSerial !== _folderReconMutationSerial) {
+  if (eventSerial !== null && eventSerial !== _folderReconMutationSerial) {
     throw new Error("folder_changed_during_scan");
   }
 }
 
-function _assertFolderReconLease(lease, generation, syncStartedAt = _lastSyncEventMs, mutationSerial = null) {
+function _assertFolderReconLease(lease, generation, eventSerial = null) {
   if (!lease || lease.released || lease.cancelRequested) throw new Error("folder_recon_cancelled");
-  _assertFolderReconGeneration(generation, syncStartedAt, mutationSerial);
+  _assertFolderReconGeneration(generation, eventSerial);
 }
 
 function _throwIfFolderReconInterrupted(error) {
@@ -3179,7 +3179,6 @@ async function _scanFolderMessagesCooperatively(
   generation = _folderReconGeneration,
   includeMessageIds = true,
 ) {
-  const syncStartedAt = _lastSyncEventMs;
   const mutationSerial = _folderReconMutationSerial;
   const reconcileLease = _folderReconInProgressOwner?.generation === generation
     ? _folderReconInProgressOwner.reconcileLease
@@ -3187,8 +3186,8 @@ async function _scanFolderMessagesCooperatively(
       ? _folderReconSchedulerOwner.reconcileLease
       : null);
   const assertCurrent = () => reconcileLease
-    ? _assertFolderReconLease(reconcileLease, generation, syncStartedAt, mutationSerial)
-    : _assertFolderReconGeneration(generation, syncStartedAt, mutationSerial);
+    ? _assertFolderReconLease(reconcileLease, generation, mutationSerial)
+    : _assertFolderReconGeneration(generation, mutationSerial);
   const assertWorkCurrent = () => {
     // Mutation/generation cancellation is the more specific reason and must
     // win when both it and foreground pressure become visible together.
@@ -3259,7 +3258,6 @@ async function _scanFolderMessagesCooperatively(
       folderPath: f.folderPath,
       uidCount: uid.count,
       uidSha256: uid.sha256,
-      syncStartedAt,
       mutationSerial,
       serverType: started.serverType || f.serverType || "",
       stableUidKeys: started.stableUidKeys === true,
@@ -3351,7 +3349,6 @@ function _folderReconProofFromRecord(entry) {
     uidSha256: entry.uidSha256,
     sortedKeys: entry.sortedKeys,
     unkeyedCount: entry.unkeyedCount,
-    syncStartedAt: entry.syncStartedAt,
     mutationSerial: entry.mutationSerial,
     serverType: entry.serverType,
     stableUidKeys: entry.stableUidKeys,
@@ -3395,7 +3392,6 @@ function _admitFolderReconActiveProof(
     uidSha256: snapshot.uidSha256,
     highestModSeq: snapshot.highestModSeq || "",
     unkeyedCount: snapshot.unkeyedCount || 0,
-    syncStartedAt: snapshot.syncStartedAt,
     mutationSerial: snapshot.mutationSerial,
     sortedKeys: snapshot.sortedKeys,
   };
@@ -4788,7 +4784,10 @@ async function _runFolderReconcile(
       }
     }
     openAttempt = { folderId: f.folderId, gateSample };
-    if (gateSample && _usableHighestModSeq(f.highestModSeq)) reverifiableThisRun.add(folderKey);
+    // Re-verification depends on the folder's identity evidence, not on
+    // this attempt's sample: a failed sample must not exempt the folder
+    // from the periodic repair of an eventless native change.
+    if (identityEvidence && _usableHighestModSeq(f.highestModSeq)) reverifiableThisRun.add(folderKey);
 
     // Fast gate (exact mode): the msgDB that earned the checkpoint, with
     // unchanged UIDVALIDITY, HIGHESTMODSEQ, no pending offline operations,
@@ -4848,13 +4847,12 @@ async function _runFolderReconcile(
         const ftsCheckpointHit = m.ftsCount === uidNative.count
           && m.ftsSha256 === uidNative.sha256;
         if (uidCheckpointHit && ftsCheckpointHit) {
-          _assertFolderReconGeneration(
-            generation,
-            uidOnly.syncStartedAt,
-            uidOnly.mutationSerial,
-          );
+          _assertFolderReconGeneration(generation, uidOnly.mutationSerial);
           _assertNoFolderReconForegroundPressure();
-          if (gateSample) {
+          // The incarnation token matched at the opening read; only the
+          // closing read proves the UIDs just hashed came from that msgDB,
+          // whether or not the range sample succeeded.
+          if (identityEvidence) {
             const closing = await _readFolderReconClosingState(f);
             _assertFolderReconLease(reconcileLease, generation);
             if (!_folderReconIdentityUnchanged(f, closing)) throw new Error("folder_identity_changed");
@@ -5051,7 +5049,7 @@ async function _runFolderReconcile(
       : null;
     const writeVerifiedCheckpoint = (ftsFingerprint, proof = expected, gateFields = null) => {
       if (proof.fromWorkingProof === true) throw new Error("retained_folder_proof_cannot_verify");
-      _assertFolderReconGeneration(generation, proof.syncStartedAt, proof.mutationSerial);
+      _assertFolderReconGeneration(generation, proof.mutationSerial);
       if (folderMembershipEpoch !== getFtsMembershipEpoch()) {
         throw new Error("membership_epoch_changed");
       }
@@ -5421,7 +5419,7 @@ async function _runFolderReconcile(
   openAttempt = null;
 
   if (memoChanged) {
-    _assertFolderReconGeneration(generation, _lastSyncEventMs);
+    _assertFolderReconGeneration(generation);
     const fencedKeys = [...memoEpochByFolder.keys()];
     for (const folderKey of fencedKeys) {
       const commitEpoch = memoEpochByFolder.get(folderKey);
@@ -5644,7 +5642,7 @@ async function _runFolderReconOrphanSlice(
   return { ...result, unloaded: pass.unloaded, ...stats };
 }
 
-async function _getFolderReconInventory(reconcileLease, generation, syncStartedAt) {
+async function _getFolderReconInventory(reconcileLease, generation, eventSerial) {
   const byFolderKey = new Map();
   for (const identity of await _listWeFolderIdentities()) {
     const accountId = String(identity?.accountId || "");
@@ -5657,7 +5655,7 @@ async function _getFolderReconInventory(reconcileLease, generation, syncStartedA
   }
   const identities = [...byFolderKey.values()].sort((a, b) =>
     `${a.accountId}:${a.folderPath}`.localeCompare(`${b.accountId}:${b.folderPath}`));
-  _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+  _assertFolderReconLease(reconcileLease, generation, eventSerial);
   return identities;
 }
 
@@ -5903,7 +5901,6 @@ async function _runFolderMembershipScanSlice(
       || session.generation !== _folderReconGeneration
       || session.folderId !== folder.folderId
       || session.folderURI !== folder.folderURI
-      || session.syncStartedAt !== _lastSyncEventMs
       || session.mutationSerial !== _folderReconMutationSerial) {
     _cancelFolderMembershipScanSession();
     assertCurrent();
@@ -5920,26 +5917,19 @@ async function _runFolderMembershipScanSlice(
       folderId: folder.folderId,
       folderURI: folder.folderURI,
       token: started.token,
-      syncStartedAt: _lastSyncEventMs,
       mutationSerial: _folderReconMutationSerial,
     };
     _folderMembershipScanSession = session;
   }
-  const assertScanCurrent = () => {
-    assertCurrent();
-    if (session.syncStartedAt !== _lastSyncEventMs
-        || session.mutationSerial !== _folderReconMutationSerial) {
-      throw new Error("folder_changed_during_scan");
-    }
-  };
-
+  // The session was opened or kept under the slice's message-event serial,
+  // which every `assertCurrent` compares.
   try {
-    assertScanCurrent();
+    assertCurrent();
     const page = await browser.tmMsgNotify.readFolderMessageScanPage(
       session.token,
       FOLDER_RECON_SCAN_PAGE_SIZE,
     );
-    assertScanCurrent();
+    assertCurrent();
     if (page?.error) throw new Error(page.error);
     const assignmentsByMsgId = new Map();
     for (const row of page?.rows || []) {
@@ -5954,12 +5944,12 @@ async function _runFolderMembershipScanSlice(
       offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
       const batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
       await withFtsMembershipFence(expectedEpoch, async (membershipFenceToken) => {
-        assertScanCurrent();
+        assertCurrent();
         await ftsSearch.assignFolderMembershipBatch(batch, membershipFenceToken);
-        assertScanCurrent();
+        assertCurrent();
       }, { mutation: true });
       expectedEpoch = getFtsMembershipEpoch();
-      assertScanCurrent();
+      assertCurrent();
     }
     _bumpFolderReconTelemetry("scanPages");
     _bumpFolderReconTelemetry("scanHeaders", (page?.rows || []).length);
@@ -5989,7 +5979,7 @@ async function _runFolderMembershipMigrationSlice(
   memo,
   reconcileLease,
   generation,
-  syncStartedAt,
+  eventSerial,
   inventoryMembershipEpoch,
   inventoryTopologySerial = _folderReconTopologySerial,
 ) {
@@ -5999,7 +5989,7 @@ async function _runFolderMembershipMigrationSlice(
     return { complete: true, legacy: true };
   }
   const assertCurrent = () => {
-    _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+    _assertFolderReconLease(reconcileLease, generation, eventSerial);
     _assertNoFolderReconForegroundPressure();
   };
   const validIdentities = identities.filter(identity =>
@@ -6348,10 +6338,10 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     return { skipped: true, reason: "busy" };
   }
   const generation = _folderReconGeneration;
-  const syncStartedAt = _lastSyncEventMs;
+  const eventSerial = _folderReconMutationSerial;
   // The quiet veto protects only the legacy key-range proof, which ordinary
   // sync traffic invalidates. Exact membership proofs are fenced on the
-  // membership epoch and the sync timestamp instead, so a capable helper
+  // membership epoch and the message-event serial instead, so a capable helper
   // keeps reconciling (and can earn cutover) under sustained traffic.
   if (_hasFolderReconForegroundPressure()
       || (!_isFolderMembershipCapable(ftsSearch)
@@ -6371,7 +6361,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
   const sliceStartedAt = Date.now();
   const cooperativeDelay = (minimumMs = FOLDER_RECON_PACE_DELAY_MS) =>
     Math.max(minimumMs, Date.now() - sliceStartedAt);
-  const owner = { generation, reconcileLease, syncStartedAt };
+  const owner = { generation, reconcileLease, eventSerial };
   _folderReconSchedulerOwner = owner;
   const folderMembershipCapable = _observeFolderMembershipCapability(ftsSearch);
   _consumeFolderReconReverifyDeadline(_useExactFolderMembership(ftsSearch));
@@ -6381,7 +6371,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     let scanGate;
     try {
       scanGate = await _readFolderReconScanGateStrict();
-      _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+      _assertFolderReconLease(reconcileLease, generation, eventSerial);
     } catch (e) {
       if (String(e?.message || e).includes("folder_recon_cancelled")) throw e;
       _wakeFolderRecon("scan_gate_read_failed", FOLDER_RECON_ERROR_DELAY_MS);
@@ -6396,12 +6386,12 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     // after the snapshot can never be mistaken for a deleted folder's row.
     const inventoryMembershipEpoch = getFtsMembershipEpoch();
     const inventoryTopologySerial = _folderReconTopologySerial;
-    const identities = await _getFolderReconInventory(reconcileLease, generation, syncStartedAt);
+    const identities = await _getFolderReconInventory(reconcileLease, generation, eventSerial);
     const keys = identities.map(i => `${i.accountId}:${i.folderPath}`);
     const currentFolderKeys = new Set(keys);
     _pruneFolderReconRuntimeToFolderKeys(currentFolderKeys);
     const memo = await _getFolderReconMemo();
-    _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+    _assertFolderReconLease(reconcileLease, generation, eventSerial);
     if (folderMembershipCapable) {
       let migration;
       try {
@@ -6411,7 +6401,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
           memo,
           reconcileLease,
           generation,
-          syncStartedAt,
+          eventSerial,
           inventoryMembershipEpoch,
           inventoryTopologySerial,
         );
@@ -6430,7 +6420,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
         _wakeFolderRecon("membership_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
         return { skipped: true, reason: "pressure" };
       }
-      _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+      _assertFolderReconLease(reconcileLease, generation, eventSerial);
       if (!migration.complete) {
         _wakeFolderRecon("membership_continue", migration.failed
           ? cooperativeDelay(FOLDER_RECON_ERROR_DELAY_MS)
@@ -6572,7 +6562,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
           return { skipped: true, reason: "pressure" };
         }
       }
-      _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+      _assertFolderReconLease(reconcileLease, generation, eventSerial);
       // A completed, bound pass stays complete: later writes are built under
       // the same binding and cannot create an outside-prefix key.
       _folderReconOrphanDone = orphan.complete === true;
@@ -6595,8 +6585,8 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
         return { complete: false, orphan, reason: "unloaded_accounts" };
       }
       if (_folderReconOrphanDone && _pendingUpdates.size === 0 && _folderReconDirty.size === 0) {
-        const cleared = _clearFolderReconPendingIfCurrent(generation, syncStartedAt);
-        _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+        const cleared = _clearFolderReconPendingIfCurrent(generation, eventSerial);
+        _assertFolderReconLease(reconcileLease, generation, eventSerial);
         if (cleared) {
           _completeFolderReconOutcome();
           return { complete: true, orphan };
@@ -6637,7 +6627,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
       _wakeFolderRecon("folder_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
       return { skipped: true, reason: "pressure" };
     }
-    _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+    _assertFolderReconLease(reconcileLease, generation, eventSerial);
     if (stats?.skipped) {
       // A helper without the RPCs is retried only after a reconnect, which
       // the native connection listener turns into a wake.
@@ -6648,7 +6638,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     }
     _folderReconRoundRobinCursor = target;
     const updatedMemo = await _getFolderReconMemo();
-    _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
+    _assertFolderReconLease(reconcileLease, generation, eventSerial);
 
     const checkpoint = updatedMemo.folders[target];
     if ((stats.foldersErrored || 0) > 0 || (stats.foldersFailed || 0) > 0) {
@@ -7428,6 +7418,7 @@ export const _testExports = {
   _scheduleReconcileWhenQuiet,
   runPostInitReconcile,
   _getLastSyncEventMs: () => _lastSyncEventMs,
+  _getFolderReconEventSerial: () => _folderReconMutationSerial,
   _setLastSyncEventMs: (v) => { _lastSyncEventMs = v; },
   _hasReconcileQuietTimer: () => _reconcileQuietTimer !== null,
   _clearReconcileQuietTimer: () => {

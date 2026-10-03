@@ -99,6 +99,7 @@ const {
   _reconcileCleanupStaleEntries,
   isReconcilePending,
   getLastSyncEventMs,
+  onExperimentMessageRemoved,
   _testExports,
 } = await import('../fts/incrementalIndexer.js');
 
@@ -626,8 +627,8 @@ describe('isReconcilePending / getLastSyncEventMs (real implementations)', () =>
     expect(await isReconcilePending()).toBe(true);
 
     const generation = _testExports._getFolderReconGeneration();
-    _testExports._setLastSyncEventMs(1000);
-    expect(_testExports._clearFolderReconPendingIfCurrent(generation, 2000)).toBe(true);
+    const eventSerial = _testExports._getFolderReconEventSerial();
+    expect(_testExports._clearFolderReconPendingIfCurrent(generation, eventSerial)).toBe(true);
     expect(await isReconcilePending()).toBe(false);
   });
 
@@ -635,13 +636,23 @@ describe('isReconcilePending / getLastSyncEventMs (real implementations)', () =>
     _testExports._setIsEnabled(true);
     _testExports._resetFolderReconState();
     const generation = _testExports._getFolderReconGeneration();
-    _testExports._setLastSyncEventMs(3000);
-    expect(_testExports._clearFolderReconPendingIfCurrent(generation, 2000)).toBe(false);
-    expect(await isReconcilePending()).toBe(true);
+    // A real message event in the same millisecond as the pass start: only
+    // its serial tells it apart.
+    vi.useFakeTimers();
+    try {
+      _testExports._setLastSyncEventMs(Date.now());
+      const eventSerial = _testExports._getFolderReconEventSerial();
+      await onExperimentMessageRemoved({ accountId: 'account1', folderPath: '/INBOX', headerMessageId: '' });
+      expect(getLastSyncEventMs()).toBe(Date.now());
+      expect(_testExports._clearFolderReconPendingIfCurrent(generation, eventSerial)).toBe(false);
+      expect(await isReconcilePending()).toBe(true);
 
-    _testExports._resetFolderReconState();
-    expect(_testExports._clearFolderReconPendingIfCurrent(generation, 4000)).toBe(false);
-    expect(await isReconcilePending()).toBe(true);
+      _testExports._resetFolderReconState();
+      expect(_testExports._clearFolderReconPendingIfCurrent(generation, _testExports._getFolderReconEventSerial())).toBe(false);
+      expect(await isReconcilePending()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns false when incremental indexing is disabled, even with a pending generation', async () => {

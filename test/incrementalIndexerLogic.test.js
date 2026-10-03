@@ -131,7 +131,7 @@ describe('atomic queue abandonment', () => {
   const settlePendingFlag = () => {
     expect(_testExports._clearFolderReconPendingIfCurrent(
       _testExports._getFolderReconGeneration(),
-      Date.now(),
+      _testExports._getFolderReconEventSerial(),
     )).toBe(true);
     expect(_testExports._isFolderReconPending()).toBe(false);
   };

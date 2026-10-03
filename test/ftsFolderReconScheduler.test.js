@@ -987,7 +987,7 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
-  it('releases an invalidated active proof so the next folder makes progress', async () => {
+  it('releases an invalidated active proof and proves the folder again from a fresh scan', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
     try {
@@ -1003,14 +1003,16 @@ describe('cooperative folder reconcile production contracts', () => {
       _testExports._setFolderReconBudgetOverride({ scans: 1, enqueues: 1 });
       _testExports._setFtsSearch(null);
 
-      const invalidated = await settleSchedulerTickWithFakeTimers(fts);
-      expect(invalidated).toMatchObject({ foldersLocalDrift: 1, foldersFailed: 0 });
+      // The event also ends the slice, as every message event does, and the
+      // invalidated proof is released rather than reused: the folder is
+      // proven again from a fresh scan.
+      await expect(settleSchedulerTickWithFakeTimers(fts)).rejects.toThrow('folder_changed_during_scan');
       expect(_testExports._getFolderReconActiveProofKey()).toBeNull();
 
       vi.setSystemTime(Date.now() + 1000);
       await settleSchedulerTickWithFakeTimers(fts);
       expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls.map(call => call[0]))
-        .toEqual(['none://repair-0', 'none://repair-1']);
+        .toEqual(['none://repair-0', 'none://repair-0']);
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
@@ -1302,7 +1304,7 @@ describe('cooperative folder reconcile production contracts', () => {
       seedExclusiveMembershipEvidence();
       expect(_testExports._clearFolderReconPendingIfCurrent(
         _testExports._getFolderReconGeneration(),
-        Date.now(),
+        _testExports._getFolderReconEventSerial(),
       )).toBe(true);
       const lease = await acquireMutatedExclusiveLease();
       expect(_testExports._isFolderReconPending()).toBe(false);
@@ -1406,7 +1408,7 @@ describe('cooperative folder reconcile production contracts', () => {
     expect(_testExports._getFolderReconSessionDone()).toContain('account1:/A');
     expect(_testExports._clearFolderReconPendingIfCurrent(
       _testExports._getFolderReconGeneration(),
-      Date.now(),
+      _testExports._getFolderReconEventSerial(),
     )).toBe(true);
 
     const lease = await acquireFtsExclusiveOperation('maintenance-read');
@@ -5673,7 +5675,7 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
       }
       expect(_testExports._clearFolderReconPendingIfCurrent(
         _testExports._getFolderReconGeneration(),
-        Date.now(),
+        _testExports._getFolderReconEventSerial(),
       )).toBe(true);
       _testExports._setIsEnabled(false);
       events.folders.onDeleted.emit({ accountId: 'account1', path: '/B' });
@@ -6767,6 +6769,53 @@ describe('reconciliation removal vs a racing re-add', () => {
     vi.useRealTimers();
   });
 
+  // Two events can share a millisecond: a prior event and the re-add both
+  // carry the frozen clock, so only the message-event serial tells them apart.
+  it.each([false, true])('keeps a row re-added and drained in the millisecond of an earlier event; re-added=%s', async (readd) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const clockSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+    try {
+      const { rowsByURI, nativeRows, fts, folders } = seedMigratedExactFolders([
+        { folderPath: '/F', headerMessageIds: [] },
+      ]);
+      await _testExports.onExperimentMessageAdded({
+        accountId: 'account1', folderPath: '/F',
+        headerMessageId: 'prior@example.com', msgKey: 8, eventType: 'msgAdded',
+      });
+      _testExports._getPendingUpdates().clear();
+      nativeRows.set(LIVE, null);
+      headerIDToWeID.mockResolvedValue(100);
+      globalThis.browser.messages.get = vi.fn(async () => ({
+        id: 100, headerMessageId: 'live@example.com', folder: { accountId: 'account1', path: '/F' },
+      }));
+      buildBatchHeader.mockResolvedValue([{ msgId: LIVE, folderId: folders[0].folderId }]);
+      getUniqueMessageKey.mockResolvedValue(LIVE);
+      _testExports._setFtsSearch(fts);
+      recheckMessageInFolder.mockImplementationOnce(async () => {
+        if (readd) {
+          // The scoped query missed; the message is re-added and drained
+          // (a real event, the real drain) before the removal fence.
+          rowsByURI.get(folders[0].folderURI).push({ msgKey: 1, headerMessageId: 'live@example.com' });
+          await _testExports.onExperimentMessageAdded({
+            accountId: 'account1', folderPath: '/F',
+            headerMessageId: 'live@example.com', msgKey: 1, eventType: 'msgAdded',
+          });
+          await flushPendingUpdates();
+          expect(_testExports._getPendingUpdates().has(LIVE)).toBe(false);
+        }
+        return 'absent';
+      });
+
+      await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+
+      expect(fts.removeBatch.mock.calls.flat(2).includes(LIVE)).toBe(!readd);
+      expect(nativeRows.has(LIVE)).toBe(readd);
+    } finally {
+      clockSpy.mockRestore();
+    }
+  });
+
   it('withholds a ghost removal when a message event arrives after classification began', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
@@ -7041,6 +7090,139 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     { folderPath: '/A', headerMessageIds: ['a-1@example.com', 'a-2@example.com'] },
     { folderPath: '/B', headerMessageIds: ['b-1@example.com', 'b-2@example.com'] },
   ];
+
+  // A failed range sample removes no identity evidence: the UID tier still
+  // closes on the msgDB that answered its opening read.
+  it.each([false, true])('never certifies a msgDB replaced during a UID-tier pass; range sample failed=%s', async (failSample) => {
+    const { fts, folders, tokens, rowsByURI, nativeRows } = installGateFolders([specs[0]]);
+    await finishSession(fts);
+    const uri = folders[0].folderURI;
+    const oldKey = 'account1:/A:a-1@example.com';
+    const newKey = 'account1:/A:replacement@example.com';
+    const scan = globalThis.browser.tmMsgNotify.beginFolderMessageScan.getMockImplementation();
+    let replaced = false;
+    let uidScans = 0;
+    globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockImplementation(async (...args) => {
+      if (args[0] === uri && args[1] === false) uidScans++;
+      if (!replaced && uidScans === 2 && args[0] === uri && args[1] === false) {
+        replaced = true;
+        tokens.set(uri, 'replacement-incarnation');
+        rowsByURI.get(uri)[0].headerMessageId = 'replacement@example.com';
+      }
+      return scan(...args);
+    });
+    let rejectedSample = false;
+    if (failSample) {
+      const fingerprint = fts.fingerprintMsgIdRange.getMockImplementation();
+      fts.fingerprintMsgIdRange.mockImplementation(async (start, end) => {
+        if (!rejectedSample && start === 'account1:/A:') {
+          rejectedSample = true;
+          throw new Error('native busy');
+        }
+        return fingerprint(start, end);
+      });
+    } else {
+      // A flag-only HIGHESTMODSEQ advance sends the folder to the UID tier.
+      folders[0].highestModSeq = '101';
+    }
+    restartSession();
+    const result = await tickUntil(fts, value => value?.complete === true
+      || _testExports._getPendingUpdates().has(newKey), 60);
+    expect(rejectedSample).toBe(failSample);
+    expect(replaced).toBe(true);
+    expect(nativeRows.has(newKey) || _testExports._getPendingUpdates().has(newKey)).toBe(true);
+    expect(result?.complete === true && nativeRows.has(oldKey)).toBe(false);
+  });
+
+  it.each([false, true])('repairs a late eventless removal at the re-verification deadline; range sample failed=%s', async (failSample) => {
+    const { fts, nativeRows } = installGateFolders(specs);
+    let rejectedSample = false;
+    if (failSample) {
+      const fingerprint = fts.fingerprintMsgIdRange.getMockImplementation();
+      fts.fingerprintMsgIdRange.mockImplementation(async (start, end) => {
+        if (!rejectedSample && start === 'account1:/A:') {
+          rejectedSample = true;
+          throw new Error('native busy');
+        }
+        return fingerprint(start, end);
+      });
+    }
+    await finishSession(fts);
+    const key = 'account1:/A:a-1@example.com';
+    expect(memoFor('account1:/A').verified).toBe(true);
+    nativeRows.delete(key);
+    vi.clearAllTimers();
+    vi.setSystemTime(_testExports._getFolderReconReverifyDueMs());
+    const result = await tickUntil(fts, value => value?.complete === true
+      || _testExports._getPendingUpdates().has(key), 60);
+    expect(rejectedSample).toBe(failSample);
+    expect(_testExports._getPendingUpdates().has(key)).toBe(true);
+    expect(result?.complete === true).toBe(false);
+  });
+
+  it.each([false, true])('repairs a UIDVALIDITY reset seen at the closing read; reset=%s', async (reset) => {
+    const { fts, folders, rowsByURI, nativeRows } = installGateFolders(specs);
+    await finishSession(fts);
+    const uri = folders[0].folderURI;
+    const newKey = 'account1:/A:reset-uid@example.com';
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let closed = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
+      // The first plain read of /A this session is the gate's closing read.
+      if (!closed && folderPath === '/A' && options === undefined) {
+        closed = true;
+        if (reset) {
+          folders[0].uidValidity = 8;
+          rowsByURI.get(uri)[0].headerMessageId = 'reset-uid@example.com';
+        }
+      }
+      return state(accountId, folderPath, options);
+    });
+    restartSession();
+    await tickUntil(fts, value => value?.complete === true || _testExports._getPendingUpdates().has(newKey), 60);
+    expect(closed).toBe(true);
+    expect(nativeRows.has(newKey) || _testExports._getPendingUpdates().has(newKey)).toBe(reset);
+    expect(nativeRows.has('account1:/A:a-2@example.com')).toBe(true);
+  });
+
+  it.each([false, true])('never takes the gate over an unreadable msgDB count; expunged=%s', async (expunged) => {
+    const { fts, rowsByURI, nativeRows, folders } = installGateFolders(specs);
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (...args) => {
+      const result = await state(...args);
+      if (args[1] === '/A') delete result.numMessages;
+      return result;
+    });
+    await finishSession(fts);
+    expect(memoFor('account1:/A')).not.toHaveProperty('numMessages');
+    const key = 'account1:/A:a-2@example.com';
+    if (expunged) {
+      // Expunged with no event and no HIGHESTMODSEQ advance.
+      rowsByURI.set(folders[0].folderURI, rowsByURI.get(folders[0].folderURI)
+        .filter(row => row.headerMessageId !== 'a-2@example.com'));
+    }
+    restartSession();
+    await finishSession(fts);
+    expect(nativeRows.has(key)).toBe(!expunged);
+    expect(nativeRows.has('account1:/A:a-1@example.com')).toBe(true);
+  });
+
+  it.each([false, true])('drops a yielded attempt\'s sample at a new generation; removed meanwhile=%s', async (removed) => {
+    const { fts, nativeRows, evidence } = installGateFolders([specs[0]]);
+    await finishSession(fts);
+    evidence.get('/A').pendingOfflineOps = true;
+    restartSession();
+    const yielded = await tickUntil(fts, value => value?.reason === 'membership_page', 60);
+    expect(yielded.reason).toBe('membership_page');
+    evidence.get('/A').pendingOfflineOps = false;
+    const key = 'account1:/A:a-1@example.com';
+    if (removed) nativeRows.delete(key);
+    restartSession();
+    await tickUntil(fts, value => value?.complete === true || _testExports._getPendingUpdates().has(key), 60);
+    expect(nativeRows.has(key) || _testExports._getPendingUpdates().has(key)).toBe(true);
+    expect(_testExports._getPendingUpdates().has(key)).toBe(removed);
+    expect(nativeRows.has('account1:/A:a-2@example.com')).toBe(true);
+  });
 
   it('certifies an unchanged folder with zero enumeration and zero storage writes', async () => {
     const { fts } = installGateFolders(specs);
@@ -7762,7 +7944,8 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     expect(memoFor('account1:/A')).toMatchObject({ verified: true });
     expect(memoFor('account1:/A')).not.toHaveProperty('rangeCount');
     expect(memoFor('account1:/A')).not.toHaveProperty('rangeSha256');
-    expect(_testExports._getFolderReconReverifyKeys()).toEqual(new Set(['account1:/B']));
+    // Still re-verified: a bad sample must not exempt the folder.
+    expect(_testExports._getFolderReconReverifyKeys()).toEqual(new Set(['account1:/A', 'account1:/B']));
   });
 
   // The incarnation token is identity evidence, earned by the closing read,
