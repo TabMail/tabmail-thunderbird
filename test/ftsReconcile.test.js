@@ -620,33 +620,44 @@ describe('isReconcilePending / getLastSyncEventMs (real implementations)', () =>
     _testExports._setIsEnabled(false);
   });
 
-  it('returns true when enabled and the pending flag is set', async () => {
+  it('is true for a fresh reconciliation generation until its pass clears it', async () => {
     _testExports._setIsEnabled(true);
-    _testExports._setLastSyncEventMs(0);
-    storageData['fts_reconcile_pending'] = Date.now();
+    _testExports._resetFolderReconState();
+    expect(await isReconcilePending()).toBe(true);
+
+    const generation = _testExports._getFolderReconGeneration();
+    _testExports._setLastSyncEventMs(1000);
+    expect(_testExports._clearFolderReconPendingIfCurrent(generation, 2000)).toBe(true);
+    expect(await isReconcilePending()).toBe(false);
+  });
+
+  it('stays pending when a sync event arrived after the pass started or the generation changed', async () => {
+    _testExports._setIsEnabled(true);
+    _testExports._resetFolderReconState();
+    const generation = _testExports._getFolderReconGeneration();
+    _testExports._setLastSyncEventMs(3000);
+    expect(_testExports._clearFolderReconPendingIfCurrent(generation, 2000)).toBe(false);
+    expect(await isReconcilePending()).toBe(true);
+
+    _testExports._resetFolderReconState();
+    expect(_testExports._clearFolderReconPendingIfCurrent(generation, 4000)).toBe(false);
     expect(await isReconcilePending()).toBe(true);
   });
 
-  it('returns false when enabled and no flag is set', async () => {
-    _testExports._setIsEnabled(true);
-    expect(await isReconcilePending()).toBe(false);
-  });
-
-  it('returns false when incremental indexing is disabled, even with a stale flag', async () => {
-    // A stale flag from an interrupted earlier session must not stall the
-    // startup tick to its max-wait cap when reconcile will never run.
+  it('returns false when incremental indexing is disabled, even with a pending generation', async () => {
+    // A disabled indexer never runs reconcile, so the startup tick must not
+    // wait to its max-wait cap for a flag nothing will clear.
+    _testExports._resetFolderReconState();
     _testExports._setIsEnabled(false);
-    storageData['fts_reconcile_pending'] = Date.now();
     expect(await isReconcilePending()).toBe(false);
   });
 
-  it('fails closed when the storage read throws', async () => {
+  it('answers from session state without reading storage', async () => {
     _testExports._setIsEnabled(true);
-    storageData['fts_reconcile_pending'] = Date.now();
-    browser.storage.local.get.mockImplementationOnce(async () => {
-      throw new Error('storage gone');
-    });
-    await expect(isReconcilePending()).rejects.toThrow('storage gone');
+    _testExports._resetFolderReconState();
+    browser.storage.local.get.mockClear();
+    expect(await isReconcilePending()).toBe(true);
+    expect(browser.storage.local.get).not.toHaveBeenCalled();
   });
 
   it('getLastSyncEventMs reflects the tracked sync-event timestamp', () => {
@@ -674,8 +685,8 @@ describe('runPostInitReconcile fingerprint path', () => {
 
   function arrangeFingerprintReconcile({ fingerprintImpl } = {}) {
     _testExports._setIsEnabled(true);
+    _testExports._resetFolderReconState();
     storageData.fts_initial_scan_complete = true;
-    storageData.fts_reconcile_pending = Date.now();
     browser.accounts.list.mockResolvedValue([{
       id: 'account1',
       type: 'imap',
@@ -741,7 +752,7 @@ describe('runPostInitReconcile fingerprint path', () => {
       expect(ftsSearch.queryByDateRange).toBeUndefined();
       expect(browser.tmMsgNotify.getFolderState).toHaveBeenCalledOnce();
       expect(storageData.fts_folder_recon_memo.folders['account1:/INBOX'].verified).toBe(true);
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(_testExports._isFolderReconPending()).toBe(false);
       expect(storageData.fts_reconcile_watermark).toBeUndefined();
     } finally {
       _testExports._setIsEnabled(false);
@@ -763,7 +774,7 @@ describe('runPostInitReconcile fingerprint path', () => {
     // completes as unsupported; the per-folder checkpoint is not written and
     // the startup-pending marker remains for the next helper/app restart.
     expect(storageData.fts_folder_recon_memo).toBeUndefined();
-    expect(storageData.fts_reconcile_pending).toBeTruthy();
+    expect(_testExports._isFolderReconPending()).toBe(true);
     expect(storageData.fts_reconcile_watermark).toBeUndefined();
   });
 });

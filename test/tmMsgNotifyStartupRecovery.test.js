@@ -187,7 +187,6 @@ function makeFtsStore(initialKeys = []) {
       ok: true,
       newMsgIds: rows.map(row => row.msgId).filter(id => !keys.has(id)),
     })),
-    findByHeaderMessageId: vi.fn(async () => []),
     stats: vi.fn(async () => ({ ok: true, docs: keys.size })),
   };
 }
@@ -473,4 +472,49 @@ it('a restored deletion burst drains without a later native event', async () => 
   expect([...engine._keys]).toEqual([live]);
   expect(indexer._testExports._getPendingUpdates().size).toBe(0);
   state.instance.onShutdown(false);
+});
+
+it('removes a stored legacy reconcile-pending key once and keeps pending state in memory', async () => {
+  const engine = makeFtsStore([]);
+  stored.chat_ftsIncrementalEnabled = true;
+  stored.fts_reconcile_pending = Date.now() - 60_000;
+  let state = bridge();
+  browser.storage.local.remove.mockClear();
+
+  await indexer.initIncrementalIndexer(engine);
+
+  expect(stored.fts_reconcile_pending).toBeUndefined();
+  expect(browser.storage.local.remove.mock.calls.flatMap(([keys]) => [keys].flat()))
+    .toEqual(['fts_reconcile_pending']);
+  expect(await indexer.isReconcilePending()).toBe(true);
+
+  // A later session finds no legacy key and writes nothing for the flag.
+  await indexer.disposeIncrementalIndexer();
+  state.instance.onShutdown(false);
+  browser.storage.local.remove.mockClear();
+  state = bridge();
+  await indexer.initIncrementalIndexer(engine);
+  expect(browser.storage.local.remove).not.toHaveBeenCalledWith('fts_reconcile_pending');
+  expect(stored.fts_reconcile_pending).toBeUndefined();
+  expect(await indexer.isReconcilePending()).toBe(true);
+  state.instance.onShutdown(false);
+});
+
+it('starts normally when the legacy reconcile-pending cleanup cannot read storage', async () => {
+  const engine = makeFtsStore([]);
+  stored.chat_ftsIncrementalEnabled = true;
+  stored.fts_reconcile_pending = Date.now() - 60_000;
+  const state = bridge();
+  const originalGet = browser.storage.local.get.getMockImplementation();
+  browser.storage.local.get.mockImplementation(value => (value === 'fts_reconcile_pending'
+    ? Promise.reject(new Error('storage unavailable'))
+    : originalGet(value)));
+  try {
+    await expect(indexer.initIncrementalIndexer(engine)).resolves.toBeUndefined();
+    expect(await indexer.isReconcilePending()).toBe(true);
+    expect(stored.fts_reconcile_pending).toBeDefined();
+  } finally {
+    browser.storage.local.get.mockImplementation(originalGet);
+    state.instance.onShutdown(false);
+  }
 });

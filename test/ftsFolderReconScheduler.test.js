@@ -650,10 +650,6 @@ async function seedDrainFailureEvidence(fts) {
   buildBatchHeader.mockResolvedValue([{ msgId: uniqueKey }]);
   getUniqueMessageKey.mockResolvedValue(uniqueKey);
   fts.filterNewMessages.mockRejectedValueOnce(new Error('native filter unavailable'));
-  // The failed drain must leave its fairness maps populated without making
-  // the durable marker precondition of the exclusive-invalidation test true.
-  globalThis.browser.storage.local.set
-    .mockRejectedValueOnce(new Error('marker storage unavailable'));
   _testExports._setFtsSearch(fts);
   await flushPendingUpdates();
   expect(_testExports._getPendingUpdates().has(uniqueKey)).toBe(true);
@@ -1094,7 +1090,7 @@ describe('cooperative folder reconcile production contracts', () => {
           timestamp: captured.timestamp + 1,
         }),
       ]));
-      expect(storageData.fts_reconcile_pending).toBeTruthy();
+      expect(_testExports._isFolderReconPending()).toBe(true);
 
       _testExports._setFtsSearch(null);
       vi.clearAllTimers();
@@ -1135,7 +1131,7 @@ describe('cooperative folder reconcile production contracts', () => {
       expect(headerIDToWeID).toHaveBeenCalledOnce();
       expect(_testExports._getConsecutiveNoProgressCycles()).toBe(0);
       expect(_testExports._getPendingUpdates().has(queuedKey)).toBe(false);
-      expect(storageData.fts_reconcile_pending).toBeTruthy();
+      expect(_testExports._isFolderReconPending()).toBe(true);
       expect(_testExports._getFolderReconActiveProofKey()).toBeNull();
 
       _testExports._setFtsSearch(null);
@@ -1176,7 +1172,7 @@ describe('cooperative folder reconcile production contracts', () => {
 
       expect(abandoned).toEqual({ dropped: 1, retained: 0 });
       expect(_testExports._getPendingUpdates().has(queuedKey)).toBe(false);
-      expect(storageData.fts_reconcile_pending).toBeTruthy();
+      expect(_testExports._isFolderReconPending()).toBe(true);
       expect(_testExports._getFolderReconActiveProofKey()).toBeNull();
 
       vi.clearAllTimers();
@@ -1201,14 +1197,13 @@ describe('cooperative folder reconcile production contracts', () => {
       ]);
       const liveKey = 'account1:/A:0-1@example.com';
       nativeKeys.add(liveKey);
-      storageData.fts_reconcile_pending = 123;
       _testExports._setFtsSearch(null);
 
-      for (let turn = 0; turn < 8 && storageData.fts_reconcile_pending; turn++) {
+      for (let turn = 0; turn < 8 && _testExports._isFolderReconPending(); turn++) {
         await settleSchedulerTickWithFakeTimers(fts);
         vi.setSystemTime(Date.now() + 1000);
       }
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(_testExports._isFolderReconPending()).toBe(false);
       expect(_testExports._getFolderReconSessionDone()).toContain('account1:/A');
       await seedDrainFailureEvidence(fts);
       _testExports._setFtsSearch(fts);
@@ -1263,10 +1258,12 @@ describe('cooperative folder reconcile production contracts', () => {
 
       expect(_testExports._getFolderReconSessionDone()).toContain('account1:/A');
       expect(_testExports._getFolderReconActiveProofKey()).toBe('account1:/A');
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
       expect(vi.getTimerCount()).toBe(timersBeforeRelease);
+      globalThis.browser.storage.local.set.mockClear();
       lease.release();
 
+      // Invalidation, the pending flag and the wake are all synchronous with
+      // owner release; nothing waits on storage.
       expect(_testExports._getFolderReconSessionDone()).not.toContain('account1:/A');
       expect(_testExports._getFolderReconActiveProofKey()).toBeNull();
       expect(_testExports._getFolderReconEphemeralEvidence()).toEqual({
@@ -1276,20 +1273,9 @@ describe('cooperative folder reconcile production contracts', () => {
         hasOrphanPass: false,
         dirty: ['__all__', 'account1:/Drain'],
       });
-      // The listener's in-memory invalidation is synchronous with release;
-      // only the serialized durable marker and its subsequent wake are async.
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
-      expect(vi.getTimerCount()).toBe(timersBeforeRelease);
-
-      await _testExports._reconStorageTransaction(
-        _testExports._getFolderReconGeneration(),
-        () => {},
-      );
-      for (let turn = 0; turn < 50 && vi.getTimerCount() === 0; turn++) {
-        await Promise.resolve();
-      }
-      expect(storageData.fts_reconcile_pending).toBeTruthy();
+      expect(_testExports._isFolderReconPending()).toBe(true);
       expect(vi.getTimerCount()).toBeGreaterThan(0);
+      expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
 
       _testExports._setFtsSearch(null);
       vi.clearAllTimers();
@@ -1297,7 +1283,7 @@ describe('cooperative folder reconcile production contracts', () => {
       const reproved = await settleSchedulerTickWithFakeTimers(fts);
       expect(reproved.missingEnqueued).toBe(1);
       expect(_testExports._getPendingUpdates().has(liveKey)).toBe(true);
-      expect(storageData.fts_reconcile_pending).toBeTruthy();
+      expect(_testExports._isFolderReconPending()).toBe(true);
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
@@ -1305,19 +1291,21 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
-  it('retries a failed post-exclusive marker before waking normal reconciliation', async () => {
+  it('wakes normal reconciliation directly on exclusive release without storage', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
     try {
       seedExclusiveMembershipEvidence();
+      expect(_testExports._clearFolderReconPendingIfCurrent(
+        _testExports._getFolderReconGeneration(),
+        Date.now(),
+      )).toBe(true);
       const lease = await acquireMutatedExclusiveLease();
-      globalThis.browser.storage.local.set
-        .mockRejectedValueOnce(new Error('marker storage unavailable'));
+      expect(_testExports._isFolderReconPending()).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
 
       lease.release();
 
-      // Membership proof is discarded synchronously with owner release even
-      // though its durable retry marker has not yet been written.
       expect(_testExports._getFolderReconActiveProofKey()).toBeNull();
       expect(_testExports._getFolderReconEphemeralEvidence()).toEqual({
         deferred: 0,
@@ -1326,59 +1314,18 @@ describe('cooperative folder reconcile production contracts', () => {
         hasOrphanPass: false,
         dirty: ['__all__'],
       });
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(_testExports._isFolderReconPending()).toBe(true);
+      expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
       expect(globalThis.browser.accounts.list).not.toHaveBeenCalled();
-      expect(vi.getTimerCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(1);
 
-      await _testExports._reconStorageTransaction(
-        _testExports._getFolderReconGeneration(),
-        () => {},
-      );
-      for (let turn = 0; turn < 10 && vi.getTimerCount() === 0; turn++) {
-        await Promise.resolve();
-      }
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
-      expect(globalThis.browser.accounts.list).not.toHaveBeenCalled();
-      expect(globalThis.browser.storage.local.set).toHaveBeenCalledTimes(1);
-      expect(vi.getTimerCount()).toBe(1); // private marker retry only
-
-      await vi.advanceTimersByTimeAsync(reconConfig.errorDelayMs - 1);
-      expect(globalThis.browser.storage.local.set).toHaveBeenCalledTimes(1);
-      expect(globalThis.browser.accounts.list).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(1);
-      await _testExports._reconStorageTransaction(
-        _testExports._getFolderReconGeneration(),
-        () => {},
-      );
-
-      expect(globalThis.browser.storage.local.set).toHaveBeenCalledTimes(2);
-      expect(storageData.fts_reconcile_pending).toBeTruthy();
-      expect(globalThis.browser.accounts.list).not.toHaveBeenCalled();
-      expect(vi.getTimerCount()).toBe(1); // ordinary scheduler wake after persistence
+      await vi.advanceTimersByTimeAsync(reconConfig.paceDelayMs);
+      expect(globalThis.browser.accounts.list).toHaveBeenCalled();
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
       vi.useRealTimers();
     }
-  });
-
-  it('clears a private marker timer handle before checking runtime ownership', () => {
-    const source = readFileSync(
-      fileURLToPath(new URL('../fts/incrementalIndexer.js', import.meta.url)),
-      'utf8',
-    );
-    const retry = source.match(
-      /async function _attemptExclusiveMarkerRetry[\s\S]*?\n}\n\nfunction _ensureExclusiveMarkerRetry/,
-    )?.[0] || '';
-    const callback = retry.match(
-      /owner\.timer = setTimeout\(\(\) => \{([\s\S]*?)\n\s*}, FOLDER_RECON_ERROR_DELAY_MS\)/,
-    )?.[1] || '';
-    expect(callback.length, 'private timer callback extraction is non-vacuous')
-      .toBeGreaterThan(100);
-    const clearAt = callback.indexOf('owner.timer = null');
-    const guardAt = callback.indexOf('_isExclusiveMarkerRetryOwnerCurrent(owner)');
-    expect(clearAt).toBeGreaterThanOrEqual(0);
-    expect(guardAt).toBeGreaterThan(clearAt);
   });
 
   it.each([
@@ -1394,23 +1341,13 @@ describe('cooperative folder reconcile production contracts', () => {
       _testExports._setIsEnabled(true);
       _testExports._setIndexerDisposed(false);
     }],
-  ])('cancels a stale post-exclusive marker retry on %s', async (_name, cancelOwner) => {
+  ])('drops a stale post-exclusive wake on %s', async (_name, cancelOwner) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
     try {
       seedExclusiveMembershipEvidence();
       const lease = await acquireMutatedExclusiveLease();
-      globalThis.browser.storage.local.set
-        .mockRejectedValueOnce(new Error('marker storage unavailable'));
       lease.release();
-      await _testExports._reconStorageTransaction(
-        _testExports._getFolderReconGeneration(),
-        () => {},
-      );
-      for (let turn = 0; turn < 10 && vi.getTimerCount() === 0; turn++) {
-        await Promise.resolve();
-      }
-      expect(globalThis.browser.storage.local.set).toHaveBeenCalledTimes(1);
       expect(vi.getTimerCount()).toBe(1);
 
       await cancelOwner();
@@ -1418,8 +1355,6 @@ describe('cooperative folder reconcile production contracts', () => {
         reconConfig.errorDelayMs + reconConfig.paceDelayMs,
       );
 
-      expect(globalThis.browser.storage.local.set).toHaveBeenCalledTimes(1);
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
       expect(globalThis.browser.accounts.list).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -1429,7 +1364,7 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
-  it('synchronously clears every generation-local proof class before marker restore and wake', () => {
+  it('synchronously clears every generation-local proof class before marking pending and waking', () => {
     const source = readFileSync(
       fileURLToPath(new URL('../fts/incrementalIndexer.js', import.meta.url)),
       'utf8',
@@ -1437,13 +1372,8 @@ describe('cooperative folder reconcile production contracts', () => {
     const handler = source.match(
       /function _handleExclusiveFtsMembershipChange[\s\S]*?\n}/,
     )?.[0] || '';
-    const markerRetry = source.match(
-      /async function _attemptExclusiveMarkerRetry[\s\S]*?\n}\n\nfunction _ensureExclusiveMarkerRetry/,
-    )?.[0] || '';
     expect(handler.length, 'exclusive invalidation handler extraction is non-vacuous')
       .toBeGreaterThan(500);
-    expect(markerRetry.length, 'exclusive marker retry extraction is non-vacuous')
-      .toBeGreaterThan(600);
     for (const state of [
       '_folderReconSessionDone.clear()',
       '_folderReconSessionDeferred.clear()',
@@ -1457,12 +1387,12 @@ describe('cooperative folder reconcile production contracts', () => {
     ]) {
       expect(handler).toContain(state);
     }
-    const markerAt = handler.indexOf('_ensureExclusiveMarkerRetry(generation)');
-    expect(markerAt).toBeGreaterThan(handler.indexOf('_folderReconDirty.add("__all__")'));
-    const durableAt = markerRetry.indexOf('await _ensureFolderReconPendingMarker()');
-    const wakeAt = markerRetry.indexOf('_wakeFolderRecon(');
-    expect(durableAt).toBeGreaterThan(0);
-    expect(wakeAt).toBeGreaterThan(durableAt);
+    const dirtyAt = handler.indexOf('_folderReconDirty.add("__all__")');
+    const pendingAt = handler.indexOf('_markFolderReconPending()');
+    const wakeAt = handler.indexOf('_wakeFolderRecon(');
+    expect(pendingAt).toBeGreaterThan(dirtyAt);
+    expect(wakeAt).toBeGreaterThan(pendingAt);
+    expect(handler).not.toContain('await');
   });
 
   it('does not invalidate verified session evidence for a read-only exclusive owner', async () => {
@@ -1470,6 +1400,10 @@ describe('cooperative folder reconcile production contracts', () => {
     _testExports._setFtsSearch(null);
     await _testExports._runFolderReconSchedulerTick(fts);
     expect(_testExports._getFolderReconSessionDone()).toContain('account1:/A');
+    expect(_testExports._clearFolderReconPendingIfCurrent(
+      _testExports._getFolderReconGeneration(),
+      Date.now(),
+    )).toBe(true);
 
     const lease = await acquireFtsExclusiveOperation('maintenance-read');
     lease.release();
@@ -1477,7 +1411,7 @@ describe('cooperative folder reconcile production contracts', () => {
 
     expect(_testExports._getFolderReconSessionDone()).toContain('account1:/A');
     expect(_testExports._getFolderReconDirty()).not.toContain('__all__');
-    expect(storageData.fts_reconcile_pending).toBeUndefined();
+    expect(_testExports._isFolderReconPending()).toBe(false);
   });
 
   it('does not cycle-rescan across 33 sequential partial folders', async () => {
@@ -1788,7 +1722,7 @@ describe('cooperative folder reconcile production contracts', () => {
         });
       }
       expect(_testExports._getPendingUpdates().size).toBe(reconConfig.pendingHighWater);
-      expect(storageData.fts_reconcile_pending).toBeTruthy();
+      expect(_testExports._isFolderReconPending()).toBe(true);
       expect(populateBatchBody).not.toHaveBeenCalled();
     } finally {
       _testExports._setIsEnabled(false);
@@ -1933,7 +1867,6 @@ describe('cooperative folder reconcile production contracts', () => {
     globalThis.browser.tmMsgNotify.probeMessageIds.mockResolvedValue({
       missing: ['b:live@example.com'],
     });
-    storageData.fts_reconcile_pending = 123;
     _testExports._setFtsSearch(fts);
 
     const result = await _testExports._runFolderReconSchedulerTick(fts);
@@ -1943,7 +1876,7 @@ describe('cooperative folder reconcile production contracts', () => {
     expect(fts.listMsgIdRange).not.toHaveBeenCalled();
     expect(fts.countMsgIdRange).not.toHaveBeenCalled();
     expect(fts.removeBatch).not.toHaveBeenCalled();
-    expect(storageData.fts_reconcile_pending).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
     expect(Object.values(storageData[_testExports.FOLDER_RECON_STORAGE_KEY]?.folders || {}))
       .not.toContainEqual(expect.objectContaining({ verified: true }));
     const status = await getIncrementalIndexerStatus();
@@ -1973,7 +1906,6 @@ describe('cooperative folder reconcile production contracts', () => {
       const { folders, nativeRows, fts } = installExactMembershipFolders(
         folderOrder.map(path => specsByPath.get(path)),
       );
-      storageData.fts_reconcile_pending = 123;
 
       const outcomes = [];
       for (let turn = 0; turn < 10; turn++) {
@@ -3068,11 +3000,10 @@ describe('cooperative folder reconcile production contracts', () => {
         getMessageByMsgId: vi.fn(async id => (nativeKeys.has(id) ? { msgId: id } : null)),
         stats: vi.fn(async () => ({})),
       };
-      storageData.fts_reconcile_pending = 123;
       _testExports._setFtsSearch(null);
 
       let result = null;
-      for (let turn = 0; turn < 8 && storageData.fts_reconcile_pending; turn++) {
+      for (let turn = 0; turn < 8 && _testExports._isFolderReconPending(); turn++) {
         result = await settleSchedulerTickWithFakeTimers(fts);
         vi.setSystemTime(Date.now() + 1000);
       }
@@ -3080,7 +3011,7 @@ describe('cooperative folder reconcile production contracts', () => {
       expect(result).toMatchObject({ complete: true });
       expect(nativeKeys).toEqual(new Set([live]));
       expect(globalThis.browser.tmMsgNotify.getFolderState).toHaveBeenCalledOnce();
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(_testExports._isFolderReconPending()).toBe(false);
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
@@ -3113,7 +3044,7 @@ describe('cooperative folder reconcile production contracts', () => {
       expect(_testExports._getFolderReconDirty()).not.toContain('account1:/Old');
       expect(_testExports._getFolderReconDrainSkipped()).not.toContain('account1:/Old');
       expect(_testExports._maybeScheduleFolderReconRerun()).toBeUndefined();
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(_testExports._isFolderReconPending()).toBe(false);
       expect(await incrementalIndexer.isReconcilePending()).toBe(false);
     } finally {
       _testExports._setIsEnabled(false);
@@ -3159,7 +3090,6 @@ describe('cooperative folder reconcile production contracts', () => {
         cancelFolderMessageScan: vi.fn(),
         probeMessageIds: vi.fn(),
       };
-      storageData.fts_reconcile_pending = 123;
       _testExports._setFtsSearch(fts);
 
       const runTick = async () => {
@@ -3184,7 +3114,7 @@ describe('cooperative folder reconcile production contracts', () => {
       // survives, no recheck was even attempted, nothing was removed, and the
       // kept row holds the marker while a capped re-inventory retry is armed.
       expect(second).toMatchObject({ complete: false, reason: 'unloaded_accounts' });
-      expect(storageData.fts_reconcile_pending).toBe(123);
+      expect(_testExports._isFolderReconPending()).toBe(true);
       // A tick the scheduler's own timer started may still be in flight; it
       // ends in the same state and re-arms the retry.
       for (let step = 0; step < 200 && _testExports._isFolderReconSchedulerActive(); step++) {
@@ -3239,7 +3169,6 @@ describe('cooperative folder reconcile production contracts', () => {
       // Only account1 is loaded, and its inventory has no /Deleted folder any more.
       installEmptyFolders([['account1', '/Keep']]);
       recheckMessageInFolder.mockResolvedValue('absent');
-      storageData.fts_reconcile_pending = 123;
       _testExports._setFtsSearch(fts);
 
       let result = null;
@@ -3257,7 +3186,7 @@ describe('cooperative folder reconcile production contracts', () => {
       // The cold account's rows hold the marker; the loaded account's stale
       // row is removed after one live global recheck.
       expect(result).toMatchObject({ complete: false, reason: 'unloaded_accounts' });
-      expect(storageData.fts_reconcile_pending).toBe(123);
+      expect(_testExports._isFolderReconPending()).toBe(true);
       expect(recheckMessageInFolder).toHaveBeenCalledOnce();
       expect(keys.has(staleKey)).toBe(false);
       for (const key of coldKeys) expect(keys.has(key)).toBe(true);
@@ -3275,43 +3204,45 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
-  it('restores a pending marker dirtied while its prior clear is suspended', async () => {
+  it('keeps reconciliation pending when work is dirtied while the completing tick is suspended', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
     try {
-      const first = {
-        uniqueKey: 'account1:/A:first@example.com', type: 'new', timestamp: 1,
-        folderKey: 'account1:/A', metadata: {},
-      };
-      _testExports._getPendingUpdates().set(first.uniqueKey, first);
-      await _testExports._abandonPendingUpdates([first], 'seed_marker');
       const fts = installEmptyFolders([['account1', '/A']]);
       _testExports._setFtsSearch(fts);
-      vi.setSystemTime(Date.now() + reconConfig.errorDelayMs);
       await _testExports._runFolderReconSchedulerTick(fts);
       vi.setSystemTime(Date.now() + 1000);
+      expect(_testExports._isFolderReconPending()).toBe(true);
 
-      const removeStarted = deferred();
-      const allowRemove = deferred();
-      globalThis.browser.storage.local.remove.mockImplementationOnce(async key => {
-        removeStarted.resolve();
-        await allowRemove.promise;
-        delete storageData[key];
+      const listStarted = deferred();
+      const allowList = deferred();
+      const list = globalThis.browser.accounts.list.getMockImplementation();
+      globalThis.browser.accounts.list.mockImplementationOnce(async (...args) => {
+        listStarted.resolve();
+        await allowList.promise;
+        return list(...args);
       });
       const completing = _testExports._runFolderReconSchedulerTick(fts);
-      await removeStarted.promise;
+      await listStarted.promise;
       const concurrent = {
         uniqueKey: 'account1:/A:late@example.com', type: 'deleted', timestamp: 2,
         folderKey: 'account1:/A', metadata: {},
       };
       _testExports._getPendingUpdates().set(concurrent.uniqueKey, concurrent);
-      const dirtying = _testExports._abandonPendingUpdates([concurrent], 'clear_race');
-      await Promise.resolve();
-      allowRemove.resolve();
-      await Promise.all([completing, dirtying]);
+      await _testExports._abandonPendingUpdates([concurrent], 'clear_race');
+      allowList.resolve();
+      await completing;
 
-      expect(storageData.fts_reconcile_pending).toBeTruthy();
+      expect(_testExports._isFolderReconPending()).toBe(true);
       expect(await incrementalIndexer.isReconcilePending()).toBe(true);
+
+      // Control: without the concurrent dirtying, the same tick clears it.
+      vi.setSystemTime(Date.now() + reconConfig.errorDelayMs * 64);
+      for (let turn = 0; turn < 6 && _testExports._isFolderReconPending(); turn++) {
+        await _testExports._runFolderReconSchedulerTick(fts);
+        vi.setSystemTime(Date.now() + reconConfig.errorDelayMs * 64);
+      }
+      expect(_testExports._isFolderReconPending()).toBe(false);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -3786,7 +3717,6 @@ describe('strict reconciliation lifecycle contracts', () => {
     try {
       const fts = installEmptyFolders([['account1', '/A']]);
       globalThis.browser.accounts.list.mockRejectedValueOnce(new Error('inventory unavailable'));
-      storageData.fts_reconcile_pending = 123;
       _testExports._setFtsSearch(fts);
       // Impose real thread-pool latency on every membership digest. In
       // production the digest settles at load-dependent latency; pinning a
@@ -3801,7 +3731,7 @@ describe('strict reconciliation lifecycle contracts', () => {
 
       await _testExports.runPostInitReconcile(fts);
       // A failed seed keeps the durable marker so a restart retries too.
-      expect(storageData.fts_reconcile_pending).toBe(123);
+      expect(_testExports._isFolderReconPending()).toBe(true);
       expect(globalThis.browser.accounts.list).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(reconConfig.errorDelayMs - 1);
@@ -3811,7 +3741,7 @@ describe('strict reconciliation lifecycle contracts', () => {
       // Settle the in-flight tick on the real event loop, then its permanent
       // strict storage tail, after each small virtual turn instead of widening
       // the amount of virtual scheduling the test accepts.
-      for (let turn = 0; turn < 20 && storageData.fts_reconcile_pending; turn++) {
+      for (let turn = 0; turn < 20 && _testExports._isFolderReconPending(); turn++) {
         await vi.advanceTimersByTimeAsync(1000);
         await settleInFlightSchedulerTickWithFakeTimers();
         await _testExports._reconStorageTransaction(
@@ -3823,7 +3753,7 @@ describe('strict reconciliation lifecycle contracts', () => {
 
       expect(globalThis.browser.accounts.list.mock.calls.length).toBeGreaterThan(1);
       expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).toHaveBeenCalled();
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(_testExports._isFolderReconPending()).toBe(false);
     } finally {
       digestSpy?.mockRestore();
       _testExports._setIsEnabled(false);
@@ -3840,7 +3770,6 @@ describe('strict reconciliation lifecycle contracts', () => {
     let observed = null;
     try {
       const fts = installEmptyFolders([['account1', '/A']]);
-      storageData.fts_reconcile_pending = 123;
       _testExports._setFtsSearch(fts);
       const realDigest = crypto.subtle.digest.bind(crypto.subtle);
       digestSpy = vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce(async (...args) => {
@@ -3852,7 +3781,7 @@ describe('strict reconciliation lifecycle contracts', () => {
       await vi.advanceTimersByTimeAsync(1000);
       expect(digestSpy).toHaveBeenCalledOnce();
       expect(_testExports._isFolderReconSchedulerActive()).toBe(true);
-      expect(storageData.fts_reconcile_pending).toBe(123);
+      expect(_testExports._isFolderReconPending()).toBe(true);
       const memoBefore = structuredClone(storageData[_testExports.FOLDER_RECON_STORAGE_KEY] ?? null);
 
       // Exercise the DEFAULT deadline the retry fixture relies on.
@@ -3885,7 +3814,7 @@ describe('strict reconciliation lifecycle contracts', () => {
       expect(_testExports._isFolderReconSchedulerActive()).toBe(false);
       // The disabled late continuation commits no proof: pending marker, memo
       // and native rows are untouched and no wake timer is left armed.
-      expect(storageData.fts_reconcile_pending).toBe(123);
+      expect(_testExports._isFolderReconPending()).toBe(true);
       expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY] ?? null).toEqual(memoBefore);
       expect(fts.removeBatch).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
@@ -3901,22 +3830,22 @@ describe('strict reconciliation lifecycle contracts', () => {
   it('accepts a tick that completes during the last real-loop turn even when the deadline elapsed in it', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-21T00:00:00Z'));
-    const removeStarted = deferred();
-    const releaseRemove = deferred();
+    const listStarted = deferred();
+    const releaseList = deferred();
     let tick = null;
     try {
       const fts = installEmptyFolders([]);
-      storageData.fts_reconcile_pending = 123;
       _testExports._setFtsSearch(fts);
-      globalThis.browser.storage.local.remove.mockImplementationOnce(async (key) => {
-        removeStarted.resolve();
-        await releaseRemove.promise;
-        delete storageData[key];
+      const list = globalThis.browser.accounts.list.getMockImplementation();
+      globalThis.browser.accounts.list.mockImplementationOnce(async (...args) => {
+        listStarted.resolve();
+        await releaseList.promise;
+        return list(...args);
       });
       tick = _testExports._runFolderReconSchedulerTick(fts);
-      await removeStarted.promise;
+      await listStarted.promise;
       expect(_testExports._isFolderReconSchedulerActive()).toBe(true);
-      expect(storageData.fts_reconcile_pending).toBe(123);
+      expect(_testExports._isFolderReconPending()).toBe(true);
 
       const deadlineMs = 50;
       let slowYields = 0;
@@ -3926,7 +3855,7 @@ describe('strict reconciliation lifecycle contracts', () => {
       const slowYield = async () => {
         slowYields++;
         await new Promise(resolve => realSetTimeout(resolve, deadlineMs + 20));
-        releaseRemove.resolve();
+        releaseList.resolve();
         await expect(tick).resolves.toMatchObject({ complete: true });
         await yieldToRealEventLoop();
       };
@@ -3934,10 +3863,9 @@ describe('strict reconciliation lifecycle contracts', () => {
         .resolves.toBeUndefined();
       expect(slowYields).toBe(1);
       expect(_testExports._isFolderReconSchedulerActive()).toBe(false);
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
-      expect(globalThis.browser.storage.local.remove).toHaveBeenCalledWith('fts_reconcile_pending');
+      expect(_testExports._isFolderReconPending()).toBe(false);
     } finally {
-      releaseRemove.resolve();
+      releaseList.resolve();
       if (tick) await tick.catch(() => {});
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
@@ -4081,7 +4009,7 @@ describe('strict reconciliation lifecycle contracts', () => {
     });
   });
 
-  it('rejects old-generation completion before it can overwrite memo or remove a newer marker', async () => {
+  it('rejects old-generation completion before it can overwrite a newer memo', async () => {
     const readStarted = deferred();
     const allowRead = deferred();
     const generation = _testExports._getFolderReconGeneration();
@@ -4090,16 +4018,13 @@ describe('strict reconciliation lifecycle contracts', () => {
       await allowRead.promise;
       return {
         [_testExports.FOLDER_RECON_STORAGE_KEY]: { version: 3, folders: {} },
-        fts_reconcile_pending: 111,
       };
     });
     const oldWrite = _testExports._reconStorageTransaction(generation, state => {
-      state.removePending = true;
       state.memo.roundRobinCursor = 'account1:/old';
     });
     await readStarted.promise;
     _testExports._resetFolderReconState();
-    storageData.fts_reconcile_pending = 222;
     storageData[_testExports.FOLDER_RECON_STORAGE_KEY] = {
       version: 3,
       folders: { 'account1:/new': { verified: false } },
@@ -4107,7 +4032,6 @@ describe('strict reconciliation lifecycle contracts', () => {
     allowRead.resolve();
 
     await expect(oldWrite).rejects.toThrow(/folder_recon_cancelled/);
-    expect(storageData.fts_reconcile_pending).toBe(222);
     expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders)
       .toHaveProperty('account1:/new');
   });
@@ -5113,7 +5037,7 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
     }
     return true;
   }
-  const reconciliationIdle = () => storageData.fts_reconcile_pending === undefined
+  const reconciliationIdle = () => !_testExports._isFolderReconPending()
     && !_testExports._isFolderReconSchedulerActive();
 
   function withReconnectableHelper(fts) {
@@ -5175,7 +5099,7 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
       // more time does not re-probe.
       await vi.advanceTimersByTimeAsync(10 * 60_000);
       expect(fts.fingerprintMsgIdRange).toHaveBeenCalledOnce();
-      expect(storageData.fts_reconcile_pending).toBeDefined();
+      expect(_testExports._isFolderReconPending()).toBe(true);
       expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).not.toHaveBeenCalled();
 
       fts.fingerprintMsgIdRange.mockReset();
@@ -5238,7 +5162,7 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
       expect(probeTimes).toHaveLength(11);
       expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders['account1:/A'])
         .toMatchObject({ verified: true });
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(_testExports._isFolderReconPending()).toBe(false);
       const intervals = probeTimes.slice(1).map((time, index) => time - probeTimes[index]);
       const ceilingMs = 5 * 60 * 1000;
       // Ten failures outgrow the ceiling, so the later retries sit at it; one
@@ -5301,7 +5225,7 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
       }]);
       events[family][name].emit({ accountId: 'account1', path: '/B' });
       await _testExports._reconStorageTransaction(_testExports._getFolderReconGeneration(), () => {});
-      expect(storageData.fts_reconcile_pending).toBeDefined();
+      expect(_testExports._isFolderReconPending()).toBe(true);
 
       expect(await driveTimersUntil(() => reconciliationIdle()
         && ![...nativeKeys].some(key => key.startsWith('account1:/B:')))).toBe(true);
@@ -5436,7 +5360,7 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
       if (swapped) {
         const ok = await driveTimersUntil(async () => fired && staleGone() && await missingFound());
         expect(ok).toBe(true);
-        expect(storageData.fts_reconcile_pending).toBeDefined();
+        expect(_testExports._isFolderReconPending()).toBe(true);
       } else {
         expect(await driveTimersUntil(() => fired && reconciliationIdle()
           && scan.mock.calls.slice(scansBefore).some(([uri]) => uri === uriA)
@@ -5613,18 +5537,22 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
       for (const event of [...Object.values(events.folders), ...Object.values(events.accounts)]) {
         expect(event.listeners.size).toBe(1);
       }
+      expect(_testExports._clearFolderReconPendingIfCurrent(
+        _testExports._getFolderReconGeneration(),
+        Date.now(),
+      )).toBe(true);
       _testExports._setIsEnabled(false);
       events.folders.onDeleted.emit({ accountId: 'account1', path: '/B' });
       for (let turn = 0; turn < 5; turn++) await yieldToRealEventLoop();
       expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
-      expect(storageData.fts_reconcile_pending).toBeUndefined();
+      expect(_testExports._isFolderReconPending()).toBe(false);
 
-      // Positive control: the same event on an enabled indexer persists intent.
+      // Positive control: the same event on an enabled indexer marks it pending.
       _testExports._setIsEnabled(true);
       _testExports._setFtsSearch(installEmptyFolders([['account1', '/A']]));
       events.folders.onDeleted.emit({ accountId: 'account1', path: '/B' });
       for (let turn = 0; turn < 5; turn++) await yieldToRealEventLoop();
-      expect(storageData.fts_reconcile_pending).toBeDefined();
+      expect(_testExports._isFolderReconPending()).toBe(true);
       _testExports._setIsEnabled(false);
       await incrementalIndexer.disposeIncrementalIndexer();
       for (const event of [...Object.values(events.folders), ...Object.values(events.accounts)]) {
@@ -5642,7 +5570,6 @@ describe('reconciliation recovery wakes (native reconnect, folder topology)', ()
 // marker, and the orphan stage completes once per binding.
 // ---------------------------------------------------------------------------
 
-const RECON_PENDING_KEY = 'fts_reconcile_pending';
 
 // Folders already migrated: every live header row is owned, the durable
 // migration record covers the inventory, so ticks go straight to the pass.
@@ -5783,7 +5710,6 @@ describe('ownerless-row classifier (exact helpers)', () => {
     ]);
     const ghosts = Array.from({ length: 6 }, (_, index) => `account1:/F:ghost-${index}@example.com`);
     for (const ghost of ghosts) nativeRows.set(ghost, null);
-    storageData[RECON_PENDING_KEY] = 123;
 
     const first = await tickUntil(fts, () => recheckMessageInFolder.mock.calls.length > 0, 5);
 
@@ -5792,14 +5718,14 @@ describe('ownerless-row classifier (exact helpers)', () => {
     expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
     expect(_testExports._getFolderMembershipStatePass().completed).toBe(false);
     expect(_testExports._getFolderReconEphemeralEvidence().orphanDone).toBe(false);
-    expect(storageData[RECON_PENDING_KEY]).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
 
     await settleSchedulerTickWithFakeTimers(fts);
     expect(nativeRows.has(ghosts[5])).toBe(false);
 
     await tickUntil(fts, result => result?.complete === true);
     expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
-    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+    expect(_testExports._isFolderReconPending()).toBe(false);
   });
 
   it('lets the global query decide after a scoped query throws, and takes a continuation-page scoped positive without one', async () => {
@@ -5881,7 +5807,6 @@ describe('unloaded-account rows (exact helpers)', () => {
     ]);
     installed.nativeRows.set(coldNull, null);
     installed.nativeRows.set(coldOwned, makeFolderMembershipId('account2', '/Archive'));
-    storageData[RECON_PENDING_KEY] = 123;
     // The scheduler's own retry timer is part of the contract under test.
     _testExports._setFtsSearch(installed.fts);
     return installed;
@@ -5974,7 +5899,7 @@ describe('unloaded-account rows (exact helpers)', () => {
     expect(nativeRows.get(coldNull)).toBeNull();
     expect(nativeRows.get(coldOwned)).toBe(makeFolderMembershipId('account2', '/Archive'));
     expect(fts.removeBatch).not.toHaveBeenCalled();
-    expect(storageData[RECON_PENDING_KEY]).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
     expect(_testExports._getFolderReconRuntimeTelemetry().membershipStateRestartRevoked).toBe(0);
     // The kept rows were never queried: no live query can see an unloaded account.
     expect(recheckMessageInFolder).not.toHaveBeenCalled();
@@ -5994,7 +5919,7 @@ describe('unloaded-account rows (exact helpers)', () => {
       expect(delays[index]).toBe(Math.min(delays[index - 1] * 2, capMs));
     }
     expect(delays.slice(-3)).toEqual([capMs, capMs, capMs]);
-    expect(storageData[RECON_PENDING_KEY]).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
     // Unchanged digest: the completed pass is reused, no page is re-read.
     fts.listFolderMembershipState.mockClear();
     fts.listFolderMembership.mockClear();
@@ -6026,7 +5951,7 @@ describe('unloaded-account rows (exact helpers)', () => {
     }]);
 
     expect(await retryDelays(3)).toEqual([1, 2, 4].map(factor => reconConfig.errorDelayMs * factor));
-    expect(storageData[RECON_PENDING_KEY]).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
     expect(_testExports._getFolderMembershipStatePass().unloaded).toBe(2);
   });
 
@@ -6048,7 +5973,7 @@ describe('unloaded-account rows (exact helpers)', () => {
     // No topology event: the account simply appears in the next inventory read.
     loadAccount2(installed);
 
-    expect(await runTimersUntil(() => storageData[RECON_PENDING_KEY] === undefined)).toBe(true);
+    expect(await runTimersUntil(() => !_testExports._isFolderReconPending())).toBe(true);
     expect(nativeRows.get(coldNull)).toBe(makeFolderMembershipId('account2', '/Archive'));
     expect(nativeRows.get(coldOwned)).toBe(makeFolderMembershipId('account2', '/Archive'));
     expect(fts.removeBatch).not.toHaveBeenCalled();
@@ -6059,12 +5984,11 @@ describe('unloaded-account rows (exact helpers)', () => {
     const { nativeRows, fts } = installed;
     nativeRows.set('account1:/F:kept@example.com', null);
     nativeRows.set('account1:/F:owned@example.com', makeFolderMembershipId('account1', '/F'));
-    storageData[RECON_PENDING_KEY] = 123;
     _testExports._setFtsSearch(fts);
 
     await runUntilRetryArmed(fts);
 
-    expect(storageData[RECON_PENDING_KEY]).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
     expect(nativeRows.size).toBe(2);
     expect(vi.getTimerCount()).toBeGreaterThan(0);
 
@@ -6083,19 +6007,18 @@ describe('unloaded-account rows (exact helpers)', () => {
       rootFolder: { path: '/', isRoot: true, subFolders: [{ id: folder.weFolderId, path: '/F', subFolders: [] }] },
     }]);
 
-    expect(await runTimersUntil(() => storageData[RECON_PENDING_KEY] === undefined)).toBe(true);
+    expect(await runTimersUntil(() => !_testExports._isFolderReconPending())).toBe(true);
     expect(nativeRows.get('account1:/F:kept@example.com')).toBe(makeFolderMembershipId('account1', '/F'));
   });
 
   it('completes and clears the marker for an empty inventory over an empty index', async () => {
     const { fts } = installExactMembershipFolders([]);
-    storageData[RECON_PENDING_KEY] = 123;
     _testExports._setFtsSearch(fts);
 
     await settleSchedulerTickWithFakeTimers(fts);
-    await runTimersUntil(() => storageData[RECON_PENDING_KEY] === undefined || vi.getTimerCount() === 0);
+    await runTimersUntil(() => !_testExports._isFolderReconPending() || vi.getTimerCount() === 0);
 
-    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+    expect(_testExports._isFolderReconPending()).toBe(false);
   });
 
   it('spends no state page on the tick after the unloaded terminal state', async () => {
@@ -6163,7 +6086,6 @@ describe('orphan completion across ticks', () => {
   it('keeps the pin refusal of all orphan work while a legacy overlap group exists, then cleans once it is gone', async () => {
     const zGone = 'account1:/ZGone:z@example.com';
     const { fts, keys } = installLegacyKeyIndex(['/F', '/F:Child'], [zGone]);
-    storageData[RECON_PENDING_KEY] = 123;
 
     for (let turn = 0; turn < 4; turn++) {
       const result = await settleSchedulerTickWithFakeTimers(fts);
@@ -6174,7 +6096,7 @@ describe('orphan completion across ticks', () => {
     expect(fts.listMsgIdRange).not.toHaveBeenCalled();
     expect(recheckMessageInFolder).not.toHaveBeenCalled();
     expect(keys.has(zGone)).toBe(true);
-    expect(storageData[RECON_PENDING_KEY]).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
 
     // Control: the overlap disappears with the inventory change.
     globalThis.browser.accounts.list.mockResolvedValue([{
@@ -6186,13 +6108,12 @@ describe('orphan completion across ticks', () => {
     expect(result).toMatchObject({ complete: true });
     expect(keys.has(zGone)).toBe(false);
     expect(recheckMessageInFolder).toHaveBeenCalledOnce();
-    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+    expect(_testExports._isFolderReconPending()).toBe(false);
   });
 
   it('yields a legacy orphan slice to foreground pressure without losing the pass', async () => {
     const ghost = 'account1:/Gone:x@example.com';
     const { fts, keys } = installLegacyKeyIndex(['/Keep'], [ghost]);
-    storageData[RECON_PENDING_KEY] = 123;
     recheckMessageInFolder.mockImplementationOnce(async () => {
       getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false });
       return 'absent';
@@ -6210,7 +6131,6 @@ describe('orphan completion across ticks', () => {
 
   it('retries a legacy basis interrupted at its global count instead of walking a clean index', async () => {
     const { fts } = installLegacyKeyIndex(['/Keep'], []);
-    storageData[RECON_PENDING_KEY] = 123;
     const count = fts.countMsgIdRange.getMockImplementation();
     let pressured = false;
     fts.countMsgIdRange.mockImplementation(async (start, end) => {
@@ -6230,7 +6150,7 @@ describe('orphan completion across ticks', () => {
     // The basis retried its global count; no orphan walk page was read.
     expect(fts.countMsgIdRange.mock.calls.filter(([start]) => start === '')).toHaveLength(2);
     expect(fts.listMsgIdRange.mock.calls.filter(([start]) => start === '')).toHaveLength(0);
-    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+    expect(_testExports._isFolderReconPending()).toBe(false);
   });
 
   it.each([
@@ -6238,12 +6158,11 @@ describe('orphan completion across ticks', () => {
     ['a walk after a count mismatch', ['account1:/Gone:x@example.com']],
   ])('keeps a legacy orphan completion from %s across a later drain write', async (_label, ghosts) => {
     const { fts, keys } = installLegacyKeyIndex(['/Keep'], ghosts);
-    storageData[RECON_PENDING_KEY] = 123;
     holdMarkerWithQueuedUpdate();
 
     await tickUntil(fts, () => _testExports._getFolderReconOrphanPass()?.complete === true);
     expect(_testExports._getFolderReconOrphanPass()?.complete).toBe(true);
-    expect(storageData[RECON_PENDING_KEY]).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
     for (const ghost of ghosts) expect(keys.has(ghost)).toBe(false);
 
     // The queued update drains: one indexBatch into a known folder.
@@ -6255,7 +6174,7 @@ describe('orphan completion across ticks', () => {
     const result = await settleSchedulerTickWithFakeTimers(fts);
 
     expect(result).toMatchObject({ complete: true });
-    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+    expect(_testExports._isFolderReconPending()).toBe(false);
     expect(fts.countMsgIdRange).not.toHaveBeenCalled();
     expect(fts.listMsgIdRange).not.toHaveBeenCalled();
   });
@@ -6269,7 +6188,6 @@ describe('orphan completion across ticks', () => {
     ]);
     const former = 'account1:/F:Former:y@example.com';
     nativeRows.set(former, makeFolderMembershipId('account1', '/F:Former'));
-    storageData[RECON_PENDING_KEY] = 123;
     holdMarkerWithQueuedUpdate();
 
     await tickUntil(fts, () => _testExports._getFolderMembershipStatePass()?.completed === true);
@@ -6277,7 +6195,7 @@ describe('orphan completion across ticks', () => {
     expect(nativeRows.has(former)).toBe(false);
     expect(nativeRows.get('account1:/F:X:a@example.com')).toBe(makeFolderMembershipId('account1', '/F'));
     expect(nativeRows.get('account1:/F:X:b@example.com')).toBe(makeFolderMembershipId('account1', '/F:X'));
-    expect(storageData[RECON_PENDING_KEY]).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
 
     _testExports._getPendingUpdates().clear();
     await runFtsMembershipMutation(async () => ({ count: 1 }));
@@ -6286,14 +6204,13 @@ describe('orphan completion across ticks', () => {
     const result = await tickUntil(fts, value => value?.complete === true, 40);
 
     expect(result).toMatchObject({ complete: true });
-    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+    expect(_testExports._isFolderReconPending()).toBe(false);
     expect(fts.listFolderMembershipState).not.toHaveBeenCalled();
   });
 
   it('does not let a completed exact pass survive an inventory change', async () => {
     const installed = seedMigratedExactFolders([{ folderPath: '/F', headerMessageIds: [] }]);
     const { fts } = installed;
-    storageData[RECON_PENDING_KEY] = 123;
     holdMarkerWithQueuedUpdate();
     await tickUntil(fts, () => _testExports._getFolderMembershipStatePass()?.completed === true);
 
@@ -6315,16 +6232,15 @@ describe('orphan completion across ticks', () => {
     const changed = await settleSchedulerTickWithFakeTimers(fts);
 
     expect(changed?.complete).not.toBe(true);
-    expect(storageData[RECON_PENDING_KEY]).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
     const result = await tickUntil(fts, value => value?.complete === true);
     expect(result).toMatchObject({ complete: true });
   });
 
   it('documents #111: a late exact-mode commit after the completed pass stays until the next pass', async () => {
     const { nativeRows, fts } = seedMigratedExactFolders([{ folderPath: '/F', headerMessageIds: [] }]);
-    storageData[RECON_PENDING_KEY] = 123;
     await tickUntil(fts, value => value?.complete === true);
-    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+    expect(_testExports._isFolderReconPending()).toBe(false);
 
     // A timed-out index_batch for a since-removed folder commits natively
     // with no epoch advance.
@@ -6355,7 +6271,6 @@ describe('orphan completion across ticks', () => {
         updatedAtMs: Date.now(),
       },
     };
-    storageData[RECON_PENDING_KEY] = 123;
 
     const result = await tickUntil(fts, value => value?.complete === true);
 
@@ -6527,7 +6442,6 @@ describe('exact state pass progress and cost', () => {
     const installed = seedMigratedExactFolders([{ folderPath: '/F', headerMessageIds }]);
     const { nativeRows, rowsByURI, folders, fts } = installed;
     for (const id of headerMessageIds) nativeRows.set(`account1:/F:${id}`, null);
-    storageData[RECON_PENDING_KEY] = 123;
 
     // Phase 1: a drain write lands between every slice until cutover.
     let written = 0;
@@ -6549,7 +6463,7 @@ describe('exact state pass progress and cost', () => {
     // Phase 2: quiet ticks complete reconciliation.
     const result = await tickUntil(fts, value => value?.complete === true, 60);
     expect(result).toMatchObject({ complete: true });
-    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+    expect(_testExports._isFolderReconPending()).toBe(false);
     expect(populateBatchBody).not.toHaveBeenCalled();
   });
 });
@@ -6612,7 +6526,7 @@ describe('drain body fetches (unchanged by reconciliation)', () => {
   });
 });
 
-describe('no-change startup writes nothing but the marker', () => {
+describe('no-change startup writes nothing to storage', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
@@ -6635,12 +6549,10 @@ describe('no-change startup writes nothing but the marker', () => {
   // the stored memo with nothing changed.
   async function finishFirstSessionThenRestart(install) {
     const installed = install();
-    storageData[RECON_PENDING_KEY] = 123;
     const first = await tickUntil(installed.fts, value => value?.complete === true, FOLDER_COUNT * 3);
     expect(first).toMatchObject({ complete: true });
     _testExports._resetFolderReconState();
     _testExports._setIsEnabled(true);
-    storageData[RECON_PENDING_KEY] = 456;
     globalThis.browser.storage.local.set.mockClear();
     globalThis.browser.storage.local.remove.mockClear();
     return installed;
@@ -6677,16 +6589,16 @@ describe('no-change startup writes nothing but the marker', () => {
     ['legacy, non-IMAP full projection', legacyFullProjection],
     ['legacy, IMAP UID tier', legacyUidTier],
     ['exact, non-IMAP full projection', exactFullProjection],
-  ])('%s: only the marker clear is written', async (_label, install) => {
+  ])('%s: zero storage writes', async (_label, install) => {
     const { fts } = await finishFirstSessionThenRestart(install);
 
     const result = await runSecondSession(fts);
 
     expect(result).toMatchObject({ complete: true });
     const { set, removed } = storageWriteKeys();
-    expect(set.filter(key => key !== RECON_PENDING_KEY)).toEqual([]);
-    expect(removed).toEqual([RECON_PENDING_KEY]);
-    expect(storageData[RECON_PENDING_KEY]).toBeUndefined();
+    expect(set).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(_testExports._isFolderReconPending()).toBe(false);
   }, 30_000);
 
   it('control: one changed folder writes its checkpoint with the cursor and its outcome', async () => {
@@ -6706,7 +6618,7 @@ describe('no-change startup writes nothing but the marker', () => {
     expect(memoWrites[0].roundRobinCursor).toBeTruthy();
     // The changed outcome is snapshotted once, and completion once more.
     expect(set.filter(key => key === 'fts_folder_recon_last')).toHaveLength(2);
-    expect(removed).toEqual([RECON_PENDING_KEY]);
+    expect(removed).toEqual([]);
   }, 30_000);
 });
 
@@ -6829,3 +6741,65 @@ describe('reconciliation removal vs a racing re-add', () => {
   });
 });
 
+
+describe('drain removal never deletes a sibling key on a scoped negative', () => {
+  const STALE_EVENT_KEY = 'account1:/Old:moved@example.com';
+  const SIBLING = 'account1:/Sib:moved@example.com';
+
+  afterEach(() => {
+    _testExports._setIsEnabled(false);
+    _testExports._getPendingUpdates().clear();
+    delete storageData.fts_pending_updates;
+  });
+
+  function drainDelete(indexed) {
+    _testExports._getPendingUpdates().set(STALE_EVENT_KEY, {
+      type: 'deleted', uniqueKey: STALE_EVENT_KEY, timestamp: Date.now(),
+      folderKey: 'account1:/Old', hasFailed: false, lastFailedAt: 0, metadata: {},
+    });
+    globalThis.browser.folders = {
+      query: vi.fn(async () => [
+        { id: 'f-old', accountId: 'account1', path: '/Old' },
+        { id: 'f-sib', accountId: 'account1', path: '/Sib' },
+      ]),
+    };
+    // A folder-scoped query can miss a message that is present (ADR-017).
+    globalThis.browser.messages = { query: vi.fn(async () => ({ messages: [] })) };
+    const fts = {
+      removeBatch: vi.fn(async ids => {
+        let count = 0;
+        for (const id of ids) if (indexed.delete(id)) count++;
+        return { count };
+      }),
+      getMessageByMsgId: vi.fn(async msgId => (indexed.has(msgId) ? { msgId } : null)),
+      // The removed sibling-key fallback searched this; keeping it lets the
+      // test fail on code that still deletes a sibling on a scoped negative.
+      findByHeaderMessageId: vi.fn(async () => [...indexed]),
+      stats: vi.fn(async () => ({})),
+    };
+    _testExports._setFtsSearch(fts);
+    return { fts, drained: flushPendingUpdates() };
+  }
+
+  it('keeps the sibling row and consumes the event when the event key is not indexed', async () => {
+    const indexed = new Set([SIBLING]);
+    const { fts, drained } = drainDelete(indexed);
+    await drained;
+
+    expect(indexed.has(SIBLING)).toBe(true);
+    expect(fts.removeBatch.mock.calls.flat(2)).not.toContain(SIBLING);
+    expect(globalThis.browser.messages.query).not.toHaveBeenCalled();
+    expect(_testExports._getPendingUpdates().size).toBe(0);
+  });
+
+  it('control: removes the event key itself and verifies it', async () => {
+    const indexed = new Set([STALE_EVENT_KEY, SIBLING]);
+    const { fts, drained } = drainDelete(indexed);
+    await drained;
+
+    expect(indexed.has(STALE_EVENT_KEY)).toBe(false);
+    expect(indexed.has(SIBLING)).toBe(true);
+    expect(fts.getMessageByMsgId).toHaveBeenCalledWith(STALE_EVENT_KEY);
+    expect(_testExports._getPendingUpdates().size).toBe(0);
+  });
+});

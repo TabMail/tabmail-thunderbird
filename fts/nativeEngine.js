@@ -842,10 +842,6 @@ export const nativeFtsSearch = {
     return nativeRPC('getMessageByMsgId', { msgId });
   },
 
-  async findByHeaderMessageId(accountId, headerMessageId) {
-    return nativeRPC('findByHeaderMessageId', { accountId, headerMessageId });
-  },
-
   async queryByDateRange(from, to, limit = 1000) {
     return nativeRPC('queryByDateRange', { from, to, limit });
   },

@@ -216,7 +216,7 @@ async function _markFolderReconDirty(folderKey) {
     _folderReconSessionDeferred.delete(normalizedFolderKey);
     _folderReconFailureCounts.delete(normalizedFolderKey);
   }
-  await _ensureFolderReconPendingMarker();
+  _markFolderReconPending();
   _wakeFolderRecon("queue_backpressure", FOLDER_RECON_PRESSURE_DELAY_MS);
 }
 
@@ -288,7 +288,7 @@ async function _deferFolderReconAfterDrainFailure(updates, reason) {
     ? updates
     : _folderReconDrainFailureKeys(updates);
   _applyFolderReconDrainFailureFairness(folderKeys);
-  await _ensureFolderReconPendingMarker();
+  _markFolderReconPending();
   // Later healthy folders are eligible immediately; the affected identity is
   // held behind its bounded deadline by scheduler selection below.
   _wakeFolderRecon(reason, FOLDER_RECON_PACE_DELAY_MS);
@@ -297,7 +297,7 @@ async function _deferFolderReconAfterDrainFailure(updates, reason) {
 /**
  * Admit a queue entry without ever exceeding the exact live high-water mark.
  * Replacements are always safe because they do not grow the map. A rejected
- * new intention is represented by the durable reconcile marker + dirty folder
+ * new intention is represented by the pending reconcile flag + dirty folder
  * and will be rediscovered from Thunderbird headers after the drain recedes.
  * Caller must hold _enqueueMutex.
  */
@@ -413,126 +413,6 @@ function _getRetryConfig() {
 }
 
 /**
- * Try to delete FTS entries when the original key doesn't match.
- * Uses native search by headerMessageId to find entries regardless of folder path.
- * This handles cases where onDeleted event has stale/wrong folder info (common with Gmail/IMAP).
- *
- * IMPORTANT: Before deleting a found entry, we verify the message is actually gone from that folder.
- * This prevents incorrect deletion when a message exists in multiple Gmail virtual folders
- * (e.g., "deleting" from INBOX just archives to All Mail, so we shouldn't delete the All Mail entry).
- *
- * @param {string} originalKey - The original uniqueKey that was tried (accountId:folderPath:headerMessageId)
- * @param {Object} ftsSearch - The FTS search instance
- * @returns {Promise<{found: boolean, deletedKeys: string[]}>}
- */
-async function _tryFallbackDeletion(originalKey, ftsSearch) {
-  const firstBoundary = originalKey.indexOf(":");
-  if (firstBoundary <= 0) {
-    return { found: false, deletedKeys: [] };
-  }
-
-  try {
-    const accountId = originalKey.slice(0, firstBoundary);
-    const liveFolders = await browser.folders.query({ accountId });
-    const originalCandidates = getUniqueMessageKeyCandidates(originalKey, liveFolders);
-    // A deleted/renamed folder may no longer be represented; an overlapping
-    // folder path may produce several interpretations. Neither is permission
-    // to derive a destructive lookup from delimiter position.
-    if (originalCandidates.length !== 1) return { found: false, deletedKeys: [] };
-    const { weFolder, headerID } = originalCandidates[0];
-    const originalFolder = weFolder.path;
-    // Use native search to find all FTS entries with this headerMessageId in this account
-    const matchingKeys = await ftsSearch.findByHeaderMessageId(accountId, headerID);
-
-    if (!matchingKeys || matchingKeys.length === 0) {
-      log(`[TMDBG FTS] No FTS entries found for headerMessageId ${headerID} in account ${accountId}`);
-      return { found: false, deletedKeys: [] };
-    }
-
-    log(`[TMDBG FTS] Found ${matchingKeys.length} FTS entries for headerMessageId ${headerID}: ${matchingKeys.join(', ')}`);
-
-    // Check each found entry - only delete if message is actually gone from that folder
-    const deletedKeys = [];
-    const skippedKeys = [];
-    for (const key of matchingKeys) {
-      // Skip the original key - it was already tried in the main deletion
-      if (key === originalKey) continue;
-
-      const foundCandidates = getUniqueMessageKeyCandidates(key, liveFolders)
-        .filter(candidate => candidate.headerID === headerID);
-      if (foundCandidates.length !== 1) {
-        log(`[TMDBG FTS] Skipping ambiguous found key: ${key}`, "warn");
-        continue;
-      }
-      const foundFolder = foundCandidates[0].weFolder;
-
-      // CRITICAL: Check if the message still exists in the found folder
-      // If it does, we should NOT delete it from FTS (e.g., Gmail virtual folders)
-      try {
-        let page = await browser.messages.query({
-          folderId: foundFolder.id,
-          headerMessageId: headerID,
-        });
-        let weId = page?.messages?.[0]?.id || null;
-        while (!weId && page?.id && typeof browser.messages.continueList === "function") {
-          page = await browser.messages.continueList(page.id);
-          weId = page?.messages?.[0]?.id || null;
-        }
-        if (weId) {
-          // Message still exists in this folder - do NOT delete from FTS
-          log(`[TMDBG FTS] Message still exists in ${foundFolder.path} (weId=${weId}), skipping FTS deletion`);
-          logFtsOperation("fallback_delete", "skipped", {
-            originalKey,
-            foundKey: key,
-            originalFolder,
-            foundFolder: foundFolder.path,
-            reason: "message_still_exists",
-          });
-          skippedKeys.push(key);
-          continue;
-        }
-      } catch (e) {
-        // Verification uncertainty is not deletion evidence.
-        log(`[TMDBG FTS] Could not verify message existence in ${foundFolder.path}: ${e}`, "info");
-        skippedKeys.push(key);
-        continue;
-      }
-
-      // Message is gone from this folder - safe to delete from FTS
-      try {
-        await ftsSearch.removeBatch([key]);
-
-        // Verify deletion succeeded
-        const verifyEntry = await ftsSearch.getMessageByMsgId(key);
-        if (!verifyEntry || verifyEntry.msgId !== key) {
-          log(`[TMDBG FTS] Native search deletion: removed ${key} (original was ${originalFolder})`);
-          logFtsOperation("fallback_delete", "success", {
-            originalKey,
-            foundKey: key,
-            originalFolder,
-            method: "native_search",
-          });
-          deletedKeys.push(key);
-        } else {
-          log(`[TMDBG FTS] Native search deletion failed to remove: ${key}`, "warn");
-        }
-      } catch (e) {
-        log(`[TMDBG FTS] Error deleting found key ${key}: ${e}`, "warn");
-      }
-    }
-
-    if (skippedKeys.length > 0) {
-      log(`[TMDBG FTS] Skipped ${skippedKeys.length} entries where message still exists in folder`);
-    }
-
-    return { found: deletedKeys.length > 0, deletedKeys };
-  } catch (e) {
-    log(`[TMDBG FTS] Native search fallback error: ${e}`, "warn");
-    return { found: false, deletedKeys: [] };
-  }
-}
-
-/**
  * Check if failed updates should be dropped based on queue stability.
  * Returns true if we've had maxConsecutiveNoProgress cycles with no successful dequeues.
  * Only applies to entries that have failed at least once (hasFailed=true).
@@ -577,9 +457,10 @@ function _incrementNoProgressCounter() {
 }
 
 /**
- * Atomically convert destructive queue abandonment into durable reconcile
- * work. Only the exact captured type+timestamp may be deleted; replacements
- * and requeues survive. Marker failure propagates and retains every entry.
+ * Atomically convert destructive queue abandonment into reconcile work: the
+ * affected folders are dirtied and reconciliation marked pending before any
+ * entry is dropped. Only the exact captured type+timestamp may be deleted;
+ * replacements and requeues survive.
  */
 async function _abandonPendingUpdates(capturedUpdates, reason = "abandoned") {
   const { acquired, release } = acquireEnqueueMutex();
@@ -610,7 +491,7 @@ async function _abandonPendingUpdates(capturedUpdates, reason = "abandoned") {
     }
     _folderReconOrphanDone = false;
     _folderReconOrphanPass = null;
-    await _ensureFolderReconPendingMarker();
+    _markFolderReconPending();
 
     let dropped = 0;
     for (const captured of matching) {
@@ -669,9 +550,10 @@ async function processPendingUpdates() {
     const toIndexUpdates = updates.filter(u => u.type === 'new' || u.type === 'moved');
     const toDeleteUpdates = updates.filter(u => u.type === 'deleted');
     
-    // Process deletions first - use unique keys directly
-    // NOTE: If folder info was stale in onDeleted event, the key might not match FTS.
-    // We now try fallback folder paths to catch these cases.
+    // Process deletions first - use unique keys directly. A delete event whose
+    // folder info was stale leaves the real row behind; the periodic
+    // reconciliation pass removes it (a scoped negative is not deletion
+    // evidence, so the drain never deletes a sibling key).
     if (toDeleteUpdates.length > 0) {
       const toDeleteUniqueKeys = toDeleteUpdates.map(u => u.uniqueKey);
       const removeResult = await _ftsSearch.removeBatch(toDeleteUniqueKeys);
@@ -686,35 +568,20 @@ async function processPendingUpdates() {
       });
 
       if (missedCount > 0) {
-        log(`[TMDBG FTS] Removed ${removedCount}/${toDeleteUniqueKeys.length} messages - ${missedCount} may have stale folder keys, trying fallbacks`);
+        log(`[TMDBG FTS] Removed ${removedCount}/${toDeleteUniqueKeys.length} messages - ${missedCount} were not indexed under the event's key`);
       } else {
         log(`[TMDBG FTS] Removed ${removedCount} messages from index`);
       }
 
-      // Verify deletions and use native search by headerMessageId for missed entries
-      // This handles cases where onDeleted event has wrong folder info (common with Gmail/IMAP)
       let verifiedDeletes = 0;
-      let fallbackDeletes = 0;
       let deleteVerifyFailed = 0;
       for (const key of toDeleteUniqueKeys) {
         try {
           const ftsEntry = await _ftsSearch.getMessageByMsgId(key);
           if (!ftsEntry || ftsEntry.msgId !== key) {
-            // Original key not in FTS - use native search to find entries with same headerMessageId
-            // This is the key fix: the delete event may have had wrong folder info
-            const fallbackResult = await _tryFallbackDeletion(key, _ftsSearch);
-            if (fallbackResult.found) {
-              log(`[TMDBG FTS] Native search deletion succeeded: ${fallbackResult.deletedKeys.join(', ')}`);
-              fallbackDeletes += fallbackResult.deletedKeys.length;
-            }
-            // Whether fallback found something or not, mark as processed (original is gone)
             processedKeys.add(key);
             verifiedDeletes++;
-            logFtsOperation("verify_delete", "success", {
-              uniqueKey: key,
-              usedFallback: fallbackResult.found,
-              fallbackKeys: fallbackResult.deletedKeys,
-            });
+            logFtsOperation("verify_delete", "success", { uniqueKey: key });
           } else {
             // Still exists in FTS - deletion failed, keep in queue
             log(`[TMDBG FTS] DELETE VERIFY FAILED: ${key} still in FTS after removeBatch (will retry)`, "warn");
@@ -741,13 +608,9 @@ async function processPendingUpdates() {
       logFtsBatchOperation("verify_delete", "complete", {
         total: toDeleteUniqueKeys.length,
         successCount: verifiedDeletes,
-        fallbackCount: fallbackDeletes,
         failCount: deleteVerifyFailed,
       });
 
-      if (fallbackDeletes > 0) {
-        log(`[TMDBG FTS] Delete verification: ${verifiedDeletes}/${toDeleteUniqueKeys.length} confirmed removed (${fallbackDeletes} via native headerMessageId search)`);
-      }
       if (deleteVerifyFailed > 0) {
         log(`[TMDBG FTS] Delete verification: ${deleteVerifyFailed} still present (retained in queue)`);
       }
@@ -1169,14 +1032,7 @@ async function processPendingUpdates() {
       error: String(e),
       retainedCount: updates.length,
     });
-    try {
-      await _deferFolderReconAfterDrainFailure(updates, "drain_error");
-    } catch (markerError) {
-      // Every queue intention remains live and is persisted below. A marker
-      // write failure must neither drop it nor undo the synchronous fairness
-      // boundary; the next retry/dirty event will attempt persistence again.
-      log(`[TMDBG FTS] Failed to persist drain-error reconcile marker: ${markerError}`, "error");
-    }
+    await _deferFolderReconAfterDrainFailure(updates, "drain_error");
     // Don't delete from map - will retry on next batch
     // Don't count as no-progress since we had an error (not a stable state)
   }
@@ -1600,8 +1456,8 @@ export async function removeExperimentListeners() {
 
 // Folder/account topology changes alter the inventory every reconciliation
 // stage compares against (exact-mode cutover, legacy orphan basis). A tick
-// re-reads it, but an idle scheduler has no tick: wake it and re-arm the
-// durable marker. Correctness never depends on delivery — every event-page
+// re-reads it, but an idle scheduler has no tick: wake it and mark
+// reconciliation pending. Correctness never depends on delivery — every event-page
 // start runs the startup reconciliation. Registered from the background
 // entry point before any await so Gecko can prime the persistent events.
 const _folderTopologyListenerOwners = new Map();
@@ -1619,9 +1475,7 @@ function _onFolderReconTopologyChanged() {
   // dirty until the next tick starts, so an operation this event overtakes
   // cannot keep its folder done or clear the pending marker.
   _folderReconDirty.add("__all__");
-  _ensureFolderReconPendingMarker().catch((e) => {
-    log(`[FTS FolderRecon] Topology marker write failed: ${e}`, "warn");
-  });
+  _markFolderReconPending();
   _wakeFolderRecon("folder_topology");
 }
 
@@ -1674,15 +1528,18 @@ function _removeFolderTopologyListeners() {
 // compatibility/tests, but the automatic startup path no longer calls them.
 // =====================================================================
 
-// Storage key for persisting reconcile-needed state across restarts
-const RECONCILE_STORAGE_KEY = "fts_reconcile_pending";
+// Durable reconcile-needed flag written by earlier versions. Every session runs
+// the startup reconciliation regardless, so the flag carries no cross-session
+// information; it is only removed if an older version left it behind.
+const LEGACY_RECONCILE_STORAGE_KEY = "fts_reconcile_pending";
 // One strict serialization chain is intentionally permanent for the module
 // lifetime. Generation changes cancel stale transactions but never reset or
-// bypass ordering between memo and pending-marker operations.
+// bypass ordering between memo operations.
 let _reconStorageChain = Promise.resolve();
-let _reconMarkerPersisted = false;
-let _reconMarkerInFlight = null;
-let _reconMarkerClearInFlight = false;
+// True from init until this session's reconciliation completes with nothing
+// left to do; any dirty event, abandoned drain entry or exclusive mutation
+// sets it again. Volatile: a new session starts pending.
+let _folderReconPendingThisSession = false;
 
 function _emptyFolderReconMemo() {
   return { version: 3, roundRobinCursor: null, folders: {} };
@@ -1705,19 +1562,11 @@ function _enqueueReconStorageOperation(operation) {
 async function _reconStorageTransaction(generation, patch) {
   return _enqueueReconStorageOperation(async () => {
     if (generation !== _folderReconGeneration) throw new Error("folder_recon_cancelled");
-    const stored = await browser.storage.local.get([
-      FOLDER_RECON_STORAGE_KEY,
-      RECONCILE_STORAGE_KEY,
-    ]);
+    const stored = await browser.storage.local.get(FOLDER_RECON_STORAGE_KEY);
     if (generation !== _folderReconGeneration) throw new Error("folder_recon_cancelled");
     const memo = _rawFolderReconMemo(stored?.[FOLDER_RECON_STORAGE_KEY]);
     const memoBefore = JSON.stringify(memo);
-    const state = {
-      memo,
-      pending: stored?.[RECONCILE_STORAGE_KEY],
-      setPending: undefined,
-      removePending: false,
-    };
+    const state = { memo };
     const patchResult = patch(state);
     if (patchResult && typeof patchResult.then === "function") {
       throw new Error("reconcile_storage_patch_must_be_synchronous");
@@ -1727,15 +1576,8 @@ async function _reconStorageTransaction(generation, patch) {
     if (JSON.stringify(state.memo) !== memoBefore) {
       toSet[FOLDER_RECON_STORAGE_KEY] = state.memo;
     }
-    if (state.setPending !== undefined) {
-      toSet[RECONCILE_STORAGE_KEY] = state.setPending;
-    }
     if (Object.keys(toSet).length > 0) {
       await browser.storage.local.set(toSet);
-      if (generation !== _folderReconGeneration) throw new Error("folder_recon_cancelled");
-    }
-    if (state.removePending) {
-      await browser.storage.local.remove(RECONCILE_STORAGE_KEY);
       if (generation !== _folderReconGeneration) throw new Error("folder_recon_cancelled");
     }
     return { ...state, result: patchResult };
@@ -1746,47 +1588,30 @@ async function _readReconStorageStrict(generation = _folderReconGeneration) {
   return _reconStorageTransaction(generation, () => {});
 }
 
-async function _ensureFolderReconPendingMarker() {
-  // A clear may already be serialized ahead of this request. Treat the
-  // durable marker as absent while that remove is in flight so a concurrent
-  // dirty event queues a restoring set behind it instead of disappearing.
-  if (_reconMarkerPersisted && !_reconMarkerClearInFlight) return;
-  const generation = _folderReconGeneration;
-  if (_reconMarkerInFlight?.generation === generation) {
-    return _reconMarkerInFlight.promise;
-  }
-  const owner = { generation, promise: null };
-  owner.promise = _reconStorageTransaction(generation, (state) => {
-    if (!state.pending) state.setPending = Date.now();
-  }).then(() => {
-    if (generation === _folderReconGeneration) _reconMarkerPersisted = true;
-  }).finally(() => {
-    if (_reconMarkerInFlight === owner) _reconMarkerInFlight = null;
-  });
-  _reconMarkerInFlight = owner;
-  return owner.promise;
+function _markFolderReconPending() {
+  _folderReconPendingThisSession = true;
 }
 
-async function _clearFolderReconPendingMarkerIfCurrent(generation, syncStartedAt) {
-  _reconMarkerClearInFlight = true;
-  // Publish the possible absence before enqueueing the transaction. Calls to
-  // ensure() that race the awaited remove will therefore serialize a set
-  // after the remove on the permanent strict storage chain.
-  _reconMarkerPersisted = false;
+function _clearFolderReconPendingIfCurrent(generation, syncStartedAt) {
+  if (generation !== _folderReconGeneration
+      || _lastSyncEventMs > syncStartedAt
+      || _folderReconDirty.size > 0
+      || _pendingUpdates.size > 0) {
+    return false;
+  }
+  _folderReconPendingThisSession = false;
+  return true;
+}
+
+async function _removeLegacyReconcilePendingKey() {
   try {
-    const transaction = await _reconStorageTransaction(generation, (state) => {
-      if (_lastSyncEventMs > syncStartedAt
-          || _folderReconDirty.size > 0
-          || _pendingUpdates.size > 0) {
-        return false;
-      }
-      state.removePending = true;
-      return true;
-    });
-    if (transaction.result !== true) _reconMarkerPersisted = true;
-    return transaction.result === true;
-  } finally {
-    _reconMarkerClearInFlight = false;
+    const stored = await browser.storage.local.get(LEGACY_RECONCILE_STORAGE_KEY);
+    if (stored?.[LEGACY_RECONCILE_STORAGE_KEY] !== undefined
+        && stored?.[LEGACY_RECONCILE_STORAGE_KEY] !== null) {
+      await browser.storage.local.remove(LEGACY_RECONCILE_STORAGE_KEY);
+    }
+  } catch (e) {
+    log(`[FTS FolderRecon] Legacy pending-flag cleanup failed: ${e}`, "warn");
   }
 }
 
@@ -2696,7 +2521,6 @@ let _folderReconWorkingProofStats = {
 };
 let _folderReconRuntimeTelemetry = null;
 let _folderReconOutcomeAggregate = null;
-let _exclusiveMarkerRetryOwner = null;
 const FOLDER_RECON_OUTCOME_PERSIST_INTERVAL_MS = 30 * 1000;
 const FOLDER_RECON_OUTCOME_FIELDS = [
   "foldersTotal", "foldersErrored", "foldersDrainBusy", "foldersMemoHit",
@@ -2716,66 +2540,8 @@ function _folderReconOutcomeChanged(counts) {
 
 const _folderReconEncoder = new TextEncoder();
 
-function _isExclusiveMarkerRetryOwnerCurrent(owner) {
-  return owner === _exclusiveMarkerRetryOwner
-    && owner.cancelled !== true
-    && owner.generation === _folderReconGeneration
-    && _isEnabled
-    && !_indexerDisposed;
-}
-
-function _cancelExclusiveMarkerRetry() {
-  const owner = _exclusiveMarkerRetryOwner;
-  if (!owner) return;
-  if (owner.timer) clearTimeout(owner.timer);
-  owner.timer = null;
-  owner.cancelled = true;
-  if (_exclusiveMarkerRetryOwner === owner) _exclusiveMarkerRetryOwner = null;
-}
-
-async function _attemptExclusiveMarkerRetry(owner) {
-  if (!_isExclusiveMarkerRetryOwnerCurrent(owner) || owner.attempting) return;
-  owner.attempting = true;
-  try {
-    if (!_isExclusiveMarkerRetryOwnerCurrent(owner)) return;
-    await _ensureFolderReconPendingMarker();
-    if (!_isExclusiveMarkerRetryOwnerCurrent(owner)) return;
-    // Clear only the owner whose durable write succeeded. A replacement
-    // generation may have installed a different retry while this await ran.
-    _exclusiveMarkerRetryOwner = null;
-    _wakeFolderRecon("exclusive_membership_change", FOLDER_RECON_PACE_DELAY_MS);
-  } catch (error) {
-    if (!_isExclusiveMarkerRetryOwnerCurrent(owner)) return;
-    log(`[FTS FolderRecon] Failed to persist exclusive-mutation retry marker: ${error}`, "error");
-    owner.timer = setTimeout(() => {
-      owner.timer = null;
-      if (!_isExclusiveMarkerRetryOwnerCurrent(owner)) return;
-      void _attemptExclusiveMarkerRetry(owner);
-    }, FOLDER_RECON_ERROR_DELAY_MS);
-  } finally {
-    owner.attempting = false;
-  }
-}
-
-function _ensureExclusiveMarkerRetry(generation) {
-  if (generation !== _folderReconGeneration || !_isEnabled || _indexerDisposed) return;
-  let owner = _exclusiveMarkerRetryOwner;
-  if (!owner || owner.generation !== generation) {
-    _cancelExclusiveMarkerRetry();
-    owner = {
-      generation,
-      attempting: false,
-      timer: null,
-      cancelled: false,
-    };
-    _exclusiveMarkerRetryOwner = owner;
-  }
-  if (!owner.attempting && !owner.timer) void _attemptExclusiveMarkerRetry(owner);
-}
-
 function _handleExclusiveFtsMembershipChange() {
   if (!_isEnabled || _indexerDisposed) return;
-  const generation = _folderReconGeneration;
   _folderReconMutationSerial = Math.min(
     Number.MAX_SAFE_INTEGER,
     _folderReconMutationSerial + 1,
@@ -2792,11 +2558,10 @@ function _handleExclusiveFtsMembershipChange() {
   _resetFolderMembershipVolatileProof();
   _releaseFolderReconActiveProof(null, "invalidation");
   _folderReconDirty.add("__all__");
-
-  // The coordinator invokes this only after releasing exclusive ownership.
-  // In-memory proof invalidation above is synchronous; durable storage stays
-  // on the permanent strict chain, and only its success may arm the wake.
-  _ensureExclusiveMarkerRetry(generation);
+  // The coordinator invokes this only after releasing exclusive ownership,
+  // and every proof class above is already invalidated.
+  _markFolderReconPending();
+  _wakeFolderRecon("exclusive_membership_change", FOLDER_RECON_PACE_DELAY_MS);
 }
 
 addFtsExclusiveMembershipChangeListener(_handleExclusiveFtsMembershipChange);
@@ -6478,7 +6243,7 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
         return { complete: false, orphan, reason: "unloaded_accounts" };
       }
       if (_folderReconOrphanDone && _pendingUpdates.size === 0 && _folderReconDirty.size === 0) {
-        const cleared = await _clearFolderReconPendingMarkerIfCurrent(generation, syncStartedAt);
+        const cleared = _clearFolderReconPendingIfCurrent(generation, syncStartedAt);
         _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
         if (cleared) {
           if (_folderReconOutcomeAggregate) _folderReconOutcomeAggregate.complete = true;
@@ -6631,9 +6396,8 @@ async function runPostInitReconcile(ftsSearch) {
   } catch (e) {
     log(`[TMDBG FTS] Reconcile failed: ${e}`, "error");
     logFtsBatchOperation("reconcile", "error", { error: String(e), mode: "folder_fingerprint" });
-    // Leave RECONCILE_STORAGE_KEY set so an interrupted service worker/app
-    // restart retries. Also arm the normal serialized scheduler retry so a
-    // one-shot inventory/storage failure heals in this live session.
+    // Reconciliation stays pending; arm the normal serialized scheduler retry
+    // so a one-shot inventory/storage failure heals in this live session.
     _wakeFolderRecon("initial_error_retry", FOLDER_RECON_ERROR_DELAY_MS);
   }
 }
@@ -6949,7 +6713,6 @@ export async function initIncrementalIndexer(ftsSearch) {
   // Fresh cooperative reconciliation session. The generation bump makes any
   // delayed completion from an earlier init/dispose unable to persist proof.
   _folderReconGeneration++;
-  _cancelExclusiveMarkerRetry();
   if (_folderReconTimer) clearTimeout(_folderReconTimer);
   _folderReconTimer = null;
   _folderReconTimerToken++;
@@ -6980,7 +6743,7 @@ export async function initIncrementalIndexer(ftsSearch) {
   _folderReconOrphanPass = null;
   _folderReconRoundRobinCursor = null;
   _folderReconInventoryRetry = null;
-  _reconMarkerPersisted = false;
+  _folderReconPendingThisSession = true;
   _clearFolderReconActiveProof({ resetStats: true });
   _resetFolderReconRuntimeTelemetry();
 
@@ -7008,11 +6771,7 @@ export async function initIncrementalIndexer(ftsSearch) {
     log("[TMDBG FTS] NOTE: Integrate with existing agent listeners for WebExtension events");
   }
 
-  // Persist that reconcile is needed — cleared on successful completion.
-  // If the extension restarts before reconcile finishes, restorePendingUpdates
-  // picks up any messages that were already enqueued, and the next init
-  // will re-run reconcile for the rest.
-  await _ensureFolderReconPendingMarker();
+  await _removeLegacyReconcilePendingKey();
 
   // Schedule the membership proof after TB's startup sync settles. A quiet
   // local msgDB snapshot keeps the two fingerprints comparable. Listeners are
@@ -7075,24 +6834,17 @@ export function getLastSyncEventMs() {
 }
 
 /**
- * Whether boot reconcile is still pending (flag set in initIncrementalIndexer,
- * cleared when reconcile Phases 1+2 complete without an exception reaching
- * runPostInitReconcile's catch — including runs that withhold the watermark
- * via accountsSkipped/removeFailed: the reconcile is over for this session
- * either way, so the maintenance tick may proceed; the next BOOT retries from
- * the older watermark. A Phase 1 throw leaves the flag SET, which makes the
- * startup tick cap-skip — the hourly alarm is the backstop). Exposed for the
- * maintenance scheduler's startup-tick wait so a due maintenance scan doesn't
- * run concurrently with (or before) the boot reconcile.
- *
- * Returns false when incremental indexing is disabled: no reconcile will ever
- * run, so a stale `fts_reconcile_pending` flag left by an interrupted earlier
- * session must not stall the startup tick to its max-wait cap on every boot.
+ * Whether this session's startup reconciliation is still pending: true from
+ * initIncrementalIndexer until the folder reconciliation completes with no
+ * dirty folder, no queued update and no sync event since its pass began; any
+ * later dirty event sets it again. Exposed for the maintenance scheduler's
+ * startup-tick wait so a due maintenance scan doesn't run concurrently with
+ * (or before) the boot reconcile. Returns false when incremental indexing is
+ * disabled: no reconcile will ever run.
  */
 export async function isReconcilePending() {
   if (!_isEnabled) return false;
-  const stored = await _readReconStorageStrict();
-  return !!stored.pending;
+  return _folderReconPendingThisSession;
 }
 
 export async function disposeIncrementalIndexer() {
@@ -7100,7 +6852,6 @@ export async function disposeIncrementalIndexer() {
 
   _isEnabled = false;
   _folderReconGeneration++;
-  _cancelExclusiveMarkerRetry();
   _folderReconConnectionUnsubscribe?.();
   _folderReconConnectionUnsubscribe = null;
   _folderReconInProgressOwner = null;
@@ -7163,8 +6914,7 @@ export async function disposeIncrementalIndexer() {
   _folderReconDirty.clear();
   _folderReconOrphanDone = false;
   _folderReconOrphanPass = null;
-  _reconMarkerPersisted = false;
-  _reconMarkerClearInFlight = false;
+  _folderReconPendingThisSession = false;
   _clearFolderReconActiveProof();
 
   // Clear timers
@@ -7266,9 +7016,8 @@ export async function clearPendingUpdates() {
     }
   }
   
-  // Manual destructive abandonment must become durable exact-reconcile work
-  // before the live/persisted queue is erased. A marker failure rejects and
-  // deliberately leaves the entries intact.
+  // Manual destructive abandonment must become exact-reconcile work before
+  // the live/persisted queue is erased.
   if (_pendingUpdates.size > 0) {
     await _abandonPendingUpdates([..._pendingUpdates.values()], "manual_clear");
   }
@@ -7375,8 +7124,7 @@ export const _testExports = {
     _folderReconUnverified = new Set();
     _folderReconBudgetOverride = null;
     _folderReconGeneration++;
-    _cancelExclusiveMarkerRetry();
-    if (_folderReconTimer) clearTimeout(_folderReconTimer);
+      if (_folderReconTimer) clearTimeout(_folderReconTimer);
     _folderReconTimer = null;
     _folderReconTimerToken++;
     _folderReconTimerDueMs = 0;
@@ -7393,8 +7141,7 @@ export const _testExports = {
     _folderReconOrphanPass = null;
     _folderReconRoundRobinCursor = null;
     _folderReconInventoryRetry = null;
-    _reconMarkerPersisted = false;
-    _reconMarkerClearInFlight = false;
+    _folderReconPendingThisSession = true;
     _clearFolderReconActiveProof({ resetStats: true });
     _resetFolderReconRuntimeTelemetry();
   },
@@ -7420,6 +7167,8 @@ export const _testExports = {
   _getFolderReconRuntimeTelemetry: () => _folderReconRuntimeTelemetry,
   _getFolderReconActiveProofKey: () => _folderReconActiveProof?.folderKey || null,
   _isFolderReconSchedulerActive: () => _folderReconSchedulerOwner !== null,
+  _isFolderReconPending: () => _folderReconPendingThisSession,
+  _clearFolderReconPendingIfCurrent,
   _getFolderReconSessionDone: () => new Set(_folderReconSessionDone),
   _getFolderReconEphemeralEvidence: () => ({
     deferred: _folderReconSessionDeferred.size + _folderReconDrainFailureDeferred.size,
