@@ -81,6 +81,7 @@ vi.mock('../agent/modules/utils.js', () => ({
   parseUniqueId: vi.fn(),
   resolveUniqueMessageKey: vi.fn(),
   recheckMessageInFolder: vi.fn(async () => 'absent'),
+  releaseMessageList: vi.fn(async () => {}),
   getUniqueMessageKey: vi.fn(),
 }));
 
@@ -118,6 +119,7 @@ const {
   headerIDToWeID,
   parseUniqueId,
   recheckMessageInFolder,
+  releaseMessageList,
   resolveUniqueMessageKey,
 } = await import('../agent/modules/utils.js');
 const { buildBatchHeader, populateBatchBody } = await import('../fts/indexer.js');
@@ -7376,5 +7378,82 @@ describe('capability-keyed quiet veto (sustained sync traffic)', () => {
     _testExports._setLastSyncEventMs(Date.now());
     expect(await settleSchedulerTickWithFakeTimers(fts)).toMatchObject({ skipped: true, reason: 'pressure' });
     expect(globalThis.browser.tmMsgNotify.getFolderState).not.toHaveBeenCalled();
+  });
+});
+
+describe('membership assignment scoped query list lifecycle', () => {
+  const ROW = 'account1:/F:scoped@example.com';
+  const HIT = { id: 5, headerMessageId: 'scoped@example.com' };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+  });
+  afterEach(() => {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  function seedUnassignedRow() {
+    const installed = seedMigratedExactFolders([{ folderPath: '/F', headerMessageIds: [] }]);
+    installed.nativeRows.set(ROW, null);
+    globalThis.browser.messages = {
+      ...globalThis.browser.messages,
+      query: vi.fn(),
+      continueList: vi.fn(),
+    };
+    return installed;
+  }
+
+  it('assigns on a terminal scoped positive with no global query and no list to release', async () => {
+    const { fts, nativeRows, folders } = seedUnassignedRow();
+    globalThis.browser.messages.query.mockResolvedValue({ messages: [HIT] });
+
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+
+    expect(nativeRows.get(ROW)).toBe(folders[0].folderId);
+    expect(recheckMessageInFolder).not.toHaveBeenCalled();
+    expect(releaseMessageList).not.toHaveBeenCalled();
+  });
+
+  it('releases an open list when a sync event interrupts its continuation, then assigns on retry', async () => {
+    const { fts, nativeRows, folders } = seedUnassignedRow();
+    let interrupted = false;
+    globalThis.browser.messages.query.mockImplementation(async () => (interrupted
+      ? { messages: [HIT] }
+      : { id: 'list-1', messages: [] }));
+    globalThis.browser.messages.continueList.mockImplementation(async () => {
+      interrupted = true;
+      // A real Thunderbird event lands while the continuation is in flight.
+      await _testExports.onExperimentMessageAdded({
+        accountId: 'account1', folderPath: '/F', headerMessageId: 'other@example.com', msgKey: 9, eventType: 'msgAdded',
+      });
+      _testExports._getPendingUpdates().clear();
+      return { id: 'list-1', messages: [HIT] };
+    });
+
+    const first = await settleSchedulerTickWithFakeTimers(fts);
+    expect(first).toMatchObject({ complete: false, migration: { retry: true } });
+    expect(releaseMessageList).toHaveBeenCalledWith('list-1');
+    expect(nativeRows.get(ROW)).toBeNull();
+    expect(recheckMessageInFolder).not.toHaveBeenCalled();
+
+    vi.setSystemTime(Date.now() + 100);
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+    expect(nativeRows.get(ROW)).toBe(folders[0].folderId);
+  });
+
+  it('releases the list when a continuation fails and lets the global query decide', async () => {
+    const { fts, nativeRows, folders } = seedUnassignedRow();
+    globalThis.browser.messages.query.mockResolvedValue({ id: 'list-1', messages: [] });
+    globalThis.browser.messages.continueList.mockRejectedValue(new Error('list busy'));
+    recheckMessageInFolder.mockResolvedValue('present');
+
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+
+    expect(releaseMessageList).toHaveBeenCalledWith('list-1');
+    expect(recheckMessageInFolder).toHaveBeenCalled();
+    expect(nativeRows.get(ROW)).toBe(folders[0].folderId);
   });
 });

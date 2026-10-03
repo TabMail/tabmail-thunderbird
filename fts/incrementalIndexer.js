@@ -15,6 +15,7 @@ import {
   log,
   parseUniqueId,
   recheckMessageInFolder,
+  releaseMessageList,
   resolveUniqueMessageKey,
 } from "../agent/modules/utils.js";
 import { buildBatchHeader, populateBatchBody } from "./indexer.js";
@@ -2511,6 +2512,9 @@ const FOLDER_RECON_REVERIFY_INTERVAL_MS = FOLDER_RECON_CONFIG.reverifyIntervalMs
 const FOLDER_RECON_POST_VERIFY_BACKOFF_INITIAL_MS = 6 * 60 * 60 * 1000;
 const FOLDER_RECON_POST_VERIFY_BACKOFF_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 const FOLDER_RECON_GENERIC_FAILURE_BACKOFF_MAX_MS = 5 * 60 * 1000;
+// Cap of the doubling inventory re-read while rows of an unloaded account
+// keep the pass from completing.
+const FOLDER_RECON_INVENTORY_RETRY_MAX_MS = 6 * 60 * 60 * 1000;
 
 function _sanitizeFolderReconRetryNotBeforeMs(value, nowMs) {
   if (!Number.isSafeInteger(value) || value <= 0) return 0;
@@ -5828,21 +5832,27 @@ async function _resolveFolderMembershipAssignment(
   for (const candidate of candidates) {
     assertCurrent();
     let scopedPositive = false;
+    // Id of a list Thunderbird still holds open; released on every exit.
+    let openListId = null;
     try {
       let page = await browser.messages.query({
         folderId: candidate.weFolder.id,
         headerMessageId: candidate.headerID,
       });
+      openListId = page?.id || null;
       assertCurrent();
       scopedPositive = (page?.messages || []).length > 0;
       while (page?.id && typeof browser.messages.continueList === "function") {
         page = await browser.messages.continueList(page.id);
+        openListId = page?.id || null;
         assertCurrent();
         if ((page?.messages || []).length > 0) scopedPositive = true;
       }
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
       // A failed scoped query is not evidence either way; the global query decides.
+    } finally {
+      if (openListId) await releaseMessageList(openListId);
     }
     if (!scopedPositive) {
       if (!globalQueried && budget.rechecks <= 0) return { kind: "deferred" };
@@ -6562,7 +6572,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
         }
         const retryDelayMs = Math.min(
           FOLDER_RECON_ERROR_DELAY_MS * (2 ** Math.min(_folderReconInventoryRetry.attempts, 30)),
-          FOLDER_RECON_POST_VERIFY_BACKOFF_INITIAL_MS,
+          FOLDER_RECON_INVENTORY_RETRY_MAX_MS,
         );
         _folderReconInventoryRetry.attempts++;
         _wakeFolderRecon("inventory_retry", retryDelayMs);

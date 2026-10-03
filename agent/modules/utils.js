@@ -1607,7 +1607,7 @@ export async function recheckMessageInFolder(headerID, weFolder) {
         verdict = "error";
     }
     if (openListId) {
-        await _releaseMessageList(openListId);
+        await releaseMessageList(openListId);
     }
     return verdict;
 }
@@ -1618,7 +1618,7 @@ export async function recheckMessageInFolder(headerID, weFolder) {
  * page without an `id`) is consumed, so drain after aborting. Never throws: a
  * release failure must not change the caller's verdict.
  */
-async function _releaseMessageList(listId) {
+export async function releaseMessageList(listId) {
     try {
         if (typeof browser.messages.abortList === "function") {
             await browser.messages.abortList(listId);
@@ -1628,7 +1628,7 @@ async function _releaseMessageList(listId) {
             page = await browser.messages.continueList(page.id);
         }
     } catch (_) {
-        log("[TMDBG HeaderResolver] recheckMessageInFolder list release failed", "debug");
+        log("[TMDBG HeaderResolver] message list release failed", "debug");
     }
 }
 
