@@ -29,6 +29,12 @@
 > - **One guard for removal vs re-add.** The private event-serial snapshot in the membership-state pass is deleted. The slice's lease assertion already rejects any message event since the slice began (`_lastSyncEventMs`), and it runs before the fenced removal mutator, so a removal judged before a re-add event is never committed. Such an event now ends the slice as a same-page retry at pacing (`membershipStatePageRetries`), not a thrown tick with an error backoff. The drain-side mutex ordering is unchanged.
 > - **Scoped queries release their lists.** `_resolveFolderMembershipAssignment` releases any `MessageList` still open after its folder-scoped query on every exit (terminal page, failed continuation, interruption) through the shared `releaseMessageList` helper.
 
+> **2026-10-03 amendment (branch `agent/tb-recon-pr3-scoped-evidence`):** membership fences read folder-scoped evidence (see the ADR-022 PR 3 amendment).
+>
+> - **Assignment fence.** A metadata-scan batch is fenced on its own folder (`[folder.folderId]`), not on every candidate of its keys; the assignment itself is still attributed to every registered candidate, and native ownership conflicts still fail the batch. A parent write outside a child's range no longer refuses the child's assignment.
+> - **Stale-owner fence.** Ghost/stale-owner removal is fenced on the stale keys' candidate folders (`folderMembershipScope`, an unfiltered read scope) since the pre-inventory epoch: an index into an unrelated folder no longer forces a same-page retry, while a row indexed into the deleted folder's path (a re-created folder, recorded through its explicit owner even before registration) still does.
+> - **Completion persistence.** A folder's completed metadata scan is persisted under fences scoped to that folder.
+
 **Context:** The historical native primary key is the unchanged string `accountId:folderPath:Message-ID`. A same-account folder pair `F` / `F:suffix` makes legacy prefix ranges overlap, while RFC-valid Message-IDs may themselves contain colons (including IPv6 domain literals). Re-encoding every key would require a full reindex and would still tempt callers to infer delimiter ownership without live folder context.
 
 **Decision:** Add an exact opaque app-owned `folderId` relation beside the unchanged raw `msgId`, following the shipped iOS relation-first design.
