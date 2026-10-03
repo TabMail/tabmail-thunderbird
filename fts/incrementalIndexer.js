@@ -2001,7 +2001,7 @@ function _logFolderProbeTiming(kind, state) {
 
 async function _readPerFolderExperimentState(
   methodName,
-  { imapOnly = false, onlyFolderKeys = null, currentIdentities = null } = {},
+  { imapOnly = false, onlyFolderKeys = null, currentIdentities = null, callOptions = null } = {},
 ) {
   let identities = currentIdentities
     ? currentIdentities.map(identity => ({ ...identity }))
@@ -2014,7 +2014,11 @@ async function _readPerFolderExperimentState(
     const identity = identities[i];
     let state;
     try {
-      state = await browser.tmMsgNotify[methodName](identity.accountId, identity.folderPath);
+      state = await browser.tmMsgNotify[methodName](
+        identity.accountId,
+        identity.folderPath,
+        ...(callOptions ? [callOptions] : []),
+      );
     } catch (e) {
       state = { ...identity, folderURI: "", error: String(e) };
     }
@@ -2370,6 +2374,71 @@ const UIDVALIDITY_UNSIGNED_MAX = 0xffffffff;
 const MSG_KEY_SIGNED_MIN = -0x80000000;
 const MSG_KEY_NONE = 0xffffffff;
 
+// A CONDSTORE HIGHESTMODSEQ the fast gate can compare; "" and "0" mean the
+// server or msgDB offers no mutation evidence.
+function _usableHighestModSeq(value) {
+  return typeof value === "string" && value.length > 0 && value !== "0";
+}
+
+// Exact-mode identity evidence for one stable-UID IMAP folder: the opening
+// msgDB incarnation token and UIDVALIDITY. Without both, nothing is sampled
+// and the folder never earns or takes the fast gate.
+function _folderReconHasIdentityEvidence(folder) {
+  return folder?.serverType === "imap"
+    && folder.stableUidKeys === true
+    && typeof folder.incarnationToken === "string"
+    && folder.incarnationToken.length > 0
+    && _normalizeUidValidity(folder.uidValidity) !== null;
+}
+
+// Fast "nothing changed" gate. Every component is mutation, identity or
+// content evidence; the message count is only a trip-wire that forces work.
+function _folderReconFastGateHit(checkpoint, folder, sample) {
+  return checkpoint?.incarnationToken === folder.incarnationToken
+    && _normalizeUidValidity(checkpoint.uidValidity) === _normalizeUidValidity(folder.uidValidity)
+    && _usableHighestModSeq(folder.highestModSeq)
+    && checkpoint.highestModSeq === folder.highestModSeq
+    && folder.pendingOfflineOps === false
+    && Number.isSafeInteger(folder.numMessages)
+    && checkpoint.numMessages === folder.numMessages
+    && checkpoint.rangeCount === sample.rangeCount
+    && checkpoint.rangeSha256 === sample.rangeSha256;
+}
+
+async function _readFolderReconClosingState(folder) {
+  try {
+    return await browser.tmMsgNotify.getFolderState(folder.accountId, folder.folderPath);
+  } catch (e) {
+    return { error: String(e) };
+  }
+}
+
+// Gate fields a certifying proof earns: the opening identity and count plus the
+// range sample taken before the proof, only when no membership mutation
+// separates that sample from the proof's epoch.
+function _folderReconEarnedGateFields(opening, sample, proof, proofEpoch) {
+  if (!sample
+      || sample.epoch !== proofEpoch
+      || proof?.stableUidKeys !== true
+      || _normalizeUidValidity(proof.uidValidity) !== _normalizeUidValidity(opening.uidValidity)) {
+    return null;
+  }
+  return {
+    incarnationToken: opening.incarnationToken,
+    ...(Number.isSafeInteger(opening.numMessages) ? { numMessages: opening.numMessages } : {}),
+    rangeCount: sample.rangeCount,
+    rangeSha256: sample.rangeSha256,
+  };
+}
+
+// The msgDB that answered the opening read still backs the folder.
+function _folderReconIdentityUnchanged(opening, closing, { modSeq = false } = {}) {
+  return !closing?.error
+    && closing?.incarnationToken === opening.incarnationToken
+    && _normalizeUidValidity(closing?.uidValidity) === _normalizeUidValidity(opening.uidValidity)
+    && (!modSeq || closing?.highestModSeq === opening.highestModSeq);
+}
+
 function _normalizeUidValidity(value) {
   if (!Number.isInteger(value)
       || value === 0
@@ -2471,6 +2540,13 @@ let _folderMembershipCapabilityState = null;
 let _folderMembershipPageBudget = 0;
 let _folderMembershipDigestSessions = new Map();
 let _folderMembershipDigestResults = new Map();
+// Folder id -> attempt state ({ gateSample }) of a reconcile attempt that
+// yielded (page budget or foreground pressure) and resumes on a later slice
+// with its digest proofs and its pre-proof range sample. Any other attempt
+// end retires the digests: a native write can commit physically after its
+// RPC settles without moving the membership epoch, so a digest cached by an
+// earlier attempt is never reused to certify a later one.
+let _folderMembershipYieldedAttempts = new Map();
 // Compatibility/debug view of folders waiting for the shared incremental
 // drain. Unlike the old single-shot rerun, the scheduler revisits these after
 // every low-water transition until equality is proven.
@@ -3557,6 +3633,31 @@ function _resetFolderMembershipVolatileProof() {
   _folderMembershipPageBudget = 0;
   _folderMembershipDigestSessions.clear();
   _folderMembershipDigestResults.clear();
+  _folderMembershipYieldedAttempts.clear();
+}
+
+// Start one folder's reconcile attempt, or resume the attempt that yielded;
+// returns the resumed attempt state or null.
+function _beginFolderMembershipAttempt(folderId) {
+  if (!folderId) return null;
+  const resumed = _folderMembershipYieldedAttempts.get(folderId);
+  if (resumed) {
+    _folderMembershipYieldedAttempts.delete(folderId);
+    return resumed;
+  }
+  const prefix = `folder\u0000${folderId}\u0000`;
+  for (const digests of [_folderMembershipDigestSessions, _folderMembershipDigestResults]) {
+    for (const key of digests.keys()) {
+      if (key.startsWith(prefix)) digests.delete(key);
+    }
+  }
+  return null;
+}
+
+function _isFolderReconAttemptYield(error) {
+  const message = String(error?.message || error);
+  return message.includes("folder_membership_page_pending")
+    || message.includes("folder_recon_pressure");
 }
 
 function _observeFolderMembershipCapability(ftsSearch) {
@@ -4426,6 +4527,8 @@ async function _runFolderReconcile(
   const ownsLease = !schedulerLease;
   const owner = { generation, reconcileLease };
   _folderReconInProgressOwner = owner;
+  // The folder attempt in progress; a yield out of this slice resumes it.
+  let openAttempt = null;
   try {
     // Add-side completeness gate: before the initial FULL scan finishes,
     // every folder carries a huge policy deficit — set equality cannot hold
@@ -4483,11 +4586,19 @@ async function _runFolderReconcile(
     orphanKeysKept: 0,
   };
 
+  const membershipMode = _captureFolderMembershipMode(ftsSearch);
+  // Sync events and exclusive rewrites after this point are not reflected in
+  // the opening folder states read below.
+  const openingSyncStartedAt = Date.now();
+  const openingMutationSerial = _folderReconMutationSerial;
   let folders;
   try {
     folders = await _readPerFolderExperimentState("getFolderState", {
       onlyFolderKeys,
       currentIdentities,
+      // Earned exact mode creates the msgDB incarnation token before any
+      // proof, so a checkpoint can bind the database it was earned on.
+      callOptions: membershipMode.exact ? { ensureIncarnationToken: true } : null,
     });
     _assertFolderReconLease(reconcileLease, generation);
   } catch (e) {
@@ -4497,7 +4608,6 @@ async function _runFolderReconcile(
     return { skipped: true, reason: "folder_inventory_failed" };
   }
 
-  const membershipMode = _captureFolderMembershipMode(ftsSearch);
   const directAmbiguity = membershipMode.exact
     ? { folderKeys: new Set(), groups: 0 }
     : _folderReconAmbiguousKeyspaces(currentIdentities || folders);
@@ -4549,6 +4659,7 @@ async function _runFolderReconcile(
   }
 
   for (const f of folders || []) {
+    openAttempt = null;
     stats.foldersTotal++;
     const folderKey = `${f.accountId}:${f.folderPath}`;
     // Re-run scope: only the drain-skipped folders.
@@ -4584,6 +4695,7 @@ async function _runFolderReconcile(
       continue;
     }
     _folderReconDrainSkipped.delete(folderKey);
+    const resumedAttempt = _beginFolderMembershipAttempt(f.folderId);
 
     // 3) A prior verified stable-IMAP checkpoint gets the cheap path first:
     // hash only the UID set (the parent never touches Message-ID), then take a
@@ -4604,11 +4716,81 @@ async function _runFolderReconcile(
       && typeof m.keyMapSha256 === "string";
     const memoUidValidity = _normalizeUidValidity(m?.uidValidity);
     const currentUidValidity = _normalizeUidValidity(f.uidValidity);
+
+    // Exact mode samples the folder's raw native key range once per attempt,
+    // BEFORE any certifying proof, and a checkpoint stores that sample. A row
+    // a late native commit removes after the proof read then makes the next
+    // gate miss instead of hiding behind a post-proof baseline. The sample is
+    // change evidence only: it may include colon-overlapping siblings and
+    // never stands in for the folder's own membership.
+    // A resumed attempt keeps its sample. A membership mutation since then
+    // also invalidated every digest the attempt cached, so it resamples.
+    let gateSample = resumedAttempt?.gateSample ?? null;
+    const resample = !resumedAttempt
+      || (gateSample !== null && gateSample.epoch !== getFtsMembershipEpoch());
+    if (resample) gateSample = null;
+    if (resample && membershipMode.exact && _folderReconHasIdentityEvidence(f)) {
+      try {
+        const sampleEpoch = getFtsMembershipEpoch();
+        _assertNoFolderReconForegroundPressure();
+        const raw = await ftsSearch.fingerprintMsgIdRange(startKey, endKey);
+        _assertFolderReconLease(reconcileLease, generation);
+        _assertNoFolderReconForegroundPressure();
+        if (sampleEpoch === getFtsMembershipEpoch()
+            && Number.isSafeInteger(raw?.count)
+            && raw.count >= 0
+            && typeof raw?.sha256 === "string"
+            && raw.sha256.length > 0) {
+          gateSample = { epoch: sampleEpoch, rangeCount: raw.count, rangeSha256: raw.sha256 };
+        }
+      } catch (e) {
+        _throwIfFolderReconInterrupted(e);
+        logFtsOperation("folder_recon", "range_sample_error", {
+          folderPath: f.folderPath,
+          error: String(e),
+        });
+      }
+    }
+    openAttempt = { folderId: f.folderId, gateSample };
+
+    // Fast gate (exact mode): the msgDB that earned the checkpoint, with
+    // unchanged UIDVALIDITY, HIGHESTMODSEQ, no pending offline operations,
+    // the same message count and the same raw native range, proves the
+    // folder unchanged without enumerating it. The closing read rejects a
+    // msgDB swapped or mutated while the gate was evaluated.
+    if (!_folderReconActiveProof
+        && gateSample
+        && priorExactProjection
+        && _lastSyncEventMs <= openingSyncStartedAt
+        && _folderReconMutationSerial === openingMutationSerial
+        && _folderReconFastGateHit(m, f, gateSample)) {
+      const closing = await _readFolderReconClosingState(f);
+      _assertFolderReconLease(reconcileLease, generation);
+      if (_folderReconIdentityUnchanged(f, closing, { modSeq: true })
+          && gateSample.epoch === getFtsMembershipEpoch()
+          && _lastSyncEventMs <= openingSyncStartedAt
+          && _folderReconMutationSerial === openingMutationSerial) {
+        stats.foldersMemoHit++;
+        verifiedThisRun.add(folderKey);
+        verifiedEpochByFolder.set(folderKey, gateSample.epoch);
+        _folderReconUnverified.delete(folderKey);
+        continue;
+      }
+    }
+
+    // The UID-only tier reuses a stored Message-ID projection. In exact mode
+    // that is sound only on the msgDB that earned it: a missing or different
+    // incarnation token forces the full projection.
+    const sameIncarnation = !membershipMode.exact
+      || (typeof m?.incarnationToken === "string"
+        && m.incarnationToken.length > 0
+        && m.incarnationToken === f.incarnationToken);
     const mayTryUidOnly = priorExactProjection
       && f.serverType === "imap"
       && f.stableUidKeys === true
       && currentUidValidity !== null
-      && memoUidValidity === currentUidValidity;
+      && memoUidValidity === currentUidValidity
+      && sameIncarnation;
     if (!_folderReconActiveProof && mayTryUidOnly) {
       try {
         const uidOnly = await _scanFolderMessagesCooperatively(f, generation, false);
@@ -4636,6 +4818,31 @@ async function _runFolderReconcile(
             uidOnly.mutationSerial,
           );
           _assertNoFolderReconForegroundPressure();
+          if (gateSample) {
+            const closing = await _readFolderReconClosingState(f);
+            _assertFolderReconLease(reconcileLease, generation);
+            if (!_folderReconIdentityUnchanged(f, closing)) throw new Error("folder_identity_changed");
+            if (folderMembershipEpoch !== getFtsMembershipEpoch()) {
+              throw new Error("membership_epoch_changed");
+            }
+            // Refresh the gate baseline (for example after a flag-only
+            // HIGHESTMODSEQ advance) so the next pass takes the gate. Written
+            // only when it differs from the stored checkpoint.
+            const gateFields = _folderReconEarnedGateFields(f, gateSample, uidOnly, folderMembershipEpoch);
+            if (gateFields) {
+              const refreshed = {
+                ...m,
+                ...gateFields,
+                highestModSeq: uidOnly.highestModSeq || "",
+                updatedAtMs: Date.now(),
+              };
+              if (!_sameFolderReconCheckpoint(m, refreshed)) {
+                memo.folders[folderKey] = refreshed;
+                memoChanged = true;
+                memoEpochByFolder.set(folderKey, folderMembershipEpoch);
+              }
+            }
+          }
           stats.foldersMemoHit++;
           verifiedThisRun.add(folderKey);
           verifiedEpochByFolder.set(folderKey, folderMembershipEpoch);
@@ -4804,7 +5011,7 @@ async function _runFolderReconcile(
         sha256: m.partialStaleFtsSha256,
       }
       : null;
-    const writeVerifiedCheckpoint = (ftsFingerprint, proof = expected) => {
+    const writeVerifiedCheckpoint = (ftsFingerprint, proof = expected, gateFields = null) => {
       if (proof.fromWorkingProof === true) throw new Error("retained_folder_proof_cannot_verify");
       _assertFolderReconGeneration(generation, proof.syncStartedAt, proof.mutationSerial);
       if (folderMembershipEpoch !== getFtsMembershipEpoch()) {
@@ -4827,6 +5034,7 @@ async function _runFolderReconcile(
           uidSha256: proof.uidSha256,
           highestModSeq: proof.highestModSeq || "",
         } : {}),
+        ...(gateFields || {}),
         updatedAtMs: Date.now(),
       };
       const proofEpoch = getFtsMembershipEpoch();
@@ -4894,7 +5102,18 @@ async function _runFolderReconcile(
     // Direct cryptographic equality — this is the only path that creates a
     // verified checkpoint.
     if (msgCount === ftsCount && expected.sha256 === nativeFingerprint.sha256) {
-      if (writeVerifiedCheckpoint(nativeFingerprint)) stats.foldersClean++;
+      let gateFields = null;
+      if (gateSample) {
+        const closing = await _readFolderReconClosingState(f);
+        _assertFolderReconLease(reconcileLease, generation);
+        if (!_folderReconIdentityUnchanged(f, closing)) {
+          stats.foldersLocalDrift++;
+          logFtsOperation("folder_recon", "identity_changed", { folderPath: f.folderPath });
+          continue;
+        }
+        gateFields = _folderReconEarnedGateFields(f, gateSample, expected, folderMembershipEpoch);
+      }
+      if (writeVerifiedCheckpoint(nativeFingerprint, expected, gateFields)) stats.foldersClean++;
       else stats.foldersMemoHit++;
       _folderReconUnverified.delete(folderKey);
       continue;
@@ -5045,6 +5264,7 @@ async function _runFolderReconcile(
       continue;
     } else if (missingPass.budgetPartial) {
       stats.foldersBudgetPartial++;
+      if (f.folderId) _folderMembershipYieldedAttempts.set(f.folderId, { gateSample });
       log(`[FTS FolderRecon] ${folderKey}: exact pass budget-truncated — checkpoint remains unverified`, "warn");
     } else if (!missingPass.clean) {
       stats.foldersFailed++;
@@ -5062,6 +5282,7 @@ async function _runFolderReconcile(
 
       if (staleBudgetPartial) {
         stats.foldersBudgetPartial++;
+        if (f.folderId) _folderMembershipYieldedAttempts.set(f.folderId, { gateSample });
         continue;
       }
 
@@ -5102,9 +5323,20 @@ async function _runFolderReconcile(
           writePartialCheckpoint(0, false, null, null);
           stats.foldersLocalDrift++;
         } else if (ftsNow.count === freshExpected.count && ftsNow.sha256 === freshExpected.sha256) {
-          writeVerifiedCheckpoint(ftsNow, freshExpected);
-          stats.foldersReconciled++;
-          _folderReconUnverified.delete(folderKey);
+          const closing = gateSample ? await _readFolderReconClosingState(f) : null;
+          if (gateSample) _assertFolderReconLease(reconcileLease, generation);
+          if (gateSample && !_folderReconIdentityUnchanged(f, closing)) {
+            writePartialCheckpoint(0, false, null, null);
+            stats.foldersLocalDrift++;
+          } else {
+            writeVerifiedCheckpoint(
+              ftsNow,
+              freshExpected,
+              _folderReconEarnedGateFields(f, gateSample, freshExpected, folderMembershipEpoch),
+            );
+            stats.foldersReconciled++;
+            _folderReconUnverified.delete(folderKey);
+          }
         } else if (localDrift) {
           // The completed cursor belonged to the earlier proof. A changed
           // local set restarts from zero immediately; it is not a failed
@@ -5146,6 +5378,7 @@ async function _runFolderReconcile(
       await new Promise(r => setTimeout(r, FOLDER_RECON_CHUNK_DELAY_MS));
     }
   }
+  openAttempt = null;
 
   if (memoChanged) {
     _assertFolderReconGeneration(generation, _lastSyncEventMs);
@@ -5184,6 +5417,11 @@ async function _runFolderReconcile(
   }
 
   return stats;
+  } catch (e) {
+    if (openAttempt?.folderId && _isFolderReconAttemptYield(e)) {
+      _folderMembershipYieldedAttempts.set(openAttempt.folderId, { gateSample: openAttempt.gateSample });
+    }
+    throw e;
   } finally {
     if (_folderReconInProgressOwner === owner) {
       _folderReconInProgressOwner = null;

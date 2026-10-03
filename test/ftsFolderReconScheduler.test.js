@@ -6865,3 +6865,322 @@ describe('drain removal never deletes a sibling key on a scoped negative', () =>
     expect(_testExports._getPendingUpdates().size).toBe(0);
   });
 });
+
+describe('fast "nothing changed" gate (earned exact mode)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+  });
+  afterEach(() => {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  // Stable-UID IMAP folders with CONDSTORE and a msgDB incarnation token the
+  // experiment creates on the first ensureIncarnationToken read.
+  function installGateFolders(specs) {
+    const installed = seedMigratedExactFolders(specs);
+    const tokens = new Map();
+    const evidence = new Map();
+    installed.folders.forEach(folder => {
+      Object.assign(folder, { serverType: 'imap', stableUidKeys: true, uidValidity: 7, highestModSeq: '100' });
+      evidence.set(folder.folderPath, { pendingOfflineOps: false, numMessagesDelta: 0 });
+    });
+    const stateFor = (accountId, folderPath, options) => {
+      const folder = installed.folders.find(item =>
+        item.accountId === accountId && item.folderPath === folderPath);
+      if (!folder) return { accountId, folderPath, error: 'folder_not_found' };
+      if (!tokens.has(folder.folderURI) && options?.ensureIncarnationToken === true) {
+        tokens.set(folder.folderURI, `incarnation-${folder.folderURI}-${tokens.size}`);
+      }
+      const extra = evidence.get(folder.folderPath);
+      const state = {
+        ...folder,
+        numMessages: installed.rowsByURI.get(folder.folderURI).length + extra.numMessagesDelta,
+        incarnationToken: tokens.get(folder.folderURI) || '',
+      };
+      if (extra.pendingOfflineOps !== undefined) state.pendingOfflineOps = extra.pendingOfflineOps;
+      return state;
+    };
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (...args) => stateFor(...args));
+    // The msgDB hash probe reflects the folder's current headers.
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (folderURI, ids) => {
+      const present = new Set((installed.rowsByURI.get(folderURI) || []).map(row => row.headerMessageId));
+      return { missing: ids.filter(id => !present.has(id)) };
+    });
+    return { ...installed, tokens, evidence };
+  }
+
+  async function finishSession(fts) {
+    const result = await tickUntil(fts, value => value?.complete === true, 60);
+    expect(result).toMatchObject({ complete: true });
+    return result;
+  }
+
+  function restartSession() {
+    _testExports._resetFolderReconState();
+    _testExports._setIsEnabled(true);
+    vi.clearAllTimers();
+    for (const mock of [
+      globalThis.browser.storage.local.set,
+      globalThis.browser.storage.local.remove,
+      globalThis.browser.tmMsgNotify.beginFolderMessageScan,
+      globalThis.browser.tmMsgNotify.getFolderState,
+    ]) mock.mockClear();
+  }
+
+  function clearNativeCalls(fts) {
+    for (const name of ['listFolderMembership', 'fingerprintMsgIdRange', 'listMsgIdRange']) fts[name].mockClear();
+  }
+
+  const memoFor = folderKey => storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders[folderKey];
+  const specs = [
+    { folderPath: '/A', headerMessageIds: ['a-1@example.com', 'a-2@example.com'] },
+    { folderPath: '/B', headerMessageIds: ['b-1@example.com', 'b-2@example.com'] },
+  ];
+
+  it('certifies an unchanged folder with zero enumeration and zero storage writes', async () => {
+    const { fts } = installGateFolders(specs);
+    await finishSession(fts);
+    expect(memoFor('account1:/A')).toMatchObject({
+      verified: true,
+      incarnationToken: expect.any(String),
+      highestModSeq: '100',
+      numMessages: 2,
+      rangeCount: 2,
+    });
+
+    restartSession();
+    clearNativeCalls(fts);
+    await finishSession(fts);
+
+    expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).not.toHaveBeenCalled();
+    expect(fts.listFolderMembership).not.toHaveBeenCalled();
+    expect(fts.listMsgIdRange).not.toHaveBeenCalled();
+    expect(fts.fingerprintMsgIdRange).toHaveBeenCalledTimes(2);
+    expect(globalThis.browser.messages.query).not.toHaveBeenCalled();
+    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+    expect(globalThis.browser.storage.local.remove).not.toHaveBeenCalled();
+    expect(_testExports._getFolderReconSessionDone()).toEqual(new Set(['account1:/A', 'account1:/B']));
+  });
+
+  it('upgrades a tokenless checkpoint through one full projection, then takes the gate', async () => {
+    const { fts } = installGateFolders(specs);
+    await finishSession(fts);
+    // A checkpoint stored by an earlier version carries no gate fields.
+    for (const checkpoint of Object.values(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders)) {
+      for (const field of ['incarnationToken', 'numMessages', 'rangeCount', 'rangeSha256']) delete checkpoint[field];
+    }
+
+    restartSession();
+    await finishSession(fts);
+    const fullScans = globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls;
+    expect(fullScans.length).toBeGreaterThanOrEqual(2);
+    expect(fullScans.every(([, full]) => full === true)).toBe(true);
+    expect(memoFor('account1:/A')).toMatchObject({ incarnationToken: expect.any(String), rangeCount: 2 });
+
+    restartSession();
+    await finishSession(fts);
+    expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).not.toHaveBeenCalled();
+  });
+
+  it('re-projects a folder whose msgDB was swapped with identical UIDs and evidence while inactive', async () => {
+    const { fts, rowsByURI, nativeRows, folders, tokens } = installGateFolders(specs);
+    await finishSession(fts);
+
+    // Rename swap while Thunderbird was closed: /A now holds the database that
+    // was /B's (same UIDs, UIDVALIDITY, HIGHESTMODSEQ, count, no offline ops)
+    // and the other way round. Only the incarnation tokens tell them apart.
+    const [uriA, uriB] = folders.map(folder => folder.folderURI);
+    const rowsA = rowsByURI.get(uriA);
+    rowsByURI.set(uriA, rowsByURI.get(uriB));
+    rowsByURI.set(uriB, rowsA);
+    const tokenA = tokens.get(uriA);
+    tokens.set(uriA, tokens.get(uriB));
+    tokens.set(uriB, tokenA);
+
+    restartSession();
+    for (let turn = 0; turn < 12; turn++) {
+      const result = await tickUntil(fts, value => value?.complete === true
+        || _testExports._getPendingUpdates().size > 0, 60);
+      if (result?.complete === true && _testExports._getPendingUpdates().size === 0) break;
+      // The missing rows are indexed by the drain; model its native write.
+      for (const key of _testExports._getPendingUpdates().keys()) {
+        const folder = folders.find(item => key.startsWith(`account1:${item.folderPath}:`));
+        nativeRows.set(key, folder.folderId);
+      }
+      _testExports._getPendingUpdates().clear();
+      vi.setSystemTime(Date.now() + 60 * 60_000);
+    }
+
+    expect(nativeRows.has('account1:/A:b-1@example.com')).toBe(true);
+    expect(nativeRows.has('account1:/A:a-1@example.com')).toBe(false);
+    expect(nativeRows.has('account1:/B:a-1@example.com')).toBe(true);
+    expect(nativeRows.has('account1:/B:b-1@example.com')).toBe(false);
+  });
+
+  it('takes the UID tier on a flag-only HIGHESTMODSEQ advance and refreshes the gate baseline', async () => {
+    const { fts, folders } = installGateFolders(specs);
+    await finishSession(fts);
+    folders[0].highestModSeq = '101';
+
+    restartSession();
+    await finishSession(fts);
+    const scans = globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls;
+    expect(scans).toEqual([[folders[0].folderURI, false]]);
+    expect(memoFor('account1:/A').highestModSeq).toBe('101');
+
+    restartSession();
+    await finishSession(fts);
+    expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['pending offline operations', (evidence) => { evidence.pendingOfflineOps = true; }],
+    ['unknown offline operations', (evidence) => { delete evidence.pendingOfflineOps; }],
+    ['a changed message count', (evidence) => { evidence.numMessagesDelta = 1; }],
+  ])('misses the gate on %s', async (_name, mutate) => {
+    const { fts, evidence, folders } = installGateFolders(specs);
+    await finishSession(fts);
+    mutate(evidence.get('/A'));
+
+    restartSession();
+    await finishSession(fts);
+
+    expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls.map(([uri]) => uri))
+      .toEqual([folders[0].folderURI]);
+  });
+
+  it.each([
+    ['no CONDSTORE', ''],
+    ['a zero HIGHESTMODSEQ', '0'],
+  ])('misses the gate with %s', async (_name, modSeq) => {
+    const { fts, folders } = installGateFolders(specs);
+    folders.forEach(folder => { folder.highestModSeq = modSeq; });
+    await finishSession(fts);
+
+    restartSession();
+    await finishSession(fts);
+
+    // A membership page yield can repeat a folder's UID-only scan; what
+    // matters is that no folder takes the gate and none needs a full scan.
+    const scans = globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls;
+    expect(new Set(scans.map(([uri]) => uri))).toEqual(new Set(folders.map(folder => folder.folderURI)));
+    expect(scans.every(([, full]) => full === false)).toBe(true);
+  });
+
+  it('never certifies the opening incarnation when the msgDB is replaced before the closing read', async () => {
+    const { fts, folders, tokens } = installGateFolders(specs);
+    const uriA = folders[0].folderURI;
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let replaced = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
+      if (!replaced && folderPath === '/A' && options === undefined) {
+        // The closing read (the only read without options) sees a different
+        // database incarnation than the inventory read that opened the proof.
+        replaced = true;
+        tokens.set(uriA, 'replacement-incarnation');
+      }
+      return state(accountId, folderPath, options);
+    });
+
+    await finishSession(fts);
+    expect(replaced).toBe(true);
+    const persistedA = globalThis.browser.storage.local.set.mock.calls
+      .map(([value]) => value[_testExports.FOLDER_RECON_STORAGE_KEY]?.folders?.['account1:/A'])
+      .filter(checkpoint => checkpoint?.verified === true);
+    expect(persistedA.length).toBeGreaterThan(0);
+    expect(persistedA.every(checkpoint => checkpoint.incarnationToken === 'replacement-incarnation')).toBe(true);
+    expect(memoFor('account1:/A')).toMatchObject({
+      verified: true,
+      incarnationToken: 'replacement-incarnation',
+    });
+  });
+
+  it('projects a folder in the same pass when its msgDB is replaced while the gate is evaluated', async () => {
+    const { fts, folders, tokens } = installGateFolders(specs);
+    await finishSession(fts);
+    const uriA = folders[0].folderURI;
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let replaced = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
+      if (!replaced && folderPath === '/A' && options === undefined) {
+        replaced = true;
+        tokens.set(uriA, 'replacement-incarnation');
+      }
+      return state(accountId, folderPath, options);
+    });
+
+    restartSession();
+    await finishSession(fts);
+    expect(replaced).toBe(true);
+    expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls)
+      .toContainEqual([uriA, true]);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, incarnationToken: 'replacement-incarnation' });
+  });
+
+  // A timed-out native removal of `lateKey` that commits physically during
+  // the closing read: after the certifying proof, with no membership epoch
+  // change and no later source event.
+  function commitRemovalAtClosingRead(nativeRows, folderPath, lateKey) {
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    const late = { committed: false };
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, path, options) => {
+      if (!late.committed && path === folderPath && options === undefined) {
+        late.committed = true;
+        nativeRows.delete(lateKey);
+      }
+      return state(accountId, path, options);
+    });
+    return late;
+  }
+
+  async function expectRepairedNextSession(fts, lateKey) {
+    restartSession();
+    await tickUntil(fts, value => value?.complete === true || _testExports._getPendingUpdates().has(lateKey), 60);
+    expect(_testExports._getPendingUpdates().has(lateKey)).toBe(true);
+  }
+
+  it.each([
+    ['/F', [{ folderPath: '/F', headerMessageIds: ['f-1@example.com', 'f-2@example.com'] }]],
+    ['/F beside /F:Child', [
+      { folderPath: '/F', headerMessageIds: ['f-1@example.com', 'f-2@example.com'] },
+      { folderPath: '/F:Child', headerMessageIds: ['c-1@example.com'] },
+    ]],
+  ])('keeps the pre-proof range sample on a full-proof certification (%s)', async (_name, folderSpecs) => {
+    const { fts, nativeRows } = installGateFolders(folderSpecs);
+    const lateKey = 'account1:/F:f-2@example.com';
+    const late = commitRemovalAtClosingRead(nativeRows, '/F', lateKey);
+    await finishSession(fts);
+    expect(late.committed).toBe(true);
+    expect(nativeRows.has(lateKey)).toBe(false);
+    expect(memoFor('account1:/F')).toMatchObject({ verified: true, rangeCount: folderSpecs.length === 1 ? 2 : 3 });
+
+    await expectRepairedNextSession(fts, lateKey);
+  });
+
+  it('keeps the pre-proof range sample on a UID-tier refresh', async () => {
+    const { fts, nativeRows, folders } = installGateFolders(specs);
+    await finishSession(fts);
+    folders[0].highestModSeq = '101';
+    const lateKey = 'account1:/A:a-2@example.com';
+    const late = commitRemovalAtClosingRead(nativeRows, '/A', lateKey);
+
+    restartSession();
+    await finishSession(fts);
+    expect(late.committed).toBe(true);
+    expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls).toEqual([[folders[0].folderURI, false]]);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, highestModSeq: '101', rangeCount: 2 });
+
+    await expectRepairedNextSession(fts, lateKey);
+  });
+
+  it('control: an unchanged folder after a certification enqueues nothing', async () => {
+    const { fts } = installGateFolders(specs);
+    await finishSession(fts);
+    restartSession();
+    await finishSession(fts);
+    expect(_testExports._getPendingUpdates().size).toBe(0);
+  });
+});
