@@ -47,6 +47,9 @@ describe('hasPdfSignature', () => {
     expect(hasPdfSignature(bytes('PK\u0003\u0004 a zip file'), 1024)).toBe(false);
     expect(hasPdfSignature(bytes('%PDF'), 1024)).toBe(false);
     expect(hasPdfSignature(bytes('x'.repeat(20) + '%PDF-1.4'), 16)).toBe(false);
+    // The whole header must fit inside the window: it ends exactly at scanBytes, or one byte past.
+    expect(hasPdfSignature(bytes('x'.repeat(11) + '%PDF-1.4'), 16)).toBe(true);
+    expect(hasPdfSignature(bytes('x'.repeat(12) + '%PDF-1.4'), 16)).toBe(false);
     expect(hasPdfSignature(new Uint8Array(0), 1024)).toBe(false);
   });
 });
@@ -254,6 +257,33 @@ describe('loadBundledPdfjs / bundledCMapUrl', () => {
   });
 });
 
+describe('loadBundledPdfjs — a failed load is not cached', () => {
+  it('rejects once, then loads on the next call', async () => {
+    vi.resetModules();
+    const fresh = await import('../chat/modules/pdfText.js');
+    const realWorkerSrc = pdfjs.GlobalWorkerOptions.workerSrc;
+    let fail = true;
+    globalThis.browser = {
+      runtime: {
+        getURL: (p) => {
+          if (fail) throw new Error('extension context gone');
+          return `moz-extension://test/${p}`;
+        },
+      },
+    };
+    try {
+      await expect(fresh.loadBundledPdfjs()).rejects.toThrow('extension context gone');
+      fail = false;
+      const lib = await fresh.loadBundledPdfjs();
+      expect(typeof lib.getDocument).toBe('function');
+      expect(lib.GlobalWorkerOptions.workerSrc).toBe('moz-extension://test/chat/libs/pdfjs/pdf.worker.min.mjs');
+    } finally {
+      delete globalThis.browser;
+      pdfjs.GlobalWorkerOptions.workerSrc = realWorkerSrc;
+    }
+  });
+});
+
 describe('extractPdfText — edge cases', () => {
   const fakeLib = (doc, destroy = vi.fn(async () => {})) => ({ PDFWorker: fakeWorkerClass(), getDocument: () => ({ promise: Promise.resolve(doc), destroy }) });
 
@@ -285,5 +315,21 @@ describe('extractPdfText — edge cases', () => {
     const doc = { numPages: 1, getPage: async () => ({ getTextContent: async () => ({ items: [{ str: text }] }), cleanup() {} }) };
     const r = await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: fakeLib(doc), cMapUrl, limits: { ...LIMITS, maxOutputChars: 3 } });
     expect(r.pages[0].text).toBe('ab');
+  });
+
+  it('keeps a whole surrogate pair that ends exactly at the limit', async () => {
+    const doc = { numPages: 1, getPage: async () => ({ getTextContent: async () => ({ items: [{ str: 'ab😀😀' }] }), cleanup() {} }) };
+    const r = await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: fakeLib(doc), cMapUrl, limits: { ...LIMITS, maxOutputChars: 4 } });
+    expect(r.pages[0].text).toBe('ab😀');
+  });
+
+  it('drops spaces before line breaks, trims, and treats a whitespace-only page as empty', async () => {
+    const items = {
+      1: [{ str: '  first line   ', hasEOL: true }, { str: 'second\t', hasEOL: true }],
+      2: [{ str: '   ', hasEOL: true }, { str: '\t' }],
+    };
+    const doc = { numPages: 2, getPage: async (n) => ({ getTextContent: async () => ({ items: items[n] }), cleanup() {} }) };
+    const r = await extractPdfText(new Uint8Array([1]), { startPage: 1, endPage: null }, { pdfjs: fakeLib(doc), cMapUrl, limits: LIMITS });
+    expect(pageTexts(r)).toEqual(['first line\nsecond', '']);
   });
 });

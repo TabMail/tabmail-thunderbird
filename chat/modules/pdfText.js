@@ -116,8 +116,9 @@ export async function extractPdfText(data, range, { pdfjs, cMapUrl, limits }) {
   const deadline = new Promise((resolve) => {
     timer = setTimeout(() => resolve({ outcome: PDF_TEXT_OUTCOME.TIMEOUT }), limits.timeoutMs);
   });
-  // Once the deadline wins, the destroyed task rejects whatever `work` is awaiting; that
-  // rejection is expected and must not surface as unhandled.
+  // Once the deadline wins, `work` is abandoned: it may reject when the task is destroyed, or stay
+  // pending forever after the worker is terminated. Nothing awaits it, and the catch keeps a
+  // rejection from surfacing as unhandled.
   const work = readPages(loadingTask, range, limits).catch(classifyError);
 
   const result = await Promise.race([work, deadline]);

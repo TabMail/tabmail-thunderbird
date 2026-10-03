@@ -114,6 +114,10 @@ vi.mock('../chat/tools/change_setting.js', () => toolModuleMock);
 vi.mock('../chat/tools/template_read.js', () => toolModuleMock);
 vi.mock('../chat/tools/template_search.js', () => toolModuleMock);
 
+// Its own run, so routing by name to this module is observable.
+const mockPdfRun = vi.fn(async () => 'pdf text');
+vi.mock('../chat/tools/attachment_read_pdf.js', () => ({ run: mockPdfRun }));
+
 // Mock inboxContext (imported by some tool modules)
 vi.mock('../agent/modules/inboxContext.js', () => ({
   buildInboxContext: vi.fn(async () => '[]'),
@@ -352,6 +356,12 @@ describe('getToolActivityLabel', () => {
     expect(await getToolActivityLabel('web_read')).toBe('Reading web content…');
   });
 
+  it('returns label for attachment_read_pdf with and without a name', async () => {
+    expect(await getToolActivityLabel('attachment_read_pdf', { unique_id: 'u', attachment_name: 'a.pdf' }))
+      .toBe('Reading PDF: a.pdf');
+    expect(await getToolActivityLabel('attachment_read_pdf', { unique_id: 'u' })).toBe('Reading PDF attachment…');
+  });
+
   it('returns "Thinking…" for unknown tool', async () => {
     expect(await getToolActivityLabel('nonexistent_tool')).toBe('Thinking…');
   });
@@ -381,6 +391,13 @@ describe('executeToolByName', () => {
     const result = await executeToolByName('inbox_read', {});
     expect(mockToolRun).toHaveBeenCalled();
     expect(result).toEqual({ ok: true, data: 'test' });
+  });
+
+  it('routes attachment_read_pdf to its own module', async () => {
+    const result = await executeToolByName('attachment_read_pdf', { unique_id: 'u' });
+    expect(mockPdfRun).toHaveBeenCalledWith({ unique_id: 'u' }, expect.anything());
+    expect(mockToolRun).not.toHaveBeenCalled();
+    expect(result).toBe('pdf text');
   });
 
   it('returns FSM marker for FSM tool', async () => {

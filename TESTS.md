@@ -16,8 +16,8 @@
 | `test/deviceSync.test.js` | 31 | State merge, CRDT, echo prevention, virgin device detection |
 | `test/ftsFolderReconScheduler.test.js` | 174 | Bounded folder membership reconciliation, epoch-fenced verification, stale/missing repair, interruption and retry, volatile drift-tolerant membership-state pass (no per-page memo writes, convergence under live mail), recovery wakes after native reconnect and folder/account topology changes |
 | `test/llmClient.test.js` | 29 | JSON/SSE response parsing, tool call parsing, conversation state |
-| `test/pdfText.test.js` | 25 | Bundled pdf.js text extraction from generated PDFs: page ranges and caps, output-limit stop/cut (surrogate-safe), CJK via packed CMaps, encrypted/owner-only/malformed, per-call worker terminated at the deadline even when it never acknowledges |
-| `test/attachmentReadPdf.test.js` | 35 | `attachment_read_pdf` tool: argument validation, attachment choice and refusals, size limits (inclusive boundary), output format and notes, unreadable pages, production pdf.js + CMap wiring, core.js registration |
+| `test/pdfText.test.js` | 28 | Bundled pdf.js text extraction from generated PDFs: page ranges and caps, output-limit stop/cut (surrogate-safe), CJK via packed CMaps, encrypted/owner-only/malformed, per-call worker terminated at the deadline even when it never acknowledges |
+| `test/attachmentReadPdf.test.js` | 40 | `attachment_read_pdf` tool: argument validation, attachment choice and refusals, size limits (inclusive boundary), output format and notes, unreadable pages, production pdf.js + CMap wiring (registration and activity label are in `test/core.test.js`) |
 
 ---
 

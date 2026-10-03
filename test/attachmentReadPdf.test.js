@@ -80,6 +80,10 @@ describe('attachment_read_pdf — arguments', () => {
     expect(browser.messages.listAttachments).not.toHaveBeenCalled();
   });
 
+  it('treats an empty start_page as page 1', async () => {
+    expect(await read({ start_page: '' })).toContain('pages_read: 1');
+  });
+
   it('accepts page numbers sent as numeric strings', async () => {
     const out = await read({ start_page: '1', end_page: '1' });
     expect(out).toContain('pages_read: 1');
@@ -98,6 +102,11 @@ describe('attachment_read_pdf — choosing the attachment', () => {
     const out = await read();
     expect(out).toContain('attachment: Report.PDF');
     expect(browser.messages.getAttachmentFile).toHaveBeenCalledWith(101, '1.3');
+  });
+
+  it('matches the PDF content type case-insensitively, with parameters', async () => {
+    setMessage([att('scan', 'Application/PDF; name=scan', '1.2')], { '1.2': pdfBytes });
+    expect(await read()).toContain('attachment: scan');
   });
 
   it('treats an application/pdf part without a .pdf name as a PDF', async () => {
@@ -301,20 +310,6 @@ describe('attachment_read_pdf — outcomes from the parser', () => {
     } finally {
       CONFIG.MAX_OUTPUT_CHARS = original;
     }
-  });
-});
-
-describe('attachment_read_pdf — registration in chat/tools/core.js', () => {
-  // core.js pulls in the whole chat UI graph, so its registration is checked from source: the
-  // backend offers the tool to 1.9.0+ clients, and an unregistered name answers "unknown tool".
-  it('is imported, routed by name in TOOL_IMPL, and has its own activity label', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const src = await readFile(path.resolve(import.meta.dirname, '../chat/tools/core.js'), 'utf8');
-    const binding = src.match(/import \* as (\w+) from "\.\/attachment_read_pdf\.js";/)?.[1];
-    expect(binding).toBeTruthy();
-    const toolImpl = src.slice(src.indexOf('const TOOL_IMPL = {'), src.indexOf('};', src.indexOf('const TOOL_IMPL = {')));
-    expect(toolImpl).toContain(`attachment_read_pdf: ${binding},`);
-    expect(src).toContain('case "attachment_read_pdf": {');
   });
 });
 
