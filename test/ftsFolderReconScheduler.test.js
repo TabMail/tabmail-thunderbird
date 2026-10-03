@@ -3514,6 +3514,68 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
+  describe('outcome snapshot writes', () => {
+    const snapshotWrites = () => globalThis.browser.storage.local.set.mock.calls
+      .filter(([value]) => Object.hasOwn(value, 'fts_folder_recon_last'));
+    const settleWrites = async () => {
+      for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+    };
+    const changed = { foldersTotal: 1, foldersReconciled: 1, missingEnqueued: 1 };
+    const unchanged = { foldersTotal: 1, foldersMemoHit: 1 };
+
+    it('writes a meaningful change and its completion once, then nothing for unchanged completions', async () => {
+      _testExports._recordFolderReconOutcome(changed, 5);
+      _testExports._completeFolderReconOutcome();
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(2);
+      expect(storageData.fts_folder_recon_last).toMatchObject({
+        complete: true,
+        totals: { missingEnqueued: 1 },
+      });
+
+      for (let pass = 0; pass < 2; pass++) {
+        _testExports._recordFolderReconOutcome(unchanged, 5);
+        _testExports._completeFolderReconOutcome();
+        await settleWrites();
+      }
+      expect(snapshotWrites()).toHaveLength(2);
+
+      // A later meaningful change is written again.
+      _testExports._recordFolderReconOutcome(changed, 5);
+      _testExports._completeFolderReconOutcome();
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(3);
+      expect(storageData.fts_folder_recon_last).toMatchObject({ totals: { missingEnqueued: 2 } });
+    });
+
+    it('writes nothing for a session of read-only slices', async () => {
+      _testExports._recordFolderReconOutcome(unchanged, 5);
+      _testExports._completeFolderReconOutcome();
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(0);
+    });
+
+    it('retries a failed change write at the next completion', async () => {
+      globalThis.browser.storage.local.set.mockRejectedValueOnce(new Error('disk full'));
+      _testExports._recordFolderReconOutcome(changed, 5);
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(1);
+      expect(storageData.fts_folder_recon_last).toBeUndefined();
+
+      _testExports._completeFolderReconOutcome();
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(2);
+      expect(storageData.fts_folder_recon_last).toMatchObject({
+        complete: true,
+        totals: { missingEnqueued: 1 },
+      });
+
+      _testExports._completeFolderReconOutcome();
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(2);
+    });
+  });
+
   it('persists aggregate-only last and rerun telemetry without exact identifiers', async () => {
     const { fts } = installRepairFolders([
       { folderPath: '/Private-Archive', rows: 1 },

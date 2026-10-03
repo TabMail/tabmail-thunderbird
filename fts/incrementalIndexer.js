@@ -1829,8 +1829,8 @@ async function _heartbeatBumpWatermark() {
  * (`fts_cursor_scan_last` / `fts_folder_recon_last`).
  */
 function _writeReconSnapshot(key, payload) {
-  browser.storage.local.set({ [key]: { at: new Date().toISOString(), ...payload } })
-    .catch(() => {});
+  return browser.storage.local.set({ [key]: { at: new Date().toISOString(), ...payload } })
+    .then(() => true, () => false);
 }
 
 /**
@@ -2607,6 +2607,12 @@ function _resetFolderReconRuntimeTelemetry() {
     lastElapsedMs: 0,
     lastPersistedAtMs: 0,
     complete: false,
+    // A meaningful slice outcome not yet in storage; cleared only by a
+    // successful write that covers it, so a failed write is retried.
+    dirty: false,
+    changeSerial: 0,
+    // Completion state of the last successful write (null = none written).
+    persistedComplete: null,
   };
 }
 
@@ -2626,8 +2632,11 @@ function _folderReconOutcomeStatus() {
 function _persistFolderReconOutcome(force = false) {
   const aggregate = _folderReconOutcomeAggregate;
   if (!aggregate || aggregate.slices === 0) return;
-  // A session of read-only slices has nothing new to report.
-  if (!_folderReconOutcomeChanged(aggregate.totals)) return;
+  // Write only a meaningful change, or the completion of a session whose
+  // change was written as incomplete. Read-only and unchanged passes
+  // (including every later re-verification) write nothing.
+  const completionUnwritten = aggregate.complete && aggregate.persistedComplete === false;
+  if (!aggregate.dirty && !completionUnwritten) return;
   const nowMs = Date.now();
   if (!force
       && aggregate.lastPersistedAtMs > 0
@@ -2635,6 +2644,8 @@ function _persistFolderReconOutcome(force = false) {
     return;
   }
   aggregate.lastPersistedAtMs = nowMs;
+  const changeSerial = aggregate.changeSerial;
+  const complete = aggregate.complete;
   _writeReconSnapshot("fts_folder_recon_last", {
     generation: aggregate.generation,
     startedAtMs: aggregate.startedAtMs,
@@ -2643,9 +2654,18 @@ function _persistFolderReconOutcome(force = false) {
     latest: { ...aggregate.latest },
     unverifiedFolders: aggregate.unverifiedFolders,
     lastElapsedMs: aggregate.lastElapsedMs,
-    complete: aggregate.complete,
+    complete,
     activeWorkingProof: _folderReconWorkingProofTelemetry(),
+  }).then((written) => {
+    if (!written) return;
+    if (aggregate.changeSerial === changeSerial) aggregate.dirty = false;
+    aggregate.persistedComplete = complete;
   });
+}
+
+function _completeFolderReconOutcome() {
+  if (_folderReconOutcomeAggregate) _folderReconOutcomeAggregate.complete = true;
+  _persistFolderReconOutcome(true);
 }
 
 function _recordFolderReconOutcome(stats, elapsedMs) {
@@ -2662,7 +2682,11 @@ function _recordFolderReconOutcome(stats, elapsedMs) {
   }
   aggregate.unverifiedFolders = Math.max(0, Number(stats?.unverifiedFolders) || 0);
   aggregate.lastElapsedMs = Math.max(0, Number(elapsedMs) || 0);
-  if (_folderReconOutcomeChanged(stats)) _persistFolderReconOutcome(false);
+  if (_folderReconOutcomeChanged(stats)) {
+    aggregate.dirty = true;
+    aggregate.changeSerial++;
+    _persistFolderReconOutcome(false);
+  }
 }
 
 function _bumpFolderReconTelemetry(field, amount = 1) {
@@ -6246,8 +6270,7 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
         const cleared = _clearFolderReconPendingIfCurrent(generation, syncStartedAt);
         _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
         if (cleared) {
-          if (_folderReconOutcomeAggregate) _folderReconOutcomeAggregate.complete = true;
-          _persistFolderReconOutcome(true);
+          _completeFolderReconOutcome();
           return { complete: true, orphan };
         }
       }
@@ -7168,6 +7191,8 @@ export const _testExports = {
   _getFolderReconActiveProofKey: () => _folderReconActiveProof?.folderKey || null,
   _isFolderReconSchedulerActive: () => _folderReconSchedulerOwner !== null,
   _isFolderReconPending: () => _folderReconPendingThisSession,
+  _recordFolderReconOutcome,
+  _completeFolderReconOutcome,
   _clearFolderReconPendingIfCurrent,
   _getFolderReconSessionDone: () => new Set(_folderReconSessionDone),
   _getFolderReconEphemeralEvidence: () => ({
