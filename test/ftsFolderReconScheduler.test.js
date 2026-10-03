@@ -7262,11 +7262,14 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
 
     it('arms one deadline timer while idle, none after dispose, and a fresh deadline after re-init', async () => {
       const { fts } = installGateFolders(specs);
-      _testExports._setFtsSearch(fts);
       await finishSession(fts);
       const due = dueMs();
+      // Attach the runtime only now, so no timer-started tick of the session
+      // can overlap the idle tick measured below.
       vi.clearAllTimers();
-      await settleSchedulerTickWithFakeTimers(fts);
+      _testExports._setFtsSearch(fts);
+      vi.setSystemTime(Date.now() + 60_000);
+      expect(await settleSchedulerTickWithFakeTimers(fts)).toMatchObject({ complete: true });
       expect(vi.getTimerCount()).toBe(1);
       expect(dueMs()).toBe(due);
 
