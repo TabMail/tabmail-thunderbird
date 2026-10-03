@@ -108,6 +108,13 @@ async function _withMembershipMutex(fn) {
   }
 }
 
+// A read whose answer decides a membership write (the drain's "already
+// indexed?" check) runs between membership mutations, never across one, so
+// it cannot act on a row an in-flight removal is about to delete.
+export async function runFtsMembershipRead(fn) {
+  return _withMembershipMutex(fn);
+}
+
 export async function runFtsMembershipMutation(fn, fenceToken = null) {
   // A recon-owned mutator is already executing under the membership mutex.
   // Only the opaque token passed by withFtsMembershipFence can select this

@@ -1576,28 +1576,59 @@ export async function recheckMessageInFolder(headerID, weFolder) {
     // Legacy keys can carry an empty folder path; the closest meaningful
     // presence check is "exists anywhere in the key's account".
     const requirePath = !!weFolder.path;
+    // Id of a list Thunderbird still holds open: set while the latest page
+    // carries a continuation id, cleared once a terminal page is consumed.
+    let openListId = null;
+    let verdict = "error";
     try {
         let page = await browser.messages.query({ headerMessageId: headerID });
         while (page) {
-            for (const m of (page.messages || [])) {
-                if (m?.folder?.accountId === weFolder.accountId
-                    && (!requirePath || m?.folder?.path === weFolder.path)) {
-                    return "present";
-                }
+            openListId = page.id || null;
+            const found = (page.messages || []).some(m =>
+                m?.folder?.accountId === weFolder.accountId
+                && (!requirePath || m?.folder?.path === weFolder.path));
+            if (found) {
+                verdict = "present";
+                break;
             }
             if (!page.id) {
                 // Last page reached and fully drained without a match —
                 // the only path allowed to confirm absence.
-                return "absent";
+                verdict = "absent";
+                break;
             }
             page = await browser.messages.continueList(page.id);
         }
-        // Nullish page (initial query or mid-drain) is an API contract
-        // violation, not proof of absence — fail closed.
-        return "error";
-    } catch (e) {
-        log(`[TMDBG HeaderResolver] recheckMessageInFolder query failed for '${headerID}': ${e}`, "warn");
-        return "error";
+        // A nullish page (initial query or mid-drain) is an API contract
+        // violation, not proof of absence — the verdict stays "error".
+    } catch (_) {
+        // Fixed text: the error may carry the Message-ID.
+        log("[TMDBG HeaderResolver] recheckMessageInFolder query failed", "warn");
+        verdict = "error";
+    }
+    if (openListId) {
+        await _releaseMessageList(openListId);
+    }
+    return verdict;
+}
+
+/**
+ * Releases a MessageList still registered with Thunderbird. `abortList` only
+ * stops further production; the list is released when its terminal page (the
+ * page without an `id`) is consumed, so drain after aborting. Never throws: a
+ * release failure must not change the caller's verdict.
+ */
+async function _releaseMessageList(listId) {
+    try {
+        if (typeof browser.messages.abortList === "function") {
+            await browser.messages.abortList(listId);
+        }
+        let page = await browser.messages.continueList(listId);
+        while (page?.id) {
+            page = await browser.messages.continueList(page.id);
+        }
+    } catch (_) {
+        log("[TMDBG HeaderResolver] recheckMessageInFolder list release failed", "debug");
     }
 }
 

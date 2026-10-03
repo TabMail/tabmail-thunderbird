@@ -415,6 +415,7 @@ export const SETTINGS = {
             stalePageKeys: 100,
             stalePagesPerSlice: 1,
             rechecksPerSlice: 5,
+            orphanBasisFoldersPerSlice: 50,
             enqueuesPerSlice: 20,
             pendingHighWater: 100,
             pendingLowWater: 25,

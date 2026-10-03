@@ -71,8 +71,13 @@ globalThis.browser = {
 
 const { logFtsBatchOperation, logFtsOperation } = await import('../agent/modules/eventLogger.js');
 const { getForegroundFetchPressure, recheckMessageInFolder } = await import('../agent/modules/utils.js');
-const { runFtsMembershipMutation } = await import('../fts/operationCoordinator.js');
+const { runFtsMembershipMutation, getFtsMembershipEpoch } = await import('../fts/operationCoordinator.js');
 const { _testExports } = await import('../fts/incrementalIndexer.js');
+
+// One legacy orphan slice, fenced on the epoch read "before the inventory".
+function runOrphanSlice(fts, identities) {
+  return _testExports._runFolderReconOrphanSlice(fts, identities, getFtsMembershipEpoch());
+}
 const {
   _getFolderReconDrainSkipped,
   _invalidateFolderReconProofForEvent,
@@ -1942,11 +1947,10 @@ describe('orphan prefixes and event hardening', () => {
     });
 
     // account1 must be loaded for its /Deleted ghosts to be recheck candidates at all.
-    await expect(_testExports._runFolderReconOrphanSlice(
-      fts,
-      [folderA({ uidCount: 0 })],
-      { version: 3, folders: {} },
-    )).rejects.toThrow('folder_recon_pressure');
+    const identities = [folderA({ uidCount: 0 })];
+    await expect(runOrphanSlice(fts, identities))
+      .resolves.toMatchObject({ deferred: true, basisProgress: true });
+    await expect(runOrphanSlice(fts, identities)).rejects.toThrow('folder_recon_pressure');
 
     expect(recheckMessageInFolder).toHaveBeenCalledOnce();
     expect(fts.removeBatch).not.toHaveBeenCalled();
@@ -1969,12 +1973,12 @@ describe('orphan prefixes and event hardening', () => {
       rootFolder: { path: '/', subFolders: [{ path: '/INBOX', subFolders: [{ path: '/INBOX/a:b', subFolders: [] }] }] },
     }]);
 
-    const memo = { version: 3, folders: {} };
     const identities = [folderA({ uidCount: 1 }), folderC];
-    const first = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
+    const first = await runOrphanSlice(fts, identities);
     expect(first).toMatchObject({ deferred: true, basisProgress: true });
-    const stats = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
+    const stats = await runOrphanSlice(fts, identities);
 
+    expect(recheckMessageInFolder).toHaveBeenCalledOnce();
     expect(stats.orphanRemoved).toBe(1);
     expect(fts._keys.has(ghost)).toBe(false);
     expect(fts._keys.has(edge)).toBe(true);
@@ -1985,20 +1989,22 @@ describe('orphan prefixes and event hardening', () => {
       `account1:/Deleted:ghost-${String(index).padStart(2, '0')}@example.com`);
     const fts = makeFtsStore(ghosts);
     const identities = [folderA({ uidCount: 0 })];
-    const memo = { version: 3, folders: {} };
     recheckMessageInFolder.mockImplementation(async () => 'present');
 
-    const first = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
-    const firstCursor = first.cursor;
-    expect(firstCursor).toBeTypeOf('string');
+    await runOrphanSlice(fts, identities); // one-shot basis: counts differ
+    await runOrphanSlice(fts, identities); // first walk slice: five rechecks
+    expect(fts.listMsgIdRange.mock.calls[0][2]).toBeNull();
 
     await runFtsMembershipMutation(async () => {
       fts._keys.add(KEY_A('new-known-mail@example.com'));
     });
-    const second = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
+    await runOrphanSlice(fts, identities);
 
-    expect(fts.listMsgIdRange.mock.calls[1][2]).toBe(firstCursor);
-    expect(second.cursor.localeCompare(firstCursor)).toBeGreaterThan(0);
+    // The volatile cursor continues after the fifth processed key; no basis
+    // is collected again for the same binding.
+    expect(fts.listMsgIdRange.mock.calls[1][2]).toBe(ghosts[4]);
+    expect(fts.countMsgIdRange.mock.calls.filter(([start]) => start === '')).toHaveLength(1);
+    expect(storageData[FOLDER_RECON_STORAGE_KEY]?.orphanSweep).toBeUndefined();
   });
 
   it('restarts an orphan cursor when the exact folder inventory is renamed', async () => {
@@ -2006,26 +2012,29 @@ describe('orphan prefixes and event hardening', () => {
     const newIdentity = folderA({ folderPath: '/New', folderURI: 'imap://new', uidCount: 1 });
     const oldMail = 'account1:/Old:old@example.com';
     const newMail = 'account1:/New:new@example.com';
-    // Ghosts sort AFTER /Old so the first slice's cursor lands beyond oldMail.
+    // Ghosts sort AFTER /Old so the first walk slice's cursor lands beyond oldMail.
     const ghosts = Array.from({ length: 7 }, (_, index) =>
       `account1:/Removed:ghost-${String(index).padStart(2, '0')}@example.com`);
     const fts = makeFtsStore([oldMail, ...ghosts]);
-    const memo = { version: 3, folders: {} };
     recheckMessageInFolder.mockImplementation(async () => 'present');
 
-    const first = await _testExports._runFolderReconOrphanSlice(fts, [oldIdentity], memo);
-    const oldCursor = first.cursor;
-    expect(oldCursor.localeCompare(oldMail)).toBeGreaterThan(0);
-    expect(memo.orphanSweep.inventorySha256).toBe(digest(['account1:/Old']));
+    await runOrphanSlice(fts, [oldIdentity]); // basis
+    await runOrphanSlice(fts, [oldIdentity]); // walk: cursor beyond oldMail
+    const walkCalls = fts.listMsgIdRange.mock.calls.length;
+    expect(walkCalls).toBe(1);
 
     await runFtsMembershipMutation(async () => { fts._keys.add(newMail); });
     recheckMessageInFolder.mockImplementation(async () => 'absent');
-    const second = await _testExports._runFolderReconOrphanSlice(fts, [newIdentity], memo);
+    let removed = 0;
+    for (let turn = 0; turn < 10 && fts._keys.has(oldMail); turn++) {
+      removed += (await runOrphanSlice(fts, [newIdentity])).orphanRemoved || 0;
+    }
 
-    expect(fts.listMsgIdRange.mock.calls[1][2]).toBeNull();
+    // The renamed inventory is a new binding: its walk starts before-first.
+    expect(fts.listMsgIdRange.mock.calls[walkCalls][2]).toBeNull();
     expect(fts._keys.has(oldMail)).toBe(false);
-    expect(second.orphanRemoved).toBeGreaterThanOrEqual(1);
-    expect(memo.orphanSweep.inventorySha256).toBe(digest(['account1:/New']));
+    expect(fts._keys.has(newMail)).toBe(true);
+    expect(removed).toBeGreaterThanOrEqual(1);
   });
 
   it('rejects partial removal-event keys instead of queueing malformed deletes', async () => {
@@ -2216,34 +2225,32 @@ describe('fresh proof and native-bound checkpoint contracts', () => {
       id: 'account1',
       rootFolder: { path: '/', subFolders: [{ path: '/INBOX', subFolders: [] }] },
     }]);
-    const memo = {
+    storageData[FOLDER_RECON_STORAGE_KEY] = {
       version: 3,
       folders: {
         'account1:/INBOX': { verified: true, ftsCount: 999_999 },
       },
     };
 
-    const result = await _testExports._runFolderReconOrphanSlice(fts, identities, memo);
+    const basis = await runOrphanSlice(fts, identities);
+    const result = await runOrphanSlice(fts, identities);
 
+    expect(basis).toMatchObject({ deferred: true, basisProgress: true });
     expect(fts.countMsgIdRange).toHaveBeenCalledWith('account1:/INBOX:', 'account1:/INBOX;');
     expect(result.orphanRemoved).toBe(1);
     expect(fts._keys.has(ghost)).toBe(false);
   });
 
-  it('does not hold the membership mutex across a global orphan fingerprint', async () => {
+  it('does not hold the membership mutex across a global orphan count', async () => {
     const fts = makeFtsStore([]);
     const fingerprintStarted = deferred();
     const allowFingerprint = deferred();
-    fts.fingerprintMsgIdRange.mockImplementationOnce(async () => {
+    fts.countMsgIdRange.mockImplementationOnce(async () => {
       fingerprintStarted.resolve();
       await allowFingerprint.promise;
-      return { count: 0, sha256: digest([]) };
+      return { ok: true, count: 0 };
     });
-    const orphan = _testExports._runFolderReconOrphanSlice(
-      fts,
-      [],
-      { version: 3, folders: {} },
-    );
+    const orphan = runOrphanSlice(fts, []);
     await fingerprintStarted.promise;
     let foregroundRan = false;
     const foreground = runFtsMembershipMutation(async () => {
@@ -2387,5 +2394,246 @@ describe('fresh proof and native-bound checkpoint contracts', () => {
     expect(stats.foldersMemoHit).toBe(0);
     expect(storageData[FOLDER_RECON_STORAGE_KEY].folders['account1:/INBOX'].verified)
       .not.toBe(true);
+  });
+});
+
+describe('legacy orphan pass: one-shot basis, fenced walk, retained terminal safeguard', () => {
+  const manyFolders = count => Array.from({ length: count }, (_, index) => folderA({
+    folderPath: `/F${String(index).padStart(3, '0')}`,
+    folderURI: `imap://f${index}`,
+    uidCount: 1,
+  }));
+  const keyIn = (identity, id) => `${identity.accountId}:${identity.folderPath}:${id}`;
+
+  async function sliceUntilComplete(fts, identities, maxSlices = 40) {
+    const results = [];
+    for (let slice = 0; slice < maxSlices; slice++) {
+      const result = await runOrphanSlice(fts, identities);
+      results.push(result);
+      if (result.complete === true) break;
+    }
+    return results;
+  }
+
+  it('proves a no-change index in ceil(folders / 50) slices with one count per range and no walk', async () => {
+    const identities = manyFolders(120);
+    const fts = makeFtsStore(identities.map(identity => keyIn(identity, 'm@example.com')));
+
+    const results = await sliceUntilComplete(fts, identities);
+
+    expect(results.at(-1)).toMatchObject({ complete: true });
+    expect(results).toHaveLength(Math.ceil(120 / 50));
+    expect(fts.countMsgIdRange).toHaveBeenCalledTimes(120 + 1);
+    expect(fts.listMsgIdRange).not.toHaveBeenCalled();
+    expect(fts.fingerprintMsgIdRange).not.toHaveBeenCalled();
+    expect(recheckMessageInFolder).not.toHaveBeenCalled();
+  });
+
+  it('sends a basis that saw a write to ONE walk without collecting the basis again', async () => {
+    const identities = manyFolders(120);
+    const fts = makeFtsStore(identities.map(identity => keyIn(identity, 'm@example.com')));
+
+    await runOrphanSlice(fts, identities);
+    await runFtsMembershipMutation(async () => {
+      fts._keys.add(keyIn(identities[0], 'drained@example.com'));
+      return { count: 1 };
+    });
+    const results = await sliceUntilComplete(fts, identities);
+
+    expect(results.at(-1)).toMatchObject({ complete: true });
+    const rangeCounts = fts.countMsgIdRange.mock.calls.filter(([start]) => start !== '');
+    expect(rangeCounts).toHaveLength(120);
+    expect(new Set(rangeCounts.map(([start]) => start)).size).toBe(120);
+    expect(fts.countMsgIdRange.mock.calls.filter(([start]) => start === '')).toHaveLength(1);
+    expect(fts.listMsgIdRange.mock.calls[0][2]).toBeNull();
+    expect(recheckMessageInFolder).not.toHaveBeenCalled();
+    // Completed and still bound: later slices spend nothing.
+    fts.countMsgIdRange.mockClear();
+    fts.listMsgIdRange.mockClear();
+    await expect(runOrphanSlice(fts, identities)).resolves.toMatchObject({ complete: true });
+    expect(fts.countMsgIdRange).not.toHaveBeenCalled();
+    expect(fts.listMsgIdRange).not.toHaveBeenCalled();
+  });
+
+  it('waits out an in-flight membership mutation before trusting an equal basis', async () => {
+    const identities = [folderA({ uidCount: 1 })];
+    const fts = makeFtsStore([KEY_A('a@example.com')]);
+    const mutationStarted = deferred();
+    const releaseMutation = deferred();
+    const mutation = runFtsMembershipMutation(async () => {
+      mutationStarted.resolve();
+      await releaseMutation.promise;
+      return { count: 0 };
+    });
+    await mutationStarted.promise;
+
+    const slice = runOrphanSlice(fts, identities);
+    const settledEarly = await Promise.race([
+      slice.then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 20)),
+    ]);
+    releaseMutation.resolve();
+    await mutation;
+    const result = await slice;
+
+    expect(settledEarly).toBe(false);
+    // The epoch the basis started under moved: no completion from that basis.
+    expect(result.complete).not.toBe(true);
+    const next = await sliceUntilComplete(fts, identities);
+    expect(next.at(-1)).toMatchObject({ complete: true });
+    expect(fts.countMsgIdRange.mock.calls.filter(([start]) => start === '')).toHaveLength(1);
+  });
+
+  it('refuses a walk removal fenced on an inventory epoch a writer advanced, then removes on the retry', async () => {
+    const identities = [folderA({ uidCount: 1 })];
+    const ghost = 'account1:/Gone:x@example.com';
+    const fts = makeFtsStore([KEY_A('a@example.com'), ghost]);
+    recheckMessageInFolder.mockResolvedValue('absent');
+    await runOrphanSlice(fts, identities); // basis: counts differ
+
+    // The inventory epoch is read before the tick's inventory; a drain write
+    // lands while the inventory is being acquired, before any page read.
+    const inventoryEpoch = getFtsMembershipEpoch();
+    await runFtsMembershipMutation(async () => {
+      fts._keys.add(KEY_A('drained@example.com'));
+      return { count: 1 };
+    });
+    const fenced = await _testExports._runFolderReconOrphanSlice(fts, identities, inventoryEpoch);
+
+    expect(fenced).toMatchObject({ complete: false, retry: true });
+    expect(fts._keys.has(ghost)).toBe(true);
+    expect(fts.removeBatch).not.toHaveBeenCalled();
+
+    const results = await sliceUntilComplete(fts, identities);
+    expect(fts._keys.has(ghost)).toBe(false);
+    expect(results.at(-1)).toMatchObject({ complete: true });
+    expect(fts._keys.has(KEY_A('drained@example.com'))).toBe(true);
+  });
+
+  it('removes an outside-prefix orphan only after one live recheck and replays the walk once', async () => {
+    const identities = [folderA({ uidCount: 1 })];
+    const ghost = 'account1:/Gone:x@example.com';
+    const cold = 'account2:/Archive:cold@example.com';
+    const fts = makeFtsStore([KEY_A('a@example.com'), ghost, cold]);
+    recheckMessageInFolder.mockResolvedValue('absent');
+
+    const results = await sliceUntilComplete(fts, identities);
+
+    expect(recheckMessageInFolder).toHaveBeenCalledOnce();
+    expect(recheckMessageInFolder.mock.calls[0][0]).toBe('x@example.com');
+    expect(fts._keys.has(ghost)).toBe(false);
+    expect(fts._keys.has(cold)).toBe(true);
+    expect(results.some(result => result.terminalRefresh === true)).toBe(true);
+    expect(results.at(-1)).toMatchObject({ complete: true, unloaded: 1 });
+  });
+
+  it('keeps a row whose folder is renamed back during the walk page read, removing only the truly absent ghost', async () => {
+    // `account1:/F:m@example.com` is the drain key built for /F. /F was then
+    // renamed to /Source (row pending cleanup) while /F:Child exists; the
+    // inventory read sees /Source + /F:Child, so the row is outside every
+    // captured prefix. /Source is renamed back to /F while the page is read.
+    const identities = [
+      folderA({ folderPath: '/F:Child', folderURI: 'imap://child', uidCount: 0 }),
+      folderA({ folderPath: '/Source', folderURI: 'imap://source', uidCount: 0 }),
+    ];
+    const restored = 'account1:/F:m@example.com';
+    const zGone = 'account1:/ZGone:z@example.com';
+    const cold = 'account2:/Cold:c@example.com';
+    const fts = makeFtsStore([restored, zGone, cold]);
+    let renamedBack = false;
+    const epochs = [];
+    const list = fts.listMsgIdRange.getMockImplementation();
+    fts.listMsgIdRange.mockImplementation(async (...args) => {
+      const page = await list(...args);
+      // A topology-only change: no membership write, no epoch advance.
+      epochs.push(getFtsMembershipEpoch());
+      renamedBack = true;
+      return page;
+    });
+    recheckMessageInFolder.mockImplementation(async (headerId, weFolder) =>
+      (renamedBack && weFolder.path === '/F' && headerId === 'm@example.com' ? 'present' : 'absent'));
+
+    const epochBefore = getFtsMembershipEpoch();
+    const results = await sliceUntilComplete(fts, identities);
+
+    expect(results.at(-1)).toMatchObject({ complete: true, unloaded: 1 });
+    // The rename back did not advance the membership epoch the walk is fenced on.
+    expect(epochs[0]).toBe(epochBefore);
+    expect(fts._keys.has(restored)).toBe(true);
+    expect(fts._keys.has(zGone)).toBe(false);
+    expect(fts._keys.has(cold)).toBe(true);
+    const queried = recheckMessageInFolder.mock.calls.map(([headerId]) => headerId);
+    expect(queried).toContain('m@example.com');
+    expect(queried).toContain('z@example.com');
+    expect(queried).not.toContain('c@example.com');
+  });
+
+  it('fails the slice without removing anything on a recheck error or a failed removal', async () => {
+    const identities = [folderA({ uidCount: 1 })];
+    const ghost = 'account1:/Gone:x@example.com';
+    const fts = makeFtsStore([KEY_A('a@example.com'), ghost]);
+    await runOrphanSlice(fts, identities); // basis: counts differ
+
+    recheckMessageInFolder.mockResolvedValueOnce('error');
+    await expect(runOrphanSlice(fts, identities)).resolves.toMatchObject({ complete: false, failed: true });
+    expect(fts._keys.has(ghost)).toBe(true);
+
+    recheckMessageInFolder.mockResolvedValueOnce('absent');
+    fts.removeBatch.mockRejectedValueOnce(new Error('native write failed'));
+    await expect(runOrphanSlice(fts, identities)).resolves.toMatchObject({ complete: false, failed: true });
+    expect(fts._keys.has(ghost)).toBe(true);
+
+    recheckMessageInFolder.mockResolvedValue('absent');
+    const results = await sliceUntilComplete(fts, identities);
+    expect(results.at(-1)).toMatchObject({ complete: true });
+    expect(fts._keys.has(ghost)).toBe(false);
+  });
+
+  it.each([
+    ['late commit behind the cursor', true, false],
+    ['late commit balanced by a removal behind the cursor (same count)', true, true],
+    ['no late commit (control)', false, false],
+  ])('replays a walk whose terminal fingerprint drifted: %s', async (_label, lateCommit, balanced) => {
+    const identities = [folderA({ uidCount: 101 })];
+    const valid = Array.from({ length: 101 }, (_, index) =>
+      KEY_A(`valid-${String(index).padStart(3, '0')}@example.com`));
+    const zGone = 'account1:/ZGone:z@example.com';
+    // Built for /AGone before that folder was removed; its RPC timed out and
+    // it commits natively later with no second membership epoch advance.
+    const aGone = 'account1:/AGone:late@example.com';
+    // A live row the drain removes natively in the same window, so the
+    // balanced variant leaves the walk's row count unchanged.
+    const drained = KEY_A('aaa-drained@example.com');
+    const fts = makeFtsStore([...valid, zGone, drained]);
+    recheckMessageInFolder.mockResolvedValue('absent');
+
+    let committed = false;
+    let completedWithLateRow = false;
+    for (let slice = 0; slice < 40; slice++) {
+      const result = await runOrphanSlice(fts, identities);
+      if (result.complete === true) {
+        completedWithLateRow = fts._keys.has(aGone);
+        break;
+      }
+      const pass = _testExports._getFolderReconOrphanPass();
+      // Commit only during a walk that removes nothing itself, once its
+      // cursor is past the late key's position.
+      if (lateCommit && !committed && !fts._keys.has(zGone)
+          && pass?.cursor && sqliteBinaryCompare(pass.cursor, aGone) > 0
+          && sqliteBinaryCompare(pass.cursor, drained) > 0) {
+        fts._keys.add(aGone);
+        if (balanced) fts._keys.delete(drained);
+        committed = true;
+      }
+    }
+
+    expect(_testExports._getFolderReconOrphanPass()?.complete).toBe(true);
+    expect(committed).toBe(lateCommit);
+    expect(completedWithLateRow).toBe(false);
+    expect(fts._keys.has(aGone)).toBe(false);
+    expect(fts._keys.has(zGone)).toBe(false);
+    expect(fts._keys.has(drained)).toBe(!balanced);
+    for (const key of valid) expect(fts._keys.has(key)).toBe(true);
+    expect(recheckMessageInFolder).toHaveBeenCalledTimes(lateCommit ? 2 : 1);
   });
 });

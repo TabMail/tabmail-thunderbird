@@ -26,6 +26,7 @@ import {
   normalizeInterruptedFtsScanStatus,
   tryAcquireFtsReconcileLease,
   withFtsMembershipFence,
+  runFtsMembershipRead,
 } from "./operationCoordinator.js";
 
 // Incremental indexing state
@@ -205,7 +206,7 @@ async function _markFolderReconDirty(folderKey) {
   const normalizedFolderKey = folderKey || "__all__";
   _folderReconDirty.add(normalizedFolderKey);
   _folderReconOrphanDone = false;
-  _folderReconOrphanBasis = null;
+  _folderReconOrphanPass = null;
   if (normalizedFolderKey === "__all__") {
     _folderReconSessionDone.clear();
     _folderReconSessionDeferred.clear();
@@ -271,7 +272,7 @@ function _applyFolderReconDrainFailureFairness(folderKeys) {
     }
   }
   _folderReconOrphanDone = false;
-  _folderReconOrphanBasis = null;
+  _folderReconOrphanPass = null;
   return earliestNotBeforeMs;
 }
 
@@ -608,7 +609,7 @@ async function _abandonPendingUpdates(capturedUpdates, reason = "abandoned") {
       }
     }
     _folderReconOrphanDone = false;
-    _folderReconOrphanBasis = null;
+    _folderReconOrphanPass = null;
     await _ensureFolderReconPendingMarker();
 
     let dropped = 0;
@@ -886,23 +887,29 @@ async function processPendingUpdates() {
             }
           }
           
-          // Step 2: Filter to find messages that need indexing
-          const filterResult = await _ftsSearch.filterNewMessages(headerBatch);
-          const newMsgIds = filterResult.newMsgIds || [];
+          // Step 2: Filter to find messages that need indexing. The
+          // "already indexed" decision runs under the membership mutex: a
+          // reconciliation removal in flight would otherwise let this read see
+          // a row that is about to be deleted and dequeue the add for good.
           const batchKeys = headerBatch.map(row => row.msgId);
-          
-          // Log filterNewMessages results
-          logFtsBatchOperation("filter", "complete", {
-            total: headerBatch.length,
-            newCount: newMsgIds.length,
-            existingCount: headerBatch.length - newMsgIds.length,
+          let newMsgIds = [];
+          let alreadyIndexedKeys = [];
+          let verifiedExisting = 0;
+          let existingVerifyFailed = 0;
+          await runFtsMembershipRead(async () => {
+            const filterResult = await _ftsSearch.filterNewMessages(headerBatch);
+            newMsgIds = filterResult.newMsgIds || [];
+
+            // Log filterNewMessages results
+            logFtsBatchOperation("filter", "complete", {
+              total: headerBatch.length,
+              newCount: newMsgIds.length,
+              existingCount: headerBatch.length - newMsgIds.length,
           });
           
           // Messages reported as already indexed - VERIFY they actually exist in FTS
           // This catches cases where filterNewMessages incorrectly reports messages as indexed
-          const alreadyIndexedKeys = batchKeys.filter(key => !newMsgIds.includes(key));
-          let verifiedExisting = 0;
-          let existingVerifyFailed = 0;
+          alreadyIndexedKeys = batchKeys.filter(key => !newMsgIds.includes(key));
           
           for (const key of alreadyIndexedKeys) {
             try {
@@ -940,6 +947,7 @@ async function processPendingUpdates() {
               existingVerifyFailed++;
             }
           }
+          });
           
           if (existingVerifyFailed > 0) {
             log(`[TMDBG FTS] Existing verification: ${verifiedExisting}/${alreadyIndexedKeys.length} confirmed in FTS, ${existingVerifyFailed} need indexing`);
@@ -2514,6 +2522,7 @@ const FOLDER_RECON_CONFIG = {
   stalePageKeys: 100,
   stalePagesPerSlice: 1,
   rechecksPerSlice: 5,
+  orphanBasisFoldersPerSlice: 50,
   enqueuesPerSlice: 20,
   pendingHighWater: 100,
   pendingLowWater: 25,
@@ -2589,6 +2598,7 @@ const FOLDER_RECON_MISSING_PAGE_KEYS = FOLDER_RECON_CONFIG.missingPageKeys;
 const FOLDER_RECON_STALE_PAGE_KEYS = FOLDER_RECON_CONFIG.stalePageKeys;
 const FOLDER_RECON_STALE_PAGES_PER_SLICE = FOLDER_RECON_CONFIG.stalePagesPerSlice;
 const FOLDER_RECON_RECHECKS_PER_SLICE = FOLDER_RECON_CONFIG.rechecksPerSlice;
+const FOLDER_RECON_ORPHAN_BASIS_FOLDERS_PER_SLICE = FOLDER_RECON_CONFIG.orphanBasisFoldersPerSlice;
 const FOLDER_RECON_ENQUEUES_PER_SLICE = FOLDER_RECON_CONFIG.enqueuesPerSlice;
 const FOLDER_RECON_PENDING_HIGH_WATER = FOLDER_RECON_CONFIG.pendingHighWater;
 const FOLDER_RECON_PENDING_LOW_WATER = FOLDER_RECON_CONFIG.pendingLowWater;
@@ -2666,7 +2676,12 @@ let _folderReconDrainFailureDeferred = new Map();
 let _folderReconDrainFailureCounts = new Map();
 let _folderReconDirty = new Set();
 let _folderReconOrphanDone = false;
-let _folderReconOrphanBasis = null;
+let _folderReconOrphanPass = null;
+// Round-robin fairness anchor for this session, seeded from the memo. It is
+// persisted only alongside a memo write that happens anyway, never on its own.
+let _folderReconRoundRobinCursor = null;
+// Capped re-inventory backoff while only rows of unloaded accounts remain.
+let _folderReconInventoryRetry = null;
 let _folderReconMutationSerial = 0;
 // One phase-tagged active-folder proof is retained for this generation. It is
 // the scalar exact projection plus the one sorted Uint32Array inherently
@@ -2690,6 +2705,14 @@ const FOLDER_RECON_OUTCOME_FIELDS = [
   "recheckKeptPresent", "recheckKeptError", "missingEnqueued", "orphanRemoved",
   "orphanKeysKept",
 ];
+// Outcome fields a read-only verified slice moves; any other field moving
+// means the slice changed something worth a snapshot.
+const FOLDER_RECON_READ_ONLY_OUTCOME_FIELDS = new Set(["foldersTotal", "foldersMemoHit"]);
+
+function _folderReconOutcomeChanged(counts) {
+  return FOLDER_RECON_OUTCOME_FIELDS.some(field =>
+    !FOLDER_RECON_READ_ONLY_OUTCOME_FIELDS.has(field) && Number(counts?.[field]) > 0);
+}
 
 const _folderReconEncoder = new TextEncoder();
 
@@ -2763,7 +2786,7 @@ function _handleExclusiveFtsMembershipChange() {
   _folderReconDrainFailureDeferred.clear();
   _folderReconDrainFailureCounts.clear();
   _folderReconOrphanDone = false;
-  _folderReconOrphanBasis = null;
+  _folderReconOrphanPass = null;
   _revokeFolderMembershipCutover();
   _cancelFolderMembershipScanSession();
   _resetFolderMembershipVolatileProof();
@@ -2838,6 +2861,8 @@ function _folderReconOutcomeStatus() {
 function _persistFolderReconOutcome(force = false) {
   const aggregate = _folderReconOutcomeAggregate;
   if (!aggregate || aggregate.slices === 0) return;
+  // A session of read-only slices has nothing new to report.
+  if (!_folderReconOutcomeChanged(aggregate.totals)) return;
   const nowMs = Date.now();
   if (!force
       && aggregate.lastPersistedAtMs > 0
@@ -2872,7 +2897,7 @@ function _recordFolderReconOutcome(stats, elapsedMs) {
   }
   aggregate.unverifiedFolders = Math.max(0, Number(stats?.unverifiedFolders) || 0);
   aggregate.lastElapsedMs = Math.max(0, Number(elapsedMs) || 0);
-  _persistFolderReconOutcome(false);
+  if (_folderReconOutcomeChanged(stats)) _persistFolderReconOutcome(false);
 }
 
 function _bumpFolderReconTelemetry(field, amount = 1) {
@@ -3583,7 +3608,7 @@ function _pruneFolderReconRuntimeToFolderKeys(folderKeys) {
     // pruning prevents the old identity from pinning the scheduler, while the
     // orphan phase supplies the durable exact cleanup proof.
     _folderReconOrphanDone = false;
-    _folderReconOrphanBasis = null;
+    _folderReconOrphanPass = null;
   }
   return removedState;
 }
@@ -3874,62 +3899,6 @@ async function _fingerprintFolderMembershipPages(
   return result;
 }
 
-async function _fingerprintFolderMembershipStatePages(
-  ftsSearch,
-  assertActive = _assertNoFolderReconForegroundPressure,
-  proofSlot = null,
-) {
-  _pruneFolderMembershipDigestProofs();
-  const key = `state\u0000${proofSlot || "ephemeral"}`;
-  const completed = proofSlot ? _folderMembershipDigestResults.get(key) : null;
-  if (completed && _folderMembershipProofStampCurrent(completed)) {
-    return { count: completed.count, sha256: completed.sha256 };
-  }
-  let session = _folderMembershipDigestSessions.get(key);
-  if (!session || !_folderMembershipProofStampCurrent(session)) {
-    session = {
-      ..._folderMembershipProofStamp(),
-      hasher: new _FolderReconSha256(),
-      count: 0,
-      afterMsgId: null,
-    };
-    _folderMembershipDigestSessions.set(key, session);
-  }
-  _consumeFolderMembershipPageBudget();
-  assertActive();
-  const page = await ftsSearch.listFolderMembershipState(
-    session.afterMsgId,
-    FOLDER_MEMBERSHIP_STATE_PAGE_SIZE,
-  );
-  assertActive();
-  if (!_folderMembershipProofStampCurrent(session)) {
-    _folderMembershipDigestSessions.delete(key);
-    throw new Error("membership_epoch_changed");
-  }
-  const entries = page?.entries || [];
-  if (entries.length > FOLDER_MEMBERSHIP_STATE_PAGE_SIZE
-      || (page.done !== true && entries.length === 0)) {
-    _folderMembershipDigestSessions.delete(key);
-    throw new Error("folder_membership_state_page_invalid");
-  }
-  for (const entry of entries) {
-    _assertStrictMembershipCursor(session.afterMsgId, entry?.msgId);
-    if (typeof entry.folderId !== "string" || entry.folderId.length === 0) {
-      _revokeFolderMembershipCutover();
-      _folderMembershipDigestSessions.delete(key);
-      throw new Error("folder_membership_state_incomplete");
-    }
-    session.afterMsgId = entry.msgId;
-    _updateFolderReconFramedDigest(session.hasher, entry.msgId);
-    session.count++;
-  }
-  if (page.done !== true) throw new Error("folder_membership_page_pending");
-  const result = { count: session.count, sha256: _bytesToHex(session.hasher.digest()) };
-  _folderMembershipDigestSessions.delete(key);
-  if (proofSlot) _folderMembershipDigestResults.set(key, { ...session, ...result, hasher: null });
-  return result;
-}
-
 async function _fingerprintFolderNative(ftsSearch, folder, startKey, endKey, proofSlot, membershipMode) {
   if (membershipMode.exact) {
     return _fingerprintFolderMembershipPages(
@@ -4001,13 +3970,25 @@ async function _getFolderReconMemo() {
   return { version: 3, roundRobinCursor: null, folders: {} };
 }
 
+/**
+ * True when two folder checkpoints carry the same proof: every field except
+ * the `updatedAtMs` timestamp is equal.
+ */
+function _sameFolderReconCheckpoint(stored, next) {
+  if (!stored || typeof stored !== "object") return false;
+  const fields = record => Object.keys(record).filter(key => key !== "updatedAtMs");
+  const storedFields = fields(stored);
+  const nextFields = fields(next);
+  return storedFields.length === nextFields.length
+    && nextFields.every(key => Object.prototype.hasOwnProperty.call(stored, key)
+      && stored[key] === next[key]);
+}
+
 async function _writeFolderReconMemo(
   memo,
   {
     generation = _folderReconGeneration,
     folderKeys = null,
-    roundRobin = false,
-    orphanSweep = false,
     membershipMigration = false,
   } = {},
 ) {
@@ -4020,11 +4001,11 @@ async function _writeFolderReconMemo(
         state.memo.folders[folderKey] = structuredClone(memo.folders[folderKey]);
       }
     }
-    if (roundRobin) state.memo.roundRobinCursor = memo.roundRobinCursor ?? null;
-    if (orphanSweep) {
-      if (memo.orphanSweep) state.memo.orphanSweep = structuredClone(memo.orphanSweep);
-      else delete state.memo.orphanSweep;
+    if (_folderReconRoundRobinCursor !== null) {
+      state.memo.roundRobinCursor = _folderReconRoundRobinCursor;
     }
+    // Orphan cursors are volatile; drop any cursor an older build stored.
+    delete state.memo.orphanSweep;
     if (membershipMigration) {
       if (memo.folderMembershipMigration) {
         state.memo.folderMembershipMigration = structuredClone(memo.folderMembershipMigration);
@@ -4485,12 +4466,10 @@ async function _folderReconOrphanSweep(
   ftsSearch,
   knownFolderKeys,
   identities,
-  totalKnownFtsCount,
   stats,
   budget,
-  resume,
-  basisProof,
-  membershipMode,
+  pass,
+  inventoryMembershipEpoch,
 ) {
   const generation = _folderReconGeneration;
   const reconcileLease = _folderReconSchedulerOwner?.reconcileLease
@@ -4499,121 +4478,42 @@ async function _folderReconOrphanSweep(
     if (reconcileLease) _assertFolderReconLease(reconcileLease, generation);
     _assertNoFolderReconForegroundPressure();
   };
-  const basisEpoch = basisProof?.membershipEpoch ?? getFtsMembershipEpoch();
-  const exactMembership = membershipMode.exact;
-  assertCurrent();
-  const nativeAll = basisProof?.nativeAll
-    || (exactMembership
-      ? await _fingerprintFolderMembershipStatePages(ftsSearch, assertCurrent)
-      : await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END));
-  assertCurrent();
-  if (!(nativeAll.count > totalKnownFtsCount)) {
-    return { complete: true, cursor: null, nativeAll, terminalEpoch: basisEpoch };
+  // Terminal safeguard: the global fingerprint at walk start is compared with
+  // a fresh one at the terminal page. A write whose identity predates the pass
+  // (a timed-out index_batch committing late, with no second epoch advance)
+  // can land behind the cursor; the drift replays the walk from before-first.
+  if (!pass.walkBaseline) {
+    assertCurrent();
+    pass.walkBaseline = await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
+    assertCurrent();
   }
-  const afterKey = resume?.inventoryCount === basisProof?.inventoryCount
-    && resume?.inventorySha256 === basisProof?.inventorySha256
-    && resume?.knownFtsCount === totalKnownFtsCount
-    && typeof resume?.afterKey === "string"
-    ? resume.afterKey
-    : null;
-  if (afterKey && (resume?.nativeCount !== nativeAll.count
-      || resume?.nativeSha256 !== nativeAll.sha256
-      || resume?.membershipEpoch !== basisEpoch)) {
-    if (basisProof) basisProof.nativeDrifted = true;
-  }
-  const pageEpoch = getFtsMembershipEpoch();
+  const afterKey = pass.cursor;
   assertCurrent();
-  const res = exactMembership
-    ? await (async () => {
-      _consumeFolderMembershipPageBudget();
-      return ftsSearch.listFolderMembershipState(afterKey, FOLDER_RECON_STALE_PAGE_KEYS);
-    })()
-    : await ftsSearch.listMsgIdRange(
-      "",
-      FOLDER_RECON_KEYSPACE_END,
-      afterKey,
-      FOLDER_RECON_STALE_PAGE_KEYS,
-    );
+  const res = await ftsSearch.listMsgIdRange(
+    "",
+    FOLDER_RECON_KEYSPACE_END,
+    afterKey,
+    FOLDER_RECON_STALE_PAGE_KEYS,
+  );
   assertCurrent();
-  const exactEntries = exactMembership ? (res.entries || []) : [];
-  const msgIds = exactMembership ? exactEntries.map(entry => entry.msgId) : (res.msgIds || []);
-  if (exactMembership) {
-    let previousMsgId = afterKey;
-    try {
-      if (exactEntries.length > FOLDER_RECON_STALE_PAGE_KEYS
-          || (res.done !== true && exactEntries.length === 0)) {
-        throw new Error("folder_membership_state_page_invalid");
-      }
-      for (const entry of exactEntries) {
-        _assertStrictMembershipCursor(previousMsgId, entry.msgId);
-        previousMsgId = entry.msgId;
-      }
-    } catch (error) {
-      return { complete: false, failed: true, cursor: afterKey, nativeAll, error: String(error) };
-    }
-  }
+  const msgIds = res.msgIds || [];
 
   const entriesToRemove = [];
   let processed = 0;
-  const knownFolderIds = exactMembership
-    ? new Set(identities.map(identity => identity.folderId))
-    : null;
-  const identityByFolderId = exactMembership
-    ? new Map(identities.map(identity => [identity.folderId, identity]))
-    : null;
-  // Both sweep modes gate removal on the row's account being present in this
-  // inventory: an unloaded account is invisible to the exact relation AND to
-  // the legacy global recheck (a query cannot see folders Thunderbird has not
-  // loaded), so "absent" from either is not deletion evidence for it.
+  let unloadedAccountRowsKept = 0;
+  // An unloaded account is invisible to the global recheck (a query cannot
+  // see folders Thunderbird has not loaded), so "absent" is not deletion
+  // evidence for it.
   const trustedAccountIds = _folderReconTrustedAccountIds(identities);
   for (let i = 0; i < msgIds.length; i++) {
     const msgId = msgIds[i];
-    if (!exactMembership && _folderReconMsgIdHasKnownFolderPrefix(msgId, knownFolderKeys)) {
+    if (_folderReconMsgIdHasKnownFolderPrefix(msgId, knownFolderKeys)) {
       processed = i + 1;
-      continue;
-    }
-    if (exactMembership) {
-      const membershipFolderId = exactEntries[i]?.folderId;
-      if (typeof membershipFolderId !== "string" || membershipFolderId.length === 0) {
-        _revokeFolderMembershipCutover();
-        stats.orphanKeysKept++;
-        return { complete: false, failed: true, cursor: afterKey, nativeAll };
-      }
-      if (knownFolderIds.has(membershipFolderId)) {
-        const owner = identityByFolderId.get(membershipFolderId);
-        if (!msgId.startsWith(`${owner.accountId}:${owner.folderPath}:`)) {
-          stats.orphanKeysKept++;
-          return { complete: false, failed: true, cursor: afterKey, nativeAll };
-        }
-        processed = i + 1;
-        continue;
-      }
-      if (!trustedAccountIds.has(_folderReconAccountIdOfMsgId(msgId))) {
-        // The owner is absent, but so is its whole account: Thunderbird has
-        // not loaded that account into this inventory, so absence is not
-        // deletion evidence (see _folderReconTrustedAccountIds). Keep the row.
-        stats.orphanKeysKept++;
-        _bumpFolderReconTelemetry("unloadedAccountRowsKept");
-        processed = i + 1;
-        continue;
-      }
-      // The relation's non-null opaque owner is authoritative and its account
-      // is present in this fresh inventory, so the id can only be absent
-      // because the folder was deleted or renamed. No raw-key parse or live
-      // folder query can make it current again; remove the stale row directly.
-      entriesToRemove.push(msgId);
-      processed = i + 1;
-      assertCurrent();
-      await _folderReconYield(FOLDER_RECON_ENTRY_DELAY_MS);
-      assertCurrent();
       continue;
     }
     if (!trustedAccountIds.has(_folderReconAccountIdOfMsgId(msgId))) {
-      // Legacy sweep, same rule as the exact branch above: the account is not
-      // in the inventory, so a global recheck would report "absent" for a row
-      // that is merely not loaded yet. Keep it.
       stats.orphanKeysKept++;
-      _bumpFolderReconTelemetry("unloadedAccountRowsKept");
+      unloadedAccountRowsKept++;
       processed = i + 1;
       continue;
     }
@@ -4623,6 +4523,9 @@ async function _folderReconOrphanSweep(
       processed = i + 1;
       continue;
     }
+    // A key outside every captured prefix may belong to a folder renamed back
+    // after the inventory read (a topology change, not a membership write), so
+    // only a live global "absent" may remove it.
     if (budget.rechecks <= 0) break;
     budget.rechecks--;
     assertCurrent();
@@ -4633,20 +4536,20 @@ async function _folderReconOrphanSweep(
     } else if (verdict === "present") {
       stats.orphanKeysKept++;
     } else {
-      return { complete: false, failed: true, cursor: afterKey, nativeAll };
+      return { complete: false, failed: true };
     }
     processed = i + 1;
     assertCurrent();
     await _folderReconYield(FOLDER_RECON_ENTRY_DELAY_MS);
     assertCurrent();
   }
-  const terminalPage = msgIds.length === 0
-    || (processed >= msgIds.length && res.done === true);
-  let finalNative = null;
-  let terminalEpoch = null;
-  try {
-    if (entriesToRemove.length > 0) {
-      await withFtsMembershipFence(pageEpoch, async (membershipFenceToken) => {
+  if (entriesToRemove.length > 0) {
+    try {
+      // Fenced on the epoch read before this tick's inventory: a row indexed
+      // into a folder created after the snapshot rejects the removal.
+      await withFtsMembershipFence(inventoryMembershipEpoch, async (membershipFenceToken) => {
+        // Sticky before the mutator: the terminal fingerprint must differ.
+        pass.walkMutated = true;
         assertCurrent();
         await ftsSearch.removeBatch(entriesToRemove, membershipFenceToken);
         assertCurrent();
@@ -4659,85 +4562,45 @@ async function _folderReconOrphanSweep(
           logFtsOperation("folder_recon", "orphan_removed", { msgId });
         }
       }, { mutation: true });
-    } else if (pageEpoch !== getFtsMembershipEpoch()) {
-      throw new Error("membership_epoch_changed");
-    }
-    if (terminalPage && exactMembership) {
-      if (entriesToRemove.length > 0 || pageEpoch !== basisEpoch) {
-        return {
-          complete: false,
-          restart: true,
-          terminalRefresh: true,
-          cursor: null,
-          nativeAll,
-        };
+    } catch (e) {
+      _throwIfFolderReconInterrupted(e);
+      if (String(e?.message || e).includes("membership_epoch_changed")) {
+        // Nothing was removed; the same page is retried on a later slice.
+        return { complete: false, retry: true };
       }
-      finalNative = nativeAll;
-      terminalEpoch = basisEpoch;
-    } else if (terminalPage) {
-      const fingerprintEpoch = getFtsMembershipEpoch();
-      // This data-sized read is intentionally outside the membership mutex.
-      // A foreground writer proceeds immediately; its epoch advance simply
-      // makes this terminal proof stale and starts another safe pass.
-      assertCurrent();
-      finalNative = exactMembership
-        ? await _fingerprintFolderMembershipStatePages(ftsSearch, assertCurrent)
-        : await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
-      assertCurrent();
-      if (fingerprintEpoch !== getFtsMembershipEpoch()) {
-        return {
-          complete: false,
-          restart: true,
-          terminalRefresh: true,
-          cursor: null,
-          nativeAll: finalNative,
-        };
-      }
-      terminalEpoch = fingerprintEpoch;
-    }
-  } catch (e) {
-    _throwIfFolderReconInterrupted(e);
-    const membershipDrift = String(e?.message || e).includes("membership_epoch_changed");
-    return {
-      complete: false,
-      ...(membershipDrift ? { restart: true } : { failed: true }),
-      cursor: membershipDrift ? null : afterKey,
-      nativeAll,
-      error: String(e),
-    };
-  }
-  if (pageEpoch !== basisEpoch || entriesToRemove.length > 0) {
-    if (basisProof) basisProof.nativeDrifted = true;
-  }
-  if (processed < msgIds.length) {
-    return {
-      complete: false,
-      cursor: processed > 0 ? msgIds[processed - 1] : afterKey,
-      cursorEpoch: getFtsMembershipEpoch(),
-      nativeAll,
-    };
-  }
-  if (terminalPage) {
-    const terminalDrift = basisProof?.nativeDrifted === true
-      || finalNative?.count !== nativeAll.count
-      || finalNative?.sha256 !== nativeAll.sha256;
-    if (terminalDrift) {
-      return {
-        complete: false,
-        restart: true,
-        terminalRefresh: true,
-        cursor: null,
-        nativeAll: finalNative || nativeAll,
-      };
+      return { complete: false, failed: true, error: String(e) };
     }
   }
-  return {
-    complete: res.done === true,
-    cursor: res.done ? null : msgIds[msgIds.length - 1],
-    ...(res.done !== true ? { cursorEpoch: getFtsMembershipEpoch() } : {}),
-    nativeAll,
-    ...(res.done === true ? { terminalEpoch } : {}),
-  };
+  if (unloadedAccountRowsKept > 0) {
+    _bumpFolderReconTelemetry("unloadedAccountRowsKept", unloadedAccountRowsKept);
+    pass.unloaded += unloadedAccountRowsKept;
+  }
+  if (processed > 0) pass.cursor = msgIds[processed - 1];
+  const terminalPage = msgIds.length === 0
+    || (processed >= msgIds.length && res.done === true);
+  if (!terminalPage) return { complete: false };
+
+  const fingerprintEpoch = getFtsMembershipEpoch();
+  // This data-sized read is intentionally outside the membership mutex.
+  assertCurrent();
+  const finalNative = await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
+  assertCurrent();
+  if (pass.walkMutated
+      || fingerprintEpoch !== getFtsMembershipEpoch()
+      || finalNative?.count !== pass.walkBaseline.count
+      || finalNative?.sha256 !== pass.walkBaseline.sha256) {
+    _restartFolderReconOrphanWalk(pass);
+    return { complete: false, restart: true, terminalRefresh: true };
+  }
+  pass.complete = true;
+  return { complete: true };
+}
+
+function _restartFolderReconOrphanWalk(pass) {
+  pass.cursor = null;
+  pass.walkBaseline = null;
+  pass.walkMutated = false;
+  pass.unloaded = 0;
 }
 
 /**
@@ -5161,7 +5024,7 @@ async function _runFolderReconcile(
       const proofUidValidity = proof.stableUidKeys === true
         ? _normalizeUidValidity(proof.uidValidity)
         : null;
-      memo.folders[folderKey] = {
+      const record = {
         verified: true,
         expectedCount: proof.count,
         expectedSha256: proof.sha256,
@@ -5177,12 +5040,19 @@ async function _runFolderReconcile(
         } : {}),
         updatedAtMs: Date.now(),
       };
-      memoChanged = true;
-      verifiedThisRun.add(folderKey);
       const proofEpoch = getFtsMembershipEpoch();
+      // An unchanged proof earns this session's verification without a
+      // storage write; only a changed proof replaces the stored checkpoint.
+      const changed = !_sameFolderReconCheckpoint(memo.folders[folderKey], record);
+      if (changed) {
+        memo.folders[folderKey] = record;
+        memoChanged = true;
+        memoEpochByFolder.set(folderKey, proofEpoch);
+      }
+      verifiedThisRun.add(folderKey);
       verifiedEpochByFolder.set(folderKey, proofEpoch);
-      memoEpochByFolder.set(folderKey, proofEpoch);
       _releaseFolderReconActiveProof(folderKey, "verified");
+      return changed;
     };
     const writePartialCheckpoint = (
       cursor,
@@ -5235,8 +5105,8 @@ async function _runFolderReconcile(
     // Direct cryptographic equality — this is the only path that creates a
     // verified checkpoint.
     if (msgCount === ftsCount && expected.sha256 === nativeFingerprint.sha256) {
-      writeVerifiedCheckpoint(nativeFingerprint);
-      stats.foldersClean++;
+      if (writeVerifiedCheckpoint(nativeFingerprint)) stats.foldersClean++;
+      else stats.foldersMemoHit++;
       _folderReconUnverified.delete(folderKey);
       continue;
     }
@@ -5596,7 +5466,20 @@ function _setFolderReconHardNotBeforeMs(notBeforeMs) {
   if (_folderReconTimer) _armFolderReconTimer("raised_floor");
 }
 
-async function _runFolderReconOrphanSlice(ftsSearch, identities, memo) {
+/**
+ * Legacy-helper orphan stage: prove that no native key lies outside every
+ * inventory folder's prefix, removing confirmed orphans on the way. The pass
+ * is volatile and bound to the tick's binding (generation, inventory digest,
+ * native connection, topology serial); only a binding change restarts it.
+ * Exact helpers need none of this: their completed, bound membership state
+ * pass already removed every row whose owner left the inventory.
+ */
+async function _runFolderReconOrphanSlice(
+  ftsSearch,
+  identities,
+  inventoryMembershipEpoch,
+  inventoryTopologySerial = _folderReconTopologySerial,
+) {
   const generation = _folderReconGeneration;
   const reconcileLease = _folderReconSchedulerOwner?.reconcileLease
     || _folderReconInProgressOwner?.reconcileLease;
@@ -5605,131 +5488,92 @@ async function _runFolderReconOrphanSlice(ftsSearch, identities, memo) {
     if (reconcileLease) _assertFolderReconLease(reconcileLease, generation);
     if (_hasFolderReconForegroundPressure()) throw new Error("folder_recon_pressure");
   };
-  const membershipMode = _captureFolderMembershipMode(ftsSearch);
-  const exactMembership = membershipMode.exact;
   const inventory = await _fingerprintStringsCooperatively(
-    exactMembership
-      ? identities.map(identity =>
-        `${identity.folderId}\u0000${identity.accountId}\u0000${identity.folderPath}`)
-      : [...knownFolderKeys],
+    [...knownFolderKeys],
     true,
     assertCurrent,
   );
   if (reconcileLease) _assertFolderReconLease(reconcileLease, generation);
-  const currentMembershipEpoch = getFtsMembershipEpoch();
-  const collectingBasis = _folderReconOrphanBasis
-    && _folderReconOrphanBasis.nextFolderIndex < identities.length;
-  if (!_folderReconOrphanBasis
-      || _folderReconOrphanBasis.generation !== generation
-      || _folderReconOrphanBasis.inventoryCount !== inventory.count
-      || _folderReconOrphanBasis.inventorySha256 !== inventory.sha256
-      || (collectingBasis
-        && _folderReconOrphanBasis.membershipEpoch !== currentMembershipEpoch)) {
-    _folderReconOrphanBasis = {
-      generation,
-      inventoryCount: inventory.count,
-      inventorySha256: inventory.sha256,
-      membershipEpoch: currentMembershipEpoch,
-      nextFolderIndex: 0,
-      knownFtsCount: 0,
-      nativeAll: null,
-      nativeDrifted: false,
+  const binding = _folderMembershipStatePassBinding(inventory, ftsSearch, inventoryTopologySerial);
+  if (!_folderMembershipStatePassBound(_folderReconOrphanPass, binding)) {
+    _folderReconOrphanPass = {
+      ...binding,
+      basisTried: false,
+      basis: null,
+      cursor: null,
+      walkBaseline: null,
+      walkMutated: false,
+      unloaded: 0,
+      complete: false,
     };
   }
-  const basis = _folderReconOrphanBasis;
-  if (basis.nextFolderIndex < identities.length) {
-    const identity = identities[basis.nextFolderIndex];
-    const { startKey, endKey } = _folderKeyRange(identity.accountId, identity.folderPath);
-    assertCurrent();
-    const range = exactMembership
-      ? await _fingerprintFolderMembershipPages(ftsSearch, identity.folderId, assertCurrent)
-      : await ftsSearch.countMsgIdRange(startKey, endKey);
-    assertCurrent();
-    if (generation !== _folderReconGeneration
-        || basis.membershipEpoch !== getFtsMembershipEpoch()) {
-      _folderReconOrphanBasis = null;
-      return { complete: false, deferred: true, restart: true };
-    }
-    basis.knownFtsCount += Math.max(0, Number(range?.count) || 0);
-    basis.nextFolderIndex++;
-    if (exactMembership || basis.nextFolderIndex < identities.length) {
-      return { complete: false, deferred: true, basisProgress: true };
-    }
-  }
-  if (!basis.nativeAll) {
+  const pass = _folderReconOrphanPass;
+  const stats = { orphanRemoved: 0, orphanKeysKept: 0 };
+  if (pass.complete) return { complete: true, unloaded: pass.unloaded, ...stats };
+
+  // One-shot count basis: the known folders' disjoint ranges sum to the
+  // global count iff no row lies outside every range. Collected across
+  // slices without restarting; a mismatch, a lost epoch or a read failure
+  // sends this binding to the walk, never to a second basis.
+  if (!pass.basisTried) {
     try {
-      const fingerprintEpoch = basis.membershipEpoch;
-      // Exact helpers expose only bounded pages. Thunderbird computes the
-      // framed digest cooperatively and rejects any missing relation row.
-      basis.nativeAll = exactMembership
-        ? await _fingerprintFolderMembershipStatePages(ftsSearch, assertCurrent)
-        : await ftsSearch.fingerprintMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
+      if (!pass.basis) {
+        pass.basis = { epoch: getFtsMembershipEpoch(), nextFolderIndex: 0, knownCount: 0 };
+      }
+      const basis = pass.basis;
+      const sliceEnd = Math.min(
+        identities.length,
+        basis.nextFolderIndex + FOLDER_RECON_ORPHAN_BASIS_FOLDERS_PER_SLICE,
+      );
+      while (basis.nextFolderIndex < sliceEnd) {
+        const identity = identities[basis.nextFolderIndex];
+        const { startKey, endKey } = _folderKeyRange(identity.accountId, identity.folderPath);
+        assertCurrent();
+        const range = await ftsSearch.countMsgIdRange(startKey, endKey);
+        assertCurrent();
+        basis.knownCount += Math.max(0, Number(range?.count) || 0);
+        basis.nextFolderIndex++;
+      }
+      if (basis.nextFolderIndex < identities.length) {
+        return { complete: false, deferred: true, basisProgress: true, ...stats };
+      }
       assertCurrent();
-      if (fingerprintEpoch !== getFtsMembershipEpoch()) {
-        throw new Error("membership_epoch_changed");
+      const global = await ftsSearch.countMsgIdRange("", FOLDER_RECON_KEYSPACE_END);
+      assertCurrent();
+      // Spent only once the global count is in hand: an interruption before
+      // this point retries the count on the next slice instead of walking.
+      pass.basisTried = true;
+      if (Number(global?.count) === basis.knownCount) {
+        // Through the mutex: waits out an in-flight drain mutation whose
+        // native commit a count may already have seen.
+        await _assertFolderReconMembershipEpoch(basis.epoch, reconcileLease, generation);
+        if (_folderReconOrphanPass === pass
+            && _folderMembershipStatePassBound(pass, _folderMembershipStatePassBinding(
+              inventory,
+              ftsSearch,
+              _folderReconTopologySerial,
+            ))) {
+          pass.complete = true;
+          return { complete: true, unloaded: pass.unloaded, ...stats };
+        }
       }
     } catch (e) {
       _throwIfFolderReconInterrupted(e);
-      _folderReconOrphanBasis = null;
-      return { complete: false, deferred: true, restart: true };
+      pass.basisTried = true;
     }
-  } else if (basis.membershipEpoch !== currentMembershipEpoch) {
-    // Folder inventory is still exact for this turn, so a membership-only
-    // change cannot invalidate which prefixes are known. Preserve forward
-    // cursor progress and force one fresh evidence pass at terminal instead
-    // of restarting a potentially huge walk on every incoming message.
-    basis.nativeDrifted = true;
+    return { complete: false, deferred: true, basisProgress: true, ...stats };
   }
-  const stats = { orphanRemoved: 0, orphanKeysKept: 0 };
+
   const result = await _folderReconOrphanSweep(
     ftsSearch,
     knownFolderKeys,
     identities,
-    basis.knownFtsCount,
     stats,
     { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE },
-    memo.orphanSweep || null,
-    basis,
-    membershipMode,
+    pass,
+    inventoryMembershipEpoch,
   );
-  if (result.complete || result.restart) {
-    delete memo.orphanSweep;
-    _folderReconOrphanBasis = null;
-  } else if (!result.failed) {
-    memo.orphanSweep = {
-      afterKey: result.cursor,
-      inventoryCount: basis.inventoryCount,
-      inventorySha256: basis.inventorySha256,
-      knownFtsCount: basis.knownFtsCount,
-      nativeCount: result.nativeAll.count,
-      nativeSha256: result.nativeAll.sha256,
-      membershipEpoch: basis.membershipEpoch,
-      updatedAtMs: Date.now(),
-    };
-  }
-  // A completed sweep is only as current as the exact native evidence read at
-  // its terminal page.  Never launder that proof by stamping a newer epoch
-  // after the fingerprint await; a foreground mutation queued in this window
-  // must reject completion.  Partial cursor progress is inventory-bound and
-  // may safely commit at the current epoch, with terminal drift forcing a
-  // subsequent pass for newly inserted keys below the cursor.
-  const commitEpoch = result.complete
-    ? result.terminalEpoch
-    : (result.cursorEpoch ?? getFtsMembershipEpoch());
-  if (!Number.isSafeInteger(commitEpoch) || commitEpoch < 0) {
-    throw new Error("orphan_terminal_epoch_missing");
-  }
-  // Browser storage can stall independently of native writers; never hold the
-  // membership mutex across it. The short post-write fence decides whether
-  // this run may rely on the committed cursor/checkpoint.
-  await _assertFolderReconMembershipEpoch(commitEpoch, reconcileLease, generation);
-  await _writeFolderReconMemo(memo, {
-    generation,
-    folderKeys: [],
-    orphanSweep: true,
-  });
-  await _assertFolderReconMembershipEpoch(commitEpoch, reconcileLease, generation);
-  return { ...result, ...stats };
+  return { ...result, unloaded: pass.unloaded, ...stats };
 }
 
 async function _getFolderReconInventory(reconcileLease, generation, syncStartedAt) {
@@ -5868,6 +5712,7 @@ function _startFolderMembershipStatePass(binding, restartReason = null) {
     afterMsgId: null,
     passMutated: false,
     passUnresolved: 0,
+    unloaded: 0,
     slices: 0,
     completed: false,
   };
@@ -5902,42 +5747,75 @@ async function _persistFolderMembershipMigration(
   await _assertFolderReconMembershipEpoch(expectedEpoch, reconcileLease, generation);
 }
 
-async function _resolveFolderMembershipAssignment(msgId, identities, assertCurrent) {
+/**
+ * Total classifier for one NULL-owner native row (row-atomic):
+ * - `unloaded`: the row's account is absent from this inventory — kept, no query;
+ * - `ghost`: no live interpretation — no candidate folder, or every candidate
+ *   globally absent;
+ * - `assign`: exactly one present owner;
+ * - `unresolved`: two present owners, a query error, or no account separator;
+ * - `deferred`: the slice's global-query budget ran out before this row's
+ *   first global query — nothing was decided, the row is retried next slice.
+ * A scoped positive is conclusive ownership (ADR-017); only a scoped negative
+ * or a scoped failure is confirmed by one global query per candidate.
+ */
+async function _resolveFolderMembershipAssignment(
+  msgId,
+  identities,
+  trustedAccountIds,
+  assertCurrent,
+  budget,
+) {
+  const accountId = _folderReconAccountIdOfMsgId(msgId);
+  if (!accountId) return { kind: "unresolved" };
+  if (!trustedAccountIds.has(accountId)) return { kind: "unloaded" };
   const folders = identities.map(identity => ({
     id: identity.weFolderId,
     accountId: identity.accountId,
     path: identity.folderPath,
   }));
   const candidates = getUniqueMessageKeyCandidates(msgId, folders);
-  let match = null;
+  const present = [];
+  let globalQueried = false;
   for (const candidate of candidates) {
     assertCurrent();
-    let page;
+    let scopedPositive = false;
     try {
-      page = await browser.messages.query({
+      let page = await browser.messages.query({
         folderId: candidate.weFolder.id,
         headerMessageId: candidate.headerID,
       });
-    } catch (_) {
-      return null;
-    }
-    assertCurrent();
-    let found = (page?.messages || []).length > 0;
-    while (page?.id && typeof browser.messages.continueList === "function") {
-      page = await browser.messages.continueList(page.id);
       assertCurrent();
-      if ((page?.messages || []).length > 0) found = true;
+      scopedPositive = (page?.messages || []).length > 0;
+      while (page?.id && typeof browser.messages.continueList === "function") {
+        page = await browser.messages.continueList(page.id);
+        assertCurrent();
+        if ((page?.messages || []).length > 0) scopedPositive = true;
+      }
+    } catch (error) {
+      _throwIfFolderReconInterrupted(error);
+      // A failed scoped query is not evidence either way; the global query decides.
     }
-    if (!found) continue;
-    const owner = identities.find(identity =>
-      identity.weFolderId === candidate.weFolder.id
-      && identity.accountId === candidate.weFolder.accountId
-      && identity.folderPath === candidate.weFolder.path);
-    if (!owner) return null;
-    if (match && match.folderId !== owner.folderId) return null;
-    match = { msgId, folderId: owner.folderId };
+    if (!scopedPositive) {
+      if (!globalQueried && budget.rechecks <= 0) return { kind: "deferred" };
+      globalQueried = true;
+      budget.rechecks--;
+      assertCurrent();
+      const verdict = await recheckMessageInFolder(candidate.headerID, candidate.weFolder);
+      assertCurrent();
+      if (verdict === "error") return { kind: "unresolved" };
+      if (verdict !== "present") continue;
+    }
+    present.push(candidate);
   }
-  return match;
+  if (present.length === 0) return { kind: "ghost" };
+  if (present.length > 1) return { kind: "unresolved" };
+  const owner = identities.find(identity =>
+    identity.weFolderId === present[0].weFolder.id
+    && identity.accountId === present[0].weFolder.accountId
+    && identity.folderPath === present[0].weFolder.path);
+  if (!owner) return { kind: "unresolved" };
+  return { kind: "assign", assignment: { msgId, folderId: owner.folderId } };
 }
 
 async function _runFolderMembershipScanSlice(
@@ -6180,21 +6058,18 @@ async function _runFolderMembershipMigrationSlice(
   pass.slices++;
   _bumpFolderReconTelemetry("membershipStatePages");
 
-  const nullMsgIds = [];
-  const staleOrphanMsgIds = [];
-  let unresolved = 0;
-  let unloadedAccountRowsKept = 0;
+  const entries = page.entries || [];
   const identityByFolderId = new Map(
     validIdentities.map(identity => [identity.folderId, identity]),
   );
   const trustedAccountIds = _folderReconTrustedAccountIds(validIdentities);
-  if ((page.entries || []).length > FOLDER_MEMBERSHIP_STATE_PAGE_SIZE
-      || (page.done !== true && (page.entries || []).length === 0)) {
+  if (entries.length > FOLDER_MEMBERSHIP_STATE_PAGE_SIZE
+      || (page.done !== true && entries.length === 0)) {
     _restartFolderMembershipStatePass(pass, "page_invalid");
     return { complete: false, failed: true, reason: "membership_state_page_invalid" };
   }
   let previousMsgId = pass.afterMsgId;
-  for (const entry of page.entries || []) {
+  for (const entry of entries) {
     const msgId = entry?.msgId;
     try {
       _assertStrictMembershipCursor(previousMsgId, msgId);
@@ -6213,6 +6088,23 @@ async function _runFolderMembershipMigrationSlice(
       _restartFolderMembershipStatePass(pass, "page_invalid");
       return { complete: false, failed: true, reason: "membership_state_folder_id_invalid" };
     }
+  }
+
+  // Classify rows in order. The cursor only ever passes a fully classified
+  // row, so a budget-deferred row (and everything after it) is re-read by the
+  // next slice, and a done:true page is terminal only once its last row is in.
+  const staleOrphanMsgIds = [];
+  const assignments = [];
+  const budget = { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE };
+  // Every message add/remove event bumps this synchronously. A removal judged
+  // before an event for the same key would race its re-add, so any event
+  // since classification began withholds this page's removals (retry below).
+  const eventSerialAtClassification = _folderReconMutationSerial;
+  let unresolved = 0;
+  let unloadedAccountRowsKept = 0;
+  let processed = 0;
+  for (const entry of entries) {
+    const msgId = entry.msgId;
     if (entry.folderId !== null) {
       const owner = identityByFolderId.get(entry.folderId);
       if (!owner) {
@@ -6222,37 +6114,53 @@ async function _runFolderMembershipMigrationSlice(
           // evidence (see _folderReconTrustedAccountIds). Keep the row and
           // let a later inventory that includes the account decide.
           unloadedAccountRowsKept++;
-          continue;
+        } else {
+          // The relation is authoritative even though the raw legacy key is
+          // ambiguous. A non-null opaque id absent from this fresh, fenced
+          // inventory whose account IS present belongs to a deleted/renamed
+          // folder and is stale.
+          staleOrphanMsgIds.push(msgId);
         }
-        // The relation is authoritative even though the raw legacy key is
-        // ambiguous. A non-null opaque id absent from this fresh, fenced
-        // inventory whose account IS present belongs to a deleted/renamed
-        // folder and is stale.
-        staleOrphanMsgIds.push(msgId);
       } else if (!msgId.startsWith(`${owner.accountId}:${owner.folderPath}:`)) {
         // A current folder id attached to a structurally different raw key is
         // a conflict, not deletion evidence.
         unresolved++;
       }
+      processed++;
       continue;
     }
-    nullMsgIds.push(msgId);
+    const verdict = await _resolveFolderMembershipAssignment(
+      msgId,
+      validIdentities,
+      trustedAccountIds,
+      assertCurrent,
+      budget,
+    );
+    if (verdict.kind === "deferred") break;
+    if (verdict.kind === "assign") assignments.push(verdict.assignment);
+    else if (verdict.kind === "ghost") staleOrphanMsgIds.push(msgId);
+    else if (verdict.kind === "unloaded") unloadedAccountRowsKept++;
+    else unresolved++;
+    processed++;
   }
   if (unloadedAccountRowsKept > 0) {
     _bumpFolderReconTelemetry("unloadedAccountRowsKept", unloadedAccountRowsKept);
     // Aggregate-only: no account, folder, or Message-ID values.
     log(`[FTS FolderRecon] Membership pass kept ${unloadedAccountRowsKept} row(s) whose account is absent from the current inventory — not loaded yet, not deletion evidence`, "warn");
   }
-  // Stale owners are judged against this tick's inventory, so the removal is
-  // fenced on the epoch read before that inventory snapshot. Any membership
-  // write since then (a row indexed into a folder created after the snapshot
-  // looks exactly like a deleted folder's row) rejects the fence before the
-  // mutator runs, and the same page is retried on a later slice.
+  // Stale owners and ghosts are judged against this tick's inventory, so the
+  // removal is fenced on the epoch read before that inventory snapshot. Any
+  // membership write since then (a row indexed into a folder created after the
+  // snapshot looks exactly like a deleted folder's row) rejects the fence
+  // before the mutator runs, and the same page is retried on a later slice.
   if (staleOrphanMsgIds.length > 0) {
     try {
       await withFtsMembershipFence(inventoryMembershipEpoch, async (membershipFenceToken) => {
         // Sticky before the mutator: an interrupted or uncertain removal
         // still forces a full replay before cutover.
+        if (_folderReconMutationSerial !== eventSerialAtClassification) {
+          throw new Error("membership_epoch_changed");
+        }
         pass.passMutated = true;
         assertCurrent();
         await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
@@ -6272,16 +6180,6 @@ async function _runFolderMembershipMigrationSlice(
       return { complete: false, failed: true, reason: "stale_folder_remove_failed", error: String(error) };
     }
   }
-  const assignments = [];
-  for (const msgId of nullMsgIds) {
-    const assignment = await _resolveFolderMembershipAssignment(
-      msgId,
-      validIdentities,
-      assertCurrent,
-    );
-    if (assignment) assignments.push(assignment);
-    else unresolved++;
-  }
   // Unfenced: native only fills a NULL owner, accepts an equal one and rolls
   // back a conflict (thrown: same-page retry), and a vanished row is a no-op.
   if (assignments.length > 0) {
@@ -6300,9 +6198,11 @@ async function _runFolderMembershipMigrationSlice(
     }
   }
   pass.passUnresolved += unresolved;
-  pass.afterMsgId = (page.entries || []).length > 0
-    ? page.entries[page.entries.length - 1].msgId
-    : pass.afterMsgId;
+  pass.unloaded += unloadedAccountRowsKept;
+  pass.afterMsgId = processed > 0 ? entries[processed - 1].msgId : pass.afterMsgId;
+  if (processed < entries.length) {
+    return { complete: false, membershipStateProgress: true };
+  }
   if (page.done === true) {
     if (pass.passMutated || pass.passUnresolved > 0) {
       const passUnresolved = pass.passUnresolved;
@@ -6457,7 +6357,7 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
         }
       }
       _folderReconOrphanDone = false;
-      _folderReconOrphanBasis = null;
+      _folderReconOrphanPass = null;
     }
     for (const dirty of [..._folderReconDirty]) {
       _folderReconSessionDone.delete(dirty);
@@ -6468,7 +6368,7 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
       }
     }
 
-    const anchor = memo.roundRobinCursor;
+    const anchor = _folderReconRoundRobinCursor ?? memo.roundRobinCursor;
     const start = anchor && keys.includes(anchor) ? (keys.indexOf(anchor) + 1) % keys.length : 0;
     let target = null;
     let earliestDeferred = Infinity;
@@ -6509,9 +6409,9 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
     if (!target) {
       if (ambiguous.groups > 0) {
         // Per-folder ranges and the sum-of-ranges orphan basis are both
-        // inexact while an overlap exists, so neither proof may run.
-        _folderReconOrphanDone = false;
-        _folderReconOrphanBasis = null;
+        // inexact while an overlap exists, so neither proof may run; the
+        // marker stays set. Ambiguity is a function of the inventory, so it
+        // cannot appear or vanish without a binding change (fresh pass).
         const ambiguityDelay = earliestDeferred < Infinity
           ? Math.min(
             FOLDER_RECON_ERROR_DELAY_MS,
@@ -6534,22 +6434,49 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
         return { skipped: true, reason: "backoff" };
       }
       let orphan;
-      try {
-        orphan = await _runFolderReconOrphanSlice(ftsSearch, identities, memo);
-      } catch (e) {
-        const message = String(e?.message || e);
-        if (message.includes("folder_membership_page_pending")) {
-          _wakeFolderRecon("orphan_membership_page", cooperativeDelay());
-          return { complete: false, orphan: { deferred: true, pageProgress: true } };
+      if (exactMembership) {
+        // The completed, bound membership state pass (checked by this tick's
+        // migration slice) already removed every row whose owner left the
+        // inventory and classified every ownerless row.
+        orphan = { complete: true, unloaded: _folderMembershipStatePass?.unloaded || 0 };
+      } else {
+        try {
+          orphan = await _runFolderReconOrphanSlice(
+            ftsSearch,
+            identities,
+            inventoryMembershipEpoch,
+            inventoryTopologySerial,
+          );
+        } catch (e) {
+          const message = String(e?.message || e);
+          if (!message.includes("folder_recon_pressure")) throw e;
+          _bumpFolderReconTelemetry("schedulerPressureSkips");
+          _wakeFolderRecon("orphan_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
+          return { skipped: true, reason: "pressure" };
         }
-        if (!message.includes("folder_recon_pressure")) throw e;
-        _bumpFolderReconTelemetry("schedulerPressureSkips");
-        _wakeFolderRecon("orphan_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
-        return { skipped: true, reason: "pressure" };
       }
       _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
-      _folderReconOrphanDone = orphan.complete === true
-        && orphan.terminalEpoch === getFtsMembershipEpoch();
+      // A completed, bound pass stays complete: later writes are built under
+      // the same binding and cannot create an outside-prefix key.
+      _folderReconOrphanDone = orphan.complete === true;
+      if (_folderReconOrphanDone && orphan.unloaded > 0) {
+        // Rows of an account Thunderbird has not loaded are kept and hold the
+        // marker. Nothing announces a late-loading account, so re-read the
+        // inventory on a capped backoff; a changed inventory resets it.
+        const inventorySha256 = exactMembership
+          ? _folderMembershipStatePass?.inventorySha256
+          : _folderReconOrphanPass?.inventorySha256;
+        if (_folderReconInventoryRetry?.inventorySha256 !== inventorySha256) {
+          _folderReconInventoryRetry = { inventorySha256, attempts: 0 };
+        }
+        const retryDelayMs = Math.min(
+          FOLDER_RECON_ERROR_DELAY_MS * (2 ** Math.min(_folderReconInventoryRetry.attempts, 30)),
+          FOLDER_RECON_POST_VERIFY_BACKOFF_INITIAL_MS,
+        );
+        _folderReconInventoryRetry.attempts++;
+        _wakeFolderRecon("inventory_retry", retryDelayMs);
+        return { complete: false, orphan, reason: "unloaded_accounts" };
+      }
       if (_folderReconOrphanDone && _pendingUpdates.size === 0 && _folderReconDirty.size === 0) {
         const cleared = await _clearFolderReconPendingMarkerIfCurrent(generation, syncStartedAt);
         _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
@@ -6603,10 +6530,8 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
       }
       return stats;
     }
+    _folderReconRoundRobinCursor = target;
     const updatedMemo = await _getFolderReconMemo();
-    _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
-    updatedMemo.roundRobinCursor = target;
-    await _writeFolderReconMemo(updatedMemo, { folderKeys: [], roundRobin: true });
     _assertFolderReconLease(reconcileLease, generation, syncStartedAt);
 
     const checkpoint = updatedMemo.folders[target];
@@ -7052,7 +6977,9 @@ export async function initIncrementalIndexer(ftsSearch) {
   _folderReconDrainFailureCounts = new Map();
   _folderReconDirty = new Set();
   _folderReconOrphanDone = false;
-  _folderReconOrphanBasis = null;
+  _folderReconOrphanPass = null;
+  _folderReconRoundRobinCursor = null;
+  _folderReconInventoryRetry = null;
   _reconMarkerPersisted = false;
   _clearFolderReconActiveProof({ resetStats: true });
   _resetFolderReconRuntimeTelemetry();
@@ -7235,7 +7162,7 @@ export async function disposeIncrementalIndexer() {
   _folderReconDrainFailureCounts.clear();
   _folderReconDirty.clear();
   _folderReconOrphanDone = false;
-  _folderReconOrphanBasis = null;
+  _folderReconOrphanPass = null;
   _reconMarkerPersisted = false;
   _reconMarkerClearInFlight = false;
   _clearFolderReconActiveProof();
@@ -7265,31 +7192,6 @@ export async function disposeIncrementalIndexer() {
   _ftsSearch = null;
 
   log("[TMDBG FTS] Incremental indexer disposed");
-}
-
-export async function updateIncrementalIndexerSettings() {
-  const wasEnabled = _isEnabled;
-  await updateIncrementalSettings();
-
-  if (wasEnabled && !_isEnabled) {
-    // Runtime disable does not advance the reconciliation generation, so
-    // explicitly retire any private marker retry (including an in-flight
-    // owner's authority to wake after its storage await settles).
-    _cancelExclusiveMarkerRetry();
-    // Cutover is session proof; a disabled indexer observes no events, so it
-    // must be re-earned by a fresh pass after re-enable.
-    _revokeFolderMembershipCutover();
-  } else if (!wasEnabled && _isEnabled && _folderReconDirty.has("__all__")) {
-    // Exclusive membership invalidation is retained in-memory while disabled.
-    // Re-arm its durable marker in the same generation before normal work can
-    // wake. If an old in-flight write succeeded this is an idempotent check;
-    // if it failed, the new owner retries the write.
-    _ensureExclusiveMarkerRetry(_folderReconGeneration);
-  }
-  
-  if (_isEnabled && !_ftsSearch) {
-    log("[TMDBG FTS] Incremental indexing enabled but no FTS engine available", "warn");
-  }
 }
 
 // Force process pending updates (for testing/manual trigger)
@@ -7413,6 +7315,7 @@ export const _testExports = {
   _getConsecutiveNoProgressCycles: () => _consecutiveNoProgressCycles,
   _setConsecutiveNoProgressCycles: (v) => { _consecutiveNoProgressCycles = v; },
   _getPendingUpdates: () => _pendingUpdates,
+  _getFolderReconRoundRobinCursor: () => _folderReconRoundRobinCursor,
   _abandonPendingUpdates,
   _getFolderReconDirty: () => new Set(_folderReconDirty),
   // Quiet-period reconcile scheduler
@@ -7456,6 +7359,8 @@ export const _testExports = {
   _maybeScheduleFolderReconRerun,
   _getFolderReconDrainSkipped: () => _folderReconDrainSkipped,
   _getFolderMembershipCutoverProven: () => _folderMembershipCutoverProven,
+  _getFolderMembershipStatePass: () => _folderMembershipStatePass,
+  _getFolderReconOrphanPass: () => _folderReconOrphanPass,
   _runFolderMembershipMigrationSlice,
   _resetFolderReconState: () => {
     _resetFtsOperationCoordinatorForTests();
@@ -7485,7 +7390,9 @@ export const _testExports = {
     _folderReconDrainFailureCounts = new Map();
     _folderReconDirty = new Set();
     _folderReconOrphanDone = false;
-    _folderReconOrphanBasis = null;
+    _folderReconOrphanPass = null;
+    _folderReconRoundRobinCursor = null;
+    _folderReconInventoryRetry = null;
     _reconMarkerPersisted = false;
     _reconMarkerClearInFlight = false;
     _clearFolderReconActiveProof({ resetStats: true });
@@ -7518,7 +7425,7 @@ export const _testExports = {
     deferred: _folderReconSessionDeferred.size + _folderReconDrainFailureDeferred.size,
     failures: _folderReconFailureCounts.size + _folderReconDrainFailureCounts.size,
     orphanDone: _folderReconOrphanDone,
-    hasOrphanBasis: _folderReconOrphanBasis !== null,
+    hasOrphanPass: _folderReconOrphanPass !== null,
     dirty: [..._folderReconDirty].sort(),
   }),
   _setFolderReconEphemeralEvidenceForTests: ({
@@ -7526,14 +7433,14 @@ export const _testExports = {
     deferredAt,
     failureCount,
     orphanDone,
-    orphanBasis,
+    orphanPass,
   }) => {
     if (folderKey) {
       _folderReconSessionDeferred.set(folderKey, deferredAt);
       _folderReconFailureCounts.set(folderKey, failureCount);
     }
     _folderReconOrphanDone = orphanDone === true;
-    _folderReconOrphanBasis = orphanBasis || null;
+    _folderReconOrphanPass = orphanPass || null;
   },
   _getFolderReconGeneration: () => _folderReconGeneration,
   _setFolderReconHardNotBeforeMs,

@@ -41,6 +41,7 @@ globalThis.browser = {
     get: vi.fn(),
     query: vi.fn(),
     continueList: vi.fn(),
+    abortList: vi.fn(),
   },
   folders: {
     query: vi.fn(async () => []),
@@ -48,6 +49,7 @@ globalThis.browser = {
 };
 
 const { recheckMessageInFolder } = await import('../agent/modules/utils.js');
+const { SETTINGS } = await import('../agent/modules/config.js');
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -58,6 +60,7 @@ const WE_FOLDER = { accountId: 'account1', path: '/[Gmail]/Bin' };
 beforeEach(() => {
   browser.messages.query.mockReset();
   browser.messages.continueList.mockReset();
+  browser.messages.abortList = vi.fn();
 });
 
 describe('recheckMessageInFolder', () => {
@@ -221,19 +224,6 @@ describe('recheckMessageInFolder', () => {
     expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('error');
   });
 
-  it('short-circuits without draining when the match is on the first page', async () => {
-    browser.messages.query.mockResolvedValue({
-      id: 'list-1',
-      messages: [
-        { id: 7, folder: { accountId: 'account1', path: '/[Gmail]/Bin' } },
-      ],
-    });
-
-    const verdict = await recheckMessageInFolder('msg-1@example.com', WE_FOLDER);
-
-    expect(verdict).toBe('present');
-    expect(browser.messages.continueList).not.toHaveBeenCalled();
-  });
 
   it('tolerates messages with missing folder info in the result set', async () => {
     browser.messages.query.mockResolvedValue({
@@ -245,5 +235,156 @@ describe('recheckMessageInFolder', () => {
 
     const verdict = await recheckMessageInFolder('msg-1@example.com', WE_FOLDER);
     expect(verdict).toBe('present');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MessageList lifecycle. Thunderbird keeps a query's list registered until its
+// terminal page (the page without an `id`) is consumed; `abortList` only stops
+// further production. Every exit that leaves a page id outstanding must abort
+// and then drain, or the list (and the query behind it) stays alive.
+// ---------------------------------------------------------------------------
+
+/**
+ * Thunderbird-like MessageList fake. `pages` are the pages the list would
+ * produce; `abortList` stops production (later pages are dropped) but the list
+ * stays registered until a terminal page is handed out.
+ */
+// `buffered` is how many pages Thunderbird has already produced. abortList
+// stops further production only: buffered pages are still delivered, and the
+// list stays registered until its terminal page (no `id`) is consumed.
+function installListFake(pages, { listId = 'list-1', continueFailures = [], buffered = pages.length } = {}) {
+  const state = { outstanding: 0, aborted: false, next: 0 };
+  const failures = [...continueFailures];
+  const pageAt = index => {
+    const end = state.aborted ? Math.min(pages.length, buffered) : pages.length;
+    const last = index >= end - 1;
+    if (last) state.outstanding = 0;
+    return { ...(last ? {} : { id: listId }), messages: index < end ? pages[index] : [] };
+  };
+  browser.messages.query.mockImplementation(async () => {
+    state.outstanding = pages.length > 1 ? 1 : 0;
+    state.next = 1;
+    return pageAt(0);
+  });
+  browser.messages.continueList.mockImplementation(async id => {
+    if (id !== listId || state.outstanding === 0) throw new Error('unknown list');
+    const failure = failures.shift();
+    if (failure === 'throw') throw new Error('list busy');
+    if (failure === 'nullish') return undefined;
+    return pageAt(state.next++);
+  });
+  browser.messages.abortList = vi.fn(async id => {
+    if (id === listId) state.aborted = true;
+  });
+  return state;
+}
+
+const HIT = { id: 7, folder: { accountId: 'account1', path: '/[Gmail]/Bin' } };
+const MISS = { id: 3, folder: { accountId: 'account1', path: '/INBOX' } };
+
+describe('recheckMessageInFolder list lifecycle', () => {
+  it('releases a buffered list after a first-page match', async () => {
+    const state = installListFake([[HIT], [MISS], [MISS]]);
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('present');
+    expect(browser.messages.abortList).toHaveBeenCalledWith('list-1');
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('drains every buffered page after aborting a first-page match', async () => {
+    const state = installListFake([[HIT], [MISS], [MISS], [MISS]]);
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('present');
+    expect(browser.messages.abortList).toHaveBeenCalledWith('list-1');
+    expect(browser.messages.continueList).toHaveBeenCalledTimes(3);
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('stops at the terminal page once abort halts production of unbuffered pages', async () => {
+    const state = installListFake([[HIT], [MISS], [MISS], [MISS]], { buffered: 2 });
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('present');
+    expect(browser.messages.continueList).toHaveBeenCalledTimes(1);
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('releases the list after a continuation-page match', async () => {
+    const state = installListFake([[MISS], [HIT], [MISS], [MISS]]);
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('present');
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('needs no finaliser after an exhausted negative', async () => {
+    const state = installListFake([[MISS], [MISS]]);
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('absent');
+    expect(browser.messages.abortList).not.toHaveBeenCalled();
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('releases the list by draining alone when abortList is unavailable', async () => {
+    const state = installListFake([[HIT], [MISS], [MISS]]);
+    browser.messages.abortList = undefined;
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('present');
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('releases the list after a pre-verdict continuation failure and still reports "error"', async () => {
+    const state = installListFake([[MISS], [MISS], [MISS]], { continueFailures: ['throw'] });
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('error');
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('releases the last known list after a nullish continuation page and reports "error"', async () => {
+    const state = installListFake([[MISS], [MISS], [MISS]], { continueFailures: ['nullish'] });
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('error');
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('keeps a "present" verdict when the finaliser itself fails, logging one fixed line', async () => {
+    installListFake([[HIT], [MISS]]);
+    browser.messages.abortList = vi.fn(async () => { throw new Error('abort failed'); });
+    browser.messages.continueList.mockImplementation(async () => { throw new Error('drain failed'); });
+    const saved = { verboseLogging: SETTINGS.verboseLogging, debugLogging: SETTINGS.debugLogging };
+    SETTINGS.verboseLogging = true;
+    SETTINGS.debugLogging = true;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).resolves.toBe('present');
+      const lines = [...logSpy.mock.calls, ...warnSpy.mock.calls].map(call => String(call[0]));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toContain('msg-1@example.com');
+      expect(lines[0]).not.toContain('abort failed');
+      expect(lines[0]).not.toContain('drain failed');
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      Object.assign(SETTINGS, saved);
+    }
+  });
+
+  it('logs a query failure without the Message-ID or the error text', async () => {
+    browser.messages.query.mockRejectedValue(new Error('msgDB busy for msg-1@example.com'));
+    const saved = { verboseLogging: SETTINGS.verboseLogging, debugLogging: SETTINGS.debugLogging };
+    SETTINGS.verboseLogging = true;
+    SETTINGS.debugLogging = true;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('error');
+      const lines = [...logSpy.mock.calls, ...warnSpy.mock.calls].map(call => String(call[0]));
+      expect(lines.length).toBeGreaterThan(0);
+      for (const line of lines) expect(line).not.toContain('msg-1@example.com');
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      Object.assign(SETTINGS, saved);
+    }
   });
 });
