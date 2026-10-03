@@ -8261,10 +8261,13 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
     const coldDone = () => _testExports._getFolderReconSessionDone().has('account1:/Cold');
 
     let removed = false;
+    let readsBeforeRemoval = -1;
     let coldDoneWhileMissing = false;
     for (let turn = 0; turn < 600 && !(removed && coldDone()); turn++) {
       if (!removed && coldPageReads() >= READS_BEFORE_REMOVAL) {
         removed = true;
+        // A settle may run more than one slice.
+        readsBeforeRemoval = coldPageReads();
         // Exactly what the engine's removeBatch wrapper attributes.
         await runFtsMembershipMutation(
           async () => { installed.nativeRows.delete(removedKey); },
@@ -8283,8 +8286,9 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
     expect(removed).toBe(true);
     expect(coldDone()).toBe(true);
     expect(coldDoneWhileMissing).toBe(false);
-    // One page per slice: the next cold read either resumes or starts over.
-    expect(coldCursors()[READS_BEFORE_REMOVAL] === null).toBe(coldRestarts);
+    // The first cold read after the removal either resumes or starts over.
+    expect(readsBeforeRemoval).toBeLessThan(Math.ceil(COLD_ROWS / reconConfig.membershipListPageSize));
+    expect(coldCursors()[readsBeforeRemoval] === null).toBe(coldRestarts);
   }, TRAFFIC_TEST_TIMEOUT_MS);
 
   // Another folder's event and drained native write also land inside the

@@ -6414,9 +6414,9 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
   const generation = _folderReconGeneration;
   const syncStartedAt = _lastSyncEventMs;
   // The quiet veto protects only the legacy key-range proof, which ordinary
-  // sync traffic invalidates. Exact membership proofs are fenced on the
-  // membership epoch and the sync timestamp instead, so a capable helper
-  // keeps reconciling (and can earn cutover) under sustained traffic.
+  // sync traffic invalidates. Exact membership proofs are fenced on their
+  // folder's own change evidence instead, so a capable helper keeps
+  // reconciling (and can earn cutover) under sustained traffic.
   if (_hasFolderReconForegroundPressure()
       || (!_isFolderMembershipCapable(ftsSearch)
         && Date.now() - _lastSyncEventMs < FOLDER_RECON_SYNC_QUIET_MS)
