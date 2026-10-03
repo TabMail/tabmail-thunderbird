@@ -2359,6 +2359,7 @@ const FOLDER_RECON_CONFIG = {
   pressureDelayMs: 2000,
   errorDelayMs: 10000,
   syncQuietMs: 5000,
+  reverifyIntervalMs: 20 * 60 * 1000,
   ...(SETTINGS?.agentQueues?.ftsFolderRecon || {}),
 };
 // Thunderbird 145 exposes UIDVALIDITY through a signed int32 even though the
@@ -2500,6 +2501,7 @@ const FOLDER_RECON_PACE_DELAY_MS = FOLDER_RECON_CONFIG.paceDelayMs;
 const FOLDER_RECON_PRESSURE_DELAY_MS = FOLDER_RECON_CONFIG.pressureDelayMs;
 const FOLDER_RECON_ERROR_DELAY_MS = FOLDER_RECON_CONFIG.errorDelayMs;
 const FOLDER_RECON_SYNC_QUIET_MS = FOLDER_RECON_CONFIG.syncQuietMs;
+const FOLDER_RECON_REVERIFY_INTERVAL_MS = FOLDER_RECON_CONFIG.reverifyIntervalMs;
 // A completed add-side sweep that still fails exact equality is replayed once
 // immediately (transient native filter failures recover without delay). If the
 // same exact set/key-map proof fails again after that replay, subsequent full
@@ -2565,6 +2567,14 @@ let _folderReconTimerToken = 0;
 let _folderReconTimerDueMs = 0;
 let _folderReconRequestedDueMs = Infinity;
 let _folderReconHardNotBeforeMs = 0;
+// Exact mode's periodic re-verification deadline (0 = not armed). Set by the
+// first exact-mode tick of a generation; only a tick holding the reconcile
+// lease consumes and renews it, so skipped ticks can never postpone it.
+let _folderReconReverifyDueMs = 0;
+// Folders the deadline re-verifies: verified with fast-gate evidence (msgDB
+// token, stable UIDs, usable HIGHESTMODSEQ), so an unchanged one costs a gate
+// check. Other folders keep their once-per-session verification.
+let _folderReconReverifyKeys = new Set();
 let _folderReconSchedulerOwner = null;
 let _folderReconGeneration = 0;
 let _folderReconSessionDone = new Set();
@@ -2759,6 +2769,9 @@ function _recordFolderReconOutcome(stats, elapsedMs) {
   aggregate.unverifiedFolders = Math.max(0, Number(stats?.unverifiedFolders) || 0);
   aggregate.lastElapsedMs = Math.max(0, Number(elapsedMs) || 0);
   if (_folderReconOutcomeChanged(stats)) {
+    // A pass that found or repaired a deficit (a periodic one included) keeps
+    // reconciliation pending until a later pass completes clean.
+    _markFolderReconPending();
     aggregate.dirty = true;
     aggregate.changeSerial++;
     _persistFolderReconOutcome(false);
@@ -4645,6 +4658,7 @@ async function _runFolderReconcile(
   // direction cursors plus fair repeated ticks make total convergence
   // unbounded without storming global rechecks or the incremental body drain.
   const verifiedThisRun = new Set();
+  const reverifiableThisRun = new Set();
   const verifiedEpochByFolder = new Map();
   const memoEpochByFolder = new Map();
   const budget = {
@@ -4752,6 +4766,7 @@ async function _runFolderReconcile(
       }
     }
     openAttempt = { folderId: f.folderId, gateSample };
+    if (gateSample && _usableHighestModSeq(f.highestModSeq)) reverifiableThisRun.add(folderKey);
 
     // Fast gate (exact mode): the msgDB that earned the checkpoint, with
     // unchanged UIDVALIDITY, HIGHESTMODSEQ, no pending offline operations,
@@ -5402,6 +5417,7 @@ async function _runFolderReconcile(
   stats.unverifiedFolders = _folderReconUnverified.size;
   Object.defineProperty(stats, "_verifiedThisRun", { value: verifiedThisRun });
   Object.defineProperty(stats, "_verifiedEpochByFolder", { value: verifiedEpochByFolder });
+  Object.defineProperty(stats, "_reverifiableThisRun", { value: reverifiableThisRun });
   const elapsed = Date.now() - reconStart;
   log(`[FTS FolderRecon] Complete: ${stats.foldersTotal} folders (${stats.foldersMemoHit} memo-hit, ${stats.foldersClean} clean, ${stats.foldersReconciled} reconciled, ${stats.foldersDrainBusy} drain-busy, ${stats.foldersErrored} errored, ${stats.foldersFailed} failed, ${stats.foldersBudgetPartial} budget-partial, ${stats.foldersLocalDrift} local-drift, ${stats.foldersBackoff} backed-off), ${stats.staleRemoved} stale removed (${stats.staleCandidates} candidates, ${stats.recheckKeptPresent} present, ${stats.recheckKeptError} recheck-errors), ${stats.missingEnqueued} missing enqueued, ${stats.orphanRemoved} orphans removed, ${elapsed}ms`);
   logFtsBatchOperation("folder_recon", "complete", { ...stats, rerun: !!onlyFolderKeys, elapsedMs: elapsed });
@@ -6265,6 +6281,37 @@ async function _runFolderMembershipMigrationSlice(
 
 /** Run one fair, bounded-cost folder/orphan slice and arrange the next tick. */
 async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
+  try {
+    return await _runFolderReconSchedulerSlice(ftsSearch);
+  } finally {
+    // Every exit keeps the periodic deadline armed while a folder needs it.
+    // The wake only ever moves the timer earlier, so it never postpones other
+    // eligible work.
+    const remainingMs = _folderReconReverifyDueMs - Date.now();
+    if (_folderReconReverifyDueMs > 0 && remainingMs > 0 && _folderReconReverifyKeys.size > 0) {
+      _wakeFolderRecon("reverify_deadline", remainingMs);
+    }
+  }
+}
+
+// Consumed only under the reconcile lease. A due deadline starts a new
+// verification pass over every gate-capable folder; unchanged ones pass the
+// fast gate.
+// The orphan and membership-state passes are bound to their own inputs and
+// are not repeated.
+function _consumeFolderReconReverifyDeadline(exactMembership) {
+  if (!exactMembership) return;
+  const nowMs = Date.now();
+  if (_folderReconReverifyDueMs === 0) {
+    _folderReconReverifyDueMs = nowMs + FOLDER_RECON_REVERIFY_INTERVAL_MS;
+    return;
+  }
+  if (nowMs < _folderReconReverifyDueMs) return;
+  for (const folderKey of _folderReconReverifyKeys) _folderReconSessionDone.delete(folderKey);
+  _folderReconReverifyDueMs = nowMs + FOLDER_RECON_REVERIFY_INTERVAL_MS;
+}
+
+async function _runFolderReconSchedulerSlice(ftsSearch) {
   _bumpFolderReconTelemetry("schedulerTicks");
   if (!_isEnabled || !ftsSearch || _indexerDisposed) return { skipped: true, reason: "disabled" };
   if (Date.now() < _folderReconHardNotBeforeMs) {
@@ -6298,6 +6345,7 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
   const owner = { generation, reconcileLease, syncStartedAt };
   _folderReconSchedulerOwner = owner;
   const folderMembershipCapable = _observeFolderMembershipCapability(ftsSearch);
+  _consumeFolderReconReverifyDeadline(_useExactFolderMembership(ftsSearch));
   _folderMembershipPageBudget = 1;
   _bumpFolderReconTelemetry("schedulerSlices");
   try {
@@ -6353,6 +6401,10 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
       }
     }
     const exactMembership = _useExactFolderMembership(ftsSearch);
+    // Cutover earned by this tick's migration slice arms the deadline now.
+    if (exactMembership && _folderReconReverifyDueMs === 0) {
+      _consumeFolderReconReverifyDeadline(true);
+    }
     const ambiguous = exactMembership
       ? { folderKeys: new Set(), groups: 0 }
       : _folderReconAmbiguousKeyspaces(identities);
@@ -6584,6 +6636,8 @@ async function _runFolderReconSchedulerTick(ftsSearch = _ftsSearch) {
         && (stats.foldersDrainBusy || 0) === 0
         && (stats.missingEnqueued || 0) === 0) {
       _folderReconSessionDone.add(target);
+      if (stats._reverifiableThisRun?.has(target)) _folderReconReverifyKeys.add(target);
+      else _folderReconReverifyKeys.delete(target);
       _folderReconSessionDeferred.delete(target);
       _folderReconFailureCounts.delete(target);
     } else if (checkpoint?.partialRetryNotBeforeMs > Date.now()) {
@@ -6980,6 +7034,8 @@ export async function initIncrementalIndexer(ftsSearch) {
   _folderReconTimerDueMs = 0;
   _folderReconRequestedDueMs = Infinity;
   _folderReconHardNotBeforeMs = 0;
+  _folderReconReverifyDueMs = 0;
+  _folderReconReverifyKeys = new Set();
   _folderReconNativeSupport = null;
   _folderReconNativeProbeFailures = { connectionGeneration: null, count: 0 };
   _folderReconConnectionUnsubscribe?.();
@@ -7130,6 +7186,8 @@ export async function disposeIncrementalIndexer() {
   _folderReconTimerDueMs = 0;
   _folderReconRequestedDueMs = Infinity;
   _folderReconHardNotBeforeMs = 0;
+  _folderReconReverifyDueMs = 0;
+  _folderReconReverifyKeys = new Set();
   // Set BEFORE awaiting anything — any in-flight heartbeat that hasn't
   // yet reached its post-read disposal check should now see this true
   // and skip its write.
@@ -7391,6 +7449,8 @@ export const _testExports = {
     _folderReconTimerDueMs = 0;
     _folderReconRequestedDueMs = Infinity;
     _folderReconHardNotBeforeMs = 0;
+    _folderReconReverifyDueMs = 0;
+    _folderReconReverifyKeys = new Set();
     _folderReconSchedulerOwner = null;
     _folderReconSessionDone = new Set();
     _folderReconSessionDeferred = new Map();
@@ -7454,6 +7514,7 @@ export const _testExports = {
     _folderReconOrphanDone = orphanDone === true;
     _folderReconOrphanPass = orphanPass || null;
   },
+  _getFolderReconReverifyDueMs: () => _folderReconReverifyDueMs,
   _getFolderReconGeneration: () => _folderReconGeneration,
   _setFolderReconHardNotBeforeMs,
   _reconStorageTransaction,

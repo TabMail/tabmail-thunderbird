@@ -25,6 +25,7 @@ const reconConfig = {
   pressureDelayMs: 250,
   errorDelayMs: 1000,
   syncQuietMs: 5000,
+  reverifyIntervalMs: 20 * 60 * 1000,
 };
 
 // Capture real primitives before any test installs fake timers. Scheduler
@@ -7174,6 +7175,105 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     expect(memoFor('account1:/A')).toMatchObject({ verified: true, highestModSeq: '101', rangeCount: 2 });
 
     await expectRepairedNextSession(fts, lateKey);
+  });
+
+  describe('periodic re-verification deadline', () => {
+    const intervalMs = reconConfig.reverifyIntervalMs;
+    const dueMs = () => _testExports._getFolderReconReverifyDueMs();
+
+    it('repairs a late native removal no event announced within one interval, with fresh membership pages', async () => {
+      const { fts, nativeRows } = installGateFolders(specs);
+      await finishSession(fts);
+      expect(dueMs()).toBeGreaterThan(Date.now());
+      // Physically removed after its digest was cached: no epoch, no event.
+      const lateKey = 'account1:/A:a-2@example.com';
+      nativeRows.delete(lateKey);
+      clearNativeCalls(fts);
+
+      await finishSession(fts);
+      expect(_testExports._getPendingUpdates().has(lateKey)).toBe(false);
+      expect(fts.fingerprintMsgIdRange).not.toHaveBeenCalled();
+
+      vi.setSystemTime(dueMs());
+      await tickUntil(fts, value => value?.complete === true || _testExports._getPendingUpdates().has(lateKey), 60);
+      expect(_testExports._getPendingUpdates().has(lateKey)).toBe(true);
+      expect(fts.listFolderMembership).toHaveBeenCalled();
+      expect(_testExports._isFolderReconPending()).toBe(true);
+    });
+
+    it('re-verifies unchanged folders across two intervals with zero enumeration and zero storage writes', async () => {
+      const { fts } = installGateFolders(specs);
+      await finishSession(fts);
+      for (let interval = 0; interval < 2; interval++) {
+        clearNativeCalls(fts);
+        globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockClear();
+        globalThis.browser.storage.local.set.mockClear();
+        globalThis.browser.storage.local.remove.mockClear();
+        const due = dueMs();
+        vi.setSystemTime(due);
+        await finishSession(fts);
+
+        expect(fts.fingerprintMsgIdRange).toHaveBeenCalledTimes(2);
+        expect(fts.listFolderMembership).not.toHaveBeenCalled();
+        expect(fts.listMsgIdRange).not.toHaveBeenCalled();
+        expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).not.toHaveBeenCalled();
+        expect(globalThis.browser.messages.query).not.toHaveBeenCalled();
+        expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+        expect(globalThis.browser.storage.local.remove).not.toHaveBeenCalled();
+        expect(dueMs()).toBeGreaterThanOrEqual(due + intervalMs);
+        expect(_testExports._isFolderReconPending()).toBe(false);
+      }
+    });
+
+    it('does not move the deadline for ticks inside the interval or for skips at the deadline', async () => {
+      const { fts } = installGateFolders(specs);
+      await finishSession(fts);
+      const due = dueMs();
+
+      vi.setSystemTime(due - 60_000);
+      await settleSchedulerTickWithFakeTimers(fts);
+      expect(dueMs()).toBe(due);
+
+      vi.setSystemTime(due);
+      getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false });
+      expect(await settleSchedulerTickWithFakeTimers(fts)).toMatchObject({ skipped: true, reason: 'pressure' });
+      expect(dueMs()).toBe(due);
+      expect(_testExports._getFolderReconSessionDone().size).toBe(2);
+
+      getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
+      clearNativeCalls(fts);
+      await finishSession(fts);
+      expect(dueMs()).toBeGreaterThan(due);
+      expect(fts.fingerprintMsgIdRange).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-verifies only gate-capable folders and keeps the others verified once per session', async () => {
+      const { fts, folders } = installGateFolders(specs);
+      folders[1].highestModSeq = '';
+      await finishSession(fts);
+      globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockClear();
+      clearNativeCalls(fts);
+
+      vi.setSystemTime(dueMs());
+      await finishSession(fts);
+      expect(fts.fingerprintMsgIdRange).toHaveBeenCalledTimes(1);
+      expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).not.toHaveBeenCalled();
+    });
+
+    it('arms one deadline timer while idle, none after dispose, and a fresh deadline after re-init', async () => {
+      const { fts } = installGateFolders(specs);
+      _testExports._setFtsSearch(fts);
+      await finishSession(fts);
+      const due = dueMs();
+      vi.clearAllTimers();
+      await settleSchedulerTickWithFakeTimers(fts);
+      expect(vi.getTimerCount()).toBe(1);
+      expect(dueMs()).toBe(due);
+
+      await incrementalIndexer.disposeIncrementalIndexer();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(dueMs()).toBe(0);
+    });
   });
 
   it('control: an unchanged folder after a certification enqueues nothing', async () => {
