@@ -2590,9 +2590,10 @@ describe('legacy orphan pass: one-shot basis, fenced walk, retained terminal saf
   });
 
   it.each([
-    ['late commit behind the cursor', true],
-    ['no late commit (control)', false],
-  ])('replays a walk whose terminal fingerprint drifted: %s', async (_label, lateCommit) => {
+    ['late commit behind the cursor', true, false],
+    ['late commit balanced by a removal behind the cursor (same count)', true, true],
+    ['no late commit (control)', false, false],
+  ])('replays a walk whose terminal fingerprint drifted: %s', async (_label, lateCommit, balanced) => {
     const identities = [folderA({ uidCount: 101 })];
     const valid = Array.from({ length: 101 }, (_, index) =>
       KEY_A(`valid-${String(index).padStart(3, '0')}@example.com`));
@@ -2600,7 +2601,10 @@ describe('legacy orphan pass: one-shot basis, fenced walk, retained terminal saf
     // Built for /AGone before that folder was removed; its RPC timed out and
     // it commits natively later with no second membership epoch advance.
     const aGone = 'account1:/AGone:late@example.com';
-    const fts = makeFtsStore([...valid, zGone]);
+    // A live row the drain removes natively in the same window, so the
+    // balanced variant leaves the walk's row count unchanged.
+    const drained = KEY_A('aaa-drained@example.com');
+    const fts = makeFtsStore([...valid, zGone, drained]);
     recheckMessageInFolder.mockResolvedValue('absent');
 
     let committed = false;
@@ -2615,8 +2619,10 @@ describe('legacy orphan pass: one-shot basis, fenced walk, retained terminal saf
       // Commit only during a walk that removes nothing itself, once its
       // cursor is past the late key's position.
       if (lateCommit && !committed && !fts._keys.has(zGone)
-          && pass?.cursor && sqliteBinaryCompare(pass.cursor, aGone) > 0) {
+          && pass?.cursor && sqliteBinaryCompare(pass.cursor, aGone) > 0
+          && sqliteBinaryCompare(pass.cursor, drained) > 0) {
         fts._keys.add(aGone);
+        if (balanced) fts._keys.delete(drained);
         committed = true;
       }
     }
@@ -2624,7 +2630,9 @@ describe('legacy orphan pass: one-shot basis, fenced walk, retained terminal saf
     expect(_testExports._getFolderReconOrphanPass()?.complete).toBe(true);
     expect(committed).toBe(lateCommit);
     expect(completedWithLateRow).toBe(false);
+    expect(fts._keys.has(aGone)).toBe(false);
     expect(fts._keys.has(zGone)).toBe(false);
+    expect(fts._keys.has(drained)).toBe(!balanced);
     for (const key of valid) expect(fts._keys.has(key)).toBe(true);
     expect(recheckMessageInFolder).toHaveBeenCalledTimes(lateCommit ? 2 : 1);
   });

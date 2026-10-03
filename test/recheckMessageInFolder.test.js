@@ -250,13 +250,17 @@ describe('recheckMessageInFolder', () => {
  * produce; `abortList` stops production (later pages are dropped) but the list
  * stays registered until a terminal page is handed out.
  */
-function installListFake(pages, { listId = 'list-1', continueFailures = [] } = {}) {
+// `buffered` is how many pages Thunderbird has already produced. abortList
+// stops further production only: buffered pages are still delivered, and the
+// list stays registered until its terminal page (no `id`) is consumed.
+function installListFake(pages, { listId = 'list-1', continueFailures = [], buffered = pages.length } = {}) {
   const state = { outstanding: 0, aborted: false, next: 0 };
   const failures = [...continueFailures];
   const pageAt = index => {
-    const last = state.aborted || index >= pages.length - 1;
+    const end = state.aborted ? Math.min(pages.length, buffered) : pages.length;
+    const last = index >= end - 1;
     if (last) state.outstanding = 0;
-    return { ...(last ? {} : { id: listId }), messages: pages[index] || [] };
+    return { ...(last ? {} : { id: listId }), messages: index < end ? pages[index] : [] };
   };
   browser.messages.query.mockImplementation(async () => {
     state.outstanding = pages.length > 1 ? 1 : 0;
@@ -285,6 +289,23 @@ describe('recheckMessageInFolder list lifecycle', () => {
 
     expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('present');
     expect(browser.messages.abortList).toHaveBeenCalledWith('list-1');
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('drains every buffered page after aborting a first-page match', async () => {
+    const state = installListFake([[HIT], [MISS], [MISS], [MISS]]);
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('present');
+    expect(browser.messages.abortList).toHaveBeenCalledWith('list-1');
+    expect(browser.messages.continueList).toHaveBeenCalledTimes(3);
+    expect(state.outstanding).toBe(0);
+  });
+
+  it('stops at the terminal page once abort halts production of unbuffered pages', async () => {
+    const state = installListFake([[HIT], [MISS], [MISS], [MISS]], { buffered: 2 });
+
+    expect(await recheckMessageInFolder('msg-1@example.com', WE_FOLDER)).toBe('present');
+    expect(browser.messages.continueList).toHaveBeenCalledTimes(1);
     expect(state.outstanding).toBe(0);
   });
 
