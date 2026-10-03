@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { makeFolderMembershipId } from '../fts/folderMembershipIdentity.js';
+import { folderMembershipScope, makeFolderMembershipId } from '../fts/folderMembershipIdentity.js';
 import { experimentFunctions } from './helpers/experimentFunctions.js';
 
 const reconConfig = {
@@ -7408,15 +7408,19 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     // No scheduler path in this harness lets a native write land between
     // the pre-proof sample and the proof's epoch read without first
     // resampling; this pins the rule at the one place that enforces it.
-    it('the sample epoch: earns no gate fields from a sample of another epoch than the proof', () => {
-      const opening = { incarnationToken: 'token', uidValidity: 7, numMessages: 2 };
+    it('the sample epoch: earns no gate fields once the folder changed after its sample', async () => {
+      const folderId = makeFolderMembershipId('account1', '/A');
+      const opening = { folderId, incarnationToken: 'token', uidValidity: 7, numMessages: 2 };
       const proof = { stableUidKeys: true, uidValidity: 7 };
-      const sample = { epoch: 4, rangeCount: 2, rangeSha256: 'digest' };
+      const sample = { epoch: getFtsMembershipEpoch(), rangeCount: 2, rangeSha256: 'digest' };
+      const earned = { incarnationToken: 'token', numMessages: 2, rangeCount: 2, rangeSha256: 'digest' };
 
-      expect(_testExports._folderReconEarnedGateFields(opening, sample, proof, 4)).toEqual({
-        incarnationToken: 'token', numMessages: 2, rangeCount: 2, rangeSha256: 'digest',
-      });
-      expect(_testExports._folderReconEarnedGateFields(opening, sample, proof, 5)).toBeNull();
+      // A write in another folder leaves the sample usable.
+      await runFtsMembershipMutation(async () => ({ count: 1 }), null,
+        new Set([makeFolderMembershipId('account1', '/B')]));
+      expect(_testExports._folderReconEarnedGateFields(opening, sample, proof)).toEqual(earned);
+      await runFtsMembershipMutation(async () => ({ count: 1 }), null, new Set([folderId]));
+      expect(_testExports._folderReconEarnedGateFields(opening, sample, proof)).toBeNull();
     });
 
     it('UIDVALIDITY: a changed UIDVALIDITY under the same incarnation token misses the gate', async () => {
@@ -7781,6 +7785,100 @@ describe('capability-keyed quiet veto (sustained sync traffic)', () => {
     expect(await settleSchedulerTickWithFakeTimers(fts)).toMatchObject({ skipped: true, reason: 'pressure' });
     expect(globalThis.browser.tmMsgNotify.getFolderState).not.toHaveBeenCalled();
   });
+});
+
+describe('folder-scoped change evidence (sustained traffic in another folder)', () => {
+  const EVENT_GAP_MS = 4_000;
+  const TRAFFIC_MS = 31 * 60_000;
+  const SLICE_STEP_MS = 250;
+  // More native membership pages than slices fit between two events.
+  const COLD_ROWS = 20 * reconConfig.membershipListPageSize + 1;
+  // Thousands of simulated slices; real time only.
+  const TRAFFIC_TEST_TIMEOUT_MS = 120_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+  });
+  afterEach(() => {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  // Earned exact mode. A late native removal no event announced (P6) left
+  // the cold folder one row short.
+  function seedColdAndHot() {
+    const cold = Array.from({ length: COLD_ROWS }, (_, i) => `cold-${String(i).padStart(4, '0')}@example.com`);
+    const installed = seedMigratedExactFolders([
+      { folderPath: '/Cold', headerMessageIds: cold },
+      { folderPath: '/Hot', headerMessageIds: ['hot-seed@example.com'] },
+    ]);
+    const missingKey = `account1:/Cold:${cold[COLD_ROWS >> 1]}`;
+    installed.nativeRows.delete(missingKey);
+    return { ...installed, missingKey };
+  }
+
+  // The healthy drain: every queued add is written natively under the
+  // folder scope the engine wrapper attributes (pinned separately in
+  // ftsMembershipScopeAttribution.test.js) before the next event arrives.
+  async function drainPending(nativeRows) {
+    const pending = _testExports._getPendingUpdates();
+    for (const [msgId, entry] of [...pending]) {
+      pending.delete(msgId);
+      const folderId = makeFolderMembershipId('account1', entry.folderKey.slice('account1:'.length));
+      await runFtsMembershipMutation(
+        async () => { nativeRows.set(msgId, folderId); },
+        null,
+        folderMembershipScope([msgId], [folderId]),
+      );
+    }
+  }
+
+  // A real message event in `eventFolderPath` every EVENT_GAP_MS.
+  async function underTraffic({ fts, nativeRows }, until, eventFolderPath = '/Hot') {
+    let event = 0;
+    for (let elapsedMs = 0; elapsedMs < TRAFFIC_MS && !until(); elapsedMs += EVENT_GAP_MS) {
+      await _testExports.onExperimentMessageAdded({
+        accountId: 'account1',
+        folderPath: eventFolderPath,
+        headerMessageId: `traffic-${event++}@example.com`,
+        msgKey: 100_000 + event,
+        eventType: 'msgAdded',
+      });
+      await drainPending(nativeRows);
+      for (let stepMs = 0; stepMs < EVENT_GAP_MS && !until(); stepMs += SLICE_STEP_MS) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        await drainPending(nativeRows);
+        vi.setSystemTime(Date.now() + SLICE_STEP_MS);
+      }
+    }
+    return until();
+  }
+
+  it('repairs and completes a cold multi-page folder while another folder receives mail every 4 s', async () => {
+    const installed = seedColdAndHot();
+    const cold = installed.folders[0];
+    _testExports._setFtsSearch(installed.fts);
+
+    const repaired = () => installed.nativeRows.get(installed.missingKey) === cold.folderId
+      && _testExports._getFolderReconSessionDone().has(`account1:${cold.folderPath}`);
+    expect(await underTraffic(installed, repaired)).toBe(true);
+    expect(installed.fts.listFolderMembership.mock.calls
+      .some(([folderId]) => folderId === cold.folderId)).toBe(true);
+  }, TRAFFIC_TEST_TIMEOUT_MS);
+
+  it('control: the same traffic aimed at the cold folder itself keeps restarting its proof', async () => {
+    const installed = seedColdAndHot();
+    const cold = installed.folders[0];
+    _testExports._setFtsSearch(installed.fts);
+
+    const done = () => _testExports._getFolderReconSessionDone().has(`account1:${cold.folderPath}`);
+    // Bounded window: the folder's own changes keep invalidating its pages.
+    const windowEnd = Date.now() + 5 * 60_000;
+    expect(await underTraffic(installed, () => done() || Date.now() >= windowEnd, '/Cold')).toBe(true);
+    expect(done()).toBe(false);
+  }, TRAFFIC_TEST_TIMEOUT_MS);
 });
 
 describe('membership assignment scoped query list lifecycle', () => {

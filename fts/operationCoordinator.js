@@ -207,9 +207,13 @@ export async function withFtsMembershipFence(
     try {
       return await fn(_membershipFenceToken);
     } finally {
-      const fencedScope = _membershipFenceScope;
+      let fencedScope = _membershipFenceScope;
       _membershipFenceScope = null;
       if (mutation) {
+        // The fenced folders are always recorded; an unscoped fence whose
+        // callback attributed nothing is conservatively the wildcard.
+        if (scope !== null) fencedScope = _mergeMembershipScope(fencedScope, scope);
+        else if (fencedScope.size === 0) fencedScope = "*";
         _membershipEpoch = Math.min(Number.MAX_SAFE_INTEGER, _membershipEpoch + 1);
         _recordMembershipScope(fencedScope, _membershipEpoch);
       }

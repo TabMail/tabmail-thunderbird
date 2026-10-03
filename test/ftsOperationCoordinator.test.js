@@ -320,6 +320,23 @@ describe('folder-scoped membership change ledger', () => {
     expect(mod.ftsMembershipUnchangedSince([H], third)).toBe(true);
   });
 
+  it('records a mutation fence\'s own scope, and the wildcard for an unscoped fence that attributed nothing', async () => {
+    const mod = await coordinator();
+    const since = mod.getFtsMembershipEpoch();
+    await mod.withFtsMembershipFence(since, async () => {}, { mutation: true, scope: [C] });
+    expect(mod.ftsMembershipUnchangedSince([C], since)).toBe(false);
+    expect(mod.ftsMembershipUnchangedSince([H], since)).toBe(true);
+
+    const second = mod.getFtsMembershipEpoch();
+    await mod.withFtsMembershipFence(second, async () => {}, { mutation: true });
+    expect(mod.ftsMembershipUnchangedSince([H], second)).toBe(false);
+
+    const third = mod.getFtsMembershipEpoch();
+    await mod.withFtsMembershipFence(third, async () => {});
+    expect(mod.ftsMembershipUnchangedSince([C], third)).toBe(true);
+    expect(mod.getFtsMembershipEpoch()).toBe(third);
+  });
+
   it('lets a scoped fence pass unrelated traffic and refuses a change to its folder', async () => {
     const mod = await coordinator();
     const since = mod.getFtsMembershipEpoch();
