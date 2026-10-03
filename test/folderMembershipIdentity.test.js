@@ -33,15 +33,22 @@ describe("folder-scope attribution of native keys", () => {
       .toEqual([makeFolderMembershipId("account1", "/INBOX")]);
   });
 
-  it("names every split of colon-bearing paths, Message-IDs and account ids", () => {
-    const candidates = folderMembershipIdCandidatesForKey("acct:work:/F:Child:id:part@example.com");
-    for (const [accountId, folderPath] of [
-      ["acct:work", "/F:Child"],
-      ["acct:work", "/F"],
-      ["acct", "work:/F"],
-    ]) {
-      expect(candidates).toContain(makeFolderMembershipId(accountId, folderPath));
-    }
+  it("names every path split of colon-bearing paths and Message-IDs, under the first-colon account", () => {
+    expect(folderMembershipIdCandidatesForKey("account1:/F:Child:id:part@example.com")).toEqual([
+      makeFolderMembershipId("account1", "/F"),
+      makeFolderMembershipId("account1", "/F:Child"),
+      makeFolderMembershipId("account1", "/F:Child:id"),
+    ]);
+  });
+
+  // One candidate per ":" after the account: a colon-heavy Message-ID costs
+  // linear work, never one identity per pair of colons.
+  it("names one candidate per later colon for a colon-heavy Message-ID", () => {
+    const pairs = 450;
+    const key = `account1:/INBOX:${"a:".repeat(pairs)}x@example.com`;
+    const candidates = folderMembershipIdCandidatesForKey(key);
+    expect(candidates).toHaveLength(pairs + 1);
+    expect(candidates[0]).toBe(makeFolderMembershipId("account1", "/INBOX"));
   });
 
   it("attributes a child folder's key to its parent's key range too", () => {

@@ -6684,6 +6684,12 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
       _folderReconSessionDeferred.delete(target);
     }
     _folderReconDirty.delete(target);
+    // A local change to the target (or a wildcard one) after this point may
+    // land after the operation's last own check — during its checkpoint
+    // write or the memo reload — and may queue nothing (a removal whose
+    // Message-ID Thunderbird could not read), so it withholds the grant.
+    // Changes to other folders do not.
+    const targetLocalScope = _folderReconLocalScope(target);
     let stats;
     try {
       stats = await _runFolderReconcile(
@@ -6739,6 +6745,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
             `${identity.accountId}:${identity.folderPath}` === target)),
           stats?._verifiedEpochByFolder?.get(target),
         )
+        && _folderReconLocalUnchangedSince(target, targetLocalScope.since)
         && (stats.foldersErrored || 0) === 0
         && (stats.foldersFailed || 0) === 0
         && (stats.foldersDrainBusy || 0) === 0
@@ -7482,6 +7489,10 @@ export async function clearPendingUpdates() {
 export { _reconcileCleanupStaleEntries };
 
 export const _testExports = {
+  _noteFolderReconLocalChange,
+  _folderReconLocalScope,
+  _folderReconLocalUnchangedSince,
+  FOLDER_RECON_CHANGE_LEDGER_CAP,
   _getRetryConfig,
   _shouldDropFailedUpdates,
   _markResolveFailed,

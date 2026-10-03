@@ -30,8 +30,9 @@ let _membershipLedgerCap = FTS_MEMBERSHIP_LEDGER_CONFIG.changeLedgerCap;
 let _membershipTouched = new Map();
 let _membershipWildcardEpoch = 0;
 let _membershipTouchFloor = 0;
-// Registered real folder ids; null until the first inventory (then every
-// candidate is recorded). It only grows within a session.
+// Real folder ids of the latest inventory; null until the first one (then
+// every candidate is recorded). Bounded by the live inventory: a folder that
+// leaves it has no proof left to protect (runtime pruning releases it).
 let _membershipFolderUniverse = null;
 // The raw scopes a running fence's callback attributed, or "*".
 let _membershipFenceScope = null;
@@ -139,17 +140,20 @@ function _resolveMembershipScope(scope) {
   return resolved;
 }
 
-// Registers real folder ids (reconciliation's inventory). A newly registered
-// folder is recorded as changed now: changes to it before registration were
-// not attributed, and no stamp older than this may trust them.
+// Replaces the universe with reconciliation's current inventory. A folder
+// new to it (including one returning after it left) is recorded as changed
+// now: changes to it while unregistered were not attributed, and no stamp
+// older than this may trust them.
 export function registerFtsMembershipFolders(folderIds) {
-  if (_membershipFolderUniverse === null) _membershipFolderUniverse = new Set();
+  const previous = _membershipFolderUniverse || new Set();
+  const universe = new Set();
   const added = [];
   for (const folderId of folderIds) {
-    if (!folderId || _membershipFolderUniverse.has(folderId)) continue;
-    _membershipFolderUniverse.add(folderId);
-    added.push(folderId);
+    if (!folderId || universe.has(folderId)) continue;
+    universe.add(folderId);
+    if (!previous.has(folderId)) added.push(folderId);
   }
+  _membershipFolderUniverse = universe;
   if (added.length > 0) _recordMembershipScope(added, _membershipEpoch);
 }
 

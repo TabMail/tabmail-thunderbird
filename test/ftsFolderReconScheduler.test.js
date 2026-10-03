@@ -91,6 +91,15 @@ vi.mock('../fts/indexer.js', () => ({
   populateBatchBody: vi.fn(),
 }));
 
+// The native helper behind the real engine wrappers (fts/engine.js); only
+// the traffic fixtures route writes through them.
+const fakeNativeFts = vi.hoisted(() => ({ indexBatch: vi.fn() }));
+vi.mock('../fts/nativeEngine.js', () => ({
+  initNativeFts: vi.fn(async () => true),
+  nativeFtsSearch: fakeNativeFts,
+  nativeMemorySearch: {},
+}));
+
 const storageData = {};
 globalThis.browser = {
   storage: {
@@ -133,6 +142,7 @@ const {
   writeOwnedFtsScanStatus,
 } = await import('../fts/operationCoordinator.js');
 const incrementalIndexer = await import('../fts/incrementalIndexer.js');
+const { ftsSearch: engineFtsSearch } = await import('../fts/engine.js');
 const { _testExports, flushPendingUpdates, getIncrementalIndexerStatus } = incrementalIndexer;
 
 function emptyDigest() {
@@ -7991,6 +8001,50 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     });
   });
 
+  // A gate hit and a UID-tier hit return right after their closing read; a
+  // removal Thunderbird reports without a Message-ID after that read queues
+  // nothing, so the session-done grant must refuse the folder.
+  it.each([
+    ['the fast gate', () => {}],
+    ['the UID tier', folders => { folders[0].highestModSeq = '101'; }],
+  ])('withholds completion when the folder changes right after %s\'s closing read, then repairs it', async (_name, steer) => {
+    const { fts, folders, rowsByURI, nativeRows } = installGateFolders(specs);
+    await finishSession(fts);
+    steer(folders);
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let fired = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
+      const result = await state(accountId, folderPath, options);
+      if (!fired && folderPath === '/A' && options === undefined) {
+        fired = true;
+        const rows = rowsByURI.get(folders[0].folderURI);
+        rows.splice(rows.findIndex(row => row.headerMessageId === 'a-2@example.com'), 1);
+        await _testExports.onExperimentMessageRemoved({
+          accountId: 'account1',
+          folderPath: '/A',
+          weFolderId: folders[0].weFolderId,
+          headerMessageId: '',
+          msgKey: 2,
+          eventType: 'msgDeleted',
+        });
+      }
+      return result;
+    });
+
+    restartSession();
+    for (let turn = 0; turn < 30 && !fired; turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      vi.setSystemTime(Date.now() + 100);
+    }
+    expect(fired).toBe(true);
+    expect(_testExports._getFolderReconSessionDone().has('account1:/A')).toBe(false);
+    expect(_testExports._getPendingUpdates().size).toBe(0);
+
+    await settleWithDrain(fts, nativeRows, folders[0].folderId, 60 * 60_000);
+    expect(nativeRows.has('account1:/A:a-2@example.com')).toBe(false);
+    expect(nativeRows.has('account1:/A:a-1@example.com')).toBe(true);
+  });
+
   it('control: an unchanged folder after a certification enqueues nothing', async () => {
     const { fts } = installGateFolders(specs);
     await finishSession(fts);
@@ -8103,29 +8157,39 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
     ]);
     const missingKey = `account1:/Cold:${cold[COLD_ROWS >> 1]}`;
     installed.nativeRows.delete(missingKey);
+    installRealDrain(installed);
     return { ...installed, missingKey };
   }
 
-  // The healthy drain: every queued add is written natively under the
-  // folder scope the engine wrapper attributes (pinned separately in
-  // ftsMembershipScopeAttribution.test.js) before the next event arrives.
-  async function drainPending(nativeRows) {
-    const pending = _testExports._getPendingUpdates();
-    for (const [msgId, entry] of [...pending]) {
-      pending.delete(msgId);
-      const folderId = makeFolderMembershipId('account1', entry.folderKey.slice('account1:'.length));
-      await runFtsMembershipMutation(
-        async () => { nativeRows.set(msgId, folderId); },
-        null,
-        { msgIds: [msgId], folderIds: [folderId] },
-      );
-    }
+  // The production drain: queued adds are resolved to headers, filtered
+  // against the native index and written through the real engine wrapper
+  // (which attributes each row to its folder) into the fake native backend.
+  function installRealDrain({ fts, nativeRows }) {
+    const headers = new Map();
+    headerIDToWeID.mockImplementation(async (headerID, weFolder) => {
+      const weID = headers.size + 1;
+      headers.set(weID, { id: weID, headerMessageId: headerID, folder: { accountId: weFolder.accountId, path: weFolder.path } });
+      return weID;
+    });
+    globalThis.browser.messages.get = vi.fn(async weID => headers.get(weID) || null);
+    const keyOf = header => `${header.folder.accountId}:${header.folder.path}:${header.headerMessageId}`;
+    buildBatchHeader.mockImplementation(async batch => batch.map(header => ({
+      msgId: keyOf(header),
+      folderId: makeFolderMembershipId(header.folder.accountId, header.folder.path),
+    })));
+    getUniqueMessageKey.mockImplementation(async header => keyOf(header));
+    populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+    fakeNativeFts.indexBatch.mockImplementation(async rows => {
+      for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+      return { count: rows.length };
+    });
+    fts.indexBatch = (rows, token) => engineFtsSearch.indexBatch(rows, token);
   }
 
   // A real message event in `eventFolderPath` every EVENT_GAP_MS. An
   // unconverted event is the experiment's fallback when the folder manager
   // cannot convert the folder: server key and folder URI, no weFolderId.
-  async function underTraffic({ fts, nativeRows, folders }, until, eventFolderPath = '/Hot', {
+  async function underTraffic({ fts, folders, rowsByURI }, until, eventFolderPath = '/Hot', {
     unconverted = false,
     messageId = n => `traffic-${n}@example.com`,
   } = {}) {
@@ -8137,33 +8201,83 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
           folderPath: eventFolderPath,
           weFolderId: folders.find(folder => folder.folderPath === eventFolderPath).weFolderId,
         };
+    const eventFolder = folders.find(folder => folder.folderPath === eventFolderPath);
     for (let elapsedMs = 0; elapsedMs < TRAFFIC_MS && !until(); elapsedMs += EVENT_GAP_MS) {
+      const headerMessageId = messageId(event++);
+      const msgKey = 100_000 + event;
+      // The message lands in the folder's msgDB, then Thunderbird announces it.
+      rowsByURI.get(eventFolder.folderURI).push({ msgKey, headerMessageId });
       await _testExports.onExperimentMessageAdded({
         ...location,
-        headerMessageId: messageId(event++),
-        msgKey: 100_000 + event,
+        headerMessageId,
+        msgKey,
         eventType: 'msgAdded',
       });
-      await drainPending(nativeRows);
+      await flushPendingUpdates();
       for (let stepMs = 0; stepMs < EVENT_GAP_MS && !until(); stepMs += SLICE_STEP_MS) {
         await settleSchedulerTickWithFakeTimers(fts);
-        await drainPending(nativeRows);
+        await flushPendingUpdates();
         vi.setSystemTime(Date.now() + SLICE_STEP_MS);
       }
     }
     return until();
   }
 
-  it('repairs and completes a cold multi-page folder while another folder receives mail every 4 s', async () => {
+  // The cold folder is one row short and one stale row long natively.
+  function seedColdRepairs() {
     const installed = seedColdAndHot();
-    const cold = installed.folders[0];
+    const staleKey = 'account1:/Cold:stale@example.com';
+    installed.nativeRows.set(staleKey, installed.folders[0].folderId);
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (folderURI, ids) => {
+      const present = new Set((installed.rowsByURI.get(folderURI) || []).map(row => row.headerMessageId));
+      return { missing: ids.filter(id => !present.has(id)) };
+    });
     _testExports._setFtsSearch(installed.fts);
+    const coldFirstPageReads = () => installed.fts.listFolderMembership.mock.calls
+      .filter(([folderId, after]) => folderId === installed.folders[0].folderId && after == null).length;
+    return { ...installed, staleKey, coldFirstPageReads };
+  }
 
-    const repaired = () => installed.nativeRows.get(installed.missingKey) === cold.folderId
-      && _testExports._getFolderReconSessionDone().has(`account1:${cold.folderPath}`);
-    expect(await underTraffic(installed, repaired)).toBe(true);
-    expect(installed.fts.listFolderMembership.mock.calls
-      .some(([folderId]) => folderId === cold.folderId)).toBe(true);
+  it('repairs and completes a cold multi-page folder while another folder receives mail every 4 s for the whole interval', async () => {
+    // Quiet baseline: the cold proof's own first-page reads (the first
+    // attempt plus a restart after each of its own repairs).
+    const quiet = seedColdRepairs();
+    const quietDone = () => _testExports._getFolderReconSessionDone().has('account1:/Cold');
+    for (let turn = 0; turn < 2000 && !quietDone(); turn++) {
+      await settleSchedulerTickWithFakeTimers(quiet.fts);
+      await flushPendingUpdates();
+      vi.setSystemTime(Date.now() + SLICE_STEP_MS);
+    }
+    expect(quietDone()).toBe(true);
+    const quietReads = quiet.coldFirstPageReads();
+
+    _testExports._resetFolderReconState();
+    _testExports._getPendingUpdates().clear();
+    const installed = seedColdRepairs();
+    const [cold, hot] = installed.folders;
+    const sent = [];
+    const coldDone = () => _testExports._getFolderReconSessionDone().has(`account1:${cold.folderPath}`);
+    let doneAtEvent = null;
+
+    await underTraffic(installed, () => {
+      if (doneAtEvent === null && coldDone()) doneAtEvent = sent.length;
+      return false;
+    }, '/Hot', { messageId: n => { sent.push(`traffic-${n}@example.com`); return sent.at(-1); } });
+
+    // Events kept arriving for the whole interval, and the drain kept up.
+    expect(sent.length).toBe(TRAFFIC_MS / EVENT_GAP_MS);
+    await flushPendingUpdates();
+    expect(_testExports._getPendingUpdates().size).toBe(0);
+    expect(sent.every(id => installed.nativeRows.get(`account1:/Hot:${id}`) === hot.folderId)).toBe(true);
+    // The cold folder was repaired in both directions and completed early.
+    expect(installed.nativeRows.get(installed.missingKey)).toBe(cold.folderId);
+    expect(installed.nativeRows.has(installed.staleKey)).toBe(false);
+    expect(coldDone()).toBe(true);
+    expect(doneAtEvent).not.toBeNull();
+    expect(doneAtEvent).toBeLessThan(sent.length / 10);
+    // The other folder's traffic caused no cold proof restart.
+    console.log('READS quiet', quietReads, 'traffic', installed.coldFirstPageReads(), 'doneAt', doneAtEvent);
+    expect(installed.coldFirstPageReads()).toBe(quietReads);
   }, TRAFFIC_TEST_TIMEOUT_MS);
 
   // Every distinct colon-bearing Message-ID splits into candidate folder
@@ -8249,6 +8363,7 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
       { folderPath: '/Hot', headerMessageIds: ['hot-seed@example.com'] },
     ]);
     const coldFolder = installed.folders[0];
+    installRealDrain(installed);
     _testExports._setFtsSearch(installed.fts);
     const removedKey = removedFolder === '/Cold'
       ? `account1:/Cold:${cold[0]}`
@@ -8276,7 +8391,7 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
         );
       }
       await settleSchedulerTickWithFakeTimers(installed.fts);
-      await drainPending(installed.nativeRows);
+      await flushPendingUpdates();
       vi.setSystemTime(Date.now() + SLICE_STEP_MS);
       if (removedFolder === '/Cold' && coldDone() && !installed.nativeRows.has(removedKey)) {
         coldDoneWhileMissing = true;
@@ -8299,15 +8414,18 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
     const counts = { injected: 0, scanPages: 0 };
     const inject = async () => {
       counts.injected++;
+      const headerMessageId = `inside-${event++}@example.com`;
+      const msgKey = 200_000 + event;
+      installed.rowsByURI.get(installed.folders[1].folderURI).push({ msgKey, headerMessageId });
       await _testExports.onExperimentMessageAdded({
         accountId: 'account1',
         folderPath: '/Hot',
         weFolderId: installed.folders[1].weFolderId,
-        headerMessageId: `inside-${event++}@example.com`,
-        msgKey: 200_000 + event,
+        headerMessageId,
+        msgKey,
         eventType: 'msgAdded',
       });
-      await drainPending(installed.nativeRows);
+      await flushPendingUpdates();
     };
     for (const name of ['listFolderMembership', 'listMsgIdRange', 'fingerprintMsgIdRange', 'filterNewMessages']) {
       const original = installed.fts[name].getMockImplementation();
@@ -8373,6 +8491,126 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
     expect(await underTraffic(installed, () => done() || Date.now() >= windowEnd, '/Hot', { unconverted: true })).toBe(true);
     expect(done()).toBe(false);
   }, TRAFFIC_TEST_TIMEOUT_MS);
+
+  // The local ledger is capped; an evicted touch raises the floor, so a
+  // proof stamped before it is refused rather than trusted.
+  it('refuses a local stamp older than an evicted touch of its folder, and trusts a newer one', () => {
+    const cold = 'account1:/Cold';
+    const old = _testExports._folderReconLocalScope(cold);
+    _testExports._noteFolderReconLocalChange(cold);
+    for (let i = 0; i < _testExports.FOLDER_RECON_CHANGE_LEDGER_CAP; i++) {
+      _testExports._noteFolderReconLocalChange(`account1:/Busy-${i}`);
+    }
+    expect(_testExports._folderReconLocalUnchangedSince(cold, old.since)).toBe(false);
+    const fresh = _testExports._folderReconLocalScope(cold);
+    expect(_testExports._folderReconLocalUnchangedSince(cold, fresh.since)).toBe(true);
+    // A retained touch of another folder does not refuse the newer stamp.
+    _testExports._noteFolderReconLocalChange('account1:/Busy-0');
+    expect(_testExports._folderReconLocalUnchangedSince(cold, fresh.since)).toBe(true);
+  });
+
+  // The operation's last own local check precedes its checkpoint write and
+  // the scheduler's memo reload. A removal whose Message-ID Thunderbird could
+  // not read invalidates local evidence but queues nothing, so only the
+  // session-done grant can keep the folder from being skipped.
+  describe('a message event after the operation\'s last own check', () => {
+    const memoKey = () => _testExports.FOLDER_RECON_STORAGE_KEY;
+    const removedKey = 'account1:/A:a-2@example.com';
+
+    function seedTwoFolders() {
+      const installed = seedMigratedExactFolders([
+        { folderPath: '/A', headerMessageIds: ['a-1@example.com', 'a-2@example.com'] },
+        { folderPath: '/B', headerMessageIds: ['b-1@example.com'] },
+      ]);
+      // The msgDB probe reflects the folder's current headers.
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (folderURI, ids) => {
+        const present = new Set((installed.rowsByURI.get(folderURI) || []).map(row => row.headerMessageId));
+        return { missing: ids.filter(id => !present.has(id)) };
+      });
+      return installed;
+    }
+
+    // /A loses a-2 from its msgDB; the event names /A but carries no
+    // Message-ID. An event in /B is the same shape in another folder.
+    function removalEvent(installed, folderPath) {
+      const folder = installed.folders.find(item => item.folderPath === folderPath);
+      if (folderPath === '/A') {
+        const rows = installed.rowsByURI.get(folder.folderURI);
+        rows.splice(rows.findIndex(row => row.headerMessageId === 'a-2@example.com'), 1);
+      }
+      return _testExports.onExperimentMessageRemoved({
+        accountId: 'account1',
+        folderPath,
+        weFolderId: folder.weFolderId,
+        headerMessageId: '',
+        msgKey: 2,
+        eventType: 'msgDeleted',
+      });
+    }
+
+    const aVerifiedIn = value => value?.[memoKey()]?.folders?.['account1:/A']?.verified === true;
+
+    // Fires once: during /A's verified checkpoint write ('write'), or during
+    // the scheduler's memo reload right after it ('reload').
+    function fireAfterLastCheck(installed, boundary, folderPath) {
+      const fired = { tick: null };
+      const storage = globalThis.browser.storage.local;
+      if (boundary === 'write') {
+        const set = storage.set.getMockImplementation();
+        storage.set.mockImplementation(async (value) => {
+          const result = await set(value);
+          if (fired.tick === null && aVerifiedIn(value)) {
+            fired.tick = 'pending';
+            await removalEvent(installed, folderPath);
+          }
+          return result;
+        });
+      } else {
+        const get = storage.get.getMockImplementation();
+        storage.get.mockImplementation(async (keys) => {
+          if (fired.tick === null && aVerifiedIn(storageData)
+              && JSON.stringify(keys ?? null).includes(memoKey())) {
+            fired.tick = 'pending';
+            await removalEvent(installed, folderPath);
+          }
+          return get(keys);
+        });
+      }
+      return fired;
+    }
+
+    async function tickUntilFired(fts, fired) {
+      for (let turn = 0; turn < 30 && fired.tick === null; turn++) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+      expect(fired.tick).toBe('pending');
+    }
+
+    it.each(['write', 'reload'])('withholds completion from the folder and repairs it (event during the %s)', async (boundary) => {
+      const installed = seedTwoFolders();
+      const fired = fireAfterLastCheck(installed, boundary, '/A');
+      _testExports._setFtsSearch(installed.fts);
+
+      await tickUntilFired(installed.fts, fired);
+      expect(_testExports._getFolderReconSessionDone().has('account1:/A')).toBe(false);
+      expect(_testExports._getPendingUpdates().size).toBe(0);
+
+      const result = await tickUntil(installed.fts, value => value?.complete === true, 60);
+      expect(result).toMatchObject({ complete: true });
+      expect(installed.nativeRows.has(removedKey)).toBe(false);
+      expect(installed.nativeRows.get('account1:/A:a-1@example.com')).toBe(installed.folders[0].folderId);
+    });
+
+    it.each(['write', 'reload'])('control: another folder\'s event during the %s keeps the completion', async (boundary) => {
+      const installed = seedTwoFolders();
+      const fired = fireAfterLastCheck(installed, boundary, '/B');
+      _testExports._setFtsSearch(installed.fts);
+
+      await tickUntilFired(installed.fts, fired);
+      expect(_testExports._getFolderReconSessionDone().has('account1:/A')).toBe(true);
+    });
+  });
 });
 
 describe('membership assignment scoped query list lifecycle', () => {

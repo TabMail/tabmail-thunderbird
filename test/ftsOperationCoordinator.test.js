@@ -382,7 +382,7 @@ describe('folder-scoped membership change ledger', () => {
   describe('registered folder universe', () => {
     const REAL_C = 'tm-folder:v1:["account1","/Cold"]';
     const REAL_H = 'tm-folder:v1:["account1","/Hot"]';
-    // Every account/path split of this key is a candidate folder; only /Hot is real.
+    // Every path split of this key is a candidate folder; only /Hot is real.
     const colonHeavyHotKey = n => `account1:/Hot:a:b:c:d:e:f-${n}@example.com`;
 
     it('keeps a registered folder\'s proof valid while another folder churns colon-heavy keys past the ledger cap', async () => {
@@ -453,6 +453,23 @@ describe('folder-scoped membership change ledger', () => {
       }, { mutation: true, scope: [REAL_C] });
       expect(mod.ftsMembershipUnchangedSince([REAL_N], fenced)).toBe(false);
       expect(mod.ftsMembershipUnchangedSince([REAL_H], fenced)).toBe(true);
+    });
+
+    // The universe is the latest inventory, never the history of every one.
+    it('stops attributing candidates to a folder that left the inventory, and re-records it on return', async () => {
+      const mod = await coordinator();
+      const GONE = 'tm-folder:v1:["account1","/Gone"]';
+      mod.registerFtsMembershipFolders([REAL_C, GONE]);
+      // Empty and repeated ids register nothing extra.
+      mod.registerFtsMembershipFolders([REAL_C, null, '', REAL_H, REAL_H]);
+      const since = mod.getFtsMembershipEpoch();
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['account1:/Gone:x@example.com'] });
+      expect(mod.ftsMembershipUnchangedSince([GONE], since)).toBe(true);
+
+      // A stamp from before that unattributed change no longer trusts it.
+      mod.registerFtsMembershipFolders([REAL_C, REAL_H, GONE]);
+      expect(mod.ftsMembershipUnchangedSince([GONE], since)).toBe(false);
+      expect(mod.ftsMembershipUnchangedSince([REAL_C, REAL_H], since)).toBe(true);
     });
 
     it('forgets the universe on reset', async () => {

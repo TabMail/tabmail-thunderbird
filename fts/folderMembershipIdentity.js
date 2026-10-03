@@ -19,26 +19,20 @@ export function makeFolderMembershipId(accountId, folderPath) {
 }
 
 // Every folder id whose rows or raw key range a native key could belong to.
-// A key is `${accountId}:${folderPath}:${headerMessageId}` and any of the
-// three parts may contain ":", so every account/path split is a candidate;
-// the true owner and every ancestor whose key range contains the key are
-// always among them. Returns null when no split exists (unknown scope).
+// A key is `${accountId}:${folderPath}:${headerMessageId}`. Account ids carry
+// no ":" (the account is the text before the first one), but the path and
+// the Message-ID may, so every later ":" is a candidate path end; the true
+// owner and every ancestor whose key range contains the key are always among
+// them. Returns null when no split exists (unknown scope).
 export function folderMembershipIdCandidatesForKey(msgId) {
   if (typeof msgId !== "string") return null;
-  const colons = [];
-  for (let i = msgId.indexOf(":"); i !== -1; i = msgId.indexOf(":", i + 1)) colons.push(i);
+  const accountEnd = msgId.indexOf(":");
+  if (accountEnd <= 0) return null;
+  const accountId = msgId.slice(0, accountEnd);
   const candidates = [];
-  for (let a = 0; a < colons.length; a++) {
-    const accountEnd = colons[a];
-    if (accountEnd === 0) continue;
-    for (let p = a + 1; p < colons.length; p++) {
-      const pathEnd = colons[p];
-      if (pathEnd === accountEnd + 1 || pathEnd === msgId.length - 1) continue;
-      candidates.push(makeFolderMembershipId(
-        msgId.slice(0, accountEnd),
-        msgId.slice(accountEnd + 1, pathEnd),
-      ));
-    }
+  for (let pathEnd = msgId.indexOf(":", accountEnd + 1); pathEnd !== -1; pathEnd = msgId.indexOf(":", pathEnd + 1)) {
+    if (pathEnd === accountEnd + 1 || pathEnd === msgId.length - 1) continue;
+    candidates.push(makeFolderMembershipId(accountId, msgId.slice(accountEnd + 1, pathEnd)));
   }
   return candidates.length > 0 ? candidates : null;
 }
