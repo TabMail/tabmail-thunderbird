@@ -2,6 +2,8 @@
 
 > Routed out of `DECISIONS.md` § ADR-017 by the `companion-compact` skill on 2026-08-05. The block between the markers below is the inline text **byte-for-byte** — nothing was reworded, merged, reordered or truncated. Index line: `DECISIONS.md`.
 
+> **2026-10-03 amendment (branch `agent/tb-recon-pr2-narrow`):** `recheckMessageInFolder` now owns its `MessageList` lifecycle. Every exit that still holds a page id runs one shared, awaited finalizer: a `"present"` match, a pre-verdict exception, or a nullish continuation page. The finalizer calls `abortList` when available, then `continueList` until the terminal page, which is what releases the list. Before this, a `"present"` verdict left the unscoped global query running, and a failure left the list registered. Finalizer errors are swallowed with one fixed-text debug log, so they never change the verdict. Only a pre-verdict drain failure yields `"error"`. The failure log no longer carries the Message-ID. `_tryFallbackDeletion` is unchanged.
+
 <!-- BEGIN PRESERVED BLOCK -->
 **Context:** The 2026-06-03 weekly maintenance scan removed a live
 `[Gmail]/Bin` message from FTS as `removedMissing`; the 2026-06-09 scan
