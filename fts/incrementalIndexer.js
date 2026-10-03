@@ -3673,14 +3673,19 @@ function _isFolderReconAttemptYield(error) {
     || message.includes("folder_recon_pressure");
 }
 
+// A capable helper without a readable connection generation cannot bind
+// proof: legacy. A pure read; only the observer below acts on a change.
+function _isFolderMembershipCapable(ftsSearch) {
+  return ftsSearch?.supportsFolderMembership?.() === true
+    && _folderMembershipConnectionGeneration(ftsSearch) !== null;
+}
+
 function _observeFolderMembershipCapability(ftsSearch) {
   const connectionGeneration = _folderMembershipConnectionGeneration(ftsSearch);
   // A reconnect can let an unobserved legacy helper write ownerless rows even
   // when the capability reads true on both sides, so a new native connection
-  // generation invalidates session proof exactly like a capability flip. A
-  // capable helper without a readable generation cannot bind proof: legacy.
-  const capable = ftsSearch?.supportsFolderMembership?.() === true
-    && connectionGeneration !== null;
+  // generation invalidates session proof exactly like a capability flip.
+  const capable = _isFolderMembershipCapable(ftsSearch);
   if (_folderMembershipCapabilityState?.capable !== capable
       || _folderMembershipCapabilityState?.connectionGeneration !== connectionGeneration) {
     _folderMembershipCapabilityState = { capable, connectionGeneration };
@@ -6325,8 +6330,13 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
   }
   const generation = _folderReconGeneration;
   const syncStartedAt = _lastSyncEventMs;
+  // The quiet veto protects only the legacy key-range proof, which ordinary
+  // sync traffic invalidates. Exact membership proofs are fenced on the
+  // membership epoch and the sync timestamp instead, so a capable helper
+  // keeps reconciling (and can earn cutover) under sustained traffic.
   if (_hasFolderReconForegroundPressure()
-      || Date.now() - _lastSyncEventMs < FOLDER_RECON_SYNC_QUIET_MS
+      || (!_isFolderMembershipCapable(ftsSearch)
+        && Date.now() - _lastSyncEventMs < FOLDER_RECON_SYNC_QUIET_MS)
   ) {
     _bumpFolderReconTelemetry("schedulerPressureSkips");
     _wakeFolderRecon("foreground_pressure", FOLDER_RECON_PRESSURE_DELAY_MS);

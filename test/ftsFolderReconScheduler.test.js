@@ -7284,3 +7284,77 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     expect(_testExports._getPendingUpdates().size).toBe(0);
   });
 });
+
+describe('capability-keyed quiet veto (sustained sync traffic)', () => {
+  const EVENT_GAP_MS = 4_000;
+  const TRAFFIC_MS = 31 * 60_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+  });
+  afterEach(() => {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  // A real message event every EVENT_GAP_MS (shorter than the quiet window);
+  // the healthy drain indexes each one before the next arrives.
+  async function underTraffic(fts, until) {
+    let event = 0;
+    for (let elapsedMs = 0; elapsedMs < TRAFFIC_MS && !until(); elapsedMs += EVENT_GAP_MS) {
+      await _testExports.onExperimentMessageAdded({
+        accountId: 'account1',
+        folderPath: '/A',
+        headerMessageId: `traffic-${event++}@example.com`,
+        msgKey: 1000 + event,
+        eventType: 'msgAdded',
+      });
+      _testExports._getPendingUpdates().clear();
+      for (let stepMs = 0; stepMs < EVENT_GAP_MS && !until(); stepMs += 250) {
+        await settleSchedulerTickWithFakeTimers(fts);
+        vi.setSystemTime(Date.now() + 250);
+      }
+    }
+    return until();
+  }
+
+  const specs = [
+    { folderPath: '/A', headerMessageIds: ['a-1@example.com'] },
+    { folderPath: '/B', headerMessageIds: ['b-1@example.com'] },
+  ];
+
+  it('earns cutover on a capable helper at startup despite events every 4 s', async () => {
+    const { fts } = installExactMembershipFolders(specs);
+    _testExports._setFtsSearch(fts);
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+
+    expect(await underTraffic(fts, () => _testExports._getFolderMembershipCutoverProven())).toBe(true);
+    expect(_testExports._getFolderMembershipStatePass()).toMatchObject({ completed: true });
+  });
+
+  it('re-earns cutover after a capable reconnect despite events every 4 s', async () => {
+    const { fts } = installExactMembershipFolders(specs);
+    _testExports._setFtsSearch(fts);
+    expect(await underTraffic(fts, () => _testExports._getFolderMembershipCutoverProven())).toBe(true);
+
+    // The reconnect revokes cutover; it is re-earned only by a state pass
+    // bound to the new connection generation.
+    fts.getConnectionGeneration.mockReturnValue(2);
+    fts.listFolderMembershipState.mockClear();
+    expect(await underTraffic(fts, () => _testExports._getFolderMembershipCutoverProven()
+      && _testExports._getFolderMembershipStatePass()?.connectionGeneration === 2)).toBe(true);
+    expect(fts.listFolderMembershipState).toHaveBeenCalled();
+  });
+
+  it('control: a legacy helper still waits for a quiet window', async () => {
+    const { fts } = installExactMembershipFolders(specs);
+    fts.supportsFolderMembership.mockReturnValue(false);
+    _testExports._setFtsSearch(fts);
+    getForegroundFetchPressure.mockClear();
+    _testExports._setLastSyncEventMs(Date.now());
+    expect(await settleSchedulerTickWithFakeTimers(fts)).toMatchObject({ skipped: true, reason: 'pressure' });
+    expect(globalThis.browser.tmMsgNotify.getFolderState).not.toHaveBeenCalled();
+  });
+});
