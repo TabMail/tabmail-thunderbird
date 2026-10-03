@@ -2415,18 +2415,21 @@ async function _readFolderReconClosingState(folder) {
   }
 }
 
-// Gate fields a certifying proof earns: the opening identity and count plus the
-// range sample taken before the proof, only when no membership mutation
-// separates that sample from the proof's epoch.
+// Gate fields a certifying proof earns, after a closing read confirmed the
+// opening msgDB. The incarnation token is identity evidence and is always
+// earned, so traffic during the range sample never denies the next session
+// the UID-only tier. The count and the range sample taken before the proof
+// are earned only when no membership mutation separates that sample from the
+// proof's epoch.
 function _folderReconEarnedGateFields(opening, sample, proof, proofEpoch) {
-  if (!sample
-      || sample.epoch !== proofEpoch
-      || proof?.stableUidKeys !== true
+  if (proof?.stableUidKeys !== true
       || _normalizeUidValidity(proof.uidValidity) !== _normalizeUidValidity(opening.uidValidity)) {
     return null;
   }
+  const identity = { incarnationToken: opening.incarnationToken };
+  if (!sample || sample.epoch !== proofEpoch) return identity;
   return {
-    incarnationToken: opening.incarnationToken,
+    ...identity,
     ...(Number.isSafeInteger(opening.numMessages) ? { numMessages: opening.numMessages } : {}),
     rangeCount: sample.rangeCount,
     rangeSha256: sample.rangeSha256,
@@ -3460,6 +3463,7 @@ function _pruneFolderReconRuntimeToFolderKeys(folderKeys) {
     _folderReconDrainSkipped,
     _folderReconUnverified,
     _folderReconSessionDone,
+    _folderReconReverifyKeys,
   ]) {
     for (const folderKey of [...set]) {
       if (!folderKeys.has(folderKey)) {
@@ -4745,13 +4749,14 @@ async function _runFolderReconcile(
     // A resumed attempt keeps its sample. A membership mutation since then
     // also invalidated every digest the attempt cached, so it resamples.
     // The sample carries the epoch read before it; a mutation during the
-    // read leaves it behind the current epoch, and every consumer (the gate's
-    // close, earned gate fields, resumption) then rejects it.
+    // read leaves it behind the current epoch, and every consumer (the
+    // session-done grant, earned gate fields, resumption) then rejects it.
+    const identityEvidence = membershipMode.exact && _folderReconHasIdentityEvidence(f);
     let gateSample = resumedAttempt?.gateSample ?? null;
     const resample = !resumedAttempt
       || (gateSample !== null && gateSample.epoch !== getFtsMembershipEpoch());
     if (resample) gateSample = null;
-    if (resample && membershipMode.exact && _folderReconHasIdentityEvidence(f)) {
+    if (resample && identityEvidence) {
       try {
         const sampleEpoch = getFtsMembershipEpoch();
         _assertNoFolderReconForegroundPressure();
@@ -4847,10 +4852,12 @@ async function _runFolderReconcile(
               throw new Error("membership_epoch_changed");
             }
             // Refresh the gate baseline (for example after a flag-only
-            // HIGHESTMODSEQ advance) so the next pass takes the gate. Written
+            // HIGHESTMODSEQ advance) so the next pass takes the gate. Only a
+            // current sample refreshes it: the stored range must belong to
+            // the stored HIGHESTMODSEQ. The token already matches. Written
             // only when it differs from the stored checkpoint.
             const gateFields = _folderReconEarnedGateFields(f, gateSample, uidOnly, folderMembershipEpoch);
-            if (gateFields) {
+            if (gateFields?.rangeSha256 !== undefined) {
               const refreshed = {
                 ...m,
                 ...gateFields,
@@ -5124,7 +5131,7 @@ async function _runFolderReconcile(
     // verified checkpoint.
     if (msgCount === ftsCount && expected.sha256 === nativeFingerprint.sha256) {
       let gateFields = null;
-      if (gateSample) {
+      if (identityEvidence) {
         const closing = await _readFolderReconClosingState(f);
         _assertFolderReconLease(reconcileLease, generation);
         if (!_folderReconIdentityUnchanged(f, closing)) {
@@ -5344,16 +5351,18 @@ async function _runFolderReconcile(
           writePartialCheckpoint(0, false, null, null);
           stats.foldersLocalDrift++;
         } else if (ftsNow.count === freshExpected.count && ftsNow.sha256 === freshExpected.sha256) {
-          const closing = gateSample ? await _readFolderReconClosingState(f) : null;
-          if (gateSample) _assertFolderReconLease(reconcileLease, generation);
-          if (gateSample && !_folderReconIdentityUnchanged(f, closing)) {
+          const closing = identityEvidence ? await _readFolderReconClosingState(f) : null;
+          if (identityEvidence) _assertFolderReconLease(reconcileLease, generation);
+          if (identityEvidence && !_folderReconIdentityUnchanged(f, closing)) {
             writePartialCheckpoint(0, false, null, null);
             stats.foldersLocalDrift++;
           } else {
             writeVerifiedCheckpoint(
               ftsNow,
               freshExpected,
-              _folderReconEarnedGateFields(f, gateSample, freshExpected, folderMembershipEpoch),
+              identityEvidence
+                ? _folderReconEarnedGateFields(f, gateSample, freshExpected, folderMembershipEpoch)
+                : null,
             );
             stats.foldersReconciled++;
             _folderReconUnverified.delete(folderKey);
@@ -7535,6 +7544,8 @@ export const _testExports = {
     _folderReconOrphanPass = orphanPass || null;
   },
   _getFolderReconReverifyDueMs: () => _folderReconReverifyDueMs,
+  _getFolderReconReverifyKeys: () => new Set(_folderReconReverifyKeys),
+  _pruneFolderReconRuntimeToFolderKeys,
   _getFolderReconGeneration: () => _folderReconGeneration,
   _setFolderReconHardNotBeforeMs,
   _reconStorageTransaction,

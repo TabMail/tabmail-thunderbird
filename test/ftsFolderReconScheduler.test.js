@@ -3518,6 +3518,25 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
+  it('never arms the periodic re-verification deadline in legacy key-range mode', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const fts = installEmptyFolders([['account1', '/A'], ['account1', '/B']]);
+      _testExports._setFtsSearch(fts);
+      let result;
+      for (let turn = 0; turn < 10 && result?.complete !== true; turn++) {
+        result = await _testExports._runFolderReconSchedulerTick(fts);
+      }
+      expect(result).toMatchObject({ complete: true });
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expect(_testExports._getFolderReconReverifyDueMs()).toBe(0);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.useRealTimers();
+    }
+  });
+
   describe('outcome snapshot writes', () => {
     const snapshotWrites = () => globalThis.browser.storage.local.set.mock.calls
       .filter(([value]) => Object.hasOwn(value, 'fts_folder_recon_last'));
@@ -3577,6 +3596,55 @@ describe('cooperative folder reconcile production contracts', () => {
       _testExports._completeFolderReconOutcome();
       await settleWrites();
       expect(snapshotWrites()).toHaveLength(2);
+    });
+
+    // A session already complete leaves no completion to write, so only the
+    // unwritten change itself can bring the failed write back.
+    it('retries a failed change write of an already complete session at the next completion', async () => {
+      _testExports._recordFolderReconOutcome(unchanged, 5);
+      _testExports._completeFolderReconOutcome();
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(0);
+
+      globalThis.browser.storage.local.set.mockRejectedValueOnce(new Error('disk full'));
+      _testExports._recordFolderReconOutcome(changed, 5);
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(1);
+      expect(storageData.fts_folder_recon_last).toBeUndefined();
+
+      _testExports._completeFolderReconOutcome();
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(2);
+      expect(storageData.fts_folder_recon_last).toMatchObject({
+        complete: true,
+        totals: { missingEnqueued: 1 },
+      });
+    });
+
+    it('keeps a change recorded while an earlier write is in flight unwritten until it is written', async () => {
+      _testExports._recordFolderReconOutcome(unchanged, 5);
+      _testExports._completeFolderReconOutcome();
+      await settleWrites();
+
+      let finishWrite;
+      globalThis.browser.storage.local.set.mockImplementationOnce(() => new Promise((resolve) => {
+        finishWrite = resolve;
+      }));
+      _testExports._recordFolderReconOutcome(changed, 5);
+      expect(snapshotWrites()).toHaveLength(1);
+      // A second change lands while the first write is in flight (throttled).
+      _testExports._recordFolderReconOutcome(changed, 5);
+      expect(snapshotWrites()).toHaveLength(1);
+      finishWrite();
+      await settleWrites();
+
+      _testExports._completeFolderReconOutcome();
+      await settleWrites();
+      expect(snapshotWrites()).toHaveLength(2);
+      expect(storageData.fts_folder_recon_last).toMatchObject({
+        complete: true,
+        totals: { missingEnqueued: 2 },
+      });
     });
   });
 
@@ -7306,6 +7374,24 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     });
   });
 
+  it('earns the incarnation token at the terminal check of a repair attempt whose range sample failed', async () => {
+    const { fts, rowsByURI, folders } = installGateFolders(specs);
+    await finishSession(fts);
+    const vanish = addRowThatVanishesDuringRepair(rowsByURI, folders);
+    const fingerprint = fts.fingerprintMsgIdRange.getMockImplementation();
+    fts.fingerprintMsgIdRange.mockImplementation(async (start, end) => {
+      if (start.startsWith('account1:/A:')) throw new Error('native busy');
+      return fingerprint(start, end);
+    });
+
+    restartSession();
+    const repaired = await tickUntil(fts, value => value?.foldersReconciled > 0 || value?.complete === true, 60);
+    expect(vanish.done).toBe(true);
+    expect(repaired.foldersReconciled).toBe(1);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, incarnationToken: expect.any(String) });
+    expect(memoFor('account1:/A')).not.toHaveProperty('rangeSha256');
+  });
+
   it('never certifies the opening incarnation at the terminal check when the msgDB was replaced', async () => {
     const { fts, rowsByURI, folders, tokens } = installGateFolders(specs);
     await finishSession(fts);
@@ -7405,10 +7491,10 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
       expect(nativeRows.has(STRAY)).toBe(false);
     });
 
-    // No scheduler path in this harness lets a native write land between
-    // the pre-proof sample and the proof's epoch read without first
-    // resampling; this pins the rule at the one place that enforces it.
-    it('the sample epoch: earns no gate fields from a sample of another epoch than the proof', () => {
+    // The scheduler-level case (a write during the sample itself) is pinned
+    // by 'stores the incarnation token when a write lands during the range
+    // sample'; this pins the rule at the one place that enforces it.
+    it('the sample epoch: earns only the incarnation token from a sample of another epoch than the proof', () => {
       const opening = { incarnationToken: 'token', uidValidity: 7, numMessages: 2 };
       const proof = { stableUidKeys: true, uidValidity: 7 };
       const sample = { epoch: 4, rangeCount: 2, rangeSha256: 'digest' };
@@ -7416,7 +7502,10 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
       expect(_testExports._folderReconEarnedGateFields(opening, sample, proof, 4)).toEqual({
         incarnationToken: 'token', numMessages: 2, rangeCount: 2, rangeSha256: 'digest',
       });
-      expect(_testExports._folderReconEarnedGateFields(opening, sample, proof, 5)).toBeNull();
+      expect(_testExports._folderReconEarnedGateFields(opening, sample, proof, 5)).toEqual({ incarnationToken: 'token' });
+      expect(_testExports._folderReconEarnedGateFields(opening, null, proof, 4)).toEqual({ incarnationToken: 'token' });
+      expect(_testExports._folderReconEarnedGateFields(opening, sample, { ...proof, uidValidity: 8 }, 4)).toBeNull();
+      expect(_testExports._folderReconEarnedGateFields(opening, sample, { uidValidity: 7 }, 4)).toBeNull();
     });
 
     it('UIDVALIDITY: a changed UIDVALIDITY under the same incarnation token misses the gate', async () => {
@@ -7541,12 +7630,108 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     });
     await finishSession(fts);
     expect(failed).toBe(true);
-    expect(memoFor('account1:/A')).toMatchObject({ verified: true });
+    // The closing read still earns the identity the UID tier needs.
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, incarnationToken: expect.any(String) });
     expect(memoFor('account1:/A')).not.toHaveProperty('rangeSha256');
 
     restartSession();
     await finishSession(fts);
     expect(memoFor('account1:/A')).toMatchObject({ verified: true, rangeCount: 2 });
+  });
+
+  it.each([
+    ['a non-numeric count', { count: '2', sha256: 'digest' }],
+    ['a negative count', { count: -1, sha256: 'digest' }],
+    ['a missing digest', { count: 2 }],
+    ['an empty digest', { count: 2, sha256: '' }],
+  ])('earns no range baseline from a range sample with %s', async (_name, malformed) => {
+    const { fts } = installGateFolders(specs);
+    const fingerprint = fts.fingerprintMsgIdRange.getMockImplementation();
+    fts.fingerprintMsgIdRange.mockImplementation(async (start, end) => (start.startsWith('account1:/A:')
+      ? malformed
+      : fingerprint(start, end)));
+    await finishSession(fts);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true });
+    expect(memoFor('account1:/A')).not.toHaveProperty('rangeCount');
+    expect(memoFor('account1:/A')).not.toHaveProperty('rangeSha256');
+    expect(_testExports._getFolderReconReverifyKeys()).toEqual(new Set(['account1:/B']));
+  });
+
+  // The incarnation token is identity evidence, earned by the closing read,
+  // not by the range sample: traffic during every sample must never keep a
+  // folder on full projections forever.
+  it('stores the incarnation token when a write lands during the range sample, so the next session takes the UID tier', async () => {
+    const { fts, folders } = installGateFolders(specs);
+    await finishSession(fts);
+    // An earlier version's checkpoint: no gate fields, so the next session
+    // must fully project /A.
+    for (const checkpoint of Object.values(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folders)) {
+      for (const field of ['incarnationToken', 'numMessages', 'rangeCount', 'rangeSha256']) delete checkpoint[field];
+    }
+    const fingerprint = fts.fingerprintMsgIdRange.getMockImplementation();
+    let wroteDuringSample = false;
+    fts.fingerprintMsgIdRange.mockImplementation(async (start, end) => {
+      const sample = await fingerprint(start, end);
+      if (!wroteDuringSample && start.startsWith('account1:/A:')) {
+        wroteDuringSample = true;
+        await runFtsMembershipMutation(async () => ({ count: 1 }));
+      }
+      return sample;
+    });
+
+    restartSession();
+    await finishSession(fts);
+    expect(wroteDuringSample).toBe(true);
+    expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls)
+      .toContainEqual([folders[0].folderURI, true]);
+    const checkpoint = memoFor('account1:/A');
+    expect(checkpoint).toMatchObject({ verified: true, incarnationToken: expect.any(String) });
+    // The stale sample earns no range or count baseline.
+    expect(checkpoint).not.toHaveProperty('rangeSha256');
+    expect(checkpoint).not.toHaveProperty('numMessages');
+
+    restartSession();
+    await finishSession(fts);
+    // A membership page yield can repeat the UID-only scan; none is full.
+    const scansOfA = globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls
+      .filter(([uri]) => uri === folders[0].folderURI).map(([, full]) => full);
+    expect(scansOfA.length).toBeGreaterThan(0);
+    expect(scansOfA.every(full => full === false)).toBe(true);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, rangeCount: 2, numMessages: 2 });
+  });
+
+  // The stored range must belong to the stored HIGHESTMODSEQ: a UID-tier
+  // pass whose sample a write made stale keeps the old baseline whole.
+  it('keeps the stored gate baseline on a UID-tier pass whose range sample a write made stale', async () => {
+    const { fts, folders } = installGateFolders(specs);
+    await finishSession(fts);
+    const before = memoFor('account1:/A');
+    folders[0].highestModSeq = '101';
+    const fingerprint = fts.fingerprintMsgIdRange.getMockImplementation();
+    let wroteDuringSample = false;
+    fts.fingerprintMsgIdRange.mockImplementation(async (start, end) => {
+      const sample = await fingerprint(start, end);
+      if (!wroteDuringSample && start.startsWith('account1:/A:')) {
+        wroteDuringSample = true;
+        await runFtsMembershipMutation(async () => ({ count: 1 }));
+      }
+      return sample;
+    });
+
+    restartSession();
+    await finishSession(fts);
+    expect(wroteDuringSample).toBe(true);
+    expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls
+      .filter(([uri]) => uri === folders[0].folderURI).every(([, full]) => full === false)).toBe(true);
+    expect(memoFor('account1:/A')).toMatchObject({
+      highestModSeq: '100',
+      rangeSha256: before.rangeSha256,
+      incarnationToken: before.incarnationToken,
+    });
+
+    restartSession();
+    await finishSession(fts);
+    expect(memoFor('account1:/A').highestModSeq).toBe('101');
   });
 
   it('errors a UID-tier hit whose closing read shows another msgDB, then re-projects it', async () => {
@@ -7679,6 +7864,31 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
       await finishSession(fts);
       expect(fts.fingerprintMsgIdRange).toHaveBeenCalledTimes(1);
       expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).not.toHaveBeenCalled();
+    });
+
+    it('stops re-verifying a folder that lost gate capability', async () => {
+      const { fts, folders } = installGateFolders(specs);
+      await finishSession(fts);
+      expect(_testExports._getFolderReconReverifyKeys()).toEqual(new Set(['account1:/A', 'account1:/B']));
+      folders[1].highestModSeq = '';
+
+      vi.setSystemTime(dueMs());
+      await finishSession(fts);
+      expect(_testExports._getFolderReconReverifyKeys()).toEqual(new Set(['account1:/A']));
+      clearNativeCalls(fts);
+      globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockClear();
+
+      vi.setSystemTime(dueMs());
+      await finishSession(fts);
+      expect(fts.fingerprintMsgIdRange).toHaveBeenCalledTimes(1);
+      expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan).not.toHaveBeenCalled();
+    });
+
+    it('prunes a vanished folder from the re-verification set', async () => {
+      const { fts } = installGateFolders(specs);
+      await finishSession(fts);
+      _testExports._pruneFolderReconRuntimeToFolderKeys(new Set(['account1:/A']));
+      expect(_testExports._getFolderReconReverifyKeys()).toEqual(new Set(['account1:/A']));
     });
 
     it('arms one deadline timer while idle, none after dispose, and a fresh deadline after re-init', async () => {
