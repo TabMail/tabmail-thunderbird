@@ -7122,6 +7122,103 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     expect(nativeRows.has('account1:/B:b-1@example.com')).toBe(false);
   });
 
+  // Runs sessions (and two re-verification intervals) with the drain.
+  async function settleAcrossIntervals(fts, nativeRows, folderId) {
+    restartSession();
+    await settleWithDrain(fts, nativeRows, folderId, 60 * 60_000);
+    for (let interval = 0; interval < 2; interval++) {
+      vi.setSystemTime(Date.now() + reconConfig.reverifyIntervalMs + 60_000);
+      await settleWithDrain(fts, nativeRows, folderId, 1000);
+    }
+  }
+
+  // Token creation can fail (the experiment then reports ""): a folder
+  // without a token never takes the gate, so an evidence-identical msgDB
+  // swap is still re-projected.
+  it('re-projects a swapped msgDB when every incarnation token is empty', async () => {
+    const { fts, rowsByURI, nativeRows, folders } = installGateFolders(specs);
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (...args) => ({
+      ...(await state(...args)),
+      incarnationToken: '',
+    }));
+    await finishSession(fts);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true });
+    const [uriA, uriB] = folders.map(folder => folder.folderURI);
+    const rowsA = rowsByURI.get(uriA);
+    rowsByURI.set(uriA, rowsByURI.get(uriB));
+    rowsByURI.set(uriB, rowsA);
+
+    restartSession();
+    for (let turn = 0; turn < 12; turn++) {
+      const result = await tickUntil(fts, value => value?.complete === true
+        || _testExports._getPendingUpdates().size > 0, 60);
+      if (result?.complete === true && _testExports._getPendingUpdates().size === 0) break;
+      for (const key of _testExports._getPendingUpdates().keys()) {
+        const folder = folders.find(item => key.startsWith(`account1:${item.folderPath}:`));
+        nativeRows.set(key, folder.folderId);
+      }
+      _testExports._getPendingUpdates().clear();
+      vi.setSystemTime(Date.now() + 60 * 60_000);
+    }
+
+    expect(nativeRows.has('account1:/A:b-1@example.com')).toBe(true);
+    expect(nativeRows.has('account1:/A:a-1@example.com')).toBe(false);
+  });
+
+  // A message re-added between the attempt's opening read and its scan (a
+  // CONDSTORE FETCH advances HIGHESTMODSEQ) is certified with the native row
+  // a pending repair left behind. When it later leaves without an event (an
+  // expunge leaves HIGHESTMODSEQ alone), the stored count must not match the
+  // folder again, or the gate would hide the stale row.
+  it('repairs a missed removal of a message re-added between the opening read and the scan', async () => {
+    const { fts, rowsByURI, nativeRows, folders } = installGateFolders(specs);
+    await finishSession(fts);
+    const uriA = folders[0].folderURI;
+    const staleKey = 'account1:/A:x@example.com';
+    nativeRows.set(staleKey, folders[0].folderId);
+    // A checkpoint without gate fields: this session fully projects /A.
+    for (const field of ['incarnationToken', 'numMessages', 'rangeCount', 'rangeSha256']) delete memoFor('account1:/A')[field];
+
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let readded = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
+      const result = await state(accountId, folderPath, options);
+      if (!readded && folderPath === '/A' && options?.ensureIncarnationToken === true) {
+        readded = true;
+        rowsByURI.set(uriA, [...rowsByURI.get(uriA), { msgKey: 3, headerMessageId: 'x@example.com' }]);
+        folders[0].highestModSeq = '101';
+      }
+      return result;
+    });
+    restartSession();
+    await finishSession(fts);
+    expect(readded).toBe(true);
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, expectedCount: 3 });
+
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(state);
+    rowsByURI.set(uriA, rowsByURI.get(uriA).filter(row => row.headerMessageId !== 'x@example.com'));
+    await settleAcrossIntervals(fts, nativeRows, folders[0].folderId);
+
+    expect(nativeRows.has(staleKey)).toBe(false);
+    expect(nativeRows.has('account1:/A:a-1@example.com')).toBe(true);
+  });
+
+  it('control: a re-added message that stays is kept after the same sessions', async () => {
+    const { fts, rowsByURI, nativeRows, folders } = installGateFolders(specs);
+    await finishSession(fts);
+    const uriA = folders[0].folderURI;
+    const key = 'account1:/A:x@example.com';
+    nativeRows.set(key, folders[0].folderId);
+    for (const field of ['incarnationToken', 'numMessages', 'rangeCount', 'rangeSha256']) delete memoFor('account1:/A')[field];
+    rowsByURI.set(uriA, [...rowsByURI.get(uriA), { msgKey: 3, headerMessageId: 'x@example.com' }]);
+    folders[0].highestModSeq = '101';
+
+    await settleAcrossIntervals(fts, nativeRows, folders[0].folderId);
+
+    expect(nativeRows.get(key)).toBe(folders[0].folderId);
+  });
+
   it('takes the UID tier on a flag-only HIGHESTMODSEQ advance and refreshes the gate baseline', async () => {
     const { fts, folders } = installGateFolders(specs);
     await finishSession(fts);
@@ -7356,7 +7453,8 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     return vanish;
   }
 
-  it('earns gate fields at the terminal check of a repair attempt', async () => {
+  // The count the gate stores must describe the proof's msgDB state.
+  it('earns only the incarnation token at the terminal check when the msgDB count moved during the attempt', async () => {
     const { fts, rowsByURI, folders } = installGateFolders(specs);
     await finishSession(fts);
     const vanish = addRowThatVanishesDuringRepair(rowsByURI, folders);
@@ -7365,13 +7463,10 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     const repaired = await tickUntil(fts, value => value?.foldersReconciled > 0 || value?.complete === true, 60);
     expect(vanish.done).toBe(true);
     expect(repaired.foldersReconciled).toBe(1);
-    expect(memoFor('account1:/A')).toMatchObject({
-      verified: true,
-      incarnationToken: expect.any(String),
-      numMessages: 3,
-      rangeCount: 2,
-      rangeSha256: expect.any(String),
-    });
+    expect(memoFor('account1:/A')).toMatchObject({ verified: true, incarnationToken: expect.any(String) });
+    for (const field of ['numMessages', 'rangeCount', 'rangeSha256']) {
+      expect(memoFor('account1:/A')).not.toHaveProperty(field);
+    }
   });
 
   it('earns the incarnation token at the terminal check of a repair attempt whose range sample failed', async () => {
@@ -7495,17 +7590,26 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     // by 'stores the incarnation token when a write lands during the range
     // sample'; this pins the rule at the one place that enforces it.
     it('the sample epoch: earns only the incarnation token from a sample of another epoch than the proof', () => {
-      const opening = { incarnationToken: 'token', uidValidity: 7, numMessages: 2 };
-      const proof = { stableUidKeys: true, uidValidity: 7 };
+      const opening = { incarnationToken: 'token', uidValidity: 7, numMessages: 2, highestModSeq: '100' };
+      const closing = { ...opening };
+      const proof = { stableUidKeys: true, uidValidity: 7, highestModSeq: '100' };
       const sample = { epoch: 4, rangeCount: 2, rangeSha256: 'digest' };
+      const earned = _testExports._folderReconEarnedGateFields;
 
-      expect(_testExports._folderReconEarnedGateFields(opening, sample, proof, 4)).toEqual({
+      expect(earned(opening, sample, proof, 4, closing)).toEqual({
         incarnationToken: 'token', numMessages: 2, rangeCount: 2, rangeSha256: 'digest',
       });
-      expect(_testExports._folderReconEarnedGateFields(opening, sample, proof, 5)).toEqual({ incarnationToken: 'token' });
-      expect(_testExports._folderReconEarnedGateFields(opening, null, proof, 4)).toEqual({ incarnationToken: 'token' });
-      expect(_testExports._folderReconEarnedGateFields(opening, sample, { ...proof, uidValidity: 8 }, 4)).toBeNull();
-      expect(_testExports._folderReconEarnedGateFields(opening, sample, { uidValidity: 7 }, 4)).toBeNull();
+      expect(earned(opening, sample, proof, 5, closing)).toEqual({ incarnationToken: 'token' });
+      expect(earned(opening, null, proof, 4, closing)).toEqual({ incarnationToken: 'token' });
+      expect(earned(opening, sample, { ...proof, uidValidity: 8 }, 4, closing)).toBeNull();
+      expect(earned(opening, sample, { uidValidity: 7 }, 4, closing)).toBeNull();
+      // The count and range describe one msgDB state: the opening count and
+      // HIGHESTMODSEQ must hold through the proof and the closing read.
+      expect(earned(opening, sample, proof, 4, { ...closing, numMessages: 3 })).toEqual({ incarnationToken: 'token' });
+      expect(earned(opening, sample, proof, 4, { ...closing, highestModSeq: '101' })).toEqual({ incarnationToken: 'token' });
+      expect(earned(opening, sample, { ...proof, highestModSeq: '101' }, 4, { ...closing, highestModSeq: '101' }))
+        .toEqual({ incarnationToken: 'token' });
+      expect(earned(opening, sample, { ...proof, highestModSeq: '101' }, 4, closing)).toEqual({ incarnationToken: 'token' });
     });
 
     it('UIDVALIDITY: a changed UIDVALIDITY under the same incarnation token misses the gate', async () => {
@@ -7562,10 +7666,12 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
   // The folder gains a row unannounced that vanishes again while the missing
   // direction looks it up, so the attempt writes nothing and verifies at its
   // terminal check; its stale or missing direction is budget-truncated first.
+  // In the missing direction the vanishing row moves the msgDB count during
+  // the attempt, so only the token is earned.
   it.each([
-    ['missing direction', 4, { scans: 1, enqueues: 1 }],
-    ['stale direction', reconConfig.stalePageKeys + 2, null],
-  ])('keeps a budget-truncated (%s) attempt pre-proof sample, so a late removal during its yield is repaired', async (_name, rows, budget) => {
+    ['missing direction', 4, { scans: 1, enqueues: 1 }, false],
+    ['stale direction', reconConfig.stalePageKeys + 2, null, true],
+  ])('keeps a budget-truncated (%s) attempt pre-proof sample, so a late removal during its yield is repaired', async (_name, rows, budget, earnsRange) => {
     const ids = Array.from({ length: rows }, (_, index) => `a-${String(index + 1).padStart(4, '0')}@example.com`);
     const { fts, rowsByURI, nativeRows, folders } = installGateFolders([{ folderPath: '/A', headerMessageIds: ids }]);
     await finishSession(fts);
@@ -7589,7 +7695,9 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
       const lateKey = `account1:/A:${ids[0]}`;
       nativeRows.delete(lateKey);
       await finishSession(fts);
-      expect(memoFor('account1:/A')).toMatchObject({ verified: true, rangeCount: rows });
+      if (earnsRange) expect(memoFor('account1:/A')).toMatchObject({ verified: true, rangeCount: rows });
+      else expect(memoFor('account1:/A')).toMatchObject({ verified: true, incarnationToken: expect.any(String) });
+      if (!earnsRange) expect(memoFor('account1:/A')).not.toHaveProperty('rangeCount');
       _testExports._setFolderReconBudgetOverride(null);
 
       await expectRepairedNextSession(fts, lateKey);

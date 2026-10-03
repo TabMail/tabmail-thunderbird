@@ -2419,15 +2419,25 @@ async function _readFolderReconClosingState(folder) {
 // opening msgDB. The incarnation token is identity evidence and is always
 // earned, so traffic during the range sample never denies the next session
 // the UID-only tier. The count and the range sample taken before the proof
-// are earned only when no membership mutation separates that sample from the
-// proof's epoch.
-function _folderReconEarnedGateFields(opening, sample, proof, proofEpoch) {
+// are earned only when they describe the proof's msgDB state: no membership
+// mutation separates the sample from the proof's epoch, and the msgDB's count
+// and HIGHESTMODSEQ did not move from the opening read through the proof to
+// the closing read. A count read at another moment than the stored
+// HIGHESTMODSEQ could let a later removal that leaves HIGHESTMODSEQ alone (an
+// expunge) restore every gate field over a stale row.
+function _folderReconEarnedGateFields(opening, sample, proof, proofEpoch, closing) {
   if (proof?.stableUidKeys !== true
       || _normalizeUidValidity(proof.uidValidity) !== _normalizeUidValidity(opening.uidValidity)) {
     return null;
   }
   const identity = { incarnationToken: opening.incarnationToken };
   if (!sample || sample.epoch !== proofEpoch) return identity;
+  const openingModSeq = opening.highestModSeq || "";
+  if (closing?.numMessages !== opening.numMessages
+      || (closing?.highestModSeq || "") !== openingModSeq
+      || (proof.highestModSeq || "") !== openingModSeq) {
+    return identity;
+  }
   return {
     ...identity,
     ...(Number.isSafeInteger(opening.numMessages) ? { numMessages: opening.numMessages } : {}),
@@ -4856,7 +4866,7 @@ async function _runFolderReconcile(
             // current sample refreshes it: the stored range must belong to
             // the stored HIGHESTMODSEQ. The token already matches. Written
             // only when it differs from the stored checkpoint.
-            const gateFields = _folderReconEarnedGateFields(f, gateSample, uidOnly, folderMembershipEpoch);
+            const gateFields = _folderReconEarnedGateFields(f, gateSample, uidOnly, folderMembershipEpoch, closing);
             if (gateFields?.rangeSha256 !== undefined) {
               const refreshed = {
                 ...m,
@@ -5139,7 +5149,7 @@ async function _runFolderReconcile(
           logFtsOperation("folder_recon", "identity_changed", { folderPath: f.folderPath });
           continue;
         }
-        gateFields = _folderReconEarnedGateFields(f, gateSample, expected, folderMembershipEpoch);
+        gateFields = _folderReconEarnedGateFields(f, gateSample, expected, folderMembershipEpoch, closing);
       }
       if (writeVerifiedCheckpoint(nativeFingerprint, expected, gateFields)) stats.foldersClean++;
       else stats.foldersMemoHit++;
@@ -5361,7 +5371,7 @@ async function _runFolderReconcile(
               ftsNow,
               freshExpected,
               identityEvidence
-                ? _folderReconEarnedGateFields(f, gateSample, freshExpected, folderMembershipEpoch)
+                ? _folderReconEarnedGateFields(f, gateSample, freshExpected, folderMembershipEpoch, closing)
                 : null,
             );
             stats.foldersReconciled++;
