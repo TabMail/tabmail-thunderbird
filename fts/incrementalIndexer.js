@@ -7482,7 +7482,7 @@ export const _testExports = {
     _folderReconUnverified = new Set();
     _folderReconBudgetOverride = null;
     _folderReconGeneration++;
-      if (_folderReconTimer) clearTimeout(_folderReconTimer);
+    if (_folderReconTimer) clearTimeout(_folderReconTimer);
     _folderReconTimer = null;
     _folderReconTimerToken++;
     _folderReconTimerDueMs = 0;
