@@ -250,3 +250,115 @@ describe('native FTS operation coordinator', () => {
     expect(JSON.stringify(storageData.fts_scan_status)).not.toMatch(/ttl|expires/i);
   });
 });
+
+describe('folder-scoped membership change ledger', () => {
+  const C = 'folder-cold';
+  const H = 'folder-hot';
+
+  it('keeps a proof about one folder valid across mutations attributed to another', async () => {
+    const mod = await coordinator();
+    const since = mod.getFtsMembershipEpoch();
+    await mod.runFtsMembershipMutation(async () => {}, null, new Set([H]));
+    await mod.runFtsMembershipMutation(async () => {}, null, new Set([H]));
+
+    expect(mod.getFtsMembershipEpoch()).toBe(since + 2);
+    expect(mod.ftsMembershipUnchangedSince([C], since)).toBe(true);
+    expect(mod.ftsMembershipUnchangedSince([H], since)).toBe(false);
+    expect(mod.ftsMembershipUnchangedSince('*', since)).toBe(false);
+  });
+
+  it('invalidates every folder on a wildcard or unscoped mutation', async () => {
+    const mod = await coordinator();
+    const since = mod.getFtsMembershipEpoch();
+    await mod.runFtsMembershipMutation(async () => {});
+    expect(mod.ftsMembershipUnchangedSince([C], since)).toBe(false);
+
+    const after = mod.getFtsMembershipEpoch();
+    expect(mod.ftsMembershipUnchangedSince([C], after)).toBe(true);
+    await mod.runFtsMembershipMutation(async () => {}, null, '*');
+    expect(mod.ftsMembershipUnchangedSince([C], after)).toBe(false);
+  });
+
+  it('attributes a mutation that throws after a partial commit', async () => {
+    const mod = await coordinator();
+    const since = mod.getFtsMembershipEpoch();
+    await expect(mod.runFtsMembershipMutation(async () => {
+      throw new Error('native failed mid-batch');
+    }, null, new Set([C]))).rejects.toThrow('native failed mid-batch');
+    expect(mod.ftsMembershipUnchangedSince([C], since)).toBe(false);
+    expect(mod.ftsMembershipUnchangedSince([H], since)).toBe(true);
+  });
+
+  it('records fenced mutator scopes with the fence advance, including on a throw', async () => {
+    const mod = await coordinator();
+    const since = mod.getFtsMembershipEpoch();
+    await mod.withFtsMembershipFence(since, async (token) => {
+      await mod.runFtsMembershipMutation(async () => {}, token, new Set([C]));
+      // Still inside the mutex: nothing is recorded before the fence ends.
+      expect(mod.ftsMembershipUnchangedSince([C], since)).toBe(true);
+    }, { mutation: true });
+    expect(mod.getFtsMembershipEpoch()).toBe(since + 1);
+    expect(mod.ftsMembershipUnchangedSince([C], since)).toBe(false);
+    expect(mod.ftsMembershipUnchangedSince([H], since)).toBe(true);
+
+    const second = mod.getFtsMembershipEpoch();
+    await expect(mod.withFtsMembershipFence(second, async (token) => {
+      await mod.runFtsMembershipMutation(async () => {}, token, new Set([H]));
+      throw new Error('verify failed after the commit');
+    }, { mutation: true })).rejects.toThrow('verify failed after the commit');
+    expect(mod.ftsMembershipUnchangedSince([H], second)).toBe(false);
+    expect(mod.ftsMembershipUnchangedSince([C], second)).toBe(true);
+
+    // A fenced native call that throws may have partially committed.
+    const third = mod.getFtsMembershipEpoch();
+    await expect(mod.withFtsMembershipFence(third, async (token) => {
+      await mod.runFtsMembershipMutation(async () => {
+        throw new Error('native failed mid-batch');
+      }, token, new Set([C]));
+    }, { mutation: true })).rejects.toThrow('native failed mid-batch');
+    expect(mod.ftsMembershipUnchangedSince([C], third)).toBe(false);
+    expect(mod.ftsMembershipUnchangedSince([H], third)).toBe(true);
+  });
+
+  it('lets a scoped fence pass unrelated traffic and refuses a change to its folder', async () => {
+    const mod = await coordinator();
+    const since = mod.getFtsMembershipEpoch();
+    await mod.runFtsMembershipMutation(async () => {}, null, new Set([H]));
+
+    const ran = vi.fn();
+    await mod.withFtsMembershipFence(since, ran, { mutation: true, scope: [C] });
+    expect(ran).toHaveBeenCalledTimes(1);
+    await expect(mod.withFtsMembershipFence(since, ran, { scope: [H] }))
+      .rejects.toThrow('membership_epoch_changed');
+    // The unscoped fence keeps the global rule.
+    await expect(mod.withFtsMembershipFence(since, ran))
+      .rejects.toThrow('membership_epoch_changed');
+    expect(ran).toHaveBeenCalledTimes(1);
+  });
+
+  it('never grants validity across an evicted ledger entry', async () => {
+    const mod = await coordinator();
+    mod._resetFtsOperationCoordinatorForTests({ changeLedgerCap: 2 });
+    const old = mod.getFtsMembershipEpoch();
+    await mod.runFtsMembershipMutation(async () => {}, null, new Set(['f1']));
+    const mid = mod.getFtsMembershipEpoch();
+    await mod.runFtsMembershipMutation(async () => {}, null, new Set(['f2']));
+    await mod.runFtsMembershipMutation(async () => {}, null, new Set(['f3']));
+
+    // f1 was evicted: a stamp from before its change cannot be judged and is
+    // invalid for every folder, including ones never touched.
+    expect(mod.ftsMembershipUnchangedSince(['f1'], old)).toBe(false);
+    expect(mod.ftsMembershipUnchangedSince(['never-touched'], old)).toBe(false);
+    // A stamp at or after the floor is still judged per folder.
+    expect(mod.ftsMembershipUnchangedSince(['f1'], mid)).toBe(true);
+    expect(mod.ftsMembershipUnchangedSince(['f2'], mid)).toBe(false);
+  });
+
+  it('clears the ledger on reset', async () => {
+    const mod = await coordinator();
+    await mod.runFtsMembershipMutation(async () => {}, null, new Set([C]));
+    mod._resetFtsOperationCoordinatorForTests();
+    expect(mod.getFtsMembershipEpoch()).toBe(0);
+    expect(mod.ftsMembershipUnchangedSince([C], 0)).toBe(true);
+  });
+});
