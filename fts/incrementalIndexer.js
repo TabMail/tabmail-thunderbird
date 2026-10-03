@@ -4609,10 +4609,6 @@ async function _runFolderReconcile(
   };
 
   const membershipMode = _captureFolderMembershipMode(ftsSearch);
-  // Sync events and exclusive rewrites after this point are not reflected in
-  // the opening folder states read below.
-  const openingSyncStartedAt = Date.now();
-  const openingMutationSerial = _folderReconMutationSerial;
   let folders;
   try {
     folders = await _readPerFolderExperimentState("getFolderState", {
@@ -4748,6 +4744,9 @@ async function _runFolderReconcile(
     // never stands in for the folder's own membership.
     // A resumed attempt keeps its sample. A membership mutation since then
     // also invalidated every digest the attempt cached, so it resamples.
+    // The sample carries the epoch read before it; a mutation during the
+    // read leaves it behind the current epoch, and every consumer (the gate's
+    // close, earned gate fields, resumption) then rejects it.
     let gateSample = resumedAttempt?.gateSample ?? null;
     const resample = !resumedAttempt
       || (gateSample !== null && gateSample.epoch !== getFtsMembershipEpoch());
@@ -4759,8 +4758,7 @@ async function _runFolderReconcile(
         const raw = await ftsSearch.fingerprintMsgIdRange(startKey, endKey);
         _assertFolderReconLease(reconcileLease, generation);
         _assertNoFolderReconForegroundPressure();
-        if (sampleEpoch === getFtsMembershipEpoch()
-            && Number.isSafeInteger(raw?.count)
+        if (Number.isSafeInteger(raw?.count)
             && raw.count >= 0
             && typeof raw?.sha256 === "string"
             && raw.sha256.length > 0) {
@@ -4785,15 +4783,14 @@ async function _runFolderReconcile(
     if (!_folderReconActiveProof
         && gateSample
         && priorExactProjection
-        && _lastSyncEventMs <= openingSyncStartedAt
-        && _folderReconMutationSerial === openingMutationSerial
         && _folderReconFastGateHit(m, f, gateSample)) {
       const closing = await _readFolderReconClosingState(f);
       _assertFolderReconLease(reconcileLease, generation);
-      if (_folderReconIdentityUnchanged(f, closing, { modSeq: true })
-          && gateSample.epoch === getFtsMembershipEpoch()
-          && _lastSyncEventMs <= openingSyncStartedAt
-          && _folderReconMutationSerial === openingMutationSerial) {
+      // A message event during the evaluation needs no check here: the
+      // event's own change is queued, and the tick rejects the slice. A
+      // membership mutation needs none either: the session-done grant
+      // requires the sample's epoch to still be current.
+      if (_folderReconIdentityUnchanged(f, closing, { modSeq: true })) {
         stats.foldersMemoHit++;
         verifiedThisRun.add(folderKey);
         verifiedEpochByFolder.set(folderKey, gateSample.epoch);
@@ -7445,6 +7442,7 @@ export const _testExports = {
   _wakeFolderRecon,
   _scanFolderMessagesCooperatively,
   _folderReconMissingDirection,
+  _folderReconEarnedGateFields,
   _getFolderReconMemo,
   _maybeScheduleFolderReconRerun,
   _getFolderReconDrainSkipped: () => _folderReconDrainSkipped,

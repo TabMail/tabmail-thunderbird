@@ -4,8 +4,10 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../agent/experiments/tmMsgNotify/tmMsgNotify.sys.mjs', import.meta.url), 'utf8');
 const OFFLINE_OPS_IID = { name: 'nsIMsgOfflineOpsDatabase' };
+const IMAP_SERVER_IID = { name: 'nsIImapIncomingServer' };
 
 function createExperiment({ generateUUID } = {}) {
+  const folders = new Map();
   class EventManager {
     constructor(options) { this.options = options; }
     api() { return { addListener() {}, removeListener() {} }; }
@@ -21,7 +23,9 @@ function createExperiment({ generateUUID } = {}) {
       } };
       if (path.includes('Timer')) return { clearInterval: vi.fn(), setInterval: vi.fn(() => 1) };
       if (path.includes('MailServices')) return { MailServices: { mfn: { addListener() {}, removeListener() {} } } };
-      if (path.includes('MailUtils')) return { MailUtils: {} };
+      if (path.includes('MailUtils')) return { MailUtils: {
+        getExistingFolder: uri => [...folders.values()].find(folder => folder.URI === uri),
+      } };
       throw new Error(path);
     } },
     console: { log: vi.fn(), error: vi.fn(), warn: vi.fn() },
@@ -29,6 +33,7 @@ function createExperiment({ generateUUID } = {}) {
       nsMsgMessageFlags: { IMAPDeleted: 1, Expunged: 2 },
       nsMsgFolderFlags: { Virtual: 0x20 },
       nsIMsgOfflineOpsDatabase: OFFLINE_OPS_IID,
+      nsIImapIncomingServer: IMAP_SERVER_IID,
     },
     Services: {
       uuid: {
@@ -37,9 +42,11 @@ function createExperiment({ generateUUID } = {}) {
       },
     },
   };
-  const folders = new Map();
   const extension = {
-    folderManager: { get: (accountId, path) => folders.get(`${accountId}:${path}`) },
+    folderManager: {
+      get: (accountId, path) => folders.get(`${accountId}:${path}`),
+      convert: folder => ({ accountId: 'account1', path: folder.weFolderPath }),
+    },
     messageManager: { convert: () => ({ id: 1 }) },
   };
   vm.runInNewContext(`${source}\nglobalThis.Experiment = tmMsgNotify;`, sandbox);
@@ -48,7 +55,20 @@ function createExperiment({ generateUUID } = {}) {
   return { api, folders, services: sandbox.Services };
 }
 
-function imapFolder({ props = {}, numMessages = 3, offline = () => false, setCharProperty } = {}) {
+function imapServer(useCondStore) {
+  return {
+    type: 'imap',
+    QueryInterface(iid) {
+      if (iid !== IMAP_SERVER_IID) throw new Error('no interface');
+      if (useCondStore instanceof Error) throw useCondStore;
+      return { useCondStore };
+    },
+  };
+}
+
+function imapFolder({
+  props = {}, numMessages = 3, offline = () => false, setCharProperty, useCondStore = true,
+} = {}) {
   const stored = { highestModSeq: '42', ...props };
   const info = {
     imapUidValidity: 7,
@@ -65,11 +85,13 @@ function imapFolder({ props = {}, numMessages = 3, offline = () => false, setCha
       if (iid !== OFFLINE_OPS_IID) throw new Error('no interface');
       return { hasOfflineActivity: offline };
     },
+    enumerateMessages: () => ({ hasMoreElements: () => false }),
   };
   return {
     folder: {
       URI: 'imap://user@example.com/INBOX',
-      server: { type: 'imap' },
+      weFolderPath: '/INBOX',
+      server: imapServer(useCondStore),
       getFlag: () => false,
       msgDatabase: db,
     },
@@ -152,6 +174,38 @@ describe('tmMsgNotify.getFolderState msgDB identity and evidence', () => {
     expect(state).not.toHaveProperty('pendingOfflineOps');
     expect(state).not.toHaveProperty('numMessages');
     expect(state.stableUidKeys).toBe(true);
+  });
+
+  // Without CONDSTORE in use Thunderbird stores HIGHESTMODSEQ only from a
+  // SELECT, so the value stays frozen while the folder stays selected and
+  // cannot witness that nothing changed.
+  it.each([
+    ['CONDSTORE is off for the server', false],
+    ['the server setting is unreadable', new Error('not an IMAP server')],
+  ])('reports no HIGHESTMODSEQ when %s, and keeps the rest of the evidence', async (_name, useCondStore) => {
+    const { api, folders } = createExperiment();
+    folders.set('account1:/INBOX', imapFolder({ useCondStore }).folder);
+
+    const state = await api.getFolderState('account1', '/INBOX', { ensureIncarnationToken: true });
+
+    expect(state.error).toBeUndefined();
+    expect(state.highestModSeq).toBe('');
+    expect(state).toMatchObject({ stableUidKeys: true, uidValidity: 7, numMessages: 3 });
+    expect(state.incarnationToken).not.toBe('');
+  });
+
+  it.each([
+    ['in use', true, '42'],
+    ['off', false, ''],
+  ])('opens a folder scan with the stored HIGHESTMODSEQ only when CONDSTORE is %s', async (_name, useCondStore, expected) => {
+    const { api, folders } = createExperiment();
+    folders.set('account1:/INBOX', imapFolder({ useCondStore }).folder);
+
+    const opened = await api.beginFolderMessageScan('imap://user@example.com/INBOX', false);
+
+    expect(opened.error).toBeUndefined();
+    expect(opened).toMatchObject({ stableUidKeys: true, uidValidity: 7, highestModSeq: expected });
+    await api.cancelFolderMessageScan(opened.token);
   });
 
   it('reads no msgDB evidence for a non-IMAP folder', async () => {

@@ -92,6 +92,22 @@ function isExcludedProofHeader(hdr) {
 }
 
 /**
+ * The msgDB's stored HIGHESTMODSEQ, or "" unless Thunderbird uses CONDSTORE
+ * for this server. Without it (the default, use_condstore=false) the value
+ * is only written from a SELECT response, so it stays frozen while the
+ * folder stays selected and gains or loses messages: it cannot witness
+ * that nothing changed.
+ */
+function condStoreHighestModSeq(folder, dbInfo) {
+  try {
+    if (folder.server.QueryInterface(Ci.nsIImapIncomingServer).useCondStore !== true) return "";
+    return String(dbInfo.getCharProperty("highestModSeq") || "");
+  } catch (_) {
+    return "";
+  }
+}
+
+/**
  * Extract message info from nsIMsgDBHdr for serialization to WebExtension.
  * IMPORTANT: Do not hold references to nsIMsgDBHdr objects - serialize immediately.
  */
@@ -380,10 +396,7 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
             const serverType = String(folder.server?.type || "");
             const stableUidKeys = serverType === "imap"
               && !folder.getFlag(Ci.nsMsgFolderFlags.Virtual);
-            let highestModSeq = "";
-            try {
-              highestModSeq = String(dbInfo.getCharProperty("highestModSeq") || "");
-            } catch (_) {}
+            const highestModSeq = stableUidKeys ? condStoreHighestModSeq(folder, dbInfo) : "";
             const token = `folder-scan-${nextFolderMessageScanId++}`;
             folderMessageScans.set(token, {
               enumerator: db.enumerateMessages(),
@@ -509,14 +522,10 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
 
             const db = folder.msgDatabase;
             const dbInfo = db.dBFolderInfo;
-            let highestModSeq = "";
-            try {
-              highestModSeq = String(dbInfo.getCharProperty("highestModSeq") || "");
-            } catch (_) {}
             const result = {
               ...base,
               uidValidity: dbInfo.imapUidValidity || 0,
-              highestModSeq,
+              highestModSeq: condStoreHighestModSeq(folder, dbInfo),
             };
             // A count is only a trip-wire for the caller, never proof; an
             // unreadable value is omitted.
