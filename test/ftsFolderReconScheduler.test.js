@@ -6704,10 +6704,24 @@ describe('reconciliation removal vs a racing re-add', () => {
     ]);
     const localRows = rowsByURI.get(folders[0].folderURI);
     nativeRows.set(LIVE, null);
+    const listPages = [];
+    const listState = fts.listFolderMembershipState.getMockImplementation();
+    fts.listFolderMembershipState.mockImplementation(async (after, limit) => {
+      listPages.push(after);
+      return listState(after, limit);
+    });
     recheckMessageInFolder.mockImplementationOnce(async () => {
-      // The scoped query missed; the message is re-added before the removal.
+      // The scoped query missed; the message is re-added (a real Thunderbird
+      // event) before the removal.
       localRows.push({ msgKey: 1, headerMessageId: 'live@example.com' });
-      _testExports._invalidateFolderReconProofForEvent('account1', '/F');
+      await _testExports.onExperimentMessageAdded({
+        accountId: 'account1',
+        folderPath: '/F',
+        headerMessageId: 'live@example.com',
+        msgKey: 1,
+        eventType: 'msgAdded',
+      });
+      _testExports._getPendingUpdates().clear();
       return 'absent';
     });
 
@@ -6716,6 +6730,9 @@ describe('reconciliation removal vs a racing re-add', () => {
     expect(fts.removeBatch.mock.calls.flat(2)).not.toContain(LIVE);
     expect(nativeRows.get(LIVE)).toBe(folders[0].folderId);
     expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    // The withheld page is read again from the same cursor.
+    expect(listPages.slice(0, 2)).toEqual([null, null]);
+    expect(_testExports._getFolderReconRuntimeTelemetry().membershipStatePageRetries).toBeGreaterThan(0);
   });
 
   it('removes the same ghost when no message event intervenes', async () => {

@@ -6144,10 +6144,6 @@ async function _runFolderMembershipMigrationSlice(
   const staleOrphanMsgIds = [];
   const assignments = [];
   const budget = { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE };
-  // Every message add/remove event bumps this synchronously. A removal judged
-  // before an event for the same key would race its re-add, so any event
-  // since classification began withholds this page's removals (retry below).
-  const eventSerialAtClassification = _folderReconMutationSerial;
   let unresolved = 0;
   let unloadedAccountRowsKept = 0;
   let processed = 0;
@@ -6206,9 +6202,6 @@ async function _runFolderMembershipMigrationSlice(
       await withFtsMembershipFence(inventoryMembershipEpoch, async (membershipFenceToken) => {
         // Sticky before the mutator: an interrupted or uncertain removal
         // still forces a full replay before cutover.
-        if (_folderReconMutationSerial !== eventSerialAtClassification) {
-          throw new Error("membership_epoch_changed");
-        }
         pass.passMutated = true;
         assertCurrent();
         await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
@@ -6397,7 +6390,16 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
           inventoryTopologySerial,
         );
       } catch (error) {
-        if (!String(error?.message || error).includes("folder_recon_pressure")) throw error;
+        const message = String(error?.message || error);
+        if (message.includes("folder_changed_during_scan")) {
+          // A message event during the slice voids its judgements (a removal
+          // could race a re-add). Nothing was committed past the cursor, so
+          // the same page is read again on the next paced slice.
+          _bumpFolderReconTelemetry("membershipStatePageRetries");
+          _wakeFolderRecon("membership_sync_event", cooperativeDelay());
+          return { complete: false, migration: { retry: true, reason: "sync_event_during_slice" } };
+        }
+        if (!message.includes("folder_recon_pressure")) throw error;
         _bumpFolderReconTelemetry("schedulerPressureSkips");
         _wakeFolderRecon("membership_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
         return { skipped: true, reason: "pressure" };
