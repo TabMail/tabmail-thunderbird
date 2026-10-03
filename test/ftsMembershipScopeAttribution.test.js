@@ -39,6 +39,8 @@ const CHILD = makeFolderMembershipId('account1', '/F:Child');
 
 beforeEach(() => {
   _resetFtsOperationCoordinatorForTests();
+  // Keys are attributed to the folders reconciliation registered.
+  registerFtsMembershipFolders([A, B, PARENT, CHILD]);
   vi.clearAllMocks();
 });
 
@@ -58,7 +60,7 @@ describe('native mutation wrappers attribute their folder scope', () => {
     expect(changed(B)).toBe(false);
   });
 
-  it('removeBatch touches every candidate folder of each key, including a parent range', async () => {
+  it('removeBatch touches every registered folder whose key range holds the key, including a parent range', async () => {
     const changed = await touched(() => ftsSearch.removeBatch(['account1:/F:Child:two@example.com']));
     expect(changed(CHILD)).toBe(true);
     expect(changed(PARENT)).toBe(true);
@@ -90,6 +92,39 @@ describe('native mutation wrappers attribute their folder scope', () => {
     ]));
     expect(indexed(B)).toBe(true);
     expect(indexed(A)).toBe(false);
+  });
+
+  it('before any inventory, a key touches no folder and an explicit owner still does', async () => {
+    _resetFtsOperationCoordinatorForTests();
+    const removed = await touched(() => ftsSearch.removeBatch(['account1:/A:seven@example.com']));
+    expect(removed(A)).toBe(false);
+    const indexed = await touched(() => ftsSearch.indexBatch([
+      { msgId: 'account1:/A:eight@example.com', folderId: A },
+    ]));
+    expect(indexed(A)).toBe(true);
+  });
+
+  // A Message-ID is untrusted input of any length. Attribution must not
+  // build or hash a path per ":" (quadratic in the key's length): the work
+  // is bounded by the registered paths. Keys stay below V8's string-hash
+  // length cutoff so every tried path is really hashed.
+  it('attributes a batch of long colon-heavy keys through the wrapper in time bounded by the registered paths', async () => {
+    const keys = 50;
+    const pairs = 8000;
+    const hot = makeFolderMembershipId('account1', '/H:x');
+    registerFtsMembershipFolders([A, hot]);
+    const batch = Array.from({ length: keys }, (_, n) => `account1:/H:x:${'a:'.repeat(pairs)}${n}@example.com`);
+    const started = performance.now();
+    const removed = await touched(() => ftsSearch.removeBatch(batch));
+    const indexed = await touched(() => ftsSearch.indexBatch(batch.map(msgId => ({ msgId, folderId: hot }))));
+    const fenced = ftsMembershipUnchangedSince({ msgIds: batch }, getFtsMembershipEpoch() - 1);
+    const elapsedMs = performance.now() - started;
+    expect(removed(hot)).toBe(true);
+    expect(removed(A)).toBe(false);
+    expect(indexed(hot)).toBe(true);
+    expect(fenced).toBe(false);
+    // Trying every ":" hashes ~3 * 10^9 code units here.
+    expect(elapsedMs).toBeLessThan(1000);
   });
 
   it('a fenced wrapper call is attributed when the fence completes', async () => {

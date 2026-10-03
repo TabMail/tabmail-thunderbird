@@ -382,7 +382,7 @@ describe('folder-scoped membership change ledger', () => {
   describe('registered folder universe', () => {
     const REAL_C = 'tm-folder:v1:["account1","/Cold"]';
     const REAL_H = 'tm-folder:v1:["account1","/Hot"]';
-    // Every path split of this key is a candidate folder; only /Hot is real.
+    // Every path split of this key could name a folder; only /Hot is real.
     const colonHeavyHotKey = n => `account1:/Hot:a:b:c:d:e:f-${n}@example.com`;
 
     it('keeps a registered folder\'s proof valid while another folder churns colon-heavy keys past the ledger cap', async () => {
@@ -397,12 +397,52 @@ describe('folder-scoped membership change ledger', () => {
       expect(mod.ftsMembershipUnchangedSince([REAL_H], since)).toBe(false);
     });
 
-    it('records every candidate of a key before the first registration', async () => {
+    it('attributes a key to every registered folder whose key range holds it, and to no other', async () => {
+      const mod = await coordinator();
+      const id = (accountId, folderPath) => `tm-folder:v1:${JSON.stringify([accountId, folderPath])}`;
+      const owners = [id('account1', '/F'), id('account1', '/F:Child'), id('account1', '/F:Child:id')];
+      const others = [id('account1', '/INBOX'), id('account2', '/F'), id('account1', '/F:Chi'), id('account1', '/F:Child:id:part@example.com')];
+      // A registered id that names no account and path matches no key.
+      mod.registerFtsMembershipFolders([...owners, ...others, 'opaque-folder']);
+      const since = mod.getFtsMembershipEpoch();
+      // A colon-bearing path and a colon-bearing Message-ID: every path end
+      // a registered folder has is tried, under the first-colon account.
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['account1:/F:Child:id:part@example.com'] });
+      for (const folderId of owners) expect(mod.ftsMembershipUnchangedSince([folderId], since)).toBe(false);
+      for (const folderId of [...others, 'opaque-folder']) expect(mod.ftsMembershipUnchangedSince([folderId], since)).toBe(true);
+    });
+
+    it('attributes a key to no folder before the first inventory, which then records every folder', async () => {
       const mod = await coordinator();
       const since = mod.getFtsMembershipEpoch();
-      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['account1:/F:Child:one@example.com'] });
-      expect(mod.ftsMembershipUnchangedSince(['tm-folder:v1:["account1","/F"]'], since)).toBe(false);
-      expect(mod.ftsMembershipUnchangedSince(['tm-folder:v1:["account1","/F:Child"]'], since)).toBe(false);
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['account1:/Cold:one@example.com'] });
+      expect(mod.ftsMembershipUnchangedSince([REAL_C], since)).toBe(true);
+      // No proof can predate the folder's registration, which records it.
+      mod.registerFtsMembershipFolders([REAL_C]);
+      expect(mod.ftsMembershipUnchangedSince([REAL_C], since)).toBe(false);
+    });
+
+    // A key read scope is never filtered by the universe: the stale-owner
+    // fence must see a row indexed into a folder created after its inventory.
+    it('breaks a key read scope on a recorded change to any folder whose range holds a key', async () => {
+      const mod = await coordinator();
+      mod.registerFtsMembershipFolders([REAL_C, REAL_H]);
+      const NEW = 'tm-folder:v1:["account1","/Gone:New"]';
+      const keys = { msgIds: ['account1:/Gone:New:k@example.com'] };
+      const since = mod.getFtsMembershipEpoch();
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['account1:/Hot:h@example.com'] });
+      expect(mod.ftsMembershipUnchangedSince(keys, since)).toBe(true);
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: [], folderIds: [NEW] });
+      expect(mod.ftsMembershipUnchangedSince(keys, since)).toBe(false);
+      // A newer stamp, an older change: unaffected.
+      expect(mod.ftsMembershipUnchangedSince(keys, mod.getFtsMembershipEpoch())).toBe(true);
+      // An unsplittable key needs the global check; an undecodable recorded
+      // owner cannot be ruled out, so it breaks the scope.
+      const now = mod.getFtsMembershipEpoch();
+      expect(mod.ftsMembershipUnchangedSince({ msgIds: ['no-split'] }, now)).toBe(true);
+      await mod.runFtsMembershipMutation(async () => {}, null, new Set(['opaque-owner']));
+      expect(mod.ftsMembershipUnchangedSince({ msgIds: ['no-split'] }, now)).toBe(false);
+      expect(mod.ftsMembershipUnchangedSince(keys, now)).toBe(false);
     });
 
     it('always records explicit owners, registered or not', async () => {
@@ -477,8 +517,11 @@ describe('folder-scoped membership change ledger', () => {
       mod.registerFtsMembershipFolders([REAL_C]);
       mod._resetFtsOperationCoordinatorForTests();
       const since = mod.getFtsMembershipEpoch();
-      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['account1:/Hot:x@example.com'] });
-      expect(mod.ftsMembershipUnchangedSince([REAL_H], since)).toBe(false);
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['account1:/Cold:x@example.com'] });
+      expect(mod.ftsMembershipUnchangedSince([REAL_C], since)).toBe(true);
+      // Registering again records the folder as new.
+      mod.registerFtsMembershipFolders([REAL_C]);
+      expect(mod.ftsMembershipUnchangedSince([REAL_C], since)).toBe(false);
     });
   });
 });

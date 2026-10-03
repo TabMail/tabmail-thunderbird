@@ -4,9 +4,10 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  folderMembershipIdCandidatesForKey,
-  folderMembershipScope,
+  folderMembershipKeyAccountEnd,
+  folderMembershipKeyPrefix,
   makeFolderMembershipId,
+  parseFolderMembershipId,
 } from "../fts/folderMembershipIdentity.js";
 
 describe("durable app-owned folder membership identity", () => {
@@ -27,54 +28,39 @@ describe("durable app-owned folder membership identity", () => {
   });
 });
 
-describe("folder-scope attribution of native keys", () => {
-  it("names the owning folder of a plain key", () => {
-    expect(folderMembershipIdCandidatesForKey("account1:/INBOX:abc@example.com"))
-      .toEqual([makeFolderMembershipId("account1", "/INBOX")]);
-  });
-
-  it("names every path split of colon-bearing paths and Message-IDs, under the first-colon account", () => {
-    expect(folderMembershipIdCandidatesForKey("account1:/F:Child:id:part@example.com")).toEqual([
-      makeFolderMembershipId("account1", "/F"),
-      makeFolderMembershipId("account1", "/F:Child"),
-      makeFolderMembershipId("account1", "/F:Child:id"),
-    ]);
-  });
-
-  // One candidate per ":" after the account: a colon-heavy Message-ID costs
-  // linear work, never one identity per pair of colons.
-  it("names one candidate per later colon for a colon-heavy Message-ID", () => {
-    const pairs = 450;
-    const key = `account1:/INBOX:${"a:".repeat(pairs)}x@example.com`;
-    const candidates = folderMembershipIdCandidatesForKey(key);
-    expect(candidates).toHaveLength(pairs + 1);
-    expect(candidates[0]).toBe(makeFolderMembershipId("account1", "/INBOX"));
-  });
-
-  it("attributes a child folder's key to its parent's key range too", () => {
-    expect(folderMembershipIdCandidatesForKey("account1:/F:Child:abc@example.com"))
-      .toEqual(expect.arrayContaining([
-        makeFolderMembershipId("account1", "/F"),
-        makeFolderMembershipId("account1", "/F:Child"),
-      ]));
-  });
-
-  it("returns null for a key with no account/path split", () => {
-    for (const key of ["", "nocolon", "account1:", ":/INBOX:id", "account1::id", "account1:/INBOX:", null, 42]) {
-      expect(folderMembershipIdCandidatesForKey(key)).toBeNull();
+describe("matching native keys to a folder", () => {
+  it("parses back exactly the tuple an identity was made from", () => {
+    for (const [accountId, folderPath] of [["account1", "/INBOX"], ["acct:work", "/F:%/Cafe\u0301/\ud83d\udce8"]]) {
+      expect(parseFolderMembershipId(makeFolderMembershipId(accountId, folderPath)))
+        .toEqual({ accountId, folderPath });
     }
   });
 
-  it("scopes a batch to every candidate plus explicit owners, or the wildcard", () => {
-    const scope = folderMembershipScope(
-      ["account1:/A:x@example.com", "account1:/B:y@example.com"],
-      ["explicit-owner", null],
-    );
-    expect([...scope].sort()).toEqual([
-      makeFolderMembershipId("account1", "/A"),
-      makeFolderMembershipId("account1", "/B"),
-      "explicit-owner",
-    ].sort());
-    expect(folderMembershipScope(["account1:/A:x@example.com", "bad"])).toBe("*");
+  it("parses nothing it did not make", () => {
+    for (const value of [
+      null, 42, "", "folder-cold", "tm-folder:v1:", "tm-folder:v1:not json",
+      'tm-folder:v1:["account1"]', 'tm-folder:v1:["account1",""]', 'tm-folder:v1:["account1",7]',
+      'tm-folder:v2:["account1","/INBOX"]',
+    ]) {
+      expect(parseFolderMembershipId(value)).toBeNull();
+    }
+  });
+
+  it("ends the account at the first colon, with or without colons later in the key", () => {
+    expect(folderMembershipKeyAccountEnd("account1:/INBOX:abc@example.com")).toBe(8);
+    expect(folderMembershipKeyAccountEnd("account1:/F:Child:id:part@example.com")).toBe(8);
+  });
+
+  it("finds no split in a key without an account, a path and a remainder", () => {
+    for (const key of ["", "nocolon", "account1:", ":/INBOX:id", "account1::id", "account1:/INBOX:", null, 42]) {
+      expect(folderMembershipKeyAccountEnd(key)).toBe(-1);
+    }
+  });
+
+  it("prefixes every key in a folder's range, its child folders' keys included", () => {
+    const prefix = folderMembershipKeyPrefix("account1", "/F");
+    expect("account1:/F:abc@example.com".startsWith(prefix)).toBe(true);
+    expect("account1:/F:Child:abc@example.com".startsWith(prefix)).toBe(true);
+    expect("account1:/FF:abc@example.com".startsWith(prefix)).toBe(false);
   });
 });

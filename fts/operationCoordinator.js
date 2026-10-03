@@ -2,7 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { folderMembershipIdCandidatesForKey } from "./folderMembershipIdentity.js";
+import {
+  folderMembershipKeyAccountEnd,
+  folderMembershipKeyPrefix,
+  parseFolderMembershipId,
+} from "./folderMembershipIdentity.js";
 
 // One process-local coordinator for every native email-FTS writer. Durable
 // scan status remains observability only; live exclusion is owned here.
@@ -20,20 +24,25 @@ let _membershipEpoch = 0;
 // only by changes attributed to C or to the wildcard, so traffic in another
 // folder never restarts it. Evicting an entry raises the floor: a stamp older
 // than an evicted change is treated as changed, never as valid.
-// Only real folders occupy the ledger: explicit owners, and key candidates
-// that name a folder reconciliation registered from its inventory. A
-// colon-bearing Message-ID splits into candidate paths no folder has, and
-// recording those would let one busy folder evict every other entry.
+// Only real folders occupy the ledger: explicit owners, and the folders
+// reconciliation registered from its inventory whose key range holds a
+// mutated key. A colon-bearing Message-ID splits into paths no folder has;
+// recording those would let one busy folder evict every other entry, and
+// building them all costs quadratic work in the key's length.
 // The cap bounds memory; it is far above any real profile's folder count.
 const FTS_MEMBERSHIP_LEDGER_CONFIG = Object.freeze({ changeLedgerCap: 4096 });
 let _membershipLedgerCap = FTS_MEMBERSHIP_LEDGER_CONFIG.changeLedgerCap;
 let _membershipTouched = new Map();
 let _membershipWildcardEpoch = 0;
 let _membershipTouchFloor = 0;
-// Real folder ids of the latest inventory; null until the first one (then
-// every candidate is recorded). Bounded by the live inventory: a folder that
-// leaves it has no proof left to protect (runtime pruning releases it).
-let _membershipFolderUniverse = null;
+// Real folder ids of the latest inventory, and their paths by account with
+// the longest one, so a key is matched only against path ends a registered
+// folder can have. Bounded by the live inventory: a folder that leaves it
+// has no proof left to protect (runtime pruning releases it). Before the
+// first inventory no proof exists, and registering a folder records it as
+// changed, so unattributed earlier changes are never trusted.
+let _membershipFolderUniverse = new Set();
+let _membershipUniverseByAccount = new Map();
 // The raw scopes a running fence's callback attributed, or "*".
 let _membershipFenceScope = null;
 let _membershipTail = Promise.resolve();
@@ -115,27 +124,30 @@ export function getFtsMembershipEpoch() {
 
 // Resolved when the change is recorded, against the universe at that time:
 // a folder registered while the mutation ran is still attributed.
-// A scope is "*", an iterable of folder ids, or { msgIds, folderIds } where
-// folderIds are explicit owners (always recorded).
+// A scope is "*", an iterable of folder ids, or { msgIds, folderIds }. Named
+// folder ids (explicit owners) are always recorded; a key is recorded for
+// the registered folders whose key range holds it.
 function _resolveMembershipScope(scope) {
   if (scope === "*") return "*";
   const resolved = new Set();
-  const addCandidate = folderId => {
-    if (folderId && (_membershipFolderUniverse === null || _membershipFolderUniverse.has(folderId))) {
-      resolved.add(folderId);
-    }
-  };
-  if (Array.isArray(scope) || scope instanceof Set) {
-    for (const folderId of scope) addCandidate(folderId);
-    return resolved;
-  }
-  for (const folderId of scope?.folderIds || []) {
+  const folderIds = Array.isArray(scope) || scope instanceof Set ? scope : (scope?.folderIds || []);
+  for (const folderId of folderIds) {
     if (folderId) resolved.add(folderId);
   }
   for (const msgId of scope?.msgIds || []) {
-    const candidates = folderMembershipIdCandidatesForKey(msgId);
-    if (!candidates) return "*";
-    candidates.forEach(addCandidate);
+    const accountEnd = folderMembershipKeyAccountEnd(msgId);
+    if (accountEnd < 0) return "*";
+    const account = _membershipUniverseByAccount.get(msgId.slice(0, accountEnd));
+    if (!account) continue;
+    // Only path ends no longer than a registered path are tried, so the
+    // work per key is bounded by the registered paths, not the key length.
+    const lastPathEnd = Math.min(msgId.length - 2, accountEnd + 1 + account.maxPathLength);
+    for (let pathEnd = msgId.indexOf(":", accountEnd + 2);
+      pathEnd !== -1 && pathEnd <= lastPathEnd;
+      pathEnd = msgId.indexOf(":", pathEnd + 1)) {
+      const folderId = account.paths.get(msgId.slice(accountEnd + 1, pathEnd));
+      if (folderId) resolved.add(folderId);
+    }
   }
   return resolved;
 }
@@ -145,15 +157,26 @@ function _resolveMembershipScope(scope) {
 // now: changes to it while unregistered were not attributed, and no stamp
 // older than this may trust them.
 export function registerFtsMembershipFolders(folderIds) {
-  const previous = _membershipFolderUniverse || new Set();
+  const previous = _membershipFolderUniverse;
   const universe = new Set();
+  const byAccount = new Map();
   const added = [];
   for (const folderId of folderIds) {
     if (!folderId || universe.has(folderId)) continue;
     universe.add(folderId);
     if (!previous.has(folderId)) added.push(folderId);
+    const folder = parseFolderMembershipId(folderId);
+    if (!folder) continue;
+    let account = byAccount.get(folder.accountId);
+    if (!account) {
+      account = { paths: new Map(), maxPathLength: 0 };
+      byAccount.set(folder.accountId, account);
+    }
+    account.paths.set(folder.folderPath, folderId);
+    account.maxPathLength = Math.max(account.maxPathLength, folder.folderPath.length);
   }
   _membershipFolderUniverse = universe;
+  _membershipUniverseByAccount = byAccount;
   if (added.length > 0) _recordMembershipScope(added, _membershipEpoch);
 }
 
@@ -186,9 +209,12 @@ function _resolveFenceScopes(scopes) {
   return resolved;
 }
 
-// True when no membership change attributed to any folder id in `scope`
-// (or to the wildcard) completed after `sinceEpoch` was read. A "*" scope is
-// the global check.
+// True when no membership change attributed to any folder in `scope` (or to
+// the wildcard) completed after `sinceEpoch` was read. A "*" scope is the
+// global check. A { msgIds, folderIds } scope names its explicit folders and
+// every folder whose rows or key range hold one of the keys; it is never
+// filtered by the universe, so a change recorded for an explicit owner not
+// yet registered (a folder created after an inventory) still breaks it.
 export function ftsMembershipUnchangedSince(scope, sinceEpoch) {
   if (scope === "*") return sinceEpoch === _membershipEpoch;
   if (!Number.isFinite(sinceEpoch)
@@ -196,8 +222,25 @@ export function ftsMembershipUnchangedSince(scope, sinceEpoch) {
       || sinceEpoch < _membershipWildcardEpoch) {
     return false;
   }
-  for (const folderId of scope) {
+  const folderIds = Array.isArray(scope) || scope instanceof Set ? scope : (scope?.folderIds || []);
+  for (const folderId of folderIds) {
     if ((_membershipTouched.get(folderId) ?? 0) > sinceEpoch) return false;
+  }
+  const msgIds = scope?.msgIds;
+  if (!msgIds) return true;
+  for (const msgId of msgIds) {
+    if (folderMembershipKeyAccountEnd(msgId) < 0) return sinceEpoch === _membershipEpoch;
+  }
+  // Matching the ledger's newer entries against the keys costs at most the
+  // ledger cap times the keys, independent of how many ":" a key holds.
+  for (const [folderId, epoch] of _membershipTouched) {
+    if (epoch <= sinceEpoch) continue;
+    const folder = parseFolderMembershipId(folderId);
+    if (!folder) return false;
+    const prefix = folderMembershipKeyPrefix(folder.accountId, folder.folderPath);
+    for (const msgId of msgIds) {
+      if (msgId.length > prefix.length && msgId.startsWith(prefix)) return false;
+    }
   }
   return true;
 }
@@ -386,7 +429,8 @@ export function _resetFtsOperationCoordinatorForTests({
   _membershipWildcardEpoch = 0;
   _membershipTouchFloor = 0;
   _membershipFenceScope = null;
-  _membershipFolderUniverse = null;
+  _membershipFolderUniverse = new Set();
+  _membershipUniverseByAccount = new Map();
   _membershipLedgerCap = changeLedgerCap;
   _membershipTail = Promise.resolve();
   _nextRunId = 1;

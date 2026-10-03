@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { folderMembershipIdCandidatesForKey, makeFolderMembershipId } from '../fts/folderMembershipIdentity.js';
+import { makeFolderMembershipId } from '../fts/folderMembershipIdentity.js';
 import { experimentFunctions } from './helpers/experimentFunctions.js';
 
 const reconConfig = {
@@ -8301,8 +8301,9 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
           return id;
         },
       })).toBe(true);
-      // Synthetic candidates (every split but the real folder) far exceed the cap.
-      const synthetic = sent.reduce((sum, key) => sum + folderMembershipIdCandidatesForKey(key).length - 1, 0);
+      // Synthetic path ends (every ":" after the account but the real
+      // folder's) far exceed the cap.
+      const synthetic = sent.reduce((sum, key) => sum + key.split(':').length - 3, 0);
       expect(synthetic).toBeGreaterThan(10 * LEDGER_CAP);
     } finally {
       _resetFtsOperationCoordinatorForTests();
@@ -8346,6 +8347,67 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
 
     expect(written).toBeGreaterThan(1);
     expect(installed.nativeRows.has(staleKey)).toBe(false);
+    expect(coldDone()).toBe(true);
+  }, TRAFFIC_TEST_TIMEOUT_MS);
+
+  // The converse at the same fence: a write that makes the stale row valid
+  // again lands after its recheck and before the removal. Attributed to the
+  // cold folder (or unattributed) it must refuse the older absence evidence;
+  // attributed to another folder it must not.
+  it.each([
+    { writer: 'self', removed: false },
+    { writer: 'wildcard', removed: false },
+    { writer: 'other', removed: true },
+  ])('a $writer write between the stale recheck and its removal fence: removed=$removed', async ({ writer, removed }) => {
+    const installed = seedMigratedExactFolders([
+      { folderPath: '/Cold', headerMessageIds: ['cold-1@example.com', 'cold-2@example.com'] },
+      { folderPath: '/Hot', headerMessageIds: ['hot-seed@example.com'] },
+    ]);
+    const [cold, hot] = installed.folders;
+    const staleId = 'stale@example.com';
+    const staleKey = `account1:/Cold:${staleId}`;
+    installed.nativeRows.set(staleKey, cold.folderId);
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (folderURI, ids) => {
+      const present = new Set((installed.rowsByURI.get(folderURI) || []).map(row => row.headerMessageId));
+      return { missing: ids.filter(id => !present.has(id)) };
+    });
+    _testExports._setFtsSearch(installed.fts);
+    let raced = false;
+    recheckMessageInFolder.mockImplementation(async (headerID) => {
+      if (headerID === staleId && !raced) {
+        raced = true;
+        if (writer === 'other') {
+          const msgId = 'account1:/Hot:late@example.com';
+          await runFtsMembershipMutation(async () => { installed.nativeRows.set(msgId, hot.folderId); }, null,
+            { msgIds: [msgId], folderIds: [hot.folderId] });
+        } else {
+          // The message is back in the cold folder and re-indexed there.
+          const rows = installed.rowsByURI.get(cold.folderURI);
+          installed.rowsByURI.set(cold.folderURI, [...rows, { ...rows[0], msgKey: 99, headerMessageId: staleId }]);
+          const reAdd = async () => { installed.nativeRows.set(staleKey, cold.folderId); };
+          if (writer === 'self') {
+            await runFtsMembershipMutation(reAdd, null, { msgIds: [staleKey], folderIds: [cold.folderId] });
+          } else {
+            await runFtsMembershipMutation(reAdd);
+          }
+        }
+      }
+      return 'absent';
+    });
+
+    const coldDone = () => _testExports._getFolderReconSessionDone().has('account1:/Cold');
+    for (let turn = 0; turn < 120 && !coldDone(); turn++) {
+      await settleSchedulerTickWithFakeTimers(installed.fts);
+      vi.setSystemTime(Date.now() + SLICE_STEP_MS);
+    }
+
+    expect(raced).toBe(true);
+    // One recheck: the other folder's write never costs the removal a retry,
+    // and after a refusal the re-added message is no longer a candidate.
+    expect(recheckMessageInFolder.mock.calls.filter(([headerID]) => headerID === staleId)).toHaveLength(1);
+    const removedIds = installed.fts.removeBatch.mock.calls.flatMap(([ids]) => ids);
+    expect(removedIds.includes(staleKey)).toBe(removed);
+    expect(installed.nativeRows.get(staleKey)).toBe(removed ? undefined : cold.folderId);
     expect(coldDone()).toBe(true);
   }, TRAFFIC_TEST_TIMEOUT_MS);
 

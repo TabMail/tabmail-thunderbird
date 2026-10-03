@@ -19,7 +19,7 @@ import {
   resolveUniqueMessageKey,
 } from "../agent/modules/utils.js";
 import { buildBatchHeader, populateBatchBody } from "./indexer.js";
-import { folderMembershipScope, makeFolderMembershipId } from "./folderMembershipIdentity.js";
+import { makeFolderMembershipId } from "./folderMembershipIdentity.js";
 import {
   _resetFtsOperationCoordinatorForTests,
   addFtsExclusiveMembershipChangeListener,
@@ -6300,7 +6300,7 @@ async function _runFolderMembershipMigrationSlice(
         // Only a write that could re-own one of these keys (for example a row
         // indexed into a folder created after the inventory) voids the
         // removal; traffic in unrelated folders does not.
-        scope: folderMembershipScope(staleOrphanMsgIds),
+        scope: { msgIds: staleOrphanMsgIds },
       });
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
