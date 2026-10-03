@@ -378,4 +378,90 @@ describe('folder-scoped membership change ledger', () => {
     expect(mod.getFtsMembershipEpoch()).toBe(0);
     expect(mod.ftsMembershipUnchangedSince([C], 0)).toBe(true);
   });
+
+  describe('registered folder universe', () => {
+    const REAL_C = 'tm-folder:v1:["account1","/Cold"]';
+    const REAL_H = 'tm-folder:v1:["account1","/Hot"]';
+    // Every account/path split of this key is a candidate folder; only /Hot is real.
+    const colonHeavyHotKey = n => `account1:/Hot:a:b:c:d:e:f-${n}@example.com`;
+
+    it('keeps a registered folder\'s proof valid while another folder churns colon-heavy keys past the ledger cap', async () => {
+      const mod = await coordinator();
+      mod._resetFtsOperationCoordinatorForTests({ changeLedgerCap: 4 });
+      mod.registerFtsMembershipFolders([REAL_C, REAL_H]);
+      const since = mod.getFtsMembershipEpoch();
+      for (let n = 0; n < 8; n++) {
+        await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: [colonHeavyHotKey(n)] });
+      }
+      expect(mod.ftsMembershipUnchangedSince([REAL_C], since)).toBe(true);
+      expect(mod.ftsMembershipUnchangedSince([REAL_H], since)).toBe(false);
+    });
+
+    it('records every candidate of a key before the first registration', async () => {
+      const mod = await coordinator();
+      const since = mod.getFtsMembershipEpoch();
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['account1:/F:Child:one@example.com'] });
+      expect(mod.ftsMembershipUnchangedSince(['tm-folder:v1:["account1","/F"]'], since)).toBe(false);
+      expect(mod.ftsMembershipUnchangedSince(['tm-folder:v1:["account1","/F:Child"]'], since)).toBe(false);
+    });
+
+    it('always records explicit owners, registered or not', async () => {
+      const mod = await coordinator();
+      mod.registerFtsMembershipFolders([REAL_C]);
+      const since = mod.getFtsMembershipEpoch();
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: [], folderIds: ['unregistered-owner'] });
+      expect(mod.ftsMembershipUnchangedSince(['unregistered-owner'], since)).toBe(false);
+      expect(mod.ftsMembershipUnchangedSince([REAL_C], since)).toBe(true);
+    });
+
+    it('records an unsplittable key as the wildcard', async () => {
+      const mod = await coordinator();
+      mod.registerFtsMembershipFolders([REAL_C]);
+      const since = mod.getFtsMembershipEpoch();
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['no-split'] });
+      expect(mod.ftsMembershipUnchangedSince([REAL_C], since)).toBe(false);
+    });
+
+    it('invalidates stamps older than a folder\'s registration, and only those', async () => {
+      const mod = await coordinator();
+      mod.registerFtsMembershipFolders([REAL_C]);
+      const old = mod.getFtsMembershipEpoch();
+      await mod.runFtsMembershipMutation(async () => {}, null, new Set([REAL_C]));
+      const current = mod.getFtsMembershipEpoch();
+      mod.registerFtsMembershipFolders([REAL_C, REAL_H]);
+      expect(mod.ftsMembershipUnchangedSince([REAL_H], old)).toBe(false);
+      expect(mod.ftsMembershipUnchangedSince([REAL_H], current)).toBe(true);
+      // Re-registering a known folder records nothing.
+      mod.registerFtsMembershipFolders([REAL_C, REAL_H]);
+      expect(mod.ftsMembershipUnchangedSince([REAL_C], current)).toBe(true);
+    });
+
+    it('attributes a key to a folder registered while the mutation ran', async () => {
+      const mod = await coordinator();
+      mod.registerFtsMembershipFolders([REAL_C]);
+      const since = mod.getFtsMembershipEpoch();
+      await mod.runFtsMembershipMutation(async () => {
+        mod.registerFtsMembershipFolders([REAL_C, REAL_H]);
+      }, null, { msgIds: ['account1:/Hot:late@example.com'] });
+      expect(mod.ftsMembershipUnchangedSince([REAL_H], since)).toBe(false);
+
+      const fenced = mod.getFtsMembershipEpoch();
+      const REAL_N = 'tm-folder:v1:["account1","/New"]';
+      await mod.withFtsMembershipFence(fenced, async (token) => {
+        await mod.runFtsMembershipMutation(async () => {}, token, { msgIds: ['account1:/New:fenced@example.com'] });
+        mod.registerFtsMembershipFolders([REAL_C, REAL_H, REAL_N]);
+      }, { mutation: true, scope: [REAL_C] });
+      expect(mod.ftsMembershipUnchangedSince([REAL_N], fenced)).toBe(false);
+      expect(mod.ftsMembershipUnchangedSince([REAL_H], fenced)).toBe(true);
+    });
+
+    it('forgets the universe on reset', async () => {
+      const mod = await coordinator();
+      mod.registerFtsMembershipFolders([REAL_C]);
+      mod._resetFtsOperationCoordinatorForTests();
+      const since = mod.getFtsMembershipEpoch();
+      await mod.runFtsMembershipMutation(async () => {}, null, { msgIds: ['account1:/Hot:x@example.com'] });
+      expect(mod.ftsMembershipUnchangedSince([REAL_H], since)).toBe(false);
+    });
+  });
 });

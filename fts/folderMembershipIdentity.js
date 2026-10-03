@@ -43,8 +43,9 @@ export function folderMembershipIdCandidatesForKey(msgId) {
   return candidates.length > 0 ? candidates : null;
 }
 
-// The folder-scope of one membership mutation: every candidate of every key
-// plus the explicit owners it writes, or "*" when any key is unattributable.
+// Every folder whose rows or key range the keys (plus explicit owners) can
+// touch, or "*" when any key is unattributable: the read scope of a fence
+// that guards those keys.
 export function folderMembershipScope(msgIds, explicitFolderIds = []) {
   const scope = new Set();
   for (const msgId of msgIds) {

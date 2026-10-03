@@ -8,7 +8,6 @@
 
 import { SETTINGS } from "../agent/modules/config.js";
 import { log } from "../agent/modules/utils.js";
-import { folderMembershipScope } from "./folderMembershipIdentity.js";
 import { initNativeFts, nativeFtsSearch, nativeMemorySearch } from "./nativeEngine.js";
 import {
   acquireFtsExclusiveOperation,
@@ -585,7 +584,7 @@ export const ftsSearch = {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.indexBatch(rows),
       membershipFenceToken,
-      folderMembershipScope(rows.map(row => row?.msgId), rows.map(row => row?.folderId)),
+      { msgIds: rows.map(row => row?.msgId), folderIds: rows.map(row => row?.folderId) },
     );
   },
 
@@ -632,7 +631,7 @@ export const ftsSearch = {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.removeBatch(ids),
       membershipFenceToken,
-      folderMembershipScope(ids),
+      { msgIds: ids },
     );
   },
 
@@ -683,10 +682,10 @@ export const ftsSearch = {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.assignFolderMembershipBatch(assignments),
       membershipFenceToken,
-      folderMembershipScope(
-        assignments.map(assignment => assignment?.msgId),
-        assignments.map(assignment => assignment?.folderId),
-      ),
+      {
+        msgIds: assignments.map(assignment => assignment?.msgId),
+        folderIds: assignments.map(assignment => assignment?.folderId),
+      },
     );
   },
 

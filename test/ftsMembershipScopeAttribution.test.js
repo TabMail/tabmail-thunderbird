@@ -27,6 +27,7 @@ const {
   _resetFtsOperationCoordinatorForTests,
   ftsMembershipUnchangedSince,
   getFtsMembershipEpoch,
+  registerFtsMembershipFolders,
   withFtsMembershipFence,
 } = await import('../fts/operationCoordinator.js');
 const { makeFolderMembershipId } = await import('../fts/folderMembershipIdentity.js');
@@ -75,6 +76,20 @@ describe('native mutation wrappers attribute their folder scope', () => {
   it('clear and an unattributable key touch every folder', async () => {
     expect((await touched(() => ftsSearch.clear()))(A)).toBe(true);
     expect((await touched(() => ftsSearch.removeBatch(['no-split'])))(A)).toBe(true);
+  });
+
+  it('with registered folders, a key touches only its real candidate folders and indexBatch its explicit owner', async () => {
+    registerFtsMembershipFolders([A, PARENT]);
+    const removed = await touched(() => ftsSearch.removeBatch(['account1:/F:Child:five@example.com']));
+    expect(removed(PARENT)).toBe(true);
+    expect(removed(CHILD)).toBe(false);
+    expect(removed(A)).toBe(false);
+
+    const indexed = await touched(() => ftsSearch.indexBatch([
+      { msgId: 'account1:/B:six@example.com', folderId: B },
+    ]));
+    expect(indexed(B)).toBe(true);
+    expect(indexed(A)).toBe(false);
   });
 
   it('a fenced wrapper call is attributed when the fence completes', async () => {

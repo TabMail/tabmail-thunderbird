@@ -25,6 +25,7 @@ import {
   addFtsExclusiveMembershipChangeListener,
   getFtsMembershipEpoch,
   normalizeInterruptedFtsScanStatus,
+  registerFtsMembershipFolders,
   tryAcquireFtsReconcileLease,
   ftsMembershipUnchangedSince,
   withFtsMembershipFence,
@@ -1243,7 +1244,7 @@ export async function onExperimentMessageAdded(messageInfo) {
 
   // Track sync event for reconcile quiet-period detection
   _lastSyncEventMs = Date.now();
-  _invalidateFolderReconProofForEvent(messageInfo?.accountId, messageInfo?.folderPath);
+  _invalidateFolderReconProofForMessageEvent(messageInfo);
 
   // Track the highest msgKey seen per folder this session — the heartbeat
   // merges these into the persistent folder cursors (ADR-020). Only
@@ -1336,7 +1337,7 @@ export async function onExperimentMessageRemoved(messageInfo) {
 
   // Track sync event for reconcile quiet-period detection
   _lastSyncEventMs = Date.now();
-  _invalidateFolderReconProofForEvent(messageInfo?.accountId, messageInfo?.folderPath);
+  _invalidateFolderReconProofForMessageEvent(messageInfo);
 
   const { headerMessageId, weFolderId, folderPath, accountId, msgKey, eventType } = messageInfo;
 
@@ -3455,6 +3456,17 @@ async function _getFolderReconWorkingProof(f, generation, folderKey) {
     fromWorkingProof: false,
     proofGuard: _folderReconGuardForFreshProof(folderKey, entry, snapshot),
   };
+}
+
+// The experiment falls back to the server key and folder URI when it cannot
+// convert the folder; only a converted folder (weFolderId) names the
+// inventory folder, so anything else invalidates every folder.
+function _invalidateFolderReconProofForMessageEvent(messageInfo) {
+  if (!messageInfo?.weFolderId) {
+    _invalidateFolderReconProofForEvent(null, null);
+    return;
+  }
+  _invalidateFolderReconProofForEvent(messageInfo.accountId, messageInfo.folderPath);
 }
 
 function _invalidateFolderReconProofForEvent(accountId, folderPath) {
@@ -5686,6 +5698,8 @@ async function _getFolderReconInventory(reconcileLease, generation) {
   const identities = [...byFolderKey.values()].sort((a, b) =>
     `${a.accountId}:${a.folderPath}`.localeCompare(`${b.accountId}:${b.folderPath}`));
   _assertFolderReconLease(reconcileLease, generation);
+  // Before any proof about these folders is stamped.
+  registerFtsMembershipFolders(identities.map(identity => identity.folderId));
   return identities;
 }
 
@@ -5828,19 +5842,22 @@ function _restartFolderMembershipStatePass(pass, reason) {
   _startFolderMembershipStatePass(pass, reason);
 }
 
+// Persists one folder's completed metadata scan; only changes in that
+// folder's scope void it.
 async function _persistFolderMembershipMigration(
   memo,
   expectedEpoch,
   reconcileLease,
   generation,
+  scope,
 ) {
-  await _assertFolderReconMembershipEpoch(expectedEpoch, reconcileLease, generation);
+  await _assertFolderReconMembershipEpoch(expectedEpoch, reconcileLease, generation, scope);
   await _writeFolderReconMemo(memo, {
     generation,
     folderKeys: [],
     membershipMigration: true,
   });
-  await _assertFolderReconMembershipEpoch(expectedEpoch, reconcileLease, generation);
+  await _assertFolderReconMembershipEpoch(expectedEpoch, reconcileLease, generation, scope);
 }
 
 /**
@@ -5934,6 +5951,8 @@ async function _runFolderMembershipScanSlice(
       || !_folderReconLocalUnchangedSince(session.localScope.folderKey, session.localScope.since)) {
     _cancelFolderMembershipScanSession();
     assertCurrent();
+    // Stamped before the scan starts, so an event during startup counts.
+    const localScope = _folderReconLocalScope(`${folder.accountId}:${folder.folderPath}`);
     const started = await browser.tmMsgNotify.beginFolderMessageScan(folder.folderURI, true);
     assertCurrent();
     if (started?.error || !started?.token) throw new Error(started?.error || "scan_start_failed");
@@ -5947,7 +5966,7 @@ async function _runFolderMembershipScanSlice(
       folderId: folder.folderId,
       folderURI: folder.folderURI,
       token: started.token,
-      localScope: _folderReconLocalScope(`${folder.accountId}:${folder.folderPath}`),
+      localScope,
     };
     _folderMembershipScanSession = session;
   }
@@ -5984,7 +6003,9 @@ async function _runFolderMembershipScanSlice(
         assertScanCurrent();
       }, {
         mutation: true,
-        scope: folderMembershipScope(batch.map(entry => entry.msgId), [folder.folderId]),
+        // Read scope is this folder; the wrapper attributes the write itself
+        // to every folder its keys can touch.
+        scope: [folder.folderId],
       });
       expectedEpoch = getFtsMembershipEpoch();
       assertScanCurrent();
@@ -6026,10 +6047,17 @@ async function _runFolderMembershipMigrationSlice(
     _cancelFolderMembershipScanSession();
     return { complete: true, legacy: true };
   }
+  // The inventory and a folder's metadata scan read no message state of
+  // other folders; the scan carries its own folder's local stamp.
   const assertCurrent = () => {
     _assertFolderReconLease(reconcileLease, generation);
-    _assertNoFolderReconSyncEventSince(syncStartedAt);
     _assertNoFolderReconForegroundPressure();
+  };
+  // The membership-state pass judges rows of every folder, so a message
+  // event anywhere since the slice started voids its page.
+  const assertStateCurrent = () => {
+    assertCurrent();
+    _assertNoFolderReconSyncEventSince(syncStartedAt);
   };
   const validIdentities = identities.filter(identity =>
     identity.accountId && identity.folderPath && identity.folderId && identity.weFolderId);
@@ -6123,6 +6151,7 @@ async function _runFolderMembershipMigrationSlice(
           result.expectedEpoch,
           reconcileLease,
           generation,
+          [folder.folderId],
         );
       }
       return { complete: false, folderProgress: true, folderComplete: result.complete };
@@ -6146,7 +6175,7 @@ async function _runFolderMembershipMigrationSlice(
   // legacy write needs a new native connection, a folder deletion changes
   // the inventory.
   const pass = _currentFolderMembershipStatePass(binding);
-  assertCurrent();
+  assertStateCurrent();
   let page;
   try {
     _consumeFolderMembershipPageBudget();
@@ -6157,7 +6186,7 @@ async function _runFolderMembershipMigrationSlice(
   } catch (error) {
     return { complete: false, failed: true, reason: "membership_state_list_failed", error: String(error) };
   }
-  assertCurrent();
+  assertStateCurrent();
   pass.slices++;
   _bumpFolderReconTelemetry("membershipStatePages");
 
@@ -6232,7 +6261,7 @@ async function _runFolderMembershipMigrationSlice(
       msgId,
       validIdentities,
       trustedAccountIds,
-      assertCurrent,
+      assertStateCurrent,
       budget,
     );
     if (verdict.kind === "deferred") break;
@@ -6258,12 +6287,12 @@ async function _runFolderMembershipMigrationSlice(
         // Sticky before the mutator: an interrupted or uncertain removal
         // still forces a full replay before cutover.
         pass.passMutated = true;
-        assertCurrent();
+        assertStateCurrent();
         await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
-        assertCurrent();
+        assertStateCurrent();
         for (const msgId of staleOrphanMsgIds) {
           const remaining = await ftsSearch.getMessageByMsgId(msgId);
-          assertCurrent();
+          assertStateCurrent();
           if (remaining?.msgId === msgId) throw new Error("stale_folder_remove_verify_failed");
         }
       }, {
@@ -6290,9 +6319,9 @@ async function _runFolderMembershipMigrationSlice(
         offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
         const batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
         pass.passMutated = true;
-        assertCurrent();
+        assertStateCurrent();
         await ftsSearch.assignFolderMembershipBatch(batch);
-        assertCurrent();
+        assertStateCurrent();
       }
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
