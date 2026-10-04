@@ -9986,6 +9986,81 @@ describe('a newer queued intention during a drain retry', () => {
     expect(nativeRows.has(key)).toBe(!removedDuringRetry);
     expect(nativeRows.get('account1:/A:a@example.com')).toBe(folder.folderId);
   });
+
+  // Two events for one message can share a millisecond: Date.now() is a
+  // time value, not a unique intention number. A drain still finishing the
+  // first must leave the opposite, newer intention queued.
+  it.each(['added then removed', 'removed then added'])('honours an opposite intention queued in the same millisecond: %s', async (direction) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const installed = seedMigratedExactFolders([{ folderPath: '/F', headerMessageIds: ['live@example.com'] }]);
+    const { fts, folders, nativeRows, rowsByURI } = installed;
+    await tickUntil(fts, value => value?.complete === true && !_testExports._isFolderReconPending(), 40);
+    expect(_testExports._getFolderReconSessionDone().has('account1:/F')).toBe(true);
+    const folder = folders[0];
+    const key = 'account1:/F:live@example.com';
+    const event = {
+      accountId: 'account1',
+      folderPath: '/F',
+      weFolderId: folder.weFolderId,
+      headerMessageId: 'live@example.com',
+      msgKey: 1,
+      eventType: 'msgAdded',
+    };
+    _testExports._setFtsSearch(fts);
+    headerIDToWeID.mockResolvedValue(1);
+    globalThis.browser.messages.get = vi.fn(async () => ({
+      id: 1,
+      headerMessageId: event.headerMessageId,
+      folder: { accountId: 'account1', path: '/F' },
+    }));
+    getUniqueMessageKey.mockResolvedValue(key);
+    buildBatchHeader.mockResolvedValue([{ msgId: key, folderId: folder.folderId }]);
+    populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+    fakeNativeFts.indexBatch.mockImplementation(async rows => {
+      for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+      return { count: rows.length };
+    });
+    fts.indexBatch = engineFtsSearch.indexBatch;
+    const adding = direction === 'added then removed';
+    const remove = async () => {
+      rowsByURI.set(folder.folderURI, []);
+      await _testExports.onExperimentMessageRemoved({ ...event, eventType: 'msgDeleted' });
+    };
+    const add = async () => {
+      rowsByURI.set(folder.folderURI, [{ msgKey: 1, headerMessageId: event.headerMessageId }]);
+      await _testExports.onExperimentMessageAdded(event);
+    };
+    if (adding) await add();
+    else await remove();
+    const first = _testExports._getPendingUpdates().get(key);
+    // The second event lands while the drain checks the native index for
+    // the first, in the same millisecond.
+    const read = fts.getMessageByMsgId.getMockImplementation();
+    let replacement = null;
+    fts.getMessageByMsgId.mockImplementation(async id => {
+      const answer = await read(id);
+      if (id === key && !replacement) {
+        if (adding) await remove();
+        else await add();
+        replacement = _testExports._getPendingUpdates().get(key);
+      }
+      return answer;
+    });
+
+    await flushPendingUpdates();
+    expect(replacement?.timestamp).toBe(first.timestamp);
+    expect(replacement?.type).not.toBe(first.type);
+    for (let turn = 0; turn < 4 && _testExports._getPendingUpdates().size > 0; turn++) {
+      vi.setSystemTime(Date.now() + 1000);
+      await flushPendingUpdates();
+    }
+    expect(_testExports._getPendingUpdates().size).toBe(0);
+
+    const result = await tickUntil(fts, value => value?.complete === true && !_testExports._isFolderReconPending(), 40);
+    expect(result).toMatchObject({ complete: true });
+    expect(nativeRows.has(key)).toBe(!adding);
+  });
 });
 
 describe('membership assignment scoped query list lifecycle', () => {

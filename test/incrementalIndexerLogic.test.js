@@ -321,6 +321,15 @@ describe('_markResolveFailed', () => {
     _markResolveFailed(removed);
     expect(_getPendingUpdates().has('test-key-6')).toBe(false);
   });
+
+  // Events can share a millisecond, so the type is part of the identity.
+  it('never overwrites an opposite intention queued in the same millisecond', () => {
+    const captured = { uniqueKey: 'test-key-7', type: 'add', timestamp: Date.now() };
+    const newer = { uniqueKey: 'test-key-7', type: 'delete', timestamp: captured.timestamp };
+    _getPendingUpdates().set(newer.uniqueKey, newer);
+    _markResolveFailed(captured);
+    expect(_getPendingUpdates().get('test-key-7')).toBe(newer);
+  });
 });
 
 // ---------------------------------------------------------------------------

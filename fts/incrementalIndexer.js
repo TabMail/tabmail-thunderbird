@@ -579,11 +579,11 @@ async function processPendingUpdates() {
     .sort((a, b) => a.timestamp - b.timestamp) // Process in chronological order
     .slice(0, INCREMENTAL_BATCH_SIZE); // Limit batch size
   
-  // Capture timestamps at start of processing - used to detect re-queued entries during dequeue
+  // Capture the intentions at start of processing - used to detect re-queued entries during dequeue
   // This prevents accidentally deleting a newer entry that was queued while we were processing
-  const snapshotTimestamps = new Map();
+  const snapshotUpdates = new Map();
   for (const update of updates) {
-    snapshotTimestamps.set(update.uniqueKey, update.timestamp);
+    snapshotUpdates.set(update.uniqueKey, update);
   }
   
   let hadError = false;
@@ -992,9 +992,10 @@ async function processPendingUpdates() {
         continue;
       }
       
-      const snapshotTs = snapshotTimestamps.get(key);
-      if (current.timestamp === snapshotTs) {
-        // Timestamp matches - safe to delete, this is the entry we processed
+      const snapshot = snapshotUpdates.get(key);
+      const snapshotTs = snapshot.timestamp;
+      if (_isQueuedIntention(snapshot)) {
+        // Still the queued intention - safe to delete, this is the entry we processed
         _pendingUpdates.delete(key);
         processedCount++;
         logFtsOperation("dequeue", "success", {
