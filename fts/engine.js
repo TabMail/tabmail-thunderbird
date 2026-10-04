@@ -584,6 +584,7 @@ export const ftsSearch = {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.indexBatch(rows),
       membershipFenceToken,
+      { msgIds: rows.map(row => row?.msgId), folderIds: rows.map(row => row?.folderId) },
     );
   },
 
@@ -611,6 +612,7 @@ export const ftsSearch = {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.clear(),
       membershipFenceToken,
+      "*",
     );
   },
 
@@ -629,6 +631,7 @@ export const ftsSearch = {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.removeBatch(ids),
       membershipFenceToken,
+      { msgIds: ids },
     );
   },
 
@@ -679,6 +682,10 @@ export const ftsSearch = {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.assignFolderMembershipBatch(assignments),
       membershipFenceToken,
+      {
+        msgIds: assignments.map(assignment => assignment?.msgId),
+        folderIds: assignments.map(assignment => assignment?.folderId),
+      },
     );
   },
 
