@@ -210,7 +210,6 @@ function makeFtsStore(initialKeys = []) {
       ok: true,
       newMsgIds: rows.map(row => row.msgId).filter(id => !keys.has(id)),
     })),
-    findByHeaderMessageId: vi.fn(async () => []),
     stats: vi.fn(async () => ({ ok: true, docs: keys.size })),
   };
 }
@@ -521,7 +520,8 @@ describe('startup membership proof', () => {
     const stats = await _runFolderReconcile(fts);
 
     expect(stats.foldersMemoHit).toBe(0);
-    expect(api.beginFolderMessageScan.mock.calls.map(call => call[1])).toEqual([false, true]);
+    // The native digest is taken first; its mismatch skips the UID scan.
+    expect(api.beginFolderMessageScan.mock.calls.map(call => call[1])).toEqual([true]);
     expect(fts._keys.has(ghost)).toBe(false);
   });
 
@@ -1859,7 +1859,6 @@ describe('gating and drain coordination', () => {
     mockNotify([folderA({ uidCount: 1 }), folderB({ error: 'summary unavailable' })], {
       actualKeysByURI: { [URI_A]: keysA },
     });
-    storageData.fts_reconcile_pending = 123;
     _getPendingUpdates().set(KEY_A('inflight@example.com'), {
       type: 'new', uniqueKey: KEY_A('inflight@example.com'), timestamp: 1, metadata: {},
     });
@@ -1869,7 +1868,7 @@ describe('gating and drain coordination', () => {
     _setFtsSearch(fts);
     await _maybeScheduleFolderReconRerun();
 
-    expect(storageData.fts_reconcile_pending).toBe(123);
+    expect(_testExports._isFolderReconPending()).toBe(true);
   });
 
   it('requires the completed initial index', async () => {

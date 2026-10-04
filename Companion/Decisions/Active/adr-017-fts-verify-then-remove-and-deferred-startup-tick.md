@@ -4,6 +4,8 @@
 
 > **2026-10-03 amendment (branch `agent/tb-recon-pr2-narrow`):** `recheckMessageInFolder` now owns its `MessageList` lifecycle. Every exit that still holds a page id runs one shared, awaited finalizer: a `"present"` match, a pre-verdict exception, or a nullish continuation page. The finalizer calls `abortList` when available, then `continueList` until the terminal page, which is what releases the list. Before this, a `"present"` verdict left the unscoped global query running, and a failure left the list registered. Finalizer errors are swallowed with one fixed-text debug log, so they never change the verdict. Only a pre-verdict drain failure yields `"error"`. The failure log no longer carries the Message-ID. `_tryFallbackDeletion` is unchanged.
 
+> **2026-10-03 amendment (branch `agent/tb-recon-pr2b-fast-check`):** `_tryFallbackDeletion` is deleted, with its fallback-only counters and the `findByHeaderMessageId` engine wrappers. A removal event whose own key is not indexed is consumed and removes nothing: a scoped negative is not evidence that a same-Message-ID sibling in another folder is stale, and the fallback had removed live siblings. A genuinely stale sibling is repaired by reconciliation: in exact mode by its folder's next rolling walk (within `walkPeriodMs` plus one tick, ADR-022 PR 2b amendment) or the next startup walk; with legacy helpers by the next session's pass. The removal event still removes and verifies its own key.
+
 <!-- BEGIN PRESERVED BLOCK -->
 **Context:** The 2026-06-03 weekly maintenance scan removed a live
 `[Gmail]/Bin` message from FTS as `removedMissing`; the 2026-06-09 scan

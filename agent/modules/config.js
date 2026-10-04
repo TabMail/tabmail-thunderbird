@@ -423,6 +423,12 @@ export const SETTINGS = {
             pressureDelayMs: 2000,
             errorDelayMs: 10000,
             syncQuietMs: 5000,
+            // Exact mode's rolling re-walk: every reverifyIntervalMs a tick
+            // admits the completed folders whose next walk is due, so every
+            // folder is walked again within walkPeriodMs plus one interval.
+            // Startup walks every folder.
+            reverifyIntervalMs: 20 * 60 * 1000,
+            walkPeriodMs: 24 * 60 * 60 * 1000,
         },
         // Proactive inbox scan - DISABLED.
         // Replaced by tagSort row coloring pass coverage which detects untagged

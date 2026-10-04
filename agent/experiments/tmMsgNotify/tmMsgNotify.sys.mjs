@@ -20,6 +20,9 @@ try {
   console.error("[tmMsgNotify] Failed to import MailServices:", e);
 }
 
+// msgDB folder-info property holding the incarnation token (getFolderState).
+const FOLDER_INCARNATION_PROPERTY = "tmFolderIncarnation";
+
 let MailUtilsMsgNotify = null;
 try {
   ({ MailUtils: MailUtilsMsgNotify } = ChromeUtils.importESModule("resource:///modules/MailUtils.sys.mjs"));
@@ -482,7 +485,7 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
          * Cheap startup identity/epoch state for one folder. Exact local
          * membership is collected separately through the bounded live scan.
          */
-        async getFolderState(accountId, folderPath) {
+        async getFolderState(accountId, folderPath, options) {
           const base = {
             accountId: String(accountId || ""),
             folderPath: String(folderPath || ""),
@@ -515,6 +518,24 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
               uidValidity: dbInfo.imapUidValidity || 0,
               highestModSeq,
             };
+            // A random token stored in this msgDB's folder info identifies the
+            // database incarnation: a database moved in from another folder
+            // carries its own token (or none). Created only on request, never
+            // overwritten; any failure reports no token.
+            let incarnationToken = "";
+            try {
+              incarnationToken = String(dbInfo.getCharProperty(FOLDER_INCARNATION_PROPERTY) || "");
+            } catch (_) {}
+            if (!incarnationToken && options?.ensureIncarnationToken === true) {
+              try {
+                const token = String(Services.uuid.generateUUID()).replace(/[{}]/g, "");
+                if (token) {
+                  dbInfo.setCharProperty(FOLDER_INCARNATION_PROPERTY, token);
+                  incarnationToken = token;
+                }
+              } catch (_) {}
+            }
+            result.incarnationToken = incarnationToken;
             return result;
           } catch (e) {
             return { ...base, error: String(e) };

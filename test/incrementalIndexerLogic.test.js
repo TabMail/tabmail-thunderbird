@@ -127,8 +127,19 @@ describe('atomic queue abandonment', () => {
   const entry = (uniqueKey, type, timestamp, folderKey) => ({
     uniqueKey, type, timestamp, folderKey, metadata: {}, hasFailed: true,
   });
+  // Start from a settled session so a pending flag set by abandonment is observable.
+  // The folders are completed this generation, so their marks are recorded.
+  const settlePendingFlag = () => {
+    _testExports._setFolderReconEphemeralEvidenceForTests({ sessionDone: ['account1:/A', 'account1:/B'] });
+    expect(_testExports._clearFolderReconPendingIfCurrent(
+      _testExports._getFolderReconGeneration(),
+      _testExports._getFolderReconEventSerial(),
+    )).toBe(true);
+    expect(_testExports._isFolderReconPending()).toBe(false);
+  };
 
-  it('durably dirties exact folders once before dropping mixed add/move/delete failures', async () => {
+  it('dirties exact folders and marks reconciliation pending before dropping mixed add/move/delete failures', async () => {
+    settlePendingFlag();
     const captured = [
       entry('account1:/A:add@example.com', 'new', 1, 'account1:/A'),
       entry('account1:/A:move@example.com', 'moved', 2, 'account1:/A'),
@@ -141,18 +152,23 @@ describe('atomic queue abandonment', () => {
     expect(result).toMatchObject({ dropped: 3, retained: 0 });
     expect(_getPendingUpdates().size).toBe(0);
     expect(_getFolderReconDirty()).toEqual(new Set(['account1:/A', 'account1:/B']));
-    expect(globalThis.browser.storage.local.set.mock.calls.filter(
-      ([obj]) => Object.hasOwn(obj, 'fts_reconcile_pending'),
-    )).toHaveLength(1);
+    expect(_testExports._isFolderReconPending()).toBe(true);
   });
 
-  it('retains every captured entry when the durable dirty marker write fails', async () => {
+  it('abandons without any storage dependency, so unavailable storage cannot strand the queue', async () => {
+    settlePendingFlag();
     const captured = [entry('account1:/A:add@example.com', 'new', 1, 'account1:/A')];
     _getPendingUpdates().set(captured[0].uniqueKey, captured[0]);
-    globalThis.browser.storage.local.set.mockRejectedValueOnce(new Error('disk full'));
+    globalThis.browser.storage.local.set.mockRejectedValue(new Error('disk full'));
+    globalThis.browser.storage.local.remove.mockRejectedValue(new Error('disk full'));
 
-    await expect(_abandonPendingUpdates(captured, 'unparseable')).rejects.toThrow('disk full');
-    expect(_getPendingUpdates().get(captured[0].uniqueKey)).toEqual(captured[0]);
+    const result = await _abandonPendingUpdates(captured, 'unparseable');
+
+    expect(result).toMatchObject({ dropped: 1, retained: 0 });
+    expect(_getFolderReconDirty()).toEqual(new Set(['account1:/A']));
+    expect(_testExports._isFolderReconPending()).toBe(true);
+    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+    expect(globalThis.browser.storage.local.remove).not.toHaveBeenCalled();
   });
 
   it('never drops a newer timestamp or changed operation requeued under the same key', async () => {
@@ -166,7 +182,7 @@ describe('atomic queue abandonment', () => {
     expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
   });
 
-  it('coalesces a persisted dirty marker instead of writing once per dropped key or wake', async () => {
+  it('writes no storage across repeated abandonments of the same folder', async () => {
     const first = entry('account1:/A:one@example.com', 'new', 1, 'account1:/A');
     const second = entry('account1:/A:two@example.com', 'deleted', 2, 'account1:/A');
     _getPendingUpdates().set(first.uniqueKey, first);
@@ -174,28 +190,32 @@ describe('atomic queue abandonment', () => {
     _getPendingUpdates().set(second.uniqueKey, second);
     await _abandonPendingUpdates([second], 'stuck');
 
-    expect(globalThis.browser.storage.local.set.mock.calls.filter(
-      ([obj]) => Object.hasOwn(obj, 'fts_reconcile_pending'),
-    )).toHaveLength(1);
+    expect(_getPendingUpdates().size).toBe(0);
+    expect(_testExports._isFolderReconPending()).toBe(true);
+    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
   });
 
-  it('maps an admitted legacy entry without a folder identity to __all__', async () => {
+  it('owes a walk of every completed folder for an admitted legacy entry without a folder identity', async () => {
+    _testExports._setFolderReconEphemeralEvidenceForTests({ sessionDone: ['account1:/A', 'account1:/B'] });
     const legacy = entry('legacy-unparseable', 'new', 1, undefined);
     _getPendingUpdates().set(legacy.uniqueKey, legacy);
 
     await _abandonPendingUpdates([legacy], 'unparseable');
 
-    expect(_getFolderReconDirty()).toEqual(new Set(['__all__']));
+    expect(_getFolderReconDirty()).toEqual(new Set(['account1:/A', 'account1:/B']));
+    expect(_testExports._getFolderReconSessionDone().size).toBe(0);
+    expect(_testExports._isFolderReconPending()).toBe(true);
   });
 
-  it('manual clear durably dirties admitted work instead of silently erasing it', async () => {
+  it('manual clear dirties admitted work instead of silently erasing it', async () => {
+    settlePendingFlag();
     const pending = entry('account1:/A:manual@example.com', 'new', 1, 'account1:/A');
     _getPendingUpdates().set(pending.uniqueKey, pending);
 
     await clearPendingUpdates();
 
     expect(_getPendingUpdates().size).toBe(0);
-    expect(storageData.fts_reconcile_pending).toBeTruthy();
+    expect(_testExports._isFolderReconPending()).toBe(true);
     expect(_getFolderReconDirty()).toContain('account1:/A');
   });
 });

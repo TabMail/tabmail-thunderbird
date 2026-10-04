@@ -230,3 +230,6 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ### PDF attachment text (attachment_read_pdf, pdf.js)
 - **[Detail](Companion/Memory/Current/039-pdf-attachment-text-bundled-pdfjs.md)** — bundled pdfjs-dist LEGACY build (modern build needs `Uint8Array.toHex`, absent in Node → tests fail); CMaps required for CJK (`UniJIS-UCS2-H` extracts empty without `cMapUrl`); pdf.js drops off-page text; pdf.js 6 has no eval path (`isEvalSupported` is a no-op); per-call `PDFWorker` TERMINATED at the deadline (awaiting `loadingTask.destroy()` hangs on a busy worker); idTranslator translates `unique_id` only for `email_*` + an explicit `attachment_read_pdf` arm.
+
+### No local msgDB change marker (reconciliation must enumerate)
+- **[Detail](Companion/Memory/Current/040-no-local-msgdb-change-marker.md)** — HIGHESTMODSEQ is stored at SELECT before header application (server progress, frozen without CONDSTORE); `highWaterKey` moves only on a new maximum; CONDSTORE stays off (Bugzilla 1123094/1124569 ghost headers with polling); IMAPDeleted/Expunged flips fire only `propertyFlagChanged`; native reader/writer queues separate (a timed-out write never proven settled). No zero-enumeration "nothing changed" gate.
