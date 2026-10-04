@@ -204,6 +204,12 @@ describe('full smart reindex attachment flag repair', () => {
     expect(storage[REPAIRED_KEY]).toEqual(['account1']);
   });
 
+  it('keeps the stored file names of a re-added row', async () => {
+    index.set(key(1), { ...storedRow(1, false), attachmentNames: 'scan-1.pdf' });
+    await indexMessages(ftsSearch);
+    expect(index.get(key(1))).toEqual({ ...storedRow(1, true), attachmentNames: 'scan-1.pdf' });
+  });
+
   it('does not look at existing rows of a recorded account, and still repairs the others', async () => {
     accounts = [ACCOUNT1, ACCOUNT2];
     storage[REPAIRED_KEY] = ['account1'];

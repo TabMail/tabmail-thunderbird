@@ -5,7 +5,7 @@
 // fts/indexer.js
 // Throttled indexer with backpressure, checkpoints, and pause/resume capability
 
-import { hasPaperclipAttachment, listAttachmentsFromFull } from "../agent/modules/attachmentParts.js";
+import { attachmentNamesText, hasPaperclipAttachment, listAttachmentsFromFull } from "../agent/modules/attachmentParts.js";
 import { getAllFoldersForAccount } from "../agent/modules/folderUtils.js";
 import { getInboxForAccount } from "../agent/modules/inboxContext.js";
 import { sanitizeMessageTags } from "../agent/modules/onMoved.js";
@@ -176,6 +176,7 @@ export async function buildBatchHeader(messages) {
       body: "",                           // filled later
       dateMs: m.date ? +new Date(m.date) : 0,
       hasAttachments: attachmentFlags[i],
+      attachmentNames: "",                // filled later
       parsedIcsAttachments: "",           // filled later
       _originalMessage: m,                // keep for body extraction (not sent to worker)
     };
@@ -211,10 +212,13 @@ export async function populateBatchBody(rows) {
         const body = await extractPlainText(full, row._originalMessage.id);
         row.body = body || "";
 
-        // The downloaded MIME tree says exactly whether there are attachments; the database
-        // flag from buildBatchHeader stays only when the tree cannot tell.
+        // The downloaded MIME tree says exactly whether there are attachments and what they are
+        // called; the database flag from buildBatchHeader stays only when the tree cannot tell.
         const attachments = listAttachmentsFromFull(full, row._originalMessage);
-        if (attachments) row.hasAttachments = hasPaperclipAttachment(attachments);
+        if (attachments) {
+          row.hasAttachments = hasPaperclipAttachment(attachments);
+          row.attachmentNames = attachmentNamesText(attachments);
+        }
 
         // Extract and parse ICS attachments for needed messages
         const icsAttachments = await extractIcsFromParts(full, row._originalMessage.id);
@@ -310,6 +314,7 @@ async function readdStaleAttachmentRows(ftsSearch, rows) {
       cc: stored.cc,
       bcc: stored.bcc,
       body: stored.body,
+      attachmentNames: stored.attachmentNames,
       dateMs: stored.dateMs,
       hasAttachments: true,
       parsedIcsAttachments: stored.parsedIcsAttachments,
