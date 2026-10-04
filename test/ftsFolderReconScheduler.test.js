@@ -8201,6 +8201,97 @@ describe('fast "nothing changed" gate (earned exact mode)', () => {
     });
   });
 
+  // The closing read must satisfy the whole gate condition: an expunge that
+  // lands during the evaluation lowers the count without moving
+  // HIGHESTMODSEQ.
+  it.each([false, true])('repairs an expunge that lands while the gate is evaluated; expunged=%s', async (expunged) => {
+    const { fts, folders, rowsByURI, nativeRows } = installGateFolders([specs[0]]);
+    await finishSession(fts);
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let closed = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (account, folderPath, options) => {
+      // The first plain read of /A this session is the gate's closing read.
+      if (!closed && options === undefined) {
+        closed = true;
+        if (expunged) rowsByURI.get(folders[0].folderURI).pop();
+      }
+      return state(account, folderPath, options);
+    });
+    restartSession();
+    await finishSession(fts);
+    expect(closed).toBe(true);
+    expect(nativeRows.has('account1:/A:a-1@example.com')).toBe(true);
+    expect(nativeRows.has('account1:/A:a-2@example.com')).toBe(!expunged);
+  });
+
+  // Runs one pass slice by slice until `ended`, spacing the slices past the
+  // re-verification interval with foreground pressure when `spaced`.
+  async function runPass(fts, spaced, ended) {
+    let pressureSkips = 0;
+    for (let slice = 0; slice < 12; slice++) {
+      const result = await settleSchedulerTickWithFakeTimers(fts);
+      if (ended(result)) return { ended: true, pressureSkips };
+      if (spaced) {
+        getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false });
+        vi.setSystemTime(Date.now() + reconConfig.reverifyIntervalMs + 1);
+        expect(await settleSchedulerTickWithFakeTimers(fts)).toMatchObject({ skipped: true, reason: 'pressure' });
+        pressureSkips++;
+        getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
+      } else {
+        vi.setSystemTime(Date.now() + 100);
+      }
+    }
+    return { ended: false, pressureSkips };
+  }
+
+  // Slices spaced past the re-verification interval (here by foreground
+  // pressure) must still let a finite pass complete. A deadline that came due
+  // during the pass starts the next pass as soon as this one completes, and
+  // that pass completes too and still repairs a late native removal.
+  it.each([false, true])('completes passes whose slices are spaced past the re-verification interval; spaced=%s', async (spaced) => {
+    const { fts, nativeRows } = installGateFolders(specs);
+    await finishSession(fts);
+    restartSession();
+    const completes = result => result?.complete === true;
+
+    const first = await runPass(fts, spaced, completes);
+    expect(first.pressureSkips > 0).toBe(spaced);
+    expect(first.ended).toBe(true);
+    expect(_testExports._isFolderReconPending()).toBe(false);
+    expect(_testExports._getFolderReconSessionDone().size < 2).toBe(spaced);
+    if (spaced) {
+      const second = await runPass(fts, spaced, completes);
+      expect(second.ended).toBe(true);
+      expect(_testExports._getFolderReconSessionDone().size < 2).toBe(true);
+    }
+    expect([...nativeRows.keys()].sort()).toEqual([
+      'account1:/A:a-1@example.com', 'account1:/A:a-2@example.com',
+      'account1:/B:b-1@example.com', 'account1:/B:b-2@example.com',
+    ]);
+
+    const key = 'account1:/A:a-1@example.com';
+    nativeRows.delete(key);
+    vi.setSystemTime(Math.max(Date.now(), _testExports._getFolderReconReverifyDueMs()) + 1);
+    await tickUntil(fts, () => _testExports._getPendingUpdates().has(key), 60);
+    expect(_testExports._getPendingUpdates().has(key)).toBe(true);
+  });
+
+  // An unloaded account keeps the session from completing; the pass's
+  // boundary still starts a re-verification that came due during it.
+  it('starts a re-verification that came due during the pass at the unloaded-account boundary', async () => {
+    const { fts, nativeRows } = installGateFolders(specs);
+    nativeRows.set('account2:/Archive:owned@example.com', makeFolderMembershipId('account2', '/Archive'));
+    const unloaded = result => result?.reason === 'unloaded_accounts';
+    await tickUntil(fts, unloaded, 60);
+    restartSession();
+
+    const pass = await runPass(fts, true, unloaded);
+    expect(pass.pressureSkips).toBeGreaterThan(0);
+    expect(pass.ended).toBe(true);
+    expect(_testExports._getFolderReconSessionDone().size < 2).toBe(true);
+    expect(nativeRows.has('account2:/Archive:owned@example.com')).toBe(true);
+  });
+
   it('control: an unchanged folder after a certification enqueues nothing', async () => {
     const { fts } = installGateFolders(specs);
     await finishSession(fts);
