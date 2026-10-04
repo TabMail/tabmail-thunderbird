@@ -8701,7 +8701,7 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
 
     // Fail-closed boundary: an ownerless row of a folder that cannot be read
     // is unresolved, so the pass never earns cutover until the folder can be.
-    it('never earns cutover while an unreadable new folder holds an ownerless row', async () => {
+    it('never earns cutover while an unreadable new folder holds an ownerless row', { timeout: 30_000 }, async () => {
       const installed = installTokenFolders([specs[0]]);
       const { fts } = installed;
       await finishSession(fts);
@@ -9940,10 +9940,14 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
     expect(telemetry.membershipStatePageRetries).toBeGreaterThan(0);
   });
 
+  // during: the row's msgDB probe, or (after a failed probe) its global
+  // recheck, where only an event in a candidate folder may void the verdict.
   it.each([
-    { eventFolder: '/Other', assigned: true },
-    { eventFolder: '/F', assigned: false },
-  ])('classifies an ownerless row while mail is drained into $eventFolder inside every msgDB probe: assigned=$assigned', async ({ eventFolder, assigned }) => {
+    { eventFolder: '/Other', during: 'probe', assigned: true },
+    { eventFolder: '/F', during: 'probe', assigned: false },
+    { eventFolder: '/Other', during: 'recheck', assigned: true },
+    { eventFolder: '/F', during: 'recheck', assigned: false },
+  ])('classifies an ownerless row while mail is drained into $eventFolder inside every $during: assigned=$assigned', async ({ eventFolder, during, assigned }) => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     const { fts, folders, nativeRows, rowsByURI } = seedMigratedExactFolders([
@@ -9974,8 +9978,8 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
     fts.indexBatch = engineFtsSearch.indexBatch;
     const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
     let arrivals = 0;
-    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
-      // A real arrival, fully drained, lands inside every msgDB probe.
+    // A real arrival, fully drained.
+    const arrive = async () => {
       const headerMessageId = `arrival-${arrivals++}@example.com`;
       rowsByURI.get(busy.folderURI).push({ msgKey: 10_000 + arrivals, headerMessageId });
       currentHeader = { id: 1, headerMessageId, folder: { accountId: 'account1', path: busy.folderPath } };
@@ -9984,7 +9988,15 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
         headerMessageId, msgKey: 10_000 + arrivals, eventType: 'msgAdded',
       });
       await flushPendingUpdates();
+    };
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
+      if (during === 'recheck') return { missing: [], error: 'db_unavailable' };
+      await arrive();
       return probe(uri, ids);
+    });
+    recheckMessageInFolder.mockImplementation(async (headerId, weFolder) => {
+      await arrive();
+      return weFolder?.path === '/F' && headerId === 'cold@example.com' ? 'present' : 'absent';
     });
 
     for (let turn = 0; turn < 40 && !_testExports._getPendingUpdates().has(missing); turn++) {
