@@ -37,6 +37,7 @@ describe('attachmentNamesText', () => {
   it('adds the words of a name written as one run, so each word can be searched', () => {
     expect(attachmentNamesText(named('TaxReceipt2024.pdf'))).toBe('TaxReceipt2024.pdf Tax Receipt 2024.pdf');
     expect(attachmentNamesText(named('PDFReport.pdf'))).toBe('PDFReport.pdf PDF Report.pdf');
+    expect(attachmentNamesText(named('2024Receipt.pdf'))).toBe('2024Receipt.pdf 2024 Receipt.pdf');
     expect(attachmentNamesText(named('Q4-Übersicht.pdf'))).toBe('Q4-Übersicht.pdf Q 4-Übersicht.pdf');
   });
 

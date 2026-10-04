@@ -322,8 +322,18 @@ async function readdStaleAttachmentRows(ftsSearch, rows) {
   }
   if (stale.length === 0) return 0;
   return withFtsMembershipFence(epoch, async (fenceToken) => {
-    await ftsSearch.removeBatch(stale.map(row => row.msgId), fenceToken);
+    // The re-add is sent even when the remove call fails: a remove that timed out (the helper's
+    // writer can be busy converting a shard) still runs later, and the helper runs writes in
+    // order, so the re-add lands after it. A remove that never ran leaves the re-add with
+    // nothing to insert.
+    let removeError = null;
+    try {
+      await ftsSearch.removeBatch(stale.map(row => row.msgId), fenceToken);
+    } catch (e) {
+      removeError = e;
+    }
     const result = await ftsSearch.indexBatch(stale, fenceToken);
+    if (removeError) throw removeError;
     if (result?.count !== stale.length) {
       throw new Error(`re-added ${result?.count} of ${stale.length} rows`);
     }
