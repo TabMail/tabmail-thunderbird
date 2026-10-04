@@ -8759,12 +8759,13 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
   });
 
   // Earned exact mode. A late native removal no event announced (P6) left
-  // the cold folder one row short.
-  function seedColdAndHot() {
+  // the cold folder one row short. `/Cold:Hot` is a distinct folder whose
+  // keys all sit inside the cold folder's raw key range.
+  function seedColdAndHot(hotPath = '/Hot') {
     const cold = Array.from({ length: COLD_ROWS }, (_, i) => `cold-${String(i).padStart(4, '0')}@example.com`);
     const installed = seedMigratedExactFolders([
       { folderPath: '/Cold', headerMessageIds: cold },
-      { folderPath: '/Hot', headerMessageIds: ['hot-seed@example.com'] },
+      { folderPath: hotPath, headerMessageIds: ['hot-seed@example.com'] },
     ]);
     const missingKey = `account1:/Cold:${cold[COLD_ROWS >> 1]}`;
     installed.nativeRows.delete(missingKey);
@@ -8775,8 +8776,22 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
   // The production drain: queued adds are resolved to headers, filtered
   // against the native index and written through the real engine wrapper
   // (which attributes each row to its folder) into the fake native backend.
-  function installRealDrain({ fts, nativeRows }) {
+  function installRealDrain({ fts, nativeRows, folders, rowsByURI }) {
     const headers = new Map();
+    // A raw key resolves through the folders whose live messages hold it, so
+    // a colon-bearing path reaches its real folder.
+    resolveUniqueMessageKey.mockImplementation(async key => {
+      const matches = folders.flatMap(folder => {
+        const prefix = `account1:${folder.folderPath}:`;
+        if (!key.startsWith(prefix)) return [];
+        const headerID = key.slice(prefix.length);
+        if (!rowsByURI.get(folder.folderURI).some(row => row.headerMessageId === headerID)) return [];
+        return [{ headerID, weFolder: { accountId: 'account1', path: folder.folderPath, id: folder.weFolderId } }];
+      });
+      if (matches.length !== 1) return null;
+      const weID = await headerIDToWeID(matches[0].headerID, matches[0].weFolder, false);
+      return { ...matches[0], weID };
+    });
     headerIDToWeID.mockImplementation(async (headerID, weFolder) => {
       const weID = headers.size + 1;
       headers.set(weID, { id: weID, headerMessageId: headerID, folder: { accountId: weFolder.accountId, path: weFolder.path } });
@@ -8790,11 +8805,17 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
     })));
     getUniqueMessageKey.mockImplementation(async header => keyOf(header));
     populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
-    fakeNativeFts.indexBatch.mockImplementation(async rows => {
+    installCapableNativeIndex(nativeRows);
+    fts.indexBatch = (rows, token) => engineFtsSearch.indexBatch(rows, token);
+  }
+
+  // A capable helper receives each row with its folderId.
+  function installCapableNativeIndex(nativeRows) {
+    fakeNativeFts.indexBatch.mockImplementation(async (rows, wire) => {
+      if (wire) wire.withFolderIds = true;
       for (const row of rows) nativeRows.set(row.msgId, row.folderId);
       return { count: rows.length };
     });
-    fts.indexBatch = (rows, token) => engineFtsSearch.indexBatch(rows, token);
   }
 
   // A real message event in `eventFolderPath` every EVENT_GAP_MS. An
@@ -8835,8 +8856,8 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
   }
 
   // The cold folder is one row short and one stale row long natively.
-  function seedColdRepairs() {
-    const installed = seedColdAndHot();
+  function seedColdRepairs(hotPath) {
+    const installed = seedColdAndHot(hotPath);
     const staleKey = 'account1:/Cold:stale@example.com';
     installed.nativeRows.set(staleKey, installed.folders[0].folderId);
     globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (folderURI, ids) => {
@@ -8849,10 +8870,10 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
     return { ...installed, staleKey, coldFirstPageReads };
   }
 
-  it('repairs and completes a cold multi-page folder while another folder receives mail every 4 s for the whole interval', async () => {
+  it.each(['/Hot', '/Cold:Hot'])('repairs and completes a cold multi-page folder while another folder (%s) receives mail every 4 s for the whole interval', async (hotPath) => {
     // Quiet baseline: the cold proof's own first-page reads (the first
     // attempt plus a restart after each of its own repairs).
-    const quiet = seedColdRepairs();
+    const quiet = seedColdRepairs(hotPath);
     const quietDone = () => _testExports._getFolderReconSessionDone().has('account1:/Cold');
     for (let turn = 0; turn < 2000 && !quietDone(); turn++) {
       await settleSchedulerTickWithFakeTimers(quiet.fts);
@@ -8864,7 +8885,7 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
 
     _testExports._resetFolderReconState();
     _testExports._getPendingUpdates().clear();
-    const installed = seedColdRepairs();
+    const installed = seedColdRepairs(hotPath);
     const [cold, hot] = installed.folders;
     const sent = [];
     const coldDone = () => _testExports._getFolderReconSessionDone().has(`account1:${cold.folderPath}`);
@@ -8873,13 +8894,13 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
     await underTraffic(installed, () => {
       if (doneAtEvent === null && coldDone()) doneAtEvent = sent.length;
       return false;
-    }, '/Hot', { messageId: n => { sent.push(`traffic-${n}@example.com`); return sent.at(-1); } });
+    }, hotPath, { messageId: n => { sent.push(`traffic-${n}@example.com`); return sent.at(-1); } });
 
     // Events kept arriving for the whole interval, and the drain kept up.
     expect(sent.length).toBe(TRAFFIC_MS / EVENT_GAP_MS);
     await flushPendingUpdates();
     expect(_testExports._getPendingUpdates().size).toBe(0);
-    expect(sent.every(id => installed.nativeRows.get(`account1:/Hot:${id}`) === hot.folderId)).toBe(true);
+    expect(sent.every(id => installed.nativeRows.get(`account1:${hotPath}:${id}`) === hot.folderId)).toBe(true);
     // The cold folder was repaired in both directions and completed early.
     expect(installed.nativeRows.get(installed.missingKey)).toBe(cold.folderId);
     expect(installed.nativeRows.has(installed.staleKey)).toBe(false);
@@ -8924,11 +8945,12 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
   // The stale direction lists the cold folder, then removes its stale rows
   // under a fence on the cold folder's evidence: another folder's write
   // after every cold listing never refuses that removal.
-  it('removes a cold folder\'s stale row while another folder is written after every cold listing', async () => {
+  it.each(['/Hot', '/Cold:Hot'])('removes a cold folder\'s stale row while another folder (%s) is written after every cold listing', async (hotPath) => {
     const installed = seedMigratedExactFolders([
       { folderPath: '/Cold', headerMessageIds: ['cold-1@example.com', 'cold-2@example.com'] },
-      { folderPath: '/Hot', headerMessageIds: ['hot-seed@example.com'] },
+      { folderPath: hotPath, headerMessageIds: ['hot-seed@example.com'] },
     ]);
+    installCapableNativeIndex(installed.nativeRows);
     const [cold, hot] = installed.folders;
     const staleKey = 'account1:/Cold:stale@example.com';
     installed.nativeRows.set(staleKey, cold.folderId);
@@ -8943,9 +8965,8 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
     installed.fts.listFolderMembership.mockImplementation(async (folderId, ...rest) => {
       const page = await list(folderId, ...rest);
       if (folderId === cold.folderId) {
-        const msgId = `account1:/Hot:late-${++written}@example.com`;
-        await runFtsMembershipMutation(async () => { installed.nativeRows.set(msgId, hot.folderId); }, null,
-          { msgIds: [msgId], folderIds: [hot.folderId] });
+        const msgId = `account1:${hotPath}:late-${++written}@example.com`;
+        await engineFtsSearch.indexBatch([{ msgId, folderId: hot.folderId }]);
       }
       return page;
     });

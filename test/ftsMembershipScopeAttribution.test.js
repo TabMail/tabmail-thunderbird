@@ -136,3 +136,115 @@ describe('native mutation wrappers attribute their folder scope', () => {
     expect(ftsMembershipUnchangedSince([B], since)).toBe(true);
   });
 });
+
+// The native helper changes only the declared owner of a row it receives
+// with a folderId (it fills a NULL owner; a different stored owner aborts the
+// batch). A folder whose raw key range merely holds the key is untouched.
+describe('owner-known writes are attributed to their owners alone', () => {
+  const childKey = 'account1:/F:Child:nine@example.com';
+  const sentWithFolderIds = async (rows, wire) => {
+    wire.withFolderIds = true;
+    return { count: rows.length };
+  };
+
+  it('an index the helper received with folderIds touches its owner and not the folder whose key range holds the key', async () => {
+    native.indexBatch.mockImplementationOnce(sentWithFolderIds);
+    const changed = await touched(() => ftsSearch.indexBatch([{ msgId: childKey, folderId: CHILD }]));
+    expect(changed(CHILD)).toBe(true);
+    expect(changed(PARENT)).toBe(false);
+  });
+
+  // An older helper receives the legacy row shape and changes key ranges.
+  it.each([
+    ['sent in the legacy shape', async (rows, wire) => { wire.withFolderIds = false; return { count: rows.length }; }],
+    ['never reported as sent', async () => { throw new Error('Native FTS helper not connected'); }],
+  ])('an index %s is attributed by key', async (_label, implementation) => {
+    native.indexBatch.mockImplementationOnce(implementation);
+    const changed = await touched(() => ftsSearch.indexBatch([{ msgId: childKey, folderId: CHILD }]).catch(() => {}));
+    expect(changed(CHILD)).toBe(true);
+    expect(changed(PARENT)).toBe(true);
+    expect(changed(A)).toBe(false);
+  });
+
+  it.each([
+    { shape: 'with folderIds', withFolderIds: true },
+    { shape: 'legacy', withFolderIds: false },
+  ])('a fenced index sent $shape is attributed by what was sent when the fence completes', async ({ withFolderIds }) => {
+    native.indexBatch.mockImplementationOnce(async (rows, wire) => {
+      wire.withFolderIds = withFolderIds;
+      return { count: rows.length };
+    });
+    const since = getFtsMembershipEpoch();
+    await withFtsMembershipFence(since, async (token) => {
+      await ftsSearch.indexBatch([{ msgId: childKey, folderId: CHILD }], token);
+    }, { mutation: true, scope: [A] });
+    expect(ftsMembershipUnchangedSince([CHILD], since)).toBe(false);
+    expect(ftsMembershipUnchangedSince([PARENT], since)).toBe(withFolderIds);
+  });
+
+  it('an assignment touches its owner and not the folder whose key range holds the key', async () => {
+    const changed = await touched(() => ftsSearch.assignFolderMembershipBatch([{ msgId: childKey, folderId: CHILD }]));
+    expect(changed(CHILD)).toBe(true);
+    expect(changed(PARENT)).toBe(false);
+  });
+
+  // A key-only removal cannot name the owner it deleted.
+  it('a removal still touches every folder whose key range holds the key', async () => {
+    const changed = await touched(() => ftsSearch.removeBatch([childKey]));
+    expect(changed(CHILD)).toBe(true);
+    expect(changed(PARENT)).toBe(true);
+  });
+});
+
+describe('native mutation wrappers apply the native write', () => {
+  const one = 'account1:/A:one@example.com';
+  const two = 'account1:/A:two@example.com';
+
+  // A stateful stand-in for the helper's rows and owners, for one call each.
+  function statefulNative() {
+    const rows = new Map();
+    native.indexBatch.mockImplementationOnce(async (batch, wire) => {
+      wire.withFolderIds = true;
+      for (const row of batch) rows.set(row.msgId, row.folderId);
+      return { count: batch.length };
+    });
+    native.removeBatch.mockImplementationOnce(async ids => {
+      let count = 0;
+      for (const id of ids) if (rows.delete(id)) count++;
+      return { count };
+    });
+    native.assignFolderMembershipBatch.mockImplementationOnce(async assignments => {
+      for (const { msgId, folderId } of assignments) rows.set(msgId, folderId);
+      return { assigned: assignments.length };
+    });
+    native.clear.mockImplementationOnce(async () => {
+      rows.clear();
+      return { ok: true };
+    });
+    return rows;
+  }
+
+  it('index, assignment, removal and clear change the native rows and return the helper\'s result', async () => {
+    const rows = statefulNative();
+    expect(await ftsSearch.indexBatch([{ msgId: one, folderId: A }, { msgId: two, folderId: null }])).toEqual({ count: 2 });
+    expect(await ftsSearch.assignFolderMembershipBatch([{ msgId: two, folderId: A }])).toEqual({ assigned: 1 });
+    expect([...rows]).toEqual([[one, A], [two, A]]);
+    expect(await ftsSearch.removeBatch([one])).toEqual({ count: 1 });
+    expect([...rows]).toEqual([[two, A]]);
+    expect(await ftsSearch.clear()).toEqual({ ok: true });
+    expect(rows.size).toBe(0);
+  });
+
+  it.each(['indexBatch', 'removeBatch', 'assignFolderMembershipBatch', 'clear'])('%s propagates a native failure and still records the change', async (method) => {
+    native[method].mockImplementationOnce(async () => { throw new Error('native write failed'); });
+    const args = {
+      indexBatch: [[{ msgId: one, folderId: A }]],
+      removeBatch: [[one]],
+      assignFolderMembershipBatch: [[{ msgId: one, folderId: A }]],
+      clear: [],
+    }[method];
+    const since = getFtsMembershipEpoch();
+    await expect(ftsSearch[method](...args)).rejects.toThrow('native write failed');
+    expect(ftsMembershipUnchangedSince([A], since)).toBe(false);
+  });
+});

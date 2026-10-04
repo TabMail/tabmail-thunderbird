@@ -330,6 +330,17 @@ describe('_markResolveFailed', () => {
     _markResolveFailed(captured);
     expect(_getPendingUpdates().get('test-key-7')).toBe(newer);
   });
+
+  // The same message can be added, removed and added again: a later
+  // intention of the same type is still a different one.
+  it('never marks a same-type intention queued later', () => {
+    const captured = { uniqueKey: 'test-key-8', type: 'add', timestamp: Date.now() };
+    const newer = { uniqueKey: 'test-key-8', type: 'add', timestamp: captured.timestamp + 1 };
+    _getPendingUpdates().set(newer.uniqueKey, newer);
+    _markResolveFailed(captured);
+    expect(_getPendingUpdates().get('test-key-8')).toBe(newer);
+    expect(newer.hasFailed).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -581,10 +581,20 @@ export async function disposeFtsEngine() {
 export const ftsSearch = {
   async indexBatch(rows, membershipFenceToken = null) {
     log(`[TMDBG FTS] indexBatch called with ${rows.length} rows`);
+    // A helper that receives each row with its folderId changes only that
+    // owner's membership (it fills a NULL owner; a different stored owner
+    // aborts the batch), so the write is attributed to the owners alone. Rows
+    // sent in the legacy shape, or not known to be sent, change key ranges and
+    // are attributed by key. The scope is resolved after the call.
+    const wire = { withFolderIds: false };
+    const msgIds = rows.map(row => row?.msgId);
     return runFtsMembershipMutation(
-      () => nativeFtsSearch.indexBatch(rows),
+      () => nativeFtsSearch.indexBatch(rows, wire),
       membershipFenceToken,
-      { msgIds: rows.map(row => row?.msgId), folderIds: rows.map(row => row?.folderId) },
+      {
+        folderIds: rows.map(row => row?.folderId),
+        get msgIds() { return wire.withFolderIds ? [] : msgIds; },
+      },
     );
   },
 
@@ -678,14 +688,13 @@ export const ftsSearch = {
     return await nativeFtsSearch.listFolderMembershipState(afterMsgId, limit);
   },
 
+  // Native assignment only fills a NULL owner with the named one, so it is
+  // attributed to the named owners alone.
   async assignFolderMembershipBatch(assignments, membershipFenceToken = null) {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.assignFolderMembershipBatch(assignments),
       membershipFenceToken,
-      {
-        msgIds: assignments.map(assignment => assignment?.msgId),
-        folderIds: assignments.map(assignment => assignment?.folderId),
-      },
+      assignments.map(assignment => assignment?.folderId),
     );
   },
 

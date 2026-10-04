@@ -789,7 +789,9 @@ export const nativeFtsSearch = {
     return nativeRPC('init', {});
   },
   
-  async indexBatch(rows) {
+  // `wire.withFolderIds` reports whether the rows were sent with their
+  // folderIds (the membership ledger's attribution depends on it).
+  async indexBatch(rows, wire = null) {
     // `folderId` is an additive wire field.  Older helpers did not advertise
     // the contract and must keep receiving the byte-for-byte legacy row shape.
     // New helpers accept only a non-empty opaque app-owned membership id.
@@ -805,6 +807,7 @@ export const nativeFtsSearch = {
         }
         return legacyRow;
       });
+      if (wire) wire.withFolderIds = includeFolderId;
       return { rows: wireRows };
     });
   },
