@@ -44,8 +44,8 @@ async function _runOwnedFtsScan(kind, status, body) {
   }
 }
 
-// A full smart reindex. While the attachment flag repair is outstanding, it also re-adds the
-// already-indexed rows whose attachment flag is stale (fts/attachmentFlags.js).
+// A full smart reindex. For accounts whose attachment flags are not yet repaired, it also
+// re-adds the already-indexed rows whose attachment flag is stale (fts/attachmentFlags.js).
 function _runSmartReindex(reportProgress) {
   return _runOwnedFtsScan("smart", { scanType: "smart" }, async (lease) => {
     const { indexMessages } = await import("./indexer.js");
@@ -503,19 +503,25 @@ async function _initFtsEngineOnce() {
       log(`[TMDBG FTS] Failed to initialize maintenance scheduler: ${e}`, "error");
     }
 
-    // Rows indexed before the indexer read Thunderbird's attachment flag all say "no
-    // attachments"; a full smart reindex re-adds them. Runs at each startup until one succeeds.
-    // An index whose initial scan has not finished is repaired by that scan instead.
+    // Rows indexed before the attachment fix all say "no attachments"; a full smart reindex
+    // re-adds them account by account (fts/attachmentFlags.js). It runs at each startup while a
+    // loaded account is not yet repaired. An index whose initial scan has not finished is
+    // repaired by that scan instead.
     try {
-      const { areAttachmentFlagsRepaired } = await import("./attachmentFlags.js");
+      const { getAttachmentRepairedAccounts } = await import("./attachmentFlags.js");
       const { fts_initial_scan_complete } = await browser.storage.local.get("fts_initial_scan_complete");
-      if (fts_initial_scan_complete && !(await areAttachmentFlagsRepaired())) {
-        log("[TMDBG FTS] Attachment flags not yet repaired; starting a smart reindex");
-        _runSmartReindex(false).then((result) => {
-          log(`[TMDBG FTS] Attachment flag repair smart reindex finished: ${JSON.stringify(result?.attachmentRepair || null)}`);
-        }).catch((e) => {
-          log(`[TMDBG FTS] Attachment flag repair smart reindex failed: ${e}`, "error");
-        });
+      if (fts_initial_scan_complete) {
+        const repaired = await getAttachmentRepairedAccounts();
+        const accounts = await browser.accounts.list();
+        const unrepaired = accounts.filter(a => a?.rootFolder && !repaired.has(a.id)).map(a => a.id);
+        if (unrepaired.length > 0) {
+          log(`[TMDBG FTS] Attachment flags not yet repaired for ${unrepaired.join(", ")}; starting a smart reindex`);
+          _runSmartReindex(false).then((result) => {
+            log(`[TMDBG FTS] Attachment flag repair smart reindex finished: ${JSON.stringify(result?.attachmentRepair || null)}`);
+          }).catch((e) => {
+            log(`[TMDBG FTS] Attachment flag repair smart reindex failed: ${e}`, "error");
+          });
+        }
       }
     } catch (e) {
       log(`[TMDBG FTS] Attachment flag repair check failed: ${e}`, "warn");

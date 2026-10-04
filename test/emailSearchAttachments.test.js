@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// email_search prints each result's has_attachments line from the index once the index's
-// attachment flags are repaired (fts/attachmentFlags.js). Until then it asks Thunderbird's
+// email_search prints a result's has_attachments line from the index when the result's account
+// has been repaired (fts/attachmentFlags.js). For any other account it asks Thunderbird's
 // message database by WebExtension id, and anything it cannot tell prints "unknown", never "no".
 // formatMailList is the real one, so these tests check the line the model reads.
 
@@ -19,7 +19,7 @@ vi.mock('../chat/modules/markdown.js', () => ({ renderMarkdown: vi.fn((t) => t),
 const { log, resolveUniqueMessageKey } = await import('../agent/modules/utils.js');
 const { run } = await import('../chat/tools/email_search.js');
 
-const REPAIRED_KEY = 'fts_attachment_flags_repaired';
+const REPAIRED_KEY = 'fts_attachment_repaired_accounts';
 const now = Date.now();
 const hit = (uniqueId, n, hasAttachments = 0) => ({
   uniqueId,
@@ -28,7 +28,7 @@ const hit = (uniqueId, n, hasAttachments = 0) => ({
   subject: `Subject ${n}`,
   hasAttachments,
 });
-const id = (n) => `account1:/INBOX:m${n}@example.com`;
+const id = (n, account = 'account1') => `${account}:/INBOX:m${n}@example.com`;
 
 const getHasAttachmentBulk = vi.fn();
 let storage;
@@ -59,8 +59,8 @@ const printed = async (args = {}) => {
     .map((block) => [block.match(/unique_id: (\S*)/)[1], block.match(/has_attachments: (\w+)/)[1]]);
 };
 
-describe('email_search attachment line, index repaired', () => {
-  beforeEach(() => { storage[REPAIRED_KEY] = true; });
+describe('email_search attachment line, account repaired', () => {
+  beforeEach(() => { storage[REPAIRED_KEY] = ['account1']; });
 
   it('prints the index\'s flag and does not ask Thunderbird', async () => {
     expect(await printed()).toEqual([[id(1), 'no'], [id(2), 'yes']]);
@@ -68,9 +68,25 @@ describe('email_search attachment line, index repaired', () => {
     expect(getHasAttachmentBulk).not.toHaveBeenCalled();
     expect(resolveUniqueMessageKey).not.toHaveBeenCalled();
   });
+
+  it('asks Thunderbird only for the hits of an account that is not repaired', async () => {
+    hits = [hit(id(1), 1, 1), hit(id(5, 'account2'), 2, 0)];
+    weIds.set(id(5, 'account2'), 105);
+    getHasAttachmentBulk.mockResolvedValue([true]);
+    expect(await printed()).toEqual([[id(1), 'yes'], [id(5, 'account2'), 'yes']]);
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([105]);
+    expect(resolveUniqueMessageKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks Thunderbird for every hit when the repaired accounts cannot be read', async () => {
+    browser.storage.local.get.mockRejectedValue(new Error('storage gone'));
+    getHasAttachmentBulk.mockResolvedValue([true, false]);
+    expect(await printed()).toEqual([[id(1), 'yes'], [id(2), 'no']]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('reading the repaired accounts failed'), 'error');
+  });
 });
 
-describe('email_search attachment line, index not yet repaired', () => {
+describe('email_search attachment line, account not yet repaired', () => {
   it('asks Thunderbird for the current page by WebExtension id, ignoring the index\'s flag', async () => {
     getHasAttachmentBulk.mockResolvedValue([true, false]);
     expect(await printed()).toEqual([[id(1), 'yes'], [id(2), 'no']]);

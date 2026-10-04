@@ -60,9 +60,11 @@ export function isInboxFolder(folder) {
  * Pattern copied from fts/indexer.js.
  * 
  * @param {string} accountId - The account ID to get folders for.
+ * @param {(e: Error) => void} [onError] - Called for each folder (or the account) that could not
+ *   be listed; the result then misses that subtree.
  * @returns {Promise<browser.folders.MailFolder[]>} - All folders in the account.
  */
-export async function getAllFoldersForAccount(accountId) {
+export async function getAllFoldersForAccount(accountId, onError = () => {}) {
   const allFolders = [];
   const visited = new Set();
 
@@ -81,8 +83,9 @@ export async function getAllFoldersForAccount(accountId) {
           await traverseFolder(child);
         }
       }
-    } catch (_) {
-      // Ignore errors for individual folder traversal
+    } catch (e) {
+      // Keep traversing the other folders; the caller learns this subtree is missing.
+      onError(e);
     }
   }
 
@@ -90,11 +93,12 @@ export async function getAllFoldersForAccount(accountId) {
     const accounts = await browser.accounts.list();
     const account = accounts.find((a) => a?.id === accountId);
     if (!account?.rootFolder) {
+      onError(new Error(`account ${accountId} not found`));
       return [];
     }
     await traverseFolder(account.rootFolder);
-  } catch (_) {
-    // Ignore top-level errors
+  } catch (e) {
+    onError(e);
   }
 
   return allFolders;

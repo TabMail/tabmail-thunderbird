@@ -4,7 +4,8 @@ const h = vi.hoisted(() => ({
   log: null,
   indexMessages: null,
   logSmartReindexRun: null,
-  areAttachmentFlagsRepaired: null,
+  repairedAccounts: null,
+  accounts: null,
   stored: {},
   listener: null,
 }));
@@ -36,7 +37,7 @@ vi.mock('../fts/memoryIndexer.js', () => ({
   migrateExistingChatHistory: vi.fn(async () => ({ migrated: false })),
 }));
 vi.mock('../fts/attachmentFlags.js', () => ({
-  areAttachmentFlagsRepaired: () => h.areAttachmentFlagsRepaired(),
+  getAttachmentRepairedAccounts: () => h.repairedAccounts(),
 }));
 
 async function startEngine() {
@@ -59,13 +60,15 @@ describe('attachment flag repair startup trigger', () => {
     h.log = vi.fn();
     h.indexMessages = vi.fn(async () => ({ attachmentRepair: { repaired: 3, failedBatches: 0 } }));
     h.logSmartReindexRun = vi.fn(async () => {});
-    h.areAttachmentFlagsRepaired = vi.fn(async () => false);
+    h.repairedAccounts = vi.fn(async () => new Set(['account1']));
+    h.accounts = [{ id: 'account1', rootFolder: { id: 'r1' } }, { id: 'account2', rootFolder: { id: 'r2' } }];
     h.stored = { fts_initial_scan_complete: true };
     h.listener = null;
     globalThis.browser = {
       storage: { local: {
         get: vi.fn(async (key) => (typeof key === 'string' ? { [key]: h.stored[key] } : { ...h.stored })),
       } },
+      accounts: { list: vi.fn(async () => h.accounts) },
       runtime: {
         sendMessage: vi.fn(async () => {}),
         onMessage: { addListener: vi.fn((fn) => { h.listener = fn; }), removeListener: vi.fn() },
@@ -79,7 +82,7 @@ describe('attachment flag repair startup trigger', () => {
     delete globalThis.browser;
   });
 
-  it('runs a full smart reindex in the background when an indexed store is unrepaired', async () => {
+  it('runs a full smart reindex in the background while a loaded account is unrepaired', async () => {
     await startEngine();
 
     await vi.waitFor(() => expect(logLines().some(l => l.includes('repair smart reindex finished'))).toBe(true));
@@ -93,7 +96,9 @@ describe('attachment flag repair startup trigger', () => {
   });
 
   it.each([
-    ['the repair is already done', () => { h.areAttachmentFlagsRepaired = vi.fn(async () => true); }],
+    ['every loaded account is repaired', () => { h.repairedAccounts = vi.fn(async () => new Set(['account1', 'account2'])); }],
+    ['the only unrepaired account has no root folder', () => { h.accounts[1] = { id: 'account2' }; }],
+    ['Thunderbird has not loaded the unrepaired account yet', () => { h.accounts = h.accounts.slice(0, 1); }],
     ['the initial scan has not finished', () => { h.stored = {}; }],
   ])('does not reindex when %s', async (_name, arrange) => {
     arrange();
@@ -113,7 +118,7 @@ describe('attachment flag repair startup trigger', () => {
   });
 
   it('keeps the engine initialized when the repair check fails', async () => {
-    h.areAttachmentFlagsRepaired = vi.fn(async () => { throw new Error('storage gone'); });
+    h.repairedAccounts = vi.fn(async () => { throw new Error('storage gone'); });
     await startEngine();
 
     expect(h.indexMessages).not.toHaveBeenCalled();
@@ -122,7 +127,7 @@ describe('attachment flag repair startup trigger', () => {
   });
 
   it('serves the smartReindex command through the same full reindex', async () => {
-    h.areAttachmentFlagsRepaired = vi.fn(async () => true);
+    h.repairedAccounts = vi.fn(async () => new Set(['account1', 'account2']));
     await startEngine();
 
     const response = await sendFts('smartReindex', { progress: true });

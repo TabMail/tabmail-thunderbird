@@ -5,7 +5,7 @@
 // email_search.js – FTS search with optional date range and limit
 
 import { log, resolveUniqueMessageKey } from "../../agent/modules/utils.js";
-import { areAttachmentFlagsRepaired } from "../../fts/attachmentFlags.js";
+import { accountIdOfMsgId, getAttachmentRepairedAccounts } from "../../fts/attachmentFlags.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { formatMailList, toIsoNoMs } from "../modules/helpers.js";
 
@@ -47,11 +47,23 @@ export function resolvePageSize() {
 
 // Email search using FTS (Full Text Search) backend only
 
-// Each hit carries the index's attachment flag. Until the index's stale flags are repaired
-// (fts/attachmentFlags.js), the flags are read from Thunderbird's message database instead.
+// Each hit carries the index's attachment flag, trusted for accounts whose stale flags have been
+// repaired (fts/attachmentFlags.js). The other hits' flags are read from Thunderbird.
 async function hitAttachmentFlags(hits) {
-  if (await areAttachmentFlagsRepaired()) return hits.map((hit) => Boolean(hit.hasAttachments));
-  return readAttachmentFlags(hits);
+  let repaired = new Set();
+  try {
+    repaired = await getAttachmentRepairedAccounts();
+  } catch (e) {
+    log(`[TMDBG Tools] email_search: reading the repaired accounts failed: ${e}`, "error");
+  }
+  const flags = hits.map(hit => (repaired.has(accountIdOfMsgId(hit.uniqueId)) ? Boolean(hit.hasAttachments) : null));
+  const askIdx = [];
+  hits.forEach((_, i) => { if (flags[i] === null) askIdx.push(i); });
+  if (askIdx.length > 0) {
+    const asked = await readAttachmentFlags(askIdx.map(i => hits[i]));
+    askIdx.forEach((hitIdx, k) => { flags[hitIdx] = asked[k]; });
+  }
+  return flags;
 }
 
 // Reads each hit's flag from Thunderbird's message database. A hit that does not resolve to

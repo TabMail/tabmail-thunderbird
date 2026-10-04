@@ -5,6 +5,7 @@
 // fts/indexer.js
 // Throttled indexer with backpressure, checkpoints, and pause/resume capability
 
+import { hasPaperclipAttachment, listAttachmentsFromFull } from "../agent/modules/attachmentParts.js";
 import { getAllFoldersForAccount } from "../agent/modules/folderUtils.js";
 import { getInboxForAccount } from "../agent/modules/inboxContext.js";
 import { sanitizeMessageTags } from "../agent/modules/onMoved.js";
@@ -15,10 +16,10 @@ import {
   safeGetFull,
 } from "../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../chat/modules/icsParser.js";
-import { areAttachmentFlagsRepaired, markAttachmentFlagsRepaired } from "./attachmentFlags.js";
+import { getAttachmentRepairedAccounts, markAttachmentAccountsRepaired } from "./attachmentFlags.js";
 import { extractPlainText } from "./bodyExtract.js";
 import { makeFolderMembershipId } from "./folderMembershipIdentity.js";
-import { getFtsMembershipEpoch, runFtsMembershipRead, withFtsMembershipFence } from "./operationCoordinator.js";
+import { getFtsMembershipEpoch, withFtsMembershipFence } from "./operationCoordinator.js";
 
 // Load FTS settings from storage
 async function getFtsSettings() {
@@ -60,7 +61,9 @@ let paused = false;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function* iterAllFolders(onTraversalError = () => {}) {
+// onAccountDone(accountId, complete) runs once the consumer has taken every folder of an account;
+// complete is false when any of its folders could not be listed.
+async function* iterAllFolders(onAccountDone = () => {}) {
   const accounts = await browser.accounts.list();
   log(`[TMDBG FTS] Found ${accounts.length} accounts`);
   
@@ -72,9 +75,13 @@ async function* iterAllFolders(onTraversalError = () => {}) {
       continue;
     }
 
+    let complete = true;
     try {
       // Use shared helper for manual folder traversal (recursive=true doesn't work for Gmail [Gmail] children)
-      const allFolders = await getAllFoldersForAccount(acct.id);
+      const allFolders = await getAllFoldersForAccount(acct.id, (e) => {
+        complete = false;
+        log(`[TMDBG FTS] Could not list a folder of account ${acct.name}: ${e}`, "warn");
+      });
       
       log(`[TMDBG FTS] Found ${allFolders.length} total folders for account ${acct.name}`);
       
@@ -91,9 +98,10 @@ async function* iterAllFolders(onTraversalError = () => {}) {
         }
       }
     } catch (e) {
+      complete = false;
       log(`[TMDBG FTS] Error traversing folders for account ${acct.name}: ${e}`, "error");
-      onTraversalError(e);
     }
+    onAccountDone(acct.id, complete);
   }
 }
 
@@ -130,9 +138,11 @@ export async function buildBatchHeader(messages) {
   const rows = [];
   let bytes = 0;
 
-  // MessageHeader has no attachment field; read Thunderbird's database flag (the paperclip
-  // heuristic). A failed read fails the batch: a row written with a guessed "no" would stay
-  // wrong. A message whose header is gone (null) is not indexed.
+  // MessageHeader has no attachment field. Thunderbird's database flag (the paperclip
+  // heuristic) is what the attachment repair compares stored rows with, and the value a new row
+  // keeps when its downloaded message cannot tell (populateBatchBody). A failed read fails the
+  // batch: a row written with a guessed "no" would stay wrong. A message whose header is gone
+  // (null) is not indexed.
   const attachmentFlags = await browser.tmHdr.getHasAttachmentBulk(messages.map(m => m.id));
   if (!Array.isArray(attachmentFlags) || attachmentFlags.length !== messages.length) {
     throw new Error(`attachment flags unavailable (${attachmentFlags?.length ?? "none"} for ${messages.length} messages)`);
@@ -200,6 +210,11 @@ export async function populateBatchBody(rows) {
       } else {
         const body = await extractPlainText(full, row._originalMessage.id);
         row.body = body || "";
+
+        // The downloaded MIME tree says exactly whether there are attachments; the database
+        // flag from buildBatchHeader stays only when the tree cannot tell.
+        const attachments = listAttachmentsFromFull(full, row._originalMessage);
+        if (attachments) row.hasAttachments = hasPaperclipAttachment(attachments);
 
         // Extract and parse ICS attachments for needed messages
         const icsAttachments = await extractIcsFromParts(full, row._originalMessage.id);
@@ -276,33 +291,30 @@ async function* pagedMessages(folder, afterId) {
 }
 
 // Re-adds already-indexed rows that Thunderbird flags as having attachments but whose stored
-// row says it has none (written before the indexer read the flag). The native index never
-// updates an existing row, so each stale row is removed and re-inserted from its stored copy,
-// with no new download. The reads and the rewrite are fenced: if any other membership change
-// lands in between, this throws and the rows are left for the next run.
+// row says it has none (written before the attachment fix). The native index never updates an
+// existing row, so each stale row is removed and re-inserted from its stored copy, with no new
+// download. The epoch is taken before the reads: if any membership change completes after that,
+// the fence throws and the rows are left for the next run.
 async function readdStaleAttachmentRows(ftsSearch, rows) {
-  let epoch = null;
+  const epoch = getFtsMembershipEpoch();
   const stale = [];
-  await runFtsMembershipRead(async () => {
-    epoch = getFtsMembershipEpoch();
-    for (const row of rows) {
-      const stored = await ftsSearch.getMessageByMsgId(row.msgId);
-      if (!stored || stored.hasAttachments) continue;
-      stale.push({
-        msgId: row.msgId,
-        folderId: row.folderId,
-        subject: stored.subject,
-        from_: stored.from_,
-        to_: stored.to_,
-        cc: stored.cc,
-        bcc: stored.bcc,
-        body: stored.body,
-        dateMs: stored.dateMs,
-        hasAttachments: true,
-        parsedIcsAttachments: stored.parsedIcsAttachments,
-      });
-    }
-  });
+  for (const row of rows) {
+    const stored = await ftsSearch.getMessageByMsgId(row.msgId);
+    if (!stored || stored.hasAttachments) continue;
+    stale.push({
+      msgId: row.msgId,
+      folderId: row.folderId,
+      subject: stored.subject,
+      from_: stored.from_,
+      to_: stored.to_,
+      cc: stored.cc,
+      bcc: stored.bcc,
+      body: stored.body,
+      dateMs: stored.dateMs,
+      hasAttachments: true,
+      parsedIcsAttachments: stored.parsedIcsAttachments,
+    });
+  }
   if (stale.length === 0) return 0;
   return withFtsMembershipFence(epoch, async (fenceToken) => {
     await ftsSearch.removeBatch(stale.map(row => row.msgId), fenceToken);
@@ -384,8 +396,11 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
   let totalScanned = 0;
   let newlyIndexed = 0;
 
-  // Until one full run repairs the stale attachment flags, every full run re-adds them.
-  const repairAttachments = !isDateRange && !(await areAttachmentFlagsRepaired());
+  // Every full run re-adds the stale attachment flags of the accounts not yet repaired; an
+  // account is recorded once all its folders were listed and none of its repair batches failed.
+  const repairedAccounts = isDateRange ? null : await getAttachmentRepairedAccounts();
+  const repairFailedAccounts = new Set();
+  const newlyRepairedAccounts = [];
   let attachmentRowsRepaired = 0;
   let attachmentRepairFailures = 0;
   let skipped = 0;
@@ -417,9 +432,11 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
   
   let sanitizedTotal = 0;
   
-  // An account whose folders could not be listed was not repaired.
-  const onTraversalError = () => { attachmentRepairFailures += 1; };
-  for await (const { accountId, folder } of iterAllFolders(onTraversalError)) {
+  const onAccountDone = (accountId, complete) => {
+    if (!repairedAccounts || repairedAccounts.has(accountId)) return;
+    if (complete && !repairFailedAccounts.has(accountId)) newlyRepairedAccounts.push(accountId);
+  };
+  for await (const { accountId, folder } of iterAllFolders(onAccountDone)) {
     if (paused) await waitUntilResumed();
     
     log(`[TMDBG FTS] ${logPrefix} scan of folder: ${folder.name} (account: ${accountId})`);
@@ -491,7 +508,7 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
         }
       }
       
-      if (repairAttachments) {
+      if (repairedAccounts && !repairedAccounts.has(accountId)) {
         const newIds = new Set(newMsgIds);
         const flagged = filteredBatch.filter(row => row.hasAttachments && !newIds.has(row.msgId));
         if (flagged.length > 0) {
@@ -499,6 +516,7 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
             attachmentRowsRepaired += await readdStaleAttachmentRows(ftsSearch, flagged);
           } catch (e) {
             attachmentRepairFailures += 1;
+            repairFailedAccounts.add(accountId);
             log(`[TMDBG FTS] Attachment flag repair failed for a batch in ${folder.name}: ${e}`, "warn");
           }
         }
@@ -638,9 +656,9 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
     await sleep(LONG_YIELD_MS);
   }
   
-  if (repairAttachments) {
-    log(`[TMDBG FTS] Attachment flag repair: ${attachmentRowsRepaired} rows re-added, ${attachmentRepairFailures} batches failed`);
-    if (attachmentRepairFailures === 0) await markAttachmentFlagsRepaired();
+  if (repairedAccounts) {
+    log(`[TMDBG FTS] Attachment flag repair: ${attachmentRowsRepaired} rows re-added, ${attachmentRepairFailures} batches failed, accounts now repaired: ${newlyRepairedAccounts.join(", ") || "none"}`);
+    await markAttachmentAccountsRepaired(newlyRepairedAccounts);
   }
 
   const duration = Date.now() - startTime;
@@ -656,7 +674,7 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
     batches: totalBatches,
     sanitized: sanitizedTotal, 
     skipped,
-    ...(repairAttachments && { attachmentRepair: { repaired: attachmentRowsRepaired, failedBatches: attachmentRepairFailures } }),
+    ...(repairedAccounts && { attachmentRepair: { repaired: attachmentRowsRepaired, failedBatches: attachmentRepairFailures, accountsRepaired: newlyRepairedAccounts } }),
     ...(collectDetails && { correctionDetails }),
     ...(isDateRange && { duration })
   };

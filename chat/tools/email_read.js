@@ -4,23 +4,11 @@
 
 // email_read.js – returns a full email content with summaries
 
+import { hasPaperclipAttachment, listAttachmentsFromFull } from "../../agent/modules/attachmentParts.js";
 import { extractBodyFromParts, getRealSubject, getUniqueMessageKey, log, resolveUniqueMessageKey, safeGetFull } from "../../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../modules/icsParser.js";
 
 
-
-// The parts Thunderbird names as files (MessagePart.name), without descending into a named part,
-// so an attached email counts as one file, as in Thunderbird's attachment list.
-function collectFileParts(parts, out = []) {
-  for (const part of Array.isArray(parts) ? parts : []) {
-    if (part?.name) {
-      out.push({ name: part.name, contentType: part.contentType || "", size: part.size ?? 0 });
-    } else {
-      collectFileParts(part?.parts, out);
-    }
-  }
-  return out;
-}
 
 export async function run(args = {}, options = {}) {
   try {
@@ -115,14 +103,14 @@ export async function run(args = {}, options = {}) {
     // }
 
     // Thunderbird's MessageHeader has no attachment field. The MIME tree fetched for the body
-    // lists the files exactly, at no extra cost; a body served from the FTS index has no MIME
-    // tree, so the answer is Thunderbird's database flag (the paperclip heuristic) and no list.
+    // lists the files exactly, at no extra cost. When there is no usable tree (a body served from
+    // the FTS index, a headers-only or undecryptable message), the answer is Thunderbird's
+    // database flag (the paperclip heuristic) and no list.
     // null = could not tell, printed as "unknown", never "no".
-    let attachments = null;
+    const attachments = listAttachmentsFromFull(full, header);
     let hasAttachments = null;
-    if (full && !full.__tmSynthetic) {
-      attachments = collectFileParts([full]);
-      hasAttachments = attachments.length > 0;
+    if (attachments) {
+      hasAttachments = hasPaperclipAttachment(attachments);
     } else {
       try {
         const [flag] = await browser.tmHdr.getHasAttachmentBulk([internalId]);
@@ -171,7 +159,7 @@ export async function run(args = {}, options = {}) {
       lines.push("");
       lines.push("attachments:");
       for (const att of attachments) {
-        lines.push(`  - ${att.name} (${att.contentType}, ${att.size} bytes)`);
+        lines.push(`  - ${att.name || "(unnamed)"} (${att.contentType}, ${att.size} bytes)`);
       }
     }
 

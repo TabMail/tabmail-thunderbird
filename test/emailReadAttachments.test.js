@@ -2,8 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// email_read reports attachments from the MIME tree it already fetched for the body. When the
-// body came from the FTS index (no MIME tree), it uses Thunderbird's database flag. It never
+// email_read reports attachments from the MIME tree it already fetched for the body. When there
+// is no usable tree (a body from the FTS index, a headers-only or undecryptable message), it uses
+// Thunderbird's database flag. It never
 // calls listAttachments or messages.query, which parse (and may download) the message again,
 // and it never prints "no" when it could not tell.
 
@@ -74,7 +75,8 @@ describe('email_read attachments from the fetched MIME tree', () => {
   });
 
   it('finds a single-part attachment that the database flag would miss', async () => {
-    safeGetFull.mockResolvedValue({ ...pdfPart, partName: '' });
+    // getFull wraps the message's only part, here the PDF itself, in an outer message/rfc822.
+    safeGetFull.mockResolvedValue({ contentType: 'message/rfc822', partName: '', parts: [{ ...pdfPart, partName: '1' }] });
     const lines = await readLines();
     expect(lines).toContain('has_attachments: yes');
     expect(lines).toContain('  - invoice.pdf (application/pdf, 51200 bytes)');
@@ -92,6 +94,20 @@ describe('email_read attachments from the fetched MIME tree', () => {
       '  - invoice.pdf (application/pdf, 51200 bytes)',
       '  - fwd.eml (message/rfc822, 900 bytes)',
     ]);
+  });
+
+  it('counts an attachment Thunderbird gives no file name, and lists it as unnamed', async () => {
+    safeGetFull.mockResolvedValue(mixed(textPart, { contentType: 'application/octet-stream', name: '', partName: '1.2', size: 10 }));
+    const lines = await readLines();
+    expect(lines).toContain('has_attachments: yes');
+    expect(lines).toContain('  - (unnamed) (application/octet-stream, 10 bytes)');
+  });
+
+  it('does not count a vCard as an attachment, as Thunderbird\'s paperclip does not, but lists it', async () => {
+    safeGetFull.mockResolvedValue(mixed(textPart, { contentType: 'text/vcard', name: 'me.vcf', partName: '1.2', size: 3 }));
+    const lines = await readLines();
+    expect(lines).toContain('has_attachments: no');
+    expect(lines).toContain('  - me.vcf (text/vcard, 3 bytes)');
   });
 
   it('reports no attachments, and no list, when the MIME tree has no files', async () => {
@@ -129,5 +145,24 @@ describe('email_read attachments for a body served from the FTS index', () => {
     getHasAttachmentBulk.mockRejectedValue(new Error('boom'));
     expect(await readLines()).toContain('has_attachments: unknown');
     expect(log).toHaveBeenCalledWith(expect.stringContaining('attachment flag read failed'), 'error');
+  });
+});
+
+describe('email_read attachments when the MIME tree cannot tell', () => {
+  it('uses the database flag for a headers-only message, whose parts getFull drops', async () => {
+    browser.messages.get.mockResolvedValue({ ...header, headersOnly: true });
+    safeGetFull.mockResolvedValue({ contentType: 'message/rfc822', partName: '', parts: [{ contentType: 'multipart/mixed', partName: '1' }] });
+    getHasAttachmentBulk.mockResolvedValue([true]);
+    const lines = await readLines();
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([42]);
+    expect(lines).toContain('has_attachments: yes');
+  });
+
+  it('uses the database flag for a message Thunderbird could not decrypt', async () => {
+    safeGetFull.mockResolvedValue({ contentType: 'message/rfc822', partName: '', decryptionStatus: 'fail', parts: [] });
+    getHasAttachmentBulk.mockResolvedValue([null]);
+    const lines = await readLines();
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([42]);
+    expect(lines).toContain('has_attachments: unknown');
   });
 });
