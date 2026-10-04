@@ -3479,8 +3479,16 @@ function _folderReconLocalProofChanged(before, after) {
     || _normalizeUidValidity(before.uidValidity) !== _normalizeUidValidity(after.uidValidity);
 }
 
-function _pruneFolderReconRuntimeToFolderKeys(folderKeys) {
+function _pruneFolderReconRuntimeToFolderKeys(folderKeys, folderIds = null) {
   let removedState = false;
+  if (folderIds) {
+    for (const folderId of [..._folderMembershipYieldedAttempts.keys()]) {
+      if (!folderIds.has(folderId)) {
+        _folderMembershipYieldedAttempts.delete(folderId);
+        removedState = true;
+      }
+    }
+  }
   for (const map of [_folderReconDirty, _folderReconNextWalkDueMs]) {
     for (const folderKey of [...map.keys()]) {
       if (!folderKeys.has(folderKey)) {
@@ -6002,11 +6010,15 @@ async function _runFolderMembershipMigrationSlice(
   const binding = _folderMembershipStatePassBinding(inventory, ftsSearch, inventoryTopologySerial);
   if (_folderMembershipCutoverProven) {
     // Checked before the page budget is spent: a completed migration leaves
-    // this slice's native page to per-folder work.
+    // this slice's native page to per-folder work. A completed pass expires
+    // after one walk period, so an owned row a late native commit left for a
+    // folder no walk visits is removed by the next pass.
     if (_folderMembershipStatePass?.completed === true
-        && _folderMembershipStatePassBound(_folderMembershipStatePass, binding)) {
+        && _folderMembershipStatePassBound(_folderMembershipStatePass, binding)
+        && Date.now() - _folderMembershipStatePass.completedAtMs < FOLDER_RECON_WALK_PERIOD_MS) {
       return { complete: true, cutover: true };
     }
+    _markFolderReconPending();
     _revokeFolderMembershipCutover();
   }
 
@@ -6247,6 +6259,7 @@ async function _runFolderMembershipMigrationSlice(
       return { complete: false, restart: true, reason: "membership_state_binding_changed" };
     }
     pass.completed = true;
+    pass.completedAtMs = Date.now();
     _folderMembershipCutoverProven = true;
     _bumpFolderReconTelemetry("membershipCutovers");
     _folderReconRuntimeTelemetry.membershipLastPassSlices = pass.slices;
@@ -6384,7 +6397,10 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     const keys = identities.map(i => `${i.accountId}:${i.folderPath}`);
     const currentFolderKeys = new Set(keys);
     _folderReconKnownFolderKeys = currentFolderKeys;
-    _pruneFolderReconRuntimeToFolderKeys(currentFolderKeys);
+    _pruneFolderReconRuntimeToFolderKeys(
+      currentFolderKeys,
+      new Set(identities.map(identity => identity.folderId)),
+    );
     const memo = await _getFolderReconMemo();
     _assertFolderReconLease(reconcileLease, generation, eventSerial);
     if (folderMembershipCapable) {
@@ -7435,6 +7451,7 @@ export const _testExports = {
   _getFolderReconDrainSkipped: () => _folderReconDrainSkipped,
   _getFolderMembershipCutoverProven: () => _folderMembershipCutoverProven,
   _getFolderMembershipStatePass: () => _folderMembershipStatePass,
+  _getFolderMembershipYieldedAttempts: () => new Map(_folderMembershipYieldedAttempts),
   _getFolderReconOrphanPass: () => _folderReconOrphanPass,
   _runFolderMembershipMigrationSlice,
   _resetFolderReconState: () => {

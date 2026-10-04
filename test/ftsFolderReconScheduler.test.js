@@ -8170,6 +8170,41 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
       expect(nativeRows.get(A2)).toBe(folders[0].folderId);
     });
 
+    // A folder that disappears while its attempt waits for a page must not
+    // leave that attempt's record behind: folder churn would grow it for
+    // the whole session.
+    it('drops the yielded attempt of a folder that disappears while it waits', async () => {
+      const ids = Array.from({ length: 150 }, (_, index) => `row-${String(index).padStart(4, '0')}@example.com`);
+      const { fts, folders } = installTokenFolders([
+        { folderPath: '/Stay', headerMessageIds: ids },
+        { folderPath: '/Vanish', headerMessageIds: ids },
+      ]);
+      await finishSession(fts, 200);
+      restartSession();
+      const allFolderIds = new Set(folders.map(folder => folder.folderId));
+      const yieldedIds = () => [..._testExports._getFolderMembershipYieldedAttempts().keys()]
+        .filter(folderId => allFolderIds.has(folderId));
+      while (yieldedIds().length === 0) {
+        const yielded = await tickUntil(fts, value => value?.reason === 'membership_page' || value?.complete === true, 60);
+        expect(yielded.reason).toBe('membership_page');
+      }
+      const [first] = yieldedIds();
+      const vanishing = folders.find(folder => folder.folderId === first);
+      const staying = folders.find(folder => folder !== vanishing);
+      globalThis.browser.accounts.list.mockResolvedValue([{
+        id: 'account1', type: 'imap',
+        rootFolder: {
+          path: '/', isRoot: true,
+          subFolders: [{ id: staying.weFolderId, accountId: 'account1', path: staying.folderPath, subFolders: [] }],
+        },
+      }]);
+
+      await finishSession(fts, 200);
+
+      expect(_testExports._getFolderMembershipYieldedAttempts().has(vanishing.folderId)).toBe(false);
+      expect(_testExports._getFolderReconSessionDone()).toEqual(new Set([`account1:${staying.folderPath}`]));
+    });
+
     it('prunes a vanished folder\'s obligation and next walk', async () => {
       const { fts } = installTokenFolders(specs);
       await finishSession(fts);
@@ -8181,6 +8216,30 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
   });
 
   describe('rolling re-walk', () => {
+    // A timed-out index_batch for a since-removed folder commits natively
+    // after the completed membership-state pass. No folder walk visits that
+    // folder, so the pass itself must not stay complete past a walk period.
+    it('removes a late native commit for a removed folder within a walk period and an interval', async () => {
+      const { fts, nativeRows, folders } = installTokenFolders([{ folderPath: '/F', headerMessageIds: ['live@example.com'] }]);
+      const passStartedAt = Date.now();
+      await finishSession(fts);
+      const passMs = Date.now() - passStartedAt;
+      const live = 'account1:/F:live@example.com';
+      const late = 'account1:/Removed:late@example.com';
+      nativeRows.set(late, makeFolderMembershipId('account1', '/Removed'));
+      const deadline = Date.now() + walkPeriodMs + intervalMs + passMs;
+
+      await runAt(fts, Date.now() + walkPeriodMs - intervalMs);
+      expect(nativeRows.has(late)).toBe(true);
+      expect(await rollUntil(fts, Date.now(), () => !nativeRows.has(late), deadline)).toBe(true);
+
+      expect(Date.now()).toBeLessThanOrEqual(deadline);
+      expect(nativeRows.get(live)).toBe(folders[0].folderId);
+      await finishSession(fts);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect(_testExports._isFolderReconPending()).toBe(false);
+    });
+
     it('repairs a late native removal no event announced at the folder\'s rolling walk, and not before', async () => {
       const { fts, nativeRows } = installTokenFolders(specs);
       await finishSession(fts);
