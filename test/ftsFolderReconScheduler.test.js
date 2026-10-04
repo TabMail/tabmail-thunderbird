@@ -7951,6 +7951,34 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
       expect(_testExports._getFolderReconSessionDone()).toEqual(new Set([BIG]));
       expect(_testExports._isFolderReconPending()).toBe(false);
     });
+
+    // The attempt began before the mark, so its digest cannot discharge it:
+    // the resumed attempt must not certify, and the row lost meanwhile is
+    // re-queued in this session rather than at the next rolling walk.
+    it('does not certify a UID-tier attempt that was yielded when its folder was marked', async () => {
+      const { fts, nativeRows, folders } = installTokenFolders([{ folderPath: '/Big', headerMessageIds: many }]);
+      await finishSession(fts);
+      restartSession();
+      // The first page yield comes before any native page is read; the
+      // second comes after one.
+      for (let page = 0; page < 2; page++) {
+        const yielded = await tickUntil(fts, value => value?.reason === 'membership_page' || value?.complete === true, 60);
+        expect(yielded.reason).toBe('membership_page');
+      }
+      // A native row vanishes with no epoch move (a late commit), and the
+      // folder's abandoned queue work marks it.
+      const lost = `${BIG}:${many[0]}`;
+      expect(nativeRows.has(lost)).toBe(true);
+      nativeRows.delete(lost);
+      await abandonQueuedUpdate(BIG);
+
+      const result = await tickUntil(fts, value => settled(value) || queued(lost), 200);
+
+      expect(queued(lost)).toBe(true);
+      expect(settled(result)).toBe(false);
+      expect(await settleAllWithDrain(fts, nativeRows, folders)).toBe(true);
+      expect(nativeRows.get(lost)).toBe(folders[0].folderId);
+    });
   });
 
   describe('walk obligations', () => {
