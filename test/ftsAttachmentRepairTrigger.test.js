@@ -95,6 +95,20 @@ describe('attachment flag repair startup trigger', () => {
       .toContain('{"repaired":3,"failedBatches":0}');
   });
 
+  it('does not hold up engine initialization while the repair reindex runs', async () => {
+    let finishScan;
+    h.indexMessages = vi.fn(() => new Promise((resolve) => { finishScan = resolve; }));
+    await startEngine();
+
+    // Initialization has resolved while the reindex is still running.
+    await vi.waitFor(() => expect(h.indexMessages).toHaveBeenCalledTimes(1));
+    expect(logLines().some(l => l.includes('FTS engine initialized successfully'))).toBe(true);
+    expect(logLines().some(l => l.includes('repair smart reindex finished'))).toBe(false);
+
+    finishScan({ attachmentRepair: { repaired: 1, failedBatches: 0 } });
+    await vi.waitFor(() => expect(logLines().some(l => l.includes('repair smart reindex finished'))).toBe(true));
+  });
+
   it.each([
     ['every loaded account is repaired', () => { h.repairedAccounts = vi.fn(async () => new Set(['account1', 'account2'])); }],
     ['the only unrepaired account has no root folder', () => { h.accounts[1] = { id: 'account2' }; }],

@@ -51,7 +51,7 @@ describe('tmHdr.getHasAttachmentBulk', () => {
   });
 
   it('returns null for every id when the extension has no message manager', async () => {
-    const { api } = createExperiment({}, undefined);
+    const { api } = createExperiment({}, null);
     expect(await api.getHasAttachmentBulk([7, 8])).toEqual([null, null]);
   });
 

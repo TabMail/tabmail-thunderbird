@@ -21,10 +21,18 @@ vi.mock('../agent/modules/inboxContext.js', () => ({ getInboxForAccount: vi.fn(a
 vi.mock('../agent/modules/onMoved.js', () => ({ sanitizeMessageTags: vi.fn(async () => ({ stripped: false })) }));
 vi.mock('../chat/modules/icsParser.js', () => ({ extractIcsFromParts: vi.fn(async () => []), formatIcsAttachmentsAsString: vi.fn(() => '') }));
 vi.mock('../fts/bodyExtract.js', () => ({ extractPlainText: vi.fn(async () => 'extracted body') }));
+// The real engine ftsSearch wrappers over a fake native layer (the same fake index).
+const native = vi.hoisted(() => ({ impl: null }));
+vi.mock('../fts/nativeEngine.js', () => ({
+  initNativeFts: vi.fn(),
+  nativeMemorySearch: {},
+  nativeFtsSearch: new Proxy({}, { get: (_t, name) => (...args) => native.impl[name](...args) }),
+}));
 
 const { safeGetFull } = await import('../agent/modules/utils.js');
 const { buildBatchHeader, indexMessages } = await import('../fts/indexer.js');
 const coordinator = await import('../fts/operationCoordinator.js');
+const engine = await import('../fts/engine.js');
 
 const REPAIRED_KEY = 'fts_attachment_repaired_accounts';
 const now = Date.now();
@@ -299,5 +307,16 @@ describe('full smart reindex attachment flag repair', () => {
     expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
     expect(ftsSearch.indexBatch).not.toHaveBeenCalled();
     expect(storage[REPAIRED_KEY]).toBeUndefined();
+  });
+
+  it('rewrites through the engine\'s membership wrappers inside the fence without deadlocking', async () => {
+    native.impl = fakeIndex();
+    const deadlock = new Promise((_, reject) => setTimeout(() => reject(new Error('repair deadlocked')), 1000));
+    await Promise.race([indexMessages(engine.ftsSearch), deadlock]);
+    expect(index.get(key(1))).toEqual({ ...storedRow(1, true), hasAttachments: true });
+    expect(native.impl.removeBatch).toHaveBeenCalledWith([key(1)]);
+    expect(native.impl.indexBatch).toHaveBeenCalledWith([expect.objectContaining({ msgId: key(1), hasAttachments: true })]);
+    expect(native.impl.removeBatch.mock.invocationCallOrder[0]).toBeLessThan(native.impl.indexBatch.mock.invocationCallOrder[0]);
+    expect(storage[REPAIRED_KEY]).toEqual(['account1']);
   });
 });
