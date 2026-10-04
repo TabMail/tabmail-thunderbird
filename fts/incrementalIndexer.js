@@ -2715,6 +2715,20 @@ function _folderReconLocalFoldersUnchangedSince(folderKeys, since) {
     && folderKeys.every(folderKey => (_folderReconLocalTouched.get(folderKey) ?? 0) <= since);
 }
 
+// True when no local change since `since` (or wildcard change) touched a
+// folder whose key prefixes any of `msgIds`, whether or not the inventory
+// lists that folder: a converted re-add in a folder loaded after the
+// inventory snapshot still withholds the removal of its key.
+function _folderReconLocalKeysUnchangedSince(msgIds, since) {
+  if (!_folderReconLocalFoldersUnchangedSince([], since)) return false;
+  for (const [folderKey, serial] of _folderReconLocalTouched) {
+    if (serial <= since) continue;
+    const prefix = `${folderKey}:`;
+    if (msgIds.some(msgId => msgId.startsWith(prefix))) return false;
+  }
+  return true;
+}
+
 function _folderReconLocalScope(folderKey) {
   return { folderKey, since: _folderReconLocalSerial };
 }
@@ -5881,15 +5895,14 @@ async function _resolveFolderMembershipAssignment(
     }
     present.push(candidate);
   }
-  // A removal re-checks the same scope inside its fence.
-  if (present.length === 0) return { kind: "ghost", localScope };
+  if (present.length === 0) return { kind: "ghost" };
   if (present.length > 1) return { kind: "unresolved" };
   const owner = identities.find(identity =>
     identity.weFolderId === present[0].weFolder.id
     && identity.accountId === present[0].weFolder.accountId
     && identity.folderPath === present[0].weFolder.path);
   if (!owner) return { kind: "unresolved" };
-  return { kind: "assign", assignment: { msgId, folderId: owner.folderId } };
+  return { kind: "assign", assignment: { msgId, folderId: owner.folderId }, localScope };
 }
 
 /**
@@ -5905,6 +5918,7 @@ async function _runFolderMembershipMigrationSlice(
   generation,
   inventoryMembershipEpoch,
   inventoryTopologySerial = _folderReconTopologySerial,
+  inventoryLocalSerial = _folderReconLocalSerial,
 ) {
   if (ftsSearch?.supportsFolderMembership?.() !== true) {
     _revokeFolderMembershipCutover();
@@ -6012,12 +6026,13 @@ async function _runFolderMembershipMigrationSlice(
   // row, so a budget-deferred or event-voided row (and everything after it)
   // is re-read by the next slice, and a done:true page is terminal only once
   // its last row is in.
-  const staleOrphanMsgIds = [];
-  const ghostScopes = [];
+  // Each verdict records its row so a page cut at an invalidated assignment
+  // drops everything after it.
+  const staleOrphans = [];
   const assignments = [];
+  const unresolvedRows = [];
+  const unloadedRows = [];
   const budget = { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE };
-  let unresolved = 0;
-  let unloadedAccountRowsKept = 0;
   let processed = 0;
   for (const entry of entries) {
     const msgId = entry.msgId;
@@ -6029,18 +6044,18 @@ async function _runFolderMembershipMigrationSlice(
           // Thunderbird has not loaded it yet; absence is not deletion
           // evidence (see _folderReconTrustedAccountIds). Keep the row and
           // let a later inventory that includes the account decide.
-          unloadedAccountRowsKept++;
+          unloadedRows.push(processed);
         } else {
           // The relation is authoritative even though the raw legacy key is
           // ambiguous. A non-null opaque id absent from this fresh, fenced
           // inventory whose account IS present belongs to a deleted/renamed
           // folder and is stale.
-          staleOrphanMsgIds.push(msgId);
+          staleOrphans.push({ msgId, row: processed });
         }
       } else if (!msgId.startsWith(`${owner.accountId}:${owner.folderPath}:`)) {
         // A current folder id attached to a structurally different raw key is
         // a conflict, not deletion evidence.
-        unresolved++;
+        unresolvedRows.push(processed);
       }
       processed++;
       continue;
@@ -6062,35 +6077,58 @@ async function _runFolderMembershipMigrationSlice(
       break;
     }
     if (verdict.kind === "deferred") break;
-    if (verdict.kind === "assign") assignments.push(verdict.assignment);
-    else if (verdict.kind === "ghost") {
-      staleOrphanMsgIds.push(msgId);
-      ghostScopes.push(verdict.localScope);
-    } else if (verdict.kind === "unloaded") unloadedAccountRowsKept++;
-    else unresolved++;
+    if (verdict.kind === "assign") {
+      assignments.push({ ...verdict.assignment, row: processed, localScope: verdict.localScope });
+    } else if (verdict.kind === "ghost") staleOrphans.push({ msgId, row: processed });
+    else if (verdict.kind === "unloaded") unloadedRows.push(processed);
+    else unresolvedRows.push(processed);
     processed++;
   }
+  // Unfenced: native only fills a NULL owner, accepts an equal one and rolls
+  // back a conflict (thrown: same-page retry), and a vanished row is a no-op.
+  // An assignment commits only while its row's evidence is current: the
+  // first row whose candidate folders changed since its verdict ends the page
+  // there (checked synchronously before each batch call), and it and every
+  // later row are re-read. A change during the batch call itself cannot be
+  // undone, so the row owes its candidate folders a walk, whose stale and
+  // missing directions repair a wrong owner.
+  const rowCurrent = entry => _folderReconLocalFoldersUnchangedSince(
+    entry.localScope.folderKeys, entry.localScope.since);
+  for (let offset = 0; offset < assignments.length;
+    offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
+    let batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
+    assertCurrent();
+    const voided = batch.find(entry => !rowCurrent(entry));
+    if (voided) {
+      _bumpFolderReconTelemetry("membershipStatePageRetries");
+      processed = voided.row;
+      batch = batch.filter(entry => entry.row < voided.row);
+    }
+    if (batch.length > 0) {
+      pass.passMutated = true;
+      try {
+        await ftsSearch.assignFolderMembershipBatch(
+          batch.map(({ msgId, folderId }) => ({ msgId, folderId })));
+      } catch (error) {
+        _throwIfFolderReconInterrupted(error);
+        return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
+      } finally {
+        for (const entry of batch) {
+          if (!rowCurrent(entry)) entry.localScope.folderKeys.forEach(_markFolderReconWalk);
+        }
+      }
+      assertCurrent();
+    }
+    if (voided) break;
+  }
+  const staleOrphanMsgIds = staleOrphans
+    .filter(entry => entry.row < processed).map(entry => entry.msgId);
+  const unresolved = unresolvedRows.filter(row => row < processed).length;
+  const unloadedAccountRowsKept = unloadedRows.filter(row => row < processed).length;
   if (unloadedAccountRowsKept > 0) {
     _bumpFolderReconTelemetry("unloadedAccountRowsKept", unloadedAccountRowsKept);
     // Aggregate-only: no account, folder, or Message-ID values.
     log(`[FTS FolderRecon] Membership pass kept ${unloadedAccountRowsKept} row(s) whose account is absent from the current inventory — not loaded yet, not deletion evidence`, "warn");
-  }
-  // Unfenced: native only fills a NULL owner, accepts an equal one and rolls
-  // back a conflict (thrown: same-page retry), and a vanished row is a no-op.
-  if (assignments.length > 0) {
-    try {
-      for (let offset = 0; offset < assignments.length;
-        offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
-        const batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
-        pass.passMutated = true;
-        assertCurrent();
-        await ftsSearch.assignFolderMembershipBatch(batch);
-        assertCurrent();
-      }
-    } catch (error) {
-      _throwIfFolderReconInterrupted(error);
-      return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
-    }
   }
   // Stale owners and ghosts are judged against this tick's inventory, so the
   // removal is fenced on the epoch read before that inventory snapshot. Any
@@ -6099,12 +6137,13 @@ async function _runFolderMembershipMigrationSlice(
   // before the mutator runs, and the same page is retried on a later slice.
   // Removals run after the page's assignments, so a refused removal never
   // costs them. A folder event (creation, rename, move) since the snapshot,
-  // or a message event in a ghost's candidate folders since its verdict,
-  // refuses the removal; mail in other folders does not.
+  // or a message event since the snapshot in any folder whose key prefixes a
+  // removed key (listed in the inventory or not), refuses the removal; mail
+  // in other folders does not.
   const assertRemovalCurrent = () => {
     assertCurrent();
     if (_folderReconTopologySerial !== inventoryTopologySerial
-        || !ghostScopes.every(scope => _folderReconLocalFoldersUnchangedSince(scope.folderKeys, scope.since))) {
+        || !_folderReconLocalKeysUnchangedSince(staleOrphanMsgIds, inventoryLocalSerial)) {
       throw new Error("folder_changed_during_scan");
     }
   };
@@ -6283,7 +6322,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
   const sliceStartedAt = Date.now();
   const cooperativeDelay = (minimumMs = FOLDER_RECON_PACE_DELAY_MS) =>
     Math.max(minimumMs, Date.now() - sliceStartedAt);
-  const owner = { generation, reconcileLease, eventSerial };
+  const owner = { generation, reconcileLease };
   _folderReconSchedulerOwner = owner;
   const folderMembershipCapable = _observeFolderMembershipCapability(ftsSearch);
   _folderMembershipPageBudget = 1;
@@ -6307,6 +6346,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     // after the snapshot can never be mistaken for a deleted folder's row.
     const inventoryMembershipEpoch = getFtsMembershipEpoch();
     const inventoryTopologySerial = _folderReconTopologySerial;
+    const inventoryLocalSerial = _folderReconLocalSerial;
     const identities = await _getFolderReconInventory(reconcileLease, generation);
     const keys = identities.map(i => `${i.accountId}:${i.folderPath}`);
     const currentFolderKeys = new Set(keys);
@@ -6327,6 +6367,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
           generation,
           inventoryMembershipEpoch,
           inventoryTopologySerial,
+          inventoryLocalSerial,
         );
       } catch (error) {
         const message = String(error?.message || error);
