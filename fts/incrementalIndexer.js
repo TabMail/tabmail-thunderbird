@@ -880,9 +880,11 @@ async function processPendingUpdates() {
               log(`[TMDBG FTS] Body extraction failed for ${failedMsgIds.length} messages - marking for retry`);
               for (const key of failedMsgIds) {
                 const queuedKey = msgIdToQueuedKey.get(key) || key;
-                const existing = _pendingUpdates.get(queuedKey);
-                if (existing) {
-                  _markResolveFailed(existing);
+                // The entry this drain captured: a newer intention queued
+                // during extraction is left alone.
+                const captured = snapshotUpdates.get(queuedKey);
+                if (captured) {
+                  _markResolveFailed(captured);
                 }
                 logFtsOperation("body_extract", "failure", {
                   uniqueKey: queuedKey,

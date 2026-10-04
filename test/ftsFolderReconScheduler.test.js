@@ -9353,6 +9353,46 @@ describe('a newer queued intention during a drain retry', () => {
     vi.useRealTimers();
   });
 
+  // Body extraction runs after an await; a removal queued meanwhile is a
+  // newer intention the older add's failure must not mark.
+  it('an older add whose body extraction fails leaves a newer removal unmarked', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, folders } = seedMigratedExactFolders([{ folderPath: '/A', headerMessageIds: [] }]);
+    const folder = folders[0];
+    const key = 'account1:/A:b@example.com';
+    const event = {
+      accountId: 'account1', folderPath: '/A', weFolderId: folder.weFolderId,
+      headerMessageId: 'b@example.com', msgKey: 2, eventType: 'msgAdded',
+    };
+    _testExports._setFtsSearch(fts);
+    headerIDToWeID.mockResolvedValue(2);
+    globalThis.browser.messages.get = vi.fn(async () => ({
+      id: 2, headerMessageId: 'b@example.com', folder: { accountId: 'account1', path: '/A' },
+    }));
+    getUniqueMessageKey.mockImplementation(async header => `account1:${header.folder.path}:${header.headerMessageId}`);
+    buildBatchHeader.mockImplementation(async headers => headers.map(header => ({
+      msgId: `account1:${header.folder.path}:${header.headerMessageId}`,
+      folderId: makeFolderMembershipId('account1', header.folder.path),
+    })));
+    await _testExports.onExperimentMessageAdded(event);
+    expect(_testExports._getPendingUpdates().get(key)?.type).toBe('new');
+    let removedQueued = false;
+    populateBatchBody.mockImplementation(async rows => {
+      vi.setSystemTime(Date.now() + 5);
+      await _testExports.onExperimentMessageRemoved({ ...event, eventType: 'msgDeleted' });
+      removedQueued = true;
+      return { successfulRows: [], failedMsgIds: rows.map(row => row.msgId) };
+    });
+    vi.setSystemTime(Date.now() + 1000);
+    await flushPendingUpdates();
+
+    expect(removedQueued).toBe(true);
+    const current = _testExports._getPendingUpdates().get(key);
+    expect(current?.type).toBe('deleted');
+    expect(current?.hasFailed).toBeUndefined();
+  });
+
   it.each([false, true])('ends with the index agreeing with the latest event; removed during the retry=%s', async (removedDuringRetry) => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
@@ -9740,6 +9780,42 @@ async function quiesceFolderReconAfterTest() {
 // yields to an event in the removed row's candidate folders or a folder event.
 describe('ownerless-row verdicts read only their candidate folders\' events', () => {
   afterEach(quiesceFolderReconAfterTest);
+
+  // Evidence read across an event in the row's own folder is void for every
+  // verdict, not only an assignment: an unresolved verdict is retried, never
+  // counted (which would restart the whole pass as failed).
+  it('an unresolved verdict read across an event in its candidate folder is retried, not counted', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, folders, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/F', headerMessageIds: [] },
+      { folderPath: '/Other', headerMessageIds: [] },
+    ]);
+    nativeRows.set('account1:/F:cold@example.com', null);
+    _testExports._setFtsSearch(fts);
+    recheckMessageInFolder.mockResolvedValue('error');
+    const query = globalThis.browser.messages.query.getMockImplementation();
+    let fired = false;
+    globalThis.browser.messages.query.mockImplementation(async (args) => {
+      if (!fired && args?.headerMessageId === 'cold@example.com') {
+        fired = true;
+        await _testExports.onExperimentMessageAdded({
+          accountId: 'account1', folderPath: '/F', weFolderId: folders[0].weFolderId,
+          headerMessageId: 'x@example.com', msgKey: 77, eventType: 'msgAdded',
+        });
+        _testExports._getPendingUpdates().clear();
+      }
+      return query(args);
+    });
+
+    const first = await settleSchedulerTickWithFakeTimers(fts);
+
+    expect(fired).toBe(true);
+    expect(JSON.stringify(first)).not.toContain('unresolved_legacy_rows');
+    const telemetry = _testExports._getFolderReconRuntimeTelemetry();
+    expect(telemetry.membershipStateRestartUnresolvedReplay).toBe(0);
+    expect(telemetry.membershipStatePageRetries).toBeGreaterThan(0);
+  });
 
   it.each([
     { eventFolder: '/Other', assigned: true },
