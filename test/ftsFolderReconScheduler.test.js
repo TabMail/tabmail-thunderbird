@@ -5739,7 +5739,8 @@ describe('ownerless-row classifier (exact helpers)', () => {
     const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
     globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
       if (ids[0] === 'thrown@example.com') throw new Error('probe failed');
-      if (ids[0] === 'errored@example.com') return { error: 'db_unavailable' };
+      // The real probe's error shape: an empty `missing` beside the error.
+      if (ids[0] === 'errored@example.com') return { missing: [], error: 'db_unavailable' };
       if (ids[0] === 'uncertain@example.com') return { missing: [], uncertain: ids };
       return probe(uri, ids);
     });
