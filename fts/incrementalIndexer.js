@@ -6036,6 +6036,15 @@ async function _runFolderMembershipMigrationSlice(
   const unloadedRows = [];
   const budget = { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE };
   let processed = 0;
+  // Foreground pressure while a row is classified cuts the page there like
+  // a voided row: the rows before it are committed (a bounded write) and the
+  // cursor advances before the slice yields, so recurring pressure cannot
+  // discard a page's progress forever.
+  let pressured = false;
+  const assertCommitCurrent = () => {
+    if (pressured) _assertFolderReconLease(reconcileLease, generation);
+    else assertCurrent();
+  };
   for (const entry of entries) {
     const msgId = entry.msgId;
     if (entry.folderId !== null) {
@@ -6072,7 +6081,12 @@ async function _runFolderMembershipMigrationSlice(
         budget,
       );
     } catch (error) {
-      if (!String(error?.message || error).includes("folder_changed_during_scan")) throw error;
+      const message = String(error?.message || error);
+      if (message.includes("folder_recon_pressure")) {
+        pressured = true;
+        break;
+      }
+      if (!message.includes("folder_changed_during_scan")) throw error;
       // A message event in one of this row's candidate folders voided its
       // verdict; the rows before it still count.
       _bumpFolderReconTelemetry("membershipStatePageRetries");
@@ -6099,7 +6113,7 @@ async function _runFolderMembershipMigrationSlice(
   for (let offset = 0; offset < assignments.length;
     offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
     let batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
-    assertCurrent();
+    assertCommitCurrent();
     const voided = batch.find(entry => !rowCurrent(entry));
     if (voided) {
       _bumpFolderReconTelemetry("membershipStatePageRetries");
@@ -6119,7 +6133,7 @@ async function _runFolderMembershipMigrationSlice(
           if (!rowCurrent(entry)) entry.localScope.folderKeys.forEach(_markFolderReconWalk);
         }
       }
-      assertCurrent();
+      assertCommitCurrent();
     }
     if (voided) break;
   }
@@ -6143,7 +6157,7 @@ async function _runFolderMembershipMigrationSlice(
   // removed key (listed in the inventory or not), refuses the removal; mail
   // in other folders does not.
   const assertRemovalCurrent = () => {
-    assertCurrent();
+    assertCommitCurrent();
     if (_folderReconTopologySerial !== inventoryTopologySerial
         || !_folderReconLocalKeysUnchangedSince(staleOrphanMsgIds, inventoryLocalSerial)) {
       throw new Error("folder_changed_during_scan");
@@ -6186,6 +6200,7 @@ async function _runFolderMembershipMigrationSlice(
   pass.passUnresolved += unresolved;
   pass.unloaded += unloadedAccountRowsKept;
   pass.afterMsgId = processed > 0 ? entries[processed - 1].msgId : pass.afterMsgId;
+  if (pressured) throw new Error("folder_recon_pressure");
   if (processed < entries.length) {
     return { complete: false, membershipStateProgress: true };
   }

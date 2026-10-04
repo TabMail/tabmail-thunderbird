@@ -9347,6 +9347,9 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
 // intention and must survive the retry's bookkeeping, so the index ends
 // without the message once the queue drains and reconciliation completes.
 describe('a newer queued intention during a drain retry', () => {
+  // The drain's stuck-queue counter is module state; an earlier test must
+  // not leave it near the abandonment threshold.
+  beforeEach(() => _testExports._setConsecutiveNoProgressCycles(0));
   afterEach(() => {
     _testExports._setIsEnabled(false);
     vi.clearAllTimers();
@@ -9424,6 +9427,9 @@ describe('a newer queued intention during a drain retry', () => {
       const result = await set(value);
       if (!added && value[_testExports.FOLDER_RECON_STORAGE_KEY]?.folders?.['account1:/A']?.verified === true) {
         added = true;
+        // No drain of the add, timer-driven or explicit, resolves it until
+        // the retry below.
+        headerIDToWeID.mockResolvedValue(null);
         rowsByURI.get(folder.folderURI).push({ msgKey: 2, headerMessageId: 'b@example.com' });
         await _testExports.onExperimentMessageAdded(event);
       }
@@ -9435,7 +9441,6 @@ describe('a newer queued intention during a drain retry', () => {
     expect(queuedAdd.type).toBe('new');
 
     // The first drain cannot resolve the message.
-    headerIDToWeID.mockResolvedValueOnce(null);
     vi.setSystemTime(Date.now() + 1000);
     await flushPendingUpdates();
     expect(_testExports._getPendingUpdates().get(key).hasFailed).toBe(true);
@@ -9780,6 +9785,51 @@ async function quiesceFolderReconAfterTest() {
 // yields to an event in the removed row's candidate folders or a folder event.
 describe('ownerless-row verdicts read only their candidate folders\' events', () => {
   afterEach(quiesceFolderReconAfterTest);
+
+  // Mail drained in another folder raises foreground pressure in bursts.
+  // Pressure may interrupt a page's classification at any row; the rows
+  // already classified are committed before the slice yields, so the pass
+  // completes between bursts shorter than a page.
+  it.each([0, 20])('assigns every row and earns cutover under recurring foreground pressure (%i ghost rows)', async (ghosts) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const PERIOD_MS = 200;
+    const BUSY_MS = 40;
+    const READ_MS = 5;
+    const ids = Array.from({ length: 40 }, (_, i) => `m-${String(i).padStart(3, '0')}@example.com`);
+    const { fts, folders, nativeRows } = installExactMembershipFolders([
+      { folderPath: '/F', headerMessageIds: ids },
+      { folderPath: '/Other', headerMessageIds: [] },
+    ]);
+    const ghostKeys = Array.from({ length: ghosts }, (_, i) => `account1:/F:gone-${String(i).padStart(3, '0')}@example.com`);
+    for (const key of ghostKeys) nativeRows.set(key, null);
+    _testExports._setFtsSearch(fts);
+    const startedAt = Date.now();
+    getForegroundFetchPressure.mockImplementation(() => ({
+      active: (Date.now() - startedAt) % PERIOD_MS < BUSY_MS ? 1 : 0, waiting: 0, chatTyping: false,
+    }));
+    // Every Thunderbird read takes time, so pressure lands mid-page.
+    const slow = fn => vi.fn(async (...args) => {
+      await new Promise(resolve => setTimeout(resolve, READ_MS));
+      return fn(...args);
+    });
+    globalThis.browser.messages.query = slow(globalThis.browser.messages.query.getMockImplementation());
+    const notify = globalThis.browser.tmMsgNotify;
+    for (const name of ['readFolderMessageScanPage', 'beginFolderMessageScan', 'getFolderState']) {
+      notify[name] = slow(notify[name].getMockImplementation());
+    }
+    let pressuredSlices = 0;
+    for (let tick = 0; tick < 80 && !_testExports._getFolderMembershipCutoverProven(); tick++) {
+      const result = await settleSchedulerTickWithFakeTimers(fts);
+      if (JSON.stringify(result ?? null).includes('pressure')) pressuredSlices++;
+      vi.setSystemTime(Date.now() + 37);
+    }
+
+    expect(pressuredSlices).toBeGreaterThan(0);
+    expect(ids.every(id => nativeRows.get(`account1:/F:${id}`) === folders[0].folderId)).toBe(true);
+    expect(ghostKeys.filter(key => nativeRows.has(key))).toEqual([]);
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+  }, 60_000);
 
   // Evidence read across an event in the row's own folder is void for every
   // verdict, not only an assignment: an unresolved verdict is retried, never
