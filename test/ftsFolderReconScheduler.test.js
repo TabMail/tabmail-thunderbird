@@ -8909,6 +8909,150 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
     await finishSession(fts);
     expect(_testExports._getPendingUpdates().size).toBe(0);
   });
+
+  // A folder whose msgDB cannot be read while it is new to the inventory
+  // must not hold every other folder's reconciliation behind its eager
+  // metadata scan: only the membership-state pass proves cutover.
+  describe('an unreadable newly inventoried folder', () => {
+    const B1 = 'account1:/B:b-1@example.com';
+
+    // /A has completed; /B then appears in the inventory. `failure` is how
+    // /B's msgDB refuses: getFolderState reports an error or throws, or the
+    // scan cannot start. /B's native rows, if any, are owned (capable era).
+    function addUnreadableFolder(installed, { failure = 'error', rows = [] } = {}) {
+      const b = {
+        accountId: 'account1',
+        folderPath: '/B',
+        folderId: makeFolderMembershipId('account1', '/B'),
+        weFolderId: 'session-folder-b',
+        folderURI: 'none://membership-b',
+        serverType: 'imap',
+        stableUidKeys: true,
+        uidValidity: 7,
+      };
+      installed.folders.push(b);
+      installed.rowsByURI.set(b.folderURI, rows.map((headerMessageId, index) => ({
+        msgKey: index + 1,
+        headerMessageId,
+      })));
+      for (const headerMessageId of rows) {
+        installed.nativeRows.set(`account1:/B:${headerMessageId}`, b.folderId);
+      }
+      globalThis.browser.accounts.list.mockResolvedValue([{
+        id: 'account1', type: 'none',
+        rootFolder: {
+          path: '/', isRoot: true,
+          subFolders: installed.folders.map(folder => ({
+            id: folder.weFolderId,
+            path: folder.folderPath,
+            subFolders: [],
+          })),
+        },
+      }]);
+      const readable = { value: false, stateReads: 0 };
+      const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+      globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
+        if (folderPath === '/B') readable.stateReads++;
+        if (folderPath === '/B' && !readable.value && failure === 'error') {
+          return { accountId, folderPath, error: 'folder_db_unavailable' };
+        }
+        if (folderPath === '/B' && !readable.value && failure === 'throw') {
+          throw new Error('folder_db_unavailable');
+        }
+        return state(accountId, folderPath, options);
+      });
+      const scan = globalThis.browser.tmMsgNotify.beginFolderMessageScan.getMockImplementation();
+      globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockImplementation(async (uri, ...rest) => {
+        if (uri === b.folderURI && !readable.value) return { error: 'folder_db_unavailable' };
+        return scan(uri, ...rest);
+      });
+      return { b, readable };
+    }
+
+    // Runs spaced ticks until `done` holds or the deadline passes.
+    async function runUntil(fts, done, deadlineMs) {
+      while (!done() && Date.now() < deadlineMs) await runAt(fts, Date.now() + 60_000, done, 20);
+      return done();
+    }
+
+    const obligations = [
+      ['a real queue abandonment', async () => { await abandonQueuedUpdate('account1:/A'); }, () => Date.now() + 60 * 60_000],
+      ['a due rolling walk', async () => {}, () => nextWalkDue('account1:/A') + 3 * intervalMs],
+    ];
+
+    it.each([
+      ...obligations.flatMap(([name, oblige, deadline]) => [
+        [name, 'error', [], oblige, deadline],
+        [name, 'throw', ['b-1@example.com'], oblige, deadline],
+        [name, 'scan', ['b-1@example.com'], oblige, deadline],
+      ]),
+    ])('repairs a healthy folder owed %s while a new folder stays unreadable; failure=%s rows=%j', async (_name, failure, rows, oblige, deadline) => {
+      const installed = installTokenFolders([specs[0]]);
+      const { fts, nativeRows, folders } = installed;
+      await finishSession(fts);
+      nativeRows.delete(A2);
+      const { readable } = addUnreadableFolder(installed, { failure, rows });
+      await oblige();
+
+      expect(await runUntil(fts, () => queued(A2), deadline())).toBe(true);
+      for (const key of _testExports._getPendingUpdates().keys()) nativeRows.set(key, folders[0].folderId);
+      _testExports._getPendingUpdates().clear();
+      expect(await runUntil(fts, () => _testExports._getFolderReconSessionDone().has('account1:/A'),
+        Date.now() + 60 * 60_000)).toBe(true);
+
+      expect(nativeRows.get(A2)).toBe(folders[0].folderId);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect(readable.stateReads).toBeGreaterThan(0);
+      expect(_testExports._getFolderReconSessionDone().has('account1:/B')).toBe(false);
+      expect(_testExports._isFolderReconPending()).toBe(true);
+      for (const headerMessageId of rows) expect(nativeRows.has(`account1:/B:${headerMessageId}`)).toBe(true);
+
+      // Once /B can be read, it is reconciled and the session completes.
+      readable.value = true;
+      expect(await settleAllWithDrain(fts, nativeRows, installed.folders)).toBe(true);
+      expect(_testExports._getFolderReconSessionDone()).toEqual(new Set(['account1:/A', 'account1:/B']));
+    });
+
+    // While cutover holds, a waiting folder's eager scan is not needed. A
+    // reconnect re-opens migration and, owing every folder a walk, ends the
+    // folder's failure wait at once.
+    it.each([false, true])('retries a waiting new folder\'s eager scan at a reconnect; reconnect=%s', async (reconnect) => {
+      const installed = installTokenFolders([specs[0]]);
+      const { fts } = installed;
+      await finishSession(fts);
+      const { b, readable } = addUnreadableFolder(installed, { rows: ['b-1@example.com'] });
+      expect(await runUntil(fts, () => _testExports._getFolderMembershipCutoverProven()
+        && _testExports._getFolderReconSessionDone().has('account1:/A'), Date.now() + 60 * 60_000)).toBe(true);
+      _testExports._setFolderReconEphemeralEvidenceForTests({
+        folderKey: 'account1:/B',
+        deferredAt: Date.now() + 60 * 60_000,
+        failureCount: 9,
+      });
+      readable.value = true;
+      const completedB = () => storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        .folderMembershipMigration.completedFolderIds[b.folderId] === true;
+
+      if (reconnect) fts.getConnectionGeneration.mockReturnValue(2);
+      await runUntil(fts, completedB, Date.now() + 10 * 60_000);
+
+      expect(completedB()).toBe(reconnect);
+    });
+
+    it('control: a readable new folder completes its eager scan before cutover', async () => {
+      const installed = installTokenFolders([specs[0]]);
+      const { fts } = installed;
+      await finishSession(fts);
+      const { b, readable } = addUnreadableFolder(installed, { rows: ['b-1@example.com'] });
+      readable.value = true;
+      installed.nativeRows.set(B1, null);
+
+      expect(await settleAllWithDrain(fts, installed.nativeRows, installed.folders)).toBe(true);
+      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folderMembershipMigration
+        .completedFolderIds[b.folderId]).toBe(true);
+      expect(installed.nativeRows.get(B1)).toBe(b.folderId);
+      expect(_testExports._getFolderReconSessionDone()).toEqual(new Set(['account1:/A', 'account1:/B']));
+    });
+  });
 });
 
 describe('capability-keyed quiet veto (sustained sync traffic)', () => {

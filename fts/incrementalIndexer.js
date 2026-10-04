@@ -3749,6 +3749,17 @@ function _folderMembershipConnectionGeneration(ftsSearch) {
   return Number.isSafeInteger(generation) ? generation : null;
 }
 
+// A folder whose reconciliation failed waits out an exponential, capped
+// delay while other folders proceed; a walk mark for it ends the wait.
+function _deferFailedFolderRecon(folderKey) {
+  const failureCount = (_folderReconFailureCounts.get(folderKey) || 0) + 1;
+  _folderReconFailureCounts.set(folderKey, failureCount);
+  _folderReconSessionDeferred.set(folderKey, Date.now() + Math.min(
+    FOLDER_RECON_ERROR_DELAY_MS * (2 ** Math.min(failureCount - 1, 30)),
+    FOLDER_RECON_GENERIC_FAILURE_BACKOFF_MAX_MS,
+  ));
+}
+
 function _resetFolderMembershipVolatileProof() {
   _folderMembershipPageBudget = 0;
   _folderMembershipDigestSessions.clear();
@@ -6117,9 +6128,19 @@ async function _runFolderMembershipMigrationSlice(
     _revokeFolderMembershipCutover();
   }
 
+  // The eager metadata scan only assigns owners in bulk; the state pass
+  // below is the cutover proof and classifies any ownerless row itself. A
+  // folder whose scan fails therefore waits out its failure deferral while
+  // the other folders' scans and the state pass go on.
+  const nowMs = Date.now();
   const incompleteIdentity = validIdentities.find(identity =>
-    migration.completedFolderIds[identity.folderId] !== true);
+    migration.completedFolderIds[identity.folderId] !== true
+    && (_folderReconSessionDeferred.get(`${identity.accountId}:${identity.folderPath}`) || 0) <= nowMs);
   if (incompleteIdentity) {
+    const failed = (result) => {
+      _deferFailedFolderRecon(`${incompleteIdentity.accountId}:${incompleteIdentity.folderPath}`);
+      return result;
+    };
     assertCurrent();
     let folder;
     try {
@@ -6132,11 +6153,11 @@ async function _runFolderMembershipMigrationSlice(
       // account/path inventory.
       folder = { ...state, ...incompleteIdentity };
     } catch (error) {
-      return { complete: false, failed: true, reason: "folder_state_failed", error: String(error) };
+      return failed({ complete: false, failed: true, reason: "folder_state_failed", error: String(error) });
     }
     assertCurrent();
     if (!folder.folderURI || folder.error) {
-      return { complete: false, failed: true, reason: "folder_state_invalid" };
+      return failed({ complete: false, failed: true, reason: "folder_state_invalid" });
     }
     try {
       const result = await _runFolderMembershipScanSlice(
@@ -6159,7 +6180,7 @@ async function _runFolderMembershipMigrationSlice(
       return { complete: false, folderProgress: true, folderComplete: result.complete };
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
-      return { complete: false, failed: true, reason: "folder_assignment_failed", error: String(error) };
+      return failed({ complete: false, failed: true, reason: "folder_assignment_failed", error: String(error) });
     }
   }
 
@@ -6734,13 +6755,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     const checkpoint = updatedMemo.folders[target];
     if ((stats.foldersErrored || 0) > 0 || (stats.foldersFailed || 0) > 0) {
       _releaseFolderReconActiveProof(target, "error");
-      const failureCount = (_folderReconFailureCounts.get(target) || 0) + 1;
-      _folderReconFailureCounts.set(target, failureCount);
-      const failureDelayMs = Math.min(
-        FOLDER_RECON_ERROR_DELAY_MS * (2 ** Math.min(failureCount - 1, 30)),
-        FOLDER_RECON_GENERIC_FAILURE_BACKOFF_MAX_MS,
-      );
-      _folderReconSessionDeferred.set(target, Date.now() + failureDelayMs);
+      _deferFailedFolderRecon(target);
     } else {
       _folderReconFailureCounts.delete(target);
       _folderReconDrainFailureCounts.delete(target);
