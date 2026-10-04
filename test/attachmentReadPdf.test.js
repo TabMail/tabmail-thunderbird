@@ -16,6 +16,7 @@ vi.mock('../agent/modules/utils.js', () => ({
   resolveUniqueMessageKey: vi.fn(async (id) => (id === 'acct:/INBOX:msg-1' ? { weFolder: 'acct:/INBOX', headerID: 'msg-1', weID: 101 } : null)),
 }));
 
+const { log } = await import('../agent/modules/utils.js');
 const tool = await import('../chat/tools/attachment_read_pdf.js');
 const { CONFIG } = tool._testing;
 
@@ -197,6 +198,7 @@ describe('attachment_read_pdf — size, download and type', () => {
 
 describe('attachment_read_pdf — outcomes from the parser', () => {
   const withPdf = (bytes) => setMessage([att('doc.pdf', 'application/pdf', '1.2')], { '1.2': bytes });
+  const pdfReadLogLines = () => log.mock.calls.map(([line]) => line).filter(line => String(line).includes('attachment_read_pdf:'));
 
   it('returns the header lines and each page\'s text, marking empty pages', async () => {
     withPdf(buildPdf({ pages: ['First page', null, 'Third page'] }));
@@ -253,6 +255,32 @@ describe('attachment_read_pdf — outcomes from the parser', () => {
   it('reports a start_page past the end with the page count', async () => {
     withPdf(buildPdf({ pages: ['one', 'two'] }));
     expect(await read({ start_page: 3 })).toEqual({ error: 'start_page 3 is past the last page (the PDF has 2 pages)' });
+  });
+
+  it('logs the downloaded size even though the parser takes the bytes', async () => {
+    const pdf = buildPdf({ pages: ['A'] });
+    withPdf(pdf);
+    // pdf.js transfers the data's buffer to its worker, leaving the caller's array empty.
+    const getDocument = vi.fn(({ data }) => {
+      structuredClone(data.buffer, { transfer: [data.buffer] });
+      return { promise: new Promise(() => {}), destroy: vi.fn(async () => {}) };
+    });
+    deps.loadPdfjs = vi.fn(async () => ({ PDFWorker: class { destroy() {} }, getDocument }));
+    vi.useFakeTimers();
+    log.mockClear();
+    const pending = read();
+    await vi.advanceTimersByTimeAsync(CONFIG.PARSE_TIMEOUT_MS + 1);
+    await pending;
+    expect(getDocument).toHaveBeenCalledTimes(1);
+    expect(pdfReadLogLines()).toEqual([expect.stringContaining(`bytes=${pdf.length} outcome=timeout`)]);
+  });
+
+  it('logs the downloaded size of a PDF the bundled parser reads', async () => {
+    const pdf = buildPdf({ pages: ['A'] });
+    withPdf(pdf);
+    log.mockClear();
+    await read();
+    expect(pdfReadLogLines()).toEqual([expect.stringContaining(`bytes=${pdf.length} outcome=ok`)]);
   });
 
   it('stops a parse that runs past the deadline', async () => {
