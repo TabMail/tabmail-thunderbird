@@ -2578,10 +2578,18 @@ let _folderReconNativeProbeFailures = { connectionGeneration: null, count: 0 };
 let _folderReconConnectionUnsubscribe = null;
 // The additive relation is never trusted merely because a durable marker
 // exists. Every add-on session earns cutover from a stable bounded global
-// membership-state pass with no null row after the live-folder metadata scans
-// have durably completed.
+// membership-state pass with no unresolved row. The live-folder metadata
+// scans before it only assign owners in bulk; the pass classifies any
+// ownerless row itself.
 let _folderMembershipCutoverProven = false;
 let _folderMembershipScanSession = null;
+// Folder id -> { failures, notBeforeMs } for metadata scans that failed. A
+// failing folder waits out an exponential, capped delay while the other
+// folders' scans and the state pass go on. Volatile and bounded by the
+// inventory: cleared with the volatile proof and on an inventory change, and
+// untouched by walk marks, so no event stream can put a failing scan ahead of
+// the state pass on every tick.
+let _folderMembershipScanDeferred = new Map();
 // Session-local global membership-state pass, bound to the reconciliation
 // generation, the live-folder inventory digest and the native connection
 // generation. It is never persisted: a restart or any binding change starts a
@@ -3758,19 +3766,9 @@ function _folderMembershipConnectionGeneration(ftsSearch) {
   return Number.isSafeInteger(generation) ? generation : null;
 }
 
-// A folder whose reconciliation failed waits out an exponential, capped
-// delay while other folders proceed; a walk mark for it ends the wait.
-function _deferFailedFolderRecon(folderKey) {
-  const failureCount = (_folderReconFailureCounts.get(folderKey) || 0) + 1;
-  _folderReconFailureCounts.set(folderKey, failureCount);
-  _folderReconSessionDeferred.set(folderKey, Date.now() + Math.min(
-    FOLDER_RECON_ERROR_DELAY_MS * (2 ** Math.min(failureCount - 1, 30)),
-    FOLDER_RECON_GENERIC_FAILURE_BACKOFF_MAX_MS,
-  ));
-}
-
 function _resetFolderMembershipVolatileProof() {
   _folderMembershipPageBudget = 0;
+  _folderMembershipScanDeferred.clear();
   _folderMembershipDigestSessions.clear();
   _folderMembershipDigestResults.clear();
   _folderMembershipYieldedAttempts.clear();
@@ -6110,6 +6108,7 @@ async function _runFolderMembershipMigrationSlice(
     memo.folderMembershipMigration = migration;
     _revokeFolderMembershipCutover();
     _cancelFolderMembershipScanSession();
+    _folderMembershipScanDeferred.clear();
     _bumpFolderReconTelemetry("membershipInventoryResets");
     // Persist the new inventory before any assignment page relies on it, so a
     // later tick never reads the old digest and cancels this live scan.
@@ -6139,15 +6138,23 @@ async function _runFolderMembershipMigrationSlice(
 
   // The eager metadata scan only assigns owners in bulk; the state pass
   // below is the cutover proof and classifies any ownerless row itself. A
-  // folder whose scan fails therefore waits out its failure deferral while
-  // the other folders' scans and the state pass go on.
+  // folder whose scan fails therefore waits out its scan deferral while the
+  // other folders' scans and the state pass go on.
   const nowMs = Date.now();
   const incompleteIdentity = validIdentities.find(identity =>
     migration.completedFolderIds[identity.folderId] !== true
-    && (_folderReconSessionDeferred.get(`${identity.accountId}:${identity.folderPath}`) || 0) <= nowMs);
+    && (_folderMembershipScanDeferred.get(identity.folderId)?.notBeforeMs || 0) <= nowMs);
   if (incompleteIdentity) {
     const failed = (result) => {
-      _deferFailedFolderRecon(`${incompleteIdentity.accountId}:${incompleteIdentity.folderPath}`);
+      _cancelFolderMembershipScanSession();
+      const failures = (_folderMembershipScanDeferred.get(incompleteIdentity.folderId)?.failures || 0) + 1;
+      _folderMembershipScanDeferred.set(incompleteIdentity.folderId, {
+        failures,
+        notBeforeMs: Date.now() + Math.min(
+          FOLDER_RECON_ERROR_DELAY_MS * (2 ** Math.min(failures - 1, 30)),
+          FOLDER_RECON_GENERIC_FAILURE_BACKOFF_MAX_MS,
+        ),
+      });
       return result;
     };
     assertCurrent();
@@ -6178,6 +6185,7 @@ async function _runFolderMembershipMigrationSlice(
       // Only completion is reusable. A partial scan lives in its session
       // token, which no later session can resume anyway.
       if (result.complete) {
+        _folderMembershipScanDeferred.delete(folder.folderId);
         await _persistFolderMembershipMigration(
           memo,
           result.expectedEpoch,
@@ -6764,7 +6772,13 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     const checkpoint = updatedMemo.folders[target];
     if ((stats.foldersErrored || 0) > 0 || (stats.foldersFailed || 0) > 0) {
       _releaseFolderReconActiveProof(target, "error");
-      _deferFailedFolderRecon(target);
+      const failureCount = (_folderReconFailureCounts.get(target) || 0) + 1;
+      _folderReconFailureCounts.set(target, failureCount);
+      const failureDelayMs = Math.min(
+        FOLDER_RECON_ERROR_DELAY_MS * (2 ** Math.min(failureCount - 1, 30)),
+        FOLDER_RECON_GENERIC_FAILURE_BACKOFF_MAX_MS,
+      );
+      _folderReconSessionDeferred.set(target, Date.now() + failureDelayMs);
     } else {
       _folderReconFailureCounts.delete(target);
       _folderReconDrainFailureCounts.delete(target);
@@ -7587,6 +7601,7 @@ export const _testExports = {
   _getFolderReconDrainSkipped: () => _folderReconDrainSkipped,
   _getFolderMembershipCutoverProven: () => _folderMembershipCutoverProven,
   _getFolderMembershipStatePass: () => _folderMembershipStatePass,
+  _getFolderMembershipScanDeferred: () => _folderMembershipScanDeferred,
   _getFolderMembershipYieldedAttempts: () => new Map(_folderMembershipYieldedAttempts),
   _getFolderReconOrphanPass: () => _folderReconOrphanPass,
   _runFolderMembershipMigrationSlice,

@@ -2989,7 +2989,9 @@ describe('cooperative folder reconcile production contracts', () => {
   });
 
   // The metadata scan reads only its own folder's msgDB: another folder's
-  // event inside every scan read never restarts it; the folder's own does.
+  // event inside every scan read never voids it; the folder's own does.
+  // A folder whose own scan can never finish waits out its scan deferral
+  // while the state pass assigns its rows one by one and earns cutover.
   it.each([
     { eventFolder: '/Hot', restarts: false },
     { eventFolder: '/Cold', restarts: true },
@@ -3001,7 +3003,7 @@ describe('cooperative folder reconcile production contracts', () => {
         { length: 3 * reconConfig.folderScanPageSize + 1 },
         (_, i) => `cold-${i}@example.com`,
       );
-      const { fts, folders } = installExactMembershipFolders([
+      const { fts, folders, nativeRows } = installExactMembershipFolders([
         { folderPath: '/Cold', headerMessageIds: coldIds },
         { folderPath: '/Hot', headerMessageIds: ['hot@example.com'] },
       ]);
@@ -3036,11 +3038,19 @@ describe('cooperative folder reconcile production contracts', () => {
         return page;
       });
 
-      const coldDone = () => _testExports._getFolderMembershipCutoverProven() || coldTokens.size > 1;
-      await tickUntil(fts, coldDone, 60);
+      await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven(), 400);
 
-      expect(coldTokens.size > 1).toBe(restarts);
-      expect(_testExports._getFolderMembershipCutoverProven()).toBe(!restarts);
+      const completed = storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+        .folderMembershipMigration.completedFolderIds;
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect(completed[cold.folderId] === true).toBe(!restarts);
+      expect(coldTokens.size === 1).toBe(!restarts);
+      const cancelled = globalThis.browser.tmMsgNotify.cancelFolderMessageScan.mock.calls.map(([token]) => token);
+      for (const token of coldTokens) expect(cancelled.includes(token)).toBe(restarts);
+      for (const id of coldIds) expect(nativeRows.get(`account1:/Cold:${id}`)).toBe(cold.folderId);
+      // Without a completed scan, the pass resolved each row in its folder.
+      expect(globalThis.browser.messages.query.mock.calls.some(([query]) =>
+        query.folderId === cold.weFolderId)).toBe(restarts);
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
@@ -3138,7 +3148,8 @@ describe('cooperative folder reconcile production contracts', () => {
   });
 
   // The scan's local stamp precedes its asynchronous startup, so an event
-  // for the folder while the enumerator opens still restarts it.
+  // for the folder while the enumerator opens still voids that scan: it is
+  // released and never completes the folder.
   it.each([
     { eventFolder: '/Cold', restarts: true },
     { eventFolder: '/Hot', restarts: false },
@@ -3158,9 +3169,11 @@ describe('cooperative folder reconcile production contracts', () => {
       const event = folders.find(folder => folder.folderPath === eventFolder);
       const begin = globalThis.browser.tmMsgNotify.beginFolderMessageScan.getMockImplementation();
       let coldBegins = 0;
+      let firstToken = null;
       globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockImplementation(async (uri, ...rest) => {
         const started = await begin(uri, ...rest);
         if (uri === cold.folderURI && !_testExports._getFolderMembershipCutoverProven() && ++coldBegins === 1) {
+          firstToken = started.token;
           await _testExports.onExperimentMessageAdded({
             accountId: 'account1',
             folderPath: event.folderPath,
@@ -3178,6 +3191,9 @@ describe('cooperative folder reconcile production contracts', () => {
 
       expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
       expect(coldBegins > 1).toBe(restarts);
+      expect(firstToken).not.toBeNull();
+      expect(globalThis.browser.tmMsgNotify.cancelFolderMessageScan.mock.calls
+        .some(([token]) => token === firstToken)).toBe(restarts);
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
@@ -8923,9 +8939,10 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
     const B1 = 'account1:/B:b-1@example.com';
 
     // /A has completed; /B then appears in the inventory. `failure` is how
-    // /B's msgDB refuses: getFolderState reports an error or throws, or the
-    // scan cannot start. /B's native rows, if any, are owned (capable era).
-    function addUnreadableFolder(installed, { failure = 'error', rows = [] } = {}) {
+    // /B's msgDB refuses: getFolderState reports an error or throws, the
+    // scan cannot start, or its page read fails. /B's native rows, if any,
+    // are owned (capable era) unless `ownerless`.
+    function addUnreadableFolder(installed, { failure = 'error', rows = [], ownerless = false } = {}) {
       const b = {
         accountId: 'account1',
         folderPath: '/B',
@@ -8942,7 +8959,7 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
         headerMessageId,
       })));
       for (const headerMessageId of rows) {
-        installed.nativeRows.set(`account1:/B:${headerMessageId}`, b.folderId);
+        installed.nativeRows.set(`account1:/B:${headerMessageId}`, ownerless ? null : b.folderId);
       }
       globalThis.browser.accounts.list.mockResolvedValue([{
         id: 'account1', type: 'none',
@@ -8955,10 +8972,17 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
           })),
         },
       }]);
-      const readable = { value: false, stateReads: 0 };
+      // A metadata-scan attempt is the migration slice's option-less state
+      // read, made only while cutover is unproven; exact-mode walks read
+      // with options, and their closing read only once cutover holds.
+      const readable = { value: false, stateReads: 0, eagerAttemptsAtMs: [], scanTokens: [] };
       const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
       globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
         if (folderPath === '/B') readable.stateReads++;
+        if (folderPath === '/B' && options === undefined
+            && !_testExports._getFolderMembershipCutoverProven()) {
+          readable.eagerAttemptsAtMs.push(Date.now());
+        }
         if (folderPath === '/B' && !readable.value && failure === 'error') {
           return { accountId, folderPath, error: 'folder_db_unavailable' };
         }
@@ -8969,17 +8993,32 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
       });
       const scan = globalThis.browser.tmMsgNotify.beginFolderMessageScan.getMockImplementation();
       globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockImplementation(async (uri, ...rest) => {
-        if (uri === b.folderURI && !readable.value) return { error: 'folder_db_unavailable' };
-        return scan(uri, ...rest);
+        if (uri === b.folderURI && !readable.value && failure === 'scan') return { error: 'folder_db_unavailable' };
+        const started = await scan(uri, ...rest);
+        if (uri === b.folderURI) readable.scanTokens.push(started.token);
+        return started;
+      });
+      const page = globalThis.browser.tmMsgNotify.readFolderMessageScanPage.getMockImplementation();
+      globalThis.browser.tmMsgNotify.readFolderMessageScanPage.mockImplementation(async (token, ...rest) => {
+        if (readable.scanTokens.includes(token) && !readable.value && failure === 'page') {
+          return { error: 'folder_db_unavailable' };
+        }
+        return page(token, ...rest);
       });
       return { b, readable };
     }
 
-    // Runs spaced ticks until `done` holds or the deadline passes.
+    // Runs spaced ticks until `done` holds or the deadline passes, skipping
+    // ahead to the next rolling-walk admission when that comes later.
     async function runUntil(fts, done, deadlineMs) {
-      while (!done() && Date.now() < deadlineMs) await runAt(fts, Date.now() + 60_000, done, 20);
+      while (!done() && Date.now() < deadlineMs) {
+        await runAt(fts, Math.max(Date.now() + 60_000, Math.min(rollingDue(), deadlineMs)), done, 20);
+      }
       return done();
     }
+
+    const completedIds = () => storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
+      .folderMembershipMigration.completedFolderIds;
 
     const obligations = [
       ['a real queue abandonment', async () => { await abandonQueuedUpdate('account1:/A'); }, () => Date.now() + 60 * 60_000],
@@ -8991,14 +9030,24 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
         [name, 'error', [], oblige, deadline],
         [name, 'throw', ['b-1@example.com'], oblige, deadline],
         [name, 'scan', ['b-1@example.com'], oblige, deadline],
+        [name, 'page', ['b-1@example.com'], oblige, deadline],
       ]),
     ])('repairs a healthy folder owed %s while a new folder stays unreadable; failure=%s rows=%j', async (_name, failure, rows, oblige, deadline) => {
       const installed = installTokenFolders([specs[0]]);
       const { fts, nativeRows, folders } = installed;
       await finishSession(fts);
       nativeRows.delete(A2);
-      const { readable } = addUnreadableFolder(installed, { failure, rows });
+      const { b, readable } = addUnreadableFolder(installed, { failure, rows });
       await oblige();
+
+      // The obligation's tick inventories /B; cutover is then re-earned by
+      // the state pass while /B's metadata scan is still failing and waiting
+      // out its deferral.
+      const cutoverWithB = () => readable.eagerAttemptsAtMs.length > 0
+        && _testExports._getFolderMembershipCutoverProven();
+      expect(await runUntil(fts, cutoverWithB, deadline())).toBe(true);
+      expect(completedIds()[b.folderId]).toBeUndefined();
+      expect(_testExports._getFolderMembershipScanDeferred().get(b.folderId)?.failures).toBeGreaterThan(0);
 
       expect(await runUntil(fts, () => queued(A2), deadline())).toBe(true);
       for (const key of _testExports._getPendingUpdates().keys()) nativeRows.set(key, folders[0].folderId);
@@ -9012,6 +9061,19 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
       expect(_testExports._getFolderReconSessionDone().has('account1:/B')).toBe(false);
       expect(_testExports._isFolderReconPending()).toBe(true);
       for (const headerMessageId of rows) expect(nativeRows.has(`account1:/B:${headerMessageId}`)).toBe(true);
+      // A failed scan writes no completion, releases any scan it started,
+      // and is not retried before its deferral ends.
+      expect(completedIds()[b.folderId]).toBeUndefined();
+      expect(readable.eagerAttemptsAtMs.length).toBeGreaterThan(0);
+      for (let i = 1; i < readable.eagerAttemptsAtMs.length; i++) {
+        expect(readable.eagerAttemptsAtMs[i] - readable.eagerAttemptsAtMs[i - 1])
+          .toBeGreaterThanOrEqual(reconConfig.errorDelayMs);
+      }
+      if (failure === 'page') {
+        expect(readable.scanTokens.length).toBeGreaterThan(0);
+        const cancelled = globalThis.browser.tmMsgNotify.cancelFolderMessageScan.mock.calls.map(([token]) => token);
+        for (const token of readable.scanTokens) expect(cancelled).toContain(token);
+      }
 
       // Once /B can be read, it is reconciled and the session completes.
       readable.value = true;
@@ -9019,44 +9081,164 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
       expect(_testExports._getFolderReconSessionDone()).toEqual(new Set(['account1:/A', 'account1:/B']));
     });
 
-    // While cutover holds, a waiting folder's eager scan is not needed. A
-    // reconnect re-opens migration and, owing every folder a walk, ends the
-    // folder's failure wait at once.
-    it.each([false, true])('retries a waiting new folder\'s eager scan at a reconnect; reconnect=%s', async (reconnect) => {
+    // A waiting folder's metadata scan ends its wait only at a reset of the
+    // membership proof (reconnect, capability change, exclusive rewrite,
+    // dispose/init, new generation) or an inventory change; neither a walk
+    // mark nor a lapsed pass ends it.
+    it.each([
+      ['no lifecycle event', false, async () => {}],
+      ['a walk mark for the folder', false, async () => { await abandonQueuedUpdate('account1:/B'); }],
+      ['a connection generation change', true, async fts => { fts.getConnectionGeneration.mockReturnValue(2); }],
+      ['a capability loss then regain', true, async fts => {
+        fts.supportsFolderMembership.mockReturnValue(false);
+        await settleSchedulerTickWithFakeTimers(fts);
+        fts.supportsFolderMembership.mockReturnValue(true);
+      }],
+      ['an exclusive membership change', true, async () => {
+        const lease = await acquireFtsExclusiveOperation('rebuild');
+        await runFtsMembershipMutation(async () => ({ ok: true }));
+        lease.release();
+      }],
+      ['a dispose and init', true, async fts => {
+        await incrementalIndexer.disposeIncrementalIndexer();
+        storageData.chat_ftsIncrementalEnabled = true;
+        await incrementalIndexer.initIncrementalIndexer(fts);
+        vi.setSystemTime(Date.now() + reconConfig.syncQuietMs + 1);
+      }],
+      ['a replacement generation', true, async () => {
+        _testExports._resetFolderReconState();
+        _testExports._setIsEnabled(true);
+        _testExports._setIndexerDisposed(false);
+      }],
+      ['an inventory change', true, async (_fts, installed) => {
+        const c = {
+          accountId: 'account1',
+          folderPath: '/C',
+          folderId: makeFolderMembershipId('account1', '/C'),
+          weFolderId: 'session-folder-c',
+          folderURI: 'none://membership-c',
+          serverType: 'imap',
+          stableUidKeys: true,
+          uidValidity: 7,
+        };
+        installed.folders.push(c);
+        installed.rowsByURI.set(c.folderURI, []);
+        const accounts = await globalThis.browser.accounts.list();
+        accounts[0].rootFolder.subFolders.push({ id: c.weFolderId, path: c.folderPath, subFolders: [] });
+      }],
+    ])('retries a waiting new folder\'s metadata scan after %s', async (_name, retried, trigger) => {
       const installed = installTokenFolders([specs[0]]);
       const { fts } = installed;
       await finishSession(fts);
       const { b, readable } = addUnreadableFolder(installed, { rows: ['b-1@example.com'] });
-      expect(await runUntil(fts, () => _testExports._getFolderMembershipCutoverProven()
+      await abandonQueuedUpdate('account1:/A');
+      expect(await runUntil(fts, () => readable.eagerAttemptsAtMs.length > 0
+        && _testExports._getFolderMembershipCutoverProven()
         && _testExports._getFolderReconSessionDone().has('account1:/A'), Date.now() + 60 * 60_000)).toBe(true);
-      _testExports._setFolderReconEphemeralEvidenceForTests({
-        folderKey: 'account1:/B',
-        deferredAt: Date.now() + 60 * 60_000,
-        failureCount: 9,
-      });
+      expect(_testExports._getFolderMembershipScanDeferred().has(b.folderId)).toBe(true);
+      const deferral = { failures: 9, notBeforeMs: Date.now() + 2 * walkPeriodMs };
+      _testExports._getFolderMembershipScanDeferred().set(b.folderId, deferral);
       readable.value = true;
-      const completedB = () => storageData[_testExports.FOLDER_RECON_STORAGE_KEY]
-        .folderMembershipMigration.completedFolderIds[b.folderId] === true;
+      readable.eagerAttemptsAtMs.length = 0;
 
-      if (reconnect) fts.getConnectionGeneration.mockReturnValue(2);
-      await runUntil(fts, completedB, Date.now() + 10 * 60_000);
+      await trigger(fts, installed);
+      // The completed pass lapses after one walk period, so migration
+      // re-opens in every case; only a reset ends the scan's wait.
+      vi.setSystemTime(Date.now() + walkPeriodMs);
+      await runUntil(fts, () => completedIds()?.[b.folderId] === true, Date.now() + 10 * 60_000);
 
-      expect(completedB()).toBe(reconnect);
+      expect(completedIds()?.[b.folderId] === true).toBe(retried);
+      expect(readable.eagerAttemptsAtMs.length > 0).toBe(retried);
+      if (!retried) expect(_testExports._getFolderMembershipScanDeferred().get(b.folderId)).toBe(deferral);
     });
 
-    it('control: a readable new folder completes its eager scan before cutover', async () => {
+    // A folder that becomes unreadable between two pages of its metadata
+    // scan releases the scan it holds open as soon as the attempt fails.
+    it('releases a partial metadata scan when the folder\'s next state read fails', async () => {
       const installed = installTokenFolders([specs[0]]);
       const { fts } = installed;
       await finishSession(fts);
-      const { b, readable } = addUnreadableFolder(installed, { rows: ['b-1@example.com'] });
+      const rows = Array.from({ length: reconConfig.folderScanPageSize + 1 }, (_, i) => `b-${i}@example.com`);
+      const { b, readable } = addUnreadableFolder(installed, { rows });
       readable.value = true;
-      installed.nativeRows.set(B1, null);
+      const page = globalThis.browser.tmMsgNotify.readFolderMessageScanPage.getMockImplementation();
+      globalThis.browser.tmMsgNotify.readFolderMessageScanPage.mockImplementation(async (token, ...rest) => {
+        const result = await page(token, ...rest);
+        if (readable.scanTokens.includes(token)) readable.value = false;
+        return result;
+      });
+      await abandonQueuedUpdate('account1:/A');
+
+      expect(await runUntil(fts, () => _testExports._getFolderMembershipScanDeferred().has(b.folderId),
+        Date.now() + 60 * 60_000)).toBe(true);
+
+      expect(readable.scanTokens).toHaveLength(1);
+      expect(globalThis.browser.tmMsgNotify.cancelFolderMessageScan).toHaveBeenCalledWith(readable.scanTokens[0]);
+      expect(completedIds()[b.folderId]).toBeUndefined();
+    });
+
+    it('control: a readable new folder completes its metadata scan before cutover', async () => {
+      const installed = installTokenFolders([specs[0]]);
+      const { fts } = installed;
+      await finishSession(fts);
+      const { b, readable } = addUnreadableFolder(installed, { rows: ['b-1@example.com'], ownerless: true });
+      readable.value = true;
 
       expect(await settleAllWithDrain(fts, installed.nativeRows, installed.folders)).toBe(true);
-      expect(storageData[_testExports.FOLDER_RECON_STORAGE_KEY].folderMembershipMigration
-        .completedFolderIds[b.folderId]).toBe(true);
+      expect(completedIds()[b.folderId]).toBe(true);
       expect(installed.nativeRows.get(B1)).toBe(b.folderId);
+      expect(_testExports._getFolderMembershipScanDeferred().size).toBe(0);
       expect(_testExports._getFolderReconSessionDone()).toEqual(new Set(['account1:/A', 'account1:/B']));
+    });
+
+    // The scan is only a bulk optimisation: a readable folder whose scan
+    // keeps failing has its ownerless rows assigned one by one by the pass.
+    it('assigns a waiting readable folder\'s ownerless rows per row and earns cutover', async () => {
+      const installed = installTokenFolders([specs[0]]);
+      const { fts } = installed;
+      await finishSession(fts);
+      const { b, readable } = addUnreadableFolder(installed, { failure: 'scan', rows: ['b-1@example.com'], ownerless: true });
+      globalThis.browser.messages.query.mockClear();
+      await abandonQueuedUpdate('account1:/A');
+
+      expect(await runUntil(fts, () => readable.eagerAttemptsAtMs.length > 0
+        && _testExports._getFolderMembershipCutoverProven(), Date.now() + 60 * 60_000)).toBe(true);
+
+      expect(installed.nativeRows.get(B1)).toBe(b.folderId);
+      expect(completedIds()[b.folderId]).toBeUndefined();
+      expect(globalThis.browser.messages.query).toHaveBeenCalledWith(expect.objectContaining({
+        folderId: b.weFolderId,
+        headerMessageId: 'b-1@example.com',
+      }));
+    });
+
+    // Fail-closed boundary: an ownerless row of a folder that cannot be read
+    // is unresolved, so the pass never earns cutover until the folder can be.
+    it('never earns cutover while an unreadable waiting folder holds an ownerless row', async () => {
+      const installed = installTokenFolders([specs[0]]);
+      const { fts } = installed;
+      await finishSession(fts);
+      const { b, readable } = addUnreadableFolder(installed, { rows: ['b-1@example.com'], ownerless: true });
+      const query = globalThis.browser.messages.query.getMockImplementation();
+      globalThis.browser.messages.query.mockImplementation(async (args) => {
+        if (args.folderId === b.weFolderId && !readable.value) throw new Error('folder_db_unavailable');
+        return query(args);
+      });
+      recheckMessageInFolder.mockImplementation(async (_headerID, weFolder) =>
+        (weFolder?.path === '/B' && !readable.value ? 'error' : 'absent'));
+      await abandonQueuedUpdate('account1:/A');
+
+      expect(await runUntil(fts, () => readable.eagerAttemptsAtMs.length > 0,
+        Date.now() + 60 * 60_000)).toBe(true);
+      expect(await runUntil(fts, () => _testExports._getFolderMembershipCutoverProven(),
+        Date.now() + 2 * 60 * 60_000)).toBe(false);
+      expect(installed.nativeRows.get(B1)).toBeNull();
+      expect(_testExports._isFolderReconPending()).toBe(true);
+
+      readable.value = true;
+      expect(await runUntil(fts, () => _testExports._getFolderMembershipCutoverProven(),
+        Date.now() + 60 * 60_000)).toBe(true);
+      expect(installed.nativeRows.get(B1)).toBe(b.folderId);
     });
   });
 });
