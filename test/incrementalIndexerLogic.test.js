@@ -299,12 +299,27 @@ describe('_markResolveFailed', () => {
     expect(result.uniqueKey).toBe('test-key-3');
   });
 
-  it('stores the updated entry in _pendingUpdates', () => {
+  it('stores the updated entry in _pendingUpdates while it is still the queued intention', () => {
     const update = { uniqueKey: 'test-key-4', type: 'add', timestamp: Date.now() };
+    _getPendingUpdates().set(update.uniqueKey, update);
     _markResolveFailed(update);
     const stored = _getPendingUpdates().get('test-key-4');
     expect(stored).toBeDefined();
     expect(stored.hasFailed).toBe(true);
+  });
+
+  // The drain marks the entry it captured before an await; a newer intention
+  // queued meanwhile wins, and a dequeued or abandoned one stays gone.
+  it('never overwrites a newer queued intention or resurrects a removed one', () => {
+    const captured = { uniqueKey: 'test-key-5', type: 'add', timestamp: Date.now() };
+    const newer = { uniqueKey: 'test-key-5', type: 'delete', timestamp: captured.timestamp + 1 };
+    _getPendingUpdates().set(newer.uniqueKey, newer);
+    _markResolveFailed(captured);
+    expect(_getPendingUpdates().get('test-key-5')).toBe(newer);
+
+    const removed = { uniqueKey: 'test-key-6', type: 'add', timestamp: Date.now() };
+    _markResolveFailed(removed);
+    expect(_getPendingUpdates().has('test-key-6')).toBe(false);
   });
 });
 

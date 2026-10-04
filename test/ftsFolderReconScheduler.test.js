@@ -7148,7 +7148,11 @@ describe('reconciliation removal vs a racing re-add', () => {
   // no longer holds. A re-add delivered after its absence verdict queues the
   // message but writes nothing native, so only the event serial can withhold
   // the removal of a row that is live again.
-  it.each([false, true])('withholds an owned stale-row removal when the re-add is delivered first; delivered=%s', async (delivered) => {
+  // A converted event names the folder (its own local change); an
+  // unconverted one is a change to every folder.
+  const reAddCases = [[false, false], [true, false], [false, true], [true, true]];
+
+  it.each(reAddCases)('withholds an owned stale-row removal when the re-add is delivered first; delivered=%s converted=%s', async (delivered, converted) => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     const { fts, nativeRows, rowsByURI, folders } = seedMigratedExactFolders([
@@ -7165,6 +7169,7 @@ describe('reconciliation removal vs a racing re-add', () => {
         rowsByURI.get(folders[0].folderURI).push({ msgKey: 1, headerMessageId: 'live@example.com' });
         await _testExports.onExperimentMessageAdded({
           accountId: 'account1', folderPath: '/F',
+          ...(converted ? { weFolderId: folders[0].weFolderId } : {}),
           headerMessageId: 'live@example.com', msgKey: 1, eventType: 'msgAdded',
         });
       }
@@ -7197,7 +7202,7 @@ describe('reconciliation removal vs a racing re-add', () => {
   // The re-add lands after the last absence check, while the removal fence
   // is being acquired: it queues work but moves no native epoch, so only the
   // event serial checked inside the fence withholds the removal.
-  it.each([false, true])('withholds an owned stale-row removal when the re-add is delivered while the removal fence is acquiring; readd=%s', async (readd) => {
+  it.each(reAddCases)('withholds an owned stale-row removal when the re-add is delivered while the removal fence is acquiring; readd=%s converted=%s', async (readd, converted) => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     const { fts, nativeRows, rowsByURI, folders } = seedMigratedExactFolders([
@@ -7227,6 +7232,7 @@ describe('reconciliation removal vs a racing re-add', () => {
             rowsByURI.get(folders[0].folderURI).push({ msgKey: 1, headerMessageId: 'live@example.com' });
             await _testExports.onExperimentMessageAdded({
               accountId: 'account1', folderPath: '/F',
+              ...(converted ? { weFolderId: folders[0].weFolderId } : {}),
               headerMessageId: 'live@example.com', msgKey: 1, eventType: 'msgAdded',
             });
           });
@@ -9708,6 +9714,95 @@ describe('folder-scoped change evidence (sustained traffic in another folder)', 
       expect(_testExports._getFolderReconSessionDone().has('account1:/A')).toBe(true);
       expect(installed.nativeRows.get(msgId)).toBe(writer.folderId);
     });
+  });
+});
+
+// A queued add that first failed to resolve is retried; a removal of the
+// same message delivered while the retry reads its header is the newer
+// intention and must survive the retry's bookkeeping, so the index ends
+// without the message once the queue drains and reconciliation completes.
+describe('a newer queued intention during a drain retry', () => {
+  afterEach(() => {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it.each([false, true])('ends with the index agreeing with the latest event; removed during the retry=%s', async (removedDuringRetry) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const installed = seedMigratedExactFolders([{ folderPath: '/A', headerMessageIds: ['a@example.com'] }]);
+    const { fts, folders, nativeRows, rowsByURI } = installed;
+    const folder = folders[0];
+    const key = 'account1:/A:b@example.com';
+    const event = {
+      accountId: 'account1',
+      folderPath: '/A',
+      weFolderId: folder.weFolderId,
+      headerMessageId: 'b@example.com',
+      msgKey: 2,
+      eventType: 'msgAdded',
+    };
+    _testExports._setFtsSearch(fts);
+    fts.indexBatch = vi.fn(async rows => runFtsMembershipMutation(async () => {
+      for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+      return { count: rows.length };
+    }, null, { msgIds: rows.map(row => row.msgId), folderIds: rows.map(row => row.folderId) }));
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => ({
+      missing: ids.filter(id => !rowsByURI.get(uri).some(row => row.headerMessageId === id)),
+    }));
+    // The add lands after /A's verified checkpoint write.
+    const storage = globalThis.browser.storage.local;
+    const set = storage.set.getMockImplementation();
+    let added = false;
+    storage.set.mockImplementation(async value => {
+      const result = await set(value);
+      if (!added && value[_testExports.FOLDER_RECON_STORAGE_KEY]?.folders?.['account1:/A']?.verified === true) {
+        added = true;
+        rowsByURI.get(folder.folderURI).push({ msgKey: 2, headerMessageId: 'b@example.com' });
+        await _testExports.onExperimentMessageAdded(event);
+      }
+      return result;
+    });
+    await tickUntil(fts, () => added, 20);
+    expect(added).toBe(true);
+    const queuedAdd = _testExports._getPendingUpdates().get(key);
+    expect(queuedAdd.type).toBe('new');
+
+    // The first drain cannot resolve the message.
+    headerIDToWeID.mockResolvedValueOnce(null);
+    vi.setSystemTime(Date.now() + 1000);
+    await flushPendingUpdates();
+    expect(_testExports._getPendingUpdates().get(key).hasFailed).toBe(true);
+
+    // The retry resolves it; the removal is delivered while its header read
+    // is in flight, and the read returns the header it captured before.
+    headerIDToWeID.mockResolvedValue(2);
+    globalThis.browser.messages.get = vi.fn(async () => {
+      const captured = { id: 2, headerMessageId: 'b@example.com', folder: { accountId: 'account1', path: '/A' } };
+      if (removedDuringRetry && rowsByURI.get(folder.folderURI).length > 1) {
+        rowsByURI.get(folder.folderURI).splice(1, 1);
+        await _testExports.onExperimentMessageRemoved({ ...event, eventType: 'msgDeleted' });
+        expect(_testExports._getPendingUpdates().get(key).timestamp).toBeGreaterThan(queuedAdd.timestamp);
+      }
+      return captured;
+    });
+    getUniqueMessageKey.mockImplementation(async header => `account1:/A:${header.headerMessageId}`);
+    buildBatchHeader.mockImplementation(async headers => headers.map(header => ({
+      msgId: `account1:/A:${header.headerMessageId}`,
+      folderId: folder.folderId,
+    })));
+    populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+    for (let turn = 0; turn < 4 && _testExports._getPendingUpdates().size > 0; turn++) {
+      vi.setSystemTime(Date.now() + 1000);
+      await flushPendingUpdates();
+    }
+    expect(_testExports._getPendingUpdates().size).toBe(0);
+
+    const result = await tickUntil(fts, value => value?.complete === true && !_testExports._isFolderReconPending(), 40);
+    expect(result).toMatchObject({ complete: true });
+    expect(nativeRows.has(key)).toBe(!removedDuringRetry);
+    expect(nativeRows.get('account1:/A:a@example.com')).toBe(folder.folderId);
   });
 });
 

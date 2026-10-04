@@ -462,6 +462,15 @@ function _shouldDropFailedUpdates() {
   return _consecutiveNoProgressCycles >= cfg.maxConsecutiveNoProgress;
 }
 
+// The drain captured `update` before an await; it is still the queued
+// intention only while the entry carries the same type and timestamp. A
+// newer intention queued meanwhile (or an abandonment) must not be
+// overwritten or resurrected by the drain's bookkeeping.
+function _isQueuedIntention(update) {
+  const current = _pendingUpdates.get(update.uniqueKey);
+  return current?.timestamp === update.timestamp && current?.type === update.type;
+}
+
 /**
  * Mark an update as having failed resolution.
  * Sets hasFailed=true so it can be dropped if queue is stuck.
@@ -473,7 +482,7 @@ function _markResolveFailed(update) {
     hasFailed: true,
     lastFailedAt: now,
   };
-  _pendingUpdates.set(update.uniqueKey, updated);
+  if (_isQueuedIntention(update)) _pendingUpdates.set(update.uniqueKey, updated);
   return updated;
 }
 
@@ -714,7 +723,7 @@ async function processPendingUpdates() {
           
           if (messageHeader) {
             // Success - clear failed flag since we resolved successfully
-            if (update.hasFailed) {
+            if (update.hasFailed && _isQueuedIntention(update)) {
               const resetUpdate = { ...update, hasFailed: false, lastFailedAt: 0 };
               _pendingUpdates.set(update.uniqueKey, resetUpdate);
             }
