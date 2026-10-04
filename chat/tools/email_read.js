@@ -100,9 +100,15 @@ export async function run(args = {}, options = {}) {
     //   log(`[TMDBG Tools] email_read: getSummary failed for ${internalId}: ${e}`);
     // }
 
-    // Get attachment info from header
-    const hasAttachmentsFlag = Boolean(header.hasAttachments);
-    log(`[TMDBG Tools] email_read: Using attachment info from header: hasAttachments=${hasAttachmentsFlag}`);
+    // Thunderbird's MessageHeader has no attachment field; listAttachments parses the message.
+    // null = the list could not be read, reported as unknown rather than as "no".
+    let attachments = null;
+    try {
+      attachments = (await browser.messages.listAttachments(internalId)) || [];
+      log(`[TMDBG Tools] email_read: listAttachments found ${attachments.length} for ${internalId}`);
+    } catch (e) {
+      log(`[TMDBG Tools] email_read: listAttachments failed for ${internalId}: ${e}`, "error");
+    }
 
     // Check replied status using tmHdr experiment
     let repliedStatus = false;
@@ -133,10 +139,18 @@ export async function run(args = {}, options = {}) {
     lines.push(`to: ${header.recipients ? header.recipients.join(", ") : ""}`);
     lines.push(`cc: ${header.ccList ? header.ccList.join(", ") : ""}`);
     lines.push(`subject: ${(await getRealSubject(header)) || "(No subject)"}`);
-    lines.push(`has_attachments: ${hasAttachmentsFlag ? "yes" : "no"}`);
+    lines.push(`has_attachments: ${attachments === null ? "unknown" : attachments.length > 0 ? "yes" : "no"}`);
     lines.push(`replied: ${repliedStatus ? "yes" : "no"}`);
     lines.push("body:");
     lines.push(body);
+
+    if (attachments && attachments.length > 0) {
+      lines.push("");
+      lines.push("attachments:");
+      for (const att of attachments) {
+        lines.push(`  - ${att.name} (${att.contentType}, ${att.size} bytes)`);
+      }
+    }
 
     // Append ICS attachment summaries
     if (icsAttachments && icsAttachments.length > 0) {

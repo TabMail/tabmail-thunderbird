@@ -97,6 +97,7 @@ export async function getInboxForAccount(accountId) {
  *     todos: string,             // Extracted action items (only included for action="reply")
  *     action: string             // One of "delete" | "archive" | "reply" | "" (empty if none)
  *     date: string               // Localized date string (e.g., MM/DD/YY)
+ *     hasAttachments: boolean    // Whether the email has attachments
  *     replied: boolean           // Whether the email has been replied to
  *   }
  *
@@ -179,20 +180,36 @@ export async function buildInboxContext() {
         messageId: msg.headerMessageId || "",
       }));
 
-      const [repliedStatuses, hasReStatuses] = await Promise.all([
+      // Thunderbird's MessageHeader has no attachment field; read the database flag by Message-ID.
+      const attachmentItems = messagesToProcess.map(msg => ({
+        folderURI: msg.folder?.id || "",
+        pathStr: msg.folder?.path || "",
+        messageId: msg.headerMessageId || "",
+      }));
+
+      const [repliedStatuses, hasReStatuses, hasAttachmentStatuses] = await Promise.all([
         _getRepliedStatusBulk(messagesToProcess),
         browser.tmHdr.getHasReBulk(bulkItems).catch(e => {
           log(`[InboxContext] getHasReBulk failed: ${e}`, "warn");
           return [];
         }),
+        browser.tmHdr.getHasAttachmentBulk(attachmentItems).catch(e => {
+          log(`[InboxContext] getHasAttachmentBulk failed: ${e}`, "error");
+          return [];
+        }),
       ]);
 
-      // Update contextArray with replied status and restore "Re:" prefix
-      for (let i = 0; i < contextArray.length; i++) {
-        contextArray[i].replied = repliedStatuses[i] || false;
+      // The bulk results follow messagesToProcess; contextArray skips messages whose entry failed.
+      const indexById = new Map(messagesToProcess.map((msg, i) => [msg.id, i]));
+
+      // Update contextArray with replied status, attachment flag and restore "Re:" prefix
+      for (const entry of contextArray) {
+        const i = indexById.get(entry.internalId);
+        entry.replied = repliedStatuses[i] || false;
+        entry.hasAttachments = hasAttachmentStatuses[i] === true;
         // TB strips "Re:" from MessageHeader.subject — restore it using HasRe flag
-        if (hasReStatuses[i] && contextArray[i].subject && !contextArray[i].subject.startsWith("Re: ")) {
-          contextArray[i].subject = "Re: " + contextArray[i].subject;
+        if (hasReStatuses[i] && entry.subject && !entry.subject.startsWith("Re: ")) {
+          entry.subject = "Re: " + entry.subject;
         }
       }
 
@@ -243,9 +260,6 @@ async function _createContextEntry(msgHeader) {
       }
     } catch (_) { /* ignore formatting errors */ }
 
-    // Check for attachments using header property
-    const hasAttachmentsFlag = Boolean(msgHeader.hasAttachments);
-
     // Generate unique ID using centralized function
     const uniqueId = await getUniqueMessageKey(msgHeader);
 
@@ -260,7 +274,7 @@ async function _createContextEntry(msgHeader) {
       todos,
       action,
       date: dateStr,
-      hasAttachments: hasAttachmentsFlag,
+      hasAttachments: false, // Will be updated by bulk fetch
       replied: false, // Will be updated by bulk fetch
     };
   } catch (e) {

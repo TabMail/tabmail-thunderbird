@@ -4,7 +4,7 @@
 
 // email_search.js – FTS search with optional date range and limit
 
-import { log } from "../../agent/modules/utils.js";
+import { getUniqueMessageKeyCandidates, log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { formatMailList, toIsoNoMs } from "../modules/helpers.js";
 
@@ -45,6 +45,39 @@ export function resolvePageSize() {
 }
 
 // Email search using FTS (Full Text Search) backend only
+
+// The index's attachment column is never set (Thunderbird's MessageHeader has no attachment
+// field), so each hit's flag is read from Thunderbird's message database by Message-ID.
+// Folder paths and Message-IDs may both contain ':', so a hit is matched against its account's
+// live folders rather than split at fixed colons.
+async function readAttachmentFlags(hits) {
+  const flags = hits.map(() => false);
+  try {
+    const foldersByAccount = new Map();
+    const items = [];
+    const itemHit = [];
+    for (let i = 0; i < hits.length; i++) {
+      const uniqueId = hits[i].uniqueId || "";
+      const accountId = uniqueId.slice(0, Math.max(0, uniqueId.indexOf(":")));
+      if (!accountId) continue;
+      if (!foldersByAccount.has(accountId)) {
+        foldersByAccount.set(accountId, browser.folders.query({ accountId }));
+      }
+      const folders = await foldersByAccount.get(accountId);
+      for (const { weFolder, headerID } of getUniqueMessageKeyCandidates(uniqueId, folders)) {
+        items.push({ folderURI: weFolder.id, pathStr: weFolder.path, messageId: headerID });
+        itemHit.push(i);
+      }
+    }
+    const statuses = await browser.tmHdr.getHasAttachmentBulk(items);
+    statuses.forEach((hasAttachment, k) => {
+      if (hasAttachment === true) flags[itemHit[k]] = true;
+    });
+  } catch (e) {
+    log(`[TMDBG Tools] email_search: reading attachment flags failed: ${e}`, "error");
+  }
+  return flags;
+}
 
 export async function run(args = {}, options = {}) {
   try {
@@ -238,14 +271,16 @@ export async function run(args = {}, options = {}) {
         totalItems: 0,
       };
     } else {
+      const hasAttachmentStatuses = await readAttachmentFlags(slice);
+
       // Map FTS hits directly to formatMailList format - use uniqueId directly from FTS
       const formatted = formatMailList(
-        slice.map((hit) => ({
+        slice.map((hit, i) => ({
           uniqueId: hit.uniqueId || "", // Use uniqueId directly from FTS (msgId = folderUri:headerID)
           date: hit.dateMs ? toIsoNoMs(new Date(hit.dateMs)) : "",
           from: hit.author || "",
           subject: hit.subject || "(No subject)",
-          hasAttachments: Boolean(hit.hasAttachments),
+          hasAttachments: hasAttachmentStatuses[i],
           snippet: hit.snippet || "",
           // Search results always return empty for these fields
           action: "",

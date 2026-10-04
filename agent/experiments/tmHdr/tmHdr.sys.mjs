@@ -512,6 +512,36 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
             return [];
           }
         },
+        // Thunderbird's MessageHeader has no attachment field, so the flag comes from the
+        // message database. Looked up by Message-ID only: callers hold WebExtension ids, not
+        // message keys, and a WebExtension id read as a key can name a different message.
+        async getHasAttachmentBulk(items) {
+          try {
+            if (!Array.isArray(items)) return [];
+            const NS = CiTM.nsMsgMessageFlags;
+            let notFound = 0;
+            const out = items.map((it) => {
+              try {
+                const hdr = it.messageId ? tmGetHdrByMessageId(it.folderURI, it.messageId, it.pathStr) : null;
+                if (!hdr) {
+                  notFound++;
+                  return false;
+                }
+                return !!(hdr.flags & NS.Attachment);
+              } catch (e) {
+                notFound++;
+                return false;
+              }
+            });
+            if (notFound > 0) {
+              console.warn(`[TMDBG tmHdr] getHasAttachmentBulk: ${notFound} of ${items.length} headers not found`);
+            }
+            return out;
+          } catch (e) {
+            console.error("[TMDBG tmHdr] getHasAttachmentBulk error", e);
+            return [];
+          }
+        },
       },
     };
   }

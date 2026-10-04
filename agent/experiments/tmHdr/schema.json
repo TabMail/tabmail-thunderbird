@@ -146,6 +146,27 @@
         "returns": { "type": "array", "items": { "type": "boolean" } }
       },
       {
+        "name": "getHasAttachmentBulk",
+        "type": "function",
+        "description": "Bulk check for nsMsgMessageFlags.Attachment, resolving each header by RFC Message-ID in its folder.",
+        "async": true,
+        "parameters": [
+          {
+            "name": "items",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "folderURI": { "type": "string" },
+                "pathStr": { "type": "string", "optional": true },
+                "messageId": { "type": "string" }
+              }
+            }
+          }
+        ],
+        "returns": { "type": "array", "items": { "type": "boolean" } }
+      },
+      {
         "name": "getRepliedByMessageId",
         "type": "function",
         "description": "Return true if Replied flag is set, resolving header by RFC Message-ID string.",
