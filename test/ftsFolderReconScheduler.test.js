@@ -479,7 +479,9 @@ function installExactMembershipFolders(specs, { assigned = false } = {}) {
       // multiple of the limit needs one more (empty) read.
       return { ok: true, entries, done: entries.length < limit };
     }),
-    assignFolderMembershipBatch: vi.fn(async assignments => {
+    // Attributed exactly as fts/engine.js's ftsSearch attributes them, so a
+    // slice's own writes reach the native change ledger as in production.
+    assignFolderMembershipBatch: vi.fn(async (assignments, token = null) => runFtsMembershipMutation(async () => {
       for (const { msgId, folderId } of assignments) {
         const existing = nativeRows.get(msgId);
         if (existing != null && existing !== folderId) throw new Error('folder_membership_conflict');
@@ -496,7 +498,7 @@ function installExactMembershipFolders(specs, { assigned = false } = {}) {
         }
       }
       return { ok: true, assigned, alreadyAssigned, missing };
-    }),
+    }, token, assignments.map(assignment => assignment?.folderId))),
     fingerprintMsgIdRange: vi.fn(async (start, end) => {
       const rows = sqliteNativeRange(allRows(), start, end);
       return { count: rows.length, sha256: framedDigest(rows) };
@@ -512,10 +514,10 @@ function installExactMembershipFolders(specs, { assigned = false } = {}) {
     filterNewMessages: vi.fn(async rows => ({
       newMsgIds: rows.map(row => row.msgId).filter(msgId => !nativeRows.has(msgId)),
     })),
-    removeBatch: vi.fn(async ids => {
+    removeBatch: vi.fn(async (ids, token = null) => runFtsMembershipMutation(async () => {
       for (const id of ids) nativeRows.delete(id);
       return { count: ids.length };
-    }),
+    }, token, { msgIds: ids })),
     getMessageByMsgId: vi.fn(async id => (nativeRows.has(id) ? { msgId: id } : null)),
     stats: vi.fn(async () => ({})),
   };
@@ -2199,10 +2201,11 @@ describe('cooperative folder reconcile production contracts', () => {
 
       expect(passResult).toMatchObject({ complete: false, migration: { restart: true } });
       expect(passResult.migration.failed).toBeUndefined();
+      // A page without removals assigns unfenced (no fence token).
       expect(fts.assignFolderMembershipBatch).toHaveBeenCalledWith([{
         msgId,
         folderId: makeFolderMembershipId('account1', '/F'),
-      }]);
+      }], null);
       expect(fts.filterNewMessages).not.toHaveBeenCalled();
       expect(nativeRows.has(msgId)).toBe(false);
       expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
@@ -10084,6 +10087,40 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
     }
   }, 30_000);
 
+  // INVARIANT (2026-10-04): only a membership write by someone else since the
+  // inventory refuses a page's removal fence, and it refuses it before any of
+  // the page's assignments commit; the page is then re-read whole.
+  it('re-reads the whole page when another writer touched the ghost\'s folder since the inventory', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, folders, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/F', headerMessageIds: ['live@example.com'] },
+    ]);
+    const ghost = 'account1:/F:ghost@example.com';
+    const live = 'account1:/F:live@example.com';
+    nativeRows.set(ghost, null);
+    nativeRows.set(live, null);
+    const list = fts.listFolderMembershipState.getMockImplementation();
+    fts.listFolderMembershipState.mockImplementationOnce(async (after, limit) => {
+      const page = await list(after, limit);
+      await runFtsMembershipMutation(async () => ({ ok: true }), null, [folders[0].folderId]);
+      return page;
+    });
+
+    const first = await settleSchedulerTickWithFakeTimers(fts);
+
+    expect(first).toMatchObject({ migration: { retry: true, reason: 'stale_folder_remove_fence_lost' } });
+    expect(fts.assignFolderMembershipBatch).not.toHaveBeenCalled();
+    expect(nativeRows.get(live)).toBeNull();
+    expect(nativeRows.has(ghost)).toBe(true);
+    vi.setSystemTime(Date.now() + 100);
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    expect(nativeRows.get(live)).toBe(folders[0].folderId);
+    expect(nativeRows.has(ghost)).toBe(false);
+    expect(fts.listFolderMembershipState.mock.calls[1][0]).toBeNull();
+  });
+
   it.each([
     { change: 'other-folder mail', withheld: false },
     { change: 'a re-add in the ghost\'s folder', withheld: true },
@@ -10143,6 +10180,12 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
       expect(nativeRows.get(live), JSON.stringify(first)).toBe(folders[0].folderId);
       expect(fts.removeBatch.mock.calls.flat(2).includes(ghost)).toBe(!withheld);
       expect(nativeRows.has(ghost)).toBe(withheld);
+      if (!withheld) {
+        // The page's own owner write for /F never voids its /F ghost's
+        // removal: no same-page retry.
+        expect(first?.migration?.retry).not.toBe(true);
+        expect(_testExports._getFolderReconRuntimeTelemetry().membershipStatePageRetries).toBe(0);
+      }
       if (withheld) {
         expect(first).toMatchObject({ migration: { retry: true, reason: 'stale_folder_remove_event' } });
         vi.setSystemTime(Date.now() + 100);

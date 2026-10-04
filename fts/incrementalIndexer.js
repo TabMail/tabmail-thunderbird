@@ -6095,8 +6095,8 @@ async function _runFolderMembershipMigrationSlice(
     else unresolvedRows.push(processed);
     processed++;
   }
-  // Unfenced: native only fills a NULL owner, accepts an equal one and rolls
-  // back a conflict (thrown: same-page retry), and a vanished row is a no-op.
+  // Native only fills a NULL owner, accepts an equal one and rolls back a
+  // conflict (thrown: same-page retry), and a vanished row is a no-op.
   // An assignment commits only while its row's evidence is current: the
   // first row whose candidate folders changed since its verdict ends the page
   // there (checked synchronously before each batch call), and it and every
@@ -6105,52 +6105,18 @@ async function _runFolderMembershipMigrationSlice(
   // missing directions repair a wrong owner.
   const rowCurrent = entry => _folderReconLocalFoldersUnchangedSince(
     entry.localScope.folderKeys, entry.localScope.since);
-  for (let offset = 0; offset < assignments.length;
-    offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
-    let batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
-    assertCommitCurrent();
-    const voided = batch.find(entry => !rowCurrent(entry));
-    if (voided) {
-      _bumpFolderReconTelemetry("membershipStatePageRetries");
-      processed = voided.row;
-      batch = batch.filter(entry => entry.row < voided.row);
-    }
-    if (batch.length > 0) {
-      pass.passMutated = true;
-      try {
-        await ftsSearch.assignFolderMembershipBatch(
-          batch.map(({ msgId, folderId }) => ({ msgId, folderId })));
-      } catch (error) {
-        _throwIfFolderReconInterrupted(error);
-        return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
-      } finally {
-        for (const entry of batch) {
-          if (!rowCurrent(entry)) entry.localScope.folderKeys.forEach(_markFolderReconWalk);
-        }
-      }
-      assertCommitCurrent();
-    }
-    if (voided) break;
-  }
-  const staleOrphanMsgIds = staleOrphans
-    .filter(entry => entry.row < processed).map(entry => entry.msgId);
-  const unresolved = unresolvedRows.filter(row => row < processed).length;
-  const unloadedAccountRowsKept = unloadedRows.filter(row => row < processed).length;
-  if (unloadedAccountRowsKept > 0) {
-    _bumpFolderReconTelemetry("unloadedAccountRowsKept", unloadedAccountRowsKept);
-    // Aggregate-only: no account, folder, or Message-ID values.
-    log(`[FTS FolderRecon] Membership pass kept ${unloadedAccountRowsKept} row(s) whose account is absent from the current inventory — not loaded yet, not deletion evidence`, "warn");
-  }
+  let staleOrphanMsgIds = [];
+  let unresolved = 0;
+  let unloadedAccountRowsKept = 0;
   // Stale owners and ghosts are judged against this tick's inventory, so the
   // removal is fenced on the epoch read before that inventory snapshot. Any
   // membership write since then (a row indexed into a folder created after the
   // snapshot looks exactly like a deleted folder's row) rejects the fence
   // before the mutator runs, and the same page is retried on a later slice.
-  // Removals run after the page's assignments, so a refused removal never
-  // costs them. A folder event (creation, rename, move) since the snapshot,
-  // or a message event since the snapshot in any folder whose key prefixes a
-  // removed key (listed in the inventory or not), refuses the removal; mail
-  // in other folders does not.
+  // A folder event (creation, rename, move) since the snapshot, or a message
+  // event since the snapshot in any folder whose key prefixes a removed key
+  // (listed in the inventory or not), refuses the removal; mail in other
+  // folders does not.
   const assertRemovalCurrent = () => {
     assertCommitCurrent();
     if (_folderReconTopologySerial !== inventoryTopologySerial
@@ -6158,26 +6124,75 @@ async function _runFolderMembershipMigrationSlice(
       throw new Error("folder_changed_during_scan");
     }
   };
-  if (staleOrphanMsgIds.length > 0) {
-    try {
-      await withFtsMembershipFence(inventoryMembershipEpoch, async (membershipFenceToken) => {
-        // Sticky before the mutator: an interrupted or uncertain removal
-        // still forces a full replay before cutover.
+  // A page with removals commits its assignments inside the removal's fence,
+  // passing its token: the page's own owner writes are then recorded with the
+  // fence's advance instead of voiding its removal. The assignments still
+  // commit before the removals, so an event-withheld removal never costs
+  // them; only a foreign membership write since the inventory refuses the
+  // fence on entry, and then the whole page is re-read.
+  const commitPage = async (membershipFenceToken) => {
+    for (let offset = 0; offset < assignments.length;
+      offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
+      let batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
+      assertCommitCurrent();
+      const voided = batch.find(entry => !rowCurrent(entry));
+      if (voided) {
+        _bumpFolderReconTelemetry("membershipStatePageRetries");
+        processed = voided.row;
+        batch = batch.filter(entry => entry.row < voided.row);
+      }
+      if (batch.length > 0) {
         pass.passMutated = true;
-        assertRemovalCurrent();
-        await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
-        assertRemovalCurrent();
-        for (const msgId of staleOrphanMsgIds) {
-          const remaining = await ftsSearch.getMessageByMsgId(msgId);
-          assertRemovalCurrent();
-          if (remaining?.msgId === msgId) throw new Error("stale_folder_remove_verify_failed");
+        try {
+          await ftsSearch.assignFolderMembershipBatch(
+            batch.map(({ msgId, folderId }) => ({ msgId, folderId })),
+            membershipFenceToken);
+        } catch (error) {
+          _throwIfFolderReconInterrupted(error);
+          return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
+        } finally {
+          for (const entry of batch) {
+            if (!rowCurrent(entry)) entry.localScope.folderKeys.forEach(_markFolderReconWalk);
+          }
         }
-      }, {
+        assertCommitCurrent();
+      }
+      if (voided) break;
+    }
+    staleOrphanMsgIds = staleOrphans
+      .filter(entry => entry.row < processed).map(entry => entry.msgId);
+    unresolved = unresolvedRows.filter(row => row < processed).length;
+    unloadedAccountRowsKept = unloadedRows.filter(row => row < processed).length;
+    if (unloadedAccountRowsKept > 0) {
+      _bumpFolderReconTelemetry("unloadedAccountRowsKept", unloadedAccountRowsKept);
+      // Aggregate-only: no account, folder, or Message-ID values.
+      log(`[FTS FolderRecon] Membership pass kept ${unloadedAccountRowsKept} row(s) whose account is absent from the current inventory — not loaded yet, not deletion evidence`, "warn");
+    }
+    if (staleOrphanMsgIds.length === 0) return null;
+    // Sticky before the mutator: an interrupted or uncertain removal
+    // still forces a full replay before cutover.
+    pass.passMutated = true;
+    assertRemovalCurrent();
+    await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
+    assertRemovalCurrent();
+    for (const msgId of staleOrphanMsgIds) {
+      const remaining = await ftsSearch.getMessageByMsgId(msgId);
+      assertRemovalCurrent();
+      if (remaining?.msgId === msgId) throw new Error("stale_folder_remove_verify_failed");
+    }
+    return null;
+  };
+  let commitFailure;
+  if (staleOrphans.length === 0) {
+    commitFailure = await commitPage(null);
+  } else {
+    try {
+      commitFailure = await withFtsMembershipFence(inventoryMembershipEpoch, commitPage, {
         mutation: true,
-        // Only a write that could re-own one of these keys (for example a row
-        // indexed into a folder created after the inventory) voids the
-        // removal; traffic in unrelated folders does not.
-        scope: { msgIds: staleOrphanMsgIds },
+        // Only a write that could re-own one of the page's ghost keys (for
+        // example a row indexed into a folder created after the inventory)
+        // voids the removal; traffic in unrelated folders does not.
+        scope: { msgIds: staleOrphans.map(entry => entry.msgId) },
       });
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
@@ -6192,6 +6207,7 @@ async function _runFolderMembershipMigrationSlice(
       return { complete: false, failed: true, reason: "stale_folder_remove_failed", error: String(error) };
     }
   }
+  if (commitFailure) return commitFailure;
   pass.passUnresolved += unresolved;
   pass.unloaded += unloadedAccountRowsKept;
   pass.afterMsgId = processed > 0 ? entries[processed - 1].msgId : pass.afterMsgId;
