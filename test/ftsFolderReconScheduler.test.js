@@ -11,7 +11,8 @@ import { experimentFunctions } from './helpers/experimentFunctions.js';
 
 const reconConfig = {
   folderScanPageSize: 250,
-  membershipAssignBatchSize: 1000,
+  // One row per assignment call, so every multi-row page crosses batches.
+  membershipAssignBatchSize: 1,
   membershipListPageSize: 50,
   membershipStatePageSize: 50,
   digestWorkChunkEntries: 1000,
@@ -9871,7 +9872,12 @@ describe('membership-state verdicts never outlive their evidence', () => {
   // Production writers: legacy `index_batch` leaves the ownerless row; a
   // capable `index_batch` owns it; the event handler queues the newer add,
   // whose drain finds the row already indexed and writes nothing.
-  it.each([false, true])('keeps a row re-added in a folder loaded after the inventory snapshot: ownerless=%s', async (ownerless) => {
+  it.each([
+    { ownerless: false, during: 'the state page read' },
+    { ownerless: true, during: 'the state page read' },
+    { ownerless: false, during: 'the inventory read' },
+    { ownerless: true, during: 'the inventory read' },
+  ])('keeps a row re-added in a folder loaded after the inventory snapshot: ownerless=$ownerless, re-added during $during', async ({ ownerless, during }) => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     const { fts, folders, nativeRows } = seedMigratedExactFolders([
@@ -9882,13 +9888,13 @@ describe('membership-state verdicts never outlive their evidence', () => {
     if (ownerless) nativeRows.set(key, null);
     // The snapshot is taken before /Late has loaded.
     const fullInventory = await globalThis.browser.accounts.list();
-    globalThis.browser.accounts.list.mockResolvedValueOnce([{
+    const partialInventory = [{
       ...fullInventory[0],
       rootFolder: {
         ...fullInventory[0].rootFolder,
         subFolders: fullInventory[0].rootFolder.subFolders.slice(0, 1),
       },
-    }]);
+    }];
     _testExports._setFtsSearch(fts);
     headerIDToWeID.mockResolvedValue(1);
     globalThis.browser.messages.get = vi.fn(async () => ({
@@ -9896,18 +9902,30 @@ describe('membership-state verdicts never outlive their evidence', () => {
     }));
     getUniqueMessageKey.mockResolvedValue(key);
     buildBatchHeader.mockResolvedValue([{ msgId: key, folderId: folders[1].folderId }]);
-    const stateRead = fts.listFolderMembershipState.getMockImplementation();
     let delivered = false;
-    fts.listFolderMembershipState.mockImplementationOnce(async (...args) => {
-      const page = await stateRead(...args);
+    const reAdd = async () => {
       await _testExports.onExperimentMessageAdded({
         accountId: 'account1', folderPath: '/Late', weFolderId: folders[1].weFolderId,
         headerMessageId: 'live@example.com', msgKey: 1, eventType: 'msgAdded',
       });
       await flushPendingUpdates();
       delivered = _testExports._getPendingUpdates().size === 0 && nativeRows.has(key);
-      return page;
-    });
+    };
+    if (during === 'the inventory read') {
+      // Delivered while the snapshot that omits /Late is being taken.
+      globalThis.browser.accounts.list.mockImplementationOnce(async () => {
+        await reAdd();
+        return partialInventory;
+      });
+    } else {
+      globalThis.browser.accounts.list.mockResolvedValueOnce(partialInventory);
+      const stateRead = fts.listFolderMembershipState.getMockImplementation();
+      fts.listFolderMembershipState.mockImplementationOnce(async (...args) => {
+        const page = await stateRead(...args);
+        await reAdd();
+        return page;
+      });
+    }
 
     const first = await settleSchedulerTickWithFakeTimers(fts);
 
@@ -10052,6 +10070,96 @@ describe('membership-state verdicts never outlive their evidence', () => {
     }
     expect(nativeRows.get(key)).toBe(folders[0].folderId);
   }, 30_000);
+
+  // Writers: legacy `index_batch` leaves the ownerless rows (including a raw
+  // key with two live readings); a capable `index_batch` owned /G's row
+  // before /G was deleted; zAccount is not loaded yet.
+  it('drops every effect of the rows after a cut and replays them without skipping or double counting', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, folders, nativeRows, key, move } = seedAmbiguousRow([
+      { folderPath: '/U:Child', headerMessageIds: ['u@example.com'] },
+      { folderPath: '/U', headerMessageIds: ['Child:u@example.com'] },
+      { folderPath: '/Z', headerMessageIds: ['later@example.com'] },
+    ]);
+    const ambiguous = 'account1:/U:Child:u@example.com';
+    const later = 'account1:/Z:later@example.com';
+    const orphan = 'account1:/G:orphan@example.com';
+    const ghost = 'account1:/H:ghost@example.com';
+    const unloaded = 'zAccount:/Unloaded:kept@example.com';
+    nativeRows.set(ambiguous, null);
+    nativeRows.set(later, null);
+    nativeRows.set(orphan, makeFolderMembershipId('account1', '/G'));
+    nativeRows.set(ghost, null);
+    nativeRows.set(unloaded, null);
+    const query = globalThis.browser.messages.query.getMockImplementation();
+    let moved = false;
+    globalThis.browser.messages.query.mockImplementation(async (args) => {
+      // /Z sorts after every other row: the move voids /F:Child's assignment
+      // (the first row) after the whole page was classified.
+      if (args.folderId === folders[4].weFolderId && !moved) {
+        moved = true;
+        await move();
+      }
+      return query(args);
+    });
+
+    const first = await settleSchedulerTickWithFakeTimers(fts);
+
+    expect(moved, JSON.stringify(first)).toBe(true);
+    expect(fts.assignFolderMembershipBatch).not.toHaveBeenCalled();
+    expect(fts.removeBatch).not.toHaveBeenCalled();
+    expect(_testExports._getFolderMembershipStatePass()).toMatchObject({
+      afterMsgId: null, passUnresolved: 0, unloaded: 0, completed: false,
+    });
+    expect(nativeRows.get(key)).toBeNull();
+    expect(nativeRows.has(orphan) && nativeRows.has(ghost)).toBe(true);
+
+    // The replay classifies every row once: the ambiguous row stays
+    // unresolved (no cutover), the rest are assigned or removed, and the
+    // unloaded account's row is kept.
+    for (let turn = 0; turn < 10 && nativeRows.has(orphan); turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      vi.setSystemTime(Date.now() + reconConfig.errorDelayMs);
+    }
+    expect(nativeRows.get(key)).toBe(folders[0].folderId);
+    expect(nativeRows.get(later)).toBe(folders[4].folderId);
+    expect(nativeRows.has(orphan)).toBe(false);
+    expect(nativeRows.has(ghost)).toBe(false);
+    expect(nativeRows.get(ambiguous)).toBeNull();
+    expect(nativeRows.get(unloaded)).toBeNull();
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+  });
+
+  it('re-checks every assignment batch, not only the first', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, folders, nativeRows, key, move } = seedAmbiguousRow([
+      { folderPath: '/A', headerMessageIds: ['first@example.com'] },
+    ]);
+    // /A's row sorts first, so its batch commits before the ambiguous row's.
+    nativeRows.set('account1:/A:first@example.com', null);
+    const assign = fts.assignFolderMembershipBatch;
+    let moved = false;
+    fts.assignFolderMembershipBatch = vi.fn(async (...args) => {
+      const result = await assign(...args);
+      if (!moved) {
+        moved = true;
+        await move();
+      }
+      return result;
+    });
+
+    const first = await settleSchedulerTickWithFakeTimers(fts);
+
+    expect(moved, JSON.stringify(first)).toBe(true);
+    expect(fts.assignFolderMembershipBatch.mock.calls.flat(2)).not.toContainEqual(
+      { msgId: key, folderId: folders[1].folderId });
+    expect(nativeRows.get(key)).toBeNull();
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    expect(nativeRows.get(key)).toBe(folders[0].folderId);
+  });
 
   it('voids a positive verdict when its second candidate folder changes before the row commits', async () => {
     vi.useFakeTimers();
