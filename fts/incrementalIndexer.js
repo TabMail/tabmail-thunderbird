@@ -15,7 +15,6 @@ import {
   log,
   parseUniqueId,
   recheckMessageInFolder,
-  releaseMessageList,
   resolveUniqueMessageKey,
 } from "../agent/modules/utils.js";
 import { buildBatchHeader, populateBatchBody } from "./indexer.js";
@@ -5826,7 +5825,12 @@ function _restartFolderMembershipStatePass(pass, reason) {
  * - `deferred`: the slice's global-query budget ran out before this row's
  *   first global query — nothing was decided, the row is retried next slice.
  * A scoped positive is conclusive ownership (ADR-017); only a scoped negative
- * or a scoped failure is confirmed by one global query per candidate.
+ * or a scoped failure is confirmed by one global query per candidate. The
+ * scoped check is the candidate folder's msgDB Message-ID index
+ * (`probeMessageIds`, a hashed lookup): a folder-scoped `messages.query`
+ * walks every message in the folder, which made a migration of an M-message
+ * folder cost ~M² header visits. `folderURIs` caches each folder's URI for
+ * the slice.
  */
 async function _resolveFolderMembershipAssignment(
   msgId,
@@ -5834,6 +5838,7 @@ async function _resolveFolderMembershipAssignment(
   trustedAccountIds,
   assertCurrent,
   budget,
+  folderURIs,
 ) {
   const accountId = _folderReconAccountIdOfMsgId(msgId);
   if (!accountId) return { kind: "unresolved" };
@@ -5861,29 +5866,27 @@ async function _resolveFolderMembershipAssignment(
   for (const candidate of candidates) {
     assertRowCurrent();
     let scopedPositive = false;
-    // Id of a list Thunderbird still holds open; released on every exit.
-    let openListId = null;
     try {
-      let page = await browser.messages.query({
-        folderId: candidate.weFolder.id,
-        headerMessageId: candidate.headerID,
-      });
-      openListId = page?.id || null;
-      assertRowCurrent();
-      scopedPositive = (page?.messages || []).length > 0;
-      // A positive is conclusive for this folder; the rest of the list is
-      // released unread.
-      while (!scopedPositive && page?.id && typeof browser.messages.continueList === "function") {
-        page = await browser.messages.continueList(page.id);
-        openListId = page?.id || null;
-        assertRowCurrent();
-        if ((page?.messages || []).length > 0) scopedPositive = true;
+      const folderKey = `${candidate.weFolder.accountId}:${candidate.weFolder.path}`;
+      let folderURI = folderURIs.get(folderKey);
+      if (folderURI === undefined) {
+        const state = await browser.tmMsgNotify.getFolderState(
+          candidate.weFolder.accountId, candidate.weFolder.path);
+        folderURI = state?.error ? "" : String(state?.folderURI || "");
+        folderURIs.set(folderKey, folderURI);
       }
-    } catch (error) {
-      _throwIfFolderReconInterrupted(error);
-      // A failed scoped query is not evidence either way; the global query decides.
-    } finally {
-      if (openListId) await releaseMessageList(openListId);
+      if (folderURI) {
+        const probe = await browser.tmMsgNotify.probeMessageIds(folderURI, [candidate.headerID]);
+        // Present only on a clean answer: a probe error or an uncertain
+        // lookup is not evidence either way. A positive read across an event
+        // in a candidate folder is voided by the commit-time row check.
+        scopedPositive = !probe?.error
+          && Array.isArray(probe?.missing)
+          && !probe.missing.includes(candidate.headerID)
+          && !(probe.uncertain || []).includes(candidate.headerID);
+      }
+    } catch {
+      // A failed scoped check is not evidence either way; the global query decides.
     }
     if (!scopedPositive) {
       if (!globalQueried && budget.rechecks <= 0) return { kind: "deferred" };
@@ -6035,16 +6038,13 @@ async function _runFolderMembershipMigrationSlice(
   const unresolvedRows = [];
   const unloadedRows = [];
   const budget = { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE };
+  const folderURIs = new Map();
   let processed = 0;
   // Foreground pressure while a row is classified cuts the page there like
-  // a voided row: the rows before it are committed (a bounded write) and the
-  // cursor advances before the slice yields, so recurring pressure cannot
-  // discard a page's progress forever.
-  let pressured = false;
-  const assertCommitCurrent = () => {
-    if (pressured) _assertFolderReconLease(reconcileLease, generation);
-    else assertCurrent();
-  };
+  // a voided row. The commit (a write bounded by the page) checks only the
+  // reconcile lease, and pressure is honoured once the cursor has advanced,
+  // so recurring pressure cannot discard a page's progress forever.
+  const assertCommitCurrent = () => _assertFolderReconLease(reconcileLease, generation);
   for (const entry of entries) {
     const msgId = entry.msgId;
     if (entry.folderId !== null) {
@@ -6079,13 +6079,11 @@ async function _runFolderMembershipMigrationSlice(
         trustedAccountIds,
         assertCurrent,
         budget,
+        folderURIs,
       );
     } catch (error) {
       const message = String(error?.message || error);
-      if (message.includes("folder_recon_pressure")) {
-        pressured = true;
-        break;
-      }
+      if (message.includes("folder_recon_pressure")) break;
       if (!message.includes("folder_changed_during_scan")) throw error;
       // A message event in one of this row's candidate folders voided its
       // verdict; the rows before it still count.
@@ -6200,7 +6198,7 @@ async function _runFolderMembershipMigrationSlice(
   pass.passUnresolved += unresolved;
   pass.unloaded += unloadedAccountRowsKept;
   pass.afterMsgId = processed > 0 ? entries[processed - 1].msgId : pass.afterMsgId;
-  if (pressured) throw new Error("folder_recon_pressure");
+  assertCurrent();
   if (processed < entries.length) {
     return { complete: false, membershipStateProgress: true };
   }

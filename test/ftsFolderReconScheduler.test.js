@@ -84,7 +84,6 @@ vi.mock('../agent/modules/utils.js', () => ({
   parseUniqueId: vi.fn(),
   resolveUniqueMessageKey: vi.fn(),
   recheckMessageInFolder: vi.fn(async () => 'absent'),
-  releaseMessageList: vi.fn(async () => {}),
   getUniqueMessageKey: vi.fn(),
 }));
 
@@ -132,7 +131,6 @@ const {
   headerIDToWeID,
   parseUniqueId,
   recheckMessageInFolder,
-  releaseMessageList,
   resolveUniqueMessageKey,
 } = await import('../agent/modules/utils.js');
 const { buildBatchHeader, populateBatchBody } = await import('../fts/indexer.js');
@@ -436,7 +434,11 @@ function installExactMembershipFolders(specs, { assigned = false } = {}) {
         msgKey: row.msgKey,
       })),
     })),
-    probeMessageIds: vi.fn(async () => ({ missing: [] })),
+    // The folder's msgDB Message-ID index: ids with no live header.
+    probeMessageIds: vi.fn(async (uri, ids) => {
+      const present = new Set((rowsByURI.get(uri) || []).map(row => row.headerMessageId));
+      return { missing: ids.filter(id => !present.has(id)), uncertain: [] };
+    }),
   };
   const nativeRows = new Map();
   for (let index = 0; index < folders.length; index++) {
@@ -1952,7 +1954,17 @@ describe('cooperative folder reconcile production contracts', () => {
         makeFolderMembershipId('account1', '/F:suffix'), null, expect.any(Number),
       );
       expectOnlyBoundedFolderMembershipReads(fts);
-      expect(globalThis.browser.tmMsgNotify.probeMessageIds).not.toHaveBeenCalled();
+      // Classification probes each candidate reading's msgDB once; the walks
+      // themselves never probe (no stale direction).
+      const uriOf = path => folders.find(folder => folder.folderPath === path).folderURI;
+      expect(globalThis.browser.tmMsgNotify.probeMessageIds.mock.calls).toEqual(
+        expect.arrayContaining([
+          [uriOf('/F'), ['parent@example.com']],
+          [uriOf('/F:suffix'), ['child@[IPv6:2001:db8::1]']],
+        ]));
+      expect(globalThis.browser.tmMsgNotify.probeMessageIds.mock.calls
+        .every(([, ids]) => ids.length === 1)).toBe(true);
+      expect(globalThis.browser.messages.query).not.toHaveBeenCalled();
       expect(outcomes).not.toContainEqual(expect.objectContaining({
         skipped: true,
         reason: 'ambiguous_folder_keyspace',
@@ -2741,7 +2753,7 @@ describe('cooperative folder reconcile production contracts', () => {
     expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
   });
 
-  it('yields to pressure raised inside an ownerless row\'s scoped query, then assigns the row', async () => {
+  it('commits an ownerless row classified while pressure rises inside its msgDB probe, then yields', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     try {
@@ -2749,20 +2761,21 @@ describe('cooperative folder reconcile production contracts', () => {
         { folderPath: '/F', headerMessageIds: ['parent@example.com'] },
       ]);
       const row = 'account1:/F:parent@example.com';
-      const query = globalThis.browser.messages.query.getMockImplementation();
-      globalThis.browser.messages.query.mockImplementationOnce(async (args) => {
+      const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementationOnce(async (...args) => {
         getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false });
-        return query(args);
+        return probe(...args);
       });
 
       const result = await settleSchedulerTickWithFakeTimers(fts);
 
+      // The classified row is a bounded write: it commits, then the tick yields.
       expect(result).toMatchObject({ skipped: true, reason: 'pressure' });
-      expect(fts.assignFolderMembershipBatch).not.toHaveBeenCalled();
-      expect(nativeRows.get(row)).toBeNull();
-      getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
-      await tickUntil(fts, () => nativeRows.get(row) === folders[0].folderId);
       expect(nativeRows.get(row)).toBe(folders[0].folderId);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
+      await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
     } finally {
       _testExports._setIsEnabled(false);
       vi.clearAllTimers();
@@ -4215,6 +4228,9 @@ describe('terminal verification membership epoch', () => {
       }]);
       nativeRows.clear();
       nativeRows.set(newKey, folderId);
+      // current@ is live in the folder's msgDB throughout; only the scan view
+      // is refreshed at the terminal step.
+      browser.tmMsgNotify.probeMessageIds.mockResolvedValue({ missing: [], uncertain: [] });
       let terminalArmed = false;
       let refreshed = false;
       let concurrentWrites = 0;
@@ -4641,8 +4657,15 @@ describe('volatile membership-state pass (memo storage churn)', () => {
 
       expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
       const cursors = fts.listFolderMembershipState.mock.calls.map(([after]) => after);
-      // Faulted page one, its same-page retry, page two, then a full replay.
-      expect(cursors.filter(after => after === null).length).toBeGreaterThanOrEqual(3);
+      if (fault === 'throw') {
+        // Faulted page one, its same-page retry, page two, then a full replay.
+        expect(cursors.filter(after => after === null).length).toBeGreaterThanOrEqual(3);
+      } else {
+        // Pressure during the commit keeps the page: the cursor advanced past
+        // page one, then page two, then a full replay.
+        expect(cursors[1]).not.toBeNull();
+        expect(cursors.filter(after => after === null).length).toBeGreaterThanOrEqual(2);
+      }
       expect(cursors.at(-2)).toBeNull();
       if (mutator === 'remove') expect(nativeRows.has(target)).toBe(false);
       else expect(nativeRows.get(target)).toBe(folders[0].folderId);
@@ -5702,29 +5725,47 @@ describe('ownerless-row classifier (exact helpers)', () => {
     expect(_testExports._isFolderReconPending()).toBe(false);
   });
 
-  it('lets the global query decide after a scoped query throws, and takes a continuation-page scoped positive without one', async () => {
+  it('lets the global query decide after a probe throws, errors or reports an uncertain lookup, or its folder state is unreadable, and takes a probe positive without one', async () => {
     const { nativeRows, fts } = seedMigratedExactFolders([
-      { folderPath: '/F', headerMessageIds: ['paged@example.com'] },
+      { folderPath: '/F', headerMessageIds: ['live@example.com'] },
+      { folderPath: '/G', headerMessageIds: [] },
     ]);
-    const thrown = 'account1:/F:thrown@example.com';
-    const paged = 'account1:/F:paged@example.com';
-    nativeRows.set(thrown, null);
-    nativeRows.set(paged, null);
-    const scoped = globalThis.browser.messages.query.getMockImplementation();
-    globalThis.browser.messages.query.mockImplementation(async args => {
-      if (args.headerMessageId === 'thrown@example.com') throw new Error('scoped query failed');
-      if (args.headerMessageId === 'paged@example.com') return { messages: [], id: 'list-1' };
-      return scoped(args);
+    const live = 'account1:/F:live@example.com';
+    const negatives = ['thrown', 'errored', 'uncertain']
+      .map(name => `account1:/F:${name}@example.com`);
+    const stateless = 'account1:/G:stateless@example.com';
+    nativeRows.set(live, null);
+    for (const key of [...negatives, stateless]) nativeRows.set(key, null);
+    const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
+      if (ids[0] === 'thrown@example.com') throw new Error('probe failed');
+      if (ids[0] === 'errored@example.com') return { error: 'db_unavailable' };
+      if (ids[0] === 'uncertain@example.com') return { missing: [], uncertain: ids };
+      return probe(uri, ids);
     });
-    globalThis.browser.messages.continueList = vi.fn(async () => ({ messages: [{ id: 7 }] }));
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let classifying = false;
+    fts.listFolderMembershipState.mockImplementation(((list) => async (...args) => {
+      classifying = true;
+      return list(...args);
+    })(fts.listFolderMembershipState.getMockImplementation()));
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, ...rest) =>
+      (classifying && folderPath === '/G'
+        // An errored state is never trusted, even when it still names a URI.
+        ? { ...(await state(accountId, folderPath, ...rest)), error: 'folder_db_unavailable' }
+        : state(accountId, folderPath, ...rest)));
     recheckMessageInFolder.mockResolvedValue('present');
 
     await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
 
     const owner = makeFolderMembershipId('account1', '/F');
-    expect(nativeRows.get(thrown)).toBe(owner);
-    expect(nativeRows.get(paged)).toBe(owner);
-    expect(recheckMessageInFolder.mock.calls.map(([headerId]) => headerId)).toEqual(['thrown@example.com']);
+    for (const key of [live, ...negatives]) expect(nativeRows.get(key)).toBe(owner);
+    expect(nativeRows.get(stateless)).toBe(makeFolderMembershipId('account1', '/G'));
+    expect(recheckMessageInFolder.mock.calls.map(([headerId]) => headerId).sort()).toEqual(
+      ['errored@example.com', 'stateless@example.com', 'thrown@example.com', 'uncertain@example.com']);
+    expect(globalThis.browser.tmMsgNotify.probeMessageIds.mock.calls
+      .some(([, ids]) => ids[0] === 'stateless@example.com')).toBe(false);
+    expect(globalThis.browser.messages.query).not.toHaveBeenCalled();
   });
 
   it('migrates many already-owned rows without any message query', async () => {
@@ -8608,8 +8649,9 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
       expect(_testExports._getFolderReconSessionDone()).toEqual(new Set(['account1:/A', 'account1:/B']));
     });
 
-    // The pass assigns an ownerless row through a per-row query of its
-    // folder, so assignment never waits on the folder's msgDB scan.
+    // The pass assigns an ownerless row through a per-row probe of its
+    // folder's Message-ID index, so assignment never waits on the folder's
+    // msgDB scan.
     it.each(['readable', 'scan'])('assigns a new folder\'s ownerless row per row and earns cutover; failure=%s', async (failure) => {
       const installed = installTokenFolders([specs[0]]);
       const { fts } = installed;
@@ -8619,16 +8661,16 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
       });
       readable.value = failure === 'readable';
       globalThis.browser.messages.query.mockClear();
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockClear();
       await abandonQueuedUpdate('account1:/A');
 
       expect(await runUntil(fts, () => passReadWithB()
         && _testExports._getFolderMembershipCutoverProven(), Date.now() + 60 * 60_000)).toBe(true);
 
       expect(installed.nativeRows.get(B1)).toBe(b.folderId);
-      expect(globalThis.browser.messages.query).toHaveBeenCalledWith(expect.objectContaining({
-        folderId: b.weFolderId,
-        headerMessageId: 'b-1@example.com',
-      }));
+      expect(globalThis.browser.tmMsgNotify.probeMessageIds)
+        .toHaveBeenCalledWith(b.folderURI, ['b-1@example.com']);
+      expect(globalThis.browser.messages.query).not.toHaveBeenCalled();
       if (failure === 'readable') {
         expect(await settleAllWithDrain(fts, installed.nativeRows, installed.folders)).toBe(true);
         expect(_testExports._getFolderReconSessionDone()).toEqual(new Set(['account1:/A', 'account1:/B']));
@@ -8642,10 +8684,10 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
       const { fts } = installed;
       await finishSession(fts);
       const { b, readable, passReadWithB } = addUnreadableFolder(installed, { rows: ['b-1@example.com'], ownerless: true });
-      const query = globalThis.browser.messages.query.getMockImplementation();
-      globalThis.browser.messages.query.mockImplementation(async (args) => {
-        if (args.folderId === b.weFolderId && !readable.value) throw new Error('folder_db_unavailable');
-        return query(args);
+      const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
+      globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
+        if (uri === b.folderURI && !readable.value) throw new Error('folder_db_unavailable');
+        return probe(uri, ids);
       });
       recheckMessageInFolder.mockImplementation(async (_headerID, weFolder) =>
         (weFolder?.path === '/B' && !readable.value ? 'error' : 'absent'));
@@ -9551,10 +9593,11 @@ describe('a newer queued intention during a drain retry', () => {
   });
 });
 
-describe('membership assignment scoped query list lifecycle', () => {
-  const ROW = 'account1:/F:scoped@example.com';
-  const HIT = { id: 5, headerMessageId: 'scoped@example.com' };
-
+// Classification cost: one hashed msgDB Message-ID lookup per candidate
+// reading, never a WebExtension query (Thunderbird answers a folder-scoped
+// `messages.query` by walking the whole folder, so a per-row query made the
+// migration quadratic in folder size).
+describe('membership assignment msgDB probe', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
@@ -9565,86 +9608,56 @@ describe('membership assignment scoped query list lifecycle', () => {
     vi.useRealTimers();
   });
 
-  function seedUnassignedRow() {
-    const installed = seedMigratedExactFolders([{ folderPath: '/F', headerMessageIds: [] }]);
-    installed.nativeRows.set(ROW, null);
-    globalThis.browser.messages = {
-      ...globalThis.browser.messages,
-      query: vi.fn(),
-      continueList: vi.fn(),
-    };
-    return installed;
-  }
-
-  it('assigns on a terminal scoped positive with no global query and no list to release', async () => {
-    const { fts, nativeRows, folders } = seedUnassignedRow();
-    globalThis.browser.messages.query.mockResolvedValue({ messages: [HIT] });
+  it('classifies every ownerless row with one probe of its folder and no message query', async () => {
+    const headerMessageIds = Array.from({ length: reconConfig.membershipStatePageSize + 3 },
+      (_, index) => `probed-${String(index).padStart(4, '0')}@example.com`);
+    const { fts, nativeRows, folders } = seedMigratedExactFolders([
+      { folderPath: '/F', headerMessageIds },
+    ]);
+    for (const id of headerMessageIds) nativeRows.set(`account1:/F:${id}`, null);
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockClear();
+    globalThis.browser.tmMsgNotify.getFolderState.mockClear();
 
     await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
 
-    expect(nativeRows.get(ROW)).toBe(folders[0].folderId);
+    for (const id of headerMessageIds) expect(nativeRows.get(`account1:/F:${id}`)).toBe(folders[0].folderId);
+    const probes = globalThis.browser.tmMsgNotify.probeMessageIds.mock.calls;
+    expect(probes.map(([, ids]) => ids[0]).sort()).toEqual(headerMessageIds);
+    expect(probes.every(([uri, ids]) => uri === folders[0].folderURI && ids.length === 1)).toBe(true);
+    // The folder's URI is resolved once per state page, not once per row.
+    const stateReads = globalThis.browser.tmMsgNotify.getFolderState.mock.calls
+      .filter(([, folderPath]) => folderPath === '/F').length;
+    expect(stateReads).toBeLessThan(headerMessageIds.length);
+    expect(globalThis.browser.messages.query).not.toHaveBeenCalled();
     expect(recheckMessageInFolder).not.toHaveBeenCalled();
-    expect(releaseMessageList).not.toHaveBeenCalled();
   });
 
-  it('releases an open list when an event in its folder interrupts its continuation, then assigns on retry', async () => {
-    const { fts, nativeRows, folders } = seedUnassignedRow();
+  it('retries a row whose probe is interrupted by an event in its folder, then assigns it', async () => {
+    const { fts, nativeRows, folders } = seedMigratedExactFolders([{ folderPath: '/F', headerMessageIds: [] }]);
+    const row = 'account1:/F:probed@example.com';
+    nativeRows.set(row, null);
     let interrupted = false;
-    globalThis.browser.messages.query.mockImplementation(async () => (interrupted
-      ? { messages: [HIT] }
-      : { id: 'list-1', messages: [] }));
-    globalThis.browser.messages.continueList.mockImplementation(async () => {
-      interrupted = true;
-      // A real Thunderbird event lands while the continuation is in flight.
-      await _testExports.onExperimentMessageAdded({
-        accountId: 'account1', folderPath: '/F', headerMessageId: 'other@example.com', msgKey: 9, eventType: 'msgAdded',
-      });
-      _testExports._getPendingUpdates().clear();
-      return { id: 'list-1', messages: [HIT] };
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async () => {
+      if (!interrupted) {
+        interrupted = true;
+        // A real Thunderbird event lands while the probe is in flight.
+        await _testExports.onExperimentMessageAdded({
+          accountId: 'account1', folderPath: '/F', headerMessageId: 'other@example.com', msgKey: 9, eventType: 'msgAdded',
+        });
+        _testExports._getPendingUpdates().clear();
+      }
+      return { missing: [], uncertain: [] };
     });
 
     const first = await settleSchedulerTickWithFakeTimers(fts);
     expect(first).toMatchObject({ complete: false, migration: { membershipStateProgress: true } });
     expect(_testExports._getFolderReconRuntimeTelemetry().membershipStatePageRetries).toBe(1);
-    expect(releaseMessageList).toHaveBeenCalledWith('list-1');
-    expect(nativeRows.get(ROW)).toBeNull();
+    expect(nativeRows.get(row)).toBeNull();
     expect(recheckMessageInFolder).not.toHaveBeenCalled();
 
     vi.setSystemTime(Date.now() + 100);
     await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
-    expect(nativeRows.get(ROW)).toBe(folders[0].folderId);
-  });
-
-  // A positive is conclusive for its folder: the rest of the list (copies
-  // sharing the Message-ID) is never paged, and the open list is released.
-  it('stops paging at a scoped positive and releases the open list', async () => {
-    const { fts, nativeRows, folders } = seedUnassignedRow();
-    globalThis.browser.messages.query.mockResolvedValue({ id: 'list-1', messages: [HIT] });
-    // A long result: one more page per continuation, then the last.
-    globalThis.browser.messages.continueList
-      .mockResolvedValueOnce({ id: 'list-1', messages: [HIT] })
-      .mockResolvedValueOnce({ id: 'list-1', messages: [HIT] })
-      .mockResolvedValue({ id: null, messages: [HIT] });
-
-    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
-
-    expect(nativeRows.get(ROW)).toBe(folders[0].folderId);
-    expect(globalThis.browser.messages.continueList).not.toHaveBeenCalled();
-    expect(releaseMessageList).toHaveBeenCalledWith('list-1');
-    expect(recheckMessageInFolder).not.toHaveBeenCalled();
-  });
-
-  it('releases the list when a continuation fails and lets the global query decide', async () => {
-    const { fts, nativeRows, folders } = seedUnassignedRow();
-    globalThis.browser.messages.query.mockResolvedValue({ id: 'list-1', messages: [] });
-    globalThis.browser.messages.continueList.mockRejectedValue(new Error('list busy'));
-    recheckMessageInFolder.mockResolvedValue('present');
-
-    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
-
-    expect(releaseMessageList).toHaveBeenCalledWith('list-1');
-    expect(recheckMessageInFolder).toHaveBeenCalled();
-    expect(nativeRows.get(ROW)).toBe(folders[0].folderId);
+    expect(nativeRows.get(row)).toBe(folders[0].folderId);
   });
 });
 
@@ -9813,9 +9826,8 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
       await new Promise(resolve => setTimeout(resolve, READ_MS));
       return fn(...args);
     });
-    globalThis.browser.messages.query = slow(globalThis.browser.messages.query.getMockImplementation());
     const notify = globalThis.browser.tmMsgNotify;
-    for (const name of ['readFolderMessageScanPage', 'beginFolderMessageScan', 'getFolderState']) {
+    for (const name of ['readFolderMessageScanPage', 'beginFolderMessageScan', 'getFolderState', 'probeMessageIds']) {
       notify[name] = slow(notify[name].getMockImplementation());
     }
     let pressuredSlices = 0;
@@ -9844,10 +9856,10 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
     nativeRows.set('account1:/F:cold@example.com', null);
     _testExports._setFtsSearch(fts);
     recheckMessageInFolder.mockResolvedValue('error');
-    const query = globalThis.browser.messages.query.getMockImplementation();
+    const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
     let fired = false;
-    globalThis.browser.messages.query.mockImplementation(async (args) => {
-      if (!fired && args?.headerMessageId === 'cold@example.com') {
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
+      if (!fired && ids[0] === 'cold@example.com') {
         fired = true;
         await _testExports.onExperimentMessageAdded({
           accountId: 'account1', folderPath: '/F', weFolderId: folders[0].weFolderId,
@@ -9855,7 +9867,7 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
         });
         _testExports._getPendingUpdates().clear();
       }
-      return query(args);
+      return probe(uri, ids);
     });
 
     const first = await settleSchedulerTickWithFakeTimers(fts);
@@ -9870,7 +9882,7 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
   it.each([
     { eventFolder: '/Other', assigned: true },
     { eventFolder: '/F', assigned: false },
-  ])('classifies an ownerless row while mail is drained into $eventFolder inside every scoped query: assigned=$assigned', async ({ eventFolder, assigned }) => {
+  ])('classifies an ownerless row while mail is drained into $eventFolder inside every msgDB probe: assigned=$assigned', async ({ eventFolder, assigned }) => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     const { fts, folders, nativeRows, rowsByURI } = seedMigratedExactFolders([
@@ -9899,10 +9911,10 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
       return { count: rows.length };
     });
     fts.indexBatch = engineFtsSearch.indexBatch;
-    const query = globalThis.browser.messages.query.getMockImplementation();
+    const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
     let arrivals = 0;
-    globalThis.browser.messages.query.mockImplementation(async (args) => {
-      // A real arrival, fully drained, lands inside every scoped query.
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
+      // A real arrival, fully drained, lands inside every msgDB probe.
       const headerMessageId = `arrival-${arrivals++}@example.com`;
       rowsByURI.get(busy.folderURI).push({ msgKey: 10_000 + arrivals, headerMessageId });
       currentHeader = { id: 1, headerMessageId, folder: { accountId: 'account1', path: busy.folderPath } };
@@ -9911,7 +9923,7 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
         headerMessageId, msgKey: 10_000 + arrivals, eventType: 'msgAdded',
       });
       await flushPendingUpdates();
-      return query(args);
+      return probe(uri, ids);
     });
 
     for (let turn = 0; turn < 40 && !_testExports._getPendingUpdates().has(missing); turn++) {
@@ -10127,15 +10139,15 @@ describe('membership-state verdicts never outlive their evidence', () => {
       { folderPath: '/Z', headerMessageIds: ['later@example.com'] },
     ]);
     nativeRows.set('account1:/Z:later@example.com', null);
-    const query = globalThis.browser.messages.query.getMockImplementation();
+    const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
     let moved = false;
-    globalThis.browser.messages.query.mockImplementation(async (args) => {
-      if (args.folderId === folders[2].weFolderId && !moved) {
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
+      if (uri === folders[2].folderURI && !moved) {
         moved = true;
         await move();
         expect(nativeRows.get(key)).toBeNull();
       }
-      return query(args);
+      return probe(uri, ids);
     });
 
     await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
@@ -10147,30 +10159,28 @@ describe('membership-state verdicts never outlive their evidence', () => {
     expect(nativeRows.get(key)).toBe(folders[0].folderId);
   });
 
-  it('never commits an assignment whose candidate folder changed during its last list release', async () => {
+  it('never commits an assignment whose candidate folder changed after its last probe answered', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     const { fts, folders, nativeRows, key, move } = seedAmbiguousRow();
-    const query = globalThis.browser.messages.query.getMockImplementation();
-    globalThis.browser.messages.query.mockImplementation(async (args) => ({
-      ...(await query(args)), id: `list-${args.folderId}`,
-    }));
-    // /F (the positive) is queried last, and the message moves while its
-    // list is released — after the row's last query.
+    // /F (the positive) is probed last, and the message moves after its
+    // probe answered — after the row's last read.
     const candidates = getUniqueMessageKeyCandidates.getMockImplementation();
     getUniqueMessageKeyCandidates.mockImplementation((...args) => candidates(...args)
       .sort((a, b) => b.weFolder.path.length - a.weFolder.path.length));
+    const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
     let moved = false;
-    releaseMessageList.mockImplementation(async (listId) => {
-      if (listId === `list-${folders[1].weFolderId}` && !moved) {
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
+      const result = await probe(uri, ids);
+      if (uri === folders[1].folderURI && !moved) {
         moved = true;
         await move();
       }
+      return result;
     });
     try {
       await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
     } finally {
-      releaseMessageList.mockImplementation(async () => {});
       getUniqueMessageKeyCandidates.mockImplementation(candidates);
     }
 
@@ -10239,16 +10249,16 @@ describe('membership-state verdicts never outlive their evidence', () => {
     nativeRows.set(orphan, makeFolderMembershipId('account1', '/G'));
     nativeRows.set(ghost, null);
     nativeRows.set(unloaded, null);
-    const query = globalThis.browser.messages.query.getMockImplementation();
+    const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
     let moved = false;
-    globalThis.browser.messages.query.mockImplementation(async (args) => {
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
       // /Z sorts after every other row: the move voids /F:Child's assignment
       // (the first row) after the whole page was classified.
-      if (args.folderId === folders[4].weFolderId && !moved) {
+      if (uri === folders[4].folderURI && !moved) {
         moved = true;
         await move();
       }
-      return query(args);
+      return probe(uri, ids);
     });
 
     const first = await settleSchedulerTickWithFakeTimers(fts);
@@ -10312,15 +10322,15 @@ describe('membership-state verdicts never outlive their evidence', () => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     const { fts, folders, nativeRows, rowsByURI, key } = seedAmbiguousRow();
-    // /F is queried second.
+    // /F is probed second.
     const candidates = getUniqueMessageKeyCandidates.getMockImplementation();
     getUniqueMessageKeyCandidates.mockImplementation((...args) => candidates(...args)
       .sort((a, b) => b.weFolder.path.length - a.weFolder.path.length));
-    const query = globalThis.browser.messages.query.getMockImplementation();
+    const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
     let removed = false;
-    globalThis.browser.messages.query.mockImplementation(async (args) => {
-      const page = await query(args);
-      if (args.folderId === folders[1].weFolderId && !removed) {
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
+      const page = await probe(uri, ids);
+      if (uri === folders[1].folderURI && !removed) {
         removed = true;
         rowsByURI.get(folders[1].folderURI).splice(0);
         await _testExports.onExperimentMessageRemoved({

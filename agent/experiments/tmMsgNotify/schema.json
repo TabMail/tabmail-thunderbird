@@ -222,6 +222,7 @@
           "type": "object",
           "properties": {
             "missing": { "type": "array", "items": { "type": "string" } },
+            "uncertain": { "type": "array", "items": { "type": "string" }, "optional": true },
             "error": { "type": "string", "optional": true }
           }
         }
