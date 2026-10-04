@@ -554,9 +554,10 @@ async function processPendingUpdates() {
     const toDeleteUpdates = updates.filter(u => u.type === 'deleted');
     
     // Process deletions first - use unique keys directly. A delete event whose
-    // folder info was stale leaves the real row behind; the periodic
-    // reconciliation pass removes it (a scoped negative is not deletion
-    // evidence, so the drain never deletes a sibling key).
+    // folder info was stale leaves the real row behind; that folder's next
+    // verification removes it (periodic re-verification for gate-capable
+    // folders, otherwise the next session). A scoped negative is not deletion
+    // evidence, so the drain never deletes a sibling key.
     if (toDeleteUpdates.length > 0) {
       const toDeleteUniqueKeys = toDeleteUpdates.map(u => u.uniqueKey);
       const removeResult = await _ftsSearch.removeBatch(toDeleteUniqueKeys);
