@@ -158,6 +158,8 @@ export async function run(args = {}, options = {}, deps = defaultDeps) {
       return { error: "the file is not a readable PDF (it is damaged or not really a PDF)" };
     }
 
+    // pdf.js transfers the bytes to its worker, which empties `bytes`; take the size first.
+    const byteCount = bytes.length;
     const pdfjs = await deps.loadPdfjs();
     const result = await extractPdfText(bytes, { startPage, endPage }, {
       pdfjs,
@@ -168,7 +170,7 @@ export async function run(args = {}, options = {}, deps = defaultDeps) {
         timeoutMs: CONFIG.PARSE_TIMEOUT_MS,
       },
     });
-    log(`[TMDBG Tools] attachment_read_pdf: weID=${weID} part=${attachment.partName} bytes=${bytes.length} outcome=${result.outcome}`);
+    log(`[TMDBG Tools] attachment_read_pdf: weID=${weID} part=${attachment.partName} bytes=${byteCount} outcome=${result.outcome}`);
 
     switch (result.outcome) {
       case PDF_TEXT_OUTCOME.OK:
