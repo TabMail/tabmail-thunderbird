@@ -159,8 +159,8 @@ export function processToolCallLLMtoTB(toolName, args, overrideCtx) {
     const processedArgs = { ...args };
 
     // Handle different tool types based on their name prefix
-    // Email tools (email_*)
-    if (toolName.startsWith('email_')) {
+    // Email tools (email_*), and attachment_read_pdf, which names its email by unique_id
+    if (toolName.startsWith('email_') || toolName === 'attachment_read_pdf') {
       // Handle single unique_id parameter
       if ((processedArgs.unique_id || processedArgs.UniqueID) && (typeof (processedArgs.unique_id || processedArgs.UniqueID) === 'number' || typeof (processedArgs.unique_id || processedArgs.UniqueID) === 'string')) {
         const realId = toRealId(processedArgs.unique_id || processedArgs.UniqueID, overrideCtx);

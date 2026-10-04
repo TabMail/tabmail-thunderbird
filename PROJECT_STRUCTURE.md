@@ -2,7 +2,7 @@
 
 > **Directory tree, entry points, and sub-component map.** Update when the structure changes.
 
-**Last updated:** 2026-09-26
+**Last updated:** 2026-10-03
 
 ---
 
@@ -23,6 +23,7 @@ tabmail-thunderbird/
 │   ├── chat.html / .js / .css  # Main chat window
 │   ├── experiments/            # Experiment APIs (glodaSearch, tmCalendar, tmWebFetch, messageSelection)
 │   ├── fsm/                    # Finite State Machines (email, calendar, contacts actions)
+│   ├── libs/pdfjs/             # Bundled pdf.js (legacy build, worker, CMaps) — attachment_read_pdf
 │   ├── tools/                  # 31 chat tool implementations
 │   │   └── core.js             # Tool registry — update when adding tools
 │   └── modules/                # 20+ support modules (converse, persistence, context, markdown)
