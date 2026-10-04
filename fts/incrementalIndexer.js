@@ -6554,6 +6554,10 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
       _folderReconDrainFailureDeferred.delete(target);
       _folderReconSessionDeferred.delete(target);
     }
+    // A queued event can drain without a native write or a walk mark (its
+    // raw key is already indexed under the old owner), so only the target's
+    // own local proof records it at the grant below.
+    const targetLocalSerial = _folderReconLocalSerial;
     let stats;
     try {
       stats = await _runFolderReconcile(
@@ -6604,6 +6608,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
       }
     }
     if (stats?._verifiedThisRun?.has(target)
+        && _folderReconLocalUnchangedSince(target, targetLocalSerial)
         && ftsMembershipUnchangedSince(
           _folderReconNativeScope(identities.find(identity =>
             `${identity.accountId}:${identity.folderPath}` === target)),
