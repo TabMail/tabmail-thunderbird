@@ -1315,7 +1315,8 @@ export function initialiseEmailCompose() {
 
 /**
  * Formats an array of inbox/search items into a wrapped text block suitable for LLM prompts.
- * Each item can include: uniqueId, internalId, date, from, subject, blurb, todos, snippet, hasAttachments.
+ * Each item can include: uniqueId, internalId, date, from, subject, blurb, todos, snippet,
+ * hasAttachments (true / false; anything else prints "unknown").
  * If snippet is available (from FTS search), it will be used instead of blurb/todos.
  *
  * @param {Array<Object>} items
@@ -1331,7 +1332,8 @@ export function formatMailList(items, options = {}) {
         `date: ${it?.date || ""}`,
         `from: ${it?.from || ""}`,
         `subject: ${it?.subject || "(No subject)"}`,
-        `has_attachments: ${it?.hasAttachments ? "yes" : "no"}`,
+        // Anything but a known true/false is "unknown", never a guessed "no".
+        `has_attachments: ${it?.hasAttachments === true ? "yes" : it?.hasAttachments === false ? "no" : "unknown"}`,
         `currently_tagged_for: ${it?.action || ""}`,
         `replied: ${it?.replied === true ? "yes" : "no"}`
       );

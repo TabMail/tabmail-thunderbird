@@ -44,6 +44,33 @@ async function _runOwnedFtsScan(kind, status, body) {
   }
 }
 
+// A full smart reindex. While the attachment flag repair is outstanding, it also re-adds the
+// already-indexed rows whose attachment flag is stale (fts/attachmentFlags.js).
+function _runSmartReindex(reportProgress) {
+  return _runOwnedFtsScan("smart", { scanType: "smart" }, async (lease) => {
+    const { indexMessages } = await import("./indexer.js");
+    const progressCallback = reportProgress ? async (p) => {
+      await writeOwnedFtsScanStatus(lease, {
+        scanType: "smart",
+        progress: {
+          folder: p.folder || "",
+          totalIndexed: p.totalIndexed || 0,
+          totalBatches: p.totalBatches || 0,
+        },
+      });
+      browser.runtime.sendMessage({type:"ftsProgress", ...p});
+    } : undefined;
+    const scanResult = await indexMessages(ftsSearch, progressCallback);
+    try {
+      const { logSmartReindexRun } = await import("./maintenanceScheduler.js");
+      await logSmartReindexRun(scanResult);
+    } catch (logErr) {
+      log(`[TMDBG FTS] Failed to log smart reindex: ${logErr.message}`, "warn");
+    }
+    return scanResult;
+  });
+}
+
 // Command interface for runtime messaging
 function attachCommandInterface() {
   const onMsg = (msg, _sender, sendResponse) => {
@@ -88,29 +115,7 @@ function attachCommandInterface() {
               return;
             }
             case "smartReindex": {
-              const result = await _runOwnedFtsScan("smart", { scanType: "smart" }, async (lease) => {
-                const { indexMessages } = await import("./indexer.js");
-                const progressCallback = msg.progress ? async (p) => {
-                  await writeOwnedFtsScanStatus(lease, {
-                    scanType: "smart",
-                    progress: {
-                      folder: p.folder || "",
-                      totalIndexed: p.totalIndexed || 0,
-                      totalBatches: p.totalBatches || 0,
-                    },
-                  });
-                  browser.runtime.sendMessage({type:"ftsProgress", ...p});
-                } : undefined;
-                const scanResult = await indexMessages(ftsSearch, progressCallback);
-                try {
-                  const { logSmartReindexRun } = await import("./maintenanceScheduler.js");
-                  await logSmartReindexRun(scanResult);
-                } catch (logErr) {
-                  log(`[TMDBG FTS] Failed to log smart reindex: ${logErr.message}`, "warn");
-                }
-                return scanResult;
-              });
-              sendResponse(result);
+              sendResponse(await _runSmartReindex(!!msg.progress));
               return;
             }
             case "pause": {
@@ -496,6 +501,24 @@ async function _initFtsEngineOnce() {
       log("[TMDBG FTS] Maintenance scheduler initialized");
     } catch (e) {
       log(`[TMDBG FTS] Failed to initialize maintenance scheduler: ${e}`, "error");
+    }
+
+    // Rows indexed before the indexer read Thunderbird's attachment flag all say "no
+    // attachments"; a full smart reindex re-adds them. Runs at each startup until one succeeds.
+    // An index whose initial scan has not finished is repaired by that scan instead.
+    try {
+      const { areAttachmentFlagsRepaired } = await import("./attachmentFlags.js");
+      const { fts_initial_scan_complete } = await browser.storage.local.get("fts_initial_scan_complete");
+      if (fts_initial_scan_complete && !(await areAttachmentFlagsRepaired())) {
+        log("[TMDBG FTS] Attachment flags not yet repaired; starting a smart reindex");
+        _runSmartReindex(false).then((result) => {
+          log(`[TMDBG FTS] Attachment flag repair smart reindex finished: ${JSON.stringify(result?.attachmentRepair || null)}`);
+        }).catch((e) => {
+          log(`[TMDBG FTS] Attachment flag repair smart reindex failed: ${e}`, "error");
+        });
+      }
+    } catch (e) {
+      log(`[TMDBG FTS] Attachment flag repair check failed: ${e}`, "warn");
     }
 
     // One-time migration of existing chat history to memory FTS

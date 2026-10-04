@@ -148,23 +148,12 @@
       {
         "name": "getHasAttachmentBulk",
         "type": "function",
-        "description": "Bulk check for nsMsgMessageFlags.Attachment, resolving each header by RFC Message-ID in its folder.",
+        "description": "Bulk read of nsMsgMessageFlags.Attachment by WebExtension message id. Each result is true, false, or null when the message is gone or its header could not be read.",
         "async": true,
         "parameters": [
-          {
-            "name": "items",
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "folderURI": { "type": "string" },
-                "pathStr": { "type": "string", "optional": true },
-                "messageId": { "type": "string" }
-              }
-            }
-          }
+          { "name": "messageIds", "type": "array", "items": { "type": "integer" } }
         ],
-        "returns": { "type": "array", "items": { "type": "boolean" } }
+        "returns": { "type": "array", "items": { "choices": [{ "type": "boolean" }, { "type": "null" }] } }
       },
       {
         "name": "getRepliedByMessageId",

@@ -2,15 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// email_read reports attachments from browser.messages.listAttachments. Thunderbird's
-// MessageHeader has no attachment field, so the header can never be the source.
+// email_read reports attachments from the MIME tree it already fetched for the body. When the
+// body came from the FTS index (no MIME tree), it uses Thunderbird's database flag. It never
+// calls listAttachments or messages.query, which parse (and may download) the message again,
+// and it never prints "no" when it could not tell.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
   resolveUniqueMessageKey: vi.fn(async () => ({ weFolder: { id: 'account1://INBOX' }, headerID: 'a@example.com', weID: 42 })),
-  safeGetFull: vi.fn(async () => ({ __tmSynthetic: true, body: '', parts: [] })),
+  safeGetFull: vi.fn(),
   extractBodyFromParts: vi.fn(async () => ''),
   getRealSubject: vi.fn(async (h) => h.subject),
   getUniqueMessageKey: vi.fn(async () => 'account1:/INBOX:a@example.com'),
@@ -21,7 +23,7 @@ vi.mock('../chat/modules/icsParser.js', () => ({
   formatIcsAttachmentsAsString: vi.fn(() => ''),
 }));
 
-const { log } = await import('../agent/modules/utils.js');
+const { log, safeGetFull } = await import('../agent/modules/utils.js');
 const { run } = await import('../chat/tools/email_read.js');
 
 // The shape Thunderbird 157's messages.get returns: there is no hasAttachments property.
@@ -36,66 +38,96 @@ const header = {
   folder: { id: 'account1://INBOX', path: '/INBOX' },
 };
 
+const textPart = { contentType: 'text/plain', partName: '1.1', size: 0, body: '' };
+const pdfPart = { contentType: 'application/pdf', name: 'invoice.pdf', partName: '1.2', size: 51200 };
+const mixed = (...parts) => ({ contentType: 'message/rfc822', partName: '', parts: [{ contentType: 'multipart/mixed', partName: '1', parts }] });
+
+const getHasAttachmentBulk = vi.fn();
 const listAttachments = vi.fn();
+const query = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
   globalThis.browser = {
-    messages: { get: vi.fn(async () => header), listAttachments },
-    tmHdr: { getMsgKey: vi.fn(async () => 7), getReplied: vi.fn(async () => false) },
+    messages: { get: vi.fn(async () => header), listAttachments, query },
+    tmHdr: { getMsgKey: vi.fn(async () => 7), getReplied: vi.fn(async () => false), getHasAttachmentBulk },
   };
 });
 
-describe('email_read attachments', () => {
+const readLines = async () => {
+  const out = await run({ unique_id: 'u1' });
+  expect(typeof out).toBe('string');
+  expect(listAttachments).not.toHaveBeenCalled();
+  expect(query).not.toHaveBeenCalled();
+  return out.split('\n');
+};
+
+describe('email_read attachments from the fetched MIME tree', () => {
   it('reports an attachment-only email as having its attachment, and lists it after the body', async () => {
-    listAttachments.mockResolvedValue([
-      { name: 'invoice.pdf', contentType: 'application/pdf', partName: '1.2', size: 51200 },
-    ]);
-    const out = await run({ unique_id: 'u1' });
-    expect(typeof out).toBe('string');
-    const lines = out.split('\n');
+    safeGetFull.mockResolvedValue(mixed(textPart, pdfPart));
+    const lines = await readLines();
     expect(lines).toContain('has_attachments: yes');
-    const bodyAt = lines.indexOf('body:');
     const listAt = lines.indexOf('attachments:');
-    expect(listAt).toBeGreaterThan(bodyAt);
+    expect(listAt).toBeGreaterThan(lines.indexOf('body:'));
     expect(lines[listAt + 1]).toBe('  - invoice.pdf (application/pdf, 51200 bytes)');
-    expect(listAttachments).toHaveBeenCalledWith(42);
+    expect(getHasAttachmentBulk).not.toHaveBeenCalled();
   });
 
-  it('lists every attachment', async () => {
-    listAttachments.mockResolvedValue([
-      { name: 'a.pdf', contentType: 'application/pdf', partName: '1.2', size: 10 },
-      { name: 'b.png', contentType: 'image/png', partName: '1.3', size: 20 },
-    ]);
-    const lines = (await run({ unique_id: 'u1' })).split('\n');
+  it('finds a single-part attachment that the database flag would miss', async () => {
+    safeGetFull.mockResolvedValue({ ...pdfPart, partName: '' });
+    const lines = await readLines();
+    expect(lines).toContain('has_attachments: yes');
+    expect(lines).toContain('  - invoice.pdf (application/pdf, 51200 bytes)');
+  });
+
+  it('lists every file, counting an attached email once', async () => {
+    const forwarded = {
+      contentType: 'message/rfc822', name: 'fwd.eml', partName: '1.3', size: 900,
+      parts: [{ contentType: 'multipart/mixed', parts: [{ contentType: 'image/png', name: 'inner.png', size: 5 }] }],
+    };
+    safeGetFull.mockResolvedValue(mixed(textPart, pdfPart, forwarded));
+    const lines = await readLines();
     const listAt = lines.indexOf('attachments:');
-    expect(lines.slice(listAt + 1, listAt + 3)).toEqual([
-      '  - a.pdf (application/pdf, 10 bytes)',
-      '  - b.png (image/png, 20 bytes)',
+    expect(lines.slice(listAt + 1)).toEqual([
+      '  - invoice.pdf (application/pdf, 51200 bytes)',
+      '  - fwd.eml (message/rfc822, 900 bytes)',
     ]);
   });
 
-  it('reports no attachments, and no list, when the email has none', async () => {
-    listAttachments.mockResolvedValue([]);
-    const lines = (await run({ unique_id: 'u1' })).split('\n');
+  it('reports no attachments, and no list, when the MIME tree has no files', async () => {
+    safeGetFull.mockResolvedValue(mixed(textPart));
+    const lines = await readLines();
     expect(lines).toContain('has_attachments: no');
     expect(lines).not.toContain('attachments:');
   });
+});
 
-  it('reports no attachments when listAttachments returns nothing', async () => {
-    listAttachments.mockResolvedValue(undefined);
-    const lines = (await run({ unique_id: 'u1' })).split('\n');
-    expect(lines).toContain('has_attachments: no');
+describe('email_read attachments for a body served from the FTS index', () => {
+  beforeEach(() => {
+    safeGetFull.mockResolvedValue({ __tmSynthetic: true, body: 'indexed body', parts: [] });
+  });
+
+  it('uses Thunderbird\'s database flag for the message, without a list', async () => {
+    getHasAttachmentBulk.mockResolvedValue([true]);
+    const lines = await readLines();
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([42]);
+    expect(lines).toContain('has_attachments: yes');
     expect(lines).not.toContain('attachments:');
   });
 
-  it('reports unknown, not no, and logs an error when the attachments cannot be listed', async () => {
-    listAttachments.mockRejectedValue(new Error('boom'));
-    const out = await run({ unique_id: 'u1' });
-    expect(typeof out).toBe('string');
-    const lines = out.split('\n');
-    expect(lines).toContain('has_attachments: unknown');
-    expect(lines).not.toContain('attachments:');
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('listAttachments failed'), 'error');
+  it('reports no when the flag is clear', async () => {
+    getHasAttachmentBulk.mockResolvedValue([false]);
+    expect(await readLines()).toContain('has_attachments: no');
+  });
+
+  it('reports unknown, not no, when the header is gone', async () => {
+    getHasAttachmentBulk.mockResolvedValue([null]);
+    expect(await readLines()).toContain('has_attachments: unknown');
+  });
+
+  it('reports unknown, not no, and logs an error when the flag cannot be read', async () => {
+    getHasAttachmentBulk.mockRejectedValue(new Error('boom'));
+    expect(await readLines()).toContain('has_attachments: unknown');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('attachment flag read failed'), 'error');
   });
 });

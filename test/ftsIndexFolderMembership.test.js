@@ -20,6 +20,10 @@ vi.mock("../agent/modules/utils.js", () => ({
 vi.mock("../agent/modules/eventLogger.js", () => ({ pushCorrectionDetail: vi.fn() }));
 vi.mock("../fts/engine.js", () => ({ ftsSearch: {} }));
 
+globalThis.browser = {
+  tmHdr: { getHasAttachmentBulk: vi.fn(async items => items.map(() => false)) },
+};
+
 const { buildBatchHeader } = await import("../fts/indexer.js");
 
 describe("FTS header row folder identity", () => {

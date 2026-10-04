@@ -2,145 +2,113 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// email_search takes each result's attachment flag from Thunderbird's message database
-// (tmHdr.getHasAttachmentBulk by Message-ID), not from the index's never-set column.
+// email_search prints each result's has_attachments line from the index once the index's
+// attachment flags are repaired (fts/attachmentFlags.js). Until then it asks Thunderbird's
+// message database by WebExtension id, and anything it cannot tell prints "unknown", never "no".
+// formatMailList is the real one, so these tests check the line the model reads.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// utils.js loads these at import; getUniqueMessageKeyCandidates itself is the real function.
-vi.mock('../agent/modules/config.js', () => ({
-  SETTINGS: { verboseLogging: false, debugLogging: false, debugMode: false, logTruncateLength: 100, getFullDiag: {} },
-}));
-vi.mock('../agent/modules/thinkBuffer.js', () => ({ getAndClearThink: vi.fn(() => null) }));
-vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
-
-vi.mock('../agent/modules/utils.js', async () => {
-  const actual = await vi.importActual('../agent/modules/utils.js');
-  return { log: vi.fn(), getUniqueMessageKeyCandidates: actual.getUniqueMessageKeyCandidates };
-});
-
+vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn(), resolveUniqueMessageKey: vi.fn() }));
 vi.mock('../chat/modules/chatConfig.js', () => ({
   CHAT_SETTINGS: { searchPageSizeDefault: 2, searchPageSizeMax: 500 },
 }));
+vi.mock('../chat/modules/context.js', () => ({ ctx: {} }));
+vi.mock('../chat/modules/markdown.js', () => ({ renderMarkdown: vi.fn((t) => t), attachSpecialLinkListeners: vi.fn() }));
 
-vi.mock('../chat/modules/helpers.js', () => ({
-  formatMailList: vi.fn(() => 'formatted'),
-  toIsoNoMs: vi.fn((d) => d.toISOString()),
-}));
-
-const { log } = await import('../agent/modules/utils.js');
-const { formatMailList } = await import('../chat/modules/helpers.js');
+const { log, resolveUniqueMessageKey } = await import('../agent/modules/utils.js');
 const { run } = await import('../chat/tools/email_search.js');
 
+const REPAIRED_KEY = 'fts_attachment_flags_repaired';
 const now = Date.now();
-const hit = (uniqueId, n, extra = {}) => ({
+const hit = (uniqueId, n, hasAttachments = 0) => ({
   uniqueId,
   dateMs: now - n * 60000,
   author: 'Sender <sender@example.com>',
   subject: `Subject ${n}`,
-  ...extra,
+  hasAttachments,
 });
-
-const INBOX = { id: 'account1://INBOX', accountId: 'account1', path: '/INBOX' };
-const WORK = { id: 'account1://Work:2026', accountId: 'account1', path: '/Work:2026' };
+const id = (n) => `account1:/INBOX:m${n}@example.com`;
 
 const getHasAttachmentBulk = vi.fn();
-const foldersQuery = vi.fn();
-let hits = [];
+let storage;
+let hits;
+let weIds;
 let query = 0;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  foldersQuery.mockImplementation(async ({ accountId }) => (accountId === 'account1' ? [INBOX, WORK] : []));
-  hits = [
-    hit('account1:/INBOX:m1@example.com', 1),
-    // The index's attachment column is never set; a value here must not leak through.
-    hit('account1:/INBOX:m2@example.com', 2, { hasAttachments: 1 }),
-    hit('account1:/INBOX:m3@example.com', 3),
-  ];
+  storage = {};
+  // Hit n resolves to WebExtension id 100 + n, unless removed from weIds.
+  weIds = new Map([[id(1), 101], [id(2), 102], [id(3), 103]]);
+  resolveUniqueMessageKey.mockImplementation(async (uniqueId) => (weIds.has(uniqueId) ? { weID: weIds.get(uniqueId) } : null));
+  hits = [hit(id(1), 1), hit(id(2), 2, 1), hit(id(3), 3)];
   globalThis.browser = {
-    storage: { local: { get: vi.fn(async () => ({})), set: vi.fn(async () => {}) } },
-    runtime: { sendMessage: vi.fn(async () => hits) },
-    folders: { query: foldersQuery },
+    storage: { local: { get: vi.fn(async (k) => (k in storage ? { [k]: storage[k] } : {})), set: vi.fn() } },
+    runtime: { sendMessage: vi.fn(async () => hits), getURL: vi.fn(() => '') },
     tmHdr: { getHasAttachmentBulk },
   };
   query += 1;
 });
 
-const listed = () => formatMailList.mock.calls.at(-1)[0].map((it) => [it.uniqueId, it.hasAttachments]);
+const printed = async (args = {}) => {
+  const result = await run({ query: `q${query}`, sort: 'date_desc', ...args });
+  return result.results
+    .split(/\n(?=unique_id: )/)
+    .filter((block) => block.startsWith('unique_id: '))
+    .map((block) => [block.match(/unique_id: (\S*)/)[1], block.match(/has_attachments: (\w+)/)[1]]);
+};
 
-describe('email_search attachment flags', () => {
-  it('reads the flags for the current page by Message-ID in each hit\'s folder', async () => {
+describe('email_search attachment line, index repaired', () => {
+  beforeEach(() => { storage[REPAIRED_KEY] = true; });
+
+  it('prints the index\'s flag and does not ask Thunderbird', async () => {
+    expect(await printed()).toEqual([[id(1), 'no'], [id(2), 'yes']]);
+    expect(await printed({ page_index: 2 })).toEqual([[id(3), 'no']]);
+    expect(getHasAttachmentBulk).not.toHaveBeenCalled();
+    expect(resolveUniqueMessageKey).not.toHaveBeenCalled();
+  });
+});
+
+describe('email_search attachment line, index not yet repaired', () => {
+  it('asks Thunderbird for the current page by WebExtension id, ignoring the index\'s flag', async () => {
     getHasAttachmentBulk.mockResolvedValue([true, false]);
-    await run({ query: `q${query}`, sort: 'date_desc' });
-    expect(getHasAttachmentBulk).toHaveBeenCalledWith([
-      { folderURI: 'account1://INBOX', pathStr: '/INBOX', messageId: 'm1@example.com' },
-      { folderURI: 'account1://INBOX', pathStr: '/INBOX', messageId: 'm2@example.com' },
-    ]);
-    expect(listed()).toEqual([
-      ['account1:/INBOX:m1@example.com', true],
-      ['account1:/INBOX:m2@example.com', false],
-    ]);
-    expect(foldersQuery).toHaveBeenCalledTimes(1);
+    expect(await printed()).toEqual([[id(1), 'yes'], [id(2), 'no']]);
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([101, 102]);
+    // One folder inventory is shared across the page's resolutions.
+    const inventories = resolveUniqueMessageKey.mock.calls.map(([, opts]) => opts.folderInventory);
+    expect(inventories[0]).toBeInstanceOf(Map);
+    expect(inventories[1]).toBe(inventories[0]);
   });
 
   it('reads the flags of the requested page only', async () => {
     getHasAttachmentBulk.mockResolvedValue([true]);
-    await run({ query: `q${query}`, sort: 'date_desc', page_index: 2 });
-    expect(getHasAttachmentBulk).toHaveBeenCalledWith([
-      { folderURI: 'account1://INBOX', pathStr: '/INBOX', messageId: 'm3@example.com' },
-    ]);
-    expect(listed()).toEqual([['account1:/INBOX:m3@example.com', true]]);
+    expect(await printed({ page_index: 2 })).toEqual([[id(3), 'yes']]);
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([103]);
   });
 
-  it('finds the folder and Message-ID when either contains a colon', async () => {
-    hits = [
-      hit('account1:/Work:2026:m4@example.com', 1),
-      hit('account1:/INBOX:part:m5@example.com', 2),
-    ];
-    getHasAttachmentBulk.mockResolvedValue([false, true]);
-    await run({ query: `q${query}`, sort: 'date_desc' });
-    expect(getHasAttachmentBulk).toHaveBeenCalledWith([
-      { folderURI: 'account1://Work:2026', pathStr: '/Work:2026', messageId: 'm4@example.com' },
-      { folderURI: 'account1://INBOX', pathStr: '/INBOX', messageId: 'part:m5@example.com' },
-    ]);
-    expect(listed()).toEqual([
-      ['account1:/Work:2026:m4@example.com', false],
-      ['account1:/INBOX:part:m5@example.com', true],
-    ]);
-  });
-
-  it('reports no attachment for a hit whose folder no longer exists', async () => {
-    hits = [hit('account1:/Gone:m6@example.com', 1), hit('account1:/INBOX:m7@example.com', 2)];
+  it('prints unknown for a hit that does not resolve to exactly one live message', async () => {
+    weIds.delete(id(1));
     getHasAttachmentBulk.mockResolvedValue([true]);
-    await run({ query: `q${query}`, sort: 'date_desc' });
-    expect(getHasAttachmentBulk).toHaveBeenCalledWith([
-      { folderURI: 'account1://INBOX', pathStr: '/INBOX', messageId: 'm7@example.com' },
-    ]);
-    expect(listed()).toEqual([
-      ['account1:/Gone:m6@example.com', false],
-      ['account1:/INBOX:m7@example.com', true],
-    ]);
+    expect(await printed()).toEqual([[id(1), 'unknown'], [id(2), 'yes']]);
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([102]);
   });
 
-  it('reports no attachment for a hit without a unique id', async () => {
-    hits = [hit(undefined, 1), hit('account1:/INBOX:m8@example.com', 2)];
-    getHasAttachmentBulk.mockResolvedValue([true]);
-    await run({ query: `q${query}`, sort: 'date_desc' });
-    expect(getHasAttachmentBulk).toHaveBeenCalledWith([
-      { folderURI: 'account1://INBOX', pathStr: '/INBOX', messageId: 'm8@example.com' },
-    ]);
-    expect(listed()).toEqual([
-      ['', false],
-      ['account1:/INBOX:m8@example.com', true],
-    ]);
+  it('prints unknown for a hit without a unique id, without asking Thunderbird', async () => {
+    hits = [hit(undefined, 1)];
+    resolveUniqueMessageKey.mockResolvedValue(null);
+    expect(await printed()).toEqual([['', 'unknown']]);
+    expect(getHasAttachmentBulk).not.toHaveBeenCalled();
   });
 
-  it('logs an error and still returns the results when the flags cannot be read', async () => {
+  it('prints unknown for a message whose header is gone', async () => {
+    getHasAttachmentBulk.mockResolvedValue([null, false]);
+    expect(await printed()).toEqual([[id(1), 'unknown'], [id(2), 'no']]);
+  });
+
+  it('prints unknown and logs an error when the flags cannot be read', async () => {
     getHasAttachmentBulk.mockRejectedValue(new Error('boom'));
-    const result = await run({ query: `q${query}`, sort: 'date_desc' });
-    expect(result.results).toBe('formatted');
-    expect(listed().map(([, flag]) => flag)).toEqual([false, false]);
+    expect(await printed()).toEqual([[id(1), 'unknown'], [id(2), 'unknown']]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('reading attachment flags failed'), 'error');
   });
 });

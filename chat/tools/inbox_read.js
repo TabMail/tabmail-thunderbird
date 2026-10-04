@@ -78,7 +78,7 @@ export async function run(args = {}, options = {}) {
         blurb: itm?.blurb || "",
         todos: itm?.todos || "",
         action: itm?.action || "",
-        hasAttachments: itm?.hasAttachments || false,
+        hasAttachments: itm?.hasAttachments,
         replied: itm?.replied || false,
       }))
     );

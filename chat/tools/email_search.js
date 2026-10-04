@@ -4,7 +4,8 @@
 
 // email_search.js – FTS search with optional date range and limit
 
-import { getUniqueMessageKeyCandidates, log } from "../../agent/modules/utils.js";
+import { log, resolveUniqueMessageKey } from "../../agent/modules/utils.js";
+import { areAttachmentFlagsRepaired } from "../../fts/attachmentFlags.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { formatMailList, toIsoNoMs } from "../modules/helpers.js";
 
@@ -46,32 +47,31 @@ export function resolvePageSize() {
 
 // Email search using FTS (Full Text Search) backend only
 
-// The index's attachment column is never set (Thunderbird's MessageHeader has no attachment
-// field), so each hit's flag is read from Thunderbird's message database by Message-ID.
-// Folder paths and Message-IDs may both contain ':', so a hit is matched against its account's
-// live folders rather than split at fixed colons.
+// Each hit carries the index's attachment flag. Until the index's stale flags are repaired
+// (fts/attachmentFlags.js), the flags are read from Thunderbird's message database instead.
+async function hitAttachmentFlags(hits) {
+  if (await areAttachmentFlagsRepaired()) return hits.map((hit) => Boolean(hit.hasAttachments));
+  return readAttachmentFlags(hits);
+}
+
+// Reads each hit's flag from Thunderbird's message database. A hit that does not resolve to
+// exactly one live message, or whose flag cannot be read, is null ("unknown", never "no").
 async function readAttachmentFlags(hits) {
-  const flags = hits.map(() => false);
+  const flags = hits.map(() => null);
   try {
-    const foldersByAccount = new Map();
-    const items = [];
-    const itemHit = [];
+    const folderInventory = new Map();
+    const weIds = [];
+    const weIdHit = [];
     for (let i = 0; i < hits.length; i++) {
-      const uniqueId = hits[i].uniqueId || "";
-      const accountId = uniqueId.slice(0, Math.max(0, uniqueId.indexOf(":")));
-      if (!accountId) continue;
-      if (!foldersByAccount.has(accountId)) {
-        foldersByAccount.set(accountId, browser.folders.query({ accountId }));
-      }
-      const folders = await foldersByAccount.get(accountId);
-      for (const { weFolder, headerID } of getUniqueMessageKeyCandidates(uniqueId, folders)) {
-        items.push({ folderURI: weFolder.id, pathStr: weFolder.path, messageId: headerID });
-        itemHit.push(i);
-      }
+      const resolved = await resolveUniqueMessageKey(hits[i].uniqueId || "", { folderInventory });
+      if (!resolved) continue;
+      weIds.push(resolved.weID);
+      weIdHit.push(i);
     }
-    const statuses = await browser.tmHdr.getHasAttachmentBulk(items);
+    if (weIds.length === 0) return flags;
+    const statuses = await browser.tmHdr.getHasAttachmentBulk(weIds);
     statuses.forEach((hasAttachment, k) => {
-      if (hasAttachment === true) flags[itemHit[k]] = true;
+      if (typeof hasAttachment === "boolean") flags[weIdHit[k]] = hasAttachment;
     });
   } catch (e) {
     log(`[TMDBG Tools] email_search: reading attachment flags failed: ${e}`, "error");
@@ -271,7 +271,7 @@ export async function run(args = {}, options = {}) {
         totalItems: 0,
       };
     } else {
-      const hasAttachmentStatuses = await readAttachmentFlags(slice);
+      const hasAttachmentStatuses = await hitAttachmentFlags(slice);
 
       // Map FTS hits directly to formatMailList format - use uniqueId directly from FTS
       const formatted = formatMailList(

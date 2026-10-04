@@ -15,8 +15,10 @@ import {
   safeGetFull,
 } from "../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../chat/modules/icsParser.js";
+import { areAttachmentFlagsRepaired, markAttachmentFlagsRepaired } from "./attachmentFlags.js";
 import { extractPlainText } from "./bodyExtract.js";
 import { makeFolderMembershipId } from "./folderMembershipIdentity.js";
+import { getFtsMembershipEpoch, runFtsMembershipRead, withFtsMembershipFence } from "./operationCoordinator.js";
 
 // Load FTS settings from storage
 async function getFtsSettings() {
@@ -58,7 +60,7 @@ let paused = false;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function* iterAllFolders() {
+async function* iterAllFolders(onTraversalError = () => {}) {
   const accounts = await browser.accounts.list();
   log(`[TMDBG FTS] Found ${accounts.length} accounts`);
   
@@ -90,6 +92,7 @@ async function* iterAllFolders() {
       }
     } catch (e) {
       log(`[TMDBG FTS] Error traversing folders for account ${acct.name}: ${e}`, "error");
+      onTraversalError(e);
     }
   }
 }
@@ -127,7 +130,20 @@ export async function buildBatchHeader(messages) {
   const rows = [];
   let bytes = 0;
 
-  for (const m of messages) {
+  // MessageHeader has no attachment field; read Thunderbird's database flag (the paperclip
+  // heuristic). A failed read fails the batch: a row written with a guessed "no" would stay
+  // wrong. A message whose header is gone (null) is not indexed.
+  const attachmentFlags = await browser.tmHdr.getHasAttachmentBulk(messages.map(m => m.id));
+  if (!Array.isArray(attachmentFlags) || attachmentFlags.length !== messages.length) {
+    throw new Error(`attachment flags unavailable (${attachmentFlags?.length ?? "none"} for ${messages.length} messages)`);
+  }
+
+  for (const [i, m] of messages.entries()) {
+    if (typeof attachmentFlags[i] !== "boolean") {
+      log(`[TMDBG FTS] buildBatchHeader: skipping message ${m.id}, its header is no longer available`, "warn");
+      continue;
+    }
+
     // 1) Stable id
     const msgIdRaw = await getUniqueMessageKey(m);
     const msgId = msgIdRaw ? String(msgIdRaw) : "";
@@ -149,7 +165,7 @@ export async function buildBatchHeader(messages) {
       bcc: "",                            // TB API doesn't expose easily
       body: "",                           // filled later
       dateMs: m.date ? +new Date(m.date) : 0,
-      hasAttachments: !!m.hasAttachments,
+      hasAttachments: attachmentFlags[i],
       parsedIcsAttachments: "",           // filled later
       _originalMessage: m,                // keep for body extraction (not sent to worker)
     };
@@ -259,6 +275,45 @@ async function* pagedMessages(folder, afterId) {
   }
 }
 
+// Re-adds already-indexed rows that Thunderbird flags as having attachments but whose stored
+// row says it has none (written before the indexer read the flag). The native index never
+// updates an existing row, so each stale row is removed and re-inserted from its stored copy,
+// with no new download. The reads and the rewrite are fenced: if any other membership change
+// lands in between, this throws and the rows are left for the next run.
+async function readdStaleAttachmentRows(ftsSearch, rows) {
+  let epoch = null;
+  const stale = [];
+  await runFtsMembershipRead(async () => {
+    epoch = getFtsMembershipEpoch();
+    for (const row of rows) {
+      const stored = await ftsSearch.getMessageByMsgId(row.msgId);
+      if (!stored || stored.hasAttachments) continue;
+      stale.push({
+        msgId: row.msgId,
+        folderId: row.folderId,
+        subject: stored.subject,
+        from_: stored.from_,
+        to_: stored.to_,
+        cc: stored.cc,
+        bcc: stored.bcc,
+        body: stored.body,
+        dateMs: stored.dateMs,
+        hasAttachments: true,
+        parsedIcsAttachments: stored.parsedIcsAttachments,
+      });
+    }
+  });
+  if (stale.length === 0) return 0;
+  return withFtsMembershipFence(epoch, async (fenceToken) => {
+    await ftsSearch.removeBatch(stale.map(row => row.msgId), fenceToken);
+    const result = await ftsSearch.indexBatch(stale, fenceToken);
+    if (result?.count !== stale.length) {
+      throw new Error(`re-added ${result?.count} of ${stale.length} rows`);
+    }
+    return stale.length;
+  }, { mutation: true });
+}
+
 /**
  * Index messages with optional date range filtering
  * @param {Object} ftsSearch - FTS search interface
@@ -328,6 +383,11 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
   // - "newlyIndexed" counts messages that were actually inserted/updated in the FTS index.
   let totalScanned = 0;
   let newlyIndexed = 0;
+
+  // Until one full run repairs the stale attachment flags, every full run re-adds them.
+  const repairAttachments = !isDateRange && !(await areAttachmentFlagsRepaired());
+  let attachmentRowsRepaired = 0;
+  let attachmentRepairFailures = 0;
   let skipped = 0;
   let totalBatches = 0;
 
@@ -357,7 +417,9 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
   
   let sanitizedTotal = 0;
   
-  for await (const { accountId, folder } of iterAllFolders()) {
+  // An account whose folders could not be listed was not repaired.
+  const onTraversalError = () => { attachmentRepairFailures += 1; };
+  for await (const { accountId, folder } of iterAllFolders(onTraversalError)) {
     if (paused) await waitUntilResumed();
     
     log(`[TMDBG FTS] ${logPrefix} scan of folder: ${folder.name} (account: ${accountId})`);
@@ -429,6 +491,19 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
         }
       }
       
+      if (repairAttachments) {
+        const newIds = new Set(newMsgIds);
+        const flagged = filteredBatch.filter(row => row.hasAttachments && !newIds.has(row.msgId));
+        if (flagged.length > 0) {
+          try {
+            attachmentRowsRepaired += await readdStaleAttachmentRows(ftsSearch, flagged);
+          } catch (e) {
+            attachmentRepairFailures += 1;
+            log(`[TMDBG FTS] Attachment flag repair failed for a batch in ${folder.name}: ${e}`, "warn");
+          }
+        }
+      }
+
       if (newMsgIds.length === 0) {
         // All messages already indexed, just update progress
         folderIndexed += filteredBatch.length;
@@ -563,6 +638,11 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
     await sleep(LONG_YIELD_MS);
   }
   
+  if (repairAttachments) {
+    log(`[TMDBG FTS] Attachment flag repair: ${attachmentRowsRepaired} rows re-added, ${attachmentRepairFailures} batches failed`);
+    if (attachmentRepairFailures === 0) await markAttachmentFlagsRepaired();
+  }
+
   const duration = Date.now() - startTime;
   log(`[TMDBG FTS] Optimized ${logPrefix.toLowerCase()} reindex completed in ${isDateRange ? duration + 'ms: ' : ''}${totalScanned} messages scanned in ${totalBatches} batches, ${newlyIndexed} newly indexed, ${skipped} skipped, ${sanitizedTotal} stale tags sanitized`);
   
@@ -576,6 +656,7 @@ export async function indexMessages(ftsSearch, progressCb = () => {}, startDate 
     batches: totalBatches,
     sanitized: sanitizedTotal, 
     skipped,
+    ...(repairAttachments && { attachmentRepair: { repaired: attachmentRowsRepaired, failedBatches: attachmentRepairFailures } }),
     ...(collectDetails && { correctionDetails }),
     ...(isDateRange && { duration })
   };

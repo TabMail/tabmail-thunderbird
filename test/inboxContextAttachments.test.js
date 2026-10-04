@@ -3,7 +3,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // buildInboxContext takes each email's attachment flag from Thunderbird's message database
-// (tmHdr.getHasAttachmentBulk by Message-ID); MessageHeader has no attachment field.
+// (tmHdr.getHasAttachmentBulk by WebExtension id); MessageHeader has no attachment field.
+// A flag it cannot read is null ("unknown"), never false.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -58,14 +59,10 @@ beforeEach(() => {
 const flags = async () => JSON.parse(await buildInboxContext()).map((e) => [e.internalId, e.hasAttachments]);
 
 describe('buildInboxContext attachment flags', () => {
-  it('reads each email\'s flag by Message-ID in its folder', async () => {
-    getHasAttachmentBulk.mockResolvedValue([false, true, false]);
-    expect(await flags()).toEqual([[1, false], [2, true], [3, false]]);
-    expect(getHasAttachmentBulk).toHaveBeenCalledWith([
-      { folderURI: 'account1://INBOX', pathStr: '/INBOX', messageId: 'm1@example.com' },
-      { folderURI: 'account1://INBOX', pathStr: '/INBOX', messageId: 'm2@example.com' },
-      { folderURI: 'account1://INBOX', pathStr: '/INBOX', messageId: 'm3@example.com' },
-    ]);
+  it('reads each email\'s flag by its WebExtension id', async () => {
+    getHasAttachmentBulk.mockResolvedValue([false, true, null]);
+    expect(await flags()).toEqual([[1, false], [2, true], [3, null]]);
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([1, 2, 3]);
   });
 
   it('keeps each flag on its own email when an earlier email\'s entry fails', async () => {
@@ -96,9 +93,9 @@ describe('buildInboxContext attachment flags', () => {
     ]);
   });
 
-  it('reports no attachments and logs an error when the flags cannot be read', async () => {
+  it('reports unknown, not no, and logs an error when the flags cannot be read', async () => {
     getHasAttachmentBulk.mockRejectedValue(new Error('boom'));
-    expect(await flags()).toEqual([[1, false], [2, false], [3, false]]);
+    expect(await flags()).toEqual([[1, null], [2, null], [3, null]]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('getHasAttachmentBulk failed'), 'error');
   });
 });

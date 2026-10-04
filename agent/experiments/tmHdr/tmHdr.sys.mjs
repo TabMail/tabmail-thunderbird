@@ -513,34 +513,26 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
           }
         },
         // Thunderbird's MessageHeader has no attachment field, so the flag comes from the
-        // message database. Looked up by Message-ID only: callers hold WebExtension ids, not
-        // message keys, and a WebExtension id read as a key can name a different message.
-        async getHasAttachmentBulk(items) {
-          try {
-            if (!Array.isArray(items)) return [];
-            const NS = CiTM.nsMsgMessageFlags;
-            let notFound = 0;
-            const out = items.map((it) => {
-              try {
-                const hdr = it.messageId ? tmGetHdrByMessageId(it.folderURI, it.messageId, it.pathStr) : null;
-                if (!hdr) {
-                  notFound++;
-                  return false;
-                }
-                return !!(hdr.flags & NS.Attachment);
-              } catch (e) {
-                notFound++;
-                return false;
-              }
-            });
-            if (notFound > 0) {
-              console.warn(`[TMDBG tmHdr] getHasAttachmentBulk: ${notFound} of ${items.length} headers not found`);
+        // message database: nsMsgMessageFlags.Attachment, the flag behind Thunderbird's
+        // paperclip column. Looked up by WebExtension message id; null when the message is
+        // gone or the read fails, so callers never mistake "could not tell" for "no".
+        async getHasAttachmentBulk(messageIds) {
+          const NS = CiTM.nsMsgMessageFlags;
+          let unknown = 0;
+          const out = (Array.isArray(messageIds) ? messageIds : []).map((id) => {
+            try {
+              const hdr = mm ? mm.get(id) : null;
+              if (hdr) return !!(hdr.flags & NS.Attachment);
+            } catch (e) {
+              console.warn("[TMDBG tmHdr] getHasAttachmentBulk: header read failed for", id, e);
             }
-            return out;
-          } catch (e) {
-            console.error("[TMDBG tmHdr] getHasAttachmentBulk error", e);
-            return [];
+            unknown++;
+            return null;
+          });
+          if (unknown > 0) {
+            console.warn(`[TMDBG tmHdr] getHasAttachmentBulk: ${unknown} of ${out.length} headers unavailable`);
           }
+          return out;
         },
       },
     };

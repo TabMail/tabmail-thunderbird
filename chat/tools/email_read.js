@@ -9,6 +9,19 @@ import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../modules/ic
 
 
 
+// The parts Thunderbird names as files (MessagePart.name), without descending into a named part,
+// so an attached email counts as one file, as in Thunderbird's attachment list.
+function collectFileParts(parts, out = []) {
+  for (const part of Array.isArray(parts) ? parts : []) {
+    if (part?.name) {
+      out.push({ name: part.name, contentType: part.contentType || "", size: part.size ?? 0 });
+    } else {
+      collectFileParts(part?.parts, out);
+    }
+  }
+  return out;
+}
+
 export async function run(args = {}, options = {}) {
   try {
     const uniqueId = args?.unique_id;
@@ -36,6 +49,7 @@ export async function run(args = {}, options = {}) {
     let header = null;
     let body = "";
     let icsAttachments = [];
+    let full = null;
 
     log(`[TMDBG Tools] email_read: Using direct fetch (headerIDToWeID + safeGetFull) for faster response`);
     log(`[TMDBG Tools] email_read: Calling headerIDToWeID with headerID='${headerID}' weFolder='${weFolder}'`);
@@ -50,7 +64,7 @@ export async function run(args = {}, options = {}) {
     
     // Get body using safeGetFull
     try {
-      const full = await safeGetFull(internalId);
+      full = await safeGetFull(internalId);
       body = await extractBodyFromParts(full, internalId) || "";
       log(`[TMDBG Tools] email_read: Body extracted from safeGetFull (length: ${body.length})`);
       
@@ -100,15 +114,24 @@ export async function run(args = {}, options = {}) {
     //   log(`[TMDBG Tools] email_read: getSummary failed for ${internalId}: ${e}`);
     // }
 
-    // Thunderbird's MessageHeader has no attachment field; listAttachments parses the message.
-    // null = the list could not be read, reported as unknown rather than as "no".
+    // Thunderbird's MessageHeader has no attachment field. The MIME tree fetched for the body
+    // lists the files exactly, at no extra cost; a body served from the FTS index has no MIME
+    // tree, so the answer is Thunderbird's database flag (the paperclip heuristic) and no list.
+    // null = could not tell, printed as "unknown", never "no".
     let attachments = null;
-    try {
-      attachments = (await browser.messages.listAttachments(internalId)) || [];
-      log(`[TMDBG Tools] email_read: listAttachments found ${attachments.length} for ${internalId}`);
-    } catch (e) {
-      log(`[TMDBG Tools] email_read: listAttachments failed for ${internalId}: ${e}`, "error");
+    let hasAttachments = null;
+    if (full && !full.__tmSynthetic) {
+      attachments = collectFileParts([full]);
+      hasAttachments = attachments.length > 0;
+    } else {
+      try {
+        const [flag] = await browser.tmHdr.getHasAttachmentBulk([internalId]);
+        if (typeof flag === "boolean") hasAttachments = flag;
+      } catch (e) {
+        log(`[TMDBG Tools] email_read: attachment flag read failed for ${internalId}: ${e}`, "error");
+      }
     }
+    log(`[TMDBG Tools] email_read: has_attachments=${hasAttachments} listed=${attachments ? attachments.length : "n/a"} for ${internalId}`);
 
     // Check replied status using tmHdr experiment
     let repliedStatus = false;
@@ -139,7 +162,7 @@ export async function run(args = {}, options = {}) {
     lines.push(`to: ${header.recipients ? header.recipients.join(", ") : ""}`);
     lines.push(`cc: ${header.ccList ? header.ccList.join(", ") : ""}`);
     lines.push(`subject: ${(await getRealSubject(header)) || "(No subject)"}`);
-    lines.push(`has_attachments: ${attachments === null ? "unknown" : attachments.length > 0 ? "yes" : "no"}`);
+    lines.push(`has_attachments: ${hasAttachments === null ? "unknown" : hasAttachments ? "yes" : "no"}`);
     lines.push(`replied: ${repliedStatus ? "yes" : "no"}`);
     lines.push("body:");
     lines.push(body);
