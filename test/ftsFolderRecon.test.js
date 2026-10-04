@@ -520,7 +520,8 @@ describe('startup membership proof', () => {
     const stats = await _runFolderReconcile(fts);
 
     expect(stats.foldersMemoHit).toBe(0);
-    expect(api.beginFolderMessageScan.mock.calls.map(call => call[1])).toEqual([false, true]);
+    // The native digest is taken first; its mismatch skips the UID scan.
+    expect(api.beginFolderMessageScan.mock.calls.map(call => call[1])).toEqual([true]);
     expect(fts._keys.has(ghost)).toBe(false);
   });
 

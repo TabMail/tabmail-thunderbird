@@ -423,11 +423,12 @@ export const SETTINGS = {
             pressureDelayMs: 2000,
             errorDelayMs: 10000,
             syncQuietMs: 5000,
-            // Exact mode re-verifies every folder this often. Unchanged
-            // folders pass the fast gate with zero enumeration and zero
-            // storage writes; a late native commit no event announced is
-            // repaired within one interval. Keep it at or below 30 minutes.
+            // Exact mode's rolling re-walk: every reverifyIntervalMs a tick
+            // admits the completed folders whose next walk is due, so every
+            // folder is walked again within walkPeriodMs plus one interval.
+            // Startup walks every folder.
             reverifyIntervalMs: 20 * 60 * 1000,
+            walkPeriodMs: 24 * 60 * 60 * 1000,
         },
         // Proactive inbox scan - DISABLED.
         // Replaced by tagSort row coloring pass coverage which detects untagged

@@ -180,7 +180,7 @@
       {
         "name": "getFolderState",
         "type": "function",
-        "description": "Read one folder's startup identity and UIDVALIDITY state. Other server types report stableUidKeys=false. IMAP folders also report the msgDB message count and whether offline operations are pending (each omitted when unreadable) and the msgDB incarnation token; ensureIncarnationToken creates the token when absent and never overwrites one. One-folder calls let the WebExtension yield between summary DB opens.",
+        "description": "Read one folder's startup identity and UIDVALIDITY state. Other server types report stableUidKeys=false. IMAP folders also report the msgDB incarnation token; ensureIncarnationToken creates the token when absent and never overwrites one. One-folder calls let the WebExtension yield between summary DB opens.",
         "async": true,
         "parameters": [
           { "name": "accountId", "type": "string" },
@@ -204,8 +204,6 @@
             "stableUidKeys": { "type": "boolean" },
             "uidValidity": { "type": "integer", "optional": true },
             "highestModSeq": { "type": "string", "optional": true },
-            "numMessages": { "type": "integer", "optional": true },
-            "pendingOfflineOps": { "type": "boolean", "optional": true },
             "incarnationToken": { "type": "string", "optional": true },
             "error": { "type": "string", "optional": true }
           }

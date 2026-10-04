@@ -128,7 +128,9 @@ describe('atomic queue abandonment', () => {
     uniqueKey, type, timestamp, folderKey, metadata: {}, hasFailed: true,
   });
   // Start from a settled session so a pending flag set by abandonment is observable.
+  // The folders are completed this generation, so their marks are recorded.
   const settlePendingFlag = () => {
+    _testExports._setFolderReconEphemeralEvidenceForTests({ sessionDone: ['account1:/A', 'account1:/B'] });
     expect(_testExports._clearFolderReconPendingIfCurrent(
       _testExports._getFolderReconGeneration(),
       _testExports._getFolderReconEventSerial(),
@@ -193,13 +195,16 @@ describe('atomic queue abandonment', () => {
     expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
   });
 
-  it('maps an admitted legacy entry without a folder identity to __all__', async () => {
+  it('owes a walk of every completed folder for an admitted legacy entry without a folder identity', async () => {
+    _testExports._setFolderReconEphemeralEvidenceForTests({ sessionDone: ['account1:/A', 'account1:/B'] });
     const legacy = entry('legacy-unparseable', 'new', 1, undefined);
     _getPendingUpdates().set(legacy.uniqueKey, legacy);
 
     await _abandonPendingUpdates([legacy], 'unparseable');
 
-    expect(_getFolderReconDirty()).toEqual(new Set(['__all__']));
+    expect(_getFolderReconDirty()).toEqual(new Set(['account1:/A', 'account1:/B']));
+    expect(_testExports._getFolderReconSessionDone().size).toBe(0);
+    expect(_testExports._isFolderReconPending()).toBe(true);
   });
 
   it('manual clear dirties admitted work instead of silently erasing it', async () => {

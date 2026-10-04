@@ -1,0 +1,11 @@
+# No Thunderbird marker proves a folder's msgDB is unchanged
+
+Recorded 2026-10-03 while building, then deleting, a zero-enumeration "nothing changed" gate for FTS reconciliation (ADR-022, PR 2b amendment). Every candidate marker failed against Thunderbird 145 comm-release source:
+
+- **HIGHESTMODSEQ is server progress, not local-applied evidence.** `nsImapMailFolder::UpdateImapMailboxInfo` stores the server's HIGHESTMODSEQ at SELECT, before `NormalEndHeaderParseStream` applies the downloaded headers. A proof taken in that window, followed by a count-preserving add and expunge whose events were missed or abandoned, matches token + UIDVALIDITY + HIGHESTMODSEQ + count + range forever. Without CONDSTORE (the default), the stored value changes only at a SELECT, so it stays frozen while a selected folder gains and loses messages.
+- **`highWaterKey` moves only on a new maximum key.** `nsDBFolderInfo::OnKeyAdded` advances it only for a key above the current maximum; lower-UID fills (`FindKeysToAdd`) and flag restorations leave it alone.
+- **CONDSTORE stays off.** With CONDSTORE on and no IDLE (TabMail's `mail.check_all_imap_folders_for_new` polling), other-client expunges leave ghost headers: Bugzilla 1123094 (NEW) and 1124569 (ASSIGNED). The add-on could enable it through its pref experiments, but the owner declined.
+- **IMAPDeleted / Expunged flips fire no add/remove event.** `nsMsgDBFolder::OnHdrFlagsChanged` → `SendFlagNotifications` routes them as a Status `propertyFlagChanged`, a listener-mask event that keyword-count notifications share. Under the non-default "mark as deleted" IMAP model an undelete makes a retained header live again without any MFN add. TabMail does not listen for it (owner: left to the rolling walk).
+- **The native helper's reader and writer queues are separate** (`classify_method`, `run_multi_threaded`, `writer_thread_main` in tabmail-native-fts). No elapsed time or later read proves that a timed-out write has settled.
+
+Consequence: reconciliation enumerates. Every startup walks every exact-mode folder (the UID-only tier is cheap when the msgDB incarnation token and UIDVALIDITY match). In-session gaps are covered by walk obligations from our own signals plus a 24 h rolling re-walk. Do not propose a zero-enumeration certification built on any of the markers above.

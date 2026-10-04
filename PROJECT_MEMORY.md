@@ -227,3 +227,6 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ### Nested Sent-folder lookup
 - **[Detail](Companion/Memory/Current/038-nested-sent-folder-resolution.md)** — MV3 root-folder enumeration returns a nested tree; traverse provider containers for after-send FTS handoff, preserving account scope and metadata matching.
+
+### No local msgDB change marker (reconciliation must enumerate)
+- **[Detail](Companion/Memory/Current/039-no-local-msgdb-change-marker.md)** — HIGHESTMODSEQ is stored at SELECT before header application (server progress, frozen without CONDSTORE); `highWaterKey` moves only on a new maximum; CONDSTORE stays off (Bugzilla 1123094/1124569 ghost headers with polling); IMAPDeleted/Expunged flips fire only `propertyFlagChanged`; native reader/writer queues separate (a timed-out write never proven settled). No zero-enumeration "nothing changed" gate.
