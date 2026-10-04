@@ -5769,6 +5769,27 @@ describe('ownerless-row classifier (exact helpers)', () => {
     expect(globalThis.browser.messages.query).not.toHaveBeenCalled();
   });
 
+  // The global answer decides after an uncertain probe: absent removes the
+  // row as a ghost, an error leaves it unresolved (no cutover).
+  it.each(['absent', 'error'])('follows the global %s verdict after an uncertain probe', async (verdict) => {
+    const { fts, nativeRows, folders } = seedMigratedExactFolders([{ folderPath: '/F', headerMessageIds: [] }]);
+    const key = 'account1:/F:uncertain@example.com';
+    nativeRows.set(key, null);
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (_uri, ids) => ({ missing: [], uncertain: ids }));
+    recheckMessageInFolder.mockResolvedValue(verdict);
+
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven(), 12);
+
+    expect(globalThis.browser.tmMsgNotify.probeMessageIds)
+      .toHaveBeenCalledWith(folders[0].folderURI, ['uncertain@example.com']);
+    expect(recheckMessageInFolder).toHaveBeenCalledWith('uncertain@example.com',
+      expect.objectContaining({ accountId: 'account1', path: '/F' }));
+    expect(nativeRows.has(key)).toBe(verdict === 'error');
+    if (verdict === 'error') expect(nativeRows.get(key)).toBeNull();
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(verdict === 'absent');
+    expect(fts.assignFolderMembershipBatch).not.toHaveBeenCalled();
+  });
+
   it('migrates many already-owned rows without any message query', async () => {
     const headerMessageIds = Array.from({ length: reconConfig.membershipStatePageSize * 2 + 3 },
       (_, index) => `owned-${String(index).padStart(4, '0')}@example.com`);
@@ -6339,7 +6360,7 @@ describe('legacy orphan pass reset triggers', () => {
   async function abandonQueuedUpdate(folderKey) {
     const update = { uniqueKey: 'account1:/Keep:dropped@example.com', type: 'add', timestamp: Date.now(), folderKey };
     _testExports._getPendingUpdates().set(update.uniqueKey, update);
-    await _testExports._abandonPendingUpdates([{ ...update }]);
+    await _testExports._abandonPendingUpdates([update]);
   }
 
   it.each([
@@ -7134,7 +7155,7 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
   async function abandonQueuedUpdate(folderKey, uniqueKey = `${folderKey || 'account1:/A'}:dropped@example.com`) {
     const update = { uniqueKey, type: 'new', timestamp: Date.now(), folderKey };
     _testExports._getPendingUpdates().set(update.uniqueKey, update);
-    expect((await _testExports._abandonPendingUpdates([{ ...update }], 'queue_stuck')).dropped).toBe(1);
+    expect((await _testExports._abandonPendingUpdates([update], 'queue_stuck')).dropped).toBe(1);
   }
 
   describe('startup walk', () => {
@@ -9439,6 +9460,45 @@ describe('a newer queued intention during a drain retry', () => {
     expect(current?.hasFailed).toBeUndefined();
   });
 
+  // The retry bookkeeping keeps the entry the drain captured, so an add whose
+  // body extraction failed once is dequeued once its retry indexes it.
+  it('dequeues a failed add once its retry indexes it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, folders, nativeRows } = seedMigratedExactFolders([{ folderPath: '/A', headerMessageIds: [] }]);
+    const key = 'account1:/A:b@example.com';
+    fts.indexBatch = vi.fn(async rows => {
+      for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+      return { count: rows.length };
+    });
+    _testExports._setFtsSearch(fts);
+    headerIDToWeID.mockResolvedValue(2);
+    globalThis.browser.messages.get = vi.fn(async () => ({
+      id: 2, headerMessageId: 'b@example.com', folder: { accountId: 'account1', path: '/A' },
+    }));
+    getUniqueMessageKey.mockImplementation(async header => `account1:${header.folder.path}:${header.headerMessageId}`);
+    buildBatchHeader.mockImplementation(async headers => headers.map(header => ({
+      msgId: `account1:${header.folder.path}:${header.headerMessageId}`,
+      folderId: makeFolderMembershipId('account1', header.folder.path),
+    })));
+    populateBatchBody
+      .mockImplementationOnce(async rows => ({ successfulRows: [], failedMsgIds: rows.map(row => row.msgId) }))
+      .mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+    await _testExports.onExperimentMessageAdded({
+      accountId: 'account1', folderPath: '/A', weFolderId: folders[0].weFolderId,
+      headerMessageId: 'b@example.com', msgKey: 2, eventType: 'msgAdded',
+    });
+
+    vi.setSystemTime(Date.now() + 1000);
+    await flushPendingUpdates();
+    expect(_testExports._getPendingUpdates().get(key)?.hasFailed).toBe(true);
+    vi.setSystemTime(Date.now() + 1000);
+    await flushPendingUpdates();
+
+    expect(nativeRows.get(key)).toBe(folders[0].folderId);
+    expect(_testExports._getPendingUpdates().has(key)).toBe(false);
+  });
+
   it.each([false, true])('ends with the index agreeing with the latest event; removed during the retry=%s', async (removedDuringRetry) => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
@@ -10354,3 +10414,138 @@ describe('membership-state verdicts never outlive their evidence', () => {
   });
 });
 
+
+// INVARIANT (2026-10-04): a queued update that names its folder holds only
+// that folder's repair in exact mode. The drain-quiet gate inferred the
+// folder from the raw key prefix, so a pending add in `/Cold:Hot` (whose raw
+// key starts with `/Cold`'s prefix) deferred `/Cold`'s owed walk for as long
+// as `/Cold:Hot` kept pending work.
+describe('exact-mode drain-quiet gate reads a queued update\'s own folder', () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(realDateNow()); });
+  afterEach(quiesceFolderReconAfterTest);
+
+  it.each([
+    { hotPath: '/Hot', owned: true, deferred: false },
+    { hotPath: '/Cold:Hot', owned: true, deferred: false },
+    // An entry restored without a folder (an earlier release) falls back to
+    // the raw key prefix and still defers the folder whose range holds it.
+    { hotPath: '/Cold:Hot', owned: false, deferred: true },
+  ])('repairs /Cold while $hotPath has a queued add (owned=$owned): deferred=$deferred', async ({ hotPath, owned, deferred }) => {
+    const { fts, folders, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/Cold', headerMessageIds: ['cold@example.com'] },
+      { folderPath: hotPath, headerMessageIds: ['hot@example.com'] },
+    ]);
+    _testExports._setFtsSearch(fts);
+    await tickUntil(fts, value => value?.complete === true && !_testExports._isFolderReconPending(), 40);
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    const [cold, hot] = folders;
+    const coldKey = 'account1:/Cold:cold@example.com';
+    const hotKey = `account1:${hotPath}:hot@example.com`;
+    const event = (folder, id) => ({
+      accountId: folder.accountId, folderPath: folder.folderPath, weFolderId: folder.weFolderId,
+      headerMessageId: id, msgKey: 1, eventType: 'msgAdded',
+    });
+    // The real producer of an owed walk: a cleared queued update for /Cold,
+    // whose native row is missing.
+    nativeRows.delete(coldKey);
+    await _testExports.onExperimentMessageAdded(event(cold, 'cold@example.com'));
+    await incrementalIndexer.clearPendingUpdates();
+    expect(_testExports._getFolderReconDirty()).toContain('account1:/Cold');
+    vi.setSystemTime(Date.now() + reconConfig.errorDelayMs + 100);
+    await _testExports.onExperimentMessageAdded(event(hot, 'hot@example.com'));
+    const queue = _testExports._getPendingUpdates();
+    expect(queue.get(hotKey)).toMatchObject({ type: 'new', folderKey: `account1:${hotPath}` });
+    if (!owned) queue.get(hotKey).folderKey = null;
+    globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockClear();
+
+    let result;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      vi.setSystemTime(Date.now() + 100);
+      result = await settleSchedulerTickWithFakeTimers(fts);
+      if (result?.foldersDrainBusy || queue.has(coldKey)) break;
+    }
+
+    expect(result?.foldersDrainBusy > 0, JSON.stringify(result)).toBe(deferred);
+    expect(globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls
+      .some(([uri]) => uri === cold.folderURI)).toBe(!deferred);
+    expect(queue.has(coldKey)).toBe(!deferred);
+    expect(queue.has(hotKey)).toBe(true);
+  });
+});
+
+// INVARIANT (2026-10-04): an older captured queue entry never dequeues a
+// newer intention, even one of the same type in the same millisecond (type +
+// timestamp is not an identity). The raw key `account1:/F:Child:x@…` is both
+// /F's `Child:x@…` and /F:Child's `x@…`.
+describe('a drain never dequeues a same-type intention queued in its millisecond', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    _testExports._setConsecutiveNoProgressCycles(0);
+  });
+  afterEach(quiesceFolderReconAfterTest);
+
+  it.each([0, 1])('keeps the later add queued after the older add drains; delta=%ims', async (delta) => {
+    const { fts, nativeRows, folders, rowsByURI } = seedMigratedExactFolders([
+      { folderPath: '/F', headerMessageIds: [] },
+      { folderPath: '/F:Child', headerMessageIds: [] },
+    ]);
+    _testExports._setFtsSearch(fts);
+    await tickUntil(fts, value => value?.complete === true && !_testExports._isFolderReconPending(), 30);
+    const key = 'account1:/F:Child:review@example.com';
+    const oldEvent = {
+      accountId: 'account1', folderPath: '/F', weFolderId: folders[0].weFolderId,
+      headerMessageId: 'Child:review@example.com', msgKey: 1, eventType: 'msgAdded',
+    };
+    const latestEvent = {
+      accountId: 'account1', folderPath: '/F:Child', weFolderId: folders[1].weFolderId,
+      headerMessageId: 'review@example.com', msgKey: 2, eventType: 'msgAdded',
+    };
+    rowsByURI.get(folders[0].folderURI).push({ msgKey: 1, headerMessageId: oldEvent.headerMessageId });
+    await _testExports.onExperimentMessageAdded(oldEvent);
+    const captured = _testExports._getPendingUpdates().get(key);
+    expect(captured).toMatchObject({ type: 'new', folderKey: 'account1:/F' });
+    let replacement;
+    resolveUniqueMessageKey.mockResolvedValue({
+      weID: 1, headerID: oldEvent.headerMessageId,
+      weFolder: { accountId: 'account1', path: '/F', id: folders[0].weFolderId },
+    });
+    // While the drain fetches the old add's header, the message is removed
+    // and a different one with the same raw key is added, all within
+    // `delta` ms of the captured add.
+    globalThis.browser.messages.get = vi.fn(async () => {
+      if (!replacement) {
+        vi.setSystemTime(captured.timestamp + delta);
+        rowsByURI.get(folders[0].folderURI).splice(0);
+        await _testExports.onExperimentMessageRemoved({ ...oldEvent, eventType: 'msgDeleted' });
+        expect(_testExports._getPendingUpdates().get(key).type).toBe('deleted');
+        rowsByURI.get(folders[1].folderURI).push({ msgKey: 2, headerMessageId: latestEvent.headerMessageId });
+        await _testExports.onExperimentMessageAdded(latestEvent);
+        replacement = _testExports._getPendingUpdates().get(key);
+        expect(replacement).toMatchObject({
+          type: 'new', folderKey: 'account1:/F:Child', timestamp: captured.timestamp + delta,
+        });
+      }
+      return { id: 1, headerMessageId: oldEvent.headerMessageId, folder: { accountId: 'account1', path: '/F' } };
+    });
+    getUniqueMessageKey.mockResolvedValue(key);
+    buildBatchHeader.mockImplementation(async headers => headers.map(header => ({
+      msgId: key, folderId: makeFolderMembershipId(header.folder.accountId, header.folder.path),
+    })));
+    populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+    fakeNativeFts.indexBatch.mockImplementation(async (rows, wire) => {
+      wire.withFolderIds = true;
+      for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+      return { count: rows.length };
+    });
+    fts.indexBatch = engineFtsSearch.indexBatch;
+
+    await flushPendingUpdates();
+
+    expect(replacement).toBeDefined();
+    // The old drain wrote the old owner; the later add stays queued to
+    // correct it.
+    expect(nativeRows.get(key)).toBe(folders[0].folderId);
+    expect(_testExports._getPendingUpdates().get(key)).toBe(replacement);
+  });
+});

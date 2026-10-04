@@ -119,7 +119,8 @@ it('startup fallback retries a failed update registration without late duplicate
 it('retains failed indexing work when the same member is updated again',async()=>{
   attachOnUpdatedListener();
   await emit({id:42});
-  const failed=_testExports._markResolveFailed(_testExports._getPendingUpdates().get(indexKey));
+  const failed=_testExports._getPendingUpdates().get(indexKey);
+  _testExports._markResolveFailed(failed);
   expect(failed.hasFailed).toBe(true);
   await emit({id:42});
   expect(_testExports._getPendingUpdates().get(indexKey)).toMatchObject({

@@ -462,12 +462,13 @@ function _shouldDropFailedUpdates() {
 }
 
 // The drain captured `update` before an await; it is still the queued
-// intention only while the entry carries the same type and timestamp. A
-// newer intention queued meanwhile (or an abandonment) must not be
-// overwritten or resurrected by the drain's bookkeeping.
+// intention only while the queue holds that very entry. Every admission
+// stores a new entry object, so a newer intention queued meanwhile (even one
+// of the same type in the same millisecond) or an abandonment is never
+// overwritten or dequeued by the drain's bookkeeping. Retry metadata is
+// therefore updated in place, never by replacing the entry.
 function _isQueuedIntention(update) {
-  const current = _pendingUpdates.get(update.uniqueKey);
-  return current?.timestamp === update.timestamp && current?.type === update.type;
+  return _pendingUpdates.get(update.uniqueKey) === update;
 }
 
 /**
@@ -475,14 +476,9 @@ function _isQueuedIntention(update) {
  * Sets hasFailed=true so it can be dropped if queue is stuck.
  */
 function _markResolveFailed(update) {
-  const now = Date.now();
-  const updated = {
-    ...update,
-    hasFailed: true,
-    lastFailedAt: now,
-  };
-  if (_isQueuedIntention(update)) _pendingUpdates.set(update.uniqueKey, updated);
-  return updated;
+  if (!_isQueuedIntention(update)) return;
+  update.hasFailed = true;
+  update.lastFailedAt = Date.now();
 }
 
 /**
@@ -507,7 +503,7 @@ function _incrementNoProgressCounter() {
 /**
  * Atomically convert destructive queue abandonment into reconcile work: the
  * affected folders are dirtied and reconciliation marked pending before any
- * entry is dropped. Only the exact captured type+timestamp may be deleted;
+ * entry is dropped. Only the captured entry itself may be deleted;
  * replacements and requeues survive.
  */
 async function _abandonPendingUpdates(capturedUpdates, reason = "abandoned") {
@@ -518,11 +514,7 @@ async function _abandonPendingUpdates(capturedUpdates, reason = "abandoned") {
     const folderKeys = new Set();
     for (const captured of capturedUpdates || []) {
       const current = _pendingUpdates.get(captured?.uniqueKey);
-      if (!current
-          || current.timestamp !== captured.timestamp
-          || current.type !== captured.type) {
-        continue;
-      }
+      if (!current || current !== captured) continue;
       matching.push(captured);
       folderKeys.add(current.folderKey || captured.folderKey || "__all__");
     }
@@ -539,8 +531,7 @@ async function _abandonPendingUpdates(capturedUpdates, reason = "abandoned") {
 
     let dropped = 0;
     for (const captured of matching) {
-      const current = _pendingUpdates.get(captured.uniqueKey);
-      if (current?.timestamp !== captured.timestamp || current?.type !== captured.type) continue;
+      if (_pendingUpdates.get(captured.uniqueKey) !== captured) continue;
       _pendingUpdates.delete(captured.uniqueKey);
       dropped++;
       logFtsOperation("drop", reason, { uniqueKey: captured.uniqueKey });
@@ -722,9 +713,10 @@ async function processPendingUpdates() {
           
           if (messageHeader) {
             // Success - clear failed flag since we resolved successfully
+            const wasRetried = update.hasFailed;
             if (update.hasFailed && _isQueuedIntention(update)) {
-              const resetUpdate = { ...update, hasFailed: false, lastFailedAt: 0 };
-              _pendingUpdates.set(update.uniqueKey, resetUpdate);
+              update.hasFailed = false;
+              update.lastFailedAt = 0;
             }
             resolvedEntries.push({ update, messageHeader });
             logFtsOperation("resolve", "success", {
@@ -733,7 +725,7 @@ async function processPendingUpdates() {
               weId: weID,
               currentFolder: messageHeader.folder?.path,
               subject: messageHeader.subject,
-              wasRetried: update.hasFailed,
+              wasRetried,
             });
           } else {
             // Fetch failed - weId may have changed again, retry
@@ -4838,11 +4830,16 @@ async function _runFolderReconcile(
     }
 
     // 2) Drain-quiet gate: pending updates for this folder mean its membership
-    //    is in flux — defer until the shared drain reaches low water.
+    //    is in flux — defer until the shared drain reaches low water. An
+    //    entry that names its folder affects only that folder; the raw key
+    //    prefix decides only for an entry with no folder. (Legacy mode
+    //    refuses prefix-overlapping folders as ambiguous before this point.)
     const pendingPrefix = `${folderKey}:`;
     let drainBusy = false;
-    for (const pendingKey of _pendingUpdates.keys()) {
-      if (pendingKey.startsWith(pendingPrefix)) {
+    for (const [pendingKey, pending] of _pendingUpdates) {
+      if (pending?.folderKey
+        ? pending.folderKey === folderKey
+        : pendingKey.startsWith(pendingPrefix)) {
         drainBusy = true;
         break;
       }
