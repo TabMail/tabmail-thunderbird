@@ -512,10 +512,17 @@ describe('formatMailList', () => {
     expect(result).toContain('subject: (No subject)');
   });
 
-  it('shows has_attachments: no when hasAttachments is falsy', () => {
+  it('shows has_attachments: no only when hasAttachments is false', () => {
     const items = [{ uniqueId: 'msg-003', hasAttachments: false }];
     const result = formatMailList(items);
     expect(result).toContain('has_attachments: no');
+  });
+
+  it('shows has_attachments: unknown when the flag could not be read', () => {
+    for (const hasAttachments of [null, undefined, 0, 1, '']) {
+      const result = formatMailList([{ uniqueId: 'msg-003', hasAttachments }]);
+      expect(result).toContain('has_attachments: unknown');
+    }
   });
 
   it('shows replied: no when replied is not true', () => {

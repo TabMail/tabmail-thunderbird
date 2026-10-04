@@ -4,7 +4,8 @@
 
 // email_search.js – FTS search with optional date range and limit
 
-import { log } from "../../agent/modules/utils.js";
+import { log, resolveUniqueMessageKey } from "../../agent/modules/utils.js";
+import { accountIdOfMsgId, getAttachmentRepairedAccounts } from "../../fts/attachmentFlags.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { formatMailList, toIsoNoMs } from "../modules/helpers.js";
 
@@ -45,6 +46,50 @@ export function resolvePageSize() {
 }
 
 // Email search using FTS (Full Text Search) backend only
+
+// Each hit carries the index's attachment flag, trusted for accounts whose stale flags have been
+// repaired (fts/attachmentFlags.js). The other hits' flags are read from Thunderbird.
+async function hitAttachmentFlags(hits) {
+  let repaired = new Set();
+  try {
+    repaired = await getAttachmentRepairedAccounts();
+  } catch (e) {
+    log(`[TMDBG Tools] email_search: reading the repaired accounts failed: ${e}`, "error");
+  }
+  const flags = hits.map(hit => (repaired.has(accountIdOfMsgId(hit.uniqueId)) ? Boolean(hit.hasAttachments) : null));
+  const askIdx = [];
+  hits.forEach((_, i) => { if (flags[i] === null) askIdx.push(i); });
+  if (askIdx.length > 0) {
+    const asked = await readAttachmentFlags(askIdx.map(i => hits[i]));
+    askIdx.forEach((hitIdx, k) => { flags[hitIdx] = asked[k]; });
+  }
+  return flags;
+}
+
+// Reads each hit's flag from Thunderbird's message database. A hit that does not resolve to
+// exactly one live message, or whose flag cannot be read, is null ("unknown", never "no").
+async function readAttachmentFlags(hits) {
+  const flags = hits.map(() => null);
+  try {
+    const folderInventory = new Map();
+    const weIds = [];
+    const weIdHit = [];
+    for (let i = 0; i < hits.length; i++) {
+      const resolved = await resolveUniqueMessageKey(hits[i].uniqueId || "", { folderInventory });
+      if (!resolved) continue;
+      weIds.push(resolved.weID);
+      weIdHit.push(i);
+    }
+    if (weIds.length === 0) return flags;
+    const statuses = await browser.tmHdr.getHasAttachmentBulk(weIds);
+    statuses.forEach((hasAttachment, k) => {
+      if (typeof hasAttachment === "boolean") flags[weIdHit[k]] = hasAttachment;
+    });
+  } catch (e) {
+    log(`[TMDBG Tools] email_search: reading attachment flags failed: ${e}`, "error");
+  }
+  return flags;
+}
 
 export async function run(args = {}, options = {}) {
   try {
@@ -238,14 +283,16 @@ export async function run(args = {}, options = {}) {
         totalItems: 0,
       };
     } else {
+      const hasAttachmentStatuses = await hitAttachmentFlags(slice);
+
       // Map FTS hits directly to formatMailList format - use uniqueId directly from FTS
       const formatted = formatMailList(
-        slice.map((hit) => ({
+        slice.map((hit, i) => ({
           uniqueId: hit.uniqueId || "", // Use uniqueId directly from FTS (msgId = folderUri:headerID)
           date: hit.dateMs ? toIsoNoMs(new Date(hit.dateMs)) : "",
           from: hit.author || "",
           subject: hit.subject || "(No subject)",
-          hasAttachments: Boolean(hit.hasAttachments),
+          hasAttachments: hasAttachmentStatuses[i],
           snippet: hit.snippet || "",
           // Search results always return empty for these fields
           action: "",

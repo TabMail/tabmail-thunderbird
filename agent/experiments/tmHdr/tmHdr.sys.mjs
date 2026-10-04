@@ -512,6 +512,28 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
             return [];
           }
         },
+        // Thunderbird's MessageHeader has no attachment field, so the flag comes from the
+        // message database: nsMsgMessageFlags.Attachment, the flag behind Thunderbird's
+        // paperclip column. Looked up by WebExtension message id; null when the message is
+        // gone or the read fails, so callers never mistake "could not tell" for "no".
+        async getHasAttachmentBulk(messageIds) {
+          const NS = CiTM.nsMsgMessageFlags;
+          let unknown = 0;
+          const out = (Array.isArray(messageIds) ? messageIds : []).map((id) => {
+            try {
+              const hdr = mm ? mm.get(id) : null;
+              if (hdr) return !!(hdr.flags & NS.Attachment);
+            } catch (e) {
+              console.warn("[TMDBG tmHdr] getHasAttachmentBulk: header read failed for", id, e);
+            }
+            unknown++;
+            return null;
+          });
+          if (unknown > 0) {
+            console.warn(`[TMDBG tmHdr] getHasAttachmentBulk: ${unknown} of ${out.length} headers unavailable`);
+          }
+          return out;
+        },
       },
     };
   }

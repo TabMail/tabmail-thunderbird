@@ -146,6 +146,16 @@
         "returns": { "type": "array", "items": { "type": "boolean" } }
       },
       {
+        "name": "getHasAttachmentBulk",
+        "type": "function",
+        "description": "Bulk read of nsMsgMessageFlags.Attachment by WebExtension message id. Each result is true, false, or null when the message is gone or its header could not be read.",
+        "async": true,
+        "parameters": [
+          { "name": "messageIds", "type": "array", "items": { "type": "integer" } }
+        ],
+        "returns": { "type": "array", "items": { "choices": [{ "type": "boolean" }, { "type": "null" }] } }
+      },
+      {
         "name": "getRepliedByMessageId",
         "type": "function",
         "description": "Return true if Replied flag is set, resolving header by RFC Message-ID string.",
