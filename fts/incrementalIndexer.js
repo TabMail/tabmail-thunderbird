@@ -981,7 +981,7 @@ async function processPendingUpdates() {
     }
 
     // Processing successful - remove verified updates from map
-    // IMPORTANT: Only delete if the timestamp matches what we processed
+    // IMPORTANT: Only delete if the queued intention (type + timestamp) is the one we processed
     // This prevents deleting entries that were re-queued during processing
     let processedCount = 0;
     let reQueuedCount = 0;
@@ -2705,10 +2705,14 @@ function _noteFolderReconLocalChange(folderKey) {
 // True when no local change to `folderKey` (or wildcard change) happened
 // after `since` was read from _folderReconLocalSerial.
 function _folderReconLocalUnchangedSince(folderKey, since) {
+  return _folderReconLocalFoldersUnchangedSince([folderKey], since);
+}
+
+function _folderReconLocalFoldersUnchangedSince(folderKeys, since) {
   return Number.isFinite(since)
     && since >= _folderReconLocalFloor
     && since >= _folderReconLocalWildcard
-    && (_folderReconLocalTouched.get(folderKey) ?? 0) <= since;
+    && folderKeys.every(folderKey => (_folderReconLocalTouched.get(folderKey) ?? 0) <= since);
 }
 
 function _folderReconLocalScope(folderKey) {
@@ -3203,9 +3207,8 @@ function _assertFolderReconLease(lease, generation, localScope = null) {
   _assertFolderReconGeneration(generation, localScope);
 }
 
-// Global consumers only (the membership-state pass and the pending-flag
-// clear): any message event anywhere since `eventSerial` (a
-// `_folderReconLocalSerial` reading) voids the step. Events are detected by
+// Global consumers only (the pending-flag clear): any message event anywhere
+// since `eventSerial` (a `_folderReconLocalSerial` reading) voids the step. Events are detected by
 // that serial, never by `_lastSyncEventMs`: two events can share a millisecond.
 function _assertNoFolderReconSyncEventSince(eventSerial) {
   if (_folderReconLocalSerial !== eventSerial) throw new Error("folder_changed_during_scan");
@@ -5825,10 +5828,22 @@ async function _resolveFolderMembershipAssignment(
     path: identity.folderPath,
   }));
   const candidates = getUniqueMessageKeyCandidates(msgId, folders);
+  // The verdict reads only the candidate folders' messages, so only an event
+  // in one of them (or one naming no folder) voids it; mail elsewhere does not.
+  const localScope = {
+    folderKeys: candidates.map(candidate => `${candidate.weFolder.accountId}:${candidate.weFolder.path}`),
+    since: _folderReconLocalSerial,
+  };
+  const assertRowCurrent = () => {
+    assertCurrent();
+    if (!_folderReconLocalFoldersUnchangedSince(localScope.folderKeys, localScope.since)) {
+      throw new Error("folder_changed_during_scan");
+    }
+  };
   const present = [];
   let globalQueried = false;
   for (const candidate of candidates) {
-    assertCurrent();
+    assertRowCurrent();
     let scopedPositive = false;
     // Id of a list Thunderbird still holds open; released on every exit.
     let openListId = null;
@@ -5838,12 +5853,14 @@ async function _resolveFolderMembershipAssignment(
         headerMessageId: candidate.headerID,
       });
       openListId = page?.id || null;
-      assertCurrent();
+      assertRowCurrent();
       scopedPositive = (page?.messages || []).length > 0;
-      while (page?.id && typeof browser.messages.continueList === "function") {
+      // A positive is conclusive for this folder; the rest of the list is
+      // released unread.
+      while (!scopedPositive && page?.id && typeof browser.messages.continueList === "function") {
         page = await browser.messages.continueList(page.id);
         openListId = page?.id || null;
-        assertCurrent();
+        assertRowCurrent();
         if ((page?.messages || []).length > 0) scopedPositive = true;
       }
     } catch (error) {
@@ -5856,15 +5873,16 @@ async function _resolveFolderMembershipAssignment(
       if (!globalQueried && budget.rechecks <= 0) return { kind: "deferred" };
       globalQueried = true;
       budget.rechecks--;
-      assertCurrent();
+      assertRowCurrent();
       const verdict = await recheckMessageInFolder(candidate.headerID, candidate.weFolder);
-      assertCurrent();
+      assertRowCurrent();
       if (verdict === "error") return { kind: "unresolved" };
       if (verdict !== "present") continue;
     }
     present.push(candidate);
   }
-  if (present.length === 0) return { kind: "ghost" };
+  // A removal re-checks the same scope inside its fence.
+  if (present.length === 0) return { kind: "ghost", localScope };
   if (present.length > 1) return { kind: "unresolved" };
   const owner = identities.find(identity =>
     identity.weFolderId === present[0].weFolder.id
@@ -5885,7 +5903,6 @@ async function _runFolderMembershipMigrationSlice(
   identities,
   reconcileLease,
   generation,
-  eventSerial,
   inventoryMembershipEpoch,
   inventoryTopologySerial = _folderReconTopologySerial,
 ) {
@@ -5893,16 +5910,11 @@ async function _runFolderMembershipMigrationSlice(
     _revokeFolderMembershipCutover();
     return { complete: true, legacy: true };
   }
-  // The inventory reads no message state.
+  // The inventory and the state pages read no message state; each ownerless
+  // row's verdict carries its own candidate folders' local scope.
   const assertCurrent = () => {
     _assertFolderReconLease(reconcileLease, generation);
     _assertNoFolderReconForegroundPressure();
-  };
-  // The membership-state pass judges rows of every folder, so a message
-  // event anywhere since the slice started voids its page.
-  const assertStateCurrent = () => {
-    assertCurrent();
-    _assertNoFolderReconSyncEventSince(eventSerial);
   };
   const validIdentities = identities.filter(identity =>
     identity.accountId && identity.folderPath && identity.folderId && identity.weFolderId);
@@ -5949,7 +5961,7 @@ async function _runFolderMembershipMigrationSlice(
   // legacy write needs a new native connection, a folder deletion changes
   // the inventory.
   const pass = _currentFolderMembershipStatePass(binding);
-  assertStateCurrent();
+  assertCurrent();
   let page;
   try {
     _consumeFolderMembershipPageBudget();
@@ -5960,7 +5972,7 @@ async function _runFolderMembershipMigrationSlice(
   } catch (error) {
     return { complete: false, failed: true, reason: "membership_state_list_failed", error: String(error) };
   }
-  assertStateCurrent();
+  assertCurrent();
   pass.slices++;
   _bumpFolderReconTelemetry("membershipStatePages");
 
@@ -5997,9 +6009,11 @@ async function _runFolderMembershipMigrationSlice(
   }
 
   // Classify rows in order. The cursor only ever passes a fully classified
-  // row, so a budget-deferred row (and everything after it) is re-read by the
-  // next slice, and a done:true page is terminal only once its last row is in.
+  // row, so a budget-deferred or event-voided row (and everything after it)
+  // is re-read by the next slice, and a done:true page is terminal only once
+  // its last row is in.
   const staleOrphanMsgIds = [];
+  const ghostScopes = [];
   const assignments = [];
   const budget = { rechecks: FOLDER_RECON_RECHECKS_PER_SLICE };
   let unresolved = 0;
@@ -6031,17 +6045,28 @@ async function _runFolderMembershipMigrationSlice(
       processed++;
       continue;
     }
-    const verdict = await _resolveFolderMembershipAssignment(
-      msgId,
-      validIdentities,
-      trustedAccountIds,
-      assertStateCurrent,
-      budget,
-    );
+    let verdict;
+    try {
+      verdict = await _resolveFolderMembershipAssignment(
+        msgId,
+        validIdentities,
+        trustedAccountIds,
+        assertCurrent,
+        budget,
+      );
+    } catch (error) {
+      if (!String(error?.message || error).includes("folder_changed_during_scan")) throw error;
+      // A message event in one of this row's candidate folders voided its
+      // verdict; the rows before it still count.
+      _bumpFolderReconTelemetry("membershipStatePageRetries");
+      break;
+    }
     if (verdict.kind === "deferred") break;
     if (verdict.kind === "assign") assignments.push(verdict.assignment);
-    else if (verdict.kind === "ghost") staleOrphanMsgIds.push(msgId);
-    else if (verdict.kind === "unloaded") unloadedAccountRowsKept++;
+    else if (verdict.kind === "ghost") {
+      staleOrphanMsgIds.push(msgId);
+      ghostScopes.push(verdict.localScope);
+    } else if (verdict.kind === "unloaded") unloadedAccountRowsKept++;
     else unresolved++;
     processed++;
   }
@@ -6050,23 +6075,51 @@ async function _runFolderMembershipMigrationSlice(
     // Aggregate-only: no account, folder, or Message-ID values.
     log(`[FTS FolderRecon] Membership pass kept ${unloadedAccountRowsKept} row(s) whose account is absent from the current inventory — not loaded yet, not deletion evidence`, "warn");
   }
+  // Unfenced: native only fills a NULL owner, accepts an equal one and rolls
+  // back a conflict (thrown: same-page retry), and a vanished row is a no-op.
+  if (assignments.length > 0) {
+    try {
+      for (let offset = 0; offset < assignments.length;
+        offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
+        const batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
+        pass.passMutated = true;
+        assertCurrent();
+        await ftsSearch.assignFolderMembershipBatch(batch);
+        assertCurrent();
+      }
+    } catch (error) {
+      _throwIfFolderReconInterrupted(error);
+      return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
+    }
+  }
   // Stale owners and ghosts are judged against this tick's inventory, so the
   // removal is fenced on the epoch read before that inventory snapshot. Any
   // membership write since then (a row indexed into a folder created after the
   // snapshot looks exactly like a deleted folder's row) rejects the fence
   // before the mutator runs, and the same page is retried on a later slice.
+  // Removals run after the page's assignments, so a refused removal never
+  // costs them. A folder event (creation, rename, move) since the snapshot,
+  // or a message event in a ghost's candidate folders since its verdict,
+  // refuses the removal; mail in other folders does not.
+  const assertRemovalCurrent = () => {
+    assertCurrent();
+    if (_folderReconTopologySerial !== inventoryTopologySerial
+        || !ghostScopes.every(scope => _folderReconLocalFoldersUnchangedSince(scope.folderKeys, scope.since))) {
+      throw new Error("folder_changed_during_scan");
+    }
+  };
   if (staleOrphanMsgIds.length > 0) {
     try {
       await withFtsMembershipFence(inventoryMembershipEpoch, async (membershipFenceToken) => {
         // Sticky before the mutator: an interrupted or uncertain removal
         // still forces a full replay before cutover.
         pass.passMutated = true;
-        assertStateCurrent();
+        assertRemovalCurrent();
         await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
-        assertStateCurrent();
+        assertRemovalCurrent();
         for (const msgId of staleOrphanMsgIds) {
           const remaining = await ftsSearch.getMessageByMsgId(msgId);
-          assertStateCurrent();
+          assertRemovalCurrent();
           if (remaining?.msgId === msgId) throw new Error("stale_folder_remove_verify_failed");
         }
       }, {
@@ -6082,24 +6135,11 @@ async function _runFolderMembershipMigrationSlice(
         _bumpFolderReconTelemetry("membershipStatePageRetries");
         return { complete: false, retry: true, reason: "stale_folder_remove_fence_lost" };
       }
-      return { complete: false, failed: true, reason: "stale_folder_remove_failed", error: String(error) };
-    }
-  }
-  // Unfenced: native only fills a NULL owner, accepts an equal one and rolls
-  // back a conflict (thrown: same-page retry), and a vanished row is a no-op.
-  if (assignments.length > 0) {
-    try {
-      for (let offset = 0; offset < assignments.length;
-        offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
-        const batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
-        pass.passMutated = true;
-        assertStateCurrent();
-        await ftsSearch.assignFolderMembershipBatch(batch);
-        assertStateCurrent();
+      if (String(error?.message || error).includes("folder_changed_during_scan")) {
+        _bumpFolderReconTelemetry("membershipStatePageRetries");
+        return { complete: false, retry: true, reason: "stale_folder_remove_event" };
       }
-    } catch (error) {
-      _throwIfFolderReconInterrupted(error);
-      return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
+      return { complete: false, failed: true, reason: "stale_folder_remove_failed", error: String(error) };
     }
   }
   pass.passUnresolved += unresolved;
@@ -6285,20 +6325,11 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
           identities,
           reconcileLease,
           generation,
-          eventSerial,
           inventoryMembershipEpoch,
           inventoryTopologySerial,
         );
       } catch (error) {
         const message = String(error?.message || error);
-        if (message.includes("folder_changed_during_scan")) {
-          // A message event during the slice voids its judgements (a removal
-          // could race a re-add). Nothing was committed past the cursor, so
-          // the same page is read again on the next paced slice.
-          _bumpFolderReconTelemetry("membershipStatePageRetries");
-          _wakeFolderRecon("membership_sync_event", cooperativeDelay());
-          return { complete: false, migration: { retry: true, reason: "sync_event_during_slice" } };
-        }
         if (!message.includes("folder_recon_pressure")) throw error;
         _bumpFolderReconTelemetry("schedulerPressureSkips");
         _wakeFolderRecon("membership_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));

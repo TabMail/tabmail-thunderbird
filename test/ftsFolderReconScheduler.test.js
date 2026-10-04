@@ -2739,6 +2739,35 @@ describe('cooperative folder reconcile production contracts', () => {
     expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
   });
 
+  it('yields to pressure raised inside an ownerless row\'s scoped query, then assigns the row', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const { fts, folders, nativeRows } = installExactMembershipFolders([
+        { folderPath: '/F', headerMessageIds: ['parent@example.com'] },
+      ]);
+      const row = 'account1:/F:parent@example.com';
+      const query = globalThis.browser.messages.query.getMockImplementation();
+      globalThis.browser.messages.query.mockImplementationOnce(async (args) => {
+        getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false });
+        return query(args);
+      });
+
+      const result = await settleSchedulerTickWithFakeTimers(fts);
+
+      expect(result).toMatchObject({ skipped: true, reason: 'pressure' });
+      expect(fts.assignFolderMembershipBatch).not.toHaveBeenCalled();
+      expect(nativeRows.get(row)).toBeNull();
+      getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
+      await tickUntil(fts, () => nativeRows.get(row) === folders[0].folderId);
+      expect(nativeRows.get(row)).toBe(folders[0].folderId);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   // INVARIANT (2026-10-02): the pass certifies that every row has a live,
   // structurally prefixing owner. Capable writes preserve that, so new mail
   // indexed while the pass runs must neither restart nor skip it; before this
@@ -9490,7 +9519,7 @@ describe('membership assignment scoped query list lifecycle', () => {
     expect(releaseMessageList).not.toHaveBeenCalled();
   });
 
-  it('releases an open list when a sync event interrupts its continuation, then assigns on retry', async () => {
+  it('releases an open list when an event in its folder interrupts its continuation, then assigns on retry', async () => {
     const { fts, nativeRows, folders } = seedUnassignedRow();
     let interrupted = false;
     globalThis.browser.messages.query.mockImplementation(async () => (interrupted
@@ -9507,7 +9536,8 @@ describe('membership assignment scoped query list lifecycle', () => {
     });
 
     const first = await settleSchedulerTickWithFakeTimers(fts);
-    expect(first).toMatchObject({ complete: false, migration: { retry: true } });
+    expect(first).toMatchObject({ complete: false, migration: { membershipStateProgress: true } });
+    expect(_testExports._getFolderReconRuntimeTelemetry().membershipStatePageRetries).toBe(1);
     expect(releaseMessageList).toHaveBeenCalledWith('list-1');
     expect(nativeRows.get(ROW)).toBeNull();
     expect(recheckMessageInFolder).not.toHaveBeenCalled();
@@ -9515,6 +9545,25 @@ describe('membership assignment scoped query list lifecycle', () => {
     vi.setSystemTime(Date.now() + 100);
     await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
     expect(nativeRows.get(ROW)).toBe(folders[0].folderId);
+  });
+
+  // A positive is conclusive for its folder: the rest of the list (copies
+  // sharing the Message-ID) is never paged, and the open list is released.
+  it('stops paging at a scoped positive and releases the open list', async () => {
+    const { fts, nativeRows, folders } = seedUnassignedRow();
+    globalThis.browser.messages.query.mockResolvedValue({ id: 'list-1', messages: [HIT] });
+    // A long result: one more page per continuation, then the last.
+    globalThis.browser.messages.continueList
+      .mockResolvedValueOnce({ id: 'list-1', messages: [HIT] })
+      .mockResolvedValueOnce({ id: 'list-1', messages: [HIT] })
+      .mockResolvedValue({ id: null, messages: [HIT] });
+
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+
+    expect(nativeRows.get(ROW)).toBe(folders[0].folderId);
+    expect(globalThis.browser.messages.continueList).not.toHaveBeenCalled();
+    expect(releaseMessageList).toHaveBeenCalledWith('list-1');
+    expect(recheckMessageInFolder).not.toHaveBeenCalled();
   });
 
   it('releases the list when a continuation fails and lets the global query decide', async () => {
@@ -9644,4 +9693,150 @@ describe('migration never starves a healthy folder\'s repair', () => {
     expect(fts.listFolderMembershipState).toHaveBeenCalled();
     expect(arrivals).toBeGreaterThan(0);
   }, 30_000);
+});
+
+// INVARIANT (2026-10-04, R7): an ownerless row's verdict depends only on its
+// candidate folders' messages, so mail delivered to any other folder while
+// the row is being classified — even inside every query — neither voids the
+// verdict nor holds the pass (and every folder's reconciliation behind it).
+// An event in a candidate folder still voids the row, and a removal still
+// yields to an event in the removed row's candidate folders or a folder event.
+describe('ownerless-row verdicts read only their candidate folders\' events', () => {
+  afterEach(async () => {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it.each([
+    { eventFolder: '/Other', assigned: true },
+    { eventFolder: '/F', assigned: false },
+  ])('classifies an ownerless row while mail is drained into $eventFolder inside every scoped query: assigned=$assigned', async ({ eventFolder, assigned }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, folders, nativeRows, rowsByURI } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['missing@example.com'] },
+      { folderPath: '/F', headerMessageIds: ['cold@example.com'] },
+      { folderPath: '/Other', headerMessageIds: [] },
+    ]);
+    const cold = 'account1:/F:cold@example.com';
+    const missing = 'account1:/A:missing@example.com';
+    nativeRows.set(cold, null);
+    nativeRows.delete(missing);
+    _testExports._setFtsSearch(fts);
+    const busy = folders.find(folder => folder.folderPath === eventFolder);
+    let currentHeader;
+    headerIDToWeID.mockResolvedValue(1);
+    globalThis.browser.messages.get = vi.fn(async () => currentHeader);
+    getUniqueMessageKey.mockImplementation(async header =>
+      `account1:${header.folder.path}:${header.headerMessageId}`);
+    buildBatchHeader.mockImplementation(async headers => headers.map(header => ({
+      msgId: `account1:${header.folder.path}:${header.headerMessageId}`,
+      folderId: makeFolderMembershipId('account1', header.folder.path),
+    })));
+    populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+    fakeNativeFts.indexBatch.mockImplementation(async rows => {
+      for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+      return { count: rows.length };
+    });
+    fts.indexBatch = engineFtsSearch.indexBatch;
+    const query = globalThis.browser.messages.query.getMockImplementation();
+    let arrivals = 0;
+    globalThis.browser.messages.query.mockImplementation(async (args) => {
+      // A real arrival, fully drained, lands inside every scoped query.
+      const headerMessageId = `arrival-${arrivals++}@example.com`;
+      rowsByURI.get(busy.folderURI).push({ msgKey: 10_000 + arrivals, headerMessageId });
+      currentHeader = { id: 1, headerMessageId, folder: { accountId: 'account1', path: busy.folderPath } };
+      await _testExports.onExperimentMessageAdded({
+        accountId: 'account1', folderPath: busy.folderPath, weFolderId: busy.weFolderId,
+        headerMessageId, msgKey: 10_000 + arrivals, eventType: 'msgAdded',
+      });
+      await flushPendingUpdates();
+      return query(args);
+    });
+
+    for (let turn = 0; turn < 40 && !_testExports._getPendingUpdates().has(missing); turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      vi.setSystemTime(Date.now() + reconConfig.paceDelayMs);
+    }
+
+    expect(arrivals).toBeGreaterThan(0);
+    if (assigned) {
+      expect(nativeRows.get(cold)).toBe(folders[1].folderId);
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+      expect(_testExports._getPendingUpdates().has(missing)).toBe(true);
+    } else {
+      // Each verdict is voided by its own folder's mail and retried.
+      expect(nativeRows.get(cold)).toBeNull();
+      expect(_testExports._getFolderMembershipCutoverProven()).toBe(false);
+      expect(_testExports._getFolderReconRuntimeTelemetry().membershipStatePageRetries).toBeGreaterThan(1);
+    }
+  }, 30_000);
+
+  it.each([
+    { change: 'other-folder mail', withheld: false },
+    { change: 'a re-add in the ghost\'s folder', withheld: true },
+    { change: 'a folder rename', withheld: true },
+  ])('commits the page\'s assignments and removes a ghost after $change during them: withheld=$withheld', async ({ change, withheld }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const renameListeners = new Set();
+    globalThis.browser.folders = {
+      onRenamed: {
+        addListener: listener => renameListeners.add(listener),
+        removeListener: listener => renameListeners.delete(listener),
+      },
+    };
+    incrementalIndexer.setupFolderTopologyListeners();
+    try {
+      const { fts, folders, nativeRows, rowsByURI } = seedMigratedExactFolders([
+        { folderPath: '/F', headerMessageIds: ['live@example.com'] },
+        { folderPath: '/Other', headerMessageIds: [] },
+      ]);
+      const ghost = 'account1:/F:ghost@example.com';
+      const live = 'account1:/F:live@example.com';
+      nativeRows.set(ghost, null);
+      nativeRows.set(live, null);
+      const assign = fts.assignFolderMembershipBatch.getMockImplementation();
+      fts.assignFolderMembershipBatch.mockImplementationOnce(async (...args) => {
+        if (change === 'other-folder mail') {
+          await _testExports.onExperimentMessageAdded({
+            accountId: 'account1', folderPath: '/Other', weFolderId: folders[1].weFolderId,
+            headerMessageId: 'other@example.com', msgKey: 7, eventType: 'msgAdded',
+          });
+        } else if (change === 'a re-add in the ghost\'s folder') {
+          rowsByURI.get(folders[0].folderURI).push({ msgKey: 8, headerMessageId: 'ghost@example.com' });
+          await _testExports.onExperimentMessageAdded({
+            accountId: 'account1', folderPath: '/F', weFolderId: folders[0].weFolderId,
+            headerMessageId: 'ghost@example.com', msgKey: 8, eventType: 'msgAdded',
+          });
+        } else {
+          // A rename and its reversal: the inventory is unchanged.
+          for (const listener of [...renameListeners]) {
+            listener({ accountId: 'account1', path: '/Other' }, { accountId: 'account1', path: '/Other' });
+          }
+        }
+        _testExports._getPendingUpdates().clear();
+        return assign(...args);
+      });
+
+      const first = await settleSchedulerTickWithFakeTimers(fts);
+
+      expect(nativeRows.get(live), JSON.stringify(first)).toBe(folders[0].folderId);
+      expect(fts.removeBatch.mock.calls.flat(2).includes(ghost)).toBe(!withheld);
+      expect(nativeRows.has(ghost)).toBe(withheld);
+      if (withheld) {
+        expect(first).toMatchObject({ migration: { retry: true, reason: 'stale_folder_remove_event' } });
+        vi.setSystemTime(Date.now() + 100);
+        await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+        expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+        // A re-added ghost is now live and owned; otherwise it is removed.
+        if (change === 'a re-add in the ghost\'s folder') expect(nativeRows.get(ghost)).toBe(folders[0].folderId);
+        else expect(nativeRows.has(ghost)).toBe(false);
+      }
+    } finally {
+      await incrementalIndexer.disposeIncrementalIndexer();
+      delete globalThis.browser.folders;
+    }
+  });
 });
