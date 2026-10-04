@@ -6932,6 +6932,66 @@ describe('reconciliation removal vs a racing re-add', () => {
     expect(nativeRows.get(LIVE)).toBe(delivered ? folders[0].folderId : undefined);
   });
 
+  // The re-add lands after the last absence check, while the removal fence
+  // is being acquired: it queues work but moves no native epoch, so only the
+  // event serial checked inside the fence withholds the removal.
+  it.each([false, true])('withholds an owned stale-row removal when the re-add is delivered while the removal fence is acquiring; readd=%s', async (readd) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, nativeRows, rowsByURI, folders } = seedMigratedExactFolders([
+      { folderPath: '/F', headerMessageIds: [] },
+    ]);
+    nativeRows.set(LIVE, folders[0].folderId);
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (_uri, ids) => ({
+      missing: ids.filter(id => !rowsByURI.get(folders[0].folderURI).some(row => row.headerMessageId === id)),
+    }));
+    let rechecked = false;
+    let injected = false;
+    let eventPromise;
+    recheckMessageInFolder.mockImplementationOnce(async () => {
+      rechecked = true;
+      return 'absent';
+    });
+    const fakeSetTimeout = globalThis.setTimeout.bind(globalThis);
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, delay, ...args) => {
+      if (rechecked && !injected && delay === _testExports.FOLDER_RECON_ENTRY_DELAY_MS) {
+        injected = true;
+        return fakeSetTimeout(() => {
+          callback(...args);
+          // The continuation does its last absence check and starts the real
+          // async membership fence before this event microtask is delivered.
+          eventPromise = Promise.resolve().then(async () => {
+            if (!readd) return;
+            rowsByURI.get(folders[0].folderURI).push({ msgKey: 1, headerMessageId: 'live@example.com' });
+            await _testExports.onExperimentMessageAdded({
+              accountId: 'account1', folderPath: '/F',
+              headerMessageId: 'live@example.com', msgKey: 1, eventType: 'msgAdded',
+            });
+          });
+        }, delay);
+      }
+      return fakeSetTimeout(callback, delay, ...args);
+    });
+    try {
+      for (let turn = 0; turn < 30 && !injected; turn++) {
+        try { await settleSchedulerTickWithFakeTimers(fts); }
+        catch (error) {
+          if (!String(error?.message || error).includes('folder_changed_during_scan')) throw error;
+        }
+        vi.setSystemTime(Date.now() + 1000);
+      }
+      await eventPromise;
+      expect(rechecked).toBe(true);
+      expect(injected).toBe(true);
+      expect(rowsByURI.get(folders[0].folderURI).some(row => row.headerMessageId === 'live@example.com')).toBe(readd);
+      expect(_testExports._getPendingUpdates().has(LIVE)).toBe(readd);
+      expect(nativeRows.get(LIVE)).toBe(readd ? folders[0].folderId : undefined);
+      expect(fts.removeBatch.mock.calls.flat(2).includes(LIVE)).toBe(!readd);
+    } finally {
+      timerSpy.mockRestore();
+    }
+  });
+
   function startDrain(indexed) {
     _testExports._getPendingUpdates().set(LIVE, {
       type: 'new', uniqueKey: LIVE, timestamp: Date.now(),
