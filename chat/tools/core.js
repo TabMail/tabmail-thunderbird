@@ -6,6 +6,7 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { resolveEmailSubject, resolveEventDetails } from "../modules/entityResolver.js";
+import * as attachmentReadPdfTool from "./attachment_read_pdf.js";
 import * as calendarEventCreateTool from "./calendar_event_create.js";
 import * as calendarEventDeleteTool from "./calendar_event_delete.js";
 import * as calendarEventEditTool from "./calendar_event_edit.js";
@@ -48,6 +49,7 @@ import * as templateToggleTool from "./template_toggle.js";
 const TOOL_IMPL = {
   inbox_read: inboxReadTool,
   email_read: emailReadTool,
+  attachment_read_pdf: attachmentReadPdfTool,
   email_search: emailSearchTool,
   calendar_search: calendarSearchTool,
   calendar_read: calendarReadTool,
@@ -125,6 +127,13 @@ export async function getToolActivityLabel(name, args = {}) {
         }
       }
       return "Reading email…";
+    }
+    case "attachment_read_pdf": {
+      const name = args?.attachment_name || "";
+      if (name) {
+        return `Reading PDF: ${name}`;
+      }
+      return "Reading PDF attachment…";
     }
     case "email_search": {
       const query = args?.query || "";

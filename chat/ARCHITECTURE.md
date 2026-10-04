@@ -36,9 +36,13 @@ chat/
 │   ├── calendarEdit.js     # Calendar event editing
 │   └── contactsDelete.js   # Contact deletion
 │
+├── libs/
+│   └── pdfjs/              # Bundled pdf.js (legacy build + worker + CMaps) for attachment_read_pdf
+│
 ├── tools/                  # Tool implementations (31 tools)
 │   ├── core.js             # Tool registry: TOOL_IMPL map + getToolActivityLabel()
 │   ├── email_search.js     # Search emails
+│   ├── attachment_read_pdf.js # Read a PDF attachment's text, a page range per call (v1.9.0+)
 │   ├── email_reply.js      # Reply to email
 │   ├── email_forward.js    # Forward email
 │   ├── email_delete.js     # Delete emails
@@ -65,6 +69,7 @@ chat/
     ├── contacts.js         # Contact integration
     ├── markdown.js         # Markdown rendering
     ├── mentionAutocomplete.js # @mention autocomplete
+    ├── pdfText.js          # Bounded, text-only PDF extraction (pdf.js in its own worker)
     └── [15+ more modules]
 ```
 
