@@ -339,7 +339,9 @@ async function _deferFolderReconAfterDrainFailure(updates, reason) {
 async function _tryAdmitPendingUpdate(uniqueKey, update, folderKey = null) {
   const existing = _pendingUpdates.has(uniqueKey);
   if (!existing && _pendingUpdates.size >= FOLDER_RECON_PENDING_HIGH_WATER) {
-    // A message in no folder cannot be found by any folder walk.
+    // A message that names no folder marks nothing; like a folder-less
+    // event, it is left to the rolling walk, the state pass and the next
+    // startup.
     if (folderKey) await _markFolderReconDirty(folderKey);
     log(`[TMDBG FTS] Queue high-water (${FOLDER_RECON_PENDING_HIGH_WATER}) reached; deferred ${uniqueKey} to exact folder reconcile`, "warn");
     return false;
