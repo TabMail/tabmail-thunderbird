@@ -2,9 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// tmHdr.getHasAttachmentBulk reads nsMsgMessageFlags.Attachment from the header that
-// Thunderbird's MessageManager holds for each WebExtension message id. A message that is gone,
-// or whose header cannot be read, is null: "could not tell", never "no".
+// tmHdr's bulk flag reads look each message up by WebExtension id in Thunderbird's
+// MessageManager. A WebExtension id is not the message's key in its folder, so a folder lookup
+// by that number can return a different message.
+// getHasAttachmentBulk: a message that is gone, or whose header cannot be read, is null ("could
+// not tell", never "no"). getRepliedBulk / getHasReBulk: such a message reads as false.
 
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -18,8 +20,6 @@ function createExperiment(headers, messageManager = { get: vi.fn((id) => headers
   const sandbox = {
     ChromeUtils: { importESModule(path) {
       if (path.includes('ExtensionCommon')) return { ExtensionCommon: { ExtensionAPI: class {} } };
-      if (path.includes('MailServices')) return { MailServices: {} };
-      if (path.includes('MailUtils')) return { MailUtils: {} };
       throw new Error(path);
     } },
     console: { log: vi.fn(), error: vi.fn(), warn: vi.fn() },
@@ -58,5 +58,39 @@ describe('tmHdr.getHasAttachmentBulk', () => {
   it('returns an empty list for a non-array argument', async () => {
     const { api } = createExperiment({});
     expect(await api.getHasAttachmentBulk(null)).toEqual([]);
+  });
+});
+
+describe.each([
+  ['getRepliedBulk', FLAGS.Replied],
+  ['getHasReBulk', FLAGS.HasRe],
+])('tmHdr.%s', (fn, flag) => {
+  it('returns each message\'s flag by WebExtension id, in id order', async () => {
+    const { api, messageManager } = createExperiment({
+      7: { flags: 0 },
+      8: { flags: flag | FLAGS.Attachment },
+    });
+    expect(await api[fn]([8, 7])).toEqual([true, false]);
+    expect(messageManager.get.mock.calls.map(([id]) => id)).toEqual([8, 7]);
+  });
+
+  it('reads false for a message that is gone or whose header cannot be read', async () => {
+    const headers = { 7: { flags: flag } };
+    const messageManager = { get: vi.fn((id) => {
+      if (id === 9) throw new Error('boom');
+      return headers[id] ?? null;
+    }) };
+    const { api } = createExperiment(headers, messageManager);
+    expect(await api[fn]([5, 9, 7])).toEqual([false, false, true]);
+  });
+
+  it('reads false for every id when the extension has no message manager', async () => {
+    const { api } = createExperiment({}, null);
+    expect(await api[fn]([7, 8])).toEqual([false, false]);
+  });
+
+  it('returns an empty list for a non-array argument', async () => {
+    const { api } = createExperiment({});
+    expect(await api[fn](null)).toEqual([]);
   });
 });

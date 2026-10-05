@@ -132,17 +132,7 @@ export async function run(args = {}, options = {}) {
     // Check replied status using tmHdr experiment
     let repliedStatus = false;
     try {
-      const folderURI = header.folder?.id || "";
-      const pathStr = header.folder?.path || "";
-      let nativeMsgKey = -1;
-      try {
-        const weId = internalId;
-        const mk = await browser.tmHdr.getMsgKey(folderURI, weId, pathStr);
-        if (typeof mk === "number" && mk >= 0) nativeMsgKey = mk;
-      } catch (e) {
-        log(`[TMDBG Tools] email_read: getMsgKey failed for ${internalId}: ${e}`, "warn");
-      }
-      repliedStatus = await browser.tmHdr.getReplied(folderURI, nativeMsgKey, pathStr, header.headerMessageId || "");
+      [repliedStatus] = await browser.tmHdr.getRepliedBulk([internalId]);
       log(`[TMDBG Tools] email_read: Replied status=${repliedStatus} for message ${internalId}`);
     } catch (e) {
       log(`[TMDBG Tools] email_read: Error checking replied status for ${internalId}: ${e}`, "warn");

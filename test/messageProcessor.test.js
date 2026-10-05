@@ -10,8 +10,7 @@ globalThis.browser = {
     get: vi.fn().mockResolvedValue({}),
   },
   tmHdr: {
-    getMsgKey: vi.fn().mockResolvedValue(1),
-    getReplied: vi.fn().mockResolvedValue(false),
+    getRepliedBulk: vi.fn(async (ids) => ids.map(() => false)),
   },
 };
 
@@ -131,7 +130,7 @@ describe("processMessage", () => {
     });
     getAction.mockResolvedValue("archive");
     createReply.mockResolvedValue(undefined);
-    browser.tmHdr.getReplied.mockResolvedValue(false);
+    browser.tmHdr.getRepliedBulk.mockImplementation(async (ids) => ids.map(() => false));
   });
 
   it("returns early with reason for null messageHeader", async () => {

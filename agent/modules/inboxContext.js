@@ -173,21 +173,16 @@ export async function buildInboxContext() {
 
     // Bulk fetch replied status and HasRe flag for processed messages only
     try {
-      const bulkItems = messagesToProcess.map(msg => ({
-        folderURI: msg.folder?.id || "",
-        key: msg.id,
-        pathStr: msg.folder?.path || "",
-        messageId: msg.headerMessageId || "",
-      }));
+      const messageIds = messagesToProcess.map(msg => msg.id);
 
       const [repliedStatuses, hasReStatuses, hasAttachmentStatuses] = await Promise.all([
         _getRepliedStatusBulk(messagesToProcess),
-        browser.tmHdr.getHasReBulk(bulkItems).catch(e => {
+        browser.tmHdr.getHasReBulk(messageIds).catch(e => {
           log(`[InboxContext] getHasReBulk failed: ${e}`, "warn");
           return [];
         }),
         // Thunderbird's MessageHeader has no attachment field; read the database flag.
-        browser.tmHdr.getHasAttachmentBulk(messagesToProcess.map(msg => msg.id)).catch(e => {
+        browser.tmHdr.getHasAttachmentBulk(messageIds).catch(e => {
           log(`[InboxContext] getHasAttachmentBulk failed: ${e}`, "error");
           return [];
         }),
@@ -289,22 +284,8 @@ async function _getRepliedStatusBulk(messages) {
       return [];
     }
 
-    // Build items array for getRepliedBulk
-    const items = messages.map((msg, idx) => {
-      const item = {
-        folderURI: msg.folder?.id || "",
-        key: msg.id,
-        pathStr: msg.folder?.path || "",
-        messageId: msg.headerMessageId || ""
-      };
-      
-      // Log first few items for debugging
-      if (idx < 3) {
-        log(`[InboxContext] Sample item ${idx}: folderURI="${item.folderURI}", key=${item.key}, pathStr="${item.pathStr}", messageId="${item.messageId}"`, 'debug');
-      }
-      
-      return item;
-    });
+    // Replied flags are read by WebExtension message id.
+    const items = messages.map(msg => msg.id);
 
     log(`[InboxContext] Calling tmHdr.getRepliedBulk for ${items.length} messages`, 'debug');
     

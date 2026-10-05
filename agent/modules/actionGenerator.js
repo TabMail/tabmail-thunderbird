@@ -67,10 +67,8 @@ export function purgeExpiredActionEntries() {
 async function _finalAction(header, action) {
   if (action !== "reply") return action;
   try {
-    const folder = header.folder;
-    let nativeKey = -1;
-    try { nativeKey = await browser.tmHdr.getMsgKey(folder.id, header.id, folder.path); } catch (_) {}
-    if (await browser.tmHdr.getReplied(folder.id, nativeKey, folder.path, header.headerMessageId || "")) return "none";
+    const [replied] = await browser.tmHdr.getRepliedBulk([header.id]);
+    if (replied) return "none";
   } catch (_) {}
   return action;
 }

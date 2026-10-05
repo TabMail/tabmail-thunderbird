@@ -65,6 +65,13 @@ describe('buildInboxContext attachment flags', () => {
     expect(getHasAttachmentBulk).toHaveBeenCalledWith([1, 2, 3]);
   });
 
+  it('reads the replied and "Re:" flags by WebExtension id too', async () => {
+    getHasAttachmentBulk.mockResolvedValue([false, false, false]);
+    await buildInboxContext();
+    expect(getRepliedBulk).toHaveBeenCalledWith([1, 2, 3]);
+    expect(getHasReBulk).toHaveBeenCalledWith([1, 2, 3]);
+  });
+
   it('keeps each flag on its own email when an earlier email\'s entry fails', async () => {
     getActionForWeId.mockImplementation(async (m) => {
       if (m.id === 1) throw new Error('cache read failed');
