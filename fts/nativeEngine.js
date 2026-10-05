@@ -845,6 +845,12 @@ export const nativeFtsSearch = {
     return nativeRPC('getMessageByMsgId', { msgId });
   },
 
+  // Each msgId's stored attachment flag, in order: true / false, or null when not indexed.
+  // Reads no bodies. Older helpers reject with "Unknown method: getAttachmentFlags".
+  async getAttachmentFlags(msgIds) {
+    return nativeRPC('getAttachmentFlags', { msgIds });
+  },
+
   async queryByDateRange(from, to, limit = 1000) {
     return nativeRPC('queryByDateRange', { from, to, limit });
   },
