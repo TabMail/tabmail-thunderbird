@@ -30,11 +30,20 @@ let _membershipEpoch = 0;
 // recording those would let one busy folder evict every other entry, and
 // building them all costs quadratic work in the key's length.
 // The cap bounds memory; it is far above any real profile's folder count.
-const FTS_MEMBERSHIP_LEDGER_CONFIG = Object.freeze({ changeLedgerCap: 4096 });
+const FTS_MEMBERSHIP_LEDGER_CONFIG = Object.freeze({ changeLedgerCap: 4096, changeLedgerKeyCap: 4096 });
 let _membershipLedgerCap = FTS_MEMBERSHIP_LEDGER_CONFIG.changeLedgerCap;
 let _membershipTouched = new Map();
 let _membershipWildcardEpoch = 0;
 let _membershipTouchFloor = 0;
+// Key-scoped change ledger beside the folder one: the exact raw keys each
+// mutation attempted (success, failure or partial), at the epoch it advanced
+// to. A verdict about one row reads only changes to its own key, so traffic
+// on other keys of the same folder never voids it. It has its own cap and
+// floor: evicting a key never moves the folder floor. A mutation whose keys
+// are unknown raises the key floor (every key counts as changed).
+let _membershipKeyLedgerCap = FTS_MEMBERSHIP_LEDGER_CONFIG.changeLedgerKeyCap;
+let _membershipTouchedKeys = new Map();
+let _membershipKeyTouchFloor = 0;
 // Real folder ids of the latest inventory, and their paths by account with
 // the longest one, so a key is matched only against path ends a registered
 // folder can have. Bounded by the live inventory: a folder that leaves it
@@ -196,6 +205,34 @@ function _recordMembershipScope(scope, epoch) {
   }
 }
 
+// The raw keys a `{ folderIds, msgIds, keys }` scope names, or null (a
+// folder-id array or Set names none: its `keys` is the iterator method).
+function _membershipScopeKeys(scope) {
+  return scope && !Array.isArray(scope) && !(scope instanceof Set) && Array.isArray(scope.keys)
+    ? scope.keys
+    : null;
+}
+
+function _recordMembershipKeys(scopes, epoch) {
+  if (scopes === "*") return;
+  for (const scope of scopes) {
+    const keys = _membershipScopeKeys(scope);
+    if (!keys) {
+      _membershipKeyTouchFloor = Math.max(_membershipKeyTouchFloor, epoch);
+      continue;
+    }
+    for (const key of keys) {
+      _membershipTouchedKeys.delete(key);
+      _membershipTouchedKeys.set(key, epoch);
+    }
+  }
+  while (_membershipTouchedKeys.size > _membershipKeyLedgerCap) {
+    const [oldest, oldestEpoch] = _membershipTouchedKeys.entries().next().value;
+    _membershipTouchedKeys.delete(oldest);
+    _membershipKeyTouchFloor = Math.max(_membershipKeyTouchFloor, oldestEpoch);
+  }
+}
+
 function _mergeMembershipScope(target, scope) {
   if (target === "*" || scope === "*") return "*";
   for (const folderId of scope) target.add(folderId);
@@ -241,6 +278,21 @@ export function ftsMembershipUnchangedSince(scope, sinceEpoch) {
     for (const msgId of msgIds) {
       if (msgId.length > prefix.length && msgId.startsWith(prefix)) return false;
     }
+  }
+  return true;
+}
+
+// True when no membership mutation that attempted one of `keys` (or the
+// wildcard, or one whose keys are unknown) completed after `sinceEpoch` was
+// read. The folder ledger and its floor play no part.
+export function ftsMembershipKeysUnchangedSince(keys, sinceEpoch) {
+  if (!Number.isFinite(sinceEpoch)
+      || sinceEpoch < _membershipKeyTouchFloor
+      || sinceEpoch < _membershipWildcardEpoch) {
+    return false;
+  }
+  for (const key of keys) {
+    if ((_membershipTouchedKeys.get(key) ?? 0) > sinceEpoch) return false;
   }
   return true;
 }
@@ -293,13 +345,16 @@ export async function runFtsMembershipMutation(fn, fenceToken = null, scope = "*
       // every attempted call is conservative and prevents stale proof reuse.
       _membershipEpoch = Math.min(Number.MAX_SAFE_INTEGER, _membershipEpoch + 1);
       _recordMembershipScope(_resolveMembershipScope(scope), _membershipEpoch);
+      _recordMembershipKeys(scope === "*" ? "*" : [scope], _membershipEpoch);
     }
   });
 }
 
 // Without `scope` the fence holds only while no membership mutation at all
 // has completed since `expectedEpoch`; with a scope, only changes attributed
-// to those folder ids (or the wildcard) break it.
+// to those folder ids (or the wildcard) break it. A `{keys}` scope is
+// key-scoped: only a change that attempted one of those raw keys (or the
+// wildcard, or a passed key floor) breaks it.
 export async function withFtsMembershipFence(
   expectedEpoch,
   fn,
@@ -308,7 +363,9 @@ export async function withFtsMembershipFence(
   return _withMembershipMutex(async () => {
     const current = scope === null
       ? expectedEpoch === _membershipEpoch
-      : ftsMembershipUnchangedSince(scope, expectedEpoch);
+      : (_membershipScopeKeys(scope) && !scope.folderIds && !scope.msgIds
+        ? ftsMembershipKeysUnchangedSince(scope.keys, expectedEpoch)
+        : ftsMembershipUnchangedSince(scope, expectedEpoch));
     if (!current) throw new Error("membership_epoch_changed");
     _membershipFenceScope = [];
     try {
@@ -324,6 +381,7 @@ export async function withFtsMembershipFence(
         else if (attributed.length === 0) fencedScope = "*";
         _membershipEpoch = Math.min(Number.MAX_SAFE_INTEGER, _membershipEpoch + 1);
         _recordMembershipScope(fencedScope, _membershipEpoch);
+        _recordMembershipKeys(fencedScope === "*" ? "*" : attributed, _membershipEpoch);
       }
     }
   });
@@ -420,6 +478,7 @@ export function getFtsOperationState() {
 
 export function _resetFtsOperationCoordinatorForTests({
   changeLedgerCap = FTS_MEMBERSHIP_LEDGER_CONFIG.changeLedgerCap,
+  changeLedgerKeyCap = FTS_MEMBERSHIP_LEDGER_CONFIG.changeLedgerKeyCap,
 } = {}) {
   _exclusiveOwner = null;
   _reconcileOwner = null;
@@ -432,6 +491,9 @@ export function _resetFtsOperationCoordinatorForTests({
   _membershipFolderUniverse = new Set();
   _membershipUniverseByAccount = new Map();
   _membershipLedgerCap = changeLedgerCap;
+  _membershipTouchedKeys = new Map();
+  _membershipKeyTouchFloor = 0;
+  _membershipKeyLedgerCap = changeLedgerKeyCap;
   _membershipTail = Promise.resolve();
   _nextRunId = 1;
 }

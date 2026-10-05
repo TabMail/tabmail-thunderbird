@@ -609,7 +609,8 @@ export const ftsSearch = {
     // owner's membership (it fills a NULL owner; a different stored owner
     // aborts the batch), so the write is attributed to the owners alone. Rows
     // sent in the legacy shape, or not known to be sent, change key ranges and
-    // are attributed by key. The scope is resolved after the call.
+    // are attributed by key. The scope is resolved after the call. Every
+    // attempted row key is recorded in the key ledger either way.
     const wire = { withFolderIds: false };
     const msgIds = rows.map(row => row?.msgId);
     return runFtsMembershipMutation(
@@ -618,6 +619,7 @@ export const ftsSearch = {
       {
         folderIds: rows.map(row => row?.folderId),
         get msgIds() { return wire.withFolderIds ? [] : msgIds; },
+        keys: msgIds,
       },
     );
   },
@@ -665,7 +667,7 @@ export const ftsSearch = {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.removeBatch(ids),
       membershipFenceToken,
-      { msgIds: ids },
+      { msgIds: ids, keys: ids },
     );
   },
 
@@ -713,12 +715,15 @@ export const ftsSearch = {
   },
 
   // Native assignment only fills a NULL owner with the named one, so it is
-  // attributed to the named owners alone.
+  // attributed to the named owners alone (and to its keys in the key ledger).
   async assignFolderMembershipBatch(assignments, membershipFenceToken = null) {
     return runFtsMembershipMutation(
       () => nativeFtsSearch.assignFolderMembershipBatch(assignments),
       membershipFenceToken,
-      assignments.map(assignment => assignment?.folderId),
+      {
+        folderIds: assignments.map(assignment => assignment?.folderId),
+        keys: assignments.map(assignment => assignment?.msgId),
+      },
     );
   },
 

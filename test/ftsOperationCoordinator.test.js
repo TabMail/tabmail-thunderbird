@@ -525,3 +525,97 @@ describe('folder-scoped membership change ledger', () => {
     });
   });
 });
+
+// INVARIANT (stage 3b): beside the folder ledger, every membership mutation
+// records the exact raw keys it attempted — on success, failure or partial
+// commit, and nested in a fence — so a key-scoped verdict is voided by a
+// change to its own key and by nothing else except the wildcard, a mutation
+// whose keys are unknown, or an evicted (floor-raising) key entry.
+describe('exact key ledger', () => {
+  const F = 'folder-f';
+  const K1 = 'account1:/F:one@example.com';
+  const K2 = 'account1:/F:two@example.com';
+  const OTHER = 'account1:/F:other@example.com';
+
+  it.each(['success', 'failure', 'partial'])('records the attempted keys of a %s mutation and no other key', async (outcome) => {
+    const mod = await coordinator();
+    const since = mod.getFtsMembershipEpoch();
+    const fn = {
+      success: async () => ({ count: 2 }),
+      failure: async () => { throw new Error('native refused'); },
+      partial: async () => ({ count: 1, failedMsgIds: [K2] }),
+    }[outcome];
+
+    const run = mod.runFtsMembershipMutation(fn, null, { folderIds: [F], keys: [K1, K2] });
+    if (outcome === 'failure') await expect(run).rejects.toThrow('native refused');
+    else await run;
+
+    expect(mod.ftsMembershipKeysUnchangedSince([K1], since)).toBe(false);
+    expect(mod.ftsMembershipKeysUnchangedSince([K2], since)).toBe(false);
+    expect(mod.ftsMembershipKeysUnchangedSince([OTHER], since)).toBe(true);
+    // A stamp read after the mutation judges it as past.
+    expect(mod.ftsMembershipKeysUnchangedSince([K1], mod.getFtsMembershipEpoch())).toBe(true);
+  });
+
+  it('records a fenced mutation\'s keys with the fence\'s advance', async () => {
+    const mod = await coordinator();
+    const since = mod.getFtsMembershipEpoch();
+    await mod.withFtsMembershipFence(since, async token => {
+      await mod.runFtsMembershipMutation(async () => ({ count: 1 }), token, { msgIds: [K1], keys: [K1] });
+    }, { mutation: true, scope: { keys: [] } });
+
+    expect(mod.getFtsMembershipEpoch()).toBe(since + 1);
+    expect(mod.ftsMembershipKeysUnchangedSince([K1], since)).toBe(false);
+    expect(mod.ftsMembershipKeysUnchangedSince([OTHER], since)).toBe(true);
+  });
+
+  it('treats a clear as the wildcard and a mutation without keys as passing the key floor', async () => {
+    const mod = await coordinator();
+    const beforeClear = mod.getFtsMembershipEpoch();
+    await mod.runFtsMembershipMutation(async () => {}, null, '*');
+    expect(mod.ftsMembershipKeysUnchangedSince([OTHER], beforeClear)).toBe(false);
+
+    const beforeKeyless = mod.getFtsMembershipEpoch();
+    await mod.runFtsMembershipMutation(async () => {}, null, [F]);
+    expect(mod.ftsMembershipKeysUnchangedSince([OTHER], beforeKeyless)).toBe(false);
+    expect(mod.ftsMembershipKeysUnchangedSince([OTHER], mod.getFtsMembershipEpoch())).toBe(true);
+  });
+
+  it('raises only the key floor when a key entry is evicted, and only the folder floor when a folder entry is', async () => {
+    const mod = await coordinator();
+    mod._resetFtsOperationCoordinatorForTests({ changeLedgerCap: 2, changeLedgerKeyCap: 2 });
+    const keysOld = mod.getFtsMembershipEpoch();
+    for (const key of ['k1', 'k2', 'k3']) {
+      await mod.runFtsMembershipMutation(async () => {}, null, { folderIds: [F], keys: [`account1:/F:${key}`] });
+    }
+    // k1 was evicted: no key verdict from before its change can be judged.
+    expect(mod.ftsMembershipKeysUnchangedSince([OTHER], keysOld)).toBe(false);
+    // One folder entry: the folder floor did not move.
+    expect(mod.ftsMembershipUnchangedSince(['never-touched'], keysOld)).toBe(true);
+
+    const foldersOld = mod.getFtsMembershipEpoch();
+    for (const folderId of ['f1', 'f2', 'f3']) {
+      await mod.runFtsMembershipMutation(async () => {}, null, { folderIds: [folderId], keys: [K1] });
+    }
+    expect(mod.ftsMembershipUnchangedSince(['never-touched'], foldersOld)).toBe(false);
+    // One key entry: the key floor did not move.
+    expect(mod.ftsMembershipKeysUnchangedSince([OTHER], foldersOld)).toBe(true);
+  });
+
+  it('lets a key-scoped fence pass writes on other keys and refuses one on its keys', async () => {
+    const mod = await coordinator();
+    const since = mod.getFtsMembershipEpoch();
+    await mod.runFtsMembershipMutation(async () => {}, null, { folderIds: [F], keys: [K2] });
+
+    const ran = vi.fn();
+    await mod.withFtsMembershipFence(since, ran, { scope: { keys: [K1] } });
+    await mod.withFtsMembershipFence(since, ran, { scope: { keys: [] } });
+    expect(ran).toHaveBeenCalledTimes(2);
+    await expect(mod.withFtsMembershipFence(since, ran, { scope: { keys: [K2] } }))
+      .rejects.toThrow('membership_epoch_changed');
+    // The same write still refuses a folder-scoped fence on its folder.
+    await expect(mod.withFtsMembershipFence(since, ran, { scope: [F] }))
+      .rejects.toThrow('membership_epoch_changed');
+    expect(ran).toHaveBeenCalledTimes(2);
+  });
+});

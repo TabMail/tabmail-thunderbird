@@ -25,6 +25,7 @@ import {
   normalizeInterruptedFtsScanStatus,
   registerFtsMembershipFolders,
   tryAcquireFtsReconcileLease,
+  ftsMembershipKeysUnchangedSince,
   ftsMembershipUnchangedSince,
   withFtsMembershipFence,
   runFtsMembershipRead,
@@ -235,6 +236,9 @@ async function _deferFolderReconAfterDrainFailure(updates, reason) {
  * Caller must hold _enqueueMutex.
  */
 async function _tryAdmitPendingUpdate(uniqueKey, update, folderKey = null) {
+  // Admitted or rejected, a newer intention for this key must withhold a
+  // removal of it that was classified before.
+  _noteFolderReconLocalKey(uniqueKey);
   const existing = _pendingUpdates.has(uniqueKey);
   if (!existing && _pendingUpdates.size >= FOLDER_RECON_PENDING_HIGH_WATER) {
     // A message that names no folder marks nothing; like a folder-less
@@ -2311,6 +2315,7 @@ const FOLDER_RECON_CONFIG = {
   walkPeriodMs: 24 * 60 * 60 * 1000,
   membershipUnresolvedRetryMs: 10 * 60 * 1000,
   changeLedgerCap: 4096,
+  changeLedgerKeyCap: 4096,
   ...(SETTINGS?.agentQueues?.ftsFolderRecon || {}),
 };
 // Thunderbird 145 exposes UIDVALIDITY through a signed int32 even though the
@@ -2430,6 +2435,7 @@ const FOLDER_RECON_REVERIFY_INTERVAL_MS = FOLDER_RECON_CONFIG.reverifyIntervalMs
 const FOLDER_RECON_WALK_PERIOD_MS = FOLDER_RECON_CONFIG.walkPeriodMs;
 const FOLDER_RECON_MEMBERSHIP_UNRESOLVED_RETRY_MS = FOLDER_RECON_CONFIG.membershipUnresolvedRetryMs;
 const FOLDER_RECON_CHANGE_LEDGER_CAP = FOLDER_RECON_CONFIG.changeLedgerCap;
+const FOLDER_RECON_CHANGE_LEDGER_KEY_CAP = FOLDER_RECON_CONFIG.changeLedgerKeyCap;
 // A completed add-side sweep that still fails exact equality is replayed once
 // immediately (transient native filter failures recover without delay). If the
 // same exact set/key-map proof fails again after that replay, subsequent full
@@ -2542,6 +2548,13 @@ let _folderReconLocalSerial = 0;
 const _folderReconLocalTouched = new Map();
 let _folderReconLocalWildcard = 0;
 let _folderReconLocalFloor = 0;
+// Key-scoped local ledger beside it, for verdicts about one raw key: each
+// event's raw key (and each queue admission's), with its own cap and floor.
+// A folder event that names no raw key voids every key that folder's range
+// holds. Evicting either raises the key floor, never the folder floor.
+const _folderReconLocalTouchedKeys = new Map();
+const _folderReconLocalKeylessFolders = new Map();
+let _folderReconLocalKeyFloor = 0;
 // One phase-tagged active-folder proof is retained for this generation. It is
 // the scalar exact projection plus the one sorted Uint32Array inherently
 // needed by missing repair — never a multi-folder cache, Thunderbird object,
@@ -2574,7 +2587,7 @@ function _folderReconOutcomeChanged(counts) {
 
 const _folderReconEncoder = new TextEncoder();
 
-function _noteFolderReconLocalChange(folderKey) {
+function _noteFolderReconLocalChange(folderKey, rawKeys = null) {
   _folderReconLocalSerial = Math.min(Number.MAX_SAFE_INTEGER, _folderReconLocalSerial + 1);
   if (!folderKey) {
     _folderReconLocalWildcard = _folderReconLocalSerial;
@@ -2587,6 +2600,27 @@ function _noteFolderReconLocalChange(folderKey) {
     _folderReconLocalTouched.delete(oldest);
     _folderReconLocalFloor = Math.max(_folderReconLocalFloor, oldestSerial);
   }
+  if (rawKeys?.length > 0) _recordFolderReconLocalKeys(_folderReconLocalTouchedKeys, rawKeys);
+  else _recordFolderReconLocalKeys(_folderReconLocalKeylessFolders, [folderKey]);
+}
+
+function _recordFolderReconLocalKeys(ledger, keys) {
+  for (const key of keys) {
+    ledger.delete(key);
+    ledger.set(key, _folderReconLocalSerial);
+  }
+  while (ledger.size > FOLDER_RECON_CHANGE_LEDGER_KEY_CAP) {
+    const [oldest, oldestSerial] = ledger.entries().next().value;
+    ledger.delete(oldest);
+    _folderReconLocalKeyFloor = Math.max(_folderReconLocalKeyFloor, oldestSerial);
+  }
+}
+
+// A queue admission (or a high-water rejection) touches only its raw key; it
+// is recorded synchronously at the admission's entry.
+function _noteFolderReconLocalKey(rawKey) {
+  _folderReconLocalSerial = Math.min(Number.MAX_SAFE_INTEGER, _folderReconLocalSerial + 1);
+  _recordFolderReconLocalKeys(_folderReconLocalTouchedKeys, [rawKey]);
 }
 
 // True when no local change to `folderKey` (or wildcard change) happened
@@ -2602,16 +2636,20 @@ function _folderReconLocalFoldersUnchangedSince(folderKeys, since) {
     && folderKeys.every(folderKey => (_folderReconLocalTouched.get(folderKey) ?? 0) <= since);
 }
 
-// True when no local change since `since` (or wildcard change) touched a
-// folder whose key prefixes any of `msgIds`, whether or not the inventory
-// lists that folder: a converted re-add in a folder loaded after the
-// inventory snapshot still withholds the removal of its key.
-function _folderReconLocalKeysUnchangedSince(msgIds, since) {
-  if (!_folderReconLocalFoldersUnchangedSince([], since)) return false;
-  for (const [folderKey, serial] of _folderReconLocalTouched) {
-    if (serial <= since) continue;
-    const prefix = `${folderKey}:`;
-    if (msgIds.some(msgId => msgId.startsWith(prefix))) return false;
+// Page-wide local evidence for a verdict read since `since`: no event that
+// named no folder.
+function _folderReconLocalWildcardUnchangedSince(since) {
+  return Number.isFinite(since) && since >= _folderReconLocalWildcard;
+}
+
+// Row-scoped: no event since `since` touched the raw key itself, and no
+// keyless event touched a folder whose range holds it (whether or not the
+// inventory lists that folder), and the key floor has not passed `since`.
+function _folderReconLocalExactKeyUnchangedSince(rawKey, since) {
+  if (!_folderReconLocalWildcardUnchangedSince(since) || since < _folderReconLocalKeyFloor) return false;
+  if ((_folderReconLocalTouchedKeys.get(rawKey) ?? 0) > since) return false;
+  for (const [folderKey, serial] of _folderReconLocalKeylessFolders) {
+    if (serial > since && rawKey.startsWith(`${folderKey}:`)) return false;
   }
   return true;
 }
@@ -2666,6 +2704,7 @@ function _newFolderReconRuntimeTelemetry() {
     unloadedAccountRowsKept: 0,
     membershipStatePages: 0,
     membershipStatePageRetries: 0,
+    membershipStateRowsRefused: 0,
     membershipStateRestartMutatedReplay: 0,
     membershipStateRestartUnresolvedReplay: 0,
     membershipStateRestartRevoked: 0,
@@ -3409,17 +3448,23 @@ function _invalidateFolderReconProofForMessageEvent(messageInfo) {
     _invalidateFolderReconProofForEvent(null, null);
     return;
   }
-  _invalidateFolderReconProofForEvent(messageInfo.accountId, messageInfo.folderPath);
+  // The queue's raw-key shape, formed inline (getUniqueMessageKey is async).
+  const headerMessageId = String(messageInfo.headerMessageId || "").replace(/[<>]/g, "");
+  _invalidateFolderReconProofForEvent(
+    messageInfo.accountId,
+    messageInfo.folderPath,
+    headerMessageId ? [`${messageInfo.accountId}:${messageInfo.folderPath}:${headerMessageId}`] : null,
+  );
 }
 
-function _invalidateFolderReconProofForEvent(accountId, folderPath) {
+function _invalidateFolderReconProofForEvent(accountId, folderPath, rawKeys = null) {
   if (!accountId || !folderPath) {
     _noteFolderReconLocalChange(null);
     _releaseFolderReconActiveProof(null, "invalidation");
     return;
   }
   const folderKey = `${accountId}:${folderPath}`;
-  _noteFolderReconLocalChange(folderKey);
+  _noteFolderReconLocalChange(folderKey, rawKeys);
   _releaseFolderReconActiveProof(folderKey, "invalidation");
 }
 
@@ -5728,6 +5773,24 @@ function _restartFolderMembershipStatePass(pass, reason) {
   _startFolderMembershipStatePass(pass, reason);
 }
 
+// A state-pass row's local evidence: a wildcard event since its baseline
+// voids the page ("folder_changed_during_scan"); an event on the row's own
+// raw key, or the key ledger's floor passing the baseline, refuses only the
+// row ("membership_row_changed").
+// "page": a wildcard local event voids every verdict on the page; "row": an
+// event on the row's own key (or a keyless event in its folder, or the key
+// floor) voids only this row.
+function _folderReconRowState(localScope) {
+  if (!_folderReconLocalWildcardUnchangedSince(localScope.since)) return "page";
+  return _folderReconLocalExactKeyUnchangedSince(localScope.key, localScope.since) ? "current" : "row";
+}
+
+function _assertFolderReconRowCurrent(localScope) {
+  const state = _folderReconRowState(localScope);
+  if (state === "page") throw new Error("folder_changed_during_scan");
+  if (state === "row") throw new Error("membership_row_changed");
+}
+
 /**
  * Total classifier for one NULL-owner native row (row-atomic):
  * - `unloaded`: the row's account is absent from this inventory — kept, no query;
@@ -5762,17 +5825,18 @@ async function _resolveFolderMembershipAssignment(
     path: identity.folderPath,
   }));
   const candidates = getUniqueMessageKeyCandidates(msgId, folders);
-  // The verdict reads only the candidate folders' messages, so only an event
-  // in one of them (or one naming no folder) voids it; mail elsewhere does not.
+  // The verdict reads only this raw key's messages, so only an event on the
+  // key itself (or a keyless one in a folder whose range holds it) voids it,
+  // refusing just this row; mail on other keys does not. An event naming no
+  // folder voids the whole page.
   const localScope = {
     folderKeys: candidates.map(candidate => `${candidate.weFolder.accountId}:${candidate.weFolder.path}`),
+    key: msgId,
     since: _folderReconLocalSerial,
   };
   const assertRowCurrent = () => {
     assertCurrent();
-    if (!_folderReconLocalFoldersUnchangedSince(localScope.folderKeys, localScope.since)) {
-      throw new Error("folder_changed_during_scan");
-    }
+    _assertFolderReconRowCurrent(localScope);
   };
   const present = [];
   let globalQueried = false;
@@ -6066,9 +6130,17 @@ async function _runFolderMembershipMigrationSlice(
     } catch (error) {
       const message = String(error?.message || error);
       if (message.includes("folder_recon_pressure")) break;
+      if (message.includes("membership_row_changed")) {
+        // An event on this row's own key voided its verdict: the row is
+        // unresolved debt for the delayed replay and the page continues.
+        _bumpFolderReconTelemetry("membershipStateRowsRefused");
+        unresolvedRows.push(processed);
+        processed++;
+        continue;
+      }
       if (!message.includes("folder_changed_during_scan")) throw error;
-      // A message event in one of this row's candidate folders voided its
-      // verdict; the rows before it still count.
+      // An event naming no folder voided every verdict; the rows before
+      // this one still count.
       _bumpFolderReconTelemetry("membershipStatePageRetries");
       break;
     }
@@ -6088,16 +6160,16 @@ async function _runFolderMembershipMigrationSlice(
   }
   // Native only fills a NULL owner, accepts an equal one and rolls back a
   // conflict (thrown: same-page retry), and a vanished row is a no-op.
-  // An assignment commits only while its row's evidence is current: the
-  // first row whose candidate folders changed since its verdict ends the page
-  // there (checked synchronously before each batch call), and it and every
+  // An assignment commits only while its row's evidence is current (checked
+  // synchronously before each batch call): a row whose own key changed since
+  // its verdict is refused and counted unresolved, and the page continues;
+  // a wildcard event ends the page at the first such row, and it and every
   // later row are re-read. A change during the batch call itself cannot be
   // undone, so the row owes its candidate folders a walk, whose stale and
   // missing directions repair a wrong owner. Each owner is owed a walk before
   // its batch is dispatched (a committed batch whose reply is lost still
   // leaves it owed), so its exact proof is earned on the grown listing.
-  const rowCurrent = entry => _folderReconLocalFoldersUnchangedSince(
-    entry.localScope.folderKeys, entry.localScope.since);
+  const rowState = entry => _folderReconRowState(entry.localScope);
   let staleOrphanMsgIds = [];
   let unresolved = 0;
   let unloadedAccountRowsKept = 0;
@@ -6106,17 +6178,22 @@ async function _runFolderMembershipMigrationSlice(
   // membership write since then (a row indexed into a folder created after the
   // snapshot looks exactly like a deleted folder's row) rejects the fence
   // before the mutator runs, and the same page is retried on a later slice.
-  // A folder event (creation, rename, move) since the snapshot, or a message
-  // event since the snapshot in any folder whose key prefixes a removed key
-  // (listed in the inventory or not), refuses the removal; mail in other
-  // folders does not.
+  // A folder event (creation, rename, move) or an event naming no folder
+  // since the snapshot refuses the page's removals. A message event since the
+  // snapshot on a removed key itself (or a keyless one in a folder whose
+  // range holds it, listed in the inventory or not), or a native write that
+  // attempted that key, refuses only that key's removal: it is counted
+  // unresolved and retried by the delayed replay. Mail on other keys does not.
   const assertRemovalCurrent = () => {
     assertCommitCurrent();
     if (_folderReconTopologySerial !== inventoryTopologySerial
-        || !_folderReconLocalKeysUnchangedSince(staleOrphanMsgIds, inventoryLocalSerial)) {
+        || !_folderReconLocalWildcardUnchangedSince(inventoryLocalSerial)) {
       throw new Error("folder_changed_during_scan");
     }
   };
+  const removalKeyCurrent = msgId =>
+    _folderReconLocalExactKeyUnchangedSince(msgId, inventoryLocalSerial)
+    && ftsMembershipKeysUnchangedSince([msgId], inventoryMembershipEpoch);
   // A page with removals commits its assignments inside the removal's fence,
   // passing its token: the page's own owner writes are then recorded with the
   // fence's advance instead of voiding its removal. The assignments still
@@ -6128,11 +6205,18 @@ async function _runFolderMembershipMigrationSlice(
       offset += FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE) {
       let batch = assignments.slice(offset, offset + FOLDER_MEMBERSHIP_ASSIGN_BATCH_SIZE);
       assertCommitCurrent();
-      const voided = batch.find(entry => !rowCurrent(entry));
+      const states = new Map(batch.map(entry => [entry, rowState(entry)]));
+      const voided = batch.find(entry => states.get(entry) === "page");
       if (voided) {
         _bumpFolderReconTelemetry("membershipStatePageRetries");
         processed = voided.row;
         batch = batch.filter(entry => entry.row < voided.row);
+      }
+      const refused = batch.filter(entry => states.get(entry) === "row");
+      if (refused.length > 0) {
+        _bumpFolderReconTelemetry("membershipStateRowsRefused", refused.length);
+        for (const entry of refused) unresolvedRows.push(entry.row);
+        batch = batch.filter(entry => states.get(entry) === "current");
       }
       if (batch.length > 0) {
         pass.passMutated = true;
@@ -6146,7 +6230,7 @@ async function _runFolderMembershipMigrationSlice(
           return { complete: false, failed: true, reason: "legacy_assignment_failed", error: String(error) };
         } finally {
           for (const entry of batch) {
-            if (!rowCurrent(entry)) entry.localScope.folderKeys.forEach(_markFolderReconWalk);
+            if (rowState(entry) !== "current") entry.localScope.folderKeys.forEach(_markFolderReconWalk);
           }
         }
         assertCommitCurrent();
@@ -6163,10 +6247,18 @@ async function _runFolderMembershipMigrationSlice(
       log(`[FTS FolderRecon] Membership pass kept ${unloadedAccountRowsKept} row(s) whose account is absent from the current inventory — not loaded yet, not deletion evidence`, "warn");
     }
     if (staleOrphanMsgIds.length === 0) return null;
+    assertRemovalCurrent();
+    const currentRemovals = staleOrphanMsgIds.filter(removalKeyCurrent);
+    const refusedRemovals = staleOrphanMsgIds.length - currentRemovals.length;
+    if (refusedRemovals > 0) {
+      _bumpFolderReconTelemetry("membershipStateRowsRefused", refusedRemovals);
+      unresolved += refusedRemovals;
+      staleOrphanMsgIds = currentRemovals;
+    }
+    if (staleOrphanMsgIds.length === 0) return null;
     // Sticky before the mutator: an interrupted or uncertain removal
     // still forces a full replay before cutover.
     pass.passMutated = true;
-    assertRemovalCurrent();
     markRemovalFolders();
     await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
     assertRemovalCurrent();
@@ -6203,10 +6295,11 @@ async function _runFolderMembershipMigrationSlice(
     try {
       commitFailure = await withFtsMembershipFence(inventoryMembershipEpoch, commitPage, {
         mutation: true,
-        // Only a write that could re-own one of the page's ghost keys (for
-        // example a row indexed into a folder created after the inventory)
-        // voids the removal; traffic in unrelated folders does not.
-        scope: { msgIds: staleOrphans.map(entry => entry.msgId) },
+        // Entry refuses only on a wildcard write or a passed key floor; a
+        // write that attempted one of the ghost keys refuses that key alone
+        // (removalKeyCurrent), so traffic on other keys, in the ghost's own
+        // folder too, does not void the page.
+        scope: { keys: [] },
       });
     } catch (error) {
       _throwIfFolderReconInterrupted(error);
@@ -7104,6 +7197,9 @@ export const _testExports = {
   _runFolderMembershipMigrationSlice,
   _resetFolderReconState: () => {
     _resetFtsOperationCoordinatorForTests();
+    _folderReconLocalTouchedKeys.clear();
+    _folderReconLocalKeylessFolders.clear();
+    _folderReconLocalKeyFloor = 0;
     _folderReconNativeSupport = null;
     _folderReconNativeProbeFailures = { connectionGeneration: null, count: 0 };
     _revokeFolderMembershipCleanup();
@@ -7156,6 +7252,10 @@ export const _testExports = {
   _getFolderReconWorkingProof,
   _admitFolderReconActiveProof,
   _invalidateFolderReconProofForEvent,
+  _invalidateFolderReconProofForMessageEvent,
+  _onFolderReconTopologyChanged,
+  _folderReconLocalExactKeyUnchangedSince,
+  FOLDER_RECON_CHANGE_LEDGER_KEY_CAP,
   _getFolderReconWorkingProofTelemetry: _folderReconWorkingProofTelemetry,
   _getFolderReconRuntimeTelemetry: () => _folderReconRuntimeTelemetry,
   _getFolderReconActiveProofKey: () => _folderReconActiveProof?.folderKey || null,
