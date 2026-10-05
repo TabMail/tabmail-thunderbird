@@ -14,7 +14,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../agent/experiments/tmHdr/tmHdr.sys.mjs', import.meta.url), 'utf8');
 
-const FLAGS = { Replied: 0x2, HasRe: 0x10, Attachment: 0x10000000 };
+const FLAGS = { Read: 0x1, Replied: 0x2, HasRe: 0x10, Attachment: 0x10000000 };
 
 function createExperiment(headers, messageManager = { get: vi.fn((id) => headers[id] ?? null) }) {
   const sandbox = {
@@ -74,6 +74,17 @@ describe.each([
     });
     expect(await api[fn]([8, 7])).toEqual([true, false]);
     expect(messageManager.get.mock.calls.map(([id]) => id)).toEqual([8, 7]);
+  });
+
+  it('reads false when only other flags are set', async () => {
+    const otherReplyFlag = flag === FLAGS.Replied ? FLAGS.HasRe : FLAGS.Replied;
+    const { api } = createExperiment({
+      11: { flags: FLAGS.Attachment },
+      12: { flags: otherReplyFlag },
+      13: { flags: FLAGS.Read },
+      14: { flags: FLAGS.Attachment | otherReplyFlag | FLAGS.Read },
+    });
+    expect(await api[fn]([11, 12, 13, 14])).toEqual([false, false, false, false]);
   });
 
   it('reads false for a message that is gone or whose header cannot be read', async () => {
