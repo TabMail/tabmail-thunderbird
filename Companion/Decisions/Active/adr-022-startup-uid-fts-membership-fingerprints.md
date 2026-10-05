@@ -91,3 +91,45 @@
 - Fresh account inventory is deliberately re-enumerated once per scheduler turn; there is no cross-turn inventory cache. Strict targeted memo transactions still read/clone the monolithic per-folder memo, so completing `F` folders retains a known Θ(`F²`) aggregate storage-serialization cost. That is an accepted residual for this revision, separate from the removed repeated parent-header scans.
 - Foreground writers may wait briefly for a bounded reconciliation fence, never for a long local scan. Conversely, a pending writer cancels reconciliation at its next page/query/yield boundary. Native membership mutations that race proof construction invalidate the epoch and refuse cursor/memo acceptance rather than laundering the newer state into older evidence.
 - ADR-020 cursor-store/heartbeat and ADR-016 watermark helpers remain for compatibility/tests, but no longer drive the automatic startup path. The obsolete privileged `listKeysAboveKey` API and its one-shot `listAllKeys()` implementation are removed; the retained test-exported cursor walker can only consume the bounded scan-token pages. ADR-021's verify-then-remove, resumable missing scan, and orphan safeguards are retained after the trigger changes.
+
+**Amendment (2026-10-05):** the sentence "ADR-020 cursor-store/heartbeat and ADR-016 watermark helpers
+remain for compatibility/tests" is superseded. Those helpers, the test-exported cursor walker and
+`tmMsgNotify.getCursorFolder` are deleted, and their stored keys join the init-time legacy-key removal.
+
+**Amendment (2026-10-05, hard floor):** the 50% duty cap counts a slice's elapsed wall time only up
+to `hardFloorMaxElapsedMs` (10 min). A longer measurement is a host sleep inside the slice, not work,
+and reserving it would stall reconciliation for as long as the machine slept. The clip applies to the
+post-slice floor and to every in-slice wake. Every reader of the floor (timer arm, floor recheck, the
+tick's `hard_floor` gate) also stores a clamp to `now + hardFloorMaxElapsedMs`, so a backward clock
+jump ends within that bound. Legitimate slices keep their full reservation.
+
+**Amendment (2026-10-05, digest encodings):** membership digests are unchanged byte for byte; only their
+construction is lighter. Message-ID sets sort and dedupe on each value's `toWellFormed()` (computed once)
+by code point, which equals UTF-8 byte order for well-formed strings (`TextEncoder` maps a lone surrogate
+to U+FFFD as `toWellFormed` does), and each value is encoded once into the one framed buffer for the one
+`crypto.subtle.digest` call. The UID view sorts unsigned numbers (`>>> 0`) in a `Uint32Array` instead of
+8-char hex strings. Both keep the cooperative chunk-sort-and-merge with its yields. Stored `uidSha256` and
+Message-ID checkpoints keep matching.
+
+**Amendment (2026-10-05, one fresh scan per verification):** the invariant "the retained repair proof cannot
+write `verified`: equality forces a fresh full local scan followed by a fresh native fingerprint" still holds
+per verification attempt, but the fresh scan is no longer repeated for every page of the native digest that
+follows it. When the reused proof is the verify-phase proof that scan admitted, and the folder's
+`fresh_after_working` digest session is in progress with a current stamp, the proof is the fresh side and
+the native side is that continuing session, never the cached `initial` result. Local events release the
+proof; the session stamp covers the folder's local scope and native epoch; a completed digest leaves no
+session, so a proof pinned across a drain is rescanned by the next attempt. The identity bracket on this
+path spans turns: the closing read is compared with this turn's opening `getFolderState`, so the proof
+continues only when it was scanned from the msgDB incarnation this turn opened (the proof entry stores its
+`incarnationToken`). A msgDB replaced with no event while the digest pages therefore forces a fresh scan
+instead of being certified under the replacement's token, which would let every later walk take the UID-only
+tier over the old Message-IDs. Other unsignalled msgDB changes while the digest pages are seen by the next walk. Cost: one fresh msgDB scan per verification attempt
+plus one per invalidation, instead of one per owner-listing page.
+
+**Amendment (2026-10-05, msgDB residency):** the reconciler does not release msgDBs itself. Residency stays
+with Thunderbird's msgDB cache manager: at most `mail.db.max_open` open databases after each 60 s sweep,
+with large databases evicted last. Reconciliation opens one folder at a time, and a stale-entry or
+ownerless-row presence recheck opens only its own folder (ADR-017's folder-scoped recheck), never every
+folder of the profile. A reconciler-specific release would make the user's next visit to a large folder
+re-parse it; whether Thunderbird's own bound is enough for the reported memory growth is the owner's call
+after a live-profile measurement.

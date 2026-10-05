@@ -9,6 +9,8 @@ const native = vi.hoisted(() => ({
   removeBatch: vi.fn(async () => ({ count: 0 })),
   clear: vi.fn(async () => ({ ok: true })),
   assignFolderMembershipBatch: vi.fn(async () => ({ ok: true })),
+  supportsFolderMembershipSummary: vi.fn(() => true),
+  folderMembershipSummary: vi.fn(async () => ({ ok: true, ownerlessRows: 1, strayTrustedRows: 2, strayUntrustedRows: 3 })),
 }));
 
 vi.mock('../agent/modules/config.js', () => ({ SETTINGS: {} }));
@@ -189,11 +191,102 @@ describe('owner-known writes are attributed to their owners alone', () => {
     expect(changed(PARENT)).toBe(false);
   });
 
-  // A key-only removal cannot name the owner it deleted.
-  it('a removal still touches every folder whose key range holds the key', async () => {
+  // A legacy helper's key-only removal cannot name the owner it deleted.
+  it('a legacy removal still touches every folder whose key range holds the key', async () => {
     const changed = await touched(() => ftsSearch.removeBatch([childKey]));
     expect(changed(CHILD)).toBe(true);
     expect(changed(PARENT)).toBe(true);
+  });
+});
+
+// INVARIANT: a removal changes only the folders whose rows it deleted. A
+// helper that reports those owners (`removedFolderIds`, with
+// `removedOwnerless` counting deleted rows that had none) is attributed to
+// them alone; any reply that cannot vouch for every deleted row's owner, and
+// any failed call, keeps the conservative key-range attribution.
+describe('removals are attributed to the owners the helper reports', () => {
+  const COLD = makeFolderMembershipId('account1', '/Cold');
+  const HOT = makeFolderMembershipId('account1', '/Cold:Hot');
+  const hotKey = 'account1:/Cold:Hot:one@example.com';
+  const childKey = 'account1:/F:Child:nine@example.com';
+  const parentKey = 'account1:/F:eight@example.com';
+
+  beforeEach(() => {
+    registerFtsMembershipFolders([A, B, PARENT, CHILD, COLD, HOT]);
+  });
+
+  it('a removal in /Cold:Hot no longer touches /Cold', async () => {
+    native.removeBatch.mockResolvedValueOnce({ ok: true, count: 1, removedFolderIds: [HOT], removedOwnerless: 0 });
+    const changed = await touched(() => ftsSearch.removeBatch([hotKey]));
+    expect(changed(HOT)).toBe(true);
+    expect(changed(COLD)).toBe(false);
+  });
+
+  it('a mixed batch of owned, absent and duplicate ids touches exactly the reported owners', async () => {
+    native.removeBatch.mockResolvedValueOnce({
+      ok: true, count: 2, removedFolderIds: [CHILD, PARENT], removedOwnerless: 0,
+    });
+    const absentKey = 'account1:/A:absent@example.com';
+    const changed = await touched(() => ftsSearch.removeBatch([childKey, parentKey, absentKey, childKey]));
+    expect(changed(CHILD)).toBe(true);
+    expect(changed(PARENT)).toBe(true);
+    expect(changed(A)).toBe(false);
+    expect(changed(B)).toBe(false);
+  });
+
+  it('a removal that deleted nothing touches no folder but still records its keys', async () => {
+    native.removeBatch.mockResolvedValueOnce({ ok: true, count: 0, removedFolderIds: [], removedOwnerless: 0 });
+    const since = getFtsMembershipEpoch();
+    await ftsSearch.removeBatch([childKey]);
+    expect(ftsMembershipUnchangedSince([CHILD], since)).toBe(true);
+    expect(ftsMembershipUnchangedSince([PARENT], since)).toBe(true);
+    expect(ftsMembershipKeysUnchangedSince([childKey], since)).toBe(false);
+  });
+
+  it.each([
+    { label: 'a legacy reply without owners', reply: { count: 1 } },
+    { label: 'owners that are not an array', reply: { count: 1, removedFolderIds: CHILD, removedOwnerless: 0 } },
+    { label: 'an empty owner id', reply: { count: 1, removedFolderIds: [CHILD, ''], removedOwnerless: 0 } },
+    { label: 'a non-string owner id', reply: { count: 1, removedFolderIds: [7], removedOwnerless: 0 } },
+    { label: 'a deleted ownerless row', reply: { count: 2, removedFolderIds: [CHILD], removedOwnerless: 1 } },
+    { label: 'no ownerless count', reply: { count: 1, removedFolderIds: [CHILD] } },
+  ])('$label keeps key attribution', async ({ reply }) => {
+    native.removeBatch.mockResolvedValueOnce(reply);
+    const changed = await touched(() => ftsSearch.removeBatch([childKey]));
+    expect(changed(CHILD)).toBe(true);
+    expect(changed(PARENT)).toBe(true);
+    expect(changed(A)).toBe(false);
+  });
+
+  it.each([
+    { label: 'throws', fail: () => { throw new Error('native refused'); } },
+    { label: 'times out', fail: () => { throw new Error('Native RPC timeout: removeBatch'); } },
+  ])('a removal that $label keeps key attribution', async ({ fail }) => {
+    native.removeBatch.mockImplementationOnce(async () => fail());
+    const changed = await touched(() => ftsSearch.removeBatch([childKey]).catch(() => {}));
+    expect(changed(CHILD)).toBe(true);
+    expect(changed(PARENT)).toBe(true);
+  });
+
+  it('a fenced removal is attributed to the reported owner when the fence completes', async () => {
+    native.removeBatch.mockResolvedValueOnce({ ok: true, count: 1, removedFolderIds: [CHILD], removedOwnerless: 0 });
+    const since = getFtsMembershipEpoch();
+    await withFtsMembershipFence(since, async (token) => {
+      await ftsSearch.removeBatch([childKey], token);
+    }, { mutation: true, scope: { keys: [] } });
+    expect(ftsMembershipUnchangedSince([CHILD], since)).toBe(false);
+    expect(ftsMembershipUnchangedSince([PARENT], since)).toBe(true);
+    expect(ftsMembershipKeysUnchangedSince([childKey], since)).toBe(false);
+  });
+
+  it('a fenced removal with a deleted ownerless row keeps key attribution', async () => {
+    native.removeBatch.mockResolvedValueOnce({ ok: true, count: 2, removedFolderIds: [CHILD], removedOwnerless: 1 });
+    const since = getFtsMembershipEpoch();
+    await withFtsMembershipFence(since, async (token) => {
+      await ftsSearch.removeBatch([childKey, parentKey], token);
+    }, { mutation: true, scope: { keys: [] } });
+    expect(ftsMembershipUnchangedSince([CHILD], since)).toBe(false);
+    expect(ftsMembershipUnchangedSince([PARENT], since)).toBe(false);
   });
 });
 
@@ -289,5 +382,17 @@ describe('native mutation wrappers apply the native write', () => {
     const since = getFtsMembershipEpoch();
     await expect(ftsSearch[method](...args)).rejects.toThrow('native write failed');
     expect(ftsMembershipUnchangedSince([A], since)).toBe(false);
+  });
+});
+
+describe('membership summary pass-through', () => {
+  it('forwards the capability and the summary request and reply unchanged', async () => {
+    native.supportsFolderMembershipSummary.mockReturnValueOnce(false);
+    expect(ftsSearch.supportsFolderMembershipSummary()).toBe(false);
+    expect(ftsSearch.supportsFolderMembershipSummary()).toBe(true);
+
+    await expect(ftsSearch.folderMembershipSummary(['folder-a', 'folder-b'], ['account1']))
+      .resolves.toEqual({ ok: true, ownerlessRows: 1, strayTrustedRows: 2, strayUntrustedRows: 3 });
+    expect(native.folderMembershipSummary).toHaveBeenCalledWith(['folder-a', 'folder-b'], ['account1']);
   });
 });

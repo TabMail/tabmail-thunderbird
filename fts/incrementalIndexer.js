@@ -1168,12 +1168,6 @@ export async function onExperimentMessageAdded(messageInfo) {
   _lastSyncEventMs = Date.now();
   _invalidateFolderReconProofForMessageEvent(messageInfo);
 
-  // Track the highest msgKey seen per folder this session — the heartbeat
-  // merges these into the persistent folder cursors (ADR-020). Only
-  // delivered events advance this, so unevented arrivals stay above the
-  // cursor and are caught by the next boot's cursor scan.
-  _noteSessionMaxKey(messageInfo);
-
   log(`[TMDBG FTS] Experiment msgAdded: type=${messageInfo.eventType}, folder=${messageInfo.folderPath}, subject="${messageInfo.subject?.substring(0, 50)}"`);
 
   let queued = false;
@@ -1195,13 +1189,12 @@ function _folderReconEventFolderKey(messageInfo) {
 
 /**
  * Shared enqueue for experiment-shaped messageInfo payloads. Used by the
- * live event path (onExperimentMessageAdded) and the boot cursor scan
- * (_runCursorScan). Deliberately does NOT touch _lastSyncEventMs — the
- * cursor scan is not a sync event and must not starve the maintenance
- * startup tick's quiet signal.
+ * live event path (onExperimentMessageAdded) and the folder reconcile's
+ * missing direction. Deliberately does NOT touch _lastSyncEventMs — a
+ * reconcile enqueue is not a sync event.
  *
  * @param {Object} messageInfo - Serialized message info from experiment
- * @param {boolean} [fromCursorScan] - Marks cursor-scan-sourced entries
+ * @param {boolean} [fromCursorScan] - Marks reconcile-sourced entries
  */
 async function _enqueueNewFromInfo(messageInfo, fromCursorScan = false) {
   if (!_isEnabled) return false;
@@ -1470,9 +1463,6 @@ function _removeFolderTopologyListeners() {
 // Unchanged IMAP folders use UID/UIDVALIDITY + FTS digest checkpoints; changed
 // folders get an exact two-way repair through the drain queue. The queue is
 // not persisted: work pending at shutdown is re-derived by the next startup.
-//
-// The older date-window, watermark, and cursor helpers remain below for
-// compatibility/tests, but the automatic startup path no longer calls them.
 // =====================================================================
 
 // Durable reconcile-needed flag written by earlier versions. Every session runs
@@ -1550,6 +1540,11 @@ const LEGACY_PENDING_QUEUE_STORAGE_KEY = "fts_pending_updates";
 const LEGACY_STORAGE_KEYS = Object.freeze([
   LEGACY_RECONCILE_STORAGE_KEY,
   LEGACY_PENDING_QUEUE_STORAGE_KEY,
+  // The retired watermark heartbeat, per-folder cursors and cursor-scan
+  // snapshot; nothing reads them.
+  "fts_reconcile_watermark",
+  "fts_folder_cursors",
+  "fts_cursor_scan_last",
 ]);
 
 // Removes retired keys once; reads first so an install without them writes
@@ -1565,18 +1560,6 @@ async function _removeLegacyStorageKeys() {
   }
 }
 
-// Persistent watermark: the lower-bound "as-of" timestamp up to which
-// FTS is known to be consistent with IMAP. Established by a clean boot
-// reconcile, advanced during runtime by the heartbeat. The next boot
-// reconcile uses (watermark.completedAtMs - 1 day) as its window start,
-// so a TB that ran 7d then was off 2d only reconciles ~3 days.
-const WATERMARK_KEY = "fts_reconcile_watermark";
-// 1-day overlap to handle timezone / rounding edge cases at window boundary.
-const RECONCILE_OVERLAP_MS = 24 * 60 * 60 * 1000;
-// First-run / missing-watermark fallback. After the first clean reconcile
-// completes, this is unreachable in steady state.
-const RECONCILE_FALLBACK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
 // Quiet period before running reconcile — prevents taking a membership
 // fingerprint while TB is still mutating the local msgDB during startup sync.
 const RECONCILE_QUIET_PERIOD_MS = 60 * 1000; // 60 seconds
@@ -1586,323 +1569,27 @@ const RECONCILE_QUIET_CHECK_INTERVAL_MS = 10 * 1000; // 10 seconds
 // Busy inboxes may never reach the quiet period, so we force reconcile after this.
 const RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000; // 10 minutes
 
-// Runtime heartbeat: while the listener is healthy, advance the watermark's
-// completedAtMs forward so the offline gap on next boot is bounded by the
-// heartbeat interval, not the entire uptime.
-const HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-
-// ---------------------------------------------------------------------------
-// Per-folder msgKey/UID cursors (add-side reconcile) — ADR-020,
-// PLAN_RECONCILE_CURSOR.md. For IMAP folders msgKey = IMAP UID, monotonic in
-// arrival-into-folder order — the signal the Date-keyed Phase 1 window cannot
-// express ("new to our local msgDB since we last looked"). The boot cursor
-// scan (Phase 1b) enqueues everything above each folder's cursor regardless
-// of its Date header, closing the add-side Class-1 blind spot (06/29 incident:
-// 352 messages synced late into Gmail secondary folders, all missed by the
-// date-windowed Phase 1).
-// ---------------------------------------------------------------------------
-const CURSOR_STORAGE_KEY = "fts_folder_cursors";
-// Keys resolved to messageInfos per experiment RPC
-const CURSOR_KEYS_CHUNK = 500;
-// Cap for full scans (cursorless new folder / UIDVALIDITY reset). Newest keys
-// win; a truncated scan is logged loudly. Matches today's new-folder posture
-// (history is owned by the initial scan / weekly maintenance).
-const CURSOR_FULL_SCAN_MAX_KEYS = 5000;
-// Small yield between messageInfo chunks to keep the event loop responsive
-const CURSOR_CHUNK_DELAY_MS = 10;
-
-// Highest msgKey seen per folder ("accountId:folderPath" -> key) via
-// delivered experiment events this session. Merged into the persistent
-// cursors by the heartbeat. Only delivered events advance this — unevented
-// arrivals stay above the stored cursor for the next boot scan to catch.
-let _sessionMaxKeyByFolder = new Map();
-
-/**
- * Record the msgKey from a delivered experiment add event.
- */
-function _noteSessionMaxKey(messageInfo) {
-  const { accountId, folderPath, msgKey } = messageInfo || {};
-  if (!accountId || !folderPath) return;
-  if (typeof msgKey !== "number" || !Number.isFinite(msgKey)) return;
-  const folderKey = `${accountId}:${folderPath}`;
-  const prev = _sessionMaxKeyByFolder.get(folderKey);
-  if (prev === undefined || msgKey > prev) {
-    _sessionMaxKeyByFolder.set(folderKey, msgKey);
-  }
-}
-
 // Tracks the most recent sync-related message event timestamp.
 // Reset on every onExperimentMessageAdded/Removed call.
 let _lastSyncEventMs = Date.now();
 // Handle to the quiet-period check timer (for cleanup)
 let _reconcileQuietTimer = null;
-// Handle to the runtime watermark-advance timer (for cleanup)
-let _watermarkHeartbeatTimer = null;
-// Disposal flag — heartbeat re-checks this AFTER its async storage read,
-// before the write, so a dispose() that fires between the read and the
-// write doesn't let a pending heartbeat write stale data into freshly-
-// cleared state. Reset to false in init.
+// Disposal flag: work that resumes after an await re-checks it so a
+// dispose() in between cannot act on freshly-cleared state. Reset in init.
 let _indexerDisposed = false;
 
 /**
- * Determine the reconcile lower-bound from the persistent watermark.
- *
- * Reads `fts_reconcile_watermark` from browser.storage.local. Returns
- * `(completedAtMs - 1 day)` when present, otherwise a 7-day fallback.
- * Does NOT query FTS — see PLAN_RECONCILE_WATERMARK.md for why the
- * old FTS-newest-date approach was unsound (the listener could advance
- * FTS during the quiet wait, shrinking the window before Phase 2 ran).
- *
- * Defensive guards (any → 7d fallback):
- *  - watermark missing
- *  - completedAtMs / fromMs wrong type
- *  - completedAtMs ≤ 0 (corrupt)
- *  - completedAtMs > now + 1 day (clock skew)
- */
-async function _getReconcileFrom() {
-  const now = Date.now();
-  let wm = null;
-  try {
-    const stored = await browser.storage.local.get(WATERMARK_KEY);
-    wm = stored?.[WATERMARK_KEY] || null;
-  } catch (e) {
-    log(`[FTS Reconcile] Watermark read failed: ${e} — using 7d fallback`, "warn");
-  }
-
-  if (!wm
-      || !Number.isFinite(wm.completedAtMs)        // catches NaN, Infinity, non-number
-      || !Number.isFinite(wm.fromMs)
-      || wm.completedAtMs <= 0                     // corrupt
-      || wm.completedAtMs > now + RECONCILE_OVERLAP_MS) {  // future-dated
-    log(`[FTS Reconcile] No usable watermark; using 7-day fallback window`);
-    return now - RECONCILE_FALLBACK_WINDOW_MS;
-  }
-
-  const from = wm.completedAtMs - RECONCILE_OVERLAP_MS;
-  log(`[FTS Reconcile] Window from ${new Date(from).toISOString()} (watermark completedAt: ${new Date(wm.completedAtMs).toISOString()}, fromMs: ${new Date(wm.fromMs).toISOString()})`);
-  return from;
-}
-
-/**
- * Write the watermark after a clean reconcile completion. Only called
- * when Phase 1 + Phase 2 both finished without an exception, every Phase 1
- * message reached the drain queue (enqueueFailed === 0), Phase 2 skipped
- * no accounts (accountsSkipped === 0), AND nothing in Phase 2 failed
- * mid-flight (removeFailed === false — covers both a removeBatch throw and
- * any internal Phase 2 exception).
- *
- * @param {number} fromMs - The reconcileFrom value Phase 2 just verified.
- */
-async function _writeWatermark(fromMs) {
-  try {
-    await browser.storage.local.set({
-      [WATERMARK_KEY]: {
-        version: 1,
-        fromMs,
-        completedAtMs: Date.now(),
-      },
-    });
-    log(`[FTS Reconcile] Watermark advanced: fromMs=${new Date(fromMs).toISOString()}, completedAtMs=${new Date().toISOString()}`);
-  } catch (e) {
-    // Non-fatal: next boot just reads the older watermark → wider window.
-    log(`[FTS Reconcile] Watermark write failed: ${e}`, "warn");
-  }
-}
-
-/**
- * Drain-stall guard shared by the watermark bump and the cursor advance:
- * if pending updates have been sitting unprocessed for longer than 2× the
- * heartbeat interval, the listener fired but the queue isn't draining.
- * Advancing coverage claims would be false while events sit pending.
- */
-function _isDrainStalled() {
-  if (_pendingUpdates.size === 0) return false;
-  let oldestTs = Infinity;
-  for (const u of _pendingUpdates.values()) {
-    if (typeof u.timestamp === "number" && u.timestamp < oldestTs) {
-      oldestTs = u.timestamp;
-    }
-  }
-  return oldestTs !== Infinity && Date.now() - oldestTs > HEARTBEAT_INTERVAL_MS * 2;
-}
-
-/**
- * Runtime watermark-advance heartbeat. Bumps completedAtMs forward
- * while the experiment listener is active and the drain queue isn't
- * stalled. Never advances fromMs — only Phase 2 may do that.
- *
- * Refuses to *create* a watermark. If boot reconcile hasn't completed
- * yet, the heartbeat is a no-op.
- */
-async function _heartbeatBumpWatermark() {
-  if (!_isEnabled || !_experimentListenersActive || _indexerDisposed) return;
-
-  if (_isDrainStalled()) {
-    log(`[FTS Heartbeat] Skipped: drain stalled`);
-    return;
-  }
-
-  let wm = null;
-  try {
-    const stored = await browser.storage.local.get(WATERMARK_KEY);
-    wm = stored?.[WATERMARK_KEY] || null;
-  } catch (e) {
-    log(`[FTS Heartbeat] Watermark read failed: ${e}`, "warn");
-    return;
-  }
-
-  // Refuse to create a watermark — only boot reconcile may do that.
-  if (!wm || !Number.isFinite(wm.fromMs)) return;
-
-  // Re-check disposal AFTER the async read but BEFORE the write — a
-  // dispose() that ran during the read should not lose to a stale
-  // heartbeat write.
-  if (_indexerDisposed) return;
-
-  try {
-    await browser.storage.local.set({
-      [WATERMARK_KEY]: {
-        version: 1,
-        fromMs: wm.fromMs,         // unchanged — only Phase 2 advances
-        completedAtMs: Date.now(), // creeps forward
-      },
-    });
-  } catch (e) {
-    log(`[FTS Heartbeat] Watermark write failed: ${e}`, "warn");
-  }
-}
-
-/**
  * Fire-and-forget prod-observability snapshot: released builds suppress all
- * info logging, so the last cursor-scan / folder-recon outcome is persisted
- * to storage.local where it can be inspected on ANY build
- * (`fts_cursor_scan_last` / `fts_folder_recon_last`).
+ * info logging, so the last folder-recon outcome is persisted to
+ * storage.local where it can be inspected on ANY build
+ * (`fts_folder_recon_last`).
  */
 function _writeReconSnapshot(key, payload) {
   return browser.storage.local.set({ [key]: { at: new Date().toISOString(), ...payload } })
     .then(() => true, () => false);
 }
 
-/**
- * Read the persistent per-folder cursors. Returns null when never written
- * (first run — the cursor scan seeds without enumeration in that case).
- */
-async function _getCursors() {
-  try {
-    const stored = await browser.storage.local.get(CURSOR_STORAGE_KEY);
-    const c = stored?.[CURSOR_STORAGE_KEY];
-    if (c && c.folders && typeof c.folders === "object") return c;
-    return null;
-  } catch (e) {
-    log(`[FTS Cursor] Cursor read failed: ${e}`, "warn");
-    return null;
-  }
-}
-
-async function _writeCursors(cursors) {
-  try {
-    await browser.storage.local.set({ [CURSOR_STORAGE_KEY]: cursors });
-  } catch (e) {
-    // Non-fatal: next boot re-scans from the older cursors (wider diff).
-    log(`[FTS Cursor] Cursor write failed: ${e}`, "warn");
-  }
-}
-
-/**
- * Heartbeat cursor advance: merge session-max keys (from delivered events)
- * into the persistent cursors. Only advances EXISTING entries — the boot
- * cursor scan is the sole minter (mirrors the watermark heartbeat's
- * "refuse to create" rule). Guarded by the shared drain-stall check.
- * Legacy helper (no production caller): its original safety argument relied
- * on queue persistence, which was deleted 2026-10-04.
- */
-async function _heartbeatAdvanceCursors() {
-  if (!_isEnabled || !_experimentListenersActive || _indexerDisposed) return;
-  if (_sessionMaxKeyByFolder.size === 0) return;
-  if (_isDrainStalled()) {
-    log(`[FTS Cursor Heartbeat] Skipped: drain stalled`);
-    return;
-  }
-
-  const cursors = await _getCursors();
-  // Refuse to create — only the boot cursor scan may mint the cursor store.
-  if (!cursors) return;
-
-  // Re-check disposal AFTER the async read (same pattern as the watermark
-  // heartbeat) so a dispose() during the read doesn't lose to a stale write.
-  if (_indexerDisposed) return;
-
-  let advanced = 0;
-  for (const [folderKey, sessionMax] of _sessionMaxKeyByFolder.entries()) {
-    const entry = cursors.folders[folderKey];
-    if (!entry) continue; // folder not minted yet — next boot's scan owns it
-    if (typeof entry.highestKeySeen === "number" && sessionMax > entry.highestKeySeen) {
-      entry.highestKeySeen = sessionMax;
-      entry.updatedAtMs = Date.now();
-      advanced++;
-    }
-  }
-
-  if (advanced > 0) {
-    await _writeCursors(cursors);
-    log(`[FTS Cursor Heartbeat] Advanced ${advanced} folder cursor(s) from session events`);
-  }
-}
-
-/**
- * Start the heartbeat timer. Called after a clean boot reconcile.
- * Idempotent — clears any prior timer first.
- */
-function _startWatermarkHeartbeat() {
-  if (_watermarkHeartbeatTimer) {
-    clearInterval(_watermarkHeartbeatTimer);
-    _watermarkHeartbeatTimer = null;
-  }
-  _watermarkHeartbeatTimer = setInterval(() => {
-    _heartbeatBumpWatermark().catch(e => {
-      log(`[FTS Heartbeat] Unexpected error: ${e}`, "warn");
-    });
-    _heartbeatAdvanceCursors().catch(e => {
-      log(`[FTS Cursor Heartbeat] Unexpected error: ${e}`, "warn");
-    });
-  }, HEARTBEAT_INTERVAL_MS);
-  log(`[FTS Heartbeat] Started — interval ${HEARTBEAT_INTERVAL_MS / 1000}s`);
-}
-
-/**
- * Stop the heartbeat timer. Called in disposeIncrementalIndexer.
- */
-function _stopWatermarkHeartbeat() {
-  if (_watermarkHeartbeatTimer) {
-    clearInterval(_watermarkHeartbeatTimer);
-    _watermarkHeartbeatTimer = null;
-    log(`[FTS Heartbeat] Stopped`);
-  }
-}
-
-/**
- * Phase 1b: per-folder msgKey/UID cursor scan (ADR-020).
- *
- * For each IMAP folder, compares the msgDB's highWater key against the
- * persisted cursor and enqueues everything above it — catching messages
- * that entered the local msgDB while nothing was listening (addon not yet
- * loaded, addon disabled, event-less bulk sync), REGARDLESS of their Date
- * header. This is the arrival-ordered complement to the Date-keyed Phase 1.
- *
- * Per-folder advance contract: a folder's cursor advances only when every
- * enqueue for it succeeded (once enqueued, the drain queue's retry owns
- * delivery — same contract as the watermark's enqueueFailed rule). Legacy
- * helper (no production caller); the queue is no longer persisted.
- * Failed folders keep their old cursor and retry next boot. Independent of
- * the watermark: neither blocks the other.
- *
- * First run (no cursor store): seeds every folder to its current highWater
- * WITHOUT enumeration — coverage before first deploy is owned by the
- * initial scan / weekly maintenance. UIDVALIDITY change or a new folder
- * triggers a capped full scan from key 0 (FTS-level dedup via the drain
- * queue's filterNewMessages makes re-enqueues cheap no-ops).
- */
-async function _listWeFolderIdentities({ imapOnly = false } = {}) {
+async function _listWeFolderIdentities() {
   const started = Date.now();
   const accounts = await browser.accounts.list(true);
   const folders = [];
@@ -1919,44 +1606,18 @@ async function _listWeFolderIdentities({ imapOnly = false } = {}) {
     for (const sub of folder.subFolders || []) walk(accountId, sub);
   };
   for (const account of accounts || []) {
-    // Older TB test doubles may omit type; the privileged per-folder call is
-    // still authoritative and will reject a non-IMAP cursor request.
-    if (imapOnly && account.type && account.type !== "imap") continue;
     walk(account.id, account.rootFolder);
   }
   log(`[TMDBG FTS FolderProbe] WebExtension inventory: ${folders.length} folder(s) from ${accounts?.length || 0} account(s) in ${Date.now() - started}ms`);
   return folders;
 }
 
-function _logFolderProbeTiming(kind, state) {
-  const elapsedMs = Number(state?.elapsedMs) || 0;
-  const details = {
-    kind,
-    accountId: state?.accountId || "",
-    folderPath: state?.folderPath || "",
-    elapsedMs,
-    lookupMs: Number(state?.lookupMs) || 0,
-    dbOpenMs: Number(state?.dbOpenMs) || 0,
-    error: state?.error || "",
-  };
-  const line = `${details.accountId}:${details.folderPath} total=${elapsedMs}ms lookup=${details.lookupMs}ms db=${details.dbOpenMs}ms`;
-  if (state?.error) {
-    log(`[FTS FolderProbe] ${kind} failed for ${line}: ${state.error}`, "warn");
-  } else if (elapsedMs >= 250) {
-    log(`[FTS FolderProbe] Slow ${kind}: ${line}`, "warn");
-  } else {
-    log(`[TMDBG FTS FolderProbe] ${kind}: ${line}`);
-  }
-  logFtsOperation("folder_probe", state?.error ? "error" : "timing", details);
-}
-
 async function _readPerFolderExperimentState(
-  methodName,
-  { imapOnly = false, onlyFolderKeys = null, currentIdentities = null, callOptions = null } = {},
+  { onlyFolderKeys = null, currentIdentities = null, callOptions = null } = {},
 ) {
   let identities = currentIdentities
     ? currentIdentities.map(identity => ({ ...identity }))
-    : await _listWeFolderIdentities({ imapOnly });
+    : await _listWeFolderIdentities();
   if (onlyFolderKeys) {
     identities = identities.filter(identity => onlyFolderKeys.has(`${identity.accountId}:${identity.folderPath}`));
   }
@@ -1965,7 +1626,7 @@ async function _readPerFolderExperimentState(
     const identity = identities[i];
     let state;
     try {
-      state = await browser.tmMsgNotify[methodName](
+      state = await browser.tmMsgNotify.getFolderState(
         identity.accountId,
         identity.folderPath,
         ...(callOptions ? [callOptions] : []),
@@ -1976,290 +1637,12 @@ async function _readPerFolderExperimentState(
     // The privileged folder-state API predates opaque WebExtension folder
     // ids. Preserve the id from the fresh account inventory beside its state.
     out.push({ ...identity, ...state });
-    if (methodName !== "getFolderState") _logFolderProbeTiming(methodName, state);
     // Each Experiment call may synchronously open one summary DB. Yield a
     // full task between folders so an account-wide startup proof stays
     // responsive even when many folders need inspection.
     if (i + 1 < identities.length) await new Promise(resolve => setTimeout(resolve, 0));
   }
   return out;
-}
-
-async function _listCursorKeysAboveKeyCooperatively(folderURI, sinceKey, maxKeys) {
-  if (typeof browser.tmMsgNotify?.beginFolderMessageScan !== "function"
-      || typeof browser.tmMsgNotify?.readFolderMessageScanPage !== "function"
-      || typeof browser.tmMsgNotify?.cancelFolderMessageScan !== "function") {
-    return { keys: [], truncated: false, totalAbove: 0, error: "scan_api_unavailable" };
-  }
-  const cap = Math.max(1, Number.isFinite(maxKeys) ? Math.floor(maxKeys) : 1);
-  const normalizedSince = _normalizeMsgKeyCursor(sinceKey) ?? 0;
-  const heap = [];
-  let totalAbove = 0;
-  let token = null;
-
-  const retainHighest = (key) => {
-    if (heap.length < cap) {
-      heap.push(key);
-      let child = heap.length - 1;
-      while (child > 0) {
-        const parent = Math.floor((child - 1) / 2);
-        if (heap[parent] <= heap[child]) break;
-        [heap[parent], heap[child]] = [heap[child], heap[parent]];
-        child = parent;
-      }
-      return;
-    }
-    if (key <= heap[0]) return;
-    heap[0] = key;
-    let parent = 0;
-    while (true) {
-      const left = parent * 2 + 1;
-      const right = left + 1;
-      let smallest = parent;
-      if (left < heap.length && heap[left] < heap[smallest]) smallest = left;
-      if (right < heap.length && heap[right] < heap[smallest]) smallest = right;
-      if (smallest === parent) break;
-      [heap[parent], heap[smallest]] = [heap[smallest], heap[parent]];
-      parent = smallest;
-    }
-  };
-
-  try {
-    const started = await browser.tmMsgNotify.beginFolderMessageScan(folderURI, false);
-    if (started?.error || !started?.token) {
-      return {
-        keys: [],
-        truncated: false,
-        totalAbove: 0,
-        error: started?.error || "scan_start_failed",
-      };
-    }
-    token = started.token;
-    while (true) {
-      const page = await browser.tmMsgNotify.readFolderMessageScanPage(token, 250);
-      if (page?.error) {
-        return { keys: [], truncated: false, totalAbove: 0, error: page.error };
-      }
-      for (const row of page?.rows || []) {
-        const key = _normalizeMsgKeyCursor(row?.msgKey);
-        if (key === null || key <= normalizedSince) continue;
-        totalAbove++;
-        retainHighest(key);
-      }
-      if (page?.done === true) break;
-    }
-    heap.sort((a, b) => a - b);
-    return { keys: heap, truncated: totalAbove > cap, totalAbove };
-  } catch (e) {
-    return { keys: [], truncated: false, totalAbove: 0, error: String(e) };
-  } finally {
-    if (token) {
-      try { await browser.tmMsgNotify.cancelFolderMessageScan(token); } catch (_) {}
-    }
-  }
-}
-
-async function _runCursorScan() {
-  if (!_isEnabled) return { skipped: true, reason: "disabled" };
-  if (!browser.tmMsgNotify
-      || typeof browser.tmMsgNotify.getCursorFolder !== "function"
-      || !_experimentListenersActive) {
-    log(`[FTS Cursor] Scan skipped — experiment API unavailable`);
-    return { skipped: true, reason: "no_experiment" };
-  }
-
-  const scanStart = Date.now();
-  const stats = {
-    foldersTotal: 0,
-    foldersUnchanged: 0,
-    foldersSeeded: 0,
-    foldersScanned: 0,
-    foldersAdvanced: 0,
-    foldersSkipped: 0,
-    keysEnqueued: 0,
-    enqueueFailed: 0,
-    truncatedScans: 0,
-  };
-
-  let folders;
-  try {
-    folders = await _readPerFolderExperimentState("getCursorFolder", { imapOnly: true });
-  } catch (e) {
-    log(`[FTS Cursor] Folder inventory failed: ${e} — scan skipped, retry next boot`, "warn");
-    logFtsBatchOperation("cursor_scan", "error", { error: String(e) });
-    return { skipped: true, reason: "folder_inventory_failed" };
-  }
-
-  const stored = await _getCursors();
-  const firstRun = !stored;
-  const cursors = stored || { version: 1, seededAtMs: Date.now(), folders: {} };
-
-  logFtsBatchOperation("cursor_scan", "start", {
-    firstRun,
-    foldersReported: folders?.length || 0,
-  });
-
-  for (const f of folders || []) {
-    stats.foldersTotal++;
-
-    if (f.error || !f.folderURI) {
-      // msgDB unreadable — never seed or advance on error; retry next boot.
-      stats.foldersSkipped++;
-      logFtsOperation("cursor_scan", "folder_error", {
-        folderPath: f.folderPath,
-        error: f.error || "no_folderURI",
-      });
-      continue;
-    }
-
-    const folderKey = `${f.accountId}:${f.folderPath}`;
-    const cur = cursors.folders[folderKey];
-    const highWater = typeof f.highWater === "number" ? f.highWater : 0;
-    const uidValidity = typeof f.uidValidity === "number" ? f.uidValidity : 0;
-
-    let sinceKey = null;
-    let scanReason = null;
-
-    if (!cur) {
-      if (firstRun) {
-        // Seed without enumeration — claim nothing before deploy.
-        cursors.folders[folderKey] = {
-          uidValidity,
-          highestKeySeen: highWater,
-          updatedAtMs: Date.now(),
-        };
-        stats.foldersSeeded++;
-        continue;
-      }
-      sinceKey = 0;
-      scanReason = "new_folder";
-    } else if (!Number.isFinite(cur.highestKeySeen)) {
-      // Corrupt entry — without this it would compare as "unchanged"
-      // forever and never heal. Re-mint via a capped full scan.
-      sinceKey = 0;
-      scanReason = "corrupt_cursor";
-    } else if (cur.uidValidity !== uidValidity) {
-      // UIDs remapped — FTS keys (headerMessageId-based) stay valid, so a
-      // full re-enqueue dedups against the index; the cursor is re-minted.
-      sinceKey = 0;
-      scanReason = "uidvalidity_reset";
-    } else if (highWater > cur.highestKeySeen) {
-      sinceKey = cur.highestKeySeen;
-      scanReason = "diff";
-    } else {
-      stats.foldersUnchanged++;
-      continue;
-    }
-
-    // Enumerate keys above the cursor
-    let listed;
-    try {
-      listed = await _listCursorKeysAboveKeyCooperatively(
-        f.folderURI,
-        sinceKey,
-        CURSOR_FULL_SCAN_MAX_KEYS,
-      );
-    } catch (e) {
-      listed = { keys: [], error: String(e) };
-    }
-    if (listed.error) {
-      stats.foldersSkipped++;
-      logFtsOperation("cursor_scan", "list_error", {
-        folderPath: f.folderPath,
-        reason: scanReason,
-        error: listed.error,
-      });
-      continue;
-    }
-
-    if (listed.truncated) {
-      stats.truncatedScans++;
-      log(`[FTS Cursor] TRUNCATED scan for ${folderKey} (${scanReason}): enqueuing newest ${listed.keys.length} of ${listed.totalAbove} keys — older history is NOT recovered by this scan`, "warn");
-      logFtsOperation("cursor_scan", "truncated", {
-        folderPath: f.folderPath,
-        reason: scanReason,
-        enqueued: listed.keys.length,
-        totalAbove: listed.totalAbove,
-      });
-    }
-
-    stats.foldersScanned++;
-
-    // Resolve keys to messageInfos in chunks and enqueue into the drain queue
-    let folderEnqueueFailed = 0;
-    let folderEnqueued = 0;
-    let lastEnumeratedKey = sinceKey;
-    for (let i = 0; i < listed.keys.length; i += CURSOR_KEYS_CHUNK) {
-      const chunk = listed.keys.slice(i, i + CURSOR_KEYS_CHUNK);
-      let res;
-      try {
-        res = await browser.tmMsgNotify.getMessageInfosForKeys(f.folderURI, chunk);
-      } catch (e) {
-        res = { infos: [], error: String(e) };
-      }
-      if (res.error) {
-        // RPC-level failure — coverage for this folder is unproven.
-        folderEnqueueFailed++;
-        logFtsOperation("cursor_scan", "infos_error", {
-          folderPath: f.folderPath,
-          error: res.error,
-        });
-        break;
-      }
-      // Keys omitted from infos = header gone between list and fetch
-      // (message deleted meanwhile) — nothing to index, remove-side owns it.
-      for (const info of res.infos || []) {
-        try {
-          if (await _enqueueNewFromInfo(info, true)) {
-            folderEnqueued++;
-          } else {
-            folderEnqueueFailed++;
-            break;
-          }
-        } catch (e) {
-          folderEnqueueFailed++;
-          log(`[FTS Cursor] Enqueue failed for ${folderKey}:${info?.headerMessageId}: ${e}`, "warn");
-        }
-      }
-      if (folderEnqueueFailed > 0) break;
-      lastEnumeratedKey = chunk[chunk.length - 1];
-      if (CURSOR_CHUNK_DELAY_MS > 0 && i + CURSOR_KEYS_CHUNK < listed.keys.length) {
-        await new Promise(r => setTimeout(r, CURSOR_CHUNK_DELAY_MS));
-      }
-    }
-
-    stats.keysEnqueued += folderEnqueued;
-    stats.enqueueFailed += folderEnqueueFailed;
-
-    if (folderEnqueueFailed === 0) {
-      // Advance: everything above the old cursor reached the persistent
-      // drain queue. Keys arriving after the getCursorFolders snapshot are
-      // the live listener's responsibility (it's registered by now).
-      cursors.folders[folderKey] = {
-        uidValidity,
-        highestKeySeen: Math.max(highWater, lastEnumeratedKey || 0),
-        updatedAtMs: Date.now(),
-      };
-      stats.foldersAdvanced++;
-      if (folderEnqueued > 0) {
-        log(`[FTS Cursor] ${folderKey}: enqueued ${folderEnqueued} (${scanReason}), cursor → ${cursors.folders[folderKey].highestKeySeen}`);
-      }
-    } else {
-      stats.foldersSkipped++;
-      log(`[FTS Cursor] ${folderKey}: ${folderEnqueueFailed} enqueue failure(s) — cursor NOT advanced, retry next boot`, "warn");
-    }
-  }
-
-  // Single write: seeded + advanced folders persist; failed folders keep
-  // their old entries (or none) and are retried next boot.
-  await _writeCursors(cursors);
-
-  const elapsed = Date.now() - scanStart;
-  log(`[FTS Cursor] Scan complete: ${stats.foldersTotal} folders (${stats.foldersUnchanged} unchanged, ${stats.foldersSeeded} seeded, ${stats.foldersScanned} scanned, ${stats.foldersAdvanced} advanced, ${stats.foldersSkipped} skipped), ${stats.keysEnqueued} enqueued, ${stats.enqueueFailed} enqueue failures, ${elapsed}ms`);
-  logFtsBatchOperation("cursor_scan", "complete", { ...stats, firstRun, elapsedMs: elapsed });
-  _writeReconSnapshot("fts_cursor_scan_last", { ...stats, firstRun, elapsedMs: elapsed });
-
-  return stats;
 }
 
 // ---------------------------------------------------------------------------
@@ -2314,6 +1697,9 @@ const FOLDER_RECON_CONFIG = {
   reverifyIntervalMs: 20 * 60 * 1000,
   walkPeriodMs: 24 * 60 * 60 * 1000,
   membershipUnresolvedRetryMs: 10 * 60 * 1000,
+  // Longest slice wall time the scheduler reserves; a longer measurement is a
+  // host sleep inside the slice, not work.
+  hardFloorMaxElapsedMs: 10 * 60 * 1000,
   changeLedgerCap: 4096,
   changeLedgerKeyCap: 4096,
   ...(SETTINGS?.agentQueues?.ftsFolderRecon || {}),
@@ -2434,6 +1820,7 @@ const FOLDER_RECON_SYNC_QUIET_MS = FOLDER_RECON_CONFIG.syncQuietMs;
 const FOLDER_RECON_REVERIFY_INTERVAL_MS = FOLDER_RECON_CONFIG.reverifyIntervalMs;
 const FOLDER_RECON_WALK_PERIOD_MS = FOLDER_RECON_CONFIG.walkPeriodMs;
 const FOLDER_RECON_MEMBERSHIP_UNRESOLVED_RETRY_MS = FOLDER_RECON_CONFIG.membershipUnresolvedRetryMs;
+const FOLDER_RECON_HARD_FLOOR_MAX_ELAPSED_MS = FOLDER_RECON_CONFIG.hardFloorMaxElapsedMs;
 const FOLDER_RECON_CHANGE_LEDGER_CAP = FOLDER_RECON_CONFIG.changeLedgerCap;
 const FOLDER_RECON_CHANGE_LEDGER_KEY_CAP = FOLDER_RECON_CONFIG.changeLedgerKeyCap;
 // A completed add-side sweep that still fails exact equality is replayed once
@@ -2711,6 +2098,8 @@ function _newFolderReconRuntimeTelemetry() {
     membershipStateRestartBindingChanged: 0,
     membershipStateRestartPageInvalid: 0,
     membershipCutovers: 0,
+    membershipSummaryCutovers: 0,
+    membershipSummaryFallbacks: 0,
     membershipLastPassSlices: 0,
   };
 }
@@ -2994,69 +2383,109 @@ function _compareFolderReconEncoded(a, b) {
   return a.bytes.length - b.bytes.length;
 }
 
-function _folderReconEncodedEqual(a, b) {
-  return _compareFolderReconEncoded(a, b) === 0;
+// UTF-8 byte order of well-formed strings is code-point order. A surrogate
+// unit belongs to a code point above U+FFFF, so it sorts after every other
+// BMP unit; at the first differing unit of two well-formed strings with an
+// equal prefix, a low surrogate only ever meets another low surrogate.
+function _compareFolderReconCodePoints(a, b) {
+  const shared = Math.min(a.length, b.length);
+  for (let i = 0; i < shared; i++) {
+    const x = a.charCodeAt(i);
+    const y = b.charCodeAt(i);
+    if (x === y) continue;
+    const xSurrogate = x >= 0xd800 && x <= 0xdfff;
+    const ySurrogate = y >= 0xd800 && y <= 0xdfff;
+    if (xSurrogate !== ySurrogate) return xSurrogate ? 1 : -1;
+    return x - y;
+  }
+  return a.length - b.length;
 }
 
-async function _cooperativeEncodeAndSortStrings(values, assertActive = () => {}) {
+function _compareFolderReconUint32(a, b) {
+  return a - b;
+}
+
+function _folderReconUtf8Length(wellFormed) {
+  let length = 0;
+  for (let i = 0; i < wellFormed.length; i++) {
+    const unit = wellFormed.charCodeAt(i);
+    if (unit < 0x80) length += 1;
+    else if (unit < 0x800) length += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff) {
+      length += 4;
+      i++;
+    } else length += 3;
+  }
+  return length;
+}
+
+// Sorts `items` (an Array or a typed array) in place-sized chunks, then merges
+// adjacent runs pairwise into a second buffer of the same kind, yielding every
+// FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES elements. Stable. Returns the buffer
+// holding the sorted result.
+async function _cooperativeSortFolderRecon(items, compare, assertActive) {
   assertActive();
-  if (values.length === 0) return [];
-  const chunks = [];
-  for (let i = 0; i < values.length; i += FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES) {
-    const chunk = [];
-    const end = Math.min(values.length, i + FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES);
-    for (let j = i; j < end; j++) {
-      chunk.push({ value: values[j], bytes: _folderReconEncoder.encode(values[j]) });
+  const length = items.length;
+  const chunkEntries = FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES;
+  for (let start = 0; start < length; start += chunkEntries) {
+    const end = Math.min(length, start + chunkEntries);
+    if (ArrayBuffer.isView(items)) {
+      items.subarray(start, end).sort(compare);
+    } else {
+      const chunk = items.slice(start, end).sort(compare);
+      for (let i = 0; i < chunk.length; i++) items[start + i] = chunk[i];
     }
-    assertActive();
-    chunk.sort(_compareFolderReconEncoded);
-    assertActive();
-    chunks.push(chunk);
-    if (i + FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES < values.length) {
+    if (end < length) {
       assertActive();
       await _folderReconYield(0);
       assertActive();
     }
   }
-  while (chunks.length > 1) {
-    const merged = [];
-    for (let i = 0; i < chunks.length; i += 2) {
-      if (i + 1 >= chunks.length) {
-        merged.push(chunks[i]);
-        continue;
-      }
-      const left = chunks[i];
-      const right = chunks[i + 1];
-      const out = new Array(left.length + right.length);
-      let a = 0;
-      let b = 0;
-      let o = 0;
-      while (a < left.length || b < right.length) {
-        out[o++] = b >= right.length
-          || (a < left.length && _compareFolderReconEncoded(left[a], right[b]) <= 0)
-          ? left[a++]
-          : right[b++];
-        if (o % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
+  let source = items;
+  let target = new items.constructor(length);
+  for (let width = chunkEntries; width < length; width *= 2) {
+    let written = 0;
+    for (let low = 0; low < length; low += 2 * width) {
+      const middle = Math.min(low + width, length);
+      const high = Math.min(low + 2 * width, length);
+      let a = low;
+      let b = middle;
+      let o = low;
+      while (a < middle || b < high) {
+        target[o++] = b >= high || (a < middle && compare(source[a], source[b]) <= 0)
+          ? source[a++]
+          : source[b++];
+        if (++written % chunkEntries === 0) {
           assertActive();
           await _folderReconYield(0);
           assertActive();
         }
       }
-      merged.push(out);
     }
-    chunks.splice(0, chunks.length, ...merged);
+    [source, target] = [target, source];
   }
-  return chunks[0];
+  return source;
 }
 
 async function _fingerprintStringsCooperatively(values, dedupe = false, assertActive = () => {}) {
   assertActive();
-  let sorted = await _cooperativeEncodeAndSortStrings(values, assertActive);
+  // TextEncoder maps a lone surrogate to U+FFFD, as toWellFormed does, so the
+  // well-formed value sorts, dedupes and encodes exactly as its UTF-8 bytes.
+  const wellFormed = new Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    wellFormed[i] = values[i].toWellFormed();
+    if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
+      assertActive();
+      await _folderReconYield(0);
+      assertActive();
+    }
+  }
+  let sorted = await _cooperativeSortFolderRecon(wellFormed, _compareFolderReconCodePoints, assertActive);
   assertActive();
   if (dedupe && sorted.length > 1) {
     const unique = [];
     for (let i = 0; i < sorted.length; i++) {
-      if (i === 0 || !_folderReconEncodedEqual(sorted[i], sorted[i - 1])) unique.push(sorted[i]);
+      if (i === 0 || sorted[i] !== sorted[i - 1]) unique.push(sorted[i]);
       if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
         assertActive();
         await _folderReconYield(0);
@@ -3065,9 +2494,11 @@ async function _fingerprintStringsCooperatively(values, dedupe = false, assertAc
     }
     sorted = unique;
   }
+  const lengths = new Uint32Array(sorted.length);
   let totalBytes = 0;
   for (let i = 0; i < sorted.length; i++) {
-    totalBytes += 8 + sorted[i].bytes.length;
+    lengths[i] = _folderReconUtf8Length(sorted[i]);
+    totalBytes += 8 + lengths[i];
     if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
       assertActive();
       await _folderReconYield(0);
@@ -3078,11 +2509,11 @@ async function _fingerprintStringsCooperatively(values, dedupe = false, assertAc
   const view = new DataView(framed.buffer);
   let offset = 0;
   for (let i = 0; i < sorted.length; i++) {
-    const bytes = sorted[i].bytes;
-    view.setUint32(offset, Math.floor(bytes.length / 0x100000000), false);
-    view.setUint32(offset + 4, bytes.length >>> 0, false);
-    framed.set(bytes, offset + 8);
-    offset += 8 + bytes.length;
+    const length = lengths[i];
+    view.setUint32(offset, Math.floor(length / 0x100000000), false);
+    view.setUint32(offset + 4, length >>> 0, false);
+    _folderReconEncoder.encodeInto(sorted[i], framed.subarray(offset + 8, offset + 8 + length));
+    offset += 8 + length;
     if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
       assertActive();
       await _folderReconYield(0);
@@ -3100,25 +2531,22 @@ async function _fingerprintStringsCooperatively(values, dedupe = false, assertAc
 
 async function _fingerprintMsgKeysCooperatively(keys, assertActive = () => {}) {
   assertActive();
-  // Fixed-width hex preserves unsigned numeric order under string sorting.
-  const hexKeys = new Array(keys.length);
+  // Unsigned, as the UID view is hashed: high-bit keys sort after 0x7fffffff.
+  const unsorted = new Uint32Array(keys.length);
   for (let i = 0; i < keys.length; i++) {
-    hexKeys[i] = (keys[i] >>> 0).toString(16).padStart(8, "0");
+    unsorted[i] = keys[i] >>> 0;
     if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
       assertActive();
       await _folderReconYield(0);
       assertActive();
     }
   }
-  const orderedHex = await _cooperativeEncodeAndSortStrings(hexKeys, assertActive);
+  const sorted = await _cooperativeSortFolderRecon(unsorted, _compareFolderReconUint32, assertActive);
   assertActive();
-  const bytes = new Uint8Array(orderedHex.length * 4);
-  const sorted = new Uint32Array(orderedHex.length);
+  const bytes = new Uint8Array(sorted.length * 4);
   const view = new DataView(bytes.buffer);
-  for (let i = 0; i < orderedHex.length; i++) {
-    const key = Number.parseInt(orderedHex[i].value, 16);
-    sorted[i] = key;
-    view.setUint32(i * 4, key, false);
+  for (let i = 0; i < sorted.length; i++) {
+    view.setUint32(i * 4, sorted[i], false);
     if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
       assertActive();
       await _folderReconYield(0);
@@ -3128,7 +2556,7 @@ async function _fingerprintMsgKeysCooperatively(keys, assertActive = () => {}) {
   assertActive();
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   assertActive();
-  return { count: orderedHex.length, sha256: _bytesToHex(digest), sorted };
+  return { count: sorted.length, sha256: _bytesToHex(digest), sorted };
 }
 
 // `localScope` ({ folderKey, since }) additionally requires that folder to be
@@ -3398,6 +2826,8 @@ function _admitFolderReconActiveProof(
     accountId: f.accountId,
     folderPath: f.folderPath,
     folderURI: f.folderURI,
+    // The msgDB incarnation the snapshot was scanned from.
+    incarnationToken: f.incarnationToken,
     serverType: snapshot.serverType || f.serverType || "",
     stableUidKeys: snapshot.stableUidKeys === true,
     uidValidity: snapshot.uidValidity,
@@ -3824,6 +3254,14 @@ function _assertStrictMembershipCursor(previous, current) {
   }
 }
 
+// True while a paged digest of the folder in `proofSlot` has started and is
+// still current.
+function _folderMembershipDigestInProgress(folder, proofSlot) {
+  if (!folder?.folderId) return false;
+  const session = _folderMembershipDigestSessions.get(`folder\u0000${folder.folderId}\u0000${proofSlot}`);
+  return !!session && _folderMembershipProofStampCurrent(session);
+}
+
 async function _fingerprintFolderMembershipPages(
   ftsSearch,
   folder,
@@ -3904,7 +3342,6 @@ async function _listFolderNative(ftsSearch, folder, startKey, endKey, afterKey, 
  * Read the per-folder verified membership checkpoint (schema v3).
  * A v1 count memo is intentionally discarded: equal counts never proved set
  * equality and must not seed the stronger checkpoint.
- * Independent of the watermark AND the cursor store (separate storage key).
  */
 async function _getFolderReconMemo() {
     const state = await _readReconStorageStrict(_folderReconGeneration);
@@ -4027,7 +3464,8 @@ async function _folderReconStaleDirection(
     _assertNoFolderReconForegroundPressure();
   };
   const folderPrefix = `${f.accountId}:${f.folderPath}:`;
-  const weFolder = { accountId: f.accountId, path: f.folderPath };
+  // The id scopes the presence recheck to this folder's msgDB.
+  const weFolder = { accountId: f.accountId, path: f.folderPath, id: f.weFolderId };
   let afterKey = resumeAfterKey;
   let pages = 0;
 
@@ -4597,8 +4035,7 @@ function _restartFolderReconOrphanWalk(pass) {
 
 /**
  * Startup fingerprint proof + exact per-folder set reconcile. This is the
- * automatic post-init reconciliation path and is independent of the legacy
- * watermark and cursor stores. Skips cleanly when the experiment API or native
+ * automatic post-init reconciliation path. Skips cleanly when the experiment API or native
  * fingerprint/range RPCs are unavailable.
  *
  * @param {Object} ftsSearch - FTS search interface
@@ -4692,7 +4129,7 @@ async function _runFolderReconcile(
   const membershipMode = _captureFolderMembershipMode(ftsSearch);
   let folders;
   try {
-    folders = await _readPerFolderExperimentState("getFolderState", {
+    folders = await _readPerFolderExperimentState({
       onlyFolderKeys,
       currentIdentities,
       // Earned exact mode creates the msgDB incarnation token before any
@@ -4922,15 +4359,42 @@ async function _runFolderReconcile(
       continue;
     }
     try {
-      folderMembershipEpoch = getFtsMembershipEpoch();
-      _assertNoFolderReconForegroundPressure();
-      nativeFingerprint = await _fingerprintFolderNative(
-        ftsSearch, f, startKey, endKey, "initial", membershipMode,
-      );
-      _assertFolderReconLease(reconcileLease, generation);
-      _assertNoFolderReconForegroundPressure();
-      if (!ftsMembershipUnchangedSince(_folderReconNativeScope(f), folderMembershipEpoch)) {
-        throw new Error("membership_epoch_changed");
+      // The verify-phase proof is the fresh scan an earlier turn took for
+      // the native digest still paging; while that digest's stamp is
+      // current, no event released the proof and no write touched the
+      // folder, so it stays the fresh side instead of being rescanned. It
+      // must come from the msgDB incarnation this turn opened: the closing
+      // read is compared with this turn's opening read only, so a msgDB
+      // replaced with no event is rescanned rather than certified under the
+      // new token.
+      const continuesFreshDigest = expected.fromWorkingProof === true
+        && expected.proofGuard?.entry?.phase === "verify"
+        && expected.proofGuard.entry.incarnationToken === f.incarnationToken
+        && membershipMode.exact
+        && _folderMembershipDigestInProgress(f, "fresh_after_working");
+      if (continuesFreshDigest) {
+        expected = { ...expected, fromWorkingProof: false };
+        folderMembershipEpoch = getFtsMembershipEpoch();
+        _assertNoFolderReconForegroundPressure();
+        nativeFingerprint = await _fingerprintFolderNative(
+          ftsSearch, f, startKey, endKey, "fresh_after_working", membershipMode,
+        );
+        _assertFolderReconLease(reconcileLease, generation);
+        _assertNoFolderReconForegroundPressure();
+        if (!ftsMembershipUnchangedSince(_folderReconNativeScope(f), folderMembershipEpoch)) {
+          throw new Error("membership_epoch_changed");
+        }
+      } else {
+        folderMembershipEpoch = getFtsMembershipEpoch();
+        _assertNoFolderReconForegroundPressure();
+        nativeFingerprint = await _fingerprintFolderNative(
+          ftsSearch, f, startKey, endKey, "initial", membershipMode,
+        );
+        _assertFolderReconLease(reconcileLease, generation);
+        _assertNoFolderReconForegroundPressure();
+        if (!ftsMembershipUnchangedSince(_folderReconNativeScope(f), folderMembershipEpoch)) {
+          throw new Error("membership_epoch_changed");
+        }
       }
       // A reused proof is repair input only. If native already equals it, take
       // a direct fresh local/native pair before allowing the verified path.
@@ -5491,12 +4955,13 @@ async function _runFolderReconcile(
 function _armFolderReconTimer(reason) {
   if (!_isEnabled || !_ftsSearch || _indexerDisposed) return;
   const nowMs = Date.now();
-  const dueMs = Math.max(_folderReconHardNotBeforeMs, _folderReconRequestedDueMs);
+  const hardFloorMs = _clampFolderReconHardFloorMs();
+  const dueMs = Math.max(hardFloorMs, _folderReconRequestedDueMs);
   if (!Number.isFinite(dueMs)) return;
   // A later request never postpones earlier eligible work. A true raised
   // eligibility floor does re-arm later, and an earlier request re-arms sooner.
   if (_folderReconTimer) {
-    const mustMoveLater = _folderReconHardNotBeforeMs > _folderReconTimerDueMs;
+    const mustMoveLater = hardFloorMs > _folderReconTimerDueMs;
     const mayMoveEarlier = dueMs < _folderReconTimerDueMs;
     if (!mustMoveLater && !mayMoveEarlier) return;
     clearTimeout(_folderReconTimer);
@@ -5516,7 +4981,7 @@ function _armFolderReconTimer(reason) {
     if (token !== _folderReconTimerToken || generation !== _folderReconGeneration) return;
     _folderReconTimer = null;
     _folderReconTimerDueMs = 0;
-    if (Date.now() < _folderReconHardNotBeforeMs) {
+    if (Date.now() < _clampFolderReconHardFloorMs()) {
       _folderReconRequestedDueMs = Math.min(_folderReconRequestedDueMs, Date.now());
       _armFolderReconTimer("floor_recheck");
       return;
@@ -5534,6 +4999,16 @@ function _wakeFolderRecon(reason = "work", delayMs = FOLDER_RECON_PACE_DELAY_MS)
   const normalizedDelayMs = Number.isFinite(delayMs) ? Math.max(0, Math.floor(delayMs)) : 0;
   _folderReconRequestedDueMs = Math.min(_folderReconRequestedDueMs, Date.now() + normalizedDelayMs);
   _armFolderReconTimer(reason);
+}
+
+// No legitimate write puts the floor more than one clipped slice ahead, so a
+// floor beyond that is left over from a backward clock jump. The clamp is
+// written back: a clamp recomputed from each read would slide with the clock
+// and never open the gate.
+function _clampFolderReconHardFloorMs() {
+  const ceilingMs = Date.now() + FOLDER_RECON_HARD_FLOOR_MAX_ELAPSED_MS;
+  if (_folderReconHardNotBeforeMs > ceilingMs) _folderReconHardNotBeforeMs = ceilingMs;
+  return _folderReconHardNotBeforeMs;
 }
 
 function _setFolderReconHardNotBeforeMs(notBeforeMs) {
@@ -5745,7 +5220,8 @@ function _startFolderMembershipStatePass(binding, restartReason = null) {
     inventorySha256: binding.inventorySha256,
     connectionGeneration: binding.connectionGeneration,
     topologySerial: binding.topologySerial,
-    startedBeforeFirst: true,
+    // The one native summary this pass may take before its walk.
+    summaryTried: false,
     afterMsgId: null,
     passMutated: false,
     passUnresolved: 0,
@@ -5768,6 +5244,28 @@ function _currentFolderMembershipStatePass(binding) {
 
 // Restart from before-first. A continuation whose pass was already replaced
 // (revocation, binding change) leaves the newer pass alone.
+// Global cleanup is earned only by this process's own current pass under the
+// binding that is still current now; the walk's last page and the summary
+// both publish here. `unloaded` is the pass's count of rows kept for accounts
+// with no enumerated folder.
+function _publishFolderMembershipCleanup(pass, inventory, ftsSearch, unloaded) {
+  if (_folderMembershipStatePass !== pass
+      || ftsSearch?.supportsFolderMembership?.() !== true
+      || !_folderMembershipStatePassBound(
+        pass,
+        _folderMembershipStatePassBinding(inventory, ftsSearch),
+      )) {
+    return false;
+  }
+  pass.unloaded = unloaded;
+  pass.completed = true;
+  pass.completedAtMs = Date.now();
+  _folderMembershipCleanupProven = true;
+  _bumpFolderReconTelemetry("membershipCutovers");
+  _folderReconRuntimeTelemetry.membershipLastPassSlices = pass.slices;
+  return true;
+}
+
 function _restartFolderMembershipStatePass(pass, reason) {
   if (_folderMembershipStatePass !== pass) return;
   _startFolderMembershipStatePass(pass, reason);
@@ -6029,6 +5527,51 @@ async function _runFolderMembershipMigrationSlice(
   assertCurrent();
   if (!readPage || Date.now() < pass.notBeforeMs) {
     return { complete: false, pending: true, notBeforeMs: pass.notBeforeMs };
+  }
+  if (!pass.summaryTried && ftsSearch?.supportsFolderMembershipSummary?.() === true) {
+    // One native read proves property P for a snapshot: no ownerless row and
+    // no row of a loaded account owned outside the inventory. It takes the
+    // slice's page and runs unfenced: every capable write keeps P or shows as
+    // a stray row, and a legacy writer changes the connection generation the
+    // binding checks. Pressure after the call never discards it; anything it
+    // cannot vouch for goes to the walk from the next pass turn.
+    pass.summaryTried = true;
+    _consumeFolderMembershipPageBudget();
+    const summaryStartedMs = Date.now();
+    let summary;
+    try {
+      summary = await ftsSearch.folderMembershipSummary(
+        [...distinctFolderIds],
+        [..._folderReconTrustedAccountIds(validIdentities)],
+      );
+    } catch (error) {
+      // Aggregate-only: the call's wall time against nativeRpcTimeoutMs.
+      logFtsBatchOperation("folder_recon", "membership_summary_failed", {
+        elapsedMs: Date.now() - summaryStartedMs,
+        error: String(error),
+      });
+      _assertFolderReconLease(reconcileLease, generation);
+      _bumpFolderReconTelemetry("membershipSummaryFallbacks");
+      return { complete: false, failed: true, reason: "membership_summary_failed", error: String(error) };
+    }
+    logFtsBatchOperation("folder_recon", "membership_summary", {
+      elapsedMs: Date.now() - summaryStartedMs,
+      folders: distinctFolderIds.size,
+      ownerlessRows: summary.ownerlessRows,
+      strayTrustedRows: summary.strayTrustedRows,
+      strayUntrustedRows: summary.strayUntrustedRows,
+    });
+    _assertFolderReconLease(reconcileLease, generation);
+    if (summary.ownerlessRows > 0 || summary.strayTrustedRows > 0) {
+      _bumpFolderReconTelemetry("membershipSummaryFallbacks");
+      return { complete: false, membershipSummaryRefused: true };
+    }
+    if (ftsSearch?.supportsFolderMembershipSummary?.() !== true
+        || !_publishFolderMembershipCleanup(pass, inventory, ftsSearch, summary.strayUntrustedRows)) {
+      return { complete: false, restart: true, reason: "membership_state_binding_changed" };
+    }
+    _bumpFolderReconTelemetry("membershipSummaryCutovers");
+    return { complete: true, cutover: true };
   }
   let page;
   try {
@@ -6351,22 +5894,11 @@ async function _runFolderMembershipMigrationSlice(
         ...(passUnresolved > 0 ? { failed: true, reason: "unresolved_legacy_rows" } : {}),
       };
     }
-    // Cutover is earned only by this process's own unbroken pass: one that
-    // started before the first row under the binding that is still current.
-    if (_folderMembershipStatePass !== pass
-        || pass.startedBeforeFirst !== true
-        || ftsSearch?.supportsFolderMembership?.() !== true
-        || !_folderMembershipStatePassBound(
-          pass,
-          _folderMembershipStatePassBinding(inventory, ftsSearch),
-        )) {
+    // Every pass starts before the first row, so its unbroken walk earns
+    // cutover under the binding that is still current.
+    if (!_publishFolderMembershipCleanup(pass, inventory, ftsSearch, pass.unloaded)) {
       return { complete: false, restart: true, reason: "membership_state_binding_changed" };
     }
-    pass.completed = true;
-    pass.completedAtMs = Date.now();
-    _folderMembershipCleanupProven = true;
-    _bumpFolderReconTelemetry("membershipCutovers");
-    _folderReconRuntimeTelemetry.membershipLastPassSlices = pass.slices;
     return { complete: true, cutover: true };
   }
   return { complete: false, membershipStateProgress: true };
@@ -6437,8 +5969,9 @@ function _consumeFolderReconRollingTick() {
 async function _runFolderReconSchedulerSlice(ftsSearch) {
   _bumpFolderReconTelemetry("schedulerTicks");
   if (!_isEnabled || !ftsSearch || _indexerDisposed) return { skipped: true, reason: "disabled" };
-  if (Date.now() < _folderReconHardNotBeforeMs) {
-    _wakeFolderRecon("hard_floor", _folderReconHardNotBeforeMs - Date.now());
+  const hardFloorMs = _clampFolderReconHardFloorMs();
+  if (Date.now() < hardFloorMs) {
+    _wakeFolderRecon("hard_floor", hardFloorMs - Date.now());
     return { skipped: true, reason: "hard_floor" };
   }
   if (_folderReconSchedulerOwner || _folderReconInProgressOwner) {
@@ -6468,8 +6001,11 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     return { skipped: true, reason: "operation_busy" };
   }
   const sliceStartedAt = Date.now();
+  // A host sleep inside the slice is not work: reserve at most the clip.
+  const clippedElapsedMs = () =>
+    Math.min(Math.max(0, Date.now() - sliceStartedAt), FOLDER_RECON_HARD_FLOOR_MAX_ELAPSED_MS);
   const cooperativeDelay = (minimumMs = FOLDER_RECON_PACE_DELAY_MS) =>
-    Math.max(minimumMs, Date.now() - sliceStartedAt);
+    Math.max(minimumMs, clippedElapsedMs());
   const owner = { generation, reconcileLease };
   _folderReconSchedulerOwner = owner;
   const folderMembershipCapable = _observeFolderMembershipCapability(ftsSearch);
@@ -6831,7 +6367,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
         elapsedMs,
       );
       _folderReconSchedulerOwner = null;
-      _setFolderReconHardNotBeforeMs(Date.now() + elapsedMs);
+      _setFolderReconHardNotBeforeMs(Date.now() + clippedElapsedMs());
     }
     reconcileLease.release();
   }
@@ -6884,12 +6420,8 @@ export async function initIncrementalIndexer(ftsSearch) {
   }
 
   _ftsSearch = ftsSearch;
-  // Reset disposal flag — a previous dispose() may have set it; a fresh
-  // init should let the heartbeat run again.
+  // Reset disposal flag — a previous dispose() may have set it.
   _indexerDisposed = false;
-  // Fresh session — session-max keys from a previous session were either
-  // merged by the heartbeat or are superseded by the boot cursor scan.
-  _sessionMaxKeyByFolder = new Map();
   // Fresh cooperative reconciliation session. The generation bump makes any
   // delayed completion from an earlier init/dispose unable to persist proof.
   _folderReconGeneration++;
@@ -7025,11 +6557,8 @@ export async function disposeIncrementalIndexer() {
   _folderReconRollingDueMs = 0;
   _folderReconNextWalkDueMs = new Map();
   _folderReconKnownFolderKeys = new Set();
-  // Set BEFORE awaiting anything — any in-flight heartbeat that hasn't
-  // yet reached its post-read disposal check should now see this true
-  // and skip its write.
+  // Set BEFORE awaiting anything, so work resuming after an await sees it.
   _indexerDisposed = true;
-  _stopWatermarkHeartbeat();
 
   // Remove experiment listeners first
   _removeFolderTopologyListeners();
@@ -7050,9 +6579,6 @@ export async function disposeIncrementalIndexer() {
   
   // Pending updates are not persisted: the next startup walk re-derives them.
   _pendingUpdates.clear();
-
-  // Clear session cursor tracking
-  _sessionMaxKeyByFolder.clear();
 
   // Clear folder-reconcile session state
   _folderReconDrainSkipped.clear();
@@ -7169,21 +6695,6 @@ export const _testExports = {
   RECONCILE_QUIET_PERIOD_MS,
   RECONCILE_QUIET_CHECK_INTERVAL_MS,
   RECONCILE_MAX_WAIT_MS,
-  // Watermark + heartbeat (PLAN_RECONCILE_WATERMARK.md)
-  _getReconcileFrom,
-  _writeWatermark,
-  _heartbeatBumpWatermark,
-  _startWatermarkHeartbeat,
-  _stopWatermarkHeartbeat,
-  // Per-folder cursors (PLAN_RECONCILE_CURSOR.md / ADR-020)
-  _runCursorScan,
-  _heartbeatAdvanceCursors,
-  _noteSessionMaxKey,
-  _getSessionMaxKeyByFolder: () => _sessionMaxKeyByFolder,
-  _clearSessionMaxKeyByFolder: () => { _sessionMaxKeyByFolder.clear(); },
-  CURSOR_STORAGE_KEY,
-  CURSOR_KEYS_CHUNK,
-  CURSOR_FULL_SCAN_MAX_KEYS,
   // Per-folder set reconcile (PLAN_FOLDER_SET_RECONCILE.md / ADR-021)
   _runFolderReconcile,
   _runFolderReconSchedulerTick,
@@ -7245,6 +6756,7 @@ export const _testExports = {
   FOLDER_RECON_STORAGE_KEY,
   FOLDER_RECON_KEYS_CHUNK,
   FOLDER_RECON_CHUNK_DELAY_MS,
+  FOLDER_RECON_BACKOFF_WAIT_CAP_MS,
   FOLDER_RECON_RECHECK_KEEPALIVE_EVERY,
   FOLDER_RECON_KEYSPACE_END,
   FOLDER_RECON_INITIAL_SCAN_KEY,
@@ -7294,13 +6806,15 @@ export const _testExports = {
   },
   _getFolderReconRollingDueMs: () => _folderReconRollingDueMs,
   _getFolderReconTimerDueMs: () => _folderReconTimerDueMs,
+  _getFolderReconHardNotBeforeMs: () => _folderReconHardNotBeforeMs,
+  _fingerprintStringsCooperatively,
+  _fingerprintMsgKeysCooperatively,
   _getFolderReconNextWalkDueMs: () => new Map(_folderReconNextWalkDueMs),
   _folderReconWalkOffsetMs,
   _pruneFolderReconRuntimeToFolderKeys,
   _getFolderReconGeneration: () => _folderReconGeneration,
   _setFolderReconHardNotBeforeMs,
   _reconStorageTransaction,
-  _hasWatermarkHeartbeatTimer: () => _watermarkHeartbeatTimer !== null,
   _setIndexerDisposed: (v) => { _indexerDisposed = v; },
   _getIndexerDisposed: () => _indexerDisposed,
   // Allow tests to set _experimentListenersActive / _isEnabled / _ftsSearch directly
@@ -7309,8 +6823,4 @@ export const _testExports = {
   _setFtsSearch: (v) => { _ftsSearch = v; },
   onExperimentMessageRemoved,
   onExperimentMessageAdded,
-  WATERMARK_KEY,
-  HEARTBEAT_INTERVAL_MS,
-  RECONCILE_OVERLAP_MS,
-  RECONCILE_FALLBACK_WINDOW_MS,
 };

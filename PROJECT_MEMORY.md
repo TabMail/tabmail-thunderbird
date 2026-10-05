@@ -153,7 +153,7 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 - **[Detail](Companion/Memory/Current/020-compose-caret-insertion-dead-zone-tab-accept.md)** — only a real editable `<br class="tm-edit-anchor">` satisfies Gecko; the empty-text-node anchor (`83b7be8`) does not. One `<br>` moves OUT of the separator so spacing is unchanged. **Two injection sites existed and the fix initially missed one.**
 
 ### 2026-05-15
-- **[Detail](Companion/Memory/Current/021-boot-reconcile-watermark-not-fts-newest.md)** — `fts_reconcile_watermark = {version, fromMs, completedAtMs}`; the heartbeat advances `completedAtMs` only, never `fromMs`, and refuses to CREATE a watermark. The old window collapsed to ~1 day because the listener indexed new mail during the 60 s quiet wait.
+- **[Detail](Companion/Memory/Current/021-boot-reconcile-watermark-not-fts-newest.md)** — **SUPERSEDED 2026-10-05 (watermark deleted).** `fts_reconcile_watermark = {version, fromMs, completedAtMs}`; the heartbeat advances `completedAtMs` only, never `fromMs`, and refuses to CREATE a watermark. The old window collapsed to ~1 day because the listener indexed new mail during the 60 s quiet wait.
 
 ### 2026-02-03
 - **Session history architecture (v1.2.9)**: Prior-session chat messages are no longer sent as actual conversation turns to the LLM. Instead, `init.js` serializes them into text and injects via `recent_chat_history` field in the system message. Backend expands this into a `chat_converse_history` prompt section (user+ack pair). This ensures the LLM treats prior sessions as background memory, not active conversation.

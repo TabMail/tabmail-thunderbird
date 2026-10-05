@@ -189,6 +189,10 @@ function supportsFolderMembership() {
   return hostInfo?.capabilities?.folderMembershipV1 === true;
 }
 
+function supportsFolderMembershipSummary() {
+  return hostInfo?.capabilities?.folderMembershipSummaryV1 === true;
+}
+
 // Monotonic per native port. Reconciliation binds session-local membership
 // proof to it: a reconnect may have let an unobserved legacy helper write
 // ownerless rows even when the capability reads true on both sides.
@@ -887,6 +891,7 @@ export const nativeFtsSearch = {
   },
 
   supportsFolderMembership,
+  supportsFolderMembershipSummary,
 
   getConnectionGeneration,
   addConnectionListener,
@@ -917,6 +922,20 @@ export const nativeFtsSearch = {
           || (entry.folderId !== null
             && (typeof entry.folderId !== "string" || entry.folderId.length === 0)))) {
       throw new Error("Native FTS folder membership state list returned an invalid response");
+    }
+    return result;
+  },
+
+  // Counts native rows with no owner, and rows whose owner is not in
+  // `folderIds`, split by whether the row's account is in `trustedAccountIds`.
+  async folderMembershipSummary(folderIds, trustedAccountIds) {
+    const result = await nativeRPC('folderMembershipSummary', { folderIds, trustedAccountIds });
+    const count = value => Number.isSafeInteger(value) && value >= 0;
+    if (result?.ok !== true
+        || !count(result.ownerlessRows)
+        || !count(result.strayTrustedRows)
+        || !count(result.strayUntrustedRows)) {
+      throw new Error("Native FTS folder membership summary returned an invalid response");
     }
     return result;
   },

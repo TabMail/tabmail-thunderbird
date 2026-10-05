@@ -2642,3 +2642,135 @@ describe('legacy orphan pass: one-shot basis, fenced walk, retained terminal saf
     expect(recheckMessageInFolder).toHaveBeenCalledTimes(lateCommit ? 2 : 1);
   });
 });
+
+// Membership digests must stay byte-identical to stored checkpoints, so the
+// oracles below are written from the digest's definition: SHA-256 over
+// UTF-8 byte-ordered (optionally byte-deduped) values, each framed by a
+// 64-bit big-endian length; and SHA-256 over numerically sorted keys as
+// big-endian u32s.
+describe('membership digest encodings', () => {
+  const encoder = new TextEncoder();
+  const DIGEST_CHUNK = 1000;
+
+  function compareBytes(a, b) {
+    const shared = Math.min(a.length, b.length);
+    for (let i = 0; i < shared; i++) {
+      if (a[i] !== b[i]) return a[i] - b[i];
+    }
+    return a.length - b.length;
+  }
+
+  function stringDigestOracle(values, dedupe) {
+    let sorted = values.map(value => encoder.encode(value)).sort(compareBytes);
+    if (dedupe) sorted = sorted.filter((bytes, i) => i === 0 || compareBytes(bytes, sorted[i - 1]) !== 0);
+    const hash = createHash('sha256');
+    for (const bytes of sorted) {
+      const frame = Buffer.alloc(8);
+      frame.writeUInt32BE(Math.floor(bytes.length / 0x100000000), 0);
+      frame.writeUInt32BE(bytes.length >>> 0, 4);
+      hash.update(frame);
+      hash.update(bytes);
+    }
+    return { count: sorted.length, sha256: hash.digest('hex') };
+  }
+
+  function keyDigestOracle(keys) {
+    const sorted = keys.map(key => key >>> 0).sort((a, b) => a - b);
+    const bytes = Buffer.alloc(sorted.length * 4);
+    sorted.forEach((key, i) => bytes.writeUInt32BE(key, i * 4));
+    return { count: sorted.length, sha256: createHash('sha256').update(bytes).digest('hex'), sorted };
+  }
+
+  // Deterministic PRNG so a failure reproduces.
+  function mulberry32(seed) {
+    let state = seed >>> 0;
+    return () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Units around every UTF-8 width and UTF-16 surrogate boundary, lone
+  // surrogates, astral pairs and NUL.
+  const UNITS = [
+    'a', 'z', '\0', '\u007f', '\u0080', '\u07ff', '\u0800', '\ud7ff', '\ue000', '\uffff', '\ufffd',
+    '\ud800', '\udbff', '\udc00', '\udfff', '\u{10000}', '\u{1f600}', '\u{10ffff}', ':', '@',
+  ];
+
+  function randomStrings(random, count, maxUnits) {
+    return Array.from({ length: count }, () => {
+      const length = Math.floor(random() * (maxUnits + 1));
+      let value = '';
+      for (let i = 0; i < length; i++) value += UNITS[Math.floor(random() * UNITS.length)];
+      return value;
+    });
+  }
+
+  it('matches the byte-order oracle for random strings, with and without dedupe', async () => {
+    const random = mulberry32(0x5eed);
+    for (let round = 0; round < 40; round++) {
+      const values = randomStrings(random, 1 + Math.floor(random() * 60), 4);
+      for (const dedupe of [false, true]) {
+        await expect(_testExports._fingerprintStringsCooperatively(values, dedupe))
+          .resolves.toEqual(stringDigestOracle(values, dedupe));
+      }
+    }
+  });
+
+  it('matches the oracle across chunk merges with duplicates and lone surrogates', async () => {
+    const random = mulberry32(0xc0ffee);
+    const values = randomStrings(random, DIGEST_CHUNK * 2 + 357, 3);
+    expect(values.length).toBeGreaterThan(DIGEST_CHUNK * 2);
+    expect(values.some(value => /[\ud800-\udfff]/.test(value) && !value.isWellFormed())).toBe(true);
+    for (const dedupe of [false, true]) {
+      await expect(_testExports._fingerprintStringsCooperatively(values, dedupe))
+        .resolves.toEqual(stringDigestOracle(values, dedupe));
+    }
+  });
+
+  it('dedupes values whose lone surrogates encode to the same bytes', async () => {
+    const values = ['x\ud800', 'x\udc00', 'x\ufffd', 'x\ud83d\ude00', 'x\uffff'];
+    const digest = await _testExports._fingerprintStringsCooperatively(values, true);
+    expect(digest.count).toBe(3);
+    expect(digest).toEqual(stringDigestOracle(values, true));
+  });
+
+  it('digests empty and all-duplicate string inputs', async () => {
+    await expect(_testExports._fingerprintStringsCooperatively([], true))
+      .resolves.toEqual(stringDigestOracle([], true));
+    await expect(_testExports._fingerprintStringsCooperatively([], false))
+      .resolves.toEqual(stringDigestOracle([], false));
+    const same = Array(DIGEST_CHUNK + 5).fill('m@example.com');
+    await expect(_testExports._fingerprintStringsCooperatively(same, true))
+      .resolves.toEqual({ count: 1, sha256: stringDigestOracle(same, true).sha256 });
+    await expect(_testExports._fingerprintStringsCooperatively(same, false))
+      .resolves.toEqual(stringDigestOracle(same, false));
+  });
+
+  it('matches the numeric big-endian oracle for msgKeys at the unsigned boundaries', async () => {
+    const edges = [0, 1, 0x7fffffff, 0x80000000, 0xfffffffe, 0xffffffff, -1, -2, 0x7fffffff, 0];
+    const random = mulberry32(0xbeef);
+    const keys = [...edges];
+    for (let i = 0; i < DIGEST_CHUNK * 2 + 11; i++) keys.push(Math.floor(random() * 0x100000000));
+    for (const input of [edges, keys]) {
+      const actual = await _testExports._fingerprintMsgKeysCooperatively(input);
+      const expected = keyDigestOracle(input);
+      expect({ count: actual.count, sha256: actual.sha256 })
+        .toEqual({ count: expected.count, sha256: expected.sha256 });
+      expect(Array.from(actual.sorted)).toEqual(expected.sorted);
+    }
+  });
+
+  it('digests empty and all-duplicate msgKey inputs', async () => {
+    for (const input of [[], Array(DIGEST_CHUNK + 3).fill(42)]) {
+      const actual = await _testExports._fingerprintMsgKeysCooperatively(input);
+      const expected = keyDigestOracle(input);
+      expect({ count: actual.count, sha256: actual.sha256 })
+        .toEqual({ count: expected.count, sha256: expected.sha256 });
+      expect(Array.from(actual.sorted)).toEqual(expected.sorted);
+    }
+  });
+});

@@ -55,3 +55,10 @@ proportional to genuinely new-to-us headers only.
 - `getCursorFolders` opens each IMAP folder's msgDB once per boot (post-quiet-period); folders
   with missing/out-of-date summaries are skipped without forcing a rebuild.
 <!-- END PRESERVED BLOCK -->
+
+**Superseded (2026-10-05):** the per-folder cursor walk is deleted. ADR-022's per-folder membership
+proofs and the rolling re-walk cover the add side. `_runCursorScan`,
+`_listCursorKeysAboveKeyCooperatively`, the cursor store/heartbeat (`_getCursors`, `_writeCursors`,
+`_heartbeatAdvanceCursors`, `_noteSessionMaxKey`) and the privileged `tmMsgNotify.getCursorFolder`
+are gone. Init removes the stored `fts_folder_cursors` and `fts_cursor_scan_last` keys once through
+`_removeLegacyStorageKeys`.

@@ -250,7 +250,7 @@ describe('cleanupMissingEntries verify-then-remove (Phase 2.5)', () => {
     expect(ftsSearch.removeBatch).toHaveBeenCalledWith(['account1:/[Gmail]/Bin:really-gone@example.com']);
     expect(mockRecheckMessageInFolder).toHaveBeenCalledWith(
       'really-gone@example.com',
-      expect.objectContaining({ accountId: 'account1', path: '/[Gmail]/Bin' }),
+      expect.objectContaining({ accountId: 'account1', path: '/[Gmail]/Bin', id: 2 }),
     );
     expect(result.removedDetails).toEqual([
       expect.objectContaining({

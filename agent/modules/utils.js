@@ -1513,7 +1513,11 @@ export async function headerIDToWeID(headerID, weFolder = null, multiple = false
 
 /**
  * Re-check whether a message is present in a specific folder using a fresh
- * GLOBAL headerMessageId query (no folderId constraint, no headerIndex cache).
+ * headerMessageId query (no headerIndex cache). With a folder path and a
+ * string folder id the query is scoped to that folder (`folderId`): an
+ * unscoped query reaches the folder through the same per-folder lookup, but
+ * also opens every other folder's msgDB in the profile. Without an id, the
+ * query is unscoped and the result is filtered to the folder.
  *
  * This is the confirmation step of verify-then-remove flows (FTS stale-entry
  * cleanup in reconcile Phase 2 and maintenance cleanupMissingEntries): a
@@ -1530,9 +1534,12 @@ export async function headerIDToWeID(headerID, weFolder = null, multiple = false
  * appears on any page.
  *
  * @param {string} headerID - Cleaned Message-ID (no angle brackets).
- * @param {object} weFolder - { accountId, path } where the message is expected.
- *                            If path is empty (legacy folder-less keys), a
- *                            match anywhere in the account counts as present.
+ * @param {object} weFolder - { accountId, path, id? } where the message is
+ *                            expected. If path is empty (legacy folder-less
+ *                            keys), a match anywhere in the account counts as
+ *                            present and the query stays unscoped.
+ *                            A folder id Thunderbird no longer resolves makes
+ *                            the query throw: "error".
  * @returns {Promise<"present"|"absent"|"error">}
  *   - "present": found in the expected account+folder → entry is NOT stale
  *   - "absent":  query SUCCEEDED, all pages drained, and the message is not
@@ -1552,8 +1559,13 @@ export async function recheckMessageInFolder(headerID, weFolder) {
     // carries a continuation id, cleared once a terminal page is consumed.
     let openListId = null;
     let verdict = "error";
+    const scopedFolderId = requirePath && typeof weFolder.id === "string" && weFolder.id
+        ? weFolder.id
+        : null;
     try {
-        let page = await browser.messages.query({ headerMessageId: headerID });
+        let page = await browser.messages.query(scopedFolderId
+            ? { folderId: scopedFolderId, headerMessageId: headerID }
+            : { headerMessageId: headerID });
         while (page) {
             openListId = page.id || null;
             const found = (page.messages || []).some(m =>

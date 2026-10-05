@@ -80,3 +80,36 @@
 - The raw key format and all existing search/result references remain compatible. Exact membership is an additive relation keyed by the app-owned durable tuple, not Thunderbird's session id and not a v2 global codec.
 - Large profiles perform unbounded total metadata work through bounded calls and idle-duty scheduling. There is no one-time session cache of mailbox contents; only durable progress fields, one live bounded scan token, and O(1) volatile digest/cursor state exist.
 - A historical true raw-`msgId` primary-key collision (two messages whose ambiguous folder/Message-ID components produce the exact same raw string) is not rewritten by this additive relation. Conflicting ownership is detected and remains fail-closed; eliminating that storage collision would require a separately designed key migration.
+
+**Amendment (2026-10-05, removal owners):** `ftsSearch.removeBatch` attributes a removal to the owners the
+helper reports (`removedFolderIds`, helper ≥ the folder-membership summary release) when the reply vouches
+for every deleted row: `removedFolderIds` is an array of non-empty strings and `removedOwnerless` is `0`.
+A removal in `/Cold:Hot` therefore no longer restarts `/Cold`'s proof. A legacy reply without the field, a
+malformed field, any deleted ownerless row (the reply does not say which ids had none), and a failed or
+timed-out call (owners unknown, not none) keep the conservative key-range attribution. Every attempted key
+is still recorded in the key ledger, and the colon-overlap revocation before a removal is unchanged: owners
+only narrow which proofs a committed removal restarts.
+
+**Amendment (2026-10-05, membership summary):** a pass on a helper with `folderMembershipSummaryV1` first
+asks `folderMembershipSummary(folderIds, trustedAccountIds)`, once per pass, on a pass turn, after the
+pass's not-before time, spending the slice's one native page. The call is unfenced and O(rows) in native
+(about 0.7 s per million rows, release build). After it, only the lease and generation are checked, never
+foreground pressure. Global cleanup is published only when the reply is valid (`ok`, three non-negative
+safe-integer counts; the adapter rejects anything else), `ownerlessRows` and `strayTrustedRows` are both 0,
+and the pass is still current and bound (topology serial, connection generation, inventory) after the
+await. The unloaded count becomes `strayUntrustedRows`, so an unloaded account's rows still hold session
+completion and wake `inventory_retry`. Anything else (ownerless rows, a loaded account's stray rows, an
+error, timeout or malformed reply) bumps `membershipSummaryFallbacks` and leaves the pass to the walk from
+the next pass turn; the summary is never a removal input. A walk that repaired rows restarts the pass, and
+that pass's summary replaces the replay walk. The walk and the summary publish through one helper
+(`_publishFolderMembershipCleanup`); the constant `startedBeforeFirst` flag is deleted. Reliance: the
+summary does not check that an in-inventory owner structurally prefixes its raw key; no writer produces
+such a row, and were one to exist that folder would stay uncertified (`folder_membership_identity_mismatch`).
+The statement above "there is no unbounded native fingerprint RPC" is amended: the summary is one unbounded
+O(rows) native read per pass on the helper's reader thread (ADR-NF-006), so user searches and the walk's
+first page queue behind it, and `nativeRpcTimeoutMs` rejects only the JS promise, not the native read. The
+trade-off is accepted because it replaces a whole-index walk of the same rows in pages. The debug event log
+records its wall time and aggregate counts; a config-valued quiet-inventory delay before it is added only if
+measured wall time approaches the timeout.
+
+

@@ -98,3 +98,8 @@ runtime listener drops.
   streaming validator and become non-load-bearing. See
   `PLAN_MAINTENANCE_SCAN_SPEEDUP.md`.
 <!-- END PRESERVED BLOCK -->
+
+**Superseded (2026-10-05):** the watermark and its heartbeat are deleted. Startup and live
+reconciliation run on ADR-022's per-folder membership proofs, so nothing reads a date window.
+`_getReconcileFrom`, `_writeWatermark` and `_heartbeatBumpWatermark` are gone, and init removes the
+stored `fts_reconcile_watermark` key once through `_removeLegacyStorageKeys`.

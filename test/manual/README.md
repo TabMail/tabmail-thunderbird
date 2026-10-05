@@ -55,3 +55,9 @@ Save through Thunderbird's native Save command while the preview is still visibl
 Post-isolation verification on Beta 156.0: a fresh draft with an unaccepted shadow preview returned only authored text in both plainTextBody and decoded HTML from getComposeDetails. Native Save, decoded MIME inspection of Drafts and its mirrored copy, and reopening with the native Edit action all retained only authored text. The disposable draft was moved to Trash. The pre-fix direct-child preview was observed in plain-text serialization and in a saved draft, establishing a native red/green comparison; raw HTML substring searches were insufficient because highlight spans split the marker.
 
 After an extension reload with the final registered scripts, the native six-case HTML probe passed with synchronously injected shadow styles (format preservation, undo/redo, media refusal, full initial proposal, continuation, scroll retention, and stale-caret protection). Linked extension stylesheets produced empty rule lists in the compose shadow tree; the preview CSS is therefore supplied by the compose script itself.
+
+# Reconciliation digest heap harness
+
+`reconMemoryHarness.mjs` runs the real folder-reconciliation digest functions over synthetic folders in plain Node and prints the peak and GC-retained heap. It is not part of `npm test`: `node --expose-gc test/manual/reconMemoryHarness.mjs [folders] [messagesPerFolder] [indexerModulePath]`. The script header explains how to compare with an older revision.
+
+Measured 2026-10-05 on Node 24, against the add-on before the digest rewrite: 50 folders × 20,000 messages peaked 60.4 MiB above baseline (61.8 before); one 200,000-message folder peaked 79.7 MiB (135.8 before). Both runs retained the same heap after GC as before the rewrite, so the digest is transient and O(folder size).

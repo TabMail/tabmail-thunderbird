@@ -604,6 +604,14 @@ export async function disposeFtsEngine() {
   return { ok: true };
 }
 
+// The owners a removeBatch reply names for every row it deleted, or null.
+function _reportedRemovalOwners(result) {
+  const owners = result?.removedFolderIds;
+  if (!Array.isArray(owners) || result.removedOwnerless !== 0) return null;
+  if (!owners.every(owner => typeof owner === "string" && owner.length > 0)) return null;
+  return owners;
+}
+
 // Main FTS API exposed to the rest of the extension
 export const ftsSearch = {
   async indexBatch(rows, membershipFenceToken = null) {
@@ -667,10 +675,24 @@ export const ftsSearch = {
 
   async removeBatch(ids, membershipFenceToken = null) {
     log(`[TMDBG FTS] removeBatch called with ${ids.length} IDs`);
+    // A helper that reports the owners of the rows it deleted changed only
+    // those folders. A reply that cannot vouch for every deleted row's owner
+    // (no or malformed owners, any ownerless row) and a failed or lost call
+    // are attributed by key range. The scope is resolved after the call;
+    // every attempted key is recorded in the key ledger either way.
+    const reply = { owners: null };
     return runFtsMembershipMutation(
-      () => nativeFtsSearch.removeBatch(ids),
+      async () => {
+        const result = await nativeFtsSearch.removeBatch(ids);
+        reply.owners = _reportedRemovalOwners(result);
+        return result;
+      },
       membershipFenceToken,
-      { msgIds: ids, keys: ids },
+      {
+        get folderIds() { return reply.owners || []; },
+        get msgIds() { return reply.owners ? [] : ids; },
+        keys: ids,
+      },
     );
   },
 
@@ -705,6 +727,10 @@ export const ftsSearch = {
     return nativeFtsSearch.supportsFolderMembership();
   },
 
+  supportsFolderMembershipSummary() {
+    return nativeFtsSearch.supportsFolderMembershipSummary();
+  },
+
   getConnectionGeneration() {
     return nativeFtsSearch.getConnectionGeneration();
   },
@@ -719,6 +745,10 @@ export const ftsSearch = {
 
   async listFolderMembershipState(afterMsgId, limit) {
     return await nativeFtsSearch.listFolderMembershipState(afterMsgId, limit);
+  },
+
+  async folderMembershipSummary(folderIds, trustedAccountIds) {
+    return await nativeFtsSearch.folderMembershipSummary(folderIds, trustedAccountIds);
   },
 
   // Native assignment only fills a NULL owner with the named one, so it is

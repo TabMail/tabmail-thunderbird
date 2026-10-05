@@ -434,6 +434,9 @@ export const SETTINGS = {
             // Delay before the membership-state pass replays rows it could
             // not classify (in-session retry while cleanup is incomplete).
             membershipUnresolvedRetryMs: 10 * 60 * 1000,
+            // Longest slice wall time the scheduler reserves (its 50% duty
+            // cycle); a longer measurement is a host sleep inside the slice.
+            hardFloorMaxElapsedMs: 10 * 60 * 1000,
         },
         // Proactive inbox scan - DISABLED.
         // Replaced by tagSort row coloring pass coverage which detects untagged

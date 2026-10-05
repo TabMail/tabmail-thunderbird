@@ -477,6 +477,34 @@ it('removes stored legacy reconcile-pending and pending-queue keys once and keep
   state.instance.onShutdown(false);
 });
 
+// The retired watermark heartbeat and cursor scan left three stored keys
+// that nothing reads; they go with the other legacy keys, once.
+it('removes the retired watermark, cursor and cursor-scan snapshot keys once', async () => {
+  const engine = makeFtsStore([]);
+  stored.chat_ftsIncrementalEnabled = true;
+  stored.fts_reconcile_watermark = { version: 1, fromMs: Date.now() - 60_000, completedAtMs: Date.now() };
+  stored.fts_folder_cursors = { version: 1, folders: {} };
+  stored.fts_cursor_scan_last = { at: new Date().toISOString(), foldersTotal: 1 };
+  let state = bridge();
+  browser.storage.local.remove.mockClear();
+
+  await indexer.initIncrementalIndexer(engine);
+
+  expect(stored.fts_reconcile_watermark).toBeUndefined();
+  expect(stored.fts_folder_cursors).toBeUndefined();
+  expect(stored.fts_cursor_scan_last).toBeUndefined();
+  expect(browser.storage.local.remove.mock.calls.flatMap(([keys]) => [keys].flat()).sort())
+    .toEqual(['fts_cursor_scan_last', 'fts_folder_cursors', 'fts_reconcile_watermark']);
+
+  await indexer.disposeIncrementalIndexer();
+  state.instance.onShutdown(false);
+  browser.storage.local.remove.mockClear();
+  state = bridge();
+  await indexer.initIncrementalIndexer(engine);
+  expect(browser.storage.local.remove).not.toHaveBeenCalled();
+  state.instance.onShutdown(false);
+});
+
 // The cleanup runs before the enabled check: an install with incremental
 // indexing disabled also stops keeping the old queue's message keys.
 it('removes stored legacy keys when incremental indexing is disabled', async () => {
