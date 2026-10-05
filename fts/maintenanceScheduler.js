@@ -19,7 +19,7 @@
  *   truthfully for a later manual maintenance run.
  * 
  * Automatic alarms are retired; startup membership reconciliation now owns
- * consistency. The scheduling helpers remain private compatibility/test code.
+ * consistency.
  */
 
 import { SETTINGS } from "../agent/modules/config.js";
@@ -105,29 +105,13 @@ function formatTimestampWithTimezone(timestamp) {
 
 export { formatTimestampWithTimezone as _testFormatTimestampWithTimezone };
 
-// Startup-tick deferral timing (see the deferral block further down).
-// Values intentionally mirror RECONCILE_QUIET_PERIOD_MS / _CHECK_INTERVAL_MS /
-// _MAX_WAIT_MS in incrementalIndexer.js (kept separate — independently tunable).
-const STARTUP_TICK_QUIET_PERIOD_MS = 60 * 1000;
-const STARTUP_TICK_CHECK_INTERVAL_MS = 10 * 1000;
-const STARTUP_TICK_MAX_WAIT_MS = 10 * 60 * 1000;
-
 // Test-only exports for pure internal functions
 export const _testExports = {
   calculateDateRange,
-  isWithinWeeklyScheduleWindow,
-  pickDueMaintenanceType,
   cleanupMissingEntries,
-  // Startup-tick deferral
-  _scheduleStartupTickWhenQuiet,
-  _hasStartupTickTimer: () => _startupTickTimer !== null,
-  _clearStartupTickTimer: () => _clearStartupTickTimer(),
   // State accessors for test setup/teardown
   _setInitializedForTest: (v) => { _isInitialized = v; },
   _setFtsSearchForTest: (v) => { _ftsSearch = v; },
-  STARTUP_TICK_QUIET_PERIOD_MS,
-  STARTUP_TICK_CHECK_INTERVAL_MS,
-  STARTUP_TICK_MAX_WAIT_MS,
 };
 
 // Maintenance schedule configuration
@@ -154,16 +138,8 @@ const MAINTENANCE_SCHEDULES = {
   }
 };
 
-// Retired tick-alarm definitions retained to clear alarms from older versions
-// and to preserve deterministic manual/test helpers.
+// Retired tick-alarm name retained to clear the alarm older versions created.
 const MAINTENANCE_TICK_ALARM_NAME = "fts-maintenance-tick";
-const MAINTENANCE_TYPE_ORDER = Object.freeze(["monthly", "weekly", "daily", "hourly"]);
-const MAINTENANCE_COVERAGE = Object.freeze({
-  monthly: ["weekly", "daily", "hourly"],
-  weekly: ["daily", "hourly"],
-  daily: ["hourly"],
-  hourly: [],
-});
 
 // Legacy per-schedule alarm names (older versions created multiple alarms).
 const LEGACY_MAINTENANCE_ALARM_NAMES = Object.freeze([
@@ -176,111 +152,6 @@ const LEGACY_MAINTENANCE_ALARM_NAMES = Object.freeze([
 let _ftsSearch = null;
 let _isInitialized = false;
 let _alarmListener = null;
-
-// ---------------------------------------------------------------------------
-// Startup-tick deferral
-// ---------------------------------------------------------------------------
-// Running a due maintenance scan immediately at TB launch races the startup
-// folder sync: messages.query can return inconsistent snapshots while msgDBs
-// are loading, and cleanupMissingEntries would mark valid entries as stale.
-// Mirror the boot-reconcile quiet wait (fts/incrementalIndexer.js): poll until
-// there have been no sync events for STARTUP_TICK_QUIET_PERIOD_MS AND boot
-// reconcile is no longer pending, with a hard cap. At the cap: if reconcile is
-// DONE (merely never quiet — busy mailbox), the tick runs; if reconcile is
-// STILL pending, the tick is skipped entirely (running would race reconcile)
-// and the hourly alarm is the due-ness backstop. Trade-offs accepted: a due
-// weekly scan whose Wed 9–12 window expires during the deferral slips to the
-// next week (ADR-017), and when no listeners update the quiet signal (either
-// incremental indexing disabled, or the tmMsgNotify experiment unavailable)
-// the deferral degrades to a fixed ~60–70s delay — verify-then-remove remains
-// the real protection there.
-// Timing constants (STARTUP_TICK_*) are declared above _testExports near the
-// top of the file (TDZ: _testExports references them at module evaluation).
-
-let _startupTickTimer = null;
-
-function _clearStartupTickTimer() {
-  if (_startupTickTimer) {
-    clearInterval(_startupTickTimer);
-    _startupTickTimer = null;
-  }
-}
-
-/**
- * Schedule the startup maintenance tick to run once TB's startup sync has
- * quieted down and the boot reconcile has completed (bounded by a hard cap).
- *
- * @param {Function} [runner] - Optional runner (defaults to
- *                              runScheduledMaintenanceTick). Injectable for testing.
- */
-function _scheduleStartupTickWhenQuiet(runner = runScheduledMaintenanceTick) {
-  const scheduledAt = Date.now();
-  // One-shot guard: the interval callback awaits async state reads, so two
-  // slow callbacks could overlap and both reach the run branch. Checked and
-  // set synchronously at the decision point (no await between), so only one
-  // can ever fire the runner per schedule.
-  let fired = false;
-
-  _clearStartupTickTimer();
-
-  log(`[TMDBG FTS] Startup maintenance tick deferred — waiting for ${STARTUP_TICK_QUIET_PERIOD_MS / 1000}s sync quiet period + reconcile completion (max wait ${STARTUP_TICK_MAX_WAIT_MS / 1000}s)`);
-
-  _startupTickTimer = setInterval(async () => {
-    try {
-      if (!_isInitialized || !_ftsSearch) {
-        // Disposed while waiting — stop without running.
-        _clearStartupTickTimer();
-        return;
-      }
-
-      const now = Date.now();
-      const waitedFor = now - scheduledAt;
-
-      let quietFor = Infinity;
-      let reconcilePending = false;
-      try {
-        const indexer = await import("./incrementalIndexer.js");
-        quietFor = now - indexer.getLastSyncEventMs();
-        reconcilePending = await indexer.isReconcilePending();
-      } catch (e) {
-        // Storage/read uncertainty cannot prove that reconciliation is idle.
-        // Defer fairly until the next poll; the hard cap remains the backstop.
-        quietFor = 0;
-        reconcilePending = true;
-        log(`[TMDBG FTS] Startup tick: indexer state unavailable (${e?.message || String(e)}) — deferring`, "warn");
-      }
-
-      const ready = quietFor >= STARTUP_TICK_QUIET_PERIOD_MS && !reconcilePending;
-      if (!ready && waitedFor < STARTUP_TICK_MAX_WAIT_MS) {
-        log(`[TMDBG FTS] Startup tick waiting — quietFor=${Math.round(quietFor / 1000)}s/${STARTUP_TICK_QUIET_PERIOD_MS / 1000}s, reconcilePending=${reconcilePending} (waited=${Math.round(waitedFor / 1000)}s)`);
-        return;
-      }
-
-      if (!ready && reconcilePending) {
-        // Hard cap reached while boot reconcile is still pending. Forcing the
-        // scan now would run it concurrently with reconcile during the busy
-        // startup this deferral exists to avoid (reconcile never sets
-        // fts_scan_status, so runScheduledMaintenanceTick can't see it).
-        // Skip the startup tick entirely — the hourly alarm is the backstop.
-        log(`[TMDBG FTS] Startup maintenance tick skipped — max wait exceeded but reconcile still pending; next tick alarm retries when due (a weekly scan whose schedule window has passed slips to its next window)`, "warn");
-        _clearStartupTickTimer();
-        return;
-      }
-
-      if (fired) return; // a parallel slow callback already ran the tick
-      fired = true;
-
-      const reason = ready ? "quiet period reached + reconcile done" : "max wait exceeded";
-      log(`[TMDBG FTS] Startup maintenance tick running — ${reason}`);
-
-      _clearStartupTickTimer();
-      await runner("startup");
-    } catch (e) {
-      log(`[TMDBG FTS] Startup maintenance tick failed: ${e?.message || String(e)}`, "warn");
-      _clearStartupTickTimer();
-    }
-  }, STARTUP_TICK_CHECK_INTERVAL_MS);
-}
 
 /**
  * Initialize the maintenance scheduler
@@ -303,7 +174,6 @@ export async function initMaintenanceScheduler(ftsSearch) {
     fts_periodic_scans_retired_v1: true,
   });
   await clearMaintenanceAlarms();
-  _clearStartupTickTimer();
 
   // Do not attach an alarm listener: no automatic maintenance job exists.
   if (_alarmListener) {
@@ -328,7 +198,6 @@ export async function disposeMaintenanceScheduler(options = {}) {
     browser.alarms.onAlarm.removeListener(_alarmListener);
     _alarmListener = null;
   }
-  _clearStartupTickTimer();
   _isInitialized = false;
   _ftsSearch = null;
   
@@ -389,182 +258,6 @@ async function clearMaintenanceAlarms() {
     } catch (_) {}
   }
   log("[TMDBG FTS] Cleared maintenance alarms (tick + legacy)");
-}
-
-/**
- * Handle alarm events for maintenance
- */
-async function handleMaintenanceAlarm(alarm) {
-  log(`[TMDBG FTS] Retired maintenance alarm ignored: ${alarm?.name || "unknown"}`, "warn");
-}
-
-/**
- * Check if current time is within the configured weekly schedule window.
- * @param {Object} weeklySchedule - { dayOfWeek: 0-6, hourStart: 0-23, hourEnd: 0-23 }
- * @returns {boolean} true if now is within the window
- */
-function isWithinWeeklyScheduleWindow(weeklySchedule) {
-  if (!weeklySchedule) return true; // No schedule configured = always allowed
-  
-  const now = new Date();
-  const currentDay = now.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
-  const currentHour = now.getHours();
-  
-  const { dayOfWeek, hourStart, hourEnd } = weeklySchedule;
-  
-  // Check if it's the right day
-  if (currentDay !== dayOfWeek) {
-    return false;
-  }
-  
-  // Check if it's within the hour window
-  if (currentHour < hourStart || currentHour >= hourEnd) {
-    return false;
-  }
-  
-  return true;
-}
-
-/**
- * Decide which maintenance type (if any) is due, using deterministic ordering:
- * monthly -> weekly -> daily -> hourly.
- *
- * Returns a type string or null.
- */
-function pickDueMaintenanceType({ nowMs, settings, lastRunsByType }) {
-  for (const type of MAINTENANCE_TYPE_ORDER) {
-    if (!settings?.[type]) {
-      continue;
-    }
-
-    const lastMs = lastRunsByType?.[type] || null;
-    const intervalMs = MAINTENANCE_SCHEDULES[type].interval * 60 * 1000;
-
-    // For weekly maintenance, also check if we're within the configured schedule window
-    if (type === 'weekly' && settings.weeklySchedule) {
-      const inWindow = isWithinWeeklyScheduleWindow(settings.weeklySchedule);
-      if (!inWindow) {
-        const { dayOfWeek, hourStart, hourEnd } = settings.weeklySchedule;
-        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-        log(`[TMDBG FTS] Weekly maintenance not in schedule window (${dayNames[dayOfWeek]} ${hourStart}:00-${hourEnd}:00)`);
-        continue;
-      }
-    }
-
-    if (!lastMs) {
-      log(`[TMDBG FTS] Maintenance due (never ran): type=${type}, intervalMin=${MAINTENANCE_SCHEDULES[type].interval}`);
-      return type;
-    }
-
-    const ageMs = nowMs - lastMs;
-    const due = ageMs >= intervalMs;
-    log(`[TMDBG FTS] Maintenance due check: type=${type}, lastMs=${lastMs}, ageMs=${ageMs}, intervalMs=${intervalMs}, due=${due}`);
-
-    if (due) {
-      return type;
-    }
-  }
-  return null;
-}
-
-async function getLastMaintenanceRunsByType() {
-  const keys = MAINTENANCE_TYPE_ORDER.map((t) => `fts_maintenance_last_${t}`);
-  const stored = await browser.storage.local.get(keys);
-  const out = {};
-  for (const type of MAINTENANCE_TYPE_ORDER) {
-    const k = `fts_maintenance_last_${type}`;
-    out[type] = stored?.[k] || null;
-  }
-  return out;
-}
-
-async function markMaintenanceCoverageCompleted({ primaryType, completedAtMs }) {
-  const covered = MAINTENANCE_COVERAGE[primaryType] || [];
-  const toSet = {};
-
-  // Always update the primary type (for determinism in "last maintenance" keys).
-  toSet[`fts_maintenance_last_${primaryType}`] = completedAtMs;
-
-  for (const t of covered) {
-    toSet[`fts_maintenance_last_${t}`] = completedAtMs;
-  }
-
-  await browser.storage.local.set(toSet);
-
-  if (covered.length > 0) {
-    log(`[TMDBG FTS] Maintenance coverage applied: primary=${primaryType}, covered=[${covered.join(", ")}], completedAt=${new Date(completedAtMs).toISOString()}`);
-  } else {
-    log(`[TMDBG FTS] Maintenance coverage applied: primary=${primaryType}, covered=[], completedAt=${new Date(completedAtMs).toISOString()}`);
-  }
-}
-
-/**
- * One maintenance tick: checks due-ness for each schedule and runs at most ONE scan.
- * triggerSource is only used for logging.
- */
-async function runScheduledMaintenanceTick(triggerSource) {
-  if (!_ftsSearch) {
-    throw new Error("FTS search not initialized");
-  }
-
-  const settings = await getMaintenanceSettings();
-  if (!settings.enabled) {
-    log(`[TMDBG FTS] Maintenance tick skipped (disabled) trigger=${triggerSource}`);
-    return { ok: true, ran: false, reason: "disabled" };
-  }
-
-  // If any scan is already running, don't start maintenance (avoid overlap / long lock time).
-  try {
-    const { fts_scan_status } = await browser.storage.local.get("fts_scan_status");
-    if (fts_scan_status?.isScanning) {
-      log(`[TMDBG FTS] Maintenance tick skipped (scan in progress) trigger=${triggerSource} scanType=${fts_scan_status?.scanType || "unknown"} maintenanceType=${fts_scan_status?.maintenanceType || "n/a"}`, "warn");
-      return { ok: true, ran: false, reason: "scan_in_progress" };
-    }
-  } catch (e) {
-    log(`[TMDBG FTS] Maintenance tick: failed to read fts_scan_status: ${e?.message || String(e)}`, "warn");
-  }
-
-  const nowMs = Date.now();
-  const lastRunsByType = await getLastMaintenanceRunsByType();
-
-  // Log summary of last-runs for debugging ordering/coverage.
-  try {
-    log(`[TMDBG FTS] Maintenance tick snapshot trigger=${triggerSource}: lastRuns=${JSON.stringify(lastRunsByType)}`);
-  } catch (_) {}
-
-  const dueType = pickDueMaintenanceType({ nowMs, settings, lastRunsByType });
-  if (!dueType) {
-    log(`[TMDBG FTS] Maintenance tick: no maintenance due trigger=${triggerSource}`);
-    return { ok: true, ran: false, reason: "not_due" };
-  }
-
-  // Optional: on DAILY maintenance run, check native FTS updates before the scan.
-  if (dueType === "daily" && _ftsSearch?.manualCheckAndUpdateHost) {
-    try {
-      log(`[TMDBG FTS] Maintenance tick: checking for native FTS updates (before daily maintenance)`);
-      const updateResult = await _ftsSearch.manualCheckAndUpdateHost();
-      if (updateResult?.updated) {
-        log(`[TMDBG FTS] ✅ Native FTS updated: ${updateResult.oldVersion} → ${updateResult.newVersion}`);
-      } else if (updateResult?.updateAvailable && !updateResult?.canUpdate) {
-        log(`[TMDBG FTS] ⚠️ Update available but cannot self-update: ${updateResult.message}`, "warn");
-      } else {
-        log(`[TMDBG FTS] Native FTS up to date: ${updateResult?.currentVersion || "unknown"}`);
-      }
-    } catch (e) {
-      log(`[TMDBG FTS] Failed to check for native FTS updates: ${e?.message || String(e)}`, "warn");
-    }
-  }
-
-  const config = MAINTENANCE_SCHEDULES[dueType];
-  log(`[TMDBG FTS] Maintenance tick: running type=${dueType} (scope: ${config.scope} ${config.scopeUnit}) trigger=${triggerSource}`);
-
-  const runResult = await runMaintenanceScan(dueType, config, false);
-  const completedAtMs = Date.now();
-
-  // Apply coverage: longer interval counts as shorter interval(s).
-  await markMaintenanceCoverageCompleted({ primaryType: dueType, completedAtMs });
-
-  return { ok: true, ran: true, type: dueType, completedAtMs, runResult };
 }
 
 /**

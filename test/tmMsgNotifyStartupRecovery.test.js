@@ -515,18 +515,28 @@ it('a restored queue past the high-water mark reconciles its deferred tail', asy
   await indexer.initIncrementalIndexer(engine);
   expect(indexer._testExports._getPendingUpdates().size).toBe(count);
   expect(indexer._testExports._getPendingUpdates().has(dead[count])).toBe(false);
-  expect(indexer._testExports._isFolderReconPending()).toBe(true);
+  // The tail is owed to reconciliation: still indexed, session incomplete.
+  const sessionComplete = async () => (await indexer.getIncrementalIndexerStatus())
+    .folderRecon.outcomes.complete;
+  expect(engine._keys.has(dead[count])).toBe(true);
+  expect(await sessionComplete()).toBe(false);
 
-  const settled = () => engine._keys.size === 1
+  const settled = async () => engine._keys.size === 1
     && indexer._testExports._getPendingUpdates().size === 0
-    && !indexer._testExports._isFolderReconPending();
-  for (let minute = 0; minute < 10 && !settled(); minute++) await vi.advanceTimersByTimeAsync(60_000);
+    && await sessionComplete();
+  // Ten virtual minutes in one-second steps, yielding to the real event loop
+  // after each so real-latency work (membership digests) settles under load.
+  for (let second = 0; second < 600 && !(await settled()); second++) {
+    await vi.advanceTimersByTimeAsync(1000);
+    await realImmediate();
+  }
   expect([...engine._keys]).toEqual([live]);
   expect(indexer._testExports._getPendingUpdates().size).toBe(0);
+  expect(await sessionComplete()).toBe(true);
   state.instance.onShutdown(false);
 });
 
-it('removes a stored legacy reconcile-pending key once and keeps pending state in memory', async () => {
+it('removes a stored legacy reconcile-pending key once and keeps no completion state in storage', async () => {
   const engine = makeFtsStore([]);
   stored.chat_ftsIncrementalEnabled = true;
   stored.fts_reconcile_pending = Date.now() - 60_000;
@@ -538,7 +548,8 @@ it('removes a stored legacy reconcile-pending key once and keeps pending state i
   expect(stored.fts_reconcile_pending).toBeUndefined();
   expect(browser.storage.local.remove.mock.calls.flatMap(([keys]) => [keys].flat()))
     .toEqual(['fts_reconcile_pending']);
-  expect(await indexer.isReconcilePending()).toBe(true);
+  // A new session starts incomplete; nothing about it is persisted.
+  expect((await indexer.getIncrementalIndexerStatus()).folderRecon.outcomes.complete).toBe(false);
 
   // A later session finds no legacy key and writes nothing for the flag.
   await indexer.disposeIncrementalIndexer();
@@ -548,7 +559,7 @@ it('removes a stored legacy reconcile-pending key once and keeps pending state i
   await indexer.initIncrementalIndexer(engine);
   expect(browser.storage.local.remove).not.toHaveBeenCalledWith('fts_reconcile_pending');
   expect(stored.fts_reconcile_pending).toBeUndefined();
-  expect(await indexer.isReconcilePending()).toBe(true);
+  expect((await indexer.getIncrementalIndexerStatus()).folderRecon.outcomes.complete).toBe(false);
   state.instance.onShutdown(false);
 });
 
@@ -563,7 +574,7 @@ it('starts normally when the legacy reconcile-pending cleanup cannot read storag
     : originalGet(value)));
   try {
     await expect(indexer.initIncrementalIndexer(engine)).resolves.toBeUndefined();
-    expect(await indexer.isReconcilePending()).toBe(true);
+    expect((await indexer.getIncrementalIndexerStatus()).folderRecon.outcomes.complete).toBe(false);
     expect(stored.fts_reconcile_pending).toBeDefined();
   } finally {
     browser.storage.local.get.mockImplementation(originalGet);

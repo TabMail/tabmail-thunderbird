@@ -11,7 +11,6 @@ import {
   getForegroundFetchPressure,
   getUniqueMessageKey,
   getUniqueMessageKeyCandidates,
-  headerIDToWeID,
   log,
   parseUniqueId,
   recheckMessageInFolder,
@@ -253,7 +252,6 @@ async function _markFolderReconDirty(folderKey) {
   _markFolderReconWalk(folderKey);
   _folderReconSessionDeferred.delete(folderKey);
   _folderReconFailureCounts.delete(folderKey);
-  _markFolderReconPending();
   _wakeFolderRecon("queue_backpressure", FOLDER_RECON_PRESSURE_DELAY_MS);
 }
 
@@ -324,7 +322,6 @@ async function _deferFolderReconAfterDrainFailure(updates, reason) {
     ? updates
     : _folderReconDrainFailureKeys(updates);
   _applyFolderReconDrainFailureFairness(folderKeys);
-  _markFolderReconPending();
   // Later healthy folders are eligible immediately; the affected identity is
   // held behind its bounded deadline by scheduler selection below.
   _wakeFolderRecon(reason, FOLDER_RECON_PACE_DELAY_MS);
@@ -333,8 +330,8 @@ async function _deferFolderReconAfterDrainFailure(updates, reason) {
 /**
  * Admit a queue entry without ever exceeding the exact live high-water mark.
  * Replacements are always safe because they do not grow the map. A rejected
- * new intention is represented by the pending reconcile flag + dirty folder
- * and will be rediscovered from Thunderbird headers after the drain recedes.
+ * new intention is represented by its folder's walk obligation and will be
+ * rediscovered from Thunderbird headers after the drain recedes.
  * Caller must hold _enqueueMutex.
  */
 async function _tryAdmitPendingUpdate(uniqueKey, update, folderKey = null) {
@@ -527,7 +524,6 @@ async function _abandonPendingUpdates(capturedUpdates, reason = "abandoned") {
     }
     _folderReconOrphanDone = false;
     _folderReconOrphanPass = null;
-    _markFolderReconPending();
 
     let dropped = 0;
     for (const captured of matching) {
@@ -1521,8 +1517,8 @@ export async function removeExperimentListeners() {
 
 // Folder/account topology changes alter the inventory every reconciliation
 // stage compares against (exact-mode cutover, legacy orphan basis). A tick
-// re-reads it, but an idle scheduler has no tick: wake it and mark
-// reconciliation pending. Correctness never depends on delivery — every event-page
+// re-reads it, but an idle scheduler has no tick: wake it and owe every
+// folder a walk. Correctness never depends on delivery — every event-page
 // start runs the startup reconciliation. Registered from the background
 // entry point before any await so Gecko can prime the persistent events.
 const _folderTopologyListenerOwners = new Map();
@@ -1539,7 +1535,6 @@ function _onFolderReconTopologyChanged() {
   // folder's earlier verification survives a topology event. An attempt this
   // event overtakes started before the marks, so it cannot discharge them.
   _markAllFolderReconWalks();
-  _markFolderReconPending();
   _wakeFolderRecon("folder_topology");
 }
 
@@ -1600,10 +1595,6 @@ const LEGACY_RECONCILE_STORAGE_KEY = "fts_reconcile_pending";
 // lifetime. Generation changes cancel stale transactions but never reset or
 // bypass ordering between memo operations.
 let _reconStorageChain = Promise.resolve();
-// True from init until this session's reconciliation completes with nothing
-// left to do; any dirty event, abandoned drain entry or exclusive mutation
-// sets it again. Volatile: a new session starts pending.
-let _folderReconPendingThisSession = false;
 
 function _emptyFolderReconMemo() {
   return { version: 3, roundRobinCursor: null, folders: {} };
@@ -1652,19 +1643,16 @@ async function _readReconStorageStrict(generation = _folderReconGeneration) {
   return _reconStorageTransaction(generation, () => {});
 }
 
-function _markFolderReconPending() {
-  _folderReconPendingThisSession = true;
-}
-
-function _clearFolderReconPendingIfCurrent(generation, eventSerial) {
-  if (generation !== _folderReconGeneration
-      || _folderReconLocalSerial !== eventSerial
-      || _folderReconDirty.size > 0
-      || _pendingUpdates.size > 0) {
-    return false;
-  }
-  _folderReconPendingThisSession = false;
-  return true;
+// The orphan tail's quiet predicate, with no side effect: nothing is owed
+// (no walk obligation, no queued update) and no message event landed since
+// `eventSerial` (a `_folderReconLocalSerial` reading) in this generation.
+// Events are detected by that serial, never by `_lastSyncEventMs`: two
+// events can share a millisecond.
+function _folderReconQuietSince(generation, eventSerial) {
+  return generation === _folderReconGeneration
+    && _folderReconLocalSerial === eventSerial
+    && _folderReconDirty.size === 0
+    && _pendingUpdates.size === 0;
 }
 
 async function _removeLegacyReconcilePendingKey() {
@@ -2393,7 +2381,6 @@ const FOLDER_RECON_KEYS_CHUNK = 500;
 // Small yield between chunks / folders to keep the event loop responsive
 const FOLDER_RECON_CHUNK_DELAY_MS = 10;
 // Native-FTS keepalive cadence during the verify-then-remove recheck loop
-// (mirrors RECONCILE_RECHECK_KEEPALIVE_EVERY)
 const FOLDER_RECON_RECHECK_KEEPALIVE_EVERY = 50;
 // Full-keyspace upper bound for the orphan sweep: U+FFFF sorts above every
 // character that can appear in a msgId key.
@@ -2507,7 +2494,7 @@ function _normalizeMsgKeyCursor(value) {
 // Yield between individual verify-then-remove rechecks. Each recheck is a
 // GLOBAL messages.query (full-profile enumeration on the parent main thread)
 // — running them back-to-back on a mature profile's ghost backlog saturates
-// the UI. Mirrors RECONCILE_ENTRY_DELAY_MS in reconcile Phase 2.
+// the UI.
 const FOLDER_RECON_ENTRY_DELAY_MS = 10;
 // Per-slice limits prevent a mature profile's backlog from issuing an
 // unbroken run of parent-thread global rechecks or drain-queue body fetches.
@@ -2629,7 +2616,7 @@ let _folderReconFailureCounts = new Map();
 let _folderReconDrainFailureDeferred = new Map();
 let _folderReconDrainFailureCounts = new Map();
 // Folder key -> serial of its newest walk mark: the outstanding-walk
-// obligations. Pending cannot clear while any remains.
+// obligations. The orphan tail's quiet predicate refuses while any remains.
 let _folderReconDirty = new Map();
 let _folderReconMarkSerial = 0;
 let _folderReconOrphanDone = false;
@@ -2749,7 +2736,6 @@ function _handleExclusiveFtsMembershipChange() {
   _releaseFolderReconActiveProof(null, "invalidation");
   // The coordinator invokes this only after releasing exclusive ownership,
   // and every proof class above is already invalidated.
-  _markFolderReconPending();
   _wakeFolderRecon("exclusive_membership_change", FOLDER_RECON_PACE_DELAY_MS);
 }
 
@@ -2871,9 +2857,10 @@ function _recordFolderReconOutcome(stats, elapsedMs) {
   aggregate.unverifiedFolders = Math.max(0, Number(stats?.unverifiedFolders) || 0);
   aggregate.lastElapsedMs = Math.max(0, Number(elapsedMs) || 0);
   if (_folderReconOutcomeChanged(stats)) {
-    // A pass that found or repaired a deficit (a periodic one included) keeps
-    // reconciliation pending until a later pass completes clean.
-    _markFolderReconPending();
+    // A pass that found or repaired a deficit (a periodic one included)
+    // reopens the session: it is complete again only when a later pass
+    // completes clean (_completeFolderReconOutcome).
+    aggregate.complete = false;
     aggregate.dirty = true;
     aggregate.changeSerial++;
     _persistFolderReconOutcome(false);
@@ -3212,13 +3199,6 @@ function _assertFolderReconGeneration(generation, localScope = null) {
 function _assertFolderReconLease(lease, generation, localScope = null) {
   if (!lease || lease.released || lease.cancelRequested) throw new Error("folder_recon_cancelled");
   _assertFolderReconGeneration(generation, localScope);
-}
-
-// Global consumers only (the pending-flag clear): any message event anywhere
-// since `eventSerial` (a `_folderReconLocalSerial` reading) voids the step. Events are detected by
-// that serial, never by `_lastSyncEventMs`: two events can share a millisecond.
-function _assertNoFolderReconSyncEventSince(eventSerial) {
-  if (_folderReconLocalSerial !== eventSerial) throw new Error("folder_changed_during_scan");
 }
 
 function _throwIfFolderReconInterrupted(error) {
@@ -3819,10 +3799,7 @@ function _observeFolderMembershipCapability(ftsSearch) {
     // A new native connection may follow a helper that lost or wrote rows
     // no event announced: every folder is walked again once cutover is
     // re-earned.
-    if (capable) {
-      _markAllFolderReconWalks();
-      _markFolderReconPending();
-    }
+    if (capable) _markAllFolderReconWalks();
   }
   if (!capable) {
     _folderMembershipStatePass = null;
@@ -5724,9 +5701,9 @@ async function _getFolderReconInventory(reconcileLease, generation) {
  * membership row it owns reads as "opaque owner absent from the fresh
  * inventory". Treating that absence as deleted-folder evidence removed
  * ~58k rows across four not-yet-loaded accounts on 2026-09-10 while the one
- * loaded account was untouched. The legacy `_reconcileCleanupStaleEntries`
- * path has always skipped an account it cannot see for this exact reason;
- * the ADR-024 exact-membership paths dropped that guard.
+ * loaded account was untouched. The legacy date-window stale-entry cleanup
+ * (since deleted) always skipped an account it could not see for this exact
+ * reason; the ADR-024 exact-membership paths had dropped that guard.
  *
  * Rule: a row may be judged stale by inventory absence ONLY when its account
  * is itself present in this very inventory (>= 1 enumerated folder). An
@@ -5958,7 +5935,6 @@ async function _runFolderMembershipMigrationSlice(
         && Date.now() - _folderMembershipStatePass.completedAtMs < FOLDER_RECON_WALK_PERIOD_MS) {
       return { complete: true, cutover: true };
     }
-    _markFolderReconPending();
     _revokeFolderMembershipCutover();
   }
 
@@ -6305,13 +6281,10 @@ function _consumeFolderReconRollingTick() {
   if (_folderReconRollingDueMs !== 0 && !due) return;
   _folderReconRollingDueMs = nowMs + FOLDER_RECON_REVERIFY_INTERVAL_MS;
   if (!due) return;
-  let admitted = false;
   for (const [folderKey, dueMs] of [..._folderReconNextWalkDueMs]) {
     if (dueMs > nowMs || !_folderReconSessionDone.has(folderKey)) continue;
     _markFolderReconWalk(folderKey);
-    admitted = true;
   }
-  if (admitted) _markFolderReconPending();
 }
 
 async function _runFolderReconSchedulerSlice(ftsSearch) {
@@ -6478,7 +6451,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
       if (ambiguous.groups > 0) {
         // Per-folder ranges and the sum-of-ranges orphan basis are both
         // inexact while an overlap exists, so neither proof may run; the
-        // marker stays set. Ambiguity is a function of the inventory, so it
+        // session stays incomplete. Ambiguity is a function of the inventory, so it
         // cannot appear or vanish without a binding change (fresh pass).
         const ambiguityDelay = earliestDeferred < Infinity
           ? Math.min(
@@ -6524,13 +6497,12 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
         }
       }
       _assertFolderReconLease(reconcileLease, generation);
-      _assertNoFolderReconSyncEventSince(eventSerial);
       // A completed, bound pass stays complete: later writes are built under
       // the same binding and cannot create an outside-prefix key.
       _folderReconOrphanDone = orphan.complete === true;
       if (_folderReconOrphanDone && orphan.unloaded > 0) {
-        // Rows of an account Thunderbird has not loaded are kept and hold the
-        // marker. Nothing announces a late-loading account, so re-read the
+        // Rows of an account Thunderbird has not loaded are kept and hold
+        // completion. Nothing announces a late-loading account, so re-read the
         // inventory on a capped backoff; a changed inventory resets it.
         const inventorySha256 = exactMembership
           ? _folderMembershipStatePass?.inventorySha256
@@ -6546,14 +6518,11 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
         _wakeFolderRecon("inventory_retry", retryDelayMs);
         return { complete: false, orphan, reason: "unloaded_accounts" };
       }
-      if (_folderReconOrphanDone && _pendingUpdates.size === 0 && _folderReconDirty.size === 0) {
-        const cleared = _clearFolderReconPendingIfCurrent(generation, eventSerial);
-        _assertFolderReconLease(reconcileLease, generation);
-        _assertNoFolderReconSyncEventSince(eventSerial);
-        if (cleared) {
-          _completeFolderReconOutcome();
-          return { complete: true, orphan };
-        }
+      // A message event since the tick began (even one after the orphan
+      // slice's last await) refuses completion here; the tick continues.
+      if (_folderReconOrphanDone && _folderReconQuietSince(generation, eventSerial)) {
+        _completeFolderReconOutcome();
+        return { complete: true, orphan };
       }
       _wakeFolderRecon("orphan_continue", orphan.failed
         ? cooperativeDelay(FOLDER_RECON_ERROR_DELAY_MS)
@@ -6721,301 +6690,6 @@ async function runPostInitReconcile(ftsSearch) {
   }
 }
 
-// FTS query chunk size for reconcile cleanup (smaller than maintenance to be lighter)
-const RECONCILE_QUERY_CHUNK_SIZE = 200;
-// Delay between validation entries to avoid overwhelming TB APIs
-const RECONCILE_ENTRY_DELAY_MS = 10;
-// Native-FTS keepalive cadence during the verify-then-remove recheck loop
-// (mirrors maintenance Phase 2.5 — a mass-deletion boot can produce thousands
-// of candidates, each recheck a global messages.query that can take seconds;
-// without pings the native connection would see no RPC until removeBatch).
-const RECONCILE_RECHECK_KEEPALIVE_EVERY = 50;
-
-/**
- * Phase 2 of reconciliation: query FTS entries in the reconcile window and
- * remove any that no longer exist in TB at their indexed folder path.
- *
- * Uses exact live-folder candidates and folder-scoped message queries, with
- * lighter chunking since the reconcile window is typically small.
- */
-async function _reconcileCleanupStaleEntries(ftsSearch, reconcileFromMs) {
-  const startDate = new Date(reconcileFromMs);
-  const endDate = new Date();
-  let checked = 0;
-  let removed = 0;
-  let accountsSkipped = 0;
-  let removeFailed = false;
-  const staleCandidates = [];
-  // Account liveness — verified lazily per account as entries are
-  // encountered (NOT sampled from the first chunk only: an account whose
-  // entries appear only in older chunks would otherwise never be checked,
-  // and its unloaded msgDBs would read as mass-stale; the recheck cannot
-  // compensate because a global query can't see unloaded folders either).
-  // After MV3 resume, TB may not have loaded all accounts' message
-  // databases yet, causing headerIDToWeID to return null for valid messages.
-  const checkedAccounts = new Set();
-  const unavailableAccounts = new Set();
-
-  logFtsBatchOperation("reconcile_phase2", "start", {
-    startDate: startDate.toISOString(),
-    endDate: endDate.toISOString(),
-  });
-
-  try {
-    async function ensureAccountChecked(accountId) {
-      if (!accountId || checkedAccounts.has(accountId)) return;
-      checkedAccounts.add(accountId);
-      try {
-        const acct = await browser.accounts.get(accountId);
-        if (!acct) {
-          unavailableAccounts.add(accountId);
-        } else {
-          const folders = await browser.folders.query({ accountId, limit: 1 });
-          if (!folders || folders.length === 0) {
-            unavailableAccounts.add(accountId);
-          }
-        }
-      } catch (e) {
-        unavailableAccounts.add(accountId);
-      }
-      if (unavailableAccounts.has(accountId)) {
-        log(`[FTS Reconcile] Phase 2: account ${accountId} unavailable — skipping its entries`, "warn");
-        logFtsOperation("reconcile_stale", "accounts_unavailable", {
-          unavailable: [accountId],
-        });
-      }
-    }
-
-    // Cursor-based pagination through FTS entries in the reconcile window.
-    // The cursor steps INCLUSIVELY to the oldest entry's dateMs (dedup via
-    // seenMsgIds) — an exclusive `oldestMs - 1` step would permanently skip
-    // entries sharing that millisecond beyond a full-chunk boundary (Date
-    // headers have second granularity, so ties are routine in bursts).
-    let cursorEndMs = endDate.getTime();
-    const startMs = startDate.getTime();
-    const seenMsgIds = new Set();
-    const exactMembership = _useExactFolderMembership(ftsSearch);
-
-    while (cursorEndMs > startMs) {
-      const chunk = await ftsSearch.queryByDateRange(startDate, new Date(cursorEndMs), RECONCILE_QUERY_CHUNK_SIZE);
-
-      if (!chunk || chunk.length === 0) break;
-
-      let newInChunk = 0;
-      for (const entry of chunk) {
-        if (seenMsgIds.has(entry.msgId)) continue; // re-fetched tie at the boundary
-        seenMsgIds.add(entry.msgId);
-        newInChunk++;
-
-        if (!exactMembership) {
-          const parsed = parseUniqueId(entry.msgId);
-          if (!parsed) {
-            checked++;
-            continue;
-          }
-          const { weFolder, headerID } = parsed;
-          await ensureAccountChecked(weFolder?.accountId);
-          if (unavailableAccounts.has(weFolder?.accountId)) {
-            checked++;
-            continue;
-          }
-          try {
-            const weID = await headerIDToWeID(headerID, weFolder, false, false);
-            if (!weID) {
-              staleCandidates.push({ msgId: entry.msgId, headerID, weFolder });
-              logFtsOperation("reconcile_stale", "found", {
-                msgId: entry.msgId,
-                folderPath: weFolder?.path || "",
-                headerID,
-                subject: entry.subject || "",
-              });
-            }
-          } catch (e) {
-            log(`[TMDBG FTS] Reconcile cleanup: error checking ${entry.msgId}: ${e}`, "info");
-            logFtsOperation("reconcile_stale", "error_skipped", {
-              msgId: entry.msgId,
-              folderPath: weFolder?.path || "",
-              headerID,
-              error: String(e),
-            });
-          }
-          checked++;
-          if (RECONCILE_ENTRY_DELAY_MS > 0) {
-            await new Promise(r => setTimeout(r, RECONCILE_ENTRY_DELAY_MS));
-          }
-          continue;
-        }
-
-        const firstBoundary = String(entry.msgId || "").indexOf(":");
-        if (firstBoundary <= 0) {
-          checked++;
-          continue;
-        }
-        const accountId = entry.msgId.slice(0, firstBoundary);
-
-        // Skip entries for accounts that aren't queryable
-        await ensureAccountChecked(accountId);
-        if (unavailableAccounts.has(accountId)) {
-          checked++;
-          continue;
-        }
-
-        try {
-          const liveFolders = await browser.folders.query({ accountId });
-          const candidates = getUniqueMessageKeyCandidates(entry.msgId, liveFolders);
-          if (candidates.length !== 1) {
-            checked++;
-            continue;
-          }
-          const { weFolder, headerID } = candidates[0];
-          let page = await browser.messages.query({
-            folderId: weFolder.id,
-            headerMessageId: headerID,
-          });
-          let weID = page?.messages?.[0]?.id || null;
-          while (!weID && page?.id && typeof browser.messages.continueList === "function") {
-            page = await browser.messages.continueList(page.id);
-            weID = page?.messages?.[0]?.id || null;
-          }
-
-          if (!weID) {
-            // Message not found at its indexed folder — stale CANDIDATE.
-            // Confirmed (or refuted) by the verify-then-remove pass below.
-            staleCandidates.push({
-              msgId: entry.msgId,
-              headerID,
-              weFolder,
-            });
-            logFtsOperation("reconcile_stale", "found", {
-              msgId: entry.msgId,
-              folderPath: weFolder?.path || "",
-              headerID,
-              subject: entry.subject || "",
-            });
-          }
-        } catch (e) {
-          // On error checking existence, skip (don't remove on uncertainty)
-          log(`[TMDBG FTS] Reconcile cleanup: error checking ${entry.msgId}: ${e}`, "info");
-          logFtsOperation("reconcile_stale", "error_skipped", {
-            msgId: entry.msgId,
-            error: String(e),
-          });
-        }
-
-        checked++;
-
-        // Small yield between entries
-        if (RECONCILE_ENTRY_DELAY_MS > 0) {
-          await new Promise(r => setTimeout(r, RECONCILE_ENTRY_DELAY_MS));
-        }
-      }
-
-      // Move cursor backwards (entries are dateMs DESC)
-      if (chunk.length < RECONCILE_QUERY_CHUNK_SIZE) break;
-      const oldestMs = chunk[chunk.length - 1]?.dateMs;
-      if (typeof oldestMs !== 'number' || oldestMs <= startMs) break;
-      // Inclusive step when the chunk made progress (ties at the boundary are
-      // re-fetched and deduped next round); if the ENTIRE chunk was already
-      // seen (a full chunk sharing one ms), step past it to escape.
-      const nextCursor = newInChunk > 0 ? oldestMs : oldestMs - 1;
-      if (nextCursor > cursorEndMs) break; // safety: cursor moved forward
-      cursorEndMs = nextCursor;
-    }
-
-    // Verify-then-remove: re-check every candidate with a fresh GLOBAL query
-    // before removal. A folder-constrained miss can be a transient msgDB state
-    // (mid-sync, compaction) — observed 2026-06-03: a live [Gmail]/Bin message
-    // was removed as "missing" and only recovered by the next weekly scan.
-    // Only remove keys whose absence from their indexed folder is confirmed by
-    // a SUCCESSFUL query; thrown queries keep the entry (skip on uncertainty).
-    const entriesToRemove = [];
-    let recheckKeptPresent = 0;
-    let recheckKeptError = 0;
-    let recheckedCount = 0;
-    for (const cand of staleCandidates) {
-      // KEEPALIVE: same cadence as maintenance Phase 2.5 — keep the native
-      // FTS connection alive through a potentially long recheck pass.
-      if (recheckedCount > 0 && recheckedCount % RECONCILE_RECHECK_KEEPALIVE_EVERY === 0) {
-        try {
-          await ftsSearch.stats();
-        } catch (keepaliveErr) {
-          log(`[FTS Reconcile] Phase 2 recheck keepalive ping failed: ${keepaliveErr.message}`, "warn");
-        }
-      }
-      recheckedCount++;
-
-      const verdict = await recheckMessageInFolder(cand.headerID, cand.weFolder);
-      if (verdict === "absent") {
-        // Only an explicit, successful confirmation of absence may remove —
-        // any other verdict (present, error, unexpected) keeps the entry.
-        entriesToRemove.push(cand.msgId);
-      } else if (verdict === "present") {
-        recheckKeptPresent++;
-        log(`[FTS Reconcile] Phase 2: recheck found ${cand.msgId} still present — keeping (transient miss)`);
-        logFtsOperation("reconcile_stale", "recheck_present", { msgId: cand.msgId });
-      } else {
-        recheckKeptError++;
-        log(`[FTS Reconcile] Phase 2: recheck errored for ${cand.msgId} — keeping (unconfirmed)`, "warn");
-        logFtsOperation("reconcile_stale", "recheck_error", { msgId: cand.msgId });
-      }
-      if (RECONCILE_ENTRY_DELAY_MS > 0) {
-        await new Promise(r => setTimeout(r, RECONCILE_ENTRY_DELAY_MS));
-      }
-    }
-    if (recheckKeptPresent > 0 || recheckKeptError > 0) {
-      log(`[FTS Reconcile] Phase 2: recheck kept ${recheckKeptPresent} present + ${recheckKeptError} errored of ${staleCandidates.length} candidates`);
-    }
-
-    // Remove stale entries in a single batch
-    if (entriesToRemove.length > 0) {
-      log(`[FTS Reconcile] Phase 2: removing ${entriesToRemove.length} stale entries`);
-      // Log each entry being removed for debugging
-      for (const msgId of entriesToRemove) {
-        logFtsOperation("reconcile_remove", "removing", {
-          msgId,
-        });
-      }
-      try {
-        const removeResult = await ftsSearch.removeBatch(entriesToRemove);
-        removed = removeResult.count || 0;
-        log(`[FTS Reconcile] Phase 2: removed ${removed} stale entries`);
-      } catch (removeErr) {
-        // Confirmed-stale entries are still in FTS — flag it so the caller
-        // does NOT advance the watermark (the entries would otherwise fall
-        // out of every future reconcile window and linger as ghosts).
-        removeFailed = true;
-        log(`[TMDBG FTS] Reconcile cleanup: removeBatch failed: ${removeErr}`, "warn");
-      }
-    }
-
-    logFtsBatchOperation("reconcile_phase2", "complete", {
-      checked,
-      staleFound: staleCandidates.length,
-      confirmedStale: entriesToRemove.length,
-      recheckKeptPresent,
-      recheckKeptError,
-      removed,
-    });
-
-    log(`[FTS Reconcile] Phase 2 complete: ${checked} checked, ${staleCandidates.length} stale candidates, ${entriesToRemove.length} confirmed, ${removed} removed`);
-  } catch (e) {
-    // Any Phase 2 failure (FTS scan, recheck pass, anything) means the
-    // window was NOT fully verified — the caller must not advance the
-    // watermark, or every unverified entry falls out of all future
-    // reconcile windows. Same contract as a removeBatch failure.
-    removeFailed = true;
-    log(`[TMDBG FTS] Reconcile phase 2 failed: ${e}`, "error");
-    logFtsBatchOperation("reconcile_phase2", "error", {
-      error: String(e),
-      checked,
-      removed,
-    });
-  }
-
-  accountsSkipped = unavailableAccounts.size;
-  return { checked, removed, accountsSkipped, removeFailed };
-}
-
 // Public API - DO NOT add duplicate listeners, integrate with existing ones
 export async function initIncrementalIndexer(ftsSearch) {
   if (!ftsSearch) {
@@ -7064,7 +6738,6 @@ export async function initIncrementalIndexer(ftsSearch) {
   _folderReconOrphanPass = null;
   _folderReconRoundRobinCursor = null;
   _folderReconInventoryRetry = null;
-  _folderReconPendingThisSession = true;
   _clearFolderReconActiveProof({ resetStats: true });
   _resetFolderReconRuntimeTelemetry();
 
@@ -7145,29 +6818,6 @@ function _scheduleReconcileWhenQuiet(ftsSearch, runner = runPostInitReconcile) {
   }, RECONCILE_QUIET_CHECK_INTERVAL_MS);
 }
 
-/**
- * Timestamp of the most recent sync-related message event (experiment
- * msgAdded/msgRemoved). Exposed for the maintenance scheduler's startup-tick
- * quiet wait — the same signal the boot-reconcile quiet period polls.
- */
-export function getLastSyncEventMs() {
-  return _lastSyncEventMs;
-}
-
-/**
- * Whether this session's startup reconciliation is still pending: true from
- * initIncrementalIndexer until the folder reconciliation completes with no
- * dirty folder, no queued update and no sync event since its pass began; any
- * later dirty event sets it again. Exposed for the maintenance scheduler's
- * startup-tick wait so a due maintenance scan doesn't run concurrently with
- * (or before) the boot reconcile. Returns false when incremental indexing is
- * disabled: no reconcile will ever run.
- */
-export async function isReconcilePending() {
-  if (!_isEnabled) return false;
-  return _folderReconPendingThisSession;
-}
-
 export async function disposeIncrementalIndexer() {
   log("[TMDBG FTS] Disposing incremental indexer");
 
@@ -7237,7 +6887,6 @@ export async function disposeIncrementalIndexer() {
   _folderReconDirty.clear();
   _folderReconOrphanDone = false;
   _folderReconOrphanPass = null;
-  _folderReconPendingThisSession = false;
   _clearFolderReconActiveProof();
 
   // Clear timers
@@ -7321,61 +6970,6 @@ export async function getIncrementalIndexerStatus() {
     },
   };
 }
-
-// Manually clear persisted pending updates (for debugging/maintenance)
-export async function clearPendingUpdates() {
-  log("[TMDBG FTS] Manually clearing pending updates");
-  
-  // Wait for any ongoing processing to complete
-  if (_isProcessing) {
-    log("[TMDBG FTS] Waiting for ongoing processing to complete before clearing");
-    let waitCount = 0;
-    while (_isProcessing && waitCount < 50) { // Max 5 seconds wait
-      await new Promise(r => setTimeout(r, 100));
-      waitCount++;
-    }
-    if (_isProcessing) {
-      log("[TMDBG FTS] Clear timeout - forcing clear despite ongoing processing", "warn");
-    }
-  }
-  
-  // Manual destructive abandonment must become exact-reconcile work before
-  // the live/persisted queue is erased.
-  if (_pendingUpdates.size > 0) {
-    await _abandonPendingUpdates([..._pendingUpdates.values()], "manual_clear");
-  }
-  
-  // Clear persisted storage
-  await clearPersistedUpdates();
-  
-  // Clear timers
-  if (_batchTimer) {
-    clearTimeout(_batchTimer);
-    _batchTimer = null;
-  }
-
-  if (_persistTimer) {
-    clearTimeout(_persistTimer);
-    _persistTimer = null;
-  }
-
-  if (_reconcileQuietTimer) {
-    clearInterval(_reconcileQuietTimer);
-    _reconcileQuietTimer = null;
-  }
-
-  // Reset processing flag
-  _isProcessing = false;
-  
-  // Reset mutex
-  _enqueueMutex = Promise.resolve();
-  
-  log("[TMDBG FTS] Pending updates cleared");
-  return { ok: true };
-}
-
-// Exported for testing
-export { _reconcileCleanupStaleEntries };
 
 export const _testExports = {
   _noteFolderReconLocalChange,
@@ -7472,7 +7066,6 @@ export const _testExports = {
     _folderReconOrphanPass = null;
     _folderReconRoundRobinCursor = null;
     _folderReconInventoryRetry = null;
-    _folderReconPendingThisSession = true;
     _clearFolderReconActiveProof({ resetStats: true });
     _resetFolderReconRuntimeTelemetry();
   },
@@ -7499,10 +7092,9 @@ export const _testExports = {
   _getFolderReconRuntimeTelemetry: () => _folderReconRuntimeTelemetry,
   _getFolderReconActiveProofKey: () => _folderReconActiveProof?.folderKey || null,
   _isFolderReconSchedulerActive: () => _folderReconSchedulerOwner !== null,
-  _isFolderReconPending: () => _folderReconPendingThisSession,
   _recordFolderReconOutcome,
   _completeFolderReconOutcome,
-  _clearFolderReconPendingIfCurrent,
+  _folderReconQuietSince,
   _getFolderReconSessionDone: () => new Set(_folderReconSessionDone),
   _getFolderReconEphemeralEvidence: () => ({
     deferred: _folderReconSessionDeferred.size + _folderReconDrainFailureDeferred.size,

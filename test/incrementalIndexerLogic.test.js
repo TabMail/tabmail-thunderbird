@@ -82,7 +82,7 @@ globalThis.browser = {
 };
 
 const incrementalIndexer = await import('../fts/incrementalIndexer.js');
-const { _testExports, clearPendingUpdates } = incrementalIndexer;
+const { _testExports } = incrementalIndexer;
 const {
   _getRetryConfig,
   _shouldDropFailedUpdates,
@@ -127,19 +127,25 @@ describe('atomic queue abandonment', () => {
   const entry = (uniqueKey, type, timestamp, folderKey) => ({
     uniqueKey, type, timestamp, folderKey, metadata: {}, hasFailed: true,
   });
-  // Start from a settled session so a pending flag set by abandonment is observable.
-  // The folders are completed this generation, so their marks are recorded.
-  const settlePendingFlag = () => {
-    _testExports._setFolderReconEphemeralEvidenceForTests({ sessionDone: ['account1:/A', 'account1:/B'] });
-    expect(_testExports._clearFolderReconPendingIfCurrent(
-      _testExports._getFolderReconGeneration(),
-      _testExports._getFolderReconEventSerial(),
-    )).toBe(true);
-    expect(_testExports._isFolderReconPending()).toBe(false);
+  // Start from a settled session (folders completed this generation, orphan
+  // stage done, quiet) so the work an abandonment owes is observable: its
+  // walk marks are recorded and the orphan tail's quiet predicate, which
+  // the next tick consults before completing, refuses.
+  const settleSession = () => {
+    _testExports._setFolderReconEphemeralEvidenceForTests({
+      sessionDone: ['account1:/A', 'account1:/B'],
+      orphanDone: true,
+    });
+    expect(quiet()).toBe(true);
   };
+  const quiet = () => _testExports._folderReconQuietSince(
+    _testExports._getFolderReconGeneration(),
+    _testExports._getFolderReconEventSerial(),
+  );
+  const orphanDone = () => _testExports._getFolderReconEphemeralEvidence().orphanDone;
 
-  it('dirties exact folders and marks reconciliation pending before dropping mixed add/move/delete failures', async () => {
-    settlePendingFlag();
+  it('dirties exact folders and reopens orphan completion before dropping mixed add/move/delete failures', async () => {
+    settleSession();
     const captured = [
       entry('account1:/A:add@example.com', 'new', 1, 'account1:/A'),
       entry('account1:/A:move@example.com', 'moved', 2, 'account1:/A'),
@@ -152,11 +158,12 @@ describe('atomic queue abandonment', () => {
     expect(result).toMatchObject({ dropped: 3, retained: 0 });
     expect(_getPendingUpdates().size).toBe(0);
     expect(_getFolderReconDirty()).toEqual(new Set(['account1:/A', 'account1:/B']));
-    expect(_testExports._isFolderReconPending()).toBe(true);
+    expect(orphanDone()).toBe(false);
+    expect(quiet()).toBe(false);
   });
 
   it('abandons without any storage dependency, so unavailable storage cannot strand the queue', async () => {
-    settlePendingFlag();
+    settleSession();
     const captured = [entry('account1:/A:add@example.com', 'new', 1, 'account1:/A')];
     _getPendingUpdates().set(captured[0].uniqueKey, captured[0]);
     globalThis.browser.storage.local.set.mockRejectedValue(new Error('disk full'));
@@ -166,7 +173,8 @@ describe('atomic queue abandonment', () => {
 
     expect(result).toMatchObject({ dropped: 1, retained: 0 });
     expect(_getFolderReconDirty()).toEqual(new Set(['account1:/A']));
-    expect(_testExports._isFolderReconPending()).toBe(true);
+    expect(orphanDone()).toBe(false);
+    expect(quiet()).toBe(false);
     expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
     expect(globalThis.browser.storage.local.remove).not.toHaveBeenCalled();
   });
@@ -183,7 +191,7 @@ describe('atomic queue abandonment', () => {
   });
 
   it('never drops a same-type intention requeued in the same millisecond', async () => {
-    settlePendingFlag();
+    settleSession();
     const old = entry('account1:/A:same@example.com', 'new', 1, 'account1:/A');
     const requeued = { ...old };
     _getPendingUpdates().set(old.uniqueKey, requeued);
@@ -192,12 +200,13 @@ describe('atomic queue abandonment', () => {
 
     expect(result).toMatchObject({ dropped: 0, retained: 1 });
     expect(_getPendingUpdates().get(old.uniqueKey)).toBe(requeued);
-    // Nothing was dropped, so no walk is owed and nothing is pending.
+    // Nothing was dropped, so no walk is owed and orphan completion stands.
     expect(_getFolderReconDirty()).toEqual(new Set());
-    expect(_testExports._isFolderReconPending()).toBe(false);
+    expect(orphanDone()).toBe(true);
   });
 
   it('writes no storage across repeated abandonments of the same folder', async () => {
+    settleSession();
     const first = entry('account1:/A:one@example.com', 'new', 1, 'account1:/A');
     const second = entry('account1:/A:two@example.com', 'deleted', 2, 'account1:/A');
     _getPendingUpdates().set(first.uniqueKey, first);
@@ -206,7 +215,8 @@ describe('atomic queue abandonment', () => {
     await _abandonPendingUpdates([second], 'stuck');
 
     expect(_getPendingUpdates().size).toBe(0);
-    expect(_testExports._isFolderReconPending()).toBe(true);
+    expect(_getFolderReconDirty()).toEqual(new Set(['account1:/A']));
+    expect(quiet()).toBe(false);
     expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
   });
 
@@ -219,19 +229,7 @@ describe('atomic queue abandonment', () => {
 
     expect(_getFolderReconDirty()).toEqual(new Set(['account1:/A', 'account1:/B']));
     expect(_testExports._getFolderReconSessionDone().size).toBe(0);
-    expect(_testExports._isFolderReconPending()).toBe(true);
-  });
-
-  it('manual clear dirties admitted work instead of silently erasing it', async () => {
-    settlePendingFlag();
-    const pending = entry('account1:/A:manual@example.com', 'new', 1, 'account1:/A');
-    _getPendingUpdates().set(pending.uniqueKey, pending);
-
-    await clearPendingUpdates();
-
-    expect(_getPendingUpdates().size).toBe(0);
-    expect(_testExports._isFolderReconPending()).toBe(true);
-    expect(_getFolderReconDirty()).toContain('account1:/A');
+    expect(quiet()).toBe(false);
   });
 });
 

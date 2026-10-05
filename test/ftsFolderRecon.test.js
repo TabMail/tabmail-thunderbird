@@ -1863,12 +1863,18 @@ describe('gating and drain coordination', () => {
       type: 'new', uniqueKey: KEY_A('inflight@example.com'), timestamp: 1, metadata: {},
     });
 
-    await _runFolderReconcile(fts);
+    const boot = await _runFolderReconcile(fts);
     _getPendingUpdates().clear();
     _setFtsSearch(fts);
     await _maybeScheduleFolderReconRerun();
 
-    expect(_testExports._isFolderReconPending()).toBe(true);
+    // B's boot error stays owed: B was never verified this session, and the
+    // rerun of A's drained folder does not certify it.
+    expect(boot.foldersErrored).toBeGreaterThan(0);
+    expect(_testExports._getFolderReconSessionDone()).not.toContain('account3:/[Gmail]/All Mail');
+    const status = await _testExports._runFolderReconcile(fts, new Set(['account1:/INBOX']));
+    expect(status).toMatchObject({ foldersTotal: 1, foldersErrored: 0 });
+    expect(_testExports._getFolderReconSessionDone()).not.toContain('account3:/[Gmail]/All Mail');
   });
 
   it('requires the completed initial index', async () => {

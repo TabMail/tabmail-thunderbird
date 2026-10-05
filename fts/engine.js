@@ -230,11 +230,6 @@ function attachCommandInterface() {
               sendResponse(await getIncrementalIndexerStatus());
               return;
             }
-            case "clearPendingUpdates": {
-              const { clearPendingUpdates } = await import("./incrementalIndexer.js");
-              sendResponse(await clearPendingUpdates());
-              return;
-            }
             case "maintenanceStatus": {
               const { getMaintenanceStatus } = await import("./maintenanceScheduler.js");
               sendResponse(await getMaintenanceStatus());
