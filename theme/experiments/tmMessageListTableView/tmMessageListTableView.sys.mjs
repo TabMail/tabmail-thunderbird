@@ -18,6 +18,11 @@
  * other experiments.
  */
 
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
+var TM_MESSAGE_LIST_TABLE_VIEW_DEBUG = false;
+function tmMessageListTableViewDebugLog(...args) { if (TM_MESSAGE_LIST_TABLE_VIEW_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupport_MLTV } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -32,7 +37,7 @@ var Services_MLTV = globalThis.Services;
 
 const LOG_PREFIX_MLTV = "[TabMail MessageList TableView]";
 
-console.log(`${LOG_PREFIX_MLTV} experiment parent script loaded.`);
+tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} experiment parent script loaded.`);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -104,11 +109,11 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
   }
 
   onShutdown(isAppShutdown) {
-    console.log(`${LOG_PREFIX_MLTV} onShutdown() called, isAppShutdown:`, isAppShutdown);
+    tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} onShutdown() called, isAppShutdown:`, isAppShutdown);
     try {
       for (const cleanup of this._tmCleanups_MLTV) {
         cleanup();
-        console.log(`${LOG_PREFIX_MLTV} ✓ Cleanup completed via onShutdown`);
+        tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} ✓ Cleanup completed via onShutdown`);
       }
       for (const subscription of this._untaggedSubscriptions_MLTV) {
         try { this.extension.off("onUntaggedInboxMessages", subscription.listener); } catch (_) {}
@@ -335,7 +340,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
         if (typeof proto.fillRow !== "function") {
           if (logCount_MLTV < CONFIG_MLTV.maxLogs) {
             logCount_MLTV++;
-            console.log(`${LOG_PREFIX_MLTV} ThreadRow.fillRow not found, listing properties:`,
+            console.warn(`${LOG_PREFIX_MLTV} ThreadRow.fillRow not found, listing properties:`,
               Object.getOwnPropertyNames(proto).slice(0, 15));
           }
           return false;
@@ -381,7 +386,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
         proto.fillRow = newFillRow;
 
         ThreadRow.__tmTableSenderPatched = true;
-        console.log(`${LOG_PREFIX_MLTV} ✓ ThreadRow.fillRow patched for sender stripping and action paint`);
+        tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} ✓ ThreadRow.fillRow patched for sender stripping and action paint`);
         return true;
       } catch (e) {
         console.error(`${LOG_PREFIX_MLTV} patchThreadRowPrototype failed:`, e);
@@ -412,7 +417,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
           } catch (_) {}
         }
         delete ThreadRow.__tmTableSenderPatched;
-        console.log(`${LOG_PREFIX_MLTV} ThreadRow prototype unpatched (fillRow restored)`);
+        tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} ThreadRow prototype unpatched (fillRow restored)`);
       } catch (e) {
         console.error(`${LOG_PREFIX_MLTV} unpatchThreadRowPrototype failed:`, e);
       }
@@ -511,7 +516,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
         mo.observe(tree, { childList: true, subtree: true, characterData: true });
         mo.__tmTableOwner = processTableRow_MLTV;
         doc.__tmTableSenderMO_MLTV = mo;
-        console.log(`${LOG_PREFIX_MLTV} ✓ MutationObserver attached`);
+        tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} ✓ MutationObserver attached`);
       } catch (e) {
         console.error(`${LOG_PREFIX_MLTV} attachTableObserver failed:`, e);
       }
@@ -669,16 +674,16 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
 
         if (_untaggedCoverageLogCount_MLTV < UNTAGGED_COVERAGE_CONFIG_MLTV.logMax) {
           _untaggedCoverageLogCount_MLTV++;
-          console.log(`${LOG_PREFIX_MLTV} Firing onUntaggedInboxMessages for:`, messageId.substring(0, 50), "weMsgId:", weMsgId);
+          tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} Firing onUntaggedInboxMessages for:`, messageId.substring(0, 50), "weMsgId:", weMsgId);
         }
 
         try {
           self.extension.emit("onUntaggedInboxMessages", [info]);
         } catch (eFire) {
-          console.log(`${LOG_PREFIX_MLTV} Failed to fire onUntaggedInboxMessages event:`, eFire);
+          console.warn(`${LOG_PREFIX_MLTV} Failed to fire onUntaggedInboxMessages event:`, eFire);
         }
       } catch (e) {
-        console.log(`${LOG_PREFIX_MLTV} _fireUntaggedMessage error:`, e);
+        console.warn(`${LOG_PREFIX_MLTV} _fireUntaggedMessage error:`, e);
       }
     }
 
@@ -815,13 +820,13 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
     // ═══════════════════════════════════════════════════════════════════════
 
     async function init_MLTV() {
-      console.log(`${LOG_PREFIX_MLTV} ═══ init() called ═══`);
+      tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} ═══ init() called ═══`);
       if (!Services_MLTV?.wm) {
         console.error(`${LOG_PREFIX_MLTV} Services.wm not available!`);
         return;
       }
       if (isInitialized_MLTV) {
-        console.log(`${LOG_PREFIX_MLTV} Already initialized, skipping`);
+        tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} Already initialized, skipping`);
         return;
       }
       if (self._activeCleanup_MLTV && self._activeCleanup_MLTV !== cleanup_MLTV) {
@@ -854,7 +859,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
         },
       });
 
-      console.log(`${LOG_PREFIX_MLTV} ✓ Initialization complete`);
+      tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} ✓ Initialization complete`);
     }
 
     function cleanup_MLTV() {
@@ -862,7 +867,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
       self._tmCleanups_MLTV.delete(cleanup_MLTV);
       if (self._activeCleanup_MLTV !== cleanup_MLTV) return;
       self._activeCleanup_MLTV = null;
-      console.log(`${LOG_PREFIX_MLTV} cleanup() called`);
+      tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} cleanup() called`);
       try {
         if (windowListenerId_MLTV) {
           ExtensionSupport_MLTV.unregisterWindowListener(windowListenerId_MLTV);
@@ -882,11 +887,11 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
         console.error(`${LOG_PREFIX_MLTV} cleanup error:`, e);
       }
       isInitialized_MLTV = false;
-      console.log(`${LOG_PREFIX_MLTV} cleanup() complete`);
+      tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} cleanup() complete`);
     }
 
     async function shutdown_MLTV() {
-      console.log(`${LOG_PREFIX_MLTV} shutdown() called from WebExtension API`);
+      tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} shutdown() called from WebExtension API`);
       cleanup_MLTV();
     }
 

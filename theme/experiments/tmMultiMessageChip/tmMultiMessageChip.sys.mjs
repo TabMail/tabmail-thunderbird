@@ -33,6 +33,11 @@
  *      to catch list-rebuild on selection change. See §4.4 trigger 3.
  */
 
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
+var TM_MULTI_MESSAGE_CHIP_DEBUG = false;
+function tmMultiMessageChipDebugLog(...args) { if (TM_MULTI_MESSAGE_CHIP_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupport_MMC } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -50,7 +55,7 @@ var ServicesMMC = globalThis.Services;
 
 const LOG_PREFIX_MMC = "[TabMail MultiMsgChip]";
 
-console.log(`${LOG_PREFIX_MMC} experiment parent script loaded. Services present?`, typeof ServicesMMC !== "undefined");
+tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} experiment parent script loaded. Services present?`, typeof ServicesMMC !== "undefined");
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -212,7 +217,7 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersisten
   }
 
   onShutdown(isAppShutdown) {
-    console.log(`${LOG_PREFIX_MMC} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
+    tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
     for (const subscription of this._chipClickSubscriptions) {
       try { this.extension.off(MULTI_MSG_CHIP_EXTENSION_EVENT_MMC, subscription.listener); } catch (_) {}
     }
@@ -221,7 +226,7 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersisten
     try {
       for (const cleanup of this._tmCleanups || []) {
         cleanup();
-        console.log(`${LOG_PREFIX_MMC} ✓ Cleanup completed via onShutdown`);
+        tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} ✓ Cleanup completed via onShutdown`);
       }
     } catch (e) {
       console.error(`${LOG_PREFIX_MMC} onShutdown cleanup failed:`, e);
@@ -465,7 +470,7 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersisten
         const pairs = _resolveLiHdrPairs(doc);
         if (_paintDiagLogCount < _PAINT_DIAG_LOG_MAX) {
           _paintDiagLogCount++;
-          console.log(`${LOG_PREFIX_MMC} paintMessageListChips: pairs=${pairs.length} doc=${doc?.location?.href || "?"}`);
+          tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} paintMessageListChips: pairs=${pairs.length} doc=${doc?.location?.href || "?"}`);
         }
         for (const { li, hdr } of pairs) {
           const weMsgId = mm?.convert?.(hdr)?.id ?? 0;
@@ -698,14 +703,14 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersisten
     // ───── Lifecycle ─────
 
     async function init(_opts = {}) {
-      console.log(`${LOG_PREFIX_MMC} ═══ init() called ═══`);
+      tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} ═══ init() called ═══`);
       if (owner._tmShutdown) return;
       if (!ServicesMMC || !ServicesMMC.wm) {
         console.error(`${LOG_PREFIX_MMC} Services.wm not available!`);
         return;
       }
       if (isInitialized) {
-        console.log(`${LOG_PREFIX_MMC} Already initialized, skipping`);
+        tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} Already initialized, skipping`);
         return;
       }
       if (owner._activeCleanup && owner._activeCleanup !== cleanup) owner._activeCleanup();
@@ -739,7 +744,7 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersisten
         onLoadWindow: (win) => attachToWindow(win),
       });
       context.__tmMultiMsgChipWindowListenerRegistered = true;
-      console.log(`${LOG_PREFIX_MMC} ✓ Initialization complete`);
+      tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} ✓ Initialization complete`);
     }
 
     function cleanup() {
@@ -747,7 +752,7 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersisten
       owner._tmCleanups.delete(cleanup);
       if (owner._activeCleanup !== cleanup) return;
       owner._activeCleanup = null;
-      console.log(`${LOG_PREFIX_MMC} cleanup() called`);
+      tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} cleanup() called`);
       try {
         if (windowListenerId && context.__tmMultiMsgChipWindowListenerRegistered) {
           try { ExtensionSupport_MMC.unregisterWindowListener(windowListenerId); } catch (_) {}
@@ -775,13 +780,13 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersisten
         console.error(`${LOG_PREFIX_MMC} Error during cleanup:`, e);
       }
       isInitialized = false;
-      console.log(`${LOG_PREFIX_MMC} cleanup() complete`);
+      tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} cleanup() complete`);
     }
 
 
 
     async function shutdown() {
-      console.log(`${LOG_PREFIX_MMC} shutdown() called from WebExtension API`);
+      tmMultiMessageChipDebugLog(`${LOG_PREFIX_MMC} shutdown() called from WebExtension API`);
       cleanup();
     }
 

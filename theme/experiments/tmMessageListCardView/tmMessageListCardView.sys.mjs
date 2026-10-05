@@ -11,6 +11,11 @@
  * - Event-driven architecture with fillRow prototype patching
  */
 
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
+var TM_MESSAGE_LIST_CARD_VIEW_DEBUG = false;
+function tmMessageListCardViewDebugLog(...args) { if (TM_MESSAGE_LIST_CARD_VIEW_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupport_MLCV } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -25,7 +30,7 @@ var ServicesCS = globalThis.Services;
 
 const LOG_PREFIX_MLCV = "[TabMail MessageList CardView]";
 
-console.log(`${LOG_PREFIX_MLCV} experiment parent script loaded. Services present?`, typeof ServicesCS !== "undefined");
+tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} experiment parent script loaded. Services present?`, typeof ServicesCS !== "undefined");
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -189,7 +194,7 @@ function _addPendingSnippetNeed(hdrKey) {
   // Log when adding new needs
   if (wasNew && _pendingNeedsDiagLogCount < _pendingNeedsDiagLogMax) {
     _pendingNeedsDiagLogCount++;
-    console.log(`${LOG_PREFIX_MLCV}[PendingDiag] _addPendingSnippetNeed:`, {
+    tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV}[PendingDiag] _addPendingSnippetNeed:`, {
       hdrKey: hdrKey?.slice(0, 50),
       pendingSetSize: _pendingSnippetNeeds.size,
       timerActive: !!_pendingNeedsDebounceTimer,
@@ -211,7 +216,7 @@ function _addPendingSnippetNeed(hdrKey) {
             try {
               if (_snippetsNeededEventLogCount < _snippetsNeededEventLogMax) {
                 _snippetsNeededEventLogCount++;
-                console.log(`${LOG_PREFIX_MLCV} Firing onSnippetsNeeded event, count:`, count);
+                tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} Firing onSnippetsNeeded event, count:`, count);
               }
               _snippetsNeededEventFire({ count });
             } catch (e) {
@@ -246,7 +251,7 @@ function _drainPendingSnippetNeeds(max = 50) {
   // Log drain operation
   if (_drainDiagLogCount < _drainDiagLogMax) {
     _drainDiagLogCount++;
-    console.log(`${LOG_PREFIX_MLCV}[SnippetDiag] drainPending:`, {
+    tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV}[SnippetDiag] drainPending:`, {
       sizeBefore,
       drained: result.length,
       sizeAfter: _pendingSnippetNeeds.size,
@@ -330,7 +335,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
   }
 
   onShutdown(isAppShutdown) {
-    console.log(`${LOG_PREFIX_MLCV} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
+    tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
     for (const subscription of this._snippetNeedSubscriptions) {
       try { this.extension.off("onSnippetsNeeded", subscription.listener); } catch (_) {}
     }
@@ -342,7 +347,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
     try {
       for (const cleanup of this._tmCleanups || []) {
         cleanup();
-        console.log(`${LOG_PREFIX_MLCV} ✓ Cleanup completed via onShutdown`);
+        tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} ✓ Cleanup completed via onShutdown`);
       }
     } catch (e) {
       console.error(`${LOG_PREFIX_MLCV} onShutdown cleanup failed:`, e);
@@ -456,7 +461,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
       if (CARD_SNIPPET_CONFIG_MLCV.forceDisableInjection === true) {
         if (!_snippetForceDisableLogged) {
           _snippetForceDisableLogged = true;
-          console.log(`${CARD_SNIPPET_CONFIG_MLCV.logPrefix} FORCE DISABLED: snippet fetch/injection is disabled for debugging`);
+          tmMessageListCardViewDebugLog(`${CARD_SNIPPET_CONFIG_MLCV.logPrefix} FORCE DISABLED: snippet fetch/injection is disabled for debugging`);
         }
         return false;
       }
@@ -1042,7 +1047,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         if (_zeroFlickerLogCount < _zeroFlickerLogMax) {
           _zeroFlickerLogCount++;
           const sender = row.querySelector?.(".sender");
-          console.log(`${CARD_SENDER_CONFIG_MLCV.logPrefix} _applyZeroFlickerEnhancements called:`, {
+          tmMessageListCardViewDebugLog(`${CARD_SENDER_CONFIG_MLCV.logPrefix} _applyZeroFlickerEnhancements called:`, {
             rowId: row.id,
             rowIndex,
             hdrKey: hdrKey?.slice(0, 40),
@@ -1274,7 +1279,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
 
         // Check for fillRow method (this is what TB uses to populate cards)
         if (typeof proto.fillRow !== "function") {
-          console.log(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard.fillRow not found`);
+          console.warn(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard.fillRow not found`);
           return false;
         }
 
@@ -1322,7 +1327,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         proto.fillRow = newFillRow;
 
         ThreadCard.__tmPatched = true;
-        console.log(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ✓ ThreadCard.fillRow patched for zero-flicker`);
+        tmMessageListCardViewDebugLog(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ✓ ThreadCard.fillRow patched for zero-flicker`);
         return true;
       } catch (e) {
         console.error(`${CARD_SENDER_CONFIG_MLCV.logPrefix} patchThreadCardPrototype failed:`, e);
@@ -1353,7 +1358,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         if (ThreadCard.__tmOrigRowHeight != null) {
           ThreadCard.ROW_HEIGHT = ThreadCard.__tmOrigRowHeight;
           delete ThreadCard.__tmOrigRowHeight;
-          console.log(`${LOG_PREFIX_MLCV} Restored ThreadCard.ROW_HEIGHT to ${ThreadCard.ROW_HEIGHT}`);
+          tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} Restored ThreadCard.ROW_HEIGHT to ${ThreadCard.ROW_HEIGHT}`);
           try {
             const threadTree = doc.getElementById("threadTree") ||
                               doc.querySelector("tree-view#threadTree, tree-view");
@@ -1369,7 +1374,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
           } catch (_) {}
         }
         delete ThreadCard.__tmPatched;
-        console.log(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard prototype unpatched (fillRow restored)`);
+        tmMessageListCardViewDebugLog(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard prototype unpatched (fillRow restored)`);
       } catch (e) {
         console.error(`${CARD_SENDER_CONFIG_MLCV.logPrefix} unpatchThreadCardPrototype failed:`, e);
       }
@@ -1507,13 +1512,13 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
     // ═══════════════════════════════════════════════════════════════════════
 
     async function init(_opts = {}) {
-      console.log(`${LOG_PREFIX_MLCV} ═══ init() called ═══`);
+      tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} ═══ init() called ═══`);
       if (!ServicesCS || !ServicesCS.wm) {
         console.error(`${LOG_PREFIX_MLCV} Services.wm not available!`);
         return;
       }
       if (isInitialized) {
-        console.log(`${LOG_PREFIX_MLCV} Already initialized, skipping`);
+        tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} Already initialized, skipping`);
         return;
       }
       if (owner._activeCleanup && owner._activeCleanup !== cleanup) owner._activeCleanup();
@@ -1541,7 +1546,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         }
       }
 
-      console.log(`${LOG_PREFIX_MLCV} Snippets use DOM-based detection (3-row mode = no .cards-row-compact)`);
+      tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} Snippets use DOM-based detection (3-row mode = no .cards-row-compact)`);
 
       const enumWin = ServicesCS.wm.getEnumerator("mail:3pane");
       while (enumWin.hasMoreElements()) {
@@ -1565,7 +1570,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         },
       });
       context.__tmCardSnippetsWindowListenerRegistered = true;
-      console.log(`${LOG_PREFIX_MLCV} ✓ Initialization complete`);
+      tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} ✓ Initialization complete`);
     }
 
     function cleanup() {
@@ -1573,7 +1578,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
       owner._tmCleanups.delete(cleanup);
       if (owner._activeCleanup !== cleanup) return;
       owner._activeCleanup = null;
-      console.log(`${LOG_PREFIX_MLCV} cleanup() called`);
+      tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} cleanup() called`);
       try {
         if (windowListenerId && context.__tmCardSnippetsWindowListenerRegistered) {
           ExtensionSupport_MLCV.unregisterWindowListener(windowListenerId);
@@ -1626,18 +1631,18 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         console.error(`${LOG_PREFIX_MLCV} Error during cleanup:`, e);
       }
       isInitialized = false;
-      console.log(`${LOG_PREFIX_MLCV} cleanup() complete`);
+      tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} cleanup() complete`);
     }
 
 
 
     async function shutdown() {
-      console.log(`${LOG_PREFIX_MLCV} shutdown() called from WebExtension API`);
+      tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} shutdown() called from WebExtension API`);
       cleanup();
     }
 
     function clearSnippetCache() {
-      console.log(`${LOG_PREFIX_MLCV} Card snippet cache clear requested (no-op; cache lives in safeGetFull)`);
+      tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV} Card snippet cache clear requested (no-op; cache lives in safeGetFull)`);
     }
 
     async function getCardSnippetNeeds(opts = {}) {
@@ -1755,7 +1760,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         
         // Log pending processing diagnostics
         if (pendingHdrKeys.length > 0) {
-          console.log(`${LOG_PREFIX_MLCV}[SnippetDiag] pendingProcessing:`, {
+          tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV}[SnippetDiag] pendingProcessing:`, {
             pendingKeysCount: pendingHdrKeys.length,
             hdrInfoMapSize: hdrInfoByKey.size,
             ..._pendingDiag,
@@ -1859,7 +1864,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         } // closes if (out.length < max) - Priority 2 fallback
         // Log when returning needs (helps debug why some messages aren't getting snippets)
         if (out.length > 0) {
-          console.log(`${LOG_PREFIX_MLCV}[SnippetDiag] getCardSnippetNeeds returning`, {
+          tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV}[SnippetDiag] getCardSnippetNeeds returning`, {
             count: out.length,
             anyTreeIn3RowMode: _isAnyTreeIn3RowMode(),
             sample: out.slice(0, 3).map(n => ({ hdrKey: n.hdrKey?.slice(0, 20), subject: n.subject?.slice(0, 30) })),
@@ -2000,7 +2005,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
         
         // Log diagnostics if there are items but few applied
         if (itemsByKey.size > 0 && applied < itemsByKey.size) {
-          console.log(`${LOG_PREFIX_MLCV}[SnippetDiag] provideCardSnippets mismatch`, {
+          tmMessageListCardViewDebugLog(`${LOG_PREFIX_MLCV}[SnippetDiag] provideCardSnippets mismatch`, {
             source,
             itemsProvided: itemsByKey.size,
             applied,
