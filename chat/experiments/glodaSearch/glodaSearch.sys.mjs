@@ -36,6 +36,7 @@ function toMs(d) {
 
 // Fast-path debug guard
 const DEBUG_GLODA_FAST = false;
+function glodaDebugLog(...args) { if (DEBUG_GLODA_FAST) console.log(...args); }
 
 var GLODA_CONV_CONFIG = {
   maxConversationMessages: 50,
@@ -43,7 +44,7 @@ var GLODA_CONV_CONFIG = {
 
 async function getConversationMessagesImpl(context, weMsgId, options = {}) {
   try {
-    console.log(`[glodaConversation] called weMsgId=${weMsgId} opts=${JSON.stringify(options || {})}`);
+    glodaDebugLog(`[glodaConversation] called weMsgId=${weMsgId} opts=${JSON.stringify(options || {})}`);
 
     if (!Number.isFinite(weMsgId) || weMsgId < 0) {
       return { success: false, error: "Invalid weMsgId", messages: [] };
@@ -145,7 +146,7 @@ async function getConversationMessagesImpl(context, weMsgId, options = {}) {
     try {
       const hasConv = typeof query.conversation === "function";
       const hasInConv = typeof query.inConversation === "function";
-      console.log(`[glodaConversation] query helpers: conversation=${hasConv} inConversation=${hasInConv} orderBy=${typeof query.orderBy === "function"} limit=${typeof query.limit === "function"}`);
+      glodaDebugLog(`[glodaConversation] query helpers: conversation=${hasConv} inConversation=${hasInConv} orderBy=${typeof query.orderBy === "function"} limit=${typeof query.limit === "function"}`);
       if (hasConv) {
         query.conversation(conv);
         applied = true;
@@ -180,7 +181,7 @@ async function getConversationMessagesImpl(context, weMsgId, options = {}) {
       }
     });
 
-    console.log(`[glodaConversation] conversation items=${items.length}`);
+    glodaDebugLog(`[glodaConversation] conversation items=${items.length}`);
 
     const out = [];
     for (const it of items) {
@@ -240,7 +241,7 @@ async function glodaDateOnly(context, fromIso, toIso, cap = 2500, folderObjs = n
     let hi = hiMs != null ? new Date(hiMs) : new Date(8640000000000000);
     if (lo > hi) [lo, hi] = [hi, lo];
     if (DEBUG_GLODA_FAST) {
-      try { console.log(`[glodaSearchFast] date-only window lo=${lo.toISOString()} hi=${Number.isFinite(hi.getTime()) ? hi.toISOString() : 'n/a'} cap=${cap}`); } catch(_) {}
+      try { glodaDebugLog(`[glodaSearchFast] date-only window lo=${lo.toISOString()} hi=${Number.isFinite(hi.getTime()) ? hi.toISOString() : 'n/a'} cap=${cap}`); } catch(_) {}
     }
     if (q.dateRange) q.dateRange([lo, hi]);
     // Optional folder scoping
@@ -253,7 +254,7 @@ async function glodaDateOnly(context, fromIso, toIso, cap = 2500, folderObjs = n
       onQueryCompleted(c) { res(c); },
     }));
     const items = col?.items ?? [];
-    if (DEBUG_GLODA_FAST) try { console.log(`[glodaSearchFast] date-only pass returned items=${items.length}`); } catch(_) {}
+    if (DEBUG_GLODA_FAST) try { glodaDebugLog(`[glodaSearchFast] date-only pass returned items=${items.length}`); } catch(_) {}
 
     const rows = [];
     for (const it of items) {
@@ -298,7 +299,7 @@ async function ftsKeysetPaged({ terms = [], phrase = "", text = "", lo, hi, page
     try {
       const _tPreview = Array.isArray(terms) && terms.length ? `terms=${terms.length}` : `text='${String(text||'').slice(0,80)}'`;
       const _pPreview = phrase ? ` phrase='${String(phrase).slice(0,80)}'` : '';
-      console.log(`[glodaSearchFast] FTS window init lo=${loDate.toISOString()} hi=${Number.isFinite(cursorHi.getTime()) ? cursorHi.toISOString() : 'n/a'} ${_tPreview}${_pPreview} pageSize=${pageSize} maxTotal=${maxTotal}`);
+      glodaDebugLog(`[glodaSearchFast] FTS window init lo=${loDate.toISOString()} hi=${Number.isFinite(cursorHi.getTime()) ? cursorHi.toISOString() : 'n/a'} ${_tPreview}${_pPreview} pageSize=${pageSize} maxTotal=${maxTotal}`);
     } catch(_) {}
   }
 
@@ -333,7 +334,7 @@ async function ftsKeysetPaged({ terms = [], phrase = "", text = "", lo, hi, page
 
     if (!items.length) {
       if (DEBUG_GLODA_FAST) {
-        try { console.log(`[glodaSearchFast] page empty; stop. window lo=${loDate.toISOString()} hi=${Number.isFinite(cursorHi.getTime()) ? cursorHi.toISOString() : 'n/a'}`); } catch(_) {}
+        try { glodaDebugLog(`[glodaSearchFast] page empty; stop. window lo=${loDate.toISOString()} hi=${Number.isFinite(cursorHi.getTime()) ? cursorHi.toISOString() : 'n/a'}`); } catch(_) {}
       }
       break;
     }
@@ -353,7 +354,7 @@ async function ftsKeysetPaged({ terms = [], phrase = "", text = "", lo, hi, page
       if (hits.length >= maxTotal) break;
     }
 
-    if (DEBUG_GLODA_FAST) try { console.log(`[glodaSearchFast] page collected=${pageCount} total=${hits.length} nextCursorHi=${oldest != null ? new Date(oldest - 1).toISOString() : 'n/a'}`); } catch(_) {}
+    if (DEBUG_GLODA_FAST) try { glodaDebugLog(`[glodaSearchFast] page collected=${pageCount} total=${hits.length} nextCursorHi=${oldest != null ? new Date(oldest - 1).toISOString() : 'n/a'}`); } catch(_) {}
 
     if (oldest === null) break;
     cursorHi = new Date(oldest - 1); // keyset step
@@ -382,17 +383,17 @@ function parseQueryToTermsAndPhrase(q) {
 // --- Public fast entry (single-string query -> tokens+phrase, two-stage)
 async function searchMessagesQueryImpl(context, queryText, fromIso, toIso, limit = 200, ignoreDate = false) {
   try {
-    if (DEBUG_GLODA_FAST) try { console.log(`[glodaSearchQuery] called q='${String(queryText||'').slice(0,80)}' from='${fromIso||''}' to='${toIso||''}' limit=${limit} ignoreDate=${!!ignoreDate}`); } catch(_) {}
+    if (DEBUG_GLODA_FAST) try { glodaDebugLog(`[glodaSearchQuery] called q='${String(queryText||'').slice(0,80)}' from='${fromIso||''}' to='${toIso||''}' limit=${limit} ignoreDate=${!!ignoreDate}`); } catch(_) {}
 
     // Pass A: date-only
     const candidates = await glodaDateOnly(context, ignoreDate ? null : fromIso, ignoreDate ? null : toIso, 2500 /*cap*/, /*folderObjs*/ null);
-    if (DEBUG_GLODA_FAST) try { console.log(`[glodaSearchQuery] date-only candidates=${candidates.length}`); } catch(_) {}
+    if (DEBUG_GLODA_FAST) try { glodaDebugLog(`[glodaSearchQuery] date-only candidates=${candidates.length}`); } catch(_) {}
 
     const q = String(queryText || "").trim();
     const { terms, phrase } = parseQueryToTermsAndPhrase(q);
-    try { console.log(`[glodaSearchQuery] parsed terms=${terms.length} phrase='${(phrase||'').slice(0,80)}'`); } catch(_) {}
+    try { glodaDebugLog(`[glodaSearchQuery] parsed terms=${terms.length} phrase='${(phrase||'').slice(0,80)}'`); } catch(_) {}
     if (!q || (terms.length === 0 && !phrase)) return candidates.slice(0, Number(limit) || 200);
-    if (DEBUG_GLODA_FAST) try { console.log(`[glodaSearchQuery] using keyset-paginated FTS (candidates=${candidates.length}) terms=${terms.length} phraseLen=${phrase ? phrase.length : 0}`); } catch(_) {}
+    if (DEBUG_GLODA_FAST) try { glodaDebugLog(`[glodaSearchQuery] using keyset-paginated FTS (candidates=${candidates.length}) terms=${terms.length} phraseLen=${phrase ? phrase.length : 0}`); } catch(_) {}
 
     // Pass B: keyset-paginated FTS constrained by same window
     const paged = await ftsKeysetPaged({
@@ -434,24 +435,24 @@ async function glodaQueryInternal(context, q, fromIso, toIso, limit, folderUris,
   try {
     const query = Gloda.newQuery(GlodaConstants.NOUN_MESSAGE);
     try {
-      console.log(
+      glodaDebugLog(
         `[glodaSearch] newQuery ok → has fulltextMatches=${typeof query.fulltextMatches === 'function'} dateHelper=${typeof query.date === 'function'} dateRangeHelper=${typeof query.dateRange === 'function'} dateRangeArity=${typeof query.dateRange === 'function' ? query.dateRange.length : 'n/a'} orderByHelper=${typeof query.orderBy === 'function'} limitHelper=${typeof query.limit === 'function'}`
       );
       try {
         const dateKeys = Object.keys(query).filter(k => /date/i.test(k));
-        console.log(`[glodaSearch] query keys with 'date': ${dateKeys.map(k => `${k}:${typeof query[k]}`).join(', ')}`);
+        glodaDebugLog(`[glodaSearch] query keys with 'date': ${dateKeys.map(k => `${k}:${typeof query[k]}`).join(', ')}`);
       } catch(_) {}
     } catch(_) {}
     try {
       if (ServicesGS?.prefs) {
         const idxOn = ServicesGS.prefs.getBoolPref("mailnews.database.global.indexer.enabled", true);
-        console.log(`[glodaSearch] pref mailnews.database.global.indexer.enabled=${idxOn}`);
+        glodaDebugLog(`[glodaSearch] pref mailnews.database.global.indexer.enabled=${idxOn}`);
       }
     } catch(_) {}
 
     // Fulltext
     if (q && typeof query.fulltextMatches === "function") {
-      try { console.log(`[glodaSearch] applying fulltextMatches for q='${String(q).slice(0,80)}'`); } catch(_) {}
+      try { glodaDebugLog(`[glodaSearch] applying fulltextMatches for q='${String(q).slice(0,80)}'`); } catch(_) {}
       query.fulltextMatches(q);
     } else {
       try { console.warn(`[glodaSearch] fulltextMatches not available on query – skipping text constraint`); } catch(_) {}
@@ -466,7 +467,7 @@ async function glodaQueryInternal(context, q, fromIso, toIso, limit, folderUris,
         let lo = (fromMs != null) ? new Date(fromMs) : new Date(0);
         let hi = (toMsVal != null) ? new Date(toMsVal) : new Date(8640000000000000);
         if (lo > hi) [lo, hi] = [hi, lo];
-        try { console.log(`[glodaSearch] applying date filter lo=${lo.toISOString()} hi=${hi.toISOString()} usingDateRange=${hasDateRangeHelper}`); } catch(_) {}
+        try { glodaDebugLog(`[glodaSearch] applying date filter lo=${lo.toISOString()} hi=${hi.toISOString()} usingDateRange=${hasDateRangeHelper}`); } catch(_) {}
         if (hasDateRangeHelper) {
           // Pass a single [lo, hi] pair; some builds expect an array of ranges.
           query.dateRange([lo, hi]);
@@ -477,7 +478,7 @@ async function glodaQueryInternal(context, q, fromIso, toIso, limit, folderUris,
         console.warn("[glodaSearch] date range apply failed", drErr);
       }
     } else if (ignoreDate) {
-      try { console.log(`[glodaSearch] ignoring date filter for diagnostics`); } catch(_) {}
+      try { glodaDebugLog(`[glodaSearch] ignoring date filter for diagnostics`); } catch(_) {}
     }
 
     // Folder scoping (optional). Gloda wants nsIMsgFolder; resolve via RDF if needed is heavy,
@@ -487,7 +488,7 @@ async function glodaQueryInternal(context, q, fromIso, toIso, limit, folderUris,
     // Apply ordering before limit so top-N is deterministic.
     try {
       const hasOrder = typeof query.orderBy === 'function';
-      console.log(`[glodaSearch] applying orderBy '-date' (if available) hasOrder=${hasOrder}`);
+      glodaDebugLog(`[glodaSearch] applying orderBy '-date' (if available) hasOrder=${hasOrder}`);
       if (hasOrder) {
         try { query.orderBy('-date'); } catch (obErr) { console.warn(`[glodaSearch] orderBy failed`, obErr); }
       }
@@ -498,7 +499,7 @@ async function glodaQueryInternal(context, q, fromIso, toIso, limit, folderUris,
         const hasLim = typeof query.limit === 'function';
         if (hasLim) {
           query.limit(limit);
-          try { console.log(`[glodaSearch] limit applied=${limit}`); } catch(_) {}
+          try { glodaDebugLog(`[glodaSearch] limit applied=${limit}`); } catch(_) {}
         } else {
           try { console.warn(`[glodaSearch] query.limit not available`); } catch(_) {}
         }
@@ -513,7 +514,7 @@ async function glodaQueryInternal(context, q, fromIso, toIso, limit, folderUris,
           onItemsAdded(_items, _collection) {},
           onItemsModified(_items, _collection) {},
           onItemsRemoved(_items, _collection) {},
-          onQueryCompleted(collection) { try { console.log(`[glodaSearch] onQueryCompleted fired`); } catch(_) {} resolve(collection); },
+          onQueryCompleted(collection) { try { glodaDebugLog(`[glodaSearch] onQueryCompleted fired`); } catch(_) {} resolve(collection); },
         };
         query.getCollection(listener);
       } catch (e) {
@@ -526,7 +527,7 @@ async function glodaQueryInternal(context, q, fromIso, toIso, limit, folderUris,
       console.warn("[glodaSearch] empty result or missing items");
       return [];
     }
-    try { console.log(`[glodaSearch] onQueryCompleted: items=${result.items.length}`); } catch(_) {}
+    try { glodaDebugLog(`[glodaSearch] onQueryCompleted: items=${result.items.length}`); } catch(_) {}
 
     for (const item of result.items) {
       try {

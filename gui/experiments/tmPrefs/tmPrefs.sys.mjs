@@ -2,12 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var TM_PREFS_DEBUG = false;
+function tmPrefsDebugLog(...args) { if (TM_PREFS_DEBUG) console.log(...args); }
+
 const { ExtensionCommon: ExtensionCommonTMPrefs } = ChromeUtils.importESModule(
   "resource://gre/modules/ExtensionCommon.sys.mjs"
 );
 var ServicesTMPrefs = globalThis.Services;
 
-console.log("[TabMail tmPrefs] experiment parent script loaded. Services present?", typeof ServicesTMPrefs !== "undefined");
+tmPrefsDebugLog("[TabMail tmPrefs] experiment parent script loaded. Services present?", typeof ServicesTMPrefs !== "undefined");
 
 // Module-local config (keep numeric values centralized for easier tuning/debug).
 const TMPREFS_CONFIG = {
@@ -161,14 +166,14 @@ function enforceUnthreadedIn3PaneWindow(win, enabled, errors, windowTag) {
       const gViewWrapper = contentWin.gViewWrapper;
       if (gViewWrapper && typeof gViewWrapper.showThreaded !== "undefined") {
         gViewWrapper.showThreaded = !enabled;
-        console.log(`[TMDBG Prefs] (apply:${tag}) Set gViewWrapper.showThreaded = ${!enabled}`);
+        tmPrefsDebugLog(`[TMDBG Prefs] (apply:${tag}) Set gViewWrapper.showThreaded = ${!enabled}`);
         return true;
       }
 
       if (gViewWrapper && typeof gViewWrapper.setViewFlags === "function") {
         const flags = enabled ? 0 : 1;
         gViewWrapper.setViewFlags(flags);
-        console.log(`[TMDBG Prefs] (apply:${tag}) Called gViewWrapper.setViewFlags(${flags})`);
+        tmPrefsDebugLog(`[TMDBG Prefs] (apply:${tag}) Called gViewWrapper.setViewFlags(${flags})`);
         return true;
       }
 
@@ -205,7 +210,7 @@ function enforceUnthreadedIn3PaneWindow(win, enabled, errors, windowTag) {
         }
 
         if (ok) {
-          console.log(`[TMDBG Prefs] (apply:${tag}) success after attempt=${attempt} reason=${reason || "unknown"}`);
+          tmPrefsDebugLog(`[TMDBG Prefs] (apply:${tag}) success after attempt=${attempt} reason=${reason || "unknown"}`);
           return;
         }
 
@@ -240,24 +245,24 @@ function enforceUnthreadedIn3PaneWindow(win, enabled, errors, windowTag) {
           contentWin.__tmPrefsFolderURIHandler = () => {
             try {
               const d = describeDisplayedFolder(contentWin);
-              console.log(`[TMDBG Prefs] (event:${tag}) folderURIChanged displayedFolder=${JSON.stringify(d)}`);
+              tmPrefsDebugLog(`[TMDBG Prefs] (event:${tag}) folderURIChanged displayedFolder=${JSON.stringify(d)}`);
             } catch (_) {}
             applyUnthreadedWithRetries("folderURIChanged");
           };
           contentWin.addEventListener("folderURIChanged", contentWin.__tmPrefsFolderURIHandler);
-          console.log(`[TMDBG Prefs] (apply:${tag}) folderURIChanged listener attached`);
+          tmPrefsDebugLog(`[TMDBG Prefs] (apply:${tag}) folderURIChanged listener attached`);
         }
 
         if (!contentWin.__tmPrefsThreadPaneLoadedHandler) {
           contentWin.__tmPrefsThreadPaneLoadedHandler = () => {
             try {
               const d = describeDisplayedFolder(contentWin);
-              console.log(`[TMDBG Prefs] (event:${tag}) threadpane-loaded displayedFolder=${JSON.stringify(d)}`);
+              tmPrefsDebugLog(`[TMDBG Prefs] (event:${tag}) threadpane-loaded displayedFolder=${JSON.stringify(d)}`);
             } catch (_) {}
             applyUnthreadedWithRetries("threadpane-loaded");
           };
           contentWin.addEventListener("threadpane-loaded", contentWin.__tmPrefsThreadPaneLoadedHandler);
-          console.log(`[TMDBG Prefs] (apply:${tag}) threadpane-loaded listener attached`);
+          tmPrefsDebugLog(`[TMDBG Prefs] (apply:${tag}) threadpane-loaded listener attached`);
         }
       } catch (eEvt) {
         errors?.push?.(`(${tag}) contentWin event hook failed: ${String(eEvt)}`);
@@ -276,7 +281,7 @@ function enforceUnthreadedIn3PaneWindow(win, enabled, errors, windowTag) {
           const bit = TMPREFS_CONFIG.unthreaded.viewFlagsThreadedBit;
           if (enabled) view.viewFlags = view.viewFlags & ~bit;
           else view.viewFlags = view.viewFlags | bit;
-          console.log(`[TMDBG Prefs] (apply:${tag}) Set view.viewFlags = ${view.viewFlags}`);
+          tmPrefsDebugLog(`[TMDBG Prefs] (apply:${tag}) Set view.viewFlags = ${view.viewFlags}`);
         }
       }
     }
@@ -315,7 +320,7 @@ function enforceUnthreadedIn3PaneWindow(win, enabled, errors, windowTag) {
         };
         folderTree.__tmPrefsFolderSelectHandler = handler;
         folderTree.addEventListener("select", handler);
-        console.log(`[TMDBG Prefs] (apply:${tag}) folderTree.select listener attached (force unthreaded across folders)`);
+        tmPrefsDebugLog(`[TMDBG Prefs] (apply:${tag}) folderTree.select listener attached (force unthreaded across folders)`);
       }
     } catch (eFolder) {
       errors?.push?.(`(${tag}) folderTree hook failed: ${String(eFolder)}`);
@@ -388,7 +393,7 @@ var tmPrefs = class extends ExtensionCommonTMPrefs.ExtensionAPI {
   }
 
   getAPI(context) {
-    console.log("[TMDBG Prefs] tmPrefs.getAPI called, creating API object");
+    tmPrefsDebugLog("[TMDBG Prefs] tmPrefs.getAPI called, creating API object");
     return {
       tmPrefs: {
         setBool(name, value) {
@@ -493,9 +498,9 @@ var tmPrefs = class extends ExtensionCommonTMPrefs.ExtensionAPI {
 
         // Enable periodic checks across existing accounts (serverN) and set interval
         setPeriodicForAllServers(minutes, enabled) {
-          console.log(`[TMDBG Prefs] setPeriodicForAllServers called: minutes=${minutes}, enabled=${enabled}`);
+          tmPrefsDebugLog(`[TMDBG Prefs] setPeriodicForAllServers called: minutes=${minutes}, enabled=${enabled}`);
           const list = ServicesTMPrefs.prefs.getChildList("mail.server.server");
-          console.log(`[TMDBG Prefs] Found ${list.length} server prefs`);
+          tmPrefsDebugLog(`[TMDBG Prefs] Found ${list.length} server prefs`);
           
           for (const k of list) {
             // Only touch IMAP servers (best-effort detection)
@@ -503,26 +508,26 @@ var tmPrefs = class extends ExtensionCommonTMPrefs.ExtensionAPI {
               let typeVal;
               try { 
                 typeVal = ServicesTMPrefs.prefs.getCharPref(k); 
-                console.log(`[TMDBG Prefs] Server type: ${k} = ${typeVal}`);
+                tmPrefsDebugLog(`[TMDBG Prefs] Server type: ${k} = ${typeVal}`);
               } catch (e) { 
-                console.log(`[TMDBG Prefs] Failed to get server type for ${k}:`, e);
+                tmPrefsDebugLog(`[TMDBG Prefs] Failed to get server type for ${k}:`, e);
                 continue; 
               }
               if (typeVal !== "imap") {
-                console.log(`[TMDBG Prefs] Skipping non-IMAP server: ${k}`);
+                tmPrefsDebugLog(`[TMDBG Prefs] Skipping non-IMAP server: ${k}`);
                 continue;
               }
               const base = k.replace(/\.type$/, "");
-              console.log(`[TMDBG Prefs] Configuring IMAP server: ${base}`);
+              tmPrefsDebugLog(`[TMDBG Prefs] Configuring IMAP server: ${base}`);
               try { 
                 ServicesTMPrefs.prefs.setIntPref(base + ".check_new_mail", enabled ? 1 : 0);
-                console.log(`[TMDBG Prefs] Set ${base}.check_new_mail = ${enabled ? 1 : 0}`);
+                tmPrefsDebugLog(`[TMDBG Prefs] Set ${base}.check_new_mail = ${enabled ? 1 : 0}`);
               } catch (e) {
                 console.warn(`[TMDBG Prefs] Failed to set ${base}.check_new_mail:`, e);
               }
               try { 
                 ServicesTMPrefs.prefs.setIntPref(base + ".check_time", Math.max(1, minutes|0));
-                console.log(`[TMDBG Prefs] Set ${base}.check_time = ${Math.max(1, minutes|0)}`);
+                tmPrefsDebugLog(`[TMDBG Prefs] Set ${base}.check_time = ${Math.max(1, minutes|0)}`);
               } catch (e) {
                 console.warn(`[TMDBG Prefs] Failed to set ${base}.check_time:`, e);
               }
@@ -531,23 +536,23 @@ var tmPrefs = class extends ExtensionCommonTMPrefs.ExtensionAPI {
           // Also set defaults so future accounts inherit it
           try { 
             ServicesTMPrefs.prefs.setIntPref("mail.server.default.check_new_mail", enabled ? 1 : 0);
-            console.log(`[TMDBG Prefs] Set mail.server.default.check_new_mail = ${enabled ? 1 : 0}`);
+            tmPrefsDebugLog(`[TMDBG Prefs] Set mail.server.default.check_new_mail = ${enabled ? 1 : 0}`);
           } catch (e) {
             console.warn(`[TMDBG Prefs] Failed to set mail.server.default.check_new_mail:`, e);
           }
           try { 
             ServicesTMPrefs.prefs.setIntPref("mail.server.default.check_time", Math.max(1, minutes|0));
-            console.log(`[TMDBG Prefs] Set mail.server.default.check_time = ${Math.max(1, minutes|0)}`);
+            tmPrefsDebugLog(`[TMDBG Prefs] Set mail.server.default.check_time = ${Math.max(1, minutes|0)}`);
           } catch (e) {
             console.warn(`[TMDBG Prefs] Failed to set mail.server.default.check_time:`, e);
           }
-          console.log(`[TMDBG Prefs] setPeriodicForAllServers completed`);
+          tmPrefsDebugLog(`[TMDBG Prefs] setPeriodicForAllServers completed`);
         },
 
         // Simple test method to verify bridge works
         test() {
           return new Promise((resolve) => {
-            console.log(`[TMDBG Prefs] test method called - experiment is working!`);
+            tmPrefsDebugLog(`[TMDBG Prefs] test method called - experiment is working!`);
             resolve("tmPrefs experiment is working");
           });
         },
@@ -609,7 +614,7 @@ var tmPrefs = class extends ExtensionCommonTMPrefs.ExtensionAPI {
         // We use the showThreaded setting from the view wrapper.
         setUnthreadedView(enabled) {
           return new Promise((resolve) => {
-            console.log(`[TMDBG Prefs] setUnthreadedView called: enabled=${enabled}`);
+            tmPrefsDebugLog(`[TMDBG Prefs] setUnthreadedView called: enabled=${enabled}`);
             TMPREFS_STATE.unthreadedEnabled = !!enabled;
             let windowsProcessed = 0;
             let successCount = 0;
@@ -639,7 +644,7 @@ var tmPrefs = class extends ExtensionCommonTMPrefs.ExtensionAPI {
                             try {
                               const wt = win.document?.documentElement?.getAttribute("windowtype") || "";
                               if (wt !== "mail:3pane") return;
-                              console.log("[TMDBG Prefs] wm.onOpenWindow: mail:3pane loaded; enforcing unthreaded");
+                              tmPrefsDebugLog("[TMDBG Prefs] wm.onOpenWindow: mail:3pane loaded; enforcing unthreaded");
                               const tmpErrors = [];
                               enforceUnthreadedIn3PaneWindow(win, TMPREFS_STATE.unthreadedEnabled, tmpErrors, "wm");
                               if (tmpErrors.length) {
@@ -672,7 +677,7 @@ var tmPrefs = class extends ExtensionCommonTMPrefs.ExtensionAPI {
               console.warn("[TMDBG Prefs] wm listener setup failed:", eWm);
             }
 
-            console.log(`[TMDBG Prefs] setUnthreadedView complete: ${successCount}/${windowsProcessed} windows, errors: ${errors.length}`);
+            tmPrefsDebugLog(`[TMDBG Prefs] setUnthreadedView complete: ${successCount}/${windowsProcessed} windows, errors: ${errors.length}`);
             resolve({
               success: windowsProcessed > 0,
               windowsProcessed,

@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var TM_CALENDAR_DEBUG = false;
+function tmCalendarDebugLog(...args) { if (TM_CALENDAR_DEBUG) console.log(...args); }
+
 const { ExtensionCommon: ExtensionCommonTMCal } = ChromeUtils.importESModule(
   "resource://gre/modules/ExtensionCommon.sys.mjs"
 );
@@ -326,7 +331,7 @@ function addExdateToItem(item, isoString, startDateLike) {
     exd.date = caldt;
     if (typeof rinfo.appendRecurrenceItem === "function") rinfo.appendRecurrenceItem(exd);
     else if (typeof rinfo.addRecurrenceItem === "function") rinfo.addRecurrenceItem(exd);
-    try { console.log("[tmCalendar] addExdateToItem: added", exd.icalProperty?.value || caldt.toString()); } catch (_) {}
+    try { tmCalendarDebugLog("[tmCalendar] addExdateToItem: added", exd.icalProperty?.value || caldt.toString()); } catch (_) {}
     return true;
   } catch (e) {
     try { console.warn("[tmCalendar] addExdateToItem failed:", e); } catch (_) {}
@@ -386,7 +391,7 @@ function applyRecurrenceToItem(item, recurrenceDetails) {
     } catch (re) {
       try { console.warn("[tmCalendar] applyRecurrenceToItem: recurrenceInfo construction failed:", re); } catch (_) {}
     }
-    console.log("[tmCalendar] applyRecurrenceToItem: applied RRULE=", value);
+    tmCalendarDebugLog("[tmCalendar] applyRecurrenceToItem: applied RRULE=", value);
     return { applied: true, cleared: false, value };
   } catch (e) {
     console.warn("[tmCalendar] applyRecurrenceToItem failed:", e);
@@ -477,7 +482,7 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
               try {
                 const raw = String(occurrence.getProperty?.("TRANSP") || master.getProperty?.("TRANSP") || "");
                 const mapped = raw.toUpperCase() === "TRANSPARENT" ? "free" : "busy";
-                console.log("[tmCalendar] item TRANSP=", raw || "(empty)", "mapped=", mapped);
+                tmCalendarDebugLog("[tmCalendar] item TRANSP=", raw || "(empty)", "mapped=", mapped);
                 return mapped;
               } catch (_) { return "busy"; }
             })(),
@@ -509,16 +514,16 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
               const exd = extractExdatesFromItem(master);
               if (exd) resultItem.exdates = exd;
             } catch (_) {}
-            try { if (rruleStr) console.log("[tmCalendar] item RRULE=", rruleStr, "id=", resultItem.id); } catch (_) {}
+            try { if (rruleStr) tmCalendarDebugLog("[tmCalendar] item RRULE=", rruleStr, "id=", resultItem.id); } catch (_) {}
           } catch (_) {}
           try {
-            console.log(`[tmCalendar] item cal=${String(calObj.id || "")} id=${resultItem.id} title='${resultItem.title}' att=${attendeesArr.length} descLen=${desc.length} url=${url ? "yes" : "no"}`);
+            tmCalendarDebugLog(`[tmCalendar] item cal=${String(calObj.id || "")} id=${resultItem.id} title='${resultItem.title}' att=${attendeesArr.length} descLen=${desc.length} url=${url ? "yes" : "no"}`);
           } catch (_) {}
           allResults.push(resultItem);
         }
       } catch (_) {}
     }
-    console.log(`[tmCalendar] query: total ${allResults.length} items across ${selected.length} calendars in ${Date.now() - tStart}ms`);
+    tmCalendarDebugLog(`[tmCalendar] query: total ${allResults.length} items across ${selected.length} calendars in ${Date.now() - tStart}ms`);
     return allResults;
   } catch (e) {
     // suppressed
@@ -593,12 +598,12 @@ function toCalIDateTime(iso, tzId) {
       if (iso.endsWith('Z') || iso.includes('+00:00') || iso.includes('-00:00')) {
         timezone = tzService.UTC;
         dt.resetTo(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), timezone);
-        console.log(`[tmCalendar] toCalIDateTime: UTC datetime '${iso}' -> ${dt.toString()}`);
+        tmCalendarDebugLog(`[tmCalendar] toCalIDateTime: UTC datetime '${iso}' -> ${dt.toString()}`);
       } else {
         // Use local timezone for offset-aware times (user's input with timezone)
         timezone = overrideTimezone || tzService.defaultTimezone || tzService.UTC;
         dt.resetTo(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), timezone);
-        console.log(`[tmCalendar] toCalIDateTime: Offset-aware '${iso}' -> ${dt.toString()} in ${timezone.tzid || 'UTC'}`);
+        tmCalendarDebugLog(`[tmCalendar] toCalIDateTime: Offset-aware '${iso}' -> ${dt.toString()} in ${timezone.tzid || 'UTC'}`);
       }
     } else {
       // For naive times (no timezone), use the override if present, else the
@@ -619,7 +624,7 @@ function toCalIDateTime(iso, tzId) {
         minutes = Number(m[5] || "0");
         seconds = Number(m[6] || "0");
         dt.resetTo(year, month, day, hours, minutes, seconds, timezone);
-        console.log(`[tmCalendar] toCalIDateTime: Naive datetime '${iso}' anchored in '${timezone.tzid}' (override) -> ${dt.toString()}`);
+        tmCalendarDebugLog(`[tmCalendar] toCalIDateTime: Naive datetime '${iso}' anchored in '${timezone.tzid}' (override) -> ${dt.toString()}`);
       } else {
         // Default behaviour: parse via JS Date (uses TB's local zone) and
         // copy wall-clock components — DST applied by the calendar API.
@@ -633,7 +638,7 @@ function toCalIDateTime(iso, tzId) {
         dt.resetTo(year, month, day, hours, minutes, seconds, timezone);
         const offset = localDate.getTimezoneOffset();
         const isDST = offset < (new Date(year, 0, 1).getTimezoneOffset());
-        console.log(`[tmCalendar] toCalIDateTime: Naive datetime '${iso}' -> ${dt.toString()} in ${timezone.tzid || 'UTC'} (UTC offset: ${-offset/60}hrs, DST: ${isDST})`);
+        tmCalendarDebugLog(`[tmCalendar] toCalIDateTime: Naive datetime '${iso}' -> ${dt.toString()} in ${timezone.tzid || 'UTC'} (UTC offset: ${-offset/60}hrs, DST: ${isDST})`);
       }
     }
 
@@ -872,7 +877,7 @@ function wireEventEditorCallbacks(onAccept, onCancel) {
       const targetWin = iframe?.contentWindow || dlg;
       targetWin.onAcceptCallback = onAccept;
       targetWin.onCancelCallback = onCancel;
-      console.log("[tmCalendar] wireEventEditorCallbacks: wired callbacks to dialog iframe");
+      tmCalendarDebugLog("[tmCalendar] wireEventEditorCallbacks: wired callbacks to dialog iframe");
       return true;
     }
 
@@ -898,7 +903,7 @@ function wireEventEditorCallbacks(onAccept, onCancel) {
         if (targetWin) {
           targetWin.onAcceptCallback = onAccept;
           targetWin.onCancelCallback = onCancel;
-          console.log("[tmCalendar] wireEventEditorCallbacks: wired callbacks to tab iframe after", attempts, "attempts");
+          tmCalendarDebugLog("[tmCalendar] wireEventEditorCallbacks: wired callbacks to tab iframe after", attempts, "attempts");
           try { timer.cancel(); } catch {}
           return;
         }
@@ -987,11 +992,11 @@ async function sendCalendarInvitations(event, calendar, method = "REQUEST", orga
     try { itip.targetCalendar = calendar; } catch {}
 
     // Debug logging to verify the iTIP item is properly constructed
-    console.log("[tmCalendar] iTIP QI ok?", (() => { try { itip.QueryInterface(Ci.calIItipItem); return true; } catch { return false; } })());
-    console.log("[tmCalendar] has getItemList?", typeof itip.getItemList === "function");
+    tmCalendarDebugLog("[tmCalendar] iTIP QI ok?", (() => { try { itip.QueryInterface(Ci.calIItipItem); return true; } catch { return false; } })());
+    tmCalendarDebugLog("[tmCalendar] has getItemList?", typeof itip.getItemList === "function");
     try {
       const list = itip.getItemList();
-      console.log("[tmCalendar] itemList size:", Array.isArray(list) ? list.length : "(not array)");
+      tmCalendarDebugLog("[tmCalendar] itemList size:", Array.isArray(list) ? list.length : "(not array)");
     } catch (e) {
       console.warn("[tmCalendar] getItemList threw:", e);
     }
@@ -1003,7 +1008,7 @@ async function sendCalendarInvitations(event, calendar, method = "REQUEST", orga
     try {
       transport = Cc["@mozilla.org/calendar/itip-transport;1"]
         .getService(Ci.calIItipTransport);
-      console.log("[tmCalendar] Using MAIL iTIP transport");
+      tmCalendarDebugLog("[tmCalendar] Using MAIL iTIP transport");
     } catch (e) {
       console.error("[tmCalendar] No mail transport available:", e);
       return { ok: false, error: "no mail transport available" };
@@ -1020,7 +1025,7 @@ async function sendCalendarInvitations(event, calendar, method = "REQUEST", orga
         QueryInterface: ChromeUtils.generateQI([Ci.calIItipTransportCallback]),
         onResult: (_op, rc, detail) => {
           if (Components.isSuccessCode(rc)) {
-            console.log(`[tmCalendar] sendCalendarInvitations: sent ${method} to ${recipients.length} recipients`);
+            tmCalendarDebugLog(`[tmCalendar] sendCalendarInvitations: sent ${method} to ${recipients.length} recipients`);
             resolve({ ok: true, recipients: recipients.length, method });
           } else {
             console.error(`[tmCalendar] sendCalendarInvitations: failed to send ${method}:`, detail || rc);
@@ -1085,7 +1090,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const s = String(start || "");
             const e = String(end || "");
             const ids = Array.isArray(calendarIds) ? calendarIds.map(String) : [];
-            console.log(`[tmCalendar] queryCalendarItems invoked start='${s}' end='${e}' calIds=${JSON.stringify(ids)}`);
+            tmCalendarDebugLog(`[tmCalendar] queryCalendarItems invoked start='${s}' end='${e}' calIds=${JSON.stringify(ids)}`);
             const res = await queryCalendarItemsInternal(s, e, ids);
             return res;
           } catch (e) {
@@ -1121,7 +1126,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               };
             });
             
-            console.log(`[tmCalendar] getCalendars: found ${calendars.length} calendars`);
+            tmCalendarDebugLog(`[tmCalendar] getCalendars: found ${calendars.length} calendars`);
             return { ok: true, calendars };
           } catch (e) {
             console.error("[tmCalendar] getCalendars failed:", e);
@@ -1217,7 +1222,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 try {
                   const raw = String(targetEvent.getProperty?.("TRANSP") || "");
                   const mapped = raw.toUpperCase() === "TRANSPARENT" ? "free" : "busy";
-                  console.log("[tmCalendar] getCalendarEventDetails: TRANSP=", raw || "(empty)", "mapped=", mapped);
+                  tmCalendarDebugLog("[tmCalendar] getCalendarEventDetails: TRANSP=", raw || "(empty)", "mapped=", mapped);
                   return mapped;
                 } catch (_) { return "busy"; }
               })()
@@ -1278,7 +1283,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                     if (item) {
                       targetEvent = item;
                       targetCalendar = cal;
-                      console.log(`[tmCalendar] deleteCalendarEvent: found event ${eventId} in calendar: ${calendar_id}`);
+                      tmCalendarDebugLog(`[tmCalendar] deleteCalendarEvent: found event ${eventId} in calendar: ${calendar_id}`);
                     }
                   } catch (e) {
                     console.warn(`[tmCalendar] deleteCalendarEvent: error finding event in calendar ${calendar_id}:`, e);
@@ -1294,7 +1299,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                     if (item) {
                       targetEvent = item;
                       targetCalendar = cal;
-                      console.log(`[tmCalendar] deleteCalendarEvent: found event ${eventId} in calendar: ${cal.id}`);
+                      tmCalendarDebugLog(`[tmCalendar] deleteCalendarEvent: found event ${eventId} in calendar: ${cal.id}`);
                       break;
                     }
                   } catch (e) {
@@ -1333,22 +1338,22 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 const attendees = targetEvent.getAttendees ? targetEvent.getAttendees() : [];
                 if (attendees.length > 0) {
                   const policy = getInvitePolicy(targetCalendar);
-                  console.log(`[tmCalendar] deleteCalendarEvent: invite policy=${policy}`);
+                  tmCalendarDebugLog(`[tmCalendar] deleteCalendarEvent: invite policy=${policy}`);
                   if (policy === "mail") {
-                    console.log("[tmCalendar] deleteCalendarEvent: iMIP cancellation invitations not implemented yet");
+                    tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: iMIP cancellation invitations not implemented yet");
                     invitationResult = { ok: false, error: "Email cancellation invitations via Thunderbird are not implemented yet. Please contact the developer or wait for future releases. For now, you can delete events without sending cancellation notices." };
                     // OLD CODE that was WIP -- does not work yet and fails to find iMIP transport
                     // invitationResult = await sendCalendarInvitations(targetEvent, targetCalendar, "CANCEL", details.organizer_email);
                   } else {
-                    console.log("[tmCalendar] deleteCalendarEvent: relying on provider/server notifications; no cancellation emails sent");
+                    tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: relying on provider/server notifications; no cancellation emails sent");
                     invitationResult = { ok: true, message: "provider/server notifications assumed" };
                   }
                 }
               }
               
-              console.log("[tmCalendar] deleteCalendarEvent: deleting event:", eventId);
+              tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: deleting event:", eventId);
               await targetCalendar.deleteItem(targetEvent);
-              console.log("[tmCalendar] deleteCalendarEvent: event deleted successfully");
+              tmCalendarDebugLog("[tmCalendar] deleteCalendarEvent: event deleted successfully");
               // Return the item's own id
               const returnedId = String(targetEvent.id || "");
               return { 
@@ -1409,7 +1414,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               const transVal = requested === "free" ? "TRANSPARENT" : "OPAQUE";
               const before = String(ev.getProperty?.("TRANSP") || "");
               ev.setProperty("TRANSP", transVal);
-              console.log("[tmCalendar] createCalendarEvent: TRANSP set from", before || "(none)", "to", transVal);
+              tmCalendarDebugLog("[tmCalendar] createCalendarEvent: TRANSP set from", before || "(none)", "to", transVal);
             } catch (e) {
               console.warn("[tmCalendar] createCalendarEvent: failed to set TRANSP:", e);
             }
@@ -1443,39 +1448,39 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // Recurrence
             if (details.recurrence && typeof details.recurrence === "object") {
               const recRes = applyRecurrenceToItem(ev, details.recurrence);
-              try { if (recRes.value) console.log("[tmCalendar] createCalendarEvent: RRULE=", recRes.value); } catch (_) {}
+              try { if (recRes.value) tmCalendarDebugLog("[tmCalendar] createCalendarEvent: RRULE=", recRes.value); } catch (_) {}
             }
 
             // Persist (returns the created item)
             const created = await cal.addItem(ev);
-            console.log("[tmCalendar] createCalendarEvent: created event with id:", created?.id);
-            try { const transpSaved = String(created?.getProperty?.("TRANSP") || ""); console.log("[tmCalendar] createCalendarEvent: initial TRANSP on created:", transpSaved || "(empty)"); } catch (_) {}
+            tmCalendarDebugLog("[tmCalendar] createCalendarEvent: created event with id:", created?.id);
+            try { const transpSaved = String(created?.getProperty?.("TRANSP") || ""); tmCalendarDebugLog("[tmCalendar] createCalendarEvent: initial TRANSP on created:", transpSaved || "(empty)"); } catch (_) {}
             try {
               let rruleStr = "";
               try { rruleStr = String(created?.getProperty?.("RRULE") || ev?.getProperty?.("RRULE") || ""); } catch (_) {}
               const rApplied = !!(rruleStr && rruleStr.includes("FREQ="));
-              console.log("[tmCalendar] createCalendarEvent: recurrence applied?", rApplied, rruleStr ? `RRULE=${rruleStr}` : "(no RRULE)");
+              tmCalendarDebugLog("[tmCalendar] createCalendarEvent: recurrence applied?", rApplied, rruleStr ? `RRULE=${rruleStr}` : "(no RRULE)");
               // Verify persisted copy by re-fetching from calendar
               try {
                 const verify = created?.id ? await cal.getItem(created.id) : null;
                 let persisted = "";
                 try { persisted = String(verify?.getProperty?.("RRULE") || ""); } catch (_) {}
-                if (persisted) console.log("[tmCalendar] createCalendarEvent: persisted RRULE=", persisted);
-                try { const transp = String(verify?.getProperty?.("TRANSP") || ""); console.log("[tmCalendar] createCalendarEvent: persisted TRANSP=", transp || "(empty)"); } catch (_) {}
+                if (persisted) tmCalendarDebugLog("[tmCalendar] createCalendarEvent: persisted RRULE=", persisted);
+                try { const transp = String(verify?.getProperty?.("TRANSP") || ""); tmCalendarDebugLog("[tmCalendar] createCalendarEvent: persisted TRANSP=", transp || "(empty)"); } catch (_) {}
               } catch (ve) { console.warn("[tmCalendar] createCalendarEvent: verify fetch failed:", ve); }
             } catch (_) {}
             
             let invitationResult = null;
             if (details.send_invitations && (details.attendees?.length > 0)) {
               const policy = getInvitePolicy(cal);
-              console.log(`[tmCalendar] createCalendarEvent: invite policy=${policy}`);
+              tmCalendarDebugLog(`[tmCalendar] createCalendarEvent: invite policy=${policy}`);
               if (policy === "mail") {
-                console.log("[tmCalendar] createCalendarEvent: iMIP invitations not implemented yet");
+                tmCalendarDebugLog("[tmCalendar] createCalendarEvent: iMIP invitations not implemented yet");
                 invitationResult = { ok: false, error: "Email invitations via Thunderbird are not implemented yet. Please contact the developer or wait for future releases. For now, you can create events without sending invitations." };
                 // OLD CODE that was WIP -- does not work yet and fails to find iMIP transport
                 // invitationResult = await sendCalendarInvitations(created || ev, cal, "REQUEST", details.organizer_email);
               } else {
-                console.log("[tmCalendar] createCalendarEvent: relying on provider/server notifications; no iMIP sent");
+                tmCalendarDebugLog("[tmCalendar] createCalendarEvent: relying on provider/server notifications; no iMIP sent");
                 invitationResult = { ok: true, message: "provider/server notifications assumed" };
               }
             }
@@ -1565,14 +1570,14 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                           const occ = rinfo.getOccurrenceFor(rid);
                           if (occ) {
                             item = occ; cal = targetCal;
-                            console.log(`[tmCalendar] modifyCalendarEvent: found occurrence for recurrenceId: ${recurIdStr} in calendar: ${calendar_id}`);
+                            tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found occurrence for recurrenceId: ${recurIdStr} in calendar: ${calendar_id}`);
                           }
                         }
                       }
                     } else {
                       // Non-recurring or series-parent edit
                       item = parent; cal = targetCal;
-                      console.log(`[tmCalendar] modifyCalendarEvent: found master item: ${eventId} in calendar: ${calendar_id}`);
+                      tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found master item: ${eventId} in calendar: ${calendar_id}`);
                     }
                   }
                 } catch (e) {
@@ -1600,11 +1605,11 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                     const occ = rinfo.getOccurrenceFor(rid);
                     if (!occ) { continue; }
                     item = occ; cal = c;
-                    console.log(`[tmCalendar] modifyCalendarEvent: found occurrence for recurrenceId: ${recurIdStr} in calendar: ${c.id}`);
+                    tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found occurrence for recurrenceId: ${recurIdStr} in calendar: ${c.id}`);
                   } else {
                     // Non-recurring or series-parent edit
                     item = parent; cal = c;
-                    console.log(`[tmCalendar] modifyCalendarEvent: found master item: ${eventId} in calendar: ${c.id}`);
+                    tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found master item: ${eventId} in calendar: ${c.id}`);
                   }
                   if (item) break;
                 } catch (e) {
@@ -1618,7 +1623,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // Use proper target selection for editing
             const { base, scope, isOccurrence, hasSeries } = pickEditTarget(item, details);
             const clone = base.clone();
-            console.log(`[tmCalendar] modifyCalendarEvent: editing target - scope: ${scope}, isOccurrence: ${isOccurrence}, hasSeries: ${hasSeries}`);
+            tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: editing target - scope: ${scope}, isOccurrence: ${isOccurrence}, hasSeries: ${hasSeries}`);
             
             // Capture original RRULE for preservation when only adding EXDATEs
             let originalRrule = "";
@@ -1640,7 +1645,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               patch,
               toCalIDateTime,
               editTzOverride,
-              log: (m) => console.log("[tmCalendar] modifyCalendarEvent: " + m),
+              log: (m) => tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: " + m),
             });
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
@@ -1651,7 +1656,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 const transVal = requested === "free" ? "TRANSPARENT" : "OPAQUE";
                 const before = String(clone.getProperty?.("TRANSP") || "");
                 clone.setProperty("TRANSP", transVal);
-                console.log("[tmCalendar] modifyCalendarEvent: TRANSP set from", before || "(none)", "to", transVal);
+                tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: TRANSP set from", before || "(none)", "to", transVal);
               } catch (e) {
                 console.warn("[tmCalendar] modifyCalendarEvent: failed to set TRANSP:", e);
               }
@@ -1674,7 +1679,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               let textDesc = hasHtml ? stripHtmlToText(patch.description_html) 
                                      : patch.description;
 
-              console.log(`[tmCalendar] modifyCalendarEvent: setting description to: ${textDesc}`);
+              tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: setting description to: ${textDesc}`);
               
               try { 
                 // 1) Set both the typed field and the ICS property
@@ -1687,7 +1692,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                   clone.setProperty("X-ALT-DESC", String(patch.description_html));
                   // Some old items carry this flag; keep it aligned with HTML presence
                   clone.setProperty("X-MOZ-HTML", "true");
-                  console.log(`[tmCalendar] modifyCalendarEvent: set HTML alt description (length: ${patch.description_html.length})`);
+                  tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: set HTML alt description (length: ${patch.description_html.length})`);
                 } else {
                   // No HTML given → make sure old HTML doesn't override your new TEXT
                   if (typeof clone.deleteProperty === "function") {
@@ -1695,16 +1700,16 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                     clone.deleteProperty("X-MOZ-HTML");
                     // Seen in the wild with some add-ons:
                     clone.deleteProperty("X-MOZ-ALT-DESC");
-                    console.log(`[tmCalendar] modifyCalendarEvent: cleared HTML alt description properties`);
+                    tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: cleared HTML alt description properties`);
                   }
                 }
                 
                 // Log what will actually be saved
-                console.log(`[tmCalendar] modifyCalendarEvent: will save DESCRIPTION length = ${String(clone.getProperty?.("DESCRIPTION")||"").length}, X-ALT-DESC present = ${!!clone.getProperty?.("X-ALT-DESC")}`);
+                tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: will save DESCRIPTION length = ${String(clone.getProperty?.("DESCRIPTION")||"").length}, X-ALT-DESC present = ${!!clone.getProperty?.("X-ALT-DESC")}`);
                 
                 // Verify the description was set on the clone
                 const verifyDesc = String(clone.getProperty?.("DESCRIPTION") || "");
-                console.log(`[tmCalendar] modifyCalendarEvent: description verification on clone - length: ${verifyDesc.length}, matches: ${verifyDesc === textDesc}`);
+                tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: description verification on clone - length: ${verifyDesc.length}, matches: ${verifyDesc === textDesc}`);
                 if (verifyDesc !== textDesc) {
                   console.warn(`[tmCalendar] modifyCalendarEvent: description mismatch! Set: "${textDesc.slice(0,50)}..." Got: "${verifyDesc.slice(0,50)}..."`);
                 }
@@ -1738,7 +1743,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // Recurrence update
             if (Object.prototype.hasOwnProperty.call(patch, "recurrence")) {
               const recRes = applyRecurrenceToItem(clone, patch.recurrence);
-              try { if (recRes.value) console.log("[tmCalendar] modifyCalendarEvent: RRULE=", recRes.value); } catch (_) {}
+              try { if (recRes.value) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: RRULE=", recRes.value); } catch (_) {}
               // If recurrence explicitly set, refresh captured RRULE
               try { originalRrule = String(clone.getProperty?.("RRULE") || originalRrule || ""); } catch (_) {}
             }
@@ -1753,7 +1758,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 for (const iso of details.exdates_add) {
                   try { if (addExdateToItem(parent, String(iso), parent.startDate)) added += 1; } catch (_) {}
                 }
-                console.log("[tmCalendar] modifyCalendarEvent: EXDATE added to parent, count=", added);
+                tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to parent, count=", added);
                 await parent.calendar.modifyItem(parent, parentOld);
               } else {
                 // We're already editing the series, add to clone
@@ -1762,7 +1767,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                   for (const iso of details.exdates_add) {
                     try { if (addExdateToItem(clone, String(iso), clone.startDate)) added += 1; } catch (_) {}
                   }
-                  console.log("[tmCalendar] modifyCalendarEvent: EXDATE added to series, count=", added);
+                  tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: EXDATE added to series, count=", added);
                 } catch (xe) {
                   console.warn("[tmCalendar] modifyCalendarEvent: failed to add EXDATE:", xe);
                 }
@@ -1774,15 +1779,15 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               const currentRrule = String(clone.getProperty?.("RRULE") || "");
               if (originalRrule && !currentRrule) {
                 clone.setProperty("RRULE", originalRrule);
-                console.log("[tmCalendar] modifyCalendarEvent: preserved RRULE from base");
+                tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: preserved RRULE from base");
               }
             } catch (_) {}
 
             // IMPORTANT: Don't set organizer during modify operations to avoid provider rejections
 
             // Log complete state before save
-            console.log("[tmCalendar] modifyCalendarEvent: attempting calendar modification...");
-            console.log("BEFORE save:",
+            tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: attempting calendar modification...");
+            tmCalendarDebugLog("BEFORE save:",
               "descriptionText.len=", (clone.descriptionText || "").length,
               "DESCRIPTION.len=", (clone.getProperty?.("DESCRIPTION")||"").length,
               "ALT.len=",  (clone.getProperty?.("X-ALT-DESC")||"").length,
@@ -1790,19 +1795,19 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             
             // Always modify using the same calendar as BASE
             const modified = await base.calendar.modifyItem(clone, base);
-            console.log("[tmCalendar] modifyCalendarEvent: modifyItem completed");
-            console.log("[tmCalendar] modifyCalendarEvent: modified event with id:", modified?.id);
+            tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modifyItem completed");
+            tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: modified event with id:", modified?.id);
             
             // Verify description was persisted after modifyItem - re-fetch fresh copy
             try {
               const fresh = await base.calendar.getItem(modified.id);
-              console.log("AFTER save (fresh):",
+              tmCalendarDebugLog("AFTER save (fresh):",
                 "descriptionText.len=", (fresh?.descriptionText || "").length,
                 "DESCRIPTION.len=",    (fresh?.getProperty?.("DESCRIPTION") || "").length,
                 "match=", (String(fresh?.descriptionText || "") === String(fresh?.getProperty?.("DESCRIPTION") || "")),
                 "ALT.len=",  (fresh?.getProperty?.("X-ALT-DESC")||"").length,
                 "X-MOZ-HTML=", fresh?.getProperty?.("X-MOZ-HTML") || "");
-              try { const transp = String(fresh?.getProperty?.("TRANSP") || ""); console.log("[tmCalendar] modifyCalendarEvent: persisted TRANSP=", transp || "(empty)"); } catch (_) {}
+              try { const transp = String(fresh?.getProperty?.("TRANSP") || ""); tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: persisted TRANSP=", transp || "(empty)"); } catch (_) {}
               
               const savedDescText = String(fresh?.descriptionText || "");
               const savedDescProp = String(fresh?.getProperty?.("DESCRIPTION") || "");
@@ -1811,7 +1816,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               if (typeof patch.description === "string") {
                 const textMatches = savedDescText === patch.description;
                 const propMatches = savedDescProp === patch.description;
-                console.log(`[tmCalendar] modifyCalendarEvent: descriptionText matches: ${textMatches}, DESCRIPTION matches: ${propMatches}`);
+                tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: descriptionText matches: ${textMatches}, DESCRIPTION matches: ${propMatches}`);
                 if (!textMatches && !propMatches) {
                   console.warn(`[tmCalendar] modifyCalendarEvent: BOTH DESCRIPTION FIELDS MISMATCH! Expected: "${patch.description.slice(0,50)}..." Got descriptionText: "${savedDescText.slice(0,50)}..." Got DESCRIPTION: "${savedDescProp.slice(0,50)}..."`);
                 }
@@ -1826,15 +1831,15 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               let rruleStr = "";
               try { rruleStr = String(modified?.getProperty?.("RRULE") || clone?.getProperty?.("RRULE") || ""); } catch (_) {}
               const rApplied = !!(rruleStr && rruleStr.includes("FREQ="));
-              console.log("[tmCalendar] modifyCalendarEvent: recurrence applied?", rApplied, rruleStr ? `RRULE=${rruleStr}` : "(no RRULE)");
+              tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: recurrence applied?", rApplied, rruleStr ? `RRULE=${rruleStr}` : "(no RRULE)");
               // Verify persisted copy by re-fetching from calendar
               try {
                 const verify = modified?.id ? await cal.getItem(modified.id) : null;
                 let persisted = "";
                 try { persisted = String(verify?.getProperty?.("RRULE") || ""); } catch (_) {}
-                if (persisted) console.log("[tmCalendar] modifyCalendarEvent: persisted RRULE=", persisted);
+                if (persisted) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: persisted RRULE=", persisted);
                 const exd = verify ? extractExdatesFromItem(verify) : "";
-                if (exd) console.log("[tmCalendar] modifyCalendarEvent: persisted EXDATE=", exd);
+                if (exd) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: persisted EXDATE=", exd);
               } catch (ve) { console.warn("[tmCalendar] modifyCalendarEvent: verify fetch failed:", ve); }
             } catch (_) {}
             
@@ -1843,14 +1848,14 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               const attendees = modified.getAttendees ? modified.getAttendees() : [];
               if (attendees.length > 0) {
                 const policy = getInvitePolicy(cal);
-                console.log(`[tmCalendar] modifyCalendarEvent: invite policy=${policy}`);
+                tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: invite policy=${policy}`);
                 if (policy === "mail") {
-                  console.log("[tmCalendar] modifyCalendarEvent: iMIP invitations not implemented yet");
+                  tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: iMIP invitations not implemented yet");
                   invitationResult = { ok: false, error: "Email invitations via Thunderbird are not implemented yet. Please contact the developer or wait for future releases. For now, you can modify events without sending invitations." };
                   // OLD CODE that was WIP -- does not work yet and fails to find iMIP transport
                   // invitationResult = await sendCalendarInvitations(created || ev, cal, "REQUEST", details.organizer_email);
                 } else {
-                  console.log("[tmCalendar] modifyCalendarEvent: relying on provider/server notifications; no iMIP sent");
+                  tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: relying on provider/server notifications; no iMIP sent");
                   invitationResult = { ok: true, message: "provider/server notifications assumed" };
                 }
               }
@@ -2059,7 +2064,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             let cappedMaster;
             try {
               cappedMaster = await cal.modifyItem(cappedClone, master);
-              console.log(`[tmCalendar] splitRecurringEvent: capped master series ${eventId} with UNTIL=${untilValue}`);
+              tmCalendarDebugLog(`[tmCalendar] splitRecurringEvent: capped master series ${eventId} with UNTIL=${untilValue}`);
             } catch (e) {
               return { ok: false, error: `failed to cap master series: ${e}` };
             }
@@ -2187,13 +2192,13 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             let created;
             try {
               created = await cal.addItem(newEv);
-              console.log("[tmCalendar] splitRecurringEvent: created new series with id:", created?.id);
+              tmCalendarDebugLog("[tmCalendar] splitRecurringEvent: created new series with id:", created?.id);
             } catch (e) {
               // Revert master cap — best-effort recovery so we don't leave the calendar
               // in a "series ended, no replacement" state.
               try {
                 await cal.modifyItem(master, cappedMaster);
-                console.log("[tmCalendar] splitRecurringEvent: reverted master cap after new-series creation failure");
+                tmCalendarDebugLog("[tmCalendar] splitRecurringEvent: reverted master cap after new-series creation failure");
               } catch (revertErr) {
                 console.error("[tmCalendar] splitRecurringEvent: REVERT FAILED — master is capped but new series was not created:", revertErr);
               }
@@ -2204,7 +2209,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             let invitationResult = null;
             if (sendInvites && attendeesToSet.length > 0) {
               const policy = getInvitePolicy(cal);
-              console.log(`[tmCalendar] splitRecurringEvent: invite policy=${policy}`);
+              tmCalendarDebugLog(`[tmCalendar] splitRecurringEvent: invite policy=${policy}`);
               if (policy === "mail") {
                 invitationResult = { ok: false, error: "Email invitations via Thunderbird are not implemented yet." };
               } else {

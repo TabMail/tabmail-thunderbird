@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var KEY_OVERRIDE_DEBUG = false;
+function keyOverrideDebugLog(...args) { if (KEY_OVERRIDE_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportKO } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -19,7 +24,7 @@ const TAB_EVENT_KO = "keyOverrideTabPressed";
 // Refuse larger actions as a whole instead of stalling keydown or acting partially.
 const MAX_TAB_ACTION_MESSAGES_KO = 100;
 
-console.log("[TabMail keyOverride] experiment parent script loaded. Services present?", typeof ServicesKO !== "undefined");
+keyOverrideDebugLog("[TabMail keyOverride] experiment parent script loaded. Services present?", typeof ServicesKO !== "undefined");
 
 var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
   constructor(extension) {
@@ -55,7 +60,7 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
 
   onShutdown(isAppShutdown) {
     // This is called by Thunderbird on disable/update/uninstall/app shutdown
-    console.log("[TabMail KeyOverride] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
+    keyOverrideDebugLog("[TabMail KeyOverride] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
     for (const subscription of this._tabSubscriptions) {
       try { this.extension.off(TAB_EVENT_KO, subscription.listener); } catch (_) {}
     }
@@ -63,7 +68,7 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
     try {
       if (this._cleanup) {
         this._cleanup();
-        console.log("[TabMail KeyOverride] ✓ Cleanup completed via onShutdown");
+        keyOverrideDebugLog("[TabMail KeyOverride] ✓ Cleanup completed via onShutdown");
       }
     } catch (e) {
       console.error("[TabMail KeyOverride] onShutdown cleanup failed:", e);
@@ -116,18 +121,18 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
     function addWindowKeyHook(win) {
       // Only register if not already registered (prevents hot reload leak)
       if (win.__keyOverrideHandler) {
-        console.log("[TabMail KeyOverride] Key listener already registered for window, skipping");
+        keyOverrideDebugLog("[TabMail KeyOverride] Key listener already registered for window, skipping");
         return;
       }
       
-      console.log("[TabMail KeyOverride] Installing WINDOW-level key listener in", win.location.href);
+      keyOverrideDebugLog("[TabMail KeyOverride] Installing WINDOW-level key listener in", win.location.href);
       
       // Store handler for cleanup (fixes hot reload leak)
       win.__keyOverrideHandler = evt => {
-        console.log("[TabMail KeyOverride] Window-level keydown:", evt.key, "code:", evt.code, "ctrl?", evt.ctrlKey, "alt?", evt.altKey, "meta?", evt.metaKey, "shift?", evt.shiftKey, "target", evt.target);
+        keyOverrideDebugLog("[TabMail KeyOverride] Window-level keydown:", evt.key, "code:", evt.code, "ctrl?", evt.ctrlKey, "alt?", evt.altKey, "meta?", evt.metaKey, "shift?", evt.shiftKey, "target", evt.target);
         // Chat hotkey migration: handled by MV3 commands now. Keep log for diagnostics and do NOT intercept.
         if (evt.code === "KeyL" && evt.altKey && (evt.metaKey || evt.ctrlKey)) {
-          console.log("[TabMail KeyOverride] Chat hotkey detected (MV3 commands will handle); not intercepting");
+          keyOverrideDebugLog("[TabMail KeyOverride] Chat hotkey detected (MV3 commands will handle); not intercepting");
           // Intentionally not preventing default so MV3 commands receives this.
         }
         // Only bare Tab is an action. Thunderbird owns navigation chords.
@@ -135,7 +140,7 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
           if (!extensionApi._tabSubscriptions.size) return;
           const messageIds = selectedMessageIds(win);
           if (!messageIds.length) return;
-          console.log("[TabMail KeyOverride] Tab detected");
+          keyOverrideDebugLog("[TabMail KeyOverride] Tab detected");
           extensionApi.extension.emit(TAB_EVENT_KO, { messageIds });
           evt.preventDefault();
           evt.stopPropagation();
@@ -151,12 +156,12 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
 
     // Cleanup function called by both onShutdown and keyOverride.shutdown()
     const cleanup = () => {
-      console.log("[TabMail KeyOverride] cleanup() called - cleaning up all resources.");
+      keyOverrideDebugLog("[TabMail KeyOverride] cleanup() called - cleaning up all resources.");
       
       // Unregister window listener (may already be unregistered from init)
       try {
         ExtensionSupportKO.unregisterWindowListener(listenerId);
-        console.log("[TabMail keyOverride] Unregistered window listener:", listenerId);
+        keyOverrideDebugLog("[TabMail keyOverride] Unregistered window listener:", listenerId);
       } catch (e) {
         // Already unregistered, ignore
       }
@@ -170,7 +175,7 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
                 // Remove the actual event listener (fixes hot reload leak)
                 win.removeEventListener("keydown", win.__keyOverrideHandler, true);
                 delete win.__keyOverrideHandler;
-                console.log("[TabMail KeyOverride] Removed key listener from window", win.location?.href);
+                keyOverrideDebugLog("[TabMail KeyOverride] Removed key listener from window", win.location?.href);
               }
             } catch (_) {}
           }
@@ -181,7 +186,7 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
       
       // Reset initialization flag so init() can run again on reload
       isInitialized = false;
-      console.log("[TabMail KeyOverride] cleanup() complete");
+      keyOverrideDebugLog("[TabMail KeyOverride] cleanup() complete");
     };
 
     // Make cleanup available to onShutdown
@@ -208,11 +213,11 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
         init() {
           // Guard against multiple initializations (prevents duplicate window listeners)
           if (isInitialized) {
-            console.log("[TabMail KeyOverride] Already initialized, skipping");
+            keyOverrideDebugLog("[TabMail KeyOverride] Already initialized, skipping");
             return;
           }
           
-          console.log("[TabMail keyOverride] init() called. Services is", ServicesKO);
+          keyOverrideDebugLog("[TabMail keyOverride] init() called. Services is", ServicesKO);
 
           if (!ServicesKO || !ServicesKO.wm) {
             console.error("[TabMail keyOverride] Services or window mediator not available!");
@@ -233,15 +238,15 @@ var keyOverride = class extends ExtensionCommonKO.ExtensionAPIPersistent {
           ExtensionSupportKO.registerWindowListener(listenerId, {
             chromeURLs: ["chrome://messenger/content/messenger.xhtml"],
             onLoadWindow: (win) => {
-              console.log("[TabMail keyOverride] onLoadWindow fired for", win.location.href);
+              keyOverrideDebugLog("[TabMail keyOverride] onLoadWindow fired for", win.location.href);
               addWindowKeyHook(win);
             },
           });
 
-          console.log("[TabMail keyOverride] Window listener registered.");
+          keyOverrideDebugLog("[TabMail keyOverride] Window listener registered.");
         },
         shutdown() {
-          console.log("[TabMail KeyOverride] shutdown() called from WebExtension API");
+          keyOverrideDebugLog("[TabMail KeyOverride] shutdown() called from WebExtension API");
           cleanup();
         },
       },

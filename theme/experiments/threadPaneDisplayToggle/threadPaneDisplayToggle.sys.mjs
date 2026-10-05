@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var THREAD_PANE_DISPLAY_TOGGLE_DEBUG = false;
+function threadPaneDisplayToggleDebugLog(...args) { if (THREAD_PANE_DISPLAY_TOGGLE_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportTPDT } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -48,14 +53,14 @@ const TPDT_CONFIG = {
 };
 
 try {
-  console.log(
+  threadPaneDisplayToggleDebugLog(
     "[TabMail threadPaneDisplayToggle] experiment parent script loaded. Services present?",
     typeof ServicesTPDT !== "undefined"
   );
 } catch (_) {}
 
 function tpdtLog(...args) {
-  console.log(TPDT_CONFIG.logPrefix, ...args);
+  threadPaneDisplayToggleDebugLog(TPDT_CONFIG.logPrefix, ...args);
 }
 
 function tpdtWarn(...args) {

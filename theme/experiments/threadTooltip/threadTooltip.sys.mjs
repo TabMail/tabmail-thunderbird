@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var THREAD_TOOLTIP_DEBUG = false;
+function threadTooltipDebugLog(...args) { if (THREAD_TOOLTIP_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportTT } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -10,7 +15,7 @@ const { ExtensionCommon: ExtensionCommonTT } = ChromeUtils.importESModule(
 );
 var ServicesTT = globalThis.Services;
 
-console.log("[TabMail ThreadTT] experiment parent script loaded. Services present?", typeof ServicesTT !== "undefined");
+threadTooltipDebugLog("[TabMail ThreadTT] experiment parent script loaded. Services present?", typeof ServicesTT !== "undefined");
 
 var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
   getAPI(context) {
@@ -30,8 +35,8 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
     // ----------------------------------------------------------
     try {
       const ctxKeys = Object.keys(context || {}).sort();
-      console.log("[TabMail ThreadTT] Diagnostic – context keys:", ctxKeys);
-      console.log(
+      threadTooltipDebugLog("[TabMail ThreadTT] Diagnostic – context keys:", ctxKeys);
+      threadTooltipDebugLog(
         "[TabMail ThreadTT] Diagnostic – context.extension.id:", context?.extension?.id,
         "context.messenger?", !!context?.messenger,
         "runtime?", !!context?.messenger?.runtime
@@ -54,7 +59,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
 
     function ensureStyle(win) {
       if (win.document.getElementById("tm-thread-tooltip-style")) return;
-      console.log("[TabMail ThreadTT] ensureStyle: injecting CSS into", win.location.href);
+      threadTooltipDebugLog("[TabMail ThreadTT] ensureStyle: injecting CSS into", win.location.href);
       const link = win.document.createElement("link");
       link.id = "tm-thread-tooltip-style";
       link.rel = "stylesheet";
@@ -77,7 +82,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
         s.id = "tm-hide-native-tooltips";
         s.textContent = `tooltip { display: none !important; }`;
         win.document.documentElement.appendChild(s);
-        console.log("[Tabmail ThreadTT] Injected CSS to hide native XUL tooltips");
+        threadTooltipDebugLog("[Tabmail ThreadTT] Injected CSS to hide native XUL tooltips");
       }
     }
 
@@ -97,7 +102,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
       tt.className = "email-item-tooltip";
       tt.style.display = "none";
       win.document.documentElement.appendChild(tt);
-      console.log("[TabMail ThreadTT] makeTooltip: tooltip element created in", win.location.href);
+      threadTooltipDebugLog("[TabMail ThreadTT] makeTooltip: tooltip element created in", win.location.href);
       return tt;
     }
 
@@ -154,7 +159,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
      * messenger.xhtml DOM for older versions.
      */
     function findThreadContainer(win) {
-      console.log("[TabMail ThreadTT] findThreadContainer invoked in", win.location.href);
+      threadTooltipDebugLog("[TabMail ThreadTT] findThreadContainer invoked in", win.location.href);
       // ----------------------------------------------------------
       // Diagnostic: log tabmail structure and current tab details
       // ----------------------------------------------------------
@@ -168,24 +173,24 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
       if (tabmail && !tabmail.__tm_logged) {
         tabmail.__tm_logged = true; // avoid spamming
         const info = tabmail.currentTabInfo;
-        console.log("[TabMail ThreadTT] tabmail diagnostic → modes count", tabmail.tabInfo?.length, "currentTabInfo.mode", info?.mode?.name, "about3Pane?", !!tabmail.currentAbout3Pane);
-        console.log("[TabMail ThreadTT] tabmail browsers → chromeBrowser", !!info?.chromeBrowser, "browser", !!info?.browser);
+        threadTooltipDebugLog("[TabMail ThreadTT] tabmail diagnostic → modes count", tabmail.tabInfo?.length, "currentTabInfo.mode", info?.mode?.name, "about3Pane?", !!tabmail.currentAbout3Pane);
+        threadTooltipDebugLog("[TabMail ThreadTT] tabmail browsers → chromeBrowser", !!info?.chromeBrowser, "browser", !!info?.browser);
       }
       function searchDoc(doc, label) {
-        console.log("[TabMail ThreadTT] searchDoc invoked for", label, "doc?", !!doc);
+        threadTooltipDebugLog("[TabMail ThreadTT] searchDoc invoked for", label, "doc?", !!doc);
         if (!doc) return null;
 
         // 1. Direct lookup in the provided document.
         const direct = doc.getElementById("threadTree");
         if (direct) {
-          console.log("[TabMail ThreadTT] searchDoc: found direct #threadTree in", label);
+          threadTooltipDebugLog("[TabMail ThreadTT] searchDoc: found direct #threadTree in", label);
           return direct;
         }
 
         // 2. Inside <mail-message-list>
         const mmList = doc.querySelector("mail-message-list");
         if (mmList) {
-          console.log("[TabMail ThreadTT] searchDoc: mail-message-list present (shadowRoot?", !!mmList.shadowRoot, ") in", label);
+          threadTooltipDebugLog("[TabMail ThreadTT] searchDoc: mail-message-list present (shadowRoot?", !!mmList.shadowRoot, ") in", label);
         }
         if (mmList && mmList.shadowRoot) {
           const within = mmList.shadowRoot.getElementById("threadTree") || mmList.shadowRoot.querySelector("#threadTree, tree-view");
@@ -195,7 +200,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
         // 3. Generic tree-view element in the light DOM
         const anyTree = doc.querySelector("tree-view#threadTree, tree-view");
         if (anyTree) {
-          console.log("[TabMail ThreadTT] searchDoc: found generic tree-view in", label);
+          threadTooltipDebugLog("[TabMail ThreadTT] searchDoc: found generic tree-view in", label);
           return anyTree;
         }
 
@@ -204,7 +209,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
           if (node.shadowRoot) {
             const found = node.shadowRoot.getElementById("threadTree") || node.shadowRoot.querySelector("#threadTree, tree-view");
             if (found) {
-              console.log("[TabMail ThreadTT] searchDoc: found tree inside shadowRoot of", node, "in", label);
+              threadTooltipDebugLog("[TabMail ThreadTT] searchDoc: found tree inside shadowRoot of", node, "in", label);
               return found;
             }
           }
@@ -226,12 +231,12 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
       }
 
       if (!contentDoc) {
-        console.log("[TabMail ThreadTT] findThreadContainer: no contentDoc available yet (tabmail.currentAbout3Pane / chromeBrowser) in", win.location.href);
+        threadTooltipDebugLog("[TabMail ThreadTT] findThreadContainer: no contentDoc available yet (tabmail.currentAbout3Pane / chromeBrowser) in", win.location.href);
       }
 
       const fromContent = searchDoc(contentDoc, contentDoc?.location?.href || "contentDoc");
       if (fromContent) {
-        console.log("[TabMail ThreadTT] findThreadContainer: located tree in contentDoc →", fromContent.tagName, "id=", fromContent.id);
+        threadTooltipDebugLog("[TabMail ThreadTT] findThreadContainer: located tree in contentDoc →", fromContent.tagName, "id=", fromContent.id);
       }
 
       // Fallback: search the outer messenger.xhtml document
@@ -240,10 +245,10 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
 
     // Observe #threadPane and its descendants until the tree-view appears.
     function watchForTree(win) {
-      console.log("[TabMail ThreadTT] watchForTree invoked for", win.location.href);
+      threadTooltipDebugLog("[TabMail ThreadTT] watchForTree invoked for", win.location.href);
       const pane = getThreadPane(win);
       if (!pane) {
-        console.log("[TabMail ThreadTT] threadPane/Box absent – observing body. Wrapper present?",
+        threadTooltipDebugLog("[TabMail ThreadTT] threadPane/Box absent – observing body. Wrapper present?",
           !!win.document.getElementById("threadPaneWrapper"),
           "in",
           win.location.href);
@@ -252,14 +257,14 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
             for (const node of mut.addedNodes) {
               const tag = node.tagName || "#text";
               if (tag === "MAIL-MESSAGE-LIST" || tag === "TREE-VIEW" || node.id === "threadPaneWrapper") {
-                console.log("[TabMail ThreadTT] body observer saw", tag, "id=", node.id, "shadowRoot?", !!node.shadowRoot, "in", win.location.href);
+                threadTooltipDebugLog("[TabMail ThreadTT] body observer saw", tag, "id=", node.id, "shadowRoot?", !!node.shadowRoot, "in", win.location.href);
               }
             }
           }
 
           const tp = getThreadPane(win);
           if (tp) {
-            console.log("[TabMail ThreadTT] thread pane wrapper appeared via observer in", win.location.href);
+            threadTooltipDebugLog("[TabMail ThreadTT] thread pane wrapper appeared via observer in", win.location.href);
             obs.disconnect();
             // Re-run watchForTree which will now find pane.
             watchForTree(win);
@@ -275,12 +280,12 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
       // If tree already present, attach immediately.
       const immediate = findThreadContainer(win);
       if (immediate) {
-        console.log("[TabMail ThreadTT] tree-view present immediately – attaching");
+        threadTooltipDebugLog("[TabMail ThreadTT] tree-view present immediately – attaching");
         addHoverHooksForTree(win, immediate);
         return;
       }
 
-      console.log("[TabMail ThreadTT] Setting up MutationObserver for tree-view insertion");
+      threadTooltipDebugLog("[TabMail ThreadTT] Setting up MutationObserver for tree-view insertion");
 
       let mootCount = 0; // track how many times we logged non-tree mutations (to avoid spam)
       const mo = new win.MutationObserver((muts) => {
@@ -292,7 +297,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
               (n.shadowRoot && n.shadowRoot.getElementById && n.shadowRoot.getElementById("threadTree"));
 
             if (el) {
-              console.log("[TabMail ThreadTT] tree-view appeared via MutationObserver", el);
+              threadTooltipDebugLog("[TabMail ThreadTT] tree-view appeared via MutationObserver", el);
               mo.disconnect();
               addHoverHooksForTree(win, el);
               return;
@@ -302,7 +307,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
             if (mootCount < 25) {
               const tag = n.tagName || "#text";
               if (tag === "MAIL-MESSAGE-LIST" || tag === "TREE-VIEW" || n.id === "threadPaneWrapper") {
-                console.log("[TabMail ThreadTT] observer saw node", tag, "id=", n.id, "shadowRoot?", !!n.shadowRoot);
+                threadTooltipDebugLog("[TabMail ThreadTT] observer saw node", tag, "id=", n.id, "shadowRoot?", !!n.shadowRoot);
                 mootCount++;
               }
             }
@@ -366,7 +371,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
     function addHoverHooks(win) {
       detachPrevious(win);   // Clean slate before reattaching
       const tree = findThreadContainer(win);
-      console.log("[TabMail ThreadTT] addHoverHooks initial tree?", !!tree, "in", win.location.href);
+      threadTooltipDebugLog("[TabMail ThreadTT] addHoverHooks initial tree?", !!tree, "in", win.location.href);
       if (tree) {
         // ----------------------------------------------------------------
         // Disable Gecko’s built-in “title-tip” tooltips which appear over
@@ -379,7 +384,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
         try {
           if (!tree.hasAttribute("disabletitletips")) {
             tree.setAttribute("disabletitletips", "true");
-            console.log("[Tabmail ThreadTT] disabletitletips set on tree – native titletip suppressed");
+            threadTooltipDebugLog("[Tabmail ThreadTT] disabletitletips set on tree – native titletip suppressed");
           }
         } catch (dtErr) {
           console.warn("[Tabmail ThreadTT] Failed to set disabletitletips:", dtErr);
@@ -431,23 +436,23 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
                      tree.querySelector("treechildren#threadTree") || tree;
         if (!body.hasAttribute("disabletitletips")) {
           body.setAttribute("disabletitletips", "true");
-          console.log("[Tabmail ThreadTT] disabletitletips set on", body.tagName, "–", win.location.href);
+          threadTooltipDebugLog("[Tabmail ThreadTT] disabletitletips set on", body.tagName, "–", win.location.href);
         }
       } catch (dtErr) {
         console.warn("[Tabmail ThreadTT] Failed to set disabletitletips:", dtErr);
       }
       if (tree.dataset.tooltipHooked === context.extension.id) {
-        console.log("[TabMail ThreadTT] addHoverHooksForTree: listeners were present from previous reload – reattaching");
+        threadTooltipDebugLog("[TabMail ThreadTT] addHoverHooksForTree: listeners were present from previous reload – reattaching");
       } else if (tree.dataset.tooltipHooked && tree.dataset.tooltipHooked !== context.extension.id) {
-        console.log("[TabMail ThreadTT] addHoverHooksForTree: overriding previous extension instance", tree.dataset.tooltipHooked, "→", context.extension.id);
+        threadTooltipDebugLog("[TabMail ThreadTT] addHoverHooksForTree: overriding previous extension instance", tree.dataset.tooltipHooked, "→", context.extension.id);
       }
       // Proceed to (re)attach listeners.
       tree.dataset.tooltipHooked = context.extension.id;
 
       if (tree.__tmHoverHandlersAttached) {
-        console.log("[TabMail ThreadTT] addHoverHooksForTree: listeners already attached – proceeding to reattach for fresh state in", win.location.href);
+        threadTooltipDebugLog("[TabMail ThreadTT] addHoverHooksForTree: listeners already attached – proceeding to reattach for fresh state in", win.location.href);
       }
-      console.log("[TabMail ThreadTT] addHoverHooksForTree: installing listeners in", win.location.href);
+      threadTooltipDebugLog("[TabMail ThreadTT] addHoverHooksForTree: installing listeners in", win.location.href);
 
       // If handlers were previously attached on this tree, remove them to avoid duplicates on reloads.
       if (tree.__tmHoverHandlersAttached) {
@@ -464,7 +469,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
           if (tree.__tmRestoreTitleHandler) {
             tree.removeEventListener("mouseout", tree.__tmRestoreTitleHandler, true);
           }
-          console.log("[TabMail ThreadTT] Removed previous hover handlers before reattaching in", win.location.href);
+          threadTooltipDebugLog("[TabMail ThreadTT] Removed previous hover handlers before reattaching in", win.location.href);
         } catch (detachErr) {
           console.warn("[TabMail ThreadTT] Error removing previous handlers:", detachErr);
         }
@@ -478,7 +483,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
       //     console.error("[TabMail ThreadTT] Failed to send ready message:", e);
       //   }
       // } else {
-      //   console.log("[TabMail ThreadTT] messenger.runtime unavailable in parent context – ready message skipped");
+      //   threadTooltipDebugLog("[TabMail ThreadTT] messenger.runtime unavailable in parent context – ready message skipped");
       // }
 
       ensureStyle(win);
@@ -489,7 +494,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
       // robust than catching popup events.
       try {
         tree.setAttribute("tooltip", tooltip.id);
-        console.log("[Tabmail ThreadTT] tree.tooltip attribute set to", tooltip.id);
+        threadTooltipDebugLog("[Tabmail ThreadTT] tree.tooltip attribute set to", tooltip.id);
       } catch (attrErr) {
         console.warn("[Tabmail ThreadTT] Failed to set tooltip attribute on tree", attrErr);
       }
@@ -666,11 +671,11 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
               //     messageId: msgId,
               //   });
               // } else {
-              //   console.log("[TabMail ThreadTT] messenger.runtime unavailable at hover – showing immediate placeholder for", msgId);
-              //   console.log("[TMDBG ThreadTT] context", context);
-              //   console.log("[TMDBG ThreadTT] context.messenger", context?.messenger);
-              //   console.log("[TMDBG ThreadTT] context.messenger.runtime", context?.messenger?.runtime);
-              //   console.log("[TMDBG ThreadTT] context.messenger.runtime.sendMessage", context?.messenger?.runtime?.sendMessage);
+              //   threadTooltipDebugLog("[TabMail ThreadTT] messenger.runtime unavailable at hover – showing immediate placeholder for", msgId);
+              //   threadTooltipDebugLog("[TMDBG ThreadTT] context", context);
+              //   threadTooltipDebugLog("[TMDBG ThreadTT] context.messenger", context?.messenger);
+              //   threadTooltipDebugLog("[TMDBG ThreadTT] context.messenger.runtime", context?.messenger?.runtime);
+              //   threadTooltipDebugLog("[TMDBG ThreadTT] context.messenger.runtime.sendMessage", context?.messenger?.runtime?.sendMessage);
               //   var data = { blurb: "Analyzing...", todos: "" };
               // }
               var data = { blurb: "Analyzing...", todos: "" };
@@ -883,7 +888,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
       };
       tree.addEventListener("mouseover", stripTitle, true);
       tree.addEventListener("mouseout", restoreTitle, true);
-      console.log("[Tabmail ThreadTT] Dynamic title-stripping listeners attached to tree");
+      threadTooltipDebugLog("[Tabmail ThreadTT] Dynamic title-stripping listeners attached to tree");
       try {
         tree.__tmMouseMoveHandler = onMouseMove;
         tree.__tmMouseLeaveHandler = onMouseLeave;
@@ -898,7 +903,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
     //------------------------------------------------------------
 
     function init() {
-      console.log("[TabMail ThreadTT] init() called.");
+      threadTooltipDebugLog("[TabMail ThreadTT] init() called.");
       if (!ServicesTT || !ServicesTT.wm) {
         console.error("[TabMail ThreadTT] Services.wm not available!");
         return;
@@ -932,7 +937,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
     }
 
     function shutdown() {
-      console.log("[TabMail ThreadTT] shutdown() called - cleaning up resources.");
+      threadTooltipDebugLog("[TabMail ThreadTT] shutdown() called - cleaning up resources.");
       
       try {
         // 1. Unregister window listener
@@ -1020,13 +1025,13 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
     function display(msgId, blurb, todos) {
       if (String(msgId) !== String(hoverState.msgId)) {
         try {
-          console.log("[TabMail ThreadTT] display: ignoring update – msgId mismatch", msgId, "!=", hoverState.msgId);
+          threadTooltipDebugLog("[TabMail ThreadTT] display: ignoring update – msgId mismatch", msgId, "!=", hoverState.msgId);
         } catch (_) {}
         return;
       }
       if (hoverState.row === -1) {
         try {
-          console.log("[TabMail ThreadTT] display: ignoring update – hoverState.row is -1 for", msgId);
+          threadTooltipDebugLog("[TabMail ThreadTT] display: ignoring update – hoverState.row is -1 for", msgId);
         } catch (_) {}
         return;
       }
@@ -1045,7 +1050,7 @@ var threadTooltip = class extends ExtensionCommonTT.ExtensionAPI {
       const finalHtml = (todosHtml + summaryHtml) || '(No details)';
       tt.innerHTML = finalHtml;
       // try {
-      //   console.log("[TabMail ThreadTT] display: updated tooltip for", msgId, "len=", finalHtml.length, "hasBlurb=", !!blurb, "hasTodos=", !!todos);
+      //   threadTooltipDebugLog("[TabMail ThreadTT] display: updated tooltip for", msgId, "len=", finalHtml.length, "hasBlurb=", !!blurb, "hasTodos=", !!todos);
       // } catch (_) {}
 
       // Use stored anchorLeft if it was calculated, else fallback to mouse offset.

@@ -27,7 +27,7 @@ describe('card wrapper ownership',()=>{
   class Card {};
   Card.prototype.fillRow=Object.assign(()=>{}, {__tmCardOwner:newer});
   Card.__tmOrigFillRow=pristine;Card.__tmOrigRowHeight=40;Card.ROW_HEIGHT=60;Card.__tmPatched=true;
-  const {unpatchThreadCardPrototype}=experimentFunctions(source('tmMessageListCardView'),['unpatchThreadCardPrototype'],{_applyZeroFlickerEnhancements:owner,CARD_SENDER_CONFIG_MLCV:{logPrefix:''},LOG_PREFIX_MLCV:'',console:{log(){},error(){}}});
+  const {unpatchThreadCardPrototype}=experimentFunctions(source('tmMessageListCardView'),['unpatchThreadCardPrototype'],{_applyZeroFlickerEnhancements:owner,CARD_SENDER_CONFIG_MLCV:{logPrefix:''},LOG_PREFIX_MLCV:'',tmMessageListCardViewDebugLog(){},console:{log(){},error(){}}});
   const doc={defaultView:{customElements:{get:()=>Card}},getElementById:()=>({reset})};
   const wrapper=Card.prototype.fillRow;unpatchThreadCardPrototype(doc);
   expect(Card.prototype.fillRow).toBe(wrapper);expect(Card.ROW_HEIGHT).toBe(60);expect(Card.__tmPatched).toBe(true);expect(reset).not.toHaveBeenCalled();

@@ -31,6 +31,11 @@
  * the separate tmMessageList experiment for maintainability.
  */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var TM_THEME_DEBUG = false;
+function tmThemeDebugLog(...args) { if (TM_THEME_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportTM } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -43,17 +48,17 @@ const { NetUtil } = ChromeUtils.importESModule(
 
 var ServicesTM = globalThis.Services;
 
-console.log("[TabMail Theme] experiment parent script loaded. Services present?", typeof ServicesTM !== "undefined");
+tmThemeDebugLog("[TabMail Theme] experiment parent script loaded. Services present?", typeof ServicesTM !== "undefined");
 
 var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
   onShutdown(isAppShutdown) {
-    console.log("[TabMail Theme] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
+    tmThemeDebugLog("[TabMail Theme] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
     this._tmShutdown = true;
     if (this._tmThemeState) this._tmThemeState.activeContext = null;
     try {
       for (const cleanup of this._tmCleanups || []) {
         cleanup();
-        console.log("[TabMail Theme] ✓ Cleanup completed via onShutdown");
+        tmThemeDebugLog("[TabMail Theme] ✓ Cleanup completed via onShutdown");
       }
     } catch (e) {
       console.error("[TabMail Theme] onShutdown cleanup failed:", e);
@@ -244,7 +249,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
       const uri = io.newURI(dataURL);
       
       try {
-        console.log(`[TabMail Theme] About to loadAndRegisterSheet() AGENT_SHEET (cache-buster: ${cacheBuster}) uri.spec.length=${uri.spec.length}`);
+        tmThemeDebugLog(`[TabMail Theme] About to loadAndRegisterSheet() AGENT_SHEET (cache-buster: ${cacheBuster}) uri.spec.length=${uri.spec.length}`);
       } catch (_) {}
       
       try {
@@ -256,7 +261,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
       
       try {
         const ok = sss.sheetRegistered(uri, sss.AGENT_SHEET);
-        console.log(`[TabMail Theme] ✓ Registered AGENT_SHEET (cache-buster: ${cacheBuster}) registeredNow=${ok}`);
+        tmThemeDebugLog(`[TabMail Theme] ✓ Registered AGENT_SHEET (cache-buster: ${cacheBuster}) registeredNow=${ok}`);
       } catch (_) {}
 
       // Atomic swap
@@ -265,10 +270,10 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
         try {
           if (sss.sheetRegistered(oldUri, sss.AGENT_SHEET)) {
             sss.unregisterSheet(oldUri, sss.AGENT_SHEET);
-            console.log("[TabMail Theme] ✓ Unregistered old AGENT_SHEET after successful swap");
+            tmThemeDebugLog("[TabMail Theme] ✓ Unregistered old AGENT_SHEET after successful swap");
           }
         } catch (e) {
-          console.log("[TabMail Theme] Could not unregister old AGENT_SHEET after swap:", e);
+          tmThemeDebugLog("[TabMail Theme] Could not unregister old AGENT_SHEET after swap:", e);
         }
       }
     }
@@ -283,13 +288,13 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
       try { isReg = sss.sheetRegistered(uri, sss.AGENT_SHEET); } catch (_) {}
       
       try {
-        console.log(`[TabMail Theme] unregisterAgentSheet() AGENT_SHEET registered=${isReg} uri.spec.length=${uri.spec.length}`);
+        tmThemeDebugLog(`[TabMail Theme] unregisterAgentSheet() AGENT_SHEET registered=${isReg} uri.spec.length=${uri.spec.length}`);
       } catch (_) {}
       
       if (isReg) {
         try {
           sss.unregisterSheet(uri, sss.AGENT_SHEET);
-          console.log("[TabMail Theme] ✓ Unregistered AGENT_SHEET");
+          tmThemeDebugLog("[TabMail Theme] ✓ Unregistered AGENT_SHEET");
         } catch (e) {
           console.error("[TabMail Theme] unregisterSheet failed:", e);
         }
@@ -327,21 +332,21 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
               resetCount++;
             }
           } catch (eWin) {
-            console.log(`[TabMail Theme] refreshOpenFolders per-window failed: ${eWin}`);
+            console.warn(`[TabMail Theme] refreshOpenFolders per-window failed: ${eWin}`);
           }
         }
       } catch (e) {
         console.error("[TabMail Theme] refreshOpenFolders failed:", e);
       }
-      console.log(`[TabMail Theme] ✓ refreshOpenFolders (reason: ${reason}) reset ${resetCount} threadTree(s)`);
+      tmThemeDebugLog(`[TabMail Theme] ✓ refreshOpenFolders (reason: ${reason}) reset ${resetCount} threadTree(s)`);
     }
 
     function forceStyleRecalc(win, reason) {
-      console.log(`[TabMail Theme] Forcing style recalc (reason: ${reason})...`);
+      tmThemeDebugLog(`[TabMail Theme] Forcing style recalc (reason: ${reason})...`);
       
       try {
         const isDarkMode = win.matchMedia("(prefers-color-scheme: dark)").matches;
-        console.log(`[TabMail Theme] Current color scheme: ${isDarkMode ? "DARK" : "LIGHT"}`);
+        tmThemeDebugLog(`[TabMail Theme] Current color scheme: ${isDarkMode ? "DARK" : "LIGHT"}`);
       } catch (_) {}
       
       const contentDocs = enumerateContentDocs(win);
@@ -352,7 +357,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
             docElem.classList.add("tm-theme-recalc");
             const computedColor = cdoc.defaultView?.getComputedStyle?.(docElem).getPropertyValue("--tm-message-unread-color");
             docElem.classList.remove("tm-theme-recalc");
-            console.log(`[TabMail Theme] ✓ Forced style recalc (${reason}):`, cdoc.documentURI, "| --tm-message-unread-color:", computedColor?.trim() || "(not set)");
+            tmThemeDebugLog(`[TabMail Theme] ✓ Forced style recalc (${reason}):`, cdoc.documentURI, "| --tm-message-unread-color:", computedColor?.trim() || "(not set)");
           }
                   } catch (e) {
           console.warn("[TabMail Theme] Could not force style recalc:", e);
@@ -365,14 +370,14 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
     // ═══════════════════════════════════════════════════════════════════════
 
     async function handleThemeChange(win, ctx) {
-      console.log("[TabMail Theme] ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓");
-      console.log("[TabMail Theme] Theme change detected - RE-REGISTERING AGENT_SHEET");
-      console.log("[TabMail Theme] ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓");
+      tmThemeDebugLog("[TabMail Theme] ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓");
+      tmThemeDebugLog("[TabMail Theme] Theme change detected - RE-REGISTERING AGENT_SHEET");
+      tmThemeDebugLog("[TabMail Theme] ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓");
       
       try {
         await withAgentSheetLock(ctx, () => registerAgentSheet(ctx), "handleThemeChange");
         forceStyleRecalc(win, "theme change");
-        console.log("[TabMail Theme] ✓ Theme change complete");
+        tmThemeDebugLog("[TabMail Theme] ✓ Theme change complete");
       } catch (e) {
         console.error("[TabMail Theme] handleThemeChange error:", e);
       }
@@ -380,9 +385,9 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
     
     function createThemeChangeHandler(win, ctx) {
       return (e) => {
-        console.log("[TabMail Theme] ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓");
-        console.log("[TabMail Theme] Theme switched to:", e.matches ? "dark" : "light");
-        console.log("[TabMail Theme] ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓");
+        tmThemeDebugLog("[TabMail Theme] ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓");
+        tmThemeDebugLog("[TabMail Theme] Theme switched to:", e.matches ? "dark" : "light");
+        tmThemeDebugLog("[TabMail Theme] ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓");
         handleThemeChange(win, ctx);
       };
     }
@@ -405,7 +410,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
           shared.themeChangeListener = handler;
           shared.mediaQueryList = mq;
           shared.context = ctx;
-          console.log("[TabMail Theme] ✓ Theme change listener registered");
+          tmThemeDebugLog("[TabMail Theme] ✓ Theme change listener registered");
         } catch (e) {
           console.error("[TabMail Theme] Failed to add theme change listener:", e);
         }
@@ -423,13 +428,13 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
       const topics = ["look-and-feel-changed", "widget:ui-resolution-changed"];
       const observer = {
         observe(subject, topic) {
-          console.log(`[TabMail Theme] UI event: ${topic} - re-registering AGENT_SHEET...`);
+          tmThemeDebugLog(`[TabMail Theme] UI event: ${topic} - re-registering AGENT_SHEET...`);
           (async () => {
             try {
               const win = ServicesTM.wm.getMostRecentWindow("mail:3pane");
               await withAgentSheetLock(ctx, () => registerAgentSheet(ctx), `uiEvent:${topic}`);
               if (win) forceStyleRecalc(win, topic);
-              console.log(`[TabMail Theme] ✓ AGENT_SHEET re-registered after ${topic}`);
+              tmThemeDebugLog(`[TabMail Theme] ✓ AGENT_SHEET re-registered after ${topic}`);
           } catch (e) {
               console.error(`[TabMail Theme] Failed to re-register AGENT_SHEET after ${topic}:`, e);
       }
@@ -442,7 +447,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
       }
       
       themeState.uiObserver = { observer, topics, context: ctx };
-      console.log("[TabMail Theme] ✓ UI event observers registered:", topics.join(", "));
+      tmThemeDebugLog("[TabMail Theme] ✓ UI event observers registered:", topics.join(", "));
     }
 
     function unregisterUIEventObservers(ctx) {
@@ -454,7 +459,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
       }
       
       delete themeState.uiObserver;
-      console.log("[TabMail Theme] ✓ UI event observers unregistered");
+      tmThemeDebugLog("[TabMail Theme] ✓ UI event observers unregistered");
                 }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -483,7 +488,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
             delete win.document.__tmTheme.themeChangeListener;
             delete win.document.__tmTheme.mediaQueryList;
             delete win.document.__tmTheme.context;
-            console.log("[TabMail Theme] ✓ Theme change listener removed");
+            tmThemeDebugLog("[TabMail Theme] ✓ Theme change listener removed");
           } catch (e) {
             console.error("[TabMail Theme] Failed to remove theme change listener:", e);
           }
@@ -498,9 +503,9 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
     // ═══════════════════════════════════════════════════════════════════════
 
     async function init(_opts = {}) {
-      console.log("[TabMail Theme] ═══ init() called ═══");
-      console.log("[TabMail Theme] windowListenerId:", windowListenerId);
-      console.log("[TabMail Theme] isInitialized:", isInitialized);
+      tmThemeDebugLog("[TabMail Theme] ═══ init() called ═══");
+      tmThemeDebugLog("[TabMail Theme] windowListenerId:", windowListenerId);
+      tmThemeDebugLog("[TabMail Theme] isInitialized:", isInitialized);
       
       if (!ServicesTM || !ServicesTM.wm) {
         console.error("[TabMail Theme] Services.wm not available!");
@@ -522,18 +527,18 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
         if (uri) {
           const sss = Cc["@mozilla.org/content/style-sheet-service;1"].getService(Ci.nsIStyleSheetService);
           agentSheetStillRegistered = sss.sheetRegistered(uri, sss.AGENT_SHEET);
-          console.log("[TabMail Theme] AGENT_SHEET registration check: URI exists?", !!uri, "still registered?", agentSheetStillRegistered);
+          tmThemeDebugLog("[TabMail Theme] AGENT_SHEET registration check: URI exists?", !!uri, "still registered?", agentSheetStillRegistered);
         } else {
-          console.log("[TabMail Theme] AGENT_SHEET registration check: no URI stored");
+          tmThemeDebugLog("[TabMail Theme] AGENT_SHEET registration check: no URI stored");
         }
       } catch (e) {
-        console.log("[TabMail Theme] AGENT_SHEET registration check failed:", e);
+        console.warn("[TabMail Theme] AGENT_SHEET registration check failed:", e);
       }
       
       // Guard against multiple initializations
       if (isInitialized && agentSheetStillRegistered) {
-        console.log("[TabMail Theme] Already initialized and AGENT_SHEET still registered");
-        console.log("[TabMail Theme] Checking if window event listeners need setup...");
+        tmThemeDebugLog("[TabMail Theme] Already initialized and AGENT_SHEET still registered");
+        tmThemeDebugLog("[TabMail Theme] Checking if window event listeners need setup...");
         try {
           const enumWin = ServicesTM.wm.getEnumerator("mail:3pane");
           while (enumWin.hasMoreElements()) {
@@ -542,16 +547,16 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
         } catch (e) {
           console.error("[TabMail Theme] Error setting up window listeners:", e);
         }
-        console.log("[TabMail Theme] Listener check complete, skipping full initialization");
+        tmThemeDebugLog("[TabMail Theme] Listener check complete, skipping full initialization");
         return;
       }
       
       if (isInitialized && !agentSheetStillRegistered) {
-        console.log("[TabMail Theme] ⚠️ Already initialized but AGENT_SHEET is NOT registered - re-registering");
+        tmThemeDebugLog("[TabMail Theme] ⚠️ Already initialized but AGENT_SHEET is NOT registered - re-registering");
         try {
           await withAgentSheetLock(context, () => registerAgentSheet(context), "init:recover");
           if (startedGeneration !== generation) return;
-          console.log("[TabMail Theme] ✓ AGENT_SHEET re-registered after suspend/resume");
+          tmThemeDebugLog("[TabMail Theme] ✓ AGENT_SHEET re-registered after suspend/resume");
           const enumWin = ServicesTM.wm.getEnumerator("mail:3pane");
           while (enumWin.hasMoreElements()) {
             forceStyleRecalc(enumWin.getNext(), "suspend/resume");
@@ -564,7 +569,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
 
       try {
         tmFlags = (_opts && _opts.flags) || {};
-        console.log("[TabMail Theme] Flags set from init()", tmFlags);
+        tmThemeDebugLog("[TabMail Theme] Flags set from init()", tmFlags);
       } catch (_) {
         tmFlags = {};
       }
@@ -575,7 +580,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
       try {
         await withAgentSheetLock(context, () => registerAgentSheet(context), "init:first");
         if (startedGeneration !== generation) return;
-        console.log("[TabMail Theme] ✓ AGENT_SHEET registered");
+        tmThemeDebugLog("[TabMail Theme] ✓ AGENT_SHEET registered");
         const enumWin = ServicesTM.wm.getEnumerator("mail:3pane");
         while (enumWin.hasMoreElements()) {
           forceStyleRecalc(enumWin.getNext(), "initial registration");
@@ -584,7 +589,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
         console.error("[TabMail Theme] Failed to register AGENT_SHEET:", e);
       }
 
-      console.log("[TabMail Theme] First time initialization - setting up theme...");
+      tmThemeDebugLog("[TabMail Theme] First time initialization - setting up theme...");
 
       registerUIEventObservers(context);
 
@@ -620,7 +625,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
       if (themeState.retireContext !== retireContext) return;
       delete themeState.retireContext;
       if (themeState.activeContext === context) themeState.activeContext = null;
-      console.log("[TabMail Theme] cleanup() called - cleaning up all resources.");
+      tmThemeDebugLog("[TabMail Theme] cleanup() called - cleaning up all resources.");
       
       try { unregisterAgentSheet(context); } catch (e) {
         console.error("[TabMail Theme] Failed to unregister AGENT_SHEET:", e);
@@ -646,24 +651,24 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
       }
       
       isInitialized = false;
-      console.log("[TabMail Theme] cleanup() complete");
+      tmThemeDebugLog("[TabMail Theme] cleanup() complete");
     }
 
 
 
     async function shutdown() {
-      console.log("[TabMail Theme] shutdown() called from WebExtension API");
+      tmThemeDebugLog("[TabMail Theme] shutdown() called from WebExtension API");
       cleanup();
     }
 
     function setFlag(flagName, value) {
-      console.log(`[TabMail Theme] setFlag: ${flagName} = ${value}`);
+      tmThemeDebugLog(`[TabMail Theme] setFlag: ${flagName} = ${value}`);
       tmFlags[flagName] = value;
     }
 
     function recolorNow(reason = "recolorNow") {
       // Deprecated: tag coloring moved to tmMessageList
-      console.log(`[TabMail Theme] recolorNow() called (deprecated - use tmMessageList.recolorNow)`);
+      tmThemeDebugLog(`[TabMail Theme] recolorNow() called (deprecated - use tmMessageList.recolorNow)`);
     }
 
     return {

@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var TM_TWEAKS_DEBUG = false;
+function tmTweaksDebugLog(...args) { if (TM_TWEAKS_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportTMTweaks } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -54,7 +59,7 @@ const TMTWEAKS_CONFIG = {
 const WINDOW_LISTENER_FLAG_KEY = "__tmTweaksWindowListenerRegistered";
 
 function tmtLog(...args) {
-  console.log(TMTWEAKS_CONFIG.logPrefix, ...args);
+  tmTweaksDebugLog(TMTWEAKS_CONFIG.logPrefix, ...args);
 }
 
 function tmtWarn(...args) {
@@ -366,7 +371,7 @@ function unregisterWindowListener(context) {
 }
 
 try {
-  console.log(
+  tmTweaksDebugLog(
     "[TabMail tmTweaks] experiment parent script loaded. Services present?",
     typeof ServicesTMTweaks !== "undefined"
   );
@@ -374,11 +379,11 @@ try {
 
 var tmTweaks = class extends ExtensionCommonTMTweaks.ExtensionAPI {
   onShutdown(isAppShutdown) {
-    console.log("[TabMail tmTweaks] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
+    tmTweaksDebugLog("[TabMail tmTweaks] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
     try {
       if (this._cleanup) {
         this._cleanup();
-        console.log("[TabMail tmTweaks] ✓ Cleanup completed via onShutdown");
+        tmTweaksDebugLog("[TabMail tmTweaks] ✓ Cleanup completed via onShutdown");
       }
     } catch (e) {
       console.error("[TabMail tmTweaks] onShutdown cleanup failed:", e);

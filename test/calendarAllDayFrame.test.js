@@ -512,3 +512,26 @@ describe('single-digit calendar dates survive the digits contract end to end', (
     }
   });
 });
+
+describe('bridge logging', () => {
+  // Root CLAUDE.md General Development Rule 12: diagnostic logs are off in shipped builds, and the
+  // query trace carries event titles.
+  const capture = () => {
+    const lines = [];
+    const record = (...args) => lines.push(args.map(String).join(' '));
+    return { lines, console: { log: record, warn: record, error: record } };
+  };
+
+  it('logs no event title from a query unless the debug flag is on', async () => {
+    const quiet = capture();
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [timedEvent('t', 'Placeholder Review', DAY, 17)], console: quiet.console });
+    expect(await api.queryCalendarItems(`${DAY}T00:00:00`, `${NEXT_DAY}T00:00:00`, ['cal1'])).toHaveLength(1);
+    expect(quiet.lines.join('\n')).not.toContain('Placeholder Review');
+
+    const loud = capture();
+    const { api: debugApi, ctx } = loadCalendarBridge(bridgeUrl, { items: [timedEvent('t', 'Placeholder Review', DAY, 17)], console: loud.console });
+    ctx.TM_CALENDAR_DEBUG = true;
+    await debugApi.queryCalendarItems(`${DAY}T00:00:00`, `${NEXT_DAY}T00:00:00`, ['cal1']);
+    expect(loud.lines.join('\n')).toContain('Placeholder Review');
+  });
+});

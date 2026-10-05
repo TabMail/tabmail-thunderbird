@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var MESSAGE_SELECTION_DEBUG = false;
+function messageSelectionDebugLog(...args) { if (MESSAGE_SELECTION_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportMS } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -56,7 +61,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
     const messageManager = context.extension.messageManager;
 
     function tlog(...args) {
-      console.log("[MessageSelection]", ...args);
+      messageSelectionDebugLog("[MessageSelection]", ...args);
     }
 
     function findDBView(win) {
@@ -581,7 +586,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
             // Unregister window listener (may already be unregistered from init)
             try {
               ExtensionSupportMS.unregisterWindowListener(listenerId);
-              console.log("[MessageSelection] Unregistered window listener:", listenerId);
+              messageSelectionDebugLog("[MessageSelection] Unregistered window listener:", listenerId);
             } catch (e) {
               // Already unregistered, ignore
             }

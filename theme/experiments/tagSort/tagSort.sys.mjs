@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var TAG_SORT_DEBUG = false;
+function tagSortDebugLog(...args) { if (TAG_SORT_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportTS } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -21,7 +26,7 @@ const TAGSORT_LOG_PREFIX = "[TagSort]";
 
 function tlog(...args) {
   try {
-    console.log(TAGSORT_LOG_PREFIX, ...args);
+    tagSortDebugLog(TAGSORT_LOG_PREFIX, ...args);
   } catch (_) {}
 }
 
@@ -72,7 +77,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
   }
 
   onShutdown(isAppShutdown) {
-    console.log("[TagSort] onShutdown() called, isAppShutdown:", isAppShutdown);
+    tagSortDebugLog("[TagSort] onShutdown() called, isAppShutdown:", isAppShutdown);
     this._extensionShutdown = true;
     try {
       for (const cleanup of this._cleanups) cleanup();

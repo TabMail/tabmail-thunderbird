@@ -15,6 +15,12 @@
 // IMPORTANT (hot reload): avoid top-level block-scoped declarations (`const`/`let`).
 // Thunderbird can evaluate this parent script multiple times during add-on reloads,
 // and block-scoped redeclaration throws (often reported as "redeclaration of const ...").
+
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var THREAD_MESSAGES_DEBUG = false;
+function threadMessagesDebugLog(...args) { if (THREAD_MESSAGES_DEBUG) console.log(...args); }
+
 var ExtensionCommonThreadMessages = globalThis.__TM_threadMessages_ExtensionCommon || null;
 if (!ExtensionCommonThreadMessages) {
   ExtensionCommonThreadMessages = ChromeUtils.importESModule(
@@ -31,7 +37,7 @@ var CONFIG = {
 };
 
 function tlog(...args) {
-  console.log("[ThreadMessages]", ...args);
+  threadMessagesDebugLog("[ThreadMessages]", ...args);
 }
 
 tlog("Loaded threadMessages.sys.mjs (v2 hot-reload-safe)", new Date().toISOString());

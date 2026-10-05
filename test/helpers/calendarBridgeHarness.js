@@ -152,7 +152,7 @@ const ITEM_FILTER_INCLUDE_OCCURRENCES = 2;
  * recurring master carries its occurrences). Returns the experiment API, the
  * recorded provider calls, and the provider itself for state assertions.
  */
-export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1' } = {}) {
+export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1', console = { log() {}, warn() {}, error() {} } } = {}) {
   const getItemsCalls = [];
   const modifications = [];
   const calendar = {
@@ -204,7 +204,7 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   };
   const ctx = vm.createContext({
     Date, ReadableStream, Intl,
-    console: { log() {}, warn() {}, error() {} },
+    console,
     Ci: { calICalendar: { ITEM_FILTER_TYPE_EVENT, ITEM_FILTER_INCLUDE_OCCURRENCES }, calIDateTime: {}, nsITimer: {} },
     // The datetime contract is the only XPCOM lookup the query/details/modify
     // paths need; timers are optional (the bridge resolves without them).
@@ -225,5 +225,5 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   });
   vm.runInContext(readFileSync(bridgePath, 'utf8'), ctx, { filename: 'tmCalendar.sys.mjs' });
   const api = new ctx.tmCalendar().getAPI({}).tmCalendar;
-  return { api, getItemsCalls, modifications, calendar };
+  return { api, getItemsCalls, modifications, calendar, ctx };
 }

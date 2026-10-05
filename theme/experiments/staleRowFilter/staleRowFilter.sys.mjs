@@ -15,6 +15,11 @@
  * Uses unique variable names with _SRF suffix to avoid collisions.
  */
 
+// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
+// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+var STALE_ROW_FILTER_DEBUG = false;
+function staleRowFilterDebugLog(...args) { if (STALE_ROW_FILTER_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupport_SRF } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -28,7 +33,7 @@ const LOG_PREFIX_SRF = "[StaleRowFilter]";
 
 function srfLog(...args) {
   try {
-    console.log(LOG_PREFIX_SRF, ...args);
+    staleRowFilterDebugLog(LOG_PREFIX_SRF, ...args);
   } catch (_) {}
 }
 
