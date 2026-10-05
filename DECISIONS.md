@@ -95,7 +95,7 @@
 
 ## ADR-016: Reconcile Window Bounded by Persistent Watermark, Not FTS-Newest Date
 
-- **[Full ADR](Companion/Decisions/Active/adr-016b-reconcile-window-persistent-watermark.md)** — FTS-newest is a *forward-looking* freshness signal being used as a *backward-looking* verification watermark, so the window collapsed to ~1 day however long TB was offline. `fts_reconcile_watermark = {version, fromMs, completedAtMs}` means "at `completedAtMs`, FTS was verified consistent with IMAP for all messages dated ≥ `fromMs`". **No sanity floor** (any cap silently leaves older drops uncorrected); heartbeat advances `completedAtMs` only and refuses to MINT a watermark.
+- **[Full ADR](Companion/Decisions/Active/adr-016b-reconcile-window-persistent-watermark.md)** — **SUPERSEDED 2026-10-05 (watermark/cursor helpers deleted; ADR-022 proofs).** FTS-newest is a *forward-looking* freshness signal being used as a *backward-looking* verification watermark, so the window collapsed to ~1 day however long TB was offline. `fts_reconcile_watermark = {version, fromMs, completedAtMs}` means "at `completedAtMs`, FTS was verified consistent with IMAP for all messages dated ≥ `fromMs`". **No sanity floor** (any cap silently leaves older drops uncorrected); heartbeat advances `completedAtMs` only and refuses to MINT a watermark.
 
 ---
 
@@ -125,7 +125,7 @@
 
 ## ADR-020: Add-Side Reconcile Keyed on Per-Folder msgKey/UID Cursors, Not Date Windows
 
-- **[Full ADR](Companion/Decisions/Active/adr-020-add-side-reconcile-per-folder-cursors.md)** — local arrival order and the Date header are decorrelated, so **no date-keyed window of any width expresses "new to our local msgDB since we last looked"** (ADR-IOS-042 doctrine applied to TB). Phase 1b `_runCursorScan` + `fts_folder_cursors` (`accountId:folderPath` → `{uidValidity, highestKeySeen}`); advance only on full per-folder success; first run seeds without enumeration; UIDVALIDITY reset → capped full scan; non-IMAP accounts excluded. Widening the window and buffering events in the experiment were both rejected, with reasons.
+- **[Full ADR](Companion/Decisions/Active/adr-020-add-side-reconcile-per-folder-cursors.md)** — **SUPERSEDED 2026-10-05 (watermark/cursor helpers deleted; ADR-022 proofs).** local arrival order and the Date header are decorrelated, so **no date-keyed window of any width expresses "new to our local msgDB since we last looked"** (ADR-IOS-042 doctrine applied to TB). Phase 1b `_runCursorScan` + `fts_folder_cursors` (`accountId:folderPath` → `{uidValidity, highestKeySeen}`); advance only on full per-folder success; first run seeds without enumeration; UIDVALIDITY reset → capped full scan; non-IMAP accounts excluded. Widening the window and buffering events in the experiment were both rejected, with reasons.
 
 ---
 

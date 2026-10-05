@@ -300,59 +300,6 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
         },
 
         /**
-         * Per-folder msgDB cursor fingerprints for the add-side reconcile
-         * (PLAN_RECONCILE_CURSOR.md / ADR-020). IMAP accounts only — for IMAP
-         * folders msgKey = IMAP UID (arrival-ordered, monotonic per
-         * UIDVALIDITY). Folders whose msgDB cannot be opened are returned
-         * with an `error` field so the caller can skip them (never seed or
-         * advance a cursor on error).
-         */
-        async getCursorFolder(accountId, folderPath) {
-          const started = Date.now();
-          const base = {
-            accountId: String(accountId || ""),
-            folderPath: String(folderPath || ""),
-            folderURI: "",
-          };
-          debugLog("getCursorFolder:start", `${base.accountId}:${base.folderPath}`);
-          try {
-            const lookupStarted = Date.now();
-            const folder = folderManager?.get(base.accountId, base.folderPath);
-            const lookupMs = Date.now() - lookupStarted;
-            if (!folder) return { ...base, lookupMs, elapsedMs: Date.now() - started, error: "folder_not_found" };
-            base.folderURI = String(folder.URI || "");
-            const isVirtual = folder.getFlag(Ci.nsMsgFolderFlags.Virtual);
-            if (String(folder.server?.type || "") !== "imap" || isVirtual) {
-              return { ...base, lookupMs, elapsedMs: Date.now() - started, error: "not_imap" };
-            }
-
-            // This is deliberately one folder per Experiment call. Opening a
-            // large or stale summary DB can be synchronous; the WebExtension
-            // caller yields between calls so one account-wide loop cannot
-            // monopolize Thunderbird's extension thread at startup.
-            const dbOpenStarted = Date.now();
-            const db = folder.msgDatabase;
-            const dbInfo = db.dBFolderInfo;
-            const dbOpenMs = Date.now() - dbOpenStarted;
-            const result = {
-              ...base,
-              uidValidity: dbInfo.imapUidValidity || 0,
-              highWater: dbInfo.highWater || 0,
-              totalMessages: folder.getTotalMessages(false),
-              lookupMs,
-              dbOpenMs,
-              elapsedMs: Date.now() - started,
-            };
-            debugLog("getCursorFolder:done", `${base.accountId}:${base.folderPath}`, result);
-            return result;
-          } catch (e) {
-            const result = { ...base, elapsedMs: Date.now() - started, error: String(e) };
-            console.warn("[tmMsgNotify] getCursorFolder:error", `${base.accountId}:${base.folderPath}`, result);
-            return result;
-          }
-        },
-
-        /**
          * Begin a bounded, live parent-process header walk. The opaque token
          * deliberately is not durable: a restart discards it and the addon
          * restarts the exact fingerprint from the beginning, which can repeat

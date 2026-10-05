@@ -91,3 +91,7 @@
 - Fresh account inventory is deliberately re-enumerated once per scheduler turn; there is no cross-turn inventory cache. Strict targeted memo transactions still read/clone the monolithic per-folder memo, so completing `F` folders retains a known Θ(`F²`) aggregate storage-serialization cost. That is an accepted residual for this revision, separate from the removed repeated parent-header scans.
 - Foreground writers may wait briefly for a bounded reconciliation fence, never for a long local scan. Conversely, a pending writer cancels reconciliation at its next page/query/yield boundary. Native membership mutations that race proof construction invalidate the epoch and refuse cursor/memo acceptance rather than laundering the newer state into older evidence.
 - ADR-020 cursor-store/heartbeat and ADR-016 watermark helpers remain for compatibility/tests, but no longer drive the automatic startup path. The obsolete privileged `listKeysAboveKey` API and its one-shot `listAllKeys()` implementation are removed; the retained test-exported cursor walker can only consume the bounded scan-token pages. ADR-021's verify-then-remove, resumable missing scan, and orphan safeguards are retained after the trigger changes.
+
+**Amendment (2026-10-05):** the sentence "ADR-020 cursor-store/heartbeat and ADR-016 watermark helpers
+remain for compatibility/tests" is superseded. Those helpers, the test-exported cursor walker and
+`tmMsgNotify.getCursorFolder` are deleted, and their stored keys join the init-time legacy-key removal.

@@ -3849,17 +3849,12 @@ describe('cooperative folder reconcile production contracts', () => {
     const schemaPath = fileURLToPath(new URL('../agent/experiments/tmMsgNotify/schema.json', import.meta.url));
     const schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
     expect(schema[0].functions.map(fn => fn.name)).not.toContain('listKeysAboveKey');
-    // The retired cursor walker remains test-exported for ADR-020 heartbeat
-    // compatibility, but has no production caller and can only use the same
-    // bounded scan-token pages as current reconciliation.
-    expect(indexer.match(/_runCursorScan\(/g)).toHaveLength(1);
-    const boundedLegacy = indexer.match(
-      /async function _listCursorKeysAboveKeyCooperatively[\s\S]*?\n}\n\nasync function _runCursorScan/,
-    )?.[0] || '';
-    expect(boundedLegacy.length).toBeGreaterThan(500);
-    expect(boundedLegacy).toContain('beginFolderMessageScan');
-    expect(boundedLegacy).toContain('readFolderMessageScanPage');
-    expect(boundedLegacy).not.toContain('.listKeysAboveKey(');
+    // The retired cursor walker, its key lister and the experiment's cursor
+    // read are deleted; no production path names them.
+    expect(indexer).not.toMatch(/_runCursorScan|_listCursorKeysAboveKeyCooperatively|getCursorFolder/);
+    expect(source).not.toContain('getCursorFolder');
+    expect(schema[0].functions.map(fn => fn.name)).not.toContain('getCursorFolder');
+    expect(schema[0].functions.map(fn => fn.name)).toContain('beginFolderMessageScan');
     const productionRecon = indexer.match(
       /async function _runFolderReconcile[\s\S]*?\n}\n\nfunction _wakeFolderRecon/,
     )?.[0] || '';
