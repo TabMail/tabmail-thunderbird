@@ -5972,8 +5972,11 @@ async function _runFolderMembershipMigrationSlice(
   { readPage = true, memo } = {},
 ) {
   if (ftsSearch?.supportsFolderMembership?.() !== true) {
+    // Reached only when capability left during the tick's awaits: nothing
+    // was proven, so the tick must not credit orphan or session completion.
+    // The next tick observes no capability and runs the legacy path.
     _revokeFolderMembershipCleanup();
-    return { complete: true, legacy: true };
+    return { complete: false, legacy: true };
   }
   // The inventory and the state pages read no message state; each ownerless
   // row's verdict carries its own candidate folders' local scope.

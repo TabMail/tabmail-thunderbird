@@ -10207,14 +10207,14 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
   // in-session. during: the row's msgDB probe, or (after a failed probe) its
   // global recheck, whose refusal happens at classification.
   it.each([
-    { eventKey: 'other@example.com', during: 'probe', refused: false },
-    { eventKey: 'cold@example.com', during: 'probe', refused: true },
-    { eventKey: '<cold@example.com>', during: 'probe', refused: true },
-    { eventKey: undefined, during: 'probe', refused: true },
-    { eventKey: 'other@example.com', during: 'recheck', refused: false },
-    { eventKey: 'cold@example.com', during: 'recheck', refused: true },
-    { eventKey: undefined, during: 'recheck', refused: true },
-  ])('a verdict read across an event for $eventKey in its candidate folder during its $during: refused=$refused', async ({ eventKey, during, refused }) => {
+    { eventKey: 'other@example.com', label: 'other@example.com', during: 'probe', refused: false },
+    { eventKey: 'cold@example.com', label: 'cold@example.com', during: 'probe', refused: true },
+    { eventKey: '<cold@example.com>', label: '<cold@example.com>', during: 'probe', refused: true },
+    { eventKey: undefined, label: 'no key', during: 'probe', refused: true },
+    { eventKey: 'other@example.com', label: 'other@example.com', during: 'recheck', refused: false },
+    { eventKey: 'cold@example.com', label: 'cold@example.com', during: 'recheck', refused: true },
+    { eventKey: undefined, label: 'no key', during: 'recheck', refused: true },
+  ])('a verdict read across an event for $label in its candidate folder during its $during: refused=$refused', async ({ eventKey, during, refused }) => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     const { fts, folders, nativeRows } = seedMigratedExactFolders([
@@ -11404,6 +11404,45 @@ describe('a capability change inside one tick', () => {
     expect(healed).toMatchObject({ complete: true });
     expect(fts.listFolderMembershipState).toHaveBeenCalled();
     expect(_testExports._getFolderMembershipCleanupProven()).toBe(true);
+  });
+
+  it('never credits completion when capability leaves during the tick with cleanup unproven', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, nativeRows } = installExactMembershipFolders([
+      { folderPath: '/A', headerMessageIds: ['a-1@example.com'] },
+      { folderPath: '/Z', headerMessageIds: [] },
+    ], { assigned: true });
+    // A NULL-owner row no recheck can classify keeps global cleanup unproven;
+    // its folder's repair backs off, so later ticks have no folder target.
+    nativeRows.set('account1:/A:unresolvable@example.com', null);
+    recheckMessageInFolder.mockResolvedValue('error');
+    let before;
+    for (let work = 0, guard = 0; work < 16 && guard < 320; guard++) {
+      before = await settleSchedulerTickWithFakeTimers(fts);
+      vi.setSystemTime(Date.now() + 100);
+      if (!isSkippedTick(before)) work++;
+    }
+    expect(before?.complete).not.toBe(true);
+    expect(_testExports._getFolderMembershipCleanupProven()).toBe(false);
+    // A disconnect lands during the tick's scan-gate read: the tick observed
+    // capability before its first await, the cleanup pass sees none.
+    let capable = true;
+    fts.supportsFolderMembership.mockImplementation(() => capable);
+    const realGet = globalThis.browser.storage.local.get.getMockImplementation();
+    globalThis.browser.storage.local.get.mockImplementation(async (...args) => {
+      const keys = [args[0]].flat();
+      if (capable && keys.includes('fts_scan_status')) capable = false;
+      return realGet(...args);
+    });
+
+    const flipped = await tickWorkUntil(fts, () => !capable, 10);
+
+    expect(capable).toBe(false);
+    expect(flipped?.complete).not.toBe(true);
+    expect(_testExports._getFolderMembershipCleanupProven()).toBe(false);
+    const status = await getIncrementalIndexerStatus();
+    expect(status.folderRecon.outcomes.complete).not.toBe(true);
   });
 });
 
