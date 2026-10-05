@@ -600,7 +600,7 @@ async function _initNativeFtsOnce() {
       }
       
       // Reject all pending RPCs
-      for (const [id, pending] of pendingRPCs) {
+      for (const pending of pendingRPCs.values()) {
         pending.reject(new Error("Native helper disconnected"));
       }
       pendingRPCs.clear();
@@ -1207,16 +1207,3 @@ export const nativeMemorySearch = {
     return nativeRPC('memoryRead', { timestampMs, toleranceMs });
   },
 };
-
-/**
- * Check if the native FTS helper is installed + handshaked.
- *
- * NOTE: connectNative() does NOT throw synchronously when the host manifest is
- * missing (the failure arrives asynchronously via the port's onDisconnect), so
- * a connect/disconnect probe can't tell us availability. The authoritative
- * signal is the structured init handshake outcome tracked in `ftsHostStatus`.
- * Returns true only when availability has been confirmed.
- */
-export async function isNativeFtsAvailable() {
-  return getFtsHostAvailability() === true;
-}

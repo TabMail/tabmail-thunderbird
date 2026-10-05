@@ -179,23 +179,6 @@ export async function initMaintenanceScheduler(ftsSearch) {
 }
 
 /**
- * Dispose the maintenance scheduler
- */
-export async function disposeMaintenanceScheduler(options = {}) {
-  if (!_isInitialized) return;
-  
-  // Compatibility option for callers that want another legacy-alarm cleanup.
-  const clearAlarms = options?.clearAlarms === true;
-  if (clearAlarms) {
-    await clearMaintenanceAlarms();
-  }
-  _isInitialized = false;
-  _ftsSearch = null;
-  
-  log("[TMDBG FTS] Maintenance scheduler disposed");
-}
-
-/**
  * Get maintenance settings from storage
  */
 async function getMaintenanceSettings() {

@@ -450,8 +450,16 @@ export const SETTINGS = {
             // Delay before the membership-state pass replays rows it could
             // not classify (in-session retry while cleanup is incomplete).
             membershipUnresolvedRetryMs: 10 * 60 * 1000,
-            // Longest slice wall time the scheduler reserves (its 50% duty
-            // cycle); a longer measurement is a host sleep inside the slice.
+            // Hard-floor cap (ADR-022). After each slice the scheduler
+            // waits at least as long as the slice ran, so reconciliation
+            // uses at most half of wall time. Only this much of one slice's
+            // elapsed time counts: a Mac that sleeps mid-slice measures
+            // hours that were not work, and uncapped that would postpone
+            // reconciliation by the same hours after wake. Page budgets keep
+            // real slices far shorter, so the cap never cuts a genuine
+            // pause; it bounds the post-sleep delay to 10 min, inside the
+            // ~30 min self-heal target. Slice times: incrementalStatus →
+            // folderRecon.maxSliceElapsedMs.
             hardFloorMaxElapsedMs: 10 * 60 * 1000,
         },
         // Proactive inbox scan - DISABLED.

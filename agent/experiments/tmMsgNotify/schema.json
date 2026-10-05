@@ -48,14 +48,6 @@
     ],
     "functions": [
       {
-        "name": "isListenerActive",
-        "type": "function",
-        "description": "Check if the notification listener is currently active.",
-        "async": true,
-        "parameters": [],
-        "returns": { "type": "boolean" }
-      },
-      {
         "name": "beginFolderMessageScan",
         "type": "function",
         "description": "Begin an opaque live msgDB header scan whose pages are bounded by readFolderMessageScanPage.",

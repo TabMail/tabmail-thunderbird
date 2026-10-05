@@ -41,12 +41,9 @@ const {
   parseUniqueId,
   debounce,
   log,
-  generateRequestId,
-  runPromisesInBatches,
   extractBodyFromParts,
   stripHtml,
   extractUserWrittenContent,
-  clearGetFullCache,
   headerIndex,
   _testCacheInternals,
 } = await import('../agent/modules/utils.js');
@@ -522,111 +519,6 @@ describe('log', () => {
 });
 
 // ---------------------------------------------------------------------------
-// generateRequestId — unique request ID generation
-// ---------------------------------------------------------------------------
-describe('generateRequestId', () => {
-  it('returns a string starting with "req_"', async () => {
-    const id = await generateRequestId();
-    expect(id).toMatch(/^req_/);
-  });
-
-  it('contains a timestamp component', async () => {
-    const before = Date.now();
-    const id = await generateRequestId();
-    const after = Date.now();
-    // Format: req_<timestamp>_<random>_<hash>
-    const parts = id.split('_');
-    // parts[0] = "req", parts[1] = timestamp
-    const timestamp = Number(parts[1]);
-    expect(timestamp).toBeGreaterThanOrEqual(before);
-    expect(timestamp).toBeLessThanOrEqual(after);
-  });
-
-  it('generates unique IDs across multiple calls', async () => {
-    const ids = new Set();
-    for (let i = 0; i < 50; i++) {
-      ids.add(await generateRequestId());
-    }
-    expect(ids.size).toBe(50);
-  });
-
-  it('follows the expected format pattern', async () => {
-    const id = await generateRequestId();
-    // req_<timestamp>_<6hexchars>_<4hexchars> OR req_<timestamp>_<alphanumeric>
-    expect(id).toMatch(/^req_\d+_[a-f0-9]+_[a-f0-9]+$/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// runPromisesInBatches — batched promise execution
-// ---------------------------------------------------------------------------
-describe('runPromisesInBatches', () => {
-  it('executes all promise factories and returns results', async () => {
-    const factories = [
-      () => Promise.resolve(1),
-      () => Promise.resolve(2),
-      () => Promise.resolve(3),
-    ];
-    const results = await runPromisesInBatches(factories, 2);
-    expect(results).toEqual([1, 2, 3]);
-  });
-
-  it('returns empty array for empty input', async () => {
-    const results = await runPromisesInBatches([], 5);
-    expect(results).toEqual([]);
-  });
-
-  it('respects concurrency by running in batches', async () => {
-    let maxConcurrent = 0;
-    let currentConcurrent = 0;
-
-    const makeFactory = (val) => () => {
-      currentConcurrent++;
-      maxConcurrent = Math.max(maxConcurrent, currentConcurrent);
-      return new Promise((resolve) => {
-        // Simulate async work — resolve synchronously to keep test fast
-        currentConcurrent--;
-        resolve(val);
-      });
-    };
-
-    const factories = [makeFactory(1), makeFactory(2), makeFactory(3), makeFactory(4), makeFactory(5)];
-    const results = await runPromisesInBatches(factories, 2);
-    expect(results).toEqual([1, 2, 3, 4, 5]);
-    // Each batch should run at most 2 concurrently
-    expect(maxConcurrent).toBeLessThanOrEqual(2);
-  });
-
-  it('handles single-item batches', async () => {
-    const factories = [
-      () => Promise.resolve('a'),
-      () => Promise.resolve('b'),
-      () => Promise.resolve('c'),
-    ];
-    const results = await runPromisesInBatches(factories, 1);
-    expect(results).toEqual(['a', 'b', 'c']);
-  });
-
-  it('handles concurrency larger than factory count', async () => {
-    const factories = [
-      () => Promise.resolve(10),
-      () => Promise.resolve(20),
-    ];
-    const results = await runPromisesInBatches(factories, 100);
-    expect(results).toEqual([10, 20]);
-  });
-
-  it('propagates rejections from promise factories', async () => {
-    const factories = [
-      () => Promise.resolve(1),
-      () => Promise.reject(new Error('batch fail')),
-      () => Promise.resolve(3),
-    ];
-    await expect(runPromisesInBatches(factories, 3)).rejects.toThrow('batch fail');
-  });
-});
-
-// ---------------------------------------------------------------------------
 // stripHtml — HTML to plain text (requires DOMParser mock)
 // ---------------------------------------------------------------------------
 describe('stripHtml', () => {
@@ -978,30 +870,6 @@ describe('extractBodyFromParts', () => {
     ];
     const result = await extractBodyFromParts(parts, 1);
     expect(result).toBe('Found in first sub-part tree');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// clearGetFullCache — cache clearing
-// ---------------------------------------------------------------------------
-describe('clearGetFullCache', () => {
-  beforeEach(() => {
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('does not throw when called on an empty cache', () => {
-    expect(() => clearGetFullCache()).not.toThrow();
-  });
-
-  it('can be called multiple times safely', () => {
-    clearGetFullCache();
-    clearGetFullCache();
-    // No error means success
   });
 });
 

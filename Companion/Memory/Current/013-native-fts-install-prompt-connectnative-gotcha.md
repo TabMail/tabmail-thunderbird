@@ -11,3 +11,5 @@
 - Download-page deep-link target `tabmail.ai/download#fts-helper` is the FTS Helper tab (see `PLAN_ATN_DISTRIBUTION.md` §1.6 / Phase 2). Tests: `test/icon.test.js` (`setWarning` keyed cases + disconnected-as-warning).
 - **Reconnect spam fix (same change):** when the helper is missing, every `nativeRPC` used to call `ensureConnected()`→`initNativeFts()`→`connectNative`, re-logging "Native helper disconnected" / "Update check failed" continuously. Added a circuit breaker: `ensureConnected()` skips re-attempting while `ftsHostAvailable === false` and within `RECONNECT_COOLDOWN_MS` (60s) of `lastConnectAttemptMs` (set on every `initNativeFts` entry); "Update check failed" downgraded error→warn. So a missing helper logs at most ~once/min, not per-RPC.
 <!-- END PRESERVED BLOCK -->
+
+**Amendment (2026-10-05):** `isNativeFtsAvailable()` was deleted in the dead-code cleanup. It still had zero callers; the availability signal is `getFtsHelperAvailable()` (engine) / `nativeFtsSearch.getHostAvailability()`.

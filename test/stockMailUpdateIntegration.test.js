@@ -9,7 +9,7 @@ vi.mock('../agent/modules/idbStorage.js', () => ({}));
 vi.mock('../agent/modules/inboxContext.js', () => ({getInboxForAccount:vi.fn()}));
 vi.mock('../agent/modules/tagHelper.js', () => ({ACTION_TAG_IDS:{},recomputeThreadForInboxMessage:vi.fn()}));
 vi.mock('../agent/modules/utils.js', () => ({
- clearAlarm:vi.fn(async()=>{}),ensureAlarm:vi.fn(),getArchiveFolderForHeader:vi.fn(),getTrashFolderForHeader:vi.fn(),
+ ensureAlarm:vi.fn(),getArchiveFolderForHeader:vi.fn(),getTrashFolderForHeader:vi.fn(),
  getUniqueMessageKey:vi.fn(async m=>`${m.folder.accountId}:${m.folder.path}:${m.headerMessageId}`),
  indexHeader:vi.fn(),log:vi.fn(),removeHeaderIndexForDeletedMessage:vi.fn(),updateHeaderIndexForMovedMessage:vi.fn(),
  getForegroundFetchPressure:vi.fn(()=>({active:0,waiting:0,chatTyping:false})),getUniqueMessageKeyCandidates:vi.fn(),headerIDToWeID:vi.fn(),parseUniqueId:vi.fn(),recheckMessageInFolder:vi.fn(),resolveUniqueMessageKey:vi.fn()

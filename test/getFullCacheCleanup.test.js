@@ -119,22 +119,6 @@ describe('safeGetFull process-local cleanup', () => {
     expect(_testCacheInternals.getFullCache.has(key(301))).toBe(false);
     expect(_testCacheInternals.getFullCache.has(key(302))).toBe(false);
   });
-
-  it('can schedule cleanup again after explicit stop', async () => {
-    const h = setupBrowser();
-    const { safeGetFull, stopGetFullCacheCleanup, _testCacheInternals } =
-      await import('../agent/modules/utils.js');
-
-    await safeGetFull(401);
-    stopGetFullCacheCleanup();
-    expect(h.timers.size).toBe(0);
-    expect(await safeGetFull(401)).toEqual({ body: 'Synthetic message 401, fetch 1' });
-    expect(h.setTimer).toHaveBeenCalledTimes(2);
-    expect(h.timers.size).toBe(1);
-    now += 60_001;
-    h.tick();
-    expect(_testCacheInternals.getFullCache.has(key(401))).toBe(false);
-  });
 });
 
 const fixtureHeader = id => ({

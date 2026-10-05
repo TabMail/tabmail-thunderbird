@@ -307,10 +307,7 @@ async function queueMessageUpdate(type, messageHeader) {
       // Preserve failure tracking from existing entry, or initialize
       hasFailed: existing?.hasFailed || false,
       lastFailedAt: existing?.lastFailedAt || 0,
-      metadata: {
-        subject: messageHeader.subject,
-        folderName: messageHeader.folder?.name
-      }
+      metadata: { subject: messageHeader.subject },
     }, folderKey);
     if (!admitted) return;
     
@@ -937,7 +934,6 @@ async function processPendingUpdates() {
       
       // If queue is stuck, drop entries that have failed
       if (_shouldDropFailedUpdates()) {
-        const cfg = _getRetryConfig();
         log(`[TMDBG FTS] Queue stuck for ${_consecutiveNoProgressCycles} cycles - dropping failed entries`, "warn");
         
         const stuckEntries = [..._pendingUpdates.values()].filter(entry => entry.hasFailed);
@@ -1194,9 +1190,9 @@ function _folderReconEventFolderKey(messageInfo) {
  * reconcile enqueue is not a sync event.
  *
  * @param {Object} messageInfo - Serialized message info from experiment
- * @param {boolean} [fromCursorScan] - Marks reconcile-sourced entries
+ * @param {boolean} [fromReconcile] - Names the source in the debug log
  */
-async function _enqueueNewFromInfo(messageInfo, fromCursorScan = false) {
+async function _enqueueNewFromInfo(messageInfo, fromReconcile = false) {
   if (!_isEnabled) return false;
 
   const { headerMessageId, folderPath, accountId, subject, eventType } = messageInfo;
@@ -1227,13 +1223,7 @@ async function _enqueueNewFromInfo(messageInfo, fromCursorScan = false) {
       uniqueKey,
       timestamp: Date.now(),
       folderKey: `${accountId}:${folderPath}`,
-      metadata: {
-        subject: subject?.substring(0, 100),
-        folderName: folderPath,
-        fromExperiment: true,
-        fromCursorScan,
-        eventType,
-      }
+      metadata: { subject: subject?.substring(0, 100) },
     };
 
     const admitted = await _tryAdmitPendingUpdate(
@@ -1242,7 +1232,7 @@ async function _enqueueNewFromInfo(messageInfo, fromCursorScan = false) {
       `${accountId}:${folderPath}`,
     );
     if (!admitted) return false;
-    log(`[TMDBG FTS] Queued new from ${fromCursorScan ? 'cursor scan' : 'experiment'}: ${uniqueKey} (${eventType}) (queue size: ${_pendingUpdates.size})`);
+    log(`[TMDBG FTS] Queued new from ${fromReconcile ? 'reconcile' : 'experiment'}: ${uniqueKey} (${eventType}) (queue size: ${_pendingUpdates.size})`);
     scheduleBatchProcess();
     return true;
   } finally {
@@ -1278,7 +1268,7 @@ async function _enqueueRemovedFromInfo(messageInfo) {
   _lastSyncEventMs = Date.now();
   _invalidateFolderReconProofForMessageEvent(messageInfo);
 
-  const { headerMessageId, weFolderId, folderPath, accountId, msgKey, eventType } = messageInfo;
+  const { headerMessageId, folderPath, accountId, eventType } = messageInfo;
 
   log(`[TMDBG FTS] Experiment msgRemoved: type=${eventType}, folder=${folderPath}, headerMessageId=${headerMessageId?.substring(0, 30)}`);
   
@@ -1308,12 +1298,7 @@ async function _enqueueRemovedFromInfo(messageInfo) {
       uniqueKey,
       timestamp: Date.now(),
       folderKey: `${accountId}:${folderPath}`,
-      metadata: {
-        folderName: folderPath,
-        msgKey,
-        fromExperiment: true,
-        eventType,
-      }
+      metadata: {},
     };
     
     // Always update - deletion takes precedence
@@ -1697,8 +1682,9 @@ const FOLDER_RECON_CONFIG = {
   reverifyIntervalMs: 20 * 60 * 1000,
   walkPeriodMs: 24 * 60 * 60 * 1000,
   membershipUnresolvedRetryMs: 10 * 60 * 1000,
-  // Longest slice wall time the scheduler reserves; a longer measurement is a
-  // host sleep inside the slice, not work.
+  // Hard-floor cap: the most of one slice's elapsed time the 50% duty floor
+  // counts; a longer measurement is a host sleep inside the slice, not work.
+  // See agent/modules/config.js for the rationale.
   hardFloorMaxElapsedMs: 10 * 60 * 1000,
   changeLedgerCap: 4096,
   changeLedgerKeyCap: 4096,
@@ -4372,29 +4358,17 @@ async function _runFolderReconcile(
         && expected.proofGuard.entry.incarnationToken === f.incarnationToken
         && membershipMode.exact
         && _folderMembershipDigestInProgress(f, "fresh_after_working");
-      if (continuesFreshDigest) {
-        expected = { ...expected, fromWorkingProof: false };
-        folderMembershipEpoch = getFtsMembershipEpoch();
-        _assertNoFolderReconForegroundPressure();
-        nativeFingerprint = await _fingerprintFolderNative(
-          ftsSearch, f, startKey, endKey, "fresh_after_working", membershipMode,
-        );
-        _assertFolderReconLease(reconcileLease, generation);
-        _assertNoFolderReconForegroundPressure();
-        if (!ftsMembershipUnchangedSince(_folderReconNativeScope(f), folderMembershipEpoch)) {
-          throw new Error("membership_epoch_changed");
-        }
-      } else {
-        folderMembershipEpoch = getFtsMembershipEpoch();
-        _assertNoFolderReconForegroundPressure();
-        nativeFingerprint = await _fingerprintFolderNative(
-          ftsSearch, f, startKey, endKey, "initial", membershipMode,
-        );
-        _assertFolderReconLease(reconcileLease, generation);
-        _assertNoFolderReconForegroundPressure();
-        if (!ftsMembershipUnchangedSince(_folderReconNativeScope(f), folderMembershipEpoch)) {
-          throw new Error("membership_epoch_changed");
-        }
+      if (continuesFreshDigest) expected = { ...expected, fromWorkingProof: false };
+      folderMembershipEpoch = getFtsMembershipEpoch();
+      _assertNoFolderReconForegroundPressure();
+      nativeFingerprint = await _fingerprintFolderNative(
+        ftsSearch, f, startKey, endKey,
+        continuesFreshDigest ? "fresh_after_working" : "initial", membershipMode,
+      );
+      _assertFolderReconLease(reconcileLease, generation);
+      _assertNoFolderReconForegroundPressure();
+      if (!ftsMembershipUnchangedSince(_folderReconNativeScope(f), folderMembershipEpoch)) {
+        throw new Error("membership_epoch_changed");
       }
       // A reused proof is repair input only. If native already equals it, take
       // a direct fresh local/native pair before allowing the verified path.
@@ -6710,7 +6684,6 @@ export const _testExports = {
   _getFolderMembershipStatePass: () => _folderMembershipStatePass,
   _getFolderMembershipYieldedAttempts: () => new Map(_folderMembershipYieldedAttempts),
   _getFolderReconOrphanPass: () => _folderReconOrphanPass,
-  _runFolderMembershipMigrationSlice,
   _resetFolderReconState: () => {
     _resetFtsOperationCoordinatorForTests();
     _folderReconLocalTouchedKeys.clear();
@@ -6754,19 +6727,12 @@ export const _testExports = {
     _folderReconInProgressOwner = v ? { generation: _folderReconGeneration } : null;
   },
   FOLDER_RECON_STORAGE_KEY,
-  FOLDER_RECON_KEYS_CHUNK,
   FOLDER_RECON_CHUNK_DELAY_MS,
   FOLDER_RECON_BACKOFF_WAIT_CAP_MS,
-  FOLDER_RECON_RECHECK_KEEPALIVE_EVERY,
-  FOLDER_RECON_KEYSPACE_END,
   FOLDER_RECON_INITIAL_SCAN_KEY,
   FOLDER_RECON_ENTRY_DELAY_MS,
   FOLDER_RECON_GENERIC_FAILURE_BACKOFF_MAX_MS,
-  FOLDER_RECON_MISSING_PAGE_KEYS,
-  FOLDER_RECON_RECHECKS_PER_SLICE,
-  FOLDER_RECON_ENQUEUES_PER_SLICE,
   FOLDER_RECON_PENDING_HIGH_WATER,
-  _getFolderReconWorkingProof,
   _admitFolderReconActiveProof,
   _invalidateFolderReconProofForEvent,
   _invalidateFolderReconProofForMessageEvent,
@@ -6816,7 +6782,6 @@ export const _testExports = {
   _setFolderReconHardNotBeforeMs,
   _reconStorageTransaction,
   _setIndexerDisposed: (v) => { _indexerDisposed = v; },
-  _getIndexerDisposed: () => _indexerDisposed,
   // Allow tests to set _experimentListenersActive / _isEnabled / _ftsSearch directly
   _setExperimentListenersActive: (v) => { _experimentListenersActive = v; },
   _setIsEnabled: (v) => { _isEnabled = v; },

@@ -567,41 +567,10 @@ export async function recheckFtsHelperAvailable() {
   return nativeFtsSearch.recheckAvailability();
 }
 
-export async function disposeFtsEngine() {
-  try {
-    log("[TMDBG FTS] Disposing FTS engine");
-  } catch (_) {}
-
-  // Remove runtime message handler
-  try {
-    if (_runtimeMessageHandler) {
-      browser.runtime.onMessage.removeListener(_runtimeMessageHandler);
-      _runtimeMessageHandler = null;
-      log("[TMDBG FTS] Runtime message handler removed");
-    }
-  } catch (e) {
-    log(`[TMDBG FTS] Failed to remove runtime message handler: ${e}`, "warn");
-  }
-
-  // Dispose incremental indexer
-  try {
-    const { disposeIncrementalIndexer } = await import("./incrementalIndexer.js");
-    await disposeIncrementalIndexer();
-  } catch (e) {
-    log(`[TMDBG FTS] Failed to dispose incremental indexer: ${e}`, "warn");
-  }
-
-  // Dispose maintenance scheduler (clears alarms + removes alarm listener)
-  try {
-    const { disposeMaintenanceScheduler } = await import("./maintenanceScheduler.js");
-    await disposeMaintenanceScheduler();
-  } catch (e) {
-    log(`[TMDBG FTS] Failed to dispose maintenance scheduler: ${e}`, "warn");
-  }
-
+// Test isolation: forget the attached handler and the initialized state.
+export function _resetFtsEngineForTests() {
+  _runtimeMessageHandler = null;
   _inited = false;
-  log("[TMDBG FTS] FTS engine disposed");
-  return { ok: true };
 }
 
 // The owners a removeBatch reply names for every row it deleted, or null.
@@ -849,38 +818,3 @@ export const memorySearch = {
     }
   },
 };
-
-// Command queue for background processing
-const _commandQueue = [];
-let _isProcessing = false;
-
-async function processNextCommand() {
-  if (_isProcessing || _commandQueue.length === 0) return;
-  
-  _isProcessing = true;
-  const cmd = _commandQueue.shift();
-  
-  log(`[FTS Engine] Processing FTS command: ${cmd.method}`);
-  
-  try {
-    const result = await cmd.handler();
-    log(`[FTS Engine] Command ${cmd.method} completed`);
-    if (cmd.resolve) cmd.resolve(result);
-  } catch (error) {
-    log(`[FTS Engine] Command ${cmd.method} failed: ${error.message}`, "error");
-    if (cmd.reject) cmd.reject(error);
-  } finally {
-    _isProcessing = false;
-    // Process next command if any
-    if (_commandQueue.length > 0) {
-      processNextCommand();
-    }
-  }
-}
-
-export function queueFtsCommand(method, handler) {
-  return new Promise((resolve, reject) => {
-    _commandQueue.push({ method, handler, resolve, reject });
-    processNextCommand();
-  });
-}
