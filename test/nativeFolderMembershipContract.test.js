@@ -21,6 +21,8 @@ function makeNativePort(
     updateRequestResult = null,
     deferUpdateRequest = false,
     updateExitScheduler = callback => setTimeout(callback, 0),
+    folderMembershipSummaryV1 = false,
+    summaryResult = null,
   } = {},
 ) {
   const listeners = [];
@@ -91,7 +93,7 @@ function makeNativePort(
             isUserInstall: true,
             isSystemInstall: false,
             installPath: "/test/fts-helper",
-            capabilities: { folderMembershipV1 },
+            capabilities: { folderMembershipV1, folderMembershipSummaryV1 },
           };
           break;
         case "updateCheck":
@@ -127,6 +129,9 @@ function makeNativePort(
           break;
         case "listFolderMembershipState":
           result = { ok: true, entries: [], done: true };
+          break;
+        case "folderMembershipSummary":
+          result = summaryResult || { ok: true, ownerlessRows: 0, strayTrustedRows: 0, strayUntrustedRows: 0 };
           break;
         case "assignFolderMembershipBatch":
           result = assignmentResult || {
@@ -223,9 +228,9 @@ function makeDeferredHelloPort(
   };
 }
 
-async function initialized(folderMembershipV1, assignmentResult = null) {
+async function initialized(folderMembershipV1, assignmentResult = null, portOptions = {}) {
   vi.resetModules();
-  const port = makeNativePort(folderMembershipV1, assignmentResult);
+  const port = makeNativePort(folderMembershipV1, assignmentResult, portOptions);
   globalThis.browser = {
     runtime: {
       connectNative: vi.fn(() => port),
@@ -433,6 +438,40 @@ describe("native folder-membership v1 contract", () => {
       .toStrictEqual({ folderId: "opaque-folder-17", afterMsgId: 17, limit: 25 });
     expect(port.messages.find(message => message.method === "listFolderMembershipState")?.params)
       .toStrictEqual({ afterMsgId: 17, limit: 25 });
+  });
+
+  it.each([
+    { folderMembershipSummaryV1: true, expected: true },
+    { folderMembershipSummaryV1: false, expected: false },
+    { folderMembershipSummaryV1: "true", expected: false },
+  ])("reports the membership summary only when hello advertises it as $folderMembershipSummaryV1", async ({ folderMembershipSummaryV1, expected }) => {
+    const { nativeFtsSearch } = await initialized(true, null, { folderMembershipSummaryV1 });
+    expect(nativeFtsSearch.supportsFolderMembershipSummary()).toBe(expected);
+  });
+
+  it("asks for the membership summary with the inventory's folder ids and trusted accounts", async () => {
+    const reply = { ok: true, ownerlessRows: 2, strayTrustedRows: 0, strayUntrustedRows: 5 };
+    const { nativeFtsSearch, port } = await initialized(true, null, {
+      folderMembershipSummaryV1: true,
+      summaryResult: reply,
+    });
+
+    await expect(nativeFtsSearch.folderMembershipSummary(["opaque-folder-17", "opaque-folder-18"], ["account1"]))
+      .resolves.toEqual(reply);
+    expect(port.messages.find(message => message.method === "folderMembershipSummary")?.params)
+      .toStrictEqual({ folderIds: ["opaque-folder-17", "opaque-folder-18"], trustedAccountIds: ["account1"] });
+  });
+
+  it.each([
+    { label: "not ok", summaryResult: { ok: false, ownerlessRows: 0, strayTrustedRows: 0, strayUntrustedRows: 0 } },
+    { label: "a missing count", summaryResult: { ok: true, ownerlessRows: 0, strayTrustedRows: 0 } },
+    { label: "a negative count", summaryResult: { ok: true, ownerlessRows: -1, strayTrustedRows: 0, strayUntrustedRows: 0 } },
+    { label: "a fractional count", summaryResult: { ok: true, ownerlessRows: 0, strayTrustedRows: 0.5, strayUntrustedRows: 0 } },
+    { label: "a string count", summaryResult: { ok: true, ownerlessRows: 0, strayTrustedRows: 0, strayUntrustedRows: "0" } },
+  ])("rejects a membership summary reply with $label", async ({ summaryResult }) => {
+    const { nativeFtsSearch } = await initialized(true, null, { folderMembershipSummaryV1: true, summaryResult });
+    await expect(nativeFtsSearch.folderMembershipSummary(["opaque-folder-17"], ["account1"]))
+      .rejects.toThrow("invalid response");
   });
 
   it("uses the frozen exact-equality metadata backfill RPC shape", async () => {

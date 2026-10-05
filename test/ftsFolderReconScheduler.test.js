@@ -6031,6 +6031,281 @@ async function tickUntil(fts, done, maxTicks = 30) {
   return result;
 }
 
+// INVARIANT: global membership cleanup is published only from evidence that
+// every native row is owned by a live inventory folder or belongs to an
+// account Thunderbird has not loaded. A helper with folderMembershipSummaryV1
+// proves that in one read per pass; anything it cannot vouch for falls to the
+// walk, which repairs it.
+describe('membership summary instead of the full state walk', () => {
+  // Counts computed from the request against the fixture's native index,
+  // with the native prefix rule: the account is the text before the first
+  // ':' when that colon is past index 0, otherwise the never-trusted empty
+  // account.
+  function enableMembershipSummary(fts, nativeRows, { during = null } = {}) {
+    fts.supportsFolderMembershipSummary = vi.fn(() => true);
+    fts.folderMembershipSummary = vi.fn(async (folderIds, trustedAccountIds) => {
+      const owners = new Set(folderIds);
+      const trusted = new Set(trustedAccountIds);
+      let ownerlessRows = 0;
+      let strayTrustedRows = 0;
+      let strayUntrustedRows = 0;
+      for (const [msgId, folderId] of nativeRows) {
+        if (folderId == null) {
+          ownerlessRows++;
+          continue;
+        }
+        if (owners.has(folderId)) continue;
+        const separator = msgId.indexOf(':');
+        const account = separator > 0 ? msgId.slice(0, separator) : '';
+        if (account && trusted.has(account)) strayTrustedRows++;
+        else strayUntrustedRows++;
+      }
+      const reply = { ok: true, ownerlessRows, strayTrustedRows, strayUntrustedRows };
+      if (during) await during(reply);
+      return reply;
+    });
+    return fts.folderMembershipSummary;
+  }
+
+  const walkPages = fts => fts.listFolderMembershipState.mock.calls.length;
+  const cleanupProven = () => _testExports._getFolderMembershipCleanupProven();
+  const runTick = fts => settleSchedulerTickWithFakeTimers(fts).catch(error => ({ error: String(error) }));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+  });
+
+  afterEach(() => {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('publishes cleanup for a clean index from one summary, without the walk', async () => {
+    const { fts, nativeRows, folders } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+      { folderPath: '/B', headerMessageIds: ['b@example.com'] },
+    ]);
+    const summary = enableMembershipSummary(fts, nativeRows);
+    await tickUntil(fts, () => cleanupProven());
+
+    expect(cleanupProven()).toBe(true);
+    expect(walkPages(fts)).toBe(0);
+    expect(summary).toHaveBeenCalledTimes(1);
+    const [folderIds, trustedAccountIds] = summary.mock.calls[0];
+    expect([...folderIds].sort()).toEqual(folders.map(folder => folder.folderId).sort());
+    expect([...trustedAccountIds]).toEqual(['account1']);
+    const pass = _testExports._getFolderMembershipStatePass();
+    expect(pass).toMatchObject({ completed: true, unloaded: 0 });
+    expect(pass.completedAtMs).toBeGreaterThan(0);
+    expect(_testExports._getFolderReconRuntimeTelemetry().membershipSummaryCutovers).toBe(1);
+  });
+
+  it('keeps cleanup complete across ticks with one summary and reaches session completion', async () => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    const summary = enableMembershipSummary(fts, nativeRows);
+    await tickUntil(fts, result => result?.complete === true, 40);
+    for (let turn = 0; turn < 5; turn++) await runTick(fts);
+
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(walkPages(fts)).toBe(0);
+    expect(cleanupProven()).toBe(true);
+    expect((await getIncrementalIndexerStatus()).folderRecon.outcomes.complete).toBe(true);
+  });
+
+  it('takes exactly one more summary once the completed pass outlives the walk period', async () => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    const summary = enableMembershipSummary(fts, nativeRows);
+    await tickUntil(fts, () => cleanupProven());
+    expect(summary).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(Date.now() + reconConfig.walkPeriodMs + 1000);
+    await tickUntil(fts, () => summary.mock.calls.length > 1 && cleanupProven());
+    for (let turn = 0; turn < 5; turn++) await runTick(fts);
+    expect(summary).toHaveBeenCalledTimes(2);
+    expect(walkPages(fts)).toBe(0);
+  });
+
+  it.each([
+    { label: 'an ownerless row', seed: rows => rows.set('account1:/A:loose@example.com', null) },
+    {
+      label: 'a stray row of a loaded account',
+      seed: rows => rows.set('account1:/Gone:stray@example.com', makeFolderMembershipId('account1', '/Gone')),
+    },
+  ])('walks after the summary refuses $label, and the repaired index earns the replay\'s summary', async ({ seed }) => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    seed(nativeRows);
+    const summary = enableMembershipSummary(fts, nativeRows);
+    await tickUntil(fts, () => cleanupProven(), 40);
+
+    // The walk's repair restarts the pass; that pass's summary replaces the
+    // replay walk.
+    expect(summary).toHaveBeenCalledTimes(2);
+    expect(walkPages(fts)).toBeGreaterThan(0);
+    expect(cleanupProven()).toBe(true);
+    expect([...nativeRows.values()].every(owner => owner === makeFolderMembershipId('account1', '/A'))).toBe(true);
+    const telemetry = _testExports._getFolderReconRuntimeTelemetry();
+    expect(telemetry.membershipSummaryFallbacks).toBe(1);
+    expect(telemetry.membershipSummaryCutovers).toBe(1);
+  });
+
+  it.each([
+    { label: 'throws', reply: () => { throw new Error('Native FTS folder membership summary returned an invalid response'); } },
+    { label: 'times out', reply: () => { throw new Error('Native RPC timeout: folderMembershipSummary'); } },
+  ])('makes one attempt and then walks when the summary $label', async ({ reply }) => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    const summary = enableMembershipSummary(fts, nativeRows);
+    summary.mockImplementation(async () => reply());
+    await tickUntil(fts, () => cleanupProven(), 40);
+
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(walkPages(fts)).toBeGreaterThan(0);
+    expect(cleanupProven()).toBe(true);
+  });
+
+  it('walks without a summary on a helper without the capability', async () => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    const summary = enableMembershipSummary(fts, nativeRows);
+    fts.supportsFolderMembershipSummary.mockReturnValue(false);
+    await tickUntil(fts, () => cleanupProven(), 40);
+    expect(summary).not.toHaveBeenCalled();
+    expect(walkPages(fts)).toBeGreaterThan(0);
+  });
+
+  it('hands a loaded account\'s orphan row to the walk, which removes it', async () => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    const orphan = 'account1:/Gone:orphan@example.com';
+    nativeRows.set(orphan, makeFolderMembershipId('account1', '/Gone'));
+    const summary = enableMembershipSummary(fts, nativeRows);
+    await tickUntil(fts, () => cleanupProven(), 40);
+
+    expect(summary).toHaveBeenCalledTimes(2);
+    expect(nativeRows.has(orphan)).toBe(false);
+    expect(fts.removeBatch).toHaveBeenCalledWith([orphan], expect.anything());
+    expect(_testExports._getFolderMembershipStatePass().unloaded).toBe(0);
+  });
+
+  it('publishes cleanup with the unloaded count and holds completion for an unloaded account\'s rows', async () => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    const coldRow = 'account2:/Inbox:cold@example.com';
+    nativeRows.set(coldRow, makeFolderMembershipId('account2', '/Inbox'));
+    const summary = enableMembershipSummary(fts, nativeRows);
+    const result = await tickUntil(fts, value => value?.reason === 'unloaded_accounts', 40);
+
+    expect(result).toMatchObject({ complete: false, reason: 'unloaded_accounts' });
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(walkPages(fts)).toBe(0);
+    expect(cleanupProven()).toBe(true);
+    expect(_testExports._getFolderMembershipStatePass().unloaded).toBe(1);
+    expect(nativeRows.has(coldRow)).toBe(true);
+    expect((await getIncrementalIndexerStatus()).folderRecon.outcomes.complete).not.toBe(true);
+  });
+
+  it.each([
+    { label: 'a folder topology event', change: () => _testExports._onFolderReconTopologyChanged() },
+    { label: 'a reconnect', change: fts => fts.getConnectionGeneration.mockReturnValue(2) },
+  ])('publishes nothing when $label lands during the summary', async ({ change }) => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    let changed = false;
+    const summary = enableMembershipSummary(fts, nativeRows, {
+      during: async () => {
+        if (changed) return;
+        changed = true;
+        change(fts);
+      },
+    });
+    for (let turn = 0; turn < 12 && summary.mock.calls.length === 0; turn++) await runTick(fts);
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(cleanupProven()).toBe(false);
+    // The rebound pass earns cleanup from its own summary.
+    await tickUntil(fts, () => cleanupProven(), 40);
+    expect(summary).toHaveBeenCalledTimes(2);
+    expect(walkPages(fts)).toBe(0);
+  });
+
+  it.each([
+    {
+      label: 'an exclusive operation',
+      change: async () => acquireFtsExclusiveOperation('full'),
+      undo: async lease => (await lease).release(),
+    },
+    {
+      label: 'a scheduler generation change',
+      change: async () => _testExports._setIsEnabled(false),
+      undo: async () => _testExports._setIsEnabled(true),
+    },
+  ])('publishes nothing and keeps the pass\'s one attempt when $label lands during the summary', async ({ change, undo }) => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    let pending = null;
+    const summary = enableMembershipSummary(fts, nativeRows, {
+      during: async () => { if (!pending) pending = change(); },
+    });
+    for (let turn = 0; turn < 12 && summary.mock.calls.length === 0; turn++) await runTick(fts);
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(cleanupProven()).toBe(false);
+    const pass = _testExports._getFolderMembershipStatePass();
+    expect(pass?.summaryTried).toBe(true);
+    expect(pass?.completed).not.toBe(true);
+    await undo(pending);
+  });
+
+  it('still publishes when foreground pressure rises during the summary', async () => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    const summary = enableMembershipSummary(fts, nativeRows, {
+      during: async () => { getForegroundFetchPressure.mockReturnValue({ active: 1, waiting: 0, chatTyping: false }); },
+    });
+    try {
+      for (let turn = 0; turn < 12 && summary.mock.calls.length === 0; turn++) await runTick(fts);
+      expect(summary).toHaveBeenCalledTimes(1);
+      expect(cleanupProven()).toBe(true);
+      expect(walkPages(fts)).toBe(0);
+    } finally {
+      getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
+    }
+  });
+
+  it('asks on a pass turn, spending the slice\'s one native page', async () => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    const summary = enableMembershipSummary(fts, nativeRows);
+    const turnsAtCall = [];
+    const listCallsAtSummary = [];
+    summary.mockImplementation(async (folderIds, trustedAccountIds) => {
+      turnsAtCall.push(_testExports._getFolderReconMembershipTurn());
+      listCallsAtSummary.push(fts.listFolderMembership.mock.calls.length);
+      return { ok: true, ownerlessRows: 0, strayTrustedRows: 0, strayUntrustedRows: 0 };
+    });
+    const listBefore = fts.listFolderMembership.mock.calls.length;
+    await runTick(fts);
+    expect(turnsAtCall).toEqual(['pass']);
+    // The summary took the slice's one native page: no folder page that tick.
+    expect(fts.listFolderMembership.mock.calls.length).toBe(listBefore);
+    expect(listCallsAtSummary).toEqual([listBefore]);
+  });
+});
+
 // Like tickUntil, with steps long enough that a refused row's delayed
 // unresolved replay runs within a few ticks. Counts only ticks that did
 // scheduler work, and settles a wake-fired slice still in flight before each

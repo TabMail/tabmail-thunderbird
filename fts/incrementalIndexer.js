@@ -2101,6 +2101,8 @@ function _newFolderReconRuntimeTelemetry() {
     membershipStateRestartBindingChanged: 0,
     membershipStateRestartPageInvalid: 0,
     membershipCutovers: 0,
+    membershipSummaryCutovers: 0,
+    membershipSummaryFallbacks: 0,
     membershipLastPassSlices: 0,
   };
 }
@@ -5216,7 +5218,8 @@ function _startFolderMembershipStatePass(binding, restartReason = null) {
     inventorySha256: binding.inventorySha256,
     connectionGeneration: binding.connectionGeneration,
     topologySerial: binding.topologySerial,
-    startedBeforeFirst: true,
+    // The one native summary this pass may take before its walk.
+    summaryTried: false,
     afterMsgId: null,
     passMutated: false,
     passUnresolved: 0,
@@ -5239,6 +5242,28 @@ function _currentFolderMembershipStatePass(binding) {
 
 // Restart from before-first. A continuation whose pass was already replaced
 // (revocation, binding change) leaves the newer pass alone.
+// Global cleanup is earned only by this process's own current pass under the
+// binding that is still current now; the walk's last page and the summary
+// both publish here. `unloaded` is the pass's count of rows kept for accounts
+// with no enumerated folder.
+function _publishFolderMembershipCleanup(pass, inventory, ftsSearch, unloaded) {
+  if (_folderMembershipStatePass !== pass
+      || ftsSearch?.supportsFolderMembership?.() !== true
+      || !_folderMembershipStatePassBound(
+        pass,
+        _folderMembershipStatePassBinding(inventory, ftsSearch),
+      )) {
+    return false;
+  }
+  pass.unloaded = unloaded;
+  pass.completed = true;
+  pass.completedAtMs = Date.now();
+  _folderMembershipCleanupProven = true;
+  _bumpFolderReconTelemetry("membershipCutovers");
+  _folderReconRuntimeTelemetry.membershipLastPassSlices = pass.slices;
+  return true;
+}
+
 function _restartFolderMembershipStatePass(pass, reason) {
   if (_folderMembershipStatePass !== pass) return;
   _startFolderMembershipStatePass(pass, reason);
@@ -5500,6 +5525,38 @@ async function _runFolderMembershipMigrationSlice(
   assertCurrent();
   if (!readPage || Date.now() < pass.notBeforeMs) {
     return { complete: false, pending: true, notBeforeMs: pass.notBeforeMs };
+  }
+  if (!pass.summaryTried && ftsSearch?.supportsFolderMembershipSummary?.() === true) {
+    // One native read proves property P for a snapshot: no ownerless row and
+    // no row of a loaded account owned outside the inventory. It takes the
+    // slice's page and runs unfenced: every capable write keeps P or shows as
+    // a stray row, and a legacy writer changes the connection generation the
+    // binding checks. Pressure after the call never discards it; anything it
+    // cannot vouch for goes to the walk from the next pass turn.
+    pass.summaryTried = true;
+    _consumeFolderMembershipPageBudget();
+    let summary;
+    try {
+      summary = await ftsSearch.folderMembershipSummary(
+        [...distinctFolderIds],
+        [..._folderReconTrustedAccountIds(validIdentities)],
+      );
+    } catch (error) {
+      _assertFolderReconLease(reconcileLease, generation);
+      _bumpFolderReconTelemetry("membershipSummaryFallbacks");
+      return { complete: false, failed: true, reason: "membership_summary_failed", error: String(error) };
+    }
+    _assertFolderReconLease(reconcileLease, generation);
+    if (summary.ownerlessRows > 0 || summary.strayTrustedRows > 0) {
+      _bumpFolderReconTelemetry("membershipSummaryFallbacks");
+      return { complete: false, membershipSummaryRefused: true };
+    }
+    if (ftsSearch?.supportsFolderMembershipSummary?.() !== true
+        || !_publishFolderMembershipCleanup(pass, inventory, ftsSearch, summary.strayUntrustedRows)) {
+      return { complete: false, restart: true, reason: "membership_state_binding_changed" };
+    }
+    _bumpFolderReconTelemetry("membershipSummaryCutovers");
+    return { complete: true, cutover: true };
   }
   let page;
   try {
@@ -5822,22 +5879,11 @@ async function _runFolderMembershipMigrationSlice(
         ...(passUnresolved > 0 ? { failed: true, reason: "unresolved_legacy_rows" } : {}),
       };
     }
-    // Cutover is earned only by this process's own unbroken pass: one that
-    // started before the first row under the binding that is still current.
-    if (_folderMembershipStatePass !== pass
-        || pass.startedBeforeFirst !== true
-        || ftsSearch?.supportsFolderMembership?.() !== true
-        || !_folderMembershipStatePassBound(
-          pass,
-          _folderMembershipStatePassBinding(inventory, ftsSearch),
-        )) {
+    // Every pass starts before the first row, so its unbroken walk earns
+    // cutover under the binding that is still current.
+    if (!_publishFolderMembershipCleanup(pass, inventory, ftsSearch, pass.unloaded)) {
       return { complete: false, restart: true, reason: "membership_state_binding_changed" };
     }
-    pass.completed = true;
-    pass.completedAtMs = Date.now();
-    _folderMembershipCleanupProven = true;
-    _bumpFolderReconTelemetry("membershipCutovers");
-    _folderReconRuntimeTelemetry.membershipLastPassSlices = pass.slices;
     return { complete: true, cutover: true };
   }
   return { complete: false, membershipStateProgress: true };

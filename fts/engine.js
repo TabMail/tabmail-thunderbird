@@ -727,6 +727,10 @@ export const ftsSearch = {
     return nativeFtsSearch.supportsFolderMembership();
   },
 
+  supportsFolderMembershipSummary() {
+    return nativeFtsSearch.supportsFolderMembershipSummary();
+  },
+
   getConnectionGeneration() {
     return nativeFtsSearch.getConnectionGeneration();
   },
@@ -741,6 +745,10 @@ export const ftsSearch = {
 
   async listFolderMembershipState(afterMsgId, limit) {
     return await nativeFtsSearch.listFolderMembershipState(afterMsgId, limit);
+  },
+
+  async folderMembershipSummary(folderIds, trustedAccountIds) {
+    return await nativeFtsSearch.folderMembershipSummary(folderIds, trustedAccountIds);
   },
 
   // Native assignment only fills a NULL owner with the named one, so it is

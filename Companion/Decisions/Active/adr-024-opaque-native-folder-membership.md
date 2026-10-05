@@ -89,3 +89,19 @@ malformed field, any deleted ownerless row (the reply does not say which ids had
 timed-out call (owners unknown, not none) keep the conservative key-range attribution. Every attempted key
 is still recorded in the key ledger, and the colon-overlap revocation before a removal is unchanged: owners
 only narrow which proofs a committed removal restarts.
+
+**Amendment (2026-10-05, membership summary):** a pass on a helper with `folderMembershipSummaryV1` first
+asks `folderMembershipSummary(folderIds, trustedAccountIds)`, once per pass, on a pass turn, after the
+pass's not-before time, spending the slice's one native page. The call is unfenced and O(rows) in native
+(about 0.7 s per million rows, release build). After it, only the lease and generation are checked, never
+foreground pressure. Global cleanup is published only when the reply is valid (`ok`, three non-negative
+safe-integer counts; the adapter rejects anything else), `ownerlessRows` and `strayTrustedRows` are both 0,
+and the pass is still current and bound (topology serial, connection generation, inventory) after the
+await. The unloaded count becomes `strayUntrustedRows`, so an unloaded account's rows still hold session
+completion and wake `inventory_retry`. Anything else (ownerless rows, a loaded account's stray rows, an
+error, timeout or malformed reply) bumps `membershipSummaryFallbacks` and leaves the pass to the walk from
+the next pass turn; the summary is never a removal input. A walk that repaired rows restarts the pass, and
+that pass's summary replaces the replay walk. The walk and the summary publish through one helper
+(`_publishFolderMembershipCleanup`); the constant `startedBeforeFirst` flag is deleted. Reliance: the
+summary does not check that an in-inventory owner structurally prefixes its raw key; no writer produces
+such a row, and were one to exist that folder would stay uncertified (`folder_membership_identity_mismatch`).
