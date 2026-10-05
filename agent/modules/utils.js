@@ -15,7 +15,6 @@ const getFullWaiters = [];
 // Chat typing gate — pauses IMAP getFull calls while user is actively typing in chat.
 // Set by runtime message from chat window, auto-clears after cooldown.
 let _chatTypingUntil = 0;
-const _chatTypingWaiters = [];
 const CHAT_TYPING_COOLDOWN_MS = 400;
 
 /**
@@ -112,130 +111,6 @@ function _diagLog(category, level, detailsOrFn) {
   } catch (_) { return false; }
 }
 
-// ----------------------------------------------------------
-// Request ID generation for SSE tool orchestration
-// ----------------------------------------------------------
-
-/**
- * Generates a unique collision-resistant request ID using:
- * - High-resolution timestamp
- * - Random component
- * - Simple hash of local network info (if available)
- * 
- * Format: req_<timestamp>_<random>_<hash>
- * Example: req_1730000000000_a3f2b1_7c4e
- * 
- * @returns {string} Unique request ID
- */
-export async function generateRequestId() {
-  try {
-    // High-resolution timestamp (milliseconds)
-    const timestamp = Date.now();
-    
-    // Random component (6 hex chars = 24 bits)
-    const random = Math.floor(Math.random() * 0xFFFFFF).toString(16).padStart(6, '0');
-    
-    // Simple hash component based on available local info
-    let hashComponent = '0000';
-    try {
-      // Try to get some local identifying information for collision resistance
-      // Use combination of user agent, screen dimensions, and timezone offset
-      const localInfo = [
-        navigator.userAgent,
-        screen.width,
-        screen.height,
-        new Date().getTimezoneOffset(),
-        navigator.hardwareConcurrency || 0,
-        navigator.language,
-      ].join('|');
-      
-      // Simple hash (FNV-1a style)
-      let hash = 2166136261;
-      for (let i = 0; i < localInfo.length; i++) {
-        hash ^= localInfo.charCodeAt(i);
-        hash = Math.imul(hash, 16777619);
-      }
-      hashComponent = (Math.abs(hash) % 0xFFFF).toString(16).padStart(4, '0');
-    } catch (e) {
-      // Fallback to another random component if local info fails
-      hashComponent = Math.floor(Math.random() * 0xFFFF).toString(16).padStart(4, '0');
-    }
-    
-    return `req_${timestamp}_${random}_${hashComponent}`;
-  } catch (e) {
-    // Ultimate fallback: UUID-style random ID
-    log(`[RequestID] Failed to generate structured ID: ${e}, using fallback`, 'warn');
-    return `req_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-  }
-}
-
-// ----------------------------------------------------------
-// Reusable alarm helpers for MV3 suspension-safe scheduling
-// ----------------------------------------------------------
-const _alarmNameToListener = new Map(); // Map<string, Function>
-
-/**
- * Ensures a browser alarm exists with the given name and schedule, and that
- * the provided onAlarm handler is registered exactly once. Any previous alarm
- * with the same name is cleared before re-creation. Duplicate listeners are
- * avoided across hot reloads.
- *
- * @param {Object} params
- * @param {string} params.name - Unique alarm name.
- * @param {number} params.periodMinutes - Recurrence interval in minutes (>=1).
- * @param {number|null} [params.delayMinutes=null] - First-fire delay in minutes; defaults to periodMinutes when null.
- * @param {Function} params.onAlarm - Callback invoked when this named alarm fires.
- */
-export async function ensureAlarm({ name, periodMinutes, delayMinutes = null, onAlarm }) {
-  try {
-    const p = Math.max(1, Math.ceil(Number(periodMinutes || 1)));
-    const d = delayMinutes == null ? p : Math.max(0, Math.ceil(Number(delayMinutes)));
-
-    // Replace or attach listener exactly once per name
-    const prev = _alarmNameToListener.get(name);
-    if (prev && prev !== onAlarm) {
-      try { browser.alarms.onAlarm.removeListener(prev); } catch (_) {}
-      _alarmNameToListener.delete(name);
-    }
-    if (!_alarmNameToListener.has(name)) {
-      const wrapped = (alarm) => {
-        if (alarm && alarm.name === name) {
-          try { log(`[Alarms] Alarm fired: ${name} @ ${new Date().toISOString()}`); } catch (_) {}
-          try { onAlarm(); } catch (e) { try { log(`[Alarms] Handler error for ${name}: ${e}`, 'error'); } catch (_) {} }
-        }
-      };
-      browser.alarms.onAlarm.addListener(wrapped);
-      _alarmNameToListener.set(name, wrapped);
-    }
-
-    // Clear and recreate the alarm schedule
-    await browser.alarms.clear(name);
-    await browser.alarms.create(name, { delayInMinutes: d, periodInMinutes: p });
-    try { log(`[Alarms] Scheduled '${name}' every ${p} minute(s) (delay ${d}m)`); } catch (_) {}
-  } catch (e) {
-    try { log(`[Alarms] ensureAlarm failed for '${name}': ${e}`, 'error'); } catch (_) {}
-    throw e;
-  }
-}
-
-/**
- * Clears an alarm and detaches its registered listener, if any.
- * @param {string} name - Alarm name to clear and detach.
- */
-export async function clearAlarm(name) {
-  try {
-    await browser.alarms.clear(name);
-    const prev = _alarmNameToListener.get(name);
-    if (prev) {
-      try { browser.alarms.onAlarm.removeListener(prev); } catch (_) {}
-      _alarmNameToListener.delete(name);
-    }
-    try { log(`[Alarms] Cleared alarm '${name}' and detached listener`); } catch (_) {}
-  } catch (e) {
-    try { log(`[Alarms] Failed to clear alarm '${name}': ${e}`, 'error'); } catch (_) {}
-  }
-}
-
 // getFull cache – in-memory storage with TTL based on uniqueHeaderID
 const getFullCache = new Map(); // Map<uniqueKey, { data, timestamp }>
 let getFullCacheCleanupTimer = null;
@@ -299,27 +174,6 @@ function startGetFullCacheCleanup() {
   getFullCacheCleanupTimer = setInterval(() => {
     try { cleanupGetFullCache(); } catch (e) { log(`[GetFull] cache cleanup exception: ${e}`, 'error'); }
   }, minutes * 60_000);
-}
-
-/** Stops the periodic cleanup timer for the getFull cache. */
-export function stopGetFullCacheCleanup() {
-  if (getFullCacheCleanupTimer !== null) {
-    clearInterval(getFullCacheCleanupTimer);
-    getFullCacheCleanupTimer = null;
-  }
-}
-
-/**
- * Clears all entries from the getFull cache.
- * Useful for debugging or manual cache invalidation.
- */
-export function clearGetFullCache() {
-  const size = getFullCache.size;
-  getFullCache.clear();
-  weIdToUniqueKey.clear();
-  if (size > 0) {
-    log(`getFull cache cleared: removed ${size} entries`);
-  }
 }
 
 export async function safeGetFull(id, preHeader = null) {
@@ -572,7 +426,6 @@ export function formatForLog(text, length = SETTINGS.logTruncateLength) {
  * @returns {string} The plain text representation.
  */
 function recursiveHtmlToText(node) {
-    let finalText = "";
     if (!node) return "";
 
     // Base case: Text nodes
@@ -863,24 +716,6 @@ export async function extractBodyFromParts(parts, rootMessageId) {
     // log(`[TMDBG Body] extractBodyFromParts returning empty result (parts traversed=${list.length}).`);
     return "";
 }
-
-/**
- * Executes an array of promise-generating functions in batches to avoid
- * overwhelming the Thunderbird API with too many concurrent requests.
- * @param {Array<Function<Promise>>} promiseFactories - An array of functions that each return a promise.
- * @param {number} concurrency - The number of promises to run in each batch.
- * @returns {Promise<Array<any>>} A promise that resolves with an array of all results.
- */
-export async function runPromisesInBatches(promiseFactories, concurrency) {
-    let allResults = [];
-    for (let i = 0; i < promiseFactories.length; i += concurrency) {
-        const batchFactories = promiseFactories.slice(i, i + concurrency);
-        const batchPromises = batchFactories.map(factory => factory());
-        const batchResults = await Promise.all(batchPromises);
-        allResults.push(...batchResults);
-    }
-    return allResults;
-} 
 
 // Sanitizes file names by replacing characters that are invalid on most filesystems.
 export function sanitizeFilename(name) {

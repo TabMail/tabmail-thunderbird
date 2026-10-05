@@ -295,10 +295,6 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
           extensionApi: self,
         }).api(),
         
-        async isListenerActive() {
-          return self._listener !== null;
-        },
-
         /**
          * Begin a bounded, live parent-process header walk. The opaque token
          * deliberately is not durable: a restart discards it and the addon

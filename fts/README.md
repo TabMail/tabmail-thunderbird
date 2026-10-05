@@ -43,8 +43,8 @@ On first run, the helper auto-migrates to a user-local directory to enable self-
 
 ## A/B Testing
 
-To enable FTS search, set `useFtsSearch: true` in `chat/modules/chatConfig.js`.
-The system will fall back to Gloda search if `useFtsSearch: false`.
+FTS search is governed by the `chat_useFtsSearch` storage key (default `true`),
+which `chat/background.js` reads at startup.
 
 ## Search Quality Features
 

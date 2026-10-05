@@ -51,7 +51,7 @@ globalThis.browser = {
 // Import module under test
 // ---------------------------------------------------------------------------
 
-const { SETTINGS, getBackendUrl, getDeviceSyncUrl, getTemplateWorkerUrl, cleanupConfigListeners } = await import('../agent/modules/config.js');
+const { SETTINGS, getBackendUrl, getDeviceSyncUrl, getTemplateWorkerUrl } = await import('../agent/modules/config.js');
 
 // ---------------------------------------------------------------------------
 // Tests for SETTINGS
@@ -381,27 +381,5 @@ describe('getTemplateWorkerUrl', () => {
     browser.storage.local.get.mockRejectedValueOnce(new Error('storage error'));
     const url = await getTemplateWorkerUrl();
     expect(url).toBe('https://templates.tabmail.ai');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests for cleanupConfigListeners
-// ---------------------------------------------------------------------------
-
-describe('cleanupConfigListeners', () => {
-  it('does not throw when called', () => {
-    expect(() => cleanupConfigListeners()).not.toThrow();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests for storage change listener
-// ---------------------------------------------------------------------------
-
-describe('storage change listener', () => {
-  it('the module registers a listener on import (already called before mock was set up)', () => {
-    // The IIFE and listener registration happen at module parse time,
-    // before our mock was ready. We verify the listener shape instead.
-    expect(typeof cleanupConfigListeners).toBe('function');
   });
 });

@@ -57,7 +57,6 @@ vi.mock('../fts/nativeEngine.js', () => ({
   nativeMemorySearch: {},
 }));
 vi.mock('../fts/incrementalIndexer.js', () => ({
-  disposeIncrementalIndexer: vi.fn(async () => {}),
   initIncrementalIndexer: vi.fn(async () => {}),
 }));
 vi.mock('../fts/memoryIndexer.js', () => ({
@@ -145,7 +144,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   if (runtimeEngine) {
-    await runtimeEngine.disposeFtsEngine();
+    runtimeEngine._resetFtsEngineForTests();
     runtimeEngine = null;
   }
 });

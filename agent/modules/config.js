@@ -450,8 +450,16 @@ export const SETTINGS = {
             // Delay before the membership-state pass replays rows it could
             // not classify (in-session retry while cleanup is incomplete).
             membershipUnresolvedRetryMs: 10 * 60 * 1000,
-            // Longest slice wall time the scheduler reserves (its 50% duty
-            // cycle); a longer measurement is a host sleep inside the slice.
+            // Hard-floor cap (ADR-022). After each slice the scheduler
+            // waits at least as long as the slice ran, so reconciliation
+            // uses at most half of wall time. Only this much of one slice's
+            // elapsed time counts: a Mac that sleeps mid-slice measures
+            // hours that were not work, and uncapped that would postpone
+            // reconciliation by the same hours after wake. Page budgets keep
+            // real slices far shorter, so the cap is not expected to cut a
+            // genuine pause; it bounds the post-sleep delay to 10 min, inside the
+            // ~30 min self-heal target. Measured slice times are kept in the
+            // folderRecon runtime telemetry (maxSliceElapsedMs).
             hardFloorMaxElapsedMs: 10 * 60 * 1000,
         },
         // Proactive inbox scan - DISABLED.
@@ -574,18 +582,6 @@ export async function getTemplateWorkerUrl() {
 // Centralized storage management for debugMode
 // This listener keeps SETTINGS.debugMode in sync with storage changes from any source
 let _storageChangeListener = null;
-
-export function cleanupConfigListeners() {
-    if (_storageChangeListener) {
-        try {
-            browser.storage.onChanged.removeListener(_storageChangeListener);
-            _storageChangeListener = null;
-            if (SETTINGS.debugLogging) console.log("[TMDBG Config] Storage change listener cleaned up");
-        } catch (e) {
-            if (SETTINGS.debugLogging) console.error(`[TMDBG Config] Failed to remove storage change listener: ${e}`);
-        }
-    }
-}
 
 // Initialize listener with cleanup tracking
 if (!_storageChangeListener) {

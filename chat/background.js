@@ -54,13 +54,6 @@ async function getExistingMail3PaneTabOrNull() {
   return null; // No mail tab available
 }
 
-async function focusTab(tab) {
-  try {
-    if (tab.windowId) await browser.windows.update(tab.windowId, { focused: true });
-    await browser.tabs.update(tab.id, { active: true });
-  } catch (_) {}
-}
-
 async function handleOpenEmailInThread(message) {
   try {
     const { weID } = message;

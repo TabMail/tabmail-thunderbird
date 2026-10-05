@@ -25,14 +25,12 @@ import { getFtsMembershipEpoch, withFtsMembershipFence } from "./operationCoordi
 async function getFtsSettings() {
   const stored = await browser.storage.local.get({
     chat_ftsBatchSize: 250,
-    chat_ftsMaxInflight: 1,
     chat_ftsSleepBetweenBatchMs: 250,
     chat_ftsLongYieldMs: 1000,
     chat_ftsMaxBatchBytes: 8388608,
   });
   return {
     ftsBatchSize: stored.chat_ftsBatchSize,
-    ftsMaxInflight: stored.chat_ftsMaxInflight,
     ftsSleepBetweenBatchMs: stored.chat_ftsSleepBetweenBatchMs,
     ftsLongYieldMs: stored.chat_ftsLongYieldMs,
     ftsMaxBatchBytes: stored.chat_ftsMaxBatchBytes,
@@ -41,7 +39,6 @@ async function getFtsSettings() {
 
 // Dynamic settings - loaded when needed
 let BATCH_SIZE = 250;
-let MAX_INFLIGHT = 1;
 let SLEEP_BETWEEN_BATCH_MS = 250;
 let LONG_YIELD_MS = 1000;
 let MAX_BATCH_BYTES = 8388608;
@@ -50,7 +47,6 @@ let MAX_BATCH_BYTES = 8388608;
 async function updateSettings() {
   const settings = await getFtsSettings();
   BATCH_SIZE = settings.ftsBatchSize;
-  MAX_INFLIGHT = settings.ftsMaxInflight;
   SLEEP_BETWEEN_BATCH_MS = settings.ftsSleepBetweenBatchMs;
   LONG_YIELD_MS = settings.ftsLongYieldMs;
   MAX_BATCH_BYTES = settings.ftsMaxBatchBytes;

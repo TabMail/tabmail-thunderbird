@@ -102,7 +102,6 @@ describe('initMaintenanceScheduler retirement migration', () => {
     );
     expect(scanningWrites).toHaveLength(0);
 
-    await scheduler.disposeMaintenanceScheduler();
     expect(vi.getTimerCount()).toBe(0);
   });
 });

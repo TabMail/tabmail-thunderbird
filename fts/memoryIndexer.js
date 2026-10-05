@@ -146,65 +146,6 @@ export async function indexChatTurn(userText, assistantText, turnId, dateMs) {
   }
 }
 
-/**
- * Index chat sessions from the chat history queue
- * This indexes all unremembered sessions from chatHistoryQueue
- *
- * @returns {Promise<{ok: boolean, indexed: number, sessions: number}>}
- */
-export async function indexQueuedSessions() {
-  try {
-    const { getUnrememberedSessions, markSessionsAsRemembered } = await import("../agent/modules/chatHistoryQueue.js");
-    
-    const sessions = await getUnrememberedSessions();
-    if (!sessions || sessions.length === 0) {
-      log(`[TMDBG Memory Indexer] No unremembered sessions to index`);
-      return { ok: true, indexed: 0, sessions: 0 };
-    }
-
-    log(`[TMDBG Memory Indexer] Indexing ${sessions.length} queued sessions to memory DB`);
-
-    let totalIndexed = 0;
-    const indexedSessionIds = [];
-
-    for (const session of sessions) {
-      const result = await indexChatSession(session.id, session.messages, session.timestamp);
-      if (result.ok) {
-        totalIndexed += result.count || 0;
-        indexedSessionIds.push(session.id);
-      }
-    }
-
-    // Mark successfully indexed sessions as remembered
-    if (indexedSessionIds.length > 0) {
-      await markSessionsAsRemembered(indexedSessionIds);
-      log(`[TMDBG Memory Indexer] Marked ${indexedSessionIds.length} sessions as remembered`);
-    }
-
-    log(`[TMDBG Memory Indexer] Completed: indexed ${totalIndexed} turns from ${indexedSessionIds.length} sessions`);
-    return { ok: true, indexed: totalIndexed, sessions: indexedSessionIds.length };
-  } catch (e) {
-    log(`[TMDBG Memory Indexer] Error indexing queued sessions: ${e}`, "error");
-    return { ok: false, error: String(e), indexed: 0, sessions: 0 };
-  }
-}
-
-/**
- * Get memory database stats
- */
-export async function getMemoryStats() {
-  try {
-    const result = await browser.runtime.sendMessage({
-      type: "fts",
-      cmd: "memoryStats",
-    });
-    return result;
-  } catch (e) {
-    log(`[TMDBG Memory Indexer] Error getting memory stats: ${e}`, "error");
-    return { ok: false, error: String(e) };
-  }
-}
-
 const MIGRATION_FLAG_KEY = "memory_fts_migration_v1_done";
 const MIGRATED_SESSIONS_KEY = "memory_fts_migrated_sessions";
 
