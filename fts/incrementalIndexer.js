@@ -2384,69 +2384,109 @@ function _compareFolderReconEncoded(a, b) {
   return a.bytes.length - b.bytes.length;
 }
 
-function _folderReconEncodedEqual(a, b) {
-  return _compareFolderReconEncoded(a, b) === 0;
+// UTF-8 byte order of well-formed strings is code-point order. A surrogate
+// unit belongs to a code point above U+FFFF, so it sorts after every other
+// BMP unit; at the first differing unit of two well-formed strings with an
+// equal prefix, a low surrogate only ever meets another low surrogate.
+function _compareFolderReconCodePoints(a, b) {
+  const shared = Math.min(a.length, b.length);
+  for (let i = 0; i < shared; i++) {
+    const x = a.charCodeAt(i);
+    const y = b.charCodeAt(i);
+    if (x === y) continue;
+    const xSurrogate = x >= 0xd800 && x <= 0xdfff;
+    const ySurrogate = y >= 0xd800 && y <= 0xdfff;
+    if (xSurrogate !== ySurrogate) return xSurrogate ? 1 : -1;
+    return x - y;
+  }
+  return a.length - b.length;
 }
 
-async function _cooperativeEncodeAndSortStrings(values, assertActive = () => {}) {
+function _compareFolderReconUint32(a, b) {
+  return a - b;
+}
+
+function _folderReconUtf8Length(wellFormed) {
+  let length = 0;
+  for (let i = 0; i < wellFormed.length; i++) {
+    const unit = wellFormed.charCodeAt(i);
+    if (unit < 0x80) length += 1;
+    else if (unit < 0x800) length += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff) {
+      length += 4;
+      i++;
+    } else length += 3;
+  }
+  return length;
+}
+
+// Sorts `items` (an Array or a typed array) in place-sized chunks, then merges
+// adjacent runs pairwise into a second buffer of the same kind, yielding every
+// FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES elements. Stable. Returns the buffer
+// holding the sorted result.
+async function _cooperativeSortFolderRecon(items, compare, assertActive) {
   assertActive();
-  if (values.length === 0) return [];
-  const chunks = [];
-  for (let i = 0; i < values.length; i += FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES) {
-    const chunk = [];
-    const end = Math.min(values.length, i + FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES);
-    for (let j = i; j < end; j++) {
-      chunk.push({ value: values[j], bytes: _folderReconEncoder.encode(values[j]) });
+  const length = items.length;
+  const chunkEntries = FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES;
+  for (let start = 0; start < length; start += chunkEntries) {
+    const end = Math.min(length, start + chunkEntries);
+    if (ArrayBuffer.isView(items)) {
+      items.subarray(start, end).sort(compare);
+    } else {
+      const chunk = items.slice(start, end).sort(compare);
+      for (let i = 0; i < chunk.length; i++) items[start + i] = chunk[i];
     }
-    assertActive();
-    chunk.sort(_compareFolderReconEncoded);
-    assertActive();
-    chunks.push(chunk);
-    if (i + FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES < values.length) {
+    if (end < length) {
       assertActive();
       await _folderReconYield(0);
       assertActive();
     }
   }
-  while (chunks.length > 1) {
-    const merged = [];
-    for (let i = 0; i < chunks.length; i += 2) {
-      if (i + 1 >= chunks.length) {
-        merged.push(chunks[i]);
-        continue;
-      }
-      const left = chunks[i];
-      const right = chunks[i + 1];
-      const out = new Array(left.length + right.length);
-      let a = 0;
-      let b = 0;
-      let o = 0;
-      while (a < left.length || b < right.length) {
-        out[o++] = b >= right.length
-          || (a < left.length && _compareFolderReconEncoded(left[a], right[b]) <= 0)
-          ? left[a++]
-          : right[b++];
-        if (o % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
+  let source = items;
+  let target = new items.constructor(length);
+  for (let width = chunkEntries; width < length; width *= 2) {
+    let written = 0;
+    for (let low = 0; low < length; low += 2 * width) {
+      const middle = Math.min(low + width, length);
+      const high = Math.min(low + 2 * width, length);
+      let a = low;
+      let b = middle;
+      let o = low;
+      while (a < middle || b < high) {
+        target[o++] = b >= high || (a < middle && compare(source[a], source[b]) <= 0)
+          ? source[a++]
+          : source[b++];
+        if (++written % chunkEntries === 0) {
           assertActive();
           await _folderReconYield(0);
           assertActive();
         }
       }
-      merged.push(out);
     }
-    chunks.splice(0, chunks.length, ...merged);
+    [source, target] = [target, source];
   }
-  return chunks[0];
+  return source;
 }
 
 async function _fingerprintStringsCooperatively(values, dedupe = false, assertActive = () => {}) {
   assertActive();
-  let sorted = await _cooperativeEncodeAndSortStrings(values, assertActive);
+  // TextEncoder maps a lone surrogate to U+FFFD, as toWellFormed does, so the
+  // well-formed value sorts, dedupes and encodes exactly as its UTF-8 bytes.
+  const wellFormed = new Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    wellFormed[i] = values[i].toWellFormed();
+    if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
+      assertActive();
+      await _folderReconYield(0);
+      assertActive();
+    }
+  }
+  let sorted = await _cooperativeSortFolderRecon(wellFormed, _compareFolderReconCodePoints, assertActive);
   assertActive();
   if (dedupe && sorted.length > 1) {
     const unique = [];
     for (let i = 0; i < sorted.length; i++) {
-      if (i === 0 || !_folderReconEncodedEqual(sorted[i], sorted[i - 1])) unique.push(sorted[i]);
+      if (i === 0 || sorted[i] !== sorted[i - 1]) unique.push(sorted[i]);
       if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
         assertActive();
         await _folderReconYield(0);
@@ -2455,9 +2495,11 @@ async function _fingerprintStringsCooperatively(values, dedupe = false, assertAc
     }
     sorted = unique;
   }
+  const lengths = new Uint32Array(sorted.length);
   let totalBytes = 0;
   for (let i = 0; i < sorted.length; i++) {
-    totalBytes += 8 + sorted[i].bytes.length;
+    lengths[i] = _folderReconUtf8Length(sorted[i]);
+    totalBytes += 8 + lengths[i];
     if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
       assertActive();
       await _folderReconYield(0);
@@ -2468,11 +2510,11 @@ async function _fingerprintStringsCooperatively(values, dedupe = false, assertAc
   const view = new DataView(framed.buffer);
   let offset = 0;
   for (let i = 0; i < sorted.length; i++) {
-    const bytes = sorted[i].bytes;
-    view.setUint32(offset, Math.floor(bytes.length / 0x100000000), false);
-    view.setUint32(offset + 4, bytes.length >>> 0, false);
-    framed.set(bytes, offset + 8);
-    offset += 8 + bytes.length;
+    const length = lengths[i];
+    view.setUint32(offset, Math.floor(length / 0x100000000), false);
+    view.setUint32(offset + 4, length >>> 0, false);
+    _folderReconEncoder.encodeInto(sorted[i], framed.subarray(offset + 8, offset + 8 + length));
+    offset += 8 + length;
     if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
       assertActive();
       await _folderReconYield(0);
@@ -2490,25 +2532,22 @@ async function _fingerprintStringsCooperatively(values, dedupe = false, assertAc
 
 async function _fingerprintMsgKeysCooperatively(keys, assertActive = () => {}) {
   assertActive();
-  // Fixed-width hex preserves unsigned numeric order under string sorting.
-  const hexKeys = new Array(keys.length);
+  // Unsigned, as the UID view is hashed: high-bit keys sort after 0x7fffffff.
+  const unsorted = new Uint32Array(keys.length);
   for (let i = 0; i < keys.length; i++) {
-    hexKeys[i] = (keys[i] >>> 0).toString(16).padStart(8, "0");
+    unsorted[i] = keys[i] >>> 0;
     if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
       assertActive();
       await _folderReconYield(0);
       assertActive();
     }
   }
-  const orderedHex = await _cooperativeEncodeAndSortStrings(hexKeys, assertActive);
+  const sorted = await _cooperativeSortFolderRecon(unsorted, _compareFolderReconUint32, assertActive);
   assertActive();
-  const bytes = new Uint8Array(orderedHex.length * 4);
-  const sorted = new Uint32Array(orderedHex.length);
+  const bytes = new Uint8Array(sorted.length * 4);
   const view = new DataView(bytes.buffer);
-  for (let i = 0; i < orderedHex.length; i++) {
-    const key = Number.parseInt(orderedHex[i].value, 16);
-    sorted[i] = key;
-    view.setUint32(i * 4, key, false);
+  for (let i = 0; i < sorted.length; i++) {
+    view.setUint32(i * 4, sorted[i], false);
     if ((i + 1) % FOLDER_RECON_DIGEST_WORK_CHUNK_ENTRIES === 0) {
       assertActive();
       await _folderReconYield(0);
@@ -2518,7 +2557,7 @@ async function _fingerprintMsgKeysCooperatively(keys, assertActive = () => {}) {
   assertActive();
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   assertActive();
-  return { count: orderedHex.length, sha256: _bytesToHex(digest), sorted };
+  return { count: sorted.length, sha256: _bytesToHex(digest), sorted };
 }
 
 // `localScope` ({ folderKey, since }) additionally requires that folder to be
@@ -6677,6 +6716,8 @@ export const _testExports = {
   _getFolderReconRollingDueMs: () => _folderReconRollingDueMs,
   _getFolderReconTimerDueMs: () => _folderReconTimerDueMs,
   _getFolderReconHardNotBeforeMs: () => _folderReconHardNotBeforeMs,
+  _fingerprintStringsCooperatively,
+  _fingerprintMsgKeysCooperatively,
   _getFolderReconNextWalkDueMs: () => new Map(_folderReconNextWalkDueMs),
   _folderReconWalkOffsetMs,
   _pruneFolderReconRuntimeToFolderKeys,

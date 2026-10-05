@@ -102,3 +102,11 @@ and reserving it would stall reconciliation for as long as the machine slept. Th
 post-slice floor and to every in-slice wake. Every reader of the floor (timer arm, floor recheck, the
 tick's `hard_floor` gate) also stores a clamp to `now + hardFloorMaxElapsedMs`, so a backward clock
 jump ends within that bound. Legitimate slices keep their full reservation.
+
+**Amendment (2026-10-05, digest encodings):** membership digests are unchanged byte for byte; only their
+construction is lighter. Message-ID sets sort and dedupe on each value's `toWellFormed()` (computed once)
+by code point, which equals UTF-8 byte order for well-formed strings (`TextEncoder` maps a lone surrogate
+to U+FFFD as `toWellFormed` does), and each value is encoded once into the one framed buffer for the one
+`crypto.subtle.digest` call. The UID view sorts unsigned numbers (`>>> 0`) in a `Uint32Array` instead of
+8-char hex strings. Both keep the cooperative chunk-sort-and-merge with its yields. Stored `uidSha256` and
+Message-ID checkpoints keep matching.
