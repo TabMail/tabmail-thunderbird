@@ -458,8 +458,8 @@ export const SETTINGS = {
             // reconciliation by the same hours after wake. Page budgets keep
             // real slices far shorter, so the cap is not expected to cut a
             // genuine pause; it bounds the post-sleep delay to 10 min, inside the
-            // ~30 min self-heal target. Slice times: incrementalStatus →
-            // folderRecon.maxSliceElapsedMs.
+            // ~30 min self-heal target. Measured slice times are kept in the
+            // folderRecon runtime telemetry (maxSliceElapsedMs).
             hardFloorMaxElapsedMs: 10 * 60 * 1000,
         },
         // Proactive inbox scan - DISABLED.
