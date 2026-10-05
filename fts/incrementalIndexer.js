@@ -1463,9 +1463,6 @@ function _removeFolderTopologyListeners() {
 // Unchanged IMAP folders use UID/UIDVALIDITY + FTS digest checkpoints; changed
 // folders get an exact two-way repair through the drain queue. The queue is
 // not persisted: work pending at shutdown is re-derived by the next startup.
-//
-// The older date-window, watermark, and cursor helpers remain below for
-// compatibility/tests, but the automatic startup path no longer calls them.
 // =====================================================================
 
 // Durable reconcile-needed flag written by earlier versions. Every session runs
@@ -3345,7 +3342,6 @@ async function _listFolderNative(ftsSearch, folder, startKey, endKey, afterKey, 
  * Read the per-folder verified membership checkpoint (schema v3).
  * A v1 count memo is intentionally discarded: equal counts never proved set
  * equality and must not seed the stronger checkpoint.
- * Independent of the watermark AND the cursor store (separate storage key).
  */
 async function _getFolderReconMemo() {
     const state = await _readReconStorageStrict(_folderReconGeneration);
@@ -4039,8 +4035,7 @@ function _restartFolderReconOrphanWalk(pass) {
 
 /**
  * Startup fingerprint proof + exact per-folder set reconcile. This is the
- * automatic post-init reconciliation path and is independent of the legacy
- * watermark and cursor stores. Skips cleanly when the experiment API or native
+ * automatic post-init reconciliation path. Skips cleanly when the experiment API or native
  * fingerprint/range RPCs are unavailable.
  *
  * @param {Object} ftsSearch - FTS search interface

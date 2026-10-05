@@ -9,6 +9,8 @@ const native = vi.hoisted(() => ({
   removeBatch: vi.fn(async () => ({ count: 0 })),
   clear: vi.fn(async () => ({ ok: true })),
   assignFolderMembershipBatch: vi.fn(async () => ({ ok: true })),
+  supportsFolderMembershipSummary: vi.fn(() => true),
+  folderMembershipSummary: vi.fn(async () => ({ ok: true, ownerlessRows: 1, strayTrustedRows: 2, strayUntrustedRows: 3 })),
 }));
 
 vi.mock('../agent/modules/config.js', () => ({ SETTINGS: {} }));
@@ -380,5 +382,17 @@ describe('native mutation wrappers apply the native write', () => {
     const since = getFtsMembershipEpoch();
     await expect(ftsSearch[method](...args)).rejects.toThrow('native write failed');
     expect(ftsMembershipUnchangedSince([A], since)).toBe(false);
+  });
+});
+
+describe('membership summary pass-through', () => {
+  it('forwards the capability and the summary request and reply unchanged', async () => {
+    native.supportsFolderMembershipSummary.mockReturnValueOnce(false);
+    expect(ftsSearch.supportsFolderMembershipSummary()).toBe(false);
+    expect(ftsSearch.supportsFolderMembershipSummary()).toBe(true);
+
+    await expect(ftsSearch.folderMembershipSummary(['folder-a', 'folder-b'], ['account1']))
+      .resolves.toEqual({ ok: true, ownerlessRows: 1, strayTrustedRows: 2, strayUntrustedRows: 3 });
+    expect(native.folderMembershipSummary).toHaveBeenCalledWith(['folder-a', 'folder-b'], ['account1']);
   });
 });

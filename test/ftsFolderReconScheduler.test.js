@@ -4598,8 +4598,20 @@ describe('one fresh msgDB scan per verification', () => {
     vi.useRealTimers();
   });
 
-  it('certifies a multi-page folder with one fresh scan after the working proof', async () => {
-    const { fts } = installExactMembershipFolders([{ folderPath: '/V', headerMessageIds }], { assigned: true });
+  // Every exact-mode IMAP folder carries a msgDB incarnation token; the
+  // continuation must hold for it as well as for a tokenless folder.
+  const folderKinds = [
+    { kind: 'a tokenless folder', incarnationToken: undefined },
+    { kind: 'a folder with an incarnation token', incarnationToken: 'incarnation-v' },
+  ];
+  function installVerifyFolder(incarnationToken) {
+    const installed = installExactMembershipFolders([{ folderPath: '/V', headerMessageIds }], { assigned: true });
+    if (incarnationToken) installed.folders[0].incarnationToken = incarnationToken;
+    return installed;
+  }
+
+  it.each(folderKinds)('certifies a multi-page folder with one fresh scan after the working proof ($kind)', async ({ incarnationToken }) => {
+    const { fts } = installVerifyFolder(incarnationToken);
     await tickUntilVerified(fts);
     expect(fts.listFolderMembership.mock.calls.length).toBeGreaterThanOrEqual(6);
     // The working proof, then one fresh scan for the whole native digest.
@@ -4607,8 +4619,8 @@ describe('one fresh msgDB scan per verification', () => {
     expect(verifiedCheckpoint().expectedCount).toBe(headerMessageIds.length);
   });
 
-  it('takes a new scan after a folder event while the fresh digest pages', async () => {
-    const { fts } = installExactMembershipFolders([{ folderPath: '/V', headerMessageIds }], { assigned: true });
+  it.each(folderKinds)('takes a new scan after a folder event while the fresh digest pages ($kind)', async ({ incarnationToken }) => {
+    const { fts } = installVerifyFolder(incarnationToken);
     await tickUntilVerifyPhase(fts);
     const scansBefore = scans();
     _testExports._invalidateFolderReconProofForEvent('account1', '/V');
@@ -4617,8 +4629,8 @@ describe('one fresh msgDB scan per verification', () => {
     expect(scans() - scansBefore).toBe(2);
   });
 
-  it('takes a new scan after a native write in the folder while the fresh digest pages', async () => {
-    const { fts, folders } = installExactMembershipFolders([{ folderPath: '/V', headerMessageIds }], { assigned: true });
+  it.each(folderKinds)('takes a new scan after a native write in the folder while the fresh digest pages ($kind)', async ({ incarnationToken }) => {
+    const { fts, folders } = installVerifyFolder(incarnationToken);
     await tickUntilVerifyPhase(fts);
     const scansBefore = scans();
     // Native-only and content-neutral: a re-assignment of an owned row still
