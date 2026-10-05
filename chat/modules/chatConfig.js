@@ -42,7 +42,6 @@ export const CHAT_SETTINGS = {
   useFtsSearch: true,
   // FTS indexer tunables
   ftsBatchSize: 250,                    // messages per index batch
-  ftsMaxInflight: 1,                    // concurrency limit
   ftsSleepBetweenBatchMs: 250,         // yield between batches
   ftsLongYieldMs: 1000,                // yield between folders
   ftsMaxBatchBytes: 8388608,           // 8MB soft limit per batch

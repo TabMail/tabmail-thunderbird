@@ -75,9 +75,6 @@ describe('CHAT_SETTINGS', () => {
     it('should have positive ftsBatchSize', () => {
       expect(CHAT_SETTINGS.ftsBatchSize).toBeGreaterThan(0);
     });
-    it('should have positive ftsMaxInflight', () => {
-      expect(CHAT_SETTINGS.ftsMaxInflight).toBeGreaterThan(0);
-    });
     it('should have positive ftsSleepBetweenBatchMs', () => {
       expect(CHAT_SETTINGS.ftsSleepBetweenBatchMs).toBeGreaterThan(0);
     });
