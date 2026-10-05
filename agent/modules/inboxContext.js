@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { formatTimestampForAgent } from "../../chat/modules/helpers.js";
+import { accountIdOfMsgId, getAttachmentRepairedAccounts } from "../../fts/attachmentFlags.js";
 import { ACTIONS, getActionForWeId } from "./actionCache.js";
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
@@ -181,27 +182,23 @@ export async function buildInboxContext() {
           log(`[InboxContext] getHasReBulk failed: ${e}`, "warn");
           return [];
         }),
-        // Thunderbird's MessageHeader has no attachment field; read the database flag.
-        browser.tmHdr.getHasAttachmentBulk(messageIds).catch(e => {
-          log(`[InboxContext] getHasAttachmentBulk failed: ${e}`, "error");
-          return [];
-        }),
+        _getAttachmentFlags(contextArray),
       ]);
 
       // The bulk results follow messagesToProcess; contextArray skips messages whose entry failed.
       const indexById = new Map(messagesToProcess.map((msg, i) => [msg.id, i]));
 
       // Update contextArray with replied status, attachment flag and restore "Re:" prefix
-      for (const entry of contextArray) {
+      contextArray.forEach((entry, j) => {
         const i = indexById.get(entry.internalId);
         entry.replied = repliedStatuses[i] || false;
         // true / false, or null when it could not be read ("unknown", never "no").
-        entry.hasAttachments = typeof hasAttachmentStatuses[i] === "boolean" ? hasAttachmentStatuses[i] : null;
+        entry.hasAttachments = hasAttachmentStatuses[j];
         // TB strips "Re:" from MessageHeader.subject — restore it using HasRe flag
         if (hasReStatuses[i] && entry.subject && !entry.subject.startsWith("Re: ")) {
           entry.subject = "Re: " + entry.subject;
         }
-      }
+      });
 
       log(`[InboxContext] Successfully fetched replied status for ${contextArray.length} messages`, 'debug');
     } catch (e) {
@@ -271,6 +268,50 @@ async function _createContextEntry(msgHeader) {
     // log(`[TMDBG InboxContext] Error processing message ${msgHeader?.id}: ${e}`);
     return null;
   }
+}
+
+// Thunderbird's MessageHeader has no attachment field. The index's flag comes from the downloaded
+// message and is trusted for accounts whose old rows were repaired (fts/attachmentFlags.js), as in
+// email_search. Emails of other accounts, emails not indexed yet, and a failed index read take
+// Thunderbird's database flag (the paperclip heuristic). In entry order: true / false, or null
+// when neither could tell ("unknown", never "no").
+async function _getAttachmentFlags(entries) {
+  const flags = entries.map(() => null);
+  let repaired = new Set();
+  try {
+    repaired = await getAttachmentRepairedAccounts();
+  } catch (e) {
+    log(`[InboxContext] reading the repaired accounts failed: ${e}`, "error");
+  }
+  const fromIndex = [];
+  entries.forEach((entry, i) => {
+    if (entry.uniqueId && repaired.has(accountIdOfMsgId(entry.uniqueId))) fromIndex.push(i);
+  });
+  if (fromIndex.length > 0) {
+    try {
+      const { ftsSearch } = await import("../../fts/engine.js");
+      const res = await ftsSearch.getAttachmentFlags(fromIndex.map(i => entries[i].uniqueId));
+      fromIndex.forEach((entryIdx, k) => {
+        if (typeof res?.flags?.[k] === "boolean") flags[entryIdx] = res.flags[k];
+      });
+    } catch (e) {
+      log(`[InboxContext] index attachment flags failed: ${e}`, "warn");
+    }
+  }
+  const fromThunderbird = [];
+  flags.forEach((flag, i) => { if (flag === null) fromThunderbird.push(i); });
+  log(`[InboxContext] attachment flags: ${entries.length - fromThunderbird.length} from the index, ${fromThunderbird.length} from Thunderbird`, 'debug');
+  if (fromThunderbird.length > 0) {
+    try {
+      const statuses = await browser.tmHdr.getHasAttachmentBulk(fromThunderbird.map(i => entries[i].internalId));
+      fromThunderbird.forEach((entryIdx, k) => {
+        if (typeof statuses[k] === "boolean") flags[entryIdx] = statuses[k];
+      });
+    } catch (e) {
+      log(`[InboxContext] getHasAttachmentBulk failed: ${e}`, "error");
+    }
+  }
+  return flags;
 }
 
 /**

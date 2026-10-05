@@ -678,6 +678,10 @@ export const ftsSearch = {
     return await nativeFtsSearch.getMessageByMsgId(msgId);
   },
 
+  async getAttachmentFlags(msgIds) {
+    return await nativeFtsSearch.getAttachmentFlags(msgIds);
+  },
+
   async queryByDateRange(from, to, limit = 1000) {
     return await nativeFtsSearch.queryByDateRange(from, to, limit);
   },
