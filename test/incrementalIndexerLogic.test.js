@@ -182,6 +182,21 @@ describe('atomic queue abandonment', () => {
     expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
   });
 
+  it('never drops a same-type intention requeued in the same millisecond', async () => {
+    settlePendingFlag();
+    const old = entry('account1:/A:same@example.com', 'new', 1, 'account1:/A');
+    const requeued = { ...old };
+    _getPendingUpdates().set(old.uniqueKey, requeued);
+
+    const result = await _abandonPendingUpdates([old], 'empty_header_batch');
+
+    expect(result).toMatchObject({ dropped: 0, retained: 1 });
+    expect(_getPendingUpdates().get(old.uniqueKey)).toBe(requeued);
+    // Nothing was dropped, so no walk is owed and nothing is pending.
+    expect(_getFolderReconDirty()).toEqual(new Set());
+    expect(_testExports._isFolderReconPending()).toBe(false);
+  });
+
   it('writes no storage across repeated abandonments of the same folder', async () => {
     const first = entry('account1:/A:one@example.com', 'new', 1, 'account1:/A');
     const second = entry('account1:/A:two@example.com', 'deleted', 2, 'account1:/A');
@@ -271,40 +286,77 @@ describe('_shouldDropFailedUpdates', () => {
 // ---------------------------------------------------------------------------
 
 describe('_markResolveFailed', () => {
-  it('sets hasFailed to true on the update', () => {
-    const update = { uniqueKey: 'test-key-1', type: 'add', timestamp: Date.now() };
-    const result = _markResolveFailed(update);
-    expect(result.hasFailed).toBe(true);
-  });
-
-  it('sets lastFailedAt to a recent timestamp', () => {
+  it('marks the queued entry in place with a recent lastFailedAt, keeping its other fields', () => {
     const before = Date.now();
-    const update = { uniqueKey: 'test-key-2', type: 'delete', timestamp: Date.now() };
-    const result = _markResolveFailed(update);
-    expect(result.lastFailedAt).toBeGreaterThanOrEqual(before);
-    expect(result.lastFailedAt).toBeLessThanOrEqual(Date.now());
-  });
-
-  it('preserves other fields from the original update', () => {
     const update = {
       uniqueKey: 'test-key-3',
       type: 'update',
       timestamp: 12345,
       metadata: { subject: 'Test' },
     };
-    const result = _markResolveFailed(update);
-    expect(result.type).toBe('update');
-    expect(result.timestamp).toBe(12345);
-    expect(result.metadata).toEqual({ subject: 'Test' });
-    expect(result.uniqueKey).toBe('test-key-3');
+    _getPendingUpdates().set(update.uniqueKey, update);
+    _markResolveFailed(update);
+    const stored = _getPendingUpdates().get('test-key-3');
+    expect(stored).toBe(update);
+    expect(stored).toMatchObject({
+      uniqueKey: 'test-key-3', type: 'update', timestamp: 12345, metadata: { subject: 'Test' }, hasFailed: true,
+    });
+    expect(stored.lastFailedAt).toBeGreaterThanOrEqual(before);
+    expect(stored.lastFailedAt).toBeLessThanOrEqual(Date.now());
   });
 
-  it('stores the updated entry in _pendingUpdates', () => {
+  it('stores the updated entry in _pendingUpdates while it is still the queued intention', () => {
     const update = { uniqueKey: 'test-key-4', type: 'add', timestamp: Date.now() };
+    _getPendingUpdates().set(update.uniqueKey, update);
     _markResolveFailed(update);
     const stored = _getPendingUpdates().get('test-key-4');
     expect(stored).toBeDefined();
     expect(stored.hasFailed).toBe(true);
+  });
+
+  // The drain marks the entry it captured before an await; a newer intention
+  // queued meanwhile wins, and a dequeued or abandoned one stays gone.
+  it('never overwrites a newer queued intention or resurrects a removed one', () => {
+    const captured = { uniqueKey: 'test-key-5', type: 'add', timestamp: Date.now() };
+    const newer = { uniqueKey: 'test-key-5', type: 'delete', timestamp: captured.timestamp + 1 };
+    _getPendingUpdates().set(newer.uniqueKey, newer);
+    _markResolveFailed(captured);
+    expect(_getPendingUpdates().get('test-key-5')).toBe(newer);
+
+    const removed = { uniqueKey: 'test-key-6', type: 'add', timestamp: Date.now() };
+    _markResolveFailed(removed);
+    expect(_getPendingUpdates().has('test-key-6')).toBe(false);
+  });
+
+  // Events can share a millisecond, so the type is part of the identity.
+  it('never overwrites an opposite intention queued in the same millisecond', () => {
+    const captured = { uniqueKey: 'test-key-7', type: 'add', timestamp: Date.now() };
+    const newer = { uniqueKey: 'test-key-7', type: 'delete', timestamp: captured.timestamp };
+    _getPendingUpdates().set(newer.uniqueKey, newer);
+    _markResolveFailed(captured);
+    expect(_getPendingUpdates().get('test-key-7')).toBe(newer);
+  });
+
+  // Type + millisecond is not an identity: a remove and a re-add can both
+  // land in the millisecond of the captured add.
+  it('never marks a same-type intention queued in the same millisecond', () => {
+    const captured = { uniqueKey: 'test-key-9', type: 'add', timestamp: Date.now() };
+    const newer = { ...captured };
+    _getPendingUpdates().set(newer.uniqueKey, newer);
+    _markResolveFailed(captured);
+    expect(_getPendingUpdates().get('test-key-9')).toBe(newer);
+    expect(newer.hasFailed).toBeUndefined();
+  });
+
+  // The same message can be added, removed and added again: a later
+  // intention of the same type is still a different one.
+  it('never marks a same-type intention queued later', () => {
+    const captured = { uniqueKey: 'test-key-8', type: 'add', timestamp: Date.now() };
+    const newer = { uniqueKey: 'test-key-8', type: 'add', timestamp: captured.timestamp + 1 };
+    _getPendingUpdates().set(newer.uniqueKey, newer);
+    _markResolveFailed(captured);
+    expect(_getPendingUpdates().get('test-key-8')).toBe(newer);
+    expect(newer.hasFailed).toBeUndefined();
   });
 });
 

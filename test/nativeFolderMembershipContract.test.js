@@ -356,11 +356,13 @@ describe("native folder-membership v1 contract", () => {
 
   it("injects opaque folderId on fresh writes only when hello advertises the capability", async () => {
     const supported = await initialized(true);
+    const supportedWire = { withFolderIds: false };
     await supported.nativeFtsSearch.indexBatch([{
       msgId: "account:/Client:Acme:message@example.com",
       folderId: "opaque-folder-17",
       body: "",
-    }]);
+    }], supportedWire);
+    expect(supportedWire.withFolderIds).toBe(true);
     expect(supported.nativeFtsSearch.supportsFolderMembership()).toBe(true);
     expect(supported.port.messages.find(message => message.method === "indexBatch")?.params.rows)
       .toEqual([expect.objectContaining({
@@ -369,11 +371,13 @@ describe("native folder-membership v1 contract", () => {
       })]);
 
     const unsupported = await initialized(false);
+    const unsupportedWire = { withFolderIds: true };
     await unsupported.nativeFtsSearch.indexBatch([{
       msgId: "account:/Client:Acme:message@example.com",
       folderId: "opaque-folder-17",
       body: "",
-    }]);
+    }], unsupportedWire);
+    expect(unsupportedWire.withFolderIds).toBe(false);
     expect(unsupported.nativeFtsSearch.supportsFolderMembership()).toBe(false);
     expect(unsupported.port.messages.find(message => message.method === "indexBatch")?.params.rows)
       .toEqual([{
@@ -493,12 +497,16 @@ describe("native folder-membership v1 contract", () => {
     capable.disconnect();
     now.mockReturnValue(62_000);
 
+    // Shaped (and reported) for the port that receives it, not the one
+    // current when the call began.
+    const wire = { withFolderIds: true };
     await nativeFtsSearch.indexBatch([{
       msgId: "account:/Client:message@example.com",
       folderId: "opaque-folder-17",
       body: "",
-    }]);
+    }], wire);
 
+    expect(wire.withFolderIds).toBe(false);
     expect(legacy.messages.find(message => message.method === "indexBatch")?.params.rows)
       .toEqual([{ msgId: "account:/Client:message@example.com", body: "" }]);
     expect(legacy.messages.map(message => message.method))

@@ -2,6 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import {
+  folderMembershipKeyAccountEnd,
+  folderMembershipKeyPrefix,
+  parseFolderMembershipId,
+} from "./folderMembershipIdentity.js";
+
 // One process-local coordinator for every native email-FTS writer. Durable
 // scan status remains observability only; live exclusion is owned here.
 const FTS_SCAN_STATUS_KEY = "fts_scan_status";
@@ -12,6 +18,33 @@ let _exclusiveOwner = null;
 let _reconcileOwner = null;
 let _exclusiveWaiters = [];
 let _membershipEpoch = 0;
+// Folder-scoped change ledger. Each membership mutation is attributed to the
+// folder ids whose rows or key range it can touch ("*" when unknown), and
+// recorded at the epoch it advanced to. A proof about folder C is invalidated
+// only by changes attributed to C or to the wildcard, so traffic in another
+// folder never restarts it. Evicting an entry raises the floor: a stamp older
+// than an evicted change is treated as changed, never as valid.
+// Only real folders occupy the ledger: explicit owners, and the folders
+// reconciliation registered from its inventory whose key range holds a
+// mutated key. A colon-bearing Message-ID splits into paths no folder has;
+// recording those would let one busy folder evict every other entry, and
+// building them all costs quadratic work in the key's length.
+// The cap bounds memory; it is far above any real profile's folder count.
+const FTS_MEMBERSHIP_LEDGER_CONFIG = Object.freeze({ changeLedgerCap: 4096 });
+let _membershipLedgerCap = FTS_MEMBERSHIP_LEDGER_CONFIG.changeLedgerCap;
+let _membershipTouched = new Map();
+let _membershipWildcardEpoch = 0;
+let _membershipTouchFloor = 0;
+// Real folder ids of the latest inventory, and their paths by account with
+// the longest one, so a key is matched only against path ends a registered
+// folder can have. Bounded by the live inventory: a folder that leaves it
+// has no proof left to protect (runtime pruning releases it). Before the
+// first inventory no proof exists, and registering a folder records it as
+// changed, so unattributed earlier changes are never trusted.
+let _membershipFolderUniverse = new Set();
+let _membershipUniverseByAccount = new Map();
+// The raw scopes a running fence's callback attributed, or "*".
+let _membershipFenceScope = null;
 let _membershipTail = Promise.resolve();
 const _membershipFenceToken = Object.freeze({});
 const _leaseStatusState = new WeakMap();
@@ -89,6 +122,129 @@ export function getFtsMembershipEpoch() {
   return _membershipEpoch;
 }
 
+// Resolved when the change is recorded, against the universe at that time:
+// a folder registered while the mutation ran is still attributed.
+// A scope is "*", an iterable of folder ids, or { msgIds, folderIds }. Named
+// folder ids (explicit owners) are always recorded; a key is recorded for
+// the registered folders whose key range holds it.
+function _resolveMembershipScope(scope) {
+  if (scope === "*") return "*";
+  const resolved = new Set();
+  const folderIds = Array.isArray(scope) || scope instanceof Set ? scope : (scope?.folderIds || []);
+  for (const folderId of folderIds) {
+    if (folderId) resolved.add(folderId);
+  }
+  for (const msgId of scope?.msgIds || []) {
+    const accountEnd = folderMembershipKeyAccountEnd(msgId);
+    if (accountEnd < 0) return "*";
+    const account = _membershipUniverseByAccount.get(msgId.slice(0, accountEnd));
+    if (!account) continue;
+    // Only path ends no longer than a registered path are tried, so the
+    // work per key is bounded by the registered paths, not the key length.
+    const lastPathEnd = Math.min(msgId.length - 2, accountEnd + 1 + account.maxPathLength);
+    for (let pathEnd = msgId.indexOf(":", accountEnd + 2);
+      pathEnd !== -1 && pathEnd <= lastPathEnd;
+      pathEnd = msgId.indexOf(":", pathEnd + 1)) {
+      const folderId = account.paths.get(msgId.slice(accountEnd + 1, pathEnd));
+      if (folderId) resolved.add(folderId);
+    }
+  }
+  return resolved;
+}
+
+// Replaces the universe with reconciliation's current inventory. A folder
+// new to it (including one returning after it left) is recorded as changed
+// now: changes to it while unregistered were not attributed, and no stamp
+// older than this may trust them.
+export function registerFtsMembershipFolders(folderIds) {
+  const previous = _membershipFolderUniverse;
+  const universe = new Set();
+  const byAccount = new Map();
+  const added = [];
+  for (const folderId of folderIds) {
+    if (!folderId || universe.has(folderId)) continue;
+    universe.add(folderId);
+    if (!previous.has(folderId)) added.push(folderId);
+    const folder = parseFolderMembershipId(folderId);
+    if (!folder) continue;
+    let account = byAccount.get(folder.accountId);
+    if (!account) {
+      account = { paths: new Map(), maxPathLength: 0 };
+      byAccount.set(folder.accountId, account);
+    }
+    account.paths.set(folder.folderPath, folderId);
+    account.maxPathLength = Math.max(account.maxPathLength, folder.folderPath.length);
+  }
+  _membershipFolderUniverse = universe;
+  _membershipUniverseByAccount = byAccount;
+  if (added.length > 0) _recordMembershipScope(added, _membershipEpoch);
+}
+
+function _recordMembershipScope(scope, epoch) {
+  if (scope === "*") {
+    _membershipWildcardEpoch = epoch;
+    return;
+  }
+  for (const folderId of scope) {
+    _membershipTouched.delete(folderId);
+    _membershipTouched.set(folderId, epoch);
+  }
+  while (_membershipTouched.size > _membershipLedgerCap) {
+    const [oldest, oldestEpoch] = _membershipTouched.entries().next().value;
+    _membershipTouched.delete(oldest);
+    _membershipTouchFloor = Math.max(_membershipTouchFloor, oldestEpoch);
+  }
+}
+
+function _mergeMembershipScope(target, scope) {
+  if (target === "*" || scope === "*") return "*";
+  for (const folderId of scope) target.add(folderId);
+  return target;
+}
+
+function _resolveFenceScopes(scopes) {
+  if (scopes === "*") return "*";
+  let resolved = new Set();
+  for (const scope of scopes) resolved = _mergeMembershipScope(resolved, _resolveMembershipScope(scope));
+  return resolved;
+}
+
+// True when no membership change attributed to any folder in `scope` (or to
+// the wildcard) completed after `sinceEpoch` was read. A "*" scope is the
+// global check. A { msgIds, folderIds } scope names its explicit folders and
+// every folder whose rows or key range hold one of the keys; it is never
+// filtered by the universe, so a change recorded for an explicit owner not
+// yet registered (a folder created after an inventory) still breaks it.
+export function ftsMembershipUnchangedSince(scope, sinceEpoch) {
+  if (scope === "*") return sinceEpoch === _membershipEpoch;
+  if (!Number.isFinite(sinceEpoch)
+      || sinceEpoch < _membershipTouchFloor
+      || sinceEpoch < _membershipWildcardEpoch) {
+    return false;
+  }
+  const folderIds = Array.isArray(scope) || scope instanceof Set ? scope : (scope?.folderIds || []);
+  for (const folderId of folderIds) {
+    if ((_membershipTouched.get(folderId) ?? 0) > sinceEpoch) return false;
+  }
+  const msgIds = scope?.msgIds;
+  if (!msgIds) return true;
+  for (const msgId of msgIds) {
+    if (folderMembershipKeyAccountEnd(msgId) < 0) return sinceEpoch === _membershipEpoch;
+  }
+  // Matching the ledger's newer entries against the keys costs at most the
+  // ledger cap times the keys, independent of how many ":" a key holds.
+  for (const [folderId, epoch] of _membershipTouched) {
+    if (epoch <= sinceEpoch) continue;
+    const folder = parseFolderMembershipId(folderId);
+    if (!folder) return false;
+    const prefix = folderMembershipKeyPrefix(folder.accountId, folder.folderPath);
+    for (const msgId of msgIds) {
+      if (msgId.length > prefix.length && msgId.startsWith(prefix)) return false;
+    }
+  }
+  return true;
+}
+
 export function addFtsExclusiveMembershipChangeListener(listener) {
   if (typeof listener !== "function") throw new TypeError("listener must be a function");
   _exclusiveMembershipChangeListeners.add(listener);
@@ -115,11 +271,20 @@ export async function runFtsMembershipRead(fn) {
   return _withMembershipMutex(fn);
 }
 
-export async function runFtsMembershipMutation(fn, fenceToken = null) {
+// `scope` names the folder ids the mutation can touch; omitting it is the
+// conservative wildcard.
+export async function runFtsMembershipMutation(fn, fenceToken = null, scope = "*") {
   // A recon-owned mutator is already executing under the membership mutex.
   // Only the opaque token passed by withFtsMembershipFence can select this
-  // path; the enclosing fence performs the single conservative epoch advance.
-  if (fenceToken === _membershipFenceToken) return fn();
+  // path; the enclosing fence performs the single conservative epoch advance
+  // and records this scope with it. The scope joins the fence before the
+  // native call, so a partial commit is still attributed.
+  if (fenceToken === _membershipFenceToken) {
+    if (_membershipFenceScope !== "*") {
+      _membershipFenceScope = scope === "*" ? "*" : [..._membershipFenceScope, scope];
+    }
+    return fn();
+  }
   return _withMembershipMutex(async () => {
     try {
       return await fn();
@@ -127,18 +292,38 @@ export async function runFtsMembershipMutation(fn, fenceToken = null) {
       // A throwing native mutator may have partially committed. Advancing on
       // every attempted call is conservative and prevents stale proof reuse.
       _membershipEpoch = Math.min(Number.MAX_SAFE_INTEGER, _membershipEpoch + 1);
+      _recordMembershipScope(_resolveMembershipScope(scope), _membershipEpoch);
     }
   });
 }
 
-export async function withFtsMembershipFence(expectedEpoch, fn, { mutation = false } = {}) {
+// Without `scope` the fence holds only while no membership mutation at all
+// has completed since `expectedEpoch`; with a scope, only changes attributed
+// to those folder ids (or the wildcard) break it.
+export async function withFtsMembershipFence(
+  expectedEpoch,
+  fn,
+  { mutation = false, scope = null } = {},
+) {
   return _withMembershipMutex(async () => {
-    if (expectedEpoch !== _membershipEpoch) throw new Error("membership_epoch_changed");
+    const current = scope === null
+      ? expectedEpoch === _membershipEpoch
+      : ftsMembershipUnchangedSince(scope, expectedEpoch);
+    if (!current) throw new Error("membership_epoch_changed");
+    _membershipFenceScope = [];
     try {
       return await fn(_membershipFenceToken);
     } finally {
+      const attributed = _membershipFenceScope;
+      _membershipFenceScope = null;
       if (mutation) {
+        // The fenced folders are always recorded; an unscoped fence whose
+        // callback attributed nothing is conservatively the wildcard.
+        let fencedScope = _resolveFenceScopes(attributed);
+        if (scope !== null) fencedScope = _mergeMembershipScope(fencedScope, _resolveMembershipScope(scope));
+        else if (attributed.length === 0) fencedScope = "*";
         _membershipEpoch = Math.min(Number.MAX_SAFE_INTEGER, _membershipEpoch + 1);
+        _recordMembershipScope(fencedScope, _membershipEpoch);
       }
     }
   });
@@ -233,11 +418,20 @@ export function getFtsOperationState() {
   };
 }
 
-export function _resetFtsOperationCoordinatorForTests() {
+export function _resetFtsOperationCoordinatorForTests({
+  changeLedgerCap = FTS_MEMBERSHIP_LEDGER_CONFIG.changeLedgerCap,
+} = {}) {
   _exclusiveOwner = null;
   _reconcileOwner = null;
   _exclusiveWaiters = [];
   _membershipEpoch = 0;
+  _membershipTouched = new Map();
+  _membershipWildcardEpoch = 0;
+  _membershipTouchFloor = 0;
+  _membershipFenceScope = null;
+  _membershipFolderUniverse = new Set();
+  _membershipUniverseByAccount = new Map();
+  _membershipLedgerCap = changeLedgerCap;
   _membershipTail = Promise.resolve();
   _nextRunId = 1;
 }

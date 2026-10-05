@@ -549,7 +549,8 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
          * (PLAN_FOLDER_SET_RECONCILE.md §2). Ids are stored WITHOUT angle
          * brackets — pass them as-is. Returns the ids with no header
          * (stale CANDIDATES only — the addon confirms each with the
-         * ADR-017 verify-then-remove recheck before touching FTS).
+         * ADR-017 verify-then-remove recheck before touching FTS), and the
+         * ids whose lookup threw (`uncertain`: neither present nor missing).
          */
         async probeMessageIds(folderURI, headerMessageIds) {
           try {
@@ -558,17 +559,19 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
             // May throw (missing/out-of-date summary) — caller skips the folder.
             const db = folder.msgDatabase;
             const missing = [];
+            const uncertain = [];
             for (const id of headerMessageIds || []) {
               let hdr = null;
               try {
                 hdr = db.getMsgHdrForMessageID(id);
               } catch (_) {
                 // Lookup error = uncertain — do NOT nominate as missing.
+                uncertain.push(String(id));
                 continue;
               }
               if (!hdr || isExcludedProofHeader(hdr)) missing.push(String(id));
             }
-            return { missing };
+            return { missing, uncertain };
           } catch (e) {
             return { missing: [], error: String(e) };
           }

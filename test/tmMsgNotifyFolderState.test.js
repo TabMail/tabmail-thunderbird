@@ -148,3 +148,32 @@ describe('tmMsgNotify.getFolderState msgDB identity and evidence', () => {
     expect(info.setCharProperty).not.toHaveBeenCalled();
   });
 });
+
+describe('tmMsgNotify.probeMessageIds', () => {
+  it('reports absent and excluded ids as missing and a failed lookup as uncertain, never missing', async () => {
+    const { api, folders } = createExperiment();
+    const headers = new Map([
+      ['live@example.com', { flags: 0 }],
+      ['deleted@example.com', { flags: 1 }],
+    ]);
+    folders.set('account1:/F', {
+      URI: 'mailbox://nobody@Local%20Folders/F',
+      msgDatabase: {
+        getMsgHdrForMessageID: vi.fn(id => {
+          if (id === 'broken@example.com') throw new Error('summary unavailable');
+          return headers.get(id) || null;
+        }),
+      },
+    });
+
+    const result = await api.probeMessageIds('mailbox://nobody@Local%20Folders/F',
+      ['live@example.com', 'gone@example.com', 'deleted@example.com', 'broken@example.com']);
+
+    expect(result).toEqual({
+      missing: ['gone@example.com', 'deleted@example.com'],
+      uncertain: ['broken@example.com'],
+    });
+    expect(await api.probeMessageIds('mailbox://nobody@Local%20Folders/Absent', ['live@example.com']))
+      .toEqual({ missing: [], error: 'folder_not_found' });
+  });
+});
