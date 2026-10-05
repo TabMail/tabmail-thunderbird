@@ -5,8 +5,9 @@
 // recheckMessageInFolder.test.js — Tests for the verify-then-remove confirmation
 // helper in agent/modules/utils.js. A folder-constrained messages.query can
 // transiently return empty (msgDB mid-sync); this helper is the second,
-// GLOBAL query whose SUCCESSFUL result is required before an FTS stale-entry
-// removal is allowed.
+// fresh query whose SUCCESSFUL result is required before an FTS stale-entry
+// removal is allowed. It is scoped to the folder when the caller knows the
+// folder's id and path, and account-wide otherwise.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -64,6 +65,60 @@ beforeEach(() => {
 });
 
 describe('recheckMessageInFolder', () => {
+  describe('folder-scoped query when the folder id and path are known', () => {
+    const SCOPED_FOLDER = { ...WE_FOLDER, id: 'folder-bin' };
+    const SCOPED_QUERY = { folderId: 'folder-bin', headerMessageId: 'msg-1@example.com' };
+
+    it('finds the message with a folderId query', async () => {
+      browser.messages.query.mockResolvedValue({
+        messages: [{ id: 7, folder: { accountId: 'account1', path: '/[Gmail]/Bin' } }],
+      });
+      expect(await recheckMessageInFolder('msg-1@example.com', SCOPED_FOLDER)).toBe('present');
+      expect(browser.messages.query).toHaveBeenCalledTimes(1);
+      expect(browser.messages.query).toHaveBeenCalledWith(SCOPED_QUERY);
+    });
+
+    it('confirms absence only from a drained folderId query', async () => {
+      browser.messages.query.mockResolvedValue({ messages: [] });
+      expect(await recheckMessageInFolder('msg-1@example.com', SCOPED_FOLDER)).toBe('absent');
+      expect(browser.messages.query).toHaveBeenCalledWith(SCOPED_QUERY);
+    });
+
+    it('drains continuation pages of the folderId query', async () => {
+      browser.messages.query.mockResolvedValue({ id: 'list-1', messages: [] });
+      browser.messages.continueList.mockResolvedValueOnce({
+        messages: [{ id: 9, folder: { accountId: 'account1', path: '/[Gmail]/Bin' } }],
+      });
+      expect(await recheckMessageInFolder('msg-1@example.com', SCOPED_FOLDER)).toBe('present');
+      expect(browser.messages.query).toHaveBeenCalledWith(SCOPED_QUERY);
+      expect(browser.messages.continueList).toHaveBeenCalledWith('list-1');
+    });
+
+    it('reports "error" when the folder id no longer resolves', async () => {
+      browser.messages.query.mockRejectedValue(new Error('Folder not found'));
+      expect(await recheckMessageInFolder('msg-1@example.com', SCOPED_FOLDER)).toBe('error');
+      expect(browser.messages.query).toHaveBeenCalledWith(SCOPED_QUERY);
+    });
+
+    it('reports "error" for a nullish folderId page', async () => {
+      browser.messages.query.mockResolvedValue(undefined);
+      expect(await recheckMessageInFolder('msg-1@example.com', SCOPED_FOLDER)).toBe('error');
+      expect(browser.messages.query).toHaveBeenCalledWith(SCOPED_QUERY);
+    });
+
+    it('keeps the account-wide query for a legacy empty path even with an id', async () => {
+      browser.messages.query.mockResolvedValue({
+        messages: [{ id: 7, folder: { accountId: 'account1', path: '/Archive' } }],
+      });
+      const verdict = await recheckMessageInFolder(
+        'msg-1@example.com',
+        { accountId: 'account1', path: '', id: 'folder-bin' },
+      );
+      expect(verdict).toBe('present');
+      expect(browser.messages.query).toHaveBeenCalledWith({ headerMessageId: 'msg-1@example.com' });
+    });
+  });
+
   it('returns "present" when the message is found in the expected account+folder', async () => {
     browser.messages.query.mockResolvedValue({
       messages: [
@@ -74,7 +129,7 @@ describe('recheckMessageInFolder', () => {
     const verdict = await recheckMessageInFolder('msg-1@example.com', WE_FOLDER);
 
     expect(verdict).toBe('present');
-    // Must be a GLOBAL query — headerMessageId only, no folderId constraint
+    // A folder without an id keeps the unscoped query.
     expect(browser.messages.query).toHaveBeenCalledWith({ headerMessageId: 'msg-1@example.com' });
   });
 

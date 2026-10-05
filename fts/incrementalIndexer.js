@@ -3417,7 +3417,8 @@ async function _folderReconStaleDirection(
     _assertNoFolderReconForegroundPressure();
   };
   const folderPrefix = `${f.accountId}:${f.folderPath}:`;
-  const weFolder = { accountId: f.accountId, path: f.folderPath };
+  // The id scopes the presence recheck to this folder's msgDB.
+  const weFolder = { accountId: f.accountId, path: f.folderPath, id: f.weFolderId };
   let afterKey = resumeAfterKey;
   let pages = 0;
 

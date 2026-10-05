@@ -4547,6 +4547,37 @@ it('stale removal cannot verify a rediscovered local row using its old native di
   }
 });
 
+// A stale-direction recheck reads only its own folder: the util scopes the
+// query by folder id, so the direction must hand that id over.
+it('scopes every stale-direction presence recheck to its folder id', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(realDateNow());
+  try {
+    const folderKey = 'account1:/Scoped';
+    const folderId = makeFolderMembershipId('account1', '/Scoped');
+    const staleKey = `${folderKey}:gone@example.com`;
+    const { nativeRows, fts } = installExactMembershipFolders([{
+      folderPath: '/Scoped', weFolderId: 'session-folder-scoped', headerMessageIds: [],
+    }]);
+    nativeRows.set(staleKey, folderId);
+    browser.tmMsgNotify.probeMessageIds.mockImplementation(async (_uri, ids) => ({ missing: ids }));
+    for (let turn = 0; turn < 35 && nativeRows.has(staleKey); turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      vi.setSystemTime(Date.now() + 1000);
+    }
+    expect(fts.removeBatch).toHaveBeenCalledWith([staleKey], expect.anything());
+    expect(recheckMessageInFolder).toHaveBeenCalled();
+    for (const [headerId, weFolder] of recheckMessageInFolder.mock.calls) {
+      expect(headerId).toBe('gone@example.com');
+      expect(weFolder).toEqual({ accountId: 'account1', path: '/Scoped', id: 'session-folder-scoped' });
+    }
+  } finally {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
+
 // INVARIANT (2026-10-02 release-profile heap: 11,268 old/new copies of the
 // whole ~57 KiB fts_folder_recon_memo held by storage.onChanged): the global
 // membership-state pass and its cutover are volatile, per-session proof. A
@@ -5913,7 +5944,7 @@ describe('ownerless-row classifier (exact helpers)', () => {
     expect(_testExports._getFolderMembershipCleanupProven()).toBe(true);
     expect(nativeRows.get(row)).toBe(makeFolderMembershipId('account1', '/F'));
     expect(recheckMessageInFolder).toHaveBeenCalledWith('late-sync@example.com', expect.objectContaining({
-      accountId: 'account1', path: '/F',
+      accountId: 'account1', path: '/F', id: 'session-folder-0',
     }));
   });
 
