@@ -2304,9 +2304,12 @@ const FOLDER_RECON_CONFIG = {
   paceDelayMs: 250,
   pressureDelayMs: 2000,
   errorDelayMs: 10000,
+  // Longest single wait for a folder's backoff to end; the tick re-arms.
+  backoffWaitCapMs: 60 * 1000,
   syncQuietMs: 5000,
   reverifyIntervalMs: 20 * 60 * 1000,
   walkPeriodMs: 24 * 60 * 60 * 1000,
+  membershipUnresolvedRetryMs: 10 * 60 * 1000,
   changeLedgerCap: 4096,
   ...(SETTINGS?.agentQueues?.ftsFolderRecon || {}),
 };
@@ -2421,9 +2424,11 @@ const FOLDER_RECON_PENDING_LOW_WATER = FOLDER_RECON_CONFIG.pendingLowWater;
 const FOLDER_RECON_PACE_DELAY_MS = FOLDER_RECON_CONFIG.paceDelayMs;
 const FOLDER_RECON_PRESSURE_DELAY_MS = FOLDER_RECON_CONFIG.pressureDelayMs;
 const FOLDER_RECON_ERROR_DELAY_MS = FOLDER_RECON_CONFIG.errorDelayMs;
+const FOLDER_RECON_BACKOFF_WAIT_CAP_MS = FOLDER_RECON_CONFIG.backoffWaitCapMs;
 const FOLDER_RECON_SYNC_QUIET_MS = FOLDER_RECON_CONFIG.syncQuietMs;
 const FOLDER_RECON_REVERIFY_INTERVAL_MS = FOLDER_RECON_CONFIG.reverifyIntervalMs;
 const FOLDER_RECON_WALK_PERIOD_MS = FOLDER_RECON_CONFIG.walkPeriodMs;
+const FOLDER_RECON_MEMBERSHIP_UNRESOLVED_RETRY_MS = FOLDER_RECON_CONFIG.membershipUnresolvedRetryMs;
 const FOLDER_RECON_CHANGE_LEDGER_CAP = FOLDER_RECON_CONFIG.changeLedgerCap;
 // A completed add-side sweep that still fails exact equality is replayed once
 // immediately (transient native filter failures recover without delay). If the
@@ -2453,10 +2458,17 @@ let _folderReconNativeSupport = null;
 let _folderReconNativeProbeFailures = { connectionGeneration: null, count: 0 };
 let _folderReconConnectionUnsubscribe = null;
 // The additive relation is never trusted merely because a durable marker
-// exists. Every add-on session earns cutover from a stable bounded global
+// exists. Every add-on session earns global cleanup from a stable bounded
 // membership-state pass with no unresolved row; the pass classifies and
-// assigns every ownerless row itself.
-let _folderMembershipCutoverProven = false;
+// assigns every ownerless row and removes every stale owner itself. Exact
+// folder work does not wait for it (an ownerless or stale-owner row is in no
+// owner listing, so it can only show a deficit); only orphan and session
+// completion do.
+let _folderMembershipCleanupProven = false;
+// While cleanup is incomplete, scheduler slices alternate between one
+// state-pass page ("pass") and folder work ("folders"), so neither starves
+// the other. Volatile, like the pass.
+let _folderReconMembershipTurn = "pass";
 // Session-local global membership-state pass, bound to the reconciliation
 // generation, the live-folder inventory digest and the native connection
 // generation. It is never persisted: a restart or any binding change starts a
@@ -2626,7 +2638,7 @@ function _handleExclusiveFtsMembershipChange() {
   _folderReconDrainFailureCounts.clear();
   _folderReconOrphanDone = false;
   _folderReconOrphanPass = null;
-  _revokeFolderMembershipCutover();
+  _revokeFolderMembershipCleanup();
   _resetFolderMembershipVolatileProof();
   _releaseFolderReconActiveProof(null, "invalidation");
   // The coordinator invokes this only after releasing exclusive ownership,
@@ -3605,13 +3617,20 @@ async function _checkFolderReconNativeSupport(ftsSearch) {
   }
 }
 
+// A capable helper always reconciles folders through exact owner listings;
+// global cleanup gates only orphan and session completion.
 function _useExactFolderMembership(ftsSearch) {
+  return _isFolderMembershipCapable(ftsSearch);
+}
+
+// Global cleanup holds while this generation's completed pass is still bound
+// to the tick's inventory and connection and has not expired.
+function _folderMembershipCleanupComplete(binding) {
   const pass = _folderMembershipStatePass;
-  return _folderMembershipCutoverProven
+  return _folderMembershipCleanupProven
     && pass?.completed === true
-    && pass.generation === _folderReconGeneration
-    && ftsSearch?.supportsFolderMembership?.() === true
-    && pass.connectionGeneration === _folderMembershipConnectionGeneration(ftsSearch);
+    && _folderMembershipStatePassBound(pass, binding)
+    && Date.now() - pass.completedAtMs < FOLDER_RECON_WALK_PERIOD_MS;
 }
 
 // Exact or legacy membership is chosen ONCE per operation and never re-decided
@@ -3625,15 +3644,16 @@ function _captureFolderMembershipMode(ftsSearch) {
   return { exact: _useExactFolderMembership(ftsSearch) };
 }
 
-// The only way to withdraw exact-membership cutover. The session-local pass
-// that earned it goes with it, so cutover can be re-earned only by a new pass
-// that starts before the first native row.
-function _revokeFolderMembershipCutover() {
-  if (_folderMembershipCutoverProven || _folderMembershipStatePass) {
+// The only way to withdraw global cleanup. The session-local pass that
+// earned it goes with it, so cleanup can be re-earned only by a new pass that
+// starts before the first native row, and that pass takes the next turn.
+function _revokeFolderMembershipCleanup() {
+  if (_folderMembershipCleanupProven || _folderMembershipStatePass) {
     _bumpFolderReconTelemetry("membershipStateRestartRevoked");
   }
-  _folderMembershipCutoverProven = false;
+  _folderMembershipCleanupProven = false;
   _folderMembershipStatePass = null;
+  _folderReconMembershipTurn = "pass";
 }
 
 function _folderMembershipConnectionGeneration(ftsSearch) {
@@ -3689,7 +3709,7 @@ function _observeFolderMembershipCapability(ftsSearch) {
   if (_folderMembershipCapabilityState?.capable !== capable
       || _folderMembershipCapabilityState?.connectionGeneration !== connectionGeneration) {
     _folderMembershipCapabilityState = { capable, connectionGeneration };
-    _revokeFolderMembershipCutover();
+    _revokeFolderMembershipCleanup();
     _resetFolderMembershipVolatileProof();
     // A new native connection may follow a helper that lost or wrote rows
     // no event announced: every folder is walked again once cutover is
@@ -3947,6 +3967,7 @@ async function _folderReconStaleDirection(
   resumeAfterKey,
   expectedMembershipEpoch,
   membershipMode,
+  removalHandoff,
 ) {
   const generation = _folderReconGeneration;
   const reconcileLease = _folderReconInProgressOwner?.reconcileLease
@@ -4051,8 +4072,20 @@ async function _folderReconStaleDirection(
 
     if (entriesToRemove.length > 0) {
       try {
+        // Another folder whose key range also holds a removed key (a
+        // colon-overlapping folder) gets the same handoff as a state-pass
+        // removal: its retry authorization is revoked first, its walk marked.
+        assertCurrent();
+        const markOtherFolders = await _prepareFolderReconRemovalHandoff(
+          generation,
+          removalHandoff.memo,
+          [...removalHandoff.folderKeys].filter(folderKey =>
+            folderKey !== `${f.accountId}:${f.folderPath}`),
+          entriesToRemove,
+        );
         await withFtsMembershipFence(expectedMembershipEpoch, async (membershipFenceToken) => {
           assertCurrent();
+          markOtherFolders();
           await ftsSearch.removeBatch(entriesToRemove, membershipFenceToken);
           assertCurrent();
           for (const msgId of entriesToRemove) {
@@ -4660,6 +4693,12 @@ async function _runFolderReconcile(
 
   const memo = await _getFolderReconMemo();
   _assertFolderReconLease(reconcileLease, generation);
+  // Every folder a stale removal can hand off to: the inventory this run was
+  // given or read, and the scheduler's last one.
+  const removalHandoffFolderKeys = new Set([
+    ..._folderReconKnownFolderKeys,
+    ...(currentIdentities || folders || []).map(folder => `${folder.accountId}:${folder.folderPath}`),
+  ]);
   let memoChanged = memo._needsMigrationWrite === true;
   delete memo._needsMigrationWrite;
   // Expensive work budgets bound this one scheduler slice. Durable folder and
@@ -5116,6 +5155,7 @@ async function _runFolderReconcile(
       staleResumeKey,
       folderMembershipEpoch,
       membershipMode,
+      { memo, folderKeys: removalHandoffFolderKeys },
     );
     if (stalePass.membershipEpoch !== undefined) folderMembershipEpoch = stalePass.membershipEpoch;
     const staleBudgetPartial = stalePass.budgetPartial;
@@ -5667,6 +5707,10 @@ function _startFolderMembershipStatePass(binding, restartReason = null) {
     unloaded: 0,
     slices: 0,
     completed: false,
+    // No state page is read before this time: the in-session unresolved
+    // replay's delay, or the backoff after rejected page mutations.
+    notBeforeMs: 0,
+    mutationFailures: 0,
   };
   return _folderMembershipStatePass;
 }
@@ -5779,11 +5823,79 @@ async function _resolveFolderMembershipAssignment(
   return { kind: "assign", assignment: { msgId, folderId: owner.folderId }, localScope };
 }
 
+// Fields of a folder checkpoint that let an unchanged terminal mismatch delay
+// its next full replay (see writePartialCheckpoint in _runFolderReconcile).
+const FOLDER_RECON_RETRY_AUTHORIZATION_FIELDS = Object.freeze([
+  "partialPostVerifyFailureCount",
+  "partialPostVerifyFtsCount",
+  "partialPostVerifyFtsSha256",
+  "partialRetryNotBeforeMs",
+]);
+
+/**
+ * Hand a removal's raw keys to every inventory folder whose key range holds
+ * one (colon-overlapping folders included). Removing such a row changes that
+ * folder's raw-key availability without changing its owner listing or msgDB
+ * digest, so a durable terminal-mismatch backoff would survive it and the
+ * now-missing message would wait out that backoff. The authorization is
+ * revoked first, in one storage transaction and only when the memo snapshot
+ * shows it (no write otherwise); a storage failure throws and the caller
+ * must remove nothing. Runs outside the membership mutex and fence.
+ * Returns the walk marks, which the caller issues right before it dispatches
+ * the removal: a removal that commits natively but whose reply is lost still
+ * leaves each folder owed a walk.
+ */
+async function _prepareFolderReconRemovalHandoff(generation, memo, folderKeys, msgIds) {
+  const affected = [...folderKeys].filter(folderKey =>
+    msgIds.some(msgId => msgId.startsWith(`${folderKey}:`)));
+  const authorized = affected.filter(folderKey =>
+    FOLDER_RECON_RETRY_AUTHORIZATION_FIELDS.some(field =>
+      memo.folders?.[folderKey]?.[field] !== undefined));
+  if (authorized.length > 0) {
+    await _reconStorageTransaction(generation, (state) => {
+      for (const folderKey of authorized) {
+        const checkpoint = state.memo.folders?.[folderKey];
+        if (!checkpoint || typeof checkpoint !== "object") continue;
+        for (const field of FOLDER_RECON_RETRY_AUTHORIZATION_FIELDS) delete checkpoint[field];
+      }
+    });
+    // The snapshot must not write the revoked fields back later.
+    for (const folderKey of authorized) {
+      for (const field of FOLDER_RECON_RETRY_AUTHORIZATION_FIELDS) {
+        delete memo.folders[folderKey][field];
+      }
+    }
+  }
+  return () => affected.forEach(_markFolderReconWalk);
+}
+
+function _folderReconBackoffWaitDelay(notBeforeMs) {
+  return Math.min(
+    FOLDER_RECON_BACKOFF_WAIT_CAP_MS,
+    Math.max(FOLDER_RECON_PACE_DELAY_MS, notBeforeMs - Date.now()),
+  );
+}
+
+// Rejected page mutations delay the next state page exponentially; folder
+// turns continue meanwhile. A committed page or a new pass resets it.
+function _deferFolderMembershipStatePassAfterFailure(pass) {
+  pass.mutationFailures++;
+  pass.notBeforeMs = Date.now() + Math.min(
+    FOLDER_RECON_ERROR_DELAY_MS * (2 ** Math.min(pass.mutationFailures - 1, 30)),
+    FOLDER_RECON_GENERIC_FAILURE_BACKOFF_MAX_MS,
+  );
+}
+
 /**
  * Upgrade only the additive folder relation. Each scheduler slice reads at
  * most one native membership-state page. Assignments are idempotent and
  * durable, so interruption restarts only the current proof, never a body
  * fetch or full-text reindex.
+ *
+ * Every tick calls it: it rechecks global cleanup against the tick's
+ * inventory first. Without `readPage` (a folder turn), or before the pass's
+ * not-before time, it then returns `{complete: false, pending: true}` without
+ * spending the page budget.
  */
 async function _runFolderMembershipMigrationSlice(
   ftsSearch,
@@ -5793,9 +5905,10 @@ async function _runFolderMembershipMigrationSlice(
   inventoryMembershipEpoch,
   inventoryTopologySerial = _folderReconTopologySerial,
   inventoryLocalSerial = _folderReconLocalSerial,
+  { readPage = true, memo } = {},
 ) {
   if (ftsSearch?.supportsFolderMembership?.() !== true) {
-    _revokeFolderMembershipCutover();
+    _revokeFolderMembershipCleanup();
     return { complete: true, legacy: true };
   }
   // The inventory and the state pages read no message state; each ownerless
@@ -5809,7 +5922,7 @@ async function _runFolderMembershipMigrationSlice(
   const distinctFolderIds = new Set(validIdentities.map(identity => identity.folderId));
   if (validIdentities.length !== identities.length
       || distinctFolderIds.size !== validIdentities.length) {
-    _revokeFolderMembershipCutover();
+    _revokeFolderMembershipCleanup();
     return { complete: false, failed: true, reason: "folder_id_inventory_invalid" };
   }
   const inventory = await _fingerprintStringsCooperatively(
@@ -5820,17 +5933,15 @@ async function _runFolderMembershipMigrationSlice(
   );
   assertCurrent();
   const binding = _folderMembershipStatePassBinding(inventory, ftsSearch, inventoryTopologySerial);
-  if (_folderMembershipCutoverProven) {
+  if (_folderMembershipCleanupProven) {
     // Checked before the page budget is spent: a completed migration leaves
     // this slice's native page to per-folder work. A completed pass expires
     // after one walk period, so an owned row a late native commit left for a
     // folder no walk visits is removed by the next pass.
-    if (_folderMembershipStatePass?.completed === true
-        && _folderMembershipStatePassBound(_folderMembershipStatePass, binding)
-        && Date.now() - _folderMembershipStatePass.completedAtMs < FOLDER_RECON_WALK_PERIOD_MS) {
+    if (_folderMembershipCleanupComplete(binding)) {
       return { complete: true, cutover: true };
     }
-    _revokeFolderMembershipCutover();
+    _revokeFolderMembershipCleanup();
   }
 
   // The pass lives only in this process, so a new session always starts it
@@ -5849,6 +5960,9 @@ async function _runFolderMembershipMigrationSlice(
   // the inventory.
   const pass = _currentFolderMembershipStatePass(binding);
   assertCurrent();
+  if (!readPage || Date.now() < pass.notBeforeMs) {
+    return { complete: false, pending: true, notBeforeMs: pass.notBeforeMs };
+  }
   let page;
   try {
     _consumeFolderMembershipPageBudget();
@@ -5960,7 +6074,13 @@ async function _runFolderMembershipMigrationSlice(
     }
     if (verdict.kind === "deferred") break;
     if (verdict.kind === "assign") {
-      assignments.push({ ...verdict.assignment, row: processed, localScope: verdict.localScope });
+      const owner = identityByFolderId.get(verdict.assignment.folderId);
+      assignments.push({
+        ...verdict.assignment,
+        ownerFolderKey: `${owner.accountId}:${owner.folderPath}`,
+        row: processed,
+        localScope: verdict.localScope,
+      });
     } else if (verdict.kind === "ghost") staleOrphans.push({ msgId, row: processed });
     else if (verdict.kind === "unloaded") unloadedRows.push(processed);
     else unresolvedRows.push(processed);
@@ -5973,7 +6093,9 @@ async function _runFolderMembershipMigrationSlice(
   // there (checked synchronously before each batch call), and it and every
   // later row are re-read. A change during the batch call itself cannot be
   // undone, so the row owes its candidate folders a walk, whose stale and
-  // missing directions repair a wrong owner.
+  // missing directions repair a wrong owner. Each owner is owed a walk before
+  // its batch is dispatched (a committed batch whose reply is lost still
+  // leaves it owed), so its exact proof is earned on the grown listing.
   const rowCurrent = entry => _folderReconLocalFoldersUnchangedSince(
     entry.localScope.folderKeys, entry.localScope.since);
   let staleOrphanMsgIds = [];
@@ -6014,6 +6136,7 @@ async function _runFolderMembershipMigrationSlice(
       }
       if (batch.length > 0) {
         pass.passMutated = true;
+        for (const entry of batch) _markFolderReconWalk(entry.ownerFolderKey);
         try {
           await ftsSearch.assignFolderMembershipBatch(
             batch.map(({ msgId, folderId }) => ({ msgId, folderId })),
@@ -6044,6 +6167,7 @@ async function _runFolderMembershipMigrationSlice(
     // still forces a full replay before cutover.
     pass.passMutated = true;
     assertRemovalCurrent();
+    markRemovalFolders();
     await ftsSearch.removeBatch(staleOrphanMsgIds, membershipFenceToken);
     assertRemovalCurrent();
     for (const msgId of staleOrphanMsgIds) {
@@ -6054,9 +6178,28 @@ async function _runFolderMembershipMigrationSlice(
     return null;
   };
   let commitFailure;
+  let markRemovalFolders = () => {};
   if (staleOrphans.length === 0) {
     commitFailure = await commitPage(null);
   } else {
+    // Revoked before anything of the page is dispatched; a failed revocation
+    // commits nothing and the page is retried after a backoff. The removal's
+    // evidence stays the pre-inventory baseline, re-checked inside the fence.
+    const removalCandidates = staleOrphans
+      .filter(entry => entry.row < processed).map(entry => entry.msgId);
+    try {
+      assertCommitCurrent();
+      markRemovalFolders = await _prepareFolderReconRemovalHandoff(
+        generation,
+        memo,
+        validIdentities.map(identity => `${identity.accountId}:${identity.folderPath}`),
+        removalCandidates,
+      );
+    } catch (error) {
+      _throwIfFolderReconInterrupted(error);
+      _deferFolderMembershipStatePassAfterFailure(pass);
+      return { complete: false, failed: true, reason: "membership_retry_revoke_failed", error: String(error) };
+    }
     try {
       commitFailure = await withFtsMembershipFence(inventoryMembershipEpoch, commitPage, {
         mutation: true,
@@ -6075,10 +6218,17 @@ async function _runFolderMembershipMigrationSlice(
         _bumpFolderReconTelemetry("membershipStatePageRetries");
         return { complete: false, retry: true, reason: "stale_folder_remove_event" };
       }
+      _deferFolderMembershipStatePassAfterFailure(pass);
       return { complete: false, failed: true, reason: "stale_folder_remove_failed", error: String(error) };
     }
   }
-  if (commitFailure) return commitFailure;
+  if (commitFailure) {
+    if (commitFailure.reason === "legacy_assignment_failed") {
+      _deferFolderMembershipStatePassAfterFailure(pass);
+    }
+    return commitFailure;
+  }
+  pass.mutationFailures = 0;
   pass.passUnresolved += unresolved;
   pass.unloaded += unloadedAccountRowsKept;
   pass.afterMsgId = processed > 0 ? entries[processed - 1].msgId : pass.afterMsgId;
@@ -6093,6 +6243,13 @@ async function _runFolderMembershipMigrationSlice(
         pass,
         passUnresolved > 0 ? "unresolved_replay" : "mutated_replay",
       );
+      // Unresolved rows are retried in-session after a delay, so an idle
+      // profile does not replay the whole relation continuously; folder
+      // turns run meanwhile. A mutated replay is immediate.
+      if (passUnresolved > 0 && _folderMembershipStatePass !== pass) {
+        _folderMembershipStatePass.notBeforeMs =
+          Date.now() + FOLDER_RECON_MEMBERSHIP_UNRESOLVED_RETRY_MS;
+      }
       return {
         complete: false,
         restart: true,
@@ -6112,7 +6269,7 @@ async function _runFolderMembershipMigrationSlice(
     }
     pass.completed = true;
     pass.completedAtMs = Date.now();
-    _folderMembershipCutoverProven = true;
+    _folderMembershipCleanupProven = true;
     _bumpFolderReconTelemetry("membershipCutovers");
     _folderReconRuntimeTelemetry.membershipLastPassSlices = pass.slices;
     return { complete: true, cutover: true };
@@ -6253,10 +6410,11 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     );
     const memo = await _getFolderReconMemo();
     _assertFolderReconLease(reconcileLease, generation);
-    if (folderMembershipCapable) {
-      let migration;
+    // A state-pass page is read only on a pass turn; every tick rechecks
+    // global cleanup. Returns null after foreground pressure.
+    const runMembershipPass = async (readPage) => {
       try {
-        migration = await _runFolderMembershipMigrationSlice(
+        const migration = await _runFolderMembershipMigrationSlice(
           ftsSearch,
           identities,
           reconcileLease,
@@ -6264,20 +6422,37 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
           inventoryMembershipEpoch,
           inventoryTopologySerial,
           inventoryLocalSerial,
+          { readPage, memo },
         );
+        _assertFolderReconLease(reconcileLease, generation);
+        return migration;
       } catch (error) {
         const message = String(error?.message || error);
         if (!message.includes("folder_recon_pressure")) throw error;
+        if (readPage) _folderReconMembershipTurn = "folders";
         _bumpFolderReconTelemetry("schedulerPressureSkips");
         _wakeFolderRecon("membership_pressure", cooperativeDelay(FOLDER_RECON_PRESSURE_DELAY_MS));
-        return { skipped: true, reason: "pressure" };
+        return null;
       }
-      _assertFolderReconLease(reconcileLease, generation);
-      if (!migration.complete) {
-        _wakeFolderRecon("membership_continue", migration.failed
-          ? cooperativeDelay(FOLDER_RECON_ERROR_DELAY_MS)
-          : cooperativeDelay());
-        return { complete: false, migration };
+    };
+    const finishMembershipPassTurn = (migration) => {
+      _folderReconMembershipTurn = "folders";
+      _wakeFolderRecon("membership_continue", migration.failed
+        ? cooperativeDelay(FOLDER_RECON_ERROR_DELAY_MS)
+        : cooperativeDelay());
+      return { complete: false, migration };
+    };
+    // The pending pass on a folder turn while cleanup is incomplete.
+    let pendingMembershipPass = null;
+    if (folderMembershipCapable) {
+      const migration = await runMembershipPass(_folderReconMembershipTurn === "pass");
+      if (!migration) return { skipped: true, reason: "pressure" };
+      if (migration.pending) {
+        // A folder turn: the next slice belongs to the pass.
+        _folderReconMembershipTurn = "pass";
+        pendingMembershipPass = migration;
+      } else if (!migration.complete) {
+        return finishMembershipPassTurn(migration);
       }
     }
     const exactMembership = _useExactFolderMembership(ftsSearch);
@@ -6343,6 +6518,28 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     }
 
     if (!target) {
+      if (pendingMembershipPass) {
+        // No folder work is owed, so the turn goes to the state pass, unless
+        // its delay holds: then the scheduler waits for the earlier of the
+        // pass's not-before time and the earliest folder deferral (the
+        // rolling wake is armed by the tick). Never a completion: orphan and
+        // session completion need global cleanup.
+        const notBeforeMs = pendingMembershipPass.notBeforeMs;
+        if (notBeforeMs > Date.now()) {
+          const deferralDelay = earliestDeferred < Infinity
+            ? _folderReconBackoffWaitDelay(earliestDeferred)
+            : Infinity;
+          _wakeFolderRecon("unresolved_retry_wait", Math.min(
+            deferralDelay,
+            Math.max(FOLDER_RECON_PACE_DELAY_MS, notBeforeMs - Date.now()),
+          ));
+          return { complete: false, reason: "unresolved_retry_wait" };
+        }
+        const migration = await runMembershipPass(true);
+        if (!migration) return { skipped: true, reason: "pressure" };
+        if (!migration.complete) return finishMembershipPassTurn(migration);
+        // The page completed the pass: fall through to orphan completion.
+      }
       if (ambiguous.groups > 0) {
         // Per-folder ranges and the sum-of-ranges orphan basis are both
         // inexact while an overlap exists, so neither proof may run; the
@@ -6363,10 +6560,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
         };
       }
       if (earliestDeferred < Infinity) {
-        _wakeFolderRecon(
-          "backoff_wait",
-          Math.min(60_000, Math.max(FOLDER_RECON_PACE_DELAY_MS, earliestDeferred - Date.now())),
-        );
+        _wakeFolderRecon("backoff_wait", _folderReconBackoffWaitDelay(earliestDeferred));
         return { skipped: true, reason: "backoff" };
       }
       let orphan;
@@ -6616,7 +6810,7 @@ export async function initIncrementalIndexer(ftsSearch) {
   _folderReconConnectionUnsubscribe = ftsSearch.addConnectionListener?.(
     () => _wakeFolderRecon("native_reconnect"),
   ) || null;
-  _revokeFolderMembershipCutover();
+  _revokeFolderMembershipCleanup();
   _folderMembershipCapabilityState = null;
   _resetFolderMembershipVolatileProof();
   _folderReconDrainSkipped = new Set();
@@ -6718,7 +6912,7 @@ export async function disposeIncrementalIndexer() {
   _folderReconConnectionUnsubscribe = null;
   _folderReconInProgressOwner = null;
   _folderReconSchedulerOwner = null;
-  _revokeFolderMembershipCutover();
+  _revokeFolderMembershipCleanup();
   _folderMembershipCapabilityState = null;
   _resetFolderMembershipVolatileProof();
   _resetFolderReconRuntimeTelemetry();
@@ -6902,7 +7096,8 @@ export const _testExports = {
   _getFolderReconMemo,
   _maybeScheduleFolderReconRerun,
   _getFolderReconDrainSkipped: () => _folderReconDrainSkipped,
-  _getFolderMembershipCutoverProven: () => _folderMembershipCutoverProven,
+  _getFolderMembershipCleanupProven: () => _folderMembershipCleanupProven,
+  _getFolderReconMembershipTurn: () => _folderReconMembershipTurn,
   _getFolderMembershipStatePass: () => _folderMembershipStatePass,
   _getFolderMembershipYieldedAttempts: () => new Map(_folderMembershipYieldedAttempts),
   _getFolderReconOrphanPass: () => _folderReconOrphanPass,
@@ -6911,7 +7106,7 @@ export const _testExports = {
     _resetFtsOperationCoordinatorForTests();
     _folderReconNativeSupport = null;
     _folderReconNativeProbeFailures = { connectionGeneration: null, count: 0 };
-    _revokeFolderMembershipCutover();
+    _revokeFolderMembershipCleanup();
     _folderMembershipCapabilityState = null;
     _resetFolderMembershipVolatileProof();
     _folderReconDrainSkipped = new Set();
@@ -6993,6 +7188,7 @@ export const _testExports = {
     _folderReconOrphanPass = orphanPass || null;
   },
   _getFolderReconRollingDueMs: () => _folderReconRollingDueMs,
+  _getFolderReconTimerDueMs: () => _folderReconTimerDueMs,
   _getFolderReconNextWalkDueMs: () => new Map(_folderReconNextWalkDueMs),
   _folderReconWalkOffsetMs,
   _pruneFolderReconRuntimeToFolderKeys,
