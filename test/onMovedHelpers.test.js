@@ -60,7 +60,6 @@ vi.mock('../agent/modules/tagHelper.js', () => ({
 }));
 
 vi.mock('../agent/modules/utils.js', () => ({
-  ensureAlarm: vi.fn(),
   getArchiveFolderForHeader: vi.fn(async () => null),
   getTrashFolderForHeader: vi.fn(async () => null),
   getUniqueMessageKey: vi.fn(async () => 'mock-key'),

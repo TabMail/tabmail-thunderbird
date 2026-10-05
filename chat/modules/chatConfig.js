@@ -37,27 +37,9 @@ export const CHAT_SETTINGS = {
   useGlodaSearch: true,
   // Apply date filters via Gloda's query.date unless explicitly disabled.
   glodaIgnoreDate: false,
-  // --- FTS (Full Text Search) A/B Testing Configuration ---
-  // Use FTS WASM SQLite backend instead of Gloda for search (A/B test flag)
-  useFtsSearch: true,
-  // FTS indexer tunables
-  ftsBatchSize: 250,                    // messages per index batch
-  ftsSleepBetweenBatchMs: 250,         // yield between batches
-  ftsLongYieldMs: 1000,                // yield between folders
-  ftsMaxBatchBytes: 8388608,           // 8MB soft limit per batch
   // Initial FTS scan settings
   ftsInitialScanEnabled: true,         // enable initial scan on install
   ftsInitialScanRetryDelayMs: 300000,  // retry delay after error (5 minutes)
-  // Incremental indexing settings (ON BY DEFAULT)
-  ftsIncrementalEnabled: true,         // enable real-time indexing of new/moved messages
-  ftsIncrementalBatchDelay: 1000,      // delay before processing batched incremental updates (1s)
-  ftsIncrementalBatchSize: 50,         // max messages per incremental batch
-  // Periodic maintenance settings 
-  ftsMaintenanceEnabled: true,         // enable periodic maintenance scans
-  ftsMaintenanceHourlyEnabled: true,   // hourly scan of last 1 day messages
-  ftsMaintenanceDailyEnabled: true,    // daily scan of last 3 days messages  
-  ftsMaintenanceWeeklyEnabled: true,   // weekly scan of last 3 weeks messages
-  ftsMaintenanceMonthlyEnabled: false, // monthly scan of last 3 months messages (disabled by default)
   // Summary retrieval behavior for search results:
   //  - 'cache_only': search displays cached summaries only (no generation). Missing entries show a hint.
   //  - 'generate' : search will generate summaries on-demand (existing behavior).

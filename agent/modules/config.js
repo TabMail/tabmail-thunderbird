@@ -456,8 +456,8 @@ export const SETTINGS = {
             // elapsed time counts: a Mac that sleeps mid-slice measures
             // hours that were not work, and uncapped that would postpone
             // reconciliation by the same hours after wake. Page budgets keep
-            // real slices far shorter, so the cap never cuts a genuine
-            // pause; it bounds the post-sleep delay to 10 min, inside the
+            // real slices far shorter, so the cap is not expected to cut a
+            // genuine pause; it bounds the post-sleep delay to 10 min, inside the
             // ~30 min self-heal target. Slice times: incrementalStatus →
             // folderRecon.maxSliceElapsedMs.
             hardFloorMaxElapsedMs: 10 * 60 * 1000,
@@ -582,18 +582,6 @@ export async function getTemplateWorkerUrl() {
 // Centralized storage management for debugMode
 // This listener keeps SETTINGS.debugMode in sync with storage changes from any source
 let _storageChangeListener = null;
-
-export function cleanupConfigListeners() {
-    if (_storageChangeListener) {
-        try {
-            browser.storage.onChanged.removeListener(_storageChangeListener);
-            _storageChangeListener = null;
-            if (SETTINGS.debugLogging) console.log("[TMDBG Config] Storage change listener cleaned up");
-        } catch (e) {
-            if (SETTINGS.debugLogging) console.error(`[TMDBG Config] Failed to remove storage change listener: ${e}`);
-        }
-    }
-}
 
 // Initialize listener with cleanup tracking
 if (!_storageChangeListener) {

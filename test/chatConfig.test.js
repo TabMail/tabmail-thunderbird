@@ -65,30 +65,12 @@ describe('CHAT_SETTINGS', () => {
     it('should have boolean glodaIgnoreDate', () => {
       expect(typeof CHAT_SETTINGS.glodaIgnoreDate).toBe('boolean');
     });
-    it('should have boolean useFtsSearch', () => {
-      expect(typeof CHAT_SETTINGS.useFtsSearch).toBe('boolean');
-    });
   });
 
   // --- FTS tunables ---
   describe('FTS settings', () => {
-    it('should have positive ftsBatchSize', () => {
-      expect(CHAT_SETTINGS.ftsBatchSize).toBeGreaterThan(0);
-    });
-    it('should have positive ftsSleepBetweenBatchMs', () => {
-      expect(CHAT_SETTINGS.ftsSleepBetweenBatchMs).toBeGreaterThan(0);
-    });
-    it('should have positive ftsMaxBatchBytes', () => {
-      expect(CHAT_SETTINGS.ftsMaxBatchBytes).toBeGreaterThan(0);
-    });
     it('should have boolean ftsInitialScanEnabled', () => {
       expect(typeof CHAT_SETTINGS.ftsInitialScanEnabled).toBe('boolean');
-    });
-    it('should have boolean ftsIncrementalEnabled', () => {
-      expect(typeof CHAT_SETTINGS.ftsIncrementalEnabled).toBe('boolean');
-    });
-    it('should have boolean ftsMaintenanceEnabled', () => {
-      expect(typeof CHAT_SETTINGS.ftsMaintenanceEnabled).toBe('boolean');
     });
   });
 

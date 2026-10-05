@@ -1298,7 +1298,6 @@ async function _enqueueRemovedFromInfo(messageInfo) {
       uniqueKey,
       timestamp: Date.now(),
       folderKey: `${accountId}:${folderPath}`,
-      metadata: {},
     };
     
     // Always update - deletion takes precedence

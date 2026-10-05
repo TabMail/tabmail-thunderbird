@@ -111,55 +111,6 @@ function _diagLog(category, level, detailsOrFn) {
   } catch (_) { return false; }
 }
 
-// ----------------------------------------------------------
-// Reusable alarm helpers for MV3 suspension-safe scheduling
-// ----------------------------------------------------------
-const _alarmNameToListener = new Map(); // Map<string, Function>
-
-/**
- * Ensures a browser alarm exists with the given name and schedule, and that
- * the provided onAlarm handler is registered exactly once. Any previous alarm
- * with the same name is cleared before re-creation. Duplicate listeners are
- * avoided across hot reloads.
- *
- * @param {Object} params
- * @param {string} params.name - Unique alarm name.
- * @param {number} params.periodMinutes - Recurrence interval in minutes (>=1).
- * @param {number|null} [params.delayMinutes=null] - First-fire delay in minutes; defaults to periodMinutes when null.
- * @param {Function} params.onAlarm - Callback invoked when this named alarm fires.
- */
-export async function ensureAlarm({ name, periodMinutes, delayMinutes = null, onAlarm }) {
-  try {
-    const p = Math.max(1, Math.ceil(Number(periodMinutes || 1)));
-    const d = delayMinutes == null ? p : Math.max(0, Math.ceil(Number(delayMinutes)));
-
-    // Replace or attach listener exactly once per name
-    const prev = _alarmNameToListener.get(name);
-    if (prev && prev !== onAlarm) {
-      try { browser.alarms.onAlarm.removeListener(prev); } catch (_) {}
-      _alarmNameToListener.delete(name);
-    }
-    if (!_alarmNameToListener.has(name)) {
-      const wrapped = (alarm) => {
-        if (alarm && alarm.name === name) {
-          try { log(`[Alarms] Alarm fired: ${name} @ ${new Date().toISOString()}`); } catch (_) {}
-          try { onAlarm(); } catch (e) { try { log(`[Alarms] Handler error for ${name}: ${e}`, 'error'); } catch (_) {} }
-        }
-      };
-      browser.alarms.onAlarm.addListener(wrapped);
-      _alarmNameToListener.set(name, wrapped);
-    }
-
-    // Clear and recreate the alarm schedule
-    await browser.alarms.clear(name);
-    await browser.alarms.create(name, { delayInMinutes: d, periodInMinutes: p });
-    try { log(`[Alarms] Scheduled '${name}' every ${p} minute(s) (delay ${d}m)`); } catch (_) {}
-  } catch (e) {
-    try { log(`[Alarms] ensureAlarm failed for '${name}': ${e}`, 'error'); } catch (_) {}
-    throw e;
-  }
-}
-
 // getFull cache – in-memory storage with TTL based on uniqueHeaderID
 const getFullCache = new Map(); // Map<uniqueKey, { data, timestamp }>
 let getFullCacheCleanupTimer = null;
