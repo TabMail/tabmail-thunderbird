@@ -15,8 +15,8 @@
  * instead of the thread-card row.
  */
 
-// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
-// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
 var TM_MESSAGE_HEADER_CHIP_DEBUG = false;
 function tmMessageHeaderChipDebugLog(...args) { if (TM_MESSAGE_HEADER_CHIP_DEBUG) console.log(...args); }
 

@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
-// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
 var TM_PREFS_DEBUG = false;
 function tmPrefsDebugLog(...args) { if (TM_PREFS_DEBUG) console.log(...args); }
 
@@ -510,7 +510,7 @@ var tmPrefs = class extends ExtensionCommonTMPrefs.ExtensionAPI {
                 typeVal = ServicesTMPrefs.prefs.getCharPref(k); 
                 tmPrefsDebugLog(`[TMDBG Prefs] Server type: ${k} = ${typeVal}`);
               } catch (e) { 
-                tmPrefsDebugLog(`[TMDBG Prefs] Failed to get server type for ${k}:`, e);
+                console.warn(`[TMDBG Prefs] Failed to get server type for ${k}:`, e);
                 continue; 
               }
               if (typeVal !== "imap") {

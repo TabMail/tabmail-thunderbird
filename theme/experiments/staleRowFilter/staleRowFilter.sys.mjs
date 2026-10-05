@@ -15,8 +15,8 @@
  * Uses unique variable names with _SRF suffix to avoid collisions.
  */
 
-// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
-// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
 var STALE_ROW_FILTER_DEBUG = false;
 function staleRowFilterDebugLog(...args) { if (STALE_ROW_FILTER_DEBUG) console.log(...args); }
 
@@ -34,6 +34,13 @@ const LOG_PREFIX_SRF = "[StaleRowFilter]";
 function srfLog(...args) {
   try {
     staleRowFilterDebugLog(LOG_PREFIX_SRF, ...args);
+  } catch (_) {}
+}
+
+// Failures stay visible in shipped builds.
+function srfWarn(...args) {
+  try {
+    console.warn(LOG_PREFIX_SRF, ...args);
   } catch (_) {}
 }
 
@@ -233,7 +240,7 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
             }
           }
         } catch (eRead) {
-          srfLog(`Failed to mark read: ${eRead}`);
+          srfWarn(`Failed to mark read: ${eRead}`);
         }
 
         // Attempt delete
@@ -251,10 +258,10 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
             }
           }
         } catch (eDelete) {
-          srfLog(`Failed to delete stale message: ${eDelete}`);
+          srfWarn(`Failed to delete stale message: ${eDelete}`);
         }
       } catch (e) {
-        srfLog(`markStaleMessageReadAndDelete error: ${e}`);
+        srfWarn(`markStaleMessageReadAndDelete error: ${e}`);
       }
     }
 
@@ -282,7 +289,7 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
           }
         }
       } catch (e) {
-        srfLog(`scanAndProcessStaleRows error: ${e}`);
+        srfWarn(`scanAndProcessStaleRows error: ${e}`);
       }
     }
 
@@ -325,7 +332,7 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
           }
         }
       } catch (e) {
-        srfLog(`handleSelectionChange error: ${e}`);
+        srfWarn(`handleSelectionChange error: ${e}`);
       }
     }
 
@@ -430,7 +437,7 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
 
         srfLog("Window setup complete");
       } catch (e) {
-        srfLog(`setupWindow error: ${e}`);
+        srfWarn(`setupWindow error: ${e}`);
       }
     }
 
@@ -471,7 +478,7 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
           delete contentWin.__tmSRF_folderHandler;
         }
       } catch (e) {
-        srfLog(`teardownDocument error: ${e}`);
+        srfWarn(`teardownDocument error: ${e}`);
       }
     }
 
@@ -511,7 +518,7 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
           }
         }
       } catch (e) {
-        srfLog(`cleanup error: ${e}`);
+        srfWarn(`cleanup error: ${e}`);
       }
 
       try {
@@ -531,7 +538,7 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
           srfLog("═══ init() called ═══");
           
           if (!Services_SRF?.wm) {
-            srfLog("Services.wm not available!");
+            srfWarn("Services.wm not available!");
             return;
           }
           
@@ -573,7 +580,7 @@ var staleRowFilter = class extends ExtensionCommon_SRF.ExtensionAPI {
             });
             _windowListenerRegistered_SRF = true;
           } catch (e) {
-            srfLog(`Failed to register window listener: ${e}`);
+            srfWarn(`Failed to register window listener: ${e}`);
           }
           
           srfLog("✓ Initialization complete");

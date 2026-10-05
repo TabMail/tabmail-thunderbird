@@ -199,7 +199,7 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 - **[Full 24-API inventory, the upstream process, and the Tier A/B/C verdicts](Companion/Memory/Current/027-experiment-api-inventory-upstream-candidacy.md)** — the design-principle filter (high-level, no Thunderbird-specific detail, no magic numbers) is the real gate. Tier A: `glodaSearch`, `tmCalendar`, `tmHdr` flags, `threadMessages`, `messageSelection`, `tmMsgNotify`.
 
 ### Liveness sweep verdicts (2026-06-18, evidence-backed)
-- **[Per-experiment DEAD/KEEP/LIVE verdicts with evidence](Companion/Memory/Current/028-experiment-liveness-sweep-verdicts-2026-06-18.md)** — `threadTooltip`/`threadMessages` DEAD; `tmWebFetch` **KEEP** (an earlier "REPLACEABLE" verdict was WRONG — arbitrary-URL CORS bypass + `describeNetworkError()`); `glodaSearch` LIVE (native FTS stores no `References`/`In-Reply-To`); `staleRowFilter` KEEP pending TB 145 evidence.
+- **[Per-experiment DEAD/KEEP/LIVE verdicts with evidence](Companion/Memory/Current/028-experiment-liveness-sweep-verdicts-2026-06-18.md)** — `threadTooltip`/`threadMessages` DEAD; `tmWebFetch` **KEEP** (an earlier "REPLACEABLE" verdict was WRONG — arbitrary-URL CORS bypass + `describeNetworkError()`); `glodaSearch` LIVE (native FTS stores no `References`/`In-Reply-To`); `staleRowFilter` KEEP pending TB 145 evidence (watch it with `STALE_ROW_FILTER_DEBUG = true`).
 
 ## Knowledge Gaps
 

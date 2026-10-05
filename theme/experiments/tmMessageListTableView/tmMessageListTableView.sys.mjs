@@ -18,8 +18,8 @@
  * other experiments.
  */
 
-// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
-// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
 var TM_MESSAGE_LIST_TABLE_VIEW_DEBUG = false;
 function tmMessageListTableViewDebugLog(...args) { if (TM_MESSAGE_LIST_TABLE_VIEW_DEBUG) console.log(...args); }
 
@@ -340,7 +340,7 @@ var tmMessageListTableView = class extends ExtensionCommon_MLTV.ExtensionAPIPers
         if (typeof proto.fillRow !== "function") {
           if (logCount_MLTV < CONFIG_MLTV.maxLogs) {
             logCount_MLTV++;
-            tmMessageListTableViewDebugLog(`${LOG_PREFIX_MLTV} ThreadRow.fillRow not found, listing properties:`,
+            console.warn(`${LOG_PREFIX_MLTV} ThreadRow.fillRow not found, listing properties:`,
               Object.getOwnPropertyNames(proto).slice(0, 15));
           }
           return false;

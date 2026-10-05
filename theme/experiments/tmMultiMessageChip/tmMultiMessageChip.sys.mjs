@@ -33,8 +33,8 @@
  *      to catch list-rebuild on selection change. See §4.4 trigger 3.
  */
 
-// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
-// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
 var TM_MULTI_MESSAGE_CHIP_DEBUG = false;
 function tmMultiMessageChipDebugLog(...args) { if (TM_MULTI_MESSAGE_CHIP_DEBUG) console.log(...args); }
 

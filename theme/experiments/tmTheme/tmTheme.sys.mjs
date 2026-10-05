@@ -31,8 +31,8 @@
  * the separate tmMessageList experiment for maintainability.
  */
 
-// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
-// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
 var TM_THEME_DEBUG = false;
 function tmThemeDebugLog(...args) { if (TM_THEME_DEBUG) console.log(...args); }
 
@@ -273,7 +273,7 @@ var tmTheme = class extends ExtensionCommonTM.ExtensionAPI {
             tmThemeDebugLog("[TabMail Theme] ✓ Unregistered old AGENT_SHEET after successful swap");
           }
         } catch (e) {
-          tmThemeDebugLog("[TabMail Theme] Could not unregister old AGENT_SHEET after swap:", e);
+          console.warn("[TabMail Theme] Could not unregister old AGENT_SHEET after swap:", e);
         }
       }
     }

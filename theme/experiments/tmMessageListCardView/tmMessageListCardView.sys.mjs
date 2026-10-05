@@ -11,8 +11,8 @@
  * - Event-driven architecture with fillRow prototype patching
  */
 
-// Diagnostic console.log output; off in shipped builds (root CLAUDE.md General Development Rule 12).
-// `var` so a hot reload that re-evaluates this script cannot throw a redeclaration error.
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
 var TM_MESSAGE_LIST_CARD_VIEW_DEBUG = false;
 function tmMessageListCardViewDebugLog(...args) { if (TM_MESSAGE_LIST_CARD_VIEW_DEBUG) console.log(...args); }
 
@@ -1279,7 +1279,7 @@ var tmMessageListCardView = class extends ExtensionCommon_MLCV.ExtensionAPIPersi
 
         // Check for fillRow method (this is what TB uses to populate cards)
         if (typeof proto.fillRow !== "function") {
-          tmMessageListCardViewDebugLog(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard.fillRow not found`);
+          console.warn(`${CARD_SENDER_CONFIG_MLCV.logPrefix} ThreadCard.fillRow not found`);
           return false;
         }
 
