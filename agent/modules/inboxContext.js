@@ -4,6 +4,7 @@
 
 import { formatTimestampForAgent } from "../../chat/modules/helpers.js";
 import { accountIdOfMsgId, getAttachmentRepairedAccounts } from "../../fts/attachmentFlags.js";
+import { ftsRequest } from "../../fts/ftsRequest.js";
 import { ACTIONS, getActionForWeId } from "./actionCache.js";
 import { SETTINGS } from "./config.js";
 import { isInboxFolder } from "./folderUtils.js";
@@ -290,11 +291,7 @@ async function _getAttachmentFlags(entries) {
   if (fromIndex.length > 0) {
     try {
       const msgIds = fromIndex.map(i => entries[i].uniqueId);
-      const { ftsSearch, isFtsEngineInitialized } = await import("../../fts/engine.js");
-      // Only the background owns the helper; the chat window asks it.
-      const res = isFtsEngineInitialized()
-        ? await ftsSearch.getAttachmentFlags(msgIds)
-        : await browser.runtime.sendMessage({ type: "fts", cmd: "getAttachmentFlags", msgIds });
+      const res = await ftsRequest("getAttachmentFlags", { msgIds }, ({ ftsSearch }) => ftsSearch.getAttachmentFlags(msgIds));
       if (!Array.isArray(res?.flags)) throw new Error(res?.error || "no flags in the response");
       fromIndex.forEach((entryIdx, k) => {
         if (typeof res?.flags?.[k] === "boolean") flags[entryIdx] = res.flags[k];
