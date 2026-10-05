@@ -184,6 +184,13 @@ describe('buildInboxContext attachment flags from the index', () => {
     expect(getHasAttachmentBulk).toHaveBeenCalledWith([2]);
   });
 
+  it('keeps the index\'s flags when Thunderbird\'s read fails, and reports only the unanswered email unknown', async () => {
+    ftsSearch.getAttachmentFlags.mockResolvedValue({ ok: true, flags: [true, null, false] });
+    getHasAttachmentBulk.mockRejectedValue(new Error('boom'));
+    expect(await flags()).toEqual([[1, true], [2, null], [3, false]]);
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([2]);
+  });
+
   it('reports unknown, not no, for an email neither the index nor Thunderbird can answer', async () => {
     ftsSearch.getAttachmentFlags.mockResolvedValue({ ok: true, flags: [true, null, null] });
     getHasAttachmentBulk.mockResolvedValue([null, false]);
