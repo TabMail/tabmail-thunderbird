@@ -24,10 +24,12 @@ function createExperiment(headers, messageManager = { get: vi.fn((id) => headers
     } },
     console: { log: vi.fn(), error: vi.fn(), warn: vi.fn() },
     Ci: { nsMsgMessageFlags: FLAGS },
+    // No open 3-pane windows: a row repaint walks an empty window list.
+    Services: { wm: { getEnumerator: () => ({ hasMoreElements: () => false }) } },
   };
   vm.runInNewContext(`${source}\nglobalThis.Experiment = tmHdr;`, sandbox);
   const api = new sandbox.Experiment().getAPI({ extension: { messageManager } }).tmHdr;
-  return { api, messageManager };
+  return { api, messageManager, console: sandbox.console };
 }
 
 describe('tmHdr.getHasAttachmentBulk', () => {
@@ -92,5 +94,30 @@ describe.each([
   it('returns an empty list for a non-array argument', async () => {
     const { api } = createExperiment({});
     expect(await api[fn](null)).toEqual([]);
+  });
+});
+
+describe('tmHdr logging', () => {
+  it('logs nothing in a shipped build when messages are gone', async () => {
+    const { api, console } = createExperiment({ 7: { flags: FLAGS.Attachment } });
+    expect(await api.getHasAttachmentBulk([5, 7, 6])).toEqual([null, true, null]);
+    expect(console.log).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('logs nothing in a shipped build when a row is repainted for a new action', async () => {
+    const hdr = { flags: 0, messageKey: 3, folder: { URI: 'imap://user@example.com/INBOX' }, setStringProperty: vi.fn() };
+    const { api, console } = createExperiment({ 7: hdr });
+    expect(await api.setAction(7, 'reply')).toBe(true);
+    expect(hdr.setStringProperty).toHaveBeenCalledWith('tm-action', 'reply');
+    expect(console.log).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('still warns when a header cannot be read', async () => {
+    const messageManager = { get: vi.fn(() => { throw new Error('boom'); }) };
+    const { api, console } = createExperiment({}, messageManager);
+    expect(await api.getHasAttachmentBulk([7])).toEqual([null]);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('header read failed'), 7, expect.any(Error));
   });
 });
