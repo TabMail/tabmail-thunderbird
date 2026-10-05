@@ -58,6 +58,7 @@ describe("native FTS unsupported helper state propagation", () => {
 
     const port = makeNativePort("0.10.1");
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => "/test/profile/browser-extension-data/thunderbird@tabmail.ai" },
       runtime: {
         connectNative: vi.fn(() => port),
         getManifest: vi.fn(() => ({ version: "1.7.2" })),

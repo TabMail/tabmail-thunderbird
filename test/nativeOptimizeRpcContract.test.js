@@ -48,6 +48,7 @@ async function initializedNativeSearch(optimizeResult) {
   vi.resetModules();
   const port = makeNativePort(optimizeResult);
   globalThis.browser = {
+    tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
     runtime: {
       connectNative: vi.fn(() => port),
       getManifest: vi.fn(() => ({

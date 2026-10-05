@@ -633,13 +633,17 @@ async function _initNativeFtsOnce() {
       return true;
     }
     
-    // Initialize the native helper
-    // The helper auto-detects TB profile and handles migration from old location
-    const manifest = browser.runtime.getManifest();
-    const addonId = manifest.browser_specific_settings?.gecko?.id || "thunderbird@tabmail.ai";
+    // Name this profile's data directory. Without profilePath the helper
+    // guesses the most recently modified profile, so with two profiles in use
+    // one would reconcile against, and remove rows from, the other's index.
+    // Every supported helper honors profilePath; never init without it.
+    const profilePath = await browser.tmMsgNotify.getFtsDataDir();
+    if (!profilePath) {
+      throw new Error("FTS data directory unavailable");
+    }
     const initResult = await nativeRPC(
       'init',
-      { addonId },
+      { profilePath },
       { bootstrapPhase: "init", expectedState: connectedReadyState },
     );
     log(`[TMDBG FTS] DB initialized at: ${initResult.dbPath}`);
@@ -802,10 +806,6 @@ async function nativeRPC(
  * FTS API - same interface as before but using native helper
  */
 export const nativeFtsSearch = {
-  async init() {
-    return nativeRPC('init', {});
-  },
-  
   // `wire.withFolderIds` reports whether the rows were sent with their
   // folderIds (the membership ledger's attribution depends on it).
   async indexBatch(rows, wire = null) {

@@ -48,6 +48,14 @@
     ],
     "functions": [
       {
+        "name": "getFtsDataDir",
+        "type": "function",
+        "description": "This profile's data directory for the native FTS helper.",
+        "async": true,
+        "parameters": [],
+        "returns": { "type": "string" }
+      },
+      {
         "name": "beginFolderMessageScan",
         "type": "function",
         "description": "Begin an opaque live msgDB header scan whose pages are bounded by readFolderMessageScanPage.",

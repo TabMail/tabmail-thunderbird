@@ -37,6 +37,7 @@ function makeNativePort() {
 function freshContext() {
   vi.resetModules();
   globalThis.browser = {
+    tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
     runtime: {
       connectNative: vi.fn(() => makeNativePort()),
       getManifest: vi.fn(() => ({ version: '1.7.2', browser_specific_settings: { gecko: { id: 'thunderbird@tabmail.ai' } } })),
