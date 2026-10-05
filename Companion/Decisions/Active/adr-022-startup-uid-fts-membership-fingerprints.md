@@ -119,8 +119,11 @@ follows it. When the reused proof is the verify-phase proof that scan admitted, 
 the native side is that continuing session, never the cached `initial` result. Local events release the
 proof; the session stamp covers the folder's local scope and native epoch; a completed digest leaves no
 session, so a proof pinned across a drain is rescanned by the next attempt. The identity bracket on this
-path spans turns (this turn's opening `getFolderState` against the closing read); an unsignalled msgDB
-change while the digest pages is seen by the next walk. Cost: one fresh msgDB scan per verification attempt
+path spans turns: the closing read is compared with this turn's opening `getFolderState`, so the proof
+continues only when it was scanned from the msgDB incarnation this turn opened (the proof entry stores its
+`incarnationToken`). A msgDB replaced with no event while the digest pages therefore forces a fresh scan
+instead of being certified under the replacement's token, which would let every later walk take the UID-only
+tier over the old Message-IDs. Other unsignalled msgDB changes while the digest pages are seen by the next walk. Cost: one fresh msgDB scan per verification attempt
 plus one per invalidation, instead of one per owner-listing page.
 
 **Amendment (2026-10-05, msgDB residency):** the reconciler does not release msgDBs itself. Residency stays

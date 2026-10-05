@@ -9596,6 +9596,41 @@ describe('startup walk, walk obligations and rolling re-walk (exact mode)', () =
       expect(installed.nativeRows.get(B1)).toBe(b.folderId);
     });
   });
+
+  // INVARIANT: a folder is certified only from a msgDB snapshot of the
+  // incarnation its closing read sees. A msgDB replaced with no event (same
+  // UIDs, another Message-ID) while a multi-page verification's fresh digest
+  // pages must not be certified under the new token, or every later walk
+  // takes the UID-only tier and never indexes the replacement's message.
+  it('indexes a message from a msgDB replaced without an event while the fresh digest pages', async () => {
+    const ids = Array.from({ length: reconConfig.membershipListPageSize * 2 + 10 },
+      (_, i) => `p-${String(i).padStart(4, '0')}@example.com`);
+    const { fts, folders, tokens, rowsByURI, nativeRows } = installTokenFolders([{ folderPath: '/A', headerMessageIds: ids }]);
+    const uri = folders[0].folderURI;
+    const newKey = 'account1:/A:swapped@example.com';
+    const oldKey = `account1:/A:${ids[0]}`;
+    const state = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let swapped = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath, options) => {
+      if (!swapped && folderPath === '/A' && options?.ensureIncarnationToken === true
+          && _testExports._getFolderReconWorkingProofTelemetry().phase === 'verify') {
+        // A later turn's opening read: Repair Folder replaced the msgDB.
+        swapped = true;
+        tokens.set(uri, 'replacement-incarnation');
+        rowsByURI.get(uri)[0].headerMessageId = 'swapped@example.com';
+      }
+      return state(accountId, folderPath, options);
+    });
+    await settleWithDrain(fts, nativeRows, folders[0].folderId, 0);
+    expect(swapped).toBe(true);
+    // Later startups: the stored token matches the replacement.
+    for (let restart = 0; restart < 2; restart++) {
+      restartSession();
+      await settleWithDrain(fts, nativeRows, folders[0].folderId, 60 * 60_000);
+    }
+    expect(nativeRows.has(newKey)).toBe(true);
+    expect(nativeRows.has(oldKey)).toBe(false);
+  });
 });
 
 describe('capability-keyed quiet veto (sustained sync traffic)', () => {

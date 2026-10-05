@@ -2829,6 +2829,8 @@ function _admitFolderReconActiveProof(
     accountId: f.accountId,
     folderPath: f.folderPath,
     folderURI: f.folderURI,
+    // The msgDB incarnation the snapshot was scanned from.
+    incarnationToken: f.incarnationToken,
     serverType: snapshot.serverType || f.serverType || "",
     stableUidKeys: snapshot.stableUidKeys === true,
     uidValidity: snapshot.uidValidity,
@@ -4365,9 +4367,14 @@ async function _runFolderReconcile(
       // The verify-phase proof is the fresh scan an earlier turn took for
       // the native digest still paging; while that digest's stamp is
       // current, no event released the proof and no write touched the
-      // folder, so it stays the fresh side instead of being rescanned.
+      // folder, so it stays the fresh side instead of being rescanned. It
+      // must come from the msgDB incarnation this turn opened: the closing
+      // read is compared with this turn's opening read only, so a msgDB
+      // replaced with no event is rescanned rather than certified under the
+      // new token.
       const continuesFreshDigest = expected.fromWorkingProof === true
         && expected.proofGuard?.entry?.phase === "verify"
+        && expected.proofGuard.entry.incarnationToken === f.incarnationToken
         && membershipMode.exact
         && _folderMembershipDigestInProgress(f, "fresh_after_working");
       if (continuesFreshDigest) {
