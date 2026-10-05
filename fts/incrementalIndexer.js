@@ -5941,7 +5941,7 @@ function _folderReconBackoffWaitDelay(notBeforeMs) {
 }
 
 // Rejected page mutations delay the next state page exponentially; folder
-// turns continue meanwhile. A committed page or a new pass resets it.
+// turns continue meanwhile. A new pass resets it.
 function _deferFolderMembershipStatePassAfterFailure(pass) {
   pass.mutationFailures++;
   pass.notBeforeMs = Date.now() + Math.min(
@@ -6273,7 +6273,7 @@ async function _runFolderMembershipMigrationSlice(
     return null;
   };
   let commitFailure;
-  let markRemovalFolders = () => {};
+  let markRemovalFolders;
   if (staleOrphans.length === 0) {
     commitFailure = await commitPage(null);
   } else {
@@ -6324,7 +6324,6 @@ async function _runFolderMembershipMigrationSlice(
     }
     return commitFailure;
   }
-  pass.mutationFailures = 0;
   pass.passUnresolved += unresolved;
   pass.unloaded += unloadedAccountRowsKept;
   pass.afterMsgId = processed > 0 ? entries[processed - 1].msgId : pass.afterMsgId;
