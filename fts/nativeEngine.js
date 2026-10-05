@@ -846,7 +846,7 @@ export const nativeFtsSearch = {
   },
 
   // Each msgId's stored attachment flag, in order: true / false, or null when not indexed.
-  // Reads no bodies. Older helpers reject with "Unknown reader method".
+  // Reads no bodies. Older helpers reject with "Unknown method: getAttachmentFlags".
   async getAttachmentFlags(msgIds) {
     return nativeRPC('getAttachmentFlags', { msgIds });
   },

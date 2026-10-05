@@ -5,7 +5,8 @@
 // buildInboxContext takes each email's attachment flag from the FTS index when its account's rows
 // were repaired, and otherwise from Thunderbird's message database (tmHdr.getHasAttachmentBulk by
 // WebExtension id); MessageHeader has no attachment field. A flag it cannot read is null
-// ("unknown"), never false.
+// ("unknown"), never false. The background owns the native helper, so it reads the index directly;
+// any other page (the chat window) asks the background over the {type: "fts"} runtime channel.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -19,11 +20,14 @@ vi.mock('../agent/modules/folderUtils.js', () => ({ isInboxFolder: (f) => f.path
 vi.mock('../agent/modules/summaryGenerator.js', () => ({ getSummary: vi.fn(async () => null) }));
 vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
-  getUniqueMessageKey: vi.fn(async (m) => `account1:/INBOX:${m.headerMessageId}`),
+  getUniqueMessageKey: vi.fn(async (m) => `${m.folder.accountId}:/INBOX:${m.headerMessageId}`),
 }));
 
-const ftsSearch = vi.hoisted(() => ({ getAttachmentFlags: vi.fn() }));
-vi.mock('../fts/engine.js', () => ({ ftsSearch }));
+const { ftsSearch, isFtsEngineInitialized } = vi.hoisted(() => ({
+  ftsSearch: { getAttachmentFlags: vi.fn() },
+  isFtsEngineInitialized: vi.fn(),
+}));
+vi.mock('../fts/engine.js', () => ({ ftsSearch, isFtsEngineInitialized }));
 
 const { getActionForWeId } = await import('../agent/modules/actionCache.js');
 const { log } = await import('../agent/modules/utils.js');
@@ -55,7 +59,9 @@ beforeEach(() => {
   messages = [message(1, 1), message(2, 2), message(3, 3)];
   storage = {};
   ftsSearch.getAttachmentFlags.mockImplementation(async (ids) => ({ ok: true, flags: ids.map(() => null) }));
+  isFtsEngineInitialized.mockReturnValue(true);
   globalThis.browser = {
+    runtime: { sendMessage: vi.fn() },
     storage: { local: { get: vi.fn(async (k) => (k in storage ? { [k]: storage[k] } : {})) } },
     accounts: { list: vi.fn(async () => [{ id: 'account1', name: 'A', rootFolder: { id: 'account1://' } }]) },
     folders: { getSubFolders: vi.fn(async () => [INBOX]) },
@@ -144,7 +150,7 @@ describe('buildInboxContext attachment flags from the index', () => {
   });
 
   it('asks Thunderbird for every email when the index read fails, as with a helper too old to answer', async () => {
-    ftsSearch.getAttachmentFlags.mockRejectedValue(new Error('Unknown reader method: getAttachmentFlags'));
+    ftsSearch.getAttachmentFlags.mockRejectedValue(new Error('Unknown method: getAttachmentFlags'));
     getHasAttachmentBulk.mockResolvedValue([true, false, true]);
     expect(await flags()).toEqual([[1, true], [2, false], [3, true]]);
     expect(getHasAttachmentBulk).toHaveBeenCalledWith([1, 2, 3]);
@@ -169,10 +175,56 @@ describe('buildInboxContext attachment flags from the index', () => {
     expect(ftsSearch.getAttachmentFlags).toHaveBeenCalledWith([key(2), key(3)]);
   });
 
+  it('reads the index only for the recorded account\'s emails and puts each flag on its own email', async () => {
+    messages[1] = { ...messages[1], folder: { ...INBOX, accountId: 'account2' } };
+    ftsSearch.getAttachmentFlags.mockResolvedValue({ ok: true, flags: [true, false] });
+    getHasAttachmentBulk.mockResolvedValue([true]);
+    expect(await flags()).toEqual([[1, true], [2, true], [3, false]]);
+    expect(ftsSearch.getAttachmentFlags).toHaveBeenCalledWith([key(1), key(3)]);
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([2]);
+  });
+
   it('reports unknown, not no, for an email neither the index nor Thunderbird can answer', async () => {
     ftsSearch.getAttachmentFlags.mockResolvedValue({ ok: true, flags: [true, null, null] });
     getHasAttachmentBulk.mockResolvedValue([null, false]);
     expect(await flags()).toEqual([[1, true], [2, null], [3, false]]);
     expect(getHasAttachmentBulk).toHaveBeenCalledWith([2, 3]);
+  });
+});
+
+describe('buildInboxContext attachment flags from the index, outside the background', () => {
+  const key = (n) => `account1:/INBOX:m${n}@example.com`;
+  beforeEach(() => {
+    storage.fts_attachment_repaired_accounts = ['account1'];
+    isFtsEngineInitialized.mockReturnValue(false);
+  });
+
+  it('asks the background for the flags and never calls the helper itself', async () => {
+    browser.runtime.sendMessage.mockResolvedValue({ ok: true, flags: [true, false, null] });
+    getHasAttachmentBulk.mockResolvedValue([true]);
+    expect(await flags()).toEqual([[1, true], [2, false], [3, true]]);
+    expect(browser.runtime.sendMessage).toHaveBeenCalledWith({
+      type: 'fts', cmd: 'getAttachmentFlags', msgIds: [key(1), key(2), key(3)],
+    });
+    expect(ftsSearch.getAttachmentFlags).not.toHaveBeenCalled();
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([3]);
+  });
+
+  it.each([
+    ['answers an error', { error: 'Unknown method: getAttachmentFlags' }],
+    ['does not answer', undefined],
+  ])('asks Thunderbird for every email when the background %s', async (_label, answer) => {
+    browser.runtime.sendMessage.mockResolvedValue(answer);
+    getHasAttachmentBulk.mockResolvedValue([true, false, true]);
+    expect(await flags()).toEqual([[1, true], [2, false], [3, true]]);
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([1, 2, 3]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('index attachment flags failed'), 'warn');
+  });
+
+  it('asks Thunderbird for every email when the background cannot be reached', async () => {
+    browser.runtime.sendMessage.mockRejectedValue(new Error('Could not establish connection. Receiving end does not exist.'));
+    getHasAttachmentBulk.mockResolvedValue([false, true, false]);
+    expect(await flags()).toEqual([[1, false], [2, true], [3, false]]);
+    expect(getHasAttachmentBulk).toHaveBeenCalledWith([1, 2, 3]);
   });
 });

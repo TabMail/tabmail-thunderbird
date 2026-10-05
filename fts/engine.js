@@ -167,6 +167,9 @@ function attachCommandInterface() {
             case "debugSample":
               sendResponse(await ftsSearch.debugSample());
               return;
+            case "getAttachmentFlags":
+              sendResponse(await ftsSearch.getAttachmentFlags(msg.msgIds || []));
+              return;
             case "getMessageByMsgId": {
               const { msgId } = msg;
               try {
@@ -553,6 +556,14 @@ async function _initFtsEngineOnce() {
 // (toolbar badge / popup banner / settings CTA). Reads the availability tracked
 // by initNativeFts() during startup. Returns null (unknown / not yet attempted),
 // true (helper present), or false (helper missing).
+// True in the context whose initFtsEngine succeeded: the background, which owns the native
+// helper's port. Any other page imports its own copy of this module (false here) and must ask the
+// background over the {type: "fts"} runtime channel; calling ftsSearch there would start a second
+// helper process.
+export function isFtsEngineInitialized() {
+  return _inited;
+}
+
 export function getFtsHelperAvailable() {
   return nativeFtsSearch.getHostAvailability();
 }

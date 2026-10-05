@@ -289,8 +289,13 @@ async function _getAttachmentFlags(entries) {
   });
   if (fromIndex.length > 0) {
     try {
-      const { ftsSearch } = await import("../../fts/engine.js");
-      const res = await ftsSearch.getAttachmentFlags(fromIndex.map(i => entries[i].uniqueId));
+      const msgIds = fromIndex.map(i => entries[i].uniqueId);
+      const { ftsSearch, isFtsEngineInitialized } = await import("../../fts/engine.js");
+      // Only the background owns the helper; the chat window asks it.
+      const res = isFtsEngineInitialized()
+        ? await ftsSearch.getAttachmentFlags(msgIds)
+        : await browser.runtime.sendMessage({ type: "fts", cmd: "getAttachmentFlags", msgIds });
+      if (!Array.isArray(res?.flags)) throw new Error(res?.error || "no flags in the response");
       fromIndex.forEach((entryIdx, k) => {
         if (typeof res?.flags?.[k] === "boolean") flags[entryIdx] = res.flags[k];
       });
