@@ -137,6 +137,7 @@ const {
   resolveUniqueMessageKey,
 } = await import('../agent/modules/utils.js');
 const { buildBatchHeader, populateBatchBody } = await import('../fts/indexer.js');
+const { logFtsBatchOperation } = await import('../agent/modules/eventLogger.js');
 const {
   _resetFtsOperationCoordinatorForTests,
   acquireFtsExclusiveOperation,
@@ -6100,6 +6101,46 @@ describe('membership summary instead of the full state walk', () => {
     expect(pass).toMatchObject({ completed: true, unloaded: 0 });
     expect(pass.completedAtMs).toBeGreaterThan(0);
     expect(_testExports._getFolderReconRuntimeTelemetry().membershipSummaryCutovers).toBe(1);
+  });
+
+  it('logs the summary\'s wall time and aggregate counts with no identifiers', async () => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+      { folderPath: '/B', headerMessageIds: ['b@example.com'] },
+    ]);
+    nativeRows.set('account2:/Inbox:cold@example.com', makeFolderMembershipId('account2', '/Inbox'));
+    const summary = enableMembershipSummary(fts, nativeRows, {
+      during: async () => { vi.setSystemTime(Date.now() + 1234); },
+    });
+    logFtsBatchOperation.mockClear();
+    await tickUntil(fts, () => summary.mock.calls.length > 0 && cleanupProven(), 40);
+
+    const logged = logFtsBatchOperation.mock.calls.filter(([, status]) => status === 'membership_summary');
+    expect(logged).toEqual([['folder_recon', 'membership_summary', {
+      elapsedMs: 1234,
+      folders: 2,
+      ownerlessRows: 0,
+      strayTrustedRows: 0,
+      strayUntrustedRows: 1,
+    }]]);
+  });
+
+  it('logs a failed summary\'s wall time', async () => {
+    const { fts, nativeRows } = seedMigratedExactFolders([
+      { folderPath: '/A', headerMessageIds: ['a@example.com'] },
+    ]);
+    const summary = enableMembershipSummary(fts, nativeRows);
+    summary.mockImplementation(async () => {
+      vi.setSystemTime(Date.now() + 60_000);
+      throw new Error('Native RPC timeout: folderMembershipSummary');
+    });
+    logFtsBatchOperation.mockClear();
+    await tickUntil(fts, () => summary.mock.calls.length > 0, 20);
+
+    expect(logFtsBatchOperation).toHaveBeenCalledWith('folder_recon', 'membership_summary_failed', {
+      elapsedMs: 60_000,
+      error: 'Error: Native RPC timeout: folderMembershipSummary',
+    });
   });
 
   it('keeps cleanup complete across ticks with one summary and reaches session completion', async () => {

@@ -5535,6 +5535,7 @@ async function _runFolderMembershipMigrationSlice(
     // cannot vouch for goes to the walk from the next pass turn.
     pass.summaryTried = true;
     _consumeFolderMembershipPageBudget();
+    const summaryStartedMs = Date.now();
     let summary;
     try {
       summary = await ftsSearch.folderMembershipSummary(
@@ -5542,10 +5543,22 @@ async function _runFolderMembershipMigrationSlice(
         [..._folderReconTrustedAccountIds(validIdentities)],
       );
     } catch (error) {
+      // Aggregate-only: the call's wall time against nativeRpcTimeoutMs.
+      logFtsBatchOperation("folder_recon", "membership_summary_failed", {
+        elapsedMs: Date.now() - summaryStartedMs,
+        error: String(error),
+      });
       _assertFolderReconLease(reconcileLease, generation);
       _bumpFolderReconTelemetry("membershipSummaryFallbacks");
       return { complete: false, failed: true, reason: "membership_summary_failed", error: String(error) };
     }
+    logFtsBatchOperation("folder_recon", "membership_summary", {
+      elapsedMs: Date.now() - summaryStartedMs,
+      folders: distinctFolderIds.size,
+      ownerlessRows: summary.ownerlessRows,
+      strayTrustedRows: summary.strayTrustedRows,
+      strayUntrustedRows: summary.strayUntrustedRows,
+    });
     _assertFolderReconLease(reconcileLease, generation);
     if (summary.ownerlessRows > 0 || summary.strayTrustedRows > 0) {
       _bumpFolderReconTelemetry("membershipSummaryFallbacks");

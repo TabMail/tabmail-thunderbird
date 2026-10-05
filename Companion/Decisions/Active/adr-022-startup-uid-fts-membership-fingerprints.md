@@ -122,3 +122,11 @@ session, so a proof pinned across a drain is rescanned by the next attempt. The 
 path spans turns (this turn's opening `getFolderState` against the closing read); an unsignalled msgDB
 change while the digest pages is seen by the next walk. Cost: one fresh msgDB scan per verification attempt
 plus one per invalidation, instead of one per owner-listing page.
+
+**Amendment (2026-10-05, msgDB residency):** the reconciler does not release msgDBs itself. Residency stays
+with Thunderbird's msgDB cache manager: at most `mail.db.max_open` open databases after each 60 s sweep,
+with large databases evicted last. Reconciliation opens one folder at a time, and a stale-entry or
+ownerless-row presence recheck opens only its own folder (ADR-017's folder-scoped recheck), never every
+folder of the profile. A reconciler-specific release would make the user's next visit to a large folder
+re-parse it; whether Thunderbird's own bound is enough for the reported memory growth is the owner's call
+after a live-profile measurement.

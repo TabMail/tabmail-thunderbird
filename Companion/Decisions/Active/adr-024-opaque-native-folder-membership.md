@@ -105,3 +105,11 @@ that pass's summary replaces the replay walk. The walk and the summary publish t
 (`_publishFolderMembershipCleanup`); the constant `startedBeforeFirst` flag is deleted. Reliance: the
 summary does not check that an in-inventory owner structurally prefixes its raw key; no writer produces
 such a row, and were one to exist that folder would stay uncertified (`folder_membership_identity_mismatch`).
+The statement above "there is no unbounded native fingerprint RPC" is amended: the summary is one unbounded
+O(rows) native read per pass on the helper's reader thread (ADR-NF-006), so user searches and the walk's
+first page queue behind it, and `nativeRpcTimeoutMs` rejects only the JS promise, not the native read. The
+trade-off is accepted because it replaces a whole-index walk of the same rows in pages. The debug event log
+records its wall time and aggregate counts; a config-valued quiet-inventory delay before it is added only if
+measured wall time approaches the timeout.
+
+
