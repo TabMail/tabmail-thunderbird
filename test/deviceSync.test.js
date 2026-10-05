@@ -3065,6 +3065,7 @@ describe('Device Sync actionConfig (compaction thresholds)', () => {
       { compact_threshold: '300', compact_threshold_chars: 32000 },
       { compact_threshold: 300 },
       { compact_threshold: 0, compact_threshold_chars: 32000 },
+      { compact_threshold: 300, compact_threshold_chars: 0 },
       { compact_threshold: 300.5, compact_threshold_chars: 32000 },
       null,
     ]) {

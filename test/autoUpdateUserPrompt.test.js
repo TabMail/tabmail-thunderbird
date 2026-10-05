@@ -536,6 +536,24 @@ describe('compactActionRulesNow', () => {
     expect(sysMsg.action_compact_threshold_chars).toBe(40000);
   });
 
+  // (a) a failed action_config read sends the current defaults, not the legacy 100 / 16,000
+  it('(a) sends the current default thresholds when reading action_config fails', async () => {
+    globalThis.browser.storage.local.get.mockImplementation(async (key) => {
+      if ([].concat(key).includes('user_prompts:action_config')) throw new Error('synthetic storage failure');
+      return {};
+    });
+    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":""}' });
+    llm.processJSONResponse.mockReturnValueOnce({ patch: '' });
+
+    await compactActionRulesNow();
+
+    expect(llm.sendChat).toHaveBeenCalledTimes(1);
+    const sysMsg = llm.sendChat.mock.calls[0][0][0];
+    expect(sysMsg.action_compact_threshold).toBe(200);
+    expect(sysMsg.action_compact_threshold_chars).toBe(32000);
+  });
+
   // (b) applies returned multi-op patch and persists
   it('(b) applies returned multi-op patch and persists; applied count = number of DEL+ADD ops', async () => {
     promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
