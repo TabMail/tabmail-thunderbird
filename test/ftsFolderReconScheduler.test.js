@@ -1673,8 +1673,14 @@ describe('cooperative folder reconcile production contracts', () => {
       ?.folders?.['account1:/Archive']?.partialRetryNotBeforeMs).toBeUndefined();
 
     getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
-    await new Promise(resolve => setTimeout(resolve, 20));
-    const resumed = await _testExports._runFolderReconSchedulerTick(fts);
+    // Real timers: the pressured slice's own duration is the inter-slice
+    // floor, so a slow (loaded) run waits longer before the next slice.
+    let resumed;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      resumed = await _testExports._runFolderReconSchedulerTick(fts);
+      if (!(resumed?.skipped && resumed.reason === 'hard_floor')) break;
+    }
     expect(resumed.foldersFailed).toBe(0);
     expect(recheckMessageInFolder.mock.calls.length).toBeGreaterThan(1);
   });
@@ -5751,22 +5757,30 @@ function seedMigratedExactFolders(specs) {
   return installExactMembershipFolders(specs, { assigned: true });
 }
 
+// Counts only ticks that did scheduler work: a tick the inter-slice floor
+// (or an in-flight wake-fired slice) skipped is not a turn, so a slow, loaded
+// event loop cannot use up the bound.
 async function tickUntil(fts, done, maxTicks = 30) {
   let result;
-  for (let turn = 0; turn < maxTicks; turn++) {
+  for (let work = 0, guard = 0; work < maxTicks && guard < 20 * maxTicks; guard++) {
     result = await settleSchedulerTickWithFakeTimers(fts);
     vi.setSystemTime(Date.now() + 100);
     if (done(result)) return result;
+    if (!isSkippedTick(result)) work++;
   }
   return result;
 }
 
 // Like tickUntil, with steps long enough that a refused row's delayed
-// unresolved replay runs within a few ticks.
-async function tickThroughUnresolvedReplay(fts, done, maxTicks = 30) {
+// unresolved replay runs within a few ticks. Counts only ticks that did
+// scheduler work, and settles a wake-fired slice still in flight before each
+// clock jump (a jump inside it would raise the hard floor by the jump).
+async function tickThroughUnresolvedReplay(fts, done, maxWorkTicks = 30) {
   let result;
-  for (let turn = 0; turn < maxTicks; turn++) {
+  for (let work = 0, guard = 0; work < maxWorkTicks && guard < 20 * maxWorkTicks; guard++) {
     result = await settleSchedulerTickWithFakeTimers(fts);
+    if (!isSkippedTick(result)) work++;
+    await settleInFlightFolderRecon();
     vi.setSystemTime(Date.now() + reconConfig.membershipUnresolvedRetryMs / 5);
     if (done(result)) return result;
   }
@@ -10170,9 +10184,13 @@ describe('ownerless-row verdicts read only their candidate folders\' events', ()
       notify[name] = slow(notify[name].getMockImplementation());
     }
     let pressuredSlices = 0;
-    for (let tick = 0; tick < 80 && !_testExports._getFolderMembershipCleanupProven(); tick++) {
+    // Counts only ticks that did scheduler work (a floor-skipped tick under a
+    // loaded event loop is not a turn).
+    for (let work = 0, guard = 0; work < 80 && guard < 1600
+      && !_testExports._getFolderMembershipCleanupProven(); guard++) {
       const result = await settleSchedulerTickWithFakeTimers(fts);
       if (JSON.stringify(result ?? null).includes('pressure')) pressuredSlices++;
+      if (!isSkippedTick(result)) work++;
       vi.setSystemTime(Date.now() + 37);
     }
 
@@ -11300,6 +11318,93 @@ describe('exact folder work before global cleanup completes', () => {
     }
     expect(sequence.slice(0, 6)).toEqual(['pass', 'folders', 'pass', 'folders', 'pass', 'folders']);
   }, 30_000);
+
+  // A pass turn whose state page meets foreground pressure every time still
+  // hands the next turn to folder work, so pressure on a long page never
+  // starves a healthy folder's repair. pressured: false is the control.
+  it.each([{ pressured: true }, { pressured: false }])('repairs a healthy folder when every state page meets pressure: pressured=$pressured', async ({ pressured }) => {
+    const installed = seedUnresolvableRowAndHealthyFolder();
+    const healthy = installed.folders[1];
+    await dropAddition(installed, healthy, 'missing@example.com');
+    const missing = 'account1:/Z:missing@example.com';
+    let pressureOnce = false;
+    getForegroundFetchPressure.mockImplementation(() => {
+      if (!pressureOnce) return { active: 0, waiting: 0, chatTyping: false };
+      pressureOnce = false;
+      return { active: 1, waiting: 0, chatTyping: false };
+    });
+    const listState = installed.fts.listFolderMembershipState.getMockImplementation();
+    installed.fts.listFolderMembershipState.mockImplementation(async (...args) => {
+      const page = await listState(...args);
+      // The next pressure check after this page sees foreground work.
+      if (pressured) pressureOnce = true;
+      return page;
+    });
+    const pressureSkipsBefore = _testExports._getFolderReconRuntimeTelemetry().schedulerPressureSkips;
+
+    try {
+      for (let turn = 0; turn < 40 && !_testExports._getPendingUpdates().has(missing); turn++) {
+        await settleSchedulerTickWithFakeTimers(installed.fts);
+        vi.setSystemTime(Date.now() + 100);
+      }
+    } finally {
+      getForegroundFetchPressure.mockReset();
+      getForegroundFetchPressure.mockReturnValue({ active: 0, waiting: 0, chatTyping: false });
+    }
+
+    expect(_testExports._getPendingUpdates().has(missing)).toBe(true);
+    expect(installed.fts.listFolderMembershipState).toHaveBeenCalled();
+    const pressureSkips = _testExports._getFolderReconRuntimeTelemetry().schedulerPressureSkips - pressureSkipsBefore;
+    if (pressured) expect(pressureSkips).toBeGreaterThan(0);
+    else expect(pressureSkips).toBe(0);
+    expect(_testExports._getFolderMembershipCleanupProven()).toBe(false);
+  }, 30_000);
+});
+
+// INVARIANT (PR 3b review): a tick decides exact versus legacy membership
+// once, before its first await. A helper whose capability arrives (hello)
+// during the tick's awaits never credits orphan/session completion that no
+// cleanup pass earned; the next tick, under the new connection, re-walks
+// and removes the stale row before completing.
+describe('a capability change inside one tick', () => {
+  afterEach(quiesceFolderReconAfterTest);
+
+  it('never credits orphan or session completion that no cleanup pass earned', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, nativeRows } = installExactMembershipFolders([
+      { folderPath: '/F', headerMessageIds: ['a@example.com'] },
+    ], { assigned: true });
+    const first = await tickUntil(fts, value => value?.complete === true);
+    expect(first).toMatchObject({ complete: true });
+    expect(_testExports._getFolderMembershipCleanupProven()).toBe(true);
+    const stale = 'account1:/Deleted:stale@example.com';
+    nativeRows.set(stale, makeFolderMembershipId('account1', '/Deleted'));
+    // A reconnect whose hello has not been answered when the tick observes
+    // capability, and is answered during the tick's scan-gate read.
+    fts.getConnectionGeneration.mockReturnValue(2);
+    let capable = false;
+    fts.supportsFolderMembership.mockImplementation(() => capable);
+    const realGet = globalThis.browser.storage.local.get.getMockImplementation();
+    globalThis.browser.storage.local.get.mockImplementation(async (...args) => {
+      const keys = [args[0]].flat();
+      if (!capable && keys.includes('fts_scan_status')) capable = true;
+      return realGet(...args);
+    });
+    fts.listFolderMembershipState.mockClear();
+
+    const flipped = await settleSchedulerTickWithFakeTimers(fts);
+
+    expect(capable).toBe(true);
+    expect(flipped?.complete).not.toBe(true);
+    expect(nativeRows.has(stale)).toBe(true);
+    // The next ticks run the cleanup pass under the new connection.
+    const healed = await tickUntil(fts, value => !nativeRows.has(stale) && value?.complete === true);
+    expect(nativeRows.has(stale)).toBe(false);
+    expect(healed).toMatchObject({ complete: true });
+    expect(fts.listFolderMembershipState).toHaveBeenCalled();
+    expect(_testExports._getFolderMembershipCleanupProven()).toBe(true);
+  });
 });
 
 // INVARIANT (PR 3b §3.2): a removal or assignment that changes a folder's

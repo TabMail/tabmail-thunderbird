@@ -6548,7 +6548,10 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
         return finishMembershipPassTurn(migration);
       }
     }
-    const exactMembership = _useExactFolderMembership(ftsSearch);
+    // Decided once, before the tick's first await: a capability that arrives
+    // during the awaits must not credit the orphan pass below without the
+    // cleanup pass this tick never ran.
+    const exactMembership = folderMembershipCapable;
     if (exactMembership) _consumeFolderReconRollingTick();
     else _folderReconRollingDueMs = 0;
     const ambiguous = exactMembership

@@ -477,6 +477,22 @@ it('removes stored legacy reconcile-pending and pending-queue keys once and keep
   state.instance.onShutdown(false);
 });
 
+// The cleanup runs before the enabled check: an install with incremental
+// indexing disabled also stops keeping the old queue's message keys.
+it('removes stored legacy keys when incremental indexing is disabled', async () => {
+  const engine = makeFtsStore([]);
+  stored.chat_ftsIncrementalEnabled = false;
+  stored.fts_reconcile_pending = Date.now() - 60_000;
+  stored.fts_pending_updates = [{ type: 'new', uniqueKey: 'synthetic:/Inbox:old@example.test' }];
+  const state = bridge();
+
+  await indexer.initIncrementalIndexer(engine);
+
+  expect(stored.fts_reconcile_pending).toBeUndefined();
+  expect(stored.fts_pending_updates).toBeUndefined();
+  state.instance.onShutdown(false);
+});
+
 it('starts normally when the legacy reconcile-pending cleanup cannot read storage', async () => {
   const engine = makeFtsStore([]);
   stored.chat_ftsIncrementalEnabled = true;
