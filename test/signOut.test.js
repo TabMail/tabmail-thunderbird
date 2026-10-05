@@ -14,6 +14,8 @@
 // - Consent and calendar state
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { parse } from "acorn";
 
 // ─── Storage Mock ────────────────────────────────────────────────────────────
 
@@ -174,6 +176,7 @@ describe("signOut security cleanup", () => {
       "device_sync_ts:templates": "2026-01-01T00:00:00Z",
       "device_sync_ts:disabledReminders": "2026-01-01T00:00:00Z",
       "device_sync_ts:taskCache": "2026-01-01T00:00:00Z",
+      "device_sync_ts:actionConfig": "2026-01-01T00:00:00Z",
     };
     setStorage({ supabaseSession: { access_token: "tok" }, ...syncKeys });
 
@@ -181,6 +184,28 @@ describe("signOut security cleanup", () => {
 
     for (const key of Object.keys(syncKeys)) {
       expect(storageData[key]).toBeUndefined();
+    }
+  });
+
+  it("clears every Device Sync field value and timestamp key, so none reaches the next account", async () => {
+    // Census from deviceSync.js itself: a newly synced field cannot be forgotten here.
+    const source = readFileSync(new URL("../agent/modules/deviceSync.js", import.meta.url), "utf8");
+    const ast = parse(source, { ecmaVersion: "latest", sourceType: "module" });
+    const objectValues = (name) => {
+      const decl = ast.body.flatMap((node) => node.type === "VariableDeclaration" ? node.declarations : [])
+        .find((d) => d.id.name === name);
+      return decl.init.properties.map((p) => p.value.value);
+    };
+    const keys = [...objectValues("FIELD_KEYS"), ...objectValues("TIMESTAMP_KEYS")];
+    expect(keys).toContain("user_prompts:action_config");
+    expect(keys).toContain("device_sync_ts:actionConfig");
+    const ts = new Date().toISOString();
+    setStorage({ supabaseSession: { access_token: "tok" }, ...Object.fromEntries(keys.map((k) => [k, ts])) });
+
+    await signOut();
+
+    for (const key of keys) {
+      expect(storageData[key], key).toBeUndefined();
     }
   });
 

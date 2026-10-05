@@ -656,6 +656,7 @@ export async function signOut() {
       "user_templates",
       "disabled_reminders_v2",
       "task_execution_cache",
+      "user_prompts:action_config",
       // Device sync state
       "device_sync_auto_enabled",
       "device_sync_backups",
@@ -665,6 +666,7 @@ export async function signOut() {
       "device_sync_ts:templates",
       "device_sync_ts:disabledReminders",
       "device_sync_ts:taskCache",
+      "device_sync_ts:actionConfig",
       // Peer base state
       "device_peer_base:composition",
       "device_peer_base:action",

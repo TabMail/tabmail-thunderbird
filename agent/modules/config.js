@@ -252,6 +252,22 @@ export const SETTINGS = {
         initialDelayMs: 150,
         maxDelayMs: 1000,
     },
+    // Action-rule compaction thresholds (sent as action_compact_threshold[_chars]).
+    // Must match iOS PromptStore and the backend's actionRuleBudget.ts. Defaults keep
+    // 160 chars per rule; the legacy defaults were too aggressive and are migrated
+    // (actionCompactConfig.js) when the user never edited them.
+    actionCompaction: {
+        defaultRules: 200,
+        minRules: 100,
+        maxRules: 500,
+        stepRules: 10,
+        defaultChars: 32000,
+        minChars: 16000,
+        maxChars: 80000,
+        stepChars: 1000,
+        legacyDefaultRules: 100,
+        legacyDefaultChars: 16000,
+    },
     // Device sync (always-on sync via WebSocket relay)
     deviceSync: {
         broadcastDebounceMs: 500, // Debounce auto-broadcast after local edits (ms)

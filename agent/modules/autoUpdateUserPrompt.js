@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import { readActionConfig, resolveActionConfig } from "./actionCompactConfig.js";
 import { SETTINGS } from "./config.js";
 import { origKey as actionOrigKey, userPromptKey as actionUserPromptKey } from "./actionCache.js";
 import * as idb from "./idbStorage.js";
@@ -15,32 +16,15 @@ import {
     saveChatLog
 } from "./utils.js";
 
-// ----------------------------------------------------------
-// Configuration for action operations
-// ----------------------------------------------------------
-const ACTION_CONFIG = {
-    defaultCompactThreshold: 100,
-    defaultCompactThresholdChars: 16000,
-};
-
 /**
  * Load action config from storage (set in prompts config page)
  */
 async function getActionConfig() {
     try {
-        const key = "user_prompts:action_config";
-        const obj = await browser.storage.local.get(key);
-        const config = obj[key] || {};
-        return {
-            compact_threshold: config.compact_threshold || ACTION_CONFIG.defaultCompactThreshold,
-            compact_threshold_chars: config.compact_threshold_chars || ACTION_CONFIG.defaultCompactThresholdChars,
-        };
+        return await readActionConfig();
     } catch (e) {
         log(`[TMDBG AutoPrompt] Failed to load action config, using defaults: ${e}`, "warn");
-        return {
-            compact_threshold: ACTION_CONFIG.defaultCompactThreshold,
-            compact_threshold_chars: ACTION_CONFIG.defaultCompactThresholdChars,
-        };
+        return resolveActionConfig(undefined, undefined);
     }
 }
 

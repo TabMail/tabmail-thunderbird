@@ -6,6 +6,8 @@
  * Storage and file operations for prompts
  */
 
+import { readActionConfig, ACTION_CONFIG_KEY } from "../../agent/modules/actionCompactConfig.js";
+import { SETTINGS } from "../../agent/modules/config.js";
 import { log } from "../../agent/modules/utils.js";
 
 /**
@@ -72,33 +74,23 @@ export async function resetPromptFile(filename) {
     }
 }
 
-// Action Config defaults
-const ACTION_CONFIG_DEFAULTS = {
-    compact_threshold: 100,
-    compact_threshold_chars: 16000,
-};
-
 /**
  * Load action config from storage and sync UI sliders
  */
 export async function loadActionConfig() {
     try {
-        const key = "user_prompts:action_config";
-        const obj = await browser.storage.local.get(key);
-        const config = obj[key] || {};
+        const { compact_threshold: threshold, compact_threshold_chars: thresholdChars } = await readActionConfig();
+        const c = SETTINGS.actionCompaction;
 
-        const threshold = config.compact_threshold || ACTION_CONFIG_DEFAULTS.compact_threshold;
-        const thresholdChars = config.compact_threshold_chars || ACTION_CONFIG_DEFAULTS.compact_threshold_chars;
-
-        // Update slider values + displayed numbers
+        // Update slider range, value + displayed number (range before value so it isn't clamped to the HTML range)
         const slider = document.getElementById("action-compact-threshold");
         const display = document.getElementById("action-compact-threshold-val");
-        if (slider) slider.value = threshold;
+        if (slider) Object.assign(slider, { min: c.minRules, max: c.maxRules, step: c.stepRules, value: threshold });
         if (display) display.textContent = String(threshold);
 
         const sliderChars = document.getElementById("action-compact-threshold-chars");
         const displayChars = document.getElementById("action-compact-threshold-chars-val");
-        if (sliderChars) sliderChars.value = thresholdChars;
+        if (sliderChars) Object.assign(sliderChars, { min: c.minChars, max: c.maxChars, step: c.stepChars, value: thresholdChars });
         if (displayChars) displayChars.textContent = String(thresholdChars);
 
         log(`[Prompts] Action config loaded: compact_threshold=${threshold}, compact_threshold_chars=${thresholdChars}`);
@@ -116,12 +108,11 @@ export async function saveActionConfig() {
         const thresholdCharsSlider = document.getElementById("action-compact-threshold-chars");
 
         const config = {
-            compact_threshold: parseInt(thresholdSlider?.value, 10) || ACTION_CONFIG_DEFAULTS.compact_threshold,
-            compact_threshold_chars: parseInt(thresholdCharsSlider?.value, 10) || ACTION_CONFIG_DEFAULTS.compact_threshold_chars,
+            compact_threshold: parseInt(thresholdSlider?.value, 10) || SETTINGS.actionCompaction.defaultRules,
+            compact_threshold_chars: parseInt(thresholdCharsSlider?.value, 10) || SETTINGS.actionCompaction.defaultChars,
         };
 
-        const key = "user_prompts:action_config";
-        await browser.storage.local.set({ [key]: config });
+        await browser.storage.local.set({ [ACTION_CONFIG_KEY]: config });
 
         log(`[Prompts] Action config saved: compact_threshold=${config.compact_threshold}, compact_threshold_chars=${config.compact_threshold_chars}`);
     } catch (e) {

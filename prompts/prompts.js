@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import { ACTION_CONFIG_TS_KEY } from "../agent/modules/actionCompactConfig.js";
 import { log } from "../agent/modules/utils.js";
 import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
 
@@ -1689,6 +1690,15 @@ document.addEventListener("DOMContentLoaded", () => {
         originalActionData = deepClone(actionData);
         if (currentPrompt === "action") renderActionSections();
       }
+    }
+
+    // Compaction thresholds changed. Refresh on the timestamp, not the value: a sync
+    // write carries both, while this page's own save carries only the value and the
+    // background stamps the timestamp afterwards. Reading before that stamp resolves a
+    // deliberate legacy-default value as never edited and shows the migrated default.
+    if (changes[ACTION_CONFIG_TS_KEY]) {
+      log("[Prompts] Action config changed, refreshing sliders");
+      loadActionConfig();
     }
 
     // Reminders changed

@@ -114,9 +114,12 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 
 // Mock config.js
-vi.mock('../agent/modules/config.js', () => ({
+vi.mock('../agent/modules/config.js', async (importOriginal) => ({
   getDeviceSyncUrl: vi.fn(async () => 'https://sync.tabmail.ai'),
-  SETTINGS: { deviceSync: { broadcastDebounceMs: 500 } },
+  SETTINGS: {
+    deviceSync: { broadcastDebounceMs: 500 },
+    actionCompaction: (await importOriginal()).SETTINGS.actionCompaction,
+  },
 }));
 
 // Mock supabaseAuth.js (dynamic import in connect())
@@ -2917,5 +2920,247 @@ describe('bounded transient sync resources',()=>{
       expect(browserMock.tmDeviceSync.send).toHaveBeenCalledTimes(12);
       expect(counts).toEqual(Array.from({length:12},()=>({records:0,timers:0})));
     } finally {browserMock.tmDeviceSync.send=original;}
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// actionConfig: compaction thresholds sync last-write-wins across devices
+// ═══════════════════════════════════════════════════════════════════════════
+describe('Device Sync actionConfig (compaction thresholds)', () => {
+  const ACTION_CONFIG_KEY = 'user_prompts:action_config';
+  const ACTION_CONFIG_TS_KEY = 'device_sync_ts:actionConfig';
+  const isoDaysFromNow = (days) => new Date(Date.now() + days * 86400000).toISOString();
+
+  beforeEach(() => {
+    clearStorage();
+    resetMockCalls();
+    mockWebSocketInstances = [];
+  });
+
+  afterEach(async () => {
+    await deviceSync.disconnect();
+  });
+
+  it('applies a newer valid incoming config with its timestamp in the same write', async () => {
+    const ws = await establishConnection();
+    const incomingTs = isoDaysFromNow(-1);
+    setStorage({
+      [ACTION_CONFIG_KEY]: { compact_threshold: 100, compact_threshold_chars: 16000 },
+      [ACTION_CONFIG_TS_KEY]: isoDaysFromNow(-2),
+    });
+    resetMockCalls();
+
+    await sendSocketMessage(ws, {
+      type: 'prompt_state',
+      data: { actionConfig: { compact_threshold: 300, compact_threshold_chars: 32000 }, actionConfig_updated_at: incomingTs },
+    });
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 300, compact_threshold_chars: 32000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBe(incomingTs);
+    // Value + timestamp in ONE change set — the storage listener skips it as sync-owned (no echo).
+    const write = browserMock.storage.local.set.mock.calls.map(([obj]) => obj).find((obj) => ACTION_CONFIG_KEY in obj);
+    expect(write).toEqual({
+      [ACTION_CONFIG_KEY]: { compact_threshold: 300, compact_threshold_chars: 32000 },
+      [ACTION_CONFIG_TS_KEY]: incomingTs,
+    });
+  });
+
+  it('applies to a device that never touched the sliders (no local config or timestamp)', async () => {
+    const ws = await establishConnection();
+    const incomingTs = isoDaysFromNow(-1);
+
+    await sendSocketMessage(ws, {
+      type: 'prompt_state',
+      data: { actionConfig: { compact_threshold: 250, compact_threshold_chars: 20000 }, actionConfig_updated_at: incomingTs },
+    });
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 250, compact_threshold_chars: 20000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBe(incomingTs);
+  });
+
+  it('keeps the local config when the incoming one is older', async () => {
+    const ws = await establishConnection();
+    const localTs = isoDaysFromNow(-1);
+    setStorage({
+      [ACTION_CONFIG_KEY]: { compact_threshold: 400, compact_threshold_chars: 30000 },
+      [ACTION_CONFIG_TS_KEY]: localTs,
+    });
+
+    await sendSocketMessage(ws, {
+      type: 'prompt_state',
+      data: { actionConfig: { compact_threshold: 120, compact_threshold_chars: 8000 }, actionConfig_updated_at: isoDaysFromNow(-3) },
+    });
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 400, compact_threshold_chars: 30000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBe(localTs);
+  });
+
+  it('ignores an epoch-zero (never edited) incoming config', async () => {
+    const ws = await establishConnection();
+    setStorage({ [ACTION_CONFIG_KEY]: { compact_threshold: 400, compact_threshold_chars: 30000 } });
+
+    await sendSocketMessage(ws, {
+      type: 'prompt_state',
+      data: { actionConfig: { compact_threshold: 100, compact_threshold_chars: 16000 }, actionConfig_updated_at: EPOCH_ZERO },
+    });
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 400, compact_threshold_chars: 30000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBeUndefined();
+  });
+
+  it('ignores an incoming config that carries no timestamp', async () => {
+    const ws = await establishConnection();
+    setStorage({ [ACTION_CONFIG_KEY]: { compact_threshold: 400, compact_threshold_chars: 30000 } });
+
+    await sendSocketMessage(ws, {
+      type: 'prompt_state',
+      // Every real prompt_state carries the global updatedAt; actionConfig must not fall back to it.
+      data: { actionConfig: { compact_threshold: 120, compact_threshold_chars: 8000 }, updatedAt: isoDaysFromNow(0) },
+    });
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 400, compact_threshold_chars: 30000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBeUndefined();
+  });
+
+  it('a null incoming config does not abort the rest of the same prompt_state', async () => {
+    const ws = await establishConnection();
+    setStorage({ [ACTION_CONFIG_KEY]: { compact_threshold: 400, compact_threshold_chars: 30000 } });
+    const compositionTs = isoDaysFromNow(-1);
+
+    await sendSocketMessage(ws, {
+      type: 'prompt_state',
+      data: {
+        actionConfig: null, actionConfig_updated_at: isoDaysFromNow(-1),
+        composition: 'Synthetic peer rule', composition_updated_at: compositionTs,
+      },
+    });
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 400, compact_threshold_chars: 30000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBeUndefined();
+    expect(storageData[FIELD_KEYS.composition]).toBe('Synthetic peer rule');
+    expect(storageData[TIMESTAMP_KEYS.composition]).toBe(compositionTs);
+  });
+
+  it('stores only the two thresholds from an incoming config', async () => {
+    const ws = await establishConnection();
+    const incomingTs = isoDaysFromNow(-1);
+
+    await sendSocketMessage(ws, {
+      type: 'prompt_state',
+      data: {
+        actionConfig: { compact_threshold: 300, compact_threshold_chars: 40000, extra: 'synthetic' },
+        actionConfig_updated_at: incomingTs,
+      },
+    });
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 300, compact_threshold_chars: 40000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBe(incomingTs);
+  });
+
+  it('ignores a malformed incoming config', async () => {
+    const ws = await establishConnection();
+    setStorage({ [ACTION_CONFIG_KEY]: { compact_threshold: 400, compact_threshold_chars: 30000 } });
+
+    for (const bad of [
+      { compact_threshold: '300', compact_threshold_chars: 32000 },
+      { compact_threshold: 300 },
+      { compact_threshold: 0, compact_threshold_chars: 32000 },
+      { compact_threshold: 300, compact_threshold_chars: 0 },
+      { compact_threshold: 300.5, compact_threshold_chars: 32000 },
+      null,
+    ]) {
+      await sendSocketMessage(ws, {
+        type: 'prompt_state',
+        data: { actionConfig: bad, actionConfig_updated_at: isoDaysFromNow(-1) },
+      });
+    }
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 400, compact_threshold_chars: 30000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBeUndefined();
+  });
+
+  it('broadcasts the stored config and timestamp when a peer requests it', async () => {
+    const ws = await establishConnection();
+    const localTs = isoDaysFromNow(-1);
+    setStorage({
+      [ACTION_CONFIG_KEY]: { compact_threshold: 350, compact_threshold_chars: 24000 },
+      [ACTION_CONFIG_TS_KEY]: localTs,
+    });
+    ws.sent = [];
+
+    await sendSocketMessage(ws, { type: 'request_state', fields: ['actionConfig'] });
+
+    const promptState = ws.sent.map((s) => JSON.parse(s)).find((m) => m.type === 'prompt_state');
+    expect(promptState.data.actionConfig).toEqual({ compact_threshold: 350, compact_threshold_chars: 24000 });
+    expect(promptState.data.actionConfig_updated_at).toBe(localTs);
+  });
+
+  it('broadcasts the defaults the backend would receive when nothing is stored', async () => {
+    const ws = await establishConnection();
+    ws.sent = [];
+
+    await deviceSync.broadcastState();
+
+    const promptState = ws.sent.map((s) => JSON.parse(s)).find((m) => m.type === 'prompt_state');
+    expect(promptState.data.actionConfig).toEqual({ compact_threshold: 200, compact_threshold_chars: 32000 });
+    expect(promptState.data.actionConfig_updated_at).toBe(EPOCH_ZERO);
+  });
+
+  it('broadcasts never-edited legacy defaults as the current defaults, still at epoch zero', async () => {
+    const ws = await establishConnection();
+    setStorage({ [ACTION_CONFIG_KEY]: { compact_threshold: 100, compact_threshold_chars: 16000 } });
+    ws.sent = [];
+
+    await deviceSync.broadcastState();
+
+    const promptState = ws.sent.map((s) => JSON.parse(s)).find((m) => m.type === 'prompt_state');
+    expect(promptState.data.actionConfig).toEqual({ compact_threshold: 200, compact_threshold_chars: 32000 });
+    expect(promptState.data.actionConfig_updated_at).toBe(EPOCH_ZERO);
+  });
+
+  it('broadcasts edited values equal to the legacy defaults as stored', async () => {
+    const ws = await establishConnection();
+    const localTs = isoDaysFromNow(-1);
+    setStorage({
+      [ACTION_CONFIG_KEY]: { compact_threshold: 100, compact_threshold_chars: 16000 },
+      [ACTION_CONFIG_TS_KEY]: localTs,
+    });
+    ws.sent = [];
+
+    await deviceSync.broadcastState();
+
+    const promptState = ws.sent.map((s) => JSON.parse(s)).find((m) => m.type === 'prompt_state');
+    expect(promptState.data.actionConfig).toEqual({ compact_threshold: 100, compact_threshold_chars: 16000 });
+    expect(promptState.data.actionConfig_updated_at).toBe(localTs);
+  });
+
+  it('probes peers for actionConfig', async () => {
+    const ws = await establishConnection();
+    ws.sent = [];
+
+    await deviceSync.syncNow();
+
+    const request = ws.sent.map((s) => JSON.parse(s)).find((m) => m.type === 'request_state');
+    expect(request.fields).toContain('actionConfig');
+  });
+
+  it('a local slider save stamps a timestamp but records no prompt history', async () => {
+    vi.useFakeTimers();
+    try {
+      deviceSync.cleanupDeviceSync();
+      browserMock.storage.onChanged.addListener.mockClear();
+      deviceSync.setupStorageListener();
+      const listener = browserMock.storage.onChanged.addListener.mock.calls.at(-1)[0];
+      const before = Date.now();
+
+      listener({ [ACTION_CONFIG_KEY]: { newValue: { compact_threshold: 200, compact_threshold_chars: 18000 } } }, 'local');
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(Date.parse(storageData[ACTION_CONFIG_TS_KEY])).toBeGreaterThanOrEqual(before);
+      expect(storageData.prompt_history ?? []).toEqual([]);
+    } finally {
+      deviceSync.cleanupDeviceSync();
+      vi.useRealTimers();
+    }
   });
 });
