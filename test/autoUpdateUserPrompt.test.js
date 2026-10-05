@@ -10,13 +10,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../agent/modules/config.js', () => ({
+vi.mock('../agent/modules/config.js', async (importOriginal) => ({
   SETTINGS: {
     verboseLogging: false,
     debugLogging: false,
     debugMode: false,
     logTruncateLength: 100,
     getFullDiag: {},
+    actionCompaction: (await importOriginal()).SETTINGS.actionCompaction,
   },
 }));
 vi.mock('../agent/modules/thinkBuffer.js', () => ({
@@ -177,7 +178,7 @@ describe('autoUpdateUserPromptOnTag', () => {
   // (a) systemMsg includes action_compact_threshold
   // -------------------------------------------------------------------------
 
-  it('(a) systemMsg includes default action_compact_threshold=100 when no config in storage', async () => {
+  it('(a) systemMsg includes default action_compact_threshold=200 when no config in storage', async () => {
     idb.get.mockImplementation(async (key) => {
       if (key.startsWith('summary:')) {
         return { [key]: { blurb: 'b', subject: 's', fromSender: 'user@example.com', todos: '' } };
@@ -186,7 +187,7 @@ describe('autoUpdateUserPromptOnTag', () => {
       if (key.startsWith('action:userprompt:')) return { [key]: '' };
       return {};
     });
-    // Storage returns empty (no action_config key) → default threshold 100
+    // Storage returns empty (no action_config key) → default threshold 200
     globalThis.browser.storage.local.get.mockResolvedValue({});
     promptGenerator.getUserActionPrompt.mockResolvedValue('# My action rules');
     llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":"ADD\nreply\nSome rule"}' });
@@ -199,7 +200,7 @@ describe('autoUpdateUserPromptOnTag', () => {
     const callArgs = llm.sendChat.mock.calls[0][0];
     expect(Array.isArray(callArgs)).toBe(true);
     const sysMsg = callArgs[0];
-    expect(sysMsg.action_compact_threshold).toBe(100);
+    expect(sysMsg.action_compact_threshold).toBe(200);
   });
 
   it('(a) systemMsg includes custom action_compact_threshold when storage has action_config', async () => {
@@ -213,7 +214,7 @@ describe('autoUpdateUserPromptOnTag', () => {
     });
     // Storage returns custom threshold 250
     globalThis.browser.storage.local.get.mockImplementation(async (key) => {
-      if (key === 'user_prompts:action_config') {
+      if ([].concat(key).includes('user_prompts:action_config')) {
         return { 'user_prompts:action_config': { compact_threshold: 250 } };
       }
       return {};
@@ -511,16 +512,16 @@ describe('compactActionRulesNow', () => {
     const sysMsg = msgs[0];
     expect(sysMsg.content).toBe('system_prompt_action_refine');
     expect(sysMsg.action_compact_only).toBe(true);
-    expect(sysMsg.action_compact_threshold).toBe(100);
-    expect(sysMsg.action_compact_threshold_chars).toBe(16000);
+    expect(sysMsg.action_compact_threshold).toBe(200);
+    expect(sysMsg.action_compact_threshold_chars).toBe(32000);
     expect(sysMsg.current_user_action_md).toBe(COMPACT_DOC);
   });
 
   // (a) sends custom thresholds when stored in config
   it('(a) sends custom thresholds from stored action_config', async () => {
     globalThis.browser.storage.local.get.mockImplementation(async (key) => {
-      if (key === 'user_prompts:action_config') {
-        return { 'user_prompts:action_config': { compact_threshold: 300, compact_threshold_chars: 15000 } };
+      if ([].concat(key).includes('user_prompts:action_config')) {
+        return { 'user_prompts:action_config': { compact_threshold: 300, compact_threshold_chars: 40000 } };
       }
       return {};
     });
@@ -532,7 +533,7 @@ describe('compactActionRulesNow', () => {
 
     const sysMsg = llm.sendChat.mock.calls[0][0][0];
     expect(sysMsg.action_compact_threshold).toBe(300);
-    expect(sysMsg.action_compact_threshold_chars).toBe(15000);
+    expect(sysMsg.action_compact_threshold_chars).toBe(40000);
   });
 
   // (b) applies returned multi-op patch and persists

@@ -58,16 +58,16 @@
           <div class="kb-config-row">
             <label for="action-compact-threshold">Rule compaction threshold:</label>
             <div class="kb-slider-group">
-              <input type="range" id="action-compact-threshold" min="20" max="500" step="10" value="100" />
-              <span class="kb-slider-value" id="action-compact-threshold-val">100</span>
+              <input type="range" id="action-compact-threshold" min="100" max="500" step="10" value="200" />
+              <span class="kb-slider-value" id="action-compact-threshold-val">200</span>
             </div>
             <span class="kb-config-hint">When rules exceed this count, similar rules are automatically merged during refinement</span>
           </div>
           <div class="kb-config-row">
             <label for="action-compact-threshold-chars">Size threshold (characters):</label>
             <div class="kb-slider-group">
-              <input type="range" id="action-compact-threshold-chars" min="2000" max="40000" step="1000" value="16000" />
-              <span class="kb-slider-value" id="action-compact-threshold-chars-val">16000</span>
+              <input type="range" id="action-compact-threshold-chars" min="16000" max="80000" step="1000" value="32000" />
+              <span class="kb-slider-value" id="action-compact-threshold-chars-val">32000</span>
             </div>
             <span class="kb-config-hint">Compaction also triggers when the rules file exceeds this many characters</span>
           </div>

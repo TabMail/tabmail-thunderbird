@@ -114,9 +114,12 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 
 // Mock config.js
-vi.mock('../agent/modules/config.js', () => ({
+vi.mock('../agent/modules/config.js', async (importOriginal) => ({
   getDeviceSyncUrl: vi.fn(async () => 'https://sync.tabmail.ai'),
-  SETTINGS: { deviceSync: { broadcastDebounceMs: 500 } },
+  SETTINGS: {
+    deviceSync: { broadcastDebounceMs: 500 },
+    actionCompaction: (await importOriginal()).SETTINGS.actionCompaction,
+  },
 }));
 
 // Mock supabaseAuth.js (dynamic import in connect())
@@ -3061,8 +3064,36 @@ describe('Device Sync actionConfig (compaction thresholds)', () => {
     await deviceSync.broadcastState();
 
     const promptState = ws.sent.map((s) => JSON.parse(s)).find((m) => m.type === 'prompt_state');
-    expect(promptState.data.actionConfig).toEqual({ compact_threshold: 100, compact_threshold_chars: 16000 });
+    expect(promptState.data.actionConfig).toEqual({ compact_threshold: 200, compact_threshold_chars: 32000 });
     expect(promptState.data.actionConfig_updated_at).toBe(EPOCH_ZERO);
+  });
+
+  it('broadcasts never-edited legacy defaults as the current defaults, still at epoch zero', async () => {
+    const ws = await establishConnection();
+    setStorage({ [ACTION_CONFIG_KEY]: { compact_threshold: 100, compact_threshold_chars: 16000 } });
+    ws.sent = [];
+
+    await deviceSync.broadcastState();
+
+    const promptState = ws.sent.map((s) => JSON.parse(s)).find((m) => m.type === 'prompt_state');
+    expect(promptState.data.actionConfig).toEqual({ compact_threshold: 200, compact_threshold_chars: 32000 });
+    expect(promptState.data.actionConfig_updated_at).toBe(EPOCH_ZERO);
+  });
+
+  it('broadcasts edited values equal to the legacy defaults as stored', async () => {
+    const ws = await establishConnection();
+    const localTs = isoDaysFromNow(-1);
+    setStorage({
+      [ACTION_CONFIG_KEY]: { compact_threshold: 100, compact_threshold_chars: 16000 },
+      [ACTION_CONFIG_TS_KEY]: localTs,
+    });
+    ws.sent = [];
+
+    await deviceSync.broadcastState();
+
+    const promptState = ws.sent.map((s) => JSON.parse(s)).find((m) => m.type === 'prompt_state');
+    expect(promptState.data.actionConfig).toEqual({ compact_threshold: 100, compact_threshold_chars: 16000 });
+    expect(promptState.data.actionConfig_updated_at).toBe(localTs);
   });
 
   it('probes peers for actionConfig', async () => {

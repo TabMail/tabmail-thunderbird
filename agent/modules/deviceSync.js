@@ -22,6 +22,7 @@
  * Thunderbird 145 MV3 WebExtension
  */
 
+import { resolveActionConfig } from "./actionCompactConfig.js";
 import { log } from "./utils.js";
 import { getDeviceSyncUrl, SETTINGS } from "./config.js";
 
@@ -61,12 +62,6 @@ const AUTO_ENABLED_KEY = "device_sync_auto_enabled";
 // Backup storage (legacy — migrated to prompt_history)
 const BACKUP_KEY = "device_sync_backups";
 const BROADCAST_DEBOUNCE_MS = SETTINGS.deviceSync?.broadcastDebounceMs ?? 500;
-
-// Must match ACTION_CONFIG in autoUpdateUserPrompt.js and the prompts page defaults.
-const ACTION_CONFIG_DEFAULTS = {
-  compact_threshold: 100,
-  compact_threshold_chars: 16000,
-};
 
 // Prompt history
 const HISTORY_KEY = "prompt_history";
@@ -380,7 +375,7 @@ async function readLocalState(fields = null) {
       } else if (field === "templates") {
         state[field] = stored[FIELD_KEYS[field]] || [];
       } else if (field === "actionConfig") {
-        state[field] = resolveActionConfig(stored[FIELD_KEYS[field]]);
+        state[field] = resolveActionConfig(stored[FIELD_KEYS[field]], stored[TIMESTAMP_KEYS[field]]);
       } else {
         state[field] = stored[FIELD_KEYS[field]] || "";
       }
@@ -567,17 +562,6 @@ export function setupStorageListener() {
  */
 function resolveIncomingTimestamp(data, field) {
   return data[`${field}_updated_at`] || data.updatedAt || EPOCH_ZERO;
-}
-
-/**
- * Compaction thresholds as sent to the backend (action_compact_threshold[_chars]).
- * Same defaults and `||` fallback as autoUpdateUserPrompt.getActionConfig().
- */
-function resolveActionConfig(config) {
-  return {
-    compact_threshold: config?.compact_threshold || ACTION_CONFIG_DEFAULTS.compact_threshold,
-    compact_threshold_chars: config?.compact_threshold_chars || ACTION_CONFIG_DEFAULTS.compact_threshold_chars,
-  };
 }
 
 function isValidActionConfig(config) {
