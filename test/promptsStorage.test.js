@@ -190,3 +190,80 @@ describe('saveActionConfig — defaults', () => {
     });
   });
 });
+
+describe('prompts page storage listener — action config refresh', () => {
+  // Extract the page's real storage.onChanged callback from prompts.js.
+  async function loadPageListener(refresh) {
+    const { readFileSync } = await import('node:fs');
+    const { runInNewContext } = await import('node:vm');
+    const { parse } = await import('acorn');
+    const source = readFileSync(new URL('../prompts/prompts.js', import.meta.url), 'utf8');
+    const found = [];
+    const walk = (node) => {
+      if (!node || typeof node.type !== 'string') return;
+      const callee = node.type === 'CallExpression' ? source.slice(node.callee.start, node.callee.end) : '';
+      if (callee === 'browser.storage.onChanged.addListener'
+        && source.slice(node.start, node.end).includes('refreshing sliders')) found.push(node.arguments[0]);
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) value.forEach(walk);
+        else if (value && typeof value === 'object') walk(value);
+      }
+    };
+    walk(parse(source, { ecmaVersion: 'latest', sourceType: 'module' }));
+    expect(found).toHaveLength(1);
+    const { ACTION_CONFIG_TS_KEY } = await import('../agent/modules/actionCompactConfig.js');
+    return runInNewContext(`(${source.slice(found[0].start, found[0].end)})`, {
+      ACTION_CONFIG_TS_KEY, loadActionConfig: refresh, log: () => {},
+    });
+  }
+
+  it('a deliberate legacy-default save stays on the slider while the background stamps its timestamp', async () => {
+    const stored = {};
+    globalThis.browser.storage.local.get.mockImplementation(async (keys) =>
+      Object.fromEntries(keys.filter((k) => k in stored).map((k) => [k, stored[k]])));
+    globalThis.browser.storage.local.set.mockImplementation(async (obj) => { Object.assign(stored, obj); });
+    const pending = [];
+    const listener = await loadPageListener(() => { const p = loadActionConfig(); pending.push(p); return p; });
+    const deliver = async (changes) => { listener(changes, 'local'); await Promise.all(pending.splice(0)); };
+    const slider = _domElements['action-compact-threshold'];
+
+    // Never-edited install: the user drags the rules slider to 100 (the legacy default) and it saves.
+    slider.value = '100';
+    await saveActionConfig();
+    await deliver({ 'user_prompts:action_config': { newValue: stored['user_prompts:action_config'] } });
+    expect(Number(slider.value)).toBe(100);
+
+    // The background then stamps the local-edit timestamp in its own write.
+    stored['device_sync_ts:actionConfig'] = new Date().toISOString();
+    await deliver({ 'device_sync_ts:actionConfig': { newValue: stored['device_sync_ts:actionConfig'] } });
+    expect(Number(slider.value)).toBe(100);
+    expect(_domElements['action-compact-threshold-val'].textContent).toBe('100');
+
+    // A later chars-slider save writes the deliberate 100 back, not the migrated default.
+    _domElements['action-compact-threshold-chars'].value = '40000';
+    await saveActionConfig();
+    expect(stored['user_prompts:action_config']).toEqual({ compact_threshold: 100, compact_threshold_chars: 40000 });
+  });
+
+  it('a Device Sync write (value and timestamp together) refreshes the sliders', async () => {
+    const syncTs = new Date().toISOString();
+    const stored = {
+      'user_prompts:action_config': { compact_threshold: 300, compact_threshold_chars: 40000 },
+      'device_sync_ts:actionConfig': syncTs,
+    };
+    globalThis.browser.storage.local.get.mockImplementation(async (keys) =>
+      Object.fromEntries(keys.filter((k) => k in stored).map((k) => [k, stored[k]])));
+    const pending = [];
+    const listener = await loadPageListener(() => { const p = loadActionConfig(); pending.push(p); return p; });
+
+    listener({
+      'user_prompts:action_config': { newValue: stored['user_prompts:action_config'] },
+      'device_sync_ts:actionConfig': { newValue: syncTs },
+    }, 'local');
+    await Promise.all(pending);
+
+    expect(pending).toHaveLength(1);
+    expect(Number(_domElements['action-compact-threshold'].value)).toBe(300);
+    expect(Number(_domElements['action-compact-threshold-chars'].value)).toBe(40000);
+  });
+});

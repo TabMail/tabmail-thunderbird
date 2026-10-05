@@ -64,4 +64,13 @@ describe('actionCompactConfig', () => {
     expect(await readActionConfig()).toEqual(DEFAULTS);
     expect(get).toHaveBeenCalledWith(['user_prompts:action_config', 'device_sync_ts:actionConfig']);
   });
+
+  it('readActionConfig keeps legacy-default values once the sync timestamp records an edit', async () => {
+    globalThis.browser.storage.local = { get: vi.fn(async () => ({
+      'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 16000 },
+      'device_sync_ts:actionConfig': editedTs(),
+    })) };
+
+    expect(await readActionConfig()).toEqual({ compact_threshold: 100, compact_threshold_chars: 16000 });
+  });
 });

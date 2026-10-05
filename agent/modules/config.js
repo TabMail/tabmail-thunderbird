@@ -252,7 +252,6 @@ export const SETTINGS = {
         initialDelayMs: 150,
         maxDelayMs: 1000,
     },
-    // Device sync (always-on sync via WebSocket relay)
     // Action-rule compaction thresholds (sent as action_compact_threshold[_chars]).
     // Must match iOS PromptStore and the backend's actionRuleBudget.ts. Defaults keep
     // 160 chars per rule; the legacy defaults were too aggressive and are migrated
@@ -269,6 +268,7 @@ export const SETTINGS = {
         legacyDefaultRules: 100,
         legacyDefaultChars: 16000,
     },
+    // Device sync (always-on sync via WebSocket relay)
     deviceSync: {
         broadcastDebounceMs: 500, // Debounce auto-broadcast after local edits (ms)
         maxBackups: 10,           // Max backup snapshots in ring buffer before applying incoming sync

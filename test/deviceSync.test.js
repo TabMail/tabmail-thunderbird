@@ -3014,10 +3014,47 @@ describe('Device Sync actionConfig (compaction thresholds)', () => {
 
     await sendSocketMessage(ws, {
       type: 'prompt_state',
-      data: { actionConfig: { compact_threshold: 120, compact_threshold_chars: 8000 } },
+      // Every real prompt_state carries the global updatedAt; actionConfig must not fall back to it.
+      data: { actionConfig: { compact_threshold: 120, compact_threshold_chars: 8000 }, updatedAt: isoDaysFromNow(0) },
     });
 
     expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 400, compact_threshold_chars: 30000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBeUndefined();
+  });
+
+  it('a null incoming config does not abort the rest of the same prompt_state', async () => {
+    const ws = await establishConnection();
+    setStorage({ [ACTION_CONFIG_KEY]: { compact_threshold: 400, compact_threshold_chars: 30000 } });
+    const compositionTs = isoDaysFromNow(-1);
+
+    await sendSocketMessage(ws, {
+      type: 'prompt_state',
+      data: {
+        actionConfig: null, actionConfig_updated_at: isoDaysFromNow(-1),
+        composition: 'Synthetic peer rule', composition_updated_at: compositionTs,
+      },
+    });
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 400, compact_threshold_chars: 30000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBeUndefined();
+    expect(storageData[FIELD_KEYS.composition]).toBe('Synthetic peer rule');
+    expect(storageData[TIMESTAMP_KEYS.composition]).toBe(compositionTs);
+  });
+
+  it('stores only the two thresholds from an incoming config', async () => {
+    const ws = await establishConnection();
+    const incomingTs = isoDaysFromNow(-1);
+
+    await sendSocketMessage(ws, {
+      type: 'prompt_state',
+      data: {
+        actionConfig: { compact_threshold: 300, compact_threshold_chars: 40000, extra: 'synthetic' },
+        actionConfig_updated_at: incomingTs,
+      },
+    });
+
+    expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 300, compact_threshold_chars: 40000 });
+    expect(storageData[ACTION_CONFIG_TS_KEY]).toBe(incomingTs);
   });
 
   it('ignores a malformed incoming config', async () => {
