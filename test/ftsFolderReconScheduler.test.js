@@ -11,8 +11,9 @@ import { experimentFunctions } from './helpers/experimentFunctions.js';
 
 const reconConfig = {
   folderScanPageSize: 250,
-  // One row per assignment call, so every multi-row page crosses batches.
-  membershipAssignBatchSize: 1,
+  // Two rows per assignment call, so a multi-row page both shares a batch
+  // and crosses batches.
+  membershipAssignBatchSize: 2,
   membershipListPageSize: 50,
   membershipStatePageSize: 50,
   digestWorkChunkEntries: 1000,
@@ -10411,6 +10412,103 @@ describe('membership-state verdicts never outlive their evidence', () => {
     expect(nativeRows.get(key)).toBe(folders[0].folderId);
   }, 30_000);
 
+  // INVARIANT (2026-10-04): the commit-time check and the in-call walk mark
+  // cover every row of a multi-row assignment batch, not just its first. /A's
+  // row sorts first and shares the batch with the ambiguous row.
+  it.each([
+    { change: 'the ambiguous row\'s move', cut: true },
+    { change: 'mail in an unrelated folder (control)', cut: false },
+  ])('commits a batch\'s valid prefix and refuses its later row after $change during classification', async ({ cut }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, folders, nativeRows, key, move } = seedAmbiguousRow([
+      { folderPath: '/A', headerMessageIds: ['first@example.com'] },
+      { folderPath: '/Z', headerMessageIds: ['later@example.com'] },
+      { folderPath: '/Other', headerMessageIds: [] },
+    ]);
+    const first = 'account1:/A:first@example.com';
+    nativeRows.set(first, null);
+    nativeRows.set('account1:/Z:later@example.com', null);
+    const probe = globalThis.browser.tmMsgNotify.probeMessageIds.getMockImplementation();
+    let changed = false;
+    globalThis.browser.tmMsgNotify.probeMessageIds.mockImplementation(async (uri, ids) => {
+      if (uri === folders[3].folderURI && !changed) {
+        changed = true;
+        if (cut) await move();
+        else {
+          await _testExports.onExperimentMessageAdded({
+            accountId: 'account1', folderPath: '/Other', weFolderId: folders[4].weFolderId,
+            headerMessageId: 'other@example.com', msgKey: 9, eventType: 'msgAdded',
+          });
+          _testExports._getPendingUpdates().clear();
+        }
+      }
+      return probe(uri, ids);
+    });
+
+    const firstTick = await settleSchedulerTickWithFakeTimers(fts);
+
+    expect(changed).toBe(true);
+    const [firstCall] = fts.assignFolderMembershipBatch.mock.calls;
+    expect(firstCall[0].map(({ msgId }) => msgId)).toEqual(cut ? [first] : [first, key]);
+    expect(nativeRows.get(first), JSON.stringify(firstTick)).toBe(folders[2].folderId);
+    expect(nativeRows.get(key)).toBe(cut ? null : folders[1].folderId);
+    expect(_testExports._getFolderReconRuntimeTelemetry().membershipStatePageRetries).toBe(cut ? 1 : 0);
+    vi.setSystemTime(Date.now() + 100);
+    await tickUntil(fts, () => _testExports._getFolderMembershipCutoverProven());
+    expect(_testExports._getFolderMembershipCutoverProven()).toBe(true);
+    expect(nativeRows.get(first)).toBe(folders[2].folderId);
+    if (cut) {
+      expect(fts.assignFolderMembershipBatch.mock.calls.flat(2)).not.toContainEqual(
+        { msgId: key, folderId: folders[1].folderId });
+      expect(nativeRows.get(key)).toBe(folders[0].folderId);
+    }
+  });
+
+  it('owes a later batch row\'s candidate folders a walk when they change during the call', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    const { fts, folders, nativeRows, rowsByURI, key, move } = seedAmbiguousRow([
+      { folderPath: '/A', headerMessageIds: ['first@example.com'] },
+    ]);
+    const first = 'account1:/A:first@example.com';
+    nativeRows.set(first, null);
+    globalThis.browser.tmMsgNotify.probeMessageIds = vi.fn(async (folderURI, headerIds) => ({
+      missing: headerIds.filter(id => !rowsByURI.get(folderURI).some(row => row.headerMessageId === id)),
+    }));
+    fakeNativeFts.indexBatch.mockImplementation(async rows => {
+      for (const row of rows) nativeRows.set(row.msgId, row.folderId);
+      return { count: rows.length };
+    });
+    fts.indexBatch = engineFtsSearch.indexBatch;
+    const assign = fts.assignFolderMembershipBatch;
+    let calls = 0;
+    fts.assignFolderMembershipBatch = vi.fn(async (...args) => {
+      const result = await assign(...args);
+      if (calls++ === 0) {
+        expect(args[0].map(({ msgId }) => msgId)).toEqual([first, key]);
+        // The ambiguous row's message moves after the native commit.
+        await move();
+      }
+      return result;
+    });
+
+    await settleSchedulerTickWithFakeTimers(fts);
+
+    expect(calls).toBeGreaterThan(0);
+    expect(nativeRows.get(first)).toBe(folders[2].folderId);
+    expect(nativeRows.get(key)).toBe(folders[1].folderId);
+    expect([..._testExports._getFolderReconDirty()])
+      .toEqual(expect.arrayContaining(['account1:/F', 'account1:/F:Child']));
+    for (let turn = 0; turn < 60 && nativeRows.get(key) !== folders[0].folderId; turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      await flushPendingUpdates();
+      vi.setSystemTime(Date.now() + reconConfig.paceDelayMs);
+    }
+    expect(nativeRows.get(key)).toBe(folders[0].folderId);
+    expect(nativeRows.get(first)).toBe(folders[2].folderId);
+  }, 30_000);
+
   // Writers: legacy `index_batch` leaves the ownerless rows (including a raw
   // key with two live readings); a capable `index_batch` owned /G's row
   // before /G was deleted; zAccount is not loaded yet.
@@ -10475,10 +10573,12 @@ describe('membership-state verdicts never outlive their evidence', () => {
     vi.useFakeTimers();
     vi.setSystemTime(realDateNow());
     const { fts, folders, nativeRows, key, move } = seedAmbiguousRow([
-      { folderPath: '/A', headerMessageIds: ['first@example.com'] },
+      { folderPath: '/A', headerMessageIds: ['first@example.com', 'second@example.com'] },
     ]);
-    // /A's row sorts first, so its batch commits before the ambiguous row's.
+    // /A's two rows sort first and fill one batch, so it commits before the
+    // ambiguous row's batch.
     nativeRows.set('account1:/A:first@example.com', null);
+    nativeRows.set('account1:/A:second@example.com', null);
     const assign = fts.assignFolderMembershipBatch;
     let moved = false;
     fts.assignFolderMembershipBatch = vi.fn(async (...args) => {
@@ -10493,6 +10593,7 @@ describe('membership-state verdicts never outlive their evidence', () => {
     const first = await settleSchedulerTickWithFakeTimers(fts);
 
     expect(moved, JSON.stringify(first)).toBe(true);
+    expect(fts.assignFolderMembershipBatch.mock.calls[0][0]).toHaveLength(reconConfig.membershipAssignBatchSize);
     expect(fts.assignFolderMembershipBatch.mock.calls.flat(2)).not.toContainEqual(
       { msgId: key, folderId: folders[1].folderId });
     expect(nativeRows.get(key)).toBeNull();
