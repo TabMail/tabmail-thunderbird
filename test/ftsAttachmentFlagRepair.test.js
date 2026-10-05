@@ -204,6 +204,31 @@ describe('full smart reindex attachment flag repair', () => {
     expect(storage[REPAIRED_KEY]).toEqual(['account1']);
   });
 
+  it('still re-adds the rows when the remove call times out but the helper runs it later', async () => {
+    // The helper's writer was busy (converting a shard): the call times out, the remove runs anyway.
+    ftsSearch.removeBatch.mockImplementationOnce(async (ids) => {
+      for (const id of ids) index.delete(id);
+      throw new Error("Native RPC 'removeBatch' timed out after 60000ms");
+    });
+    const result = await indexMessages(ftsSearch);
+    expect(index.get(key(1))).toEqual({ ...storedRow(1, true), hasAttachments: true });
+    expect(result.attachmentRepair.failedBatches).toBe(1);
+    expect(storage[REPAIRED_KEY]).toBeUndefined();
+  });
+
+  it('leaves the row as it was when the remove fails and never runs', async () => {
+    ftsSearch.removeBatch.mockImplementationOnce(async () => { throw new Error('Native FTS helper not connected'); });
+    const result = await indexMessages(ftsSearch);
+    expect(index.get(key(1))).toEqual(storedRow(1, false));
+    expect(result.attachmentRepair.failedBatches).toBe(1);
+  });
+
+  it('keeps the stored file names of a re-added row', async () => {
+    index.set(key(1), { ...storedRow(1, false), attachmentNames: 'scan-1.pdf' });
+    await indexMessages(ftsSearch);
+    expect(index.get(key(1))).toEqual({ ...storedRow(1, true), attachmentNames: 'scan-1.pdf' });
+  });
+
   it('does not look at existing rows of a recorded account, and still repairs the others', async () => {
     accounts = [ACCOUNT1, ACCOUNT2];
     storage[REPAIRED_KEY] = ['account1'];

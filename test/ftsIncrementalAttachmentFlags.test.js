@@ -110,6 +110,14 @@ describe('incremental drain attachment status', () => {
     expect(_testExports._getPendingUpdates().size).toBe(0);
   });
 
+  it('indexes the file names of the downloaded message', async () => {
+    queue(1, 2);
+    await flushPendingUpdates();
+
+    expect(index.get(keyOf(1)).attachmentNames).toBe('scan.pdf');
+    expect(index.get(keyOf(2)).attachmentNames).toBe('');
+  });
+
   it('keeps the paperclip for a headers-only message, whose download has no parts', async () => {
     globalThis.browser.messages.get.mockImplementation(async id => ({ ...header(id), headersOnly: true }));
     safeGetFull.mockImplementation(async () => ({ contentType: 'message/rfc822', parts: [{ contentType: 'multipart/mixed' }] }));
@@ -117,6 +125,7 @@ describe('incremental drain attachment status', () => {
     await flushPendingUpdates();
 
     expect(index.get(keyOf(2)).hasAttachments).toBe(true);
+    expect(index.get(keyOf(2)).attachmentNames).toBe('');
   });
 
   it('does not index a message whose header is gone, and hands the work to reconciliation', async () => {

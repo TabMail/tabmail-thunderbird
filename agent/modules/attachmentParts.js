@@ -37,3 +37,20 @@ export function listAttachmentsFromFull(full, header) {
 export function hasPaperclipAttachment(attachments) {
   return attachments.some(att => !NOT_PAPERCLIP_TYPES.has(String(att.contentType).toLowerCase()));
 }
+
+// The text the FTS index stores for a message's attachment names, one file per line. The index
+// splits words only at spaces and punctuation, so a name written as one run (TaxReceipt2024.pdf)
+// is followed by the same name split where the case or digits change ("Tax Receipt 2024.pdf").
+export function attachmentNamesText(attachments) {
+  return attachments.filter(att => att.name).map(att => {
+    const words = splitNameWords(att.name);
+    return words === att.name ? att.name : `${att.name} ${words}`;
+  }).join("\n");
+}
+
+function splitNameWords(name) {
+  return name
+    .replace(/(\p{Ll})(?=\p{Lu})/gu, "$1 ")
+    .replace(/(\p{Lu})(?=\p{Lu}\p{Ll})/gu, "$1 ")
+    .replace(/(\p{L})(?=\p{N})|(\p{N})(?=\p{L})/gu, "$1$2 ");
+}
