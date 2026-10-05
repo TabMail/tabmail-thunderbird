@@ -35,7 +35,6 @@ let _isEnabled = false;
 let _ftsSearch = null;
 let _pendingUpdates = new Map(); // uniqueKey -> { type, uniqueKey, timestamp, metadata, hasFailed }
 let _batchTimer = null;
-let _persistTimer = null; // Timer for debounced persistence
 let _isProcessing = false; // Prevents concurrent processing
 
 // Queue stability tracking - counts consecutive processing cycles with no successful dequeues
@@ -48,7 +47,6 @@ let _enqueueMutex = Promise.resolve();
 // Settings  
 let INCREMENTAL_BATCH_DELAY_MS = 1000; // Wait 1s before processing batch
 let INCREMENTAL_BATCH_SIZE = 10; // Process up to 10 messages per batch (reduced from 50 to minimize lock time)
-let PERSIST_DEBOUNCE_MS = 2000; // Wait 2s before persisting pending updates to storage
 let INCREMENTAL_RETRY_DELAY_MS = 10000; // Default retry on error (overridden by config)
 
 async function getIncrementalSettings() {
@@ -77,104 +75,6 @@ async function updateIncrementalSettings() {
     }
   } catch (_) {}
   log(`[TMDBG FTS] Incremental indexing settings: enabled=${_isEnabled}, batchDelay=${INCREMENTAL_BATCH_DELAY_MS}ms, batchSize=${INCREMENTAL_BATCH_SIZE}, retryDelay=${INCREMENTAL_RETRY_DELAY_MS}ms`);
-}
-
-// Persistence functions for pending updates
-const STORAGE_KEY = "fts_pending_updates";
-
-async function persistPendingUpdates() {
-  try {
-    // Convert Map to array for storage (Maps aren't JSON-serializable)
-    const updatesArray = Array.from(_pendingUpdates.entries()).map(([uniqueKey, data]) => ({
-      uniqueKey,
-      type: data.type,
-      timestamp: data.timestamp,
-      folderKey: data.folderKey || null,
-      // Failure tracking - persist so status survives restarts
-      hasFailed: data.hasFailed || false,
-      lastFailedAt: data.lastFailedAt || 0,
-      // Store minimal metadata for logging only (uniqueKey is what matters)
-      metadata: {
-        subject: data.metadata?.subject,
-        folderName: data.metadata?.folderName
-      }
-    }));
-    
-    await browser.storage.local.set({ [STORAGE_KEY]: updatesArray });
-    log(`[TMDBG FTS] Persisted ${updatesArray.length} pending updates to storage`);
-  } catch (e) {
-    log(`[TMDBG FTS] Failed to persist pending updates: ${e}`, "error");
-  }
-}
-
-async function restorePendingUpdates() {
-  try {
-    const stored = await browser.storage.local.get(STORAGE_KEY);
-    const updatesArray = stored[STORAGE_KEY] || [];
-    
-    if (updatesArray.length > 0) {
-      // Merge restored updates into existing map (don't replace - avoid race condition)
-      let restoredCount = 0;
-      let skippedCount = 0;
-      let deferredCount = 0;
-      
-      for (const item of updatesArray) {
-        // Only add if not already present (newly queued items take precedence)
-        if (!_pendingUpdates.has(item.uniqueKey)) {
-          if (_pendingUpdates.size >= FOLDER_RECON_PENDING_HIGH_WATER) {
-            deferredCount++;
-            continue;
-          }
-          _pendingUpdates.set(item.uniqueKey, {
-            type: item.type,
-            uniqueKey: item.uniqueKey,
-            timestamp: item.timestamp,
-            folderKey: item.folderKey || null,
-            // Restore failure tracking
-            hasFailed: item.hasFailed || false,
-            lastFailedAt: item.lastFailedAt || 0,
-            metadata: item.metadata || {}
-          });
-          _noteFolderReconPendingSize();
-          restoredCount++;
-        } else {
-          skippedCount++;
-        }
-      }
-      
-      // Old builds could persist an arbitrarily large map. The live queue
-      // stays bounded; this session's startup walk of every folder
-      // rediscovers the deferred tail.
-      log(`[TMDBG FTS] Restored ${restoredCount} pending updates from storage (${skippedCount} already queued, ${deferredCount} deferred to reconcile)`);
-      
-      // Schedule processing of restored updates
-      if (_isEnabled && _ftsSearch && _pendingUpdates.size > 0) {
-        log(`[TMDBG FTS] Scheduling processing of restored pending updates`);
-        _batchTimer = setTimeout(processPendingUpdates, INCREMENTAL_BATCH_DELAY_MS);
-      }
-    } else {
-      log(`[TMDBG FTS] No pending updates found in storage`);
-    }
-  } catch (e) {
-    log(`[TMDBG FTS] Failed to restore pending updates: ${e}`, "error");
-  }
-}
-
-async function clearPersistedUpdates() {
-  try {
-    await browser.storage.local.remove(STORAGE_KEY);
-    log(`[TMDBG FTS] Cleared persisted pending updates from storage`);
-  } catch (e) {
-    log(`[TMDBG FTS] Failed to clear persisted pending updates: ${e}`, "warn");
-  }
-}
-
-function schedulePersist() {
-  // Debounce persistence to avoid excessive writes
-  if (_persistTimer) {
-    clearTimeout(_persistTimer);
-  }
-  _persistTimer = setTimeout(persistPendingUpdates, PERSIST_DEBOUNCE_MS);
 }
 
 function scheduleBatchProcess() {
@@ -423,9 +323,6 @@ async function queueMessageUpdate(type, messageHeader) {
       queueSize: _pendingUpdates.size,
       wasRequeued: !!existing,
     });
-    
-    // Schedule persistence (debounced)
-    schedulePersist();
     
     // Restart batch timer
     if (_batchTimer) {
@@ -1073,23 +970,11 @@ async function processPendingUpdates() {
     // Don't count as no-progress since we had an error (not a stable state)
   }
   
-  // Clear persist timer to avoid redundant persistence
-  if (_persistTimer) {
-    clearTimeout(_persistTimer);
-    _persistTimer = null;
-  }
-  
-  // Update persistence after processing
   if (_pendingUpdates.size === 0) {
-    // All updates processed - clear storage
-    await clearPersistedUpdates();
     // Drain is empty: folders the boot folder-reconcile skipped as
     // drain-busy can now be re-checked (single-shot per boot; async —
     // must not block the drain loop's tail). PLAN_FOLDER_SET_RECONCILE.md.
     _maybeScheduleFolderReconRerun();
-  } else {
-    // More updates remain - persist current state
-    await persistPendingUpdates();
   }
 
   if (_pendingUpdates.size <= FOLDER_RECON_PENDING_LOW_WATER) {
@@ -1362,7 +1247,6 @@ async function _enqueueNewFromInfo(messageInfo, fromCursorScan = false) {
     if (!admitted) return false;
     log(`[TMDBG FTS] Queued new from ${fromCursorScan ? 'cursor scan' : 'experiment'}: ${uniqueKey} (${eventType}) (queue size: ${_pendingUpdates.size})`);
     scheduleBatchProcess();
-    schedulePersist();
     return true;
   } finally {
     release();
@@ -1444,7 +1328,6 @@ async function _enqueueRemovedFromInfo(messageInfo) {
     if (!admitted) return false;
     log(`[TMDBG FTS] Queued deletion from experiment: ${uniqueKey} (queue size: ${_pendingUpdates.size})`);
     scheduleBatchProcess();
-    schedulePersist();
     return true;
   } finally {
     release();
@@ -1581,7 +1464,8 @@ function _removeFolderTopologyListeners() {
 // the incremental indexer. After listeners are up and sync becomes quiet, the
 // startup proof compares every folder's local membership with native FTS.
 // Unchanged IMAP folders use UID/UIDVALIDITY + FTS digest checkpoints; changed
-// folders get an exact two-way repair through the persistent drain queue.
+// folders get an exact two-way repair through the drain queue. The queue is
+// not persisted: work pending at shutdown is re-derived by the next startup.
 //
 // The older date-window, watermark, and cursor helpers remain below for
 // compatibility/tests, but the automatic startup path no longer calls them.
@@ -1655,15 +1539,25 @@ function _folderReconQuietSince(generation, eventSerial) {
     && _pendingUpdates.size === 0;
 }
 
-async function _removeLegacyReconcilePendingKey() {
+// The pending-update queue is no longer persisted (owner 2026-10-04): the
+// startup walk of every folder re-derives work pending at shutdown, so a
+// stored queue could only replay a stale intention over a newer one.
+const LEGACY_PENDING_QUEUE_STORAGE_KEY = "fts_pending_updates";
+const LEGACY_STORAGE_KEYS = Object.freeze([
+  LEGACY_RECONCILE_STORAGE_KEY,
+  LEGACY_PENDING_QUEUE_STORAGE_KEY,
+]);
+
+// Removes retired keys once; reads first so an install without them writes
+// nothing.
+async function _removeLegacyStorageKeys() {
   try {
-    const stored = await browser.storage.local.get(LEGACY_RECONCILE_STORAGE_KEY);
-    if (stored?.[LEGACY_RECONCILE_STORAGE_KEY] !== undefined
-        && stored?.[LEGACY_RECONCILE_STORAGE_KEY] !== null) {
-      await browser.storage.local.remove(LEGACY_RECONCILE_STORAGE_KEY);
-    }
+    const stored = await browser.storage.local.get([...LEGACY_STORAGE_KEYS]);
+    const present = LEGACY_STORAGE_KEYS.filter(key => stored?.[key] !== undefined
+      && stored?.[key] !== null);
+    if (present.length > 0) await browser.storage.local.remove(present);
   } catch (e) {
-    log(`[FTS FolderRecon] Legacy pending-flag cleanup failed: ${e}`, "warn");
+    log(`[FTS FolderRecon] Legacy storage cleanup failed: ${e}`, "warn");
   }
 }
 
@@ -1914,9 +1808,9 @@ async function _writeCursors(cursors) {
  * Heartbeat cursor advance: merge session-max keys (from delivered events)
  * into the persistent cursors. Only advances EXISTING entries — the boot
  * cursor scan is the sole minter (mirrors the watermark heartbeat's
- * "refuse to create" rule). Guarded by the shared drain-stall check: an
- * event that was delivered and enqueued is covered by queue persistence,
- * so advancing past it is safe once the drain is healthy.
+ * "refuse to create" rule). Guarded by the shared drain-stall check.
+ * Legacy helper (no production caller): its original safety argument relied
+ * on queue persistence, which was deleted 2026-10-04.
  */
 async function _heartbeatAdvanceCursors() {
   if (!_isEnabled || !_experimentListenersActive || _indexerDisposed) return;
@@ -1992,8 +1886,9 @@ function _stopWatermarkHeartbeat() {
  * header. This is the arrival-ordered complement to the Date-keyed Phase 1.
  *
  * Per-folder advance contract: a folder's cursor advances only when every
- * enqueue for it succeeded (once enqueued, the drain queue's persistence +
- * retry own delivery — same contract as the watermark's enqueueFailed rule).
+ * enqueue for it succeeded (once enqueued, the drain queue's retry owns
+ * delivery — same contract as the watermark's enqueueFailed rule). Legacy
+ * helper (no production caller); the queue is no longer persisted.
  * Failed folders keep their old cursor and retry next boot. Independent of
  * the watermark: neither blocks the other.
  *
@@ -2388,7 +2283,7 @@ const FOLDER_RECON_KEYSPACE_END = "￿";
 // The exact membership proof needs initial add-side completeness. Before the
 // initial FULL scan has completed, every folder has a huge policy deficit and the missing
 // direction would mass-enqueue the whole backlog through the incremental
-// drain queue (whose persistence serializes the entire map per debounce).
+// drain queue.
 // Gate the whole phase on the initial scan's completion flag (written by
 // chat/background.js runInitialFtsScan).
 const FOLDER_RECON_INITIAL_SCAN_KEY = "fts_initial_scan_complete";
@@ -6743,14 +6638,12 @@ export async function initIncrementalIndexer(ftsSearch) {
 
   // Load settings
   await updateIncrementalSettings();
+  await _removeLegacyStorageKeys();
 
   if (!_isEnabled) {
     log("[TMDBG FTS] Incremental indexing is disabled");
     return;
   }
-
-  // Restore any pending updates from previous session
-  await restorePendingUpdates();
 
   log("[TMDBG FTS] Incremental indexer initialized");
 
@@ -6765,11 +6658,9 @@ export async function initIncrementalIndexer(ftsSearch) {
     log("[TMDBG FTS] NOTE: Integrate with existing agent listeners for WebExtension events");
   }
 
-  await _removeLegacyReconcilePendingKey();
-
   // Schedule the membership proof after TB's startup sync settles. A quiet
   // local msgDB snapshot keeps the two fingerprints comparable. Listeners are
-  // already active, so events during the wait still enter the durable queue.
+  // already active, so events during the wait still enter the queue.
   _scheduleReconcileWhenQuiet(ftsSearch);
 }
 
@@ -6865,13 +6756,7 @@ export async function disposeIncrementalIndexer() {
     }
   }
   
-  // Persist any remaining pending updates before disposal
-  if (_pendingUpdates.size > 0) {
-    log(`[TMDBG FTS] Persisting ${_pendingUpdates.size} pending updates before disposal`);
-    await persistPendingUpdates();
-  }
-  
-  // Clear pending updates from memory
+  // Pending updates are not persisted: the next startup walk re-derives them.
   _pendingUpdates.clear();
 
   // Clear session cursor tracking
@@ -6895,11 +6780,6 @@ export async function disposeIncrementalIndexer() {
     _batchTimer = null;
   }
 
-  if (_persistTimer) {
-    clearTimeout(_persistTimer);
-    _persistTimer = null;
-  }
-
   if (_reconcileQuietTimer) {
     clearInterval(_reconcileQuietTimer);
     _reconcileQuietTimer = null;
@@ -6921,11 +6801,6 @@ export async function flushPendingUpdates() {
   if (_batchTimer) {
     clearTimeout(_batchTimer);
     _batchTimer = null;
-  }
-  
-  if (_persistTimer) {
-    clearTimeout(_persistTimer);
-    _persistTimer = null;
   }
   
   await processPendingUpdates();
@@ -6955,12 +6830,10 @@ export async function getIncrementalIndexerStatus() {
     hasEngine: !!_ftsSearch,
     integratedMode: true, // No separate listeners - integrated with agent
     pendingUpdates: _pendingUpdates.size,
-    hasPersistTimer: !!_persistTimer,
     isProcessing: _isProcessing,
     settings: {
       batchDelay: INCREMENTAL_BATCH_DELAY_MS,
       batchSize: INCREMENTAL_BATCH_SIZE,
-      persistDebounce: PERSIST_DEBOUNCE_MS,
     },
     folderRecon: {
       ..._folderReconRuntimeTelemetry,

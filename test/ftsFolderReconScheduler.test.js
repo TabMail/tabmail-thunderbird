@@ -706,7 +706,6 @@ async function seedDrainFailureEvidence(fts) {
   await flushPendingUpdates();
   expect(_testExports._getPendingUpdates().has(uniqueKey)).toBe(true);
   _testExports._getPendingUpdates().clear();
-  delete storageData.fts_pending_updates;
 }
 
 beforeEach(() => {
@@ -1135,13 +1134,7 @@ describe('cooperative folder reconcile production contracts', () => {
         timestamp: captured.timestamp + 1,
         folderKey: 'account1:/A',
       });
-      expect(storageData.fts_pending_updates).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          uniqueKey: queuedKey,
-          type: 'moved',
-          timestamp: captured.timestamp + 1,
-        }),
-      ]));
+      expect(storageData.fts_pending_updates).toBeUndefined();
       expect(_testExports._getFolderReconDirty()).toContain('account1:/A');
 
       _testExports._setFtsSearch(null);
@@ -6630,7 +6623,6 @@ describe('exact state pass progress and cost', () => {
 describe('drain body fetches (unchanged by reconciliation)', () => {
   afterEach(() => {
     _testExports._getPendingUpdates().clear();
-    delete storageData.fts_pending_updates;
   });
 
   async function drain(headerIds, indexed) {
@@ -6787,7 +6779,6 @@ describe('reconciliation removal vs a racing re-add', () => {
   afterEach(() => {
     _testExports._setIsEnabled(false);
     _testExports._getPendingUpdates().clear();
-    delete storageData.fts_pending_updates;
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -7088,7 +7079,6 @@ describe('drain removal never deletes a sibling key on a scoped negative', () =>
   afterEach(() => {
     _testExports._setIsEnabled(false);
     _testExports._getPendingUpdates().clear();
-    delete storageData.fts_pending_updates;
   });
 
   function drainDelete(indexed) {

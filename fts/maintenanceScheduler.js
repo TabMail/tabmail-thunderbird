@@ -151,7 +151,6 @@ const LEGACY_MAINTENANCE_ALARM_NAMES = Object.freeze([
 
 let _ftsSearch = null;
 let _isInitialized = false;
-let _alarmListener = null;
 
 /**
  * Initialize the maintenance scheduler
@@ -176,10 +175,6 @@ export async function initMaintenanceScheduler(ftsSearch) {
   await clearMaintenanceAlarms();
 
   // Do not attach an alarm listener: no automatic maintenance job exists.
-  if (_alarmListener) {
-    browser.alarms.onAlarm.removeListener(_alarmListener);
-    _alarmListener = null;
-  }
   log("[TMDBG FTS] Periodic maintenance retired; startup membership reconciliation active (manual repair remains available)");
 }
 
@@ -193,10 +188,6 @@ export async function disposeMaintenanceScheduler(options = {}) {
   const clearAlarms = options?.clearAlarms === true;
   if (clearAlarms) {
     await clearMaintenanceAlarms();
-  }
-  if (_alarmListener) {
-    browser.alarms.onAlarm.removeListener(_alarmListener);
-    _alarmListener = null;
   }
   _isInitialized = false;
   _ftsSearch = null;
