@@ -7,6 +7,10 @@ const { ExtensionCommon: ExtensionCommonTMHdr } = ChromeUtils.importESModule(
 );
 const CiTM = globalThis.Ci || Components?.interfaces;
 
+// Diagnostic logging is off in shipped builds; failures still log through console.warn.
+const TMHDR_DEBUG = false;
+function tmHdrDebugLog(...args) { if (TMHDR_DEBUG) console.log(...args); }
+
 // ---------------------------------------------------------------------------
 // Action-on-hdr helpers (Phase 2b).
 //
@@ -134,7 +138,7 @@ function _invalidateRowForHdrInAllWindows(hdr) {
     }
     if (_invalLog < 20) {
       _invalLog++;
-      console.log(
+      tmHdrDebugLog(
         `[tmHdr] invalidate folderURI="${folderURI}" msgKey=${msgKey} ` +
         `viewsSeen=${diagViewsSeen} notedRows=${diagNoted}`
       );
@@ -283,7 +287,7 @@ var tmHdr = class extends ExtensionCommonTMHdr.ExtensionAPI {
             return null;
           });
           if (unknown > 0) {
-            console.warn(`[TMDBG tmHdr] getHasAttachmentBulk: ${unknown} of ${out.length} headers unavailable`);
+            tmHdrDebugLog(`[TMDBG tmHdr] getHasAttachmentBulk: ${unknown} of ${out.length} headers unavailable`);
           }
           return out;
         },
