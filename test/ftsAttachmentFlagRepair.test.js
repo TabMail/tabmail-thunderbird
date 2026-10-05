@@ -340,7 +340,10 @@ describe('full smart reindex attachment flag repair', () => {
     await Promise.race([indexMessages(engine.ftsSearch), deadlock]);
     expect(index.get(key(1))).toEqual({ ...storedRow(1, true), hasAttachments: true });
     expect(native.impl.removeBatch).toHaveBeenCalledWith([key(1)]);
-    expect(native.impl.indexBatch).toHaveBeenCalledWith([expect.objectContaining({ msgId: key(1), hasAttachments: true })]);
+    // The second argument is the wire-shape report the engine reads to attribute the write.
+    expect(native.impl.indexBatch).toHaveBeenCalledWith(
+      [expect.objectContaining({ msgId: key(1), hasAttachments: true, folderId: folderIdOf(INBOX1) })],
+      { withFolderIds: false });
     expect(native.impl.removeBatch.mock.invocationCallOrder[0]).toBeLessThan(native.impl.indexBatch.mock.invocationCallOrder[0]);
     expect(storage[REPAIRED_KEY]).toEqual(['account1']);
   });
