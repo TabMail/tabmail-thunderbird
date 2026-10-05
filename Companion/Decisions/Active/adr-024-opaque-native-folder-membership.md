@@ -80,3 +80,12 @@
 - The raw key format and all existing search/result references remain compatible. Exact membership is an additive relation keyed by the app-owned durable tuple, not Thunderbird's session id and not a v2 global codec.
 - Large profiles perform unbounded total metadata work through bounded calls and idle-duty scheduling. There is no one-time session cache of mailbox contents; only durable progress fields, one live bounded scan token, and O(1) volatile digest/cursor state exist.
 - A historical true raw-`msgId` primary-key collision (two messages whose ambiguous folder/Message-ID components produce the exact same raw string) is not rewritten by this additive relation. Conflicting ownership is detected and remains fail-closed; eliminating that storage collision would require a separately designed key migration.
+
+**Amendment (2026-10-05, removal owners):** `ftsSearch.removeBatch` attributes a removal to the owners the
+helper reports (`removedFolderIds`, helper ≥ the folder-membership summary release) when the reply vouches
+for every deleted row: `removedFolderIds` is an array of non-empty strings and `removedOwnerless` is `0`.
+A removal in `/Cold:Hot` therefore no longer restarts `/Cold`'s proof. A legacy reply without the field, a
+malformed field, any deleted ownerless row (the reply does not say which ids had none), and a failed or
+timed-out call (owners unknown, not none) keep the conservative key-range attribution. Every attempted key
+is still recorded in the key ledger, and the colon-overlap revocation before a removal is unchanged: owners
+only narrow which proofs a committed removal restarts.
