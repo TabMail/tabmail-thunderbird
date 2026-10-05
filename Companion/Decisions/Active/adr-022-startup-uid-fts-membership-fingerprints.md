@@ -110,3 +110,15 @@ to U+FFFD as `toWellFormed` does), and each value is encoded once into the one f
 `crypto.subtle.digest` call. The UID view sorts unsigned numbers (`>>> 0`) in a `Uint32Array` instead of
 8-char hex strings. Both keep the cooperative chunk-sort-and-merge with its yields. Stored `uidSha256` and
 Message-ID checkpoints keep matching.
+
+**Amendment (2026-10-05, one fresh scan per verification):** the invariant "the retained repair proof cannot
+write `verified`: equality forces a fresh full local scan followed by a fresh native fingerprint" still holds
+per verification attempt, but the fresh scan is no longer repeated for every page of the native digest that
+follows it. When the reused proof is the verify-phase proof that scan admitted, and the folder's
+`fresh_after_working` digest session is in progress with a current stamp, the proof is the fresh side and
+the native side is that continuing session, never the cached `initial` result. Local events release the
+proof; the session stamp covers the folder's local scope and native epoch; a completed digest leaves no
+session, so a proof pinned across a drain is rescanned by the next attempt. The identity bracket on this
+path spans turns (this turn's opening `getFolderState` against the closing read); an unsignalled msgDB
+change while the digest pages is seen by the next walk. Cost: one fresh msgDB scan per verification attempt
+plus one per invalidation, instead of one per owner-listing page.

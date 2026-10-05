@@ -3253,6 +3253,14 @@ function _assertStrictMembershipCursor(previous, current) {
   }
 }
 
+// True while a paged digest of the folder in `proofSlot` has started and is
+// still current.
+function _folderMembershipDigestInProgress(folder, proofSlot) {
+  if (!folder?.folderId) return false;
+  const session = _folderMembershipDigestSessions.get(`folder\u0000${folder.folderId}\u0000${proofSlot}`);
+  return !!session && _folderMembershipProofStampCurrent(session);
+}
+
 async function _fingerprintFolderMembershipPages(
   ftsSearch,
   folder,
@@ -4352,15 +4360,37 @@ async function _runFolderReconcile(
       continue;
     }
     try {
-      folderMembershipEpoch = getFtsMembershipEpoch();
-      _assertNoFolderReconForegroundPressure();
-      nativeFingerprint = await _fingerprintFolderNative(
-        ftsSearch, f, startKey, endKey, "initial", membershipMode,
-      );
-      _assertFolderReconLease(reconcileLease, generation);
-      _assertNoFolderReconForegroundPressure();
-      if (!ftsMembershipUnchangedSince(_folderReconNativeScope(f), folderMembershipEpoch)) {
-        throw new Error("membership_epoch_changed");
+      // The verify-phase proof is the fresh scan an earlier turn took for
+      // the native digest still paging; while that digest's stamp is
+      // current, no event released the proof and no write touched the
+      // folder, so it stays the fresh side instead of being rescanned.
+      const continuesFreshDigest = expected.fromWorkingProof === true
+        && expected.proofGuard?.entry?.phase === "verify"
+        && membershipMode.exact
+        && _folderMembershipDigestInProgress(f, "fresh_after_working");
+      if (continuesFreshDigest) {
+        expected = { ...expected, fromWorkingProof: false };
+        folderMembershipEpoch = getFtsMembershipEpoch();
+        _assertNoFolderReconForegroundPressure();
+        nativeFingerprint = await _fingerprintFolderNative(
+          ftsSearch, f, startKey, endKey, "fresh_after_working", membershipMode,
+        );
+        _assertFolderReconLease(reconcileLease, generation);
+        _assertNoFolderReconForegroundPressure();
+        if (!ftsMembershipUnchangedSince(_folderReconNativeScope(f), folderMembershipEpoch)) {
+          throw new Error("membership_epoch_changed");
+        }
+      } else {
+        folderMembershipEpoch = getFtsMembershipEpoch();
+        _assertNoFolderReconForegroundPressure();
+        nativeFingerprint = await _fingerprintFolderNative(
+          ftsSearch, f, startKey, endKey, "initial", membershipMode,
+        );
+        _assertFolderReconLease(reconcileLease, generation);
+        _assertNoFolderReconForegroundPressure();
+        if (!ftsMembershipUnchangedSince(_folderReconNativeScope(f), folderMembershipEpoch)) {
+          throw new Error("membership_epoch_changed");
+        }
       }
       // A reused proof is repair input only. If native already equals it, take
       // a direct fresh local/native pair before allowing the verified path.

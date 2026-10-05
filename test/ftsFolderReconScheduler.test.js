@@ -4547,6 +4547,147 @@ it('stale removal cannot verify a rediscovered local row using its old native di
   }
 });
 
+// INVARIANT: verifying a folder reads its msgDB once. The fresh scan taken
+// after the working proof matches native is the fresh side for every page of
+// the native digest that follows it; a folder event, or a native write in the
+// folder, while that digest pages forces a new scan.
+describe('one fresh msgDB scan per verification', () => {
+  const folderKey = 'account1:/V';
+  // Three owner-listing pages at this suite's membershipListPageSize.
+  const headerMessageIds = Array.from(
+    { length: reconConfig.membershipListPageSize * 2 + 10 },
+    (_, index) => `verify-${String(index).padStart(4, '0')}@example.com`,
+  );
+
+  function verifiedCheckpoint() {
+    return storageData[_testExports.FOLDER_RECON_STORAGE_KEY]?.folders?.[folderKey];
+  }
+
+  function scans() {
+    return globalThis.browser.tmMsgNotify.beginFolderMessageScan.mock.calls.length;
+  }
+
+  async function tickUntilVerified(fts, onTurn = () => {}) {
+    for (let turn = 0; turn < 60 && verifiedCheckpoint()?.verified !== true; turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      await onTurn();
+      vi.setSystemTime(Date.now() + 100);
+    }
+    expect(verifiedCheckpoint()?.verified).toBe(true);
+  }
+
+  async function tickUntilVerifyPhase(fts) {
+    for (let turn = 0; turn < 30
+      && _testExports._getFolderReconWorkingProofTelemetry().phase !== 'verify'; turn++) {
+      await settleSchedulerTickWithFakeTimers(fts);
+      vi.setSystemTime(Date.now() + 100);
+    }
+    expect(_testExports._getFolderReconWorkingProofTelemetry().phase).toBe('verify');
+    expect(verifiedCheckpoint()?.verified).not.toBe(true);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+  });
+
+  afterEach(() => {
+    _testExports._setIsEnabled(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('certifies a multi-page folder with one fresh scan after the working proof', async () => {
+    const { fts } = installExactMembershipFolders([{ folderPath: '/V', headerMessageIds }], { assigned: true });
+    await tickUntilVerified(fts);
+    expect(fts.listFolderMembership.mock.calls.length).toBeGreaterThanOrEqual(6);
+    // The working proof, then one fresh scan for the whole native digest.
+    expect(scans()).toBe(2);
+    expect(verifiedCheckpoint().expectedCount).toBe(headerMessageIds.length);
+  });
+
+  it('takes a new scan after a folder event while the fresh digest pages', async () => {
+    const { fts } = installExactMembershipFolders([{ folderPath: '/V', headerMessageIds }], { assigned: true });
+    await tickUntilVerifyPhase(fts);
+    const scansBefore = scans();
+    _testExports._invalidateFolderReconProofForEvent('account1', '/V');
+    await tickUntilVerified(fts);
+    // The event released the proof: a new working proof and a new fresh scan.
+    expect(scans() - scansBefore).toBe(2);
+  });
+
+  it('takes a new scan after a native write in the folder while the fresh digest pages', async () => {
+    const { fts, folders } = installExactMembershipFolders([{ folderPath: '/V', headerMessageIds }], { assigned: true });
+    await tickUntilVerifyPhase(fts);
+    const scansBefore = scans();
+    // Native-only and content-neutral: a re-assignment of an owned row still
+    // stales the folder's digest stamp.
+    await fts.assignFolderMembershipBatch([
+      { msgId: `${folderKey}:${headerMessageIds[0]}`, folderId: folders[0].folderId },
+    ]);
+    await tickUntilVerified(fts);
+    expect(scans() - scansBefore).toBe(1);
+  });
+
+  // A verify-phase proof whose fresh digest already completed (pinned while
+  // the drain indexes what the digest found missing) is never the fresh side
+  // of a later attempt: an unsignalled msgDB change before that attempt is
+  // seen by its own fresh scan, never certified from the older snapshot.
+  it('never certifies a completed verification snapshot after an unsignalled msgDB change', async () => {
+    const ids = ['a@example.com', 'b@example.com', 'c@example.com'];
+    const { fts, folders, rowsByURI, nativeRows } = installExactMembershipFolders(
+      [{ folderPath: '/V', headerMessageIds: [ids[0]] }],
+      { assigned: true },
+    );
+    const uri = folders[0].folderURI;
+    const addLocalRow = (headerMessageId) => {
+      rowsByURI.set(uri, [...rowsByURI.get(uri), { msgKey: rowsByURI.get(uri).length + 1, headerMessageId }]);
+    };
+    // The fresh scan taken after the working proof matched sees b, which the
+    // msgDB gained without an event.
+    const realBegin = globalThis.browser.tmMsgNotify.beginFolderMessageScan.getMockImplementation();
+    globalThis.browser.tmMsgNotify.beginFolderMessageScan.mockImplementation(async (...args) => {
+      if (scans() === 2) addLocalRow(ids[1]);
+      return realBegin(...args);
+    });
+    headerIDToWeID.mockImplementation(async id => ids.indexOf(id) + 1);
+    globalThis.browser.messages.get = vi.fn(async id => ({
+      id, headerMessageId: ids[id - 1], folder: { accountId: 'account1', path: '/V' },
+    }));
+    getUniqueMessageKey.mockImplementation(async h => `${folderKey}:${h.headerMessageId}`);
+    buildBatchHeader.mockImplementation(async headers => headers.map(h => ({
+      msgId: `${folderKey}:${h.headerMessageId}`, folderId: folders[0].folderId,
+    })));
+    populateBatchBody.mockImplementation(async rows => ({ successfulRows: rows, failedMsgIds: [] }));
+    const indexed = new Set();
+    fts.indexBatch = vi.fn(async rows => runFtsMembershipMutation(async () => {
+      for (const row of rows) {
+        indexed.add(row.msgId);
+        nativeRows.set(row.msgId, row.folderId);
+      }
+      return { count: rows.length };
+    }, null, { folderIds: rows.map(row => row.folderId), keys: rows.map(row => row.msgId) }));
+    let cAdded = false;
+    let scansAtC = 0;
+    const drain = async () => {
+      if (_testExports._getPendingUpdates().size === 0) return;
+      _testExports._setFtsSearch(fts);
+      await flushPendingUpdates();
+      _testExports._setFtsSearch(null);
+      // After the drain indexed b, the msgDB gains c without an event.
+      if (!cAdded && indexed.has(`${folderKey}:${ids[1]}`)) {
+        cAdded = true;
+        scansAtC = scans();
+        addLocalRow(ids[2]);
+      }
+    };
+    await tickUntilVerified(fts, drain);
+    expect(cAdded).toBe(true);
+    expect(scans()).toBeGreaterThan(scansAtC);
+    expect(verifiedCheckpoint().expectedCount).toBe(3);
+  });
+});
+
 // A stale-direction recheck reads only its own folder: the util scopes the
 // query by folder id, so the direction must hand that id over.
 it('scopes every stale-direction presence recheck to its folder id', async () => {
