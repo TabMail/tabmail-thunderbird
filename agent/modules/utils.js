@@ -524,7 +524,7 @@ export async function safeGetFull(id, preHeader = null) {
 /**
  * Return the real subject for a MessageHeader, restoring "Re:" if TB stripped it.
  * TB's WebExtension API strips "Re:" internally (RFC 5256 normalization).
- * Uses tmHdr.getFlags to check nsMsgMessageFlags.HasRe (0x0010).
+ * Uses tmHdr.getHasReBulk to check nsMsgMessageFlags.HasRe.
  * @param {object} header - TB MessageHeader (needs .id, .folder, .headerMessageId, .subject)
  * @returns {Promise<string>} subject with "Re:" restored if applicable
  */
@@ -532,13 +532,8 @@ export async function getRealSubject(header) {
   const subject = header?.subject || "";
   if (!header) return subject;
   try {
-    const flags = await browser.tmHdr.getFlags(
-      header.folder?.id || "",
-      header.id,
-      header.folder?.path || "",
-      header.headerMessageId || ""
-    );
-    if (flags?.exists && (flags.raw & 0x0010) && !subject.startsWith("Re: ")) {
+    const [hasRe] = await browser.tmHdr.getHasReBulk([header.id]);
+    if (hasRe && !subject.startsWith("Re: ")) {
       return "Re: " + subject;
     }
   } catch (_) {}

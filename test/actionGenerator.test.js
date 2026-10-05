@@ -136,9 +136,8 @@ globalThis.browser = {
   },
   tmHdr: {
     setAction:vi.fn(async()=>true),
-    getMsgKey:vi.fn(async()=>1),
-    getReplied:vi.fn(async()=>false),
-    getFlags: vi.fn().mockResolvedValue({ exists: false }),
+    getRepliedBulk: vi.fn(async (ids) => ids.map(() => false)),
+    getHasReBulk: vi.fn(async (ids) => ids.map(() => false)),
   },
   storage: {
     local: {
@@ -191,7 +190,7 @@ beforeEach(() => {
   mockIsMessageInInboxByUniqueKey.mockResolvedValue(true);
   mockGetRealSubject.mockImplementation(async (header) => header?.subject || "");
   browser.messages.get.mockResolvedValue({ tags: [] });
-  browser.tmHdr.getReplied.mockResolvedValue(false);
+  browser.tmHdr.getRepliedBulk.mockImplementation(async (ids) => ids.map(() => false));
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -676,13 +675,14 @@ describe('getAction semaphore', () => {
 
 describe('generator mutation ownership boundaries',()=>{
  it('downgrades an already-replied cached reply through native projection',async()=>{
-  idbStore['action:test-unique-key']='reply';browser.tmHdr.getReplied.mockResolvedValue(true);
+  idbStore['action:test-unique-key']='reply';browser.tmHdr.getRepliedBulk.mockResolvedValue([true]);
   expect(await getAction(makeHeader())).toBe('none');
+  expect(browser.tmHdr.getRepliedBulk).toHaveBeenCalledWith([1]);
   expect(idbStore['action:test-unique-key']).toBe('none');
   expect(browser.tmHdr.setAction).toHaveBeenCalledWith(1,'none');
  });
  it('commits an already-replied generated reply as none in the first transaction',async()=>{
-  browser.tmHdr.getReplied.mockResolvedValue(true);
+  browser.tmHdr.getRepliedBulk.mockResolvedValue([true]);
   mockSendChat.mockResolvedValue({assistant:'{"action":"reply"}'});mockProcessJSONResponse.mockReturnValue({action:'reply'});
   expect(await getAction(makeHeader(),{forceRecompute:true})).toBe('none');
   expect(mockIdbSet.mock.calls.filter(([values])=>'action:test-unique-key' in values).map(([values])=>values['action:test-unique-key'])).toEqual(['none']);
@@ -707,7 +707,7 @@ describe('generator mutation ownership boundaries',()=>{
 describe('peer cache replied invariant',()=>{
  it('commits a peer reply as none when the live message was already replied',async()=>{
   const {probeAICache}=await import('../agent/modules/deviceSync.js');
-  probeAICache.mockResolvedValueOnce('reply');browser.tmHdr.getReplied.mockResolvedValue(true);
+  probeAICache.mockResolvedValueOnce('reply');browser.tmHdr.getRepliedBulk.mockResolvedValue([true]);
   expect(await getAction(makeHeader())).toBe('none');
   expect(probeAICache).toHaveBeenCalledOnce();expect(mockSendChat).not.toHaveBeenCalled();
   expect(idbStore['action:test-unique-key']).toBe('none');

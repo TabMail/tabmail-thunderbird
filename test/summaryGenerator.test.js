@@ -108,7 +108,7 @@ vi.mock("../agent/modules/senderFilter.js", () => ({
 // ─── Browser mock ───────────────────────────────────────────────────────────
 globalThis.browser = {
   tmHdr: {
-    getFlags: vi.fn().mockResolvedValue({ exists: false }),
+    getHasReBulk: vi.fn(async (ids) => ids.map(() => false)),
   },
   storage: {
     local: {

@@ -51,7 +51,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   globalThis.browser = {
     messages: { get: vi.fn(async () => header), listAttachments, query },
-    tmHdr: { getMsgKey: vi.fn(async () => 7), getReplied: vi.fn(async () => false), getHasAttachmentBulk },
+    tmHdr: { getRepliedBulk: vi.fn(async (ids) => ids.map(() => false)), getHasAttachmentBulk },
   };
 });
 
@@ -164,5 +164,21 @@ describe('email_read attachments when the MIME tree cannot tell', () => {
     const lines = await readLines();
     expect(getHasAttachmentBulk).toHaveBeenCalledWith([42]);
     expect(lines).toContain('has_attachments: unknown');
+  });
+});
+
+describe('email_read replied status', () => {
+  it('reads the replied flag by the message\'s WebExtension id', async () => {
+    safeGetFull.mockResolvedValue(mixed(textPart));
+    browser.tmHdr.getRepliedBulk.mockResolvedValue([true]);
+    const lines = await readLines();
+    expect(browser.tmHdr.getRepliedBulk).toHaveBeenCalledWith([42]);
+    expect(lines).toContain('replied: yes');
+  });
+
+  it('reports not replied when the flag cannot be read', async () => {
+    safeGetFull.mockResolvedValue(mixed(textPart));
+    browser.tmHdr.getRepliedBulk.mockRejectedValue(new Error('boom'));
+    expect(await readLines()).toContain('replied: no');
   });
 });

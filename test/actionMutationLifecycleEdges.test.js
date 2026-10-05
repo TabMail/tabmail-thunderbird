@@ -83,7 +83,7 @@ it('confirmed deletion evicts a fresh action without waiting for its TTL and pre
  expect(h.store[owner.payloadKey(otherKey)]).toBe('delete');expect(h.native.get(9)).toBe('delete');
 });
 it('the semaphore cache-hit return normalizes a reply after the native replied flag changes',async()=>{
- browser.tmHdr.getMsgKey=async()=>1;browser.tmHdr.getReplied=vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+ browser.tmHdr.getRepliedBulk=vi.fn().mockResolvedValueOnce([false]).mockResolvedValueOnce([true]);
  const {getAction}=await import('../agent/modules/actionGenerator.js');
  let release;dependencies.chat.mockImplementationOnce(()=>new Promise(r=>{release=r;}));
  const first=getAction(header);await waitStarted(()=>release);
@@ -91,10 +91,10 @@ it('the semaphore cache-hit return normalizes a reply after the native replied f
  release({assistant:'{"action":"reply"}'});
  expect(await first).toBe('reply');expect(await waiter).toBe('none');
  expect(dependencies.chat).toHaveBeenCalledTimes(1);
- expect(browser.tmHdr.getReplied).toHaveBeenCalledTimes(2);
+ expect(browser.tmHdr.getRepliedBulk).toHaveBeenCalledTimes(2);
  expect(h.store[owner.payloadKey(key)]).toBe('reply');expect(h.native.get(1)).toBe('reply');
  // A newly-started read may persist normalization; superseded waiting work cannot.
- browser.tmHdr.getReplied.mockResolvedValue(true);expect(await getAction(header)).toBe('none');expect(h.store[owner.payloadKey(key)]).toBe('none');expect(h.native.get(1)).toBe('none');
+ browser.tmHdr.getRepliedBulk.mockResolvedValue([true]);expect(await getAction(header)).toBe('none');expect(h.store[owner.payloadKey(key)]).toBe('none');expect(h.native.get(1)).toBe('none');
 });
 it('deferred leave-inbox cleanup clears the moved native projection while preserving an unrelated inbox action',async()=>{
  await owner.setAction(header,'reply');await owner.setAction(other,'delete');
