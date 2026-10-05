@@ -112,4 +112,8 @@ trade-off is accepted because it replaces a whole-index walk of the same rows in
 records its wall time and aggregate counts; a config-valued quiet-inventory delay before it is added only if
 measured wall time approaches the timeout.
 
-
+**Owner-blessed limitations (2026-10-05):** (1) a NULL-owner row that can never be classified keeps global
+membership cleanup incomplete, so orphan and session completion never finish while it exists. Every
+folder's own exact repair still runs, because folder work no longer waits on global cleanup. (2) A session
+that has to migrate many NULL-owner rows pays bounded extra folder sweeps and memo writes. Both fail
+closed, and the owner accepted both.

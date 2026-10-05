@@ -131,5 +131,5 @@ with Thunderbird's msgDB cache manager: at most `mail.db.max_open` open database
 with large databases evicted last. Reconciliation opens one folder at a time, and a stale-entry or
 ownerless-row presence recheck opens only its own folder (ADR-017's folder-scoped recheck), never every
 folder of the profile. A reconciler-specific release would make the user's next visit to a large folder
-re-parse it; whether Thunderbird's own bound is enough for the reported memory growth is the owner's call
-after a live-profile measurement.
+re-parse it. Owner decision 2026-10-05: Thunderbird's own bound is accepted, no reconciler-specific
+release, and no live-profile measurement is required.
