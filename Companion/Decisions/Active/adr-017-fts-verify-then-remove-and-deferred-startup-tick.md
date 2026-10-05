@@ -6,6 +6,8 @@
 
 > **2026-10-03 amendment (branch `agent/tb-recon-pr2b-fast-check`):** `_tryFallbackDeletion` is deleted, with its fallback-only counters and the `findByHeaderMessageId` engine wrappers. A removal event whose own key is not indexed is consumed and removes nothing: a scoped negative is not evidence that a same-Message-ID sibling in another folder is stale, and the fallback had removed live siblings. A genuinely stale sibling is repaired by reconciliation: in exact mode by its folder's next rolling walk (within `walkPeriodMs` plus one tick, ADR-022 PR 2b amendment) or the next startup walk; with legacy helpers by the next session's pass. The removal event still removes and verifies its own key.
 
+> **2026-10-04 amendment (PR 3b, branch `agent/tb-recon-pr3b`):** decision 2 is retired. The deferred startup maintenance tick (`_scheduleStartupTickWhenQuiet`, its timer, `STARTUP_TICK_*`), the dead scheduling chain behind it (`handleMaintenanceAlarm`, `runScheduledMaintenanceTick`, `pickDueMaintenanceType`, `isWithinWeeklyScheduleWindow`, coverage bookkeeping) and both of its signals (`getLastSyncEventMs`, `isReconcilePending` with the volatile pending flag) are deleted. A per-name census found no production caller. `_reconcileCleanupStaleEntries` (named in the context below) is deleted too, also without a production caller. Decision 1 (verify-then-remove) stands. The text below is history.
+
 <!-- BEGIN PRESERVED BLOCK -->
 **Context:** The 2026-06-03 weekly maintenance scan removed a live
 `[Gmail]/Bin` message from FTS as `removedMissing`; the 2026-06-09 scan

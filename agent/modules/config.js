@@ -422,6 +422,8 @@ export const SETTINGS = {
             paceDelayMs: 250,
             pressureDelayMs: 2000,
             errorDelayMs: 10000,
+            // Longest single wait for a folder's backoff to end; the tick re-arms.
+            backoffWaitCapMs: 60 * 1000,
             syncQuietMs: 5000,
             // Exact mode's rolling re-walk: every reverifyIntervalMs a tick
             // admits the completed folders whose next walk is due, so every
@@ -429,6 +431,9 @@ export const SETTINGS = {
             // Startup walks every folder.
             reverifyIntervalMs: 20 * 60 * 1000,
             walkPeriodMs: 24 * 60 * 60 * 1000,
+            // Delay before the membership-state pass replays rows it could
+            // not classify (in-session retry while cleanup is incomplete).
+            membershipUnresolvedRetryMs: 10 * 60 * 1000,
         },
         // Proactive inbox scan - DISABLED.
         // Replaced by tagSort row coloring pass coverage which detects untagged

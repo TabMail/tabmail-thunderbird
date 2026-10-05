@@ -25,6 +25,7 @@ vi.mock('../fts/memoryIndexer.js', () => ({}));
 const { ftsSearch } = await import('../fts/engine.js');
 const {
   _resetFtsOperationCoordinatorForTests,
+  ftsMembershipKeysUnchangedSince,
   ftsMembershipUnchangedSince,
   getFtsMembershipEpoch,
   registerFtsMembershipFolders,
@@ -193,6 +194,48 @@ describe('owner-known writes are attributed to their owners alone', () => {
     const changed = await touched(() => ftsSearch.removeBatch([childKey]));
     expect(changed(CHILD)).toBe(true);
     expect(changed(PARENT)).toBe(true);
+  });
+});
+
+// INVARIANT (stage 3b): every native mutation wrapper reports the exact raw
+// keys it attempts — whether or not its folder attribution uses them — so
+// a key-scoped state-pass verdict is voided by any write to its key.
+describe('native mutation wrappers attribute their exact keys', () => {
+  const key = 'account1:/F:Child:nine@example.com';
+  const other = 'account1:/F:Child:ten@example.com';
+
+  async function keysTouched(write) {
+    const since = getFtsMembershipEpoch();
+    await write();
+    return candidate => !ftsMembershipKeysUnchangedSince([candidate], since);
+  }
+
+  it.each([
+    { label: 'a capable indexBatch', write: () => {
+      native.indexBatch.mockImplementationOnce(async (rows, wire) => { wire.withFolderIds = true; return { count: rows.length }; });
+      return ftsSearch.indexBatch([{ msgId: key, folderId: CHILD }]);
+    } },
+    { label: 'a failed capable indexBatch', write: () => {
+      native.indexBatch.mockImplementationOnce(async (rows, wire) => { wire.withFolderIds = true; throw new Error('native refused'); });
+      return ftsSearch.indexBatch([{ msgId: key, folderId: CHILD }]).catch(() => {});
+    } },
+    { label: 'a legacy indexBatch', write: () => ftsSearch.indexBatch([{ msgId: key, folderId: CHILD }]) },
+    { label: 'an assignment', write: () => ftsSearch.assignFolderMembershipBatch([{ msgId: key, folderId: CHILD }]) },
+    { label: 'a removal', write: () => ftsSearch.removeBatch([key]) },
+  ])('$label records its row\'s key and no other', async ({ write }) => {
+    const changed = await keysTouched(write);
+    expect(changed(key)).toBe(true);
+    expect(changed(other)).toBe(false);
+  });
+
+  it('a fenced wrapper call records its key when the fence completes', async () => {
+    const since = getFtsMembershipEpoch();
+    await withFtsMembershipFence(since, async (token) => {
+      await ftsSearch.removeBatch([key], token);
+      expect(ftsMembershipKeysUnchangedSince([key], since)).toBe(true);
+    }, { mutation: true, scope: { keys: [] } });
+    expect(ftsMembershipKeysUnchangedSince([key], since)).toBe(false);
+    expect(ftsMembershipKeysUnchangedSince([other], since)).toBe(true);
   });
 });
 

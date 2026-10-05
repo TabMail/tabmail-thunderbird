@@ -42,3 +42,5 @@ unconditionally and applies the same keep-rule before `parseUniqueId`. Five test
 `test/ftsFolderRecon.test.js` and one in the scheduler suite had ghost rows under accounts absent from
 the inventory (`gone:`, `ghostAcct:`) and asserted removal — blessing tests; they now use a loaded
 account with a vanished folder (`account1:/Deleted`), which is the only legitimate orphan shape.
+
+> **2026-10-04 (PR 3b):** the legacy `_reconcileCleanupStaleEntries` path named above is deleted (no production caller); the account-liveness guard lives on in `_folderReconTrustedAccountIds` at every removal site. "Post-cutover" now reads "after global cleanup completes": exact folder work no longer waits for it (ADR-024 PR 3b amendment).

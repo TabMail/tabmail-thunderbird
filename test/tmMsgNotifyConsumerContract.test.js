@@ -125,16 +125,13 @@ it('native additions and deletions reach the exact durable FTS account/folder in
   state.getListener().msgAdded(header);
   state.getListener().msgsDeleted([{ ...header, messageId: 'removed@example.test' }]);
   await Promise.all(work);
-  expect([...indexer._testExports._getPendingUpdates()].map(([key, value]) => [key, value.type])).toEqual([
-    ['synthetic:/Inbox:added@example.test', 'new'],
-    ['synthetic:/Inbox:removed@example.test', 'deleted'],
-  ]);
-
-  await indexer.disposeIncrementalIndexer();
-  expect(stored.fts_pending_updates.map(row => [row.uniqueKey, row.type, row.folderKey])).toEqual([
+  expect([...indexer._testExports._getPendingUpdates()].map(([key, value]) => [key, value.type, value.folderKey])).toEqual([
     ['synthetic:/Inbox:added@example.test', 'new', 'synthetic:/Inbox'],
     ['synthetic:/Inbox:removed@example.test', 'deleted', 'synthetic:/Inbox'],
   ]);
+
+  await indexer.disposeIncrementalIndexer();
+  expect(stored.fts_pending_updates).toBeUndefined();
   state.instance.onShutdown(false);
 });
 
@@ -196,7 +193,7 @@ for (const readiness of ['not initialized', 'disabled in settings']) {
   });
 }
 
-it('a native removal persists its intention before the ordinary batch timer runs', async () => {
+it('a native removal stays queued, unpersisted, until the ordinary batch timer runs', async () => {
   const state = bridge();
   await indexer.setupExperimentListeners();
   stored.chat_ftsIncrementalEnabled = true;
@@ -213,8 +210,9 @@ it('a native removal persists its intention before the ordinary batch timer runs
   ).type).toBe('deleted');
   await vi.advanceTimersByTimeAsync(2100);
   expect(engine.removeBatch).not.toHaveBeenCalled();
-  expect(stored.fts_pending_updates?.map(row => [row.uniqueKey, row.type, row.folderKey])).toEqual([
-    ['synthetic:/Inbox:removal-only@example.test', 'deleted', 'synthetic:/Inbox'],
-  ]);
+  expect(indexer._testExports._getPendingUpdates().get(
+    'synthetic:/Inbox:removal-only@example.test',
+  )).toMatchObject({ type: 'deleted', folderKey: 'synthetic:/Inbox' });
+  expect(stored.fts_pending_updates).toBeUndefined();
   state.instance.onShutdown(false);
 });

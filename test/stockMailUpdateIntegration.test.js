@@ -85,9 +85,10 @@ it('primes the listener before agent startup and queues a Gmail member with read
  await emit({id:42},{flagged:true});
  expect([..._testExports._getPendingUpdates().keys()]).toEqual([indexKey]);
  await vi.advanceTimersByTimeAsync(2000);
- expect(stored.fts_pending_updates).toEqual([expect.objectContaining({
+ expect(_testExports._getPendingUpdates().get(indexKey)).toMatchObject({
   uniqueKey:indexKey,type:'new',folderKey:'synthetic-account:/[Gmail]/Starred',
- })]);
+ });
+ expect(stored.fts_pending_updates).toBeUndefined();
  expect(app.originalBrowser.messages.get).toHaveBeenCalledWith(42);
  expect(app.originalBrowser.messages.update).not.toHaveBeenCalled();
  expect(app.originalBrowser.messages.move).not.toHaveBeenCalled();
@@ -109,7 +110,8 @@ it('startup fallback retries a failed update registration without late duplicate
   await emit({ id: 42 }, { flagged: true });
   expect([..._testExports._getPendingUpdates().keys()]).toEqual([indexKey]);
   await vi.advanceTimersByTimeAsync(2000);
-  expect(stored.fts_pending_updates).toEqual([expect.objectContaining({uniqueKey:indexKey,type:'new'})]);
+  expect(_testExports._getPendingUpdates().get(indexKey)).toMatchObject({uniqueKey:indexKey,type:'new'});
+  expect(stored.fts_pending_updates).toBeUndefined();
   expect(app.originalBrowser.messages.update).not.toHaveBeenCalled();
   expect(app.originalBrowser.messages.move).not.toHaveBeenCalled();
   expect(app.originalBrowser.messages.delete).not.toHaveBeenCalled();
@@ -126,11 +128,11 @@ it('retains failed indexing work when the same member is updated again',async()=
   expect(_testExports._getPendingUpdates().get(indexKey)).toMatchObject({
     type:'new',hasFailed:true,lastFailedAt:failed.lastFailedAt,
   });
+  expect(_testExports._getPendingUpdates().get(indexKey)).toMatchObject({
+    folderKey:'synthetic-account:/[Gmail]/Starred',
+  });
   await disposeIncrementalIndexer();
-  expect(stored.fts_pending_updates).toEqual([expect.objectContaining({
-    uniqueKey:indexKey,type:'new',folderKey:'synthetic-account:/[Gmail]/Starred',
-    hasFailed:true,lastFailedAt:failed.lastFailedAt,
-  })]);
+  expect(stored.fts_pending_updates).toBeUndefined();
   expect(browser.messages.update).not.toHaveBeenCalled();
   expect(browser.messages.move).not.toHaveBeenCalled();
   expect(browser.messages.delete).not.toHaveBeenCalled();

@@ -2,11 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// ftsReconcile.test.js — Tests for FTS boot-time reconciliation stale-entry cleanup
-//
-// Tests _reconcileCleanupStaleEntries (Phase 2 of runPostInitReconcile):
-// After indexing current messages, the reconciler queries FTS entries in the
-// reconcile window and removes any whose messages no longer exist in TB.
+// ftsReconcile.test.js — Tests for FTS boot-time reconciliation: the orphan
+// tail's quiet predicate and the fingerprint startup path. (The legacy
+// date-window stale-entry cleanup had no production caller and was deleted,
+// with its tests, in PR 3b.)
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -96,42 +95,10 @@ globalThis.browser = {
 
 const { logFtsBatchOperation, logFtsOperation } = await import('../agent/modules/eventLogger.js');
 const {
-  _reconcileCleanupStaleEntries,
-  isReconcilePending,
-  getLastSyncEventMs,
+  getIncrementalIndexerStatus,
   onExperimentMessageRemoved,
   _testExports,
 } = await import('../fts/incrementalIndexer.js');
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makeFtsSearch({
-  queryByDateRangeResults = [],
-  removeBatchResult = { count: 0 },
-} = {}) {
-  // Support multiple calls returning different results.
-  // Account liveness is now checked lazily per entry (no pre-check query),
-  // so only the main cursor loop consumes queryByDateRange responses.
-  const queryFn = vi.fn();
-  if (Array.isArray(queryByDateRangeResults[0])) {
-    // Array of arrays — each call returns the next array
-    for (const result of queryByDateRangeResults) {
-      queryFn.mockResolvedValueOnce(result);
-    }
-  } else {
-    // Single array — main loop, then empty
-    queryFn.mockResolvedValueOnce(queryByDateRangeResults); // main loop
-    queryFn.mockResolvedValueOnce([]);                       // end of cursor
-  }
-
-  return {
-    queryByDateRange: queryFn,
-    removeBatch: vi.fn(async () => removeBatchResult),
-    stats: vi.fn(async () => ({ totalDocs: 0 })),
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -151,488 +118,27 @@ beforeEach(() => {
   }
 });
 
-describe('_reconcileCleanupStaleEntries', () => {
-  it('returns zeros when FTS has no entries in the window', async () => {
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [] });
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result).toEqual({ checked: 0, removed: 0, accountsSkipped: 0, removeFailed: false });
-    expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
-  });
-
-  it('keeps entries that still exist in TB at their indexed folder', async () => {
-    const entry = {
-      msgId: 'account1:/INBOX:msg-header-id-1@example.com',
-      subject: 'Test message',
-      dateMs: Date.now() - 3600000,
-    };
-
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [entry] });
-
-    // Message still exists at its folder
-    mockHeaderIDToWeID.mockResolvedValue(42);
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(1);
-    expect(result.removed).toBe(0);
-    expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
-
-    // Verify headerIDToWeID was called with correct args (no global fallback)
-    expect(mockHeaderIDToWeID).toHaveBeenCalledWith(
-      'msg-header-id-1@example.com',
-      { accountId: 'account1', path: '/INBOX' },
-      false,
-      false,
-    );
-  });
-
-  it('removes entries for messages no longer at their indexed folder', async () => {
-    const staleEntry = {
-      msgId: 'account1:/INBOX:moved-msg@example.com',
-      subject: 'Moved to archive',
-      dateMs: Date.now() - 3600000,
-    };
-
-    const ftsSearch = makeFtsSearch({
-      queryByDateRangeResults: [staleEntry],
-      removeBatchResult: { count: 1 },
-    });
-
-    // Message no longer exists at INBOX (was moved)
-    mockHeaderIDToWeID.mockResolvedValue(null);
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(1);
-    expect(result.removed).toBe(1);
-    expect(ftsSearch.removeBatch).toHaveBeenCalledWith(['account1:/INBOX:moved-msg@example.com']);
-  });
-
-  it('handles mix of stale and current entries', async () => {
-    const entries = [
-      {
-        msgId: 'account1:/INBOX:still-here@example.com',
-        subject: 'Still in inbox',
-        dateMs: Date.now() - 3600000,
-      },
-      {
-        msgId: 'account1:/INBOX:moved-away@example.com',
-        subject: 'Moved to archive',
-        dateMs: Date.now() - 7200000,
-      },
-      {
-        msgId: 'account1:/Deleted Messages:permanently-deleted@example.com',
-        subject: 'Expunged',
-        dateMs: Date.now() - 10800000,
-      },
-    ];
-
-    const ftsSearch = makeFtsSearch({
-      queryByDateRangeResults: entries,
-      removeBatchResult: { count: 2 },
-    });
-
-    // First message exists, second and third don't
-    mockHeaderIDToWeID
-      .mockResolvedValueOnce(10) // still-here: exists
-      .mockResolvedValueOnce(null) // moved-away: gone
-      .mockResolvedValueOnce(null); // permanently-deleted: gone
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(3);
-    expect(result.removed).toBe(2);
-    expect(ftsSearch.removeBatch).toHaveBeenCalledWith([
-      'account1:/INBOX:moved-away@example.com',
-      'account1:/Deleted Messages:permanently-deleted@example.com',
-    ]);
-  });
-
-  it('skips entries with unparseable msgId format', async () => {
-    const entries = [
-      {
-        msgId: 'bad-format-no-colons',
-        subject: 'Broken',
-        dateMs: Date.now() - 3600000,
-      },
-      {
-        msgId: 'account1:/INBOX:valid-msg@example.com',
-        subject: 'Valid',
-        dateMs: Date.now() - 3600000,
-      },
-    ];
-
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: entries });
-
-    // Only the valid one gets checked
-    mockHeaderIDToWeID.mockResolvedValue(42);
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(2); // both counted as checked
-    expect(result.removed).toBe(0);
-    expect(mockHeaderIDToWeID).toHaveBeenCalledTimes(1); // only valid one
-  });
-
-  it('does not remove entries when headerIDToWeID throws', async () => {
-    const entry = {
-      msgId: 'account1:/INBOX:error-msg@example.com',
-      subject: 'Error checking',
-      dateMs: Date.now() - 3600000,
-    };
-
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [entry] });
-
-    // Error during existence check — should NOT remove (conservative)
-    mockHeaderIDToWeID.mockRejectedValue(new Error('IMAP disconnected'));
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(1);
-    expect(result.removed).toBe(0);
-    expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
-  });
-
-  it('handles pagination when FTS returns full chunks', async () => {
-    // Simulate two chunks: first chunk is full (200 entries), second is partial
-    const chunk1 = Array.from({ length: 200 }, (_, i) => ({
-      msgId: `account1:/INBOX:msg-${i}@example.com`,
-      subject: `Msg ${i}`,
-      dateMs: Date.now() - (i + 1) * 60000, // 1 min apart, newest first
-    }));
-    const chunk2 = [
-      {
-        msgId: 'account1:/INBOX:msg-200@example.com',
-        subject: 'Msg 200',
-        dateMs: Date.now() - 201 * 60000,
-      },
-    ];
-
-    const ftsSearch = makeFtsSearch({
-      queryByDateRangeResults: [chunk1, chunk2],
-    });
-
-    // All messages still exist
-    mockHeaderIDToWeID.mockResolvedValue(1);
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(201);
-    expect(result.removed).toBe(0);
-    // queryByDateRange: 2 pagination calls (no pre-check — liveness is lazy)
-    expect(ftsSearch.queryByDateRange).toHaveBeenCalledTimes(2);
-  });
-
-  it('logs reconcile_stale events for each stale entry found', async () => {
-    const staleEntry = {
-      msgId: 'account1:/INBOX:stale@example.com',
-      subject: 'Stale message',
-      dateMs: Date.now() - 3600000,
-    };
-
-    const ftsSearch = makeFtsSearch({
-      queryByDateRangeResults: [staleEntry],
-      removeBatchResult: { count: 1 },
-    });
-
-    mockHeaderIDToWeID.mockResolvedValue(null);
-
-    await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(logFtsOperation).toHaveBeenCalledWith(
-      'reconcile_stale',
-      'found',
-      expect.objectContaining({
-        msgId: 'account1:/INBOX:stale@example.com',
-        folderPath: '/INBOX',
-        headerID: 'stale@example.com',
-      }),
-    );
-  });
-
-  it('logs reconcile_phase2 start and complete events', async () => {
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [] });
-
-    await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(logFtsBatchOperation).toHaveBeenCalledWith(
-      'reconcile_phase2',
-      'start',
-      expect.objectContaining({
-        startDate: expect.any(String),
-        endDate: expect.any(String),
-      }),
-    );
-
-    expect(logFtsBatchOperation).toHaveBeenCalledWith(
-      'reconcile_phase2',
-      'complete',
-      expect.objectContaining({
-        checked: 0,
-        staleFound: 0,
-        removed: 0,
-      }),
-    );
-  });
-
-  it('verify-then-remove: keeps candidate when recheck finds the message still present', async () => {
-    const falseStaleEntry = {
-      msgId: 'account1:/[Gmail]/Bin:still-in-bin@example.com',
-      subject: 'Live message, transient query miss',
-      dateMs: Date.now() - 3600000,
-    };
-
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [falseStaleEntry] });
-
-    // First-pass folder-constrained lookup misses (transient msgDB state)...
-    mockHeaderIDToWeID.mockResolvedValue(null);
-    // ...but the global recheck finds it still in its indexed folder.
-    mockRecheckMessageInFolder.mockResolvedValue('present');
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(1);
-    expect(result.removed).toBe(0);
-    expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
-
-    // Recheck called with the parsed headerID + weFolder
-    expect(mockRecheckMessageInFolder).toHaveBeenCalledWith(
-      'still-in-bin@example.com',
-      { accountId: 'account1', path: '/[Gmail]/Bin' },
-    );
-
-    expect(logFtsOperation).toHaveBeenCalledWith(
-      'reconcile_stale',
-      'recheck_present',
-      expect.objectContaining({ msgId: 'account1:/[Gmail]/Bin:still-in-bin@example.com' }),
-    );
-  });
-
-  it('verify-then-remove: keeps candidate when recheck errors (unconfirmed)', async () => {
-    const entry = {
-      msgId: 'account1:/INBOX:recheck-error@example.com',
-      subject: 'Recheck errored',
-      dateMs: Date.now() - 3600000,
-    };
-
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [entry] });
-
-    mockHeaderIDToWeID.mockResolvedValue(null);
-    mockRecheckMessageInFolder.mockResolvedValue('error');
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.removed).toBe(0);
-    expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
-
-    expect(logFtsOperation).toHaveBeenCalledWith(
-      'reconcile_stale',
-      'recheck_error',
-      expect.objectContaining({ msgId: 'account1:/INBOX:recheck-error@example.com' }),
-    );
-  });
-
-  it('verify-then-remove: removes only recheck-confirmed candidates in a mixed batch', async () => {
-    const entries = [
-      {
-        msgId: 'account1:/[Gmail]/Bin:false-positive@example.com',
-        subject: 'Transient miss',
-        dateMs: Date.now() - 3600000,
-      },
-      {
-        msgId: 'account1:/[Gmail]/Bin:really-gone@example.com',
-        subject: 'Expunged for real',
-        dateMs: Date.now() - 7200000,
-      },
-    ];
-
-    const ftsSearch = makeFtsSearch({
-      queryByDateRangeResults: entries,
-      removeBatchResult: { count: 1 },
-    });
-
-    // Both miss on the first-pass folder-constrained lookup
-    mockHeaderIDToWeID.mockResolvedValue(null);
-    // Recheck: first is still present, second confirmed absent
-    mockRecheckMessageInFolder
-      .mockResolvedValueOnce('present')
-      .mockResolvedValueOnce('absent');
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(2);
-    expect(result.removed).toBe(1);
-    expect(ftsSearch.removeBatch).toHaveBeenCalledWith([
-      'account1:/[Gmail]/Bin:really-gone@example.com',
-    ]);
-  });
-
-  it('handles removeBatch failure gracefully', async () => {
-    const staleEntry = {
-      msgId: 'account1:/INBOX:stale@example.com',
-      subject: 'Stale',
-      dateMs: Date.now() - 3600000,
-    };
-
-    const ftsSearch = makeFtsSearch({ queryByDateRangeResults: [staleEntry] });
-    ftsSearch.removeBatch = vi.fn().mockRejectedValue(new Error('native disconnected'));
-
-    mockHeaderIDToWeID.mockResolvedValue(null);
-
-    // Should not throw
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(1);
-    expect(result.removed).toBe(0); // removeBatch failed, so removed stays 0
-    // Confirmed-stale entries are still in FTS — caller must NOT advance the watermark
-    expect(result.removeFailed).toBe(true);
-  });
-
-  it('handles queryByDateRange failure gracefully', async () => {
-    const ftsSearch = {
-      queryByDateRange: vi.fn().mockRejectedValue(new Error('native crash')),
-      removeBatch: vi.fn(),
-      stats: vi.fn(),
-    };
-
-    // Should not throw
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(0);
-    expect(result.removed).toBe(0);
-    // A Phase 2 exception means the window was NOT verified — the caller
-    // must not advance the watermark (same contract as a removeBatch throw)
-    expect(result.removeFailed).toBe(true);
-
-    // Should log error
-    expect(logFtsBatchOperation).toHaveBeenCalledWith(
-      'reconcile_phase2',
-      'error',
-      expect.objectContaining({ error: expect.stringContaining('native crash') }),
-    );
-  });
-
-  it('checks account liveness lazily per entry and skips unavailable accounts', async () => {
-    const entries = [
-      {
-        msgId: 'account1:/INBOX:gone-from-live-account@example.com',
-        subject: 'Live account',
-        dateMs: Date.now() - 3600000,
-      },
-      {
-        msgId: 'account9:/INBOX:msg-in-dead-account@example.com',
-        subject: 'Unavailable account',
-        dateMs: Date.now() - 7200000,
-      },
-    ];
-
-    const ftsSearch = makeFtsSearch({
-      queryByDateRangeResults: entries,
-      removeBatchResult: { count: 1 },
-    });
-
-    mockHeaderIDToWeID.mockResolvedValue(null);
-    // default recheck mock: 'absent'
-
-    // account9 is not queryable
-    browser.accounts.get.mockImplementation(async (id) => (id === 'account9' ? null : { id }));
-    try {
-      const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-      expect(result.checked).toBe(2);
-      expect(result.accountsSkipped).toBe(1);
-      // Only the live account's entry was nominated and removed
-      expect(ftsSearch.removeBatch).toHaveBeenCalledWith([
-        'account1:/INBOX:gone-from-live-account@example.com',
-      ]);
-      // The dead account's entry never reached existence checking
-      expect(mockHeaderIDToWeID).toHaveBeenCalledTimes(1);
-    } finally {
-      browser.accounts.get.mockImplementation(async (id) => ({ id }));
-    }
-  });
-
-  it('does not skip same-millisecond entries at a full-chunk boundary (inclusive cursor + dedup)', async () => {
-    // Date headers have second granularity, so dateMs ties are routine.
-    // 205 entries where 6 share one dateMs spanning the 200-entry chunk
-    // boundary — an exclusive `oldestMs - 1` cursor would skip the tied
-    // entries beyond the boundary forever.
-    const base = Date.now() - 1000;
-    const TIE_MS = base - 197 * 1000;
-    const allEntries = Array.from({ length: 205 }, (_, i) => ({
-      msgId: `account1:/INBOX:tie-${i}@example.com`,
-      subject: `Msg ${i}`,
-      dateMs: (i >= 197 && i <= 202) ? TIE_MS : base - i * 1000,
-    }));
-
-    // Real cursor semantics: filter by the passed end date, DESC, limited
-    const ftsSearch = {
-      queryByDateRange: vi.fn(async (start, end, limit) =>
-        allEntries
-          .filter((e) => e.dateMs >= start.getTime() && e.dateMs <= end.getTime())
-          .sort((a, b) => b.dateMs - a.dateMs)
-          .slice(0, limit),
-      ),
-      removeBatch: vi.fn(async () => ({ count: 0 })),
-      stats: vi.fn(async () => ({ totalDocs: 0 })),
-    };
-
-    // Everything still exists — we only care about coverage
-    mockHeaderIDToWeID.mockResolvedValue(42);
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.checked).toBe(205); // every entry verified, none tie-skipped
-    expect(ftsSearch.removeBatch).not.toHaveBeenCalled();
-  });
-
-  it('recheck loop pings the native FTS keepalive every 50 candidates', async () => {
-    // 51 stale candidates → exactly one ping (at recheckedCount === 50).
-    const entries = Array.from({ length: 51 }, (_, i) => ({
-      msgId: `account1:/[Gmail]/Bin:gone-${i}@example.com`,
-      subject: `Gone ${i}`,
-      dateMs: Date.now() - (i + 1) * 60000,
-    }));
-
-    const ftsSearch = makeFtsSearch({
-      queryByDateRangeResults: entries,
-      removeBatchResult: { count: 51 },
-    });
-
-    mockHeaderIDToWeID.mockResolvedValue(null);
-    // default recheck mock: 'absent' → all confirmed
-
-    const result = await _reconcileCleanupStaleEntries(ftsSearch, Date.now() - 86400000);
-
-    expect(result.removed).toBe(51);
-    expect(ftsSearch.stats).toHaveBeenCalledTimes(1);
-  });
-});
-
 // ---------------------------------------------------------------------------
-// Real implementations of the startup-tick readiness signals
-// (maintenanceStartupTick.test.js mocks these — this covers the real code)
+// The orphan tail's quiet predicate (replaces the deleted volatile pending flag)
 // ---------------------------------------------------------------------------
 
-describe('isReconcilePending / getLastSyncEventMs (real implementations)', () => {
+describe('_folderReconQuietSince (orphan tail quiet predicate)', () => {
   afterEach(() => {
+    _testExports._getPendingUpdates().clear();
     _testExports._setIsEnabled(false);
   });
 
-  it('is true for a fresh reconciliation generation until its pass clears it', async () => {
+  it('holds for a quiet generation and has no side effect', () => {
     _testExports._setIsEnabled(true);
     _testExports._resetFolderReconState();
-    expect(await isReconcilePending()).toBe(true);
-
     const generation = _testExports._getFolderReconGeneration();
     const eventSerial = _testExports._getFolderReconEventSerial();
-    expect(_testExports._clearFolderReconPendingIfCurrent(generation, eventSerial)).toBe(true);
-    expect(await isReconcilePending()).toBe(false);
+    expect(_testExports._folderReconQuietSince(generation, eventSerial)).toBe(true);
+    // A pure predicate: asking again changes nothing.
+    expect(_testExports._folderReconQuietSince(generation, eventSerial)).toBe(true);
   });
 
-  it('stays pending when a sync event arrived after the pass started or the generation changed', async () => {
+  it('refuses after a message event since the pass started, or a generation change', async () => {
     _testExports._setIsEnabled(true);
     _testExports._resetFolderReconState();
     const generation = _testExports._getFolderReconGeneration();
@@ -643,41 +149,37 @@ describe('isReconcilePending / getLastSyncEventMs (real implementations)', () =>
       _testExports._setLastSyncEventMs(Date.now());
       const eventSerial = _testExports._getFolderReconEventSerial();
       await onExperimentMessageRemoved({ accountId: 'account1', folderPath: '/INBOX', headerMessageId: '' });
-      expect(getLastSyncEventMs()).toBe(Date.now());
-      expect(_testExports._clearFolderReconPendingIfCurrent(generation, eventSerial)).toBe(false);
-      expect(await isReconcilePending()).toBe(true);
+      expect(_testExports._getLastSyncEventMs()).toBe(Date.now());
+      expect(_testExports._folderReconQuietSince(generation, eventSerial)).toBe(false);
+      // Control: a serial read after the event is quiet.
+      expect(_testExports._folderReconQuietSince(
+        generation,
+        _testExports._getFolderReconEventSerial(),
+      )).toBe(true);
 
       _testExports._resetFolderReconState();
-      expect(_testExports._clearFolderReconPendingIfCurrent(generation, _testExports._getFolderReconEventSerial())).toBe(false);
-      expect(await isReconcilePending()).toBe(true);
+      expect(_testExports._folderReconQuietSince(
+        generation,
+        _testExports._getFolderReconEventSerial(),
+      )).toBe(false);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('returns false when incremental indexing is disabled, even with a pending generation', async () => {
-    // A disabled indexer never runs reconcile, so the startup tick must not
-    // wait to its max-wait cap for a flag nothing will clear.
-    _testExports._resetFolderReconState();
-    _testExports._setIsEnabled(false);
-    expect(await isReconcilePending()).toBe(false);
-  });
-
-  it('answers from session state without reading storage', async () => {
+  it('refuses while an update is queued', () => {
     _testExports._setIsEnabled(true);
     _testExports._resetFolderReconState();
-    browser.storage.local.get.mockClear();
-    expect(await isReconcilePending()).toBe(true);
-    expect(browser.storage.local.get).not.toHaveBeenCalled();
-  });
-
-  it('getLastSyncEventMs reflects the tracked sync-event timestamp', () => {
-    const before = getLastSyncEventMs();
-    expect(typeof before).toBe('number');
-    const marker = Date.now() - 12345;
-    _testExports._setLastSyncEventMs(marker);
-    expect(getLastSyncEventMs()).toBe(marker);
-    _testExports._setLastSyncEventMs(before);
+    const generation = _testExports._getFolderReconGeneration();
+    const eventSerial = _testExports._getFolderReconEventSerial();
+    _testExports._getPendingUpdates().set('account1:/INBOX:queued@example.com', {
+      uniqueKey: 'account1:/INBOX:queued@example.com',
+      type: 'new',
+      timestamp: Date.now(),
+    });
+    expect(_testExports._folderReconQuietSince(generation, eventSerial)).toBe(false);
+    _testExports._getPendingUpdates().clear();
+    expect(_testExports._folderReconQuietSince(generation, eventSerial)).toBe(true);
   });
 });
 
@@ -756,14 +258,16 @@ describe('runPostInitReconcile fingerprint path', () => {
       _testExports._setLastSyncEventMs(0);
 
       await _testExports.runPostInitReconcile(ftsSearch);
-      await _testExports._runFolderReconSchedulerTick(ftsSearch);
+      const result = await _testExports._runFolderReconSchedulerTick(ftsSearch);
 
       expect(browser.messages.query).not.toHaveBeenCalled();
       expect(browser.messages.continueList).not.toHaveBeenCalled();
       expect(ftsSearch.queryByDateRange).toBeUndefined();
       expect(browser.tmMsgNotify.getFolderState).toHaveBeenCalledOnce();
       expect(storageData.fts_folder_recon_memo.folders['account1:/INBOX'].verified).toBe(true);
-      expect(_testExports._isFolderReconPending()).toBe(false);
+      // The session completed through the orphan tail's quiet predicate.
+      expect(result).toMatchObject({ complete: true });
+      expect((await getIncrementalIndexerStatus()).folderRecon.outcomes.complete).toBe(true);
       expect(storageData.fts_reconcile_watermark).toBeUndefined();
     } finally {
       _testExports._setIsEnabled(false);
@@ -771,7 +275,7 @@ describe('runPostInitReconcile fingerprint path', () => {
     }
   });
 
-  it('leaves the pending marker when the proof throws', async () => {
+  it('leaves the session incomplete when the proof throws', async () => {
     const ftsSearch = arrangeFingerprintReconcile({
       fingerprintImpl: async () => {
         throw new Error('native disconnected');
@@ -783,9 +287,13 @@ describe('runPostInitReconcile fingerprint path', () => {
 
     // Feature detection is fail-closed inside the phase, so the current run
     // completes as unsupported; the per-folder checkpoint is not written and
-    // the startup-pending marker remains for the next helper/app restart.
+    // the session stays incomplete: no folder is verified and the next tick
+    // does not complete.
     expect(storageData.fts_folder_recon_memo).toBeUndefined();
-    expect(_testExports._isFolderReconPending()).toBe(true);
+    expect(_testExports._getFolderReconSessionDone()).not.toContain('account1:/INBOX');
+    const next = await _testExports._runFolderReconSchedulerTick(ftsSearch);
+    expect(next?.complete).not.toBe(true);
+    expect((await getIncrementalIndexerStatus()).folderRecon.outcomes.complete).toBe(false);
     expect(storageData.fts_reconcile_watermark).toBeUndefined();
   });
 });

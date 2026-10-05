@@ -41,7 +41,7 @@ globalThis.browser = { storage: { local: {
       ? Object.fromEntries(value.map(key => [key, stored[key]]))
       : Object.fromEntries(Object.entries(value).map(([key, fallback]) => [key, stored[key] ?? fallback]))),
   set: vi.fn(async value => Object.assign(stored, structuredClone(value))),
-  remove: vi.fn(async key => { delete stored[key]; }),
+  remove: vi.fn(async keys => { for (const key of [keys].flat()) delete stored[key]; }),
 } } };
 
 const indexer = await import('../fts/incrementalIndexer.js');
@@ -340,94 +340,59 @@ it('startup recovery removes a deletion replayed before FTS readiness and preser
   state.instance.onShutdown(false);
 });
 
-it('a native deletion arriving during restore keeps precedence over an older durable add', async () => {
-  const key = 'synthetic:/Inbox:removed@example.test';
+// The pending-update queue is not persisted (owner 2026-10-04): a previous
+// session's stored queue is never applied, so its stale deletion cannot
+// remove a row that is live now. The startup walk re-derives pending work.
+it('never applies a previous session\'s stored queue: its stale deletion keeps a live row', async () => {
+  const live = 'synthetic:/Inbox:live@example.test';
   const control = 'synthetic:/Inbox:other@example.test';
-  const oldRows = [key, control].map(uniqueKey => ({
-    type: 'new', uniqueKey, folderKey: 'synthetic:/Inbox', timestamp: 1,
-    hasFailed: true, lastFailedAt: 1, metadata: {},
+  const engine = makeFtsStore([live]);
+  stored.fts_pending_updates = [live, control].map(uniqueKey => ({
+    type: 'deleted', uniqueKey, folderKey: 'synthetic:/Inbox', timestamp: 1,
+    hasFailed: false, lastFailedAt: 0, metadata: {},
   }));
-  // persistPendingUpdates is the producer of this previous-session payload.
-  stored.fts_pending_updates = structuredClone(oldRows);
   stored.chat_ftsIncrementalEnabled = true;
   stored.chat_ftsIncrementalBatchDelay = 5000;
   const state = bridge();
-  await indexer.setupExperimentListeners();
-  expect(state.native.size).toBe(1);
+  await indexer.initIncrementalIndexer(engine);
   expect(indexer._testExports._getPendingUpdates().size).toBe(0);
+  expect(stored.fts_pending_updates).toBeUndefined();
 
-  const originalGet = browser.storage.local.get.getMockImplementation();
-  let release, restoreStarted = false;
-  const oldRead = new Promise(resolve => { release = resolve; });
-  browser.storage.local.get.mockImplementation(value => {
-    if (value === 'fts_pending_updates' && !restoreStarted) {
-      restoreStarted = true;
-      return oldRead;
-    }
-    return originalGet(value);
-  });
-  try {
-    const initializing = indexer.initIncrementalIndexer({ removeBatch: vi.fn() });
-    for (let step = 0; step < 20 && !restoreStarted; step++) await Promise.resolve();
-    expect(restoreStarted).toBe(true);
-    state.getListener().msgsDeleted([{ ...header, messageId: 'removed@example.test' }]);
-    await Promise.all(work);
-    expect(work).toHaveLength(1);
-    expect(indexer._testExports._getPendingUpdates().get(key)).toMatchObject({ type: 'deleted' });
-    release({ fts_pending_updates: structuredClone(oldRows) });
-    await initializing;
-    expect(indexer._testExports._getPendingUpdates().get(key)).toMatchObject({ type: 'deleted' });
-    expect(indexer._testExports._getPendingUpdates().get(control)).toMatchObject({
-      type: 'new', hasFailed: true, lastFailedAt: 1,
-    });
-    await indexer.disposeIncrementalIndexer();
-    expect(stored.fts_pending_updates.map(row => [row.uniqueKey, row.type])).toEqual([
-      [key, 'deleted'], [control, 'new'],
-    ]);
-    expect(stored.fts_pending_updates.find(row => row.uniqueKey === control)).toMatchObject({
-      hasFailed: true, lastFailedAt: 1,
-    });
-  } finally {
-    browser.storage.local.get.mockImplementation(originalGet);
-    state.instance.onShutdown(false);
-  }
+  await vi.advanceTimersByTimeAsync(5001);
+  expect(engine.removeBatch).not.toHaveBeenCalled();
+  expect([...engine._keys]).toEqual([live]);
+  // Control: a deletion received in this session still drains.
+  state.getListener().msgsDeleted([{ ...header, messageId: 'live@example.test' }]);
+  await Promise.all(work);
+  await vi.advanceTimersByTimeAsync(5001);
+  expect(engine.removeBatch.mock.calls.flatMap(([keys]) => keys)).toEqual([live]);
+  expect(stored.fts_pending_updates).toBeUndefined();
+  state.instance.onShutdown(false);
 });
 
-for (const restart of [false, true]) {
-  it(`${restart ? 'restored' : 'live'} native deletion drains without a later mail event`, async () => {
-    const deleted = 'synthetic:/Inbox:removed@example.test';
-    const live = 'synthetic:/Inbox:live@example.test';
-    const engine = makeFtsStore([deleted, live]);
-    stored.chat_ftsIncrementalEnabled = true;
-    stored.chat_ftsIncrementalBatchDelay = 5000;
-    let state = bridge();
-    await indexer.initIncrementalIndexer(engine);
-    state.getListener().msgsDeleted([{ ...header, messageId: 'removed@example.test' }]);
-    await Promise.all(work);
-    expect(indexer._testExports._getPendingUpdates().get(deleted)?.type).toBe('deleted');
+it('a live native deletion drains without a later mail event', async () => {
+  const deleted = 'synthetic:/Inbox:removed@example.test';
+  const live = 'synthetic:/Inbox:live@example.test';
+  const engine = makeFtsStore([deleted, live]);
+  stored.chat_ftsIncrementalEnabled = true;
+  stored.chat_ftsIncrementalBatchDelay = 5000;
+  const state = bridge();
+  await indexer.initIncrementalIndexer(engine);
+  state.getListener().msgsDeleted([{ ...header, messageId: 'removed@example.test' }]);
+  await Promise.all(work);
+  expect(indexer._testExports._getPendingUpdates().get(deleted)?.type).toBe('deleted');
 
-    if (restart) {
-      await indexer.disposeIncrementalIndexer();
-      state.instance.onShutdown(false);
-      expect(stored.fts_pending_updates).toEqual([
-        expect.objectContaining({ uniqueKey: deleted, type: 'deleted' }),
-      ]);
-      expect(indexer._testExports._getPendingUpdates().size).toBe(0);
-      state = bridge();
-      await indexer.initIncrementalIndexer(engine);
-      expect(indexer._testExports._getPendingUpdates().get(deleted)?.type).toBe('deleted');
-    }
+  await vi.advanceTimersByTimeAsync(5001);
+  expect([...engine._keys]).toEqual([live]);
+  expect(engine.removeBatch.mock.calls.flatMap(([keys]) => keys)).toEqual([deleted]);
+  expect(indexer._testExports._getPendingUpdates().size).toBe(0);
+  expect(stored.fts_pending_updates).toBeUndefined();
+  state.instance.onShutdown(false);
+});
 
-    await vi.advanceTimersByTimeAsync(5001);
-    expect([...engine._keys]).toEqual([live]);
-    expect(engine.removeBatch.mock.calls.flatMap(([keys]) => keys)).toEqual([deleted]);
-    expect(indexer._testExports._getPendingUpdates().size).toBe(0);
-    expect(stored.fts_pending_updates).toBeUndefined();
-    state.instance.onShutdown(false);
-  });
-}
-
-it('a restored deletion burst drains without a later native event', async () => {
+// Deletions still queued at shutdown are not persisted; the next startup's
+// reconciliation removes them without a later native event.
+it('a deletion burst queued at shutdown is reconciled after restart', async () => {
   const live = 'synthetic:/Inbox:live@example.test';
   const count = indexer._testExports.FOLDER_RECON_PENDING_HIGH_WATER;
   const dead = Array.from(
@@ -446,7 +411,7 @@ it('a restored deletion burst drains without a later native event', async () => 
   expect(indexer._testExports._getPendingUpdates().size).toBe(count);
 
   await indexer.disposeIncrementalIndexer();
-  expect(stored.fts_pending_updates).toHaveLength(count);
+  expect(stored.fts_pending_updates).toBeUndefined();
   state.instance.onShutdown(false);
   state = bridge();
   const events = browser.tmMsgNotify;
@@ -462,9 +427,17 @@ it('a restored deletion burst drains without a later native event', async () => 
   Object.assign(events, api);
   browser.tmMsgNotify = events;
   await indexer.initIncrementalIndexer(engine);
-  expect(indexer._testExports._getPendingUpdates().size).toBe(count);
+  expect(indexer._testExports._getPendingUpdates().size).toBe(0);
+  expect(engine._keys.size).toBe(count + 1);
 
-  await vi.advanceTimersByTimeAsync(60_000);
+  const settled = () => engine._keys.size === 1
+    && indexer._testExports._getPendingUpdates().size === 0;
+  // Ten virtual minutes in one-second steps, yielding to the real event loop
+  // after each so real-latency work (membership digests) settles under load.
+  for (let second = 0; second < 600 && !settled(); second++) {
+    await vi.advanceTimersByTimeAsync(1000);
+    await realImmediate();
+  }
   expect([...engine._keys]).toEqual([live]);
   expect(indexer._testExports._getPendingUpdates().size).toBe(0);
   expect(stored.fts_pending_updates).toBeUndefined();
@@ -474,71 +447,22 @@ it('a restored deletion burst drains without a later native event', async () => 
   state.instance.onShutdown(false);
 });
 
-// A restored queue larger than the high-water mark admits up to the mark and
-// leaves the tail to reconciliation, which still removes it without a later
-// native event.
-it('a restored queue past the high-water mark reconciles its deferred tail', async () => {
-  const live = 'synthetic:/Inbox:live@example.test';
-  const count = indexer._testExports.FOLDER_RECON_PENDING_HIGH_WATER;
-  const dead = Array.from(
-    { length: count + 1 }, (_, i) => `synthetic:/Inbox:removed-${i}@example.test`,
-  );
-  const engine = makeFtsStore([...dead, live]);
-  stored.chat_ftsIncrementalEnabled = true;
-  stored.chat_ftsIncrementalBatchDelay = 5000;
-  stored.fts_initial_scan_complete = true;
-  let state = bridge();
-  await indexer.initIncrementalIndexer(engine);
-  state.getListener().msgsDeleted(dead.slice(0, count).map((key, i) => ({
-    ...header, messageKey: i + 17, messageId: `removed-${i}@example.test`,
-  })));
-  await Promise.all(work);
-  expect(indexer._testExports._getPendingUpdates().size).toBe(count);
-
-  await indexer.disposeIncrementalIndexer();
-  const tail = { ...stored.fts_pending_updates[0], uniqueKey: dead[count] };
-  stored.fts_pending_updates = [...stored.fts_pending_updates, tail];
-  state.instance.onShutdown(false);
-  state = bridge();
-  const events = browser.tmMsgNotify;
-  browser.accounts = { list: vi.fn() };
-  const folder = {
-    accountId: 'synthetic', folderPath: '/Inbox', folderURI: header.folder.URI,
-    serverType: 'imap', stableUidKeys: true, uidValidity: 7,
-  };
-  const api = mockNotify([folder], {
-    actualKeysByURI: { [folder.folderURI]: [live] },
-    msgDbByURI: { [folder.folderURI]: new Set(['live@example.test']) },
-  });
-  Object.assign(events, api);
-  browser.tmMsgNotify = events;
-  await indexer.initIncrementalIndexer(engine);
-  expect(indexer._testExports._getPendingUpdates().size).toBe(count);
-  expect(indexer._testExports._getPendingUpdates().has(dead[count])).toBe(false);
-  expect(indexer._testExports._isFolderReconPending()).toBe(true);
-
-  const settled = () => engine._keys.size === 1
-    && indexer._testExports._getPendingUpdates().size === 0
-    && !indexer._testExports._isFolderReconPending();
-  for (let minute = 0; minute < 10 && !settled(); minute++) await vi.advanceTimersByTimeAsync(60_000);
-  expect([...engine._keys]).toEqual([live]);
-  expect(indexer._testExports._getPendingUpdates().size).toBe(0);
-  state.instance.onShutdown(false);
-});
-
-it('removes a stored legacy reconcile-pending key once and keeps pending state in memory', async () => {
+it('removes stored legacy reconcile-pending and pending-queue keys once and keeps no completion state in storage', async () => {
   const engine = makeFtsStore([]);
   stored.chat_ftsIncrementalEnabled = true;
   stored.fts_reconcile_pending = Date.now() - 60_000;
+  stored.fts_pending_updates = [{ type: 'new', uniqueKey: 'synthetic:/Inbox:old@example.test' }];
   let state = bridge();
   browser.storage.local.remove.mockClear();
 
   await indexer.initIncrementalIndexer(engine);
 
   expect(stored.fts_reconcile_pending).toBeUndefined();
+  expect(stored.fts_pending_updates).toBeUndefined();
   expect(browser.storage.local.remove.mock.calls.flatMap(([keys]) => [keys].flat()))
-    .toEqual(['fts_reconcile_pending']);
-  expect(await indexer.isReconcilePending()).toBe(true);
+    .toEqual(['fts_reconcile_pending', 'fts_pending_updates']);
+  // A new session starts incomplete; nothing about it is persisted.
+  expect((await indexer.getIncrementalIndexerStatus()).folderRecon.outcomes.complete).toBe(false);
 
   // A later session finds no legacy key and writes nothing for the flag.
   await indexer.disposeIncrementalIndexer();
@@ -546,9 +470,26 @@ it('removes a stored legacy reconcile-pending key once and keeps pending state i
   browser.storage.local.remove.mockClear();
   state = bridge();
   await indexer.initIncrementalIndexer(engine);
-  expect(browser.storage.local.remove).not.toHaveBeenCalledWith('fts_reconcile_pending');
+  expect(browser.storage.local.remove).not.toHaveBeenCalled();
   expect(stored.fts_reconcile_pending).toBeUndefined();
-  expect(await indexer.isReconcilePending()).toBe(true);
+  expect(stored.fts_pending_updates).toBeUndefined();
+  expect((await indexer.getIncrementalIndexerStatus()).folderRecon.outcomes.complete).toBe(false);
+  state.instance.onShutdown(false);
+});
+
+// The cleanup runs before the enabled check: an install with incremental
+// indexing disabled also stops keeping the old queue's message keys.
+it('removes stored legacy keys when incremental indexing is disabled', async () => {
+  const engine = makeFtsStore([]);
+  stored.chat_ftsIncrementalEnabled = false;
+  stored.fts_reconcile_pending = Date.now() - 60_000;
+  stored.fts_pending_updates = [{ type: 'new', uniqueKey: 'synthetic:/Inbox:old@example.test' }];
+  const state = bridge();
+
+  await indexer.initIncrementalIndexer(engine);
+
+  expect(stored.fts_reconcile_pending).toBeUndefined();
+  expect(stored.fts_pending_updates).toBeUndefined();
   state.instance.onShutdown(false);
 });
 
@@ -558,12 +499,12 @@ it('starts normally when the legacy reconcile-pending cleanup cannot read storag
   stored.fts_reconcile_pending = Date.now() - 60_000;
   const state = bridge();
   const originalGet = browser.storage.local.get.getMockImplementation();
-  browser.storage.local.get.mockImplementation(value => (value === 'fts_reconcile_pending'
+  browser.storage.local.get.mockImplementation(value => ([value].flat().includes('fts_reconcile_pending')
     ? Promise.reject(new Error('storage unavailable'))
     : originalGet(value)));
   try {
     await expect(indexer.initIncrementalIndexer(engine)).resolves.toBeUndefined();
-    expect(await indexer.isReconcilePending()).toBe(true);
+    expect((await indexer.getIncrementalIndexerStatus()).folderRecon.outcomes.complete).toBe(false);
     expect(stored.fts_reconcile_pending).toBeDefined();
   } finally {
     browser.storage.local.get.mockImplementation(originalGet);
