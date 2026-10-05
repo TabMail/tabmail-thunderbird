@@ -19,7 +19,7 @@
  */
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
-// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
 var TM_MESSAGE_LIST_TABLE_VIEW_DEBUG = false;
 function tmMessageListTableViewDebugLog(...args) { if (TM_MESSAGE_LIST_TABLE_VIEW_DEBUG) console.log(...args); }
 

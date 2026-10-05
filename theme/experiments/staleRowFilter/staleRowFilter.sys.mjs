@@ -16,7 +16,7 @@
  */
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
-// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
 var STALE_ROW_FILTER_DEBUG = false;
 function staleRowFilterDebugLog(...args) { if (STALE_ROW_FILTER_DEBUG) console.log(...args); }
 

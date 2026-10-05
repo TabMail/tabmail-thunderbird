@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
-// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
 var TM_CALENDAR_DEBUG = false;
 function tmCalendarDebugLog(...args) { if (TM_CALENDAR_DEBUG) console.log(...args); }
 
@@ -1639,7 +1639,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // Apply start/end with duration preservation when only one side
             // moves. Extracted to durationPreservation.js so the math is
             // unit-testable without a full Mozilla cal runtime.
-            applyDurationPreservation({
+            const durationResult = applyDurationPreservation({
               base,
               clone,
               patch,
@@ -1647,6 +1647,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               editTzOverride,
               log: (m) => tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: " + m),
             });
+            // The edit still saves; this is the only trace that the event's length changed.
+            if (durationResult.error) {
+              console.warn("[tmCalendar] modifyCalendarEvent: duration preservation failed:", durationResult.error);
+            }
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
             // Transparency (availability): apply only if provided

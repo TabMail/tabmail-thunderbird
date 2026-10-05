@@ -32,7 +32,7 @@
  */
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
-// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
 var TM_THEME_DEBUG = false;
 function tmThemeDebugLog(...args) { if (TM_THEME_DEBUG) console.log(...args); }
 

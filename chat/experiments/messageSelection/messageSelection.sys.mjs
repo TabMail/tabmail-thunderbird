@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
-// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
 var MESSAGE_SELECTION_DEBUG = false;
 function messageSelectionDebugLog(...args) { if (MESSAGE_SELECTION_DEBUG) console.log(...args); }
 

@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
-// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
 var TM_TWEAKS_DEBUG = false;
 function tmTweaksDebugLog(...args) { if (TM_TWEAKS_DEBUG) console.log(...args); }
 

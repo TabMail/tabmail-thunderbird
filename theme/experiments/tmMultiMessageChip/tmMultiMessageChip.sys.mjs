@@ -34,7 +34,7 @@
  */
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
-// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
 var TM_MULTI_MESSAGE_CHIP_DEBUG = false;
 function tmMultiMessageChipDebugLog(...args) { if (TM_MULTI_MESSAGE_CHIP_DEBUG) console.log(...args); }
 

@@ -7,7 +7,7 @@
 // extended to support POST/PATCH with upload streams).
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
-// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
 var TM_GMAIL_LABELS_DEBUG = false;
 function tmGmailLabelsDebugLog(...args) { if (TM_GMAIL_LABELS_DEBUG) console.log(...args); }
 

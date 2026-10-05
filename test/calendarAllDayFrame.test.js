@@ -514,8 +514,8 @@ describe('single-digit calendar dates survive the digits contract end to end', (
 });
 
 describe('bridge logging', () => {
-  // Root CLAUDE.md General Development Rule 12: diagnostic logs are off in shipped builds, and the
-  // query trace carries event titles.
+  // Diagnostic logs are off in shipped builds (the query trace carries event titles); a failure
+  // that is otherwise silent stays visible.
   const capture = () => {
     const lines = [];
     const record = (...args) => lines.push(args.map(String).join(' '));
@@ -533,5 +533,37 @@ describe('bridge logging', () => {
     ctx.TM_CALENDAR_DEBUG = true;
     await debugApi.queryCalendarItems(`${DAY}T00:00:00`, `${NEXT_DAY}T00:00:00`, ['cal1']);
     expect(loud.lines.join('\n')).toContain('Placeholder Review');
+  });
+
+  it('reports a failed duration preservation on an edit, and nothing on a normal one', async () => {
+    const move = { event_id: 't', calendar_id: 'cal1', patch: { start_iso: `${DAY}T15:00:00` } };
+
+    const quiet = capture();
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [timedEvent('t', 'Placeholder Review', DAY, 17)], console: quiet.console });
+    expect(await api.modifyCalendarEvent(move)).toMatchObject({ ok: true });
+    expect(quiet.lines).toEqual([]);
+
+    // The existing duration cannot be applied to the new start.
+    const event = timedEvent('t', 'Placeholder Review', DAY, 17);
+    const cloneEvent = event.clone;
+    event.clone = () => {
+      const copy = cloneEvent();
+      let start = copy.startDate;
+      Object.defineProperty(copy, 'startDate', {
+        get: () => start,
+        set: (value) => {
+          const cloneDate = value.clone;
+          value.clone = () => Object.assign(cloneDate(), { addDuration() { throw new Error('duration unavailable'); } });
+          start = value;
+        },
+      });
+      return copy;
+    };
+    const failing = capture();
+    const { api: failingApi } = loadCalendarBridge(bridgeUrl, { items: [event], console: failing.console });
+    expect(await failingApi.modifyCalendarEvent(move)).toMatchObject({ ok: true });
+    expect(failing.lines).toHaveLength(1);
+    expect(failing.lines[0]).toContain('duration preservation failed');
+    expect(failing.lines[0]).toContain('duration unavailable');
   });
 });

@@ -17,7 +17,7 @@
 // and block-scoped redeclaration throws (often reported as "redeclaration of const ...").
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
-// `var` makes the flag a property of the experiment global, so it can be switched on there (tests do).
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
 var THREAD_MESSAGES_DEBUG = false;
 function threadMessagesDebugLog(...args) { if (THREAD_MESSAGES_DEBUG) console.log(...args); }
 
