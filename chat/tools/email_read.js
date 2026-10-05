@@ -4,6 +4,7 @@
 
 // email_read.js – returns a full email content with summaries
 
+import { hasPaperclipAttachment, listAttachmentsFromFull } from "../../agent/modules/attachmentParts.js";
 import { extractBodyFromParts, getRealSubject, getUniqueMessageKey, log, resolveUniqueMessageKey, safeGetFull } from "../../agent/modules/utils.js";
 import { extractIcsFromParts, formatIcsAttachmentsAsString } from "../modules/icsParser.js";
 
@@ -36,6 +37,7 @@ export async function run(args = {}, options = {}) {
     let header = null;
     let body = "";
     let icsAttachments = [];
+    let full = null;
 
     log(`[TMDBG Tools] email_read: Using direct fetch (headerIDToWeID + safeGetFull) for faster response`);
     log(`[TMDBG Tools] email_read: Calling headerIDToWeID with headerID='${headerID}' weFolder='${weFolder}'`);
@@ -50,7 +52,7 @@ export async function run(args = {}, options = {}) {
     
     // Get body using safeGetFull
     try {
-      const full = await safeGetFull(internalId);
+      full = await safeGetFull(internalId);
       body = await extractBodyFromParts(full, internalId) || "";
       log(`[TMDBG Tools] email_read: Body extracted from safeGetFull (length: ${body.length})`);
       
@@ -100,9 +102,24 @@ export async function run(args = {}, options = {}) {
     //   log(`[TMDBG Tools] email_read: getSummary failed for ${internalId}: ${e}`);
     // }
 
-    // Get attachment info from header
-    const hasAttachmentsFlag = Boolean(header.hasAttachments);
-    log(`[TMDBG Tools] email_read: Using attachment info from header: hasAttachments=${hasAttachmentsFlag}`);
+    // Thunderbird's MessageHeader has no attachment field. The MIME tree fetched for the body
+    // lists the files exactly, at no extra cost. When there is no usable tree (a body served from
+    // the FTS index, a headers-only or undecryptable message), the answer is Thunderbird's
+    // database flag (the paperclip heuristic) and no list.
+    // null = could not tell, printed as "unknown", never "no".
+    const attachments = listAttachmentsFromFull(full, header);
+    let hasAttachments = null;
+    if (attachments) {
+      hasAttachments = hasPaperclipAttachment(attachments);
+    } else {
+      try {
+        const [flag] = await browser.tmHdr.getHasAttachmentBulk([internalId]);
+        if (typeof flag === "boolean") hasAttachments = flag;
+      } catch (e) {
+        log(`[TMDBG Tools] email_read: attachment flag read failed for ${internalId}: ${e}`, "error");
+      }
+    }
+    log(`[TMDBG Tools] email_read: has_attachments=${hasAttachments} listed=${attachments ? attachments.length : "n/a"} for ${internalId}`);
 
     // Check replied status using tmHdr experiment
     let repliedStatus = false;
@@ -133,10 +150,18 @@ export async function run(args = {}, options = {}) {
     lines.push(`to: ${header.recipients ? header.recipients.join(", ") : ""}`);
     lines.push(`cc: ${header.ccList ? header.ccList.join(", ") : ""}`);
     lines.push(`subject: ${(await getRealSubject(header)) || "(No subject)"}`);
-    lines.push(`has_attachments: ${hasAttachmentsFlag ? "yes" : "no"}`);
+    lines.push(`has_attachments: ${hasAttachments === null ? "unknown" : hasAttachments ? "yes" : "no"}`);
     lines.push(`replied: ${repliedStatus ? "yes" : "no"}`);
     lines.push("body:");
     lines.push(body);
+
+    if (attachments && attachments.length > 0) {
+      lines.push("");
+      lines.push("attachments:");
+      for (const att of attachments) {
+        lines.push(`  - ${att.name || "(unnamed)"} (${att.contentType}, ${att.size} bytes)`);
+      }
+    }
 
     // Append ICS attachment summaries
     if (icsAttachments && icsAttachments.length > 0) {
