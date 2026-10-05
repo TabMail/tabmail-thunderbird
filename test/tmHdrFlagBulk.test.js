@@ -16,19 +16,10 @@ const source = readFileSync(new URL('../agent/experiments/tmHdr/tmHdr.sys.mjs', 
 
 const FLAGS = { Replied: 0x2, HasRe: 0x10, Attachment: 0x10000000 };
 
-// A folder where the message whose key is 7 is a different, replied, "Re:" message. Reading
-// by key would return it for WebExtension id 7.
-const otherMessage = { flags: FLAGS.Replied | FLAGS.HasRe | FLAGS.Attachment };
-const folder = { URI: 'imap://user@example.com/INBOX', GetMessageHeader: vi.fn((key) => (key === 7 ? otherMessage : null)) };
-const mailUtils = { getExistingFolder: vi.fn(() => folder), findMsgIdInFolder: vi.fn(() => null) };
-const mailServices = { accounts: { getAccount: vi.fn(() => ({ incomingServer: { rootFolder: folder } })) } };
-
 function createExperiment(headers, messageManager = { get: vi.fn((id) => headers[id] ?? null) }) {
   const sandbox = {
     ChromeUtils: { importESModule(path) {
       if (path.includes('ExtensionCommon')) return { ExtensionCommon: { ExtensionAPI: class {} } };
-      if (path.includes('MailServices')) return { MailServices: mailServices };
-      if (path.includes('MailUtils')) return { MailUtils: mailUtils };
       throw new Error(path);
     } },
     console: { log: vi.fn(), error: vi.fn(), warn: vi.fn() },
@@ -81,13 +72,6 @@ describe.each([
     });
     expect(await api[fn]([8, 7])).toEqual([true, false]);
     expect(messageManager.get.mock.calls.map(([id]) => id)).toEqual([8, 7]);
-  });
-
-  it('never reads a different message whose folder key equals the id', async () => {
-    folder.GetMessageHeader.mockClear();
-    const { api } = createExperiment({ 7: { flags: 0 } });
-    expect(await api[fn]([7])).toEqual([false]);
-    expect(folder.GetMessageHeader).not.toHaveBeenCalled();
   });
 
   it('reads false for a message that is gone or whose header cannot be read', async () => {

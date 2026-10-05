@@ -438,6 +438,9 @@ export async function safeGetFull(id, preHeader = null) {
             ...(msgId ? { "message-id": [`<${msgId}>`] } : {}),
           },
           parts: [],
+          // The calendar invites the indexer parsed from the downloaded message; there are no
+          // parts here to scan for them.
+          parsedIcsAttachments: ftsRes.parsedIcsAttachments || "",
         };
 
         getFullCache.set(uniqueKey, { data: syntheticFull, timestamp: Date.now() });
