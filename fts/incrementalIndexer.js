@@ -1700,6 +1700,9 @@ const FOLDER_RECON_CONFIG = {
   reverifyIntervalMs: 20 * 60 * 1000,
   walkPeriodMs: 24 * 60 * 60 * 1000,
   membershipUnresolvedRetryMs: 10 * 60 * 1000,
+  // Longest slice wall time the scheduler reserves; a longer measurement is a
+  // host sleep inside the slice, not work.
+  hardFloorMaxElapsedMs: 10 * 60 * 1000,
   changeLedgerCap: 4096,
   changeLedgerKeyCap: 4096,
   ...(SETTINGS?.agentQueues?.ftsFolderRecon || {}),
@@ -1820,6 +1823,7 @@ const FOLDER_RECON_SYNC_QUIET_MS = FOLDER_RECON_CONFIG.syncQuietMs;
 const FOLDER_RECON_REVERIFY_INTERVAL_MS = FOLDER_RECON_CONFIG.reverifyIntervalMs;
 const FOLDER_RECON_WALK_PERIOD_MS = FOLDER_RECON_CONFIG.walkPeriodMs;
 const FOLDER_RECON_MEMBERSHIP_UNRESOLVED_RETRY_MS = FOLDER_RECON_CONFIG.membershipUnresolvedRetryMs;
+const FOLDER_RECON_HARD_FLOOR_MAX_ELAPSED_MS = FOLDER_RECON_CONFIG.hardFloorMaxElapsedMs;
 const FOLDER_RECON_CHANGE_LEDGER_CAP = FOLDER_RECON_CONFIG.changeLedgerCap;
 const FOLDER_RECON_CHANGE_LEDGER_KEY_CAP = FOLDER_RECON_CONFIG.changeLedgerKeyCap;
 // A completed add-side sweep that still fails exact equality is replayed once
@@ -4877,12 +4881,13 @@ async function _runFolderReconcile(
 function _armFolderReconTimer(reason) {
   if (!_isEnabled || !_ftsSearch || _indexerDisposed) return;
   const nowMs = Date.now();
-  const dueMs = Math.max(_folderReconHardNotBeforeMs, _folderReconRequestedDueMs);
+  const hardFloorMs = _clampFolderReconHardFloorMs();
+  const dueMs = Math.max(hardFloorMs, _folderReconRequestedDueMs);
   if (!Number.isFinite(dueMs)) return;
   // A later request never postpones earlier eligible work. A true raised
   // eligibility floor does re-arm later, and an earlier request re-arms sooner.
   if (_folderReconTimer) {
-    const mustMoveLater = _folderReconHardNotBeforeMs > _folderReconTimerDueMs;
+    const mustMoveLater = hardFloorMs > _folderReconTimerDueMs;
     const mayMoveEarlier = dueMs < _folderReconTimerDueMs;
     if (!mustMoveLater && !mayMoveEarlier) return;
     clearTimeout(_folderReconTimer);
@@ -4902,7 +4907,7 @@ function _armFolderReconTimer(reason) {
     if (token !== _folderReconTimerToken || generation !== _folderReconGeneration) return;
     _folderReconTimer = null;
     _folderReconTimerDueMs = 0;
-    if (Date.now() < _folderReconHardNotBeforeMs) {
+    if (Date.now() < _clampFolderReconHardFloorMs()) {
       _folderReconRequestedDueMs = Math.min(_folderReconRequestedDueMs, Date.now());
       _armFolderReconTimer("floor_recheck");
       return;
@@ -4920,6 +4925,16 @@ function _wakeFolderRecon(reason = "work", delayMs = FOLDER_RECON_PACE_DELAY_MS)
   const normalizedDelayMs = Number.isFinite(delayMs) ? Math.max(0, Math.floor(delayMs)) : 0;
   _folderReconRequestedDueMs = Math.min(_folderReconRequestedDueMs, Date.now() + normalizedDelayMs);
   _armFolderReconTimer(reason);
+}
+
+// No legitimate write puts the floor more than one clipped slice ahead, so a
+// floor beyond that is left over from a backward clock jump. The clamp is
+// written back: a clamp recomputed from each read would slide with the clock
+// and never open the gate.
+function _clampFolderReconHardFloorMs() {
+  const ceilingMs = Date.now() + FOLDER_RECON_HARD_FLOOR_MAX_ELAPSED_MS;
+  if (_folderReconHardNotBeforeMs > ceilingMs) _folderReconHardNotBeforeMs = ceilingMs;
+  return _folderReconHardNotBeforeMs;
 }
 
 function _setFolderReconHardNotBeforeMs(notBeforeMs) {
@@ -5824,8 +5839,9 @@ function _consumeFolderReconRollingTick() {
 async function _runFolderReconSchedulerSlice(ftsSearch) {
   _bumpFolderReconTelemetry("schedulerTicks");
   if (!_isEnabled || !ftsSearch || _indexerDisposed) return { skipped: true, reason: "disabled" };
-  if (Date.now() < _folderReconHardNotBeforeMs) {
-    _wakeFolderRecon("hard_floor", _folderReconHardNotBeforeMs - Date.now());
+  const hardFloorMs = _clampFolderReconHardFloorMs();
+  if (Date.now() < hardFloorMs) {
+    _wakeFolderRecon("hard_floor", hardFloorMs - Date.now());
     return { skipped: true, reason: "hard_floor" };
   }
   if (_folderReconSchedulerOwner || _folderReconInProgressOwner) {
@@ -5855,8 +5871,11 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
     return { skipped: true, reason: "operation_busy" };
   }
   const sliceStartedAt = Date.now();
+  // A host sleep inside the slice is not work: reserve at most the clip.
+  const clippedElapsedMs = () =>
+    Math.min(Math.max(0, Date.now() - sliceStartedAt), FOLDER_RECON_HARD_FLOOR_MAX_ELAPSED_MS);
   const cooperativeDelay = (minimumMs = FOLDER_RECON_PACE_DELAY_MS) =>
-    Math.max(minimumMs, Date.now() - sliceStartedAt);
+    Math.max(minimumMs, clippedElapsedMs());
   const owner = { generation, reconcileLease };
   _folderReconSchedulerOwner = owner;
   const folderMembershipCapable = _observeFolderMembershipCapability(ftsSearch);
@@ -6218,7 +6237,7 @@ async function _runFolderReconSchedulerSlice(ftsSearch) {
         elapsedMs,
       );
       _folderReconSchedulerOwner = null;
-      _setFolderReconHardNotBeforeMs(Date.now() + elapsedMs);
+      _setFolderReconHardNotBeforeMs(Date.now() + clippedElapsedMs());
     }
     reconcileLease.release();
   }
@@ -6607,6 +6626,7 @@ export const _testExports = {
   FOLDER_RECON_STORAGE_KEY,
   FOLDER_RECON_KEYS_CHUNK,
   FOLDER_RECON_CHUNK_DELAY_MS,
+  FOLDER_RECON_BACKOFF_WAIT_CAP_MS,
   FOLDER_RECON_RECHECK_KEEPALIVE_EVERY,
   FOLDER_RECON_KEYSPACE_END,
   FOLDER_RECON_INITIAL_SCAN_KEY,
@@ -6656,6 +6676,7 @@ export const _testExports = {
   },
   _getFolderReconRollingDueMs: () => _folderReconRollingDueMs,
   _getFolderReconTimerDueMs: () => _folderReconTimerDueMs,
+  _getFolderReconHardNotBeforeMs: () => _folderReconHardNotBeforeMs,
   _getFolderReconNextWalkDueMs: () => new Map(_folderReconNextWalkDueMs),
   _folderReconWalkOffsetMs,
   _pruneFolderReconRuntimeToFolderKeys,

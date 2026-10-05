@@ -95,3 +95,10 @@
 **Amendment (2026-10-05):** the sentence "ADR-020 cursor-store/heartbeat and ADR-016 watermark helpers
 remain for compatibility/tests" is superseded. Those helpers, the test-exported cursor walker and
 `tmMsgNotify.getCursorFolder` are deleted, and their stored keys join the init-time legacy-key removal.
+
+**Amendment (2026-10-05, hard floor):** the 50% duty cap counts a slice's elapsed wall time only up
+to `hardFloorMaxElapsedMs` (10 min). A longer measurement is a host sleep inside the slice, not work,
+and reserving it would stall reconciliation for as long as the machine slept. The clip applies to the
+post-slice floor and to every in-slice wake. Every reader of the floor (timer arm, floor recheck, the
+tick's `hard_floor` gate) also stores a clamp to `now + hardFloorMaxElapsedMs`, so a backward clock
+jump ends within that bound. Legitimate slices keep their full reservation.

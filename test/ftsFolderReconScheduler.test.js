@@ -31,6 +31,7 @@ const reconConfig = {
   reverifyIntervalMs: 20 * 60 * 1000,
   walkPeriodMs: 24 * 60 * 60 * 1000,
   membershipUnresolvedRetryMs: 10 * 60 * 1000,
+  hardFloorMaxElapsedMs: 10 * 60 * 1000,
 };
 
 // Capture real primitives before any test installs fake timers. Scheduler
@@ -1812,6 +1813,98 @@ describe('cooperative folder reconcile production contracts', () => {
       expect(globalThis.browser.tmMsgNotify.getFolderState.mock.calls.map(call => call[1]))
         .toEqual(['/A', '/B']);
       expect(_testExports._getFolderReconRoundRobinCursor()).toBe('account1:/B');
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.useRealTimers();
+    }
+  });
+
+  // A host sleep inside a slice inflates its measured wall time. Install a
+  // folder-state read that moves the fake clock forward once, mid-slice.
+  function jumpClockDuringFirstFolderRead(jumpMs) {
+    const folderState = globalThis.browser.tmMsgNotify.getFolderState.getMockImplementation();
+    let jumped = false;
+    globalThis.browser.tmMsgNotify.getFolderState.mockImplementation(async (accountId, folderPath) => {
+      if (!jumped) {
+        jumped = true;
+        vi.setSystemTime(Date.now() + jumpMs);
+      }
+      return folderState(accountId, folderPath);
+    });
+    return () => jumped;
+  }
+
+  it('clips a host sleep inside a slice so the next wake stays within hardFloorMaxElapsedMs', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const fts = installEmptyFolders([['account1', '/A'], ['account1', '/B']]);
+      const jumped = jumpClockDuringFirstFolderRead(2 * 60 * 60 * 1000);
+      _testExports._setFtsSearch(fts);
+      await _testExports._runFolderReconSchedulerTick();
+
+      expect(jumped()).toBe(true);
+      expect(_testExports._getFolderReconRuntimeTelemetry().lastSliceElapsedMs)
+        .toBeGreaterThanOrEqual(2 * 60 * 60 * 1000);
+      const dueInMs = _testExports._getFolderReconTimerDueMs() - Date.now();
+      expect(dueInMs).toBeGreaterThan(0);
+      expect(dueInMs).toBeLessThanOrEqual(reconConfig.hardFloorMaxElapsedMs);
+      expect(_testExports._getFolderReconHardNotBeforeMs() - Date.now())
+        .toBeLessThanOrEqual(reconConfig.hardFloorMaxElapsedMs);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the full reservation of a legitimately long slice below the clip', async () => {
+    const longSliceMs = 5 * 60 * 1000;
+    expect(longSliceMs).toBeGreaterThan(_testExports.FOLDER_RECON_BACKOFF_WAIT_CAP_MS);
+    expect(longSliceMs).toBeLessThan(reconConfig.hardFloorMaxElapsedMs);
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const fts = installEmptyFolders([['account1', '/A'], ['account1', '/B']]);
+      const jumped = jumpClockDuringFirstFolderRead(longSliceMs);
+      _testExports._setFtsSearch(fts);
+      await _testExports._runFolderReconSchedulerTick();
+
+      expect(jumped()).toBe(true);
+      expect(_testExports._getFolderReconHardNotBeforeMs() - Date.now())
+        .toBeGreaterThanOrEqual(longSliceMs);
+      expect(_testExports._getFolderReconTimerDueMs() - Date.now())
+        .toBeGreaterThanOrEqual(longSliceMs);
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.useRealTimers();
+    }
+  });
+
+  it('ends a backward clock jump stall within hardFloorMaxElapsedMs without re-arming every wake', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const fts = installEmptyFolders([['account1', '/A'], ['account1', '/B']]);
+      const jumped = jumpClockDuringFirstFolderRead(30 * 1000);
+      _testExports._setFtsSearch(fts);
+      await _testExports._runFolderReconSchedulerTick();
+      expect(jumped()).toBe(true);
+      expect(_testExports._getFolderReconHardNotBeforeMs()).toBeGreaterThan(Date.now());
+
+      vi.setSystemTime(Date.now() - 2 * 60 * 60 * 1000);
+      _testExports._wakeFolderRecon('test_after_backward_jump', reconConfig.paceDelayMs);
+      expect(_testExports._getFolderReconTimerDueMs() - Date.now())
+        .toBeLessThanOrEqual(reconConfig.hardFloorMaxElapsedMs);
+      const armedDelayMs = _testExports._getFolderReconRuntimeTelemetry().lastScheduledDelayMs;
+      // A wake that asks for nothing earlier leaves the armed timer alone.
+      await vi.advanceTimersByTimeAsync(1000);
+      _testExports._wakeFolderRecon('test_repeat_wake', reconConfig.paceDelayMs);
+      expect(_testExports._getFolderReconRuntimeTelemetry().lastScheduledDelayMs).toBe(armedDelayMs);
+
+      const slicesBefore = _testExports._getFolderReconRuntimeTelemetry().schedulerSlices;
+      await vi.advanceTimersByTimeAsync(reconConfig.hardFloorMaxElapsedMs + reconConfig.paceDelayMs);
+      await settleInFlightSchedulerTickWithFakeTimers();
+      expect(_testExports._getFolderReconRuntimeTelemetry().schedulerSlices).toBeGreaterThan(slicesBefore);
     } finally {
       _testExports._setIsEnabled(false);
       vi.useRealTimers();
