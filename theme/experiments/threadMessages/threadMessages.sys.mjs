@@ -15,6 +15,12 @@
 // IMPORTANT (hot reload): avoid top-level block-scoped declarations (`const`/`let`).
 // Thunderbird can evaluate this parent script multiple times during add-on reloads,
 // and block-scoped redeclaration throws (often reported as "redeclaration of const ...").
+
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
+var THREAD_MESSAGES_DEBUG = false;
+function threadMessagesDebugLog(...args) { if (THREAD_MESSAGES_DEBUG) console.log(...args); }
+
 var ExtensionCommonThreadMessages = globalThis.__TM_threadMessages_ExtensionCommon || null;
 if (!ExtensionCommonThreadMessages) {
   ExtensionCommonThreadMessages = ChromeUtils.importESModule(
@@ -31,7 +37,12 @@ var CONFIG = {
 };
 
 function tlog(...args) {
-  console.log("[ThreadMessages]", ...args);
+  threadMessagesDebugLog("[ThreadMessages]", ...args);
+}
+
+// Failures stay visible in shipped builds.
+function threadMessagesWarn(...args) {
+  console.warn("[ThreadMessages]", ...args);
 }
 
 tlog("Loaded threadMessages.sys.mjs (v2 hot-reload-safe)", new Date().toISOString());
@@ -56,7 +67,7 @@ function _safeGetMsgDatabase(folder) {
       if (db) return db;
     }
   } catch (e) {
-    tlog("[ThreadMessages] folder.getMsgDatabase failed:", e);
+    threadMessagesWarn("[ThreadMessages] folder.getMsgDatabase failed:", e);
   }
   try {
     if (!folder) return null;
@@ -72,14 +83,14 @@ function _safeGetThreadForHdr(db, hdr) {
       return db.GetThreadContainingMsgHdr(hdr);
     }
   } catch (e1) {
-    tlog("[ThreadMessages] GetThreadContainingMsgHdr threw:", e1);
+    threadMessagesWarn("[ThreadMessages] GetThreadContainingMsgHdr threw:", e1);
   }
   try {
     if (typeof db.getThreadContainingMsgHdr === "function") {
       return db.getThreadContainingMsgHdr(hdr);
     }
   } catch (e2) {
-    tlog("[ThreadMessages] getThreadContainingMsgHdr threw:", e2);
+    threadMessagesWarn("[ThreadMessages] getThreadContainingMsgHdr threw:", e2);
   }
   return null;
 }
@@ -106,14 +117,14 @@ function _safeGetChildHdrAt(thread, i) {
       return thread.getChildHdrAt(i);
     }
   } catch (e1) {
-    tlog(`[ThreadMessages] getChildHdrAt(${i}) threw:`, e1);
+    threadMessagesWarn(`[ThreadMessages] getChildHdrAt(${i}) threw:`, e1);
   }
   try {
     if (typeof thread.GetChildHdrAt === "function") {
       return thread.GetChildHdrAt(i);
     }
   } catch (e2) {
-    tlog(`[ThreadMessages] GetChildHdrAt(${i}) threw:`, e2);
+    threadMessagesWarn(`[ThreadMessages] GetChildHdrAt(${i}) threw:`, e2);
   }
   return null;
 }
@@ -193,7 +204,7 @@ var threadMessages = class extends ExtensionCommonThreadMessages.ExtensionAPI {
                   parentHdr = folder.GetMessageHeader(parentKey);
                 }
               } catch (eParent) {
-                tlog(`GetMessageHeader for parent ${parentKey} failed:`, eParent);
+                threadMessagesWarn(`GetMessageHeader for parent ${parentKey} failed:`, eParent);
                 break;
               }
               
@@ -243,7 +254,7 @@ var threadMessages = class extends ExtensionCommonThreadMessages.ExtensionAPI {
                 
                 messages.push(msgObj);
               } catch (msgErr) {
-                tlog(`Failed to process parent message:`, msgErr);
+                threadMessagesWarn(`Failed to process parent message:`, msgErr);
               }
             }
             
@@ -256,7 +267,7 @@ var threadMessages = class extends ExtensionCommonThreadMessages.ExtensionAPI {
             };
             
           } catch (e) {
-            tlog("getThreadParents error:", e);
+            threadMessagesWarn("getThreadParents error:", e);
             return { success: false, error: String(e), messages: [] };
           }
         },
@@ -336,7 +347,7 @@ var threadMessages = class extends ExtensionCommonThreadMessages.ExtensionAPI {
                     parentHdr = folder.GetMessageHeader(threadParent);
                   }
                 } catch (eParent) {
-                  tlog(`[ThreadMessages] Diagnostic GetMessageHeader(threadParent=${threadParent}) threw:`, eParent);
+                  threadMessagesWarn(`[ThreadMessages] Diagnostic GetMessageHeader(threadParent=${threadParent}) threw:`, eParent);
                 }
                 if (parentHdr) {
                   let pKey = null;
@@ -388,7 +399,7 @@ var threadMessages = class extends ExtensionCommonThreadMessages.ExtensionAPI {
                   subject: weMsg.subject || childHdr.subject || childHdr.mime2DecodedSubject || "",
                 });
               } catch (msgErr) {
-                tlog(`[ThreadMessages] Failed to convert/enrich child message #${i}:`, msgErr);
+                threadMessagesWarn(`[ThreadMessages] Failed to convert/enrich child message #${i}:`, msgErr);
               }
             }
 
@@ -402,7 +413,7 @@ var threadMessages = class extends ExtensionCommonThreadMessages.ExtensionAPI {
               threadParent,
             };
           } catch (e) {
-            tlog("getThreadMessages error:", e);
+            threadMessagesWarn("getThreadMessages error:", e);
             return { success: false, error: String(e), messages: [] };
           }
         },

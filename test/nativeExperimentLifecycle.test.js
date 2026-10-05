@@ -34,10 +34,12 @@ describe('native lifecycle across init, window load and shutdown',()=>{
    x.openWindow(w.win);
    expect(nativeEffects(w)).toBeGreaterThan(before);
    if(n==='tmTheme'){
-    const beforeLogs=x.logs.length;
+    // A theme change re-registers the agent sheet under a fresh cache-busted URI.
+    const beforeSheets=[...x.sheets];
     w.media.dispatch('change',{matches:true});
     await tick();
-    expect(x.logs.length).toBeGreaterThan(beforeLogs);
+    expect(x.sheets.size).toBe(1);
+    expect([...x.sheets]).not.toEqual(beforeSheets);
    }
    x.instance.onShutdown(false);
    expect(nativeEffects(w)).toBe(before);

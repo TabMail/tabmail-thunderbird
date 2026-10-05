@@ -56,7 +56,7 @@ function createExperiment() {
   };
   const instance = new sandbox.Experiment(extension);
   const api = instance.getAPI({ extension }).tmMsgNotify;
-  return { api, instance, listeners, eventManagers, addListener, removeListener, errorLog: sandbox.console.error };
+  return { api, instance, listeners, eventManagers, addListener, removeListener, errorLog: sandbox.console.error, console: sandbox.console };
 }
 
 const header = {
@@ -282,5 +282,22 @@ describe('tmMsgNotify independent event subscriptions', () => {
       ['destination@example.test', '/Destination', 'moveCompleted'],
       ['destination@example.test', '/Destination', 'copyCompleted'],
     ]);
+  });
+});
+
+describe('tmMsgNotify logging', () => {
+  it('logs nothing in a shipped build as messages are added, classified, deleted and moved', () => {
+    const { api, listeners, console } = createExperiment();
+    const agent = vi.fn();
+    api.onMessageAdded.addListener(agent);
+    const native = [...listeners][0];
+    native.msgAdded(header);
+    native.msgsClassified([header]);
+    native.msgsDeleted([header]);
+    native.msgsMoveCopyCompleted(true, [header], header.folder, [header]);
+    api.onMessageAdded.removeListener(agent);
+    expect(agent).toHaveBeenCalled();
+    expect(console.log).not.toHaveBeenCalled();
+    expect(console.error).not.toHaveBeenCalled();
   });
 });

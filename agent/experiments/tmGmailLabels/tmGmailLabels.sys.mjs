@@ -6,6 +6,11 @@
 // Uses XPCOM nsIChannel + asyncOpen for HTTP (same as tmWebFetch pattern,
 // extended to support POST/PATCH with upload streams).
 
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
+var TM_GMAIL_LABELS_DEBUG = false;
+function tmGmailLabelsDebugLog(...args) { if (TM_GMAIL_LABELS_DEBUG) console.log(...args); }
+
 const { ExtensionCommon: ExtensionCommonGmailLabels } = ChromeUtils.importESModule(
   "resource://gre/modules/ExtensionCommon.sys.mjs"
 );
@@ -31,7 +36,7 @@ function _getAccessTokenForServer(server) {
     oauth2Module.getAccessToken({
       onSuccess(token) { resolve(token); },
       onFailure(error) {
-        console.log(`[tmGmailLabels] getAccessToken failed: ${error}`);
+        console.warn(`[tmGmailLabels] getAccessToken failed: ${error}`);
         resolve("");
       },
     });
@@ -129,7 +134,7 @@ var tmGmailLabels = class extends ExtensionCommonGmailLabels.ExtensionAPI {
             if (!server) return "";
             return await _getAccessTokenForServer(server);
           } catch (e) {
-            console.log(`[tmGmailLabels] getAccessToken ERROR: ${e}`);
+            console.warn(`[tmGmailLabels] getAccessToken ERROR: ${e}`);
             return "";
           }
         },
@@ -161,13 +166,13 @@ var tmGmailLabels = class extends ExtensionCommonGmailLabels.ExtensionAPI {
                   const folder = rootFolder.getChildNamed(name);
                   folder.clearFlag(Ci.nsMsgFolderFlags.Subscribed);
                 }
-                console.log(`[tmGmailLabels] Unsubscribed IMAP folder: ${name}`);
+                tmGmailLabelsDebugLog(`[tmGmailLabels] Unsubscribed IMAP folder: ${name}`);
               } catch (e) {
-                console.log(`[tmGmailLabels] Unsubscribe ${name}: ${e}`);
+                console.warn(`[tmGmailLabels] Unsubscribe ${name}: ${e}`);
               }
             }
           } catch (e) {
-            console.log(`[tmGmailLabels] unsubscribeTmFolders ERROR: ${e}`);
+            console.warn(`[tmGmailLabels] unsubscribeTmFolders ERROR: ${e}`);
           }
         },
 
@@ -197,13 +202,13 @@ var tmGmailLabels = class extends ExtensionCommonGmailLabels.ExtensionAPI {
             }
 
             if (result.status < 200 || result.status >= 300) {
-              console.log(`[tmGmailLabels] gmailFetch ${method} ${path}: HTTP ${result.status} ${result.body?.substring(0, 200)}`);
+              console.warn(`[tmGmailLabels] gmailFetch ${method} ${path}: HTTP ${result.status} ${result.body?.substring(0, 200)}`);
               return "";
             }
 
             return result.body || "";
           } catch (e) {
-            console.log(`[tmGmailLabels] gmailFetch ERROR ${method} ${path}: ${e}`);
+            console.warn(`[tmGmailLabels] gmailFetch ERROR ${method} ${path}: ${e}`);
             return "";
           }
         },

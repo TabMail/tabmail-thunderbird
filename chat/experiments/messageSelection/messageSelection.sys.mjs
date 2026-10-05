@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
+var MESSAGE_SELECTION_DEBUG = false;
+function messageSelectionDebugLog(...args) { if (MESSAGE_SELECTION_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportMS } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -56,7 +61,11 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
     const messageManager = context.extension.messageManager;
 
     function tlog(...args) {
-      console.log("[MessageSelection]", ...args);
+      messageSelectionDebugLog("[MessageSelection]", ...args);
+    }
+    // Failures stay visible in shipped builds.
+    function tlogWarn(...args) {
+      console.warn("[MessageSelection]", ...args);
     }
 
     function findDBView(win) {
@@ -213,15 +222,15 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
               }
             }
           } catch (e) {
-            tlog("Error getting selection from view:", e);
+            tlogWarn("Error getting selection from view:", e);
           }
         }
         
         tlog("getCurrentSelection() finished - count:", selectionCount, "selection:", currentSelection);
         return currentSelection;
       } catch (e) {
-        tlog("FATAL ERROR in getCurrentSelection():", e);
-        tlog("Error stack:", e.stack);
+        tlogWarn("FATAL ERROR in getCurrentSelection():", e);
+        tlogWarn("Error stack:", e.stack);
         currentSelection = [];
         selectionCount = 0;
         return currentSelection;
@@ -256,7 +265,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
           tlog("Select listener registered for threadTree");
         }
       } catch (e) {
-        tlog("Error setting up window tracking:", e);
+        tlogWarn("Error setting up window tracking:", e);
       }
     }
 
@@ -275,7 +284,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
         ServicesMS.obs.notifyObservers(null, "messageSelection-changed", data);
         tlog("Notification sent successfully");
       } catch (e) {
-        tlog("Error notifying selection change:", e);
+        tlogWarn("Error notifying selection change:", e);
       }
     }
 
@@ -366,7 +375,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
           tabSelectHandler(null, false);
         }
       } catch (e) {
-        tlog("Failed to add TabSelect listener:", e);
+        tlogWarn("Failed to add TabSelect listener:", e);
       }
     }
 
@@ -413,7 +422,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
               },
             });
           } catch (e) {
-            tlog("Failed to register window listener:", e);
+            tlogWarn("Failed to register window listener:", e);
           }
         },
         async getSelectedMessages() {
@@ -429,7 +438,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
             
             return result;
           } catch (e) {
-            tlog("ERROR in getSelectedMessages():", e, e?.stack);
+            tlogWarn("ERROR in getSelectedMessages():", e, e?.stack);
             // Return empty string instead of throwing
             return "";
           }
@@ -471,7 +480,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
             tlog("No suitable window found for cmd_openConversation");
             return false;
           } catch (e) {
-            tlog("Error in openSelectedInConversation:", e);
+            tlogWarn("Error in openSelectedInConversation:", e);
             return false;
           }
         },
@@ -581,7 +590,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
             // Unregister window listener (may already be unregistered from init)
             try {
               ExtensionSupportMS.unregisterWindowListener(listenerId);
-              console.log("[MessageSelection] Unregistered window listener:", listenerId);
+              messageSelectionDebugLog("[MessageSelection] Unregistered window listener:", listenerId);
             } catch (e) {
               // Already unregistered, ignore
             }
@@ -619,7 +628,7 @@ var messageSelection = class extends ExtensionCommonMS.ExtensionAPIPersistent {
                     }
                   }
                 } catch (cleanupErr) {
-                  tlog("[MessageSelection] Error cleaning up window:", cleanupErr);
+                  tlogWarn("[MessageSelection] Error cleaning up window:", cleanupErr);
                 }
               }
             }

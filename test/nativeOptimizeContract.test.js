@@ -4,7 +4,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockIndexMessages, mockLog, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
+const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
+  mockGetAttachmentFlags: vi.fn(),
   mockIndexMessages: vi.fn(),
   mockLog: vi.fn(),
   mockNativeOptimize: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock('../fts/nativeEngine.js', () => ({
   initNativeFts: vi.fn(async () => true),
   nativeFtsSearch: {
     checkReindexNeeded: vi.fn(async () => ({ needsReindex: false, isFirstRun: false })),
+    getAttachmentFlags: (...args) => mockGetAttachmentFlags(...args),
     getHostAvailability: vi.fn(() => true),
     getHostStatus: vi.fn(() => ({ status: 'available' })),
     markVersionAsIndexed: vi.fn(async () => {}),
@@ -370,5 +372,31 @@ describe('native optimize maintenance contract', () => {
       error: 'runtime native optimize rejected',
     }));
     expect(getFtsOperationState()).toMatchObject({ exclusive: false, reconcile: false });
+  });
+});
+
+// inbox_read in the chat window asks the background for the index's attachment flags over this
+// command, because only the background owns the native helper's port (fts/ftsRequest.js).
+describe('attachment flags command', () => {
+  it('answers with the helper\'s flags for the msgIds asked', async () => {
+    mockGetAttachmentFlags.mockResolvedValueOnce({ ok: true, flags: [true, null] });
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+    const sendResponse = vi.fn();
+
+    const msgIds = ['account1:/INBOX:a@example.com', 'account1:/INBOX:b@example.com'];
+    expect(runtimeListener({ type: 'fts', cmd: 'getAttachmentFlags', msgIds }, {}, sendResponse)).toBe(true);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ ok: true, flags: [true, null] }));
+    expect(mockGetAttachmentFlags).toHaveBeenCalledWith(msgIds);
+  });
+
+  it('answers a helper error as an error', async () => {
+    mockGetAttachmentFlags.mockRejectedValueOnce(new Error('Unknown method: getAttachmentFlags'));
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+    const sendResponse = vi.fn();
+
+    runtimeListener({ type: 'fts', cmd: 'getAttachmentFlags', msgIds: ['account1:/INBOX:a@example.com'] }, {}, sendResponse);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ error: 'Unknown method: getAttachmentFlags' }));
   });
 });

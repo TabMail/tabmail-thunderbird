@@ -207,7 +207,7 @@ export async function populateBatchBody(rows) {
       if (full?.__tmSynthetic) {
         // FTS already has this body as plain text — use directly, skip MIME extraction
         row.body = full.body || "";
-        row.parsedIcsAttachments = "";
+        row.parsedIcsAttachments = full.parsedIcsAttachments || "";
       } else {
         const body = await extractPlainText(full, row._originalMessage.id);
         row.body = body || "";

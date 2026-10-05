@@ -517,10 +517,21 @@ async function initCheckAndUpdateHost(bootstrapState) {
   }
 }
 
+// Set by the first initNativeFts call, which only the background's initFtsEngine makes: that
+// context owns the helper's port. Every other extension page (chat window, compose, settings)
+// loads its own copy of this module, where an RPC must not connect: the page would start, and
+// own, a second helper process. Such a page asks the background instead (fts/ftsRequest.js).
+let ownsHelper = false;
+
+export function ownsNativeHelper() {
+  return ownsHelper;
+}
+
 /**
  * Connect to native FTS helper
  */
 export function initNativeFts() {
+  ownsHelper = true;
   if (nativeInitializationPromise) return nativeInitializationPromise;
   const initialization = _initNativeFtsOnce();
   nativeInitializationPromise = initialization;
@@ -675,6 +686,8 @@ async function ensureConnected() {
       if (nativePort) return false;
     }
   }
+
+  if (!ownsHelper) return false;
 
   // Circuit breaker: if the helper is unavailable, only re-attempt once per
   // cooldown instead of on every RPC (otherwise initNativeFts spams
@@ -843,6 +856,12 @@ export const nativeFtsSearch = {
   
   async getMessageByMsgId(msgId) {
     return nativeRPC('getMessageByMsgId', { msgId });
+  },
+
+  // Each msgId's stored attachment flag, in order: true / false, or null when not indexed.
+  // Reads no bodies. Older helpers reject with "Unknown method: getAttachmentFlags".
+  async getAttachmentFlags(msgIds) {
+    return nativeRPC('getAttachmentFlags', { msgIds });
   },
 
   async queryByDateRange(from, to, limit = 1000) {
@@ -1076,6 +1095,7 @@ export const nativeFtsSearch = {
   // (popup / settings) and the periodic recheck. Returns true once connected.
   async recheckAvailability() {
     if (nativePort) return true;
+    if (!ownsHelper) return false;
     // Already known-present and connecting/connected elsewhere — don't disturb.
     // Reset the cooldown so initNativeFts() actually re-attempts right now.
     lastConnectAttemptMs = 0;

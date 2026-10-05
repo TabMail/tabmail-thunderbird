@@ -36,7 +36,7 @@ export async function run(args = {}, options = {}) {
     // FTS was designed for full-text search, not for single message lookups by ID
     let header = null;
     let body = "";
-    let icsAttachments = [];
+    let parsedIcs = "";
     let full = null;
 
     log(`[TMDBG Tools] email_read: Using direct fetch (headerIDToWeID + safeGetFull) for faster response`);
@@ -56,12 +56,20 @@ export async function run(args = {}, options = {}) {
       body = await extractBodyFromParts(full, internalId) || "";
       log(`[TMDBG Tools] email_read: Body extracted from safeGetFull (length: ${body.length})`);
       
-      // Extract ICS attachments while we have the full message
-      try {
-        icsAttachments = await extractIcsFromParts(full, internalId);
-        log(`[TMDBG Tools] email_read: ICS scan complete from full message. found=${icsAttachments.length}`);
-      } catch (e) {
-        log(`[TMDBG Tools] email_read: ICS scan failed: ${e}`, "warn");
+      if (full?.__tmSynthetic) {
+        // A body served from the FTS index has no MIME parts to scan; the indexer parsed the
+        // calendar invites when it downloaded the message, and the index returns that text.
+        parsedIcs = full.parsedIcsAttachments || "";
+        log(`[TMDBG Tools] email_read: ICS text from the FTS index (length: ${parsedIcs.length})`);
+      } else {
+        // Extract ICS attachments while we have the full message
+        try {
+          const icsAttachments = await extractIcsFromParts(full, internalId);
+          log(`[TMDBG Tools] email_read: ICS scan complete from full message. found=${icsAttachments.length}`);
+          parsedIcs = formatIcsAttachmentsAsString(icsAttachments);
+        } catch (e) {
+          log(`[TMDBG Tools] email_read: ICS scan failed: ${e}`, "warn");
+        }
       }
     } catch (e) {
       log(`[TMDBG Tools] email_read: safeGetFull failed for ${internalId}: ${e}`, "error");
@@ -124,17 +132,7 @@ export async function run(args = {}, options = {}) {
     // Check replied status using tmHdr experiment
     let repliedStatus = false;
     try {
-      const folderURI = header.folder?.id || "";
-      const pathStr = header.folder?.path || "";
-      let nativeMsgKey = -1;
-      try {
-        const weId = internalId;
-        const mk = await browser.tmHdr.getMsgKey(folderURI, weId, pathStr);
-        if (typeof mk === "number" && mk >= 0) nativeMsgKey = mk;
-      } catch (e) {
-        log(`[TMDBG Tools] email_read: getMsgKey failed for ${internalId}: ${e}`, "warn");
-      }
-      repliedStatus = await browser.tmHdr.getReplied(folderURI, nativeMsgKey, pathStr, header.headerMessageId || "");
+      [repliedStatus] = await browser.tmHdr.getRepliedBulk([internalId]);
       log(`[TMDBG Tools] email_read: Replied status=${repliedStatus} for message ${internalId}`);
     } catch (e) {
       log(`[TMDBG Tools] email_read: Error checking replied status for ${internalId}: ${e}`, "warn");
@@ -164,12 +162,9 @@ export async function run(args = {}, options = {}) {
     }
 
     // Append ICS attachment summaries
-    if (icsAttachments && icsAttachments.length > 0) {
-      const parsedIcsData = formatIcsAttachmentsAsString(icsAttachments);
-      if (parsedIcsData) {
-        lines.push(parsedIcsData);
-        log(`[TMDBG Tools] email_read: Parsed ICS attachments (${icsAttachments.length} attachments)`);
-      }
+    if (parsedIcs) {
+      lines.push(parsedIcs);
+      log(`[TMDBG Tools] email_read: Appended parsed ICS attachments (length: ${parsedIcs.length})`);
     }
 
     log(`[TMDBG Tools] email_read: returning content for id=${internalId}`);

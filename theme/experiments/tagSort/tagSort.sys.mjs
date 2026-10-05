@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
+var TAG_SORT_DEBUG = false;
+function tagSortDebugLog(...args) { if (TAG_SORT_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportTS } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -21,7 +26,14 @@ const TAGSORT_LOG_PREFIX = "[TagSort]";
 
 function tlog(...args) {
   try {
-    console.log(TAGSORT_LOG_PREFIX, ...args);
+    tagSortDebugLog(TAGSORT_LOG_PREFIX, ...args);
+  } catch (_) {}
+}
+
+// Failures stay visible in shipped builds.
+function tagSortWarn(...args) {
+  try {
+    console.warn(TAGSORT_LOG_PREFIX, ...args);
   } catch (_) {}
 }
 
@@ -72,7 +84,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
   }
 
   onShutdown(isAppShutdown) {
-    console.log("[TagSort] onShutdown() called, isAppShutdown:", isAppShutdown);
+    tagSortDebugLog("[TagSort] onShutdown() called, isAppShutdown:", isAppShutdown);
     this._extensionShutdown = true;
     try {
       for (const cleanup of this._cleanups) cleanup();
@@ -316,7 +328,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
             threadPane.saveSelection();
             selectionSaved = true;
           } catch (e) {
-            tlog("applyDateOnlySort: threadPane.saveSelection() failed", e);
+            tagSortWarn("applyDateOnlySort: threadPane.saveSelection() failed", e);
           }
         }
 
@@ -327,7 +339,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
             try {
               threadPane.restoreSelection({ notify: false });
             } catch (e) {
-              tlog("applyDateOnlySort: threadPane.restoreSelection() failed", e);
+              tagSortWarn("applyDateOnlySort: threadPane.restoreSelection() failed", e);
             }
           }
         }
@@ -520,7 +532,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
             threadPane.saveSelection();
             selectionSaved = true;
           } catch (e) {
-            tlog("applySort: threadPane.saveSelection() failed", e);
+            tagSortWarn("applySort: threadPane.saveSelection() failed", e);
           }
         }
 
@@ -563,7 +575,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
             try {
               threadPane.restoreSelection({ notify: false });
             } catch (e) {
-              tlog("applySort: threadPane.restoreSelection() failed", e);
+              tagSortWarn("applySort: threadPane.restoreSelection() failed", e);
             }
           }
         }
@@ -738,7 +750,7 @@ var tagSort = class extends ExtensionCommonTS.ExtensionAPI {
               ServicesTS.obs.addObserver(_sortOrderNotifyObserver, TAGSORT_ORDER_NOTIFY_TOPIC);
             }
           } catch (e) {
-            tlog("init: failed adding sort order notification observer", e);
+            tagSortWarn("init: failed adding sort order notification observer", e);
           }
 
           // Observe tag sort enabled pref

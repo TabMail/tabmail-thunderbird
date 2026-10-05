@@ -10,7 +10,7 @@ Current lifecycle update (2026-09-26): `tmKeepAlive` and its hidden relay have b
 **Tier A — strong upstream candidates (generic capability, clean shape, others want it):**
 - `glodaSearch` (chat/) — gloda FTS + cross-folder conversation threading. No stock equivalent. → propose `messages` full-text + conversation API.
 - `tmCalendar` (chat/) — calICalendarManager CRUD + recurrence split + duration preservation. **Aligns with ACTIVE upstream work** (webext-experiments/calendar; March 2026 digest: "enhance the Calendar API ahead of the next ESR"). Best first contribution — push our recurrence/CalDAV CRUD into the existing draft.
-- `tmHdr` flags portion (`getReplied`/`getFlags`/`getHasRe`) — stock `MessageHeader` exposes read/flagged/junk but NOT replied/forwarded. Small clean addition to the `MessageHeader` type.
+- `tmHdr` flags portion (`getReplied`/`getFlags`/`getHasRe`; since 2026-10-04 `getRepliedBulk`/`getHasReBulk` by WebExtension id) — stock `MessageHeader` exposes read/flagged/junk but NOT replied/forwarded. Small clean addition to the `MessageHeader` type.
 - `threadMessages` (theme/) — nsIMsgThread ancestor/sibling walk. Fold into a conversation API alongside glodaSearch.
 - `messageSelection` (chat/) — thread-pane selection + `onSelectionChanged`. `mailTabs.getSelectedMessages()` exists; **gap = the change event**. Propose the event only.
 - `tmMsgNotify` (agent/) — msgAdded/Classified/Deleted/MoveCopy bridge. **Largely covered by stock `messages.onNewMailReceived/onMoved/onCopied/onDeleted/onUpdated` already** — verify the residual gap (msgsClassified, payload/timing) before proposing.

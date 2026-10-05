@@ -176,6 +176,15 @@ describe('new rows take the attachment status of the downloaded message', () => 
     expect(index.get(key(3)).hasAttachments).toBe(false);
   });
 
+  it('keeps the calendar invites the index stored when the body came from the index', async () => {
+    safeGetFull.mockImplementation(async (id) => ({
+      __tmSynthetic: true, body: 'b', parts: [], ...(id === 1 ? { parsedIcsAttachments: 'ics from the index' } : {}),
+    }));
+    await indexMessages(ftsSearch);
+    expect(index.get(key(1)).parsedIcsAttachments).toBe('ics from the index');
+    expect(index.get(key(2)).parsedIcsAttachments).toBe('');
+  });
+
   it.each([
     ['the body came from the index', () => ({ __tmSynthetic: true, body: 'b', parts: [] }), {}],
     ['the message is headers-only', () => ({ contentType: 'message/rfc822', parts: [{ contentType: 'multipart/mixed' }] }), { headersOnly: true }],

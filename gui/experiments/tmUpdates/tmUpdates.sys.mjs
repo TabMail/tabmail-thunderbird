@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
+var TM_UPDATES_DEBUG = false;
+function tmUpdatesDebugLog(...args) { if (TM_UPDATES_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupportTMUpdates } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -31,7 +36,7 @@ const TMUPDATES_CONFIG = {
 };
 
 function tmLog(...args) {
-  console.log(TMUPDATES_CONFIG.logPrefix, ...args);
+  tmUpdatesDebugLog(TMUPDATES_CONFIG.logPrefix, ...args);
 }
 
 function tmWarn(...args) {
@@ -308,7 +313,7 @@ function doRestartThunderbird() {
 }
 
 try {
-  console.log(
+  tmUpdatesDebugLog(
     "[TabMail tmUpdates] experiment parent script loaded. Services present?",
     typeof ServicesTMUpdates !== "undefined"
   );
@@ -347,7 +352,7 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPIPersistent {
   }
 
   onShutdown(isAppShutdown) {
-    console.log("[TabMail tmUpdates] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
+    tmUpdatesDebugLog("[TabMail tmUpdates] onShutdown() called by Thunderbird, isAppShutdown:", isAppShutdown);
     for (const subscription of this._actionSubscriptions) {
       try { this.extension.off("onNotificationAction", subscription.listener); } catch (_) {}
     }
@@ -355,7 +360,7 @@ var tmUpdates = class extends ExtensionCommonTMUpdates.ExtensionAPIPersistent {
     try {
       if (this._cleanup) {
         this._cleanup();
-        console.log("[TabMail tmUpdates] ✓ Cleanup completed via onShutdown");
+        tmUpdatesDebugLog("[TabMail tmUpdates] ✓ Cleanup completed via onShutdown");
       }
     } catch (e) {
       console.error("[TabMail tmUpdates] onShutdown cleanup failed:", e);

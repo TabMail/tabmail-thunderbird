@@ -22,11 +22,11 @@ vi.mock('../agent/modules/config.js', () => ({
   },
 }));
 
-const mockGetFlags = vi.fn();
+const mockGetHasReBulk = vi.fn();
 
 globalThis.browser = {
   tmHdr: {
-    getFlags: (...args) => mockGetFlags(...args),
+    getHasReBulk: (...args) => mockGetHasReBulk(...args),
   },
   storage: {
     local: {
@@ -48,131 +48,65 @@ const { getRealSubject, signalChatTyping } = await import('../agent/modules/util
 
 describe('getRealSubject', () => {
   beforeEach(() => {
-    mockGetFlags.mockReset();
+    mockGetHasReBulk.mockReset();
+  });
+
+  const header = (id, subject) => ({
+    id,
+    subject,
+    folder: { id: 'folder1', path: '/INBOX' },
+    headerMessageId: `m${id}@example.com`,
   });
 
   it('returns original subject when HasRe flag is not set', async () => {
-    mockGetFlags.mockResolvedValue({ exists: true, raw: 0x0000 });
-    const header = {
-      id: 1,
-      subject: 'Meeting notes',
-      folder: { id: 'folder1', path: '/INBOX' },
-      headerMessageId: 'abc@example.com',
-    };
-    const result = await getRealSubject(header);
-    expect(result).toBe('Meeting notes');
+    mockGetHasReBulk.mockResolvedValue([false]);
+    expect(await getRealSubject(header(1, 'Meeting notes'))).toBe('Meeting notes');
   });
 
-  it('prepends Re: when HasRe flag (0x0010) is set', async () => {
-    mockGetFlags.mockResolvedValue({ exists: true, raw: 0x0010 });
-    const header = {
-      id: 2,
-      subject: 'Meeting notes',
-      folder: { id: 'folder1', path: '/INBOX' },
-      headerMessageId: 'def@example.com',
-    };
-    const result = await getRealSubject(header);
-    expect(result).toBe('Re: Meeting notes');
+  it('prepends Re: when the HasRe flag is set', async () => {
+    mockGetHasReBulk.mockResolvedValue([true]);
+    expect(await getRealSubject(header(2, 'Meeting notes'))).toBe('Re: Meeting notes');
   });
 
   it('does not double-prepend Re: if subject already starts with it', async () => {
-    mockGetFlags.mockResolvedValue({ exists: true, raw: 0x0010 });
-    const header = {
-      id: 3,
-      subject: 'Re: Meeting notes',
-      folder: { id: 'folder1', path: '/INBOX' },
-      headerMessageId: 'ghi@example.com',
-    };
-    const result = await getRealSubject(header);
-    expect(result).toBe('Re: Meeting notes');
+    mockGetHasReBulk.mockResolvedValue([true]);
+    expect(await getRealSubject(header(3, 'Re: Meeting notes'))).toBe('Re: Meeting notes');
   });
 
   it('returns empty string for null header', async () => {
-    const result = await getRealSubject(null);
-    expect(result).toBe('');
+    expect(await getRealSubject(null)).toBe('');
   });
 
   it('returns empty string for undefined header', async () => {
-    const result = await getRealSubject(undefined);
-    expect(result).toBe('');
+    expect(await getRealSubject(undefined)).toBe('');
   });
 
   it('returns subject when header has no subject field', async () => {
-    mockGetFlags.mockResolvedValue({ exists: true, raw: 0x0010 });
-    const header = {
-      id: 4,
-      folder: { id: 'folder1', path: '/INBOX' },
-      headerMessageId: 'jkl@example.com',
-    };
-    const result = await getRealSubject(header);
+    mockGetHasReBulk.mockResolvedValue([true]);
     // empty subject, HasRe set, but "Re: " + "" = "Re: "
-    expect(result).toBe('Re: ');
+    expect(await getRealSubject({ id: 4, folder: { id: 'folder1', path: '/INBOX' } })).toBe('Re: ');
   });
 
-  it('gracefully handles getFlags error', async () => {
-    mockGetFlags.mockRejectedValue(new Error('API unavailable'));
-    const header = {
-      id: 5,
-      subject: 'Important',
-      folder: { id: 'folder1', path: '/INBOX' },
-      headerMessageId: 'mno@example.com',
-    };
-    const result = await getRealSubject(header);
-    expect(result).toBe('Important');
+  it('gracefully handles a flag read error', async () => {
+    mockGetHasReBulk.mockRejectedValue(new Error('API unavailable'));
+    expect(await getRealSubject(header(5, 'Important'))).toBe('Important');
   });
 
-  it('gracefully handles getFlags returning non-existent', async () => {
-    mockGetFlags.mockResolvedValue({ exists: false });
-    const header = {
-      id: 6,
-      subject: 'Test',
-      folder: { id: 'folder1', path: '/INBOX' },
-      headerMessageId: 'pqr@example.com',
-    };
-    const result = await getRealSubject(header);
-    expect(result).toBe('Test');
+  it('returns the subject unchanged when the read returns no result', async () => {
+    mockGetHasReBulk.mockResolvedValue([]);
+    expect(await getRealSubject(header(6, 'Test'))).toBe('Test');
   });
 
-  it('handles HasRe combined with other flags', async () => {
-    // HasRe (0x0010) + Replied (0x0002) + Read (0x0001) = 0x0013
-    mockGetFlags.mockResolvedValue({ exists: true, raw: 0x0013 });
-    const header = {
-      id: 7,
-      subject: 'Budget update',
-      folder: { id: 'folder1', path: '/INBOX' },
-      headerMessageId: 'stu@example.com',
-    };
-    const result = await getRealSubject(header);
-    expect(result).toBe('Re: Budget update');
+  it('reads the flag by the message\'s WebExtension id alone', async () => {
+    mockGetHasReBulk.mockResolvedValue([false]);
+    await getRealSubject(header(42, 'Test'));
+    expect(mockGetHasReBulk).toHaveBeenCalledWith([42]);
   });
 
-  it('passes correct args to getFlags', async () => {
-    mockGetFlags.mockResolvedValue({ exists: true, raw: 0 });
-    const header = {
-      id: 42,
-      subject: 'Test',
-      folder: { id: 'imap://user@host/INBOX', path: '/INBOX' },
-      headerMessageId: 'xyz@example.com',
-    };
-    await getRealSubject(header);
-    expect(mockGetFlags).toHaveBeenCalledWith(
-      'imap://user@host/INBOX',
-      42,
-      '/INBOX',
-      'xyz@example.com'
-    );
-  });
-
-  it('handles missing folder gracefully', async () => {
-    mockGetFlags.mockResolvedValue({ exists: true, raw: 0x0010 });
-    const header = {
-      id: 8,
-      subject: 'No folder',
-      headerMessageId: 'abc@example.com',
-    };
-    const result = await getRealSubject(header);
-    expect(result).toBe('Re: No folder');
-    expect(mockGetFlags).toHaveBeenCalledWith('', 8, '', 'abc@example.com');
+  it('needs no folder', async () => {
+    mockGetHasReBulk.mockResolvedValue([true]);
+    expect(await getRealSubject({ id: 8, subject: 'No folder' })).toBe('Re: No folder');
+    expect(mockGetHasReBulk).toHaveBeenCalledWith([8]);
   });
 });
 

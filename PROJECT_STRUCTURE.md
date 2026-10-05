@@ -51,6 +51,7 @@ tabmail-thunderbird/
 │   ├── helperPrompt.js         # Shared install/reinstall CTA copy
 │   ├── nativeCompatibility.js  # Signing-key overlap/cutoff policy
 │   ├── nativeEngine.js         # Native bridge (range + opaque-folder membership RPCs)
+│   ├── ftsRequest.js           # Run an FTS request in the helper's owner (background) or ask it
 │   ├── memoryIndexer.js        # In-memory indexing
 │   └── maintenanceScheduler.js # Manual repair scans (automatic schedules retired)
 │

@@ -167,6 +167,9 @@ function attachCommandInterface() {
             case "debugSample":
               sendResponse(await ftsSearch.debugSample());
               return;
+            case "getAttachmentFlags":
+              sendResponse(await ftsSearch.getAttachmentFlags(msg.msgIds || []));
+              return;
             case "getMessageByMsgId": {
               const { msgId } = msg;
               try {
@@ -673,6 +676,10 @@ export const ftsSearch = {
 
   async getMessageByMsgId(msgId) {
     return await nativeFtsSearch.getMessageByMsgId(msgId);
+  },
+
+  async getAttachmentFlags(msgIds) {
+    return await nativeFtsSearch.getAttachmentFlags(msgIds);
   },
 
   async queryByDateRange(from, to, limit = 1000) {

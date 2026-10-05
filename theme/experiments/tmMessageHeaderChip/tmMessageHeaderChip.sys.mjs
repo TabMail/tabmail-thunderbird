@@ -15,6 +15,11 @@
  * instead of the thread-card row.
  */
 
+// Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
+// `var` makes the flag a property of the experiment global, so it can be switched on there.
+var TM_MESSAGE_HEADER_CHIP_DEBUG = false;
+function tmMessageHeaderChipDebugLog(...args) { if (TM_MESSAGE_HEADER_CHIP_DEBUG) console.log(...args); }
+
 const { ExtensionSupport: ExtensionSupport_MHC } = ChromeUtils.importESModule(
   "resource:///modules/ExtensionSupport.sys.mjs"
 );
@@ -29,7 +34,7 @@ var ServicesMHC = globalThis.Services;
 
 const LOG_PREFIX_MHC = "[TabMail MessageHeaderChip]";
 
-console.log(`${LOG_PREFIX_MHC} experiment parent script loaded. Services present?`, typeof ServicesMHC !== "undefined");
+tmMessageHeaderChipDebugLog(`${LOG_PREFIX_MHC} experiment parent script loaded. Services present?`, typeof ServicesMHC !== "undefined");
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -182,7 +187,7 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPIPersiste
   }
 
   onShutdown(isAppShutdown) {
-    console.log(`${LOG_PREFIX_MHC} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
+    tmMessageHeaderChipDebugLog(`${LOG_PREFIX_MHC} onShutdown() called by Thunderbird, isAppShutdown:`, isAppShutdown);
     for (const subscription of this._chipClickSubscriptions) {
       try { this.extension.off(HEADER_CHIP_EXTENSION_EVENT_MHC, subscription.listener); } catch (_) {}
     }
@@ -190,7 +195,7 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPIPersiste
     try {
       for (const cleanup of this._tmCleanups || []) {
         cleanup();
-        console.log(`${LOG_PREFIX_MHC} ✓ Cleanup completed via onShutdown`);
+        tmMessageHeaderChipDebugLog(`${LOG_PREFIX_MHC} ✓ Cleanup completed via onShutdown`);
       }
     } catch (e) {
       console.error(`${LOG_PREFIX_MHC} onShutdown cleanup failed:`, e);
@@ -583,13 +588,13 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPIPersiste
     // ───── Lifecycle ─────
 
     async function init(_opts = {}) {
-      console.log(`${LOG_PREFIX_MHC} ═══ init() called ═══`);
+      tmMessageHeaderChipDebugLog(`${LOG_PREFIX_MHC} ═══ init() called ═══`);
       if (!ServicesMHC || !ServicesMHC.wm) {
         console.error(`${LOG_PREFIX_MHC} Services.wm not available!`);
         return;
       }
       if (isInitialized) {
-        console.log(`${LOG_PREFIX_MHC} Already initialized, skipping`);
+        tmMessageHeaderChipDebugLog(`${LOG_PREFIX_MHC} Already initialized, skipping`);
         return;
       }
       if (owner._activeCleanup && owner._activeCleanup !== cleanup) owner._activeCleanup();
@@ -619,7 +624,7 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPIPersiste
         onLoadWindow: (win) => attachToWindow(win),
       });
       context.__tmHeaderChipWindowListenerRegistered = true;
-      console.log(`${LOG_PREFIX_MHC} ✓ Initialization complete`);
+      tmMessageHeaderChipDebugLog(`${LOG_PREFIX_MHC} ✓ Initialization complete`);
     }
 
     function cleanup() {
@@ -627,7 +632,7 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPIPersiste
       owner._tmCleanups.delete(cleanup);
       if (owner._activeCleanup !== cleanup) return;
       owner._activeCleanup = null;
-      console.log(`${LOG_PREFIX_MHC} cleanup() called`);
+      tmMessageHeaderChipDebugLog(`${LOG_PREFIX_MHC} cleanup() called`);
       try {
         if (windowListenerId && context.__tmHeaderChipWindowListenerRegistered) {
           try { ExtensionSupport_MHC.unregisterWindowListener(windowListenerId); } catch (_) {}
@@ -651,13 +656,13 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPIPersiste
         console.error(`${LOG_PREFIX_MHC} Error during cleanup:`, e);
       }
       isInitialized = false;
-      console.log(`${LOG_PREFIX_MHC} cleanup() complete`);
+      tmMessageHeaderChipDebugLog(`${LOG_PREFIX_MHC} cleanup() complete`);
     }
 
 
 
     async function shutdown() {
-      console.log(`${LOG_PREFIX_MHC} shutdown() called from WebExtension API`);
+      tmMessageHeaderChipDebugLog(`${LOG_PREFIX_MHC} shutdown() called from WebExtension API`);
       cleanup();
     }
 

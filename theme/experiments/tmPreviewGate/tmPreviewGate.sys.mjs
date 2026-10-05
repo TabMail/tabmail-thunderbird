@@ -212,7 +212,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             pgLog("[TabMail PreviewGate] ✓ Unregistered old AGENT_SHEET after successful swap");
           }
         } catch (e) {
-          pgLog("[TabMail PreviewGate] Could not unregister old AGENT_SHEET after swap:", e);
+          pgErr("[TabMail PreviewGate] Could not unregister old AGENT_SHEET after swap:", e);
         }
       }
     }
@@ -388,7 +388,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
             });
             shared.paneMO = mo;
           } catch (e) {
-            pgLog(
+            pgErr(
               `[TabMail PreviewGate] AutoGate: Failed to observe messagepane attributes: ${e}`
             );
           }
@@ -463,11 +463,11 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
               `[TabMail PreviewGate] AutoGate: watching for messagepane insertion (doc="${docHref || "?"}")`
             );
           } catch (eMO) {
-            pgLog(`[TabMail PreviewGate] AutoGate: failed to watch for messagepane insertion: ${eMO}`);
+            pgErr(`[TabMail PreviewGate] AutoGate: failed to watch for messagepane insertion: ${eMO}`);
           }
         }
       } catch (e) {
-        pgLog(`[TabMail PreviewGate] AutoGate install failed: ${e}`);
+        pgErr(`[TabMail PreviewGate] AutoGate install failed: ${e}`);
       }
     }
 
@@ -702,7 +702,7 @@ var tmPreviewGate = class extends ExtensionCommonTMPreviewGate.ExtensionAPI {
               ensurePreviewGateWatchers(win);
             }
           } catch (e2) {
-            pgLog(
+            pgErr(
               `[TabMail PreviewGate] setPreviewAutoGateEnabled install pass failed: ${e2}`
             );
           }
