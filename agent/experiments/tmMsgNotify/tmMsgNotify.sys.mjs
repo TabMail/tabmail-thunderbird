@@ -294,6 +294,15 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
           name: "tmMsgNotify.onMessageRemoved",
           extensionApi: self,
         }).api(),
+
+        /**
+         * This profile's directory for the native FTS helper's databases. The
+         * helper cannot tell which Thunderbird profile started it, so the
+         * addon names it explicitly.
+         */
+        async getFtsDataDir() {
+          return PathUtils.join(PathUtils.profileDir, "browser-extension-data", context.extension.id);
+        },
         
         /**
          * Begin a bounded, live parent-process header walk. The opaque token

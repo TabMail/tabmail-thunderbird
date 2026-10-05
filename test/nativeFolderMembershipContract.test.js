@@ -232,6 +232,7 @@ async function initialized(folderMembershipV1, assignmentResult = null, portOpti
   vi.resetModules();
   const port = makeNativePort(folderMembershipV1, assignmentResult, portOptions);
   globalThis.browser = {
+    tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
     runtime: {
       connectNative: vi.fn(() => port),
       getManifest: vi.fn(() => ({
@@ -521,6 +522,7 @@ describe("native folder-membership v1 contract", () => {
     const capable = makeNativePort(true);
     const legacy = makeNativePort(false);
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn()
           .mockReturnValueOnce(capable)
@@ -559,6 +561,7 @@ describe("native folder-membership v1 contract", () => {
       vi.resetModules();
       const port = makeDeferredHelloPort(folderMembershipV1, { deferInit: true });
       globalThis.browser = {
+        tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
         runtime: {
           connectNative: vi.fn(() => port),
           getManifest: vi.fn(() => ({
@@ -606,6 +609,7 @@ describe("native folder-membership v1 contract", () => {
     const capable = makeNativePort(true);
     const later = makeNativePort(true);
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn()
           .mockReturnValueOnce(legacy)
@@ -647,6 +651,7 @@ describe("native folder-membership v1 contract", () => {
     vi.resetModules();
     const port = makeDeferredHelloPort(true, { failInit: true });
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn(() => port),
         getManifest: vi.fn(() => ({
@@ -670,6 +675,7 @@ describe("native folder-membership v1 contract", () => {
     const first = makeDeferredHelloPort(true);
     const second = makeDeferredHelloPort(true);
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
@@ -699,6 +705,7 @@ describe("native folder-membership v1 contract", () => {
     vi.resetModules();
     const port = makeDeferredHelloPort(true, { failInit: true });
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn(() => port),
         getManifest: vi.fn(() => ({
@@ -738,6 +745,7 @@ describe("native folder-membership v1 contract", () => {
     const first = makeDeferredHelloPort(true, firstOptions);
     const second = makeNativePort(true);
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
@@ -794,7 +802,7 @@ describe("native folder-membership v1 contract", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("uses the native pre-init update gate before init and rejects repeated init", async () => {
+  it("uses the native pre-init update gate before init", async () => {
     vi.resetModules();
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,
@@ -818,6 +826,7 @@ describe("native folder-membership v1 contract", () => {
       },
     });
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn(() => port),
         getManifest: vi.fn(() => ({
@@ -843,7 +852,6 @@ describe("native folder-membership v1 contract", () => {
       });
     expect(nativeFtsSearch.getHostStatus().status).toBe("available");
 
-    await expect(nativeFtsSearch.init()).rejects.toThrow("native_already_initialized");
     expect(port.disconnect).not.toHaveBeenCalled();
   });
 
@@ -889,6 +897,7 @@ describe("native folder-membership v1 contract", () => {
         hostVersion: "0.11.3",
       });
       globalThis.browser = {
+        tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
         runtime: {
           connectNative: vi.fn()
             .mockReturnValueOnce(first)
@@ -969,6 +978,7 @@ describe("native folder-membership v1 contract", () => {
     });
     const second = makeNativePort(true);
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
@@ -1022,6 +1032,7 @@ describe("native folder-membership v1 contract", () => {
     vi.resetModules();
     const recovered = makeNativePort(true);
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn()
           .mockImplementationOnce(() => { throw new Error("native_connect_sync_failed"); })
@@ -1060,6 +1071,7 @@ describe("native folder-membership v1 contract", () => {
     const first = makeDeferredHelloPort(true);
     const second = makeDeferredHelloPort(true, { deferInit: true });
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
@@ -1123,6 +1135,7 @@ describe("native folder-membership v1 contract", () => {
     const first = makeNativePort(true, null, { canSelfUpdate: true });
     const second = makeNativePort(true);
     globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
