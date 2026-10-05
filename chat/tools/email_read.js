@@ -174,6 +174,7 @@ export async function run(args = {}, options = {}) {
     // Append ICS attachment summaries
     if (parsedIcs) {
       lines.push(parsedIcs);
+      log(`[TMDBG Tools] email_read: Appended parsed ICS attachments (length: ${parsedIcs.length})`);
     }
 
     log(`[TMDBG Tools] email_read: returning content for id=${internalId}`);
