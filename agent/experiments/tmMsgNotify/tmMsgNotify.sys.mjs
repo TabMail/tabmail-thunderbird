@@ -31,7 +31,7 @@ try {
 }
 
 // Debug flag
-const DEBUG_MSG_NOTIFY = true;
+const DEBUG_MSG_NOTIFY = false;
 
 function debugLog(...args) {
   if (DEBUG_MSG_NOTIFY) {
