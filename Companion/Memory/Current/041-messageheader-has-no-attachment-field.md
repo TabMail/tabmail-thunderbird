@@ -22,7 +22,7 @@ Recorded 2026-10-04 after an attachment-only email (a PDF, no body text) was rep
   - `inboxContext` (feeds `inbox_read`) asks `getHasAttachmentBulk` by id. It downloads no bodies, and the only index read is `getMessageByMsgId`, one native round trip per message carrying the full body, so the in-process flag read is kept (2026-10-04; a cheap native bulk read of the column would let it use the index).
   - `email_read` uses `listAttachmentsFromFull` on the tree it already fetched, lists every file after the body in iOS's format (`  - name (contentType, size bytes)`, `(unnamed)` for `""`), and says `has_attachments` by `hasPaperclipAttachment`. When the tree cannot tell, it uses the DB flag by id and prints no list.
   - A flag that cannot be read prints `has_attachments: unknown`, never `no` (`formatMailList`, `email_read`).
-- **`safeGetFull` cannot answer "has attachments".** Its native-FTS tier returns a synthetic message, so anything that walks `full.parts` sees no parts on an FTS hit. The `email_read` ICS scan has the same gap on FTS hits (follow-up).
+- **`safeGetFull` cannot answer "has attachments".** Its native-FTS tier returns a synthetic message, so anything that walks `full.parts` sees no parts on an FTS hit. The `email_read` ICS scan had the same gap on FTS hits until 2026-10-04: the synthetic message now carries the row's stored `parsedIcsAttachments` (the indexer parses invites when it downloads a message; native `message_meta`), `email_read` prints that text instead of scanning parts, and `populateBatchBody`'s synthetic branch re-adds it rather than `""`.
 
 Before reading any field of a WebExtension type, check Thunderbird's schema for it. A missing field reads as `undefined` and coerces to a plausible default.
 
