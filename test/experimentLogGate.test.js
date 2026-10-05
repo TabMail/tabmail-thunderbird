@@ -48,11 +48,11 @@ function walk(node, visit, ancestors = []) {
 }
 
 const isFunction = (n) => ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(n.type);
-const isConsoleLog = (n) => n.type === 'CallExpression' && n.callee.type === 'MemberExpression'
-  && n.callee.object.name === 'console' && n.callee.property.name === 'log';
+const consoleMethod = (callee) => (callee?.type === 'MemberExpression' && !callee.computed
+  && callee.object.type === 'Identifier' && callee.object.name === 'console' ? callee.property.name : null);
+const isConsoleLog = (n) => n.type === 'CallExpression' && consoleMethod(n.callee) === 'log';
 const onlyStatement = (s) => (s?.type === 'BlockStatement' ? (s.body.length === 1 ? s.body[0] : null) : s);
-const calledName = (s) => (s?.type === 'ExpressionStatement' && s.expression.type === 'CallExpression'
-  && s.expression.callee.type === 'Identifier' ? s.expression.callee.name : null);
+const isDebugFlagName = (name, flags) => flags.has(name) || /(^|_)DEBUG(_|$)/.test(name);
 
 /** `function name(...) { if (FLAG) console.log(...); }` → FLAG, else null. */
 function gatedHelperFlag(fn) {
@@ -62,67 +62,130 @@ function gatedHelperFlag(fn) {
   return inner?.type === 'ExpressionStatement' && isConsoleLog(inner.expression) ? stmt.test.name : null;
 }
 
-/** A function whose body only forwards to `gated` (optionally inside a lone try). */
-function forwardsTo(fn, gated) {
-  let stmt = onlyStatement(fn.body);
-  if (stmt?.type === 'TryStatement') stmt = onlyStatement(stmt.block);
-  return gated.has(calledName(stmt));
+function mentionsFlag(expr, flags) {
+  let hit = false;
+  walk(expr, (n) => { if (n.type === 'Identifier' && isDebugFlagName(n.name, flags)) hit = true; });
+  return hit;
 }
 
-/** Is `node` (with these ancestors) inside code that handles a failure? */
-function inFailureHandler(ancestors) {
-  for (let i = ancestors.length - 1; i >= 0; i--) {
+/** Does `node` run only when a debug flag is on, judged up to (not including) `root`? */
+function flagConditioned(node, ancestors, root, flags) {
+  let child = node;
+  for (let i = ancestors.length - 1; i >= 0 && ancestors[i] !== root; i--) {
     const a = ancestors[i];
-    if (a.type === 'CatchClause') return true;
-    if (!isFunction(a)) continue;
-    const call = ancestors[i - 1];
-    if (call?.type !== 'CallExpression' || call.callee.type !== 'MemberExpression') continue;
-    const method = call.callee.property.name;
-    if (method === 'catch' && call.arguments[0] === a) return true;
-    if (method === 'then' && call.arguments[1] === a) return true;
+    if ((a.type === 'IfStatement' || a.type === 'ConditionalExpression') && child !== a.test && mentionsFlag(a.test, flags)) return true;
+    if (a.type === 'LogicalExpression' && child === a.right && mentionsFlag(a.left, flags)) return true;
+    child = a;
   }
   return false;
 }
 
-/** Problems with one experiment script's logging, as readable strings. */
-function auditLogging(src, { allowInFailure = [] } = {}) {
+/**
+ * The calls of a function that only logs (statements nested in blocks, ifs
+ * and trys are all console.* or identifier calls), else null.
+ */
+function loggingCalls(fn) {
+  const calls = [];
+  const visit = (stmt) => {
+    if (!stmt || stmt.type === 'EmptyStatement') return true;
+    if (stmt.type === 'BlockStatement') return stmt.body.every(visit);
+    if (stmt.type === 'IfStatement') return visit(stmt.consequent) && visit(stmt.alternate);
+    if (stmt.type === 'TryStatement') return visit(stmt.block) && (!stmt.handler || visit(stmt.handler.body));
+    if (stmt.type !== 'ExpressionStatement' || stmt.expression.type !== 'CallExpression') return false;
+    const { callee } = stmt.expression;
+    if (!consoleMethod(callee) && callee.type !== 'Identifier') return false;
+    calls.push(stmt.expression);
+    return true;
+  };
+  return visit(fn.body) && calls.length ? calls : null;
+}
+
+/** Where a failure handler starts, if `ancestors` put the node inside one. */
+function failureHandlerRoot(ancestors) {
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    const a = ancestors[i];
+    if (a.type === 'CatchClause') return a;
+    const call = ancestors[i - 1];
+    if (!isFunction(a) || call?.type !== 'CallExpression' || call.callee.type !== 'MemberExpression') continue;
+    if (call.callee.property.name === 'catch' && call.arguments[0] === a) return a;
+    if (call.callee.property.name === 'then' && call.arguments[1] === a) return a;
+  }
+  return null;
+}
+
+/**
+ * The script's logging, as { problems, visibleOnLine }. A logger is visible
+ * only if every path reaches console.warn or console.error without a debug
+ * flag condition; anything else is gated.
+ */
+function analyseLogging(src, { allowInFailure = [] } = {}) {
   const ast = parse(src, { ecmaVersion: 'latest', sourceType: 'script', locations: true });
   const lines = src.split('\n');
   const problems = [];
 
-  const helpers = new Map();
-  const functions = [];
-  walk(ast, (n) => {
+  const diagnosticHelpers = new Map();
+  const declarations = [];
+  walk(ast, (n, ancestors) => {
     if (n.type !== 'FunctionDeclaration') return;
-    functions.push(n);
+    declarations.push({ fn: n, ancestors });
     const flag = gatedHelperFlag(n);
-    if (flag) helpers.set(n, flag);
+    if (flag) diagnosticHelpers.set(n, flag);
   });
-  const gated = new Set([...helpers.keys()].map((fn) => fn.id.name));
-  for (let grew = true; grew;) {
-    grew = false;
-    for (const fn of functions) {
-      if (!gated.has(fn.id.name) && forwardsTo(fn, gated)) { gated.add(fn.id.name); grew = true; }
+  const flags = new Set(diagnosticHelpers.values());
+
+  // Logging helpers: functions that only log, through console.* or each other.
+  const helpers = new Map();
+  for (const { fn } of declarations) {
+    const calls = loggingCalls(fn);
+    if (calls) helpers.set(fn.id.name, { fn, calls });
+  }
+  for (let shrunk = true; shrunk;) {
+    shrunk = false;
+    for (const [name, { calls }] of helpers) {
+      if (calls.some((c) => c.callee.type === 'Identifier' && !helpers.has(c.callee.name))) { helpers.delete(name); shrunk = true; }
     }
   }
+  const callAncestors = new Map();
+  walk(ast, (n, ancestors) => { if (n.type === 'CallExpression') callAncestors.set(n, ancestors); });
+  const visible = new Set();
+  const reachesVisibly = (call, root) => !flagConditioned(call, callAncestors.get(call), root, flags)
+    && (['warn', 'error'].includes(consoleMethod(call.callee)) || visible.has(call.callee.name));
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [name, { fn, calls }] of helpers) {
+      if (!visible.has(name) && calls.every((c) => reachesVisibly(c, fn))) { visible.add(name); grew = true; }
+    }
+  }
+  const isLoggingCall = (n) => consoleMethod(n.callee) || (n.callee.type === 'Identifier' && helpers.has(n.callee.name));
+  const nearestFunction = (ancestors) => [...ancestors].reverse().find(isFunction) || null;
 
-  const flags = new Set(helpers.values());
   const flagInit = new Map();
   walk(ast, (n, ancestors) => {
-    if (isConsoleLog(n) && !ancestors.some((a) => helpers.has(a))) problems.push(`line ${n.loc.start.line}: console.log outside a flag-gated helper`);
+    if (isConsoleLog(n) && !ancestors.some((a) => diagnosticHelpers.has(a))) problems.push(`line ${n.loc.start.line}: console.log outside a flag-gated helper`);
     if (n.type === 'VariableDeclarator' && flags.has(n.id.name)) flagInit.set(n.id.name, n.init);
     if (n.type === 'AssignmentExpression' && n.left.type === 'Identifier' && flags.has(n.left.name)) problems.push(`line ${n.loc.start.line}: flag ${n.left.name} is reassigned`);
-    if (n.type === 'CallExpression' && n.callee.type === 'Identifier' && gated.has(n.callee.name) && inFailureHandler(ancestors)) {
-      const text = lines[n.loc.start.line - 1].trim();
-      if (!allowInFailure.some((s) => text.includes(s))) problems.push(`line ${n.loc.start.line}: failure handler logs only when debugging: ${text}`);
-    }
+    if (n.type !== 'CallExpression') return;
+    const text = lines[n.loc.start.line - 1].trim();
+    const report = () => { if (!allowInFailure.some((s) => text.includes(s))) problems.push(`line ${n.loc.start.line}: failure handler logs only when debugging: ${text}`); };
+    const root = failureHandlerRoot(ancestors);
+    if (root && isLoggingCall(n) && !reachesVisibly(n, root)) report();
+    // A logger passed by reference as a rejection handler.
+    const method = n.callee.type === 'MemberExpression' ? n.callee.property.name : null;
+    const handler = method === 'catch' ? n.arguments[0] : method === 'then' ? n.arguments[1] : null;
+    if (handler && ((handler.type === 'Identifier' && helpers.has(handler.name) && !visible.has(handler.name))
+      || (consoleMethod(handler) && !['warn', 'error'].includes(consoleMethod(handler))))) report();
   });
   for (const flag of flags) {
     const init = flagInit.get(flag);
     if (!(init?.type === 'Literal' && init.value === false)) problems.push(`flag ${flag} is not initialised to false`);
   }
-  return problems;
+
+  const visibleOnLine = (line) => [...callAncestors].some(([call, ancestors]) => call.loc.start.line === line
+    && isLoggingCall(call) && reachesVisibly(call, nearestFunction(ancestors)));
+  return { problems, visibleOnLine };
 }
+
+const auditLogging = (src, options) => analyseLogging(src, options).problems;
 
 // Failure-handler lines that deliberately log only when debugging; none is the
 // only report of a failure.
@@ -141,6 +204,7 @@ const VISIBLE_FAILURES = [
   ['theme/experiments/staleRowFilter/staleRowFilter.sys.mjs', 'Services.wm not available!'],
   ['theme/experiments/tmMessageListCardView/tmMessageListCardView.sys.mjs', 'ThreadCard.fillRow not found'],
   ['theme/experiments/tmMessageListTableView/tmMessageListTableView.sys.mjs', 'ThreadRow.fillRow not found'],
+  ['chat/experiments/tmCalendar/tmCalendar.sys.mjs', 'duration preservation failed:'],
 ];
 
 describe('experiment logging', () => {
@@ -158,9 +222,10 @@ describe('experiment logging', () => {
 
   for (const [rel, marker] of VISIBLE_FAILURES) {
     it(`${rel} reports "${marker}" visibly`, () => {
-      const lines = readFileSync(join(ROOT, rel), 'utf8').split('\n').filter((l) => l.includes(marker));
+      const src = readFileSync(join(ROOT, rel), 'utf8');
+      const lines = src.split('\n').map((l, i) => (l.includes(marker) ? i + 1 : 0)).filter(Boolean);
       expect(lines).toHaveLength(1);
-      expect(lines[0]).toMatch(/console\.(warn|error)\(|\w+Warn\(/);
+      expect(analyseLogging(src).visibleOnLine(lines[0])).toBe(true);
     });
   }
 });
@@ -189,7 +254,20 @@ describe('experiment logging audit', () => {
     expect(auditLogging(after('try { run(); } catch (e) {\n  tlog("expected");\n}'), { allowInFailure: ['expected'] })).toEqual([]);
   });
 
+  it('judges a logger by what it reaches, not by its name', () => {
+    const warnHelper = 'function xWarn(...args) { console.warn("[X]", ...args); }\n';
+    expect(auditLogging(after(`${warnHelper}try { run(); } catch (e) { xWarn("run failed", e); }`))).toEqual([]);
+    const gatedWarn = after('function xWarn(...args) { if (X_DEBUG) console.warn("[X]", ...args); }\ntry { run(); } catch (e) { xWarn("run failed", e); }');
+    expect(auditLogging(gatedWarn)).toHaveLength(1);
+    expect(analyseLogging(gatedWarn).visibleOnLine(8)).toBe(false);
+    expect(auditLogging(after('try { run(); } catch (e) {\n  if (X_DEBUG) console.warn("run failed", e);\n}'))).toHaveLength(1);
+    expect(auditLogging(after('try { run(); } catch (e) {\n  if (e.name !== "AbortError") console.warn("run failed", e);\n}'))).toEqual([]);
+  });
+
   it('treats promise rejection handlers as failure handlers', () => {
+    expect(auditLogging(after('work().catch(tlog);'))).toHaveLength(1);
+    expect(auditLogging(after('work().catch(console.log);'))).toHaveLength(1);
+    expect(auditLogging(after('work().then(null, console.error);'))).toEqual([]);
     expect(auditLogging(after('work().catch((e) => tlog("work failed", e));'))).toHaveLength(1);
     expect(auditLogging(after('work().then(() => tlog("done"), function (e) { xDebugLog("work failed", e); });'))).toEqual(['line 8: failure handler logs only when debugging: work().then(() => tlog("done"), function (e) { xDebugLog("work failed", e); });']);
   });
