@@ -1912,6 +1912,39 @@ describe('cooperative folder reconcile production contracts', () => {
     }
   });
 
+  it('lets an armed wake recover a backward clock jump with no further wake request', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(realDateNow());
+    try {
+      const fts = installEmptyFolders([['account1', '/A'], ['account1', '/B']]);
+      const jumped = jumpClockDuringFirstFolderRead(30 * 1000);
+      _testExports._setFtsSearch(fts);
+      await _testExports._runFolderReconSchedulerTick();
+      expect(jumped()).toBe(true);
+      const firstWakeDelay = _testExports._getFolderReconTimerDueMs() - Date.now();
+      expect(firstWakeDelay).toBeGreaterThan(0);
+      expect(_testExports._getFolderReconSessionDone().has('account1:/B')).toBe(false);
+      const slicesBefore = _testExports._getFolderReconRuntimeTelemetry().schedulerSlices;
+      vi.setSystemTime(Date.now() - 2 * 60 * 60 * 1000);
+      // No event and no explicit wake: only the already-armed timer fires,
+      // and its floor recheck must pull the requested deadline back.
+      await vi.advanceTimersByTimeAsync(firstWakeDelay + 1);
+      const rescheduledDelayMs = _testExports._getFolderReconTimerDueMs() - Date.now();
+      await vi.advanceTimersByTimeAsync(reconConfig.hardFloorMaxElapsedMs + reconConfig.paceDelayMs);
+      await settleInFlightSchedulerTickWithFakeTimers();
+      expect({
+        withinBound: rescheduledDelayMs <= reconConfig.hardFloorMaxElapsedMs,
+        madeProgress: _testExports._getFolderReconRuntimeTelemetry().schedulerSlices > slicesBefore,
+        folderDone: _testExports._getFolderReconSessionDone().has('account1:/B'),
+        storedVerified: storageData[_testExports.FOLDER_RECON_STORAGE_KEY]?.folders?.['account1:/B']?.verified === true,
+      }).toEqual({ withinBound: true, madeProgress: true, folderDone: true, storedVerified: true });
+    } finally {
+      _testExports._setIsEnabled(false);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it('backs off persistent folder errors exponentially while refreshing inventory once per tick', async () => {
     vi.useFakeTimers();
     const startedAt = new Date('2026-08-21T00:00:00Z').getTime();
