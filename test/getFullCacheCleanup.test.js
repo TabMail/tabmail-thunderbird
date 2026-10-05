@@ -182,6 +182,17 @@ describe('safeGetFull cleanup across body sources and callers', () => {
     expect(h.setTimer).toHaveBeenCalledTimes(1);
   });
 
+  it('carries the calendar invites the index stored on a body served from the index', async () => {
+    setupBrowser();
+    ftsGet.mockImplementation(async (k) => (k === key(601)
+      ? { body: 'Indexed body', parsedIcsAttachments: 'ICS Attachments (parsed):' }
+      : { body: 'Indexed body' }));
+    const { safeGetFull } = await import('../agent/modules/utils.js');
+    expect(await safeGetFull(601)).toMatchObject({ __tmSynthetic: true, parts: [], parsedIcsAttachments: 'ICS Attachments (parsed):' });
+    expect(await safeGetFull(602)).toMatchObject({ __tmSynthetic: true, parts: [], parsedIcsAttachments: '' });
+    expect(globalThis.browser.messages.getFull).not.toHaveBeenCalled();
+  });
+
   it('retains the schedule after a body-fetch failure while later bodies still expire', async () => {
     const h = setupBrowser();
     globalThis.browser.messages.getFull.mockRejectedValueOnce(new Error('Synthetic missing body'));

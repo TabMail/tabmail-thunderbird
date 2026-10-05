@@ -25,6 +25,7 @@ vi.mock('../chat/modules/icsParser.js', () => ({
 }));
 
 const { log, safeGetFull } = await import('../agent/modules/utils.js');
+const { extractIcsFromParts, formatIcsAttachmentsAsString } = await import('../chat/modules/icsParser.js');
 const { run } = await import('../chat/tools/email_read.js');
 
 // The shape Thunderbird 157's messages.get returns: there is no hasAttachments property.
@@ -164,5 +165,39 @@ describe('email_read attachments when the MIME tree cannot tell', () => {
     const lines = await readLines();
     expect(getHasAttachmentBulk).toHaveBeenCalledWith([42]);
     expect(lines).toContain('has_attachments: unknown');
+  });
+});
+
+describe('email_read calendar invites', () => {
+  const icsText = 'ICS Attachments (parsed):\nICS[1] filename=\'invite.ics\' contentType=\'text/calendar\' part=\'1.2\'';
+
+  it('prints the invites the index stored when the body comes from the index', async () => {
+    safeGetFull.mockResolvedValue({ __tmSynthetic: true, body: 'indexed body', parts: [], parsedIcsAttachments: icsText });
+    getHasAttachmentBulk.mockResolvedValue([true]);
+    const lines = await readLines();
+    expect(lines.slice(-2)).toEqual(icsText.split('\n'));
+    expect(lines.indexOf('ICS Attachments (parsed):')).toBeGreaterThan(lines.indexOf('body:'));
+    expect(extractIcsFromParts).not.toHaveBeenCalled();
+  });
+
+  it('prints no invite section when the index stored none', async () => {
+    safeGetFull.mockResolvedValue({ __tmSynthetic: true, body: 'indexed body', parts: [], parsedIcsAttachments: '' });
+    getHasAttachmentBulk.mockResolvedValue([false]);
+    const lines = await readLines();
+    expect(lines.filter((l) => l.startsWith('ICS'))).toEqual([]);
+    expect(extractIcsFromParts).not.toHaveBeenCalled();
+  });
+
+  it('scans the downloaded MIME tree for invites when the message was fetched', async () => {
+    const icsPart = { contentType: 'text/calendar', name: 'invite.ics', partName: '1.2', size: 300 };
+    const full = mixed(textPart, icsPart);
+    const found = [{ filename: 'invite.ics', contentType: 'text/calendar', partName: '1.2', text: 'BEGIN:VCALENDAR' }];
+    safeGetFull.mockResolvedValue(full);
+    extractIcsFromParts.mockResolvedValueOnce(found);
+    formatIcsAttachmentsAsString.mockReturnValueOnce(icsText);
+    const lines = await readLines();
+    expect(extractIcsFromParts).toHaveBeenCalledWith(full, 42);
+    expect(formatIcsAttachmentsAsString).toHaveBeenCalledWith(found);
+    expect(lines.slice(-2)).toEqual(icsText.split('\n'));
   });
 });
