@@ -23,11 +23,12 @@ vi.mock('../agent/modules/utils.js', () => ({
   getUniqueMessageKey: vi.fn(async (m) => `${m.folder.accountId}:/INBOX:${m.headerMessageId}`),
 }));
 
-const { ftsSearch, isFtsEngineInitialized } = vi.hoisted(() => ({
+const { ftsSearch, ownsNativeHelper } = vi.hoisted(() => ({
   ftsSearch: { getAttachmentFlags: vi.fn() },
-  isFtsEngineInitialized: vi.fn(),
+  ownsNativeHelper: vi.fn(),
 }));
-vi.mock('../fts/engine.js', () => ({ ftsSearch, isFtsEngineInitialized }));
+vi.mock('../fts/engine.js', () => ({ ftsSearch }));
+vi.mock('../fts/nativeEngine.js', () => ({ ownsNativeHelper }));
 
 const { getActionForWeId } = await import('../agent/modules/actionCache.js');
 const { log } = await import('../agent/modules/utils.js');
@@ -59,7 +60,7 @@ beforeEach(() => {
   messages = [message(1, 1), message(2, 2), message(3, 3)];
   storage = {};
   ftsSearch.getAttachmentFlags.mockImplementation(async (ids) => ({ ok: true, flags: ids.map(() => null) }));
-  isFtsEngineInitialized.mockReturnValue(true);
+  ownsNativeHelper.mockReturnValue(true);
   globalThis.browser = {
     runtime: { sendMessage: vi.fn() },
     storage: { local: { get: vi.fn(async (k) => (k in storage ? { [k]: storage[k] } : {})) } },
@@ -203,7 +204,7 @@ describe('buildInboxContext attachment flags from the index, outside the backgro
   const key = (n) => `account1:/INBOX:m${n}@example.com`;
   beforeEach(() => {
     storage.fts_attachment_repaired_accounts = ['account1'];
-    isFtsEngineInitialized.mockReturnValue(false);
+    ownsNativeHelper.mockReturnValue(false);
   });
 
   it('asks the background for the flags and never calls the helper itself', async () => {

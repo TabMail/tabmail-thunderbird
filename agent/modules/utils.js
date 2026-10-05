@@ -2,34 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import { ftsRequest } from "../../fts/ftsRequest.js";
 import { SETTINGS } from "./config.js";
 import "./quoteAndSignature.js";
 import { getAndClearThink } from "./thinkBuffer.js";
-
-// Lazy-loaded FTS search reference for direct API access (avoids runtime.sendMessage issues)
-let _ftsSearchRef = null;
-let _ftsSearchLoadAttempted = false;
-
-/**
- * Get the FTS search API directly (for use in background script context).
- * Returns null if FTS is not available or not yet initialized.
- */
-async function _getFtsSearch() {
-  if (_ftsSearchRef) return _ftsSearchRef;
-  if (_ftsSearchLoadAttempted) return null;
-  _ftsSearchLoadAttempted = true;
-  try {
-    const { ftsSearch } = await import("../../fts/engine.js");
-    if (ftsSearch) {
-      _ftsSearchRef = ftsSearch;
-      return ftsSearch;
-    }
-  } catch (e) {
-    // FTS engine not available - this is expected if FTS is disabled or not initialized
-    console.log(`[TMDBG GetFull] FTS engine import failed (expected if FTS disabled): ${e}`);
-  }
-  return null;
-}
 
 let activeGetFullCount = 0;
 const MAX_CONCURRENT_GETFULL = 16;
@@ -408,10 +384,9 @@ export async function safeGetFull(id, preHeader = null) {
     const msgId = String(headerMessageIdRaw || "").replace(/[<>]/g, "");
     const ftsKey = uniqueKey || msgId;
     if (ftsKey) {
-      // Use direct FTS API call instead of runtime.sendMessage
-      // (runtime.sendMessage doesn't work within the same background script context)
-      const ftsSearchApi = await _getFtsSearch();
-      const ftsRes = ftsSearchApi ? await ftsSearchApi.getMessageByMsgId(ftsKey) : null;
+      // safeGetFull also runs in the chat window (email_read) and compose; ftsRequest reaches the
+      // helper only through the background, which owns it.
+      const ftsRes = await ftsRequest("getMessageByMsgId", { msgId: ftsKey }, ({ ftsSearch }) => ftsSearch.getMessageByMsgId(ftsKey));
       const body = ftsRes?.body || "";
       if (typeof ftsRes === "undefined") {
         _diagLog("ftsNoResponse", "warn", () => ({
@@ -470,8 +445,7 @@ export async function safeGetFull(id, preHeader = null) {
       // FTS stats: rate-limited, with expensive async calls only when the counter allows
       if (_diagLog("ftsStats", "warn", { note: "fetching stats..." })) {
         try {
-          const ftsApi = await _getFtsSearch();
-          const stats = ftsApi ? await ftsApi.stats() : null;
+          const stats = await ftsRequest("stats", {}, ({ ftsSearch }) => ftsSearch.stats());
           log(`[TMDBG SnippetDiag][BG] ${SAFE_GETFULL_CONFIG.logPrefix} FTS stats at miss ${JSON.stringify(stats || {})}`, "warn");
           if (!stats || (typeof stats === "object" && Object.keys(stats).length === 0)) {
             try {

@@ -19,6 +19,8 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({ getAndClearThink: vi.fn(() =
 vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
 const ftsGet = vi.hoisted(() => vi.fn(async () => null));
 vi.mock('../fts/engine.js', () => ({ ftsSearch: { getMessageByMsgId: (...args) => ftsGet(...args) } }));
+const ownsNativeHelper = vi.hoisted(() => vi.fn(() => true));
+vi.mock('../fts/nativeEngine.js', () => ({ ownsNativeHelper }));
 
 const key = id => `test-account:/Inbox:message-${id}`;
 
@@ -255,5 +257,40 @@ describe('safeGetFull cleanup across body sources and callers', () => {
     h.tick();
     expect(_testCacheInternals.getFullCache.has(key(801))).toBe(false);
     expect(await safeGetFull(801)).toEqual({ body: 'Synthetic message 801, fetch 2' });
+  });
+});
+
+// safeGetFull also runs in the chat window (email_read) and compose, which have no helper port of
+// their own: there the indexed body comes from the background, never from a helper the page starts.
+describe('safeGetFull outside the context that owns the native helper', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    ftsGet.mockReset().mockResolvedValue(null);
+    ownsNativeHelper.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    ownsNativeHelper.mockReturnValue(true);
+    vi.restoreAllMocks();
+    delete globalThis.browser;
+  });
+
+  it('asks the background for the indexed body and never calls the helper itself', async () => {
+    setupBrowser();
+    const sendMessage = vi.fn(async () => ({ body: 'Indexed body', parsedIcsAttachments: 'ICS Attachments (parsed):' }));
+    globalThis.browser.runtime = { sendMessage };
+    const { safeGetFull } = await import('../agent/modules/utils.js');
+    expect(await safeGetFull(701)).toMatchObject({ __tmSynthetic: true, parsedIcsAttachments: 'ICS Attachments (parsed):' });
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'fts', cmd: 'getMessageByMsgId', msgId: key(701) });
+    expect(ftsGet).not.toHaveBeenCalled();
+    expect(globalThis.browser.messages.getFull).not.toHaveBeenCalled();
+  });
+
+  it('fetches the message from Thunderbird when the background cannot answer', async () => {
+    setupBrowser();
+    globalThis.browser.runtime = { sendMessage: vi.fn(async () => { throw new Error('Receiving end does not exist.'); }) };
+    const { safeGetFull } = await import('../agent/modules/utils.js');
+    expect(await safeGetFull(702)).toEqual({ body: 'Synthetic message 702, fetch 1' });
+    expect(ftsGet).not.toHaveBeenCalled();
   });
 });

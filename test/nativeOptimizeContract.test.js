@@ -376,22 +376,8 @@ describe('native optimize maintenance contract', () => {
 });
 
 // inbox_read in the chat window asks the background for the index's attachment flags over this
-// command, because only the context that initialized the engine owns the native helper's port.
+// command, because only the background owns the native helper's port (fts/ftsRequest.js).
 describe('attachment flags command', () => {
-  it('reports the engine initialized only once initFtsEngine succeeded, and only until disposed', async () => {
-    const { initNativeFts } = await import('../fts/nativeEngine.js');
-    vi.mocked(initNativeFts).mockRejectedValueOnce(new Error('helper missing'));
-    runtimeEngine = await import('../fts/engine.js');
-
-    expect(runtimeEngine.isFtsEngineInitialized()).toBe(false);
-    await expect(runtimeEngine.initFtsEngine()).rejects.toThrow('helper missing');
-    expect(runtimeEngine.isFtsEngineInitialized()).toBe(false);
-    await runtimeEngine.initFtsEngine();
-    expect(runtimeEngine.isFtsEngineInitialized()).toBe(true);
-    await runtimeEngine.disposeFtsEngine();
-    expect(runtimeEngine.isFtsEngineInitialized()).toBe(false);
-  });
-
   it('answers with the helper\'s flags for the msgIds asked', async () => {
     mockGetAttachmentFlags.mockResolvedValueOnce({ ok: true, flags: [true, null] });
     runtimeEngine = await import('../fts/engine.js');
