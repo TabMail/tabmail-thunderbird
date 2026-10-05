@@ -28,7 +28,7 @@ import { getDeviceSyncUrl, SETTINGS } from "./config.js";
 const PFX = "[DeviceSync] ";
 
 // Valid field names for sync
-const VALID_FIELDS = ["composition", "action", "kb", "templates", "disabledReminders", "taskCache"];
+const VALID_FIELDS = ["composition", "action", "kb", "templates", "disabledReminders", "taskCache", "actionConfig"];
 
 // Field → storage key mapping
 const FIELD_KEYS = {
@@ -38,6 +38,7 @@ const FIELD_KEYS = {
   templates: "user_templates",
   disabledReminders: "disabled_reminders_v2",
   taskCache: "task_execution_cache",
+  actionConfig: "user_prompts:action_config",
 };
 
 // Field → per-field timestamp key mapping
@@ -48,6 +49,7 @@ const TIMESTAMP_KEYS = {
   templates: "device_sync_ts:templates",
   disabledReminders: "device_sync_ts:disabledReminders",
   taskCache: "device_sync_ts:taskCache",
+  actionConfig: "device_sync_ts:actionConfig",
 };
 
 // Epoch 0 for new devices — prevents overwriting existing prompts
@@ -59,6 +61,12 @@ const AUTO_ENABLED_KEY = "device_sync_auto_enabled";
 // Backup storage (legacy — migrated to prompt_history)
 const BACKUP_KEY = "device_sync_backups";
 const BROADCAST_DEBOUNCE_MS = SETTINGS.deviceSync?.broadcastDebounceMs ?? 500;
+
+// Must match ACTION_CONFIG in autoUpdateUserPrompt.js and the prompts page defaults.
+const ACTION_CONFIG_DEFAULTS = {
+  compact_threshold: 100,
+  compact_threshold_chars: 16000,
+};
 
 // Prompt history
 const HISTORY_KEY = "prompt_history";
@@ -371,6 +379,8 @@ async function readLocalState(fields = null) {
         state[field] = stored[FIELD_KEYS[field]] || {};
       } else if (field === "templates") {
         state[field] = stored[FIELD_KEYS[field]] || [];
+      } else if (field === "actionConfig") {
+        state[field] = resolveActionConfig(stored[FIELD_KEYS[field]]);
       } else {
         state[field] = stored[FIELD_KEYS[field]] || "";
       }
@@ -515,8 +525,10 @@ export function setupStorageListener() {
       log(`${PFX}Failed to write edit timestamps: ${e}`, "warn");
     });
 
-    // Record history for local edits (debounced 2s)
+    // Record history for local edits (debounced 2s). History snapshots hold
+    // prompt text only, so an actionConfig entry would carry no diff.
     for (const field of changedFields) {
+      if (field === "actionConfig") continue;
       debouncedRecordHistory(field);
     }
 
@@ -555,6 +567,23 @@ export function setupStorageListener() {
  */
 function resolveIncomingTimestamp(data, field) {
   return data[`${field}_updated_at`] || data.updatedAt || EPOCH_ZERO;
+}
+
+/**
+ * Compaction thresholds as sent to the backend (action_compact_threshold[_chars]).
+ * Same defaults and `||` fallback as autoUpdateUserPrompt.getActionConfig().
+ */
+function resolveActionConfig(config) {
+  return {
+    compact_threshold: config?.compact_threshold || ACTION_CONFIG_DEFAULTS.compact_threshold,
+    compact_threshold_chars: config?.compact_threshold_chars || ACTION_CONFIG_DEFAULTS.compact_threshold_chars,
+  };
+}
+
+function isValidActionConfig(config) {
+  return typeof config === "object" && config !== null
+    && Number.isInteger(config.compact_threshold) && config.compact_threshold > 0
+    && Number.isInteger(config.compact_threshold_chars) && config.compact_threshold_chars > 0;
 }
 
 /**
@@ -781,6 +810,36 @@ async function handlePromptState(data) {
       }
     }
 
+    // ─── ActionConfig: last-write-wins — an epoch-zero (never edited) ─
+    // incoming timestamp is never newer than local, so it is skipped too.
+    let actionConfigApplied = false;
+    if (data.actionConfig !== undefined) {
+      const incomingTs = data.actionConfig_updated_at || EPOCH_ZERO;
+      const localTs = localTimestamps.actionConfig;
+      if (incomingTs <= localTs) {
+        log(`${PFX}Skipping actionConfig — not newer (incoming ${incomingTs} <= local ${localTs})`);
+      } else if (!isValidActionConfig(data.actionConfig)) {
+        log(`${PFX}Skipping actionConfig — invalid payload`, "warn");
+      } else {
+        const incomingConfig = {
+          compact_threshold: data.actionConfig.compact_threshold,
+          compact_threshold_chars: data.actionConfig.compact_threshold_chars,
+        };
+        // Value and timestamp in one change set: the storage listener treats it as sync-owned.
+        suppressBroadcast = true;
+        try {
+          await browser.storage.local.set({
+            [FIELD_KEYS.actionConfig]: incomingConfig,
+            [TIMESTAMP_KEYS.actionConfig]: incomingTs,
+          });
+        } finally {
+          suppressBroadcast = false;
+        }
+        actionConfigApplied = true;
+        log(`${PFX}actionConfig: LWW accept compact_threshold=${incomingConfig.compact_threshold}, compact_threshold_chars=${incomingConfig.compact_threshold_chars}`);
+      }
+    }
+
     // ─── Apply text field updates + peer base ─────────────────────────
     // Always save peer base updates (even if no text fields were applied)
     if (Object.keys(peerBaseUpdates).length > 0) {
@@ -788,7 +847,7 @@ async function handlePromptState(data) {
     }
 
     if (textFieldNames.length === 0 && !templatesMerged && !remindersMerged && !taskCacheMerged) {
-      log(`${PFX}No fields to apply`);
+      log(actionConfigApplied ? `${PFX}Applied incoming prompt_state (actionConfig)` : `${PFX}No fields to apply`);
       return;
     }
 

@@ -1691,6 +1691,12 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
+    // Compaction thresholds changed (e.g., Device Sync from another device)
+    if (changes["user_prompts:action_config"]) {
+      log("[Prompts] Action config changed, refreshing sliders");
+      loadActionConfig();
+    }
+
     // Reminders changed
     if (changes.disabled_reminders) {
       if (currentPrompt === "reminders") {
