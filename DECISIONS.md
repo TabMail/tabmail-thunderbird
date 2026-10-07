@@ -149,6 +149,10 @@
 
 - **[Full ADR](Companion/Decisions/Active/adr-025-native-fts-helper-bound-to-this-profile.md)** — without `profilePath` the helper's `find_thunderbird_profile_dir()` opened the most recently modified profile's `fts.db`/`memory.db`, so with two profiles (multi-profile, two Thunderbird instances) reconciliation could remove the other profile's rows and two helpers could write one database. `initNativeFts` now sends `init {profilePath}` from the `tmMsgNotify.getFtsDataDir()` experiment (`PathUtils.profileDir`/browser-extension-data/<addon id>); fail closed (no directory ⇒ no init, status `missing`), no auto-detect fallback. Every supported helper (≥0.11.1) honours the override. Dead `nativeFtsSearch.init()` deleted. Orphaned old index (incl. `memory.db`) in a guessed directory no profile reads is moved into this profile when it has none, else removed, by the helper (ADR-NF-007, next helper release); contamination already in another profile's index stays (owner).
 
+## ADR-026: `web_read` Reads a Page as a User Agent, Without Asking robots.txt
+
+- **[Full ADR](Companion/Decisions/Active/adr-026-web-read-is-a-user-agent-no-robots-txt.md)** — owner 2026-10-07: robots.txt is for crawlers; `web_read` fetches one page the user asked for, as a browser does, so `isPathAllowedByRobots`/`checkRobotsTxt` are deleted (their parser matched only `*` or the full user-agent, not the RFC 9309 product token, and a later group cleared the `*` rules). TabMail stays named in `tmWebFetch`'s User-Agent; the backend URL guard (user-given or tool-result URLs, no private addresses) is unchanged. iOS `WebReadTool`, Voice `web_read` and the backend tool description change together; supersedes Voice #45.
+
 ---
 
 ## Template for New Decisions
