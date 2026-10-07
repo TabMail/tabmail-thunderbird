@@ -3,77 +3,17 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // web_read.js – fetch and extract content from a web URL (TB 141+, MV3)
+//
+// A page is read because the user asked for it, as a browser opens one, so robots.txt (written for
+// crawlers, RFC 9309) is not consulted. tmWebFetch names TabMail in the User-Agent, so a site can
+// still tell it apart.
 
 import { log } from "../../agent/modules/utils.js";
 
 const CONFIG = {
   TIMEOUT_MS: 30000,
   MAX_CONTENT_LENGTH: 500000, // 500KB max
-  USER_AGENT: "TabMail/1.0 (Thunderbird Extension; +https://tabmail.app)",
 };
-
-/**
- * Parse robots.txt and check if the URL path is allowed
- * @param {string} robotsTxt - The robots.txt content
- * @param {string} path - The URL path to check
- * @param {string} userAgent - The user agent string
- * @returns {boolean} - true if allowed, false if disallowed
- */
-function isPathAllowedByRobots(robotsTxt, path, userAgent = "*") {
-  try {
-    const lines = robotsTxt.split("\n");
-    let currentAgent = null;
-    let disallowRules = [];
-    let allowRules = [];
-    
-    // Parse robots.txt
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      
-      const lowerLine = trimmed.toLowerCase();
-      if (lowerLine.startsWith("user-agent:")) {
-        const agent = trimmed.substring(11).trim();
-        currentAgent = agent;
-        // Reset rules when we hit a new user-agent section
-        if (agent !== "*" && agent !== userAgent) {
-          disallowRules = [];
-          allowRules = [];
-        }
-      } else if (currentAgent === "*" || currentAgent === userAgent) {
-        if (lowerLine.startsWith("disallow:")) {
-          const rule = trimmed.substring(9).trim();
-          if (rule) disallowRules.push(rule);
-        } else if (lowerLine.startsWith("allow:")) {
-          const rule = trimmed.substring(6).trim();
-          if (rule) allowRules.push(rule);
-        }
-      }
-    }
-    
-    // Check rules: allow rules take precedence over disallow rules
-    for (const allowRule of allowRules) {
-      if (path.startsWith(allowRule)) {
-        log(`[TMDBG Tools] web_read: Path '${path}' explicitly allowed by robots.txt`);
-        return true;
-      }
-    }
-    
-    for (const disallowRule of disallowRules) {
-      if (path.startsWith(disallowRule)) {
-        log(`[TMDBG Tools] web_read: Path '${path}' disallowed by robots.txt`);
-        return false;
-      }
-    }
-    
-    log(`[TMDBG Tools] web_read: Path '${path}' allowed (no matching rules)`);
-    return true;
-  } catch (e) {
-    log(`[TMDBG Tools] web_read: Error parsing robots.txt: ${e}`, "warn");
-    // On parse error, be conservative and allow
-    return true;
-  }
-}
 
 /**
  * Fetch URL using privileged experimental API (bypasses CORS)
@@ -90,34 +30,6 @@ async function fetchWithPrivileged(url, timeout) {
   } catch (e) {
     log(`[TMDBG Tools] web_read: tmWebFetch.fetch() failed: ${e}`, "error");
     throw e;
-  }
-}
-
-/**
- * Check robots.txt for the given URL
- * @param {string} url - The full URL to check
- * @returns {Promise<boolean>} - true if allowed, false if disallowed
- */
-async function checkRobotsTxt(url) {
-  try {
-    const urlObj = new URL(url);
-    const robotsUrl = `${urlObj.protocol}//${urlObj.host}/robots.txt`;
-    
-    log(`[TMDBG Tools] web_read: Checking robots.txt at ${robotsUrl}`);
-    
-    const response = await fetchWithPrivileged(robotsUrl, 5000);
-    
-    if (response.status !== 200) {
-      // If robots.txt doesn't exist (404) or errors, assume allowed
-      log(`[TMDBG Tools] web_read: robots.txt returned ${response.status}, assuming allowed`);
-      return true;
-    }
-    
-    return isPathAllowedByRobots(response.responseText, urlObj.pathname, CONFIG.USER_AGENT);
-  } catch (e) {
-    // On any error (timeout, network, etc.), be conservative and allow
-    log(`[TMDBG Tools] web_read: Error checking robots.txt: ${e}, assuming allowed`, "warn");
-    return true;
   }
 }
 
@@ -163,8 +75,6 @@ function extractTextFromHTML(html) {
  * @param {string} args.url - The URL to read
  * @returns {Promise<string|object>} - Content string or error object
  */
-export { isPathAllowedByRobots as _testIsPathAllowedByRobots };
-
 export async function run(args = {}, options = {}) {
   try {
     const url = args?.url;
@@ -187,13 +97,6 @@ export async function run(args = {}, options = {}) {
     } catch (e) {
       log(`[TMDBG Tools] web_read: invalid URL format: ${e}`, "error");
       return { error: "Invalid URL format" };
-    }
-    
-    // Check robots.txt
-    const robotsAllowed = await checkRobotsTxt(url);
-    if (!robotsAllowed) {
-      log(`[TMDBG Tools] web_read: Access disallowed by robots.txt`, "error");
-      return { error: "Access to this URL is disallowed by the site's robots.txt" };
     }
     
     // Fetch the content

@@ -4,7 +4,7 @@
 
 // webRead.test.js — Tests for chat/tools/web_read.js
 //
-// Tests URL validation, robots.txt parsing, content extraction, and run().
+// Tests URL validation, that robots.txt is not asked, content extraction, and run().
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -14,9 +14,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 globalThis.browser = {
   tmWebFetch: {
     fetch: vi.fn(async (url, options) => {
-      if (url.endsWith('/robots.txt')) {
-        return { status: 200, statusText: 'OK', responseText: '', contentType: 'text/plain' };
-      }
       return {
         status: 200,
         statusText: 'OK',
@@ -63,9 +60,6 @@ describe('web_read', () => {
     vi.clearAllMocks();
     // Reset default fetch mock
     browser.tmWebFetch.fetch.mockImplementation(async (url) => {
-      if (url.endsWith('/robots.txt')) {
-        return { status: 200, statusText: 'OK', responseText: '', contentType: 'text/plain' };
-      }
       return {
         status: 200,
         statusText: 'OK',
@@ -115,64 +109,24 @@ describe('web_read', () => {
   });
 
   // --- robots.txt ---
-  describe('robots.txt checking', () => {
-    it('should allow when robots.txt returns 404', async () => {
-      browser.tmWebFetch.fetch.mockImplementation(async (url) => {
-        if (url.endsWith('/robots.txt')) {
-          return { status: 404, statusText: 'Not Found', responseText: '', contentType: 'text/plain' };
-        }
-        return { status: 200, statusText: 'OK', responseText: 'Content', contentType: 'text/plain' };
-      });
-      const result = await run({ url: 'https://example.com/page' });
+  // A page is read because the user asked for it, as a browser opens one: robots.txt is not asked.
+  describe('robots.txt', () => {
+    it('reads the page alone, without asking robots.txt', async () => {
+      const result = await run({ url: 'https://example.com/secret/page' });
       expect(typeof result).toBe('string');
+      expect(browser.tmWebFetch.fetch).toHaveBeenCalledTimes(1);
+      expect(browser.tmWebFetch.fetch).toHaveBeenCalledWith('https://example.com/secret/page', expect.anything());
     });
 
-    it('should block when robots.txt disallows path', async () => {
+    it('reads a page a robots.txt would disallow', async () => {
       browser.tmWebFetch.fetch.mockImplementation(async (url) => {
         if (url.endsWith('/robots.txt')) {
-          return {
-            status: 200,
-            statusText: 'OK',
-            responseText: 'User-agent: *\nDisallow: /secret/',
-            contentType: 'text/plain',
-          };
+          return { status: 200, statusText: 'OK', responseText: 'User-agent: *\nDisallow: /', contentType: 'text/plain' };
         }
-        return { status: 200, statusText: 'OK', responseText: 'Content', contentType: 'text/plain' };
+        return { status: 200, statusText: 'OK', responseText: 'Secret content', contentType: 'text/plain' };
       });
       const result = await run({ url: 'https://example.com/secret/page' });
-      expect(result).toEqual(expect.objectContaining({ error: expect.stringContaining('robots.txt') }));
-    });
-
-    it('should allow when path not disallowed', async () => {
-      browser.tmWebFetch.fetch.mockImplementation(async (url) => {
-        if (url.endsWith('/robots.txt')) {
-          return {
-            status: 200,
-            statusText: 'OK',
-            responseText: 'User-agent: *\nDisallow: /secret/',
-            contentType: 'text/plain',
-          };
-        }
-        return { status: 200, statusText: 'OK', responseText: 'Public content', contentType: 'text/plain' };
-      });
-      const result = await run({ url: 'https://example.com/public/page' });
-      expect(typeof result).toBe('string');
-    });
-
-    it('should allow when allow rule matches before disallow', async () => {
-      browser.tmWebFetch.fetch.mockImplementation(async (url) => {
-        if (url.endsWith('/robots.txt')) {
-          return {
-            status: 200,
-            statusText: 'OK',
-            responseText: 'User-agent: *\nAllow: /secret/public\nDisallow: /secret/',
-            contentType: 'text/plain',
-          };
-        }
-        return { status: 200, statusText: 'OK', responseText: 'Content', contentType: 'text/plain' };
-      });
-      const result = await run({ url: 'https://example.com/secret/public' });
-      expect(typeof result).toBe('string');
+      expect(result).toContain('Secret content');
     });
   });
 
@@ -180,9 +134,6 @@ describe('web_read', () => {
   describe('HTTP error handling', () => {
     it('should return error for HTTP 500', async () => {
       browser.tmWebFetch.fetch.mockImplementation(async (url) => {
-        if (url.endsWith('/robots.txt')) {
-          return { status: 404, statusText: 'Not Found', responseText: '', contentType: 'text/plain' };
-        }
         return { status: 500, statusText: 'Internal Server Error', responseText: '', contentType: 'text/html' };
       });
       const result = await run({ url: 'https://example.com/error' });
@@ -191,9 +142,6 @@ describe('web_read', () => {
 
     it('should return error for fetch failure', async () => {
       browser.tmWebFetch.fetch.mockImplementation(async (url) => {
-        if (url.endsWith('/robots.txt')) {
-          return { status: 404, statusText: 'Not Found', responseText: '', contentType: 'text/plain' };
-        }
         throw new Error('Network error');
       });
       const result = await run({ url: 'https://example.com/fail' });
@@ -202,9 +150,6 @@ describe('web_read', () => {
 
     it('should return error for network error response', async () => {
       browser.tmWebFetch.fetch.mockImplementation(async (url) => {
-        if (url.endsWith('/robots.txt')) {
-          return { status: 404, statusText: 'Not Found', responseText: '', contentType: 'text/plain' };
-        }
         return { error: true, errorMessage: 'DNS resolution failed' };
       });
       const result = await run({ url: 'https://example.com/fail' });
@@ -222,9 +167,6 @@ describe('web_read', () => {
 
     it('should return plain text for non-HTML content', async () => {
       browser.tmWebFetch.fetch.mockImplementation(async (url) => {
-        if (url.endsWith('/robots.txt')) {
-          return { status: 404, statusText: 'Not Found', responseText: '', contentType: 'text/plain' };
-        }
         return { status: 200, statusText: 'OK', responseText: 'Just plain text', contentType: 'text/plain' };
       });
       const result = await run({ url: 'https://example.com/text' });
@@ -239,9 +181,6 @@ describe('web_read', () => {
     it('should truncate content exceeding max length', async () => {
       const longContent = 'x'.repeat(600000);
       browser.tmWebFetch.fetch.mockImplementation(async (url) => {
-        if (url.endsWith('/robots.txt')) {
-          return { status: 404, statusText: 'Not Found', responseText: '', contentType: 'text/plain' };
-        }
         return { status: 200, statusText: 'OK', responseText: longContent, contentType: 'text/plain' };
       });
       const result = await run({ url: 'https://example.com/big' });
