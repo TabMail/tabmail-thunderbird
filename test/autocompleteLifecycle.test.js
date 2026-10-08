@@ -1070,9 +1070,9 @@ it.each(['plain','html'])('sends the complete body for a %s Cmd-K expansion and 
 it.each([
  ['a copied signature is dropped','Hello team,\n\nPlease report issues.\n\nThanks,\nExample\n\n-- \nPrivate signature','Hello team,\n\nPlease report issues.\n\nThanks,\nExample'],
  ['a signature-only result is refused','-- \nPrivate signature',null],
-])('Cmd-K in a signed draft shows the signature once: %s',async(_,result,applied)=>{
- const original='Hello,\n\nPlease report issues.\n\nThanks,\nExample';
- const {w,tm,body}=setup(original+'<pre class="moz-signature">-- \nPrivate signature</pre>');
+])('Cmd-K in an empty signed draft shows the signature once: %s',async(_,result,applied)=>{
+ const {w,tm,body}=setup('<p><br></p><pre class="moz-signature">-- \nPrivate signature</pre>');
+ const original=tm.extractUserAndQuoteTexts(body).originalUserMessage;
  tm.attachAutocomplete(body);w.document.designMode='on';
  w.browser.runtime.sendMessage.mockImplementation(async message=>message.type==='runInlineComposeEdit'?{body:result}:undefined);
  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
@@ -1113,19 +1113,21 @@ it('Cmd-K keeps a signature delimiter the user typed in an HTML draft',async()=>
  expect(body.textContent.split('Private signature')).toHaveLength(2);
 });
 
-it.each(['success','empty','whitespace','native-failure','dismissed'])('retains inline history only after successful application: %s',async outcome=>{
+it.each(['success','empty','whitespace','error','native-failure','dismissed'])('retains inline history only after successful application: %s',async outcome=>{
  const {w,tm,body}=setup('<p>Draft.</p>');
  const previous=[{userRequest:'Earlier'}],candidate=[...previous,{userRequest:'Expand'}];tm.state.editChatHistory=previous;
  tm.showInlineEditDropdown();
  const wrapper=w.document.getElementById('tm-inline-edit');
  w.browser.runtime.sendMessage.mockImplementation(async()=>{
   if(outcome==='dismissed')wrapper.remove();
+  // The background replies {error} without a body when the edit request throws.
+  if(outcome==='error')return {error:'Synthetic failure'};
   return {body:outcome==='empty'?'':outcome==='whitespace'?'   ':'Expanded draft.',chatHistory:candidate};
  });
  if(outcome==='native-failure')w.document.execCommand.mockReturnValue(false);
  await tm._runInlineEditInstruction({instruction:'Expand',wrapper});
  expect(tm.state.editChatHistory).toEqual(outcome==='success'?candidate:previous);
- if(outcome==='empty'||outcome==='whitespace'){
+ if(outcome==='empty'||outcome==='whitespace'||outcome==='error'){
   expect(wrapper.isConnected).toBe(true);expect(wrapper.querySelector('.tm-inline-actions').shadowRoot.querySelector('[role="alert"]').textContent).toContain('Please try again');
   expect(w.document.documentElement.outerHTML).not.toContain('No usable edit was returned');
   expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe('Draft.');

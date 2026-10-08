@@ -108,27 +108,22 @@ Object.assign(TabMail, {
   },
 
   /**
-   * Thunderbird inserts the identity signature itself. A model-written "-- "
-   * block copying it would show the signature twice, so drop that block. Only
-   * a copy of the draft's own signature (quoted or forwarded ones do not count)
-   * is dropped, never a delimiter or a line the user wrote.
+   * Thunderbird inserts the identity signature itself. A model-written draft
+   * that copies it after a "-- " line would show it twice, so drop that block.
+   * Only drafts the user has not written in yet, with a signature of their own
+   * (quoted or forwarded ones do not count), and only a copy of that signature:
+   * text the user wrote is never cut.
    */
   withoutAddedSignature(editor, original, proposed) {
-    // Any whitespace but a line break: Gecko stores a typed "-- " as "--\u00A0".
-    const delimiter = /^--[^\S\r\n]*$/m;
     const own = [...editor.querySelectorAll('.moz-signature')].filter(node => !node.closest('blockquote, .moz-forward-container'));
-    const match = own.length && !delimiter.test(original) ? delimiter.exec(proposed) : null;
+    const match = own.length && !original.trim() ? /^--[^\S\r\n]*$/m.exec(proposed) : null;
     if (!match) return proposed;
-    // Model output arrives NFKC-normalized with folded quotes and spaces, and
-    // may re-wrap lines, so compare letters and digits only.
-    const keys = text => text.normalize('NFKC').toLowerCase().split(/\r?\n/).map(line => line.replace(/[^\p{L}\p{N}]+/gu, '')).filter(Boolean);
-    const signature = own.map(node => keys(node.textContent).join('')).join('');
-    const kept = new Set(keys(proposed.slice(0, match.index)));
-    const cut = keys(proposed.slice(match.index));
-    if (!cut.every(line => signature.includes(line))) return proposed;
-    // The model may put a delimiter above lines the user wrote; never cut those.
-    if (keys(original).some(line => cut.join('').includes(line) && !kept.has(line))) return proposed;
-    return proposed.slice(0, match.index).trimEnd();
+    // Model output arrives NFKC-normalized and may re-wrap lines, so compare
+    // letters and digits only.
+    const key = text => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    const signature = own.map(node => key(node.textContent)).join('');
+    const copied = proposed.slice(match.index).split(/\r?\n/).every(line => signature.includes(key(line)));
+    return copied ? proposed.slice(0, match.index).trimEnd() : proposed;
   },
 });
 
