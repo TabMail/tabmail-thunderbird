@@ -240,12 +240,34 @@ it.each([
   expect(s.tm.state.correctedText).toBe(signedDraft);
 });
 
-it('a delimiter the user typed is never proposed for removal', async () => {
-  const typed = 'Hi Alex,\n\nThanks.\n-- \nPat';
-  const s = setup(`${typed.replaceAll('\n', '<br>')}${ownSignature}`); respond(s, `${typed}\nExample Co`);
-  expect(s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage).toBe(typed);
+// Gecko stores a typed "-- " in HTML as "-- "; model output arrives NFKC-normalized.
+it.each([
+  ['plain-text line', 'Hi Alex,<br><br>Thanks.<br>-- <br>Pat'],
+  ['HTML editor line', 'Hi Alex,<br><br>Thanks.<br>--&nbsp;<br>Pat'],
+])('a delimiter the user typed is never proposed for removal (%s)', async (_, html) => {
+  const s = setup(`${html}${ownSignature}`);
+  const typed = s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage;
+  const suggestion = 'Hi Alex,\n\nThanks.\n-- \nPat\nExample Co';
+  respond(s, suggestion);
   await s.tm.triggerCorrectionBackend(s.body, typed, '', 0, true);
-  expect(s.tm.state.correctedText).toBe(`${typed}\nExample Co`);
+  expect(s.tm.state.correctedText).toBe(suggestion);
+});
+
+it('dash lines that are not a signature delimiter stay in the suggestion', async () => {
+  const suggestion = 'Hi Alex,\n--Pat\n---\nwait -- what\n -- \nThanks.';
+  const s = setup(`<p>Hi Alex,</p>${ownSignature}`); respond(s, suggestion);
+  await s.tm.triggerCorrectionBackend(s.body, 'Hi Alex,', '', 0, true);
+  expect(s.tm.state.correctedText).toBe(suggestion);
+});
+
+it('a reply whose quote carries a signature still shows its own signature once', async () => {
+  const key = 'reply:synthetic-account:synthetic-message';
+  const sys = await producerSystem({ [key]: { reply: signedDraft, source: 'chat_compose', ts: Date.now(), directReplace: true } });
+  await sys.created({ id: 92 });
+  const s = setup(`<p><br></p><div class="moz-cite-prefix">Alex wrote:</div><blockquote type="cite">Earlier<div class="moz-signature">-- <br>Alex</div></blockquote>${ownSignature}`); wire(s, sys, 92);
+  await s.tm.triggerCorrectionBackend(s.body, s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage, '', 0, true);
+  expect(s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage).toBe('Hi Alex,\n\nSynthetic agent draft.\n\nBest,\nPat');
+  expect(signatureCount(s.body)).toBe(1);
 });
 
 it('a suggestion that is only a signature proposes nothing', async () => {

@@ -114,7 +114,8 @@ Object.assign(TabMail, {
    * signature (quoted or forwarded ones do not count), keep the text unchanged.
    */
   withoutAddedSignature(editor, original, proposed) {
-    const delimiter = /^--[ \t]*$/m;
+    // Any whitespace but a line break: Gecko stores a typed "-- " as "--\u00A0".
+    const delimiter = /^--[^\S\r\n]*$/m;
     const ownSignature = [...editor.querySelectorAll('.moz-signature')].some(node => !node.closest('blockquote, .moz-forward-container'));
     const match = ownSignature && !delimiter.test(original) ? delimiter.exec(proposed) : null;
     return match ? proposed.slice(0, match.index).trimEnd() : proposed;
