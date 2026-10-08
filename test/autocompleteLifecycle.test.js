@@ -1067,6 +1067,27 @@ it.each(['plain','html'])('sends the complete body for a %s Cmd-K expansion and 
  expect(w.document.execCommand).toHaveBeenCalledTimes(1);
 });
 
+it.each([
+ ['a copied signature is dropped','Hello team,\n\nPlease report issues.\n\nThanks,\nExample\n\n-- \nPrivate signature','Hello team,\n\nPlease report issues.\n\nThanks,\nExample'],
+ ['a signature-only result is refused','-- \nPrivate signature',null],
+])('Cmd-K in a signed draft shows the signature once: %s',async(_,result,applied)=>{
+ const original='Hello,\n\nPlease report issues.\n\nThanks,\nExample';
+ const {w,tm,body}=setup(original+'<pre class="moz-signature">-- \nPrivate signature</pre>');
+ tm.attachAutocomplete(body);w.document.designMode='on';
+ w.browser.runtime.sendMessage.mockImplementation(async message=>message.type==='runInlineComposeEdit'?{body:result}:undefined);
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+ const input=w.document.getElementById('tm-inline-edit').querySelector('iframe').contentDocument.querySelector('textarea');
+ input.value='Address the team';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+ if(applied){
+  await vi.waitFor(()=>expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe(applied));
+ }else{
+  await vi.waitFor(()=>expect(w.document.getElementById('tm-inline-edit').querySelector('.tm-inline-actions').shadowRoot.querySelector('.tm-inline-error')).not.toBeNull());
+  expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe(original);
+  expect(w.document.execCommand).not.toHaveBeenCalled();
+ }
+ expect(body.textContent.split('Private signature')).toHaveLength(2);
+});
+
 it.each(['success','empty','whitespace','native-failure','dismissed'])('retains inline history only after successful application: %s',async outcome=>{
  const {w,tm,body}=setup('<p>Draft.</p>');
  const previous=[{userRequest:'Earlier'}],candidate=[...previous,{userRequest:'Expand'}];tm.state.editChatHistory=previous;

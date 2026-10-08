@@ -206,3 +206,51 @@ it('an aborted flag transaction cannot activate a draft and remains retryable', 
   expect(draft.body.textContent).toBe(payload.reply);
   expect(await sys.read(key)).toEqual({...payload, directReplace: false});
 });
+
+// Thunderbird inserts the identity signature itself. Agent drafts and
+// suggestions that copy a "-- " signature must not show it a second time.
+const ownSignature = '<pre class="moz-signature" cols="72">-- \nPat Example\nExample Co</pre>';
+const signedDraft = 'Hi Alex,\n\nSynthetic agent draft.\n\nBest,\nPat\n\n-- \nPat Example\nExample Co';
+const signatureCount = body => body.textContent.split('Pat Example').length - 1;
+function respond(s, suggestion) {
+  const filename = resolve('compose/modules/api.js');
+  runInContext(readFileSync(filename, 'utf8'), s.dom.getInternalVMContext(), { filename });
+  s.w.browser.runtime.sendMessage = vi.fn(async () => ({ suggestion, usertext: '' }));
+}
+
+it.each([true, false])('an agent draft that copies the signature shows it once (direct insertion: %s)', async directReplace => {
+  const key = 'reply:synthetic-account:synthetic-message';
+  const sys = await producerSystem({ [key]: { reply: signedDraft, source: 'chat_compose', ts: Date.now(), directReplace } });
+  await sys.created({ id: 91 });
+  const s = setup(`<p><br></p>${ownSignature}`); wire(s, sys, 91);
+  await s.tm.triggerCorrectionBackend(s.body, s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage, '', 0, true);
+  if (!directReplace) expect(s.tm.acceptComposePreview()).toBe(true);
+  expect(s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage).toBe('Hi Alex,\n\nSynthetic agent draft.\n\nBest,\nPat');
+  expect(signatureCount(s.body)).toBe(1);
+  expect(s.body.querySelectorAll('.moz-signature')).toHaveLength(1);
+});
+
+it.each([
+  ['no signature of its own', ''],
+  ['only a quoted signature', '<blockquote type="cite">Earlier<div class="moz-signature">-- <br>Alex</div></blockquote>'],
+  ['only a forwarded signature', '<div class="moz-forward-container">Forwarded<div class="moz-signature">-- <br>Alex</div></div>'],
+])('a suggested signature stays when the draft has %s', async (_, tail) => {
+  const s = setup(`<p>Hi Alex,</p>${tail}`); respond(s, signedDraft);
+  await s.tm.triggerCorrectionBackend(s.body, 'Hi Alex,', '', 0, true);
+  expect(s.tm.state.correctedText).toBe(signedDraft);
+});
+
+it('a delimiter the user typed is never proposed for removal', async () => {
+  const typed = 'Hi Alex,\n\nThanks.\n-- \nPat';
+  const s = setup(`${typed.replaceAll('\n', '<br>')}${ownSignature}`); respond(s, `${typed}\nExample Co`);
+  expect(s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage).toBe(typed);
+  await s.tm.triggerCorrectionBackend(s.body, typed, '', 0, true);
+  expect(s.tm.state.correctedText).toBe(`${typed}\nExample Co`);
+});
+
+it('a suggestion that is only a signature proposes nothing', async () => {
+  const s = setup(`<p>Hi Alex,</p>${ownSignature}`); respond(s, '-- \nPat Example');
+  await s.tm.triggerCorrectionBackend(s.body, 'Hi Alex,', '', 0, true);
+  expect(s.tm.state.correctedText).toBeFalsy();
+  expect(s.w.document.getElementById('tm-compose-preview')).toBeNull();
+});

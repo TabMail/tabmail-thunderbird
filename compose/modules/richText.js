@@ -106,6 +106,19 @@ Object.assign(TabMail, {
     }
     return offset;
   },
+
+  /**
+   * Thunderbird inserts the identity signature itself. A model-written "-- "
+   * block on top of it would show the signature twice, so drop the block the
+   * proposal adds. A delimiter the user typed, and drafts without their own
+   * signature (quoted or forwarded ones do not count), keep the text unchanged.
+   */
+  withoutAddedSignature(editor, original, proposed) {
+    const delimiter = /^--[ \t]*$/m;
+    const ownSignature = [...editor.querySelectorAll('.moz-signature')].some(node => !node.closest('blockquote, .moz-forward-container'));
+    const match = ownSignature && !delimiter.test(original) ? delimiter.exec(proposed) : null;
+    return match ? proposed.slice(0, match.index).trimEnd() : proposed;
+  },
 });
 
 Object.assign(TabMail, {

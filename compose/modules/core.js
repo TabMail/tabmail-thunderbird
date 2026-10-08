@@ -315,7 +315,9 @@ Object.assign(TabMail, {
       let correctedMessage = null;
       let backendUserText = originalUserMessage;
       if (correctionData) {
-        correctedMessage = correctionData.suggestion || null;
+        correctedMessage = correctionData.suggestion
+          ? TabMail.withoutAddedSignature(editor, originalUserMessage, correctionData.suggestion) || null
+          : null;
         backendUserText = correctionData.usertext || backendUserText;
         TabMail.log.info('core', `✓ Request #${requestId} returned suggestion: ${correctedMessage ? correctedMessage.substring(0, 50) + '...' : 'NULL'}`
         );
