@@ -123,11 +123,11 @@ Object.assign(TabMail, {
     // may re-wrap lines, so compare letters and digits only.
     const keys = text => text.normalize('NFKC').toLowerCase().split(/\r?\n/).map(line => line.replace(/[^\p{L}\p{N}]+/gu, '')).filter(Boolean);
     const signature = own.map(node => keys(node.textContent).join('')).join('');
-    const kept = keys(proposed.slice(0, match.index)).join('');
+    const kept = new Set(keys(proposed.slice(0, match.index)));
     const cut = keys(proposed.slice(match.index));
     if (!cut.every(line => signature.includes(line))) return proposed;
     // The model may put a delimiter above lines the user wrote; never cut those.
-    if (keys(original).some(line => cut.join('').includes(line) && !kept.includes(line))) return proposed;
+    if (keys(original).some(line => cut.join('').includes(line) && !kept.has(line))) return proposed;
     return proposed.slice(0, match.index).trimEnd();
   },
 });

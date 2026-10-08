@@ -8,7 +8,7 @@ Recorded 2026-10-08. Owner report: accepting a compose suggestion sometimes left
   - the draft has its own `.moz-signature` (one inside `blockquote` or `.moz-forward-container` belongs to quoted or forwarded mail and does not count);
   - the user's text has no delimiter line;
   - every line of the cut block is part of that signature's text (a positive match: the block is a copy of the draft's own signature);
-  - no line the user wrote sits in the cut block without also being in the kept part (the model may put a delimiter above contact lines the user typed).
+  - no line the user wrote sits in the cut block without also being a line of the kept part (the model may put a delimiter above contact lines the user typed). It must be compared line by line: with the kept part joined into one string, a user's "Tom" was cut because "tomorrow" contains it (round 4).
 
   Both comparisons use letters and digits only, after NFKC and lower-casing. Model output reaches the compose script through `sendChat` → `normalizeUnicode` (NFKC, folded quotes, U+00A0 → space) and may re-wrap lines, so an exact line match missed verbatim echoes and deleted user text (tier-1 review rounds 2 and 3, 2026-10-08). The delimiter's whitespace class includes U+00A0 because Gecko's HTML editor stores a typed "-- " line as `--&nbsp;` (plain-text compose keeps a plain space; checked natively). It is applied in `core.js` to every suggestion (autocomplete, cached agent replies, direct agent-draft insertion) and in `inlineEditor.js` to Cmd-K results. A result that is only a signature counts as empty, so Cmd-K shows its retryable error.
 - **Kept unchanged.** These are left alone:
@@ -27,13 +27,13 @@ Recorded 2026-10-08. Owner report: accepting a compose suggestion sometimes left
     - no own signature, including a bare delimiter;
     - a quoted or forwarded copy of the same signature;
     - a user-typed delimiter, in plain-text, `--&nbsp;` and bare shapes;
-    - user lines below a model-added delimiter, including a no-break space, a curly apostrophe and a split line;
+    - user lines below a model-added delimiter, including a no-break space, a curly apostrophe, a split line, a capitalised echo, and a name a kept word contains;
     - a copy that differs from the own signature;
     - a sign-off matching a signature line;
     - two copies (cut at the first delimiter);
     - a re-wrapped copy;
     - full-width digits;
-    - non-delimiter dash lines;
+    - non-delimiter dash lines, including ones followed by signature text (they pin the delimiter anchors);
     - a signature-only suggestion.
   - `test/autocompleteLifecycle.test.js`:
     - "Cmd-K in a signed draft shows the signature once";

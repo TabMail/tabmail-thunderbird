@@ -267,8 +267,10 @@ it('lines the user wrote below a delimiter the model added are never proposed fo
 // re-wrap lines; the user's lines must survive that echo too.
 it.each([
   ['a doubled space the editor stores as a no-break space', 'Hi Alex,<br>Thanks,<br>Pat Example&nbsp; Example Co', 'Hi Alex,\nThanks,\n-- \nPat Example  Example Co', '-- \nPat Example\nExample Co'],
-  ['a curly apostrophe', 'Hi Alex,<br>Thanks,<br>Pat O’Brien', 'Hi Alex,\nThanks,\n-- \nPat O\'Brien', '-- \nPat O’Brien\nExample Co'],
+  ['a curly apostrophe', 'Hi Alex,<br>Thanks,<br>Pat O’Example', 'Hi Alex,\nThanks,\n-- \nPat O\'Example', '-- \nPat O’Example\nExample Co'],
   ['a line the model splits', 'Hi Alex,<br>Thanks,<br>Pat Example, Example Co', 'Hi Alex,\nThanks,\n-- \nPat Example\nExample Co', '-- \nPat Example\nExample Co'],
+  ['a line the model capitalizes', 'Hi Alex,<br>Thanks,<br>pat example, example co', 'Hi Alex,\nThanks,\n-- \nPat Example, Example Co', '-- \nPat Example\nExample Co'],
+  ['a name a kept word contains', 'Hi Alex,<br>See you tomorrow.<br>Tom', 'Hi Alex,\nSee you tomorrow.\n-- \nTom', '-- \nTom Example\nExample Co'],
 ])('signature-like lines the user wrote stay below a model-added delimiter: %s', async (_, html, suggestion, signature) => {
   const s = setup(`<p>${html}</p><pre class="moz-signature">${signature}</pre>`);
   const typed = s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage;
@@ -301,8 +303,11 @@ it('a copied signature is dropped when the model normalized its full-width digit
   expect(s.tm.state.correctedText).toBe('Hi Alex,');
 });
 
-it('dash lines that are not a signature delimiter stay in the suggestion', async () => {
-  const suggestion = 'Hi Alex,\n--Pat\n---\nwait -- what\n -- \nThanks.';
+it.each([
+  'Hi Alex,\n--Pat\n---\nwait -- what\n -- \nThanks.',
+  'Hi Alex,\nNotes below --\nPat Example\nExample Co',
+  'Hi Alex,\n--Pat Example\nExample Co',
+])('dash lines that are not a signature delimiter stay in the suggestion: %j', async suggestion => {
   const s = setup(`<p>Hi Alex,</p>${ownSignature}`); respond(s, suggestion);
   await s.tm.triggerCorrectionBackend(s.body, 'Hi Alex,', '', 0, true);
   expect(s.tm.state.correctedText).toBe(suggestion);
