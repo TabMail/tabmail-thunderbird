@@ -109,22 +109,25 @@ Object.assign(TabMail, {
 
   /**
    * Thunderbird inserts the identity signature itself. A model-written "-- "
-   * block on top of it would show the signature twice, so drop the block the
-   * proposal adds. A delimiter the user typed, a block holding lines the user
-   * wrote, and drafts without their own signature (quoted or forwarded ones do
-   * not count) keep the text unchanged.
+   * block copying it would show the signature twice, so drop that block. Only
+   * a copy of the draft's own signature (quoted or forwarded ones do not count)
+   * is dropped, never a delimiter or a line the user wrote.
    */
   withoutAddedSignature(editor, original, proposed) {
     // Any whitespace but a line break: Gecko stores a typed "-- " as "--\u00A0".
     const delimiter = /^--[^\S\r\n]*$/m;
-    const ownSignature = [...editor.querySelectorAll('.moz-signature')].some(node => !node.closest('blockquote, .moz-forward-container'));
-    const match = ownSignature && !delimiter.test(original) ? delimiter.exec(proposed) : null;
+    const own = [...editor.querySelectorAll('.moz-signature')].filter(node => !node.closest('blockquote, .moz-forward-container'));
+    const match = own.length && !delimiter.test(original) ? delimiter.exec(proposed) : null;
     if (!match) return proposed;
-    const lines = text => new Set(text.split(/\r?\n/).map(line => line.trim()).filter(Boolean));
-    const kept = lines(proposed.slice(0, match.index));
-    const cut = lines(proposed.slice(match.index));
+    // Model output arrives NFKC-normalized with folded quotes and spaces, and
+    // may re-wrap lines, so compare letters and digits only.
+    const keys = text => text.normalize('NFKC').toLowerCase().split(/\r?\n/).map(line => line.replace(/[^\p{L}\p{N}]+/gu, '')).filter(Boolean);
+    const signature = own.map(node => keys(node.textContent).join('')).join('');
+    const kept = keys(proposed.slice(0, match.index)).join('');
+    const cut = keys(proposed.slice(match.index));
+    if (!cut.every(line => signature.includes(line))) return proposed;
     // The model may put a delimiter above lines the user wrote; never cut those.
-    if ([...lines(original)].some(line => cut.has(line) && !kept.has(line))) return proposed;
+    if (keys(original).some(line => cut.join('').includes(line) && !kept.includes(line))) return proposed;
     return proposed.slice(0, match.index).trimEnd();
   },
 });

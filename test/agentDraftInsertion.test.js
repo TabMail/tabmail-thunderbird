@@ -231,23 +231,25 @@ it.each([true, false])('an agent draft that copies the signature shows it once (
 });
 
 it.each([
-  ['no signature of its own', ''],
-  ['only a quoted signature', '<blockquote type="cite">Earlier<div class="moz-signature">-- <br>Alex</div></blockquote>'],
-  ['only a forwarded signature', '<div class="moz-forward-container">Forwarded<div class="moz-signature">-- <br>Alex</div></div>'],
-])('a suggested signature stays when the draft has %s', async (_, tail) => {
-  const s = setup(`<p>Hi Alex,</p>${tail}`); respond(s, signedDraft);
+  ['no signature of its own', '', signedDraft],
+  ['no signature of its own (bare delimiter)', '', 'Hi Alex,\n\nThanks.\n-- '],
+  ['only a quoted copy of the same signature', '<blockquote type="cite">Earlier<div class="moz-signature">-- <br>Pat Example<br>Example Co</div></blockquote>', signedDraft],
+  ['only a forwarded copy of the same signature', '<div class="moz-forward-container">Forwarded<div class="moz-signature">-- <br>Pat Example<br>Example Co</div></div>', signedDraft],
+])('a suggested signature stays when the draft has %s', async (_, tail, suggestion) => {
+  const s = setup(`<p>Hi Alex,</p>${tail}`); respond(s, suggestion);
   await s.tm.triggerCorrectionBackend(s.body, 'Hi Alex,', '', 0, true);
-  expect(s.tm.state.correctedText).toBe(signedDraft);
+  expect(s.tm.state.correctedText).toBe(suggestion);
 });
 
 // Gecko stores a typed "-- " in HTML as "-- "; model output arrives NFKC-normalized.
 it.each([
-  ['plain-text line', 'Hi Alex,<br><br>Thanks.<br>-- <br>Pat'],
-  ['HTML editor line', 'Hi Alex,<br><br>Thanks.<br>--&nbsp;<br>Pat'],
-])('a delimiter the user typed is never proposed for removal (%s)', async (_, html) => {
+  ['plain-text line', 'Hi Alex,<br><br>Thanks.<br>-- <br>Pat', 'Hi Alex,\n\nThanks.\n-- \nPat\nExample Co'],
+  ['HTML editor line', 'Hi Alex,<br><br>Thanks.<br>--&nbsp;<br>Pat', 'Hi Alex,\n\nThanks.\n-- \nPat\nExample Co'],
+  ['bare plain-text line', 'Hi Alex,<br><br>Thanks.<br>-- <br>', 'Hi Alex,\n\nThank you.\n-- '],
+  ['bare HTML editor line', 'Hi Alex,<br><br>Thanks.<br>--&nbsp;<br>', 'Hi Alex,\n\nThank you.\n-- '],
+])('a delimiter the user typed is never proposed for removal (%s)', async (_, html, suggestion) => {
   const s = setup(`${html}${ownSignature}`);
   const typed = s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage;
-  const suggestion = 'Hi Alex,\n\nThanks.\n-- \nPat\nExample Co';
   respond(s, suggestion);
   await s.tm.triggerCorrectionBackend(s.body, typed, '', 0, true);
   expect(s.tm.state.correctedText).toBe(suggestion);
@@ -261,13 +263,42 @@ it('lines the user wrote below a delimiter the model added are never proposed fo
   expect(s.tm.state.correctedText).toBe(suggestion);
 });
 
+// Model output is NFKC-normalized (no-break spaces, curly quotes) and may
+// re-wrap lines; the user's lines must survive that echo too.
+it.each([
+  ['a doubled space the editor stores as a no-break space', 'Hi Alex,<br>Thanks,<br>Pat Example&nbsp; Example Co', 'Hi Alex,\nThanks,\n-- \nPat Example  Example Co', '-- \nPat Example\nExample Co'],
+  ['a curly apostrophe', 'Hi Alex,<br>Thanks,<br>Pat O’Brien', 'Hi Alex,\nThanks,\n-- \nPat O\'Brien', '-- \nPat O’Brien\nExample Co'],
+  ['a line the model splits', 'Hi Alex,<br>Thanks,<br>Pat Example, Example Co', 'Hi Alex,\nThanks,\n-- \nPat Example\nExample Co', '-- \nPat Example\nExample Co'],
+])('signature-like lines the user wrote stay below a model-added delimiter: %s', async (_, html, suggestion, signature) => {
+  const s = setup(`<p>${html}</p><pre class="moz-signature">${signature}</pre>`);
+  const typed = s.tm.extractUserAndQuoteTexts(s.body).originalUserMessage;
+  respond(s, suggestion);
+  await s.tm.triggerCorrectionBackend(s.body, typed, '', 0, true);
+  expect(s.tm.state.correctedText).toBe(suggestion);
+});
+
+it('a copied signature that differs from the draft\'s own stays', async () => {
+  const suggestion = 'Hi Alex,\n\n-- \nPat Example\nFormer Co';
+  const s = setup(`<p>Hi Alex,</p>${ownSignature}`); respond(s, suggestion);
+  await s.tm.triggerCorrectionBackend(s.body, 'Hi Alex,', '', 0, true);
+  expect(s.tm.state.correctedText).toBe(suggestion);
+});
+
 it.each([
   ['a sign-off that matches a signature line', 'Hi Alex,\n\nBest,\nPat Example', 'Hi Alex,\n\nBest,\nPat Example\n\n-- \nPat Example\nExample Co'],
-  ['two copied signatures', 'Hi Alex,', 'Hi Alex,\n\n-- \nPat Example\n\nP.S. Synthetic note.\n-- \nPat Example\nExample Co'],
+  ['two copied signatures', 'Hi Alex,', 'Hi Alex,\n\n-- \nPat Example\nExample Co\n\n-- \nPat Example\nExample Co'],
+  ['a re-wrapped signature', 'Hi Alex,', 'Hi Alex,\n\n-- \nPat Example, Example Co'],
 ])('a copied signature is dropped from the first delimiter: %s', async (_, typed, suggestion) => {
   const s = setup(`<p>${typed.replaceAll('\n', '<br>')}</p>${ownSignature}`); respond(s, suggestion);
   await s.tm.triggerCorrectionBackend(s.body, typed, '', 0, true);
   expect(s.tm.state.correctedText).toBe(typed);
+});
+
+it('a copied signature is dropped when the model normalized its full-width digits', async () => {
+  const s = setup('<p>Hi Alex,</p><pre class="moz-signature">-- \nPat Example\nTel ５５５-０１００</pre>');
+  respond(s, 'Hi Alex,\n\n-- \nPat Example\nTel 555-0100');
+  await s.tm.triggerCorrectionBackend(s.body, 'Hi Alex,', '', 0, true);
+  expect(s.tm.state.correctedText).toBe('Hi Alex,');
 });
 
 it('dash lines that are not a signature delimiter stay in the suggestion', async () => {

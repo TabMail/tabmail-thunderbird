@@ -1089,9 +1089,10 @@ it.each([
 });
 
 it('Cmd-K keeps lines the user wrote below a delimiter the model added',async()=>{
- const {w,tm,body}=setup('Hello,<br>Thanks,<br>Pat<br>Pat Example | Example Co<br>Phone 555-0100<pre class="moz-signature">-- \nPrivate signature</pre>');
+ // The editor stores the doubled space as a no-break space; the model echo is NFKC-normalized.
+ const {w,tm,body}=setup('Hello,<br>Thanks,<br>Private&nbsp; signature<pre class="moz-signature">-- \nPrivate signature</pre>');
  tm.attachAutocomplete(body);w.document.designMode='on';
- const result='Hello,\nThanks,\nPat\n-- \nPat Example | Example Co\nPhone 555-0100';
+ const result='Hello,\nThanks,\n-- \nPrivate  signature';
  w.browser.runtime.sendMessage.mockImplementation(async message=>message.type==='runInlineComposeEdit'?{body:result}:undefined);
  body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
  const input=w.document.getElementById('tm-inline-edit').querySelector('iframe').contentDocument.querySelector('textarea');
