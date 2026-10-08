@@ -1088,6 +1088,17 @@ it.each([
  expect(body.textContent.split('Private signature')).toHaveLength(2);
 });
 
+it('Cmd-K keeps lines the user wrote below a delimiter the model added',async()=>{
+ const {w,tm,body}=setup('Hello,<br>Thanks,<br>Pat<br>Pat Example | Example Co<br>Phone 555-0100<pre class="moz-signature">-- \nPrivate signature</pre>');
+ tm.attachAutocomplete(body);w.document.designMode='on';
+ const result='Hello,\nThanks,\nPat\n-- \nPat Example | Example Co\nPhone 555-0100';
+ w.browser.runtime.sendMessage.mockImplementation(async message=>message.type==='runInlineComposeEdit'?{body:result}:undefined);
+ body.dispatchEvent(new w.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
+ const input=w.document.getElementById('tm-inline-edit').querySelector('iframe').contentDocument.querySelector('textarea');
+ input.value='Separate my contact details';input.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+ await vi.waitFor(()=>expect(tm.extractUserAndQuoteTexts(body).originalUserMessage).toBe(result));
+});
+
 it('Cmd-K keeps a signature delimiter the user typed in an HTML draft',async()=>{
  // Gecko stores the typed line as "-- "; the model echoes it NFKC-normalized.
  const {w,tm,body}=setup('Hello,<br>Thanks.<br>--&nbsp;<br>Pat Mobile<pre class="moz-signature">-- \nPrivate signature</pre>');

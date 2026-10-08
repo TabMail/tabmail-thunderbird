@@ -110,15 +110,22 @@ Object.assign(TabMail, {
   /**
    * Thunderbird inserts the identity signature itself. A model-written "-- "
    * block on top of it would show the signature twice, so drop the block the
-   * proposal adds. A delimiter the user typed, and drafts without their own
-   * signature (quoted or forwarded ones do not count), keep the text unchanged.
+   * proposal adds. A delimiter the user typed, a block holding lines the user
+   * wrote, and drafts without their own signature (quoted or forwarded ones do
+   * not count) keep the text unchanged.
    */
   withoutAddedSignature(editor, original, proposed) {
     // Any whitespace but a line break: Gecko stores a typed "-- " as "--\u00A0".
     const delimiter = /^--[^\S\r\n]*$/m;
     const ownSignature = [...editor.querySelectorAll('.moz-signature')].some(node => !node.closest('blockquote, .moz-forward-container'));
     const match = ownSignature && !delimiter.test(original) ? delimiter.exec(proposed) : null;
-    return match ? proposed.slice(0, match.index).trimEnd() : proposed;
+    if (!match) return proposed;
+    const lines = text => new Set(text.split(/\r?\n/).map(line => line.trim()).filter(Boolean));
+    const kept = lines(proposed.slice(0, match.index));
+    const cut = lines(proposed.slice(match.index));
+    // The model may put a delimiter above lines the user wrote; never cut those.
+    if ([...lines(original)].some(line => cut.has(line) && !kept.has(line))) return proposed;
+    return proposed.slice(0, match.index).trimEnd();
   },
 });
 

@@ -253,6 +253,23 @@ it.each([
   expect(s.tm.state.correctedText).toBe(suggestion);
 });
 
+it('lines the user wrote below a delimiter the model added are never proposed for removal', async () => {
+  const typed = 'Hi Alex,\n\nThanks,\nPat\nPat Example | Example Co\nPhone 555-0100';
+  const suggestion = 'Hi Alex,\n\nThanks,\nPat\n-- \nPat Example | Example Co\nPhone 555-0100';
+  const s = setup(`<p>${typed.replaceAll('\n', '<br>')}</p>${ownSignature}`); respond(s, suggestion);
+  await s.tm.triggerCorrectionBackend(s.body, typed, '', 0, true);
+  expect(s.tm.state.correctedText).toBe(suggestion);
+});
+
+it.each([
+  ['a sign-off that matches a signature line', 'Hi Alex,\n\nBest,\nPat Example', 'Hi Alex,\n\nBest,\nPat Example\n\n-- \nPat Example\nExample Co'],
+  ['two copied signatures', 'Hi Alex,', 'Hi Alex,\n\n-- \nPat Example\n\nP.S. Synthetic note.\n-- \nPat Example\nExample Co'],
+])('a copied signature is dropped from the first delimiter: %s', async (_, typed, suggestion) => {
+  const s = setup(`<p>${typed.replaceAll('\n', '<br>')}</p>${ownSignature}`); respond(s, suggestion);
+  await s.tm.triggerCorrectionBackend(s.body, typed, '', 0, true);
+  expect(s.tm.state.correctedText).toBe(typed);
+});
+
 it('dash lines that are not a signature delimiter stay in the suggestion', async () => {
   const suggestion = 'Hi Alex,\n--Pat\n---\nwait -- what\n -- \nThanks.';
   const s = setup(`<p>Hi Alex,</p>${ownSignature}`); respond(s, suggestion);
