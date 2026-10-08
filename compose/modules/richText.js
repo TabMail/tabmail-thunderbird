@@ -106,6 +106,25 @@ Object.assign(TabMail, {
     }
     return offset;
   },
+
+  /**
+   * Thunderbird inserts the identity signature itself. A model-written draft
+   * that copies it after a "-- " line would show it twice, so drop that block.
+   * Only drafts the user has not written in yet, with a signature of their own
+   * (quoted or forwarded ones do not count), and only a copy of that signature:
+   * text the user wrote is never cut.
+   */
+  withoutAddedSignature(editor, original, proposed) {
+    const own = [...editor.querySelectorAll('.moz-signature')].filter(node => !node.closest('blockquote, .moz-forward-container'));
+    const match = own.length && !original.trim() ? /^--[^\S\r\n]*$/m.exec(proposed) : null;
+    if (!match) return proposed;
+    // Model output arrives NFKC-normalized and may re-wrap lines, so compare
+    // letters and digits only.
+    const key = text => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    const signature = own.map(node => key(node.textContent)).join('');
+    const copied = proposed.slice(match.index).split(/\r?\n/).every(line => signature.includes(key(line)));
+    return copied ? proposed.slice(0, match.index).trimEnd() : proposed;
+  },
 });
 
 Object.assign(TabMail, {

@@ -213,6 +213,9 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 ### Contextual compose preview
 - **[Detail](Companion/Memory/Current/021-contextual-compose-preview.md)** — separate sentence preview, insertion-only highlights, atomic Tab/click acceptance, next-sentence continuation, disabled-only enable control, HTML range projection, native undo validation, shared Near cursor/Docked at bottom placement (#44), and mixed inline/block boundary offsets (#42). Cmd-K recipient proposals commit only after body acceptance, with stale-recipient and operation guards (#49).
 
+### Double signature from a model-written "-- " block
+- **[Detail](Companion/Memory/Current/043-model-signature-block-duplicates-thunderbird-signature.md)** — agent drafts/suggestions copying the user's "-- " signature duplicated Thunderbird's own `.moz-signature`; `withoutAddedSignature` (richText.js) cuts only a copy of the own signature (letters+digits match after NFKC) and ONLY in drafts the user has not written in (user-line heuristics kept deleting typed text) in core.js + Cmd-K; insertHTML/SetIdentity ruled out natively; headless Beta + Marionette sandbox repro recipe.
+
 ### Device Sync local-edit wake
 
 - Device Sync local-edit wake registration, timestamp ownership, and remote-echo suppression: [contract](Companion/Memory/Current/device-sync-local-edit-wake.md).

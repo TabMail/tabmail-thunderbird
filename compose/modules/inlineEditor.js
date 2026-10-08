@@ -236,7 +236,8 @@ Object.assign(TabMail, {
       if (!wrapper?.isConnected) return; // Dismissed body results cannot apply or enter history.
       const inlineRequestDuration = performance.now() - inlineRequestStartTime;
       
-      if (!result || typeof result.body !== "string" || !result.body.trim()) {
+      const afterText = typeof result?.body === "string" ? TabMail.withoutAddedSignature(editor, beforeText, result.body) : "";
+      if (!afterText.trim()) {
         console.warn(`[TabMail InlineEdit] No edit result returned after ${inlineRequestDuration.toFixed(1)}ms`);
         if (wrapper?.isConnected) {
           TabMail.showInlineEditError(wrapper, 'No usable edit was returned. Please try again.');
@@ -253,7 +254,6 @@ Object.assign(TabMail, {
         );
       } catch (_) {}
 
-      const afterText = result.body;
       // Restore the compose host before its native editor transaction.
       if (typeof wrapper._tm_cleanup === "function") wrapper._tm_cleanup("apply");
       const diffs = TabMail.computeDiff(beforeText, afterText);
