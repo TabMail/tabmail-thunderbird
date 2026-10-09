@@ -42,6 +42,36 @@ Recorded 2026-10-08. Owner report: accepting a compose suggestion sometimes left
     - "Cmd-K keeps a signature delimiter the user typed in an HTML draft";
     - the `error` (no-body) outcome of "retains inline history only after successful application".
 
+## Update 2026-10-08 (latest) — only a last paragraph that is EXACTLY the signature is dropped
+
+Tier-1 round 2 showed the per-line rule below still dropped text that was not the signature: lines
+of signature words finishing the draft's own sentence or list in the same paragraph ("The agreement
+was signed by" / "Pat Example, Example Co"; "Please ship it to:" / "12 Main St" / "Springfield";
+"The winner is" / "Pat Example"), and a final paragraph holding PART of the signature as content (an
+address the email asks for). Under the owner's rule (a missed copy is fine, a dropped line is a
+catastrophe) the rule is now, in `withoutAddedSignature` alone (`_addedSignatureStart` and the
+`addedSignature` config thresholds are deleted):
+
+- **A copy** is the draft's LAST paragraph (it starts after a blank line, a "-- " line or the start
+  of the draft) whose sorted words equal the signature's sorted words EXACTLY (same words, same
+  counts; any line breaks, order, case, NFKC, punctuation), with a word on every line. Words are
+  letters with combining marks, digits and symbols (`\p{S}`, so an emoji added to a copy keeps it);
+  punctuation is ignored. A "-- " line just above it (blank lines between allowed) goes with it. The
+  cut repeats, so two copies go.
+- **Now kept** (were dropped; two signatures, never a drop): a partial copy (missing a word or a
+  line), a copy sharing a paragraph with the sign-off or any other line (including under a
+  non-delimiter dash line), a copy with an extra or repeated word or an emoji, and the name-only
+  signature's name as the sign-off ("Best," / "Pat Example" — this reverses the owner-accepted cut
+  below, in the safe direction). An older or edited copy was already kept.
+- **Now dropped** (was kept): a copy of a one-word signature in a paragraph of its own.
+- **Residual (not owner-reviewed):** a last paragraph whose words are exactly the signature's is
+  dropped even if it was meant as content, e.g. a final "Pat Example?" / "Example Co?" asking who
+  should sign. Without the "-- " line nothing distinguishes it from a copy.
+- **Tests:** `test/agentDraftInsertion.test.js` ("a copied signature is dropped", "a suggestion that
+  does not end in a copy stays whole" with every round-2 example, and the seeded invariant "never
+  drops anything but whole copies of the signature", whose oracle is written independently of the
+  production helpers and fails on the previous rule); Cmd-K rows in `test/autocompleteLifecycle.test.js`.
+
 ## Update 2026-10-08 (later) — only lines made ENTIRELY of signature words are ever dropped
 
 Owner: *"no drops … It's okay if we accidentally leak it in, but if we accidentally remove it,

@@ -109,73 +109,45 @@ Object.assign(TabMail, {
 
   /**
    * Thunderbird inserts the identity signature itself. A model-written draft
-   * that ends with a copy of it (whole or in part, with or without a "-- "
-   * line) would show two, so drop that copy: the draft keeps Thunderbird's
-   * current one. Dropping text that is not the signature is far worse than
-   * showing it twice, so only lines made entirely of its words are cut. Only
-   * drafts the user has not written in yet, so text the user wrote is never
-   * cut, and only drafts with a signature of their own (quoted or forwarded
-   * ones do not count).
+   * that ends with a copy of it would show two, so drop that copy: the draft
+   * keeps Thunderbird's current one. Dropping text that is not the signature
+   * is far worse than showing it twice, so only a last paragraph made of
+   * exactly the signature's words, with a word on every line, is a copy
+   * (with a "-- " line just above it); a partial or edited copy, or one
+   * sharing a paragraph with other lines, stays. Only drafts the user has not written in yet, so text the
+   * user wrote is never cut, and only drafts with a signature of their own
+   * (quoted or forwarded ones do not count).
    */
   withoutAddedSignature(editor, original, proposed) {
     if (original.trim()) return proposed;
-    // No signature of its own leaves no words to match: nothing is cut.
     const own = [...editor.querySelectorAll('.moz-signature')].filter(node => !node.closest('blockquote, .moz-forward-container'));
-    const signature = new Map();
-    for (const word of TabMail._signatureWords(own.map(node => TabMail.indexComposeText(node).text).join('\n'))) signature.set(word, (signature.get(word) || 0) + 1);
-    let text = proposed;
-    for (let cut = TabMail._addedSignatureStart(text, signature); cut !== null; cut = TabMail._addedSignatureStart(text, signature)) {
-      text = text.slice(0, cut).trimEnd();
+    const signature = TabMail._signatureWords(own.map(node => TabMail.indexComposeText(node).text).join('\n'));
+    // No signature words of its own leaves nothing to match: nothing is cut.
+    if (!signature) return proposed;
+    const delimiter = /^--\s*$/;
+    let lines = proposed.split('\n');
+    for (;;) {
+      let end = lines.length;
+      while (end && !lines[end - 1].trim()) end--;
+      let start = end;
+      while (start && lines[start - 1].trim() && !delimiter.test(lines[start - 1])) start--;
+      const paragraph = lines.slice(start, end);
+      if (paragraph.some(line => !TabMail._signatureWords(line)) || TabMail._signatureWords(paragraph.join('\n')) !== signature) break;
+      while (start && !lines[start - 1].trim()) start--;
+      if (start && delimiter.test(lines[start - 1])) start--;
+      lines = lines.slice(0, start);
     }
-    return text;
+    const kept = lines.join('\n');
+    return kept === proposed ? proposed : kept.trimEnd();
   },
 
-  // Model output arrives NFKC-normalized and may re-wrap lines or change
-  // case, so compare letters (with their combining marks, which carry the
-  // vowels of Devanagari, Thai and similar scripts) and digits only.
+  // The words of `text`, sorted, so a copy matches whatever its line breaks
+  // and word order. Model output arrives NFKC-normalized and may re-wrap
+  // lines or change case, so compare letters (with their combining marks,
+  // which carry the vowels of Devanagari, Thai and similar scripts), digits
+  // and symbols such as emoji, but not punctuation.
   _signatureWords(text) {
-    return text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{M}\p{N}]+/gu) || [];
-  },
-
-  /**
-   * Where the copy of `signature` (word -> count) that ends `text` starts, or
-   * null. Walk up from the last line and stop at the first line with any word
-   * the signature does not have (or none), or at a blank line once the block
-   * has a line, so a line or paragraph after or above a copy is never part of
-   * it. Any line walked may start the block; the block kept has the most
-   * matched words over repeated ones (a sign-off name above a copy only adds
-   * a repeat; on a tie, the smaller block), and it must pass every
-   * `addedSignature` threshold. A "-- " line just above the block goes with
-   * it.
-   */
-  _addedSignatureStart(text, signature) {
-    const cfg = TabMail.config.addedSignature;
-    const signatureTotal = [...signature.values()].reduce((sum, count) => sum + count, 0);
-    const lines = text.split('\n');
-    const offsets = [];
-    lines.reduce((offset, line, i) => (offsets[i] = offset) + line.length + 1, 0);
-    const counts = new Map();
-    let total = 0, matched = 0, best = null;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].trim()) {
-        if (total) break;
-        continue;
-      }
-      const words = TabMail._signatureWords(lines[i]);
-      if (!words.length || words.some(word => !signature.has(word))) break;
-      for (const word of words) {
-        const count = (counts.get(word) || 0) + 1;
-        counts.set(word, count);
-        total++;
-        if (count <= signature.get(word)) matched++;
-      }
-      const score = 2 * matched - total;
-      if (!best || score > best.score) best = { score, i, matched, total };
-    }
-    if (!best || best.matched < cfg.MIN_MATCHED_WORDS || best.matched / best.total < cfg.MIN_PRECISION || best.matched / signatureTotal < cfg.MIN_RECALL) return null;
-    let above = best.i - 1;
-    while (above >= 0 && !lines[above].trim()) above--;
-    return offsets[above >= 0 && /^--[^\S\r\n]*\r?$/.test(lines[above]) ? above : best.i];
+    return (text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{M}\p{N}\p{S}]+/gu) || []).sort().join(' ');
   },
 });
 
