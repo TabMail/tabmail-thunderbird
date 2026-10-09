@@ -283,6 +283,7 @@ it.each([
   ['a copy of a longer signature', 'Hi Alex,\n\nBest,\nPat\n\n-- \nPat Example\nSenior Engineer, Example Co\nTel 555-0100', longSignature, 'Hi Alex,\n\nBest,\nPat'],
   ['a copy of a signature with an emoji', 'Hi Alex,\n\n-- \nPat Example 🎉', '<pre class="moz-signature">-- \nPat Example 🎉</pre>', 'Hi Alex,'],
   ['a copy of a one-word signature', 'Hi Alex,\n\n-- \nPat', '<pre class="moz-signature">-- \nPat</pre>', 'Hi Alex,'],
+  ['a copy of a two-word name', 'Hi Alex,\n\nAnn Marie', '<pre class="moz-signature">-- \nAnn Marie</pre>', 'Hi Alex,'],
   ['a copy of a Devanagari signature', 'नमस्ते,\n\n-- \nसीमा शर्मा\nउदाहरण कंपनी', '<pre class="moz-signature">-- \nसीमा शर्मा\nउदाहरण कंपनी</pre>', 'नमस्ते,'],
 ])('a copied signature is dropped: %s', async (_, suggestion, signature, kept) => {
   const s = await suggest(`<p><br></p>${signature}`, '', suggestion);
@@ -324,6 +325,7 @@ it.each([
   ['a winner announced', 'Hi Sam,\n\nThe winner is\nPat Example', '<pre class="moz-signature">-- \nPat Example</pre>'],
   ['dash lines with no copy', 'Hi Alex,\n--Pat\n---\nwait -- what\n -- \nThanks.', ownSignature],
   ['a paragraph after the copy sharing a signature word', 'Hi Alex,\n\nPat Example\nSenior Engineer\n\nExample Co is hiring!', longSignature],
+  ['the signature words run together', 'Hi Alex,\n\nAnnmarie', '<pre class="moz-signature">-- \nAnn Marie</pre>'],
   ['a signature without words', 'Hi Alex,\n\n-- \n:)', '<pre class="moz-signature">-- \n:)</pre>'],
   ['a different Devanagari name as the sign-off', 'नमस्ते,\n\nमासी', '<pre class="moz-signature">-- \nसीमा</pre>'],
   ['a different Devanagari name in a closing line', 'नमस्ते,\n\nइनसे बात करें:\nमासी शर्मा', '<pre class="moz-signature">-- \nसीमा शर्मा</pre>'],
