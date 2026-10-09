@@ -41,3 +41,37 @@ Recorded 2026-10-08. Owner report: accepting a compose suggestion sometimes left
     - "Cmd-K keeps lines the user wrote below a delimiter the model added";
     - "Cmd-K keeps a signature delimiter the user typed in an HTML draft";
     - the `error` (no-body) outcome of "retains inline history only after successful application".
+
+## Update 2026-10-08 — a copy is matched on its words with tolerance, not on "-- "
+
+Owner, after the first fix: an older or edited copy should not show two signatures either, the
+"-- " line is too fragile to depend on, and nothing that is not the signature may be dropped.
+`withoutAddedSignature` now matches the END of the draft against the draft's own signature
+(`_addedSignatureStart`, `TabMail.config.addedSignature`). It still runs only on drafts the user
+has not written in, and only a signature of the draft's own (quoted/forwarded ones do not count)
+supplies the words.
+
+- **Words.** Letters and digits after NFKC and lower-casing, from the signature's line-aware
+  projection (`indexComposeText`; `textContent` runs an HTML signature's lines together across
+  `<br>`). Each signature word matches at most as often as the signature has it.
+- **The walk.** From the last line up, skipping blank lines, stopping at the first line with NO
+  signature word: text after a copy (a "See you then." line, a `:)`) or above it is never in the
+  block. Only a line made entirely of signature words may start the block, so "Thanks, Pat
+  Example, Example Co" is never cut. Among the possible starts, the block with the most signature
+  words over other words wins (a sign-off "Pat" above a copy only adds a repeat, so it stays).
+- **Thresholds** (config): `MIN_MATCHED_WORDS` 2, `MIN_PRECISION` 0.7 (block words that are
+  signature words), `MIN_RECALL` 0.6 (signature words present). A "-- " line just above the block
+  (blank lines between allowed) goes with it as cleanup only. The cut repeats, so two copies go.
+- **Now dropped** (were kept): an older or edited copy (new title, number, company), a copy without
+  a "-- " line, a copy under a non-delimiter dash line.
+- **Still kept** (two signatures, never a drop): a draft the user has written in; anything after
+  the copy; a sign-off on the signature line; a copy too far off; half of the signature (`-- \nPat
+  Example` of a two-line signature: without the "-- " evidence it is a sign-off) — this one WAS cut
+  before; a one-word signature; a sign-off name when the signature has more (e.g. a phone number).
+  A name-only signature's copy of the name in the sign-off IS cut (it equals the signature, which
+  Thunderbird shows right below).
+- **Tests:** `test/agentDraftInsertion.test.js` ("a copied signature is dropped", "a suggestion that
+  does not end in a copy stays whole", "tolerance boundary", "matched-word boundary", "only a
+  delimiter just above the copy goes with it"); Cmd-K rows in `test/autocompleteLifecycle.test.js`.
+  Every rule has a mutant the suite kills; the own-signature guard was deleted as redundant (no
+  own signature ⇒ no words ⇒ no cut).

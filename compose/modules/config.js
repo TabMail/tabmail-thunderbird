@@ -169,6 +169,23 @@ TabMail.config = {
   SUBSET_DIFF_TOLERANCE: 5,
 
   /**
+   * How closely the end of a model-written draft must match the draft's own
+   * Thunderbird signature to be dropped as a copy of it (an older or edited
+   * copy included). Words are letters and digits after NFKC and lower-casing;
+   * each signature word counts at most as often as the signature has it.
+   * MIN_MATCHED_WORDS: signature words the block must contain, so a sign-off
+   *   name alone is never taken for the signature.
+   * MIN_PRECISION: share of the block's words that are signature words, so
+   *   an edited line (a new title or number) is still recognized.
+   * MIN_RECALL: share of the signature's words the block must contain.
+   */
+  addedSignature: {
+    MIN_MATCHED_WORDS: 2,
+    MIN_PRECISION: 0.7,
+    MIN_RECALL: 0.6,
+  },
+
+  /**
    * For logging, truncate texts to this length.
    */
   LOG_TRUNCATE_LENGTH: 100,

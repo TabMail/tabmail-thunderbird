@@ -242,7 +242,6 @@ it.each([
   ['no signature of its own (bare delimiter)', '', 'Hi Alex,\n\nThanks.\n-- '],
   ['only a quoted copy of the same signature', '<blockquote type="cite">Earlier<div class="moz-signature">-- <br>Pat Example<br>Example Co</div></blockquote>', signedDraft],
   ['only a forwarded copy of the same signature', '<div class="moz-forward-container">Forwarded<div class="moz-signature">-- <br>Pat Example<br>Example Co</div></div>', signedDraft],
-  ['a different signature', ownSignature, 'Hi Alex,\n\n-- \nPat Example\nFormer Co'],
 ])('a suggested signature stays when the draft has %s', async (_, tail, suggestion) => {
   const s = await suggest(`<p><br></p>${tail}`, '', suggestion);
   expect(s.tm.state.correctedText).toBe(suggestion);
@@ -251,6 +250,7 @@ it.each([
 // Gecko stores a typed "-- " in HTML as "--&nbsp;"; model output arrives NFKC-normalized.
 it.each([
   ['a copied signature', 'Hi Alex,', 'Hi Alex,\n\n-- \nPat Example\nExample Co'],
+  ['a copied signature without a delimiter', 'Hi Alex,', 'Hi Alex,\n\nPat Example\nExample Co'],
   ['a typed delimiter', 'Hi Alex,<br>--&nbsp;<br>Pat', 'Hi Alex,\n-- \nPat\nExample Co'],
   ['contact lines under a model-added delimiter', 'Hi Alex,<br>Thanks,<br>Pat Example, Example Co', 'Hi Alex,\nThanks,\n-- \nPat Example\nExample Co'],
   ['a line without letters under a model-added delimiter', 'Hi Alex,<br>Thanks<br>:)', 'Hi Alex,\nThanks a lot\n-- \n:)'],
@@ -262,23 +262,73 @@ it.each([
   expect(s.tm.state.correctedText).toBe(suggestion);
 });
 
+// A copy is matched on its words, with tolerance, not on a "-- " line.
+const longSignature = '<pre class="moz-signature">-- \nPat Example\nSenior Engineer, Example Co\nTel 555-0100</pre>';
 it.each([
-  ['two copied signatures', 'Hi Alex,\n\n-- \nPat Example\nExample Co\n\n-- \nPat Example\nExample Co', ownSignature],
-  ['a re-wrapped signature', 'Hi Alex,\n\n-- \nPat Example, Example Co', ownSignature],
-  ['full-width digits the model normalized', 'Hi Alex,\n\n-- \nPat Example\nTel 555-0100', '<pre class="moz-signature">-- \nPat Example\nTel ５５５-０１００</pre>'],
-  ['a capitalized copy', 'Hi Alex,\n\n-- \nPAT EXAMPLE\nExample Co', ownSignature],
-])('a copied signature is dropped from the first delimiter: %s', async (_, suggestion, signature) => {
+  ['a copy after a delimiter', 'Hi Alex,\n\n-- \nPat Example\nExample Co', ownSignature, 'Hi Alex,'],
+  ['a copy without a delimiter', 'Hi Alex,\n\nBest,\nPat\n\nPat Example\nExample Co', ownSignature, 'Hi Alex,\n\nBest,\nPat'],
+  ['a copy right under the sign-off', 'Hi Alex,\n\nBest,\nPat Example\nExample Co', ownSignature, 'Hi Alex,\n\nBest,'],
+  ['an older signature', 'Hi Alex,\n\n-- \nPat Example\nFormer Co', ownSignature, 'Hi Alex,'],
+  ['an edited signature', 'Hi Alex,\n\nBest,\nPat\n\n-- \nPat Example\nEngineer, Example Co\nTel 555-0199', longSignature, 'Hi Alex,\n\nBest,\nPat'],
+  ['two copies', 'Hi Alex,\n\n-- \nPat Example\nExample Co\n\n-- \nPat Example\nExample Co', ownSignature, 'Hi Alex,'],
+  ['two copies without delimiters', 'Hi Alex,\n\nPat Example\nExample Co\n\nPat Example\nExample Co', ownSignature, 'Hi Alex,'],
+  ['a re-wrapped copy', 'Hi Alex,\n\n-- \nPat Example, Example Co', ownSignature, 'Hi Alex,'],
+  ['full-width digits the model normalized', 'Hi Alex,\n\n-- \nPat Example\nTel 555-0100', '<pre class="moz-signature">-- \nPat Example\nTel ５５５-０１００</pre>', 'Hi Alex,'],
+  ['a capitalized copy', 'Hi Alex,\n\n-- \nPAT EXAMPLE\nExample Co', ownSignature, 'Hi Alex,'],
+  ['Windows line ends', 'Hi Alex,\r\n\r\n-- \r\nPat Example\r\nExample Co', ownSignature, 'Hi Alex,'],
+  ['a copy of an HTML signature', 'Hi Alex,\n\n-- \nPat Example\nExample Co', '<div class="moz-signature">-- <br>Pat <b>Example</b><br><a href="https://example.com">Example Co</a></div>', 'Hi Alex,'],
+  ['a copy under a non-delimiter dash line', 'Hi Alex,\nNotes below --\nPat Example\nExample Co', ownSignature, 'Hi Alex,\nNotes below --'],
+  ['a copy whose first line starts with dashes', 'Hi Alex,\n--Pat Example\nExample Co', ownSignature, 'Hi Alex,'],
+])('a copied signature is dropped: %s', async (_, suggestion, signature, kept) => {
   const s = await suggest(`<p><br></p>${signature}`, '', suggestion);
-  expect(s.tm.state.correctedText).toBe('Hi Alex,');
+  expect(s.tm.state.correctedText).toBe(kept);
+});
+
+// Never drop text that is not the signature: anything not clearly a copy stays.
+it.each([
+  ['dash lines with no copy', 'Hi Alex,\n--Pat\n---\nwait -- what\n -- \nThanks.', ownSignature],
+  ['a sign-off name of a longer signature', 'Hi Alex,\n\nBest,\nPat Example', longSignature],
+  ['a closing line naming the company', 'Hi Alex,\n\nExample Co will ship it next week.', ownSignature],
+  ['a sentence with the signature words', 'Hi Alex,\n\nCall Pat Example at Example Co.', ownSignature],
+  ['a line after the copy', 'Hi Alex,\n\n-- \nPat Example\nExample Co\n\nSee you then.', ownSignature],
+  ['a line without words after the copy', 'Hi Alex,\n\n-- \nPat Example\nExample Co\n:)', ownSignature],
+  ['the sign-off on the signature line', 'Hi Alex,\n\nThanks, Pat Example, Example Co', ownSignature],
+  ['a copy too far from the signature', 'Hi Alex,\n\n-- \nPat Example\nMarketing Lead, Other Group\nFax 555-0300', longSignature],
+  ['half of the signature', 'Hi Alex,\n\n-- \nPat Example', ownSignature],
+  ['a sign-off name of a signature with a phone number', 'Hi Alex,\n\nBest,\nPat Example', '<pre class="moz-signature">-- \nPat Example\n+1 555 0100</pre>'],
+  ['a one-word signature', 'Hi Alex,\n\nBest,\nPat', '<pre class="moz-signature">-- \nPat</pre>'],
+  ['a signature without words', 'Hi Alex,\n\n-- \n:)', '<pre class="moz-signature">-- \n:)</pre>'],
+])('a suggestion that does not end in a copy stays whole: %s', async (_, suggestion, signature) => {
+  const s = await suggest(`<p><br></p>${signature}`, '', suggestion);
+  expect(s.tm.state.correctedText).toBe(suggestion);
+});
+
+// Each tolerance at its boundary (`TabMail.config.addedSignature`), against a ten-word signature.
+const tenWordSignature = '<pre class="moz-signature">-- \nAlpha Bravo Charlie Delta Echo\nFoxtrot Golf Hotel India Juliet</pre>';
+it.each([
+  ['six of ten signature words (MIN_RECALL)', 'Alpha Bravo Charlie\nDelta Echo Foxtrot', true],
+  ['five of ten signature words', 'Alpha Bravo Charlie\nDelta Echo', false],
+  ['seven signature words in ten (MIN_PRECISION)', 'Alpha Bravo Charlie Delta\nEcho Foxtrot Golf Xray Yankee Zulu', true],
+  ['seven signature words in eleven', 'Alpha Bravo Charlie Delta\nEcho Foxtrot Golf Xray Yankee Zulu Quebec', false],
+])('tolerance boundary: %s', (_, copy, dropped) => {
+  const s = setup(`<p><br></p>${tenWordSignature}`);
+  const suggestion = `Hi Alex,\n\n-- \n${copy}`;
+  expect(s.tm.withoutAddedSignature(s.body, '', suggestion)).toBe(dropped ? 'Hi Alex,' : suggestion);
 });
 
 it.each([
-  'Hi Alex,\n--Pat\n---\nwait -- what\n -- \nThanks.',
-  'Hi Alex,\nNotes below --\nPat Example\nExample Co',
-  'Hi Alex,\n--Pat Example\nExample Co',
-])('dash lines that are not a signature delimiter stay in the suggestion: %j', async suggestion => {
-  const s = await suggest(`<p><br></p>${ownSignature}`, '', suggestion);
-  expect(s.tm.state.correctedText).toBe(suggestion);
+  ['two matched words (MIN_MATCHED_WORDS)', '<pre class="moz-signature">-- \nPat Example</pre>', 'Hi Alex,\n\nBest,\nPat Example', 'Hi Alex,\n\nBest,'],
+  ['one matched word', '<pre class="moz-signature">-- \nPat</pre>', 'Hi Alex,\n\n-- \nPat', 'Hi Alex,\n\n-- \nPat'],
+])('matched-word boundary: %s', (_, signature, suggestion, kept) => {
+  const s = setup(`<p><br></p>${signature}`);
+  expect(s.tm.withoutAddedSignature(s.body, '', suggestion)).toBe(kept);
+});
+
+it('only a delimiter just above the copy goes with it', () => {
+  const s = setup(`<p><br></p>${ownSignature}`);
+  expect(s.tm.withoutAddedSignature(s.body, '', 'Hi Alex,\n--\nThanks!\nPat Example\nExample Co')).toBe('Hi Alex,\n--\nThanks!');
+  expect(s.tm.withoutAddedSignature(s.body, '', 'Hi Alex,\n -- \n\nPat Example\nExample Co')).toBe('Hi Alex,\n --');
+  expect(s.tm.withoutAddedSignature(s.body, '', 'Hi Alex,\n--\n\n\nPat Example\nExample Co')).toBe('Hi Alex,');
 });
 
 it('a reply whose quote carries a signature still shows its own signature once', async () => {
@@ -291,8 +341,8 @@ it('a reply whose quote carries a signature still shows its own signature once',
   expect(signatureCount(s.body)).toBe(1);
 });
 
-it('a suggestion that is only a signature proposes nothing', async () => {
-  const s = await suggest(`<p><br></p>${ownSignature}`, '', '-- \nPat Example');
+it.each(['-- \nPat Example\nExample Co', 'Pat Example\nExample Co'])('a suggestion that is only a signature proposes nothing: %j', async suggestion => {
+  const s = await suggest(`<p><br></p>${ownSignature}`, '', suggestion);
   expect(s.tm.state.correctedText).toBeFalsy();
   expect(s.w.document.getElementById('tm-compose-preview')).toBeNull();
 });

@@ -109,21 +109,67 @@ Object.assign(TabMail, {
 
   /**
    * Thunderbird inserts the identity signature itself. A model-written draft
-   * that copies it after a "-- " line would show it twice, so drop that block.
-   * Only drafts the user has not written in yet, with a signature of their own
-   * (quoted or forwarded ones do not count), and only a copy of that signature:
-   * text the user wrote is never cut.
+   * that ends with a copy of it (current, older or edited, with or without a
+   * "-- " line) would show two, so drop that copy: the draft keeps
+   * Thunderbird's current one. Only drafts the user has not written in yet,
+   * so text the user wrote is never cut, and only drafts with a signature of
+   * their own (quoted or forwarded ones do not count).
    */
   withoutAddedSignature(editor, original, proposed) {
+    if (original.trim()) return proposed;
+    // No signature of its own leaves no words to match: nothing is cut.
     const own = [...editor.querySelectorAll('.moz-signature')].filter(node => !node.closest('blockquote, .moz-forward-container'));
-    const match = own.length && !original.trim() ? /^--[^\S\r\n]*$/m.exec(proposed) : null;
-    if (!match) return proposed;
-    // Model output arrives NFKC-normalized and may re-wrap lines, so compare
-    // letters and digits only.
-    const key = text => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-    const signature = own.map(node => key(node.textContent)).join('');
-    const copied = proposed.slice(match.index).split(/\r?\n/).every(line => signature.includes(key(line)));
-    return copied ? proposed.slice(0, match.index).trimEnd() : proposed;
+    const signature = new Map();
+    for (const word of TabMail._signatureWords(own.map(node => TabMail.indexComposeText(node).text).join('\n'))) signature.set(word, (signature.get(word) || 0) + 1);
+    let text = proposed;
+    for (let cut = TabMail._addedSignatureStart(text, signature); cut !== null; cut = TabMail._addedSignatureStart(text, signature)) {
+      text = text.slice(0, cut).trimEnd();
+    }
+    return text;
+  },
+
+  // Model output arrives NFKC-normalized and may re-wrap lines or change
+  // case, so compare letters and digits only.
+  _signatureWords(text) {
+    return text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  },
+
+  /**
+   * Where the copy of `signature` (word -> count) that ends `text` starts, or
+   * null. Walk up from the last line and stop at the first line with no
+   * signature word, so text after or above a copy is never part of it. Each
+   * line made only of signature words may start the block; the block kept has
+   * the most signature words over other words (a sign-off name above a copy
+   * only adds a repeat), and it must pass every `addedSignature` threshold. A
+   * "-- " line just above the block goes with it.
+   */
+  _addedSignatureStart(text, signature) {
+    const cfg = TabMail.config.addedSignature;
+    const signatureTotal = [...signature.values()].reduce((sum, count) => sum + count, 0);
+    const lines = text.split('\n');
+    const offsets = [];
+    lines.reduce((offset, line, i) => (offsets[i] = offset) + line.length + 1, 0);
+    const counts = new Map();
+    let total = 0, matched = 0, best = null;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].trim()) continue;
+      const words = TabMail._signatureWords(lines[i]);
+      const signatureWords = words.filter(word => signature.has(word)).length;
+      if (!signatureWords) break;
+      for (const word of words) {
+        const count = (counts.get(word) || 0) + 1;
+        counts.set(word, count);
+        total++;
+        if (count <= (signature.get(word) || 0)) matched++;
+      }
+      if (signatureWords < words.length) continue;
+      const score = 2 * matched - total;
+      if (!best || score > best.score) best = { score, i, matched, total };
+    }
+    if (!best || best.matched < cfg.MIN_MATCHED_WORDS || best.matched / best.total < cfg.MIN_PRECISION || best.matched / signatureTotal < cfg.MIN_RECALL) return null;
+    let above = best.i - 1;
+    while (above >= 0 && !lines[above].trim()) above--;
+    return offsets[above >= 0 && /^--[^\S\r\n]*\r?$/.test(lines[above]) ? above : best.i];
   },
 });
 
