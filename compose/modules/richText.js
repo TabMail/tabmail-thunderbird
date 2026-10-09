@@ -113,8 +113,8 @@ Object.assign(TabMail, {
    * keeps Thunderbird's current one. Dropping text that is not the signature
    * is far worse than showing it twice, so only a last paragraph made of
    * exactly the signature's words, with a word on every line, is a copy
-   * (with a "-- " line just above it); a partial or edited copy, or one
-   * sharing a paragraph with other lines, stays. Only drafts the user has not written in yet, so text the
+   * (a "-- " line just above it, if any, goes too); a partial or edited
+   * copy, or one sharing a paragraph with other lines, stays. Only drafts the user has not written in yet, so text the
    * user wrote is never cut, and only drafts with a signature of their own
    * (quoted or forwarded ones do not count).
    */
