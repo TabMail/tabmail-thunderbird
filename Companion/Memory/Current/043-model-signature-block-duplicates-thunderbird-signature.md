@@ -42,6 +42,18 @@ Recorded 2026-10-08. Owner report: accepting a compose suggestion sometimes left
     - "Cmd-K keeps a signature delimiter the user typed in an HTML draft";
     - the `error` (no-body) outcome of "retains inline history only after successful application".
 
+## Update 2026-10-08 (later) — only lines made ENTIRELY of signature words are ever dropped
+
+Owner: *"no drops … It's okay if we accidentally leak it in, but if we accidentally remove it,
+that's a catastrophe."* So the walk below now stops at the first line with ANY word the signature
+lacks (or no word at all), not just at a line with no signature word: mixed lines are never in the
+block. Supersedes the "A line in the copy's OWN paragraph that shares a signature word IS" rule and
+the older/edited-copy tolerance in the section below. What remains tolerated: case, NFKC, re-wrapping,
+missing lines or words, no "-- " line. **Now kept (two signatures):** an older or edited copy that
+has any word the current signature lacks (old company, new phone number). Pinned by an invariant
+test, "never drops a line with a word the signature lacks (seeded random drafts)": 2000 seeded
+drafts, the result is always a prefix and every removed line is a "-- " line or all signature words.
+
 ## Update 2026-10-08 — a copy is matched on its words with tolerance, not on "-- "
 
 Owner, after the first fix: an older or edited copy should not show two signatures either, the

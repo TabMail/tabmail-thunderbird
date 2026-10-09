@@ -109,11 +109,13 @@ Object.assign(TabMail, {
 
   /**
    * Thunderbird inserts the identity signature itself. A model-written draft
-   * that ends with a copy of it (current, older or edited, with or without a
-   * "-- " line) would show two, so drop that copy: the draft keeps
-   * Thunderbird's current one. Only drafts the user has not written in yet,
-   * so text the user wrote is never cut, and only drafts with a signature of
-   * their own (quoted or forwarded ones do not count).
+   * that ends with a copy of it (whole or in part, with or without a "-- "
+   * line) would show two, so drop that copy: the draft keeps Thunderbird's
+   * current one. Dropping text that is not the signature is far worse than
+   * showing it twice, so only lines made entirely of its words are cut. Only
+   * drafts the user has not written in yet, so text the user wrote is never
+   * cut, and only drafts with a signature of their own (quoted or forwarded
+   * ones do not count).
    */
   withoutAddedSignature(editor, original, proposed) {
     if (original.trim()) return proposed;
@@ -137,15 +139,14 @@ Object.assign(TabMail, {
 
   /**
    * Where the copy of `signature` (word -> count) that ends `text` starts, or
-   * null. Walk up from the last line and stop at the first line with no
-   * signature word, or at a blank line once the block has a line, so a
-   * paragraph after or above a copy is never part of it. A line in the copy's
-   * own paragraph that shares a signature word is (an edited line such as a
-   * new phone number). Each line made only of signature words may start the
-   * block; the block kept has the most signature words over other words (a
-   * sign-off name above a copy only adds a repeat; on a tie, the smaller
-   * block), and it must pass every `addedSignature` threshold. A "-- " line
-   * just above the block goes with it.
+   * null. Walk up from the last line and stop at the first line with any word
+   * the signature does not have (or none), or at a blank line once the block
+   * has a line, so a line or paragraph after or above a copy is never part of
+   * it. Any line walked may start the block; the block kept has the most
+   * matched words over repeated ones (a sign-off name above a copy only adds
+   * a repeat; on a tie, the smaller block), and it must pass every
+   * `addedSignature` threshold. A "-- " line just above the block goes with
+   * it.
    */
   _addedSignatureStart(text, signature) {
     const cfg = TabMail.config.addedSignature;
@@ -161,15 +162,13 @@ Object.assign(TabMail, {
         continue;
       }
       const words = TabMail._signatureWords(lines[i]);
-      const signatureWords = words.filter(word => signature.has(word)).length;
-      if (!signatureWords) break;
+      if (!words.length || words.some(word => !signature.has(word))) break;
       for (const word of words) {
         const count = (counts.get(word) || 0) + 1;
         counts.set(word, count);
         total++;
-        if (count <= (signature.get(word) || 0)) matched++;
+        if (count <= signature.get(word)) matched++;
       }
-      if (signatureWords < words.length) continue;
       const score = 2 * matched - total;
       if (!best || score > best.score) best = { score, i, matched, total };
     }

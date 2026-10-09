@@ -262,14 +262,15 @@ it.each([
   expect(s.tm.state.correctedText).toBe(suggestion);
 });
 
-// A copy is matched on its words, with tolerance, not on a "-- " line.
+// A copy is matched on its words, with tolerance, not on a "-- " line. Only
+// lines made entirely of the signature's words are ever dropped.
 const longSignature = '<pre class="moz-signature">-- \nPat Example\nSenior Engineer, Example Co\nTel 555-0100</pre>';
 it.each([
   ['a copy after a delimiter', 'Hi Alex,\n\n-- \nPat Example\nExample Co', ownSignature, 'Hi Alex,'],
   ['a copy without a delimiter', 'Hi Alex,\n\nBest,\nPat\n\nPat Example\nExample Co', ownSignature, 'Hi Alex,\n\nBest,\nPat'],
   ['a copy right under the sign-off', 'Hi Alex,\n\nBest,\nPat Example\nExample Co', ownSignature, 'Hi Alex,\n\nBest,'],
-  ['an older signature', 'Hi Alex,\n\n-- \nPat Example\nFormer Co', ownSignature, 'Hi Alex,'],
-  ['an edited signature', 'Hi Alex,\n\nBest,\nPat\n\n-- \nPat Example\nEngineer, Example Co\nTel 555-0199', longSignature, 'Hi Alex,\n\nBest,\nPat'],
+  ['a copy missing a word', 'Hi Alex,\n\nBest,\nPat\n\n-- \nPat Example\nEngineer, Example Co\nTel 555-0100', longSignature, 'Hi Alex,\n\nBest,\nPat'],
+  ['a copy missing a line', 'Hi Alex,\n\n-- \nPat Example\nSenior Engineer, Example Co', longSignature, 'Hi Alex,'],
   ['two copies', 'Hi Alex,\n\n-- \nPat Example\nExample Co\n\n-- \nPat Example\nExample Co', ownSignature, 'Hi Alex,'],
   ['two copies without delimiters', 'Hi Alex,\n\nPat Example\nExample Co\n\nPat Example\nExample Co', ownSignature, 'Hi Alex,'],
   ['a re-wrapped copy', 'Hi Alex,\n\n-- \nPat Example, Example Co', ownSignature, 'Hi Alex,'],
@@ -289,6 +290,10 @@ it.each([
 
 // Never drop text that is not the signature: anything not clearly a copy stays.
 it.each([
+  ['an older signature with a word the current one lacks', 'Hi Alex,\n\n-- \nPat Example\nFormer Co', ownSignature],
+  ['an edited signature with a new number', 'Hi Alex,\n\n-- \nPat Example\nSenior Engineer, Example Co\nTel 555-0199', longSignature],
+  ['a closing line that is partly signature words', 'Hi Alex,\n\nAttendees:\nPat Example\nExample Co team', ownSignature],
+  ['a sentence wrapped across signature words', 'Hi Alex,\n\nThe contract is with\nExample Co\nand Pat Example.', ownSignature],
   ['dash lines with no copy', 'Hi Alex,\n--Pat\n---\nwait -- what\n -- \nThanks.', ownSignature],
   ['a sign-off name of a longer signature', 'Hi Alex,\n\nBest,\nPat Example', longSignature],
   ['a closing line naming the company', 'Hi Alex,\n\nExample Co will ship it next week.', ownSignature],
@@ -314,8 +319,8 @@ const tenWordSignature = '<pre class="moz-signature">-- \nAlpha Bravo Charlie De
 it.each([
   ['six of ten signature words (MIN_RECALL)', 'Alpha Bravo Charlie\nDelta Echo Foxtrot', true],
   ['five of ten signature words', 'Alpha Bravo Charlie\nDelta Echo', false],
-  ['seven signature words in ten (MIN_PRECISION)', 'Alpha Bravo Charlie Delta\nEcho Foxtrot Golf Xray Yankee Zulu', true],
-  ['seven signature words in eleven', 'Alpha Bravo Charlie Delta\nEcho Foxtrot Golf Xray Yankee Zulu Quebec', false],
+  ['seven matched words in ten, three repeated (MIN_PRECISION)', 'Alpha Bravo Charlie Delta Echo Foxtrot Golf\nAlpha Bravo Charlie', true],
+  ['seven matched words in eleven, four repeated', 'Alpha Bravo Charlie Delta Echo Foxtrot Golf\nAlpha Alpha Bravo Charlie', false],
 ])('tolerance boundary: %s', (_, copy, dropped) => {
   const s = setup(`<p><br></p>${tenWordSignature}`);
   const suggestion = `Hi Alex,\n\n-- \n${copy}`;
@@ -330,11 +335,11 @@ it.each([
   expect(s.tm.withoutAddedSignature(s.body, '', suggestion)).toBe(kept);
 });
 
-// The block kept is the one with the most signature words over other words,
-// not the one with the most signature words; on a tie, the smaller one.
+// The block kept is the one with the most matched words over repeated ones,
+// not the one with the most matched words; on a tie, the smaller one.
 const phoneSignature = '<pre class="moz-signature">-- \nPat Example\nExample Co\nTel 555 0100</pre>';
 it.each([
-  ['a smaller block beats a larger one with more other words', phoneSignature, 'Hi Alex,\nPat\nWe met at the office near 0100\nPat Example\nExample Co\nTel 555', 'Hi Alex,\nPat\nWe met at the office near 0100'],
+  ['a smaller block beats a larger one with more repeated words', phoneSignature, 'Hi Alex,\nPat Pat Pat 0100\nPat Example\nExample Co\nTel 555', 'Hi Alex,\nPat Pat Pat 0100'],
   ['a tie keeps the smaller block', ownSignature, 'Hi Alex,\nExample Pat\nPat Example', 'Hi Alex,\nExample Pat\nPat Example'],
   // A blank line ends the block, so a copy split by one is cut below it only while the part above is too small to count.
   ['a copy split by a blank line', phoneSignature, 'Hi Alex,\n\nPat Example\nExample Co\n\nTel 555 0100\nPat Example', 'Hi Alex,\n\nPat Example\nExample Co'],
@@ -342,6 +347,45 @@ it.each([
 ])('block choice: %s', (_, signature, suggestion, kept) => {
   const s = setup(`<p><br></p>${signature}`);
   expect(s.tm.withoutAddedSignature(s.body, '', suggestion)).toBe(kept);
+});
+
+// The invariant: whatever the draft, only a "-- " line or a line made entirely
+// of the signature's words is ever dropped, and only from the end.
+it('never drops a line with a word the signature lacks (seeded random drafts)', () => {
+  let seed = 0x5eed;
+  const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const pick = list => list[Math.floor(random() * list.length)];
+  const signatureWords = ['Pat', 'Example', 'Co', 'Senior', 'Engineer', 'Tel', '555', '0100'];
+  const otherWords = ['Hi', 'Alex', 'thanks', 'team', 'see', 'you', 'Friday', 'Former', '0199', 'and', 'with', 'is', 'hiring'];
+  const s = setup(`<p><br></p>${longSignature}`);
+  const inSignature = new Set(signatureWords.map(word => word.toLowerCase()));
+  let cuts = 0;
+  for (let n = 0; n < 2000; n++) {
+    const lines = Array.from({ length: 1 + Math.floor(random() * 8) }, () => {
+      const kind = random();
+      if (kind < 0.1) return '';
+      if (kind < 0.18) return pick(['-- ', '--', '---', '--Pat']);
+      const words = Array.from({ length: 1 + Math.floor(random() * 4) }, () => pick(random() < 0.6 ? signatureWords : otherWords));
+      return words.join(pick([' ', ', ']));
+    });
+    // Half the drafts end in a copy of the signature, whole or damaged.
+    if (random() < 0.5) {
+      const copy = ['Pat Example', 'Senior Engineer, Example Co', 'Tel 555-0100'].filter(() => random() < 0.8);
+      if (copy.length && random() < 0.3) copy[Math.floor(random() * copy.length)] += ` ${pick(otherWords)}`;
+      lines.push(...(random() < 0.5 ? ['', '-- '] : ['']), ...copy);
+    }
+    const draft = lines.join('\n');
+    const result = s.tm.withoutAddedSignature(s.body, '', draft);
+    expect(draft.startsWith(result)).toBe(true);
+    const removed = draft.slice(result.length).split('\n').filter(line => line.trim());
+    if (removed.length) cuts++;
+    for (const line of removed) {
+      const words = line.toLowerCase().match(/[a-z0-9]+/g) || [];
+      expect(/^--[^\S\r\n]*$/.test(line) || (words.length > 0 && words.every(word => inSignature.has(word))), `${JSON.stringify(draft)} lost ${JSON.stringify(line)}`).toBe(true);
+    }
+  }
+  // Not vacuous: the drafts do exercise the cut.
+  expect(cuts).toBeGreaterThan(500);
 });
 
 it('only a delimiter just above the copy goes with it', () => {
