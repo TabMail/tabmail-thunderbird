@@ -64,7 +64,7 @@ catastrophe) the rule is now, in `withoutAddedSignature` alone (`_addedSignature
   signature's name as the sign-off ("Best," / "Pat Example" — this reverses the owner-accepted cut
   below, in the safe direction). An older or edited copy was already kept.
 - **Now dropped** (was kept): a copy of a one-word signature in a paragraph of its own.
-- **Residual (not owner-reviewed):** a last paragraph whose words are exactly the signature's is
+- **Residual, OWNER-ACCEPTED 2026-10-08 (PR #140):** a last paragraph whose words are exactly the signature's is
   dropped even if it was meant as content, e.g. a final "Pat Example?" / "Example Co?" asking who
   should sign. Without the "-- " line nothing distinguishes it from a copy.
 - **Tests:** `test/agentDraftInsertion.test.js` ("a copied signature is dropped", "a suggestion that
