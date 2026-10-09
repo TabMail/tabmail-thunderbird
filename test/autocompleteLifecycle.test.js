@@ -1069,6 +1069,7 @@ it.each(['plain','html'])('sends the complete body for a %s Cmd-K expansion and 
 
 it.each([
  ['a copied signature is dropped','Hello team,\n\nPlease report issues.\n\nThanks,\nExample\n\n-- \nPrivate signature','Hello team,\n\nPlease report issues.\n\nThanks,\nExample'],
+ ['a copy without a delimiter is dropped','Hello team,\n\nPlease report issues.\n\nThanks,\nExample\n\nPrivate signature','Hello team,\n\nPlease report issues.\n\nThanks,\nExample'],
  ['a signature-only result is refused','-- \nPrivate signature',null],
 ])('Cmd-K in an empty signed draft shows the signature once: %s',async(_,result,applied)=>{
  const {w,tm,body}=setup('<p><br></p><pre class="moz-signature">-- \nPrivate signature</pre>');

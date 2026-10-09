@@ -109,21 +109,45 @@ Object.assign(TabMail, {
 
   /**
    * Thunderbird inserts the identity signature itself. A model-written draft
-   * that copies it after a "-- " line would show it twice, so drop that block.
-   * Only drafts the user has not written in yet, with a signature of their own
-   * (quoted or forwarded ones do not count), and only a copy of that signature:
-   * text the user wrote is never cut.
+   * that ends with a copy of it would show two, so drop that copy: the draft
+   * keeps Thunderbird's current one. Dropping text that is not the signature
+   * is far worse than showing it twice, so only a last paragraph made of
+   * exactly the signature's words, with a word on every line, is a copy
+   * (a "-- " line just above it, if any, goes too); a partial or edited
+   * copy, or one sharing a paragraph with other lines, stays. Only drafts the user has not written in yet, so text the
+   * user wrote is never cut, and only drafts with a signature of their own
+   * (quoted or forwarded ones do not count).
    */
   withoutAddedSignature(editor, original, proposed) {
+    if (original.trim()) return proposed;
     const own = [...editor.querySelectorAll('.moz-signature')].filter(node => !node.closest('blockquote, .moz-forward-container'));
-    const match = own.length && !original.trim() ? /^--[^\S\r\n]*$/m.exec(proposed) : null;
-    if (!match) return proposed;
-    // Model output arrives NFKC-normalized and may re-wrap lines, so compare
-    // letters and digits only.
-    const key = text => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-    const signature = own.map(node => key(node.textContent)).join('');
-    const copied = proposed.slice(match.index).split(/\r?\n/).every(line => signature.includes(key(line)));
-    return copied ? proposed.slice(0, match.index).trimEnd() : proposed;
+    const signature = TabMail._signatureWords(own.map(node => TabMail.indexComposeText(node).text).join('\n'));
+    // No signature words of its own leaves nothing to match: nothing is cut.
+    if (!signature) return proposed;
+    const delimiter = /^--\s*$/;
+    let lines = proposed.split('\n');
+    for (;;) {
+      let end = lines.length;
+      while (end && !lines[end - 1].trim()) end--;
+      let start = end;
+      while (start && lines[start - 1].trim() && !delimiter.test(lines[start - 1])) start--;
+      const paragraph = lines.slice(start, end);
+      if (paragraph.some(line => !TabMail._signatureWords(line)) || TabMail._signatureWords(paragraph.join('\n')) !== signature) break;
+      while (start && !lines[start - 1].trim()) start--;
+      if (start && delimiter.test(lines[start - 1])) start--;
+      lines = lines.slice(0, start);
+    }
+    const kept = lines.join('\n');
+    return kept === proposed ? proposed : kept.trimEnd();
+  },
+
+  // The words of `text`, sorted, so a copy matches whatever its line breaks
+  // and word order. Model output arrives NFKC-normalized and may re-wrap
+  // lines or change case, so compare letters (with their combining marks,
+  // which carry the vowels of Devanagari, Thai and similar scripts), digits
+  // and symbols such as emoji, but not punctuation.
+  _signatureWords(text) {
+    return (text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{M}\p{N}\p{S}]+/gu) || []).sort().join(' ');
   },
 });
 
