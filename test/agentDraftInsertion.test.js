@@ -279,6 +279,9 @@ it.each([
   ['a copy of an HTML signature', 'Hi Alex,\n\n-- \nPat Example\nExample Co', '<div class="moz-signature">-- <br>Pat <b>Example</b><br><a href="https://example.com">Example Co</a></div>', 'Hi Alex,'],
   ['a copy under a non-delimiter dash line', 'Hi Alex,\nNotes below --\nPat Example\nExample Co', ownSignature, 'Hi Alex,\nNotes below --'],
   ['a copy whose first line starts with dashes', 'Hi Alex,\n--Pat Example\nExample Co', ownSignature, 'Hi Alex,'],
+  ['a copy under a longer dash line', 'Hi Alex,\n---\nPat Example\nExample Co', ownSignature, 'Hi Alex,\n---'],
+  ['a copy under a dash-led line', 'Hi Alex,\n--Thanks\nPat Example\nExample Co', ownSignature, 'Hi Alex,\n--Thanks'],
+  ['a copy of a Devanagari signature', 'नमस्ते,\n\n-- \nसीमा शर्मा\nउदाहरण कंपनी', '<pre class="moz-signature">-- \nसीमा शर्मा\nउदाहरण कंपनी</pre>', 'नमस्ते,'],
 ])('a copied signature is dropped: %s', async (_, suggestion, signature, kept) => {
   const s = await suggest(`<p><br></p>${signature}`, '', suggestion);
   expect(s.tm.state.correctedText).toBe(kept);
@@ -298,6 +301,9 @@ it.each([
   ['a sign-off name of a signature with a phone number', 'Hi Alex,\n\nBest,\nPat Example', '<pre class="moz-signature">-- \nPat Example\n+1 555 0100</pre>'],
   ['a one-word signature', 'Hi Alex,\n\nBest,\nPat', '<pre class="moz-signature">-- \nPat</pre>'],
   ['a signature without words', 'Hi Alex,\n\n-- \n:)', '<pre class="moz-signature">-- \n:)</pre>'],
+  ['a paragraph after the copy sharing a signature word', 'Hi Alex,\n\nPat Example\nSenior Engineer\n\nExample Co is hiring!', longSignature],
+  ['a different Devanagari name as the sign-off', 'नमस्ते,\n\nमासी', '<pre class="moz-signature">-- \nसीमा</pre>'],
+  ['a different Devanagari name in a closing line', 'नमस्ते,\n\nइनसे बात करें:\nमासी शर्मा', '<pre class="moz-signature">-- \nसीमा शर्मा</pre>'],
 ])('a suggestion that does not end in a copy stays whole: %s', async (_, suggestion, signature) => {
   const s = await suggest(`<p><br></p>${signature}`, '', suggestion);
   expect(s.tm.state.correctedText).toBe(suggestion);
@@ -320,6 +326,20 @@ it.each([
   ['two matched words (MIN_MATCHED_WORDS)', '<pre class="moz-signature">-- \nPat Example</pre>', 'Hi Alex,\n\nBest,\nPat Example', 'Hi Alex,\n\nBest,'],
   ['one matched word', '<pre class="moz-signature">-- \nPat</pre>', 'Hi Alex,\n\n-- \nPat', 'Hi Alex,\n\n-- \nPat'],
 ])('matched-word boundary: %s', (_, signature, suggestion, kept) => {
+  const s = setup(`<p><br></p>${signature}`);
+  expect(s.tm.withoutAddedSignature(s.body, '', suggestion)).toBe(kept);
+});
+
+// The block kept is the one with the most signature words over other words,
+// not the one with the most signature words; on a tie, the smaller one.
+const phoneSignature = '<pre class="moz-signature">-- \nPat Example\nExample Co\nTel 555 0100</pre>';
+it.each([
+  ['a smaller block beats a larger one with more other words', phoneSignature, 'Hi Alex,\nPat\nWe met at the office near 0100\nPat Example\nExample Co\nTel 555', 'Hi Alex,\nPat\nWe met at the office near 0100'],
+  ['a tie keeps the smaller block', ownSignature, 'Hi Alex,\nExample Pat\nPat Example', 'Hi Alex,\nExample Pat\nPat Example'],
+  // A blank line ends the block, so a copy split by one is cut below it only while the part above is too small to count.
+  ['a copy split by a blank line', phoneSignature, 'Hi Alex,\n\nPat Example\nExample Co\n\nTel 555 0100\nPat Example', 'Hi Alex,\n\nPat Example\nExample Co'],
+  ['two copies split by a blank line', ownSignature, 'Hi Alex,\n\nPat Example\nExample Co\n\nPat Example\nExample Co', 'Hi Alex,'],
+])('block choice: %s', (_, signature, suggestion, kept) => {
   const s = setup(`<p><br></p>${signature}`);
   expect(s.tm.withoutAddedSignature(s.body, '', suggestion)).toBe(kept);
 });

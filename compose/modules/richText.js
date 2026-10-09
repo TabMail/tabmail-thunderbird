@@ -129,19 +129,23 @@ Object.assign(TabMail, {
   },
 
   // Model output arrives NFKC-normalized and may re-wrap lines or change
-  // case, so compare letters and digits only.
+  // case, so compare letters (with their combining marks, which carry the
+  // vowels of Devanagari, Thai and similar scripts) and digits only.
   _signatureWords(text) {
-    return text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+    return text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{M}\p{N}]+/gu) || [];
   },
 
   /**
    * Where the copy of `signature` (word -> count) that ends `text` starts, or
    * null. Walk up from the last line and stop at the first line with no
-   * signature word, so text after or above a copy is never part of it. Each
-   * line made only of signature words may start the block; the block kept has
-   * the most signature words over other words (a sign-off name above a copy
-   * only adds a repeat), and it must pass every `addedSignature` threshold. A
-   * "-- " line just above the block goes with it.
+   * signature word, or at a blank line once the block has a line, so a
+   * paragraph after or above a copy is never part of it. A line in the copy's
+   * own paragraph that shares a signature word is (an edited line such as a
+   * new phone number). Each line made only of signature words may start the
+   * block; the block kept has the most signature words over other words (a
+   * sign-off name above a copy only adds a repeat; on a tie, the smaller
+   * block), and it must pass every `addedSignature` threshold. A "-- " line
+   * just above the block goes with it.
    */
   _addedSignatureStart(text, signature) {
     const cfg = TabMail.config.addedSignature;
@@ -152,7 +156,10 @@ Object.assign(TabMail, {
     const counts = new Map();
     let total = 0, matched = 0, best = null;
     for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].trim()) continue;
+      if (!lines[i].trim()) {
+        if (total) break;
+        continue;
+      }
       const words = TabMail._signatureWords(lines[i]);
       const signatureWords = words.filter(word => signature.has(word)).length;
       if (!signatureWords) break;

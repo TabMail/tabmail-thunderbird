@@ -51,14 +51,20 @@ Owner, after the first fix: an older or edited copy should not show two signatur
 has not written in, and only a signature of the draft's own (quoted/forwarded ones do not count)
 supplies the words.
 
-- **Words.** Letters and digits after NFKC and lower-casing, from the signature's line-aware
+- **Words.** Letters with their combining marks (`\p{M}`: without them Devanagari, Thai and similar
+  scripts split into consonant fragments and a different name matched) and digits, after NFKC and
+  lower-casing, from the signature's line-aware
   projection (`indexComposeText`; `textContent` runs an HTML signature's lines together across
   `<br>`). Each signature word matches at most as often as the signature has it.
-- **The walk.** From the last line up, skipping blank lines, stopping at the first line with NO
-  signature word: text after a copy (a "See you then." line, a `:)`) or above it is never in the
-  block. Only a line made entirely of signature words may start the block, so "Thanks, Pat
+- **The walk.** From the last line up, stopping at the first line with NO signature word, and at a
+  blank line once the block has a line: a paragraph after a copy ("See you then.", `:)`, even
+  "Example Co is hiring!") or above it is never in the block. A line in the copy's OWN paragraph
+  that shares a signature word IS (that is how an edited line, a new phone number, is tolerated),
+  so same-paragraph text after a copy that shares a signature word can be cut (tier-1 round 1, F2).
+  A copy split by a blank line is cut below it only while the part above is too small to count. Only a line made entirely of signature words may start the block, so "Thanks, Pat
   Example, Example Co" is never cut. Among the possible starts, the block with the most signature
-  words over other words wins (a sign-off "Pat" above a copy only adds a repeat, so it stays).
+  words over other words wins (a sign-off "Pat" above a copy only adds a repeat, so it stays); on
+  a tie, the smaller block.
 - **Thresholds** (config): `MIN_MATCHED_WORDS` 2, `MIN_PRECISION` 0.7 (block words that are
   signature words), `MIN_RECALL` 0.6 (signature words present). A "-- " line just above the block
   (blank lines between allowed) goes with it as cleanup only. The cut repeats, so two copies go.
@@ -69,7 +75,8 @@ supplies the words.
   Example` of a two-line signature: without the "-- " evidence it is a sign-off) — this one WAS cut
   before; a one-word signature; a sign-off name when the signature has more (e.g. a phone number).
   A name-only signature's copy of the name in the sign-off IS cut (it equals the signature, which
-  Thunderbird shows right below).
+  Thunderbird shows right below). **Owner-accepted 2026-10-08:** both the kept half copy (even with
+  its "-- " line: the owner does not want the dash relied on) and the cut name-only sign-off.
 - **Tests:** `test/agentDraftInsertion.test.js` ("a copied signature is dropped", "a suggestion that
   does not end in a copy stays whole", "tolerance boundary", "matched-word boundary", "only a
   delimiter just above the copy goes with it"); Cmd-K rows in `test/autocompleteLifecycle.test.js`.
