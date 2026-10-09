@@ -65,8 +65,10 @@ vi.mock('../agent/modules/idbStorage.js', () => ({
 }));
 
 const mockIsInternalSender = vi.fn().mockResolvedValue(false);
+const mockComputeRecipientStatus = vi.fn().mockResolvedValue('');
 vi.mock('../agent/modules/senderFilter.js', () => ({
   isInternalSender: (...args) => mockIsInternalSender(...args),
+  computeRecipientStatus: (...args) => mockComputeRecipientStatus(...args),
 }));
 
 const mockGetUniqueMessageKey = vi.fn().mockResolvedValue('test-unique-key');
@@ -508,6 +510,30 @@ describe('getAction', () => {
     expect(sysMsg.summary).toBe('A meeting invite');
     expect(sysMsg.is_noreply_address).toBe(true);
     expect(sysMsg.has_unsubscribe_link).toBe(true);
+  });
+
+  it("adds recipient_status to the action request when the user is only cc'd", async () => {
+    mockComputeRecipientStatus.mockResolvedValueOnce('cc');
+    mockSendChat.mockResolvedValue({ assistant: '{"action": "archive"}' });
+    mockProcessJSONResponse.mockReturnValue({ action: 'archive' });
+    browser.messages.get.mockResolvedValue({ tags: [] });
+
+    await getAction(makeHeader());
+
+    const sysMsg = mockSendChat.mock.calls[0][0][0];
+    expect(sysMsg.recipient_status).toBe('cc');
+  });
+
+  it('omits recipient_status from the action request when the user is a direct recipient (or unknown)', async () => {
+    mockComputeRecipientStatus.mockResolvedValueOnce('');
+    mockSendChat.mockResolvedValue({ assistant: '{"action": "reply"}' });
+    mockProcessJSONResponse.mockReturnValue({ action: 'reply' });
+    browser.messages.get.mockResolvedValue({ tags: [] });
+
+    await getAction(makeHeader());
+
+    const sysMsg = mockSendChat.mock.calls[0][0][0];
+    expect('recipient_status' in sysMsg).toBe(false);
   });
 
   it('uses getRealSubject to restore Re: prefix in LLM system message', async () => {

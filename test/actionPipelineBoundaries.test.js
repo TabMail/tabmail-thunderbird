@@ -34,7 +34,7 @@ const dependencies=vi.hoisted(()=>({reply:vi.fn(),chat:vi.fn(),peer:vi.fn(),summ
 vi.mock('../chat/modules/helpers.js',()=>({getUserName:async()=> 'Example User'}));
 vi.mock('../agent/modules/summaryGenerator.js',()=>({getSummary:(...a)=>dependencies.summary(...a),purgeExpiredSummaryEntries:async()=>{}}));
 vi.mock('../agent/modules/messagePrefilter.js',()=>({analyzeEmailForReplyFilter:async()=>({skipCachedReply:false})}));
-vi.mock('../agent/modules/senderFilter.js',()=>({isInternalSender:(...a)=>dependencies.internal(...a)}));
+vi.mock('../agent/modules/senderFilter.js',()=>({isInternalSender:(...a)=>dependencies.internal(...a),computeRecipientStatus:async()=>''}));
 vi.mock('../agent/modules/replyGenerator.js',()=>({createReply:(...args)=>dependencies.reply(...args),purgeExpiredReplyEntries:async()=>{}}));
 vi.mock('../agent/modules/tagHelper.js',()=>({runThreadAggregation:async()=>{},applyPriorityTag:async(_id,action)=>owner.setAction(header,action)}));
 vi.mock('../agent/modules/promptGenerator.js',()=>({getUserActionPrompt:async()=>''}));

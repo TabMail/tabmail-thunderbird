@@ -8,7 +8,7 @@ import * as idb from "./idbStorage.js";
 import { processJSONResponse, sendChat } from "./llm.js";
 import { analyzeEmailForReplyFilter } from "./messagePrefilter.js";
 import { getUserActionPrompt } from "./promptGenerator.js";
-import { isInternalSender } from "./senderFilter.js";
+import { computeRecipientStatus, isInternalSender } from "./senderFilter.js";
 import { getSummary } from "./summaryGenerator.js";
 import { beginAutomaticWork, finishAutomaticWork, payloadKey, purgeExpired, setAction, touchAction } from "./actionCache.js";
 import {
@@ -199,6 +199,16 @@ export async function getAction(messageHeader, { forceRecompute = false, token }
       const emailFilter = await analyzeEmailForReplyFilter(messageHeader, full, plainBody);
       log(`${PFX}Filter status for ${uniqueKey}: isNoReply=${emailFilter.isNoReply}, hasUnsubscribe=${emailFilter.hasUnsubscribe}`);
 
+      // Recipient status: "cc" only on positive evidence, as for the summary request
+      // (the general action rules never send a cc'd email to reply/none). Omitted otherwise.
+      const recipientStatus = await computeRecipientStatus(messageHeader);
+      log(
+        `${PFX}recipient_status for ${uniqueKey}: ` +
+        (recipientStatus
+          ? `"${recipientStatus}" (field SENT in action request)`
+          : `direct/unknown (field omitted)`)
+      );
+
       // Build single consolidated message that backend will process
       const systemMsg = {
         role: "system",
@@ -212,6 +222,7 @@ export async function getAction(messageHeader, { forceRecompute = false, token }
         summary: summaryData?.blurb || "Not Available",
         is_noreply_address: emailFilter.isNoReply,
         has_unsubscribe_link: emailFilter.hasUnsubscribe,
+        ...(recipientStatus ? { recipient_status: recipientStatus } : {}),
       };
 
       log(`${PFX}Preparing LLM call for ${uniqueKey}. summaryData=${summaryData ? 'EXISTS' : 'NULL'}, blurb="${summaryData?.blurb?.substring(0, 50) || 'N/A'}..."`);

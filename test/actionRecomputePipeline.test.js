@@ -34,7 +34,7 @@ const dependencies=vi.hoisted(()=>({reply:vi.fn(),chat:vi.fn()}));
 vi.mock('../chat/modules/helpers.js',()=>({getUserName:async()=> 'Example User'}));
 vi.mock('../agent/modules/summaryGenerator.js',()=>({getSummary:async()=>({id:key,blurb:'Synthetic summary',todos:''}),purgeExpiredSummaryEntries:async()=>{}}));
 vi.mock('../agent/modules/messagePrefilter.js',()=>({analyzeEmailForReplyFilter:async()=>({skipCachedReply:false})}));
-vi.mock('../agent/modules/senderFilter.js',()=>({isInternalSender:async()=>false}));
+vi.mock('../agent/modules/senderFilter.js',()=>({isInternalSender:async()=>false,computeRecipientStatus:async()=>''}));
 vi.mock('../agent/modules/replyGenerator.js',()=>({createReply:(...args)=>dependencies.reply(...args),purgeExpiredReplyEntries:async()=>{}}));
 vi.mock('../agent/modules/tagHelper.js',()=>({runThreadAggregation:async()=>{}}));
 vi.mock('../agent/modules/promptGenerator.js',()=>({getUserActionPrompt:async()=>''}));
