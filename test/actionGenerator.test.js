@@ -67,6 +67,7 @@ vi.mock('../agent/modules/idbStorage.js', () => ({
 const mockIsInternalSender = vi.fn().mockResolvedValue(false);
 vi.mock('../agent/modules/senderFilter.js', () => ({
   isInternalSender: (...args) => mockIsInternalSender(...args),
+  computeRecipientStatus: async () => '',
 }));
 
 const mockGetUniqueMessageKey = vi.fn().mockResolvedValue('test-unique-key');
