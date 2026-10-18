@@ -7,6 +7,7 @@
 
 import { log } from "../agent/modules/utils.js";
 import { SETTINGS } from "../agent/modules/config.js";
+import { getMemorySizeLimitBytes } from "./memorySizeLimit.js";
 import {
   getNativeFtsCompatibility,
   versionLessThan,
@@ -1179,7 +1180,26 @@ export const nativeFtsSearch = {
  */
 export const nativeMemorySearch = {
   async indexBatch(rows) {
-    return nativeRPC('memoryIndexBatch', { rows });
+    // The limit is read once, before the call. `maxBytes` is additive: a helper
+    // that does not advertise the size limit gets the legacy shape.
+    const maxBytes = await getMemorySizeLimitBytes();
+    return nativeRPC('memoryIndexBatch', connectionHostInfo =>
+      connectionHostInfo?.capabilities?.memorySizeLimitV1 === true ? { rows, maxBytes } : { rows });
+  },
+
+  // Applies the current limit now (after the user lowers it) and gives the
+  // freed disk space back. An older helper has no memoryTrim: answered here.
+  async trim() {
+    const maxBytes = await getMemorySizeLimitBytes();
+    if (hostInfo?.capabilities?.memorySizeLimitV1 !== true) {
+      return { ok: false, unsupported: true };
+    }
+    return nativeRPC('memoryTrim', connectionHostInfo => {
+      if (connectionHostInfo?.capabilities?.memorySizeLimitV1 !== true) {
+        throw new Error("Native FTS helper does not support the memory size limit");
+      }
+      return { maxBytes };
+    });
   },
   
   async search(query, options = {}) {

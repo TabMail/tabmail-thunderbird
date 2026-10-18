@@ -239,6 +239,15 @@
           </div>
         </div>
         <div class="history-content">
+          <div class="history-usage" id="history-usage">
+            <div class="history-usage-label" id="history-usage-label">Memory used: Loading...</div>
+            <progress id="history-usage-bar" value="0" max="100"></progress>
+            <label class="history-usage-limit" for="history-size-limit">
+              Size limit
+              <select id="history-size-limit"></select>
+            </label>
+          </div>
+          <p class="history-usage-note" id="history-usage-note" style="display: none;"></p>
           <div class="history-stats" id="history-stats">
             <span class="history-stat">Loading...</span>
           </div>

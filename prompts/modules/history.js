@@ -11,6 +11,8 @@
 import { log } from "../../agent/modules/utils.js";
 import { showStatus } from "./utils.js";
 import { clearAllThinking } from "../../chat/modules/persistentChatStore.js";
+import { SETTINGS } from "../../agent/modules/config.js";
+import { formatBytes, getMemorySizeLimitBytes, setMemorySizeLimitBytes } from "../../fts/memorySizeLimit.js";
 
 const CHAT_TURNS_KEY = "chat_turns";
 const CHAT_META_KEY = "chat_meta";
@@ -19,6 +21,7 @@ const PAGE_SIZE = 20;
 
 let displayData = []; // unified display list (turns or FTS results)
 let memoryFtsStats = null;
+let memorySizeLimitBytes = null;
 let turnsCount = 0;
 let currentPage = 1;
 let totalPages = 1;
@@ -52,6 +55,8 @@ export async function loadChatHistory() {
             log(`[Prompts] Failed to get Memory FTS stats: ${e}`, "warn");
             memoryFtsStats = null;
         }
+
+        memorySizeLimitBytes = await getMemorySizeLimitBytes();
 
         // Load active turns count for stats display
         try {
@@ -111,10 +116,10 @@ function renderChatHistory() {
     const statsDiv = document.getElementById("history-stats");
     const paginationDiv = document.getElementById("history-pagination");
 
+    renderMemoryUsage();
+
     // Stats bar
     const ftsDocsCount = memoryFtsStats?.docs || 0;
-    const ftsDbBytes = memoryFtsStats?.dbBytes || 0;
-    const ftsDbSize = ftsDbBytes > 0 ? `${(ftsDbBytes / 1024).toFixed(1)} KB` : "0 KB";
 
     let statsHtml = `
         <span class="history-stat">
@@ -124,10 +129,6 @@ function renderChatHistory() {
         <span class="history-stat">
             <span class="history-stat-label">Searchable entries:</span>
             <span class="history-stat-value">${ftsDocsCount}</span>
-        </span>
-        <span class="history-stat">
-            <span class="history-stat-label">DB Size:</span>
-            <span class="history-stat-value">${ftsDbSize}</span>
         </span>
     `;
 
@@ -172,6 +173,65 @@ function renderChatHistory() {
 
     updatePaginationControls();
     log(`[Prompts] Rendered page ${currentPage}/${totalPages} (${pageData.length} entries)`);
+}
+
+/**
+ * Usage bar: memory used against the size limit, and the limit choice.
+ * `usedBytes` (pages in use) is what the helper's limit counts; a helper
+ * without the size limit reports only the file size and keeps no limit.
+ */
+function renderMemoryUsage() {
+    const label = document.getElementById("history-usage-label");
+    const bar = document.getElementById("history-usage-bar");
+    const select = document.getElementById("history-size-limit");
+    const note = document.getElementById("history-usage-note");
+    if (!label || !bar || !select || !note) return;
+
+    const limit = memorySizeLimitBytes ?? SETTINGS.memoryManagement.memorySizeLimitDefaultBytes;
+    const choices = SETTINGS.memoryManagement.memorySizeLimitChoicesBytes;
+    if (select.options.length !== choices.length) {
+        select.replaceChildren(...choices.map(bytes => new Option(formatBytes(bytes), String(bytes))));
+    }
+    select.value = String(limit);
+
+    const hasLimit = typeof memoryFtsStats?.usedBytes === "number";
+    const used = hasLimit ? memoryFtsStats.usedBytes : (memoryFtsStats?.dbBytes || 0);
+    label.textContent = `Memory used: ${formatBytes(used)} of ${formatBytes(limit)}`;
+    bar.max = limit;
+    bar.value = Math.min(used, limit);
+
+    note.textContent = memoryFtsStats && !hasLimit
+        ? "The size limit applies once the search helper updates."
+        : "When memory reaches the limit, the oldest conversations are removed first.";
+    note.style.display = "block";
+}
+
+/**
+ * Store a new size limit and apply it now; the helper removes the oldest
+ * entries until memory fits and gives the freed disk space back.
+ */
+async function changeMemorySizeLimit(bytes) {
+    try {
+        await setMemorySizeLimitBytes(bytes);
+        memorySizeLimitBytes = bytes;
+        log(`[Prompts] Memory size limit set to ${bytes} bytes`);
+        const result = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryTrim" });
+        if (result?.unsupported) {
+            showStatus(`Size limit set to ${formatBytes(bytes)}. It applies once the search helper updates.`);
+        } else if (result?.error) {
+            log(`[Prompts] Applying the memory size limit failed: ${result.error}`, "warn");
+            showStatus("Size limit saved, but applying it failed: " + result.error, true);
+        } else {
+            const removed = result?.trimmed || 0;
+            showStatus(removed > 0
+                ? `Size limit set to ${formatBytes(bytes)}. Removed ${removed} oldest conversations.`
+                : `Size limit set to ${formatBytes(bytes)}.`);
+        }
+        await loadChatHistory();
+    } catch (e) {
+        log(`[Prompts] Error changing memory size limit: ${e}`, "error");
+        showStatus("Failed to change the size limit: " + e, true);
+    }
 }
 
 /**
@@ -507,7 +567,7 @@ export async function clearChatHistory() {
 }
 
 // Test-only exports for pure functions
-export const _testExports = { formatSessionTime, escapeHtml, highlightSearchTerms };
+export const _testExports = { formatSessionTime, escapeHtml, highlightSearchTerms, changeMemorySizeLimit };
 
 /**
  * Initialize history tab event handlers
@@ -539,6 +599,13 @@ export function initHistoryHandlers() {
 
     if (nextBtn) {
         nextBtn.addEventListener("click", nextPage);
+    }
+
+    const sizeLimitSelect = document.getElementById("history-size-limit");
+    if (sizeLimitSelect) {
+        sizeLimitSelect.addEventListener("change", () => {
+            changeMemorySizeLimit(Number(sizeLimitSelect.value));
+        });
     }
 
     const deleteOldBtn = document.getElementById("delete-old-history");

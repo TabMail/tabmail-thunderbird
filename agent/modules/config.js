@@ -498,6 +498,17 @@ export const SETTINGS = {
         emailCacheMaxSize: 2000,
         // theme/background: max entries in proactive inject URL tracking map
         proactiveInjectMaxEntries: 500,
+        // Chat memory (native helper memory.db) size limit: default and the
+        // choices offered on the Chat History tab. Oldest entries go first.
+        memorySizeLimitDefaultBytes: 1024 ** 3,
+        memorySizeLimitChoicesBytes: [
+            100 * 1024 ** 2,
+            250 * 1024 ** 2,
+            500 * 1024 ** 2,
+            1024 ** 3,
+            2 * 1024 ** 3,
+            5 * 1024 ** 3,
+        ],
     },
 };
 
