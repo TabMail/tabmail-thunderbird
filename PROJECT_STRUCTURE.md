@@ -53,6 +53,7 @@ tabmail-thunderbird/
 │   ├── nativeEngine.js         # Native bridge (range + opaque-folder membership RPCs)
 │   ├── ftsRequest.js           # Run an FTS request in the helper's owner (background) or ask it
 │   ├── memoryIndexer.js        # In-memory indexing
+│   ├── memorySizeLimit.js      # Chat memory size limit setting + byte formatting (ADR-027)
 │   └── maintenanceScheduler.js # Manual repair scans (automatic schedules retired)
 │
 ├── gui/                         # GUI tweaks & preferences

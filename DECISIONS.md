@@ -153,6 +153,10 @@
 
 - **[Full ADR](Companion/Decisions/Active/adr-026-web-read-is-a-user-agent-no-robots-txt.md)** — owner 2026-10-07: robots.txt is for crawlers; `web_read` fetches one page the user asked for, as a browser does, so `isPathAllowedByRobots`/`checkRobotsTxt` are deleted (their parser matched only `*` or the full user-agent, not the RFC 9309 product token, and a later group cleared the `*` rules). TabMail stays named in `tmWebFetch`'s User-Agent; the backend URL guard (user-given or tool-result URLs, no private addresses) is unchanged. iOS `WebReadTool`, Voice `web_read` and the backend tool description change together; supersedes Voice #45.
 
+## ADR-027: Chat Memory Has a User-Set Size Limit, Default 1 GB
+
+- **[Full ADR](Companion/Decisions/Active/adr-027-chat-memory-size-limit.md)** — owner 2026-10-17: `memorySizeLimitBytes` (storage.local; choices 100/250/500 MB, 1 GB default, 2/5 GB in `SETTINGS.memoryManagement`) on a usage row (progress bar like the Settings plan-usage bar + select) atop the Chat History tab. `nativeMemorySearch.indexBatch` snapshots it and sends `maxBytes`; changing it sends `memoryTrim` (helper trims oldest within its time budget, no VACUUM; status says when more go with later writes). Gated on hello `capabilities.memorySizeLimitV1` (native-fts ADR-NF-008); older helper: legacy write shape, trim answered `unsupported`, tab says it applies after the helper updates. Shows `usedBytes` (pages in use); "DB Size" stat folded in.
+
 ---
 
 ## Template for New Decisions

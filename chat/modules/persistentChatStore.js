@@ -6,7 +6,7 @@
 //
 // Dual storage: browser.storage.local (ordered active buffer) + native FTS (searchable).
 // Active buffer holds budgeted turns for conversation context rebuild.
-// FTS holds rendered text for search; evicted turns remain in FTS forever.
+// FTS holds rendered text for search; evicted turns remain in FTS until the memory size limit removes the oldest.
 
 import { log } from "../../agent/modules/utils.js";
 import { get as idbGet, set as idbSet, remove as idbRemove, getAllKeys as idbGetAllKeys } from "../../agent/modules/idbStorage.js";

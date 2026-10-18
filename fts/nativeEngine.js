@@ -7,6 +7,7 @@
 
 import { log } from "../agent/modules/utils.js";
 import { SETTINGS } from "../agent/modules/config.js";
+import { getMemorySizeLimitBytes } from "./memorySizeLimit.js";
 import {
   getNativeFtsCompatibility,
   versionLessThan,
@@ -1179,7 +1180,32 @@ export const nativeFtsSearch = {
  */
 export const nativeMemorySearch = {
   async indexBatch(rows) {
-    return nativeRPC('memoryIndexBatch', { rows });
+    // The limit is read once, before the call. `maxBytes` is additive: a helper
+    // that does not advertise the size limit gets the legacy shape.
+    const maxBytes = await getMemorySizeLimitBytes();
+    return nativeRPC('memoryIndexBatch', connectionHostInfo =>
+      connectionHostInfo?.capabilities?.memorySizeLimitV1 === true ? { rows, maxBytes } : { rows });
+  },
+
+  // Applies the current limit now (after the user changes it). An older
+  // helper has no memoryTrim: answered here. Capability is decided against the
+  // connection that would receive the call, after any reconnect, so a helper
+  // that only disconnected is not reported as needing an update.
+  async trim() {
+    const maxBytes = await getMemorySizeLimitBytes();
+    let unsupported = false;
+    try {
+      return await nativeRPC('memoryTrim', connectionHostInfo => {
+        if (connectionHostInfo?.capabilities?.memorySizeLimitV1 !== true) {
+          unsupported = true;
+          throw new Error("Native FTS helper does not support the memory size limit");
+        }
+        return { maxBytes };
+      });
+    } catch (error) {
+      if (unsupported) return { ok: false, unsupported: true };
+      throw error;
+    }
   },
   
   async search(query, options = {}) {

@@ -343,6 +343,9 @@ function attachCommandInterface() {
             case "memoryClear":
               sendResponse(await memorySearch.clear());
               return;
+            case "memoryTrim":
+              sendResponse(await memorySearch.trim());
+              return;
             case "memoryRemoveBatch":
               sendResponse(await memorySearch.removeBatch(msg.ids || []));
               return;
@@ -792,6 +795,11 @@ export const memorySearch = {
   async clear() {
     log("[TMDBG Memory] Clearing memory index");
     return await nativeMemorySearch.clear();
+  },
+
+  async trim() {
+    log("[TMDBG Memory] Applying the memory size limit");
+    return await nativeMemorySearch.trim();
   },
 
   async removeBatch(ids) {

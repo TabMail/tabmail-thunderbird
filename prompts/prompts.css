@@ -1257,6 +1257,41 @@ button:focus-visible {
   border-radius: 6px;
 }
 
+.history-usage {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.history-usage-label {
+  font-size: 14px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+#history-usage-bar {
+  flex: 1;
+  max-width: 300px;
+  height: 12px;
+  border-radius: 6px;
+}
+
+.history-usage-limit {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.history-usage-note {
+  margin: 0 0 12px;
+  font-size: 13px;
+  opacity: 0.7;
+}
+
 .history-stats {
   display: flex;
   gap: 16px;

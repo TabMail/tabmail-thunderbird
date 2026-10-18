@@ -11,7 +11,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
 vi.mock('../agent/modules/config.js', () => ({
-  SETTINGS: { memoryManagement: { nativeRpcTimeoutMs: 1_000 } },
+  SETTINGS: {
+    memoryManagement: {
+      nativeRpcTimeoutMs: 1_000,
+      memorySizeLimitDefaultBytes: 1024 ** 3,
+      memorySizeLimitChoicesBytes: [1024 ** 3],
+    },
+  },
 }));
 
 function makeNativePort() {
@@ -38,6 +44,7 @@ function freshContext() {
   vi.resetModules();
   globalThis.browser = {
     tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+    storage: { local: { get: vi.fn(async defaults => ({ ...defaults })) } },
     runtime: {
       connectNative: vi.fn(() => makeNativePort()),
       getManifest: vi.fn(() => ({ version: '1.7.2', browser_specific_settings: { gecko: { id: 'thunderbird@tabmail.ai' } } })),
