@@ -1188,18 +1188,24 @@ export const nativeMemorySearch = {
   },
 
   // Applies the current limit now (after the user changes it). An older
-  // helper has no memoryTrim: answered here.
+  // helper has no memoryTrim: answered here. Capability is decided against the
+  // connection that would receive the call, after any reconnect, so a helper
+  // that only disconnected is not reported as needing an update.
   async trim() {
     const maxBytes = await getMemorySizeLimitBytes();
-    if (hostInfo?.capabilities?.memorySizeLimitV1 !== true) {
-      return { ok: false, unsupported: true };
+    let unsupported = false;
+    try {
+      return await nativeRPC('memoryTrim', connectionHostInfo => {
+        if (connectionHostInfo?.capabilities?.memorySizeLimitV1 !== true) {
+          unsupported = true;
+          throw new Error("Native FTS helper does not support the memory size limit");
+        }
+        return { maxBytes };
+      });
+    } catch (error) {
+      if (unsupported) return { ok: false, unsupported: true };
+      throw error;
     }
-    return nativeRPC('memoryTrim', connectionHostInfo => {
-      if (connectionHostInfo?.capabilities?.memorySizeLimitV1 !== true) {
-        throw new Error("Native FTS helper does not support the memory size limit");
-      }
-      return { maxBytes };
-    });
   },
   
   async search(query, options = {}) {

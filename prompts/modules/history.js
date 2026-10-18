@@ -221,7 +221,6 @@ function renderMemoryUsage() {
 async function changeMemorySizeLimit(bytes) {
     try {
         await setMemorySizeLimitBytes(bytes);
-        memorySizeLimitBytes = bytes;
         log(`[Prompts] Memory size limit set to ${bytes} bytes`);
         const result = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryTrim" });
         if (result?.unsupported) {
@@ -232,7 +231,7 @@ async function changeMemorySizeLimit(bytes) {
         } else {
             const removed = result?.trimmed || 0;
             let status = `Size limit set to ${formatBytes(bytes)}.`;
-            if (removed > 0) status += ` Removed the ${removed} oldest ${removed === 1 ? "entry" : "entries"}.`;
+            if (removed > 0) status += removed === 1 ? " Removed the oldest entry." : ` Removed the ${removed} oldest entries.`;
             if (result?.withinLimit === false) status += " More are removed as new conversations are kept.";
             showStatus(status);
         }
@@ -435,6 +434,21 @@ export function showClearAllConfirmation() {
 }
 
 /**
+ * Confirm a size limit below what memory holds: the oldest entries above it
+ * are removed now.
+ */
+function showLowerSizeLimitConfirmation(bytes, usedBytes) {
+    showModal(
+        "Lower the Size Limit",
+        `<p>Memory holds ${formatBytes(usedBytes)}. Lowering the limit to <strong>${formatBytes(bytes)}</strong> removes the oldest conversations until it fits.</p>
+         <p style="color: var(--in-content-danger-button-background);">This action cannot be undone.</p>`,
+        async () => {
+            await changeMemorySizeLimit(bytes);
+        }
+    );
+}
+
+/**
  * Show Delete Old History dialog
  */
 export function showDeleteOldHistoryDialog() {
@@ -610,7 +624,17 @@ export function initHistoryHandlers() {
     const sizeLimitSelect = document.getElementById("history-size-limit");
     if (sizeLimitSelect) {
         sizeLimitSelect.addEventListener("change", () => {
-            changeMemorySizeLimit(Number(sizeLimitSelect.value));
+            const bytes = Number(sizeLimitSelect.value);
+            const used = memoryFtsStats?.usedBytes;
+            // A limit below what memory holds removes entries for good: ask first,
+            // as Clear All does. A misclick or arrow keys stepping through the list
+            // then remove nothing.
+            if (typeof used === "number" && bytes < used) {
+                sizeLimitSelect.value = String(memorySizeLimitBytes ?? SETTINGS.memoryManagement.memorySizeLimitDefaultBytes);
+                showLowerSizeLimitConfirmation(bytes, used);
+                return;
+            }
+            changeMemorySizeLimit(bytes);
         });
     }
 

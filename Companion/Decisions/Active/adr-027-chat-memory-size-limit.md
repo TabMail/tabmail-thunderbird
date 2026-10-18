@@ -7,7 +7,8 @@ uses the same helper mechanism with its own setting.
 
 The native helper's chat memory database (`memory.db`, one row per chat exchange, searched by
 `memory_search` / `memory_read`) had no size bound. Owner 2026-10-17: memory must have a limit,
-user-configurable on the settings page, defaulting to 1 GB, which holds almost everything.
+user-configurable, shown as a usage bar at the top of the memory page (the Chat History tab),
+defaulting to 1 GB, which holds almost everything.
 
 ## Decision
 
@@ -26,9 +27,16 @@ user-configurable on the settings page, defaulting to 1 GB, which holds almost e
 - **Capability-gated:** the helper's `hello` must advertise `capabilities.memorySizeLimitV1`.
   Without it:
   - writes keep the legacy `{ rows }` shape;
-  - `trim()` answers `{ ok: false, unsupported: true }` without an RPC;
+  - `trim()` answers `{ ok: false, unsupported: true }` without sending `memoryTrim`; capability
+    is checked against the connection that would receive the call, after any reconnect, so a
+    helper that only disconnected is not reported as outdated;
   - the tab says the limit applies once the search helper updates.
-  The stored setting takes effect as soon as an updated helper connects.
+  Once an updated helper connects, the stored limit applies at the next memory write or limit
+  change; nothing trims on connect.
+- **Lowering below what memory holds asks first.** A choice below the current used size opens a
+  confirmation (as Clear All does) and the list returns to the stored limit until it is confirmed,
+  so a misclick or arrow keys stepping through the list remove nothing. Raising the limit, or
+  lowering it while still above the used size, applies directly.
 - **UI:** a usage row at the top of the Chat History tab, styled like the Settings plan-usage
   bar:
   - "Memory used: X of Y";
@@ -48,4 +56,6 @@ user-configurable on the settings page, defaulting to 1 GB, which holds almost e
 - Tests: `test/memorySizeLimit.test.js` covers:
   - the setting;
   - the wire, with and without the capability;
-  - the usage row and the limit change (store, then trim, then status).
+  - the usage row and the limit change (store, then trim, then status);
+  - the confirmation before a lower limit removes entries;
+  - the real `prompts/prompts.html` and the shipped choices and default.

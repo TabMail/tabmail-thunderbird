@@ -190,6 +190,38 @@ describe('native memory size limit wire', () => {
     expect(port.messages.find(m => m.method === 'memoryTrim').params).toEqual({ maxBytes: 100 * MB });
   });
 
+  it('reconnects a helper that disconnected and applies the trim, rather than calling it outdated', async () => {
+    vi.resetModules();
+    const ports = [];
+    const trimResult = { ok: true, trimmed: 2, usedBytes: 5, withinLimit: true };
+    globalThis.browser = {
+      storage: makeStorage({ memorySizeLimitBytes: 100 * MB }),
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      alarms: { create: vi.fn(() => Promise.resolve()) },
+      runtime: {
+        connectNative: vi.fn(() => {
+          const port = makeNativePort({ capabilities: { memorySizeLimitV1: true }, memoryResults: { memoryTrim: trimResult } });
+          ports.push(port);
+          return port;
+        }),
+        getManifest: vi.fn(() => ({ version: '1.9.2', browser_specific_settings: { gecko: { id: 'thunderbird@tabmail.ai' } } })),
+      },
+    };
+    const { initNativeFts, nativeMemorySearch } = await import('../fts/nativeEngine.js');
+    await initNativeFts();
+    ports[0].disconnect();
+    // Past the reconnect cooldown, as a helper restart after a crash or an update is.
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now + 61_000);
+    try {
+      await expect(nativeMemorySearch.trim()).resolves.toEqual(trimResult);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(ports.length).toBe(2);
+    expect(ports[1].messages.find(m => m.method === 'memoryTrim').params).toEqual({ maxBytes: 100 * MB });
+  });
+
   it('answers memoryTrim itself for a helper without the limit, sending nothing', async () => {
     const { nativeMemorySearch, port } = await initializedMemory({ capabilities: { folderMembershipV1: true } });
     await expect(nativeMemorySearch.trim()).resolves.toEqual({ ok: false, unsupported: true });
@@ -317,7 +349,7 @@ describe('Chat History usage bar', () => {
   });
 
   it.each([
-    [1, 'Size limit set to 100 MB. Removed the 1 oldest entry. More are removed as new conversations are kept.'],
+    [1, 'Size limit set to 100 MB. Removed the oldest entry. More are removed as new conversations are kept.'],
     [0, 'Size limit set to 100 MB. More are removed as new conversations are kept.'],
   ])('says more go later when the helper ran out of time (%s removed)', async (trimmed, text) => {
     const { changeMemorySizeLimit, el, showStatus } = await loadHistory({
@@ -338,6 +370,16 @@ describe('Chat History usage bar', () => {
     await changeMemorySizeLimit(2 * GB);
     expect(storage.data.memorySizeLimitBytes).toBe(2 * GB);
     expect(showStatus.mock.calls).toEqual([['Size limit set to 2 GB. It applies once the search helper updates.']]);
+  });
+
+  it('says only the new limit when no search engine answers the trim', async () => {
+    const { changeMemorySizeLimit, storage, showStatus } = await loadHistory({
+      stats: { docs: 1, dbBytes: MB, usedBytes: MB },
+      trimResult: undefined,
+    });
+    await changeMemorySizeLimit(2 * GB);
+    expect(storage.data.memorySizeLimitBytes).toBe(2 * GB);
+    expect(showStatus.mock.calls).toEqual([['Size limit set to 2 GB.']]);
   });
 
   it('reports a failed trim as an error, keeping the stored limit', async () => {
