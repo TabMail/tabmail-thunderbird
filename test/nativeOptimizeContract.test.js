@@ -4,10 +4,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryTrim, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
+const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryIndex, mockNativeMemoryTrim, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
   mockGetAttachmentFlags: vi.fn(),
   mockIndexMessages: vi.fn(),
   mockLog: vi.fn(),
+  mockNativeMemoryIndex: vi.fn(),
   mockNativeMemoryTrim: vi.fn(),
   mockNativeOptimize: vi.fn(),
   mockRebuildEmbeddings: vi.fn(),
@@ -56,13 +57,15 @@ vi.mock('../fts/nativeEngine.js', () => ({
     addConnectionListener: vi.fn(() => 'unsubscribe'),
   },
   nativeMemorySearch: {
+    indexBatch: (...args) => mockNativeMemoryIndex(...args),
     trim: (...args) => mockNativeMemoryTrim(...args),
   },
 }));
 vi.mock('../fts/incrementalIndexer.js', () => ({
   initIncrementalIndexer: vi.fn(async () => {}),
 }));
-vi.mock('../fts/memoryIndexer.js', () => ({
+vi.mock('../fts/memoryIndexer.js', async importOriginal => ({
+  ...await importOriginal(),
   migrateExistingChatHistory: vi.fn(async () => ({ migrated: false })),
 }));
 
@@ -136,6 +139,7 @@ beforeEach(() => {
   for (const key of Object.keys(storageData)) delete storageData[key];
   _resetFtsOperationCoordinatorForTests();
   mockNativeOptimize.mockReset();
+  mockNativeMemoryIndex.mockReset();
   mockNativeMemoryTrim.mockReset();
   mockRebuildEmbeddings.mockReset();
   mockIndexMessages.mockResolvedValue({
@@ -429,5 +433,49 @@ describe('memory trim command', () => {
     runtimeListener({ type: 'fts', cmd: 'memoryTrim' }, {}, sendResponse);
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ error: 'Native RPC timed out' }));
     expect(sendResponse).toHaveBeenCalledTimes(1);
+  });
+});
+
+// A chat exchange and a finished session reach the helper's memory write
+// whole, through the background's command when the caller does not own the
+// helper's port.
+describe('memory writes from chat', () => {
+  async function connected() {
+    const written = new Map();
+    mockNativeMemoryIndex.mockImplementation(async rows => {
+      for (const row of rows) written.set(row.memId, structuredClone(row));
+      return { ok: true, count: rows.length };
+    });
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+    browser.runtime.sendMessage.mockImplementation(msg => new Promise(resolve => runtimeListener(msg, {}, resolve)));
+    const indexer = await import('../fts/memoryIndexer.js');
+    return { written, ...indexer };
+  }
+
+  afterEach(() => {
+    browser.runtime.sendMessage.mockImplementation(async () => {});
+  });
+
+  it('keeps a whole exchange sent through the background command', async () => {
+    const { written, indexChatTurn } = await connected();
+    const text = 'full fixture content '.repeat(1000);
+    const now = Date.now();
+    await indexChatTurn(text, 'answer', 'fixture-turn', now);
+    expect([...written.keys()]).toEqual(['turn:fixture-turn']);
+    expect(written.get('turn:fixture-turn').content).toBe(`[USER]: ${text}\n\n[AGENT]: answer`);
+    expect(written.get('turn:fixture-turn').dateMs).toBe(now);
+  });
+
+  it('keeps a whole session sent through the background command when the direct write fails', async () => {
+    const { written, indexChatSession } = await connected();
+    mockNativeMemoryIndex.mockRejectedValueOnce(new Error('Native FTS helper not connected'));
+    const text = 'full fixture content '.repeat(1000);
+    const now = Date.now();
+    await indexChatSession('fixture-session', [{ role: 'user', content: text }, { role: 'assistant', content: 'answer' }], now);
+    expect(mockNativeMemoryIndex).toHaveBeenCalledTimes(2);
+    expect([...written.keys()]).toEqual(['chat:fixture-session']);
+    expect(written.get('chat:fixture-session').content).toBe(`[USER]: ${text}\n\n[AGENT]: answer`);
+    expect(written.get('chat:fixture-session').dateMs).toBe(now);
   });
 });

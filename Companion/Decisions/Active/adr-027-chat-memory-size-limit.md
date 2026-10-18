@@ -59,7 +59,12 @@ defaulting to 1 GB, which holds almost everything.
   - the setting;
   - the wire, with and without the capability;
   - the usage row and the limit change (store, then trim, then status);
-  - the trim error and disconnected-helper paths.
+  - the trim error and disconnected-helper paths;
+  - the limit read when each write starts, the request shaped for the helper that receives it,
+    and no write or trim when the limit cannot be read;
+  - Clear All emptying the chat stores and thinking while keeping the chosen limit.
+  `test/nativeOptimizeContract.test.js` covers a whole exchange and session reaching the helper
+  through the background's command.
   `test/memorySizeLimitPage.test.js` covers the real `prompts/prompts.html` with the shipped
   choices and default: the row and its stats states, the confirmation before any lower limit,
   and the saved-but-not-applied status.

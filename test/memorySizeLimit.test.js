@@ -23,7 +23,9 @@ vi.mock('../agent/modules/config.js', () => ({
   },
 }));
 vi.mock('../prompts/modules/utils.js', () => ({ showStatus: vi.fn() }));
-vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn() }));
+// Thinking tokens kept in IndexedDB, as Clear All finds them.
+const { thinkingRows } = vi.hoisted(() => ({ thinkingRows: new Map() }));
+vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn(async () => thinkingRows.clear()) }));
 
 function makeStorage(initial = {}) {
   const data = { ...initial };
@@ -37,7 +39,9 @@ function makeStorage(initial = {}) {
         return out;
       }),
       set: vi.fn(async values => Object.assign(data, values)),
-      remove: vi.fn(async () => {}),
+      remove: vi.fn(async keys => {
+        for (const key of Array.isArray(keys) ? keys : [keys]) delete data[key];
+      }),
     },
   };
 }
@@ -96,7 +100,8 @@ describe('memory size limit setting', () => {
 });
 
 // `memoryErrors` names methods the helper answers with an error reply.
-function makeNativePort({ capabilities, memoryResults = {}, memoryErrors = {} }) {
+// `initReply`, when given, holds the init reply until it resolves.
+function makeNativePort({ capabilities, memoryResults = {}, memoryErrors = {}, initReply }) {
   const messageListeners = [];
   const disconnectListeners = [];
   const messages = [];
@@ -128,7 +133,8 @@ function makeNativePort({ capabilities, memoryResults = {}, memoryErrors = {} })
       } else {
         result = memoryResults[message.method] ?? { ok: true };
       }
-      Promise.resolve().then(() => {
+      const reply = message.method === 'init' && initReply ? initReply : Promise.resolve();
+      reply.then(() => {
         for (const listener of messageListeners) listener({ id: message.id, result });
       });
     },
@@ -255,6 +261,83 @@ describe('native memory size limit wire', () => {
     const { nativeMemorySearch, port } = await initializedMemory({ capabilities: { folderMembershipV1: true } });
     await expect(nativeMemorySearch.trim()).resolves.toEqual({ ok: false, unsupported: true });
     expect(port.messages.some(m => m.method === 'memoryTrim')).toBe(false);
+  });
+
+  // A memory write snapshots the limit once, when it starts; a later change
+  // applies to the next write.
+  it('applies the limit read when each write starts', async () => {
+    vi.resetModules();
+    let releaseInit;
+    const port = makeNativePort({
+      capabilities: { memorySizeLimitV1: true },
+      initReply: new Promise(resolve => { releaseInit = resolve; }),
+    });
+    const storage = makeStorage({ memorySizeLimitBytes: 2 * GB });
+    globalThis.browser = {
+      storage,
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      alarms: { create: vi.fn(() => Promise.resolve()) },
+      runtime: { connectNative: vi.fn(() => port), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
+    };
+    const { initNativeFts, nativeMemorySearch } = await import('../fts/nativeEngine.js');
+    const init = initNativeFts();
+    const pending = nativeMemorySearch.indexBatch(ROWS);
+    await vi.waitFor(() => expect(storage.local.get).toHaveBeenCalled());
+    storage.data.memorySizeLimitBytes = 100 * MB;
+    releaseInit();
+    await init;
+    await pending;
+    await nativeMemorySearch.indexBatch(ROWS);
+    const writes = port.messages.filter(m => m.method === 'memoryIndexBatch');
+    expect(writes.map(m => m.params)).toEqual([{ rows: ROWS, maxBytes: 2 * GB }, { rows: ROWS, maxBytes: 100 * MB }]);
+  });
+
+  // The request is shaped for the helper that receives it, even when the
+  // helper was replaced while the limit was being read.
+  it.each([
+    ['an older helper replaced by one with the limit', false, true],
+    ['a helper with the limit replaced by an older one', true, false],
+  ])('shapes memory requests for the receiving helper: %s', async (_label, before, after) => {
+    vi.resetModules();
+    const ports = [makeNativePort({ capabilities: { memorySizeLimitV1: before } })];
+    const storage = makeStorage({ memorySizeLimitBytes: 250 * MB });
+    globalThis.browser = {
+      storage,
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      alarms: { create: vi.fn(() => Promise.resolve()) },
+      runtime: { connectNative: vi.fn(() => ports.at(-1)), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
+    };
+    const { initNativeFts, nativeMemorySearch } = await import('../fts/nativeEngine.js');
+    await initNativeFts();
+    let releaseRead;
+    const read = new Promise(resolve => { releaseRead = resolve; });
+    storage.local.get.mockReturnValueOnce(read).mockReturnValueOnce(read);
+    const write = nativeMemorySearch.indexBatch(ROWS);
+    const trim = nativeMemorySearch.trim();
+    ports[0].disconnect();
+    ports.push(makeNativePort({ capabilities: { memorySizeLimitV1: after } }));
+    await initNativeFts();
+    releaseRead({ memorySizeLimitBytes: 250 * MB });
+    const [, trimAnswer] = await Promise.all([write, trim]);
+    expect(ports[0].messages.map(m => m.method)).toEqual(['hello', 'init']);
+    const received = ports[1].messages;
+    expect(received.find(m => m.method === 'memoryIndexBatch').params).toEqual(after ? { rows: ROWS, maxBytes: 250 * MB } : { rows: ROWS });
+    expect(received.filter(m => m.method === 'memoryTrim').length).toBe(after ? 1 : 0);
+    expect(trimAnswer).toEqual(after ? { ok: true } : { ok: false, unsupported: true });
+  });
+
+  // Without the user's limit nothing is written or trimmed: a guessed
+  // default could be below what they chose.
+  it('refuses memory writes and trims when the limit cannot be read', async () => {
+    const { nativeMemorySearch, port, storage } = await initializedMemory({
+      capabilities: { memorySizeLimitV1: true },
+      stored: { memorySizeLimitBytes: 5 * GB },
+    });
+    storage.local.get.mockRejectedValue(new Error('storage unavailable'));
+    await expect(nativeMemorySearch.indexBatch(ROWS)).rejects.toThrow('storage unavailable');
+    await expect(nativeMemorySearch.trim()).rejects.toThrow('storage unavailable');
+    expect(port.messages.map(m => m.method)).toEqual(['hello', 'init']);
+    expect(storage.data.memorySizeLimitBytes).toBe(5 * GB);
   });
 });
 
@@ -486,6 +569,29 @@ describe('Chat History usage bar', () => {
     await history.clearChatHistory();
     expect(el['history-usage-label'].textContent).toBe('Memory used: unavailable (limit 1 GB)');
     expect(el['history-usage-note'].textContent).toContain('once the search helper is running');
+  });
+
+  it('Clear All removes the chat history and keeps the chosen limit', async () => {
+    thinkingRows.set('fixture', 'thinking fixture');
+    const { history, el, storage } = await loadHistory({
+      stats: { docs: 9, dbBytes: 2 * MB, usedBytes: 2 * MB },
+      statsAfter: { docs: 0, dbBytes: 2 * MB, usedBytes: 64 * 1024 },
+      stored: {
+        memorySizeLimitBytes: 250 * MB,
+        chat_turns: [{ role: 'user', content: 'fixture' }],
+        chat_meta: { fixture: true },
+        chat_id_map: { fixture: 1 },
+        memory_fts_migration_v1_done: true,
+        memory_fts_migrated_sessions: ['fixture'],
+        chat_turns_migration_v1: true,
+        chat_turns_migration_v2: true,
+        chat_refs_migration_v1: true,
+      },
+    });
+    await history.clearChatHistory();
+    expect(storage.data).toEqual({ memorySizeLimitBytes: 250 * MB });
+    expect(thinkingRows.size).toBe(0);
+    expect(el['history-usage-label'].textContent).toBe('Memory used: 64 KB of 250 MB');
   });
 
   it('rejects a limit that is not offered without trimming', async () => {
