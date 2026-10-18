@@ -33,10 +33,12 @@ defaulting to 1 GB, which holds almost everything.
   - the tab says the limit applies once the search helper updates.
   Once an updated helper connects, the stored limit applies at the next memory write or limit
   change; nothing trims on connect.
-- **Lowering below what memory holds asks first.** A choice below the current used size opens a
-  confirmation (as Clear All does) and the list returns to the stored limit until it is confirmed,
-  so a misclick or arrow keys stepping through the list remove nothing. Raising the limit, or
-  lowering it while still above the used size, applies directly.
+- **Any lower limit asks first.** A choice below the stored limit opens a confirmation (as Clear
+  All does) whatever the usage shown, since that can be unknown, from an older helper, or out of
+  date. The list returns to the stored limit until it is confirmed, so a misclick or arrow keys
+  stepping through the list remove nothing. Raising the limit applies directly. When the limit
+  is stored but applying it fails, the status says so and the tab reloads; the next memory write
+  applies it.
 - **UI:** a usage row at the top of the Chat History tab, styled like the Settings plan-usage
   bar:
   - "Memory used: X of Y";
@@ -57,5 +59,7 @@ defaulting to 1 GB, which holds almost everything.
   - the setting;
   - the wire, with and without the capability;
   - the usage row and the limit change (store, then trim, then status);
-  - the confirmation before a lower limit removes entries;
-  - the real `prompts/prompts.html` and the shipped choices and default.
+  - the trim error and disconnected-helper paths.
+  `test/memorySizeLimitPage.test.js` covers the real `prompts/prompts.html` with the shipped
+  choices and default: the row and its stats states, the confirmation before any lower limit,
+  and the saved-but-not-applied status.
