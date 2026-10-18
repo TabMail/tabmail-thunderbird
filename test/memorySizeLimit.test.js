@@ -266,6 +266,28 @@ describe('Chat History usage bar', () => {
     expect(el['history-usage-note'].textContent).toContain('once the search helper updates');
   });
 
+  for (const [name, stats] of [
+    ['no reply', undefined],
+    ['an error reply', { error: 'Native FTS helper not connected' }],
+  ]) {
+    it(`says usage is unavailable, not zero, on ${name} from the helper`, async () => {
+      const { history, el } = await loadHistory({ stats });
+      Object.assign(el, {
+        'history-search-input': { value: '' },
+        'history-list': { innerHTML: '' },
+        'history-empty': { style: {} },
+        'history-stats': { innerHTML: '' },
+        'history-pagination': { style: {} },
+      });
+      await history.loadChatHistory();
+      expect(el['history-usage-label'].textContent).toBe('Memory used: unavailable (limit 1 GB)');
+      expect(el['history-usage-label'].textContent).not.toMatch(/\d+ KB/);
+      expect(el['history-usage-bar'].value).toBe(0);
+      expect(el['history-usage-note'].textContent).toContain('once the search helper is running');
+      expect(el['history-size-limit'].value).toBe(String(GB));
+    });
+  }
+
   it('caps the bar at the limit when memory is over it', async () => {
     const { history, el } = await loadHistory({
       stats: { docs: 9, dbBytes: 200 * MB, usedBytes: 150 * MB },

@@ -195,15 +195,22 @@ function renderMemoryUsage() {
     select.value = String(limit);
 
     const hasLimit = typeof memoryFtsStats?.usedBytes === "number";
-    const used = hasLimit ? memoryFtsStats.usedBytes : (memoryFtsStats?.dbBytes || 0);
-    label.textContent = `Memory used: ${formatBytes(used)} of ${formatBytes(limit)}`;
+    const used = hasLimit ? memoryFtsStats.usedBytes : memoryFtsStats?.dbBytes;
     bar.max = limit;
+    note.style.display = "block";
+    // No stats (helper not running, or an error reply): say so rather than show 0.
+    if (typeof used !== "number") {
+        label.textContent = `Memory used: unavailable (limit ${formatBytes(limit)})`;
+        bar.value = 0;
+        note.textContent = "Memory usage shows once the search helper is running.";
+        return;
+    }
+    label.textContent = `Memory used: ${formatBytes(used)} of ${formatBytes(limit)}`;
     bar.value = Math.min(used, limit);
 
-    note.textContent = memoryFtsStats && !hasLimit
-        ? "The size limit applies once the search helper updates."
-        : "When memory reaches the limit, the oldest conversations are removed first.";
-    note.style.display = "block";
+    note.textContent = hasLimit
+        ? "When memory reaches the limit, the oldest conversations are removed first."
+        : "The size limit applies once the search helper updates.";
 }
 
 /**

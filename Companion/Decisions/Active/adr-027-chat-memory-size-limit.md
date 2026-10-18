@@ -33,6 +33,8 @@ user-configurable on the settings page, defaulting to 1 GB, which holds almost e
   - a one-line note.
   "Used" is the helper's `usedBytes` (pages in use), the measure the limit counts. An older
   helper's `dbBytes` (file size) is shown instead. The "DB Size" stat moved into this row.
+  With no stats at all (helper not running, or an error reply) the row says usage is
+  unavailable instead of showing 0.
 
 ## Consequences
 
