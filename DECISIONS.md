@@ -155,7 +155,7 @@
 
 ## ADR-027: Chat Memory Has a User-Set Size Limit, Default 1 GB
 
-- **[Full ADR](Companion/Decisions/Active/adr-027-chat-memory-size-limit.md)** — owner 2026-10-17: `memorySizeLimitBytes` (storage.local; choices 100/250/500 MB, 1 GB default, 2/5 GB in `SETTINGS.memoryManagement`) on a usage row (progress bar like the Settings plan-usage bar + select) atop the Chat History tab. `nativeMemorySearch.indexBatch` snapshots it and sends `maxBytes`; changing it sends `memoryTrim` (helper trims oldest, VACUUMs). Gated on hello `capabilities.memorySizeLimitV1` (native-fts ADR-NF-008); older helper: legacy write shape, trim answered `unsupported`, tab says it applies after the helper updates. Shows `usedBytes` (pages in use); "DB Size" stat folded in.
+- **[Full ADR](Companion/Decisions/Active/adr-027-chat-memory-size-limit.md)** — owner 2026-10-17: `memorySizeLimitBytes` (storage.local; choices 100/250/500 MB, 1 GB default, 2/5 GB in `SETTINGS.memoryManagement`) on a usage row (progress bar like the Settings plan-usage bar + select) atop the Chat History tab. `nativeMemorySearch.indexBatch` snapshots it and sends `maxBytes`; changing it sends `memoryTrim` (helper trims oldest within its time budget, no VACUUM; status says when more go with later writes). Gated on hello `capabilities.memorySizeLimitV1` (native-fts ADR-NF-008); older helper: legacy write shape, trim answered `unsupported`, tab says it applies after the helper updates. Shows `usedBytes` (pages in use); "DB Size" stat folded in.
 
 ---
 

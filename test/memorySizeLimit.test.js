@@ -180,7 +180,7 @@ describe('native memory size limit wire', () => {
   });
 
   it('applies the stored limit with memoryTrim and returns the helper result', async () => {
-    const trimResult = { ok: true, trimmed: 3, usedBytes: 10, withinLimit: true, compacted: false };
+    const trimResult = { ok: true, trimmed: 3, usedBytes: 10, withinLimit: true };
     const { nativeMemorySearch, port } = await initializedMemory({
       capabilities: { memorySizeLimitV1: true },
       stored: { memorySizeLimitBytes: 100 * MB },
@@ -197,7 +197,8 @@ describe('native memory size limit wire', () => {
   });
 });
 
-// Minimal DOM for the Chat History tab's usage row.
+// The Chat History tab's elements: the usage row, and the list and stats that
+// loadChatHistory renders after it.
 function makeUsageDom() {
   const el = {
     'history-usage-label': { textContent: '' },
@@ -206,8 +207,15 @@ function makeUsageDom() {
     'history-size-limit': {
       value: '',
       options: [],
+      listeners: {},
       replaceChildren(...options) { this.options = options; },
+      addEventListener(type, listener) { this.listeners[type] = listener; },
     },
+    'history-search-input': { value: '', addEventListener() {} },
+    'history-list': { innerHTML: '' },
+    'history-empty': { style: {} },
+    'history-stats': { innerHTML: '' },
+    'history-pagination': { style: {} },
   };
   globalThis.document = { getElementById: id => el[id] ?? null };
   globalThis.Option = function Option(text, value) { this.text = text; this.value = value; };
@@ -215,18 +223,23 @@ function makeUsageDom() {
 }
 
 describe('Chat History usage bar', () => {
-  async function loadHistory({ stats, stored = {}, trimResult } = {}) {
+  // `stats` answers memoryStats; `statsAfter`, when given, answers it once
+  // memoryTrim or memoryClear has been sent (what the helper then holds).
+  async function loadHistory({ stats, statsAfter, stored = {}, trimResult } = {}) {
     vi.resetModules();
     const storage = makeStorage(stored);
+    let changed = false;
     const sendMessage = vi.fn(async msg => {
-      if (msg.cmd === 'memoryStats') return stats;
-      if (msg.cmd === 'memoryTrim') return trimResult;
+      if (msg.cmd === 'memoryStats') return changed && statsAfter !== undefined ? statsAfter : stats;
+      if (msg.cmd === 'memoryTrim') { changed = true; return trimResult; }
+      if (msg.cmd === 'memoryClear') { changed = true; return { ok: true }; }
       return [];
     });
     globalThis.browser = { storage, runtime: { sendMessage } };
     const el = makeUsageDom();
     const history = await import('../prompts/modules/history.js');
     const { showStatus } = await import('../prompts/modules/utils.js');
+    showStatus.mockClear();
     return { changeMemorySizeLimit: history._testExports.changeMemorySizeLimit, history, el, storage, sendMessage, showStatus };
   }
 
@@ -234,14 +247,6 @@ describe('Chat History usage bar', () => {
     const { history, el } = await loadHistory({
       stats: { docs: 4, dbBytes: 900 * MB, usedBytes: 300 * MB },
       stored: { memorySizeLimitBytes: 500 * MB },
-    });
-    // loadChatHistory touches the list too; give it the elements it needs.
-    Object.assign(el, {
-      'history-search-input': { value: '' },
-      'history-list': { innerHTML: '' },
-      'history-empty': { style: {} },
-      'history-stats': { innerHTML: '' },
-      'history-pagination': { style: {} },
     });
     await history.loadChatHistory();
     expect(el['history-usage-label'].textContent).toBe('Memory used: 300 MB of 500 MB');
@@ -254,13 +259,6 @@ describe('Chat History usage bar', () => {
 
   it('says the limit waits for a helper update when stats carry no used size', async () => {
     const { history, el } = await loadHistory({ stats: { docs: 1, dbBytes: 2 * MB } });
-    Object.assign(el, {
-      'history-search-input': { value: '' },
-      'history-list': { innerHTML: '' },
-      'history-empty': { style: {} },
-      'history-stats': { innerHTML: '' },
-      'history-pagination': { style: {} },
-    });
     await history.loadChatHistory();
     expect(el['history-usage-label'].textContent).toBe('Memory used: 2 MB of 1 GB');
     expect(el['history-usage-note'].textContent).toContain('once the search helper updates');
@@ -272,13 +270,6 @@ describe('Chat History usage bar', () => {
   ]) {
     it(`says usage is unavailable, not zero, on ${name} from the helper`, async () => {
       const { history, el } = await loadHistory({ stats });
-      Object.assign(el, {
-        'history-search-input': { value: '' },
-        'history-list': { innerHTML: '' },
-        'history-empty': { style: {} },
-        'history-stats': { innerHTML: '' },
-        'history-pagination': { style: {} },
-      });
       await history.loadChatHistory();
       expect(el['history-usage-label'].textContent).toBe('Memory used: unavailable (limit 1 GB)');
       expect(el['history-usage-label'].textContent).not.toMatch(/\d+ KB/);
@@ -293,22 +284,16 @@ describe('Chat History usage bar', () => {
       stats: { docs: 9, dbBytes: 200 * MB, usedBytes: 150 * MB },
       stored: { memorySizeLimitBytes: 100 * MB },
     });
-    Object.assign(el, {
-      'history-search-input': { value: '' },
-      'history-list': { innerHTML: '' },
-      'history-empty': { style: {} },
-      'history-stats': { innerHTML: '' },
-      'history-pagination': { style: {} },
-    });
     await history.loadChatHistory();
     expect(el['history-usage-label'].textContent).toBe('Memory used: 150 MB of 100 MB');
     expect(el['history-usage-bar'].value).toBe(100 * MB);
   });
 
-  it('stores a new limit, then applies it, and reports what was removed', async () => {
-    const { changeMemorySizeLimit, storage, sendMessage, showStatus } = await loadHistory({
-      stats: { docs: 1, dbBytes: MB, usedBytes: MB },
-      trimResult: { ok: true, trimmed: 7, usedBytes: MB, withinLimit: true },
+  it('stores a new limit, then applies it, reports what was removed, and shows the new usage', async () => {
+    const { changeMemorySizeLimit, el, storage, sendMessage, showStatus } = await loadHistory({
+      stats: { docs: 9, dbBytes: 300 * MB, usedBytes: 300 * MB },
+      statsAfter: { docs: 2, dbBytes: 300 * MB, usedBytes: 90 * MB },
+      trimResult: { ok: true, trimmed: 7, usedBytes: 90 * MB, withinLimit: true },
     });
     await changeMemorySizeLimit(100 * MB);
     expect(storage.data.memorySizeLimitBytes).toBe(100 * MB);
@@ -316,7 +301,33 @@ describe('Chat History usage bar', () => {
     expect(cmds.indexOf('memoryTrim')).toBeGreaterThanOrEqual(0);
     expect(storage.local.set.mock.invocationCallOrder[0])
       .toBeLessThan(sendMessage.mock.invocationCallOrder[cmds.indexOf('memoryTrim')]);
-    expect(showStatus).toHaveBeenCalledWith('Size limit set to 100 MB. Removed 7 oldest conversations.');
+    expect(showStatus.mock.calls).toEqual([['Size limit set to 100 MB. Removed the 7 oldest entries.']]);
+    expect(el['history-usage-label'].textContent).toBe('Memory used: 90 MB of 100 MB');
+    expect(el['history-size-limit'].value).toBe(String(100 * MB));
+  });
+
+  it('says only the new limit when nothing had to be removed', async () => {
+    const { changeMemorySizeLimit, el, showStatus } = await loadHistory({
+      stats: { docs: 2, dbBytes: 90 * MB, usedBytes: 90 * MB },
+      trimResult: { ok: true, trimmed: 0, usedBytes: 90 * MB, withinLimit: true },
+    });
+    await changeMemorySizeLimit(5 * GB);
+    expect(showStatus.mock.calls).toEqual([['Size limit set to 5 GB.']]);
+    expect(el['history-usage-label'].textContent).toBe('Memory used: 90 MB of 5 GB');
+  });
+
+  it.each([
+    [1, 'Size limit set to 100 MB. Removed the 1 oldest entry. More are removed as new conversations are kept.'],
+    [0, 'Size limit set to 100 MB. More are removed as new conversations are kept.'],
+  ])('says more go later when the helper ran out of time (%s removed)', async (trimmed, text) => {
+    const { changeMemorySizeLimit, el, showStatus } = await loadHistory({
+      stats: { docs: 9, dbBytes: 300 * MB, usedBytes: 300 * MB },
+      statsAfter: { docs: 8, dbBytes: 300 * MB, usedBytes: 280 * MB },
+      trimResult: { ok: true, trimmed, usedBytes: 280 * MB, withinLimit: false },
+    });
+    await changeMemorySizeLimit(100 * MB);
+    expect(showStatus.mock.calls).toEqual([[text]]);
+    expect(el['history-usage-label'].textContent).toBe('Memory used: 280 MB of 100 MB');
   });
 
   it('keeps the new limit and says so when the helper cannot apply it yet', async () => {
@@ -326,7 +337,7 @@ describe('Chat History usage bar', () => {
     });
     await changeMemorySizeLimit(2 * GB);
     expect(storage.data.memorySizeLimitBytes).toBe(2 * GB);
-    expect(showStatus).toHaveBeenCalledWith('Size limit set to 2 GB. It applies once the search helper updates.');
+    expect(showStatus.mock.calls).toEqual([['Size limit set to 2 GB. It applies once the search helper updates.']]);
   });
 
   it('reports a failed trim as an error, keeping the stored limit', async () => {
@@ -336,7 +347,46 @@ describe('Chat History usage bar', () => {
     });
     await changeMemorySizeLimit(250 * MB);
     expect(storage.data.memorySizeLimitBytes).toBe(250 * MB);
-    expect(showStatus).toHaveBeenCalledWith('Size limit saved, but applying it failed: helper busy', true);
+    expect(showStatus.mock.calls).toEqual([['Size limit saved, but applying it failed: helper busy', true]]);
+  });
+
+  it('changes the limit when the user picks another size in the list', async () => {
+    const { history, el, storage, sendMessage, showStatus } = await loadHistory({
+      stats: { docs: 1, dbBytes: MB, usedBytes: MB },
+      trimResult: { ok: true, trimmed: 0, usedBytes: MB, withinLimit: true },
+    });
+    await history.loadChatHistory();
+    history.initHistoryHandlers();
+    const select = el['history-size-limit'];
+    // The select's values are strings, as the DOM gives them.
+    select.value = select.options.find(o => o.text === '100 MB').value;
+    select.listeners.change();
+    await vi.waitFor(() => expect(showStatus).toHaveBeenCalled());
+    expect(storage.data.memorySizeLimitBytes).toBe(100 * MB);
+    const trimCall = sendMessage.mock.calls.findIndex(([m]) => m.cmd === 'memoryTrim');
+    expect(trimCall).toBeGreaterThanOrEqual(0);
+    expect(storage.local.set.mock.invocationCallOrder[0]).toBeLessThan(sendMessage.mock.invocationCallOrder[trimCall]);
+    expect(showStatus.mock.calls).toEqual([['Size limit set to 100 MB.']]);
+  });
+
+  it('shows what the running helper holds after Clear All', async () => {
+    const { history, el, sendMessage } = await loadHistory({
+      stats: { docs: 9, dbBytes: 2 * MB, usedBytes: 2 * MB },
+      statsAfter: { docs: 0, dbBytes: 2 * MB, usedBytes: 64 * 1024 },
+    });
+    await history.loadChatHistory();
+    expect(el['history-usage-label'].textContent).toBe('Memory used: 2 MB of 1 GB');
+    await history.clearChatHistory();
+    expect(sendMessage.mock.calls.some(([m]) => m.cmd === 'memoryClear')).toBe(true);
+    expect(el['history-usage-label'].textContent).toBe('Memory used: 64 KB of 1 GB');
+    expect(el['history-usage-note'].textContent).toContain('oldest conversations are removed first');
+  });
+
+  it('still says usage is unavailable after Clear All when no helper answers', async () => {
+    const { history, el } = await loadHistory({ stats: undefined });
+    await history.clearChatHistory();
+    expect(el['history-usage-label'].textContent).toBe('Memory used: unavailable (limit 1 GB)');
+    expect(el['history-usage-note'].textContent).toContain('once the search helper is running');
   });
 
   it('rejects a limit that is not offered without trimming', async () => {

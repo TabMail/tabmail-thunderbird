@@ -4,10 +4,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
+const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryTrim, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
   mockGetAttachmentFlags: vi.fn(),
   mockIndexMessages: vi.fn(),
   mockLog: vi.fn(),
+  mockNativeMemoryTrim: vi.fn(),
   mockNativeOptimize: vi.fn(),
   mockRebuildEmbeddings: vi.fn(),
 }));
@@ -54,7 +55,9 @@ vi.mock('../fts/nativeEngine.js', () => ({
     getConnectionGeneration: vi.fn(() => 7),
     addConnectionListener: vi.fn(() => 'unsubscribe'),
   },
-  nativeMemorySearch: {},
+  nativeMemorySearch: {
+    trim: (...args) => mockNativeMemoryTrim(...args),
+  },
 }));
 vi.mock('../fts/incrementalIndexer.js', () => ({
   initIncrementalIndexer: vi.fn(async () => {}),
@@ -133,6 +136,7 @@ beforeEach(() => {
   for (const key of Object.keys(storageData)) delete storageData[key];
   _resetFtsOperationCoordinatorForTests();
   mockNativeOptimize.mockReset();
+  mockNativeMemoryTrim.mockReset();
   mockRebuildEmbeddings.mockReset();
   mockIndexMessages.mockResolvedValue({
     scanned: 0,
@@ -397,5 +401,33 @@ describe('attachment flags command', () => {
 
     runtimeListener({ type: 'fts', cmd: 'getAttachmentFlags', msgIds: ['account1:/INBOX:a@example.com'] }, {}, sendResponse);
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ error: 'Unknown method: getAttachmentFlags' }));
+  });
+});
+
+// The Chat History tab applies a changed memory size limit through this
+// command, because only the background owns the native helper's port.
+describe('memory trim command', () => {
+  it('applies the limit once through the helper and answers with its result', async () => {
+    const result = { ok: true, trimmed: 4, usedBytes: 10, withinLimit: true };
+    mockNativeMemoryTrim.mockResolvedValueOnce(result);
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+    const sendResponse = vi.fn();
+
+    expect(runtimeListener({ type: 'fts', cmd: 'memoryTrim' }, {}, sendResponse)).toBe(true);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith(result));
+    expect(mockNativeMemoryTrim).toHaveBeenCalledTimes(1);
+    expect(sendResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers a helper failure as an error', async () => {
+    mockNativeMemoryTrim.mockRejectedValueOnce(new Error('Native RPC timed out'));
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+    const sendResponse = vi.fn();
+
+    runtimeListener({ type: 'fts', cmd: 'memoryTrim' }, {}, sendResponse);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ error: 'Native RPC timed out' }));
+    expect(sendResponse).toHaveBeenCalledTimes(1);
   });
 });

@@ -214,8 +214,9 @@ function renderMemoryUsage() {
 }
 
 /**
- * Store a new size limit and apply it now; the helper removes the oldest
- * entries until memory fits and gives the freed disk space back.
+ * Store a new size limit and apply it now: the helper removes the oldest
+ * entries until memory fits, or as many as its time allows (`withinLimit`
+ * false), and the rest go with the next entries kept.
  */
 async function changeMemorySizeLimit(bytes) {
     try {
@@ -230,9 +231,10 @@ async function changeMemorySizeLimit(bytes) {
             showStatus("Size limit saved, but applying it failed: " + result.error, true);
         } else {
             const removed = result?.trimmed || 0;
-            showStatus(removed > 0
-                ? `Size limit set to ${formatBytes(bytes)}. Removed ${removed} oldest conversations.`
-                : `Size limit set to ${formatBytes(bytes)}.`);
+            let status = `Size limit set to ${formatBytes(bytes)}.`;
+            if (removed > 0) status += ` Removed the ${removed} oldest ${removed === 1 ? "entry" : "entries"}.`;
+            if (result?.withinLimit === false) status += " More are removed as new conversations are kept.";
+            showStatus(status);
         }
         await loadChatHistory();
     } catch (e) {
@@ -560,11 +562,8 @@ export async function clearChatHistory() {
             "chat_refs_migration_v1"
         ]);
 
-        displayData = [];
-        turnsCount = 0;
-        memoryFtsStats = null;
-        currentPage = 1;
-        renderChatHistory();
+        // Re-read everything, so the usage row shows what the helper now holds.
+        await loadChatHistory();
         showStatus("Chat history cleared");
         log("[Prompts] Chat history cleared");
     } catch (e) {

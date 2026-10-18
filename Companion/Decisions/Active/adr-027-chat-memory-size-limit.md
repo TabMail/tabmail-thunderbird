@@ -18,7 +18,11 @@ user-configurable on the settings page, defaulting to 1 GB, which holds almost e
 - **Enforcement is the helper's.** `nativeMemorySearch.indexBatch` reads the limit once, before
   the call, and sends `maxBytes` with every memory write. The helper then removes the oldest
   entries until the used size fits. Changing the limit on the Chat History tab stores it, then
-  sends `memoryTrim`, which applies it at once and gives the freed disk space back.
+  sends `memoryTrim`, which applies it at once, within the helper's time budget; a trim cut short
+  (`withinLimit: false`) says so in the status, and the next memory write continues it. The helper
+  does not compact the file: freed space is reused, and the file keeps its largest size
+  (ADR-NF-008 revisions). The status counts the removed entries (one per exchange), not
+  conversations.
 - **Capability-gated:** the helper's `hello` must advertise `capabilities.memorySizeLimitV1`.
   Without it:
   - writes keep the legacy `{ rows }` shape;

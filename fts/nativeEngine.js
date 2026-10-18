@@ -1187,8 +1187,8 @@ export const nativeMemorySearch = {
       connectionHostInfo?.capabilities?.memorySizeLimitV1 === true ? { rows, maxBytes } : { rows });
   },
 
-  // Applies the current limit now (after the user lowers it) and gives the
-  // freed disk space back. An older helper has no memoryTrim: answered here.
+  // Applies the current limit now (after the user changes it). An older
+  // helper has no memoryTrim: answered here.
   async trim() {
     const maxBytes = await getMemorySizeLimitBytes();
     if (hostInfo?.capabilities?.memorySizeLimitV1 !== true) {
