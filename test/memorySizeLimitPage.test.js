@@ -182,6 +182,30 @@ describe('Chat History size limit on the real page', () => {
     expect(page.trims()).toBe(1);
   });
 
+  // The comparison is with the user's stored limit, not the shipped default:
+  // pairs on both sides of the default.
+  it.each([
+    [5 * GB, 2 * GB],
+    [2 * GB, GB],
+  ])('asks before lowering a stored %s limit to %s', async (stored, chosen) => {
+    const page = await openPage({ usedBytes: 300 * MB, stored });
+    page.choose(chosen);
+    await expectAsksThenApplies(page, chosen, stored);
+  });
+
+  it.each([
+    [100 * MB, 250 * MB],
+    [250 * MB, 500 * MB],
+    [2 * GB, 5 * GB],
+  ])('applies raising a stored %s limit to %s directly', async (stored, chosen) => {
+    const page = await openPage({ usedBytes: 300 * MB, stored });
+    page.choose(chosen);
+    expect(page.asking()).toBe(false);
+    await vi.waitFor(() => expect(page.status()).toMatch(/^Size limit set to /));
+    expect(page.data.memorySizeLimitBytes).toBe(chosen);
+    expect(page.trims()).toBe(1);
+  });
+
   it('asks when the stats shown are out of date: no used size at load, a capable helper at the change', async () => {
     const page = await openPage({ usedBytes: 300 * MB, stored: GB, stats: RELEASED });
     page.setStats({ docs: 3, dbBytes: 300 * MB, usedBytes: 300 * MB });
