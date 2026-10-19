@@ -115,6 +115,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-066 | memory_read → format memory entries | Correct output | Formatting |
 | TB-067 | attachment_read_pdf → page range, limits and refusals on generated PDFs | Text or a clear error | Business rule |
 | TB-068 | attachment_read_pdf → parse deadline bounds the call | Timeout at the deadline, worker terminated | Robustness |
+| TB-069 | memory_search → no query lists the most recent conversations (empty `q` to the helper, paged; in the dates asked) | Results, no "missing query" | Business rule |
 
 ---
 

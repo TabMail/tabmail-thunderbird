@@ -47,12 +47,9 @@ export { normalizeArgs as _testNormalizeArgs, sessionKey as _testSessionKey, res
 export async function run(args = {}, options = {}) {
   try {
     const norm = normalizeArgs(args);
+    // An empty query lists the most recent conversations, newest first (the
+    // helper's memorySearch does that for an empty q): "what have we discussed".
     const rawQuery = norm.query;
-
-    if (!rawQuery) {
-      log(`[TMDBG Tools] memory_search: missing or empty query`, "error");
-      return { error: "missing query" };
-    }
 
     const pageSize = resolvePageSize();
     const prefetchPages = Math.max(

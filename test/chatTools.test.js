@@ -913,16 +913,33 @@ describe('TB-069: memory_search handler logic', () => {
     memorySearch.resetPaginationSessions();
   });
 
-  it('returns error for missing query', async () => {
-    const result = await memorySearch.run({});
-    expect(result).toHaveProperty('error');
-    expect(result.error).toContain('missing query');
+  // "What have we discussed" names no topic: with no query the tool asks the
+  // helper for the most recent conversations (an empty q lists them newest
+  // first) and pages them like any search.
+  it.each([[{}], [{ query: '   ' }]])('lists the most recent conversations for no query (%o)', async (args) => {
+    const result = await memorySearch.run(args);
+    const calls = browser.runtime.sendMessage.mock.calls.filter(
+      (c) => c[0]?.type === 'fts' && c[0]?.cmd === 'memorySearch'
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toEqual(expect.objectContaining({ q: '', from: '', to: '', ignoreDate: true }));
+    expect(result).not.toHaveProperty('error');
+    expect(result.totalItems).toBe(2);
+    expect(result.page).toBe(1);
   });
 
-  it('returns error for empty query', async () => {
-    const result = await memorySearch.run({ query: '   ' });
-    expect(result).toHaveProperty('error');
-    expect(result.error).toContain('missing query');
+  it('lists the most recent conversations in the dates asked for no query', async () => {
+    const from = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    const to = new Date().toISOString();
+    await memorySearch.run({ from_date: from, to_date: to });
+    const calls = browser.runtime.sendMessage.mock.calls.filter(
+      (c) => c[0]?.type === 'fts' && c[0]?.cmd === 'memorySearch'
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0].q).toBe('');
+    expect(calls[0][0].ignoreDate).toBe(false);
+    expect(calls[0][0].from).not.toBe('');
+    expect(calls[0][0].to).not.toBe('');
   });
 
   it('sends memorySearch message to FTS backend', async () => {
