@@ -36,10 +36,15 @@ describe('TB-069: the no-query memory listing and the native-messaging cap', () 
     const memorySearch = await import('../chat/tools/memory_search.js');
     memorySearch.resetPaginationSessions();
 
-    const listed = await memorySearch.run({});
-    expect(listed).not.toHaveProperty('error');
-    const shown = [...String(listed.results).matchAll(/\[timestamp: (\d+)\]/g)].map((m) => Number(m[1]));
-    expect(shown.length).toBeGreaterThan(0);
-    expect(shown).toEqual(rows.slice(0, shown.length).map((r) => r.dateMs));
+    const { CHAT_SETTINGS } = await import('../chat/modules/chatConfig.js');
+    const pageSize = CHAT_SETTINGS.searchPageSizeDefault;
+    const shownIn = (result) => [...String(result.results).matchAll(/\[timestamp: (\d+)\]/g)].map((m) => Number(m[1]));
+
+    const first = await memorySearch.run({});
+    expect(first).not.toHaveProperty('error');
+    expect(shownIn(first)).toEqual(rows.slice(0, pageSize).map((r) => r.dateMs));
+    const second = await memorySearch.run({ page_index: 2 });
+    expect(second).not.toHaveProperty('error');
+    expect(shownIn(second)).toEqual(rows.slice(pageSize, 2 * pageSize).map((r) => r.dateMs));
   });
 });
