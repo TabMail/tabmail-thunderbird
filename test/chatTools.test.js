@@ -163,6 +163,7 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
     searchPageSizeMax: 50,
     searchPrefetchPagesDefault: 4,
     searchPrefetchMaxResults: 200,
+    memoryListMaxResults: 15,
     inboxPageSizeDefault: 10,
     inboxPageSizeMax: 50,
     createEventDefaultDurationMinutes: 60,
@@ -951,7 +952,7 @@ describe('TB-069: memory_search handler logic', () => {
 
     const first = await memorySearch.run(args);
     expect(first).not.toHaveProperty('error');
-    expect(memorySearchCalls()).toEqual([{ type: 'fts', cmd: 'memorySearch', q: '', from: '', to: '', limit: 20, ignoreDate: true }]);
+    expect(memorySearchCalls()).toEqual([{ type: 'fts', cmd: 'memorySearch', q: '', from: '', to: '', limit: 15, ignoreDate: true }]);
     expect([first.page, first.totalPages, first.totalItems]).toEqual([1, 3, 12]);
     expect(shownTimestamps(first)).toEqual(newest.slice(0, 5));
     // The helper gives no snippet for an empty query: the conversation shows.
@@ -977,23 +978,53 @@ describe('TB-069: memory_search handler logic', () => {
     const to = iso(rows[2].dateMs + HOUR);
 
     const window = await memorySearch.run({ from_date: from, to_date: to });
-    expect(memorySearchCalls().at(-1)).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from, to, limit: 20, ignoreDate: false });
+    expect(memorySearchCalls().at(-1)).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from, to, limit: 15, ignoreDate: false });
     expect(shownTimestamps(window)).toEqual(rows.slice(2, 6).map((r) => r.dateMs));
 
     // Only a start: everything since it.
     const since = await memorySearch.run({ from_date: from });
-    expect(memorySearchCalls().at(-1)).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from, to: '', limit: 20, ignoreDate: false });
+    expect(memorySearchCalls().at(-1)).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from, to: '', limit: 15, ignoreDate: false });
     expect(shownTimestamps(since)).toEqual(rows.slice(0, 5).map((r) => r.dateMs));
     expect(since.totalItems).toBe(6);
 
     // Only an end: everything before it.
     const before = await memorySearch.run({ to_date: to });
-    expect(memorySearchCalls().at(-1)).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from: '', to, limit: 20, ignoreDate: false });
+    expect(memorySearchCalls().at(-1)).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from: '', to, limit: 15, ignoreDate: false });
     expect(shownTimestamps(before)).toEqual(rows.slice(2, 7).map((r) => r.dateMs));
     expect(before.totalItems).toBe(10);
 
     // Each range was its own listing, not page one of another.
     expect(memorySearchCalls()).toHaveLength(3);
+  });
+
+  // A listing and a search in one turn ("what have we discussed?", then a
+  // topic) are separate sessions: neither answers with the other's rows.
+  it('keeps a no-query listing and a query search in one turn apart', async () => {
+    const rows = helperWithConversations(7);
+    const found = { dateMs: Date.now() - 50 * HOUR, content: '[USER]: plan the trip\n\n[AGENT]: done', snippet: 'our [vacation] plans' };
+    const listing = browser.runtime.sendMessage.getMockImplementation();
+    browser.runtime.sendMessage.mockImplementation(async (msg) => (msg?.cmd === 'memorySearch' && msg.q === 'vacation' ? [found] : listing(msg)));
+
+    const list = await memorySearch.run({});
+    const search = await memorySearch.run({ query: 'vacation' });
+    const listAgain = await memorySearch.run({});
+
+    expect(memorySearchCalls().map((m) => [m.q, m.limit])).toEqual([['', 15], ['vacation', 20]]);
+    expect(shownTimestamps(list)).toEqual(rows.slice(0, 5).map((r) => r.dateMs));
+    expect(list.results).not.toContain('vacation');
+    expect(search.totalItems).toBe(1);
+    expect(search.results).toContain('our [vacation] plans');
+    expect(search.results).not.toContain('request 0');
+    expect(shownTimestamps(listAgain)).toEqual(shownTimestamps(list));
+    expect(listAgain.results).not.toContain('vacation');
+  });
+
+  // With no snippet, a listed conversation shows its first 400 characters.
+  it('shows the first 400 characters of each conversation listed', async () => {
+    const content = `[USER]: ${'q'.repeat(100)}\n\n[AGENT]: ${'a'.repeat(280)}TAIL-START${'z'.repeat(600)}`;
+    browser.runtime.sendMessage.mockImplementation(async (msg) => (msg?.cmd === 'memorySearch' && msg.q === '' ? [{ dateMs: Date.now() - HOUR, content, snippet: null }] : null));
+    const listed = await memorySearch.run({});
+    expect(String(listed.results).split('\n').slice(1).join('\n')).toBe(content.slice(0, 400));
   });
 
   it('sends memorySearch message to FTS backend', async () => {

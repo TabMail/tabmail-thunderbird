@@ -22,6 +22,7 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
     searchPageSizeMax: 500,
     searchPrefetchPagesDefault: 4,
     searchPrefetchMaxResults: 200,
+    memoryListMaxResults: 40,
   },
 }));
 vi.mock('../chat/modules/helpers.js', () => ({

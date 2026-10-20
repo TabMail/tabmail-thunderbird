@@ -60,7 +60,11 @@ export async function run(args = {}, options = {}) {
       1,
       Number(CHAT_SETTINGS.searchPrefetchMaxResults) || 200
     );
-    const fetchLimit = Math.min(pageSize * prefetchPages, prefetchMax);
+    // A listing (no query) has no relevance filter, and the helper returns every
+    // row's full content in ONE native message, which Thunderbird caps at 1 MiB
+    // (an over-cap reply disconnects the helper). So it fetches a few pages only.
+    const listMax = Math.max(1, Number(CHAT_SETTINGS.memoryListMaxResults));
+    const fetchLimit = Math.min(pageSize * prefetchPages, rawQuery ? prefetchMax : listMax);
 
     // Date range handling (same as email_search)
     const toDateStr = norm.to_date || "";
