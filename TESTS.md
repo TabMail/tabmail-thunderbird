@@ -115,7 +115,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-066 | memory_read → format memory entries | Correct output | Formatting |
 | TB-067 | attachment_read_pdf → page range, limits and refusals on generated PDFs | Text or a clear error | Business rule |
 | TB-068 | attachment_read_pdf → parse deadline bounds the call | Timeout at the deadline, worker terminated | Robustness |
-| TB-069 | memory_search → no query lists the most recent conversations (empty `q` to the helper, paged; in the dates asked) | Results, no "missing query" | Business rule |
+| TB-069 | memory_search → no query (left out, `""` or blank) lists the most recent conversations: empty `q` to a helper-shaped fake (newest first, no snippet, dates and limit honoured), the conversation text shown, newest first, separate pages from one listing; both-sided, from-only and to-only dates sent exactly and kept to, each range its own listing (8 mutants killed: literal `""` refused, no content fallback, reversed, always page one, dates swapped, one-sided dates ignored, dates left out of the listing key, limit 0) | Results, no "missing query" | Business rule |
 
 ---
 

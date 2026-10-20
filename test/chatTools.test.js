@@ -907,39 +907,93 @@ describe('TB-068: inbox_read handler logic', () => {
 // TB-069: memory_search – query, pagination, error handling
 // ---------------------------------------------------------------------------
 describe('TB-069: memory_search handler logic', () => {
+  const runtimeSendMessage = browser.runtime.sendMessage.getMockImplementation();
   beforeEach(() => {
     clearStorage();
     vi.clearAllMocks();
+    browser.runtime.sendMessage.mockImplementation(runtimeSendMessage);
     memorySearch.resetPaginationSessions();
   });
 
   // "What have we discussed" names no topic: with no query the tool asks the
-  // helper for the most recent conversations (an empty q lists them newest
-  // first) and pages them like any search.
-  it.each([[{}], [{ query: '   ' }]])('lists the most recent conversations for no query (%o)', async (args) => {
-    const result = await memorySearch.run(args);
-    const calls = browser.runtime.sendMessage.mock.calls.filter(
-      (c) => c[0]?.type === 'fts' && c[0]?.cmd === 'memorySearch'
-    );
-    expect(calls).toHaveLength(1);
-    expect(calls[0][0]).toEqual(expect.objectContaining({ q: '', from: '', to: '', ignoreDate: true }));
-    expect(result).not.toHaveProperty('error');
-    expect(result.totalItems).toBe(2);
-    expect(result.page).toBe(1);
+  // helper for the most recent conversations and pages them like any search.
+  // The fake below answers as the native helper does for an empty q: every
+  // row newest first, no snippet, within from/to unless ignoreDate, at most
+  // limit rows.
+  const HOUR = 3_600_000;
+  function helperWithConversations(count) {
+    const now = Date.now();
+    const rows = Array.from({ length: count }, (_, i) => ({
+      dateMs: now - (i + 1) * 3 * HOUR,
+      content: `[USER]: request ${i}\n\n[AGENT]: answer ${i}`,
+      snippet: null,
+    }));
+    browser.runtime.sendMessage.mockImplementation(async (msg) => {
+      if (msg?.type !== 'fts' || msg?.cmd !== 'memorySearch') return null;
+      if (msg.q !== '') return [];
+      const from = msg.ignoreDate || !msg.from ? -Infinity : Date.parse(msg.from);
+      const to = msg.ignoreDate || !msg.to ? Infinity : Date.parse(msg.to);
+      return rows
+        .filter((r) => r.dateMs >= from && r.dateMs <= to)
+        .sort((a, b) => b.dateMs - a.dateMs)
+        .slice(0, msg.limit);
+    });
+    return rows;
+  }
+  const memorySearchCalls = () => browser.runtime.sendMessage.mock.calls
+    .map((c) => c[0])
+    .filter((m) => m?.type === 'fts' && m?.cmd === 'memorySearch');
+  const shownTimestamps = (result) => [...String(result.results).matchAll(/\[timestamp: (\d+)\]/g)].map((m) => Number(m[1]));
+
+  it.each([[{}], [{ query: '' }], [{ query: '   ' }]])('lists the most recent conversations, newest first, a page at a time, for no query (%o)', async (args) => {
+    const rows = helperWithConversations(12);
+    const newest = rows.map((r) => r.dateMs);
+
+    const first = await memorySearch.run(args);
+    expect(first).not.toHaveProperty('error');
+    expect(memorySearchCalls()).toEqual([{ type: 'fts', cmd: 'memorySearch', q: '', from: '', to: '', limit: 20, ignoreDate: true }]);
+    expect([first.page, first.totalPages, first.totalItems]).toEqual([1, 3, 12]);
+    expect(shownTimestamps(first)).toEqual(newest.slice(0, 5));
+    // The helper gives no snippet for an empty query: the conversation shows.
+    expect(first.results).toContain('[USER]: request 0');
+    expect(first.results).toContain('[AGENT]: answer 4');
+    expect(first.results).not.toContain('request 5');
+    expect(first.comment).toContain('page_index: 2');
+
+    const second = await memorySearch.run({ ...args, page_index: 2 });
+    const third = await memorySearch.run({ ...args, page_index: 3 });
+    expect(shownTimestamps(second)).toEqual(newest.slice(5, 10));
+    expect(shownTimestamps(third)).toEqual(newest.slice(10, 12));
+    expect(third).not.toHaveProperty('comment');
+    // The pages come from the one listing fetched.
+    expect(memorySearchCalls()).toHaveLength(1);
   });
 
-  it('lists the most recent conversations in the dates asked for no query', async () => {
-    const from = new Date(Date.now() - 7 * 86_400_000).toISOString();
-    const to = new Date().toISOString();
-    await memorySearch.run({ from_date: from, to_date: to });
-    const calls = browser.runtime.sendMessage.mock.calls.filter(
-      (c) => c[0]?.type === 'fts' && c[0]?.cmd === 'memorySearch'
-    );
-    expect(calls).toHaveLength(1);
-    expect(calls[0][0].q).toBe('');
-    expect(calls[0][0].ignoreDate).toBe(false);
-    expect(calls[0][0].from).not.toBe('');
-    expect(calls[0][0].to).not.toBe('');
+  it('lists the most recent conversations within the dates asked for no query, each range its own listing', async () => {
+    const rows = helperWithConversations(12);
+    const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    // Rows 2..5 (6 to 18 hours ago).
+    const from = iso(rows[5].dateMs - HOUR);
+    const to = iso(rows[2].dateMs + HOUR);
+
+    const window = await memorySearch.run({ from_date: from, to_date: to });
+    expect(memorySearchCalls().at(-1)).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from, to, limit: 20, ignoreDate: false });
+    expect(shownTimestamps(window)).toEqual(rows.slice(2, 6).map((r) => r.dateMs));
+
+    // Only a start: everything since it.
+    const since = await memorySearch.run({ from_date: from });
+    expect(memorySearchCalls().at(-1)).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from, to: '', limit: 20, ignoreDate: false });
+    expect(shownTimestamps(since)).toEqual(rows.slice(0, 5).map((r) => r.dateMs));
+    expect(since.totalItems).toBe(6);
+
+    // Only an end: everything before it.
+    const before = await memorySearch.run({ to_date: to });
+    expect(memorySearchCalls().at(-1)).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from: '', to, limit: 20, ignoreDate: false });
+    expect(shownTimestamps(before)).toEqual(rows.slice(2, 7).map((r) => r.dateMs));
+    expect(before.totalItems).toBe(10);
+
+    // Each range was its own listing, not page one of another.
+    expect(memorySearchCalls()).toHaveLength(3);
   });
 
   it('sends memorySearch message to FTS backend', async () => {
