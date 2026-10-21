@@ -9,7 +9,7 @@
 // chat/modules/chatConfig.js, chat/modules/helpers.js, and various other
 // modules. We mock all browser-dependent modules and set up globalThis.browser.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // globalThis.browser mock
@@ -1050,6 +1050,56 @@ describe('TB-069: memory_search handler logic', () => {
     const name = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const listed = (await listAll({ from_date: name, to_date: name })).flatMap(shownTimestamps);
     expect(listed).toEqual([rows[3], rows[2], rows[1]].map((r) => r.dateMs));
+  });
+
+  // A day is the whole local day however long daylight saving makes it: 23 or
+  // 25 hours, or starting at 01:00 where midnight is skipped.
+  describe('a local day across daylight saving', () => {
+    let savedZone;
+    beforeEach(() => { savedZone = process.env.TZ; });
+    afterEach(() => {
+      if (savedZone === undefined) delete process.env.TZ;
+      else process.env.TZ = savedZone;
+    });
+
+    // The next day in `zone` lasting `hours` that does (or doesn't) start after midnight.
+    function transitionDay(zone, hours, skipsMidnight) {
+      process.env.TZ = zone;
+      const today = new Date();
+      for (let i = 0; i < 800; i += 1) {
+        const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
+        const next = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+        if ((next.getTime() - start.getTime()) / HOUR === hours && (start.getHours() !== 0) === skipsMidnight) return [start, next];
+      }
+      throw new Error(`no ${hours}-hour day in ${zone}`);
+    }
+
+    it.each([
+      ['America/Vancouver', 23, false],
+      ['America/Vancouver', 25, false],
+      ['America/Santiago', 23, true],
+    ])('lists exactly a day in %s of %s hours (midnight skipped: %s)', async (zone, hours, skipsMidnight) => {
+      const [start, next] = transitionDay(zone, hours, skipsMidnight);
+      const rows = helperWithRows([
+        { memId: 'before', dateMs: start.getTime() - 1 },
+        { memId: 'start', dateMs: start.getTime() },
+        { memId: 'inside', dateMs: start.getTime() + 12 * HOUR },
+        { memId: 'end', dateMs: next.getTime() - 1 },
+        { memId: 'after', dateMs: next.getTime() },
+      ].map((r) => ({ ...r, content: `[USER]: ${r.memId}`, snippet: null })));
+      const name = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+      const listed = (await listAll({ from_date: name, to_date: name })).flatMap(shownTimestamps);
+      expect(listed).toEqual([rows[3], rows[2], rows[1]].map((r) => r.dateMs));
+    });
+  });
+
+  // An empty memory lists nothing and says no more pages follow.
+  it('ends an empty listing on its first page', async () => {
+    helperWithRows([]);
+    const result = await memorySearch.run({});
+    expect(memorySearchCalls().length).toBeGreaterThan(0);
+    expect(result).toMatchObject({ results: 'No relevant memories found for this query.', totalItems: 0, totalPages: 1 });
+    expect(result.comment).toBeUndefined();
   });
 
   // A full timestamp bounds to the millisecond.
