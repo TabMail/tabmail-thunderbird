@@ -17,12 +17,19 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   reply grows with the rows asked for. native-fts ADR-NF-006 already designs its folder membership
   summary under this cap.
 - **The rule.** Size every helper request that returns full rows so its reply stays well under 1 MiB.
-  The no-query `memory_search` listing fetches at most `CHAT_SETTINGS.memoryListMaxResults` (100, five
-  pages) instead of the search prefetch (2000), pinned by `test/memoryListingTransport.test.js` (TB-069),
-  which runs the production settings against a fake helper that refuses an over-cap reply.
-- **Still open (not in this change).** A row-count bound is not a byte bound: 100 very large rows (the
-  older whole-session rows) can still pass the cap. The query path's prefetch (up to 2000 full rows,
-  relevance-filtered) and Chat History's "delete old" listing (`q: ""`, 500 rows) carry the same
-  exposure. A byte-safe reply would need the shared helper to return previews or byte-bounded pages.
+  The no-query `memory_search` listing is fetched a few turns at a time
+  (`CHAT_SETTINGS.memoryListFetchRows`, 5, independent of the 20-turn page): each request asks for
+  the newest turns no newer than the last one listed (`to` = its `dateMs`, inclusive, in ms), skips
+  those already listed at that millisecond by `memId`, and takes one extra turn to know whether more
+  follow. Pinned by `test/memoryListingTransport.test.js` (TB-069), which runs the production
+  settings against a fake helper that refuses an over-cap reply, including 300 whole sessions of
+  100 KB listed six pages deep. *(Superseded 2026-10-20: the first fix fetched at most
+  `memoryListMaxResults` (100) rows in one reply; a row-count bound is not a byte bound, so it was
+  replaced by the paged fetch on the owner's "shouldn't we be doing pagination?")*
+- **Still open (not in this change).** A reply of 6 turns still passes the cap if those turns average
+  ~170 KB (very long whole-session rows). The query path's prefetch (up to 2000 full rows,
+  relevance-filtered) and Chat History's "delete old" listing (`q: ""`, 500 rows) carry the larger
+  exposure; ranked results cannot use the date cursor, so paging them needs an `offset` (or previews)
+  in the shared helper, an owner call.
 - **Not on other clients.** Voice reads the helper's replies over its own pipe with no such cap, and
   iOS reads its own database.
