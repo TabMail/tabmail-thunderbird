@@ -4,11 +4,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryIndex, mockNativeMemoryTrim, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
+const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryIndex, mockNativeMemorySearch, mockNativeMemoryTrim, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
   mockGetAttachmentFlags: vi.fn(),
   mockIndexMessages: vi.fn(),
   mockLog: vi.fn(),
   mockNativeMemoryIndex: vi.fn(),
+  mockNativeMemorySearch: vi.fn(),
   mockNativeMemoryTrim: vi.fn(),
   mockNativeOptimize: vi.fn(),
   mockRebuildEmbeddings: vi.fn(),
@@ -58,6 +59,7 @@ vi.mock('../fts/nativeEngine.js', () => ({
   },
   nativeMemorySearch: {
     indexBatch: (...args) => mockNativeMemoryIndex(...args),
+    search: (...args) => mockNativeMemorySearch(...args),
     trim: (...args) => mockNativeMemoryTrim(...args),
   },
 }));
@@ -140,6 +142,7 @@ beforeEach(() => {
   _resetFtsOperationCoordinatorForTests();
   mockNativeOptimize.mockReset();
   mockNativeMemoryIndex.mockReset();
+  mockNativeMemorySearch.mockReset();
   mockNativeMemoryTrim.mockReset();
   mockRebuildEmbeddings.mockReset();
   mockIndexMessages.mockResolvedValue({
@@ -405,6 +408,22 @@ describe('attachment flags command', () => {
 
     runtimeListener({ type: 'fts', cmd: 'getAttachmentFlags', msgIds: ['account1:/INBOX:a@example.com'] }, {}, sendResponse);
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ error: 'Unknown method: getAttachmentFlags' }));
+  });
+});
+
+// The chat memory_search tool sends its search through this command; the
+// preview length it asks must reach the helper.
+describe('memory search command', () => {
+  it('passes the search, with its preview length, to the helper and answers its rows', async () => {
+    const rows = [{ memId: 'turn:1', dateMs: 1, content: '[USER]: hi', snippet: null }];
+    mockNativeMemorySearch.mockResolvedValueOnce(rows);
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+    const sendResponse = vi.fn();
+
+    runtimeListener({ type: 'fts', cmd: 'memorySearch', q: '', from: '', to: '', limit: 6, ignoreDate: true, previewChars: 400 }, {}, sendResponse);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith(rows));
+    expect(mockNativeMemorySearch).toHaveBeenCalledWith('', { from: '', to: '', limit: 6, ignoreDate: true, previewChars: 400 });
   });
 });
 

@@ -326,8 +326,8 @@ function attachCommandInterface() {
             }
             // Memory database commands (separate from email FTS)
             case "memorySearch": {
-              const { q, from, to, limit, ignoreDate } = msg;
-              const result = await memorySearch.search(q, { from, to, limit, ignoreDate });
+              const { q, from, to, limit, ignoreDate, previewChars } = msg;
+              const result = await memorySearch.search(q, { from, to, limit, ignoreDate, previewChars });
               log(`[FTS Engine] Memory search completed, returning ${Array.isArray(result) ? result.length : 'non-array'} results`);
               sendResponse(result);
               return;
@@ -783,9 +783,9 @@ export const memorySearch = {
   },
 
   async search(query, options = {}) {
-    const { from, to, limit, ignoreDate } = options;
+    const { from, to, limit, ignoreDate, previewChars } = options;
     log(`[TMDBG Memory] search called: "${query}" from=${from || '-'} to=${to || '-'}`);
-    return await nativeMemorySearch.search(query, { from, to, limit, ignoreDate });
+    return await nativeMemorySearch.search(query, { from, to, limit, ignoreDate, previewChars });
   },
 
   async stats() {

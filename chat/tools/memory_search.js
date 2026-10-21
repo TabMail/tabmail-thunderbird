@@ -63,6 +63,11 @@ function dateBoundMs(text, end) {
   return Number.isNaN(ms) ? null : ms;
 }
 
+/** Characters shown of each turn, and asked of the helper (memoryPreviewChars). */
+function previewChars() {
+  return Math.max(1, Number(CHAT_SETTINGS.memoryPreviewChars) || 1);
+}
+
 /**
  * One memorySearch request to the helper. Retries while no listener answers
  * (FTS engine not yet initialized / hot-reload race); a real result, an empty
@@ -103,6 +108,7 @@ async function requestMemory({ q, from, to, limit }) {
           to: to ?? "",
           limit,
           ignoreDate,
+          previewChars: previewChars(),
         });
       } catch (sendErr) {
         // Thrown sendMessage (no receiving end yet) == not ready: retry
@@ -190,15 +196,7 @@ export async function run(args = {}, options = {}) {
     if (!searchSessions[sKey]) {
       log(`[TMDBG Tools] memory_search: using memory FTS backend (new session)`);
       if (rawQuery) {
-        const prefetchPages = Math.max(
-          1,
-          Number(CHAT_SETTINGS.searchPrefetchPagesDefault) || 4
-        );
-        const prefetchMax = Math.max(
-          1,
-          Number(CHAT_SETTINGS.searchPrefetchMaxResults) || 200
-        );
-        const fetchLimit = Math.min(pageSize * prefetchPages, prefetchMax);
+        const fetchLimit = Math.max(1, Number(CHAT_SETTINGS.memorySearchMaxResults) || 1);
         const result = await requestMemory({ q: rawQuery, from: fromMs, to: toMs, limit: fetchLimit });
         if (result.error) return { error: result.error };
         // Memory results are already sorted by date DESC, rank ASC from native host
@@ -279,7 +277,7 @@ export async function run(args = {}, options = {}) {
               })
             : "";
           // Use snippet if available (highlighted matches), otherwise truncate content
-          const text = item.snippet || (item.content || "").slice(0, 400);
+          const text = item.snippet || (item.content || "").slice(0, previewChars());
           // Return timestamp as the key for memory_read
           return `${globalIdx}. [timestamp: ${timestamp}] ${date}\n${text}`;
         })

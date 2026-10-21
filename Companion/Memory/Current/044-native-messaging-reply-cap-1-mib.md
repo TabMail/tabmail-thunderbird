@@ -26,10 +26,26 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   100 KB listed six pages deep. *(Superseded 2026-10-20: the first fix fetched at most
   `memoryListMaxResults` (100) rows in one reply; a row-count bound is not a byte bound, so it was
   replaced by the paged fetch on the owner's "shouldn't we be doing pagination?")*
-- **Still open (not in this change).** A reply of 6 turns still passes the cap if those turns average
-  ~170 KB (very long whole-session rows). The query path's prefetch (up to 2000 full rows,
-  relevance-filtered) and Chat History's "delete old" listing (`q: ""`, 500 rows) carry the larger
-  exposure; ranked results cannot use the date cursor, so paging them needs an `offset` (or previews)
-  in the shared helper, an owner call.
+- **Previews (owner, 2026-10-20: "Helper previews").** A reply of 6 whole turns still passed the cap
+  when they averaged ~170 KB, and a query search asked for 2000 whole rows. native-fts `memorySearch`
+  now takes `previewChars` (ADR-NF-012): each result's `content` and `snippet` come back cut to that
+  many characters; stored rows stay whole and `memory_read` still returns the whole exchange.
+  `memory_search` asks for the 400 characters it shows (`CHAT_SETTINGS.memoryPreviewChars`), on the
+  listing and on a search, through `fts/engine.js` and `nativeEngine.js`.
+- **Query cap (owner, 2026-10-20: "Top 100 matches").** A search fetches its 100 best matches
+  (`CHAT_SETTINGS.memorySearchMaxResults`) in one request, 5 pages of 20, in place of the email
+  search's prefetch (2000). Ranked results cannot use the date cursor, so a search is not paged
+  through the helper. 100 previews of 400 characters (content and snippet) stay far under 1 MiB.
+- **Older helper.** A helper without `previewChars` ignores it and returns whole rows, as before;
+  Thunderbird updates its helper itself on connect (no `MIN_HOST_VERSION` change). Until that update,
+  a reply of very long rows can still pass the cap.
+- **Pinned** by `test/memoryListingTransport.test.js` (production settings; the fake cuts to
+  `previewChars` and refuses an over-cap reply; listings up to 200 sessions of 200 KB, searches of
+  3000 matching 1 KB exchanges and 200 matching 200 KB sessions), `test/chatTools.test.js` (the
+  request shape), `test/nativeOptimizeContract.test.js` (the background command) and
+  `test/memorySizeLimit.test.js` (the native wire).
+- **Still open (not in this change).** Chat History's search (`limit: 200`, shows each row's whole
+  content) and its "delete old" listing (`q: ""`, `limit: 500`, uses only `memId` and `dateMs`) still
+  ask for whole rows; issue #147.
 - **Not on other clients.** Voice reads the helper's replies over its own pipe with no such cap, and
   iOS reads its own database.

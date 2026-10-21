@@ -167,6 +167,17 @@ async function initializedMemory({ capabilities, stored = {}, memoryResults, mem
 
 const ROWS = [{ memId: 'turn:1', role: 'session', content: '[USER]: hi', sessionId: 'persistent_chat', turnIndex: 0, dateMs: 1 }];
 
+describe('native memory search wire', () => {
+  it('asks the helper for previews when the caller gives a length, and whole rows when not', async () => {
+    const { nativeMemorySearch, port } = await initializedMemory({ memoryResults: { memorySearch: [] } });
+    await nativeMemorySearch.search('trip', { limit: 100, ignoreDate: true, previewChars: 400 });
+    await nativeMemorySearch.search('trip', { limit: 100, ignoreDate: true });
+    const [previewed, whole] = port.messages.filter(m => m.method === 'memorySearch').map(m => JSON.parse(JSON.stringify(m.params)));
+    expect(previewed).toEqual({ q: 'trip', limit: 100, ignoreDate: true, previewChars: 400 });
+    expect(whole).toEqual({ q: 'trip', limit: 100, ignoreDate: true });
+  });
+});
+
 describe('native memory size limit wire', () => {
   it('sends the stored limit with every memory write to a helper that advertises it', async () => {
     const { nativeMemorySearch, port } = await initializedMemory({

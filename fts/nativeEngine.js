@@ -1209,8 +1209,8 @@ export const nativeMemorySearch = {
   },
   
   async search(query, options = {}) {
-    const { from, to, limit = 50, ignoreDate = false } = options;
-    return nativeRPC('memorySearch', { q: query, from, to, limit, ignoreDate });
+    const { from, to, limit = 50, ignoreDate = false, previewChars } = options;
+    return nativeRPC('memorySearch', { q: query, from, to, limit, ignoreDate, previewChars });
   },
   
   async stats() {

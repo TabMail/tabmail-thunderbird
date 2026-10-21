@@ -164,6 +164,8 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
     searchPrefetchPagesDefault: 4,
     searchPrefetchMaxResults: 200,
     memoryListFetchRows: 2,
+    memorySearchMaxResults: 15,
+    memoryPreviewChars: 400,
     inboxPageSizeDefault: 10,
     inboxPageSizeMax: 50,
     createEventDefaultDurationMinutes: 60,
@@ -968,7 +970,7 @@ describe('TB-069: memory_search handler logic', () => {
 
     const first = await memorySearch.run(args);
     expect(first).not.toHaveProperty('error');
-    expect(memorySearchCalls()[0]).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from: '', to: '', limit: FETCH_ROWS + 1, ignoreDate: true });
+    expect(memorySearchCalls()[0]).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from: '', to: '', limit: FETCH_ROWS + 1, ignoreDate: true, previewChars: 400 });
     expect(first.page).toBe(1);
     expect(shownTimestamps(first)).toEqual(newest.slice(0, 5));
     // The helper gives no snippet for an empty query: the conversation shows.
@@ -1021,7 +1023,7 @@ describe('TB-069: memory_search handler logic', () => {
     const to = rows[2].dateMs + HOUR;
 
     const window = await memorySearch.run({ from_date: iso(from), to_date: iso(to) });
-    expect(memorySearchCalls()[0]).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from, to, limit: FETCH_ROWS + 1, ignoreDate: false });
+    expect(memorySearchCalls()[0]).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from, to, limit: FETCH_ROWS + 1, ignoreDate: false, previewChars: 400 });
     expect(shownTimestamps(window)).toEqual(rows.slice(2, 6).map((r) => r.dateMs));
     expect(window.totalItems).toBe(4);
 
@@ -1162,7 +1164,7 @@ describe('TB-069: memory_search handler logic', () => {
     const search = await memorySearch.run({ query: 'vacation' });
     const listAgain = await memorySearch.run({});
 
-    expect(memorySearchCalls().filter((m) => m.q === 'vacation').map((m) => m.limit)).toEqual([20]);
+    expect(memorySearchCalls().filter((m) => m.q === 'vacation').map((m) => m.limit)).toEqual([15]);
     expect(shownTimestamps(list)).toEqual(rows.slice(0, 5).map((r) => r.dateMs));
     expect(list.results).not.toContain('vacation');
     expect(search.totalItems).toBe(1);
@@ -1178,6 +1180,18 @@ describe('TB-069: memory_search handler logic', () => {
     browser.runtime.sendMessage.mockImplementation(async (msg) => (msg?.cmd === 'memorySearch' && msg.q === '' ? [{ memId: 'one', dateMs: Date.now() - HOUR, content, snippet: null }] : null));
     const listed = await memorySearch.run({});
     expect(String(listed.results).split('\n').slice(1).join('\n')).toBe(content.slice(0, 400));
+  });
+
+  // A search asks once for its best matches (memorySearchMaxResults), each cut
+  // to what the tool shows, and pages them from that.
+  it('asks once for the best matches of a search, each cut to what is shown', async () => {
+    const now = Date.now();
+    const matches = Array.from({ length: 15 }, (_, i) => ({ memId: `s${i}`, dateMs: now - (i + 1) * HOUR, content: `[USER]: trip ${i}`, snippet: `[trip] ${i}` }));
+    browser.runtime.sendMessage.mockImplementation(async (msg) => (msg?.cmd === 'memorySearch' ? matches.slice(0, msg.limit) : null));
+    const pages = await listAll({ query: 'trip' });
+    expect(memorySearchCalls().map(({ q, limit, previewChars }) => ({ q, limit, previewChars }))).toEqual([{ q: 'trip', limit: 15, previewChars: 400 }]);
+    expect(pages.flatMap(shownTimestamps)).toEqual(matches.map((m) => m.dateMs));
+    expect(pages.at(-1)).toMatchObject({ totalPages: 3, totalItems: 15 });
   });
 
   it('sends memorySearch message to FTS backend', async () => {
