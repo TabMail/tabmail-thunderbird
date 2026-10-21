@@ -63,6 +63,11 @@ function dateBoundMs(text, end) {
   return Number.isNaN(ms) ? null : ms;
 }
 
+/** The most turns one search gives, a listing too (memorySearchMaxResults). */
+function searchMax() {
+  return Math.max(1, Number(CHAT_SETTINGS.memorySearchMaxResults) || 1);
+}
+
 /** Characters shown of each turn, and asked of the helper (memoryPreviewChars). */
 function previewChars() {
   return Math.max(1, Number(CHAT_SETTINGS.memoryPreviewChars) || 1);
@@ -152,8 +157,9 @@ async function requestMemory({ q, from, to, limit }) {
  * than (or as old as) the last one listed, skipping those already listed at that
  * same millisecond, and one more to tell whether any follow. A few turns per
  * request keep a reply far below the 1 MiB that Thunderbird allows one native
- * message (an over-cap reply disconnects the helper). Returns an error message,
- * or null.
+ * message (an over-cap reply disconnects the helper). A listing ends at
+ * `searchMax()` turns, as a search does, so a far page asked for never lists the
+ * whole memory. Returns an error message, or null.
  */
 async function fetchListingRows(session) {
   const { hits, from, to } = session;
@@ -167,13 +173,14 @@ async function fetchListingRows(session) {
   const result = await requestMemory({
     q: "",
     from,
-    to: cursor === null ? to : to === null ? cursor : Math.min(to, cursor),
+    to: cursor === null ? to : cursor,
     limit,
   });
   if (result.error) return result.error;
   const fresh = result.hits.filter((h) => !listedAtCursor.has(h.memId));
-  hits.push(...fresh.slice(0, rows));
-  if (fresh.length <= rows) session.done = true;
+  const max = searchMax();
+  hits.push(...fresh.slice(0, Math.min(rows, max - hits.length)));
+  if (fresh.length <= rows || hits.length >= max) session.done = true;
   return null;
 }
 
@@ -196,10 +203,10 @@ export async function run(args = {}, options = {}) {
     if (!searchSessions[sKey]) {
       log(`[TMDBG Tools] memory_search: using memory FTS backend (new session)`);
       if (rawQuery) {
-        const fetchLimit = Math.max(1, Number(CHAT_SETTINGS.memorySearchMaxResults) || 1);
+        const fetchLimit = searchMax();
         const result = await requestMemory({ q: rawQuery, from: fromMs, to: toMs, limit: fetchLimit });
         if (result.error) return { error: result.error };
-        // Memory results are already sorted by date DESC, rank ASC from native host
+        // Memory results come ranked by the native host, best first
         let hits = result.hits;
         if (hits.length > fetchLimit) {
           log(

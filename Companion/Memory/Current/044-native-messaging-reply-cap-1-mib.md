@@ -36,13 +36,19 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   (`CHAT_SETTINGS.memorySearchMaxResults`) in one request, 5 pages of 20, in place of the email
   search's prefetch (2000). Ranked results cannot use the date cursor, so a search is not paged
   through the helper. 100 previews of 400 characters (content and snippet) stay far under 1 MiB.
+- **A listing ends there too (2026-10-21, review).** The listing stops at
+  `memorySearchMaxResults` turns, as a search does, so `page_index` far past the end lists at most
+  100 turns (20 requests) and answers with the last page, not the whole memory one request at a
+  time. Once it has ended it gives `totalPages` and `totalItems`.
 - **Older helper.** A helper without `previewChars` ignores it and returns whole rows, as before;
   Thunderbird updates its helper itself on connect (no `MIN_HOST_VERSION` change). Until that update,
   a reply of very long rows can still pass the cap.
 - **Pinned** by `test/memoryListingTransport.test.js` (production settings; the fake cuts to
   `previewChars` and refuses an over-cap reply; listings up to 200 sessions of 200 KB, searches of
-  3000 matching 1 KB exchanges and 200 matching 200 KB sessions), `test/chatTools.test.js` (the
-  request shape), `test/nativeOptimizeContract.test.js` (the background command) and
+  3000 matching 1 KB exchanges and 200 matching 200 KB sessions; against an older helper that
+  returns whole rows, listings of 3000 exchanges of 1 KB and 300 sessions of 100 KB and a search of
+  3000 matching 1 KB exchanges), `test/chatTools.test.js` (the request shape, the listing ending at
+  `memorySearchMaxResults`), `test/nativeOptimizeContract.test.js` (the background command) and
   `test/memorySizeLimit.test.js` (the native wire).
 - **Still open (not in this change).** Chat History's search (`limit: 200`, shows each row's whole
   content) and its "delete old" listing (`q: ""`, `limit: 500`, uses only `memId` and `dateMs`) still

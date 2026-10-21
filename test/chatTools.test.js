@@ -922,20 +922,23 @@ describe('TB-069: memory_search handler logic', () => {
   // helper for the most recent conversations and pages them like any search,
   // fetching them a few at a time (memoryListFetchRows, 2 here; pages of 5).
   // The fake below answers as the native helper does for an empty q: every
-  // row newest first (rows of one millisecond in no set order), no snippet,
-  // within from/to (ms or ISO) unless ignoreDate, at most limit rows.
+  // row newest first (rows of one millisecond in no set order: here in the
+  // other order on every request), no snippet, within from/to (ms or ISO)
+  // unless ignoreDate, at most limit rows.
   const HOUR = 3_600_000;
   const FETCH_ROWS = 2;
   function helperWithRows(rows) {
     const bound = (v, open) => (v === '' || v === null || v === undefined ? open : typeof v === 'number' ? v : Date.parse(v));
+    let requests = 0;
     browser.runtime.sendMessage.mockImplementation(async (msg) => {
       if (msg?.type !== 'fts' || msg?.cmd !== 'memorySearch') return null;
       if (msg.q !== '') return [];
       const from = msg.ignoreDate ? -Infinity : bound(msg.from, -Infinity);
       const to = msg.ignoreDate ? Infinity : bound(msg.to, Infinity);
+      const ties = (requests++ % 2 === 0 ? 1 : -1);
       return rows
         .filter((r) => r.dateMs >= from && r.dateMs <= to)
-        .sort((a, b) => b.dateMs - a.dateMs || (a.memId < b.memId ? 1 : -1))
+        .sort((a, b) => b.dateMs - a.dateMs || (a.memId < b.memId ? ties : -ties))
         .slice(0, msg.limit)
         .map((r) => ({ ...r }));
     });
@@ -972,6 +975,9 @@ describe('TB-069: memory_search handler logic', () => {
     expect(first).not.toHaveProperty('error');
     expect(memorySearchCalls()[0]).toEqual({ type: 'fts', cmd: 'memorySearch', q: '', from: '', to: '', limit: FETCH_ROWS + 1, ignoreDate: true, previewChars: 400 });
     expect(first.page).toBe(1);
+    // How many there are is known only once all are listed.
+    expect(first).not.toHaveProperty('totalPages');
+    expect(first).not.toHaveProperty('totalItems');
     expect(shownTimestamps(first)).toEqual(newest.slice(0, 5));
     // The helper gives no snippet for an empty query: the conversation shows.
     expect(first.results).toContain('[USER]: request 0');
@@ -997,8 +1003,30 @@ describe('TB-069: memory_search handler logic', () => {
     expect(memorySearchCalls()).toHaveLength(before);
   });
 
+  // A page past a listing's end is its last page, with the totals.
+  it('answers a page past the end of a listing with its last page', async () => {
+    const rows = helperWithConversations(12);
+    const past = await memorySearch.run({ page_index: 99 });
+    expect(past).toMatchObject({ page: 3, totalPages: 3, totalItems: 12 });
+    expect(past).not.toHaveProperty('comment');
+    expect(shownTimestamps(past)).toEqual(rows.slice(10).map((r) => r.dateMs));
+  });
+
+  // A listing ends where a search does (memorySearchMaxResults, 15 here): a far
+  // page asked for lists the newest that many, a few at a time, never the whole
+  // memory.
+  it('lists at most a search\'s worth of turns for a far page', async () => {
+    const rows = helperWithConversations(40);
+    const far = await memorySearch.run({ page_index: 1e9 });
+    expect(far).toMatchObject({ page: 3, totalPages: 3, totalItems: 15 });
+    expect(far).not.toHaveProperty('comment');
+    expect(shownTimestamps(far)).toEqual(rows.slice(10, 15).map((r) => r.dateMs));
+    expect(memorySearchCalls().length).toBeLessThanOrEqual(Math.ceil(15 / FETCH_ROWS) + 1);
+    expect(memorySearchCalls().every((m) => m.limit <= FETCH_ROWS + 2)).toBe(true);
+  });
+
   // Turns stamped in the same millisecond, on either side of a request's last
-  // turn, are each listed once.
+  // turn, are each listed once, whatever order the helper gives them in.
   it('lists every turn once when several share a millisecond', async () => {
     const now = Date.now();
     const rows = helperWithRows(Array.from({ length: 13 }, (_, i) => ({

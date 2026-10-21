@@ -88,7 +88,8 @@ export const CHAT_SETTINGS = {
   // since Thunderbird caps one native message at 1 MiB (an over-cap reply
   // disconnects the helper).
   memoryListFetchRows: 5,
-  // memory_search with a query: the best matches fetched, in one request.
+  // memory_search with a query: the best matches fetched, in one request. A
+  // listing (no query) ends at as many of the most recent turns.
   memorySearchMaxResults: 100,
   // memory_search: characters shown of each turn. The helper is asked to cut
   // what it returns to this (`previewChars`), so a reply of long turns stays
