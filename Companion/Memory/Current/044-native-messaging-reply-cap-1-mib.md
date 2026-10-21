@@ -43,6 +43,12 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
 - **Older helper.** A helper without `previewChars` ignores it and returns whole rows, as before;
   Thunderbird updates its helper itself on connect (no `MIN_HOST_VERSION` change). Until that update,
   a reply of very long rows can still pass the cap.
+  With a helper from before the dated-search and listing fixes (native-fts ADR-NF-012 amendment,
+  2026-10-21) two more effects hold until it updates: a dated query of 100 can lose in-range
+  matches (that helper keeps its best 100 before dropping those outside the dates; at 2000 its
+  vector search failed and it fell back to keyword-only, which kept them), and every listing request
+  reads the whole memory's content (1.5 to 4 s per request at 1 GB). **Release order:** native-fts
+  with that amendment ships before, or with, this Thunderbird change.
 - **Pinned** by `test/memoryListingTransport.test.js` (production settings; the fake cuts to
   `previewChars` and refuses an over-cap reply; listings up to 200 sessions of 200 KB, searches of
   3000 matching 1 KB exchanges and 200 matching 200 KB sessions; against an older helper that
