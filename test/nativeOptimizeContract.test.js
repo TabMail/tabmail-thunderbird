@@ -425,6 +425,29 @@ describe('memory search command', () => {
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith(rows));
     expect(mockNativeMemorySearch).toHaveBeenCalledWith('', { from: '', to: '', limit: 6, ignoreDate: true, previewChars: 400 });
   });
+
+  it('cuts a conversation only when a preview is asked for: Chat History gets it whole', async () => {
+    const content = '[USER]: ' + 'trip '.repeat(200) + 'END OF THE CONVERSATION';
+    const row = { memId: 'turn:1', dateMs: Date.now() - 60_000, sessionId: 'persistent_chat', content, snippet: 'trip' };
+    // Like the helper: the content is cut to the preview length only when one is sent.
+    mockNativeMemorySearch.mockImplementation(async (_q, options) => [
+      { ...row, content: options.previewChars ? content.slice(0, options.previewChars) : content },
+    ]);
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+
+    const toolResponse = vi.fn();
+    runtimeListener({ type: 'fts', cmd: 'memorySearch', q: 'trip', limit: 6, ignoreDate: true, previewChars: 400 }, {}, toolResponse);
+    await vi.waitFor(() => expect(toolResponse).toHaveBeenCalledTimes(1));
+    expect(toolResponse.mock.calls[0][0][0].content).toBe(content.slice(0, 400));
+
+    // Chat History's search sends no preview length.
+    const historyResponse = vi.fn();
+    runtimeListener({ type: 'fts', cmd: 'memorySearch', q: 'trip', limit: 200, ignoreDate: true }, {}, historyResponse);
+    await vi.waitFor(() => expect(historyResponse).toHaveBeenCalledTimes(1));
+    expect(historyResponse.mock.calls[0][0][0].content).toBe(content);
+    expect(historyResponse.mock.calls[0][0][0].content.endsWith('END OF THE CONVERSATION')).toBe(true);
+  });
 });
 
 // The Chat History tab applies a changed memory size limit through this
