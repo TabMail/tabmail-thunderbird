@@ -22,10 +22,8 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
     searchPageSizeMax: 500,
     searchPrefetchPagesDefault: 4,
     searchPrefetchMaxResults: 200,
+    memoryListFetchRows: 5,
   },
-}));
-vi.mock('../chat/modules/helpers.js', () => ({
-  toIsoNoMs: vi.fn((d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z')),
 }));
 
 const {

@@ -83,6 +83,18 @@ export const CHAT_SETTINGS = {
   searchPrefetchPagesDefault: 100,
   // Safety cap on total prefetched results for a single search session
   searchPrefetchMaxResults: 10000,
+  // memory_search with no query (a listing of the most recent conversations):
+  // turns per helper request. The listing is fetched in steps of this many,
+  // since Thunderbird caps one native message at 1 MiB (an over-cap reply
+  // disconnects the helper).
+  memoryListFetchRows: 5,
+  // memory_search with a query: the best matches fetched, in one request. A
+  // listing (no query) ends at as many of the most recent turns.
+  memorySearchMaxResults: 100,
+  // memory_search: characters shown of each turn. The helper is asked to cut
+  // what it returns to this (`previewChars`), so a reply of long turns stays
+  // far below the 1 MiB cap; a helper without that support returns them whole.
+  memoryPreviewChars: 400,
   // --- FTS backend readiness retry (chat tools) ---
   // When `browser.runtime.sendMessage({type:"fts", ...})` resolves to `undefined`,
   // no listener handled the message — typically because `initFtsEngine()` hasn't
