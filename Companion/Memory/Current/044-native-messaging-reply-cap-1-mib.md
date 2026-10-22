@@ -71,9 +71,28 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   `chatHistoryDeleteFetchRows` (500) a request, and removes each page as it comes; each request
   starts at the last date listed and skips the ids already listed there, so it ends even if a
   removal removes nothing. Pinned by `test/chatHistoryNativeCap.test.js` (TB-193).
-  Residual: one entry over 1 MiB on its own still passes the cap when read whole. The chat's
-  `memory_read` reads every entry within ±10 minutes whole (up to 50), so a few long ones pass
-  it with none over 1 MiB (issue #151). An older helper ignores `previewChars` and answers whole rows (500 a
+  Residual: one entry over 1 MiB on its own still passes the cap when read whole. An older helper ignores `previewChars` and answers whole rows (500 a
   request for "delete old", as before) until it updates.
+- **The chat's `memory_read` (2026-10-21, issue #151).** It asked the helper's `memoryRead` for
+  every entry within ±`tolerance_minutes` (10 by default), and the helper answered up to 50 of them
+  whole, oldest first, so a few long sessions near the timestamp passed the cap with none over 1 MiB.
+  It now lists the window newest first with the shortest preview
+  (`CHAT_SETTINGS.memoryReadListRows` 20 a request, `memoryReadListPreviewChars` 1; the date-cursor
+  and `memId` dedupe of the other listings), stops once `max_turns` entries at or before the
+  timestamp are listed (every later one is listed by then, and no centered slice reaches further
+  back), takes the `max_turns` centered on the nearest entry (at most `memoryReadMaxTurns`, 50, the
+  old read's own cap), and reads each whole by `memoryRead` at its millisecond (`toleranceMs` 0,
+  one request per millisecond, picked by `memId`; one removed since the listing is left out). A
+  dense window now centers on the timestamp too: the old read answered only the window's oldest 50.
+  A `max_turns` that is not a number gets 20 (it used to lift every bound). Each read at one
+  millisecond needs the helper to choose rows from `memory_meta` first: the shipped
+  `memory_read_by_timestamp` joined from `memory_fts` and so scanned the whole memory per read
+  (about 0.13 s at 1 GB, 20 reads 2.6 s), fixed by the native-fts change that picks the
+  read's rows from `memory_meta` first (branch `agent/nf-memory-read-meta-first`, ADR-NF-012 item 3);
+  that helper release goes before, or with, this change. Pinned by `test/memoryReadNativeCap.test.js`
+  (TB-194). Residuals: one entry over 1 MiB, or many
+  long ones written at one millisecond, still pass the cap when read whole (the helper reads by
+  date, not id); an older helper ignores `previewChars` and lists whole entries, 20 a request (it
+  read up to 50 before).
 - **Not on other clients.** Voice reads the helper's replies over its own pipe with no such cap, and
   iOS reads its own database.

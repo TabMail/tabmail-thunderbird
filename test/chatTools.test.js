@@ -47,9 +47,11 @@ globalThis.browser = {
       }
       // Memory search mock
       if (msg?.type === 'fts' && msg?.cmd === 'memorySearch') {
+        const day = Date.now() - 86400000;
+        const twoDays = Date.now() - 172800000;
         return [
-          { dateMs: Date.now() - 86400000, content: 'User: what is tabmail?\nAssistant: TabMail is an email client.', snippet: 'tabmail email client' },
-          { dateMs: Date.now() - 172800000, content: 'User: how do reminders work?\nAssistant: You can set reminders.', snippet: 'reminders work' },
+          { memId: `m${day}`, dateMs: day, content: 'User: what is tabmail?\nAssistant: TabMail is an email client.', snippet: 'tabmail email client' },
+          { memId: `m${twoDays}`, dateMs: twoDays, content: 'User: how do reminders work?\nAssistant: You can set reminders.', snippet: 'reminders work' },
         ];
       }
       // Memory read mock
@@ -58,8 +60,7 @@ globalThis.browser = {
           return { error: 'invalid timestamp' };
         }
         return [
-          { dateMs: msg.timestampMs, content: 'User: hello\nAssistant: hi there' },
-          { dateMs: msg.timestampMs + 1000, content: 'User: how are you?\nAssistant: doing well' },
+          { memId: `m${msg.timestampMs}`, dateMs: msg.timestampMs, content: 'User: hello\nAssistant: hi there' },
         ];
       }
       return undefined;
@@ -166,6 +167,9 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
     memoryListFetchRows: 2,
     memorySearchMaxResults: 15,
     memoryPreviewChars: 400,
+    memoryReadMaxTurns: 50,
+    memoryReadListRows: 20,
+    memoryReadListPreviewChars: 1,
     inboxPageSizeDefault: 10,
     inboxPageSizeMax: 50,
     createEventDefaultDurationMinutes: 60,
@@ -300,6 +304,7 @@ describe('TB-051: run() returns JSON-serializable result', () => {
     expect(serialized).toBeTruthy();
     // memory_read returns a formatted string on success
     expect(typeof result).toBe('string');
+    expect(result).toContain('Conversation from');
   });
 
   it('kb_add returns serializable result on success', async () => {
@@ -690,36 +695,62 @@ describe('TB-066: memory_read formats memory entries', () => {
     vi.clearAllMocks();
   });
 
+  // The window's entries for the listing (a preview each) and the reads (whole).
+  // A listing that never ends fails here rather than hanging the file.
+  function serveWindow(entries) {
+    const answer = browser.runtime.sendMessage.getMockImplementation();
+    let listings = 0;
+    browser.runtime.sendMessage.mockImplementation(async (msg) => {
+      if (msg?.cmd === 'memorySearch') {
+        if (++listings > 100) throw new Error('runaway: too many listings');
+        return entries
+          .filter((e) => e.dateMs >= msg.from && e.dateMs <= msg.to)
+          .sort((x, y) => y.dateMs - x.dateMs)
+          .slice(0, msg.limit)
+          .map((e) => ({ ...e, content: e.content.slice(0, msg.previewChars) }));
+      }
+      if (msg?.cmd === 'memoryRead') {
+        return entries.filter((e) => Math.abs(e.dateMs - msg.timestampMs) <= msg.toleranceMs);
+      }
+      return answer(msg);
+    });
+    return () => browser.runtime.sendMessage.mockImplementation(answer);
+  }
+
   it('formats entries with date headers', async () => {
-    const ts = new Date('2026-03-10T15:00:00Z').getTime();
+    const ts = Date.now() - 86400000;
+    const restore = serveWindow([
+      { memId: 'a', dateMs: ts, content: 'User: hello\nAssistant: hi there' },
+      { memId: 'b', dateMs: ts + 1000, content: 'User: how are you?\nAssistant: doing well' },
+    ]);
     const result = await memoryRead.run({ timestamp: ts });
+    restore();
     expect(typeof result).toBe('string');
-    expect(result).toContain('Conversation from');
-    expect(result).toContain('User: hello');
-    expect(result).toContain('Assistant: hi there');
+    expect(result.split('--- Conversation from')).toHaveLength(3);
+    expect(result).toContain('User: hello\nAssistant: hi there');
+    expect(result).toContain('User: how are you?\nAssistant: doing well');
   });
 
   it('returns message when no entries found', async () => {
-    // Override sendMessage to return empty array for this test
-    browser.runtime.sendMessage.mockResolvedValueOnce([]);
+    const restore = serveWindow([]);
     const result = await memoryRead.run({ timestamp: Date.now() });
+    restore();
     expect(typeof result).toBe('string');
     expect(result).toContain('No conversation found');
   });
 
   it('handles max_turns parameter', async () => {
-    // Return many entries
-    const ts = Date.now();
-    const manyEntries = Array.from({ length: 30 }, (_, i) => ({
+    const ts = Date.now() - 86400000;
+    const restore = serveWindow(Array.from({ length: 30 }, (_, i) => ({
+      memId: `t${i}`,
       dateMs: ts + i * 1000,
       content: `Turn ${i}`,
-    }));
-    browser.runtime.sendMessage.mockResolvedValueOnce(manyEntries);
+    })));
     const result = await memoryRead.run({ timestamp: ts, max_turns: 5 });
-    // Should only include 5 entries
-    const segments = result.split('--- Conversation from');
-    // First split element is empty string before first separator
-    expect(segments.length - 1).toBe(5);
+    restore();
+    // The five nearest the timestamp, oldest first.
+    const segments = result.split('--- Conversation from').slice(1);
+    expect(segments.map((s) => s.split('\n')[1])).toEqual(['Turn 0', 'Turn 1', 'Turn 2', 'Turn 3', 'Turn 4']);
   });
 
   it('returns error for backend failure', async () => {
