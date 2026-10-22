@@ -131,10 +131,10 @@ const search = async (page, query) => {
   page.d.getElementById('history-search-btn').click();
 };
 
-// What the page shows of an entry: its first 400 characters, and an ellipsis
-// when it goes on.
+// What the page shows of an entry: its first 400 characters (code points), and
+// an ellipsis when it goes on.
 const PREVIEW_CHARS = 400;
-const preview = e => ([...e.content].length >= PREVIEW_CHARS ? `${[...e.content].slice(0, PREVIEW_CHARS).join('')}…` : e.content);
+const preview = e => ([...e.content].length > PREVIEW_CHARS ? `${[...e.content].slice(0, PREVIEW_CHARS).join('')}…` : e.content);
 
 describe('TB-193: Chat History search and the native-messaging cap', () => {
   it('shows the start of 200 matching sessions of 200 KB, with every reply under the cap', async () => {
@@ -176,6 +176,37 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     await vi.waitFor(() => expect(page.shown()).toHaveLength(2));
     expect(page.shown()).toEqual([short.content, preview(long)]);
     expect(page.shown()[1]).toHaveLength(PREVIEW_CHARS + 1);
+  });
+
+  it('shows an entry of exactly 400 characters whole, and one of 401 cut with an ellipsis, counting characters not UTF-16 units', async () => {
+    const at = Date.now() - 60_000;
+    const make = (memId, content, offset) => ({ memId, sessionId: 's', role: 'exchange', content, dateMs: at - offset });
+    const exact = 'planning ' + 'a'.repeat(391);
+    const over = 'planning ' + 'b'.repeat(392);
+    // 400 emoji: 800 UTF-16 units, 400 characters.
+    const emoji = 'planning ' + '\u{1F600}'.repeat(391);
+    const emojiOver = 'planning ' + '\u{1F600}'.repeat(392);
+    const helper = fakeHelper([make('exact', exact, 0), make('over', over, 1), make('emoji', emoji, 2), make('emojiOver', emojiOver, 3)]);
+    const page = await openPage(helper);
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(4));
+    expect(page.shown()).toEqual([exact, `${over.slice(0, 400)}…`, emoji, `${[...emojiOver].slice(0, 400).join('')}…`]);
+  });
+
+  it('a new search opens on its first page', async () => {
+    const alpha = entriesOf(60, 10, Date.now() - 60_000, 'alpha');
+    const beta = entriesOf(40, 10, Date.now() - 30_000, 'beta');
+    const helper = fakeHelper([...alpha, ...beta]);
+    const page = await openPage(helper);
+    await search(page, 'alpha');
+    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 1 of 3'));
+    page.d.getElementById('history-next-page').click();
+    page.d.getElementById('history-next-page').click();
+    expect(page.pageInfo()).toBe('Page 3 of 3');
+    await search(page, 'beta');
+    await vi.waitFor(() => expect(page.label()).toContain('"beta" (40 results)'));
+    expect(page.pageInfo()).toBe('Page 1 of 2');
+    expect(page.shown()).toEqual(beta.slice(0, 20).map(preview));
   });
 
   it('a search that answers late does not show over a later one, nor change the pages it lists', async () => {

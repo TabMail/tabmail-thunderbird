@@ -1428,7 +1428,8 @@ button:focus-visible {
 }
 
 .history-search-result-content {
-  padding: 10px 14px;
+  /* Margin, not padding: a clamped box paints the next line in its padding. */
+  margin: 10px 14px;
   font-size: 13px;
   line-height: 1.5;
   white-space: pre-wrap;

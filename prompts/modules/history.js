@@ -100,7 +100,8 @@ export async function searchChatHistory(query) {
             q,
             limit: 200,
             ignoreDate: true,
-            previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars
+            // One more than shown, so an entry that goes on is told from one that ends there.
+            previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars + 1
         });
         if (search !== searchToken) return;
 
@@ -312,7 +313,7 @@ function previewText(content) {
     if (!content) return "(empty)";
     const chars = [...content];
     const max = SETTINGS.memoryManagement.chatHistorySearchPreviewChars;
-    return chars.length >= max ? `${chars.slice(0, max).join("")}…` : content;
+    return chars.length > max ? `${chars.slice(0, max).join("")}…` : content;
 }
 
 /**

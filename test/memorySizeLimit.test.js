@@ -177,7 +177,7 @@ describe('native memory search wire', () => {
     expect(whole).toEqual({ q: 'trip', limit: 100, ignoreDate: true });
   });
 
-  it('reads at exactly the millisecond asked when the tolerance is 0 (Chat History reads one entry)', async () => {
+  it('reads at exactly the millisecond asked when the tolerance is 0 (a caller reads one entry)', async () => {
     const { nativeMemorySearch, port } = await initializedMemory({ memoryResults: { memoryRead: [] } });
     const ts = Date.now() - 60_000;
     await nativeMemorySearch.read(ts, 0);
