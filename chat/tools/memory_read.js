@@ -88,8 +88,9 @@ export async function run(args = {}, options = {}) {
     const toleranceMs = toleranceMinutes > 0
       ? toleranceMinutes * 60 * 1000
       : DEFAULT_TOLERANCE_MS;
+    // A max_turns that is not a number gets the default, as iOS and Voice do.
     const maxTurns = Math.min(
-      args?.max_turns ? Math.max(1, Math.floor(Number(args.max_turns))) : 20,
+      (args?.max_turns ? Math.max(1, Math.floor(Number(args.max_turns))) : 20) || 20,
       CHAT_SETTINGS.memoryReadMaxTurns
     );
 

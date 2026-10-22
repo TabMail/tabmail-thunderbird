@@ -47,9 +47,11 @@ globalThis.browser = {
       }
       // Memory search mock
       if (msg?.type === 'fts' && msg?.cmd === 'memorySearch') {
+        const day = Date.now() - 86400000;
+        const twoDays = Date.now() - 172800000;
         return [
-          { dateMs: Date.now() - 86400000, content: 'User: what is tabmail?\nAssistant: TabMail is an email client.', snippet: 'tabmail email client' },
-          { dateMs: Date.now() - 172800000, content: 'User: how do reminders work?\nAssistant: You can set reminders.', snippet: 'reminders work' },
+          { memId: `m${day}`, dateMs: day, content: 'User: what is tabmail?\nAssistant: TabMail is an email client.', snippet: 'tabmail email client' },
+          { memId: `m${twoDays}`, dateMs: twoDays, content: 'User: how do reminders work?\nAssistant: You can set reminders.', snippet: 'reminders work' },
         ];
       }
       // Memory read mock
@@ -302,6 +304,7 @@ describe('TB-051: run() returns JSON-serializable result', () => {
     expect(serialized).toBeTruthy();
     // memory_read returns a formatted string on success
     expect(typeof result).toBe('string');
+    expect(result).toContain('Conversation from');
   });
 
   it('kb_add returns serializable result on success', async () => {
@@ -693,10 +696,13 @@ describe('TB-066: memory_read formats memory entries', () => {
   });
 
   // The window's entries for the listing (a preview each) and the reads (whole).
+  // A listing that never ends fails here rather than hanging the file.
   function serveWindow(entries) {
     const answer = browser.runtime.sendMessage.getMockImplementation();
+    let listings = 0;
     browser.runtime.sendMessage.mockImplementation(async (msg) => {
       if (msg?.cmd === 'memorySearch') {
+        if (++listings > 100) throw new Error('runaway: too many listings');
         return entries
           .filter((e) => e.dateMs >= msg.from && e.dateMs <= msg.to)
           .sort((x, y) => y.dateMs - x.dateMs)

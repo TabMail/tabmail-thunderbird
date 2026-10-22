@@ -84,7 +84,12 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   old read's own cap), and reads each whole by `memoryRead` at its millisecond (`toleranceMs` 0,
   one request per millisecond, picked by `memId`; one removed since the listing is left out). A
   dense window now centers on the timestamp too: the old read answered only the window's oldest 50.
-  Pinned by `test/memoryReadNativeCap.test.js` (TB-194). Residuals: one entry over 1 MiB, or many
+  A `max_turns` that is not a number gets 20 (it used to lift every bound). Each read at one
+  millisecond needs the helper to choose rows from `memory_meta` first: the shipped
+  `memory_read_by_timestamp` joined from `memory_fts` and so scanned the whole memory per read
+  (about 0.13 s at 1 GB, 20 reads 2.6 s), fixed in native-fts with the listing's `CROSS JOIN`;
+  that release goes before, or with, this change. Pinned by `test/memoryReadNativeCap.test.js`
+  (TB-194). Residuals: one entry over 1 MiB, or many
   long ones written at one millisecond, still pass the cap when read whole (the helper reads by
   date, not id); an older helper ignores `previewChars` and lists whole entries, 20 a request (it
   read up to 50 before).

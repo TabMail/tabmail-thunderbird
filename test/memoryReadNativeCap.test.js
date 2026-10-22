@@ -31,7 +31,9 @@ function entry(id, anchorMs, offsetMs, chars = 10) {
   return { memId: id, sessionId: 'persistent_chat', role: 'exchange', content: `[USER]: ${'u'.repeat(chars)}\n\n[AGENT]: done ${id}`, dateMs: anchorMs + offsetMs };
 }
 
-function fakeHelper(entries, { previews = true } = {}) {
+// `shuffleTies`: entries sharing a millisecond come back in a new order each
+// request, as the helper gives no order among them.
+function fakeHelper(entries, { previews = true, shuffleTies = false } = {}) {
   const stored = [...entries];
   const replies = { overCap: 0, largest: 0, calls: [] };
   const reply = result => {
@@ -57,7 +59,9 @@ function fakeHelper(entries, { previews = true } = {}) {
             const to = msg.ignoreDate ? Infinity : bound(msg.to, Infinity);
             return reply(stored
               .filter(e => e.dateMs >= from && e.dateMs <= to)
-              .sort((a, b) => b.dateMs - a.dateMs)
+              .map(e => ({ e, tie: shuffleTies ? Math.random() : 0 }))
+              .sort((a, b) => b.e.dateMs - a.e.dateMs || a.tie - b.tie)
+              .map(({ e }) => e)
               .slice(0, msg.limit)
               .map(e => ({ ...e, content: cut(e.content, msg.previewChars), snippet: null, rank: 0 })));
           }
@@ -142,6 +146,41 @@ describe('TB-194: memory_read and the native-messaging cap', () => {
     // The 30 at one millisecond are read in one request.
     expect(helper.replies.calls.filter(m => m.cmd === 'memoryRead' && m.timestampMs === ts)).toHaveLength(1);
     expect(helper.replies.overCap).toBe(0);
+  });
+
+  it('lists each tied entry once whatever order the helper gives them in', async () => {
+    const ts = Date.now() - 86_400_000;
+    const entries = [
+      ...Array.from({ length: 15 }, (_, i) => entry(`after${i}`, ts, (i + 1) * 1000)),
+      ...Array.from({ length: 30 }, (_, i) => entry(`tie${i}`, ts, 0)),
+      ...Array.from({ length: 10 }, (_, i) => entry(`before${i}`, ts, -(i + 1) * 1000)),
+    ];
+    fakeHelper(entries, { shuffleTies: true });
+    for (let round = 0; round < 20; round++) {
+      const ids = shownIds(await run({ timestamp: ts, max_turns: 50 }));
+      expect(ids).toHaveLength(50);
+      expect(new Set(ids).size).toBe(50);
+    }
+  });
+
+  it('returns the newest max_turns when the timestamp is at the newest end of the window', async () => {
+    const ts = Date.now() - 86_400_000;
+    // 60 a second apart ending at the timestamp, and one a second after it.
+    fakeHelper([...Array.from({ length: 60 }, (_, i) => entry(`y${i}`, ts, -i * 1000)), entry('after', ts, 1000)]);
+    expect(shownIds(await run({ timestamp: ts, max_turns: 30 }))).toEqual([...Array.from({ length: 29 }, (_, i) => `y${28 - i}`), 'after']);
+    // None after it, and max_turns one more than a page of 20.
+    fakeHelper(Array.from({ length: 60 }, (_, i) => entry(`x${i}`, ts, -i * 1000)));
+    expect(shownIds(await run({ timestamp: ts, max_turns: 21 }))).toEqual(Array.from({ length: 21 }, (_, i) => `x${20 - i}`));
+  });
+
+  it('uses the default max_turns for one that is not a number', async () => {
+    const ts = Date.now() - 86_400_000;
+    const helper = fakeHelper(Array.from({ length: 300 }, (_, i) => entry(`n${i - 150}`, ts, (i - 150) * 1000)));
+    for (const max_turns of ['all', 'max', 'twenty', {}]) {
+      helper.replies.calls.length = 0;
+      expect(shownIds(await run({ timestamp: ts, max_turns }))).toEqual(Array.from({ length: 20 }, (_, i) => `n${i - 10}`));
+      expect(helper.replies.calls.filter(m => m.cmd === 'memoryRead')).toHaveLength(20);
+    }
   });
 
   it('leaves out an entry removed between the listing and its read', async () => {
