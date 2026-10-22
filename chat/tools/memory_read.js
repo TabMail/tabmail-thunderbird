@@ -19,7 +19,8 @@ const DEFAULT_TOLERANCE_MS = 600000;
  * preview); each page starts at the last date listed and skips the entries
  * already listed at it. Listing stops once `maxTurns` entries at or before the
  * timestamp are in: every entry after it is listed by then, and no centered
- * slice of `maxTurns` reaches further back.
+ * slice of `maxTurns` reaches an entry farther from it. (Entries sharing the
+ * timestamp's own millisecond can take more of the slice than older ones.)
  */
 async function listWindow(timestamp, toleranceMs, maxTurns) {
   const listed = [];

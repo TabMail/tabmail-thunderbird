@@ -87,8 +87,9 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   A `max_turns` that is not a number gets 20 (it used to lift every bound). Each read at one
   millisecond needs the helper to choose rows from `memory_meta` first: the shipped
   `memory_read_by_timestamp` joined from `memory_fts` and so scanned the whole memory per read
-  (about 0.13 s at 1 GB, 20 reads 2.6 s), fixed in native-fts with the listing's `CROSS JOIN`;
-  that release goes before, or with, this change. Pinned by `test/memoryReadNativeCap.test.js`
+  (about 0.13 s at 1 GB, 20 reads 2.6 s), fixed by the native-fts change that picks the
+  read's rows from `memory_meta` first (branch `agent/nf-memory-read-meta-first`, ADR-NF-012 item 3);
+  that helper release goes before, or with, this change. Pinned by `test/memoryReadNativeCap.test.js`
   (TB-194). Residuals: one entry over 1 MiB, or many
   long ones written at one millisecond, still pass the cap when read whole (the helper reads by
   date, not id); an older helper ignores `previewChars` and lists whole entries, 20 a request (it
