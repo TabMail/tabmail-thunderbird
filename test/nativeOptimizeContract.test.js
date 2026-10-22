@@ -453,8 +453,8 @@ describe('memory search command', () => {
   });
 });
 
-// Chat History reads each entry it shows through this command, at exactly its
-// millisecond: a tolerance of 0 must reach the helper as 0.
+// A caller can read one entry through this command at exactly its millisecond:
+// a tolerance of 0 must reach the helper as 0.
 describe('memory read command', () => {
   it('passes the timestamp and a tolerance of 0 to the helper and answers its rows', async () => {
     const ts = Date.now() - 60_000;

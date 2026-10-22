@@ -4,8 +4,8 @@
 
 /**
  * Chat History tab functionality
- * Default: shows recent turns from persistent chat store (chat_turns)
- * Search: queries Memory FTS, formats like memory_read output
+ * Default: shows the memory's size and an empty list
+ * Search: queries Memory FTS and shows a preview of each entry, as Voice does
  */
 
 import { log } from "../../agent/modules/utils.js";
@@ -18,6 +18,8 @@ const CHAT_TURNS_KEY = "chat_turns";
 const CHAT_META_KEY = "chat_meta";
 const CHAT_ID_MAP_KEY = "chat_id_map";
 const PAGE_SIZE = 20;
+// Said in place of a reply when a long request fills the preview.
+const PREVIEW_NO_REPLY_NOTE = "The rest is not shown: the request is too long to preview.";
 
 let displayData = []; // unified display list (turns or FTS results)
 let memoryFtsStats = null;
@@ -27,16 +29,9 @@ let currentPage = 1;
 let totalPages = 1;
 let currentSearchQuery = "";
 let isSearchMode = false;
-// A search or page change that finishes after a later one doesn't render
-// over it. A search is superseded by a later search or a reload; a page by any
-// later page (a search shows its first page) or a reload. A page change while
-// a search request is pending pages the results shown and leaves the search
-// be; one while the search reads its first page shows that search's page. A
-// reload's own render isn't checked: one that answers after a search started
-// can show that search's page before its reads finish (previews, replaced
-// when they do).
+// A search that answers after a later search or a reload doesn't render over
+// it. A page change while a search is pending pages the results shown.
 let searchToken = 0;
-let pageToken = 0;
 
 /**
  * Load chat history — shows stats + search bar only (no entries until search).
@@ -45,7 +40,6 @@ export async function loadChatHistory() {
     try {
         log("[Prompts] Loading chat history stats...");
         searchToken++;
-        pageToken++;
 
         // Reset search mode
         currentSearchQuery = "";
@@ -87,10 +81,9 @@ export async function loadChatHistory() {
 }
 
 /**
- * Search chat history using Memory FTS. The helper answers each result's id
- * and date with the shortest preview: Thunderbird refuses a native message
- * over 1 MiB, and memory entries are stored whole. The page then reads the
- * entries it shows (readWholeEntries).
+ * Search chat history using Memory FTS. The helper answers the start of each
+ * result (previewChars), which is what the page shows: Thunderbird refuses a
+ * native message over 1 MiB, and memory entries are stored whole.
  */
 export async function searchChatHistory(query) {
     if (!query || query.trim().length === 0) {
@@ -109,7 +102,8 @@ export async function searchChatHistory(query) {
             q,
             limit: 200,
             ignoreDate: true,
-            previewChars: SETTINGS.memoryManagement.chatHistoryPreviewChars
+            // One more than shown, so an entry that goes on is told from one that ends there.
+            previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars + 1
         });
         if (search !== searchToken) return;
 
@@ -119,52 +113,10 @@ export async function searchChatHistory(query) {
         displayData = Array.isArray(results) ? results : [];
         log(`[Prompts] Search returned ${displayData.length} results`);
 
-        await showPage(1);
+        renderChatHistory();
     } catch (e) {
         log(`[Prompts] Search failed: ${e}`, "error");
         showStatus("Search failed: " + e, true);
-    }
-}
-
-/**
- * Reads each entry whole, once: the search returned only a preview of it. An
- * entry is read at its own millisecond and picked by its id, so each reply
- * holds one entry (or the few written at that millisecond). One removed since
- * the search says so.
- */
-async function readWholeEntries(entries) {
-    await Promise.all(entries.filter(entry => !entry.whole).map(async entry => {
-        const rows = await browser.runtime.sendMessage({
-            type: "fts",
-            cmd: "memoryRead",
-            timestampMs: entry.dateMs,
-            toleranceMs: 0
-        });
-        if (!Array.isArray(rows)) {
-            throw new Error(rows?.error || "invalid memory read reply");
-        }
-        const row = rows.find(r => r.memId === entry.memId);
-        entry.content = row ? row.content : "(No longer in memory.)";
-        entry.whole = true;
-    }));
-}
-
-/**
- * Show a page of the search results, its entries read whole first.
- */
-async function showPage(page) {
-    const view = ++pageToken;
-    try {
-        const pages = Math.max(1, Math.ceil(displayData.length / PAGE_SIZE));
-        const target = Math.max(1, Math.min(page, pages));
-        const start = (target - 1) * PAGE_SIZE;
-        await readWholeEntries(displayData.slice(start, start + PAGE_SIZE));
-        if (view !== pageToken) return;
-        currentPage = target;
-        renderChatHistory();
-    } catch (e) {
-        log(`[Prompts] Loading the results failed: ${e}`, "error");
-        showStatus("Loading the results failed: " + e, true);
     }
 }
 
@@ -312,8 +264,8 @@ async function changeMemorySizeLimit(bytes) {
 }
 
 /**
- * Render FTS entries (used for both default and search views).
- * Each entry is a user+assistant exchange with clean rendered text.
+ * Render search results: each entry's preview as what was asked, then what
+ * the agent did.
  */
 function renderFtsEntries(container, entries) {
     if (isSearchMode) {
@@ -340,18 +292,65 @@ function renderFtsEntries(container, entries) {
         dateHeader.textContent = `Conversation from ${dateStr}`;
         entryDiv.appendChild(dateHeader);
 
-        // Content — with search highlight if in search mode
+        // What was asked, then what the agent did, as Voice shows them;
+        // search words highlighted.
         const contentDiv = document.createElement("div");
         contentDiv.className = "history-search-result-content";
-        if (isSearchMode && currentSearchQuery) {
-            contentDiv.innerHTML = highlightSearchTerms(entry.content || "(empty)", currentSearchQuery);
-        } else {
-            contentDiv.textContent = entry.content || "(empty)";
+        const { text: preview, cut } = previewText(entry.content);
+        let { request, agent } = exchangeOf(preview);
+        // The ellipsis goes on the last part shown, after the split: a cut
+        // just past the reply label leaves no reply (and the note), not "…".
+        if (cut) {
+            if (agent) agent += "…";
+            else request += "…";
+        }
+        for (const [text, className] of [[request, "history-search-result-request"], [agent, "history-search-result-reply"]]) {
+            if (!text) continue;
+            const part = document.createElement("div");
+            part.className = className;
+            if (isSearchMode && currentSearchQuery) {
+                part.innerHTML = highlightSearchTerms(text, currentSearchQuery);
+            } else {
+                part.textContent = text;
+            }
+            contentDiv.appendChild(part);
+        }
+        // A long request fills the preview before the reply starts: say so,
+        // rather than leave the reply looking empty (owner 2026-10-21).
+        if (cut && !agent) {
+            const note = document.createElement("div");
+            note.className = "history-search-result-reply history-search-result-note";
+            note.textContent = PREVIEW_NO_REPLY_NOTE;
+            contentDiv.appendChild(note);
         }
         entryDiv.appendChild(contentDiv);
 
         container.appendChild(entryDiv);
     }
+}
+
+/**
+ * The start of an entry, as the search asked for it (an older helper answers
+ * whole entries); `cut` says it goes on.
+ */
+function previewText(content) {
+    if (!content) return { text: "(empty)", cut: false };
+    const chars = [...content];
+    const max = SETTINGS.memoryManagement.chatHistorySearchPreviewChars;
+    return chars.length > max ? { text: chars.slice(0, max).join(""), cut: true } : { text: content, cut: false };
+}
+
+/**
+ * An entry split into what the user asked and what the agent did, as Voice
+ * splits it (`[USER]: …` then `[AGENT]: …`; `[ASSISTANT]` in entries written
+ * before v1.2.9). An entry with no request (a greeting, a nudge) is all reply;
+ * a preview cut before the reply is all request.
+ */
+function exchangeOf(text) {
+    const turn = /^\[USER\]: ([\s\S]*?)(?:\n\n\[(?:AGENT|ASSISTANT)\]: ([\s\S]*))?$/.exec(text);
+    if (turn) return { request: turn[1], agent: turn[2] ?? "" };
+    const reply = /^\[(?:AGENT|ASSISTANT)\]: ([\s\S]*)$/.exec(text);
+    return { request: "", agent: reply ? reply[1] : text };
 }
 
 /**
@@ -379,7 +378,8 @@ function updatePaginationControls() {
  */
 export function prevPage() {
     if (currentPage > 1) {
-        showPage(currentPage - 1);
+        currentPage--;
+        renderChatHistory();
     }
 }
 
@@ -388,7 +388,8 @@ export function prevPage() {
  */
 export function nextPage() {
     if (currentPage < totalPages) {
-        showPage(currentPage + 1);
+        currentPage++;
+        renderChatHistory();
     }
 }
 
@@ -571,7 +572,7 @@ async function deleteOldHistory(days) {
         // listed and skips the entries already listed at it.
         let ftsDeleted = 0;
         try {
-            const { chatHistoryDeleteFetchRows, chatHistoryPreviewChars } = SETTINGS.memoryManagement;
+            const { chatHistoryDeleteFetchRows, chatHistoryDeletePreviewChars } = SETTINGS.memoryManagement;
             let to = cutoffMs - 1;
             let listedAtCursor = new Set();
             while (true) {
@@ -583,7 +584,7 @@ async function deleteOldHistory(days) {
                     to,
                     limit,
                     ignoreDate: false,
-                    previewChars: chatHistoryPreviewChars
+                    previewChars: chatHistoryDeletePreviewChars
                 });
                 if (!Array.isArray(page)) {
                     throw new Error(page?.error || "invalid memory search reply");

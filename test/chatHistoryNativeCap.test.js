@@ -6,10 +6,10 @@
 // native-messaging reply cap. Thunderbird refuses a helper message over 1 MiB
 // and disconnects the helper; memory entries are stored whole. This runs the
 // real page (prompts/prompts.html) with the shipped settings against a fake
-// helper that answers memorySearch, memoryRead and memoryRemoveBatch as the
-// helper does (previewChars cuts content in the reply, both date bounds
-// inclusive, newest first, a search matching entries that hold one of its
-// words) and refuses an over-cap reply. Any other command fails, so a page
+// helper that answers memorySearch and memoryRemoveBatch as the helper does
+// (previewChars cuts content in the reply, both date bounds inclusive, newest
+// first, a search matching entries that hold one of its words) and refuses an
+// over-cap reply. Any other command fails, so a page
 // that sends one (a clear, a write) fails its test.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -19,6 +19,11 @@ import { JSDOM } from 'jsdom';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
 vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn() }));
+// The memory writers' direct path to the helper, routed to the same message
+// path their other writes take, so a test captures every row they store.
+vi.mock('../fts/nativeEngine.js', () => ({
+  nativeMemorySearch: { indexBatch: rows => globalThis.browser.runtime.sendMessage({ type: 'fts', cmd: 'memoryIndexBatch', rows }) },
+}));
 
 const NATIVE_MESSAGE_CAP_BYTES = 1024 * 1024;
 // A page that never stops asking fails here, not by exhausting the worker.
@@ -76,13 +81,6 @@ function fakeHelper(entries, { removes = true } = {}) {
           .map(e => ({ ...e, content: cut(e.content, msg.previewChars), snippet: query ? cut(e.content, msg.previewChars) : null, rank: 0 }));
         return reply(found);
       }
-      case 'memoryRead': {
-        const found = stored
-          .filter(e => Math.abs(e.dateMs - msg.timestampMs) <= msg.toleranceMs)
-          .sort((a, b) => a.dateMs - b.dateMs)
-          .slice(0, 50);
-        return reply(found);
-      }
       case 'memoryRemoveBatch': {
         let count = 0;
         if (removes) {
@@ -106,6 +104,10 @@ function fakeHelper(entries, { removes = true } = {}) {
 async function openPage(helper) {
   vi.resetModules();
   const dom = new JSDOM(readFileSync(resolve('prompts/prompts.html'), 'utf8'));
+  // The page's own stylesheet, which JSDOM does not load from the page's link.
+  const style = dom.window.document.createElement('style');
+  style.textContent = readFileSync(resolve('prompts/prompts.css'), 'utf8');
+  dom.window.document.head.appendChild(style);
   globalThis.document = dom.window.document;
   globalThis.Option = dom.window.Option;
   globalThis.browser = {
@@ -126,7 +128,11 @@ async function openPage(helper) {
   return {
     d,
     history,
-    shown: () => [...d.querySelectorAll('#history-list .history-search-result-content')].map(el => el.textContent),
+    // Each entry as shown: what was asked, and what the agent did.
+    shown: () => [...d.querySelectorAll('#history-list .history-search-result-content')].map(el => ({
+      request: el.querySelector('.history-search-result-request')?.textContent ?? '',
+      reply: el.querySelector('.history-search-result-reply')?.textContent ?? '',
+    })),
     pageInfo: () => d.getElementById('history-page-info').textContent,
     label: () => d.getElementById('history-stats').textContent.replace(/\s+/g, ' ').trim(),
     status: () => d.getElementById('status-message').textContent,
@@ -138,53 +144,209 @@ const search = async (page, query) => {
   page.d.getElementById('history-search-btn').click();
 };
 
+// What the page shows of an entry: its first 400 characters (code points), and
+// an ellipsis when it goes on.
+const PREVIEW_CHARS = 400;
+const preview = e => ([...e.content].length > PREVIEW_CHARS ? `${[...e.content].slice(0, PREVIEW_CHARS).join('')}…` : e.content);
+// That preview split as Voice shows an entry: the request after `[USER]: `, the
+// reply after `[AGENT]: `; an entry not written that way is all reply.
+const USER = '[USER]: ';
+const AGENT = '\n\n[AGENT]: ';
+const view = e => {
+  const text = preview(e);
+  if (!text.startsWith(USER)) return { request: '', reply: text };
+  const at = text.indexOf(AGENT);
+  return at < 0 ? { request: text.slice(USER.length), reply: '' } : { request: text.slice(USER.length, at), reply: text.slice(at + AGENT.length) };
+};
+const asReply = text => ({ request: '', reply: text });
+// Said in a reply's place when a long request fills the preview.
+const NOTE = 'The rest is not shown: the request is too long to preview.';
+// Each entry's parts, by class, in the order shown.
+const partsOf = page => [...page.d.querySelectorAll('#history-list .history-search-result-content')].map(el => [...el.children].map(c => c.className));
+const REQUEST_THEN_REPLY = ['history-search-result-request', 'history-search-result-reply'];
+
 describe('TB-193: Chat History search and the native-messaging cap', () => {
-  it('shows 200 matching sessions of 200 KB, each entry on the page whole, with every reply under the cap', async () => {
+  it('shows the start of 200 matching sessions of 200 KB, with every reply under the cap', async () => {
     const entries = entriesOf(200, 200_000);
     const helper = fakeHelper(entries);
     const page = await openPage(helper);
 
     await search(page, 'planning');
     await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
+    expect(page.shown()).toEqual(entries.slice(0, 20).map(view));
+    expect(page.shown()[0].request).toMatch(/^planning u{100}$/);
+    expect(page.shown()[0].reply).toMatch(/^a+…$/);
+    // Request then reply, and no note under a reply that shows.
+    expect(partsOf(page)).toEqual(Array(20).fill(REQUEST_THEN_REPLY));
     expect(page.pageInfo()).toBe('Page 1 of 10');
     expect(page.d.querySelector('#history-list .search-highlight')?.textContent).toBe('planning');
 
     page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 10'));
-    expect(page.shown()).toEqual(entries.slice(20, 40).map(e => e.content));
+    expect(page.pageInfo()).toBe('Page 2 of 10');
+    expect(page.shown()).toEqual(entries.slice(20, 40).map(view));
     page.d.getElementById('history-prev-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 1 of 10'));
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
+    expect(page.pageInfo()).toBe('Page 1 of 10');
+    expect(page.shown()).toEqual(entries.slice(0, 20).map(view));
 
     expect(helper.replies.overCap).toBe(0);
-    // Only the shown entries are read, each once; browsing changes nothing stored.
-    const reads = helper.replies.calls.filter(m => m.cmd === 'memoryRead');
-    expect(reads).toHaveLength(40);
-    expect(new Set(helper.replies.calls.map(m => m.cmd))).toEqual(new Set(['memoryStats', 'memorySearch', 'memoryRead']));
+    expect(helper.replies.largest).toBeLessThan(NATIVE_MESSAGE_CAP_BYTES / 4);
+    // One search; browsing changes nothing stored.
+    expect(helper.replies.calls.map(m => m.cmd).filter(c => c !== 'memoryStats')).toEqual(['memorySearch']);
     expect(helper.stored).toEqual(entries);
-  }, 30_000);
+  });
 
-  it('shows each entry whole when others share its millisecond, and says when one is gone', async () => {
-    const now = Date.now() - 60_000;
-    const entries = [
-      { memId: 'a', sessionId: 's', role: 'exchange', content: 'planning one', dateMs: now },
-      { memId: 'b', sessionId: 's', role: 'exchange', content: 'planning two', dateMs: now },
-      { memId: 'c', sessionId: 's', role: 'exchange', content: 'planning three', dateMs: now - 1 },
-    ];
-    const helper = fakeHelper(entries);
+  it('shows a short entry whole, and the start of a long one from a helper that answers whole entries', async () => {
+    const short = { memId: 's', sessionId: 's', role: 'exchange', content: '[USER]: planning\n\n[AGENT]: done', dateMs: Date.now() - 60_000 };
+    const long = entriesOf(1, 5000, Date.now() - 120_000)[0];
+    const helper = fakeHelper([short, long]);
     const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    // An older helper ignores previewChars.
+    helper.sendMessage.mockImplementation(async msg => answer({ ...msg, previewChars: undefined }));
 
-    // Removed after the search answered, before the page read it.
-    const search0 = helper.sendMessage.getMockImplementation();
-    helper.sendMessage.mockImplementation(async msg => {
-      const result = await search0(msg);
-      if (msg.cmd === 'memorySearch') helper.stored.splice(helper.stored.findIndex(e => e.memId === 'c'), 1);
-      return result;
-    });
     await search(page, 'planning');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(2));
+    expect(page.shown()).toEqual([{ request: 'planning', reply: 'done' }, view(long)]);
+  });
+
+  it('shows an entry of exactly 400 characters whole, and one of 401 cut with an ellipsis, counting characters not UTF-16 units', async () => {
+    const at = Date.now() - 60_000;
+    const make = (memId, content, offset) => ({ memId, sessionId: 's', role: 'exchange', content, dateMs: at - offset });
+    const exact = 'planning ' + 'a'.repeat(391);
+    const over = 'planning ' + 'b'.repeat(392);
+    // 400 emoji: 800 UTF-16 units, 400 characters.
+    const emoji = 'planning ' + '\u{1F600}'.repeat(391);
+    const emojiOver = 'planning ' + '\u{1F600}'.repeat(392);
+    const helper = fakeHelper([make('exact', exact, 0), make('over', over, 1), make('emoji', emoji, 2), make('emojiOver', emojiOver, 3)]);
+    const page = await openPage(helper);
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(4));
+    expect(page.shown()).toEqual([exact, `${over.slice(0, 400)}…`, emoji, `${[...emojiOver].slice(0, 400).join('')}…`].map(asReply));
+  });
+
+  it('shows what was asked and what the agent did, as Voice does, for every shape the memory writers store, search words highlighted in both', async () => {
+    const at = Date.now() - 60_000;
+    // Rows as Thunderbird's memory writers store them.
+    const written = [];
+    globalThis.browser = { runtime: { sendMessage: async msg => { written.push(...msg.rows); return { ok: true }; } } };
+    const { indexChatTurn, indexChatSession } = await import('../fts/memoryIndexer.js');
+    // A request with a line break, as extractPlainTextFromHtml renders <br>.
+    await indexChatTurn('planning\nthe trip', 'Booked the planning call.', 'turn', at);
+    // A greeting or a nudge: no request, in paragraphs, as extractPlainTextFromHtml renders <p>.
+    await indexChatTurn('', 'Welcome back.\n\nThe planning call is at 3.', 'greeting', at - 1);
+    // A request the agent never answered.
+    await indexChatTurn('planning question', '', 'unanswered', at - 6);
+    await indexChatSession('session', [
+      { role: 'user', content: 'planning a move' },
+      { role: 'assistant', content: 'Here is a checklist.' },
+      { role: 'user', content: 'and the boxes?' },
+      { role: 'assistant', content: 'Ordered.' },
+    ], at - 2);
+    expect(written.map(r => r.memId)).toEqual(['turn:turn', 'turn:greeting', 'turn:unanswered', 'chat:session']);
+    const make = (memId, content, offset) => ({ memId, sessionId: 's', role: 'session', content, dateMs: at - offset });
+    const helper = fakeHelper([
+      ...written,
+      // Written by v1.0.11 to v1.2.8, which labelled the reply [ASSISTANT].
+      make('legacyTurn', '[USER]: planning a trip\n\n[ASSISTANT]: Booked the call.', 3),
+      make('legacyGreeting', '[ASSISTANT]: Hello, planning starts Monday.', 4),
+      make('cut', `[USER]: planning ${'r'.repeat(500)}\n\n[AGENT]: done`, 5),
+    ]);
+    const page = await openPage(helper);
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(7));
+    expect(page.shown()).toEqual([
+      { request: 'planning\nthe trip', reply: 'Booked the planning call.' },
+      { request: '', reply: 'Welcome back.\n\nThe planning call is at 3.' },
+      // A session of several turns: its first request, then the rest, as Voice shows one.
+      { request: 'planning a move', reply: 'Here is a checklist.\n\n[USER]: and the boxes?\n\n[AGENT]: Ordered.' },
+      { request: 'planning a trip', reply: 'Booked the call.' },
+      { request: '', reply: 'Hello, planning starts Monday.' },
+      // The preview ends before the reply: all request, and a note that says why.
+      { request: `planning ${'r'.repeat(383)}…`, reply: NOTE },
+      // Never answered, and shown whole: no reply and no note.
+      { request: 'planning question', reply: '' },
+    ]);
+    // No part opens with a role label, and every row with a reply shows it.
+    for (const { request, reply } of page.shown()) {
+      expect(request).not.toMatch(/^\[(USER|AGENT|ASSISTANT)\]:/);
+      expect(reply).not.toMatch(/^\[(USER|AGENT|ASSISTANT)\]:/);
+    }
+    expect(page.shown().slice(0, 6).every(e => e.reply !== '')).toBe(true);
+    const entries = [...page.d.querySelectorAll('#history-list .history-search-result-content')];
+    expect(entries[0].children).toHaveLength(2);
+    expect(entries[1].querySelector('.history-search-result-request')).toBeNull();
+    expect(entries[4].querySelector('.history-search-result-request')).toBeNull();
+    expect(entries[5].querySelector('.history-search-result-note')).not.toBeNull();
+    expect(entries[6].querySelector('.history-search-result-reply')).toBeNull();
+    // Each request shows at most 2 lines and each reply (or the note) at most 3, as Voice shows
+    // them. JSDOM does no layout, so this reads the clamp the page's stylesheet gives each part.
+    const clampOf = el => {
+      const style = page.d.defaultView.getComputedStyle(el);
+      return [style.display, style.overflow, style.getPropertyValue('-webkit-line-clamp')];
+    };
+    const requests = [...page.d.querySelectorAll('#history-list .history-search-result-request')];
+    const replies = [...page.d.querySelectorAll('#history-list .history-search-result-reply')];
+    expect(requests.map(clampOf)).toEqual(Array(5).fill(['-webkit-box', 'hidden', '2']));
+    expect(replies.map(clampOf)).toEqual(Array(6).fill(['-webkit-box', 'hidden', '3']));
+    const highlighted = part => [...entries[0].querySelectorAll(`${part} .search-highlight`)].map(el => el.textContent);
+    expect(highlighted('.history-search-result-request')).toEqual(['planning']);
+    expect(highlighted('.history-search-result-reply')).toEqual(['planning']);
+  });
+
+  it('says why a reply is not shown when the request fills the preview, even when it ends right at the reply label, and never highlights the note', async () => {
+    const at = Date.now() - 60_000;
+    const make = (memId, content, offset) => ({ memId, sessionId: 's', role: 'session', content, dateMs: at - offset });
+    // Requests of 381 and 377 characters: the 400-character cut ends just past `[AGENT]: ` / `[ASSISTANT]: `.
+    const agent381 = make('agent381', `[USER]: request ${'q'.repeat(373)}\n\n[AGENT]: the reply`, 0);
+    const assistant377 = make('assistant377', `[USER]: request ${'q'.repeat(369)}\n\n[ASSISTANT]: the reply`, 1);
+    // One character of reply fits.
+    const agent380 = make('agent380', `[USER]: request ${'q'.repeat(372)}\n\n[AGENT]: the reply`, 2);
+    const page = await openPage(fakeHelper([agent381, assistant377, agent380]));
+    await search(page, 'request');
     await vi.waitFor(() => expect(page.shown()).toHaveLength(3));
-    expect(page.shown()).toEqual(['planning one', 'planning two', '(No longer in memory.)']);
+    expect(page.shown()).toEqual([
+      { request: `request ${'q'.repeat(373)}…`, reply: NOTE },
+      { request: `request ${'q'.repeat(369)}…`, reply: NOTE },
+      { request: `request ${'q'.repeat(372)}`, reply: 't…' },
+    ]);
+    expect(partsOf(page)).toEqual([
+      ['history-search-result-request', 'history-search-result-reply history-search-result-note'],
+      ['history-search-result-request', 'history-search-result-reply history-search-result-note'],
+      REQUEST_THEN_REPLY,
+    ]);
+    // The search word is in the request and in the note: only the request's is highlighted.
+    const notes = [...page.d.querySelectorAll('#history-list .history-search-result-note')];
+    expect(notes.map(n => n.querySelector('.search-highlight'))).toEqual([null, null]);
+    expect([...page.d.querySelectorAll('#history-list .history-search-result-request .search-highlight')].map(el => el.textContent)).toEqual(['request', 'request', 'request']);
+  });
+
+  it('shows HTML-special characters in the request and the reply as text, highlighted, with no element made from them', async () => {
+    const entry = {
+      memId: 'html', sessionId: 'persistent_chat', role: 'session', dateMs: Date.now() - 60_000,
+      content: `[USER]: what's <b>bold</b> & "quoted" planning?\n\n[AGENT]: it's <img src=x onerror="globalThis.__injected=1"> & planning done`,
+    };
+    const page = await openPage(fakeHelper([entry]));
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(1));
+    expect(page.shown()).toEqual([{ request: `what's <b>bold</b> & "quoted" planning?`, reply: `it's <img src=x onerror="globalThis.__injected=1"> & planning done` }]);
+    expect(page.d.querySelectorAll('#history-list img, #history-list b')).toHaveLength(0);
+    expect([...page.d.querySelectorAll('#history-list .search-highlight')].map(el => el.textContent)).toEqual(['planning', 'planning']);
+  });
+
+  it('a new search opens on its first page', async () => {
+    const alpha = entriesOf(60, 10, Date.now() - 60_000, 'alpha');
+    const beta = entriesOf(40, 10, Date.now() - 30_000, 'beta');
+    const helper = fakeHelper([...alpha, ...beta]);
+    const page = await openPage(helper);
+    await search(page, 'alpha');
+    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 1 of 3'));
+    page.d.getElementById('history-next-page').click();
+    page.d.getElementById('history-next-page').click();
+    expect(page.pageInfo()).toBe('Page 3 of 3');
+    await search(page, 'beta');
+    await vi.waitFor(() => expect(page.label()).toContain('"beta" (40 results)'));
+    expect(page.pageInfo()).toBe('Page 1 of 2');
+    expect(page.shown()).toEqual(beta.slice(0, 20).map(view));
   });
 
   it('a search that answers late does not show over a later one, nor change the pages it lists', async () => {
@@ -208,47 +370,20 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
     releaseFirst();
     await new Promise(r => setTimeout(r, 0));
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
+    expect(page.shown()).toEqual(entries.slice(0, 20).map(view));
     expect(page.d.getElementById('history-empty').style.display).toBe('none');
     page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 2'));
-    expect(page.shown()).toEqual(entries.slice(20, 40).map(e => e.content));
+    expect(page.pageInfo()).toBe('Page 2 of 2');
+    expect(page.shown()).toEqual(entries.slice(20, 40).map(view));
   });
 
-  it('a page that loads late does not show over a later search', async () => {
-    const entries = entriesOf(40, 10);
-    const helper = fakeHelper(entries);
-    const page = await openPage(helper);
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-
-    // Hold the reads of page 2's entries; the next search reads page 1's.
-    const answer = helper.sendMessage.getMockImplementation();
-    const secondPageMs = new Set(entries.slice(20).map(e => e.dateMs));
-    let releaseReads;
-    const readsHeld = new Promise(r => { releaseReads = r; });
-    helper.sendMessage.mockImplementation(async msg => {
-      if (msg.cmd === 'memoryRead' && secondPageMs.has(msg.timestampMs)) await readsHeld;
-      return answer(msg);
-    });
-    page.d.getElementById('history-next-page').click();
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(helper.replies.calls.filter(m => m.cmd === 'memorySearch')).toHaveLength(2));
-    await new Promise(r => setTimeout(r, 0));
-    releaseReads();
-    await new Promise(r => setTimeout(r, 0));
-    await new Promise(r => setTimeout(r, 0));
-    expect(page.pageInfo()).toBe('Page 1 of 2');
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
-  });
-
-  // Holds the helper's answers to `cmd` messages for which `match` is true until released.
-  function hold(helper, cmd, match = () => true) {
+  // Holds the helper's answers to `cmd` messages until released.
+  function hold(helper, cmd) {
     const answer = helper.sendMessage.getMockImplementation();
     let release;
     const held = new Promise(r => { release = r; });
     helper.sendMessage.mockImplementation(async msg => {
-      if (msg.cmd === cmd && match(msg)) await held;
+      if (msg.cmd === cmd) await held;
       return answer(msg);
     });
     return () => release();
@@ -264,40 +399,18 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     const page = await openPage(helper);
     await search(page, 'alpha');
     await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-    expect(page.shown()).toEqual(alpha.slice(0, 20).map(e => e.content));
+    expect(page.shown()).toEqual(alpha.slice(0, 20).map(view));
 
     const releaseSearch = hold(helper, 'memorySearch');
     await search(page, 'beta');
     page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 2'));
-    expect(page.shown()).toEqual(alpha.slice(20, 40).map(e => e.content));
+    expect(page.pageInfo()).toBe('Page 2 of 2');
+    expect(page.shown()).toEqual(alpha.slice(20, 40).map(view));
     expect(page.label()).toContain('"alpha" (40 results)');
 
     releaseSearch();
     await vi.waitFor(() => expect(page.label()).toContain('"beta" (5 results)'));
-    expect(page.shown()).toEqual(beta.map(e => e.content));
-  });
-
-  it('a page change that loads late does not show over a later page change', async () => {
-    const entries = entriesOf(60, 10);
-    const helper = fakeHelper(entries);
-    const page = await openPage(helper);
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-    page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 3'));
-
-    const thirdPageMs = new Set(entries.slice(40).map(e => e.dateMs));
-    const releaseReads = hold(helper, 'memoryRead', msg => thirdPageMs.has(msg.timestampMs));
-    page.d.getElementById('history-next-page').click();
-    await settle();
-    expect(page.pageInfo()).toBe('Page 2 of 3');
-    page.d.getElementById('history-prev-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 1 of 3'));
-    releaseReads();
-    await settle();
-    expect(page.pageInfo()).toBe('Page 1 of 3');
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
+    expect(page.shown()).toEqual(beta.map(view));
   });
 
   it('a search that answers after the tab reloads shows nothing', async () => {
@@ -311,52 +424,6 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(page.shown()).toEqual([]);
     expect(page.d.getElementById('history-empty').textContent).toBe('Use the search bar to find past conversations.');
     expect(page.label()).not.toContain('Search:');
-  });
-
-  it('after a page fails to load, retrying it shows every entry whole', async () => {
-    const entries = entriesOf(40, 10);
-    const helper = fakeHelper(entries);
-    const page = await openPage(helper);
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-
-    // One entry on page 2 fails to read once (an error reply, then a rejected call).
-    for (const failure of [{ error: 'Native RPC timed out' }, new Error('Could not establish connection')]) {
-      const answer = helper.sendMessage.getMockImplementation();
-      let failed = false;
-      helper.sendMessage.mockImplementation(async msg => {
-        if (msg.cmd === 'memoryRead' && msg.timestampMs === entries[25].dateMs && !failed) {
-          failed = true;
-          if (failure instanceof Error) throw failure;
-          return failure;
-        }
-        return answer(msg);
-      });
-      page.d.getElementById('history-next-page').click();
-      await vi.waitFor(() => expect(failed).toBe(true));
-      await settle();
-      expect(page.pageInfo()).toBe('Page 1 of 2');
-      expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
-      helper.sendMessage.mockImplementation(answer);
-    }
-    page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 2'));
-    expect(page.shown()).toEqual(entries.slice(20, 40).map(e => e.content));
-  });
-
-  it('reports a failed read and keeps the page it showed', async () => {
-    const entries = entriesOf(40, 10);
-    const helper = fakeHelper(entries);
-    const page = await openPage(helper);
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-
-    const answer = helper.sendMessage.getMockImplementation();
-    helper.sendMessage.mockImplementation(async msg => (msg.cmd === 'memoryRead' ? { error: 'Native helper disconnected' } : answer(msg)));
-    page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.status()).toContain('Native helper disconnected'));
-    expect(page.pageInfo()).toBe('Page 1 of 2');
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
   });
 });
 

@@ -1428,13 +1428,38 @@ button:focus-visible {
 }
 
 .history-search-result-content {
-  padding: 10px 14px;
+  margin: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* What was asked, then what the agent did, as Voice shows them: the start of
+   each (the search asks for a preview). */
+.history-search-result-request,
+.history-search-result-reply {
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 200px;
-  overflow-y: auto;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.history-search-result-request {
+  font-weight: 500;
+}
+
+.history-search-result-reply {
+  color: var(--in-content-deemphasized-text);
+  -webkit-line-clamp: 3;
+}
+
+/* Said in place of a reply the preview has no room for. */
+.history-search-result-note {
+  font-style: italic;
 }
 
 

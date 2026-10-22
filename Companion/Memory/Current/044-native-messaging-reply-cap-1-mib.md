@@ -58,21 +58,35 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   `test/memorySizeLimit.test.js` (the native wire).
 - **Chat History tab (2026-10-21, issue #147).** Its search and its "delete old" listing asked for
   whole rows too (`limit: 200` and `q: ""` `limit: 500`); "delete old" also saw only the newest 500
-  entries, so nothing past them was ever deleted. Both now ask for the shortest preview
-  (`SETTINGS.memoryManagement.chatHistoryPreviewChars`, 1). The search still shows each entry
-  whole: the page reads each entry it shows on its own (`memoryRead` at the entry's millisecond,
-  `toleranceMs: 0`, picked by `memId`), once, so a reply holds one entry or the few written at that
-  millisecond. A search that finishes after a later search or a reload does not render
-  (`searchToken`), and a page after a later page, search or reload (`pageToken`); a page
-  change while the search request is pending pages the results shown, and the search then
-  shows (one while the search reads its first page lands on that search's page). A reload's
-  own render is not checked, so one answering after a search started can briefly show that
-  search's page as previews until its reads finish. "Delete old" lists only the entries older than the cutoff (`to` = cutoff - 1 ms),
-  `chatHistoryDeleteFetchRows` (500) a request, and removes each page as it comes; each request
-  starts at the last date listed and skips the ids already listed there, so it ends even if a
-  removal removes nothing. Pinned by `test/chatHistoryNativeCap.test.js` (TB-193).
-  Residual: one entry over 1 MiB on its own still passes the cap when read whole. An older helper ignores `previewChars` and answers whole rows (500 a
-  request for "delete old", as before) until it updates.
+  entries, so nothing past them was ever deleted. Both now ask for previews. #152 first kept the
+  search showing each entry whole (1-character previews, then each shown entry read by `memoryRead`
+  at its millisecond, `toleranceMs: 0`, picked by `memId`, with a `pageToken` for late page reads);
+  the owner then chose Voice's preview display (2026-10-21), so the search shows 400 characters
+  (`SETTINGS.memoryManagement.chatHistorySearchPreviewChars`; code points, as the helper counts)
+  laid out as Voice shows an entry: what was asked (`[USER]: …`, 2 lines, `.history-search-result-request`)
+  then what the agent did (`[AGENT]: …`, 3 lines, de-emphasized, `.history-search-result-reply`),
+  labels removed, search words highlighted in both; a greeting or nudge (`[AGENT]: …` alone) is all
+  reply, a row written before v1.2.9 (reply labelled `[ASSISTANT]`) splits the same way, a preview cut
+  before the reply is all request with a note in the reply's place ("The rest is not shown: the request
+  is too long to preview.", worded to hold for a long request never answered too; owner 2026-10-21: a
+  request of more than about 380 characters leaves the reply no room, accepted; the ellipsis goes on the
+  last part shown after the split, so a cut just past the reply label gets the note, not a lone "…"), and a multi-turn session row shows its later turns' labels in the
+  reply, as Voice does (fixtures built from `indexChatTurn` / `indexChatSession` output; `exchangeOf`, `-webkit-line-clamp`; the clamped
+  parts carry no padding, as Gecko paints the next line in a clamped box's padding). It asks the helper for one character more,
+  so an entry that goes on (ellipsis) is told from one of exactly 400; the page cuts too, since an
+  older helper answers whole entries. Paging is
+  synchronous; a search that finishes after a later search or a reload does not render
+  (`searchToken`), and a page change while the search request is pending pages the results shown.
+  The full exchange is no longer readable on the tab, and highlighting reaches only the preview.
+  "Delete old" asks for 1-character previews (`chatHistoryDeletePreviewChars`) and lists only the
+  entries older than the cutoff (`to` = cutoff - 1 ms), `chatHistoryDeleteFetchRows` (500) a
+  request, and removes each page as it comes; each request starts at the last date listed and skips
+  the ids already listed there, so it ends even if a removal removes nothing. Pinned by
+  `test/chatHistoryNativeCap.test.js` (TB-193).
+  Residual: one entry over 1 MiB on its own still passes the cap when `memory_read` reads it whole: **owner-accepted 2026-10-21** ("requires a single
+  turn being over 1MB which is very unlikely"; revisit if it happens). An older helper ignores
+  `previewChars` and answers whole rows (200 a search, 500 a request for "delete old", as before)
+  until it updates.
 - **The chat's `memory_read` (2026-10-21, issue #151).** It asked the helper's `memoryRead` for
   every entry within ±`tolerance_minutes` (10 by default), and the helper answered up to 50 of them
   whole, oldest first, so a few long sessions near the timestamp passed the cap with none over 1 MiB.
@@ -88,11 +102,11 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   millisecond needs the helper to choose rows from `memory_meta` first: the shipped
   `memory_read_by_timestamp` joined from `memory_fts` and so scanned the whole memory per read
   (about 0.13 s at 1 GB, 20 reads 2.6 s), fixed by the native-fts change that picks the
-  read's rows from `memory_meta` first (branch `agent/nf-memory-read-meta-first`, ADR-NF-012 item 3);
+  read's rows from `memory_meta` first (native-fts #34, ADR-NF-012 item 3);
   that helper release goes before, or with, this change. Pinned by `test/memoryReadNativeCap.test.js`
   (TB-194). Residuals: one entry over 1 MiB, or many
   long ones written at one millisecond, still pass the cap when read whole (the helper reads by
-  date, not id); an older helper ignores `previewChars` and lists whole entries, 20 a request (it
+  date, not id; the second **owner-accepted 2026-10-22** as a known limitation, issue #157); an older helper ignores `previewChars` and lists whole entries, 20 a request (it
   read up to 50 before).
 - **Not on other clients.** Voice reads the helper's replies over its own pipe with no such cap, and
   iOS reads its own database.
