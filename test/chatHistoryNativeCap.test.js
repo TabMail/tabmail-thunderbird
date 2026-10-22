@@ -104,6 +104,10 @@ function fakeHelper(entries, { removes = true } = {}) {
 async function openPage(helper) {
   vi.resetModules();
   const dom = new JSDOM(readFileSync(resolve('prompts/prompts.html'), 'utf8'));
+  // The page's own stylesheet, which JSDOM does not load from the page's link.
+  const style = dom.window.document.createElement('style');
+  style.textContent = readFileSync(resolve('prompts/prompts.css'), 'utf8');
+  dom.window.document.head.appendChild(style);
   globalThis.document = dom.window.document;
   globalThis.Option = dom.window.Option;
   globalThis.browser = {
@@ -274,6 +278,16 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(entries[4].querySelector('.history-search-result-request')).toBeNull();
     expect(entries[5].querySelector('.history-search-result-note')).not.toBeNull();
     expect(entries[6].querySelector('.history-search-result-reply')).toBeNull();
+    // Each request shows at most 2 lines and each reply (or the note) at most 3, as Voice shows
+    // them. JSDOM does no layout, so this reads the clamp the page's stylesheet gives each part.
+    const clampOf = el => {
+      const style = page.d.defaultView.getComputedStyle(el);
+      return [style.display, style.overflow, style.getPropertyValue('-webkit-line-clamp')];
+    };
+    const requests = [...page.d.querySelectorAll('#history-list .history-search-result-request')];
+    const replies = [...page.d.querySelectorAll('#history-list .history-search-result-reply')];
+    expect(requests.map(clampOf)).toEqual(Array(5).fill(['-webkit-box', 'hidden', '2']));
+    expect(replies.map(clampOf)).toEqual(Array(6).fill(['-webkit-box', 'hidden', '3']));
     const highlighted = part => [...entries[0].querySelectorAll(`${part} .search-highlight`)].map(el => el.textContent);
     expect(highlighted('.history-search-result-request')).toEqual(['planning']);
     expect(highlighted('.history-search-result-reply')).toEqual(['planning']);
