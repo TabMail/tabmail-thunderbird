@@ -155,6 +155,11 @@ const view = e => {
   return at < 0 ? { request: text.slice(USER.length), reply: '' } : { request: text.slice(USER.length, at), reply: text.slice(at + AGENT.length) };
 };
 const asReply = text => ({ request: '', reply: text });
+// Said in a reply's place when a long request fills the preview.
+const NOTE = 'The rest is not shown: the request is too long to preview.';
+// Each entry's parts, by class, in the order shown.
+const partsOf = page => [...page.d.querySelectorAll('#history-list .history-search-result-content')].map(el => [...el.children].map(c => c.className));
+const REQUEST_THEN_REPLY = ['history-search-result-request', 'history-search-result-reply'];
 
 describe('TB-193: Chat History search and the native-messaging cap', () => {
   it('shows the start of 200 matching sessions of 200 KB, with every reply under the cap', async () => {
@@ -167,6 +172,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(page.shown()).toEqual(entries.slice(0, 20).map(view));
     expect(page.shown()[0].request).toMatch(/^planning u{100}$/);
     expect(page.shown()[0].reply).toMatch(/^a+…$/);
+    // Request then reply, and no note under a reply that shows.
+    expect(partsOf(page)).toEqual(Array(20).fill(REQUEST_THEN_REPLY));
     expect(page.pageInfo()).toBe('Page 1 of 10');
     expect(page.d.querySelector('#history-list .search-highlight')?.textContent).toBe('planning');
 
@@ -250,7 +257,7 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
       { request: 'planning a trip', reply: 'Booked the call.' },
       { request: '', reply: 'Hello, planning starts Monday.' },
       // The preview ends before the reply: all request, and a note that says why.
-      { request: `planning ${'r'.repeat(383)}…`, reply: 'Reply not shown: the request is too long to preview.' },
+      { request: `planning ${'r'.repeat(383)}…`, reply: NOTE },
       // Never answered, and shown whole: no reply and no note.
       { request: 'planning question', reply: '' },
     ]);
@@ -265,11 +272,37 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(entries[1].querySelector('.history-search-result-request')).toBeNull();
     expect(entries[4].querySelector('.history-search-result-request')).toBeNull();
     expect(entries[5].querySelector('.history-search-result-note')).not.toBeNull();
-    expect(entries[5].querySelector('.history-search-result-note .search-highlight')).toBeNull();
     expect(entries[6].querySelector('.history-search-result-reply')).toBeNull();
     const highlighted = part => [...entries[0].querySelectorAll(`${part} .search-highlight`)].map(el => el.textContent);
     expect(highlighted('.history-search-result-request')).toEqual(['planning']);
     expect(highlighted('.history-search-result-reply')).toEqual(['planning']);
+  });
+
+  it('says why a reply is not shown when the request fills the preview, even when it ends right at the reply label, and never highlights the note', async () => {
+    const at = Date.now() - 60_000;
+    const make = (memId, content, offset) => ({ memId, sessionId: 's', role: 'session', content, dateMs: at - offset });
+    // Requests of 381 and 377 characters: the 400-character cut ends just past `[AGENT]: ` / `[ASSISTANT]: `.
+    const agent381 = make('agent381', `[USER]: request ${'q'.repeat(373)}\n\n[AGENT]: the reply`, 0);
+    const assistant377 = make('assistant377', `[USER]: request ${'q'.repeat(369)}\n\n[ASSISTANT]: the reply`, 1);
+    // One character of reply fits.
+    const agent380 = make('agent380', `[USER]: request ${'q'.repeat(372)}\n\n[AGENT]: the reply`, 2);
+    const page = await openPage(fakeHelper([agent381, assistant377, agent380]));
+    await search(page, 'request');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(3));
+    expect(page.shown()).toEqual([
+      { request: `request ${'q'.repeat(373)}…`, reply: NOTE },
+      { request: `request ${'q'.repeat(369)}…`, reply: NOTE },
+      { request: `request ${'q'.repeat(372)}`, reply: 't…' },
+    ]);
+    expect(partsOf(page)).toEqual([
+      ['history-search-result-request', 'history-search-result-reply history-search-result-note'],
+      ['history-search-result-request', 'history-search-result-reply history-search-result-note'],
+      REQUEST_THEN_REPLY,
+    ]);
+    // The search word is in the request and in the note: only the request's is highlighted.
+    const notes = [...page.d.querySelectorAll('#history-list .history-search-result-note')];
+    expect(notes.map(n => n.querySelector('.search-highlight'))).toEqual([null, null]);
+    expect([...page.d.querySelectorAll('#history-list .history-search-result-request .search-highlight')].map(el => el.textContent)).toEqual(['request', 'request', 'request']);
   });
 
   it('shows HTML-special characters in the request and the reply as text, highlighted, with no element made from them', async () => {

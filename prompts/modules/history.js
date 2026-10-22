@@ -19,7 +19,7 @@ const CHAT_META_KEY = "chat_meta";
 const CHAT_ID_MAP_KEY = "chat_id_map";
 const PAGE_SIZE = 20;
 // Said in place of a reply when a long request fills the preview.
-const PREVIEW_NO_REPLY_NOTE = "Reply not shown: the request is too long to preview.";
+const PREVIEW_NO_REPLY_NOTE = "The rest is not shown: the request is too long to preview.";
 
 let displayData = []; // unified display list (turns or FTS results)
 let memoryFtsStats = null;
@@ -297,7 +297,13 @@ function renderFtsEntries(container, entries) {
         const contentDiv = document.createElement("div");
         contentDiv.className = "history-search-result-content";
         const { text: preview, cut } = previewText(entry.content);
-        const { request, agent } = exchangeOf(preview);
+        let { request, agent } = exchangeOf(preview);
+        // The ellipsis goes on the last part shown, after the split: a cut
+        // just past the reply label leaves no reply (and the note), not "…".
+        if (cut) {
+            if (agent) agent += "…";
+            else request += "…";
+        }
         for (const [text, className] of [[request, "history-search-result-request"], [agent, "history-search-result-reply"]]) {
             if (!text) continue;
             const part = document.createElement("div");
@@ -325,13 +331,13 @@ function renderFtsEntries(container, entries) {
 
 /**
  * The start of an entry, as the search asked for it (an older helper answers
- * whole entries); an ellipsis marks one that goes on, and `cut` says so.
+ * whole entries); `cut` says it goes on.
  */
 function previewText(content) {
     if (!content) return { text: "(empty)", cut: false };
     const chars = [...content];
     const max = SETTINGS.memoryManagement.chatHistorySearchPreviewChars;
-    return chars.length > max ? { text: `${chars.slice(0, max).join("")}…`, cut: true } : { text: content, cut: false };
+    return chars.length > max ? { text: chars.slice(0, max).join(""), cut: true } : { text: content, cut: false };
 }
 
 /**
