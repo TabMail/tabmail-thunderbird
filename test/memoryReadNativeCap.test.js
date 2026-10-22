@@ -225,6 +225,22 @@ describe('TB-194: memory_read and the native-messaging cap', () => {
     expect(listings.every(m => m.from === ts - 10 * MINUTE_MS && m.to === ts + 10 * MINUTE_MS)).toBe(true);
   });
 
+  it('keeps a short positive tolerance: both bounds in, older and newer out, each whole and in order', async () => {
+    const ts = Date.now() - 86_400_000;
+    const helper = fakeHelper([
+      entry('older', ts, -2 * MINUTE_MS),
+      entry('lower', ts, -MINUTE_MS),
+      entry('anchor', ts, 0),
+      entry('upper', ts, MINUTE_MS),
+      entry('newer', ts, 2 * MINUTE_MS),
+    ]);
+    const result = await run({ timestamp: ts, tolerance_minutes: 1 });
+    expect(shownIds(result)).toEqual(['lower', 'anchor', 'upper']);
+    for (const id of ['lower', 'anchor', 'upper']) expect(sectionOf(result, id)).toContain(`[USER]: ${'u'.repeat(10)}`);
+    expect(helper.replies.calls.filter(m => m.cmd === 'memoryRead').map(m => m.timestampMs)).toEqual([ts - MINUTE_MS, ts, ts + MINUTE_MS]);
+    expect(helper.stored.map(e => e.memId)).toEqual(['older', 'lower', 'anchor', 'upper', 'newer']);
+  });
+
   it('reports a failed listing or read', async () => {
     const ts = Date.now() - 86_400_000;
     fakeHelper([entry('a', ts, 0)]);
@@ -242,6 +258,14 @@ describe('TB-194: memory_read and the native-messaging cap', () => {
       });
       const result = await run({ timestamp: ts });
       expect(result).toEqual({ error: `memory read failed: ${failure.message ?? failure.error}` });
+    }
+    // No answer at all (nothing handled the message) is a failure too, not an empty memory; a
+    // listing that fails reads nothing.
+    for (const cmd of ['memorySearch', 'memoryRead']) {
+      browser.runtime.sendMessage.mockClear();
+      browser.runtime.sendMessage.mockImplementation(async msg => (msg.cmd === cmd ? undefined : answer(msg)));
+      expect(await run({ timestamp: ts })).toEqual({ error: 'memory read failed: invalid response format' });
+      expect(browser.runtime.sendMessage.mock.calls.map(([m]) => m.cmd)).toEqual(cmd === 'memorySearch' ? ['memorySearch'] : ['memorySearch', 'memoryRead']);
     }
   });
 });
