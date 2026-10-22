@@ -27,9 +27,12 @@ let currentPage = 1;
 let totalPages = 1;
 let currentSearchQuery = "";
 let isSearchMode = false;
-// Bumped by each search, page change and reload: a slower one that finishes
-// after a later one doesn't render over it.
-let viewToken = 0;
+// A search, page change or reload that finishes after a later one doesn't
+// render over it. A search is superseded by a later search or a reload; a page
+// by any later page (a search shows its first page) or a reload. A page change
+// while a search is pending pages the results shown and leaves the search be.
+let searchToken = 0;
+let pageToken = 0;
 
 /**
  * Load chat history — shows stats + search bar only (no entries until search).
@@ -37,7 +40,8 @@ let viewToken = 0;
 export async function loadChatHistory() {
     try {
         log("[Prompts] Loading chat history stats...");
-        viewToken++;
+        searchToken++;
+        pageToken++;
 
         // Reset search mode
         currentSearchQuery = "";
@@ -90,27 +94,28 @@ export async function searchChatHistory(query) {
         return;
     }
 
-    const view = ++viewToken;
+    const search = ++searchToken;
     try {
         log(`[Prompts] Searching chat history for: "${query}"`);
-        currentSearchQuery = query.trim();
-        isSearchMode = true;
-        currentPage = 1;
+        const q = query.trim();
 
         const results = await browser.runtime.sendMessage({
             type: "fts",
             cmd: "memorySearch",
-            q: currentSearchQuery,
+            q,
             limit: 200,
             ignoreDate: true,
             previewChars: SETTINGS.memoryManagement.chatHistoryPreviewChars
         });
-        if (view !== viewToken) return;
+        if (search !== searchToken) return;
 
+        currentSearchQuery = q;
+        isSearchMode = true;
+        currentPage = 1;
         displayData = Array.isArray(results) ? results : [];
         log(`[Prompts] Search returned ${displayData.length} results`);
 
-        await showPage(1, view);
+        await showPage(1);
     } catch (e) {
         log(`[Prompts] Search failed: ${e}`, "error");
         showStatus("Search failed: " + e, true);
@@ -141,16 +146,16 @@ async function readWholeEntries(entries) {
 }
 
 /**
- * Show a page of the search results, its entries read whole first. `view` is
- * the search's own token when it shows its first page.
+ * Show a page of the search results, its entries read whole first.
  */
-async function showPage(page, view = ++viewToken) {
+async function showPage(page) {
+    const view = ++pageToken;
     try {
         const pages = Math.max(1, Math.ceil(displayData.length / PAGE_SIZE));
         const target = Math.max(1, Math.min(page, pages));
         const start = (target - 1) * PAGE_SIZE;
         await readWholeEntries(displayData.slice(start, start + PAGE_SIZE));
-        if (view !== viewToken) return;
+        if (view !== pageToken) return;
         currentPage = target;
         renderChatHistory();
     } catch (e) {

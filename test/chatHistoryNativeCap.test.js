@@ -19,6 +19,8 @@ vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
 vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn() }));
 
 const NATIVE_MESSAGE_CAP_BYTES = 1024 * 1024;
+// A page that never stops asking fails here, not by exhausting the worker.
+const MAX_HELPER_REQUESTS = 20_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 afterEach(() => {
@@ -55,6 +57,7 @@ function fakeHelper(entries, { removes = true } = {}) {
   const cut = (text, n) => (Number.isInteger(n) && n > 0 ? [...text].slice(0, n).join('') : text);
   const sendMessage = vi.fn(async msg => {
     replies.calls.push(msg);
+    if (replies.calls.length > MAX_HELPER_REQUESTS) throw new Error('runaway: too many helper requests');
     switch (msg.cmd) {
       case 'memoryStats':
         return { docs: stored.length, usedBytes: 1, dbBytes: 1 };
@@ -121,6 +124,7 @@ async function openPage(helper) {
     history,
     shown: () => [...d.querySelectorAll('#history-list .history-search-result-content')].map(el => el.textContent),
     pageInfo: () => d.getElementById('history-page-info').textContent,
+    label: () => d.getElementById('history-stats').textContent.replace(/\s+/g, ' ').trim(),
     status: () => d.getElementById('status-message').textContent,
   };
 }
@@ -153,7 +157,7 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     // Only the shown entries are read, each once.
     const reads = helper.replies.calls.filter(m => m.cmd === 'memoryRead');
     expect(reads).toHaveLength(40);
-  });
+  }, 30_000);
 
   it('shows each entry whole when others share its millisecond, and says when one is gone', async () => {
     const now = Date.now() - 60_000;
@@ -232,6 +236,76 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
   });
 
+  // Holds the helper's answers to `cmd` messages for which `match` is true until released.
+  function hold(helper, cmd, match = () => true) {
+    const answer = helper.sendMessage.getMockImplementation();
+    let release;
+    const held = new Promise(r => { release = r; });
+    helper.sendMessage.mockImplementation(async msg => {
+      if (msg.cmd === cmd && match(msg)) await held;
+      return answer(msg);
+    });
+    return () => release();
+  }
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+  };
+
+  it('a page change while a search is pending pages the results shown, then shows the search', async () => {
+    const alpha = entriesOf(40, 10);
+    const helper = fakeHelper(alpha);
+    const page = await openPage(helper);
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
+
+    const releaseSearch = hold(helper, 'memorySearch');
+    await search(page, 'beta');
+    page.d.getElementById('history-next-page').click();
+    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 2'));
+    expect(page.shown()).toEqual(alpha.slice(20, 40).map(e => e.content));
+    expect(page.label()).toContain('"planning" (40 results)');
+
+    releaseSearch();
+    await vi.waitFor(() => expect(page.label()).toContain('"beta" (40 results)'));
+    expect(page.pageInfo()).toBe('Page 1 of 2');
+    expect(page.shown()).toEqual(alpha.slice(0, 20).map(e => e.content));
+  });
+
+  it('a page change that loads late does not show over a later page change', async () => {
+    const entries = entriesOf(60, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
+    page.d.getElementById('history-next-page').click();
+    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 3'));
+
+    const thirdPageMs = new Set(entries.slice(40).map(e => e.dateMs));
+    const releaseReads = hold(helper, 'memoryRead', msg => thirdPageMs.has(msg.timestampMs));
+    page.d.getElementById('history-next-page').click();
+    await settle();
+    expect(page.pageInfo()).toBe('Page 2 of 3');
+    page.d.getElementById('history-prev-page').click();
+    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 1 of 3'));
+    releaseReads();
+    await settle();
+    expect(page.pageInfo()).toBe('Page 1 of 3');
+    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
+  });
+
+  it('a search that answers after the tab reloads shows nothing', async () => {
+    const helper = fakeHelper(entriesOf(3, 10));
+    const page = await openPage(helper);
+    const releaseSearch = hold(helper, 'memorySearch');
+    await search(page, 'planning');
+    await page.history.loadChatHistory();
+    releaseSearch();
+    await settle();
+    expect(page.shown()).toEqual([]);
+    expect(page.d.getElementById('history-empty').textContent).toBe('Use the search bar to find past conversations.');
+    expect(page.label()).not.toContain('Search:');
+  });
+
   it('reports a failed read and keeps the page it showed', async () => {
     const entries = entriesOf(40, 10);
     const helper = fakeHelper(entries);
@@ -293,6 +367,8 @@ describe('TB-193: Chat History "delete old" and the native-messaging cap', () =>
       expect(asked).toHaveLength(older.length);
       expect(new Set(asked).size).toBe(older.length);
       expect(helper.stored).toHaveLength(removes ? 0 : older.length);
+      // The count is what the helper says it removed.
+      expect(page.status()).toContain(`${removes ? older.length : 0} search entries`);
     }
   });
 

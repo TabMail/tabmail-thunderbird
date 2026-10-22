@@ -62,13 +62,15 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   (`SETTINGS.memoryManagement.chatHistoryPreviewChars`, 1). The search still shows each entry
   whole: the page reads each entry it shows on its own (`memoryRead` at the entry's millisecond,
   `toleranceMs: 0`, picked by `memId`), once, so a reply holds one entry or the few written at that
-  millisecond; a search or page change that finishes after a later one does not render
-  (`viewToken`). "Delete old" lists only the entries older than the cutoff (`to` = cutoff - 1 ms),
+  millisecond. A search that finishes after a later search or a reload does not render
+  (`searchToken`), and a page after a later page, search or reload (`pageToken`); a page
+  change while a search is pending pages the results shown, and the search then shows. "Delete old" lists only the entries older than the cutoff (`to` = cutoff - 1 ms),
   `chatHistoryDeleteFetchRows` (500) a request, and removes each page as it comes; each request
   starts at the last date listed and skips the ids already listed there, so it ends even if a
   removal removes nothing. Pinned by `test/chatHistoryNativeCap.test.js` (TB-193).
-  Residual: one entry over 1 MiB on its own still passes the cap when read whole, here and in the
-  chat's `memory_read`; an older helper ignores `previewChars` and answers whole rows (500 a
+  Residual: one entry over 1 MiB on its own still passes the cap when read whole. The chat's
+  `memory_read` reads every entry within ±10 minutes whole (up to 50), so a few long ones pass
+  it with none over 1 MiB (issue #151). An older helper ignores `previewChars` and answers whole rows (500 a
   request for "delete old", as before) until it updates.
 - **Not on other clients.** Voice reads the helper's replies over its own pipe with no such cap, and
   iOS reads its own database.
