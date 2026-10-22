@@ -64,7 +64,10 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   `toleranceMs: 0`, picked by `memId`), once, so a reply holds one entry or the few written at that
   millisecond. A search that finishes after a later search or a reload does not render
   (`searchToken`), and a page after a later page, search or reload (`pageToken`); a page
-  change while a search is pending pages the results shown, and the search then shows. "Delete old" lists only the entries older than the cutoff (`to` = cutoff - 1 ms),
+  change while the search request is pending pages the results shown, and the search then
+  shows (one while the search reads its first page lands on that search's page). A reload's
+  own render is not checked, so one answering after a search started can briefly show that
+  search's page as previews until its reads finish. "Delete old" lists only the entries older than the cutoff (`to` = cutoff - 1 ms),
   `chatHistoryDeleteFetchRows` (500) a request, and removes each page as it comes; each request
   starts at the last date listed and skips the ids already listed there, so it ends even if a
   removal removes nothing. Pinned by `test/chatHistoryNativeCap.test.js` (TB-193).

@@ -27,10 +27,14 @@ let currentPage = 1;
 let totalPages = 1;
 let currentSearchQuery = "";
 let isSearchMode = false;
-// A search, page change or reload that finishes after a later one doesn't
-// render over it. A search is superseded by a later search or a reload; a page
-// by any later page (a search shows its first page) or a reload. A page change
-// while a search is pending pages the results shown and leaves the search be.
+// A search or page change that finishes after a later one doesn't render
+// over it. A search is superseded by a later search or a reload; a page by any
+// later page (a search shows its first page) or a reload. A page change while
+// a search request is pending pages the results shown and leaves the search
+// be; one while the search reads its first page shows that search's page. A
+// reload's own render isn't checked: one that answers after a search started
+// can show that search's page before its reads finish (previews, replaced
+// when they do).
 let searchToken = 0;
 let pageToken = 0;
 
