@@ -95,6 +95,14 @@ export const CHAT_SETTINGS = {
   // what it returns to this (`previewChars`), so a reply of long turns stays
   // far below the 1 MiB cap; a helper without that support returns them whole.
   memoryPreviewChars: 400,
+  // memory_read: the most turns it returns (the helper's own read stopped at
+  // 50), and the window listed this many turns per request with the shortest
+  // preview (`previewChars`) before each turn shown is read whole on its own,
+  // so no reply holds many whole turns (Thunderbird caps one native message at
+  // 1 MiB). A helper without previews lists them whole, fewer than it read.
+  memoryReadMaxTurns: 50,
+  memoryReadListRows: 20,
+  memoryReadListPreviewChars: 1,
   // --- FTS backend readiness retry (chat tools) ---
   // When `browser.runtime.sendMessage({type:"fts", ...})` resolves to `undefined`,
   // no listener handled the message — typically because `initFtsEngine()` hasn't
