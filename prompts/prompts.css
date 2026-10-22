@@ -1457,6 +1457,11 @@ button:focus-visible {
   -webkit-line-clamp: 3;
 }
 
+/* Said in place of a reply the preview has no room for. */
+.history-search-result-note {
+  font-style: italic;
+}
+
 
 /* History Search Bar */
 .history-search-bar {

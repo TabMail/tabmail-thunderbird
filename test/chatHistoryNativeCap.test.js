@@ -222,13 +222,15 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     await indexChatTurn('planning the trip', 'Booked the planning call.', 'turn', at);
     // A greeting or a nudge: no request.
     await indexChatTurn('', 'Welcome back, the planning call is at 3.', 'greeting', at - 1);
+    // A request the agent never answered.
+    await indexChatTurn('planning question', '', 'unanswered', at - 6);
     await indexChatSession('session', [
       { role: 'user', content: 'planning a move' },
       { role: 'assistant', content: 'Here is a checklist.' },
       { role: 'user', content: 'and the boxes?' },
       { role: 'assistant', content: 'Ordered.' },
     ], at - 2);
-    expect(written.map(r => r.memId)).toEqual(['turn:turn', 'turn:greeting', 'chat:session']);
+    expect(written.map(r => r.memId)).toEqual(['turn:turn', 'turn:greeting', 'turn:unanswered', 'chat:session']);
     const make = (memId, content, offset) => ({ memId, sessionId: 's', role: 'session', content, dateMs: at - offset });
     const helper = fakeHelper([
       ...written,
@@ -239,7 +241,7 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     ]);
     const page = await openPage(helper);
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(6));
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(7));
     expect(page.shown()).toEqual([
       { request: 'planning the trip', reply: 'Booked the planning call.' },
       { request: '', reply: 'Welcome back, the planning call is at 3.' },
@@ -247,23 +249,40 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
       { request: 'planning a move', reply: 'Here is a checklist.\n\n[USER]: and the boxes?\n\n[AGENT]: Ordered.' },
       { request: 'planning a trip', reply: 'Booked the call.' },
       { request: '', reply: 'Hello, planning starts Monday.' },
-      // The preview ends before the reply: all request.
-      { request: `planning ${'r'.repeat(383)}…`, reply: '' },
+      // The preview ends before the reply: all request, and a note that says why.
+      { request: `planning ${'r'.repeat(383)}…`, reply: 'Reply not shown: the request is too long to preview.' },
+      // Never answered, and shown whole: no reply and no note.
+      { request: 'planning question', reply: '' },
     ]);
     // No part opens with a role label, and every row with a reply shows it.
     for (const { request, reply } of page.shown()) {
       expect(request).not.toMatch(/^\[(USER|AGENT|ASSISTANT)\]:/);
       expect(reply).not.toMatch(/^\[(USER|AGENT|ASSISTANT)\]:/);
     }
-    expect(page.shown().slice(0, 5).every(e => e.reply !== '')).toBe(true);
+    expect(page.shown().slice(0, 6).every(e => e.reply !== '')).toBe(true);
     const entries = [...page.d.querySelectorAll('#history-list .history-search-result-content')];
     expect(entries[0].children).toHaveLength(2);
     expect(entries[1].querySelector('.history-search-result-request')).toBeNull();
     expect(entries[4].querySelector('.history-search-result-request')).toBeNull();
-    expect(entries[5].querySelector('.history-search-result-reply')).toBeNull();
+    expect(entries[5].querySelector('.history-search-result-note')).not.toBeNull();
+    expect(entries[5].querySelector('.history-search-result-note .search-highlight')).toBeNull();
+    expect(entries[6].querySelector('.history-search-result-reply')).toBeNull();
     const highlighted = part => [...entries[0].querySelectorAll(`${part} .search-highlight`)].map(el => el.textContent);
     expect(highlighted('.history-search-result-request')).toEqual(['planning']);
     expect(highlighted('.history-search-result-reply')).toEqual(['planning']);
+  });
+
+  it('shows HTML-special characters in the request and the reply as text, highlighted, with no element made from them', async () => {
+    const entry = {
+      memId: 'html', sessionId: 'persistent_chat', role: 'session', dateMs: Date.now() - 60_000,
+      content: `[USER]: what's <b>bold</b> & "quoted" planning?\n\n[AGENT]: it's <img src=x onerror="globalThis.__injected=1"> & planning done`,
+    };
+    const page = await openPage(fakeHelper([entry]));
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(1));
+    expect(page.shown()).toEqual([{ request: `what's <b>bold</b> & "quoted" planning?`, reply: `it's <img src=x onerror="globalThis.__injected=1"> & planning done` }]);
+    expect(page.d.querySelectorAll('#history-list img, #history-list b')).toHaveLength(0);
+    expect([...page.d.querySelectorAll('#history-list .search-highlight')].map(el => el.textContent)).toEqual(['planning', 'planning']);
   });
 
   it('a new search opens on its first page', async () => {

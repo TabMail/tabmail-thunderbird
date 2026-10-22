@@ -4,8 +4,8 @@
 
 /**
  * Chat History tab functionality
- * Default: shows recent turns from persistent chat store (chat_turns)
- * Search: queries Memory FTS, formats like memory_read output
+ * Default: shows the memory's size and an empty list
+ * Search: queries Memory FTS and shows a preview of each entry, as Voice does
  */
 
 import { log } from "../../agent/modules/utils.js";
@@ -18,6 +18,8 @@ const CHAT_TURNS_KEY = "chat_turns";
 const CHAT_META_KEY = "chat_meta";
 const CHAT_ID_MAP_KEY = "chat_id_map";
 const PAGE_SIZE = 20;
+// Said in place of a reply when a long request fills the preview.
+const PREVIEW_NO_REPLY_NOTE = "Reply not shown: the request is too long to preview.";
 
 let displayData = []; // unified display list (turns or FTS results)
 let memoryFtsStats = null;
@@ -262,8 +264,8 @@ async function changeMemorySizeLimit(bytes) {
 }
 
 /**
- * Render FTS entries (used for both default and search views).
- * Each entry is a user+assistant exchange with clean rendered text.
+ * Render search results: each entry's preview as what was asked, then what
+ * the agent did.
  */
 function renderFtsEntries(container, entries) {
     if (isSearchMode) {
@@ -294,7 +296,8 @@ function renderFtsEntries(container, entries) {
         // search words highlighted.
         const contentDiv = document.createElement("div");
         contentDiv.className = "history-search-result-content";
-        const { request, agent } = exchangeOf(previewText(entry.content));
+        const { text: preview, cut } = previewText(entry.content);
+        const { request, agent } = exchangeOf(preview);
         for (const [text, className] of [[request, "history-search-result-request"], [agent, "history-search-result-reply"]]) {
             if (!text) continue;
             const part = document.createElement("div");
@@ -306,6 +309,14 @@ function renderFtsEntries(container, entries) {
             }
             contentDiv.appendChild(part);
         }
+        // A long request fills the preview before the reply starts: say so,
+        // rather than leave the reply looking empty (owner 2026-10-21).
+        if (cut && !agent) {
+            const note = document.createElement("div");
+            note.className = "history-search-result-reply history-search-result-note";
+            note.textContent = PREVIEW_NO_REPLY_NOTE;
+            contentDiv.appendChild(note);
+        }
         entryDiv.appendChild(contentDiv);
 
         container.appendChild(entryDiv);
@@ -314,13 +325,13 @@ function renderFtsEntries(container, entries) {
 
 /**
  * The start of an entry, as the search asked for it (an older helper answers
- * whole entries); an ellipsis marks one that goes on.
+ * whole entries); an ellipsis marks one that goes on, and `cut` says so.
  */
 function previewText(content) {
-    if (!content) return "(empty)";
+    if (!content) return { text: "(empty)", cut: false };
     const chars = [...content];
     const max = SETTINGS.memoryManagement.chatHistorySearchPreviewChars;
-    return chars.length > max ? `${chars.slice(0, max).join("")}…` : content;
+    return chars.length > max ? { text: `${chars.slice(0, max).join("")}…`, cut: true } : { text: content, cut: false };
 }
 
 /**
