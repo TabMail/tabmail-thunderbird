@@ -19,6 +19,11 @@ import { JSDOM } from 'jsdom';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
 vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn() }));
+// The memory writers' direct path to the helper, routed to the same message
+// path their other writes take, so a test captures every row they store.
+vi.mock('../fts/nativeEngine.js', () => ({
+  nativeMemorySearch: { indexBatch: rows => globalThis.browser.runtime.sendMessage({ type: 'fts', cmd: 'memoryIndexBatch', rows }) },
+}));
 
 const NATIVE_MESSAGE_CAP_BYTES = 1024 * 1024;
 // A page that never stops asking fails here, not by exhausting the worker.
@@ -208,31 +213,54 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(page.shown()).toEqual([exact, `${over.slice(0, 400)}…`, emoji, `${[...emojiOver].slice(0, 400).join('')}…`].map(asReply));
   });
 
-  it('shows what was asked and what the agent did, as Voice does, search words highlighted in both', async () => {
+  it('shows what was asked and what the agent did, as Voice does, for every shape the memory writers store, search words highlighted in both', async () => {
     const at = Date.now() - 60_000;
-    const make = (memId, content, offset) => ({ memId, sessionId: 's', role: 'exchange', content, dateMs: at - offset });
-    const longRequest = `[USER]: planning ${'r'.repeat(500)}\n\n[AGENT]: done`;
+    // Rows as Thunderbird's memory writers store them today.
+    const written = [];
+    globalThis.browser = { runtime: { sendMessage: async msg => { written.push(...msg.rows); return { ok: true }; } } };
+    const { indexChatTurn, indexChatSession } = await import('../fts/memoryIndexer.js');
+    await indexChatTurn('planning the trip', 'Booked the planning call.', 'turn', at);
+    // A greeting or a nudge: no request.
+    await indexChatTurn('', 'Welcome back, the planning call is at 3.', 'greeting', at - 1);
+    await indexChatSession('session', [
+      { role: 'user', content: 'planning a move' },
+      { role: 'assistant', content: 'Here is a checklist.' },
+      { role: 'user', content: 'and the boxes?' },
+      { role: 'assistant', content: 'Ordered.' },
+    ], at - 2);
+    expect(written.map(r => r.memId)).toEqual(['turn:turn', 'turn:greeting', 'chat:session']);
+    const make = (memId, content, offset) => ({ memId, sessionId: 's', role: 'session', content, dateMs: at - offset });
     const helper = fakeHelper([
-      make('turn', '[USER]: planning the trip\n\n[AGENT]: Booked the planning call.', 0),
-      make('cut', longRequest, 1),
-      make('session', 'User: planning a move\n\nAssistant: Here is a checklist.', 2),
-      make('noRequest', '[USER]: \n\n[AGENT]: planning reminder set', 3),
+      ...written,
+      // Written by v1.0.11 to v1.2.8, which labelled the reply [ASSISTANT].
+      make('legacyTurn', '[USER]: planning a trip\n\n[ASSISTANT]: Booked the call.', 3),
+      make('legacyGreeting', '[ASSISTANT]: Hello, planning starts Monday.', 4),
+      make('cut', `[USER]: planning ${'r'.repeat(500)}\n\n[AGENT]: done`, 5),
     ]);
     const page = await openPage(helper);
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(4));
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(6));
     expect(page.shown()).toEqual([
       { request: 'planning the trip', reply: 'Booked the planning call.' },
+      { request: '', reply: 'Welcome back, the planning call is at 3.' },
+      // A session of several turns: its first request, then the rest, as Voice shows one.
+      { request: 'planning a move', reply: 'Here is a checklist.\n\n[USER]: and the boxes?\n\n[AGENT]: Ordered.' },
+      { request: 'planning a trip', reply: 'Booked the call.' },
+      { request: '', reply: 'Hello, planning starts Monday.' },
       // The preview ends before the reply: all request.
       { request: `planning ${'r'.repeat(383)}…`, reply: '' },
-      // An older session, not written as a request and a reply.
-      { request: '', reply: 'User: planning a move\n\nAssistant: Here is a checklist.' },
-      { request: '', reply: 'planning reminder set' },
     ]);
+    // No part opens with a role label, and every row with a reply shows it.
+    for (const { request, reply } of page.shown()) {
+      expect(request).not.toMatch(/^\[(USER|AGENT|ASSISTANT)\]:/);
+      expect(reply).not.toMatch(/^\[(USER|AGENT|ASSISTANT)\]:/);
+    }
+    expect(page.shown().slice(0, 5).every(e => e.reply !== '')).toBe(true);
     const entries = [...page.d.querySelectorAll('#history-list .history-search-result-content')];
     expect(entries[0].children).toHaveLength(2);
-    expect(entries[2].querySelector('.history-search-result-request')).toBeNull();
-    expect(entries[3].querySelector('.history-search-result-request')).toBeNull();
+    expect(entries[1].querySelector('.history-search-result-request')).toBeNull();
+    expect(entries[4].querySelector('.history-search-result-request')).toBeNull();
+    expect(entries[5].querySelector('.history-search-result-reply')).toBeNull();
     const highlighted = part => [...entries[0].querySelectorAll(`${part} .search-highlight`)].map(el => el.textContent);
     expect(highlighted('.history-search-result-request')).toEqual(['planning']);
     expect(highlighted('.history-search-result-reply')).toEqual(['planning']);

@@ -65,9 +65,11 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   (`SETTINGS.memoryManagement.chatHistorySearchPreviewChars`; code points, as the helper counts)
   laid out as Voice shows an entry: what was asked (`[USER]: …`, 2 lines, `.history-search-result-request`)
   then what the agent did (`[AGENT]: …`, 3 lines, de-emphasized, `.history-search-result-reply`),
-  labels removed, search words highlighted in both; a preview cut before the reply is all request,
-  an older `User:`/`Assistant:` session all reply (`exchangeOf`, `-webkit-line-clamp`; spaced by
-  margin, as Gecko paints the next line in a clamped box's padding). It asks the helper for one character more,
+  labels removed, search words highlighted in both; a greeting or nudge (`[AGENT]: …` alone) is all
+  reply, a row written before v1.2.9 (reply labelled `[ASSISTANT]`) splits the same way, a preview cut
+  before the reply is all request, and a multi-turn session row shows its later turns' labels in the
+  reply, as Voice does (fixtures built from `indexChatTurn` / `indexChatSession` output; `exchangeOf`, `-webkit-line-clamp`; the clamped
+  parts carry no padding, as Gecko paints the next line in a clamped box's padding). It asks the helper for one character more,
   so an entry that goes on (ellipsis) is told from one of exactly 400; the page cuts too, since an
   older helper answers whole entries. Paging is
   synchronous; a search that finishes after a later search or a reload does not render

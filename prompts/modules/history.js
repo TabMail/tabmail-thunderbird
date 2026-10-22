@@ -325,12 +325,15 @@ function previewText(content) {
 
 /**
  * An entry split into what the user asked and what the agent did, as Voice
- * splits it (`[USER]: …` then `[AGENT]: …`). A preview cut before the reply is
- * all request; an entry not written that way (an older session) is all reply.
+ * splits it (`[USER]: …` then `[AGENT]: …`; `[ASSISTANT]` in entries written
+ * before v1.2.9). An entry with no request (a greeting, a nudge) is all reply;
+ * a preview cut before the reply is all request.
  */
 function exchangeOf(text) {
-    const match = /^\[USER\]: ([\s\S]*?)(?:\n\n\[AGENT\]: ([\s\S]*))?$/.exec(text);
-    return match ? { request: match[1], agent: match[2] ?? "" } : { request: "", agent: text };
+    const turn = /^\[USER\]: ([\s\S]*?)(?:\n\n\[(?:AGENT|ASSISTANT)\]: ([\s\S]*))?$/.exec(text);
+    if (turn) return { request: turn[1], agent: turn[2] ?? "" };
+    const reply = /^\[(?:AGENT|ASSISTANT)\]: ([\s\S]*)$/.exec(text);
+    return { request: "", agent: reply ? reply[1] : text };
 }
 
 /**
