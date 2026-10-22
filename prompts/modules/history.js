@@ -27,16 +27,9 @@ let currentPage = 1;
 let totalPages = 1;
 let currentSearchQuery = "";
 let isSearchMode = false;
-// A search or page change that finishes after a later one doesn't render
-// over it. A search is superseded by a later search or a reload; a page by any
-// later page (a search shows its first page) or a reload. A page change while
-// a search request is pending pages the results shown and leaves the search
-// be; one while the search reads its first page shows that search's page. A
-// reload's own render isn't checked: one that answers after a search started
-// can show that search's page before its reads finish (previews, replaced
-// when they do).
+// A search that answers after a later search or a reload doesn't render over
+// it. A page change while a search is pending pages the results shown.
 let searchToken = 0;
-let pageToken = 0;
 
 /**
  * Load chat history — shows stats + search bar only (no entries until search).
@@ -45,7 +38,6 @@ export async function loadChatHistory() {
     try {
         log("[Prompts] Loading chat history stats...");
         searchToken++;
-        pageToken++;
 
         // Reset search mode
         currentSearchQuery = "";
@@ -87,10 +79,9 @@ export async function loadChatHistory() {
 }
 
 /**
- * Search chat history using Memory FTS. The helper answers each result's id
- * and date with the shortest preview: Thunderbird refuses a native message
- * over 1 MiB, and memory entries are stored whole. The page then reads the
- * entries it shows (readWholeEntries).
+ * Search chat history using Memory FTS. The helper answers the start of each
+ * result (previewChars), which is what the page shows: Thunderbird refuses a
+ * native message over 1 MiB, and memory entries are stored whole.
  */
 export async function searchChatHistory(query) {
     if (!query || query.trim().length === 0) {
@@ -109,7 +100,7 @@ export async function searchChatHistory(query) {
             q,
             limit: 200,
             ignoreDate: true,
-            previewChars: SETTINGS.memoryManagement.chatHistoryPreviewChars
+            previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars
         });
         if (search !== searchToken) return;
 
@@ -119,52 +110,10 @@ export async function searchChatHistory(query) {
         displayData = Array.isArray(results) ? results : [];
         log(`[Prompts] Search returned ${displayData.length} results`);
 
-        await showPage(1);
+        renderChatHistory();
     } catch (e) {
         log(`[Prompts] Search failed: ${e}`, "error");
         showStatus("Search failed: " + e, true);
-    }
-}
-
-/**
- * Reads each entry whole, once: the search returned only a preview of it. An
- * entry is read at its own millisecond and picked by its id, so each reply
- * holds one entry (or the few written at that millisecond). One removed since
- * the search says so.
- */
-async function readWholeEntries(entries) {
-    await Promise.all(entries.filter(entry => !entry.whole).map(async entry => {
-        const rows = await browser.runtime.sendMessage({
-            type: "fts",
-            cmd: "memoryRead",
-            timestampMs: entry.dateMs,
-            toleranceMs: 0
-        });
-        if (!Array.isArray(rows)) {
-            throw new Error(rows?.error || "invalid memory read reply");
-        }
-        const row = rows.find(r => r.memId === entry.memId);
-        entry.content = row ? row.content : "(No longer in memory.)";
-        entry.whole = true;
-    }));
-}
-
-/**
- * Show a page of the search results, its entries read whole first.
- */
-async function showPage(page) {
-    const view = ++pageToken;
-    try {
-        const pages = Math.max(1, Math.ceil(displayData.length / PAGE_SIZE));
-        const target = Math.max(1, Math.min(page, pages));
-        const start = (target - 1) * PAGE_SIZE;
-        await readWholeEntries(displayData.slice(start, start + PAGE_SIZE));
-        if (view !== pageToken) return;
-        currentPage = target;
-        renderChatHistory();
-    } catch (e) {
-        log(`[Prompts] Loading the results failed: ${e}`, "error");
-        showStatus("Loading the results failed: " + e, true);
     }
 }
 
@@ -343,15 +292,27 @@ function renderFtsEntries(container, entries) {
         // Content — with search highlight if in search mode
         const contentDiv = document.createElement("div");
         contentDiv.className = "history-search-result-content";
+        const text = previewText(entry.content);
         if (isSearchMode && currentSearchQuery) {
-            contentDiv.innerHTML = highlightSearchTerms(entry.content || "(empty)", currentSearchQuery);
+            contentDiv.innerHTML = highlightSearchTerms(text, currentSearchQuery);
         } else {
-            contentDiv.textContent = entry.content || "(empty)";
+            contentDiv.textContent = text;
         }
         entryDiv.appendChild(contentDiv);
 
         container.appendChild(entryDiv);
     }
+}
+
+/**
+ * The start of an entry, as the search asked for it (an older helper answers
+ * whole entries); an ellipsis marks one that goes on.
+ */
+function previewText(content) {
+    if (!content) return "(empty)";
+    const chars = [...content];
+    const max = SETTINGS.memoryManagement.chatHistorySearchPreviewChars;
+    return chars.length >= max ? `${chars.slice(0, max).join("")}…` : content;
 }
 
 /**
@@ -379,7 +340,8 @@ function updatePaginationControls() {
  */
 export function prevPage() {
     if (currentPage > 1) {
-        showPage(currentPage - 1);
+        currentPage--;
+        renderChatHistory();
     }
 }
 
@@ -388,7 +350,8 @@ export function prevPage() {
  */
 export function nextPage() {
     if (currentPage < totalPages) {
-        showPage(currentPage + 1);
+        currentPage++;
+        renderChatHistory();
     }
 }
 
@@ -571,7 +534,7 @@ async function deleteOldHistory(days) {
         // listed and skips the entries already listed at it.
         let ftsDeleted = 0;
         try {
-            const { chatHistoryDeleteFetchRows, chatHistoryPreviewChars } = SETTINGS.memoryManagement;
+            const { chatHistoryDeleteFetchRows, chatHistoryDeletePreviewChars } = SETTINGS.memoryManagement;
             let to = cutoffMs - 1;
             let listedAtCursor = new Set();
             while (true) {
@@ -583,7 +546,7 @@ async function deleteOldHistory(days) {
                     to,
                     limit,
                     ignoreDate: false,
-                    previewChars: chatHistoryPreviewChars
+                    previewChars: chatHistoryDeletePreviewChars
                 });
                 if (!Array.isArray(page)) {
                     throw new Error(page?.error || "invalid memory search reply");

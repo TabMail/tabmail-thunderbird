@@ -1433,8 +1433,11 @@ button:focus-visible {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 200px;
-  overflow-y: auto;
+  /* The start of each conversation (the search asks for a preview). */
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
 }
 
 

@@ -6,10 +6,10 @@
 // native-messaging reply cap. Thunderbird refuses a helper message over 1 MiB
 // and disconnects the helper; memory entries are stored whole. This runs the
 // real page (prompts/prompts.html) with the shipped settings against a fake
-// helper that answers memorySearch, memoryRead and memoryRemoveBatch as the
-// helper does (previewChars cuts content in the reply, both date bounds
-// inclusive, newest first, a search matching entries that hold one of its
-// words) and refuses an over-cap reply. Any other command fails, so a page
+// helper that answers memorySearch and memoryRemoveBatch as the helper does
+// (previewChars cuts content in the reply, both date bounds inclusive, newest
+// first, a search matching entries that hold one of its words) and refuses an
+// over-cap reply. Any other command fails, so a page
 // that sends one (a clear, a write) fails its test.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -76,13 +76,6 @@ function fakeHelper(entries, { removes = true } = {}) {
           .map(e => ({ ...e, content: cut(e.content, msg.previewChars), snippet: query ? cut(e.content, msg.previewChars) : null, rank: 0 }));
         return reply(found);
       }
-      case 'memoryRead': {
-        const found = stored
-          .filter(e => Math.abs(e.dateMs - msg.timestampMs) <= msg.toleranceMs)
-          .sort((a, b) => a.dateMs - b.dateMs)
-          .slice(0, 50);
-        return reply(found);
-      }
       case 'memoryRemoveBatch': {
         let count = 0;
         if (removes) {
@@ -138,53 +131,51 @@ const search = async (page, query) => {
   page.d.getElementById('history-search-btn').click();
 };
 
+// What the page shows of an entry: its first 400 characters, and an ellipsis
+// when it goes on.
+const PREVIEW_CHARS = 400;
+const preview = e => ([...e.content].length >= PREVIEW_CHARS ? `${[...e.content].slice(0, PREVIEW_CHARS).join('')}…` : e.content);
+
 describe('TB-193: Chat History search and the native-messaging cap', () => {
-  it('shows 200 matching sessions of 200 KB, each entry on the page whole, with every reply under the cap', async () => {
+  it('shows the start of 200 matching sessions of 200 KB, with every reply under the cap', async () => {
     const entries = entriesOf(200, 200_000);
     const helper = fakeHelper(entries);
     const page = await openPage(helper);
 
     await search(page, 'planning');
     await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
+    expect(page.shown()).toEqual(entries.slice(0, 20).map(preview));
+    expect(page.shown()[0]).toMatch(/^\[USER\]: planning u+\n\n\[AGENT\]: a+…$/);
     expect(page.pageInfo()).toBe('Page 1 of 10');
     expect(page.d.querySelector('#history-list .search-highlight')?.textContent).toBe('planning');
 
     page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 10'));
-    expect(page.shown()).toEqual(entries.slice(20, 40).map(e => e.content));
+    expect(page.pageInfo()).toBe('Page 2 of 10');
+    expect(page.shown()).toEqual(entries.slice(20, 40).map(preview));
     page.d.getElementById('history-prev-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 1 of 10'));
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
+    expect(page.pageInfo()).toBe('Page 1 of 10');
+    expect(page.shown()).toEqual(entries.slice(0, 20).map(preview));
 
     expect(helper.replies.overCap).toBe(0);
-    // Only the shown entries are read, each once; browsing changes nothing stored.
-    const reads = helper.replies.calls.filter(m => m.cmd === 'memoryRead');
-    expect(reads).toHaveLength(40);
-    expect(new Set(helper.replies.calls.map(m => m.cmd))).toEqual(new Set(['memoryStats', 'memorySearch', 'memoryRead']));
+    expect(helper.replies.largest).toBeLessThan(NATIVE_MESSAGE_CAP_BYTES / 4);
+    // One search; browsing changes nothing stored.
+    expect(helper.replies.calls.map(m => m.cmd).filter(c => c !== 'memoryStats')).toEqual(['memorySearch']);
     expect(helper.stored).toEqual(entries);
-  }, 30_000);
+  });
 
-  it('shows each entry whole when others share its millisecond, and says when one is gone', async () => {
-    const now = Date.now() - 60_000;
-    const entries = [
-      { memId: 'a', sessionId: 's', role: 'exchange', content: 'planning one', dateMs: now },
-      { memId: 'b', sessionId: 's', role: 'exchange', content: 'planning two', dateMs: now },
-      { memId: 'c', sessionId: 's', role: 'exchange', content: 'planning three', dateMs: now - 1 },
-    ];
-    const helper = fakeHelper(entries);
+  it('shows a short entry whole, and the start of a long one from a helper that answers whole entries', async () => {
+    const short = { memId: 's', sessionId: 's', role: 'exchange', content: '[USER]: planning\n\n[AGENT]: done', dateMs: Date.now() - 60_000 };
+    const long = entriesOf(1, 5000, Date.now() - 120_000)[0];
+    const helper = fakeHelper([short, long]);
     const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    // An older helper ignores previewChars.
+    helper.sendMessage.mockImplementation(async msg => answer({ ...msg, previewChars: undefined }));
 
-    // Removed after the search answered, before the page read it.
-    const search0 = helper.sendMessage.getMockImplementation();
-    helper.sendMessage.mockImplementation(async msg => {
-      const result = await search0(msg);
-      if (msg.cmd === 'memorySearch') helper.stored.splice(helper.stored.findIndex(e => e.memId === 'c'), 1);
-      return result;
-    });
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(3));
-    expect(page.shown()).toEqual(['planning one', 'planning two', '(No longer in memory.)']);
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(2));
+    expect(page.shown()).toEqual([short.content, preview(long)]);
+    expect(page.shown()[1]).toHaveLength(PREVIEW_CHARS + 1);
   });
 
   it('a search that answers late does not show over a later one, nor change the pages it lists', async () => {
@@ -208,47 +199,20 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
     releaseFirst();
     await new Promise(r => setTimeout(r, 0));
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
+    expect(page.shown()).toEqual(entries.slice(0, 20).map(preview));
     expect(page.d.getElementById('history-empty').style.display).toBe('none');
     page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 2'));
-    expect(page.shown()).toEqual(entries.slice(20, 40).map(e => e.content));
+    expect(page.pageInfo()).toBe('Page 2 of 2');
+    expect(page.shown()).toEqual(entries.slice(20, 40).map(preview));
   });
 
-  it('a page that loads late does not show over a later search', async () => {
-    const entries = entriesOf(40, 10);
-    const helper = fakeHelper(entries);
-    const page = await openPage(helper);
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-
-    // Hold the reads of page 2's entries; the next search reads page 1's.
-    const answer = helper.sendMessage.getMockImplementation();
-    const secondPageMs = new Set(entries.slice(20).map(e => e.dateMs));
-    let releaseReads;
-    const readsHeld = new Promise(r => { releaseReads = r; });
-    helper.sendMessage.mockImplementation(async msg => {
-      if (msg.cmd === 'memoryRead' && secondPageMs.has(msg.timestampMs)) await readsHeld;
-      return answer(msg);
-    });
-    page.d.getElementById('history-next-page').click();
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(helper.replies.calls.filter(m => m.cmd === 'memorySearch')).toHaveLength(2));
-    await new Promise(r => setTimeout(r, 0));
-    releaseReads();
-    await new Promise(r => setTimeout(r, 0));
-    await new Promise(r => setTimeout(r, 0));
-    expect(page.pageInfo()).toBe('Page 1 of 2');
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
-  });
-
-  // Holds the helper's answers to `cmd` messages for which `match` is true until released.
-  function hold(helper, cmd, match = () => true) {
+  // Holds the helper's answers to `cmd` messages until released.
+  function hold(helper, cmd) {
     const answer = helper.sendMessage.getMockImplementation();
     let release;
     const held = new Promise(r => { release = r; });
     helper.sendMessage.mockImplementation(async msg => {
-      if (msg.cmd === cmd && match(msg)) await held;
+      if (msg.cmd === cmd) await held;
       return answer(msg);
     });
     return () => release();
@@ -264,40 +228,18 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     const page = await openPage(helper);
     await search(page, 'alpha');
     await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-    expect(page.shown()).toEqual(alpha.slice(0, 20).map(e => e.content));
+    expect(page.shown()).toEqual(alpha.slice(0, 20).map(preview));
 
     const releaseSearch = hold(helper, 'memorySearch');
     await search(page, 'beta');
     page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 2'));
-    expect(page.shown()).toEqual(alpha.slice(20, 40).map(e => e.content));
+    expect(page.pageInfo()).toBe('Page 2 of 2');
+    expect(page.shown()).toEqual(alpha.slice(20, 40).map(preview));
     expect(page.label()).toContain('"alpha" (40 results)');
 
     releaseSearch();
     await vi.waitFor(() => expect(page.label()).toContain('"beta" (5 results)'));
-    expect(page.shown()).toEqual(beta.map(e => e.content));
-  });
-
-  it('a page change that loads late does not show over a later page change', async () => {
-    const entries = entriesOf(60, 10);
-    const helper = fakeHelper(entries);
-    const page = await openPage(helper);
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-    page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 3'));
-
-    const thirdPageMs = new Set(entries.slice(40).map(e => e.dateMs));
-    const releaseReads = hold(helper, 'memoryRead', msg => thirdPageMs.has(msg.timestampMs));
-    page.d.getElementById('history-next-page').click();
-    await settle();
-    expect(page.pageInfo()).toBe('Page 2 of 3');
-    page.d.getElementById('history-prev-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 1 of 3'));
-    releaseReads();
-    await settle();
-    expect(page.pageInfo()).toBe('Page 1 of 3');
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
+    expect(page.shown()).toEqual(beta.map(preview));
   });
 
   it('a search that answers after the tab reloads shows nothing', async () => {
@@ -311,52 +253,6 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(page.shown()).toEqual([]);
     expect(page.d.getElementById('history-empty').textContent).toBe('Use the search bar to find past conversations.');
     expect(page.label()).not.toContain('Search:');
-  });
-
-  it('after a page fails to load, retrying it shows every entry whole', async () => {
-    const entries = entriesOf(40, 10);
-    const helper = fakeHelper(entries);
-    const page = await openPage(helper);
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-
-    // One entry on page 2 fails to read once (an error reply, then a rejected call).
-    for (const failure of [{ error: 'Native RPC timed out' }, new Error('Could not establish connection')]) {
-      const answer = helper.sendMessage.getMockImplementation();
-      let failed = false;
-      helper.sendMessage.mockImplementation(async msg => {
-        if (msg.cmd === 'memoryRead' && msg.timestampMs === entries[25].dateMs && !failed) {
-          failed = true;
-          if (failure instanceof Error) throw failure;
-          return failure;
-        }
-        return answer(msg);
-      });
-      page.d.getElementById('history-next-page').click();
-      await vi.waitFor(() => expect(failed).toBe(true));
-      await settle();
-      expect(page.pageInfo()).toBe('Page 1 of 2');
-      expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
-      helper.sendMessage.mockImplementation(answer);
-    }
-    page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.pageInfo()).toBe('Page 2 of 2'));
-    expect(page.shown()).toEqual(entries.slice(20, 40).map(e => e.content));
-  });
-
-  it('reports a failed read and keeps the page it showed', async () => {
-    const entries = entriesOf(40, 10);
-    const helper = fakeHelper(entries);
-    const page = await openPage(helper);
-    await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-
-    const answer = helper.sendMessage.getMockImplementation();
-    helper.sendMessage.mockImplementation(async msg => (msg.cmd === 'memoryRead' ? { error: 'Native helper disconnected' } : answer(msg)));
-    page.d.getElementById('history-next-page').click();
-    await vi.waitFor(() => expect(page.status()).toContain('Native helper disconnected'));
-    expect(page.pageInfo()).toBe('Page 1 of 2');
-    expect(page.shown()).toEqual(entries.slice(0, 20).map(e => e.content));
   });
 });
 
