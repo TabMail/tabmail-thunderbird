@@ -222,13 +222,14 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
 
   it('shows what was asked and what the agent did, as Voice does, for every shape the memory writers store, search words highlighted in both', async () => {
     const at = Date.now() - 60_000;
-    // Rows as Thunderbird's memory writers store them today.
+    // Rows as Thunderbird's memory writers store them.
     const written = [];
     globalThis.browser = { runtime: { sendMessage: async msg => { written.push(...msg.rows); return { ok: true }; } } };
     const { indexChatTurn, indexChatSession } = await import('../fts/memoryIndexer.js');
-    await indexChatTurn('planning the trip', 'Booked the planning call.', 'turn', at);
-    // A greeting or a nudge: no request.
-    await indexChatTurn('', 'Welcome back, the planning call is at 3.', 'greeting', at - 1);
+    // A request with a line break, as extractPlainTextFromHtml renders <br>.
+    await indexChatTurn('planning\nthe trip', 'Booked the planning call.', 'turn', at);
+    // A greeting or a nudge: no request, in paragraphs, as extractPlainTextFromHtml renders <p>.
+    await indexChatTurn('', 'Welcome back.\n\nThe planning call is at 3.', 'greeting', at - 1);
     // A request the agent never answered.
     await indexChatTurn('planning question', '', 'unanswered', at - 6);
     await indexChatSession('session', [
@@ -250,8 +251,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     await search(page, 'planning');
     await vi.waitFor(() => expect(page.shown()).toHaveLength(7));
     expect(page.shown()).toEqual([
-      { request: 'planning the trip', reply: 'Booked the planning call.' },
-      { request: '', reply: 'Welcome back, the planning call is at 3.' },
+      { request: 'planning\nthe trip', reply: 'Booked the planning call.' },
+      { request: '', reply: 'Welcome back.\n\nThe planning call is at 3.' },
       // A session of several turns: its first request, then the rest, as Voice shows one.
       { request: 'planning a move', reply: 'Here is a checklist.\n\n[USER]: and the boxes?\n\n[AGENT]: Ordered.' },
       { request: 'planning a trip', reply: 'Booked the call.' },
