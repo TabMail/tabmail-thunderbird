@@ -1430,15 +1430,32 @@ button:focus-visible {
 .history-search-result-content {
   /* Margin, not padding: a clamped box paints the next line in its padding. */
   margin: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* What was asked, then what the agent did, as Voice shows them: the start of
+   each (the search asks for a preview). */
+.history-search-result-request,
+.history-search-result-reply {
   white-space: pre-wrap;
   word-break: break-word;
-  /* The start of each conversation (the search asks for a preview). */
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
+  -webkit-line-clamp: 2;
+}
+
+.history-search-result-request {
+  font-weight: 500;
+}
+
+.history-search-result-reply {
+  color: var(--in-content-deemphasized-text);
+  -webkit-line-clamp: 3;
 }
 
 

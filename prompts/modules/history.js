@@ -290,14 +290,21 @@ function renderFtsEntries(container, entries) {
         dateHeader.textContent = `Conversation from ${dateStr}`;
         entryDiv.appendChild(dateHeader);
 
-        // Content — with search highlight if in search mode
+        // What was asked, then what the agent did, as Voice shows them;
+        // search words highlighted.
         const contentDiv = document.createElement("div");
         contentDiv.className = "history-search-result-content";
-        const text = previewText(entry.content);
-        if (isSearchMode && currentSearchQuery) {
-            contentDiv.innerHTML = highlightSearchTerms(text, currentSearchQuery);
-        } else {
-            contentDiv.textContent = text;
+        const { request, agent } = exchangeOf(previewText(entry.content));
+        for (const [text, className] of [[request, "history-search-result-request"], [agent, "history-search-result-reply"]]) {
+            if (!text) continue;
+            const part = document.createElement("div");
+            part.className = className;
+            if (isSearchMode && currentSearchQuery) {
+                part.innerHTML = highlightSearchTerms(text, currentSearchQuery);
+            } else {
+                part.textContent = text;
+            }
+            contentDiv.appendChild(part);
         }
         entryDiv.appendChild(contentDiv);
 
@@ -314,6 +321,16 @@ function previewText(content) {
     const chars = [...content];
     const max = SETTINGS.memoryManagement.chatHistorySearchPreviewChars;
     return chars.length > max ? `${chars.slice(0, max).join("")}…` : content;
+}
+
+/**
+ * An entry split into what the user asked and what the agent did, as Voice
+ * splits it (`[USER]: …` then `[AGENT]: …`). A preview cut before the reply is
+ * all request; an entry not written that way (an older session) is all reply.
+ */
+function exchangeOf(text) {
+    const match = /^\[USER\]: ([\s\S]*?)(?:\n\n\[AGENT\]: ([\s\S]*))?$/.exec(text);
+    return match ? { request: match[1], agent: match[2] ?? "" } : { request: "", agent: text };
 }
 
 /**

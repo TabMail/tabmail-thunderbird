@@ -63,8 +63,11 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   at its millisecond, `toleranceMs: 0`, picked by `memId`, with a `pageToken` for late page reads);
   the owner then chose Voice's preview display (2026-10-21), so the search shows 400 characters
   (`SETTINGS.memoryManagement.chatHistorySearchPreviewChars`; code points, as the helper counts)
-  clamped to 5 lines (`.history-search-result-content`, `-webkit-line-clamp`; spaced by margin, as
-  Gecko paints the next line in a clamped box's padding). It asks the helper for one character more,
+  laid out as Voice shows an entry: what was asked (`[USER]: …`, 2 lines, `.history-search-result-request`)
+  then what the agent did (`[AGENT]: …`, 3 lines, de-emphasized, `.history-search-result-reply`),
+  labels removed, search words highlighted in both; a preview cut before the reply is all request,
+  an older `User:`/`Assistant:` session all reply (`exchangeOf`, `-webkit-line-clamp`; spaced by
+  margin, as Gecko paints the next line in a clamped box's padding). It asks the helper for one character more,
   so an entry that goes on (ellipsis) is told from one of exactly 400; the page cuts too, since an
   older helper answers whole entries. Paging is
   synchronous; a search that finishes after a later search or a reload does not render
