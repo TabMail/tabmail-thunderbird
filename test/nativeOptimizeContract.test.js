@@ -4,13 +4,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryIndex, mockNativeMemorySearch, mockNativeMemoryTrim, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
+const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryIndex, mockNativeMemoryRead, mockNativeMemorySearch, mockNativeMemoryTrim, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
   mockGetAttachmentFlags: vi.fn(),
   mockIndexMessages: vi.fn(),
   mockLog: vi.fn(),
   mockNativeMemoryIndex: vi.fn(),
   mockNativeMemorySearch: vi.fn(),
   mockNativeMemoryTrim: vi.fn(),
+  mockNativeMemoryRead: vi.fn(),
   mockNativeOptimize: vi.fn(),
   mockRebuildEmbeddings: vi.fn(),
 }));
@@ -61,6 +62,7 @@ vi.mock('../fts/nativeEngine.js', () => ({
     indexBatch: (...args) => mockNativeMemoryIndex(...args),
     search: (...args) => mockNativeMemorySearch(...args),
     trim: (...args) => mockNativeMemoryTrim(...args),
+    read: (...args) => mockNativeMemoryRead(...args),
   },
 }));
 vi.mock('../fts/incrementalIndexer.js', () => ({
@@ -144,6 +146,7 @@ beforeEach(() => {
   mockNativeMemoryIndex.mockReset();
   mockNativeMemorySearch.mockReset();
   mockNativeMemoryTrim.mockReset();
+  mockNativeMemoryRead.mockReset();
   mockRebuildEmbeddings.mockReset();
   mockIndexMessages.mockResolvedValue({
     scanned: 0,
@@ -426,7 +429,7 @@ describe('memory search command', () => {
     expect(mockNativeMemorySearch).toHaveBeenCalledWith('', { from: '', to: '', limit: 6, ignoreDate: true, previewChars: 400 });
   });
 
-  it('cuts a conversation only when a preview is asked for: Chat History gets it whole', async () => {
+  it('cuts a conversation only when a preview is asked for: a search without one gets it whole', async () => {
     const content = '[USER]: ' + 'trip '.repeat(200) + 'END OF THE CONVERSATION';
     const row = { memId: 'turn:1', dateMs: Date.now() - 60_000, sessionId: 'persistent_chat', content, snippet: 'trip' };
     // Like the helper: the content is cut to the preview length only when one is sent.
@@ -441,12 +444,29 @@ describe('memory search command', () => {
     await vi.waitFor(() => expect(toolResponse).toHaveBeenCalledTimes(1));
     expect(toolResponse.mock.calls[0][0][0].content).toBe(content.slice(0, 400));
 
-    // Chat History's search sends no preview length.
+    // A search that sends no preview length (an older caller) gets each row whole.
     const historyResponse = vi.fn();
     runtimeListener({ type: 'fts', cmd: 'memorySearch', q: 'trip', limit: 200, ignoreDate: true }, {}, historyResponse);
     await vi.waitFor(() => expect(historyResponse).toHaveBeenCalledTimes(1));
     expect(historyResponse.mock.calls[0][0][0].content).toBe(content);
     expect(historyResponse.mock.calls[0][0][0].content.endsWith('END OF THE CONVERSATION')).toBe(true);
+  });
+});
+
+// Chat History reads each entry it shows through this command, at exactly its
+// millisecond: a tolerance of 0 must reach the helper as 0.
+describe('memory read command', () => {
+  it('passes the timestamp and a tolerance of 0 to the helper and answers its rows', async () => {
+    const ts = Date.now() - 60_000;
+    const rows = [{ memId: 'turn:1', dateMs: ts, content: '[USER]: hi' }];
+    mockNativeMemoryRead.mockResolvedValueOnce(rows);
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+    const sendResponse = vi.fn();
+
+    runtimeListener({ type: 'fts', cmd: 'memoryRead', timestampMs: ts, toleranceMs: 0 }, {}, sendResponse);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith(rows));
+    expect(mockNativeMemoryRead).toHaveBeenCalledWith(ts, 0);
   });
 });
 

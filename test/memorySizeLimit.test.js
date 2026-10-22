@@ -176,6 +176,16 @@ describe('native memory search wire', () => {
     expect(previewed).toEqual({ q: 'trip', limit: 100, ignoreDate: true, previewChars: 400 });
     expect(whole).toEqual({ q: 'trip', limit: 100, ignoreDate: true });
   });
+
+  it('reads at exactly the millisecond asked when the tolerance is 0 (Chat History reads one entry)', async () => {
+    const { nativeMemorySearch, port } = await initializedMemory({ memoryResults: { memoryRead: [] } });
+    const ts = Date.now() - 60_000;
+    await nativeMemorySearch.read(ts, 0);
+    await nativeMemorySearch.read(ts);
+    const [exact, around] = port.messages.filter(m => m.method === 'memoryRead').map(m => m.params);
+    expect(exact).toEqual({ timestampMs: ts, toleranceMs: 0 });
+    expect(around).toEqual({ timestampMs: ts, toleranceMs: 600000 });
+  });
 });
 
 describe('native memory size limit wire', () => {

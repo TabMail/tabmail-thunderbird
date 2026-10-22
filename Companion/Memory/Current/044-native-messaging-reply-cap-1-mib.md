@@ -56,8 +56,24 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   3000 matching 1 KB exchanges), `test/chatTools.test.js` (the request shape, the listing ending at
   `memorySearchMaxResults`), `test/nativeOptimizeContract.test.js` (the background command) and
   `test/memorySizeLimit.test.js` (the native wire).
-- **Still open (not in this change).** Chat History's search (`limit: 200`, shows each row's whole
-  content) and its "delete old" listing (`q: ""`, `limit: 500`, uses only `memId` and `dateMs`) still
-  ask for whole rows; issue #147.
+- **Chat History tab (2026-10-21, issue #147).** Its search and its "delete old" listing asked for
+  whole rows too (`limit: 200` and `q: ""` `limit: 500`); "delete old" also saw only the newest 500
+  entries, so nothing past them was ever deleted. Both now ask for the shortest preview
+  (`SETTINGS.memoryManagement.chatHistoryPreviewChars`, 1). The search still shows each entry
+  whole: the page reads each entry it shows on its own (`memoryRead` at the entry's millisecond,
+  `toleranceMs: 0`, picked by `memId`), once, so a reply holds one entry or the few written at that
+  millisecond. A search that finishes after a later search or a reload does not render
+  (`searchToken`), and a page after a later page, search or reload (`pageToken`); a page
+  change while the search request is pending pages the results shown, and the search then
+  shows (one while the search reads its first page lands on that search's page). A reload's
+  own render is not checked, so one answering after a search started can briefly show that
+  search's page as previews until its reads finish. "Delete old" lists only the entries older than the cutoff (`to` = cutoff - 1 ms),
+  `chatHistoryDeleteFetchRows` (500) a request, and removes each page as it comes; each request
+  starts at the last date listed and skips the ids already listed there, so it ends even if a
+  removal removes nothing. Pinned by `test/chatHistoryNativeCap.test.js` (TB-193).
+  Residual: one entry over 1 MiB on its own still passes the cap when read whole. The chat's
+  `memory_read` reads every entry within ±10 minutes whole (up to 50), so a few long ones pass
+  it with none over 1 MiB (issue #151). An older helper ignores `previewChars` and answers whole rows (500 a
+  request for "delete old", as before) until it updates.
 - **Not on other clients.** Voice reads the helper's replies over its own pipe with no such cap, and
   iOS reads its own database.

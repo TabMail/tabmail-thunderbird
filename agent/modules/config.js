@@ -509,6 +509,13 @@ export const SETTINGS = {
             2 * 1024 ** 3,
             5 * 1024 ** 3,
         ],
+        // Chat History tab: Thunderbird refuses a native message over 1 MiB,
+        // and memory entries are stored whole, so its listings ask the helper
+        // for the shortest preview (memorySearch `previewChars`) and it reads
+        // each entry it shows on its own.
+        chatHistoryPreviewChars: 1,
+        // "Delete old": entries listed per request, paged by date.
+        chatHistoryDeleteFetchRows: 500,
     },
 };
 
