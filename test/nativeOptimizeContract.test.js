@@ -426,7 +426,7 @@ describe('memory search command', () => {
     expect(mockNativeMemorySearch).toHaveBeenCalledWith('', { from: '', to: '', limit: 6, ignoreDate: true, previewChars: 400 });
   });
 
-  it('cuts a conversation only when a preview is asked for: Chat History gets it whole', async () => {
+  it('cuts a conversation only when a preview is asked for: a search without one gets it whole', async () => {
     const content = '[USER]: ' + 'trip '.repeat(200) + 'END OF THE CONVERSATION';
     const row = { memId: 'turn:1', dateMs: Date.now() - 60_000, sessionId: 'persistent_chat', content, snippet: 'trip' };
     // Like the helper: the content is cut to the preview length only when one is sent.
@@ -441,7 +441,7 @@ describe('memory search command', () => {
     await vi.waitFor(() => expect(toolResponse).toHaveBeenCalledTimes(1));
     expect(toolResponse.mock.calls[0][0][0].content).toBe(content.slice(0, 400));
 
-    // Chat History's search sends no preview length.
+    // A search that sends no preview length (an older caller) gets each row whole.
     const historyResponse = vi.fn();
     runtimeListener({ type: 'fts', cmd: 'memorySearch', q: 'trip', limit: 200, ignoreDate: true }, {}, historyResponse);
     await vi.waitFor(() => expect(historyResponse).toHaveBeenCalledTimes(1));

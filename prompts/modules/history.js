@@ -27,6 +27,9 @@ let currentPage = 1;
 let totalPages = 1;
 let currentSearchQuery = "";
 let isSearchMode = false;
+// Bumped by each search, page change and reload: a slower one that finishes
+// after a later one doesn't render over it.
+let viewToken = 0;
 
 /**
  * Load chat history — shows stats + search bar only (no entries until search).
@@ -34,6 +37,7 @@ let isSearchMode = false;
 export async function loadChatHistory() {
     try {
         log("[Prompts] Loading chat history stats...");
+        viewToken++;
 
         // Reset search mode
         currentSearchQuery = "";
@@ -75,7 +79,10 @@ export async function loadChatHistory() {
 }
 
 /**
- * Search chat history using Memory FTS
+ * Search chat history using Memory FTS. The helper answers each result's id
+ * and date with the shortest preview: Thunderbird refuses a native message
+ * over 1 MiB, and memory entries are stored whole. The page then reads the
+ * entries it shows (readWholeEntries).
  */
 export async function searchChatHistory(query) {
     if (!query || query.trim().length === 0) {
@@ -83,6 +90,7 @@ export async function searchChatHistory(query) {
         return;
     }
 
+    const view = ++viewToken;
     try {
         log(`[Prompts] Searching chat history for: "${query}"`);
         currentSearchQuery = query.trim();
@@ -94,16 +102,60 @@ export async function searchChatHistory(query) {
             cmd: "memorySearch",
             q: currentSearchQuery,
             limit: 200,
-            ignoreDate: true
+            ignoreDate: true,
+            previewChars: SETTINGS.memoryManagement.chatHistoryPreviewChars
         });
+        if (view !== viewToken) return;
 
         displayData = Array.isArray(results) ? results : [];
         log(`[Prompts] Search returned ${displayData.length} results`);
 
-        renderChatHistory();
+        await showPage(1, view);
     } catch (e) {
         log(`[Prompts] Search failed: ${e}`, "error");
         showStatus("Search failed: " + e, true);
+    }
+}
+
+/**
+ * Reads each entry whole, once: the search returned only a preview of it. An
+ * entry is read at its own millisecond and picked by its id, so each reply
+ * holds one entry (or the few written at that millisecond). One removed since
+ * the search says so.
+ */
+async function readWholeEntries(entries) {
+    await Promise.all(entries.filter(entry => !entry.whole).map(async entry => {
+        const rows = await browser.runtime.sendMessage({
+            type: "fts",
+            cmd: "memoryRead",
+            timestampMs: entry.dateMs,
+            toleranceMs: 0
+        });
+        if (!Array.isArray(rows)) {
+            throw new Error(rows?.error || "invalid memory read reply");
+        }
+        const row = rows.find(r => r.memId === entry.memId);
+        entry.content = row ? row.content : "(No longer in memory.)";
+        entry.whole = true;
+    }));
+}
+
+/**
+ * Show a page of the search results, its entries read whole first. `view` is
+ * the search's own token when it shows its first page.
+ */
+async function showPage(page, view = ++viewToken) {
+    try {
+        const pages = Math.max(1, Math.ceil(displayData.length / PAGE_SIZE));
+        const target = Math.max(1, Math.min(page, pages));
+        const start = (target - 1) * PAGE_SIZE;
+        await readWholeEntries(displayData.slice(start, start + PAGE_SIZE));
+        if (view !== viewToken) return;
+        currentPage = target;
+        renderChatHistory();
+    } catch (e) {
+        log(`[Prompts] Loading the results failed: ${e}`, "error");
+        showStatus("Loading the results failed: " + e, true);
     }
 }
 
@@ -318,8 +370,7 @@ function updatePaginationControls() {
  */
 export function prevPage() {
     if (currentPage > 1) {
-        currentPage--;
-        renderChatHistory();
+        showPage(currentPage - 1);
     }
 }
 
@@ -328,8 +379,7 @@ export function prevPage() {
  */
 export function nextPage() {
     if (currentPage < totalPages) {
-        currentPage++;
-        renderChatHistory();
+        showPage(currentPage + 1);
     }
 }
 
@@ -505,32 +555,50 @@ async function deleteOldHistory(days) {
             log(`[Prompts] Failed to trim old turns: ${e}`, "warn");
         }
 
-        // 2. Delete old entries from Memory FTS
+        // 2. Delete old entries from Memory FTS: those older than the cutoff,
+        // listed by date a page at a time with the shortest preview (a reply
+        // of whole entries can pass Thunderbird's 1 MiB native message cap),
+        // each page removed as it comes. Each request starts at the last date
+        // listed and skips the entries already listed at it.
         let ftsDeleted = 0;
         try {
-            // Load FTS entries to find old ones
-            const ftsResults = await browser.runtime.sendMessage({
-                type: "fts",
-                cmd: "memorySearch",
-                q: "",
-                limit: 500,
-                ignoreDate: true
-            });
-            const idsToDelete = [];
-            for (const entry of (ftsResults || [])) {
-                if (entry.dateMs && entry.dateMs < cutoffMs && entry.memId) {
-                    idsToDelete.push(entry.memId);
-                }
-            }
-            if (idsToDelete.length > 0) {
-                const result = await browser.runtime.sendMessage({
+            const { chatHistoryDeleteFetchRows, chatHistoryPreviewChars } = SETTINGS.memoryManagement;
+            let to = cutoffMs - 1;
+            let listedAtCursor = new Set();
+            while (true) {
+                const limit = chatHistoryDeleteFetchRows + listedAtCursor.size;
+                const page = await browser.runtime.sendMessage({
                     type: "fts",
-                    cmd: "memoryRemoveBatch",
-                    ids: idsToDelete
+                    cmd: "memorySearch",
+                    q: "",
+                    to,
+                    limit,
+                    ignoreDate: false,
+                    previewChars: chatHistoryPreviewChars
                 });
-                ftsDeleted = result?.count || idsToDelete.length;
-                log(`[Prompts] Deleted ${ftsDeleted} old entries from Memory FTS`);
+                if (!Array.isArray(page)) {
+                    throw new Error(page?.error || "invalid memory search reply");
+                }
+                const ids = page.filter(entry => !listedAtCursor.has(entry.memId)).map(entry => entry.memId);
+                if (ids.length > 0) {
+                    const result = await browser.runtime.sendMessage({
+                        type: "fts",
+                        cmd: "memoryRemoveBatch",
+                        ids
+                    });
+                    if (result?.error) throw new Error(result.error);
+                    ftsDeleted += result?.count ?? ids.length;
+                }
+                // Fewer than asked: none older are left.
+                if (page.length < limit) break;
+                const cursor = page[page.length - 1].dateMs;
+                if (cursor !== to) listedAtCursor = new Set();
+                for (const entry of page) {
+                    if (entry.dateMs === cursor) listedAtCursor.add(entry.memId);
+                }
+                to = cursor;
             }
+            log(`[Prompts] Deleted ${ftsDeleted} old entries from Memory FTS`);
         } catch (e) {
             log(`[Prompts] Failed to delete old FTS entries: ${e}`, "warn");
         }
