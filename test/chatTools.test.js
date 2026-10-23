@@ -619,6 +619,17 @@ describe('TB-062b: email_search sort and fetch size', () => {
     expect(searchCalls().map(c => c[0].sort)).toEqual(['relevance', 'date_asc', 'date_desc']);
   });
 
+  it('asks the search for relevance when the sort given is not one it knows', async () => {
+    // The helper refuses a sort it does not know, so the tool must never pass one through.
+    // Each its own query: an unknown sort shares the relevance session, so a reused query sends no search.
+    await withSearchAnswer(hitsOf([1]), async () => {
+      for (const [i, sort] of ['newest', 'DATE_DESC', 7, null].entries()) {
+        await emailSearch.run({ query: `invoice ${i}`, sort });
+      }
+    });
+    expect(searchCalls().map(c => c[0].sort)).toEqual(['relevance', 'relevance', 'relevance', 'relevance']);
+  });
+
   it('fetches emailSearchMaxResults (13 here), whatever the page size', async () => {
     const { CHAT_SETTINGS } = await import('../chat/modules/chatConfig.js');
     const pageSize = CHAT_SETTINGS.searchPageSizeDefault;
