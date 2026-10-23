@@ -162,8 +162,7 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
   CHAT_SETTINGS: {
     searchPageSizeDefault: 5,
     searchPageSizeMax: 50,
-    searchPrefetchPagesDefault: 4,
-    searchPrefetchMaxResults: 200,
+    emailSearchMaxResults: 15,
     memoryListFetchRows: 2,
     memorySearchMaxResults: 15,
     memoryPreviewChars: 400,
@@ -577,6 +576,79 @@ describe('TB-062: email_search query construction', () => {
     } finally {
       if (originalImpl) browser.runtime.sendMessage.mockImplementation(originalImpl);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TB-062b: email_search sorts in the search, then pages its best matches (#150)
+// ---------------------------------------------------------------------------
+describe('TB-062b: email_search sort and fetch size', () => {
+  const day = 86_400_000;
+  const now = Date.now();
+  // Hits as the search answers them; `dates` are days ago, in the answer's order.
+  const hitsOf = (dates) => dates.map((d, i) => ({
+    uniqueId: `uid${i}`, subject: `Subject ${i}`, author: 'a@example.com', dateMs: now - d * day, snippet: '',
+  }));
+
+  async function withSearchAnswer(hits, body) {
+    const originalImpl = browser.runtime.sendMessage.getMockImplementation();
+    browser.runtime.sendMessage.mockImplementation(async (msg) => (msg?.cmd === 'search' ? hits : null));
+    try {
+      await body();
+    } finally {
+      if (originalImpl) browser.runtime.sendMessage.mockImplementation(originalImpl);
+    }
+  }
+
+  const searchCalls = () => browser.runtime.sendMessage.mock.calls.filter(c => c[0]?.type === 'fts' && c[0]?.cmd === 'search');
+
+  beforeEach(() => {
+    clearStorage();
+    vi.clearAllMocks();
+    emailSearch.resetPaginationSessions();
+  });
+
+  it('asks the search for its sort, relevance when none is given', async () => {
+    await withSearchAnswer(hitsOf([1]), async () => {
+      await emailSearch.run({ query: 'invoice' });
+      await emailSearch.run({ query: 'invoice', sort: 'date_asc' });
+      await emailSearch.run({ query: 'invoice', sort: 'date_desc' });
+    });
+    expect(searchCalls().map(c => c[0].sort)).toEqual(['relevance', 'date_asc', 'date_desc']);
+  });
+
+  it('fetches emailSearchMaxResults (15 here), not a multiple of the page size', async () => {
+    await withSearchAnswer(hitsOf([1]), async () => {
+      await emailSearch.run({ query: 'invoice' });
+    });
+    expect(searchCalls().map(c => c[0].limit)).toEqual([15]);
+  });
+
+  it('keeps the order the search answered, for a date sort too', async () => {
+    // Out of date order on purpose: the search's order is the answer, the tool does not re-sort.
+    await withSearchAnswer(hitsOf([3, 1, 2]), async () => {
+      for (const sort of ['date_desc', 'date_asc', 'relevance']) {
+        const result = await emailSearch.run({ query: 'invoice', sort });
+        const at = ['Subject 0', 'Subject 1', 'Subject 2'].map(subject => result.results.indexOf(subject));
+        expect(at.every(i => i >= 0), sort).toBe(true);
+        expect([...at].sort((a, b) => a - b), sort).toEqual(at);
+      }
+    });
+  });
+
+  it('serves the fetched matches in pages and ends at the last one', async () => {
+    await withSearchAnswer(hitsOf(Array.from({ length: 15 }, (_, i) => i + 1)), async () => {
+      const first = await emailSearch.run({ query: 'invoice' });
+      expect(first).toMatchObject({ page: 1, totalPages: 3, totalItems: 15 });
+      expect(first.comment).toContain('page_index: 2');
+      const last = await emailSearch.run({ query: 'invoice', page_index: 3 });
+      expect(last).toMatchObject({ page: 3, totalPages: 3 });
+      expect(last.comment).toBeUndefined();
+      expect(last.results).toContain('Subject 14');
+      const past = await emailSearch.run({ query: 'invoice', page_index: 9 });
+      expect(past).toMatchObject({ page: 3, totalPages: 3 });
+    });
+    expect(searchCalls().length).toBe(1);
   });
 });
 

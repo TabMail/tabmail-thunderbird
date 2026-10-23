@@ -24,9 +24,8 @@ export function normalizeArgs(args = {}) {
     query: (args?.query || "").trim(),
     from_date: args?.from_date || "",
     to_date: args?.to_date || "",
-    sort: args?.sort === "date_asc" ? "date_asc" : 
-          args?.sort === "date_desc" ? "date_desc" : 
-          args?.sort === "relevance" ? "relevance" : "date_desc",
+    sort: args?.sort === "date_asc" ? "date_asc" :
+          args?.sort === "date_desc" ? "date_desc" : "relevance",
   };
   return norm;
 }
@@ -97,15 +96,8 @@ export async function run(args = {}, options = {}) {
     const rawQuery = norm.query;
     const sort = norm.sort;
     const pageSize = resolvePageSize();
-    const prefetchPages = Math.max(
-      1,
-      Number(CHAT_SETTINGS.searchPrefetchPagesDefault) || 4
-    );
-    const prefetchMax = Math.max(
-      1,
-      Number(CHAT_SETTINGS.searchPrefetchMaxResults) || 200
-    );
-    const fetchLimit = Math.min(pageSize * prefetchPages, prefetchMax);
+    // The search sorts every match before it takes this many (native-fts #46).
+    const fetchLimit = Math.max(1, Number(CHAT_SETTINGS.emailSearchMaxResults) || 1);
 
     // Date range handling
     const toDateStr = norm.to_date || "";
@@ -141,7 +133,7 @@ export async function run(args = {}, options = {}) {
           `[TMDBG Tools] email_search: FTS QUERY raw='${String(rawQuery||"").slice(0,80)}'`
         );
         log(
-          `[TMDBG Tools] email_search: effective dates from_date='${norm.from_date}' to_date='${norm.to_date}' → fromIso='${fromIso || "-"}' toIso='${toIso || "-"}' ignoreDate=${ignoreDate} limit=${fetchLimit}`
+          `[TMDBG Tools] email_search: effective dates from_date='${norm.from_date}' to_date='${norm.to_date}' → fromIso='${fromIso || "-"}' toIso='${toIso || "-"}' ignoreDate=${ignoreDate} limit=${fetchLimit} sort=${sort}`
         );
         
         // Use FTS search via runtime messaging. Retry while the response is
@@ -174,7 +166,8 @@ export async function run(args = {}, options = {}) {
             from: fromIso,
             to: toIso,
             limit: fetchLimit,
-            ignoreDate
+            ignoreDate,
+            sort
           });
           } catch (sendErr) {
             // A THROWN sendMessage (no receiving end yet — boot/hot-reload
@@ -220,27 +213,6 @@ export async function run(args = {}, options = {}) {
       } catch (fe) {
         log(`[TMDBG Tools] email_search: FTS backend failed: ${fe}`, "error");
         return { error: "fts search failed" };
-      }
-
-      // Sort collected hits based on sort option
-      if (sort === "relevance") {
-        // Keep FTS relevance ordering (already sorted by rank ASC, then date DESC)
-        log(`[TMDBG Tools] email_search: preserving FTS relevance ordering`);
-      } else {
-        // Sort by date only
-        hits.sort((a, b) => {
-          const da = a.dateMs || 0;
-          const db = b.dateMs || 0;
-          return sort === "date_asc" ? da - db : db - da;
-        });
-        log(`[TMDBG Tools] email_search: sorted by date (${sort})`);
-      }
-
-      if (hits.length > fetchLimit) {
-        log(
-          `[TMDBG Tools] email_search: truncating collected hits ${hits.length} -> ${fetchLimit} due to fetchLimit`
-        );
-        hits = hits.slice(0, fetchLimit);
       }
 
       log(

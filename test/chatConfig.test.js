@@ -50,12 +50,6 @@ describe('CHAT_SETTINGS', () => {
 
   // --- Search defaults ---
   describe('search settings', () => {
-    it('should have positive searchDefaultLimit', () => {
-      expect(CHAT_SETTINGS.searchDefaultLimit).toBeGreaterThan(0);
-    });
-    it('should have searchMaxLimit >= searchDefaultLimit', () => {
-      expect(CHAT_SETTINGS.searchMaxLimit).toBeGreaterThanOrEqual(CHAT_SETTINGS.searchDefaultLimit);
-    });
     it('should have positive searchDefaultDaysBack', () => {
       expect(CHAT_SETTINGS.searchDefaultDaysBack).toBeGreaterThan(0);
     });
@@ -180,13 +174,17 @@ describe('CHAT_SETTINGS', () => {
     });
   });
 
-  // --- Prefetch ---
-  describe('search prefetch settings', () => {
-    it('should have positive searchPrefetchPagesDefault', () => {
-      expect(CHAT_SETTINGS.searchPrefetchPagesDefault).toBeGreaterThan(0);
+  // --- Fetch size: 100 everywhere, in pages of 20 (owner 2026-10-22, #150) ---
+  describe('search fetch size', () => {
+    it('fetches the 100 best emails and memories, five pages of 20', () => {
+      expect(CHAT_SETTINGS.emailSearchMaxResults).toBe(100);
+      expect(CHAT_SETTINGS.memorySearchMaxResults).toBe(100);
+      expect(CHAT_SETTINGS.searchPageSizeDefault).toBe(20);
     });
-    it('should have positive searchPrefetchMaxResults', () => {
-      expect(CHAT_SETTINGS.searchPrefetchMaxResults).toBeGreaterThan(0);
+    it('has no other search result count', () => {
+      for (const name of ['searchDefaultLimit', 'searchMaxLimit', 'searchPrefetchPagesDefault', 'searchPrefetchMaxResults']) {
+        expect(CHAT_SETTINGS).not.toHaveProperty(name);
+      }
     });
   });
 });

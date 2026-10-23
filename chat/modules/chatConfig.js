@@ -21,10 +21,6 @@ export const CHAT_SETTINGS = {
   // Fade-out duration (ms) for tool bubbles before removal
   toolBubbleFadeMs: 250,
   // --- Search tool configuration (chat-only) ---
-  // Default number of emails to return for search results when not specified.
-  searchDefaultLimit: 5,
-  // Hard cap to protect performance.
-  searchMaxLimit: 50,
   // Default lookback window in days if no explicit date range provided.
   searchDefaultDaysBack: 365,
   // For `calendar_search` with a non-empty `query` and no explicit
@@ -77,12 +73,9 @@ export const CHAT_SETTINGS = {
   // from `browser.storage.local` (set via Options) and only falls back here
   // when the user hasn't customized it.
   createEventDefaultDurationMinutes: 45,
-  // For email_search: number of pages to prefetch in one backend query
-  // This avoids needing offset support and lets repeated calls with the same
-  // arguments advance pages locally without re-querying Gloda.
-  searchPrefetchPagesDefault: 100,
-  // Safety cap on total prefetched results for a single search session
-  searchPrefetchMaxResults: 10000,
+  // email_search: the best matches fetched, in the search's sort order, in
+  // one request; the tool serves its pages from them.
+  emailSearchMaxResults: 100,
   // memory_search with no query (a listing of the most recent conversations):
   // turns per helper request. The listing is fetched in steps of this many,
   // since Thunderbird caps one native message at 1 MiB (an over-cap reply

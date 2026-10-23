@@ -4,8 +4,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryIndex, mockNativeMemoryRead, mockNativeMemorySearch, mockNativeMemoryTrim, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
+const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryIndex, mockNativeMemoryRead, mockNativeMemorySearch, mockNativeMemoryTrim, mockNativeOptimize, mockNativeSearch, mockRebuildEmbeddings } = vi.hoisted(() => ({
   mockGetAttachmentFlags: vi.fn(),
+  mockNativeSearch: vi.fn(),
   mockIndexMessages: vi.fn(),
   mockLog: vi.fn(),
   mockNativeMemoryIndex: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock('../fts/nativeEngine.js', () => ({
     markVersionAsIndexed: vi.fn(async () => {}),
     optimize: (...args) => mockNativeOptimize(...args),
     rebuildEmbeddings: (...args) => mockRebuildEmbeddings(...args),
+    search: (...args) => mockNativeSearch(...args),
     stats: vi.fn(async () => ({ docs: 0, vecDocs: 0 })),
     supportsFolderMembership: vi.fn(() => true),
     getConnectionGeneration: vi.fn(() => 7),
@@ -145,6 +147,7 @@ beforeEach(() => {
   mockNativeOptimize.mockReset();
   mockNativeMemoryIndex.mockReset();
   mockNativeMemorySearch.mockReset();
+  mockNativeSearch.mockReset();
   mockNativeMemoryTrim.mockReset();
   mockNativeMemoryRead.mockReset();
   mockRebuildEmbeddings.mockReset();
@@ -415,6 +418,21 @@ describe('attachment flags command', () => {
 });
 
 // The chat memory_search tool sends its search through this command; the
+// The sort email_search asks must reach the helper, which sorts before it takes the limit (#150).
+describe('email search command', () => {
+  it('passes the search, with its sort, to the helper and answers its rows in the order given', async () => {
+    const rows = [{ uniqueId: 'b', dateMs: 1 }, { uniqueId: 'a', dateMs: 2 }];
+    mockNativeSearch.mockResolvedValueOnce(rows);
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+    const sendResponse = vi.fn();
+
+    runtimeListener({ type: 'fts', cmd: 'search', q: 'from:"a@example.com"', from: '', to: '', limit: 100, ignoreDate: true, sort: 'date_asc' }, {}, sendResponse);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith(rows));
+    expect(mockNativeSearch).toHaveBeenCalledWith('from:"a@example.com"', { from: '', to: '', limit: 100, ignoreDate: true, sort: 'date_asc' });
+  });
+});
+
 // preview length it asks must reach the helper.
 describe('memory search command', () => {
   it('passes the search, with its preview length, to the helper and answers its rows', async () => {
