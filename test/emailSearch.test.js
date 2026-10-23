@@ -78,8 +78,8 @@ describe('normalizeArgs', () => {
     expect(result.to_date).toBe('');
   });
 
-  it('defaults sort to date_desc when not provided', () => {
-    expect(normalizeArgs({}).sort).toBe('date_desc');
+  it('defaults sort to relevance when not provided', () => {
+    expect(normalizeArgs({}).sort).toBe('relevance');
   });
 
   it('accepts valid sort values', () => {
@@ -88,10 +88,10 @@ describe('normalizeArgs', () => {
     expect(normalizeArgs({ sort: 'relevance' }).sort).toBe('relevance');
   });
 
-  it('defaults invalid sort values to date_desc', () => {
-    expect(normalizeArgs({ sort: 'invalid' }).sort).toBe('date_desc');
-    expect(normalizeArgs({ sort: '' }).sort).toBe('date_desc');
-    expect(normalizeArgs({ sort: 123 }).sort).toBe('date_desc');
+  it('defaults invalid sort values to relevance', () => {
+    expect(normalizeArgs({ sort: 'invalid' }).sort).toBe('relevance');
+    expect(normalizeArgs({ sort: '' }).sort).toBe('relevance');
+    expect(normalizeArgs({ sort: 123 }).sort).toBe('relevance');
   });
 
   it('returns only the expected keys', () => {
@@ -134,9 +134,9 @@ describe('sessionKey', () => {
     expect(key1).toBe(key2);
   });
 
-  it('normalizes invalid sort to date_desc in the key', () => {
+  it('normalizes invalid sort to relevance in the key', () => {
     const key1 = sessionKey({ query: 'test', sort: 'bogus' });
-    const key2 = sessionKey({ query: 'test', sort: 'date_desc' });
+    const key2 = sessionKey({ query: 'test', sort: 'relevance' });
     expect(key1).toBe(key2);
   });
 

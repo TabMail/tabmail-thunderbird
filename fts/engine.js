@@ -82,8 +82,8 @@ function attachCommandInterface() {
         try {
           switch (msg.cmd) {
             case "search": {
-              const { q, from, to, limit, ignoreDate } = msg;
-              const result = await ftsSearch.searchMessagesQuery(q, from, to, limit, ignoreDate);
+              const { q, from, to, limit, ignoreDate, sort } = msg;
+              const result = await ftsSearch.search(q, { from, to, limit, ignoreDate, sort });
               console.log(`[FTS Engine] Search completed, returning ${Array.isArray(result) ? result.length : 'non-array'} results`);
               sendResponse(result);
               return;
@@ -615,11 +615,6 @@ export const ftsSearch = {
   async search(query, options = {}) {
     log(`[TMDBG FTS] search called: "${query}"`);
     return await nativeFtsSearch.search(query, options);
-  },
-
-  // Alias for search (used by old code)
-  async searchMessagesQuery(q, from, to, limit, ignoreDate) {
-    return await this.search(q, { from, to, limit, ignoreDate });
   },
 
   async stats() {

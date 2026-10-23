@@ -4,8 +4,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryIndex, mockNativeMemoryRead, mockNativeMemorySearch, mockNativeMemoryTrim, mockNativeOptimize, mockRebuildEmbeddings } = vi.hoisted(() => ({
+const { mockGetAttachmentFlags, mockIndexMessages, mockLog, mockNativeMemoryIndex, mockNativeMemoryRead, mockNativeMemorySearch, mockNativeMemoryTrim, mockNativeOptimize, mockNativeSearch, mockRebuildEmbeddings } = vi.hoisted(() => ({
   mockGetAttachmentFlags: vi.fn(),
+  mockNativeSearch: vi.fn(),
   mockIndexMessages: vi.fn(),
   mockLog: vi.fn(),
   mockNativeMemoryIndex: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock('../fts/nativeEngine.js', () => ({
     markVersionAsIndexed: vi.fn(async () => {}),
     optimize: (...args) => mockNativeOptimize(...args),
     rebuildEmbeddings: (...args) => mockRebuildEmbeddings(...args),
+    search: (...args) => mockNativeSearch(...args),
     stats: vi.fn(async () => ({ docs: 0, vecDocs: 0 })),
     supportsFolderMembership: vi.fn(() => true),
     getConnectionGeneration: vi.fn(() => 7),
@@ -145,6 +147,7 @@ beforeEach(() => {
   mockNativeOptimize.mockReset();
   mockNativeMemoryIndex.mockReset();
   mockNativeMemorySearch.mockReset();
+  mockNativeSearch.mockReset();
   mockNativeMemoryTrim.mockReset();
   mockNativeMemoryRead.mockReset();
   mockRebuildEmbeddings.mockReset();
@@ -411,6 +414,54 @@ describe('attachment flags command', () => {
 
     runtimeListener({ type: 'fts', cmd: 'getAttachmentFlags', msgIds: ['account1:/INBOX:a@example.com'] }, {}, sendResponse);
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ error: 'Unknown method: getAttachmentFlags' }));
+  });
+});
+
+// The sort email_search asks must reach the helper, which sorts before it takes the limit (#150).
+describe('email search command', () => {
+  it('passes the search, with its sort, to the helper and answers its rows in the order given', async () => {
+    const rows = [{ uniqueId: 'b', dateMs: 1 }, { uniqueId: 'a', dateMs: 2 }];
+    mockNativeSearch.mockResolvedValueOnce(rows);
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+    const sendResponse = vi.fn();
+
+    runtimeListener({ type: 'fts', cmd: 'search', q: 'from:"a@example.com"', from: '', to: '', limit: 100, ignoreDate: true, sort: 'date_asc' }, {}, sendResponse);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith(rows));
+    expect(mockNativeSearch).toHaveBeenCalledWith('from:"a@example.com"', { from: '', to: '', limit: 100, ignoreDate: true, sort: 'date_asc' });
+  });
+
+  it('answers each sort asked, within the date range asked', async () => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const from = new Date(now - 4 * day).toISOString();
+    const to = new Date(now - day).toISOString();
+    // Relevance order (rank) differs from date order; 'outside' is out of the range.
+    const rows = [
+      { uniqueId: 'old', dateMs: now - 3 * day, rank: -0.5 },
+      { uniqueId: 'best', dateMs: now - 2 * day, rank: -0.9 },
+      { uniqueId: 'new', dateMs: now - 1.5 * day, rank: -0.3 },
+      { uniqueId: 'outside', dateMs: now - 10 * day, rank: -1 },
+    ];
+    // Like the helper: keeps the range, sorts, then takes the limit.
+    mockNativeSearch.mockImplementation(async (_q, options) => rows
+      .filter(row => options.ignoreDate || (row.dateMs >= Date.parse(options.from) && row.dateMs <= Date.parse(options.to)))
+      .sort((a, b) => (options.sort === 'date_asc' ? a.dateMs - b.dateMs : options.sort === 'date_desc' ? b.dateMs - a.dateMs : a.rank - b.rank))
+      .slice(0, options.limit));
+    runtimeEngine = await import('../fts/engine.js');
+    await runtimeEngine.initFtsEngine();
+
+    for (const [sort, expected] of [
+      ['date_asc', ['old', 'best', 'new']],
+      ['date_desc', ['new', 'best', 'old']],
+      ['relevance', ['best', 'old', 'new']],
+      [undefined, ['best', 'old', 'new']],
+    ]) {
+      const sendResponse = vi.fn();
+      runtimeListener({ type: 'fts', cmd: 'search', q: 'invoice', from, to, limit: 100, ignoreDate: false, sort }, {}, sendResponse);
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledTimes(1));
+      expect(sendResponse.mock.calls[0][0].map(r => r.uniqueId), String(sort)).toEqual(expected);
+    }
   });
 });
 

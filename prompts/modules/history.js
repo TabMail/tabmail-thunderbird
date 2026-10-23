@@ -12,6 +12,7 @@ import { log } from "../../agent/modules/utils.js";
 import { showStatus } from "./utils.js";
 import { clearAllThinking } from "../../chat/modules/persistentChatStore.js";
 import { SETTINGS } from "../../agent/modules/config.js";
+import { CHAT_SETTINGS } from "../../chat/modules/chatConfig.js";
 import { formatBytes, getMemorySizeLimitBytes, setMemorySizeLimitBytes } from "../../fts/memorySizeLimit.js";
 
 const CHAT_TURNS_KEY = "chat_turns";
@@ -100,7 +101,8 @@ export async function searchChatHistory(query) {
             type: "fts",
             cmd: "memorySearch",
             q,
-            limit: 200,
+            // The best matches, as many as the chat's memory_search fetches (100 everywhere, #150).
+            limit: CHAT_SETTINGS.memorySearchMaxResults,
             ignoreDate: true,
             // One more than shown, so an entry that goes on is told from one that ends there.
             previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars + 1

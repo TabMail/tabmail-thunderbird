@@ -109,6 +109,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-060 | reminder_add → validates date format (YYYY/MM/DD) | Correct validation | Business rule |
 | TB-061 | reminder_add → deduplication check | No duplicate reminders | Business rule |
 | TB-062 | email_search → query construction | Correct filter params | Query |
+| TB-062b | email_search → sort in the helper (#150): the sort asked (relevance by default, unknown = relevance), fetch size `emailSearchMaxResults` whatever the page size (the shipped 100 in five pages of 20, `emailSearchFetchSize.test.js`), the helper's order kept for every sort, paging ends at the last page; the `search` command answers each sort within the date range asked, and the native wire carries every sort with both date bounds and answers the helper's matches, default limit 100 | Sort before the limit | Query |
 | TB-063 | calendar_event_create → required fields | Validation | Validation |
 | TB-064 | kb_add → append to existing KB | Content added | Mutation |
 | TB-065 | kb_del → remove specific entry | Content removed | Mutation |

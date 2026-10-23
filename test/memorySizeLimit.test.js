@@ -160,12 +160,42 @@ async function initializedMemory({ capabilities, stored = {}, memoryResults, mem
       })),
     },
   };
-  const { initNativeFts, nativeMemorySearch } = await import('../fts/nativeEngine.js');
+  const { initNativeFts, nativeFtsSearch, nativeMemorySearch } = await import('../fts/nativeEngine.js');
   await initNativeFts();
-  return { nativeMemorySearch, port, storage };
+  return { nativeFtsSearch, nativeMemorySearch, port, storage };
 }
 
 const ROWS = [{ memId: 'turn:1', role: 'session', content: '[USER]: hi', sessionId: 'persistent_chat', turnIndex: 0, dateMs: 1 }];
+
+// The helper sorts every match before it takes the limit (native-fts #46): the email search's sort
+// must reach it, and a search without a sort leaves the helper's default (relevance).
+describe('native email search wire', () => {
+  it('sends the sort and the limit asked, and 100 with no sort when the caller gives neither (#150)', async () => {
+    const { nativeFtsSearch, port } = await initializedMemory({ memoryResults: { search: [] } });
+    await nativeFtsSearch.search('invoice', { limit: 20, ignoreDate: true, sort: 'date_desc' });
+    await nativeFtsSearch.search('invoice', { ignoreDate: true });
+    const [sorted, plain] = port.messages.filter(m => m.method === 'search').map(m => JSON.parse(JSON.stringify(m.params)));
+    expect(sorted).toEqual({ q: 'invoice', limit: 20, ignoreDate: true, sort: 'date_desc' });
+    expect(plain).toEqual({ q: 'invoice', limit: 100, ignoreDate: true });
+  });
+
+  it('sends each sort with both date bounds as asked, and answers the matches the helper found', async () => {
+    const rows = [{ uniqueId: 'account1:INBOX:example', dateMs: Date.now(), rank: -0.8 }];
+    const { nativeFtsSearch, port } = await initializedMemory({ memoryResults: { search: rows } });
+    const from = new Date(Date.now() - 10 * 86_400_000).toISOString();
+    const to = new Date(Date.now() - 86_400_000).toISOString();
+    for (const sort of ['date_asc', 'date_desc', 'relevance']) {
+      expect(await nativeFtsSearch.search('invoice', { from, to, sort }), sort).toEqual(rows);
+      const sent = port.messages.filter(m => m.method === 'search').at(-1);
+      expect(JSON.parse(JSON.stringify(sent.params)), sort).toEqual({ q: 'invoice', from, to, sort, limit: 100, ignoreDate: false });
+    }
+  });
+
+  it('answers no matches as an empty list', async () => {
+    const { nativeFtsSearch } = await initializedMemory({ memoryResults: { search: [] } });
+    expect(await nativeFtsSearch.search('absent', { ignoreDate: true })).toEqual([]);
+  });
+});
 
 describe('native memory search wire', () => {
   it('asks the helper for previews when the caller gives a length, and whole rows when not', async () => {
@@ -175,6 +205,20 @@ describe('native memory search wire', () => {
     const [previewed, whole] = port.messages.filter(m => m.method === 'memorySearch').map(m => JSON.parse(JSON.stringify(m.params)));
     expect(previewed).toEqual({ q: 'trip', limit: 100, ignoreDate: true, previewChars: 400 });
     expect(whole).toEqual({ q: 'trip', limit: 100, ignoreDate: true });
+  });
+
+  it('asks for the 100 best matches when the caller gives no limit (#150)', async () => {
+    const { nativeMemorySearch, port } = await initializedMemory({ memoryResults: { memorySearch: [] } });
+    await nativeMemorySearch.search('trip', { ignoreDate: true });
+    const [asked] = port.messages.filter(m => m.method === 'memorySearch').map(m => JSON.parse(JSON.stringify(m.params)));
+    expect(asked).toEqual({ q: 'trip', limit: 100, ignoreDate: true });
+  });
+
+  it('answers the matches the helper found, and no matches as an empty list', async () => {
+    const found = await initializedMemory({ memoryResults: { memorySearch: ROWS } });
+    expect(await found.nativeMemorySearch.search('hi', { ignoreDate: true })).toEqual(ROWS);
+    const empty = await initializedMemory({ memoryResults: { memorySearch: [] } });
+    expect(await empty.nativeMemorySearch.search('absent', { ignoreDate: true })).toEqual([]);
   });
 
   it('reads at exactly the millisecond asked when the tolerance is 0 (a caller reads one entry)', async () => {
