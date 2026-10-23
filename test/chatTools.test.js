@@ -162,7 +162,8 @@ vi.mock('../chat/modules/chatConfig.js', () => ({
   CHAT_SETTINGS: {
     searchPageSizeDefault: 5,
     searchPageSizeMax: 50,
-    emailSearchMaxResults: 15,
+    // 13: not a multiple of the page size, so a fetch size derived from the page size fails.
+    emailSearchMaxResults: 13,
     memoryListFetchRows: 2,
     memorySearchMaxResults: 15,
     memoryPreviewChars: 400,
@@ -590,9 +591,10 @@ describe('TB-062b: email_search sort and fetch size', () => {
     uniqueId: `uid${i}`, subject: `Subject ${i}`, author: 'a@example.com', dateMs: now - d * day, snippet: '',
   }));
 
+  // The search answers at most the limit it is asked for, as the helper does.
   async function withSearchAnswer(hits, body) {
     const originalImpl = browser.runtime.sendMessage.getMockImplementation();
-    browser.runtime.sendMessage.mockImplementation(async (msg) => (msg?.cmd === 'search' ? hits : null));
+    browser.runtime.sendMessage.mockImplementation(async (msg) => (msg?.cmd === 'search' ? hits.slice(0, msg.limit) : null));
     try {
       await body();
     } finally {
@@ -617,11 +619,31 @@ describe('TB-062b: email_search sort and fetch size', () => {
     expect(searchCalls().map(c => c[0].sort)).toEqual(['relevance', 'date_asc', 'date_desc']);
   });
 
-  it('fetches emailSearchMaxResults (15 here), not a multiple of the page size', async () => {
-    await withSearchAnswer(hitsOf([1]), async () => {
-      await emailSearch.run({ query: 'invoice' });
+  it('fetches emailSearchMaxResults (13 here), whatever the page size', async () => {
+    const { CHAT_SETTINGS } = await import('../chat/modules/chatConfig.js');
+    const pageSize = CHAT_SETTINGS.searchPageSizeDefault;
+    try {
+      await withSearchAnswer(hitsOf(Array.from({ length: 40 }, (_, i) => i + 1)), async () => {
+        const atDefault = await emailSearch.run({ query: 'invoice' });
+        expect(atDefault).toMatchObject({ totalItems: 13, totalPages: 3 });
+        CHAT_SETTINGS.searchPageSizeDefault = CHAT_SETTINGS.searchPageSizeMax;
+        const atMax = await emailSearch.run({ query: 'receipt' });
+        expect(atMax).toMatchObject({ totalItems: 13, totalPages: 1 });
+        expect(atMax.results).toContain('Subject 12');
+        expect(atMax.results).not.toContain('Subject 13');
+      });
+    } finally {
+      CHAT_SETTINGS.searchPageSizeDefault = pageSize;
+    }
+    expect(searchCalls().map(c => c[0].limit)).toEqual([13, 13]);
+  });
+
+  it('serves fewer matches than the fetch size as they are', async () => {
+    await withSearchAnswer(hitsOf([1, 2, 3]), async () => {
+      const result = await emailSearch.run({ query: 'invoice' });
+      expect(result).toMatchObject({ page: 1, totalPages: 1, totalItems: 3 });
+      expect(result.comment).toBeUndefined();
     });
-    expect(searchCalls().map(c => c[0].limit)).toEqual([15]);
   });
 
   it('keeps the order the search answered, for a date sort too', async () => {
@@ -637,14 +659,15 @@ describe('TB-062b: email_search sort and fetch size', () => {
   });
 
   it('serves the fetched matches in pages and ends at the last one', async () => {
-    await withSearchAnswer(hitsOf(Array.from({ length: 15 }, (_, i) => i + 1)), async () => {
+    await withSearchAnswer(hitsOf(Array.from({ length: 40 }, (_, i) => i + 1)), async () => {
       const first = await emailSearch.run({ query: 'invoice' });
-      expect(first).toMatchObject({ page: 1, totalPages: 3, totalItems: 15 });
+      expect(first).toMatchObject({ page: 1, totalPages: 3, totalItems: 13 });
       expect(first.comment).toContain('page_index: 2');
       const last = await emailSearch.run({ query: 'invoice', page_index: 3 });
       expect(last).toMatchObject({ page: 3, totalPages: 3 });
       expect(last.comment).toBeUndefined();
-      expect(last.results).toContain('Subject 14');
+      expect(last.results).toContain('Subject 12');
+      expect(last.results).not.toContain('Subject 13');
       const past = await emailSearch.run({ query: 'invoice', page_index: 9 });
       expect(past).toMatchObject({ page: 3, totalPages: 3 });
     });

@@ -178,6 +178,23 @@ describe('native email search wire', () => {
     expect(sorted).toEqual({ q: 'invoice', limit: 20, ignoreDate: true, sort: 'date_desc' });
     expect(plain).toEqual({ q: 'invoice', limit: 100, ignoreDate: true });
   });
+
+  it('sends each sort with both date bounds as asked, and answers the matches the helper found', async () => {
+    const rows = [{ uniqueId: 'account1:INBOX:example', dateMs: Date.now(), rank: -0.8 }];
+    const { nativeFtsSearch, port } = await initializedMemory({ memoryResults: { search: rows } });
+    const from = new Date(Date.now() - 10 * 86_400_000).toISOString();
+    const to = new Date(Date.now() - 86_400_000).toISOString();
+    for (const sort of ['date_asc', 'date_desc', 'relevance']) {
+      expect(await nativeFtsSearch.search('invoice', { from, to, sort }), sort).toEqual(rows);
+      const sent = port.messages.filter(m => m.method === 'search').at(-1);
+      expect(JSON.parse(JSON.stringify(sent.params)), sort).toEqual({ q: 'invoice', from, to, sort, limit: 100, ignoreDate: false });
+    }
+  });
+
+  it('answers no matches as an empty list', async () => {
+    const { nativeFtsSearch } = await initializedMemory({ memoryResults: { search: [] } });
+    expect(await nativeFtsSearch.search('absent', { ignoreDate: true })).toEqual([]);
+  });
 });
 
 describe('native memory search wire', () => {
@@ -195,6 +212,13 @@ describe('native memory search wire', () => {
     await nativeMemorySearch.search('trip', { ignoreDate: true });
     const [asked] = port.messages.filter(m => m.method === 'memorySearch').map(m => JSON.parse(JSON.stringify(m.params)));
     expect(asked).toEqual({ q: 'trip', limit: 100, ignoreDate: true });
+  });
+
+  it('answers the matches the helper found, and no matches as an empty list', async () => {
+    const found = await initializedMemory({ memoryResults: { memorySearch: ROWS } });
+    expect(await found.nativeMemorySearch.search('hi', { ignoreDate: true })).toEqual(ROWS);
+    const empty = await initializedMemory({ memoryResults: { memorySearch: [] } });
+    expect(await empty.nativeMemorySearch.search('absent', { ignoreDate: true })).toEqual([]);
   });
 
   it('reads at exactly the millisecond asked when the tolerance is 0 (a caller reads one entry)', async () => {

@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn(), resolveUniqueMessageKey: vi.fn() }));
 vi.mock('../chat/modules/chatConfig.js', () => ({
-  CHAT_SETTINGS: { searchPageSizeDefault: 2, searchPageSizeMax: 500 },
+  CHAT_SETTINGS: { searchPageSizeDefault: 2, searchPageSizeMax: 500, emailSearchMaxResults: 100 },
 }));
 vi.mock('../chat/modules/context.js', () => ({ ctx: {} }));
 vi.mock('../chat/modules/markdown.js', () => ({ renderMarkdown: vi.fn((t) => t), attachSpecialLinkListeners: vi.fn() }));
@@ -45,7 +45,8 @@ beforeEach(() => {
   hits = [hit(id(1), 1), hit(id(2), 2, 1), hit(id(3), 3)];
   globalThis.browser = {
     storage: { local: { get: vi.fn(async (k) => (k in storage ? { [k]: storage[k] } : {})), set: vi.fn() } },
-    runtime: { sendMessage: vi.fn(async () => hits), getURL: vi.fn(() => '') },
+    // The search answers at most the limit it is asked for, as the helper does.
+    runtime: { sendMessage: vi.fn(async (msg) => (msg?.cmd === 'search' ? hits.slice(0, msg.limit) : null)), getURL: vi.fn(() => '') },
     tmHdr: { getHasAttachmentBulk },
   };
   query += 1;
