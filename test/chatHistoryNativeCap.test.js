@@ -166,7 +166,7 @@ const partsOf = page => [...page.d.querySelectorAll('#history-list .history-sear
 const REQUEST_THEN_REPLY = ['history-search-result-request', 'history-search-result-reply'];
 
 describe('TB-193: Chat History search and the native-messaging cap', () => {
-  it('shows the start of 200 matching sessions of 200 KB, with every reply under the cap', async () => {
+  it('shows the 100 best of 200 matching sessions of 200 KB, with every reply under the cap', async () => {
     const entries = entriesOf(200, 200_000);
     const helper = fakeHelper(entries);
     const page = await openPage(helper);
@@ -178,20 +178,22 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(page.shown()[0].reply).toMatch(/^a+…$/);
     // Request then reply, and no note under a reply that shows.
     expect(partsOf(page)).toEqual(Array(20).fill(REQUEST_THEN_REPLY));
-    expect(page.pageInfo()).toBe('Page 1 of 10');
+    // 100 everywhere (#150): the search asks for its 100 best, five pages of 20.
+    expect(page.pageInfo()).toBe('Page 1 of 5');
     expect(page.d.querySelector('#history-list .search-highlight')?.textContent).toBe('planning');
 
     page.d.getElementById('history-next-page').click();
-    expect(page.pageInfo()).toBe('Page 2 of 10');
+    expect(page.pageInfo()).toBe('Page 2 of 5');
     expect(page.shown()).toEqual(entries.slice(20, 40).map(view));
     page.d.getElementById('history-prev-page').click();
-    expect(page.pageInfo()).toBe('Page 1 of 10');
+    expect(page.pageInfo()).toBe('Page 1 of 5');
     expect(page.shown()).toEqual(entries.slice(0, 20).map(view));
 
     expect(helper.replies.overCap).toBe(0);
     expect(helper.replies.largest).toBeLessThan(NATIVE_MESSAGE_CAP_BYTES / 4);
     // One search; browsing changes nothing stored.
     expect(helper.replies.calls.map(m => m.cmd).filter(c => c !== 'memoryStats')).toEqual(['memorySearch']);
+    expect(helper.replies.calls.find(m => m.cmd === 'memorySearch').limit).toBe(100);
     expect(helper.stored).toEqual(entries);
   });
 

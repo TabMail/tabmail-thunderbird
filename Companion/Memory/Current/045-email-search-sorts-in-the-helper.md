@@ -21,7 +21,11 @@ Recorded 2026-10-23 (issue #150).
 - **Same number everywhere (owner 2026-10-22): 100.** `memorySearchMaxResults` was already 100;
   `nativeEngine.js` `search` and `memorySearch` default to 100 when a caller gives no limit. The dead
   `searchDefaultLimit` (5) and `searchMaxLimit` (50) are deleted, as are the two prefetch settings.
-  The helper's 512-result cap is a safety limit, not the target size.
+  The helper's 512-result cap is a safety limit, not the target size. The Chat History tab's search
+  asked for 200 (memory 044); it now asks for `CHAT_SETTINGS.memorySearchMaxResults`, five pages of
+  20, the same number as the chat's `memory_search` (its "delete old" listing is a listing, fetched
+  `chatHistoryDeleteFetchRows` at a time, and is unchanged). Pinned by `test/chatHistoryNativeCap.test.js`
+  TB-193.
 - **Reply size.** 100 email results (headers and a snippet each) stay far under the 1 MiB
   native-messaging cap (memory 044); before, 2,000 did too.
 - **Older helper.** A helper from before #46 ignores `sort` and answers in relevance order, so until
