@@ -653,16 +653,15 @@ export async function clearChatHistory() {
             log(`[Prompts] Failed to clear thinking from IDB: ${e}`, "warn");
         }
 
-        // Clear Memory FTS database
-        try {
-            await browser.runtime.sendMessage({
-                type: "fts",
-                cmd: "memoryClear"
-            });
-            log("[Prompts] Memory FTS cleared");
-        } catch (e) {
-            log(`[Prompts] Failed to clear Memory FTS: ${e}`, "warn");
-        }
+        // Clear Memory FTS database. The FTS engine answers a failed clear
+        // with { error } rather than rejecting, so the reply is checked; either
+        // failure ends in the failure status below, never the success one.
+        const clearReply = await browser.runtime.sendMessage({
+            type: "fts",
+            cmd: "memoryClear"
+        });
+        if (clearReply?.error) throw new Error(`Memory FTS clear failed: ${clearReply.error}`);
+        log("[Prompts] Memory FTS cleared");
 
         // Clear migration flags
         await browser.storage.local.remove([
