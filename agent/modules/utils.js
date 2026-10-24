@@ -4,7 +4,7 @@
 
 import { ftsRequest } from "../../fts/ftsRequest.js";
 import { SETTINGS } from "./config.js";
-import { markdownLink } from "./markdownLinks.js";
+import { markdownLink, unwrapMarkdownLinks } from "./markdownLinks.js";
 import "./quoteAndSignature.js";
 import { getAndClearThink } from "./thinkBuffer.js";
 
@@ -542,8 +542,9 @@ export function extractUserWrittenContent(body, contentType) {
         }
     }
 
-    // Use text-based quote detection (single source of truth)
-    const boundary = qd && qd.findBoundaryInPlainText ? qd.findBoundaryInPlainText(textContent) : null;
+    // Use text-based quote detection (single source of truth), on the links' labels so a
+    // linked attribution still ends in "wrote:"; the lines kept are the converted ones.
+    const boundary = qd && qd.findBoundaryInPlainText ? qd.findBoundaryInPlainText(unwrapMarkdownLinks(textContent)) : null;
     if (!boundary) {
         return String(textContent || "").replace(/(\n\s*){3,}/g, '\n\n').trim();
     }
@@ -632,6 +633,18 @@ export async function getUniqueMessageKey(input, weFolder = null) {
  */
 export function looksLikeHtmlDocument(text) {
     return /^\s*(<!doctype\b|<html[\s>])/i.test(text || "");
+}
+
+/**
+ * Splits converted body text (links written as [label](address)) into main and quoted
+ * parts. The quote boundaries are found with each link read as its label, so a linked
+ * attribution ("On Monday, [Bob wrote:](mailto:...)") still ends in "wrote:"; both parts
+ * keep the addresses. Unwrapping never adds or removes a line, as a link sits on one line.
+ * @param {string} text
+ * @returns {{ main: string, quote: string, signature: string, boundaryType: string|null }}
+ */
+export function splitConvertedTextForQuote(text) {
+    return globalThis.TabMailQuoteDetection.splitPlainTextForQuote(text, { detectionText: unwrapMarkdownLinks(text) });
 }
 
 // A text/plain body as written, or converted when it holds an HTML document.

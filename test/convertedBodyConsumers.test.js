@@ -24,7 +24,7 @@ vi.mock('../agent/modules/idbStorage.js', () => ({ get: vi.fn(async () => ({})),
 
 const { buildComposeEditChat } = await import('../compose/modules/edit.js');
 const { cacheReply } = await import('../agent/modules/replyGenerator.js');
-const { extractBodyFromParts } = await import('../agent/modules/utils.js');
+const { extractBodyFromParts, extractUserWrittenContent } = await import('../agent/modules/utils.js');
 await import('../agent/modules/quoteAndSignature.js');
 
 let savedNode;
@@ -70,7 +70,18 @@ describe('compose edit reads the related message as extracted', () => {
     expect(chat.message.trim()).toBe('Read [the update](https://example.com/new)');
     expect(chat.quotes_section).toContain('old');
   });
+
+  it('splits off a quote whose "wrote:" is itself a link, keeping every address', async () => {
+    const chat = await composeEditMessage({ parts: [{ contentType: 'text/html', body: LINKED_ATTRIBUTION_HTML }] });
+    expect(chat.message).toBe('See [the plan](https://example.com/plan)');
+    expect(chat.quotes_section).toBe('On Monday, [Bob wrote:](mailto:bob@example.com)\nold [thread](https://example.com/old)');
+  });
 });
+
+// The attribution line ends in "wrote:" only once its link is read as the label.
+const LINKED_ATTRIBUTION_HTML = '<div>See <a href="https://example.com/plan">the plan</a></div>'
+  + '<div>On Monday, <a href="mailto:bob@example.com">Bob wrote:</a></div>'
+  + '<blockquote>old <a href="https://example.com/old">thread</a></blockquote>';
 
 describe('a precached reply reads the message as extracted', () => {
   it('sends the whole address of a link in an HTML body', async () => {
@@ -82,6 +93,21 @@ describe('a precached reply reads the message as extracted', () => {
     const [[systemMsg]] = h.send.mock.calls[0];
     expect(systemMsg.message).toBe('Read [the \\<guide\\>](https://example.com/?a=1&copy=2)');
   });
+
+  it('splits off a quote whose "wrote:" is itself a link, keeping every address', async () => {
+    h.full.mockResolvedValueOnce({ parts: [{ contentType: 'text/html', body: LINKED_ATTRIBUTION_HTML }] });
+    h.send.mockResolvedValueOnce({ err: 'synthetic stop' });
+    await cacheReply('synthetic:key', { id: 4, headerMessageId: 'r@example.com' }, {});
+    const [[systemMsg]] = h.send.mock.calls[0];
+    expect(systemMsg.message).toBe('See [the plan](https://example.com/plan)');
+    expect(systemMsg.quotes_section).toBe('On Monday, [Bob wrote:](mailto:bob@example.com)\nold [thread](https://example.com/old)');
+  });
+});
+
+describe('extractUserWrittenContent', () => {
+  it('ends the user\'s text at a quote whose "wrote:" is itself a link', () => {
+    expect(extractUserWrittenContent(LINKED_ATTRIBUTION_HTML, 'text/html')).toBe('See [the plan](https://example.com/plan)');
+  });
 });
 
 describe('extractBodyFromParts', () => {
@@ -89,5 +115,26 @@ describe('extractBodyFromParts', () => {
     const body = await extractBodyFromParts({ parts: [{ contentType: 'text/plain', body:
       '<!DOCTYPE html><html><body><p>Hi <a href="https://example.com/a">there</a></p></body></html>' }] });
     expect(body).toBe('Hi [there](https://example.com/a)');
+  });
+
+  async function streamedPlainBody(raw) {
+    const getAttachmentFile = vi.fn(async () => ({ text: async () => raw }));
+    vi.stubGlobal('browser', { messages: { getAttachmentFile } });
+    const body = await extractBodyFromParts([{ contentType: 'text/plain', partName: '1', size: raw.length }], 7);
+    expect(getAttachmentFile).toHaveBeenCalledWith(7, '1');
+    return body;
+  }
+
+  it('converts a streamed text/plain part that holds an HTML document', async () => {
+    expect(await streamedPlainBody('<html><body><p>Hi <a href="https://example.com/a">there</a></p></body></html>'))
+      .toBe('Hi [there](https://example.com/a)');
+  });
+
+  it.each([
+    ['an address in angle brackets', '<bob@example.com> asked about <b> & Q&amp;A'],
+    ['a tag-like token', '<htmlish> is not a document'],
+  ])('keeps a text/plain part starting with %s as written', async (_name, text) => {
+    expect(await extractBodyFromParts([{ contentType: 'text/plain', body: text }])).toBe(text);
+    expect(await streamedPlainBody(text)).toBe(text);
   });
 });

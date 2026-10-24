@@ -585,7 +585,9 @@
    * Uses findQuoteRegion() to properly handle: quote from top, signature from bottom.
    *
    * @param {string} text
-   * @param {{ includeForward?: boolean }} [opts] - Options. includeForward defaults to true.
+   * @param {{ includeForward?: boolean, detectionText?: string }} [opts] - Options. includeForward
+   *   defaults to true. detectionText, when given, is a view of `text` with the same lines (such
+   *   as its links read as their labels); the boundaries are found in it and `text` is split.
    * @returns {{ main: string, quote: string, signature: string, boundaryType: string|null }}
    */
   function splitPlainTextForQuote(text, opts = {}) {
@@ -593,7 +595,7 @@
       const src = String(text || "");
       if (!src.trim()) return { main: "", quote: "", signature: "", boundaryType: null };
 
-      const region = findQuoteRegion(src, opts);
+      const region = findQuoteRegion(opts.detectionText === undefined ? src : String(opts.detectionText), opts);
       if (!region) {
         return { main: src.trimEnd(), quote: "", signature: "", boundaryType: null };
       }

@@ -4,7 +4,7 @@
 
 import { processEditResponse, sendChat } from "../../agent/modules/llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
-import { extractBodyFromParts, safeGetFull, saveChatLog } from "../../agent/modules/utils.js";
+import { extractBodyFromParts, safeGetFull, saveChatLog, splitConvertedTextForQuote } from "../../agent/modules/utils.js";
 import { getUserName } from "../../chat/modules/helpers.js";
 import { executeToolsHeadless } from "../../chat/tools/core.js";
 import { createIsolatedContext } from "../../chat/modules/idTranslator.js";
@@ -94,7 +94,7 @@ export async function buildComposeEditChat({
         const full = await safeGetFull(header.id, header);
         let bodyHtml = await extractBodyFromParts(full, header.id);
         const plainBody = bodyHtml || "";
-        const splitBody = globalThis.TabMailQuoteDetection.splitPlainTextForQuote(plainBody);
+        const splitBody = splitConvertedTextForQuote(plainBody);
         relatedEmailInfo = {
           message: splitBody.main,
           quotes_section: splitBody.quote,
