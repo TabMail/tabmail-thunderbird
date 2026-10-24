@@ -227,6 +227,22 @@ describe('TB-146: hasUnsubscribeLink — "unsubscribe" in body', () => {
     expect(result.hasUnsubscribe).toBe(true);
   });
 
+  it('reads the extracted body as written, an address in angle brackets included', async () => {
+    const { JSDOM } = await import('jsdom');
+    const { window } = new JSDOM('');
+    vi.stubGlobal('DOMParser', window.DOMParser);
+    vi.stubGlobal('Node', window.Node);
+    try {
+      const result = await analyzeEmailForReplyFilter(
+        makeHeader('news@example.com'),
+        { parts: [{ contentType: 'text/plain', body: 'To unsubscribe, visit <https://example.com/unsub>' }] },
+      );
+      expect(result.hasUnsubscribe).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('detects "opt out" + "click" in body text', async () => {
     const bodyText = 'If you wish to opt out, click here to manage preferences.';
     const result = await analyzeEmailForReplyFilter(

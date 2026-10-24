@@ -8,7 +8,7 @@ import { SETTINGS } from "./config.js";
 import * as idb from "./idbStorage.js";
 import { processEditResponse, sendChat } from "./llm.js";
 import { getUserCompositionPrompt, getUserKBPrompt } from "./promptGenerator.js";
-import { extractBodyFromParts, formatForLog, getRealSubject, getUniqueMessageKey, log, safeGetFull, saveChatLog, stripHtml } from "./utils.js";
+import { extractBodyFromParts, formatForLog, getRealSubject, getUniqueMessageKey, log, safeGetFull, saveChatLog, splitConvertedTextForQuote } from "./utils.js";
 
 export const STORAGE_PREFIX = "reply:";
 export const TS_PREFIX = "reply:ts:";
@@ -134,7 +134,7 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
     // Get the body from the full message to send to the LLM
     const full = await safeGetFull(messageHeader.id, messageHeader);
     let bodyHtml = await extractBodyFromParts(full, messageHeader.id);
-    const plainBody = stripHtml(bodyHtml || "");
+    const plainBody = bodyHtml || "";
 
     // Check if device sync resolved during body fetch + setup (natural ~50-500ms window).
     if (deviceSyncProbePromise) {
@@ -162,7 +162,7 @@ export async function cacheReply(uniqueMessageKey, messageHeader, details = {}, 
     const recipientsFormatted = recipientLines.join("\n");
 
     // Split original email body into message + quotes on client side
-    const splitBody = globalThis.TabMailQuoteDetection.splitPlainTextForQuote(plainBody);
+    const splitBody = splitConvertedTextForQuote(plainBody);
 
     // Build single consolidated message that backend will process
     // Uses the same flow as edit_reply for consistency

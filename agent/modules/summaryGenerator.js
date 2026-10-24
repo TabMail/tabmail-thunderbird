@@ -17,7 +17,6 @@ import {
   log,
   safeGetFull,
   saveChatLog,
-  stripHtml,
 } from "./utils.js";
 
 const PFX = "[SummaryGen] ";
@@ -296,7 +295,7 @@ export async function generateSummary(messageHeader, highPriority = false) {
   }
 
   const bodyHtml = await extractBodyFromParts(full, messageHeader.id);
-  const plainBody = stripHtml(bodyHtml || "");
+  const plainBody = bodyHtml || "";
 
   // Log extracted body details for debugging (especially for spam emails moved to inbox)
   log(`${PFX}Body extraction for ${uniqueKey}: bodyHtml.length=${bodyHtml?.length ?? 0}, plainBody.length=${plainBody?.length ?? 0}`);

@@ -8,13 +8,15 @@
 // calls listAttachments or messages.query, which parse (and may download) the message again,
 // and it never prints "no" when it could not tell.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { JSDOM } from 'jsdom';
+vi.mock('../agent/modules/config.js', () => ({ SETTINGS: { getFullDiag: {}, verboseLogging: false, debugLogging: false, debugMode: false } }));
 
-vi.mock('../agent/modules/utils.js', () => ({
+vi.mock('../agent/modules/utils.js', async importOriginal => ({
+  ...(await importOriginal()),
   log: vi.fn(),
   resolveUniqueMessageKey: vi.fn(async () => ({ weFolder: { id: 'account1://INBOX' }, headerID: 'a@example.com', weID: 42 })),
   safeGetFull: vi.fn(),
-  extractBodyFromParts: vi.fn(async () => ''),
   getRealSubject: vi.fn(async (h) => h.subject),
   getUniqueMessageKey: vi.fn(async () => 'account1:/INBOX:a@example.com'),
 }));
@@ -215,5 +217,34 @@ describe('email_read calendar invites', () => {
     expect(extractIcsFromParts).toHaveBeenCalledWith(full, 42);
     expect(formatIcsAttachmentsAsString).toHaveBeenCalledWith(found);
     expect(lines.slice(-2)).toEqual(icsText.split('\n'));
+  });
+});
+
+// A body keeps each link as [label](address) (#162), whether it was converted from the
+// downloaded HTML or read back from the FTS index.
+const LINKED = 'See [the guide](https://example.com/a?x=1&copy=2)';
+const linkedFull = (from, wrap) => (from === 'html'
+  ? wrap({ contentType: 'text/html', body: '<p>See <a href="https://example.com/a?x=1&amp;copy=2">the guide</a></p>' })
+  : { __tmSynthetic: true, contentType: 'text/plain', parts: [], body: LINKED });
+
+describe('email_read body', () => {
+  let savedNode;
+  beforeAll(() => {
+    const { window } = new JSDOM('');
+    savedNode = globalThis.Node;
+    globalThis.Node = window.Node;
+    globalThis.DOMParser = window.DOMParser;
+  });
+  afterAll(() => {
+    globalThis.Node = savedNode;
+    delete globalThis.DOMParser;
+  });
+
+  it.each(['html', 'fts'])('returns the whole address of a link in a body from %s', async (from) => {
+    safeGetFull.mockResolvedValueOnce(linkedFull(from, mixed));
+    const out = await run({ unique_id: 'u1' });
+    expect(safeGetFull).toHaveBeenCalledExactlyOnceWith(42);
+    expect(out).toContain(`body:\n${LINKED}`);
+    expect(out).not.toContain('<a href=');
   });
 });

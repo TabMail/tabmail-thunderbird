@@ -102,4 +102,52 @@ describe('card snippet wake consumer', () => {
     provider.stop();
     expect(listeners.size).toBe(0);
   });
+
+  it('shows each link as its label, past an image-heavy newsletter\'s leading run of image links', async () => {
+    const listeners = new Set();
+    const event = {
+      addListener: vi.fn(listener => listeners.add(listener)),
+      removeListener: vi.fn(listener => listeners.delete(listener)),
+      emit(info) { for (const listener of [...listeners]) listener(info); },
+    };
+    vi.stubGlobal('browser', { tmMessageListCardView: { onSnippetsNeeded: event } });
+    const tracking = `[](https://example.com/t?${'x'.repeat(150)})\n`.repeat(150);
+    plainText.mockResolvedValueOnce(`${tracking}Hello [there \\*friend\\*](https://example.com/a), [Q&amp;A](https://example.com/q) and [you](mailto:a@example.com)\nSecond line`);
+    const need = { hdrKey: 'synthetic-header-2', msgId: 'synthetic2@example.test', weId: 2 };
+    const getNeeds = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([need]).mockResolvedValue([]);
+    const provideSnippets = vi.fn(async () => ({ ok: true, applied: 1 }));
+    const provider = createCardSnippetProvider({ getNeeds, provideSnippets });
+    provider.start();
+    await vi.waitFor(() => expect(getNeeds).toHaveBeenCalledTimes(1));
+    event.emit({ count: 1 });
+    await vi.waitFor(() => expect(provideSnippets).toHaveBeenCalledExactlyOnceWith({
+      items: [{ hdrKey: 'synthetic-header-2', snippet: 'Hello there *friend*, Q&A and you Second line' }],
+      source: 'mv3-provider',
+    }));
+    provider.stop();
+  });
+
+  it('reads past a run of image links longer than any fixed window', async () => {
+    const listeners = new Set();
+    const event = {
+      addListener: vi.fn(listener => listeners.add(listener)),
+      removeListener: vi.fn(listener => listeners.delete(listener)),
+      emit(info) { for (const listener of [...listeners]) listener(info); },
+    };
+    vi.stubGlobal('browser', { tmMessageListCardView: { onSnippetsNeeded: event } });
+    const tracking = `[](https://example.com/t?${'x'.repeat(150)})`.repeat(400);
+    plainText.mockResolvedValueOnce(`${tracking}Hello from the newsletter`);
+    const need = { hdrKey: 'synthetic-header-3', msgId: 'synthetic3@example.test', weId: 3 };
+    const getNeeds = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([need]).mockResolvedValue([]);
+    const provideSnippets = vi.fn(async () => ({ ok: true, applied: 1 }));
+    const provider = createCardSnippetProvider({ getNeeds, provideSnippets });
+    provider.start();
+    await vi.waitFor(() => expect(getNeeds).toHaveBeenCalledTimes(1));
+    event.emit({ count: 1 });
+    await vi.waitFor(() => expect(provideSnippets).toHaveBeenCalledExactlyOnceWith({
+      items: [{ hdrKey: 'synthetic-header-3', snippet: 'Hello from the newsletter' }],
+      source: 'mv3-provider',
+    }));
+    provider.stop();
+  });
 });

@@ -9,6 +9,7 @@
 //
 // TB 145 / MV3 note: do not use async runtime.onMessage handlers; this module doesn't register listeners.
 
+import { unwrapMarkdownLinks } from "../../agent/modules/markdownLinks.js";
 import { getUniqueMessageKey, safeGetFull } from "../../agent/modules/utils.js";
 import { extractPlainText } from "../../fts/bodyExtract.js";
 import * as snippetCache from "./snippetCache.js";
@@ -48,7 +49,10 @@ function _perr(...args) {
 
 function _normalizeSnippet(text) {
   try {
-    let t = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    // Links show as their label: extracted text writes them as [label](address).
+    // The whole body: a leading run of image links, empty once unwrapped, has no fixed length.
+    let t = unwrapMarkdownLinks(String(text || ""))
+      .replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     // Keep up to N non-empty-ish lines (configurable), then flatten.
     const lines = t
       .split("\n")

@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { extractBodyFromParts, log, safeGetFull, stripHtml } from "./utils.js";
+import { extractBodyFromParts, log, safeGetFull } from "./utils.js";
 
 /**
  * Email pre-filtering utilities for reply skip decisions and LLM prompt context.
@@ -157,7 +157,7 @@ export async function analyzeEmailForReplyFilter(messageHeader, fullMessage = nu
                 full = full || await safeGetFull(messageHeader.id, messageHeader);
                 if (!body) {
                     const bodyHtml = await extractBodyFromParts(full, messageHeader.id);
-                    body = stripHtml(bodyHtml || "");
+                    body = bodyHtml || "";
                 }
             } catch (fetchErr) {
                 log(`[EmailFilter] Message ${messageHeader.id}: Failed to fetch full message: ${fetchErr}`, 'warn');

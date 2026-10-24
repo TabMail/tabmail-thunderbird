@@ -4,6 +4,7 @@
 
 import { ftsRequest } from "../../fts/ftsRequest.js";
 import { SETTINGS } from "./config.js";
+import { markdownLink, unwrapMarkdownLinks } from "./markdownLinks.js";
 import "./quoteAndSignature.js";
 import { getAndClearThink } from "./thinkBuffer.js";
 
@@ -423,9 +424,10 @@ export function formatForLog(text, length = SETTINGS.logTruncateLength) {
  * intelligently adding newlines for block-level elements.
  * This logic is inspired by _getCleanedEditorTextWithOptionsRecursive from dom.js.
  * @param {Node} node The DOM node to process.
+ * @param {boolean} linkAddresses Write each link as [label](address); false writes its label alone.
  * @returns {string} The plain text representation.
  */
-function recursiveHtmlToText(node) {
+function recursiveHtmlToText(node, linkAddresses = true) {
     if (!node) return "";
 
     // Base case: Text nodes
@@ -456,7 +458,12 @@ function recursiveHtmlToText(node) {
         // Recursively process child nodes
         let innerText = "";
         for (const child of Array.from(node.childNodes)) {
-            innerText += recursiveHtmlToText(child);
+            innerText += recursiveHtmlToText(child, linkAddresses);
+        }
+
+        // A link keeps its address: the agent and search must be able to read it.
+        if (tagName === 'A' && linkAddresses) {
+            return markdownLink(innerText, node.getAttribute?.("href"));
         }
 
         // Add a newline after block elements if they don't already end with one
@@ -477,14 +484,16 @@ function recursiveHtmlToText(node) {
 /**
  * Strips HTML tags from a string to get plain text, preserving line breaks.
  * @param {string} html - The HTML string.
+ * @param {{linkAddresses?: boolean}} [options] - linkAddresses false writes each link as its
+ *   label alone, for a display surface; the agent and search keep the default.
  * @returns {string} - The plain text.
  */
-export function stripHtml(html) {
+export function stripHtml(html, { linkAddresses = true } = {}) {
     if (!html) return "";
     try {
         const doc = new DOMParser().parseFromString(html, "text/html");
         // We start traversal from the body, and clean up at the end.
-        let text = recursiveHtmlToText(doc.body);
+        let text = recursiveHtmlToText(doc.body, linkAddresses);
         // Strip invisible Unicode characters (zero-width joiners/spaces, soft hyphens, etc.)
         text = text.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD\u034F\u061C\u180E]/g, '');
         // Consolidate multiple blank lines into one or two.
@@ -533,8 +542,9 @@ export function extractUserWrittenContent(body, contentType) {
         }
     }
 
-    // Use text-based quote detection (single source of truth)
-    const boundary = qd && qd.findBoundaryInPlainText ? qd.findBoundaryInPlainText(textContent) : null;
+    // Use text-based quote detection (single source of truth), on the links' labels so a
+    // linked attribution still ends in "wrote:"; the lines kept are the converted ones.
+    const boundary = qd && qd.findBoundaryInPlainText ? qd.findBoundaryInPlainText(unwrapMarkdownLinks(textContent)) : null;
     if (!boundary) {
         return String(textContent || "").replace(/(\n\s*){3,}/g, '\n\n').trim();
     }
@@ -614,10 +624,40 @@ export async function getUniqueMessageKey(input, weFolder = null) {
 }
 
 /**
+ * True when a text/plain part actually holds an HTML document. A body that *starts* with an
+ * HTML document marker is mislabeled HTML — some senders put the full HTML document into the
+ * text/plain MIME part. A document marker at position zero is never legitimate prose, so this
+ * cannot match normal plain text that merely contains angle brackets (addresses, code, "a < b").
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function looksLikeHtmlDocument(text) {
+    return /^\s*(<!doctype\b|<html[\s>])/i.test(text || "");
+}
+
+/**
+ * Splits converted body text (links written as [label](address)) into main and quoted
+ * parts. The quote boundaries are found with each link read as its label, so a linked
+ * attribution ("On Monday, [Bob wrote:](mailto:...)") still ends in "wrote:"; both parts
+ * keep the addresses. Unwrapping never adds or removes a line, as a link sits on one line.
+ * @param {string} text
+ * @returns {{ main: string, quote: string, signature: string, boundaryType: string|null }}
+ */
+export function splitConvertedTextForQuote(text) {
+    return globalThis.TabMailQuoteDetection.splitPlainTextForQuote(text, { detectionText: unwrapMarkdownLinks(text) });
+}
+
+// A text/plain body as written, or converted when it holds an HTML document.
+function plainPartText(text) {
+    return looksLikeHtmlDocument(text) ? stripHtml(text) : text;
+}
+
+/**
  * Extracts the most suitable text body from message parts recursively.
  * Prefers plain text, but falls back to converting HTML to text.
  * @param {browser.messages.MessagePart[]} parts - The parts of the message.
- * @returns {string} - The extracted body content as plain text.
+ * @returns {string} - The extracted body content as plain text, links written as
+ *   [label](address). Pass it on as is: parsing it as HTML again alters it.
  */
 export async function extractBodyFromParts(parts, rootMessageId) {
     if (!parts) return "";
@@ -659,7 +699,7 @@ export async function extractBodyFromParts(parts, rootMessageId) {
             // log(`[TMDBG Body] text/plain part found (len=${textPart.body.length}). Raw sample='${formatForLog(textPart.body)}'`);
             // log(`[TMDBG BodyDump] text/plain raw:\n${textPart.body}`);
         } catch (_) {}
-        return textPart.body;
+        return plainPartText(textPart.body);
     }
     if (textPart && !textPart.body && textPart.partName && typeof textPart.size === "number" && textPart.size > 0 && rootMessageId) {
         try {
@@ -667,7 +707,7 @@ export async function extractBodyFromParts(parts, rootMessageId) {
             const file = await browser.messages.getAttachmentFile(rootMessageId, textPart.partName);
             const raw = await file.text();
             // log(`[TMDBG Body] fetched text/plain via attachment file (len=${raw.length}).`);
-            return raw;
+            return plainPartText(raw);
         } catch (e) {
             // log(`[TMDBG Body] failed to fetch text/plain attachment for part='${textPart.partName}': ${e}`);
         }
