@@ -108,6 +108,11 @@ export async function searchChatHistory(query) {
             previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars + 1
         });
         if (search !== searchToken) return;
+        if (results?.error) {
+            log(`[Prompts] Search failed: ${results.error}`, "error");
+            showStatus("Search failed: " + results.error, true);
+            return;
+        }
 
         currentSearchQuery = q;
         isSearchMode = true;

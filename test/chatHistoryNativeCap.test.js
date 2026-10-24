@@ -427,6 +427,21 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(page.d.getElementById('history-empty').textContent).toBe('Use the search bar to find past conversations.');
     expect(page.label()).not.toContain('Search:');
   });
+
+  // An older helper's request is refused before it is sent (native-fts ADR-NF-018):
+  // the page says why rather than showing an empty result.
+  it('says why a search failed when the helper answers an error, and shows no results', async () => {
+    const helper = fakeHelper(entriesOf(3, 10));
+    const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg =>
+      (msg.cmd === 'memorySearch' ? { error: 'Chat memory search needs a newer search helper.' } : answer(msg)));
+    await search(page, 'planning');
+    await settle();
+    expect(page.status()).toBe('Search failed: Chat memory search needs a newer search helper.');
+    expect(page.shown()).toEqual([]);
+    expect(page.label()).not.toContain('Search:');
+  });
 });
 
 describe('TB-193: Chat History "delete old" and the native-messaging cap', () => {

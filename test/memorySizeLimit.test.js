@@ -165,6 +165,10 @@ async function initializedMemory({ capabilities, stored = {}, memoryResults, mem
   return { nativeFtsSearch, nativeMemorySearch, port, storage };
 }
 
+const CURRENT_MEMORY_SEARCH = { memoryPreviewV1: true, memoryFilterBeforeLimitV1: true };
+const MEMORY_SEARCH_NEEDS_HELPER_UPDATE =
+  'Chat memory search needs a newer search helper: in TabMail settings, under Full Text Search, choose Check for Updates.';
+
 const ROWS = [{ memId: 'turn:1', role: 'session', content: '[USER]: hi', sessionId: 'persistent_chat', turnIndex: 0, dateMs: 1 }];
 
 // The helper sorts every match before it takes the limit (native-fts #46): the email search's sort
@@ -199,7 +203,7 @@ describe('native email search wire', () => {
 
 describe('native memory search wire', () => {
   it('asks the helper for previews when the caller gives a length, and whole rows when not', async () => {
-    const { nativeMemorySearch, port } = await initializedMemory({ memoryResults: { memorySearch: [] } });
+    const { nativeMemorySearch, port } = await initializedMemory({ capabilities: CURRENT_MEMORY_SEARCH, memoryResults: { memorySearch: [] } });
     await nativeMemorySearch.search('trip', { limit: 100, ignoreDate: true, previewChars: 400 });
     await nativeMemorySearch.search('trip', { limit: 100, ignoreDate: true });
     const [previewed, whole] = port.messages.filter(m => m.method === 'memorySearch').map(m => JSON.parse(JSON.stringify(m.params)));
@@ -229,6 +233,65 @@ describe('native memory search wire', () => {
     const [exact, around] = port.messages.filter(m => m.method === 'memoryRead').map(m => m.params);
     expect(exact).toEqual({ timestampMs: ts, toleranceMs: 0 });
     expect(around).toEqual({ timestampMs: ts, toleranceMs: 600000 });
+  });
+});
+
+// A 0.11.8 helper reports the same version as one with previews and the dated
+// filter, so only its capabilities tell them apart (native-fts ADR-NF-018). On
+// it a listing of long sessions came back over the 1 MiB cap and a dated search
+// lost its matches; the request is refused instead, and nothing is sent.
+describe('memory search on a helper without previews or the dated filter', () => {
+  const DATED = { from: '2026-01-01', to: '2026-02-01', limit: 100, ignoreDate: false, previewChars: 400 };
+
+  it.each([
+    ['no capabilities', undefined],
+    ['older capabilities only', { memorySizeLimitV1: true }],
+    ['the flag not true', { memoryPreviewV1: 'yes', memoryFilterBeforeLimitV1: true }],
+  ])('refuses a request for previews with the update message: %s', async (_label, capabilities) => {
+    const { nativeMemorySearch, port } = await initializedMemory({ capabilities, memoryResults: { memorySearch: ROWS } });
+    for (const [q, options] of [['', { limit: 6, ignoreDate: true, previewChars: 400 }], ['trip', { limit: 100, ignoreDate: true, previewChars: 400 }]]) {
+      expect(await nativeMemorySearch.search(q, options)).toEqual({ error: MEMORY_SEARCH_NEEDS_HELPER_UPDATE });
+    }
+    expect(port.messages.filter(m => m.method === 'memorySearch')).toEqual([]);
+  });
+
+  it('refuses a dated search on a helper with previews but not the dated filter, and answers a listing and an undated search', async () => {
+    const { nativeMemorySearch, port } = await initializedMemory({ capabilities: { memoryPreviewV1: true }, memoryResults: { memorySearch: ROWS } });
+    expect(await nativeMemorySearch.search('trip', DATED)).toEqual({ error: MEMORY_SEARCH_NEEDS_HELPER_UPDATE });
+    expect(await nativeMemorySearch.search('', DATED)).toEqual(ROWS);
+    expect(await nativeMemorySearch.search('trip', { ...DATED, ignoreDate: true })).toEqual(ROWS);
+    expect(port.messages.filter(m => m.method === 'memorySearch').map(m => m.params.q)).toEqual(['', 'trip']);
+  });
+
+  it('sends every request as asked to a current helper and answers its matches', async () => {
+    const { nativeMemorySearch, port } = await initializedMemory({ capabilities: CURRENT_MEMORY_SEARCH, memoryResults: { memorySearch: ROWS } });
+    expect(await nativeMemorySearch.search('trip', DATED)).toEqual(ROWS);
+    expect(await nativeMemorySearch.search('', { limit: 6, ignoreDate: true, previewChars: 400 })).toEqual(ROWS);
+    const sent = port.messages.filter(m => m.method === 'memorySearch').map(m => JSON.parse(JSON.stringify(m.params)));
+    expect(sent).toEqual([{ q: 'trip', ...DATED }, { q: '', limit: 6, ignoreDate: true, previewChars: 400 }]);
+  });
+
+  // Decided against the helper that receives the request, not one connected earlier.
+  it.each([
+    ['a current helper replaced by an older one', CURRENT_MEMORY_SEARCH, undefined],
+    ['an older helper replaced by a current one', undefined, CURRENT_MEMORY_SEARCH],
+  ])('decides for the receiving helper: %s', async (_label, before, after) => {
+    vi.resetModules();
+    const ports = [makeNativePort({ capabilities: before, memoryResults: { memorySearch: ROWS } })];
+    globalThis.browser = {
+      storage: makeStorage(),
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      alarms: { create: vi.fn(() => Promise.resolve()) },
+      runtime: { connectNative: vi.fn(() => ports.at(-1)), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
+    };
+    const { initNativeFts, nativeMemorySearch, MEMORY_SEARCH_NEEDS_HELPER_UPDATE: refusal } = await import('../fts/nativeEngine.js');
+    await initNativeFts();
+    ports[0].disconnect();
+    ports.push(makeNativePort({ capabilities: after, memoryResults: { memorySearch: ROWS } }));
+    await initNativeFts();
+    expect(await nativeMemorySearch.search('trip', DATED)).toEqual(after ? ROWS : { error: refusal });
+    expect(ports[0].messages.filter(m => m.method === 'memorySearch')).toEqual([]);
+    expect(ports[1].messages.filter(m => m.method === 'memorySearch').length).toBe(after ? 1 : 0);
   });
 });
 

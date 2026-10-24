@@ -19,6 +19,8 @@ import {
 // 0.7.0:  Semantic search (sqlite-vec embeddings + hybrid FTS5/vector scoring)
 // 0.11.0: Ordered msgId membership fingerprints required by startup reconcile
 const MIN_HOST_VERSION = "0.11.0";
+export const MEMORY_SEARCH_NEEDS_HELPER_UPDATE =
+  "Chat memory search needs a newer search helper: in TabMail settings, under Full Text Search, choose Check for Updates.";
 
 // Time-box for the update-manifest CDN fetch. It runs inside the awaited
 // init chain on EVERY boot; an un-time-boxed fetch on a stalled connection
@@ -1208,9 +1210,28 @@ export const nativeMemorySearch = {
     }
   },
   
+  // A helper without previews answers whole rows, and one reply of a few long
+  // ones passes Thunderbird's 1 MiB cap and disconnects it; a helper that drops
+  // dated matches after its limit answers a dated search with too few
+  // (native-fts ADR-NF-018). Such a request is refused, decided against the
+  // connection that would receive it, so the caller can say to update the helper.
   async search(query, options = {}) {
     const { from, to, limit = 100, ignoreDate = false, previewChars } = options;
-    return nativeRPC('memorySearch', { q: query, from, to, limit, ignoreDate, previewChars });
+    let outdated = false;
+    try {
+      return await nativeRPC('memorySearch', connectionHostInfo => {
+        const capabilities = connectionHostInfo?.capabilities;
+        if ((previewChars !== undefined && capabilities?.memoryPreviewV1 !== true)
+          || (query && !ignoreDate && capabilities?.memoryFilterBeforeLimitV1 !== true)) {
+          outdated = true;
+          throw new Error(MEMORY_SEARCH_NEEDS_HELPER_UPDATE);
+        }
+        return { q: query, from, to, limit, ignoreDate, previewChars };
+      });
+    } catch (error) {
+      if (outdated) return { error: MEMORY_SEARCH_NEEDS_HELPER_UPDATE };
+      throw error;
+    }
   },
   
   async stats() {
