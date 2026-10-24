@@ -6,8 +6,10 @@
 // when the helper cleared its memory. The FTS engine answers a failed
 // memoryClear with `{ error }` rather than rejecting, so the page must read
 // the reply. This runs the real page (prompts/prompts.html) through the
-// Clear All confirmation against a fake helper whose memoryClear succeeds,
-// answers an error, or rejects.
+// Clear All confirmation against a fake helper that holds memory rows and
+// whose memoryClear succeeds, answers an error, or rejects. Storage keeps
+// what is written, and the chat store's migration and memory writer are the
+// real ones, so a failed clear is checked against what happens next.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -15,10 +17,16 @@ import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
-vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn() }));
+vi.mock('../agent/modules/idbStorage.js', () => ({
+  get: vi.fn(async () => ({})),
+  set: vi.fn(async () => {}),
+  remove: vi.fn(async () => {}),
+  getAllKeys: vi.fn(async () => []),
+}));
 
 const CLEARED = 'Chat history cleared';
 const FAILED = 'Failed to clear chat history';
+const HOUR_MS = 60 * 60 * 1000;
 
 afterEach(() => {
   delete globalThis.browser;
@@ -26,45 +34,70 @@ afterEach(() => {
   delete globalThis.Option;
 });
 
-// A helper whose memoryClear answers with `clear()`.
-function fakeHelper(clear) {
-  const sendMessage = vi.fn(async msg => {
+function fakeStorage() {
+  const data = {};
+  const pick = keys => {
+    if (keys == null) return { ...data };
+    if (typeof keys === 'string') keys = [keys];
+    if (Array.isArray(keys)) return Object.fromEntries(keys.filter(k => k in data).map(k => [k, data[k]]));
+    return Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, k in data ? data[k] : v]));
+  };
+  return {
+    data,
+    onChanged: { addListener() {} },
+    local: {
+      get: vi.fn(async keys => pick(keys)),
+      set: vi.fn(async patch => { Object.assign(data, patch); }),
+      remove: vi.fn(async keys => { for (const k of [keys].flat()) delete data[k]; }),
+    },
+  };
+}
+
+// A helper holding memory rows; `helper.clear` sets how memoryClear answers.
+function fakeHelper() {
+  const memory = new Map();
+  const helper = { memory, clear: 'ok' };
+  helper.sendMessage = vi.fn(async msg => {
     switch (msg.cmd) {
       case 'memoryStats':
-        return { docs: 1, usedBytes: 1, dbBytes: 1 };
+        return { docs: memory.size, usedBytes: memory.size, dbBytes: memory.size };
       case 'memorySearch':
         return [];
+      case 'memoryIndexBatch':
+        for (const row of msg.rows) memory.set(row.memId, row);
+        return { ok: true, count: msg.rows.length };
       case 'memoryClear':
-        return clear();
+        if (helper.clear === 'error') return { error: 'clear' };
+        if (helper.clear === 'rejection') throw new Error('Native FTS helper not connected');
+        memory.clear();
+        return { ok: true };
       default:
         throw new Error(`unexpected helper command: ${msg.cmd}`);
     }
   });
-  return { sendMessage };
+  return helper;
 }
 
-async function openPage(helper) {
+async function openPage() {
   vi.resetModules();
   const dom = new JSDOM(readFileSync(resolve('prompts/prompts.html'), 'utf8'));
   globalThis.document = dom.window.document;
   globalThis.Option = dom.window.Option;
-  globalThis.browser = {
-    storage: {
-      onChanged: { addListener() {} },
-      local: {
-        get: vi.fn(async () => ({})),
-        set: vi.fn(async () => {}),
-        remove: vi.fn(async () => {}),
-      },
-    },
-    runtime: { sendMessage: helper.sendMessage },
-  };
+  const storage = fakeStorage();
+  const helper = fakeHelper();
+  globalThis.browser = { storage, runtime: { sendMessage: helper.sendMessage } };
+  const store = await import('../chat/modules/persistentChatStore.js');
+  const { indexChatTurn } = await import('../fts/memoryIndexer.js');
   const history = await import('../prompts/modules/history.js');
   await history.loadChatHistory();
   history.initHistoryHandlers();
   const d = dom.window.document;
   const statusEl = d.getElementById('status-message');
   return {
+    storage,
+    helper,
+    store,
+    indexChatTurn,
     // Clear All as the user does it: open the confirmation, then confirm.
     async clearAll() {
       history.showClearAllConfirmation();
@@ -78,21 +111,40 @@ async function openPage(helper) {
 
 describe('Chat History Clear All reports what the helper did (#146)', () => {
   it('says cleared when the helper clears its memory', async () => {
-    const page = await openPage(fakeHelper(async () => ({ ok: true })));
+    const page = await openPage();
+    await page.indexChatTurn('request', 'reply', 'old', Date.now() - HOUR_MS);
+    expect(page.helper.memory.size).toBe(1);
     await page.clearAll();
     expect(page.status()).toBe(CLEARED);
     expect(page.statusIsError()).toBe(false);
+    expect(page.helper.memory.size).toBe(0);
   });
 
-  for (const [name, clear] of [
-    ['answers an error', async () => ({ error: 'clear' })],
-    ['rejects', async () => { throw new Error('Native FTS helper not connected'); }],
-  ]) {
-    it(`says it failed when the helper's memoryClear ${name}`, async () => {
-      const page = await openPage(fakeHelper(clear));
+  for (const [failure, answer] of [['error', 'an error'], ['rejection', 'a rejection']]) {
+    it(`says it failed when the helper's memoryClear answers with ${answer}`, async () => {
+      const page = await openPage();
+      page.helper.clear = failure;
       await page.clearAll();
       expect(page.status()).toBe(FAILED);
       expect(page.statusIsError()).toBe(true);
+    });
+
+    // The chat store's startup migration clears memory unless its flag says
+    // it already ran; a failed Clear All must not let that later wipe what
+    // the user said after it.
+    it(`keeps memory written after a failed clear (${failure}) through the next startup`, async () => {
+      const page = await openPage();
+      await page.store.migrateFromSessions();
+      await page.indexChatTurn('old request', 'old reply', 'old', Date.now() - HOUR_MS);
+      page.helper.clear = failure;
+      await page.clearAll();
+      expect(page.status()).toBe(FAILED);
+      expect(page.helper.memory.has('turn:old')).toBe(true);
+
+      page.helper.clear = 'ok';
+      await page.indexChatTurn('new request', 'new reply', 'newer', Date.now());
+      await page.store.migrateFromSessions();
+      expect(page.helper.memory.has('turn:newer')).toBe(true);
     });
   }
 });
