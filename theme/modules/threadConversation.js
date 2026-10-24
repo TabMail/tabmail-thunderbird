@@ -8,6 +8,7 @@
 
 import { getActionForWeId } from "../../agent/modules/actionCache.js";
 import { SETTINGS } from "../../agent/modules/config.js";
+import { unwrapMarkdownLinks } from "../../agent/modules/markdownLinks.js";
 import { getIdentityForMessage, safeGetFull, stripHtml } from "../../agent/modules/utils.js";
 
 // Cache identity email -> display name (for "Identity:email:..." author strings)
@@ -241,7 +242,8 @@ function extractBodyFromParts(parts, maxLength) {
     
     traverse(parts);
     
-    let body = plainBody.trim() || stripHtml(htmlBody);
+    // The bubble shows a link as its label; stripHtml writes it as [label](address).
+    let body = plainBody.trim() || unwrapMarkdownLinks(stripHtml(htmlBody));
     
     if (maxLength > 0 && body.length > maxLength) {
         body = body.substring(0, maxLength) + "…";
@@ -545,8 +547,9 @@ export async function fetchAndSendThreadConversation(tabId, weMsgId) {
                 try {
                     const fullMsg = await safeGetFull(msg.weId);
                     if (fullMsg?.__tmSynthetic) {
-                        // FTS cache hit — body is already plain text
-                        let body = fullMsg.body || "";
+                        // FTS cache hit — body is already plain text, with links written
+                        // as [label](address); the bubble shows a link as its label.
+                        let body = unwrapMarkdownLinks(fullMsg.body || "");
                         if (bodyMaxLength > 0 && body.length > bodyMaxLength) {
                             body = body.substring(0, bodyMaxLength) + "…";
                         }

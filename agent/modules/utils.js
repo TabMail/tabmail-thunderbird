@@ -4,6 +4,7 @@
 
 import { ftsRequest } from "../../fts/ftsRequest.js";
 import { SETTINGS } from "./config.js";
+import { markdownLink } from "./markdownLinks.js";
 import "./quoteAndSignature.js";
 import { getAndClearThink } from "./thinkBuffer.js";
 
@@ -457,6 +458,11 @@ function recursiveHtmlToText(node) {
         let innerText = "";
         for (const child of Array.from(node.childNodes)) {
             innerText += recursiveHtmlToText(child);
+        }
+
+        // A link keeps its address: the agent and search must be able to read it.
+        if (tagName === 'A') {
+            return markdownLink(innerText, node.getAttribute?.("href"));
         }
 
         // Add a newline after block elements if they don't already end with one
