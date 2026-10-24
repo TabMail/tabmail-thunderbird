@@ -562,6 +562,33 @@ describe('TB-193: Chat History "delete old" and the native-messaging cap', () =>
     expect(helper.stored).toHaveLength(3);
   });
 
+  // Local turns are removed before the search index: a stop afterwards still
+  // reports the turns it removed.
+  it.each([true, false])('reports the local turns removed, whether the listing is refused (%s) or not', async refuses => {
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    const helper = fakeHelper(entriesOf(3, 10, now - 31 * DAY_MS));
+    const page = await openPage(helper);
+    const fresh = { _ts: now - DAY_MS, content: 'recent turn' };
+    const data = { chat_turns: [
+      { _ts: now - 40 * DAY_MS, content: 'old turn one' },
+      { _ts: now - 41 * DAY_MS, content: 'old turn two' },
+      fresh,
+    ] };
+    browser.storage.local.get.mockImplementation(async key => (typeof key === 'string' ? { [key]: data[key] } : {}));
+    browser.storage.local.set.mockImplementation(async values => { Object.assign(data, values); });
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg =>
+      (refuses && msg.cmd === 'memorySearch' ? { error: MEMORY_SEARCH_NEEDS_HELPER_UPDATE } : answer(msg)));
+
+    await deleteOlderThan(page, 30);
+    expect(data.chat_turns).toEqual([fresh]);
+    expect(page.status()).toContain(`Deleted 2 turns + ${refuses ? 0 : 3} search entries`);
+    expect(page.statusIsError()).toBe(refuses);
+    expect(helper.stored).toHaveLength(refuses ? 3 : 0);
+  });
+
   it('reports a finished deletion as a success', async () => {
     const now = Date.now();
     vi.useFakeTimers({ toFake: ['Date'] });
