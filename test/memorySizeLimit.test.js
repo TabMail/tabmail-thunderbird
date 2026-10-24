@@ -293,6 +293,57 @@ describe('memory search on a helper without previews or the dated filter', () =>
     expect(ports[0].messages.filter(m => m.method === 'memorySearch')).toEqual([]);
     expect(ports[1].messages.filter(m => m.method === 'memorySearch').length).toBe(after ? 1 : 0);
   });
+
+  // The search itself reconnects (past the reconnect cooldown): the hello that
+  // decides is the one the new connection answers, not what was known when the
+  // search was called (nothing, while disconnected).
+  it.each([
+    ['a current helper', CURRENT_MEMORY_SEARCH],
+    ['an older helper', undefined],
+  ])('decides for the helper the search reconnects to: %s', async (_label, after) => {
+    vi.resetModules();
+    const ports = [makeNativePort({ capabilities: CURRENT_MEMORY_SEARCH, memoryResults: { memorySearch: ROWS } })];
+    globalThis.browser = {
+      storage: makeStorage(),
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      alarms: { create: vi.fn(() => Promise.resolve()) },
+      runtime: { connectNative: vi.fn(() => ports.at(-1)), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
+    };
+    const { initNativeFts, nativeMemorySearch, MEMORY_SEARCH_NEEDS_HELPER_UPDATE: refusal } = await import('../fts/nativeEngine.js');
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(now);
+      await initNativeFts();
+      ports[0].disconnect();
+      ports.push(makeNativePort({ capabilities: after, memoryResults: { memorySearch: ROWS } }));
+      vi.setSystemTime(now + 10 * 60_000);
+      expect(await nativeMemorySearch.search('trip', DATED)).toEqual(after ? ROWS : { error: refusal });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(ports[1].messages.map(m => m.method)).toEqual(after ? ['hello', 'init', 'memorySearch'] : ['hello', 'init']);
+    expect(ports[0].messages.filter(m => m.method === 'memorySearch')).toEqual([]);
+  });
+
+  // Only a missing capability is "needs an update": a current helper's error
+  // reply, or no helper at all, keeps its own error.
+  it('rejects with a current helper\'s own error after sending the request', async () => {
+    const { nativeMemorySearch, port } = await initializedMemory({
+      capabilities: CURRENT_MEMORY_SEARCH,
+      memoryErrors: { memorySearch: 'database is locked' },
+    });
+    await expect(nativeMemorySearch.search('trip', DATED)).rejects.toThrow('database is locked');
+    expect(port.messages.filter(m => m.method === 'memorySearch')).toHaveLength(1);
+  });
+
+  it('rejects with the connection error when no helper is connected, sending nothing', async () => {
+    const { nativeMemorySearch, port } = await initializedMemory({ capabilities: CURRENT_MEMORY_SEARCH, memoryResults: { memorySearch: ROWS } });
+    port.disconnect();
+    const failure = nativeMemorySearch.search('trip', DATED);
+    await expect(failure).rejects.toThrow('Native FTS helper not connected');
+    expect(port.messages.filter(m => m.method === 'memorySearch')).toEqual([]);
+  });
 });
 
 describe('native memory size limit wire', () => {

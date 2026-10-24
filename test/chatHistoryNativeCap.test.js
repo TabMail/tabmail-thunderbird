@@ -136,6 +136,7 @@ async function openPage(helper) {
     pageInfo: () => d.getElementById('history-page-info').textContent,
     label: () => d.getElementById('history-stats').textContent.replace(/\s+/g, ' ').trim(),
     status: () => d.getElementById('status-message').textContent,
+    statusIsError: () => d.getElementById('status-message').className === 'error',
   };
 }
 
@@ -444,6 +445,9 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
   });
 });
 
+const MEMORY_SEARCH_NEEDS_HELPER_UPDATE =
+  'Chat memory search needs a newer search helper: in TabMail settings, under Full Text Search, choose Check for Updates.';
+
 describe('TB-193: Chat History "delete old" and the native-messaging cap', () => {
   async function deleteOlderThan(page, days) {
     page.d.getElementById('delete-old-history').click();
@@ -510,6 +514,8 @@ describe('TB-193: Chat History "delete old" and the native-messaging cap', () =>
 
     await deleteOlderThan(page, 30);
     expect(page.status()).toContain('500 search entries');
+    expect(page.status()).toContain('then stopped: Native helper disconnected');
+    expect(page.statusIsError()).toBe(true);
     expect(helper.stored).toHaveLength(700);
   });
 
@@ -529,7 +535,42 @@ describe('TB-193: Chat History "delete old" and the native-messaging cap', () =>
 
     await deleteOlderThan(page, 30);
     expect(page.status()).toContain('500 search entries');
+    expect(page.status()).toContain('then stopped: Native RPC timed out');
+    expect(page.statusIsError()).toBe(true);
     expect(removals).toBe(2);
     expect(helper.stored).toHaveLength(700);
+  });
+
+  // An older helper refuses the listing before it is sent (native-fts ADR-NF-018):
+  // the page says to update it rather than reporting a finished deletion.
+  it('says the helper needs an update when it refuses the listing, and removes nothing', async () => {
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    const older = entriesOf(3, 10, now - 31 * DAY_MS);
+    const helper = fakeHelper(older);
+    const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg =>
+      (msg.cmd === 'memorySearch' ? { error: MEMORY_SEARCH_NEEDS_HELPER_UPDATE } : answer(msg)));
+
+    await deleteOlderThan(page, 30);
+    expect(page.status()).toContain(`0 search entries older than`);
+    expect(page.status()).toContain(`then stopped: ${MEMORY_SEARCH_NEEDS_HELPER_UPDATE}`);
+    expect(page.statusIsError()).toBe(true);
+    expect(helper.replies.calls.filter(m => m.cmd === 'memoryRemoveBatch')).toHaveLength(0);
+    expect(helper.stored).toHaveLength(3);
+  });
+
+  it('reports a finished deletion as a success', async () => {
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    const helper = fakeHelper(entriesOf(3, 10, now - 31 * DAY_MS));
+    const page = await openPage(helper);
+    await deleteOlderThan(page, 30);
+    expect(page.status()).toContain('3 search entries');
+    expect(page.status()).not.toContain('stopped');
+    expect(page.statusIsError()).toBe(false);
   });
 });
