@@ -25,10 +25,6 @@ const CARD_SNIPPET_PROVIDER_CONFIG = {
   // Allow more short lines to be included before flattening (prevents "early stop" on short emails).
   minSnippetNonEmptyLines: 1,
   maxSnippetNonEmptyLines: 6,
-  // UTF-16 code units of the body the snippet reads, so a long body's links are not
-  // all scanned. It must hold an image-heavy newsletter's leading run of image-only
-  // tracking links, which are empty once unwrapped (as iOS snippetLinkScanChars).
-  linkScanChars: 32000,
   diag: {
     maxLogs: 30,
     maxErrors: 30,
@@ -54,7 +50,8 @@ function _perr(...args) {
 function _normalizeSnippet(text) {
   try {
     // Links show as their label: extracted text writes them as [label](address).
-    let t = unwrapMarkdownLinks(String(text || "").slice(0, CARD_SNIPPET_PROVIDER_CONFIG.linkScanChars))
+    // The whole body: a leading run of image links, empty once unwrapped, has no fixed length.
+    let t = unwrapMarkdownLinks(String(text || ""))
       .replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     // Keep up to N non-empty-ish lines (configurable), then flatten.
     const lines = t

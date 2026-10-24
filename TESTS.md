@@ -24,7 +24,8 @@
 | `test/pdfText.test.js` | 28 | Bundled pdf.js text extraction from generated PDFs: page ranges and caps, output-limit stop/cut (surrogate-safe), CJK via packed CMaps, encrypted/owner-only/malformed, per-call worker terminated at the deadline even when it never acknowledges |
 | `test/attachmentReadPdf.test.js` | 40 | `attachment_read_pdf` tool: argument validation, attachment choice and refusals, size limits (inclusive boundary), output format and notes, unreadable pages, production pdf.js + CMap wiring (registration and activity label are in `test/core.test.js`) |
 | `test/markdownLinks.test.js` | 25 | HTML links as `[label](address)` (iOS #100 rules) in `stripHtml`, user-written content and FTS extraction; `unwrapMarkdownLinks` display grammar |
-| `test/threadConversationLinks.test.js` | 3 | Thread bubble bodies show links as labels (HTML and FTS-cache bodies), text/plain as written |
+| `test/threadConversationLinks.test.js` | 4 | Thread bubble bodies show links as labels (HTML and FTS-cache bodies), literal Markdown in HTML and text/plain as written |
+| `test/convertedBodyConsumers.test.js` | 4 | Compose edit reads `extractBodyFromParts` text as is (whole link address, text/plain as written, quote split on a link-bearing attribution); a text/plain HTML document is converted |
 
 ---
 
@@ -81,6 +82,7 @@
 | TB-035 | HTML entity escaping | Safe output | Security |
 | TB-193 | `stripHtml` writes `<a href>` as `[label](address)` with the iOS #100 escapes (label whitespace by grapheme, Markdown punctuation, `&amp;`; address Cc/Cf/White_Space percent-encoded, `\ ( ) < > ;` escaped); empty href keeps the label; image link keeps the address; hidden link dropped; reaches `extractUserWrittenContent` and FTS `extractPlainText` (`test/markdownLinks.test.js`, red-first: 10 of 12 stripHtml cases fail on base; 10 mutants killed) | Agent and search read link addresses (#162) | **Red-first** executed |
 | TB-194 | `unwrapMarkdownLinks` shows a link as its label (iOS port: one-line grammar, escapes reversed, leftmost scan, linear on unclosed-opener runs); card snippets past an image-heavy newsletter's leading tracking links and thread bubbles (HTML and FTS-cache bodies) show labels, a text/plain bubble as written (`test/markdownLinks.test.js`, `test/cardSnippetWakeProvider.test.js`, `test/threadConversationLinks.test.js`) | Displayed text unchanged by #162 | **Red-first** executed |
+| TB-195 | Consumers of `extractBodyFromParts` (summary, action, reply, prefilter, compose edit) pass its plain text on without a second HTML parse: `&copy=` in an address, a label's `\<g\>` and a text/plain `<bob@example.com>` survive; a text/plain HTML document is converted; a bubble's literal `[x](u)` in HTML stays; a snippet reads past 400 image links (`test/convertedBodyConsumers.test.js`, `test/summaryGenerator.test.js`, `test/threadConversationLinks.test.js`, `test/cardSnippetWakeProvider.test.js`, red-first: 6 fail on d61cabe0) | Agent reads links unaltered; display keeps sender text (#162 review) | **Red-first** executed |
 
 ### 1.4 Patch Applier (agent/modules/patchApplier.js) ✅
 

@@ -71,7 +71,7 @@ vi.mock('../agent/modules/senderFilter.js', () => ({
 }));
 
 const mockGetUniqueMessageKey = vi.fn().mockResolvedValue('test-unique-key');
-const mockExtractBodyFromParts = vi.fn().mockResolvedValue('<p>Hello world</p>');
+const mockExtractBodyFromParts = vi.fn().mockResolvedValue('Hello world');
 const mockStripHtml = vi.fn((html) => html.replace(/<[^>]+>/g, ''));
 const mockSafeGetFull = vi.fn().mockResolvedValue({ parts: [] });
 const mockSaveChatLog = vi.fn();
@@ -181,7 +181,7 @@ beforeEach(() => {
   // Re-apply defaults after clearAllMocks
   mockIsInternalSender.mockResolvedValue(false);
   mockGetUniqueMessageKey.mockResolvedValue('test-unique-key');
-  mockExtractBodyFromParts.mockResolvedValue('<p>Hello world</p>');
+  mockExtractBodyFromParts.mockResolvedValue('Hello world');
   mockStripHtml.mockImplementation((html) => html.replace(/<[^>]+>/g, ''));
   mockSafeGetFull.mockResolvedValue({ parts: [] });
   mockGetUserName.mockResolvedValue('Test User');
@@ -228,6 +228,16 @@ describe('getAction', () => {
     // Timestamp should be updated (touched)
     const updatedTs = idbStore['action:ts:test-unique-key']?.ts;
     expect(updatedTs).toBeGreaterThan(oldTs);
+  });
+
+  it('sends the extracted body as is, without parsing it as HTML again', async () => {
+    const body = 'Read [the \\<guide\\>](https://example.com/?a=1&copy=2) from Bob <bob@example.com>';
+    mockExtractBodyFromParts.mockResolvedValueOnce(body);
+    mockSendChat.mockResolvedValue({ assistant: '{"action": "reply"}' });
+    mockProcessJSONResponse.mockReturnValue({ action: 'reply' });
+    await getAction(makeHeader(), { forceRecompute: true });
+    expect(mockSendChat).toHaveBeenCalled();
+    expect(JSON.stringify(mockSendChat.mock.calls[0])).toContain(JSON.stringify(body).slice(1, -1));
   });
 
   it('skips cache when forceRecompute is true', async () => {

@@ -7,15 +7,7 @@
 // iOS EmailFilter.extractPlainText); fall back to text/plain with an HTML-document
 // guard. Ignore attachments.
 
-import { log, stripHtml } from "../agent/modules/utils.js";
-
-// A body that *starts* with an HTML document marker is mislabeled HTML — some
-// senders put the full HTML document into the text/plain MIME part. A document
-// marker at position zero is never legitimate prose, so this cannot match normal
-// plain text that merely contains angle brackets (addresses, code, "a < b").
-function looksLikeHtmlDocument(text) {
-  return /^\s*(<!doctype\b|<html[\s>])/i.test(text || "");
-}
+import { log, looksLikeHtmlDocument, stripHtml } from "../agent/modules/utils.js";
 
 export async function extractPlainText(full, messageId) {
   try {

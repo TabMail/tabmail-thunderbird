@@ -53,7 +53,7 @@ vi.mock("../agent/modules/config.js", () => ({
 vi.mock("../agent/modules/utils.js", () => ({
   log: vi.fn(),
   getUniqueMessageKey: vi.fn(async (header) => header?.headerMessageId ?? null),
-  extractBodyFromParts: vi.fn(async () => "<p>Hello world</p>"),
+  extractBodyFromParts: vi.fn(async () => "Hello world"),
   stripHtml: vi.fn((html) => html?.replace(/<[^>]*>/g, "") ?? ""),
   safeGetFull: vi.fn(async () => ({ parts: [] })),
   indexHeader: vi.fn(),
@@ -451,6 +451,14 @@ describe("generateSummary", () => {
     await generateSummary(header);
 
     expect(extractBodyFromParts).toHaveBeenCalledWith(fullResult, 99);
+  });
+
+  it("sends the converted body as extracted, without parsing it as HTML again", async () => {
+    const body = "Read [the \\<guide\\>](https://example.com/?a=1&copy=2&notit=3) & <bob@example.com>";
+    extractBodyFromParts.mockResolvedValueOnce(body);
+    await generateSummary(makeHeader({ id: 7 }));
+    expect(sendChat).toHaveBeenCalled();
+    expect(JSON.stringify(sendChat.mock.calls[0])).toContain(JSON.stringify(body).slice(1, -1));
   });
 
   it("passes highPriority flag to sendChat as ignoreSemaphore", async () => {

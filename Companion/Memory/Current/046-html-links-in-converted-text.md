@@ -16,14 +16,27 @@ Recorded 2026-10-24 (issue #162).
   percent-encoded as UTF-8 and `\ ( ) < > ;` get a backslash. A missing, empty or whitespace-only href
   leaves the label alone; an image-only link keeps its address as `[](address)`; a hidden
   (`display:none`) link is dropped with its address, because the hidden check runs first.
-- **Display surfaces unwrap.** `unwrapMarkdownLinks` (same module) is a port of iOS
-  `EmailFilter.unwrapMarkdownLinks`: linear, two right-to-left passes, the same one-line grammar. Card
-  snippets (`cardSnippetProvider` `_normalizeSnippet`, over the first `linkScanChars` = 32,000 UTF-16
-  units, so an image-heavy newsletter's run of empty-label tracking links unwraps to nothing and the
-  first sentence shows) and thread bubbles (`threadConversation`: the HTML fallback and the FTS-cache
-  body, unwrapped before `bodyMaxLength` truncation) show the label, so what the user sees did not
-  change. A text/plain bubble body is shown as written. The snippet cache key (`snippet_v4:`) was NOT
-  bumped: unwrapped snippets equal the old label-only ones.
+- **Converted text is passed on as is.** `extractBodyFromParts` returns plain text; its callers
+  (summary, action, reply, the reply prefilter, compose edit) used to run `stripHtml` over it again.
+  Parsing converted text as HTML alters it: `&copy=2` in an address became `©=2`, a label's `\<g\>`
+  and a text/plain `Bob <bob@example.com>` were eaten as tags. That second parse is deleted (#162
+  review). A text/plain part holding a whole HTML document (`looksLikeHtmlDocument`, now in `utils.js`
+  and shared with `fts/bodyExtract.js`) is converted inside `extractBodyFromParts` instead, so the
+  agent still never gets raw HTML from one. A text/plain body now reaches the prompt with its
+  entities, angle-bracketed addresses and blank lines as written.
+- **Display surfaces show the label.** A thread bubble's HTML fallback converts with
+  `stripHtml(html, { linkAddresses: false })`: an anchor gives its label alone and literal text the
+  sender wrote, `[x](https://example.com/x)` included, stays as written. The FTS-cache bubble body and
+  card snippets (`cardSnippetProvider` `_normalizeSnippet`) start from text that already has links
+  written as Markdown, so they unwrap it with `unwrapMarkdownLinks` (same module), a port of iOS
+  `EmailFilter.unwrapMarkdownLinks`: linear, two right-to-left passes, the same one-line grammar. The
+  snippet unwraps the WHOLE body (#162 review): a fixed input window cut an image-heavy newsletter's
+  run of empty-label tracking links mid-address and showed raw Markdown; the scanner is linear and
+  `_normalizeSnippet` already read the whole body before. On those two text surfaces Markdown link
+  syntax the sender typed shows as its label too, the rule of iOS snippets (#148): the stored text
+  cannot tell it from a converted link. A text/plain bubble body from the MIME path is shown as
+  written. The snippet cache key (`snippet_v4:`) was NOT bumped: unwrapped snippets equal the old
+  label-only ones.
 - **Parity evidence.** Differential fuzz against the Swift originals (scratch scripts, not committed):
   `unwrapMarkdownLinks` identical on 200,000 link-heavy random strings; `markdownLink` identical to
   `finishLink`'s escaping on 100,000 random labels and addresses drawn from control, format,
@@ -36,5 +49,8 @@ Recorded 2026-10-24 (issue #162).
   (`Bob <[bob@example.com](mailto:bob@example.com)> wrote:`) unchanged: no quote pattern depends on an
   angle-bracketed address.
 - **Tests.** `test/markdownLinks.test.js` (writer, unwrapper, `stripHtml` on a real jsdom DOM,
-  `extractUserWrittenContent`, `extractPlainText`), `test/threadConversationLinks.test.js`, and the
-  newsletter case in `test/cardSnippetWakeProvider.test.js`.
+  `extractUserWrittenContent`, `extractPlainText`), `test/threadConversationLinks.test.js`,
+  `test/convertedBodyConsumers.test.js` (compose edit with the real extractor: whole address, text/plain
+  as written, a quote split on a link-bearing attribution; a text/plain HTML document), the summary
+  prompt case in `test/summaryGenerator.test.js`, and the newsletter cases in
+  `test/cardSnippetWakeProvider.test.js`.

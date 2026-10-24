@@ -150,6 +150,7 @@ describe('unwrapMarkdownLinks shows a link as its label', () => {
     // The first address fails at the space; the link that starts inside it still unwraps.
     expect(unwrapMarkdownLinks('[a](x[b c](y)')).toBe('[a](xb c');
     expect(unwrapMarkdownLinks('[[a](x)')).toBe('[a');
+    expect(unwrapMarkdownLinks('[outer[inner](x)')).toBe('[outerinner');
     expect(unwrapMarkdownLinks('[a](x)[b](y)')).toBe('ab');
     expect(unwrapMarkdownLinks('[](x)[](y)Hello')).toBe('Hello');
   });

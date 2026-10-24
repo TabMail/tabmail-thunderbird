@@ -242,8 +242,8 @@ function extractBodyFromParts(parts, maxLength) {
     
     traverse(parts);
     
-    // The bubble shows a link as its label; stripHtml writes it as [label](address).
-    let body = plainBody.trim() || unwrapMarkdownLinks(stripHtml(htmlBody));
+    // The bubble shows a link as its label.
+    let body = plainBody.trim() || stripHtml(htmlBody, { linkAddresses: false });
     
     if (maxLength > 0 && body.length > maxLength) {
         body = body.substring(0, maxLength) + "…";

@@ -75,6 +75,12 @@ describe('thread bubble body', () => {
     expect(body).toBe('Read the *post* and a@example.com.');
   });
 
+  it('shows text an HTML body writes as Markdown as written, and only its anchors as their label', async () => {
+    const body = await bubbleBody({ parts: [{ contentType: 'text/html', body:
+      '<p>Type [x](https://example.com/x) exactly, then <a href="https://example.com/y">the link</a>.</p>' }] });
+    expect(body).toBe('Type [x](https://example.com/x) exactly, then the link.');
+  });
+
   it('shows an FTS cache body with each link as its label', async () => {
     const body = await bubbleBody({ __tmSynthetic: true, body: 'Read [the \\*post\\*](https://example.com/a) and [Q&amp;A](https://example.com/q).' });
     expect(body).toBe('Read the *post* and Q&A.');
