@@ -6,7 +6,8 @@
 // row gets its attachment status from the downloaded message, a message whose header is gone is
 // not indexed, and a failed attachment flag read keeps the work queued, never written as "no".
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { JSDOM } from 'jsdom';
 
 vi.mock('../agent/modules/config.js', () => ({
   SETTINGS: { agentQueues: { ftsIncremental: {} }, eventLogger: { enabled: false } },
@@ -17,7 +18,8 @@ vi.mock('../agent/modules/eventLogger.js', () => ({
   logMessageEventBatch: vi.fn(),
   logMoveEvent: vi.fn(),
 }));
-vi.mock('../agent/modules/utils.js', () => ({
+vi.mock('../agent/modules/utils.js', async importOriginal => ({
+  ...(await importOriginal()),
   getForegroundFetchPressure: vi.fn(() => ({ active: 0, waiting: 0, chatTyping: false })),
   getRealSubject: vi.fn(async m => m.subject || ''),
   getUniqueMessageKey: vi.fn(async m => `${m.folder.accountId}:${m.folder.path}:${m.headerMessageId}`),
@@ -34,7 +36,6 @@ vi.mock('../agent/modules/folderUtils.js', () => ({ getAllFoldersForAccount: vi.
 vi.mock('../agent/modules/inboxContext.js', () => ({ getInboxForAccount: vi.fn(async () => null) }));
 vi.mock('../agent/modules/onMoved.js', () => ({ sanitizeMessageTags: vi.fn(async () => ({ stripped: false })) }));
 vi.mock('../chat/modules/icsParser.js', () => ({ extractIcsFromParts: vi.fn(async () => []), formatIcsAttachmentsAsString: vi.fn(() => '') }));
-vi.mock('../fts/bodyExtract.js', () => ({ extractPlainText: vi.fn(async () => 'body text') }));
 
 const storageData = {};
 globalThis.browser = {
@@ -145,5 +146,35 @@ describe('incremental drain attachment status', () => {
 
     expect(fts.indexBatch).not.toHaveBeenCalled();
     expect([..._testExports._getPendingUpdates().keys()].sort()).toEqual([keyOf(1), keyOf(2)]);
+  });
+});
+
+// A body keeps each link as [label](address) (#162), whether it was converted from the
+// downloaded HTML or read back from the FTS index.
+const LINKED = 'See [the guide](https://example.com/a?x=1&copy=2)';
+const linkedFull = (from, wrap) => (from === 'html'
+  ? wrap({ contentType: 'text/html', body: '<p>See <a href="https://example.com/a?x=1&amp;copy=2">the guide</a></p>' })
+  : { __tmSynthetic: true, contentType: 'text/plain', parts: [], body: LINKED });
+
+describe('incremental indexing writes the body as extracted', () => {
+  let savedNode;
+  beforeAll(() => {
+    const { window } = new JSDOM('');
+    savedNode = globalThis.Node;
+    globalThis.Node = window.Node;
+    globalThis.DOMParser = window.DOMParser;
+  });
+  afterAll(() => {
+    globalThis.Node = savedNode;
+    delete globalThis.DOMParser;
+  });
+
+  it.each(['html', 'fts'])('stores the whole address of a link in a body from %s', async (from) => {
+    safeGetFull.mockResolvedValueOnce(linkedFull(from, (part) => ({ contentType: 'message/rfc822', parts: [part] })));
+    queue(2);
+    await flushPendingUpdates();
+    expect(safeGetFull).toHaveBeenCalledTimes(1);
+    expect(index.get(keyOf(2)).body).toBe(LINKED);
+    expect(_testExports._getPendingUpdates().size).toBe(0);
   });
 });

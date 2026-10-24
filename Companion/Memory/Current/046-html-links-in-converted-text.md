@@ -45,12 +45,17 @@ Recorded 2026-10-24 (issue #162).
 - **Not changed.** Whitespace around a link stays TB's (`see<a>x</a>.` gives `see[x](u).`); iOS adds a
   space around a link in its collapsed mode. Exact text parity is tabmail-ios #251's job (a DOM walk
   modelled on TB). Forward-only, as iOS: FTS rows indexed before this change keep the label-only text
-  until the message is indexed again. Quote detection reads an attribution with a link
-  (`Bob <[bob@example.com](mailto:bob@example.com)> wrote:`) unchanged: no quote pattern depends on an
-  angle-bracketed address.
+  until the message is indexed again.
+- **Quote boundaries are found on the label-only view.** An attribution can itself be a link
+  (`On Monday, [Bob wrote:](mailto:bob@example.com)`), and then no quote pattern matches the converted
+  line. `splitConvertedTextForQuote` (compose edit, precached reply) and `extractUserWrittenContent`
+  find the boundary on `unwrapMarkdownLinks(text)` and slice the converted text at the same line, so
+  both halves keep every address. This works because unwrapping never changes the line count: a link
+  never spans a line break. `splitPlainTextForQuote` takes the view as `opts.detectionText`.
 - **Tests.** `test/markdownLinks.test.js` (writer, unwrapper, `stripHtml` on a real jsdom DOM,
   `extractUserWrittenContent`, `extractPlainText`), `test/threadConversationLinks.test.js`,
   `test/convertedBodyConsumers.test.js` (compose edit with the real extractor: whole address, text/plain
-  as written, a quote split on a link-bearing attribution; a text/plain HTML document), the summary
-  prompt case in `test/summaryGenerator.test.js`, and the newsletter cases in
+  as written, a quote split on a link-bearing attribution and on a linked "wrote:"; a text/plain HTML
+  document), the link-body cases in `test/emailReadAttachments.test.js` (tool output) and
+  `test/ftsIncrementalAttachmentFlags.test.js` (stored FTS row), the summary prompt case in `test/summaryGenerator.test.js`, and the newsletter cases in
   `test/cardSnippetWakeProvider.test.js`.
