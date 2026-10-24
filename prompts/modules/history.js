@@ -108,6 +108,11 @@ export async function searchChatHistory(query) {
             previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars + 1
         });
         if (search !== searchToken) return;
+        if (results?.error) {
+            log(`[Prompts] Search failed: ${results.error}`, "error");
+            showStatus("Search failed: " + results.error, true);
+            return;
+        }
 
         currentSearchQuery = q;
         isSearchMode = true;
@@ -573,6 +578,7 @@ async function deleteOldHistory(days) {
         // each page removed as it comes. Each request starts at the last date
         // listed and skips the entries already listed at it.
         let ftsDeleted = 0;
+        let ftsError = null;
         try {
             const { chatHistoryDeleteFetchRows, chatHistoryDeletePreviewChars } = SETTINGS.memoryManagement;
             let to = cutoffMs - 1;
@@ -613,9 +619,13 @@ async function deleteOldHistory(days) {
             log(`[Prompts] Deleted ${ftsDeleted} old entries from Memory FTS`);
         } catch (e) {
             log(`[Prompts] Failed to delete old FTS entries: ${e}`, "warn");
+            ftsError = e;
         }
 
-        showStatus(`Deleted ${turnsDeleted} turns + ${ftsDeleted} search entries older than ${cutoffDate.toLocaleDateString()}`);
+        // A stop says what was removed and why the rest was not (an older
+        // helper refuses the listing until it is updated, ADR-NF-018).
+        const deleted = `Deleted ${turnsDeleted} turns + ${ftsDeleted} search entries older than ${cutoffDate.toLocaleDateString()}`;
+        showStatus(ftsError ? `${deleted}, then stopped: ${ftsError.message}` : deleted, ftsError !== null);
 
         await loadChatHistory();
     } catch (e) {

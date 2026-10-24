@@ -49,6 +49,18 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   vector search failed and it fell back to keyword-only, which kept them), and every listing request
   reads the whole memory's content (1.5 to 4 s per request at 1 GB). **Release order:** native-fts
   with that amendment ships before, or with, this Thunderbird change.
+  **Superseded 2026-10-24 (release review): an older helper is refused, not trusted to update.**
+  The 1.9.3 release review measured both effects on helper 0.11.8: a dated search returned 0 of 6
+  matches inside the dates, and a listing of six whole sessions came back as one 1.25 MB message
+  that disconnected the helper. An update can fail (no network), and helper main reported the same
+  version, 0.11.8. So native-fts advertises `memoryPreviewV1` and `memoryFilterBeforeLimitV1`
+  (ADR-NF-018), and `nativeMemorySearch.search` refuses a request with `previewChars` on a helper
+  without the first, and a dated search with a query on one without the second, decided against the
+  connection that would receive it (`nativeRPC` parameter factory). Nothing is sent; the caller gets
+  `{ error: MEMORY_SEARCH_NEEDS_HELPER_UPDATE }`, which names Check for Updates. Every caller sends
+  `previewChars`, so on an older helper the chat's memory tools and Chat History search say to update
+  rather than search. Pinned by `test/memorySizeLimit.test.js` (refusal, nothing sent, the
+  receiving helper decides) and `test/chatHistoryNativeCap.test.js` (the page shows the error).
 - **Pinned** by `test/memoryListingTransport.test.js` (production settings; the fake cuts to
   `previewChars` and refuses an over-cap reply; listings up to 200 sessions of 200 KB, searches of
   3000 matching 1 KB exchanges and 200 matching 200 KB sessions; against an older helper that

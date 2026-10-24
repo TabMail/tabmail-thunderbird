@@ -1399,6 +1399,22 @@ describe('TB-069: memory_search handler logic', () => {
     expect(result.error).toContain('memory search failed');
   });
 
+  // An older helper refuses the request before it is sent (native-fts ADR-NF-018):
+  // the tool's reply carries the whole reason, which says how to recover.
+  it.each([[{ query: 'trip' }], [{}]])('keeps the helper-update reason in the reply (%o), and answers once the helper can', async (args) => {
+    const update = 'Chat memory search needs a newer search helper: in TabMail settings, under Full Text Search, choose Check for Updates.';
+    browser.runtime.sendMessage.mockImplementation(async (msg) =>
+      (msg?.type === 'fts' && msg?.cmd === 'memorySearch' ? { error: update } : null));
+    const refused = await memorySearch.run(args);
+    expect(refused.error).toBe(`memory search failed: ${update}`);
+
+    memorySearch.resetPaginationSessions();
+    helperWithConversations(3);
+    const answered = await memorySearch.run({ ...args, query: '' });
+    expect(answered).not.toHaveProperty('error');
+    expect(shownTimestamps(answered)).toHaveLength(3);
+  });
+
   it('returns error when backend returns non-array', async () => {
     browser.runtime.sendMessage
       .mockResolvedValueOnce(null) // reconnect-kick probe
