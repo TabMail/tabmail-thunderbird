@@ -8,13 +8,10 @@ import { buildInboxContext } from "../../agent/modules/inboxContext.js";
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { formatMailList } from "../modules/helpers.js";
+import { createToolSessions } from "../modules/toolSessions.js";
 
-// In-memory pagination session for the current user-turn
-let inboxSession = null;
-
-function resetSession() {
-  inboxSession = null;
-}
+// The inbox as first read: the chat window's turn, or one headless run
+const sessions = createToolSessions();
 
 function getPageSize() {
   const defSize = Number(CHAT_SETTINGS.inboxPageSizeDefault) || 10;
@@ -27,15 +24,16 @@ function getPageSize() {
 
 export function resetPaginationSessions() {
   try {
-    resetSession();
+    sessions.resetTurn();
     log(`[TMDBG Tools] inbox_read: pagination session reset`);
   } catch (_) {}
 }
 
 export async function run(args = {}, options = {}) {
   try {
-    // Initialize session on first call in a user turn
-    if (!inboxSession) {
+    // Initialize session on first call in a user turn or headless run
+    const turnOrRun = sessions.of(options.headlessRun);
+    if (!turnOrRun.inbox) {
       const inboxContextJson = await buildInboxContext();
       let items = [];
       try {
@@ -45,18 +43,18 @@ export async function run(args = {}, options = {}) {
         log(`[TMDBG Tools] inbox_read: JSON parse failed: ${e}`, "error");
         items = [];
       }
-      inboxSession = {
+      turnOrRun.inbox = {
         allItems: items,
         pageSize: getPageSize(),
       };
       log(
         `[TMDBG Tools] inbox_read: session created items=${
           items.length
-        } pageSize=${inboxSession.pageSize}`
+        } pageSize=${turnOrRun.inbox.pageSize}`
       );
     }
 
-    const { allItems, pageSize } = inboxSession;
+    const { allItems, pageSize } = turnOrRun.inbox;
     const totalPages = Math.ceil((allItems.length || 0) / pageSize) || 1;
 
     const pageIndexArg = Number.isFinite(args?.page_index)
