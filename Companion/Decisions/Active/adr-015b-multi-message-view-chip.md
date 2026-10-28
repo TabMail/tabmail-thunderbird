@@ -13,7 +13,7 @@
 
 **Rationale:**
 - Sibling experiment per established pattern (`tmMessageListCardView` / `tmMessageListTableView` / `tmMessageHeaderChip` — each owns one DOM region with one lifecycle). Hot-reload independence: a bug in one doesn't take down the other.
-- Per `PLAN_TB_LABEL_V2.md` §5a, action constants and helpers MUST be duplicated across experiments because module state isn't reliably shared. Acceptable cost.
+- Action constants and helpers MUST be duplicated across experiments because module state isn't reliably shared. Acceptable cost.
 - The transient-doc lifecycle problem CANNOT be solved by attach-only-in-`attachToWindow` — multimessageview doesn't exist at experiment-init time in the common case. The `_attachAndPaintDoc`-from-refresh pattern is the load-bearing fix.
 
 **Consequences:**

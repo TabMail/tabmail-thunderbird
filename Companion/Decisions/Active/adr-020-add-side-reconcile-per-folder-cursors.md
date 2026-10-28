@@ -18,7 +18,7 @@ window of any width expresses "new to our local msgDB since we last looked". Wid
 same hole. Buffering events in the experiment was rejected: the addon-not-loaded window has no
 experiment running.
 
-**Decision:** Add reconcile **Phase 1b** (`_runCursorScan`, PLAN_RECONCILE_CURSOR.md): per-folder
+**Decision:** Add reconcile **Phase 1b** (`_runCursorScan`): per-folder
 persistent cursors `storage.local["fts_folder_cursors"]` mapping `accountId:folderPath` →
 `{uidValidity, highestKeySeen}`. For IMAP folders msgKey = IMAP UID (arrival-ordered, monotonic
 per UIDVALIDITY). On boot, everything above each folder's cursor is enqueued into the existing

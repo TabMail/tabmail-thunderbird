@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // byok.test.js — BYOK storage payload, model-access, and smoke logic.
-// Covers PLAN_BYOK_SUPPORT.md §6.1 (Thunderbird): wire-shape parity with iOS,
+// Covers Thunderbird BYOK: wire-shape parity with iOS,
 // autocomplete never carried, snake_case keys, and the connectivity smoke.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -41,7 +41,7 @@ function makeStorageMock() {
 }
 
 // A throwing storage.sync so any accidental Firefox-Sync write of a BYOK key
-// (which would carry it off-device, violating the §7 "never leaves the device"
+// (which would carry it off-device, violating the "never leaves the device"
 // invariant) is caught loudly by the test below.
 function makeSyncSpy() {
   return {

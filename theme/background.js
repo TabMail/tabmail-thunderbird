@@ -71,7 +71,7 @@ function _stopActionChipClickListener(reason) {
 // `weMsgId` through directly so we act on the chip's own message — NOT on
 // the current 3-pane selection (which can drift between paint and click,
 // and is empty in standalone message windows). Bypasses the selection-based
-// `triggerTagActionKey()` path. See PLAN_HEADER_CHIP.md §1 + §4.7.
+// `triggerTagActionKey()` path. See ADR-014.
 async function _onHeaderChipClick(info) {
     try {
         const weMsgId = Number.isInteger(info?.weMsgId) ? info.weMsgId : 0;
@@ -116,7 +116,7 @@ function _stopHeaderChipClickListener(reason) {
 // ─── Multi-message-view chip (collapsed-thread / multi-select) click handling ───
 // Same shape as the header chip handler — chip carries `data-tm-we-msg-id` and
 // click event passes weMsgId through directly so we act on the chip's own
-// message, NOT on any selection state. See PLAN_MULTI_MESSAGE_CHIP.md §1 + §4.7.
+// message, NOT on any selection state. See ADR-015 (multi-message-view chip).
 async function _onMultiMessageChipClick(info) {
     try {
         const weMsgId = Number.isInteger(info?.weMsgId) ? info.weMsgId : 0;
@@ -603,8 +603,7 @@ browser.messageDisplay.onMessagesDisplayed.addListener(async (tab, messages) => 
 
     // Header chip: refresh on every message-display change. The experiment
     // reads `gMessage` from each surface itself, so no tab→doc plumbing is
-    // needed. Cheap (idempotent paint per surface). See PLAN_HEADER_CHIP.md
-    // §4.4 trigger 1.
+    // needed. Cheap (idempotent paint per surface). See ADR-014.
     try {
         if (browser.tmMessageHeaderChip?.refreshAll) {
             await browser.tmMessageHeaderChip.refreshAll();
@@ -616,8 +615,8 @@ browser.messageDisplay.onMessagesDisplayed.addListener(async (tab, messages) => 
     // Multi-message-view chips: refresh on every display change. The
     // experiment idempotently attaches delegation+MO+paints — required
     // because the multimessageview doc is transient (only loaded when the
-    // user clicks a collapsed thread / multi-selects). See
-    // PLAN_MULTI_MESSAGE_CHIP.md §4.4 trigger 1.
+    // user clicks a collapsed thread / multi-selects). See ADR-015
+    // (multi-message-view chip).
     try {
         if (browser.tmMultiMessageChip?.refreshAll) {
             await browser.tmMultiMessageChip.refreshAll();

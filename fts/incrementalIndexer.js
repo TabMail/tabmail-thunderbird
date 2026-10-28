@@ -973,7 +973,7 @@ async function processPendingUpdates() {
   if (_pendingUpdates.size === 0) {
     // Drain is empty: folders the boot folder-reconcile skipped as
     // drain-busy can now be re-checked (single-shot per boot; async —
-    // must not block the drain loop's tail). PLAN_FOLDER_SET_RECONCILE.md.
+    // must not block the drain loop's tail). ADR-021.
     _maybeScheduleFolderReconRerun();
   }
 
@@ -6668,7 +6668,7 @@ export const _testExports = {
   RECONCILE_QUIET_PERIOD_MS,
   RECONCILE_QUIET_CHECK_INTERVAL_MS,
   RECONCILE_MAX_WAIT_MS,
-  // Per-folder set reconcile (PLAN_FOLDER_SET_RECONCILE.md / ADR-021)
+  // Per-folder set reconcile (ADR-021)
   _runFolderReconcile,
   _runFolderReconSchedulerTick,
   _runFolderReconOrphanSlice,

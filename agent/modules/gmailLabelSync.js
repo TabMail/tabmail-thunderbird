@@ -6,7 +6,7 @@
  * gmailLabelSync.js — Gmail REST API label REMOVE-only sync.
  *
  * Post Phase 0 scope: this module exists solely to REMOVE `tm_*` Gmail labels
- * from a message when it leaves inbox (passive decay per PLAN_TB_LABEL_V2 §Phase 4).
+ * from a message when it leaves inbox (passive decay).
  *
  * What's gone:
  *   - No Gmail label CREATE (we never add `tm_*` anymore).

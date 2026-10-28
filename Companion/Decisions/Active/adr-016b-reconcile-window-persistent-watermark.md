@@ -95,8 +95,7 @@ runtime listener drops.
   three-phase pattern rather than streaming-cursor with 10ms
   per-entry yields. With boot reconcile now authoritative for the
   boot gap, the weekly scan can be refactored to share the
-  streaming validator and become non-load-bearing. See
-  `PLAN_MAINTENANCE_SCAN_SPEEDUP.md`.
+  streaming validator and become non-load-bearing.
 <!-- END PRESERVED BLOCK -->
 
 **Superseded (2026-10-05):** the watermark and its heartbeat are deleted. Startup and live

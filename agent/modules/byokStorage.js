@@ -8,7 +8,7 @@
  * Lives in agent/modules so `llm.js` can read the saved BYOK config without
  * importing the config-page layer (which would create an import cycle:
  * llm.js → byokSettings → byokSmoke → llm.js). Depends ONLY on
- * `browser.storage.local`. See PLAN_BYOK_SUPPORT.md §6.1.
+ * `browser.storage.local`.
  *
  * Two configurable tiers — "Light" (wire `background`) and "Heavy" (wire
  * `interactive`); autocomplete is fixed to TabMail and never carried.
@@ -80,7 +80,7 @@ export function assembleByokPayload(cfg) {
  * Catalog models a key can access, tolerant of provider naming quirks:
  *  - exact match, OR
  *  - Anthropic dated alias (`claude-haiku-4-5` ⊂ `claude-haiku-4-5-20251001`).
- * Google's `models/` prefix is already stripped server-side (§1.4.3 G2). Pure.
+ * Google's `models/` prefix is already stripped server-side. Pure.
  */
 export function isModelAvailable(catalogModel, available) {
   if (!Array.isArray(available)) return false;

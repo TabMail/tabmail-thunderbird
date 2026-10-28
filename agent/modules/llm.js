@@ -574,7 +574,7 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
     web_search_enabled: webSearchEnabled,
   };
 
-  // BYOK (PLAN_BYOK_SUPPORT.md §6.1): attach the user's per-tier provider keys.
+  // BYOK: attach the user's per-tier provider keys.
   // The connectivity smoke passes an explicit `payload.byok` (already spread
   // above); otherwise read the saved config. The backend resolves which tier
   // applies from the system prompt and ignores `byok` entirely when nothing is
