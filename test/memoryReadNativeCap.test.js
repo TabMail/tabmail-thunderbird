@@ -14,6 +14,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
+// The tools run here as a page: nothing here starts the native helper, so what
+// they ask goes to the background as a message (fts/ftsRequest.js), which
+// `sendMessage` below answers. test/memoryToolsContext.test.js covers the
+// background. `storage` is what the helper module reads when it loads.
+const PAGE_STORAGE = { onChanged: { addListener() {} }, local: { get: async defaults => ({ ...defaults }) } };
 
 const { run } = await import('../chat/tools/memory_read.js');
 
@@ -48,6 +53,7 @@ function fakeHelper(entries, { previews = true, shuffleTies = false } = {}) {
   const cut = (text, n) => (previews && Number.isInteger(n) && n > 0 ? [...text].slice(0, n).join('') : text);
   const bound = (v, none) => (v === undefined || v === '' || v === null ? none : v);
   globalThis.browser = {
+    storage: PAGE_STORAGE,
     runtime: {
       sendMessage: vi.fn(async msg => {
         replies.calls.push(msg);

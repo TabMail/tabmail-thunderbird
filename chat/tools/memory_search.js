@@ -7,6 +7,7 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
+import { ftsRequest } from "../../fts/ftsRequest.js";
 
 // Maintain per-argument search sessions during a single user turn (mirrors email_search)
 let searchSessions = {};
@@ -102,19 +103,22 @@ async function requestMemory({ q, from, to, limit }) {
     try {
       browser.runtime.sendMessage({ type: "fts", cmd: "getFtsAvailability" }).catch(() => {});
     } catch (_) {}
+    // Headless runs call this in the background, which owns the helper; a
+    // message it sends would never reach its own FTS handler. There a failed
+    // search answers { error }, as the handler answers a page, instead of
+    // throwing into the not-ready retry below.
+    const fields = { q, from: from ?? "", to: to ?? "", limit, ignoreDate, previewChars: previewChars() };
+    const search = async ({ memorySearch }) => {
+      try {
+        return await memorySearch.search(fields.q, fields);
+      } catch (e) {
+        return { error: String(e?.message || e) };
+      }
+    };
     while (true) {
       readyAttempts += 1;
       try {
-        hits = await browser.runtime.sendMessage({
-          type: "fts",
-          cmd: "memorySearch",
-          q,
-          from: from ?? "",
-          to: to ?? "",
-          limit,
-          ignoreDate,
-          previewChars: previewChars(),
-        });
+        hits = await ftsRequest("memorySearch", fields, search);
       } catch (sendErr) {
         // Thrown sendMessage (no receiving end yet) == not ready: retry
         // until the deadline instead of failing the tool call instantly.
