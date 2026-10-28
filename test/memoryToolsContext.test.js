@@ -195,5 +195,49 @@ describe('memory tools answer in every context (#155)', () => {
         error: 'memory read failed: Native FTS helper not connected',
       });
     });
+
+    // The listing step succeeds and the whole read then fails: a failure, never "nothing found".
+    it(`memory_read reports a failed whole read from ${name}`, async () => {
+      enter();
+      const { nativeMemorySearch } = await import('../fts/nativeEngine.js');
+      nativeMemorySearch.read.mockImplementationOnce(async () => { throw new Error('Native RPC timed out'); });
+      await expect(memoryRead.run({ timestamp: entry.dateMs })).resolves.toEqual({
+        error: 'memory read failed: Native RPC timed out',
+      });
+      expect(nativeMemorySearch.read).toHaveBeenCalled();
+    });
+  }
+});
+
+// The helper gets the same requests from the background as from a page: the
+// same query, dates, limit, preview length and read tolerance (the caps that
+// keep each reply under the 1 MiB native message limit, TB-069 and TB-194).
+describe('the helper is asked the same from every context (#155)', () => {
+  const day = ms => {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  async function asked(name, act) {
+    const { nativeMemorySearch } = await import('../fts/nativeEngine.js');
+    CONTEXTS[name]();
+    memorySearch.resetPaginationSessions();
+    nativeMemorySearch.search.mockClear();
+    nativeMemorySearch.read.mockClear();
+    await act();
+    return JSON.stringify({ search: nativeMemorySearch.search.mock.calls, read: nativeMemorySearch.read.mock.calls });
+  }
+  const CALLS = {
+    'a dated search': () => memorySearch.run({ query: 'lighthouse', from_date: day(entry.dateMs), to_date: day(entry.dateMs) }),
+    'a listing': () => memorySearch.run({ query: '' }),
+    'a whole read': () => memoryRead.run({ timestamp: entry.dateMs }),
+  };
+  for (const [what, act] of Object.entries(CALLS)) {
+    it(`${what}`, async () => {
+      const page = await asked('a page', act);
+      expect(page).not.toBe(JSON.stringify({ search: [], read: [] }));
+      for (const background of ['the background, no other page open', 'the background, a page open that does not answer']) {
+        expect(await asked(background, act)).toBe(page);
+      }
+    });
   }
 });
