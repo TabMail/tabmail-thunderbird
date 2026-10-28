@@ -139,7 +139,8 @@ export async function run(args = {}, options = {}) {
           `[TMDBG Tools] email_search: effective dates from_date='${norm.from_date}' to_date='${norm.to_date}' → fromIso='${fromIso || "-"}' toIso='${toIso || "-"}' ignoreDate=${ignoreDate} limit=${fetchLimit} sort=${sort}`
         );
         
-        // Use FTS search via runtime messaging. Retry while the response is
+        // Search through ftsRequest: a runtime message from a page, a direct
+        // engine call in the background (#170). Retry while the response is
         // `undefined` — that means no listener handled the message (FTS engine
         // not yet initialized / hot-reload race). A real result, an empty
         // array, or an `{error}` object all exit the loop immediately.
@@ -153,8 +154,8 @@ export async function run(args = {}, options = {}) {
         );
         const readyDeadline = Date.now() + readyTimeoutMs;
         let readyAttempts = 0;
-        // Actively kick a helper reconnect probe (cooldown-guarded in the
-        // background) so the engine self-heals while we poll below.
+        // Meant as a helper reconnect kick; no handler answers this shape
+        // today (#174).
         // Fire-and-forget; always the FIRST fts message this call sends.
         try {
           browser.runtime.sendMessage({ type: "fts", cmd: "getFtsAvailability" }).catch(() => {});
@@ -164,10 +165,10 @@ export async function run(args = {}, options = {}) {
         // a failed search answers { error }, as the handler answers a page,
         // instead of throwing into the not-ready retry below.
         const fields = { q: rawQuery, from: fromIso, to: toIso, limit: fetchLimit, ignoreDate, sort };
-        const { q, ...options } = fields;
+        const { q, ...searchOptions } = fields;
         const search = async ({ ftsSearch }) => {
           try {
-            return await ftsSearch.search(q, options);
+            return await ftsSearch.search(q, searchOptions);
           } catch (e) {
             return { error: String(e?.message || e) };
           }

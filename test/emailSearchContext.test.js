@@ -170,8 +170,8 @@ describe('email_search answers in every context (#170)', () => {
 
     it(`keeps the order asked for from ${name}`, async () => {
       enter();
-      const result = await emailSearch.run({ query: 'harbour', sort: 'date_asc' });
-      expect(result.results.split('\n')).toEqual(['Harbour trip plan', 'Harbour trip tickets']);
+      const result = await emailSearch.run({ query: 'harbour', sort: 'date_desc' });
+      expect(result.results.split('\n')).toEqual(['Harbour trip tickets', 'Harbour trip plan']);
     });
 
     it(`reports a helper failure from ${name} as a page does`, async () => {
@@ -200,9 +200,12 @@ describe('the helper is asked the same from every context (#170)', () => {
   }
   for (const sort of SORTED) {
     it(`a dated search sorted by ${sort}`, async () => {
-      const args = { query: 'harbour', from_date: day(Date.now() - 3 * HOUR_MS), to_date: day(Date.now()), sort };
+      const args = { query: 'harbour', from_date: day(Date.now() - 3 * 24 * HOUR_MS), to_date: day(Date.now()), sort };
       const page = await asked('a page', args);
       expect(page).not.toBe('[]');
+      // Days apart at any hour, so a swapped from/to cannot match.
+      const [[, asked0]] = JSON.parse(page);
+      expect(Date.parse(asked0.from)).toBeLessThan(Date.parse(asked0.to));
       for (const background of ['the background, no other page open', 'the background, a page open that does not answer']) {
         expect(await asked(background, args)).toBe(page);
       }
