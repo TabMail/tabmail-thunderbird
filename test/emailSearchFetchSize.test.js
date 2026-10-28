@@ -24,7 +24,8 @@ beforeEach(() => {
   emailSearch.resetPaginationSessions();
   const hits = Array.from({ length: 150 }, (_, i) => ({ uniqueId: `account1:INBOX:message${i}`, dateMs: Date.now() - i * 60_000 }));
   globalThis.browser = {
-    storage: { local: { get: vi.fn(async () => ({ fts_attachment_repaired_accounts: ['account1'] })) } },
+    // The tool runs as a page: fts/nativeEngine.js (through ftsRequest) loads config.js, which listens for storage changes.
+    storage: { onChanged: { addListener() {} }, local: { get: vi.fn(async () => ({ fts_attachment_repaired_accounts: ['account1'] })) } },
     // The search answers at most the limit it is asked for, as the helper does; "few" has 3 matches.
     runtime: {
       sendMessage: vi.fn(async (msg) => (msg.cmd === 'search' ? hits.slice(0, Math.min(msg.q === 'few' ? 3 : hits.length, msg.limit)) : null)),
