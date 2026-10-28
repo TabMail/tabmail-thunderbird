@@ -64,7 +64,7 @@ const PROP_MOUSEDOWN_MHC = "__tmHeaderChipDelegationMousedown";
 const PROP_MO_MHC        = "__tmHeaderChipMO";
 const PROP_MO_TIMER_MHC  = "__tmHeaderChipMOTimer";
 
-// Header-DOM landmarks (TB 145, see PLAN_HEADER_CHIP.md §2 / innernhtml.log:621-643).
+// Header-DOM landmarks (TB 145 about:message).
 const ANCHOR_ID_MHC                  = "expandedButtonsBox";
 const HEADER_RE_RENDER_PARENT_ID_MHC = "headerSubjectSecurityContainer";
 const MESSAGE_HEADER_ID_MHC          = "messageHeader";
@@ -81,7 +81,7 @@ const CHROME_URLS_MHC = [
 
 // Action constants. DUPLICATED from tmMessageListCardView.sys.mjs:517-558 by
 // design — experiments don't reliably share module state across .sys.mjs
-// files (PLAN_TB_LABEL_V2.md §5a "Why three local maps"). Values must match.
+// files, so each experiment keeps its own local map. Values must match.
 // (TM_ACTION_CLASSES_MLCV intentionally NOT copied — drives row-level class
 // swap which has no analogue in the header.)
 const _ACTION_TO_KEYWORD_MHC = {
@@ -249,7 +249,7 @@ var tmMessageHeaderChip = class extends ExtensionCommon_MHC.ExtensionAPIPersiste
 
     /**
      * Yield every doc inside `win` that hosts a `#messageHeader` element.
-     * Three cases (PLAN_HEADER_CHIP.md §4.2):
+     * Three cases:
      *   A: messageDisplay tab — chromeBrowser.contentDocument is about:message
      *   B: 3-pane preview — chromeBrowser.contentDocument is about:3pane,
      *      with a nested `#messageBrowser` whose contentDocument is about:message

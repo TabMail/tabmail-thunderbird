@@ -14,7 +14,7 @@ work proportional to drift, works for arbitrarily old emails. The repeatedly-cit
 `indexedAt`/`verifiedAt` native-FTS column was REJECTED (verification-by-attention-age is still
 periodic scanning, plus a native schema migration).
 
-**Decision:** Add reconcile **Phase 1c** (`_runFolderReconcile`, PLAN_FOLDER_SET_RECONCILE.md),
+**Decision:** Add reconcile **Phase 1c** (`_runFolderReconcile`),
 running after the cursor scan, independent of both the watermark and the cursor store. The
 count invariant: with add-side completeness guaranteed (ADR-020 cursors + live events),
 FTS-per-folder ⊇ msgDB-per-folder, so per folder `ftsCount > msgCount` ⟹ ghosts provably

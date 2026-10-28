@@ -9,8 +9,7 @@
 // can't be imported directly. Per the established pattern (see
 // staleRowFilter.test.js, tmMessageHeaderChip.test.js), we replicate the
 // pure-JS helpers here so any drift surfaces in CI. The painter / DOM
-// mutation / lifecycle code is exercised through manual QA per
-// PLAN_MULTI_MESSAGE_CHIP.md §8.
+// mutation / lifecycle code is exercised through manual QA (ADR-015, multi-message-view chip).
 //
 // NOTE: there is intentionally NO `_actionFromKeywords_MMC` to test —
 // the multi-msg chip skips the legacy IMAP-keyword fallback that older

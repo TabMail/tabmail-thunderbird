@@ -22,8 +22,7 @@ import { runProviderSmoke } from "./byokSmoke.js";
  * BYOK (Bring-Your-Own-Key) Settings Module — Thunderbird.
  *
  * Lets a user route their AI traffic to their own OpenAI / Anthropic / Google
- * (Gemini) key. Mirrors the iOS implementation 1:1 (see PLAN_BYOK_SUPPORT.md
- * §6.1, revised 2026-05-26):
+ * (Gemini) key. Mirrors the iOS implementation 1:1:
  *
  *  - TWO configurable tiers only: "Light" (wire id `background`) and "Heavy"
  *    (wire id `interactive`). Autocomplete is FIXED to TabMail (latency-critical)
@@ -34,7 +33,7 @@ import { runProviderSmoke } from "./byokSmoke.js";
  *  - `provider === 'tabmail'` is the off-state for a tier (no master toggle).
  *
  * The backend resolves which tier applies to a given request from the system
- * prompt (§5), so we just send every configured non-TabMail tier and let it pick.
+ * prompt, so we just send every configured non-TabMail tier and let it pick.
  */
 
 export const PROVIDERS = ["openai", "anthropic", "google"];
@@ -46,7 +45,7 @@ export const PROVIDER_LABELS = {
   google: "Google",
 };
 
-// Verified key-provisioning consoles (PLAN §2 / iOS BYOKProviderInfo.keyURL).
+// Verified key-provisioning consoles (iOS BYOKProviderInfo.keyURL).
 export const PROVIDER_KEY_URLS = {
   openai: "https://platform.openai.com/api-keys",
   anthropic: "https://console.anthropic.com/settings/keys",

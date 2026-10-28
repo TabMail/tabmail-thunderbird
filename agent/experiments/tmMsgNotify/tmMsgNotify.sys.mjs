@@ -136,7 +136,7 @@ function extractMessageInfo(hdr, folderManager, messageManager, eventType) {
     const dateMs = hdr.dateInSeconds ? hdr.dateInSeconds * 1000 : 0;
     // msgKey: for IMAP folders this is the IMAP UID — monotonic in
     // arrival-into-folder order. Used by the indexer's per-folder cursor
-    // (PLAN_RECONCILE_CURSOR.md / ADR-020).
+    // (ADR-020).
     let msgKey = null;
     try {
       const k = hdr.messageKey;
@@ -498,7 +498,7 @@ var tmMsgNotify = class extends ExtensionCommonMsgNotify.ExtensionAPIPersistent 
          * Probe headerMessageIds against a folder's msgDB via
          * getMsgHdrForMessageID — a hash index (threading depends on it),
          * so this is the fast stale-finder that needs NO msgDB enumeration
-         * (PLAN_FOLDER_SET_RECONCILE.md §2). Ids are stored WITHOUT angle
+         * (ADR-021). Ids are stored WITHOUT angle
          * brackets — pass them as-is. Returns the ids with no header
          * (stale CANDIDATES only — the addon confirms each with the
          * ADR-017 verify-then-remove recheck before touching FTS), and the

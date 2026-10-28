@@ -25,12 +25,11 @@
  *      views collapsed-thread/multi-select). attachToWindow may run with
  *      no doc to attach to; later, when the doc appears via
  *      onMessagesDisplayed, _attachAndPaintDoc is the workhorse that
- *      idempotently attaches delegation+MO and paints. See
- *      PLAN_MULTI_MESSAGE_CHIP.md §4.1 + §4.4.
+ *      idempotently attaches delegation+MO and paints.
  *   2. N chips per surface (one per <li>), not one. Per-row hdr resolved
- *      from gMessageSummary._msgNodes reverse-mapping. See §4.3.1.
+ *      from gMessageSummary._msgNodes reverse-mapping (_resolveLiHdrPairs).
  *   3. MutationObserver target is `#content` (parent of `#messageList`)
- *      to catch list-rebuild on selection change. See §4.4 trigger 3.
+ *      to catch list-rebuild on selection change.
  */
 
 // Diagnostic console.log output, off in shipped builds; failures use console.warn and stay visible.
@@ -84,8 +83,7 @@ const PROP_MOUSEDOWN_MMC = "__tmMultiMsgChipDelegationMousedown";
 const PROP_MO_MMC        = "__tmMultiMsgChipMO";
 const PROP_MO_TIMER_MMC  = "__tmMultiMsgChipMOTimer";
 
-// Multi-message-view DOM landmarks (TB 145, see PLAN_MULTI_MESSAGE_CHIP.md
-// §2 / innernhtml.log:1-92 / multimessageview.js).
+// Multi-message-view DOM landmarks (TB 145, see multimessageview.js).
 const MESSAGE_LIST_ID_MMC      = "messageList";
 const CONTENT_PARENT_ID_MMC    = "content";              // MO target (parent of messageList)
 const ITEM_HEADER_SELECTOR_MMC = ".item-header";         // chip anchor inside each <li>
@@ -110,7 +108,7 @@ const CHROME_URLS_MMC = [
 
 // Action constants. DUPLICATED from tmMessageListCardView.sys.mjs:517-541
 // by design — experiments don't reliably share module state across .sys.mjs
-// files (PLAN_TB_LABEL_V2.md §5a "Why three local maps"). Values must match
+// files, so each experiment keeps its own local map. Values must match
 // the card-view AND header-chip experiments.
 //
 // _ACTION_TO_KEYWORD_MMC is used by _colorForAction_MMC to look up the
@@ -280,8 +278,7 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersisten
 
     /**
      * Yield every doc inside `win` that hosts `#messageList`
-     * (multimessageview.xhtml). Three cases (PLAN_MULTI_MESSAGE_CHIP.md
-     * §4.2):
+     * (multimessageview.xhtml). Three cases:
      *   A: messageDisplay tab whose content IS multimessageview.
      *   B: 3-pane preview — about:3pane → nested messageBrowser →
      *      multimessageview lives where about:message normally would.
@@ -333,7 +330,6 @@ var tmMultiMessageChip = class extends ExtensionCommon_MMC.ExtensionAPIPersisten
 
     /**
      * Resolve { li, hdr } pairs by reverse-mapping `gMessageSummary._msgNodes`.
-     * See PLAN_MULTI_MESSAGE_CHIP.md §4.3.1 for the strategy.
      *
      * `_msgNodes` is a dict where keys = `messageKey + folder.URI` (string
      * concat with NO separator — see TB multimessageview.js:122-130) and

@@ -875,7 +875,7 @@ export const nativeFtsSearch = {
     return nativeRPC('queryByDateRange', { from, to, limit });
   },
 
-  // Generic msgId key-range RPCs (PLAN_FOLDER_SET_RECONCILE.md). Half-open
+  // Generic msgId key-range RPCs (ADR-021). Half-open
   // range [startKey, endKey) over the unsharded message_ids PK. Requires
   // native helper ≥ 0.10.0 — older helpers reject with "Unknown reader
   // method" (the folder reconcile feature-detects and no-ops).

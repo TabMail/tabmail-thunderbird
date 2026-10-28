@@ -635,8 +635,7 @@ tree-view#threadTree .thread-card-dynamic-row > .tm-card-snippet-wrapper {
  * `tm-action-chip tm-action-X`) AND the message-header chip (which carries
  * `tm-action-chip tm-header-action-chip tm-action-X`). The card row's own
  * `tm-action-X` class still drives row-level tinting via separate rules
- * further down — those are unaffected by this change. See
- * tabmail-thunderbird/PLAN_HEADER_CHIP.md §5.1. */
+ * further down — those are unaffected by this change (ADR-014). */
 .tm-action-chip.tm-action-reply {
   background-image:
     linear-gradient(135deg,

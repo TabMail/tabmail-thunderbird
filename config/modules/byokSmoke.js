@@ -6,8 +6,8 @@ import { sendChatCompletions } from "../../agent/modules/llm.js";
 import { isModelAvailable } from "../../agent/modules/byokStorage.js";
 
 /**
- * BYOK connectivity smoke — Thunderbird port of iOS `runBYOKSmoke`
- * (PLAN_BYOK_SUPPORT.md §6.1). Tests entirely through normal endpoints
+ * BYOK connectivity smoke — Thunderbird port of iOS `runBYOKSmoke`.
+ * Tests entirely through normal endpoints
  * (`POST /byok/list-models` + `/completions/chat`); the backend is unchanged.
  *
  * TB-specific adaptation: iOS forces the `system_prompt_compose/summary` prompts,
@@ -58,7 +58,7 @@ export function smokeUserMessage(fixture) {
  * Success = routed to BYOK + non-empty response + the expected fragment present.
  * Tool stages are intentionally NOT checked — a tool event names the tool and
  * whether it succeeded, not what it returned (production sends no result), so the
- * fragment is the real verification (matches iOS §10.4b).
+ * fragment is the real verification (matches iOS).
  *
  * @param {Object|null} result  the object returned by sendChatCompletions
  * @param {string} expectedFragment  case-insensitive substring that must appear

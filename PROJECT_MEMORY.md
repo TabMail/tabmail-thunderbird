@@ -110,7 +110,7 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 ### 2026-07-04 — Summary `recipient_status` (cc detection, positive evidence)
 - **[Detail](Companion/Memory/Current/006-summary-recipient-status-cc-positive-evidence.md)** — address literally in `ccList`, not in To, user not the author; omitted when unsure (the SMTP envelope is discarded at delivery, so not-in-To proves nothing). `senderFilter.classifyRecipientStatus`; `_extractAllEmails` is global per entry.
 
-### 2026-07-03 — Remove-side folder reconcile landed (Phase 1c, ADR-021 / PLAN_FOLDER_SET_RECONCILE.md)
+### 2026-07-03 — Remove-side folder reconcile landed (Phase 1c, ADR-021)
 - **[Detail](Companion/Memory/Current/007-remove-side-folder-reconcile-phase-1c.md)** — `_runFolderReconcile` + `fts_folder_recon_memo`; headerMessageIds extracted by PREFIX STRIP, never `parseUniqueId` (it mis-splits ':'-bearing folder paths → false removal); `recheck_error` blocks the memo; orphan sweep only on `totalAll > Σ`.
 
 ### 2026-07-01 — Weekly-scan mass corrections (06/29: 352 indexed) = the ADD-side Class-1 date-window blind spot at scale (event log off → inferred, high confidence)

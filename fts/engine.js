@@ -675,7 +675,7 @@ export const ftsSearch = {
     return await nativeFtsSearch.queryByDateRange(from, to, limit);
   },
 
-  // Generic msgId key-range RPCs (PLAN_FOLDER_SET_RECONCILE.md). Count/list
+  // Generic msgId key-range RPCs (ADR-021). Count/list
   // have older history; fingerprintMsgIdRange requires helper >= 0.11.0, so
   // callers must feature-detect the complete reconciliation surface.
   async countMsgIdRange(startKey, endKey) {
