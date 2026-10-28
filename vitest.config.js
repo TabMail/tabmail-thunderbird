@@ -8,7 +8,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
-    // Connected background tests load isolated ES modules with node:vm.
-    poolOptions: { forks: { execArgv: ['--experimental-vm-modules'] } },
+    // Connected background tests load isolated ES modules with node:vm;
+    // --expose-gc lets a test check that a finished run's state is released.
+    poolOptions: { forks: { execArgv: ['--experimental-vm-modules', '--expose-gc'] } },
   },
 });

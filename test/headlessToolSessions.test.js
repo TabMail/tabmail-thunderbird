@@ -11,8 +11,9 @@
 // pages alone. The chat window's turn keeps its own sessions, reset per turn.
 //
 // This runs the real search tools (memory_search, email_search, inbox_read,
-// calendar_search, calendar_read) through the real executeToolsHeadless, over
-// stand-ins for the index, the inbox and the calendar that change between runs.
+// calendar_search, calendar_read) through the real executeToolsHeadless, and
+// through the real check-in task runner and reply generator, over stand-ins for
+// the index, the inbox and the calendar that change between runs.
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,6 +23,43 @@ vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
   normalizeUnicode: vi.fn(t => t),
   resolveUniqueMessageKey: vi.fn(async id => id),
+  extractBodyFromParts: vi.fn(async () => 'Synthetic message body'),
+  formatForLog: vi.fn(s => s),
+  getRealSubject: vi.fn(s => s),
+  getUniqueMessageKey: vi.fn(async () => 'synthetic-key'),
+  safeGetFull: vi.fn(async () => ({})),
+  saveChatLog: vi.fn(async () => {}),
+  splitConvertedTextForQuote: vi.fn(text => ({ main: text, quote: '' })),
+}));
+// The model, as each runner calls it: a test sets what it does.
+const model = vi.hoisted(() => ({ sendChat: null }));
+vi.mock('../agent/modules/llm.js', () => ({
+  sendChat: vi.fn((...args) => model.sendChat(...args)),
+  processEditResponse: vi.fn(text => ({ body: text })),
+}));
+vi.mock('../agent/modules/idbStorage.js', () => ({
+  get: vi.fn(async () => ({})),
+  set: vi.fn(async () => {}),
+  remove: vi.fn(async () => {}),
+  getAllKeys: vi.fn(async () => []),
+}));
+vi.mock('../agent/modules/promptGenerator.js', () => ({
+  getUserCompositionPrompt: vi.fn(async () => ''),
+  getUserKBPrompt: vi.fn(async () => ''),
+}));
+vi.mock('../agent/modules/deviceSync.js', () => ({ probeAICache: vi.fn(async () => null) }));
+vi.mock('../agent/modules/taskScheduler.js', () => ({
+  getExecutionState: vi.fn(async () => ({})),
+  consumeMissed: vi.fn(async () => {}),
+}));
+vi.mock('../agent/modules/reminderBuilder.js', () => ({
+  buildReminderList: vi.fn(async () => ({ reminders: [] })),
+  formatRemindersForSystem: vi.fn(() => '[]'),
+}));
+vi.mock('../agent/modules/reminderStateStore.js', () => ({ hashReminder: vi.fn(() => 'hash') }));
+vi.mock('../chat/modules/chatWindowUtils.js', () => ({
+  isChatWindowOpen: vi.fn(async () => false),
+  openOrFocusChatWindow: vi.fn(async () => {}),
 }));
 vi.mock('../agent/modules/config.js', () => ({ SETTINGS: { debugMode: false } }));
 vi.mock('../chat/modules/chatConfig.js', async importOriginal => {
@@ -40,6 +78,8 @@ vi.mock('../chat/modules/persistentChatStore.js', () => ({
 // A list shows each item's subject, one per line.
 vi.mock('../chat/modules/helpers.js', () => ({
   formatMailList: vi.fn(items => items.map(i => i.subject).join('\n')),
+  formatTimestampForAgent: vi.fn(() => ''),
+  getUserName: vi.fn(async () => ''),
   toNaiveIso: vi.fn(s => s),
   toIsoNoMs: vi.fn((d = new Date()) => d.toISOString().replace(/\.\d{3}Z$/, 'Z')),
   initialiseEmailCompose: vi.fn(),
@@ -217,4 +257,73 @@ describe('a headless run is never answered from another run (#171)', () => {
     const listed = [page1, page2].map(text => text.split('\n').filter(line => line.endsWith(' plan'))).flat();
     expect(listed).toEqual(snapshot);
   });
+
+  it('a finished headless run leaves nothing behind', async () => {
+    for (let i = 0; i < 30; i += 1) addEverywhere(`item${i}`);
+    let run = createIsolatedContext();
+    for (const [name, args] of Object.values(SEARCHES)) {
+      await runTool(run, name, args);
+      await runTool(run, name, { ...args, page_index: 2 });
+    }
+    const held = new WeakRef(run);
+    run = null;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    globalThis.gc();
+    expect(held.deref()).toBeUndefined();
+  });
+});
+
+// The runners that start headless runs: each check-in task and each reply is
+// one run. Its model reads the inbox, the inbox changes, and it asks for page 2;
+// then another run of the same kind reads the inbox again.
+const inboxLines = output => JSON.parse(output).results.split('\n').filter(line => line.endsWith(' plan'));
+
+const RUNNERS = {
+  async 'a check-in task'(changeMidRun) {
+    const { _testExports } = await import('../agent/modules/proactiveCheckin.js');
+    const pages = [];
+    let turn = 0;
+    model.sendChat = async messages => {
+      turn += 1;
+      if (turn > 1) pages.push(inboxLines(messages.at(-1).content));
+      if (turn === 1) return { tool_calls: [call('inbox_read', {})] };
+      if (turn === 2) {
+        changeMidRun();
+        return { tool_calls: [call('inbox_read', { page_index: 2 })] };
+      }
+      return { assistant: 'Done.' };
+    };
+    await _testExports._executeTask({ instruction: 'Synthetic task' }, 'synthetic-task');
+    return pages;
+  },
+  async 'a reply'(changeMidRun) {
+    const { cacheReply } = await import('../agent/modules/replyGenerator.js');
+    const pages = [];
+    model.sendChat = async (messages, options) => {
+      const [first] = await options.onToolExecution([call('inbox_read', {})], null);
+      pages.push(inboxLines(first.output));
+      changeMidRun();
+      const [second] = await options.onToolExecution([call('inbox_read', { page_index: 2 })], null);
+      pages.push(inboxLines(second.output));
+      return { assistant: 'Synthetic reply.' };
+    };
+    await cacheReply('synthetic-key', { id: 1, headerMessageId: 'synthetic@example.com' }, {});
+    return pages;
+  },
+};
+
+describe('each check-in and each reply is its own run (#171)', () => {
+  for (const [what, runOnce] of Object.entries(RUNNERS)) {
+    it(`${what} pages its own first read, and the next one reads afresh`, async () => {
+      for (let i = 0; i < 55; i += 1) addEverywhere(`item${i}`);
+      const snapshot = world.inbox.map(m => m.subject);
+
+      const pages = await runOnce(() => addEverywhere('interloper'));
+      expect(pages.flat()).toEqual(snapshot);
+
+      addEverywhere('lantern');
+      const [next] = await runOnce(() => {});
+      expect(next.slice(0, 2)).toEqual(['lantern plan', 'interloper plan']);
+    });
+  }
 });

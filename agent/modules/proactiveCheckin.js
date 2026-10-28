@@ -1311,6 +1311,7 @@ export async function sendTestProactiveNudge() {
 // ─────────────────────────────────────────────────────────────
 
 export const _testExports = {
+  _executeTask,
   TASK_EVAL_SYSTEM_PROMPT,
   INTERACTIVE_SYSTEM_PROMPT,
   _hashReminderList,
