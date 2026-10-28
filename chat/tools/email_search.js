@@ -6,6 +6,7 @@
 
 import { log, resolveUniqueMessageKey } from "../../agent/modules/utils.js";
 import { accountIdOfMsgId, getAttachmentRepairedAccounts } from "../../fts/attachmentFlags.js";
+import { ftsRequest } from "../../fts/ftsRequest.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { formatMailList, toIsoNoMs } from "../modules/helpers.js";
 import { createToolSessions } from "../modules/toolSessions.js";
@@ -158,19 +159,23 @@ export async function run(args = {}, options = {}) {
         try {
           browser.runtime.sendMessage({ type: "fts", cmd: "getFtsAvailability" }).catch(() => {});
         } catch (_) {}
+        // Headless runs call this in the background, which owns the helper; a
+        // message it sends would never reach its own FTS handler (#170). There
+        // a failed search answers { error }, as the handler answers a page,
+        // instead of throwing into the not-ready retry below.
+        const fields = { q: rawQuery, from: fromIso, to: toIso, limit: fetchLimit, ignoreDate, sort };
+        const { q, ...options } = fields;
+        const search = async ({ ftsSearch }) => {
+          try {
+            return await ftsSearch.search(q, options);
+          } catch (e) {
+            return { error: String(e?.message || e) };
+          }
+        };
         while (true) {
           readyAttempts += 1;
           try {
-            hits = await browser.runtime.sendMessage({
-            type: "fts",
-            cmd: "search",
-            q: rawQuery,
-            from: fromIso,
-            to: toIso,
-            limit: fetchLimit,
-            ignoreDate,
-            sort
-          });
+            hits = await ftsRequest("search", fields, search);
           } catch (sendErr) {
             // A THROWN sendMessage (no receiving end yet — boot/hot-reload
             // race) is the same "not ready" condition as an undefined

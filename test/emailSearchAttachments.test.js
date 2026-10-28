@@ -44,7 +44,8 @@ beforeEach(() => {
   resolveUniqueMessageKey.mockImplementation(async (uniqueId) => (weIds.has(uniqueId) ? { weID: weIds.get(uniqueId) } : null));
   hits = [hit(id(1), 1), hit(id(2), 2, 1), hit(id(3), 3)];
   globalThis.browser = {
-    storage: { local: { get: vi.fn(async (k) => (k in storage ? { [k]: storage[k] } : {})), set: vi.fn() } },
+    // The tool runs as a page: fts/nativeEngine.js (through ftsRequest) loads config.js, which listens for storage changes.
+    storage: { onChanged: { addListener() {} }, local: { get: vi.fn(async (k) => (k in storage ? { [k]: storage[k] } : {})), set: vi.fn() } },
     // The search answers at most the limit it is asked for, as the helper does.
     runtime: { sendMessage: vi.fn(async (msg) => (msg?.cmd === 'search' ? hits.slice(0, msg.limit) : null)), getURL: vi.fn(() => '') },
     tmHdr: { getHasAttachmentBulk },
