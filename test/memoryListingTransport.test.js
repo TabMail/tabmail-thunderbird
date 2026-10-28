@@ -7,6 +7,11 @@
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: () => {} }));
+// The tools run here as a page: nothing here starts the native helper, so what
+// they ask goes to the background as a message (fts/ftsRequest.js), which
+// `sendMessage` below answers. test/memoryToolsContext.test.js covers the
+// background. `storage` is what the helper module reads when it loads.
+const PAGE_STORAGE = { onChanged: { addListener() {} }, local: { get: async defaults => ({ ...defaults }) } };
 
 const NATIVE_MESSAGE_CAP_BYTES = 1024 * 1024;
 
@@ -23,6 +28,7 @@ function rowsOf(count, agentChars) {
 // before previews (`whole`) ignores previewChars and answers whole rows.
 function fakeHelper(rows, { whole = false } = {}) {
   globalThis.browser = {
+    storage: PAGE_STORAGE,
     runtime: {
       sendMessage: vi.fn(async (msg) => {
         if (msg?.cmd !== 'memorySearch') return undefined;

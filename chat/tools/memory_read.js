@@ -7,6 +7,7 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
+import { ftsRequest } from "../../fts/ftsRequest.js";
 
 // Default tolerance: 10 minutes (600,000 ms)
 const DEFAULT_TOLERANCE_MS = 600000;
@@ -28,16 +29,17 @@ async function listWindow(timestamp, toleranceMs, maxTurns) {
   let listedAtCursor = new Set();
   while (true) {
     const limit = CHAT_SETTINGS.memoryReadListRows + listedAtCursor.size;
-    const page = await browser.runtime.sendMessage({
-      type: "fts",
-      cmd: "memorySearch",
+    // Headless runs call this in the background, which owns the helper; a
+    // message it sends would never reach its own FTS handler.
+    const fields = {
       q: "",
       from: timestamp - toleranceMs,
       to,
       limit,
       ignoreDate: false,
       previewChars: CHAT_SETTINGS.memoryReadListPreviewChars,
-    });
+    };
+    const page = await ftsRequest("memorySearch", fields, ({ memorySearch }) => memorySearch.search(fields.q, fields));
     if (!Array.isArray(page)) {
       throw new Error(page?.error || "invalid response format");
     }
@@ -66,12 +68,11 @@ async function readWhole(entries) {
     if (!byDate.has(entry.dateMs)) byDate.set(entry.dateMs, null);
   }
   await Promise.all([...byDate.keys()].map(async (dateMs) => {
-    const rows = await browser.runtime.sendMessage({
-      type: "fts",
-      cmd: "memoryRead",
-      timestampMs: dateMs,
-      toleranceMs: 0,
-    });
+    const rows = await ftsRequest(
+      "memoryRead",
+      { timestampMs: dateMs, toleranceMs: 0 },
+      ({ memorySearch }) => memorySearch.read(dateMs, 0),
+    );
     if (!Array.isArray(rows)) {
       throw new Error(rows?.error || "invalid response format");
     }
