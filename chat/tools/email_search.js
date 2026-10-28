@@ -8,13 +8,14 @@ import { log, resolveUniqueMessageKey } from "../../agent/modules/utils.js";
 import { accountIdOfMsgId, getAttachmentRepairedAccounts } from "../../fts/attachmentFlags.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { formatMailList, toIsoNoMs } from "../modules/helpers.js";
+import { createToolSessions } from "../modules/toolSessions.js";
 
-// Maintain per-argument search sessions during a single user turn
-let searchSessions = {};
+// Per-argument search sessions: the chat window's turn, or one headless run
+const sessions = createToolSessions();
 
 export function resetPaginationSessions() {
   try {
-    searchSessions = {};
+    sessions.resetTurn();
     log(`[TMDBG Tools] email_search: pagination sessions reset`);
   } catch (_) {}
 }
@@ -92,6 +93,7 @@ async function readAttachmentFlags(hits) {
 
 export async function run(args = {}, options = {}) {
   try {
+    const searchSessions = sessions.of(options.headlessRun);
     const norm = normalizeArgs(args);
     const rawQuery = norm.query;
     const sort = norm.sort;

@@ -7,6 +7,7 @@
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { toIsoNoMs } from "../modules/helpers.js";
+import { createToolSessions } from "../modules/toolSessions.js";
 
 // ====================================================================
 // UNIFIED TIME NORMALIZATION SYSTEM
@@ -90,11 +91,12 @@ function makeDayKeyFromNormalized(normalizedDate) {
   }
 }
 
-let summarySessions = {};
+// Per-argument summaries: the chat window's turn, or one headless run
+const sessions = createToolSessions();
 
 export function resetPaginationSessions() {
   try {
-    summarySessions = {};
+    sessions.resetTurn();
     log(`[TMDBG Tools] calendar_search: pagination sessions reset`);
   } catch (_) {}
 }
@@ -145,6 +147,7 @@ export async function run(args = {}, options = {}) {
       }
     } catch (_) {}
     const pageSize = resolvePageSize();
+    const summarySessions = sessions.of(options.headlessRun);
     const sKey = sessionKey(args);
     if (!summarySessions[sKey]) {
       if (!browser.tmCalendar) {

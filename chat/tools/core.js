@@ -375,7 +375,9 @@ export async function executeToolsHeadless(toolCalls, tokenUsage, idContext) {
     const startTime = Date.now();
     
     try {
-      const result = await executeToolByName(name, processedArgs);
+      // Search sessions belong to this run alone (#171). A batch with no run
+      // context shares them with nothing.
+      const result = await executeToolByName(name, processedArgs, { headlessRun: idContext || {} });
       const elapsed = Date.now() - startTime;
       log(`[Tools Headless] Completed: ${name} (${elapsed}ms)`);
 

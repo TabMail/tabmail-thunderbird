@@ -8,13 +8,14 @@
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { ftsRequest } from "../../fts/ftsRequest.js";
+import { createToolSessions } from "../modules/toolSessions.js";
 
-// Maintain per-argument search sessions during a single user turn (mirrors email_search)
-let searchSessions = {};
+// Per-argument search sessions: the chat window's turn, or one headless run (mirrors email_search)
+const sessions = createToolSessions();
 
 export function resetPaginationSessions() {
   try {
-    searchSessions = {};
+    sessions.resetTurn();
     log(`[TMDBG Tools] memory_search: pagination sessions reset`);
   } catch (_) {}
 }
@@ -190,6 +191,7 @@ async function fetchListingRows(session) {
 
 export async function run(args = {}, options = {}) {
   try {
+    const searchSessions = sessions.of(options.headlessRun);
     const norm = normalizeArgs(args);
     // An empty query lists the most recent conversations, newest first (the
     // helper's memorySearch does that for an empty q): "what have we discussed".
