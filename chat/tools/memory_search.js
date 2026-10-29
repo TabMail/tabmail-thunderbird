@@ -77,7 +77,8 @@ function previewChars() {
 
 /**
  * One memorySearch request to the helper. Retries while no listener answers
- * (FTS engine not yet initialized / hot-reload race); a real result, an empty
+ * (the background has not attached its FTS handler yet: startup or hot-reload
+ * race); a real result, an empty
  * array or an `{error}` object ends the wait. Returns `{ hits }` or `{ error }`.
  */
 async function requestMemory({ q, from, to, limit }) {

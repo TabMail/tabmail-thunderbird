@@ -188,7 +188,8 @@ describe('native optimize maintenance contract', () => {
     const first = runtimeEngine.initFtsEngine();
     const second = runtimeEngine.initFtsEngine();
     expect(second).toBe(first);
-    expect(initNativeFts).toHaveBeenCalledTimes(1);
+    // The helper connects after the scan status is normalized (one storage read).
+    await vi.waitFor(() => expect(initNativeFts).toHaveBeenCalledTimes(1));
 
     pending.resolve(true);
     await Promise.all([first, second]);
