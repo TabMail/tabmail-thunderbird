@@ -406,9 +406,17 @@ async function _initFtsEngineOnce() {
   log("[TMDBG FTS] Initializing worker and database");
 
   try {
+    // Attached before the helper connects, so a page's request gets what a
+    // direct call here gets: it waits while the helper connects, and gets the
+    // helper's error at once while the helper is missing (#175). Nothing that
+    // can fail runs before initNativeFts claims the helper: a startup that
+    // failed earlier would leave the background's recheck nothing to retry.
+    attachCommandInterface();
     await initNativeFts();
+    // A scan status left over from an interrupted session would otherwise show
+    // as a live scan until the next one (with incremental indexing off, nothing
+    // else clears it).
     await normalizeInterruptedFtsScanStatus();
-    attachCommandInterface(); // Attach command handlers
 
     // Check if embeddings need rebuilding AFTER command interface is registered.
     // Two triggers: (1) schema version bump, (2) missing embeddings (state-based).

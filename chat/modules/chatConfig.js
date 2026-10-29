@@ -98,13 +98,18 @@ export const CHAT_SETTINGS = {
   memoryReadListPreviewChars: 1,
   // --- FTS backend readiness retry (chat tools) ---
   // When `browser.runtime.sendMessage({type:"fts", ...})` resolves to `undefined`,
-  // no listener handled the message — typically because `initFtsEngine()` hasn't
-  // attached the command interface yet (startup race) or it was torn down by a
-  // hot-reload. We poll-retry the send up to this total budget before giving up
-  // and surfacing "invalid response format" to the LLM.
+  // no listener handled the message — typically because the background has not
+  // yet run `initFtsEngine()`, which attaches the command interface before it
+  // connects the helper (startup race), or a hot-reload tore it down. Once it is attached, a
+  // request waits in the handler while the helper connects, and gets the
+  // helper's error at once while the helper is missing (#175). We poll-retry the
+  // send up to this total budget before giving up and surfacing "invalid
+  // response format" to the LLM.
   // 30s (was 10s): must comfortably cover a cold engine boot INCLUDING the
   // worst-case update-manifest fetch timeout (15s) + native init, so tool
-  // calls ride out engine self-heal instead of giving up (2026-07-03).
+  // calls ride out engine self-heal instead of giving up (2026-07-03). Since
+  // #175 a page waits out the native init inside the handler instead, so this
+  // budget now only has to cover the background starting up.
   ftsReadinessTimeoutMs: 30000,
   // Delay between readiness retries.
   ftsReadinessRetryDelayMs: 250,

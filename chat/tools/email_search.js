@@ -141,8 +141,9 @@ export async function run(args = {}, options = {}) {
         
         // Search through ftsRequest: a runtime message from a page, a direct
         // engine call in the background (#170). Retry while the response is
-        // `undefined` — that means no listener handled the message (FTS engine
-        // not yet initialized / hot-reload race). A real result, an empty
+        // `undefined` — that means no listener handled the message (the
+        // background has not attached its FTS handler yet: startup or
+        // hot-reload race). A real result, an empty
         // array, or an `{error}` object all exit the loop immediately.
         const readyTimeoutMs = Math.max(
           0,

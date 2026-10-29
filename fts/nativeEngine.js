@@ -657,8 +657,7 @@ async function _initNativeFtsOnce() {
     log("[TMDBG FTS] Native FTS helper connected successfully");
 
     // NOTE: Version check + auto-reindex is handled by initFtsEngine() in engine.js
-    // AFTER attachCommandInterface() is called. Do NOT trigger reindex here — the
-    // runtime message handler isn't registered yet and the message would be lost.
+    // once this connection is up. Do NOT trigger reindex here.
 
     return true;
   } catch (error) {

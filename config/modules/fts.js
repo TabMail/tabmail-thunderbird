@@ -145,8 +145,8 @@ export async function saveFtsSettings() {
 export async function updateFtsStatus() {
   try {
     // If the native helper needs user action, show an install/reinstall CTA and skip the
-    // stats query (the FTS command interface isn't attached without the helper,
-    // so the query would just error out).
+    // stats query (without the helper it is answered only with the helper's
+    // "not connected" error).
     const installCta = $("fts-not-installed");
     try {
       const avail = await browser.runtime.sendMessage({ command: "getFtsAvailability" });
