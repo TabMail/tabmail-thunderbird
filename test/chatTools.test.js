@@ -621,6 +621,13 @@ describe('TB-062c: a search sends only its own search request', () => {
     expect(sent).toHaveLength(notReady + 1);
     for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd });
   });
+
+  // A listing of recent conversations (no query) fetches in steps; still only its own requests.
+  it.each([0, 2])('memory_search listing sends only memorySearch requests (%i not-ready answers first)', async (notReady) => {
+    const sent = await sentMessages(memorySearch, 'memorySearch', {}, notReady);
+    expect(sent).toHaveLength(notReady + 1);
+    for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd: 'memorySearch' });
+  });
 });
 
 // ---------------------------------------------------------------------------

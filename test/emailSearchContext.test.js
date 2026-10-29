@@ -157,6 +157,18 @@ beforeEach(() => {
 
 const SORTED = ['relevance', 'date_desc', 'date_asc'];
 
+// What a search sent on the runtime: the background calls the helper directly
+// and sends nothing; a page sends only its own search requests (#174).
+function expectOnlyOwnRequests(name) {
+  const sent = browser.runtime.sendMessage.mock.calls.map(c => c[0]);
+  if (name === 'a page') {
+    expect(sent.length).toBeGreaterThan(0);
+    for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd: 'search' });
+  } else {
+    expect(sent).toEqual([]);
+  }
+}
+
 describe('email_search answers in every context (#170)', () => {
   for (const [name, enter] of Object.entries(CONTEXTS)) {
     it(`finds the mail from ${name}`, async () => {
@@ -166,6 +178,7 @@ describe('email_search answers in every context (#170)', () => {
       expect(result.results).toContain('Harbour trip plan');
       expect(result.results).toContain('Harbour trip tickets');
       expect(result.totalItems).toBe(2);
+      expectOnlyOwnRequests(name);
     });
 
     it(`keeps the order asked for from ${name}`, async () => {
