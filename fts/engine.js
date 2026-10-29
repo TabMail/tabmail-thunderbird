@@ -12,6 +12,7 @@ import { initNativeFts, nativeFtsSearch, nativeMemorySearch } from "./nativeEngi
 import {
   acquireFtsExclusiveOperation,
   clearOwnedFtsScanStatus,
+  normalizeInterruptedFtsScanStatus,
   runFtsMembershipMutation,
   writeOwnedFtsScanStatus,
 } from "./operationCoordinator.js";
@@ -410,10 +411,12 @@ async function _initFtsEngineOnce() {
     // helper's error at once while the helper is missing (#175). Nothing that
     // can fail runs before initNativeFts claims the helper: a startup that
     // failed earlier would leave the background's recheck nothing to retry.
-    // A scan status left over from an interrupted session is cleared where it
-    // is consumed (the folder reconcile's scan gate) or by the next scan.
     attachCommandInterface();
     await initNativeFts();
+    // A scan status left over from an interrupted session would otherwise show
+    // as a live scan until the next one (with incremental indexing off, nothing
+    // else clears it).
+    await normalizeInterruptedFtsScanStatus();
 
     // Check if embeddings need rebuilding AFTER command interface is registered.
     // Two triggers: (1) schema version bump, (2) missing embeddings (state-based).
