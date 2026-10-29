@@ -12,7 +12,6 @@ import { initNativeFts, nativeFtsSearch, nativeMemorySearch } from "./nativeEngi
 import {
   acquireFtsExclusiveOperation,
   clearOwnedFtsScanStatus,
-  normalizeInterruptedFtsScanStatus,
   runFtsMembershipMutation,
   writeOwnedFtsScanStatus,
 } from "./operationCoordinator.js";
@@ -406,10 +405,13 @@ async function _initFtsEngineOnce() {
   log("[TMDBG FTS] Initializing worker and database");
 
   try {
-    await normalizeInterruptedFtsScanStatus();
     // Attached before the helper connects, so a page's request gets what a
     // direct call here gets: it waits while the helper connects, and gets the
-    // helper's error at once while the helper is missing (#175).
+    // helper's error at once while the helper is missing (#175). Nothing that
+    // can fail runs before initNativeFts claims the helper: a startup that
+    // failed earlier would leave the background's recheck nothing to retry.
+    // A scan status left over from an interrupted session is cleared where it
+    // is consumed (the folder reconcile's scan gate) or by the next scan.
     attachCommandInterface();
     await initNativeFts();
 

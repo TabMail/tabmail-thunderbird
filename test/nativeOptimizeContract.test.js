@@ -188,8 +188,7 @@ describe('native optimize maintenance contract', () => {
     const first = runtimeEngine.initFtsEngine();
     const second = runtimeEngine.initFtsEngine();
     expect(second).toBe(first);
-    // The helper connects after the scan status is normalized (one storage read).
-    await vi.waitFor(() => expect(initNativeFts).toHaveBeenCalledTimes(1));
+    expect(initNativeFts).toHaveBeenCalledTimes(1);
 
     pending.resolve(true);
     await Promise.all([first, second]);
@@ -262,6 +261,9 @@ describe('native optimize maintenance contract', () => {
     await expect(runtimeEngine.initFtsEngine()).rejects.toThrow('marker write failed');
     await vi.waitFor(() => expect(mockRebuildEmbeddings).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(getFtsOperationState().exclusive).toBe(false));
+    // The failed rebuild finishes settling a few promise steps after it
+    // releases ownership; the retry comes after that, as the next init does.
+    await new Promise(resolve => setTimeout(resolve, 0));
     await runtimeEngine.initFtsEngine();
     await vi.waitFor(() => expect(mockRebuildEmbeddings).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(nativeFtsSearch.markVersionAsIndexed).toHaveBeenCalledTimes(1));
