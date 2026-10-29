@@ -98,12 +98,6 @@ async function requestMemory({ q, from, to, limit }) {
     );
     const readyDeadline = Date.now() + readyTimeoutMs;
     let readyAttempts = 0;
-    // Actively kick a helper reconnect probe (cooldown-guarded in the
-    // background) so the engine self-heals while we poll below.
-    // Fire-and-forget; always the FIRST fts message this call sends.
-    try {
-      browser.runtime.sendMessage({ type: "fts", cmd: "getFtsAvailability" }).catch(() => {});
-    } catch (_) {}
     // Headless runs call this in the background, which owns the helper; a
     // message it sends would never reach its own FTS handler. There a failed
     // search answers { error }, as the handler answers a page, instead of

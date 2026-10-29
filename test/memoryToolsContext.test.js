@@ -160,6 +160,18 @@ beforeEach(() => {
   memorySearch.resetPaginationSessions();
 });
 
+// What a search sent on the runtime: the background calls the helper directly
+// and sends nothing; a page sends only its own search requests (#174).
+function expectOnlyOwnRequests(name) {
+  const sent = browser.runtime.sendMessage.mock.calls.map(c => c[0]);
+  if (name === 'a page') {
+    expect(sent.length).toBeGreaterThan(0);
+    for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd: 'memorySearch' });
+  } else {
+    expect(sent).toEqual([]);
+  }
+}
+
 describe('memory tools answer in every context (#155)', () => {
   for (const [name, enter] of Object.entries(CONTEXTS)) {
     it(`memory_search finds the conversation from ${name}`, async () => {
@@ -168,6 +180,7 @@ describe('memory tools answer in every context (#155)', () => {
       expect(result.error).toBeUndefined();
       expect(result.results).toContain(`[timestamp: ${entry.dateMs}]`);
       expect(result.results).toContain('lighthouse trip');
+      expectOnlyOwnRequests(name);
     });
 
     it(`memory_search lists recent conversations from ${name}`, async () => {
@@ -175,6 +188,7 @@ describe('memory tools answer in every context (#155)', () => {
       const result = await memorySearch.run({ query: '' });
       expect(result.error).toBeUndefined();
       expect(result.results).toContain(`[timestamp: ${entry.dateMs}]`);
+      expectOnlyOwnRequests(name);
     });
 
     it(`memory_read reads the whole conversation from ${name}`, async () => {

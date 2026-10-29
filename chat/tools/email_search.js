@@ -154,12 +154,6 @@ export async function run(args = {}, options = {}) {
         );
         const readyDeadline = Date.now() + readyTimeoutMs;
         let readyAttempts = 0;
-        // Meant as a helper reconnect kick; no handler answers this shape
-        // today (#174).
-        // Fire-and-forget; always the FIRST fts message this call sends.
-        try {
-          browser.runtime.sendMessage({ type: "fts", cmd: "getFtsAvailability" }).catch(() => {});
-        } catch (_) {}
         // Headless runs call this in the background, which owns the helper; a
         // message it sends would never reach its own FTS handler (#170). There
         // a failed search answers { error }, as the handler answers a page,

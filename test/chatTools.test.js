@@ -548,7 +548,6 @@ describe('TB-062: email_search query construction', () => {
 
   it('retries while FTS backend returns undefined, then succeeds', async () => {
     browser.runtime.sendMessage
-      .mockResolvedValueOnce(null) // reconnect-kick probe (getFtsAvailability)
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce([
@@ -577,6 +576,57 @@ describe('TB-062: email_search query construction', () => {
     } finally {
       if (originalImpl) browser.runtime.sendMessage.mockImplementation(originalImpl);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TB-062c: a search sends only its own search request (#174)
+// ---------------------------------------------------------------------------
+// The background's FTS handler runs only the commands it knows and refuses any
+// other with an error. So every runtime message a search tool sends is its own
+// search request, retries included.
+describe('TB-062c: a search sends only its own search request', () => {
+  let originalImpl;
+  beforeEach(() => {
+    clearStorage();
+    vi.clearAllMocks();
+    emailSearch.resetPaginationSessions();
+    memorySearch.resetPaginationSessions();
+    originalImpl = browser.runtime.sendMessage.getMockImplementation();
+  });
+  afterEach(() => {
+    browser.runtime.sendMessage.mockImplementation(originalImpl);
+  });
+
+  // `notReady` requests are answered undefined first (no handler yet), then the search answers.
+  async function sentMessages(tool, cmd, args, notReady) {
+    let unanswered = notReady;
+    browser.runtime.sendMessage.mockImplementation(async (msg) => {
+      if (msg?.type !== 'fts' || msg?.cmd !== cmd) return undefined;
+      if (unanswered > 0) { unanswered -= 1; return undefined; }
+      return [];
+    });
+    const result = await tool.run(args);
+    expect(result).not.toHaveProperty('error');
+    return browser.runtime.sendMessage.mock.calls.map((c) => c[0]);
+  }
+
+  it.each([
+    ['email_search', 'search', 0, () => emailSearch],
+    ['email_search', 'search', 2, () => emailSearch],
+    ['memory_search', 'memorySearch', 0, () => memorySearch],
+    ['memory_search', 'memorySearch', 2, () => memorySearch],
+  ])('%s sends only %s requests (%i not-ready answers first)', async (_name, cmd, notReady, tool) => {
+    const sent = await sentMessages(tool(), cmd, { query: 'quarterly report' }, notReady);
+    expect(sent).toHaveLength(notReady + 1);
+    for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd });
+  });
+
+  // A listing of recent conversations (no query) fetches in steps; still only its own requests.
+  it.each([0, 2])('memory_search listing sends only memorySearch requests (%i not-ready answers first)', async (notReady) => {
+    const sent = await sentMessages(memorySearch, 'memorySearch', {}, notReady);
+    expect(sent).toHaveLength(notReady + 1);
+    for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd: 'memorySearch' });
   });
 });
 
@@ -1383,7 +1433,6 @@ describe('TB-069: memory_search handler logic', () => {
 
   it('returns no-results message when backend returns empty array', async () => {
     browser.runtime.sendMessage
-      .mockResolvedValueOnce(null) // reconnect-kick probe
       .mockResolvedValueOnce([]);
     const result = await memorySearch.run({ query: 'nonexistent' });
     expect(result.totalItems).toBe(0);
@@ -1392,7 +1441,6 @@ describe('TB-069: memory_search handler logic', () => {
 
   it('returns error when backend returns error object', async () => {
     browser.runtime.sendMessage
-      .mockResolvedValueOnce(null) // reconnect-kick probe
       .mockResolvedValueOnce({ error: 'index corrupted' });
     const result = await memorySearch.run({ query: 'test' });
     expect(result).toHaveProperty('error');
@@ -1417,7 +1465,6 @@ describe('TB-069: memory_search handler logic', () => {
 
   it('returns error when backend returns non-array', async () => {
     browser.runtime.sendMessage
-      .mockResolvedValueOnce(null) // reconnect-kick probe
       .mockResolvedValueOnce('not an array');
     const result = await memorySearch.run({ query: 'test' });
     expect(result).toHaveProperty('error');
@@ -1426,7 +1473,6 @@ describe('TB-069: memory_search handler logic', () => {
 
   it('retries while backend returns undefined (FTS not ready), then succeeds', async () => {
     browser.runtime.sendMessage
-      .mockResolvedValueOnce(null) // reconnect-kick probe
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce([
@@ -1941,7 +1987,6 @@ describe('Additional tool edge cases', () => {
     // readiness budget, instead of failing the tool call instantly.
     memorySearch.resetPaginationSessions();
     browser.runtime.sendMessage
-      .mockResolvedValueOnce(null) // reconnect-kick probe
       .mockRejectedValueOnce(new Error('Could not establish connection'))
       .mockResolvedValueOnce([
         { dateMs: Date.now(), content: 'recovered', snippet: 'recovered' },
