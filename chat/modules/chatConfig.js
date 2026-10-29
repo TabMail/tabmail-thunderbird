@@ -99,8 +99,8 @@ export const CHAT_SETTINGS = {
   // --- FTS backend readiness retry (chat tools) ---
   // When `browser.runtime.sendMessage({type:"fts", ...})` resolves to `undefined`,
   // no listener handled the message — typically because the background has not
-  // yet run `initFtsEngine()`, which attaches the command interface as its first
-  // step (startup race), or a hot-reload tore it down. Once it is attached, a
+  // yet run `initFtsEngine()`, which attaches the command interface before it
+  // connects the helper (startup race), or a hot-reload tore it down. Once it is attached, a
   // request waits in the handler while the helper connects, and gets the
   // helper's error at once while the helper is missing (#175). We poll-retry the
   // send up to this total budget before giving up and surfacing "invalid
