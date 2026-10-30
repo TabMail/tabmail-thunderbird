@@ -20,6 +20,7 @@
 | `test/shownItemIdentity.test.js` | 3 | Two knowledge-base bullets that read the same once normalized (curly and straight quotes in a task; the old and new reminder prefixes) are two Tasks/Reminders items built by the real builder and parsers, and deleting one removes only its own bullet on this device and a connected peer; one bullet alone carries its own label (control) |
 | `test/shownItemStaleReminder.test.js` | 1 | A cached knowledge-base reminder whose bullet was deleted is still listed but deletes nothing from the Reminders tab: an unrelated note is kept and the answer is already removed (real generator, cache, builder and prompt store) |
 | `test/reminderBuilder.test.js` | 39 | Each KB reminder carries the labels of its own bullet only (same text, other date) |
+| `test/reminderHashMigrationSync.test.js` | 2 | The reminder list moving a disabled entry to its shared hash, from the background and the chat window: stamped in its write, sent once, taken by a peer |
 | `test/refineQueueAcrossReset.test.js` | 4 | DS-REFINE-QUEUE: a refine queued before a reset runs after it; one read before it is refused |
 | `test/deviceSyncRulings.test.js` | 40 | Upgrade, unsaved upgrade, marker refusals, the writer name never stored (DS-NAME), routing of the prompt-store message; a history restore of the writing style and the action rules brings back the entry's rules and keeps this device's own leading and closing text (DS-SKELETON) |
 | `test/deviceSyncReceiveConnection.test.js` | 9 | Sign-out never waits; a section Reset reads its defaults inside its hold, so a whole-field reset and a newer line, or a history restore emptying the section (writing style and action rules), asked for meanwhile land after it; Sync Now on a connected pair sends the three bullet fields, so a note whose send was lost reaches the peer; a refine answering after sign-out is saved |
@@ -173,7 +174,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | # | Test | Expected | Category |
 |---|------|----------|----------|
 | TB-090 | State merge with per-field timestamps | Newer wins per field | Merge |
-| TB-091 | Echo prevention (suppressBroadcast flag) | No infinite loop | Echo |
+| TB-091 | Echo prevention (a received or reset write is not sent back) | No infinite loop | Echo |
 | TB-092 | Virgin device detection (all epoch-zero) | Skip broadcast, probe | Detection |
 | TB-093 | Labelled-bullet merge of a received snapshot (DS-MERGE) | Labels unioned, deletions by seen map | Algorithm |
 | TB-094 | Template CRDT merge (by ID, newer updatedAt wins) | Correct per-template | CRDT |

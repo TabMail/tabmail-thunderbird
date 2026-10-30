@@ -6,7 +6,7 @@
 import { initComposeHandlers } from "./modules/composeTracker.js";
 import { primeProactiveAlarmListener } from "./modules/proactiveCheckin.js";
 import { SETTINGS } from "./modules/config.js";
-import { attachDeviceSyncTransportListener, setAICacheProbeHandler, setupStorageListener } from "./modules/deviceSync.js";
+import { attachDeviceSyncTransportListener, setAICacheProbeHandler } from "./modules/deviceSync.js";
 import * as idb from "./modules/idbStorage.js";
 import { handlePromptStoreMessage, initPromptStoreHost } from "./modules/promptStore.js";
 import { ensureSignedIn, signOut } from "./modules/supabaseAuth.js";
@@ -97,7 +97,6 @@ setAICacheProbeHandler(async (probeKeys, fields) => {
 // This page is the one place the knowledge base and the rules are changed (promptStore.js).
 initPromptStoreHost().catch((e) => log(`[PromptStore] Start failed: ${e}`, "error"));
 attachDeviceSyncTransportListener();
-setupStorageListener();
 
 log("TabMail Agent background script loaded.");
 // log('[TMDBG Summary] agent.js debug build reloaded – timestamp ' + (new Date()).toISOString());
@@ -237,7 +236,7 @@ function setupRuntimeMessageListener() {
                 return { ok: true };
             } catch (e) {
                 log(`Error disabling reminder: ${e}`, "error");
-                return { ok: false, error: String(e) };
+                return { ok: false, error: String(e), busy: e?.busy === true };
             }
         })();
     }
@@ -254,7 +253,7 @@ function setupRuntimeMessageListener() {
                 return { ok: true };
             } catch (e) {
                 log(`Error enabling reminder: ${e}`, "error");
-                return { ok: false, error: String(e) };
+                return { ok: false, error: String(e), busy: e?.busy === true };
             }
         })();
     }
@@ -1794,17 +1793,16 @@ async function init() {
         log(`[actionCache] Startup bulk-push init failed: ${e}`, "warn");
     }
 
-    // 10. Device sync — auto-connect and start storage listener for always-on Device sync.
+    // 10. Device sync — auto-connect for always-on Device sync.
     try {
-        const { connect: connectDeviceSync, setupStorageListener, isAutoEnabled } = await import("./modules/deviceSync.js");
+        const { connect: connectDeviceSync, isAutoEnabled } = await import("./modules/deviceSync.js");
 
 
 
         const autoSyncEnabled = await isAutoEnabled();
         if (autoSyncEnabled) {
-            setupStorageListener();
             await connectDeviceSync();
-            log("[DeviceSync] Auto-connected and storage listener started");
+            log("[DeviceSync] Auto-connected");
         } else {
             log("[DeviceSync] Auto-sync disabled by user, skipping connect");
         }

@@ -62,6 +62,9 @@ const TIMESTAMP_KEYS = {
   actionConfig: "device_sync_ts:actionConfig",
 };
 
+// The disabled reminders before the v2 map: a list of hashes, read as the map until the map is written
+const DISABLED_REMINDERS_V1_KEY = "disabled_reminders";
+
 // Epoch 0 for new devices — prevents overwriting existing prompts
 const EPOCH_ZERO = "1970-01-01T00:00:00.000Z";
 
@@ -115,15 +118,9 @@ function sendTransport(data) {
   return browser.tmDeviceSync.send(data);
 }
 
-// Suppress broadcast flag — set true when applying incoming sync to avoid echo
-let suppressBroadcast = false;
-
 // Debounce timer for auto-broadcast on local edits
 let _broadcastDebounceTimer = null;
 let _broadcastPendingFields = new Set();
-
-// Storage change listener reference (for cleanup)
-let _storageChangeListener = null;
 
 // Status change listeners — pages register callbacks for real-time UI updates
 const statusListeners = new Set();
@@ -169,22 +166,6 @@ async function readTimestamps() {
     const result = {};
     for (const field of VALID_FIELDS) result[field] = EPOCH_ZERO;
     return result;
-  }
-}
-
-/**
- * Initialize timestamps to epoch 0 if none exist (new device).
- */
-async function initTimestampsIfNeeded() {
-  const stored = await browser.storage.local.get(Object.values(TIMESTAMP_KEYS));
-  const anyExists = Object.values(TIMESTAMP_KEYS).some((k) => stored[k]);
-  if (!anyExists) {
-    const init = {};
-    for (const key of Object.values(TIMESTAMP_KEYS)) {
-      init[key] = EPOCH_ZERO;
-    }
-    await browser.storage.local.set(init);
-    log(`${PFX}New device detected — initialized timestamps to epoch 0`);
   }
 }
 
@@ -286,26 +267,47 @@ export async function restoreFromHistory(entry) {
 /** A history restore's templates, written by its holder (promptStore.js) while `holds()`, with a fresh
  * timestamp. Returns whether they were written. */
 export function writeRestoredTemplates(templates, holds) {
-  return writeLegacyField("templates", templates, new Date().toISOString(), holds);
+  return writeField("templates", templates, holds, { at: new Date().toISOString() });
 }
 
 /** A `prompt_state` field's reset to `value` with the epoch-zero timestamp, by its holder (promptStore.js)
  * while `holds()`. Returns whether it was written. */
 export function writeFieldDefault(field, value, holds) {
-  return writeLegacyField(field, value, EPOCH_ZERO, holds);
+  return writeField(field, value, holds, { at: EPOCH_ZERO });
 }
 
-/** Writes a `prompt_state` field (never a bullet field: those are the prompt store's) and its timestamp, if
- * `holds()` still does at the write, without broadcasting it. Returns whether it was written. */
-async function writeLegacyField(field, value, timestamp, holds) {
+/**
+ * A `prompt_state` field (never a bullet field: those are the prompt store's) as stored, with its
+ * timestamp: { value, updatedAt }. The disabled-reminders map of a device that has only the v1 list is
+ * that list as a map, each entry at the field's timestamp; the next write of the map stores it as v2.
+ * @param {string} field
+ */
+export async function readStoredField(field) {
+  if (!LEGACY_FIELDS.includes(field)) throw new Error(`not a prompt_state field: ${field}`);
+  const keys = [FIELD_KEYS[field], TIMESTAMP_KEYS[field], ...(field === "disabledReminders" ? [DISABLED_REMINDERS_V1_KEY] : [])];
+  const stored = await browser.storage.local.get(keys);
+  const updatedAt = stored[TIMESTAMP_KEYS[field]] || EPOCH_ZERO;
+  let value = stored[FIELD_KEYS[field]];
+  if (field === "disabledReminders" && !value && Array.isArray(stored[DISABLED_REMINDERS_V1_KEY])) {
+    value = legacyArrayToCRDTMap(stored[DISABLED_REMINDERS_V1_KEY], updatedAt);
+  }
+  return { value, updatedAt };
+}
+
+/**
+ * Writes a `prompt_state` field (never a bullet field), by its holder (promptStore.js) while `holds()` still
+ * does at the write, with `extra` keys in the same write. A local edit (`edit`) is stamped now, in that
+ * write, and then sent to peers and recorded in the history (noteLocalEdit); any other write (a received
+ * merge, a restore, a reset) carries the timestamp `at` when given, and is not sent from here. Every writer
+ * of these fields comes through here, so nothing else tells local edits from received ones.
+ * Returns whether it was written.
+ */
+export async function writeField(field, value, holds, { at, edit = false, extra = {} } = {}) {
   if (!LEGACY_FIELDS.includes(field)) throw new Error(`not a prompt_state field: ${field}`);
   if (!holds()) return false;
-  suppressBroadcast = true;
-  try {
-    await browser.storage.local.set({ [FIELD_KEYS[field]]: value, [TIMESTAMP_KEYS[field]]: timestamp });
-  } finally {
-    suppressBroadcast = false;
-  }
+  const stamp = edit ? new Date().toISOString() : at;
+  await browser.storage.local.set({ [FIELD_KEYS[field]]: value, ...(stamp ? { [TIMESTAMP_KEYS[field]]: stamp } : {}), ...extra });
+  if (edit) noteLocalEdit([field]);
   return true;
 }
 
@@ -384,6 +386,7 @@ async function readLocalState(fields = null, { texts = true } = {}) {
     const storageKeys = [
       ...Object.entries(FIELD_KEYS).filter(([field]) => !unread.includes(field)).map(([, key]) => key),
       ...Object.values(TIMESTAMP_KEYS),
+      DISABLED_REMINDERS_V1_KEY,
     ];
     const stored = await browser.storage.local.get(storageKeys);
     const state = { updatedAt: new Date().toISOString() };
@@ -398,11 +401,11 @@ async function readLocalState(fields = null, { texts = true } = {}) {
       }
       if (field === "taskCache") {
         // Send full cache map (per-key CRDT merge on receive)
-        const { getAllCachedResults } = await import("./taskExecutionCache.js");
-        state[field] = await getAllCachedResults();
-      } else if (field === "disabledReminders") {
-        // Send CRDT map (per-hash timestamps handle conflicts)
         state[field] = stored[FIELD_KEYS[field]] || {};
+      } else if (field === "disabledReminders") {
+        // Send CRDT map (per-hash timestamps handle conflicts); a device with only the v1 list sends it as one
+        state[field] = stored[FIELD_KEYS[field]]
+          || (Array.isArray(stored[DISABLED_REMINDERS_V1_KEY]) ? legacyArrayToCRDTMap(stored[DISABLED_REMINDERS_V1_KEY], stored[TIMESTAMP_KEYS[field]] || EPOCH_ZERO) : {});
       } else if (field === "templates") {
         state[field] = stored[FIELD_KEYS[field]] || [];
       } else if (field === "actionConfig") {
@@ -425,10 +428,6 @@ async function readLocalState(fields = null, { texts = true } = {}) {
  * @param {string[]|null} fields - If specified, only send these fields. null = all.
  */
 export async function broadcastState(fields = null) {
-  if (suppressBroadcast) {
-    return;
-  }
-
   if (!connected) {
     return;
   }
@@ -614,74 +613,35 @@ export async function resetFieldToDefault(field, defaultValue) {
   }
 }
 
-// ─── Storage Change Listener (Auto-Broadcast on Local Edit) ─────────────
+// ─── Local Edits (Auto-Broadcast) ───────────────────────────────────────
 
 /**
- * Set up storage.onChanged listener for auto-broadcasting local edits.
- * Register synchronously during background startup; repeated initialization is harmless.
- * Uses debounce to avoid flooding during rapid typing.
+ * A local edit of `fields`, already stored with its timestamp: recorded in the history after a quiet period
+ * (the history holds prompt text only, so an actionConfig entry would carry no diff) and sent to peers after
+ * the broadcast debounce.
+ * @param {string[]} fields
  */
-export function setupStorageListener() {
-  if (_storageChangeListener) return; // Already set up
+function noteLocalEdit(fields) {
+  for (const field of fields) _broadcastPendingFields.add(field);
+  const historyFields = fields.filter((field) => field !== "actionConfig");
+  if (historyFields.length > 0) scheduleEditHistory(historyFields);
 
-  const listener = (changes, area) => {
-    // Local edit timestamps must advance even while transport is paused.
-    if (area !== "local" || suppressBroadcast) return;
-
-    // Check if any prompt-related key changed. The bullet fields are written only by promptStore.js,
-    // which sends them and records their history itself.
-    const changedFields = [];
-    for (const [field, storageKey] of Object.entries(FIELD_KEYS)) {
-      if (SYNC_FIELDS.includes(field)) continue;
-      // Sync-owned writes carry their timestamp in the same change event.
-      if (changes[storageKey] && !changes[TIMESTAMP_KEYS[field]]) {
-        changedFields.push(field);
-      }
+  // Debounce broadcast: reset timer, broadcast after quiet period
+  if (_broadcastDebounceTimer) clearTimeout(_broadcastDebounceTimer);
+  _broadcastDebounceTimer = setTimeout(async () => {
+    _broadcastDebounceTimer = null;
+    const pending = [..._broadcastPendingFields];
+    _broadcastPendingFields.clear();
+    if (transportDisconnected) return;
+    try {
+      // A first wake may reach this debounce before late startup reconnects
+      // the module to the already-open parent transport.
+      if (!connected) await connect();
+      await broadcastState(pending);
+    } catch (e) {
+      log(`${PFX}Debounced broadcast failed: ${e}`, "warn");
     }
-    if (changedFields.length === 0) return;
-
-    // Update per-field timestamps for changed fields (these are local edits)
-    const now = new Date().toISOString();
-    const tsUpdates = {};
-    for (const field of changedFields) {
-      tsUpdates[TIMESTAMP_KEYS[field]] = now;
-      _broadcastPendingFields.add(field);
-    }
-    // Fire-and-forget timestamp write
-    browser.storage.local.set(tsUpdates).catch((e) => {
-      log(`${PFX}Failed to write edit timestamps: ${e}`, "warn");
-    });
-
-    // Record history for local edits (debounced 2s). History snapshots hold
-    // prompt text only, so an actionConfig entry would carry no diff.
-    const historyFields = changedFields.filter((field) => field !== "actionConfig");
-    if (historyFields.length > 0) scheduleEditHistory(historyFields);
-
-    // Debounce broadcast: reset timer, broadcast after quiet period
-    if (_broadcastDebounceTimer) clearTimeout(_broadcastDebounceTimer);
-    _broadcastDebounceTimer = setTimeout(async () => {
-      _broadcastDebounceTimer = null;
-      const fields = [..._broadcastPendingFields];
-      _broadcastPendingFields.clear();
-      if (transportDisconnected) return;
-      try {
-        // A first wake may reach this debounce before late startup reconnects
-        // the module to the already-open parent transport.
-        if (!connected) await connect();
-        await broadcastState(fields);
-      } catch (e) {
-        log(`${PFX}Debounced broadcast failed: ${e}`, "warn");
-      }
-    }, BROADCAST_DEBOUNCE_MS);
-  };
-
-  try {
-    browser.storage.onChanged.addListener(listener);
-    _storageChangeListener = listener;
-    log(`${PFX}Storage change listener registered (auto-broadcast on edit)`);
-  } catch (e) {
-    log(`${PFX}Storage listener registration failed: ${e}`, "warn");
-  }
+  }, BROADCAST_DEBOUNCE_MS);
 }
 
 // ─── Handle Incoming Prompt State (Per-Field Merge) ─────────────────────
@@ -736,8 +696,6 @@ async function handlePromptState(data, store) {
   const textFields = await store.receiveLegacy(data);
   if (textFields.length > 0) log(`${PFX}Imported a released device's texts as additions (${textFields.join(", ")})`);
 
-  const localTimestamps = await readTimestamps();
-
   const willMergeTemplates = data.templates !== undefined && Array.isArray(data.templates)
     && resolveIncomingTimestamp(data, "templates") !== EPOCH_ZERO
     && data.templates.some((t) => t && typeof t.id === "string" && typeof t.name === "string");
@@ -766,18 +724,13 @@ async function handlePromptState(data, store) {
       try {
         const { mergeTemplates, gcDeletedTemplates } = await import("./templateManager.js");
         const beforeTemplates = JSON.stringify((await browser.storage.local.get(FIELD_KEYS.templates))[FIELD_KEYS.templates] || []);
-        suppressBroadcast = true;
         await mergeTemplates(validTemplates, store);
         await gcDeletedTemplates(store);
         const afterTemplates = JSON.stringify((await browser.storage.local.get(FIELD_KEYS.templates))[FIELD_KEYS.templates] || []);
         templatesMerged = beforeTemplates !== afterTemplates;
       } catch (e) {
-        // DS-RECEIVE: a merge whose hold ended before its save is refused as busy, so the whole message is
-        // applied again (the merge is per template, newer wins: applying it again changes nothing twice).
-        if (e?.changed === true) throw Object.assign(new Error(`the templates' merge was not saved: ${e.message}`), { busy: true });
+        if (e?.changed === true) throw e;
         log(`${PFX}Template CRDT merge failed: ${e}`, "warn");
-      } finally {
-        suppressBroadcast = false;
       }
     }
   }
@@ -798,43 +751,36 @@ async function handlePromptState(data, store) {
 
       if (incomingMap && Object.keys(incomingMap).length > 0) {
         const { mergeIncoming } = await import("./reminderStateStore.js");
-        const beforeReminders = JSON.stringify((await browser.storage.local.get(FIELD_KEYS.disabledReminders))[FIELD_KEYS.disabledReminders] || {});
-        suppressBroadcast = true;
-        await mergeIncoming(incomingMap);
-        const afterReminders = JSON.stringify((await browser.storage.local.get(FIELD_KEYS.disabledReminders))[FIELD_KEYS.disabledReminders] || {});
-        remindersMerged = beforeReminders !== afterReminders;
-        suppressBroadcast = false;
+        remindersMerged = (await mergeIncoming(incomingMap, store)) > 0;
       }
     } catch (e) {
+      if (e?.changed === true) throw e;
       log(`${PFX}DisabledReminders CRDT merge failed: ${e}`, "warn");
-      suppressBroadcast = false;
     }
   }
 
   // ─── TaskCache: per-key CRDT merge — skip if epoch-zero ────────
   let taskCacheMerged = false;
   if (willMergeTaskCache && Object.keys(data.taskCache).length > 0) {
-    suppressBroadcast = true;
     try {
       const { mergeIncomingCache } = await import("./taskExecutionCache.js");
       // In this message's hold, never a nested acquire (DS-SEMAPHORE).
-      await mergeIncomingCache(data.taskCache, store);
-      taskCacheMerged = true;
+      taskCacheMerged = (await mergeIncomingCache(data.taskCache, store)) > 0;
     } catch (e) {
       // DS-RECEIVE: a hold that ended before the save applies the whole message again.
-      if (e?.busy === true) throw e;
+      if (e?.changed === true) throw e;
       log(`${PFX}TaskCache CRDT merge failed: ${e}`, "warn");
-    } finally {
-      suppressBroadcast = false;
     }
   }
 
   // ─── ActionConfig: last-write-wins — an epoch-zero (never edited) ─
-  // incoming timestamp is never newer than local, so it is skipped too.
+  // incoming timestamp is never newer than local, so it is skipped too. The local timestamp is read in this
+  // hold, after the merges above: every local edit is written in a hold too, so none lands between this
+  // read and the write below, and a write after this hold ended is refused (applied again, DS-RECEIVE).
   let actionConfigApplied = false;
   if (data.actionConfig !== undefined) {
     const incomingTs = data.actionConfig_updated_at || EPOCH_ZERO;
-    const localTs = localTimestamps.actionConfig;
+    const { updatedAt: localTs } = await store.field("actionConfig");
     if (incomingTs <= localTs) {
       log(`${PFX}Skipping actionConfig — not newer (incoming ${incomingTs} <= local ${localTs})`);
     } else if (!isValidActionConfig(data.actionConfig)) {
@@ -844,16 +790,7 @@ async function handlePromptState(data, store) {
         compact_threshold: data.actionConfig.compact_threshold,
         compact_threshold_chars: data.actionConfig.compact_threshold_chars,
       };
-      // Value and timestamp in one change set: the storage listener treats it as sync-owned.
-      suppressBroadcast = true;
-      try {
-        await browser.storage.local.set({
-          [FIELD_KEYS.actionConfig]: incomingConfig,
-          [TIMESTAMP_KEYS.actionConfig]: incomingTs,
-        });
-      } finally {
-        suppressBroadcast = false;
-      }
+      await store.saveField("actionConfig", incomingConfig, { received: true, at: incomingTs });
       actionConfigApplied = true;
       log(`${PFX}actionConfig: LWW accept compact_threshold=${incomingConfig.compact_threshold}, compact_threshold_chars=${incomingConfig.compact_threshold_chars}`);
     }
@@ -1036,7 +973,13 @@ async function handleMessage(rawData) {
         if (parsed.data) {
           await enqueueReceive("prompt_state", async () => {
             const { withPromptStore } = await import("./promptStore.js");
-            await withPromptStore((store) => handlePromptState(parsed.data, store), { label: "legacy sync apply" });
+            await withPromptStore((store) => handlePromptState(parsed.data, store).catch((e) => {
+              // DS-RECEIVE: a write refused because this hold ended first (`changed`) is refused as busy, so
+              // the whole message is applied again. Every store in it merges per item, newer wins, and
+              // actionConfig is last-write-wins on timestamps read in the hold: applying it again changes
+              // nothing twice and never puts an older value over a newer one.
+              throw e?.changed === true ? Object.assign(new Error(`the received prompt_state was not saved: ${e.message}`), { busy: true }) : e;
+            }), { label: "legacy sync apply" });
           });
         }
         break;
@@ -1094,7 +1037,6 @@ async function connectOnce(generation) {
   const { getAccessToken } = await import("./supabaseAuth.js");
   const accessToken = await getAccessToken();
   if (!accessToken || generation !== connectionGeneration) return;
-  await initTimestampsIfNeeded();
   const enabled = await isAutoEnabled();
   const workerUrl = await getDeviceSyncUrl();
   if (!enabled || generation !== connectionGeneration) return;
@@ -1117,8 +1059,8 @@ export async function disconnect() {
 }
 
 /**
- * Sign-out's cleanup — clears timers, disconnects. The storage listener stays: an edit made while signed out
- * still gets its timestamp and its history record, so it wins over older peers' values at the next connect
+ * Sign-out's cleanup — clears timers, disconnects. An edit made while signed out is still stamped in its
+ * write and recorded in the history (writeField), so it wins over older peers' values at the next connect
  * (DS-DEVICE). Idle suspension must retain the parent transport.
  */
 export async function cleanupDeviceSync() {

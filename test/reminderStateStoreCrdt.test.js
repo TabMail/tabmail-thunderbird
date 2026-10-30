@@ -33,10 +33,29 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({
 
 vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
 
-// Mock deviceSync to prevent real broadcast calls
+// The map is read as deviceSync reads a prompt_state field, and changed in one hold of the prompt store,
+// which saves a local edit stamped (and sent to peers) and a received merge as received. The holds
+// themselves, across devices and contexts, are tested in promptStateWriters.test.js.
+const FIELD_KEY = 'disabled_reminders_v2';
+const TS_KEY = 'device_sync_ts:disabledReminders';
+async function readField() {
+  const stored = await browser.storage.local.get([FIELD_KEY, TS_KEY]);
+  return { value: stored[FIELD_KEY], updatedAt: stored[TS_KEY] ?? '1970-01-01T00:00:00.000Z' };
+}
 vi.mock('../agent/modules/deviceSync.js', () => ({
-  broadcastState: vi.fn(async () => {}),
+  readStoredField: vi.fn(async () => readField()),
 }));
+const heldStore = vi.hoisted(() => ({}));
+vi.mock('../agent/modules/promptStore.js', () => ({
+  withPromptStore: vi.fn(async (body) => body(heldStore)),
+}));
+Object.assign(heldStore, {
+  holds: () => true,
+  field: vi.fn(async () => readField()),
+  saveField: vi.fn(async (field, value, { received = false } = {}) => {
+    await browser.storage.local.set({ [FIELD_KEY]: value, ...(received ? {} : { [TS_KEY]: new Date().toISOString() }) });
+  }),
+});
 
 // ---------------------------------------------------------------------------
 // Browser storage mock
@@ -96,7 +115,12 @@ const {
   setEnabled,
   mergeIncoming,
   gcStaleEntries,
+  REMINDERS_BUSY_ERROR,
 } = await import('../agent/modules/reminderStateStore.js');
+const { withPromptStore } = await import('../agent/modules/promptStore.js');
+
+/** A received map merged in a hold, as Device Sync's receive does. */
+const receive = (incoming) => withPromptStore((store) => mergeIncoming(incoming, store));
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -196,10 +220,21 @@ describe('setEnabled', () => {
     expect(map['k:test'].ts).not.toBe('2020-01-01T00:00:00Z');
   });
 
-  it('broadcasts to device sync peers after setting', async () => {
-    const { broadcastState } = await import('../agent/modules/deviceSync.js');
+  it('saves the map as a local edit (stamped and sent to peers) in one hold', async () => {
+    heldStore.saveField.mockClear();
+    withPromptStore.mockClear();
     await setEnabled('k:test', false);
-    expect(broadcastState).toHaveBeenCalledWith(['disabledReminders']);
+    expect(withPromptStore).toHaveBeenCalledTimes(1);
+    expect(heldStore.saveField).toHaveBeenCalledWith('disabledReminders', { 'k:test': expect.objectContaining({ enabled: false }) });
+    expect(typeof storageData[TS_KEY]).toBe('string');
+  });
+
+  it('reports a store busy through every try as busy, with nothing saved', async () => {
+    withPromptStore.mockImplementationOnce(async () => { throw Object.assign(new Error('the prompt store is busy'), { busy: true }); });
+    await expect(setEnabled('k:test', false)).rejects.toMatchObject({ message: REMINDERS_BUSY_ERROR, busy: true });
+    expect(storageData[FIELD_KEY]).toBeUndefined();
+    withPromptStore.mockImplementationOnce(async () => { throw Object.assign(new Error('the reminders changed'), { changed: true }); });
+    await expect(gcStaleEntries(new Set())).rejects.toMatchObject({ changed: true });
   });
 });
 
@@ -214,8 +249,9 @@ describe('mergeIncoming', () => {
       'k:new1': { enabled: false, ts: '2025-06-01T00:00:00Z' },
       'k:new2': { enabled: true, ts: '2025-06-01T00:00:00Z' },
     };
-    await mergeIncoming(incoming);
+    expect(await receive(incoming)).toBe(2);
     const map = storageData.disabled_reminders_v2;
+    expect(storageData[TS_KEY]).toBeUndefined();
     expect(map['k:new1']).toEqual({ enabled: false, ts: '2025-06-01T00:00:00Z' });
     expect(map['k:new2']).toEqual({ enabled: true, ts: '2025-06-01T00:00:00Z' });
   });
@@ -227,7 +263,7 @@ describe('mergeIncoming', () => {
     const incoming = {
       'k:test': { enabled: true, ts: '2025-06-01T00:00:00Z' },
     };
-    await mergeIncoming(incoming);
+    await receive(incoming);
     const map = storageData.disabled_reminders_v2;
     expect(map['k:test'].enabled).toBe(true);
     expect(map['k:test'].ts).toBe('2025-06-01T00:00:00Z');
@@ -240,7 +276,7 @@ describe('mergeIncoming', () => {
     const incoming = {
       'k:test': { enabled: false, ts: '2025-01-01T00:00:00Z' },
     };
-    await mergeIncoming(incoming);
+    await receive(incoming);
     const map = storageData.disabled_reminders_v2;
     expect(map['k:test'].enabled).toBe(true);
     expect(map['k:test'].ts).toBe('2025-06-01T00:00:00Z');
@@ -256,7 +292,7 @@ describe('mergeIncoming', () => {
       'k:wrong_ts_type': { enabled: true, ts: 12345 },
       'k:wrong_enabled_type': { enabled: 'yes', ts: '2025-06-01T00:00:00Z' },
     };
-    await mergeIncoming(incoming);
+    await receive(incoming);
     const map = storageData.disabled_reminders_v2;
     expect(Object.keys(map)).toEqual(['k:valid']);
   });
@@ -270,7 +306,7 @@ describe('mergeIncoming', () => {
     const incoming = {
       'k:test': { enabled: false, ts: '2020-01-01T00:00:00Z' },
     };
-    await mergeIncoming(incoming);
+    await receive(incoming);
     // Local entry should still be enabled=true with its original timestamp
     const map = storageData.disabled_reminders_v2;
     expect(map['k:test'].enabled).toBe(true);

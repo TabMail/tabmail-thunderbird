@@ -218,7 +218,7 @@ KB format: `Reminder: Due YYYY/MM/DD [HH:MM], <text>` or `Reminder: <text>` (no 
 
 ### Device Sync local-edit wake
 
-- Device Sync local-edit wake registration, timestamp ownership, and remote-echo suppression: [contract](Companion/Memory/Current/device-sync-local-edit-wake.md).
+- Device Sync local-edit wake registration, timestamp ownership, and remote-echo suppression; storage listener and suppressBroadcast DELETED (#194), every prompt_state field incl. task cache stamped and sent by writeField in its hold: [contract](Companion/Memory/Current/device-sync-local-edit-wake.md).
 
 - Retained self-message notices: rediscover native popup windows after background wake and coalesce concurrent opens; [ownership and verification](Companion/Memory/Current/037-notice-window-wake.md).
 

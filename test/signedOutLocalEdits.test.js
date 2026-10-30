@@ -39,7 +39,6 @@ describe('local edits while signed out (R34)', () => {
       // The templates page's commands run in the background, the prompt store's host.
       const a = await new BulletDevice('A', store, new BulletRelay(), { files: [MANAGER] }).start();
       const manager = a.realm.require(MANAGER);
-      a.sync.setupStorageListener();
       expect(await manager.addTemplate({ id: 'history-template', name: 'Template edit before session end' })).toMatchObject({ id: 'history-template' });
       if (signOut) expect(await authOn(a).signOut()).toBe(true);
       await vi.advanceTimersByTimeAsync(2100);
@@ -56,8 +55,6 @@ describe('local edits while signed out (R34)', () => {
     const a = await new BulletDevice('A', aStore, relay, { files: [MANAGER] }).start();
     const b = await new BulletDevice('B', bStore, relay, { files: [MANAGER] }).start();
     const aTemplates = a.realm.require(MANAGER);
-    a.sync.setupStorageListener();
-    b.sync.setupStorageListener();
     await a.connect();
     await b.connect();
     if (signOut) expect(await authOn(a).signOut()).toBe(true);
@@ -89,21 +86,13 @@ describe('local edits while signed out (R34)', () => {
     const peerTime = new Date(Date.now() - 10000).toISOString();
     const a = await new BulletDevice('A', new DeviceStore({ 'user_prompts:action_config': original, 'device_sync_ts:actionConfig': old }), relay).start();
     const b = await new BulletDevice('B', new DeviceStore({ 'user_prompts:action_config': peerValue, 'device_sync_ts:actionConfig': peerTime }), relay).start();
-    a.sync.setupStorageListener();
-    b.sync.setupStorageListener();
     await a.connect();
     await b.connect();
     if (signOut) expect(await authOn(a).signOut()).toBe(true);
-    const page = createRealm({
-      files: ['prompts/modules/storage.js', 'prompts/modules/markdown.js', 'agent/modules/bullets.js', 'agent/modules/actionCompactConfig.js'],
-      stubs: {
-        'agent/modules/promptStore.js': {},
-        'agent/modules/utils.js': { log() {} },
-        'agent/modules/config.js': { SETTINGS: { actionCompaction: { defaultRules: 200, defaultChars: 32000 } } },
-      },
-      globals: { browser: { storage: a.store.api() } },
+    // The prompts page's save, through the background's prompt store.
+    const page = a.page(['agent/modules/actionCompactConfig.js', 'prompts/modules/storage.js', 'prompts/modules/markdown.js'], {}, {
+      document: { getElementById: (id) => ({ value: id.endsWith('-chars') ? '40000' : '250' }) },
     });
-    page.context.document = { getElementById: (id) => ({ value: id.endsWith('-chars') ? '40000' : '250' }) };
     await page.require('prompts/modules/storage.js').saveActionConfig();
     if (signOut) {
       a.store.values.supabaseSession = structuredClone(SIGNED_IN);

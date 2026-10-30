@@ -11,10 +11,6 @@
 
 import { log } from "./utils.js";
 
-// Storage keys
-const DISABLED_REMINDERS_KEY_V1 = "disabled_reminders";
-const DISABLED_REMINDERS_KEY_V2 = "disabled_reminders_v2";
-
 // GC age threshold — entries not in fresh set and older than this are removed.
 const GC_AGE_DAYS = 90;
 
@@ -52,52 +48,23 @@ export function hashReminder(reminder) {
   return `o:${(reminder.content || "").slice(0, 32)}`;
 }
 
-// ─── v1 → v2 Migration ──────────────────────────────────────────────────
-
-let _migration = null;
-
-/**
- * Migrate v1 array to v2 CRDT map on first access. Every caller awaits the one migration, so none reads or
- * writes the v2 map before it has finished (a write meanwhile would be overwritten by the v1 copy).
- */
-function migrateIfNeeded() {
-  _migration ??= migrate();
-  return _migration;
-}
-
-async function migrate() {
-  try {
-    const stored = await browser.storage.local.get([DISABLED_REMINDERS_KEY_V1, DISABLED_REMINDERS_KEY_V2]);
-
-    // Already migrated if v2 exists
-    if (stored[DISABLED_REMINDERS_KEY_V2]) return;
-
-    const oldHashes = stored[DISABLED_REMINDERS_KEY_V1];
-    if (Array.isArray(oldHashes) && oldHashes.length > 0) {
-      const now = new Date().toISOString();
-      const map = {};
-      for (const hash of oldHashes) {
-        map[hash] = { enabled: false, ts: now };
-      }
-      await browser.storage.local.set({ [DISABLED_REMINDERS_KEY_V2]: map });
-      log(`[ReminderState] Migrated ${oldHashes.length} entries from v1 to v2 CRDT format`);
-    }
-  } catch (e) {
-    log(`[ReminderState] Migration error: ${e}`, "warn");
-  }
-}
-
 // ─── CRDT Map Read/Write ─────────────────────────────────────────────────
+// The map is changed only in a hold of the device's prompt semaphore (promptStore.js), as every store a
+// received `prompt_state` writes: a local change and a received merge never interleave, so neither drops
+// the other's entries. A device with only the v1 list reads it as the map; the next change stores it as v2
+// (deviceSync.js readStoredField).
+
+/** What a reminder change reports when the prompt store stayed busy through every try (DS-NO-BUSY-UI). */
+export const REMINDERS_BUSY_ERROR = "Couldn't save: the reminders are busy. Try again in a moment.";
 
 /**
  * Get the full CRDT map.
  * @returns {Promise<Object>} Map of {hash: {enabled, ts}}
  */
 export async function getDisabledMap() {
-  await migrateIfNeeded();
   try {
-    const stored = await browser.storage.local.get({ [DISABLED_REMINDERS_KEY_V2]: {} });
-    return stored[DISABLED_REMINDERS_KEY_V2] || {};
+    const { readStoredField } = await import("./deviceSync.js");
+    return (await readStoredField("disabledReminders")).value || {};
   } catch (e) {
     log(`[ReminderState] Error loading disabled map: ${e}`, "error");
     return {};
@@ -105,15 +72,37 @@ export async function getDisabledMap() {
 }
 
 /**
- * Save the CRDT map.
- * @param {Object} map - Map of {hash: {enabled, ts}}
+ * A local change of the map, in one hold of the prompt semaphore: the stored map is read, `change(map)` run
+ * on a copy, and the map saved as a local edit (stamped, sent to peers) when it returns true. Throws, with
+ * nothing saved, when the hold ended before the save, or REMINDERS_BUSY_ERROR when the store stayed busy.
+ * @param {string} label - What changes it, for the logs
+ * @param {(map: Object) => boolean} change
+ * @returns {Promise<Object>} The map as saved, or as read when unchanged
  */
-async function saveDisabledMap(map) {
+async function editDisabledMap(label, change) {
+  const { withPromptStore } = await import("./promptStore.js");
   try {
-    await browser.storage.local.set({ [DISABLED_REMINDERS_KEY_V2]: map });
+    return await withPromptStore(async (store) => {
+      const map = { ...((await store.field("disabledReminders")).value || {}) };
+      if (change(map)) await store.saveField("disabledReminders", map);
+      return map;
+    }, { label });
   } catch (e) {
-    log(`[ReminderState] Error saving disabled map: ${e}`, "error");
+    throw e?.busy === true ? Object.assign(new Error(REMINDERS_BUSY_ERROR), { busy: true }) : e;
   }
+}
+
+/** Puts each of `incoming`'s valid entries into `map` where newer than its own. Returns how many. */
+function mergeEntries(map, incoming) {
+  let merged = 0;
+  for (const [hash, entry] of Object.entries(incoming)) {
+    if (!entry || typeof entry.ts !== "string" || typeof entry.enabled !== "boolean") continue;
+    if (!map[hash] || entry.ts > map[hash].ts) {
+      map[hash] = entry;
+      merged++;
+    }
+  }
+  return merged;
 }
 
 /**
@@ -132,53 +121,45 @@ export async function getDisabledHashes() {
 }
 
 /**
- * Set enabled status for a reminder hash (idempotent).
- * Writes a CRDT entry with current timestamp.
- * Broadcasts change to device sync peers (local user action).
+ * Set enabled status for a reminder hash (idempotent): a CRDT entry with the current timestamp, saved as a
+ * local edit, which sends it to Device Sync peers.
  * @param {string} hash - Reminder hash
  * @param {boolean} enabled - Whether enabled (true = re-enabled tombstone, false = disabled)
  */
 export async function setEnabled(hash, enabled) {
-  const map = await getDisabledMap();
-  map[hash] = { enabled, ts: new Date().toISOString() };
-  await saveDisabledMap(map);
-
+  const map = await editDisabledMap("reminder enable", (map) => {
+    map[hash] = { enabled, ts: new Date().toISOString() };
+    return true;
+  });
   const disabledCount = Object.values(map).filter((e) => !e.enabled).length;
   log(`[ReminderState] Set ${hash} enabled=${enabled} (disabled count: ${disabledCount})`);
-
-  // Broadcast to device sync peers
-  try {
-    const { broadcastState } = await import("./deviceSync.js");
-    await broadcastState(["disabledReminders"]);
-  } catch (e) {
-    log(`[ReminderState] Failed to broadcast after setEnabled: ${e}`, "warn");
-  }
 }
 
 /**
- * CRDT merge: per-hash, newer timestamp wins.
- * Does NOT trigger a broadcast (used for incoming device sync).
- * @param {Object} incomingMap - Map of {hash: {enabled, ts}}
+ * Entries this device moves to new hashes (the reminder list's hash migration), merged per hash, newer
+ * wins, as a local edit.
+ * @param {Object} entries - Map of {hash: {enabled, ts}}
  */
-export async function mergeIncoming(incomingMap) {
-  const localMap = await getDisabledMap();
+export async function migrateEntries(entries) {
   let merged = 0;
+  await editDisabledMap("reminder hash migration", (map) => (merged = mergeEntries(map, entries)) > 0);
+  log(`[ReminderState] Hash migration: ${merged} entries`);
+}
 
-  for (const [hash, inEntry] of Object.entries(incomingMap)) {
-    // Validate entry structure
-    if (!inEntry || typeof inEntry.ts !== "string" || typeof inEntry.enabled !== "boolean") continue;
-
-    const localEntry = localMap[hash];
-    if (!localEntry || inEntry.ts > localEntry.ts) {
-      localMap[hash] = inEntry;
-      merged++;
-    }
-  }
-
-  if (merged > 0) {
-    await saveDisabledMap(localMap);
-  }
+/**
+ * CRDT merge of a received map: per-hash, newer timestamp wins. Run by Device Sync inside its hold of the
+ * prompt semaphore, `store`; saved as received (not sent back). Throws a `changed` error, with nothing
+ * saved, when that hold ended first.
+ * @param {Object} incomingMap - Map of {hash: {enabled, ts}}
+ * @param {PromptStoreHold} store - The hold it runs in
+ * @returns {Promise<number>} How many entries it adopted
+ */
+export async function mergeIncoming(incomingMap, store) {
+  const localMap = { ...((await store.field("disabledReminders")).value || {}) };
+  const merged = mergeEntries(localMap, incomingMap);
+  if (merged > 0) await store.saveField("disabledReminders", localMap, { received: true });
   log(`[ReminderState] CRDT merge: ${merged} entries adopted from ${Object.keys(incomingMap).length} incoming (local total: ${Object.keys(localMap).length})`);
+  return merged;
 }
 
 /**
@@ -187,25 +168,17 @@ export async function mergeIncoming(incomingMap) {
  * @param {Set<string>} freshHashes - Set of hashes from current reminders
  */
 export async function gcStaleEntries(freshHashes) {
-  const map = await getDisabledMap();
-  if (Object.keys(map).length === 0) return;
-
   const now = Date.now();
   const maxAge = GC_AGE_DAYS * 86400 * 1000;
   let removed = 0;
-
-  for (const [hash, entry] of Object.entries(map)) {
-    if (!freshHashes.has(hash)) {
-      const entryTime = new Date(entry.ts).getTime();
-      if (now - entryTime > maxAge) {
+  await editDisabledMap("reminder clean-up", (map) => {
+    for (const [hash, entry] of Object.entries(map)) {
+      if (!freshHashes.has(hash) && now - new Date(entry.ts).getTime() > maxAge) {
         delete map[hash];
         removed++;
       }
     }
-  }
-
-  if (removed > 0) {
-    await saveDisabledMap(map);
-    log(`[ReminderState] GC removed ${removed} entries older than ${GC_AGE_DAYS} days`);
-  }
+    return removed > 0;
+  });
+  if (removed > 0) log(`[ReminderState] GC removed ${removed} entries older than ${GC_AGE_DAYS} days`);
 }

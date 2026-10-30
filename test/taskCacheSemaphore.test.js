@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore } from './support/bulletDevices.js';
 
 const CACHE_KEY = 'task_execution_cache';
+const CACHE_TS = 'device_sync_ts:taskCache';
 const CACHE_FILE = 'agent/modules/taskExecutionCache.js';
 const DAY_MS = 86400 * 1000;
 
@@ -31,14 +32,14 @@ async function device(store, options = {}) {
   return { a, cache: a.realm.require(CACHE_FILE) };
 }
 
-/** Holds the merge's own read of the cache map (that key alone, not the whole state a history entry reads),
- * once, after it read: it goes on when `resume` opens. */
+/** Holds the merge's own read of the cache map (the map and its timestamp, not the whole state a history
+ * entry reads), once, after it read: it goes on when `resume` opens. */
 function pauseMergeRead(a) {
   const reached = gate();
   const resume = gate();
   let paused = false;
   a.store.afterIO = async (op, keys) => {
-    if (paused || op !== 'get' || keysOf(keys).join() !== CACHE_KEY || a.prompts.holder?.label !== 'legacy sync apply') return;
+    if (paused || op !== 'get' || keysOf(keys).sort().join() !== [CACHE_KEY, CACHE_TS].sort().join() || a.prompts.holder?.label !== 'legacy sync apply') return;
     paused = true;
     reached.open();
     await resume.promise;
@@ -131,5 +132,39 @@ describe('the task cache while a peer cache is merged (DS-SEMAPHORE)', () => {
     await holding;
     expect(stored(a)[localKey]).toBeUndefined();
     expect(a.logs.some(({ message }) => message.includes(`Result for ${localKey} not cached`))).toBe(true);
+  });
+
+  it.each(writers.map((writer) => [writer.name, writer]))('%s whose hold ended before its save is not saved, and the check-in goes on', async (_, writer) => {
+    const { a, cache } = await device(new DeviceStore({ [CACHE_KEY]: writer.seed }), { leaseMs: 40 });
+    const before = structuredClone(stored(a));
+    // Held after its read of the map until its lease has ended.
+    const reached = gate();
+    const resume = gate();
+    a.store.afterIO = async (op, keys) => {
+      if (op !== 'get' || !keysOf(keys).includes(CACHE_KEY) || a.prompts.holder?.label !== 'task cache') return;
+      a.store.afterIO = null;
+      reached.open();
+      await resume.promise;
+    };
+    const writing = writer.run(cache);
+    await reached.promise;
+    await vi.waitFor(() => expect(a.logs.some(({ message }) => message.includes('past its lease'))).toBe(true), { timeout: 2000 });
+    resume.open();
+    await expect(writing).resolves.toBeUndefined();
+    expect(stored(a)).toEqual(before);
+  });
+
+  it('a received cache with nothing newer changes nothing and records no history entry', async () => {
+    const entry = { content: 'Own result', sessionId: 'own-session', ts: new Date().toISOString() };
+    const { a } = await device(new DeviceStore({ [CACHE_KEY]: { [peerKey]: entry } }));
+    const history = () => (a.store.values.prompt_history ?? []).filter(({ source }) => source === 'sync_receive');
+    const recorded = history().length;
+    await a.receive({ type: 'prompt_state', data: { taskCache: { [peerKey]: { ...entry, content: 'Older peer result', ts: new Date(Date.now() - DAY_MS).toISOString() } }, taskCache_updated_at: new Date().toISOString() } });
+    expect(stored(a)[peerKey]).toEqual(entry);
+    expect(history()).toHaveLength(recorded);
+    // Control: a newer peer result is taken and recorded.
+    await a.receive(peerMessage(peerKey));
+    expect(stored(a)[peerKey].content).toBe('Peer result');
+    expect(history()).toHaveLength(recorded + 1);
   });
 });

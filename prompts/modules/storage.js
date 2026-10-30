@@ -6,7 +6,7 @@
  * Storage and file operations for prompts
  */
 
-import { readActionConfig, ACTION_CONFIG_KEY } from "../../agent/modules/actionCompactConfig.js";
+import { readActionConfig } from "../../agent/modules/actionCompactConfig.js";
 import { SETTINGS } from "../../agent/modules/config.js";
 import { defaultTexts, holdsSectionMarker, SECTION_MARKER_REFUSAL, withPromptStore } from "../../agent/modules/promptStore.js";
 import { addItems, replaceItems } from "./markdown.js";
@@ -93,8 +93,13 @@ export async function loadActionConfig() {
     }
 }
 
+/** What a compaction-settings save reports when the prompt store stayed busy through every try
+ * (DS-NO-BUSY-UI). */
+export const ACTION_SETTINGS_BUSY_ERROR = "Couldn't save: the settings are busy. Try again in a moment.";
+
 /**
- * Save action config to storage from current slider values
+ * Save action config from current slider values: a local edit in one hold of the prompt semaphore, stamped
+ * in the same write, so a received prompt_state applied meanwhile never replaces it (#194).
  */
 export async function saveActionConfig() {
     try {
@@ -106,12 +111,12 @@ export async function saveActionConfig() {
             compact_threshold_chars: parseInt(thresholdCharsSlider?.value, 10) || SETTINGS.actionCompaction.defaultChars,
         };
 
-        await browser.storage.local.set({ [ACTION_CONFIG_KEY]: config });
+        await withPromptStore((store) => store.saveField("actionConfig", config), { label: "compaction settings" });
 
         log(`[Prompts] Action config saved: compact_threshold=${config.compact_threshold}, compact_threshold_chars=${config.compact_threshold_chars}`);
     } catch (e) {
         log(`[Prompts] Failed to save action config: ${e}`, "error");
-        throw e;
+        throw e?.busy === true ? Object.assign(new Error(ACTION_SETTINGS_BUSY_ERROR), { busy: true }) : e;
     }
 }
 

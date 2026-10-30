@@ -20,7 +20,7 @@ import { buildInboxContext } from "./inboxContext.js";
 import { parseTasksFromKB, getTaskHash } from "./kbTaskParser.js";
 import { getKBReminders, parseRemindersFromKB } from "./kbReminderGenerator.js";
 import { readView } from "./promptStore.js";
-import { gcStaleEntries, getDisabledHashes, getDisabledMap, hashReminder, mergeIncoming } from "./reminderStateStore.js";
+import { gcStaleEntries, getDisabledHashes, getDisabledMap, hashReminder, migrateEntries } from "./reminderStateStore.js";
 import { getSummaryWithHeaderId } from "./summaryGenerator.js";
 import { log, normalizeUnicode } from "./utils.js";
 
@@ -234,7 +234,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
 
     // Write all migrations in one atomic batch (avoids async race from calling setEnabled per-item)
     if (Object.keys(migrationEntries).length > 0) {
-      mergeIncoming(migrationEntries).catch((e) => {
+      migrateEntries(migrationEntries).catch((e) => {
         log(`[ReminderBuilder] Migration merge error (non-fatal): ${e}`, "warn");
       });
     }

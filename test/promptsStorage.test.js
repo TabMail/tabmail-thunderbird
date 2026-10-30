@@ -14,6 +14,18 @@ vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
 }));
 
+// The page saves the sliders in one hold of the prompt store, which writes the value and its local-edit
+// timestamp in one write, as the background's store does (its holds are tested in promptStateWriters.test.js).
+const heldStore = vi.hoisted(() => ({
+  saveField: async (field, value) => {
+    await globalThis.browser.storage.local.set({ 'user_prompts:action_config': value, 'device_sync_ts:actionConfig': new Date().toISOString() });
+  },
+}));
+vi.mock('../agent/modules/promptStore.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  withPromptStore: vi.fn(async (body) => body(heldStore)),
+}));
+
 // Minimal DOM stubs (storage.js calls document.getElementById for slider sync)
 const makeDomElement = (value) => ({
   value: String(value),
@@ -39,7 +51,8 @@ globalThis.browser = {
 // Import module under test
 // ---------------------------------------------------------------------------
 
-const { loadActionConfig, saveActionConfig } = await import('../prompts/modules/storage.js');
+const { ACTION_SETTINGS_BUSY_ERROR, loadActionConfig, saveActionConfig } = await import('../prompts/modules/storage.js');
+const { withPromptStore } = await import('../agent/modules/promptStore.js');
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -139,9 +152,9 @@ describe('saveActionConfig — defaults', () => {
 
     await saveActionConfig();
 
-    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
+    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
       'user_prompts:action_config': { compact_threshold: 200, compact_threshold_chars: 32000 },
-    });
+    }));
   });
 
   it('writes custom value from compact_threshold slider', async () => {
@@ -150,9 +163,9 @@ describe('saveActionConfig — defaults', () => {
 
     await saveActionConfig();
 
-    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
+    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
       'user_prompts:action_config': { compact_threshold: 250, compact_threshold_chars: 16000 },
-    });
+    }));
   });
 
   it('falls back to default compact_threshold when slider element is absent', async () => {
@@ -161,9 +174,9 @@ describe('saveActionConfig — defaults', () => {
 
     await saveActionConfig();
 
-    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
+    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
       'user_prompts:action_config': { compact_threshold: 200, compact_threshold_chars: 16000 },
-    });
+    }));
   });
 
   // (e) compact_threshold_chars — save roundtrip with custom value
@@ -173,9 +186,9 @@ describe('saveActionConfig — defaults', () => {
 
     await saveActionConfig();
 
-    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
+    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
       'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 20000 },
-    });
+    }));
   });
 
   // (e) compact_threshold_chars — falls back to default when chars slider absent
@@ -185,9 +198,22 @@ describe('saveActionConfig — defaults', () => {
 
     await saveActionConfig();
 
-    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
+    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
       'user_prompts:action_config': { compact_threshold: 100, compact_threshold_chars: 32000 },
-    });
+    }));
+  });
+
+  it('saves the value and its timestamp in one hold, and a busy store is reported as busy', async () => {
+    const before = Date.now();
+    await saveActionConfig();
+    expect(withPromptStore).toHaveBeenCalledTimes(1);
+    const [write] = globalThis.browser.storage.local.set.mock.calls;
+    expect(Date.parse(write[0]['device_sync_ts:actionConfig'])).toBeGreaterThanOrEqual(before);
+
+    withPromptStore.mockImplementationOnce(async () => { throw Object.assign(new Error('the prompt store is busy'), { busy: true }); });
+    await expect(saveActionConfig()).rejects.toMatchObject({ message: ACTION_SETTINGS_BUSY_ERROR, busy: true });
+    withPromptStore.mockImplementationOnce(async () => { throw new Error('storage failed'); });
+    await expect(saveActionConfig()).rejects.toThrow('storage failed');
   });
 });
 
@@ -243,7 +269,7 @@ describe('prompts page storage listener — action config refresh', () => {
     expect(loaded).toEqual(['action', 'kb']);
   });
 
-  it('a deliberate legacy-default save stays on the slider while the background stamps its timestamp', async () => {
+  it('a deliberate legacy-default save stays on the slider, stamped in the same write', async () => {
     const stored = {};
     globalThis.browser.storage.local.get.mockImplementation(async (keys) =>
       Object.fromEntries(keys.filter((k) => k in stored).map((k) => [k, stored[k]])));
@@ -256,12 +282,10 @@ describe('prompts page storage listener — action config refresh', () => {
     // Never-edited install: the user drags the rules slider to 100 (the legacy default) and it saves.
     slider.value = '100';
     await saveActionConfig();
-    await deliver({ 'user_prompts:action_config': { newValue: stored['user_prompts:action_config'] } });
-    expect(Number(slider.value)).toBe(100);
-
-    // The background then stamps the local-edit timestamp in its own write.
-    stored['device_sync_ts:actionConfig'] = new Date().toISOString();
-    await deliver({ 'device_sync_ts:actionConfig': { newValue: stored['device_sync_ts:actionConfig'] } });
+    await deliver({
+      'user_prompts:action_config': { newValue: stored['user_prompts:action_config'] },
+      'device_sync_ts:actionConfig': { newValue: stored['device_sync_ts:actionConfig'] },
+    });
     expect(Number(slider.value)).toBe(100);
     expect(_domElements['action-compact-threshold-val'].textContent).toBe('100');
 

@@ -6,25 +6,25 @@ import { SYNC_FIELDS } from '../agent/modules/bullets.js';
 import { BulletDevice, BulletRelay, DeviceStore, storeStates } from './support/bulletDevices.js';
 
 afterEach(() => vi.useRealTimers());
-async function harness({ enabled = true, connectEarly = true, failFirstAdd = false, fullStartup = false, asyncDelivery = false } = {}) {
+async function harness({ enabled = true, connectEarly = true, fullStartup = false } = {}) {
   vi.useFakeTimers();
   const listeners = new Set(), stored = { device_sync_auto_enabled: enabled }, sent = [];
-  let adds = 0;
   const startupLogs = [], syncLogs = [], bulletCalls = [];
-  // The bullet fields' engine (promptStore.js), recorded: what this file checks is the wake and
-  // registration of the storage listener, which carries the other fields.
+  // The bullet fields' engine (promptStore.js), recorded: what this file checks is how a local edit of the
+  // other fields is stamped and sent around a wake.
   const promptStore = {
     outgoingBulletState: async (field) => { bulletCalls.push(['outgoing', field]); return { kind: 'messages', messages: [] }; },
     receiveLegacyPromptState: async () => [],
     receiveBulletState: async () => ({ kind: 'ignored' }),
     bulletSyncDisconnected: () => bulletCalls.push(['disconnected']),
-    // The connect send, through one hold, and the storage listener's history record, in a hold of its own.
+    // The connect send, through one hold, and a local edit's history record, in a hold of its own.
     sendBulletState: async (fields) => { for (const field of fields) await promptStore.outgoingBulletState(field); },
     withPromptStore: async (body) => body({ recordHistory: async () => {} }),
   };
   let finishStartup;
   const startupDone = new Promise(resolve => { finishStartup = resolve; });
-  const onChanged = { addListener: fn => { if (failFirstAdd && ++adds === 1) throw new Error("synthetic registration failure"); listeners.add(fn); }, removeListener: fn => listeners.delete(fn) };
+  // Other modules' storage listeners (startup registers some); Device Sync registers none.
+  const onChanged = { addListener: fn => listeners.add(fn), removeListener: fn => listeners.delete(fn) };
   const overrides = {
     'browser.runtime.getManifest': () => ({version: 'synthetic'}),
     'browser.storage.onChanged': onChanged,
@@ -33,7 +33,7 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
     'browser.storage.local.set': async values => {
       const changes = Object.fromEntries(Object.entries(values).map(([key,value]) => [key,{oldValue:stored[key],newValue:value}]));
       Object.assign(stored, values);
-      if (fullStartup || asyncDelivery) setTimeout(() => { for (const listener of [...listeners]) listener(changes,'local'); }, 0);
+      if (fullStartup) setTimeout(() => { for (const listener of [...listeners]) listener(changes,'local'); }, 0);
     },
     'browser.tmDeviceSync.getState': async () => 'open',
     'browser.tmDeviceSync.send': async data => sent.push(JSON.parse(data)),
@@ -50,7 +50,6 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
     let source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
     const scope = { console: {log(){},warn(){},error(){}}, Date, performance, browser, crypto: globalThis.crypto, SYNC_FIELDS,
       dynamicImport: async path => {
-        if (path === "./taskExecutionCache.js") return {getAllCachedResults: async () => ({})};
         if (path === "./promptStore.js") return promptStore;
         throw new Error(`Unexpected fixture import: ${path}`);
       },
@@ -78,12 +77,11 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
   }) : null;
   const reminders = fullStartup ? evaluate('agent/modules/kbReminderGenerator.js', {getUserKBPrompt:prompts.getUserKBPrompt}) : null;
   evaluate('agent/background.js', {
-    setupStorageListener: sync.setupStorageListener,
     attachDeviceSyncTransportListener: sync.attachDeviceSyncTransportListener,
     setAICacheProbeHandler: sync.setAICacheProbeHandler,
     ensureActionTags: fullStartup ? async () => {} : () => new Promise(() => {}),
     ...(fullStartup ? {
-      log: message => { startupLogs.push(message); if(message.includes('Auto-connected and storage listener started')) finishStartup(); },
+      log: message => { startupLogs.push(message); if(message.includes('[DeviceSync] Auto-connected')) finishStartup(); },
       dynamicImport: async path => {
         if(path === './modules/deviceSync.js') return sync;
         if(path === './modules/kbReminderGenerator.js') return reminders;
@@ -96,57 +94,42 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
     await startupDone;
     await vi.advanceTimersByTimeAsync(1);
   }
-  return {sync,stored,sent,listeners,evaluate,startupLogs,syncLogs,overrides,bulletCalls,async edit() {
-    const value=[{id:'synthetic-template',name:'Synthetic local edit'}];
-    stored.user_templates=value;
-    for (const listener of [...listeners]) await listener({user_templates:{newValue:value}},'local');
+  // A local edit of the task cache, written by its holder of the prompt store (writeField), which stamps
+  // it in the same write and sends it after the broadcast debounce.
+  return {sync,stored,sent,evaluate,startupLogs,syncLogs,overrides,bulletCalls,async edit() {
+    const value={'synthetic-key':{result:'Synthetic local edit',ts:new Date().toISOString()}};
+    expect(await sync.writeField('taskCache', value, () => true, { edit: true })).toBe(true);
     await vi.advanceTimersByTimeAsync(500);
     return value;
   }};
 }
 it('timestamps and broadcasts the first local edit while startup is awaiting', async () => {
   const h=await harness(); const value=await h.edit();
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.stored['device_sync_ts:taskCache']).toEqual(expect.any(String));
   expect(h.sent).toHaveLength(1);
-  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{templates:value,templates_updated_at:h.stored['device_sync_ts:templates']}});
-  expect(h.listeners.size).toBe(1);
-});
-it('warm registration handles the same local edit as a positive control', async () => {
-  const h=await harness(); h.sync.setupStorageListener(); h.sync.setupStorageListener();
-  const value=await h.edit();
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
-  expect(h.sent).toHaveLength(1);
-  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{templates:value}});
-  expect(h.listeners.size).toBe(1);
+  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{taskCache:value,taskCache_updated_at:h.stored['device_sync_ts:taskCache']}});
 });
 
 it('reconnects the module to its existing parent before the first broadcast', async () => {
   const h = await harness({ connectEarly: false });
   const value = await h.edit();
   expect(h.sent).toHaveLength(1);
-  expect(h.sent[0]).toMatchObject({ type: 'prompt_state', data: { templates: value } });
+  expect(h.sent[0]).toMatchObject({ type: 'prompt_state', data: { taskCache: value } });
+});
+// A field edited in a hold of the prompt store is stamped in its own write and sent the same way.
+it.each([true, false])('stamps and sends a held local edit made right after a wake (module connected first: %s)', async (connectEarly) => {
+  const h = await harness({ connectEarly });
+  const value = [{ id: 'synthetic-template', name: 'Synthetic held edit' }];
+  expect(await h.sync.writeField('templates', value, () => true, { edit: true })).toBe(true);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.sent).toHaveLength(1);
+  expect(h.sent[0]).toMatchObject({ type: 'prompt_state', data: { templates: value, templates_updated_at: h.stored['device_sync_ts:templates'] } });
 });
 it('timestamps local edits while auto-sync is disabled without sending', async () => {
   const h = await harness({ enabled: false });
   await h.edit();
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
-  expect(h.sent).toEqual([]);
-});
-it('retries a failed registration without duplicating the successful owner', async () => {
-  const h = await harness({ failFirstAdd: true });
-  expect(h.listeners.size).toBe(0);
-  h.sync.setupStorageListener(); h.sync.setupStorageListener();
-  await h.edit();
-  expect(h.listeners.size).toBe(1);
-  expect(h.sent).toHaveLength(1);
-});
-it('ignores an event delivered while suppression is still active', async () => {
-  const h = await harness();
-  vm.runInContext('suppressBroadcast = true', h.sync);
-  const work = h.edit();
-  vm.runInContext('suppressBroadcast = false', h.sync);
-  await work;
-  expect(h.stored['device_sync_ts:templates']).toBeUndefined();
+  expect(h.stored['device_sync_ts:taskCache']).toEqual(expect.any(String));
   expect(h.sent).toEqual([]);
 });
 it('preserves edit timestamps when disconnect occurs before the broadcast debounce', async () => {
@@ -154,28 +137,14 @@ it('preserves edit timestamps when disconnect occurs before the broadcast deboun
   const work = h.edit();
   await h.sync.disconnect();
   await work;
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
-  expect(h.sent).toEqual([]);
-});
-
-it('never timestamps, records or sends a change of the bullet fields\' own keys, another area or an unrelated key', async () => {
-  const h = await harness();
-  for (const listener of h.listeners) {
-    listener({'user_prompts:user_kb.md':{newValue:'Local markdown'}, 'bullet_state:kb':{newValue:{bullets:[],seen:{}}}}, 'local');
-    listener({'user_prompts:user_composition.md':{newValue:'Local markdown'}}, 'local');
-    listener({'user_prompts:user_kb.md':{newValue:'Other area'}}, 'sync');
-    listener({unrelated:{newValue:true}}, 'local');
-  }
-  await vi.advanceTimersByTimeAsync(2000);
-  expect(Object.keys(h.stored).filter(key => key.startsWith('device_sync_ts:'))).toEqual([]);
-  expect(h.stored.prompt_history).toBeUndefined();
+  expect(h.stored['device_sync_ts:taskCache']).toEqual(expect.any(String));
   expect(h.sent).toEqual([]);
 });
 
 it('finishes real startup without turning a bundled KB default into a peer-overwriting edit', async () => {
   const local = await harness({fullStartup:true,connectEarly:false});
   expect(local.startupLogs).toContain('[Startup] KB reminder generation completed');
-  expect(local.startupLogs).toContain('[DeviceSync] Auto-connected and storage listener started');
+  expect(local.startupLogs).toContain('[DeviceSync] Auto-connected');
   expect(local.stored.reminder_kb_list).toBeDefined();
   expect(local.stored['user_prompts:user_kb.md']).toBeUndefined();
   expect(local.stored['device_sync_ts:kb']).toBeUndefined();
@@ -186,25 +155,17 @@ it('finishes real startup without turning a bundled KB default into a peer-overw
   expect(local.bulletCalls.filter(([call]) => call === 'outgoing').map(([, field]) => field)).toEqual(SYNC_FIELDS);
 });
 
-it('retries a failed early subscription through completed startup with one owner', async () => {
-  const h = await harness({fullStartup:true,failFirstAdd:true});
-  expect(h.listeners.size).toBe(1);
-  const value = await h.edit();
-  expect(h.sent).toHaveLength(1);
-  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{templates:value}});
-});
-
 it('contains a first-wake reconnect failure and publishes the preserved edit after reconnect', async () => {
   const h=await harness({connectEarly:false});
   h.overrides['browser.tmDeviceSync.getState']=async()=>{throw new Error('synthetic transport failure');};
   const value=await h.edit();
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.stored['device_sync_ts:taskCache']).toEqual(expect.any(String));
   expect(h.sent).toEqual([]);
   expect(h.syncLogs.some(m=>m.includes('Debounced broadcast failed'))).toBe(true);
   h.overrides['browser.tmDeviceSync.getState']=async()=> 'open';
   await h.sync.connect();
   await h.sync.handleMessage(JSON.stringify({type:'connected',userId:'synthetic'}));
-  expect(h.sent.find(m=>m.type==='prompt_state')?.data?.templates).toEqual(value);
+  expect(h.sent.find(m=>m.type==='prompt_state')?.data?.taskCache).toEqual(value);
 });
 
 // The bullet fields (knowledge base, composition, action) on simulated devices: the real deviceSync.js,
