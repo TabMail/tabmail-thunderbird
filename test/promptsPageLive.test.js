@@ -916,3 +916,45 @@ describe('the real prompts page reports a failure as a failure, changes nothing,
     ui.dom.window.close();
   });
 });
+
+// A section Reset changes only its own section, whatever else the field holds (issues #190 and #191: a Reset
+// once reset the whole field first, then put the page's other sections back).
+describe('a section Reset on the real prompts page changes only its own section', () => {
+  for (const field of ['composition', 'action']) {
+    // On one device with no peer to send lines back, so a line a Reset removed stays removed.
+    const holdsHere = async (a, ui, expected) => {
+      expect(await held(a, field)).toEqual(sorted(expected));
+      expect(sorted(ui.shown(field))).toEqual(sorted(expected));
+    };
+    const resetOf = (before, key) => [...before.filter(([k]) => k !== key), ...defaultsOf(field).filter(([k]) => k === key)];
+
+    it(`a ${field} section Reset on a device with no peer keeps the user's own rules in every other section`, async () => {
+      const { shapes, other } = AT[field];
+      const opened = await devices({ connected: false });
+      await opened.a.add(field, shapes, 'Own rule in the section reset');
+      await opened.a.add(field, other, 'Own rule in another section');
+      const ui = await openPage(opened.a);
+      const before = await held(opened.a, field);
+      await ui.resetSection(field, shapes);
+      expect(ui.lastStatus()[0]).toMatch(/^Reset: /);
+      await holdsHere(opened.a, ui, resetOf(before, shapes));
+      expect(await held(opened.a, field)).toContainEqual([other, 'Own rule in another section']);
+      ui.dom.window.close();
+    });
+
+    it(`a ${field} text with a section of its own that this version doesn't have, on a device with no peer: Reset is offered only on the known sections, and a Reset changes only its own section`, async () => {
+      const { shapes, other, otherName } = AT[field];
+      const ownSection = [`# Older section of its own (${HEADER_MARK})`, '- Rule of the older section'];
+      const opened = await devices({ connected: false, stored: { [field]: released(field, [[otherName, ownSection]]) } });
+      const ui = await openPage(opened.a);
+      expect(ui.document.querySelectorAll(`#${field}-sections .reset-section-btn`)).toHaveLength(SECTION_HEADERS[field].length);
+      const before = await held(opened.a, field);
+      // The section of its own reads as lines of the known section before it, where the page shows them.
+      expect(before).toContainEqual([other, 'Rule of the older section']);
+      await ui.resetSection(field, shapes);
+      expect(ui.lastStatus()[0]).toMatch(/^Reset: /);
+      await holdsHere(opened.a, ui, resetOf(before, shapes));
+      ui.dom.window.close();
+    });
+  }
+});
