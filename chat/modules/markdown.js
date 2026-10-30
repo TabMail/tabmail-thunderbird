@@ -1265,6 +1265,12 @@ export function attachSpecialLinkListeners(container) {
                   card.style.opacity = '0.3';
                   btn.textContent = 'hidden';
                   btn.style.pointerEvents = 'none';
+                } else if (result?.busy === true) {
+                  // The reminders stayed busy: say so on the card, which stays clickable to try again
+                  // (DS-NO-BUSY-UI).
+                  const { REMINDERS_BUSY_ERROR } = await import("../../agent/modules/reminderStateStore.js");
+                  btn.textContent = REMINDERS_BUSY_ERROR;
+                  log(`[TMDBG Markdown] Reminder not disabled, the reminders are busy: ${hash.substring(0, 8)}...`, "warn");
                 } else {
                   log(`[TMDBG Markdown] Failed to disable reminder: ${result?.error || 'unknown'}`, "error");
                 }

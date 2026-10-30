@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
+import { JSDOM } from 'jsdom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore } from './support/bulletDevices.js';
 import { openPage } from './support/promptsPage.js';
@@ -103,6 +104,30 @@ function promptsTab(d, file, toggle) {
     },
   }, { [file]: [toggle] });
   return { tab: realm.require(file), statuses };
+}
+
+/** A reminder card in the chat, as markdown.js renders it, with its dismiss handler
+ * (attachSpecialLinkListeners) sending to the background's reminder replies (`reply`). */
+async function chatCard(d, reply) {
+  const source = readFileSync(new URL('chat/modules/markdown.js', ROOT), 'utf8');
+  const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const node = ast.body.map((n) => n.declaration ?? n).find((n) => n.type === 'FunctionDeclaration' && n.id.name === 'attachSpecialLinkListeners');
+  const dom = new JSDOM('<main><div class="tm-reminder-card" data-reminder-index="0"><span class="tm-reminder-card-text">Reply about the synthetic invoice</span><span class="tm-reminder-dismiss">don\'t show again</span></div></main>');
+  const context = vm.createContext({
+    document: dom.window.document, window: dom.window, log() {},
+    browser: { runtime: { sendMessage: reply } },
+    __import: async (path) => {
+      if (path.endsWith('/reminderBuilder.js')) return { getDisplayedReminderHashes: () => ['m:card'] };
+      if (path.endsWith('/reminderStateStore.js')) return d.page([REMINDERS]).require(REMINDERS);
+      throw new Error(`unexpected import ${path}`);
+    },
+  });
+  vm.runInContext(source.slice(node.start, node.end).replaceAll('import(', '__import('), context);
+  context.container = dom.window.document.querySelector('main');
+  vm.runInContext('attachSpecialLinkListeners(container)', context);
+  const card = dom.window.document.querySelector('.tm-reminder-card');
+  await vi.waitFor(() => expect(card.getAttribute('data-hash')).toBe('m:card'));
+  return { dom, card, button: card.querySelector('.tm-reminder-dismiss') };
 }
 
 describe('a reminder or settings change refused because the prompt store stayed busy is reported as busy (DS-NO-BUSY-UI)', () => {
@@ -203,6 +228,40 @@ describe('a reminder or settings change refused because the prompt store stayed 
     await release();
     expect(result.error).toBe(reminders.REMINDERS_BUSY_ERROR);
     expect(store.values[MAP_KEY]).toEqual(before);
+  });
+
+  it('the chat window\'s reminder card shows the busy notice once, keeps its button, and saves on the next click once the store is free', async () => {
+    const { d, store, reminders } = await device();
+    const before = structuredClone(store.values[MAP_KEY]);
+    const reply = registrar(reminders);
+    const replies = [];
+    const ui = await chatCard(d, async (message) => { const r = await reply(message); replies.push(r); return r; });
+    try {
+      const release = await holdSemaphore(d);
+      ui.button.dispatchEvent(new ui.dom.window.Event('click'));
+      await vi.waitFor(() => expect(ui.button.textContent).toBe(reminders.REMINDERS_BUSY_ERROR), { timeout: 1000 });
+      expect(replies).toEqual([expect.objectContaining({ ok: false, busy: true })]);
+      expect(ui.card.textContent.split(reminders.REMINDERS_BUSY_ERROR)).toHaveLength(2);
+      expect(store.values[MAP_KEY]).toEqual(before);
+      await release();
+      ui.button.dispatchEvent(new ui.dom.window.Event('click'));
+      await vi.waitFor(() => expect(ui.button.textContent).toBe('hidden'), { timeout: 1000 });
+      expect(store.values[MAP_KEY]['m:card']).toMatchObject({ enabled: false });
+    } finally {
+      ui.dom.window.close();
+    }
+  });
+
+  it('control: the chat window\'s reminder card hides the reminder when the store is free', async () => {
+    const { d, store, reminders } = await device();
+    const ui = await chatCard(d, registrar(reminders));
+    try {
+      ui.button.dispatchEvent(new ui.dom.window.Event('click'));
+      await vi.waitFor(() => expect(ui.button.textContent).toBe('hidden'), { timeout: 1000 });
+      expect(store.values[MAP_KEY]['m:card']).toMatchObject({ enabled: false });
+    } finally {
+      ui.dom.window.close();
+    }
   });
 
   it('control: each caller saves once the store is free', async () => {
