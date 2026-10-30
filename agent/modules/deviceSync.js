@@ -65,10 +65,6 @@ const TIMESTAMP_KEYS = {
 // The disabled reminders before the v2 map: a list of hashes, read as the map until the map is written
 const DISABLED_REMINDERS_V1_KEY = "disabled_reminders";
 
-// The one field still written outside a hold of the prompt semaphore, whose local edits the storage
-// listener stamps and sends (see writeField)
-const LISTENED_FIELDS = ["taskCache"];
-
 // Epoch 0 for new devices — prevents overwriting existing prompts
 const EPOCH_ZERO = "1970-01-01T00:00:00.000Z";
 
@@ -122,17 +118,9 @@ function sendTransport(data) {
   return browser.tmDeviceSync.send(data);
 }
 
-// Set while a received task cache is merged, so the storage listener does not take it for a local edit.
-// The other `prompt_state` stores are written only in a hold of the prompt semaphore (writeField), which
-// says whether a write is a local edit; only the task cache is still written outside one.
-let suppressBroadcast = false;
-
 // Debounce timer for auto-broadcast on local edits
 let _broadcastDebounceTimer = null;
 let _broadcastPendingFields = new Set();
-
-// Storage change listener reference (for cleanup)
-let _storageChangeListener = null;
 
 // Status change listeners — pages register callbacks for real-time UI updates
 const statusListeners = new Set();
@@ -311,7 +299,7 @@ export async function readStoredField(field) {
  * does at the write, with `extra` keys in the same write. A local edit (`edit`) is stamped now, in that
  * write, and then sent to peers and recorded in the history (noteLocalEdit); any other write (a received
  * merge, a restore, a reset) carries the timestamp `at` when given, and is not sent from here. Every writer
- * of these fields comes through here, so the storage listener need not tell local edits from received ones.
+ * of these fields comes through here, so nothing else tells local edits from received ones.
  * Returns whether it was written.
  */
 export async function writeField(field, value, holds, { at, edit = false, extra = {} } = {}) {
@@ -413,8 +401,7 @@ async function readLocalState(fields = null, { texts = true } = {}) {
       }
       if (field === "taskCache") {
         // Send full cache map (per-key CRDT merge on receive)
-        const { getAllCachedResults } = await import("./taskExecutionCache.js");
-        state[field] = await getAllCachedResults();
+        state[field] = stored[FIELD_KEYS[field]] || {};
       } else if (field === "disabledReminders") {
         // Send CRDT map (per-hash timestamps handle conflicts); a device with only the v1 list sends it as one
         state[field] = stored[FIELD_KEYS[field]]
@@ -626,7 +613,7 @@ export async function resetFieldToDefault(field, defaultValue) {
   }
 }
 
-// ─── Storage Change Listener (Auto-Broadcast on Local Edit) ─────────────
+// ─── Local Edits (Auto-Broadcast) ───────────────────────────────────────
 
 /**
  * A local edit of `fields`, already stored with its timestamp: recorded in the history after a quiet period
@@ -655,42 +642,6 @@ function noteLocalEdit(fields) {
       log(`${PFX}Debounced broadcast failed: ${e}`, "warn");
     }
   }, BROADCAST_DEBOUNCE_MS);
-}
-
-/**
- * Set up storage.onChanged listener for auto-broadcasting local edits.
- * Register synchronously during background startup; repeated initialization is harmless.
- * Uses debounce to avoid flooding during rapid typing.
- */
-export function setupStorageListener() {
-  if (_storageChangeListener) return; // Already set up
-
-  const listener = (changes, area) => {
-    // Local edit timestamps must advance even while transport is paused.
-    if (area !== "local" || suppressBroadcast) return;
-
-    // Only the fields still written outside a hold: the others' writers stamp and send their own edits.
-    const changedFields = LISTENED_FIELDS.filter((field) => changes[FIELD_KEYS[field]] && !changes[TIMESTAMP_KEYS[field]]);
-    if (changedFields.length === 0) return;
-
-    // Update per-field timestamps for changed fields (these are local edits)
-    const now = new Date().toISOString();
-    const tsUpdates = {};
-    for (const field of changedFields) tsUpdates[TIMESTAMP_KEYS[field]] = now;
-    // Fire-and-forget timestamp write
-    browser.storage.local.set(tsUpdates).catch((e) => {
-      log(`${PFX}Failed to write edit timestamps: ${e}`, "warn");
-    });
-    noteLocalEdit(changedFields);
-  };
-
-  try {
-    browser.storage.onChanged.addListener(listener);
-    _storageChangeListener = listener;
-    log(`${PFX}Storage change listener registered (auto-broadcast on edit)`);
-  } catch (e) {
-    log(`${PFX}Storage listener registration failed: ${e}`, "warn");
-  }
 }
 
 // ─── Handle Incoming Prompt State (Per-Field Merge) ─────────────────────
@@ -811,18 +762,14 @@ async function handlePromptState(data, store) {
   // ─── TaskCache: per-key CRDT merge — skip if epoch-zero ────────
   let taskCacheMerged = false;
   if (willMergeTaskCache && Object.keys(data.taskCache).length > 0) {
-    suppressBroadcast = true;
     try {
       const { mergeIncomingCache } = await import("./taskExecutionCache.js");
       // In this message's hold, never a nested acquire (DS-SEMAPHORE).
-      await mergeIncomingCache(data.taskCache, store);
-      taskCacheMerged = true;
+      taskCacheMerged = (await mergeIncomingCache(data.taskCache, store)) > 0;
     } catch (e) {
       // DS-RECEIVE: a hold that ended before the save applies the whole message again.
-      if (e?.busy === true) throw e;
+      if (e?.changed === true) throw e;
       log(`${PFX}TaskCache CRDT merge failed: ${e}`, "warn");
-    } finally {
-      suppressBroadcast = false;
     }
   }
 
@@ -1112,8 +1059,8 @@ export async function disconnect() {
 }
 
 /**
- * Sign-out's cleanup — clears timers, disconnects. The storage listener stays: an edit made while signed out
- * still gets its timestamp and its history record, so it wins over older peers' values at the next connect
+ * Sign-out's cleanup — clears timers, disconnects. An edit made while signed out is still stamped in its
+ * write and recorded in the history (writeField), so it wins over older peers' values at the next connect
  * (DS-DEVICE). Idle suspension must retain the parent transport.
  */
 export async function cleanupDeviceSync() {

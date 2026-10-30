@@ -32,40 +32,30 @@ async function loadCache() {
 }
 
 /**
- * Persist an operation's cache map to storage.
- * @param {Object} cache - The cache map
- */
-async function saveCache(cache) {
-  try {
-    await browser.storage.local.set({ [STORAGE_KEY]: cache });
-  } catch (e) {
-    log(`[TaskCache] Error saving cache to storage: ${e}`, "error");
-  }
-}
-
-/**
  * One read-change-save of the cache map in a hold of the prompt semaphore (DS-SEMAPHORE), so two writers
  * never save over each other's entries: `store`, the hold of a received message's apply, or else a hold of
- * its own. `change(cache)` edits the map in place and returns whether it changed it. The map is saved only
- * while the hold lasts (DS-LEASE); a hold that ended first throws a `busy` error and saves nothing.
+ * its own. `change(cache)` edits the map in place and returns whether it changed it. The map is read and
+ * saved through the hold: a change of this device's is stamped in its write and sent to peers; a received
+ * merge (in `store`) is saved as received, not sent back. A hold that ended before the save throws a
+ * `changed` error and saves nothing.
  * @returns {Promise<boolean>} Whether the map was saved
  */
 async function changeCache(change, store) {
-  if (store) return changeCacheIn(store, change);
+  if (store) return changeCacheIn(store, change, true);
   const { withPromptStore } = await import("./promptStore.js");
-  return withPromptStore((hold) => changeCacheIn(hold, change), { label: "task cache" });
+  return withPromptStore((hold) => changeCacheIn(hold, change, false), { label: "task cache" });
 }
 
-async function changeCacheIn(store, change) {
-  const cache = await loadCache();
+async function changeCacheIn(store, change, received) {
+  const cache = { ...((await store.field("taskCache")).value || {}) };
   if (!change(cache)) return false;
-  if (!store.holds()) {
-    const error = new Error("the task cache's hold ended before its save");
-    error.busy = true;
-    throw error;
-  }
-  await saveCache(cache);
+  await store.saveField("taskCache", cache, { received });
   return true;
+}
+
+/** Whether `e` is the prompt store refusing a change: busy through its wait, or its hold ended first. */
+function refused(e) {
+  return e?.busy === true || e?.changed === true;
 }
 
 /**
@@ -119,7 +109,7 @@ export async function setCachedResult(taskHash, dateStr, content, sessionId) {
       return true;
     });
   } catch (e) {
-    if (e?.busy !== true) throw e;
+    if (!refused(e)) throw e;
     log(`[TaskCache] Result for ${key} not cached: ${e}`, "warn");
     return;
   }
@@ -154,19 +144,12 @@ function evictExcessEntries(cache, taskHash) {
 }
 
 /**
- * Get the full cache map (for Device Sync broadcast).
- * @returns {Promise<Object>} Full cache map
- */
-export async function getAllCachedResults() {
-  return await loadCache();
-}
-
-/**
  * CRDT merge: per-key, newer timestamp wins.
- * Does NOT trigger a broadcast (used by Device Sync receiver).
+ * Saved as received: not stamped, not sent back (used by Device Sync receiver).
  * @param {Object} incomingMap - Map of {compositeKey: {content, sessionId, ts}}
  * @param {Object} store - The hold of the received message's apply, which the merge saves in (never a
- *   nested acquire); a hold that ended before the save throws a `busy` error, so the message is applied again
+ *   nested acquire); a hold that ended before the save throws a `changed` error, so the message is applied again
+ * @returns {Promise<number>} How many entries it adopted
  */
 export async function mergeIncomingCache(incomingMap, store) {
   let merged = 0;
@@ -186,6 +169,7 @@ export async function mergeIncomingCache(incomingMap, store) {
   }, store);
 
   log(`[TaskCache] CRDT merge: ${merged} entries adopted from ${Object.keys(incomingMap).length} incoming (local total: ${total})`);
+  return merged;
 }
 
 /**
@@ -223,7 +207,7 @@ export async function gcOrphanedEntries(activeTaskHashes) {
       return removed > 0;
     });
   } catch (e) {
-    if (e?.busy !== true) throw e;
+    if (!refused(e)) throw e;
     log(`[TaskCache] GC not saved (the next check-in runs it again): ${e}`, "warn");
     return;
   }

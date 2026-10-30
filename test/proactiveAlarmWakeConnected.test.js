@@ -18,7 +18,11 @@ vi.mock('../chat/modules/mentionAutocomplete.js', () => ({ updateEmailCacheForMe
 vi.mock('../chat/modules/idTranslator.js', async importOriginal => ({ ...await importOriginal(), cleanupEvictedIds: vi.fn() }));
 vi.mock('../chat/modules/chatWindowUtils.js', () => ({ isChatWindowOpen: vi.fn(async () => false), openOrFocusChatWindow: vi.fn(async () => {}) }));
 // The task cache saves in a hold of the prompt semaphore; its contention is covered by taskCacheSemaphore.
-vi.mock('../agent/modules/promptStore.js', () => ({ withPromptStore: async (body) => body({ holds: () => true }) }));
+vi.mock('../agent/modules/promptStore.js', () => ({ withPromptStore: async (body) => body({
+  holds: () => true,
+  field: async () => ({ value: (await browser.storage.local.get('task_execution_cache')).task_execution_cache }),
+  saveField: async (field, value) => { await browser.storage.local.set({ task_execution_cache: value }); },
+}) }));
 vi.mock('../agent/modules/promptGenerator.js', () => ({ getUserKBPrompt: vi.fn(async () => '') }));
 vi.mock('../chat/modules/markdown.js', () => ({ renderMarkdown: async s => s }));
 vi.mock('../agent/modules/llm.js', () => ({ sendChat: vi.fn(async () => { throw new Error('forbidden live or unexpected LLM call'); }) }));

@@ -418,9 +418,9 @@ describe('Device Sync', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // TB-091: Echo prevention (suppressBroadcast flag)
+  // TB-091: Echo prevention (a received or reset write is not sent back)
   // ═══════════════════════════════════════════════════════════════════════════
-  describe('TB-091: Echo prevention (suppressBroadcast flag)', () => {
+  describe('TB-091: Echo prevention (a received or reset write is not sent back)', () => {
     it('broadcastState returns early when not connected (no echo)', async () => {
       // deviceSync is not connected (no socket), broadcastState should silently return
       setStorage({
@@ -911,26 +911,14 @@ describe('Device Sync', () => {
       expect(deviceSync.isConnected()).toBe(false);
     });
 
-    it('cleanupDeviceSync (sign-out) keeps the storage change listener, so a local edit while signed out still gets its timestamp (R34)', async () => {
-      const fresh = await import('../agent/modules/deviceSync.js?cleanupKeepsListener');
-      browserMock.storage.onChanged.addListener.mockClear();
-      browserMock.storage.onChanged.removeListener.mockClear();
-      fresh.setupStorageListener();
-      expect(browserMock.storage.onChanged.addListener).toHaveBeenCalledTimes(1);
-      const listener = browserMock.storage.onChanged.addListener.mock.calls[0][0];
-
+    it('after cleanupDeviceSync (sign-out), a local edit of any prompt_state field is still stamped in its own write (R34)', async () => {
+      const fresh = await import('../agent/modules/deviceSync.js?cleanupStampsEdits');
       await fresh.cleanupDeviceSync();
-      expect(browserMock.storage.onChanged.removeListener).not.toHaveBeenCalled();
       const before = Date.now();
-      // The task cache, written outside the prompt store, is stamped by the listener.
-      listener({ task_execution_cache: { newValue: {} } }, 'local');
-      await vi.waitFor(() => expect(Date.parse(storageData['device_sync_ts:taskCache'])).toBeGreaterThanOrEqual(before));
-      // A field edited in a hold is stamped in its own write, signed in or not.
-      await fresh.writeField('templates', [], () => true, { edit: true });
-      expect(Date.parse(storageData[TIMESTAMP_KEYS.templates])).toBeGreaterThanOrEqual(before);
-      // Still the one listener.
-      fresh.setupStorageListener();
-      expect(browserMock.storage.onChanged.addListener).toHaveBeenCalledTimes(1);
+      for (const field of ['templates', 'taskCache', 'disabledReminders', 'actionConfig']) {
+        expect(await fresh.writeField(field, field === 'templates' ? [] : {}, () => true, { edit: true }), field).toBe(true);
+        expect(Date.parse(storageData[`device_sync_ts:${field}`]), field).toBeGreaterThanOrEqual(before);
+      }
     });
   });
 
@@ -2273,18 +2261,15 @@ describe('Device Sync', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // setupStorageListener
+  // No storage listener: every prompt_state writer stamps and sends its own edits
   // ═══════════════════════════════════════════════════════════════════════════
-  describe('setupStorageListener', () => {
-    it('registers one storage change listener, however often it is called', async () => {
-      const fresh = await import('../agent/modules/deviceSync.js?registersOnce');
+  describe('no storage change listener', () => {
+    it('Device Sync registers none: loading and cleaning it up add no storage.onChanged listener', async () => {
       browserMock.storage.onChanged.addListener.mockClear();
-
-      fresh.setupStorageListener();
-      fresh.setupStorageListener();
-
-      expect(browserMock.storage.onChanged.addListener).toHaveBeenCalledTimes(1);
+      const fresh = await import('../agent/modules/deviceSync.js?noStorageListener');
+      expect(fresh.setupStorageListener).toBeUndefined();
       await fresh.cleanupDeviceSync();
+      expect(browserMock.storage.onChanged.addListener).not.toHaveBeenCalled();
     });
   });
 

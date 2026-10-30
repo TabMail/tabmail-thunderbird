@@ -173,7 +173,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | # | Test | Expected | Category |
 |---|------|----------|----------|
 | TB-090 | State merge with per-field timestamps | Newer wins per field | Merge |
-| TB-091 | Echo prevention (suppressBroadcast flag) | No infinite loop | Echo |
+| TB-091 | Echo prevention (a received or reset write is not sent back) | No infinite loop | Echo |
 | TB-092 | Virgin device detection (all epoch-zero) | Skip broadcast, probe | Detection |
 | TB-093 | Labelled-bullet merge of a received snapshot (DS-MERGE) | Labels unioned, deletions by seen map | Algorithm |
 | TB-094 | Template CRDT merge (by ID, newer updatedAt wins) | Correct per-template | CRDT |

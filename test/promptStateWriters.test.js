@@ -3,10 +3,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // promptStateWriters.test.js — every read-change-save of the stores a received `prompt_state` also writes
-// (the action compaction settings and the disabled-reminders map; the templates have their own matrix in
-// templateWriters.test.js) runs in one hold of the device's prompt semaphore (DS-SEMAPHORE, #194), from
-// the background, the prompts page and the chat window, on a simulated device running the real
-// promptStore.js, deviceSync.js, reminderStateStore.js, actionCompactConfig.js and prompts/modules/storage.js.
+// (the action compaction settings, the disabled-reminders map and the task cache; the templates have their
+// own matrix in templateWriters.test.js) runs in one hold of the device's prompt semaphore (DS-SEMAPHORE,
+// #194), from the background, the prompts page and the chat window, on a simulated device running the real
+// promptStore.js, deviceSync.js, reminderStateStore.js, taskExecutionCache.js, actionCompactConfig.js and
+// prompts/modules/storage.js.
 //
 // The invariant, over every writer: an older update that resumes after a newer action never replaces it,
 // and a local edit landing during an incoming apply is never replaced by the peer's older value. An older
@@ -22,14 +23,22 @@ import { createRealm } from './support/deviceRealm.js';
 const REMINDERS = 'agent/modules/reminderStateStore.js';
 const ACTION_CONFIG = 'agent/modules/actionCompactConfig.js';
 const TEMPLATES = 'agent/modules/templateManager.js';
+const TASK_CACHE = 'agent/modules/taskExecutionCache.js';
 const STORAGE = 'prompts/modules/storage.js';
 const ACTION_KEY = 'user_prompts:action_config';
 const ACTION_TS = 'device_sync_ts:actionConfig';
 const MAP_KEY = 'disabled_reminders_v2';
 const MAP_TS = 'device_sync_ts:disabledReminders';
 const V1_KEY = 'disabled_reminders';
+const CACHE_KEY = 'task_execution_cache';
+const CACHE_TS = 'device_sync_ts:taskCache';
 const DAY = 86400 * 1000;
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
+/** Today's date as the task cache keys its entries ("<task hash>_<YYYY-MM-DD>"). */
+const today = () => new Date().toISOString().slice(0, 10);
+const cached = (content, ts) => ({ content, sessionId: 'synthetic-session', ts });
+/** A cached result old enough for the task cache's clean-up to remove. */
+const staleKey = () => `t:stale_${ago(100 * DAY).slice(0, 10)}`;
 
 function gate() {
   let open;
@@ -37,14 +46,16 @@ function gate() {
   return { promise, open };
 }
 
-/** What every writer starts from: settings and a map edited two days ago, one entry old enough for the
- * clean-up to remove. */
+/** What every writer starts from: settings, a map and a task cache edited two days ago, with one entry in
+ * the map and one in the cache old enough for their clean-ups to remove. */
 function storedState() {
   return {
     [ACTION_KEY]: { compact_threshold: 150, compact_threshold_chars: 20000 },
     [ACTION_TS]: ago(2 * DAY),
     [MAP_KEY]: { 'm:own': { enabled: false, ts: ago(2 * DAY) }, 'm:stale': { enabled: false, ts: ago(100 * DAY) } },
     [MAP_TS]: ago(2 * DAY),
+    [CACHE_KEY]: { [`t:own_${today()}`]: cached('Own result', ago(2 * DAY)), [staleKey()]: cached('Stale result', ago(100 * DAY)) },
+    [CACHE_TS]: ago(2 * DAY),
   };
 }
 
@@ -63,8 +74,7 @@ function sliders(rules, chars) {
 async function device({ leaseMs = 15000, values = {} } = {}) {
   const store = new DeviceStore({ ...storedState(), prompt_history_migrated: true, ...values });
   for (const [key, value] of Object.entries(values)) if (value === undefined) delete store.values[key];
-  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [REMINDERS, ACTION_CONFIG], leaseMs }).start();
-  d.sync.setupStorageListener();
+  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [REMINDERS, ACTION_CONFIG, TASK_CACHE], leaseMs }).start();
   devices.push(d);
   const chat = d.page([REMINDERS]);
   return {
@@ -74,6 +84,8 @@ async function device({ leaseMs = 15000, values = {} } = {}) {
     background: d.realm.require(REMINDERS),
     /** reminderStateStore.js as the chat window runs it (reminder_del, the reminder list). */
     page: chat.require(REMINDERS),
+    /** taskExecutionCache.js as the background runs it (the check-ins). */
+    cache: d.realm.require(TASK_CACHE),
     /** The prompts page's saveActionConfig with its sliders at `rules`, `chars`. */
     saveActionConfig: (rules, chars) => d.page([ACTION_CONFIG, STORAGE, 'prompts/modules/markdown.js'], {}, { document: sliders(rules, chars) }).require(STORAGE).saveActionConfig(),
   };
@@ -81,11 +93,12 @@ async function device({ leaseMs = 15000, values = {} } = {}) {
 
 const map = (store) => store.values[MAP_KEY] ?? {};
 const actionConfig = (store) => store.values[ACTION_KEY];
+const taskCache = (store) => store.values[CACHE_KEY] ?? {};
 
 /** Whether a storage read or write touches these stores. */
 function touchesStores(keys) {
   const list = typeof keys === 'string' ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys ?? {});
-  return list.some((key) => [ACTION_KEY, ACTION_TS, MAP_KEY, MAP_TS, V1_KEY].includes(key));
+  return list.some((key) => [ACTION_KEY, ACTION_TS, MAP_KEY, MAP_TS, V1_KEY, CACHE_KEY, CACHE_TS].includes(key));
 }
 
 /** Holds the `k`-th read or write of these stores (from 1) after it lands, until `open()`. */
@@ -128,6 +141,7 @@ function peerState({ actionConfig = true } = {}) {
       updatedAt: at,
       ...(actionConfig ? { actionConfig: { compact_threshold: 300, compact_threshold_chars: 40000 }, actionConfig_updated_at: at } : {}),
       disabledReminders: { 'm:peer': { enabled: false, ts: at } }, disabledReminders_updated_at: at,
+      taskCache: { [`t:peer_${today()}`]: cached('Peer result', at) }, taskCache_updated_at: at,
     },
   };
 }
@@ -177,17 +191,28 @@ const WRITERS = [
     run: (env, m) => m.migrateEntries({ 'm:migrated': { enabled: false, ts: new Date().toISOString() } }),
     landed: (s) => map(s)['m:migrated']?.enabled === false,
   },
+  {
+    name: 'cache a task result (check-in)', contexts: ['background'],
+    run: (env) => env.cache.setCachedResult('t:older', today(), 'Older result', 'synthetic-session'),
+    landed: (s) => taskCache(s)[`t:older_${today()}`]?.content === 'Older result',
+  },
+  {
+    name: 'clean-up of orphaned task results (check-in)', contexts: ['background'],
+    run: (env) => env.cache.gcOrphanedEntries(new Set(['t:own'])),
+    landed: (s) => !(staleKey() in taskCache(s)) && Boolean(taskCache(s)[`t:own_${today()}`]),
+  },
 ];
 
 const CASES = WRITERS.flatMap((writer) => writer.contexts.map((context) => ({ ...writer, context })));
 const managerFor = (env, context) => (context === 'chat window' ? env.page : env.background);
 
-/** The newer local edit: the compaction sliders moved on the prompts page, and a reminder disabled from
- * the context the older writer is not in. Returns when it started. */
+/** The newer local edit: the compaction sliders moved on the prompts page, a reminder disabled from the
+ * context the older writer is not in, and a task result cached. Returns when it started. */
 async function newerEdit(env, writer) {
   const at = new Date().toISOString();
   await env.saveActionConfig(400, 50000);
   await managerFor(env, writer.context === 'background' ? 'chat window' : 'background').setEnabled('m:newer', false);
+  await env.cache.setCachedResult('t:newer', today(), 'Newer result', 'synthetic-session');
   return at;
 }
 
@@ -196,6 +221,8 @@ const keptNewerEdit = (env, at, label) => {
   expect(env.store.values[ACTION_TS] >= at, `${label}: the edit's timestamp`).toBe(true);
   expect(map(env.store)['m:newer'], label).toMatchObject({ enabled: false });
   expect(map(env.store)['m:newer'].ts >= at, `${label}: the entry's timestamp`).toBe(true);
+  expect(taskCache(env.store)[`t:newer_${today()}`], label).toMatchObject({ content: 'Newer result' });
+  expect(env.store.values[CACHE_TS] >= at, `${label}: the task cache's timestamp`).toBe(true);
 };
 
 /** The newer actions run while an older writer is held past its lease. */
@@ -208,13 +235,14 @@ const NEWER_ACTIONS = [
     run: async (env) => {
       await env.d.connect();
       const at = new Date().toISOString();
-      await env.d.receive({ type: 'prompt_state', data: { updatedAt: at, actionConfig: { compact_threshold: 350, compact_threshold_chars: 45000 }, actionConfig_updated_at: at, disabledReminders: { 'm:peer2': { enabled: false, ts: at } }, disabledReminders_updated_at: at } });
+      await env.d.receive({ type: 'prompt_state', data: { updatedAt: at, actionConfig: { compact_threshold: 350, compact_threshold_chars: 45000 }, actionConfig_updated_at: at, disabledReminders: { 'm:peer2': { enabled: false, ts: at } }, disabledReminders_updated_at: at, taskCache: { [`t:peer2_${today()}`]: cached('Peer result 2', at) }, taskCache_updated_at: at } });
       return at;
     },
     kept: (env, at, label) => {
       expect(actionConfig(env.store), label).toEqual({ compact_threshold: 350, compact_threshold_chars: 45000 });
       expect(env.store.values[ACTION_TS], label).toBe(at);
       expect(map(env.store)['m:peer2'], label).toEqual({ enabled: false, ts: at });
+      expect(taskCache(env.store)[`t:peer2_${today()}`], label).toEqual(cached('Peer result 2', at));
     },
   },
   {
@@ -297,10 +325,10 @@ describe('controls: the same writers land, and a writer that waits applies to wh
 describe('a received prompt_state is applied as received', () => {
   // It keeps the peer's timestamps, is not sent back to peers and is not recorded as a local edit; a local
   // edit is (control).
-  it('a received map and settings are not stamped now, sent back or recorded as a local edit', async () => {
+  it('a received map, task cache and settings are not stamped now, sent back or recorded as a local edit', async () => {
     const env = await device();
     await env.d.connect();
-    const stamps = { map: env.store.values[MAP_TS] };
+    const stamps = { map: env.store.values[MAP_TS], cache: env.store.values[CACHE_TS] };
     const sent = () => env.d.relay.legacy.filter(({ from, message }) => from === 'A' && message.type === 'prompt_state');
     const before = sent().length;
     const message = peerState();
@@ -310,6 +338,8 @@ describe('a received prompt_state is applied as received', () => {
     // Past the broadcast and edit-history debounces.
     await new Promise((resolve) => setTimeout(resolve, 2200));
     expect(env.store.values[MAP_TS]).toBe(stamps.map);
+    expect(env.store.values[CACHE_TS]).toBe(stamps.cache);
+    expect(taskCache(env.store)[`t:peer_${today()}`]).toEqual(message.data.taskCache[`t:peer_${today()}`]);
     expect(env.store.values[ACTION_TS]).toBe(message.data.actionConfig_updated_at);
     expect(sent().length).toBe(before);
     expect((env.store.values.prompt_history ?? []).filter((entry) => entry.source === 'local_edit')).toEqual([]);
