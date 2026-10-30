@@ -30,6 +30,7 @@ vi.mock("../agent/modules/config.js", async () => {
 });
 vi.mock("../agent/modules/utils.js", () => ({ log: vi.fn(), normalizeUnicode: (s) => s }));
 vi.mock("../agent/modules/thinkBuffer.js", () => ({ setThink: vi.fn() }));
+vi.mock("../agent/modules/deviceSync.js", () => ({ cleanupDeviceSync: vi.fn(async () => {}), connect: vi.fn(async () => {}) }));
 vi.mock("../chat/modules/privacySettings.js", () => ({ assertAiBackendAllowed: vi.fn(async () => {}) }));
 vi.mock("../agent/modules/byokStorage.js", () => ({ buildByokPayload: vi.fn(async () => null) }));
 vi.mock("../config/modules/webSearch.js", () => ({ getWebSearchEnabled: vi.fn(async () => false) }));
@@ -56,6 +57,8 @@ globalThis.browser = {
 
 const { SETTINGS } = await import("../agent/modules/config.js");
 const auth = await import("../agent/modules/supabaseAuth.js");
+// As the background page, the one place the session is stored.
+auth.initSessionHost();
 const llm = await import("../agent/modules/llm.js");
 
 const RETRIES = SETTINGS.authTokenRefreshRetries;

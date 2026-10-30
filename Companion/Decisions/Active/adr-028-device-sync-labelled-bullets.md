@@ -69,6 +69,15 @@ had touched. Timestamps on the whole field could not tell the cases apart.
   like any other, and a refine that reaches its model call signed out fails as any signed-out AI
   call does. Sign-in and sign-out do not renew the change counter. An account change keeps
   everything too; identical texts from the two accounts' groups collapse (DS-DEDUP).
+- **The account picks the group (#192).** Every write of the session goes through one function,
+  `storeSession` in supabaseAuth.js, run only by the background page (`initSessionHost`; a page sends
+  `store-session`): a sign-in from the popup, an automatic re-sign-in after a refused AI call, a token
+  refresh (in the background or a page), a refused refresh, a sign-out. When the stored account (the
+  access token's subject) differs from the new one, Device Sync is closed first (`cleanupDeviceSync`:
+  waiting messages dropped, nothing more sent, nothing waited for), then the session is stored, then
+  Device Sync connects as the new account. A write of the same account keeps the connection. Writes
+  run one after another. Before this, an automatic re-sign-in to another account kept syncing with the
+  old account's devices until the next reconnect.
 
 ## Consequences
 

@@ -35,9 +35,9 @@ async function connected(options = {}) {
   return { a, b, relay };
 }
 
-/** The real supabaseAuth on device `d`. */
+/** The real supabaseAuth on device `d`, as its background page runs it (the one place the session is stored). */
 function authOn(d) {
-  return createRealm({
+  const auth = createRealm({
     files: ['agent/modules/supabaseAuth.js'],
     stubs: {
       'agent/modules/config.js': { SETTINGS: {}, getBackendUrl: async () => 'https://backend.example.com' },
@@ -47,6 +47,8 @@ function authOn(d) {
     },
     globals: { browser: { storage: d.store.api() }, atob: globalThis.atob, setTimeout, clearTimeout },
   }).require('agent/modules/supabaseAuth.js');
+  auth.initSessionHost();
+  return auth;
 }
 
 /** Pauses `d`'s first read of the prompt history: a merge reads it in its hold, just before it commits. */

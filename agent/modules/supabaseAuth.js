@@ -28,12 +28,12 @@ export async function getSession() {
 
 /**
  * Stores the Supabase session.
- * 
+ *
  * @param {{access_token: string, refresh_token: string, expires_at: number}} session
  */
 async function setSession(session) {
   try {
-    await browser.storage.local.set({ supabaseSession: session });
+    await storeSession(session);
     log("[SupabaseAuth] Session stored successfully");
   } catch (e) {
     log(`[SupabaseAuth] Failed to store session: ${e}`, "error");
@@ -45,10 +45,89 @@ async function setSession(session) {
  */
 async function clearSession() {
   try {
-    await browser.storage.local.remove("supabaseSession");
+    await storeSession(null);
     log("[SupabaseAuth] Session cleared");
   } catch (e) {
     log(`[SupabaseAuth] Failed to clear session: ${e}`, "error");
+  }
+}
+
+// ─── The one session writer ─────────────────────────────────────────────
+
+// The background page stores the session; a page (the popup, a settings page, a chat window) asks it to.
+let _sessionHost = false;
+// The background's session writes, one after another, so each compares against the one stored before it.
+let _sessionWrites = Promise.resolve();
+
+/** Makes this realm the one that stores the session: called by the background page at startup. */
+export function initSessionHost() {
+  _sessionHost = true;
+}
+
+/** The background's "store-session" runtime message handler: returns the write's promise. */
+export function handleStoreSessionMessage(message) {
+  return storeSession(message?.session ?? null).then(
+    () => ({ ok: true }),
+    (e) => ({ ok: false, error: String(e) }),
+  );
+}
+
+/** The account a session's access token was issued to (its subject), or null when it cannot be read. */
+function accountOf(session) {
+  try {
+    const part = session.access_token.split(".")[1];
+    const json = atob(part.replace(/-/g, "+").replace(/_/g, "/") + "==".slice(0, (4 - (part.length % 4)) % 4));
+    const sub = JSON.parse(json).sub;
+    return typeof sub === "string" && sub !== "" ? sub : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Whether two stored sessions (null when signed out) are the same account. A session whose account
+ * cannot be read is never the same as another. */
+function sameAccount(a, b) {
+  if (!a || !b) return !a && !b;
+  const account = accountOf(a);
+  return account !== null && account === accountOf(b);
+}
+
+/**
+ * Every write of the session, from every sign-in, token refresh and sign-out, in every page: the sign-in
+ * is which devices this one syncs with (DS-DEVICE). When the account changes, by any path, Device Sync
+ * leaves the old account's devices before the new session is stored, so nothing is sent to them or taken
+ * from them after it, then connects as the new account. Nothing on the device is removed.
+ * @param {{access_token: string, refresh_token: string, expires_at: number}|null} session - null signs out
+ */
+function storeSession(session) {
+  if (!_sessionHost) {
+    return browser.runtime.sendMessage({ command: "store-session", session }).then((response) => {
+      if (!response?.ok) throw new Error(response?.error || "the background did not store the session");
+    });
+  }
+  const write = _sessionWrites.then(() => switchSession(session));
+  _sessionWrites = write.catch(() => {});
+  return write;
+}
+
+async function switchSession(session) {
+  const changed = !sameAccount(await getSession(), session);
+  if (changed) {
+    // Leaving never waits: messages still waiting from the old devices are dropped, nothing more is sent.
+    try {
+      const { cleanupDeviceSync } = await import("./deviceSync.js");
+      await cleanupDeviceSync();
+      log("[SupabaseAuth] The account changed: Device Sync left the previous account's devices");
+    } catch (e) {
+      log(`[SupabaseAuth] Device Sync could not be closed for the account change: ${e}`, "error");
+    }
+  }
+  if (session) await browser.storage.local.set({ supabaseSession: session });
+  else await browser.storage.local.remove("supabaseSession");
+  if (changed && session) {
+    // Not awaited: the connect reads the token, and a refresh it starts stores its session through here.
+    const { connect } = await import("./deviceSync.js");
+    connect().catch((e) => log(`[SupabaseAuth] Device Sync could not connect as the new account: ${e}`, "warn"));
   }
 }
 
@@ -634,21 +713,13 @@ export async function signOut() {
     // Only clear local session - don't call Supabase logout endpoint
     // This allows other sessions (e.g., web dashboard) to remain logged in
     // The token will naturally expire, or user can sign out globally from web
+    // Clearing it closes Device Sync first (storeSession), as every account change does.
     await clearSession();
 
     // Sign-out deletes nothing (DS-DEVICE): the prompts, templates, history, settings and caches are this
     // device's, kept for whoever signs in next. Only the AI calls and Device Sync need an account.
 
-    // 1. Close the parent-owned Device Sync transport.
-    try {
-      const { cleanupDeviceSync } = await import("./deviceSync.js");
-      await cleanupDeviceSync();
-      log("[SupabaseAuth] Device sync disconnected");
-    } catch (e) {
-      log(`[SupabaseAuth] Device sync cleanup failed (non-fatal): ${e}`, "error");
-    }
-
-    // 2. The consent flag is the signed-out account's status (every sign-in sets it again), not data.
+    // The consent flag is the signed-out account's status (every sign-in sets it again), not data.
     try {
       await browser.storage.local.remove("tabmailConsentRequired");
     } catch (e) {

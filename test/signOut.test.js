@@ -80,9 +80,11 @@ vi.mock("../agent/modules/deviceSync.js", () => ({
 
 // ─── Import after mocks ─────────────────────────────────────────────────────
 
-const { signOut, getSession } = await import(
+const { signOut, getSession, initSessionHost } = await import(
   "../agent/modules/supabaseAuth.js"
 );
+// As the background page, the one place the session is stored.
+initSessionHost();
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
