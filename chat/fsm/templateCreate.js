@@ -102,10 +102,6 @@ export async function runStateCreateTemplateExec() {
       enabled: true,
     });
 
-    if (!newTemplate) {
-      throw new Error("addTemplate returned null");
-    }
-
     try {
       if (pid && ctx.fsmSessions[pid]) {
         ctx.fsmSessions[pid].createResult = {

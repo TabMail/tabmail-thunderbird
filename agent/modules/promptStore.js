@@ -414,6 +414,24 @@ async function hostRecordHistory(token, source, fields, templates) {
   return { outcome: "saved" };
 }
 
+const TEMPLATES_KEY = "user_templates";
+const TEMPLATES_MIGRATED_KEY = "templates_migrated";
+
+/** The stored templates (tombstones included), read in a hold (its save checks the hold). */
+async function hostTemplates() {
+  const stored = await browser.storage.local.get(TEMPLATES_KEY);
+  return { templates: Array.isArray(stored[TEMPLATES_KEY]) ? stored[TEMPLATES_KEY] : [] };
+}
+
+/** Saves `templates` as the whole stored list, and the first-run flag with it when `migrated`, if the hold
+ * still holds the semaphore at the write. Templates are not AI-written: the change counter stays. */
+async function hostSaveTemplates(token, templates, migrated) {
+  if (!Array.isArray(templates)) throw new Error("templates must be a list");
+  if (!holding(token)()) return { outcome: "changed" };
+  await browser.storage.local.set(migrated ? { [TEMPLATES_KEY]: templates, [TEMPLATES_MIGRATED_KEY]: true } : { [TEMPLATES_KEY]: templates });
+  return { outcome: "saved" };
+}
+
 const OPERATIONS = {
   acquire: (message) => hostAcquire(message.label),
   release: (message) => hostRelease(message.token),
@@ -434,6 +452,8 @@ const HELD = {
   send: (message) => hostSend(message.token, message.fields),
   history: (message) => hostHistory(message.token),
   recordHistory: (message) => hostRecordHistory(message.token, message.source, message.fields, message.templates),
+  templates: () => hostTemplates(),
+  saveTemplates: (message) => hostSaveTemplates(message.token, message.templates, message.migrated === true),
 };
 
 function operation(op) {
@@ -613,6 +633,19 @@ class PromptStoreHold {
     await this.#call("recordHistory", { source, fields, templates });
   }
 
+  /** The stored templates, tombstones included: { templates }. */
+  async templates() {
+    const { templates } = await this.#call("templates", {});
+    return { templates };
+  }
+
+  /** Saves `templates` as the whole stored list (with the first-run flag set when `migrated`). Throws a
+   * `changed` error, with nothing saved, when the hold ended first. */
+  async saveTemplates(templates, { migrated = false } = {}) {
+    const response = await this.#call("saveTemplates", { templates, migrated });
+    if (response.outcome === "changed") throw changedError("the templates");
+  }
+
   /** Whether this hold still holds the semaphore (background only). */
   holds() {
     return !this.#ended && holder?.token === this.#token;
@@ -635,7 +668,7 @@ async function acquire(label) {
 }
 
 /**
- * The one way to read or change the knowledge base, the writing style and the action rules
+ * The one way to read or change the knowledge base, the writing style, the action rules and the templates
  * (DS-SEMAPHORE): acquires the device's prompt semaphore, runs `body(store)` and releases it, however
  * `body` ends. While another holds it the caller waits in line behind every earlier caller (request order)
  * and, after `SETTINGS.promptSemaphore.acquireWaitMs` in line, rejects with a `busy` error. Sign-in state

@@ -151,10 +151,6 @@ export async function runStateDownloadTemplateExec() {
       enabled: templateData.enabled !== undefined ? templateData.enabled : true,
     });
 
-    if (!newTemplate) {
-      throw new Error("addTemplate returned null");
-    }
-
     try {
       if (pid && ctx.fsmSessions[pid]) {
         ctx.fsmSessions[pid].downloadResult = {

@@ -69,6 +69,8 @@ export class DeviceStore {
           return values;
         },
         set: async (values) => {
+          // A test can fail or hold a write before it lands.
+          if (store.beforeSet) await store.beforeSet(values);
           if ((store.failNext || store.failing) && Object.keys(values).some((key) => key.startsWith('bullet_state:'))) {
             store.failNext = false;
             throw new Error('synthetic storage failure');
@@ -189,8 +191,13 @@ export function bundledFetch(catalog) {
   return async (url) => {
     const path = String(url).replace(/^moz-extension:\/\/[^/]+\//, '');
     const text = path === CATALOG_FILE ? JSON.stringify(catalog) : readFileSync(new URL(path, ROOT), 'utf8');
-    return { ok: true, status: 200, text: async () => text };
+    return { ok: true, status: 200, text: async () => text, json: async () => JSON.parse(text) };
   };
+}
+
+/** `stubs` without the modules a realm loads as files: a test that loads one runs the real module. */
+function stubsFor(stubs, files) {
+  return Object.fromEntries(Object.entries(stubs).filter(([path]) => !files.includes(path)));
 }
 
 /**
@@ -292,8 +299,8 @@ export class BulletDevice {
   /** A page of the add-on on this device (the prompts page, a chat window): `files` in a realm of its
    * own, which reaches the prompt store as every page does, by `runtime.sendMessage` to the background,
    * routed there as background.js routes it (`command: "prompt-store"`), each message copied both ways.
-   * Returns the realm. */
-  page(files) {
+   * `stubs` replaces more modules for this page. Returns the realm. */
+  page(files, stubs = {}) {
     const device = this;
     const sendMessage = async (message) => {
       const copy = structuredClone(message);
@@ -302,7 +309,7 @@ export class BulletDevice {
     };
     return createRealm({
       files: [...FILES, ...files],
-      stubs: this.stubs(),
+      stubs: stubsFor({ ...this.stubs(), ...stubs }, [...FILES, ...files]),
       globals: {
         browser: { storage: this.store.api(), runtime: { getURL: (path) => `moz-extension://synthetic/${path}`, sendMessage } },
         crypto: globalThis.crypto,

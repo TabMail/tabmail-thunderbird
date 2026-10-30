@@ -138,10 +138,10 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({
 const mergeTemplatesCalls = [];
 const gcDeletedTemplatesCalls = [];
 vi.mock('../agent/modules/templateManager.js', () => ({
-  // As the module does, saves nothing once `current()` (the message's connection lasts) fails.
-  mergeTemplates: vi.fn(async (incoming, current = () => true) => {
+  // As the module does, saves in the hold it runs in, `store`: refused (`changed`) once that hold ended.
+  mergeTemplates: vi.fn(async (incoming, store) => {
     mergeTemplatesCalls.push(incoming);
-    if (!current()) return;
+    if (!store.holds()) throw Object.assign(new Error('the templates changed while this was worked on, so nothing was saved'), { changed: true });
     // Simulate merge: store incoming templates
     const existing = storageData['user_templates'] || [];
     const merged = [...existing];
@@ -584,93 +584,8 @@ describe('Device Sync', () => {
     });
   });
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // TB-094: Template CRDT merge (by ID, newer updatedAt wins)
-  // ═══════════════════════════════════════════════════════════════════════════
-  describe('TB-094: Template CRDT merge (by ID, newer updatedAt wins)', () => {
-    it('mergeTemplates is called with incoming templates during sync', async () => {
-      const { mergeTemplates } = await import('../agent/modules/templateManager.js');
-
-      const incoming = [
-        { id: 't1', name: 'Template 1', updatedAt: '2026-03-15T00:00:00Z' },
-        { id: 't2', name: 'Template 2', updatedAt: '2026-03-14T00:00:00Z' },
-      ];
-
-      await mergeTemplates(incoming);
-
-      expect(mergeTemplatesCalls).toHaveLength(1);
-      expect(mergeTemplatesCalls[0]).toEqual(incoming);
-    });
-
-    it('newer template wins when merging by ID', async () => {
-      // Set up existing template
-      setStorage({
-        [FIELD_KEYS.templates]: [
-          { id: 't1', name: 'Old Name', updatedAt: '2026-03-10T00:00:00Z' },
-        ],
-      });
-
-      const { mergeTemplates } = await import('../agent/modules/templateManager.js');
-      mergeTemplates.mockClear();
-      mergeTemplatesCalls.length = 0;
-
-      const incoming = [
-        { id: 't1', name: 'New Name', updatedAt: '2026-03-15T00:00:00Z' },
-      ];
-
-      await mergeTemplates(incoming);
-
-      // After mock merge, the newer template should win
-      const templates = storageData[FIELD_KEYS.templates];
-      const t1 = templates.find((t) => t.id === 't1');
-      expect(t1.name).toBe('New Name');
-      expect(t1.updatedAt).toBe('2026-03-15T00:00:00Z');
-    });
-
-    it('older incoming template does not overwrite newer local', async () => {
-      setStorage({
-        [FIELD_KEYS.templates]: [
-          { id: 't1', name: 'Newer Local', updatedAt: '2026-03-15T00:00:00Z' },
-        ],
-      });
-
-      const { mergeTemplates } = await import('../agent/modules/templateManager.js');
-      mergeTemplates.mockClear();
-      mergeTemplatesCalls.length = 0;
-
-      const incoming = [
-        { id: 't1', name: 'Older Remote', updatedAt: '2026-03-10T00:00:00Z' },
-      ];
-
-      await mergeTemplates(incoming);
-
-      const templates = storageData[FIELD_KEYS.templates];
-      const t1 = templates.find((t) => t.id === 't1');
-      expect(t1.name).toBe('Newer Local');
-    });
-
-    it('new template ID is added during merge', async () => {
-      setStorage({
-        [FIELD_KEYS.templates]: [
-          { id: 't1', name: 'Existing', updatedAt: '2026-03-10T00:00:00Z' },
-        ],
-      });
-
-      const { mergeTemplates } = await import('../agent/modules/templateManager.js');
-      mergeTemplates.mockClear();
-      mergeTemplatesCalls.length = 0;
-
-      const incoming = [
-        { id: 't2', name: 'Brand New', updatedAt: '2026-03-15T00:00:00Z' },
-      ];
-
-      await mergeTemplates(incoming);
-
-      const templates = storageData[FIELD_KEYS.templates];
-      expect(templates).toHaveLength(2);
-      expect(templates.find((t) => t.id === 't2').name).toBe('Brand New');
-    });
-  });
+  // TB-094 (template CRDT merge, by id, newer updatedAt wins) is tested on the real module in
+  // templateManager.test.js, and in its hold of the prompt semaphore in templateWriters.test.js.
 
   // ═══════════════════════════════════════════════════════════════════════════
   // TB-095: DisabledReminders merge (per-hash, newer ts wins)

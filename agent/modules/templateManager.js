@@ -28,6 +28,15 @@ import { log } from "./utils.js";
 const PFX = "[TemplateManager] ";
 const STORAGE_KEY = "user_templates";
 
+/** What a template change reports when the prompt store stayed busy through every try (DS-NO-BUSY-UI): the
+ * templates page shows it, a chat tool hands it to the model. */
+export const TEMPLATES_BUSY_ERROR = "Couldn't save: the templates are busy. Try again in a moment.";
+
+/** `e`, or, when it is a busy refusal, the error every template change reports for one. */
+function templatesError(e) {
+    return e?.busy === true ? Object.assign(new Error(TEMPLATES_BUSY_ERROR), { busy: true }) : e;
+}
+
 /**
  * Generate a random UUID v4 for templates
  * @returns {string}
@@ -93,19 +102,29 @@ export async function loadTemplates() {
 }
 
 /**
- * Save all templates to storage
- * @param {Template[]} templates - Array of templates
- * @returns {Promise<boolean>}
+ * The one way to change the stored templates (DS-SEMAPHORE): in one hold of the device's prompt semaphore,
+ * the stored list (tombstones included) is read, `change(templates)` run on a copy, and what it returns as
+ * `save` written as the whole list, checked at the write. From a page the hold is the background's, reached
+ * by runtime message. Throws when the hold ended before the save (`changed`) or the semaphore stayed held
+ * (`busy`, as TEMPLATES_BUSY_ERROR), with nothing saved.
+ * @param {string} label - What writes, for the logs
+ * @param {(templates: Template[]) => { save: Template[]|null, result: any }} change - `save` null saves nothing
+ * @returns {Promise<any>} - the `result` of `change`
  */
-export async function saveTemplates(templates) {
+async function editTemplates(label, change) {
+    const { withPromptStore } = await import("./promptStore.js");
     try {
-        // deviceSync storage listener handles per-field timestamp (device_sync_ts:templates)
-        await browser.storage.local.set({ [STORAGE_KEY]: templates });
-        log(`${PFX}Saved ${templates.length} templates to storage`);
-        return true;
+        return await withPromptStore(async (store) => {
+            const { templates } = await store.templates();
+            const { save, result } = change(templates);
+            if (save) {
+                await store.saveTemplates(save);
+                log(`${PFX}Saved ${save.length} templates (${label})`);
+            }
+            return result;
+        }, { label });
     } catch (e) {
-        log(`${PFX}Error saving templates: ${e}`, "error");
-        return false;
+        throw templatesError(e);
     }
 }
 
@@ -122,19 +141,17 @@ export async function getTemplate(id) {
 /**
  * Add a new template
  * @param {Partial<Template>} templateData - Template data
- * @returns {Promise<Template|null>}
+ * @returns {Promise<Template>} - throws when it couldn't be saved (TEMPLATES_BUSY_ERROR while the store stays busy)
  */
 export async function addTemplate(templateData) {
     try {
-        const templates = await loadTemplates();
         const newTemplate = createTemplate(templateData);
-        templates.push(newTemplate);
-        await saveTemplates(templates);
+        await editTemplates("template add", (templates) => ({ save: [...templates, newTemplate], result: null }));
         log(`${PFX}Added template: ${newTemplate.name} (${newTemplate.id})`);
         return newTemplate;
     } catch (e) {
         log(`${PFX}Error adding template: ${e}`, "error");
-        return null;
+        throw e;
     }
 }
 
@@ -142,80 +159,61 @@ export async function addTemplate(templateData) {
  * Update an existing template
  * @param {string} id - Template ID
  * @param {Partial<Template>} updates - Fields to update
- * @returns {Promise<Template|null>}
+ * @returns {Promise<Template|null>} - null when no template has that id; throws when it couldn't be saved
  */
 export async function updateTemplate(id, updates) {
     try {
-        const templates = await loadTemplates();
-        const index = templates.findIndex((t) => t.id === id);
-
-        if (index === -1) {
+        const updated = await editTemplates("template update", (templates) => {
+            const index = templates.findIndex((t) => t.id === id);
+            if (index === -1) return { save: null, result: null };
+            // Merge updates, preserving id and createdAt
+            const next = [...templates];
+            next[index] = {
+                ...templates[index],
+                ...updates,
+                id: templates[index].id,
+                createdAt: templates[index].createdAt,
+                updatedAt: getTimestamp(),
+            };
+            return { save: next, result: next[index] };
+        });
+        if (!updated) {
             log(`${PFX}Template not found: ${id}`, "warn");
             return null;
         }
-
-        // Merge updates, preserving id and createdAt
-        templates[index] = {
-            ...templates[index],
-            ...updates,
-            id: templates[index].id,
-            createdAt: templates[index].createdAt,
-            updatedAt: getTimestamp(),
-        };
-
-        await saveTemplates(templates);
-        log(`${PFX}Updated template: ${templates[index].name} (${id})`);
-        return templates[index];
+        log(`${PFX}Updated template: ${updated.name} (${id})`);
+        return updated;
     } catch (e) {
         log(`${PFX}Error updating template: ${e}`, "error");
-        return null;
+        throw e;
     }
 }
 
 /**
  * Delete a template (soft-delete: sets deleted=true for device sync propagation).
  * @param {string} id - Template ID
- * @returns {Promise<boolean>}
+ * @returns {Promise<boolean>} - false when no template has that id; throws when it couldn't be saved
  */
 export async function deleteTemplate(id) {
     try {
-        const templates = await loadTemplates();
-        const index = templates.findIndex((t) => t.id === id);
-
-        if (index === -1) {
+        const deleted = await editTemplates("template delete", (templates) => {
+            const index = templates.findIndex((t) => t.id === id);
+            if (index === -1) return { save: null, result: null };
+            const now = getTimestamp();
+            const next = [...templates];
+            next[index] = { ...templates[index], deleted: true, deletedAt: now, updatedAt: now };
+            return { save: next, result: next[index] };
+        });
+        if (!deleted) {
             log(`${PFX}Template not found for deletion: ${id}`, "warn");
             return false;
         }
-
-        const now = getTimestamp();
-        templates[index] = {
-            ...templates[index],
-            deleted: true,
-            deletedAt: now,
-            updatedAt: now,
-        };
-        await saveTemplates(templates);
-        log(`${PFX}Soft-deleted template: ${templates[index].name} (${id})`);
+        log(`${PFX}Soft-deleted template: ${deleted.name} (${id})`);
         return true;
     } catch (e) {
         log(`${PFX}Error deleting template: ${e}`, "error");
-        return false;
+        throw e;
     }
-}
-
-/**
- * Toggle template enabled state
- * @param {string} id - Template ID
- * @returns {Promise<boolean|null>} - New enabled state or null on error
- */
-export async function toggleTemplate(id) {
-    const template = await getTemplate(id);
-    if (!template) {
-        return null;
-    }
-
-    const updated = await updateTemplate(id, { enabled: !template.enabled });
-    return updated ? updated.enabled : null;
 }
 
 /**
@@ -237,14 +235,16 @@ export async function getVisibleTemplates() {
 }
 
 /**
- * Per-template CRDT merge: index by id, newer updatedAt wins.
+ * Per-template CRDT merge: index by id, newer updatedAt wins. Run by Device Sync inside its hold of the
+ * prompt semaphore, `store`. Throws a `changed` error, with nothing saved, when that hold ended first.
  * @param {Template[]} incoming - Incoming templates from device sync
+ * @param {PromptStoreHold} store - The hold it runs in
  * @returns {Promise<void>}
  */
-export async function mergeTemplates(incoming) {
+export async function mergeTemplates(incoming, store) {
     if (!Array.isArray(incoming) || incoming.length === 0) return;
 
-    const local = await loadTemplates();
+    const { templates: local } = await store.templates();
     const merged = new Map();
 
     // Index local templates by id
@@ -274,7 +274,7 @@ export async function mergeTemplates(incoming) {
     }
 
     if (adopted > 0) {
-        await saveTemplates(Array.from(merged.values()));
+        await store.saveTemplates(Array.from(merged.values()));
         log(`${PFX}CRDT merge: ${adopted} templates adopted from ${incoming.length} incoming (local total: ${merged.size})`);
     } else {
         log(`${PFX}CRDT merge: 0 templates adopted from ${incoming.length} incoming`);
@@ -282,10 +282,12 @@ export async function mergeTemplates(incoming) {
 }
 
 /**
- * GC deleted template tombstones older than 90 days.
+ * GC deleted template tombstones older than 90 days. Run by Device Sync inside its hold of the prompt
+ * semaphore, `store`. Throws a `changed` error, with nothing saved, when that hold ended first.
+ * @param {PromptStoreHold} store - The hold it runs in
  */
-export async function gcDeletedTemplates() {
-    const templates = await loadTemplates();
+export async function gcDeletedTemplates(store) {
+    const { templates } = await store.templates();
     const now = Date.now();
     const maxAge = 90 * 86400 * 1000;
     let removed = 0;
@@ -302,7 +304,7 @@ export async function gcDeletedTemplates() {
     });
 
     if (removed > 0) {
-        await saveTemplates(filtered);
+        await store.saveTemplates(filtered);
         log(`${PFX}GC removed ${removed} deleted template tombstones older than 90 days`);
     }
 }
@@ -310,33 +312,32 @@ export async function gcDeletedTemplates() {
 /**
  * Reorder templates
  * @param {string[]} orderedIds - Array of template IDs in desired order
- * @returns {Promise<boolean>}
+ * @returns {Promise<void>} - throws when it couldn't be saved
  */
 export async function reorderTemplates(orderedIds) {
     try {
-        const templates = await loadTemplates();
-        const templateMap = new Map(templates.map((t) => [t.id, t]));
+        const count = await editTemplates("template reorder", (templates) => {
+            const templateMap = new Map(templates.map((t) => [t.id, t]));
 
-        const reordered = [];
-        for (const id of orderedIds) {
-            const template = templateMap.get(id);
-            if (template) {
-                reordered.push(template);
-                templateMap.delete(id);
+            const reordered = [];
+            for (const id of orderedIds) {
+                const template = templateMap.get(id);
+                if (template) {
+                    reordered.push(template);
+                    templateMap.delete(id);
+                }
             }
-        }
 
-        // Add any templates not in orderedIds at the end
-        for (const template of templateMap.values()) {
-            reordered.push(template);
-        }
-
-        await saveTemplates(reordered);
-        log(`${PFX}Reordered ${reordered.length} templates`);
-        return true;
+            // Add any templates not in orderedIds at the end
+            for (const template of templateMap.values()) {
+                reordered.push(template);
+            }
+            return { save: reordered, result: reordered.length };
+        });
+        log(`${PFX}Reordered ${count} templates`);
     } catch (e) {
         log(`${PFX}Error reordering templates: ${e}`, "error");
-        return false;
+        throw e;
     }
 }
 
@@ -366,54 +367,82 @@ export async function importTemplates(json, overwrite = false) {
             throw new Error("Invalid template data: expected array");
         }
 
-        const templates = await loadTemplates();
-        const existingIds = new Set(templates.map((t) => t.id));
+        const counts = await editTemplates("template import", (stored) => {
+            const templates = [...stored];
+            const existingIds = new Set(templates.map((t) => t.id));
 
-        let importedCount = 0;
-        let skippedCount = 0;
+            let importedCount = 0;
+            let skippedCount = 0;
 
-        for (const item of imported) {
-            // Validate required fields
-            if (!item.name || !item.id) {
-                skippedCount++;
-                continue;
-            }
+            for (const item of imported) {
+                // Validate required fields
+                if (!item.name || !item.id) {
+                    skippedCount++;
+                    continue;
+                }
 
-            // Clean up legacy fields
-            delete item.source;
-            delete item.author;
+                // Clean up legacy fields
+                delete item.source;
+                delete item.author;
 
-            if (existingIds.has(item.id)) {
-                if (overwrite) {
-                    const index = templates.findIndex((t) => t.id === item.id);
-                    templates[index] = createTemplate({
-                        ...item,
-                        updatedAt: getTimestamp(),
-                    });
-                    importedCount++;
+                if (existingIds.has(item.id)) {
+                    if (overwrite) {
+                        const index = templates.findIndex((t) => t.id === item.id);
+                        templates[index] = createTemplate({
+                            ...item,
+                            updatedAt: getTimestamp(),
+                        });
+                        importedCount++;
+                    } else {
+                        // Generate new ID for duplicate
+                        const newTemplate = createTemplate({
+                            ...item,
+                            id: generateId(),
+                        });
+                        templates.push(newTemplate);
+                        importedCount++;
+                    }
                 } else {
-                    // Generate new ID for duplicate
-                    const newTemplate = createTemplate({
-                        ...item,
-                        id: generateId(),
-                    });
-                    templates.push(newTemplate);
+                    templates.push(createTemplate(item));
                     importedCount++;
                 }
-            } else {
-                templates.push(createTemplate(item));
-                importedCount++;
             }
-        }
 
-        await saveTemplates(templates);
-        log(`${PFX}Imported ${importedCount} templates, skipped ${skippedCount}`);
+            return { save: templates, result: { imported: importedCount, skipped: skippedCount } };
+        });
+        log(`${PFX}Imported ${counts.imported} templates, skipped ${counts.skipped}`);
 
-        return { imported: importedCount, skipped: skippedCount };
+        return counts;
     } catch (e) {
         log(`${PFX}Error importing templates: ${e}`, "error");
         throw e;
     }
+}
+
+/**
+ * Removes visible templates whose id repeats an earlier visible one (the first kept), from the stored list
+ * as it is in the hold, tombstones kept after them. Saves only when one was removed.
+ * @returns {Promise<{templates: Template[], removed: number}>} - the visible templates after, and how many were removed
+ */
+export async function dedupeTemplates() {
+    const result = await editTemplates("template duplicate clean-up", (templates) => {
+        const seen = new Set();
+        const visible = [];
+        let removed = 0;
+        for (const template of templates.filter((t) => !t.deleted)) {
+            if (seen.has(template.id)) {
+                log(`${PFX}Found duplicate template: ${template.name} (${template.id})`);
+                removed++;
+            } else {
+                seen.add(template.id);
+                visible.push(template);
+            }
+        }
+        const save = removed > 0 ? [...visible, ...templates.filter((t) => t.deleted)] : null;
+        return { save, result: { templates: visible, removed } };
+    });
+    if (result.removed > 0) log(`${PFX}Removed ${result.removed} duplicate templates`);
+    return result;
 }
 
 /**
@@ -502,7 +531,9 @@ async function loadDefaultTemplates() {
 
 /**
  * Initialize templates with defaults if not already done.
- * This loads templates from the bundled default_templates.json file.
+ * This loads templates from the bundled default_templates.json file. In one hold of the prompt semaphore
+ * the defaults the stored list lacks (by id) are added after it, saved with the flag: a template saved
+ * before this ran is kept, and a second run adds nothing.
  *
  * @returns {Promise<{initialized: number}>}
  */
@@ -514,21 +545,20 @@ export async function initializeDefaultTemplates() {
     }
 
     try {
-        // Load default templates from bundled JSON
+        // Load default templates from bundled JSON (before the hold: the hold never waits on a fetch)
         const defaultTemplates = await loadDefaultTemplates();
 
-        if (defaultTemplates.length === 0) {
-            log(`${PFX}No default templates found`);
-            await markTemplatesMigrated();
-            return { initialized: 0 };
-        }
+        const { withPromptStore } = await import("./promptStore.js");
+        const initialized = await withPromptStore(async (store) => {
+            const { templates } = await store.templates();
+            const ids = new Set(templates.map((t) => t.id));
+            const added = defaultTemplates.filter((t) => !ids.has(t.id));
+            await store.saveTemplates([...templates, ...added], { migrated: true });
+            return added.length;
+        }, { label: "template first-run defaults" });
 
-        // Save default templates
-        await saveTemplates(defaultTemplates);
-        await markTemplatesMigrated();
-
-        log(`${PFX}Initialization complete: ${defaultTemplates.length} templates loaded`);
-        return { initialized: defaultTemplates.length };
+        log(`${PFX}Initialization complete: ${initialized} templates loaded`);
+        return { initialized };
     } catch (e) {
         log(`${PFX}Template initialization failed: ${e}`, "error");
         throw e;
@@ -569,6 +599,6 @@ export async function resetToDefaultTemplates() {
         return defaultTemplates.length;
     } catch (e) {
         log(`${PFX}Reset to defaults failed: ${e}`, "error");
-        throw e;
+        throw templatesError(e);
     }
 }

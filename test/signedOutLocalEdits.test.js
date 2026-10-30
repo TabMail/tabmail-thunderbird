@@ -17,13 +17,7 @@ const gate = () => {
   const promise = new Promise((resolve) => { open = resolve; });
   return { promise, open };
 };
-function templatesOn(store) {
-  return createRealm({
-    files: ['agent/modules/templateManager.js'],
-    stubs: { 'agent/modules/utils.js': { log() {} } },
-    globals: { browser: { storage: store.api() } },
-  });
-}
+const MANAGER = 'agent/modules/templateManager.js';
 function authOn(d) {
   return createRealm({
     files: ['agent/modules/supabaseAuth.js'],
@@ -42,8 +36,9 @@ describe('local edits while signed out (R34)', () => {
     vi.useFakeTimers();
     try {
       const store = new DeviceStore();
-      const a = await new BulletDevice('A', store, new BulletRelay()).start();
-      const manager = templatesOn(store).require('agent/modules/templateManager.js');
+      // The templates page's commands run in the background, the prompt store's host.
+      const a = await new BulletDevice('A', store, new BulletRelay(), { files: [MANAGER] }).start();
+      const manager = a.realm.require(MANAGER);
       a.sync.setupStorageListener();
       expect(await manager.addTemplate({ id: 'history-template', name: 'Template edit before session end' })).toMatchObject({ id: 'history-template' });
       if (signOut) expect(await authOn(a).signOut()).toBe(true);
@@ -58,10 +53,9 @@ describe('local edits while signed out (R34)', () => {
     const relay = new BulletRelay();
     const aStore = new DeviceStore();
     const bStore = new DeviceStore();
-    const aTemplates = templatesOn(aStore).require('agent/modules/templateManager.js');
-    const bTemplates = templatesOn(bStore).require('agent/modules/templateManager.js');
-    const a = await new BulletDevice('A', aStore, relay, { stubs: { 'agent/modules/templateManager.js': aTemplates } }).start();
-    const b = await new BulletDevice('B', bStore, relay, { stubs: { 'agent/modules/templateManager.js': bTemplates } }).start();
+    const a = await new BulletDevice('A', aStore, relay, { files: [MANAGER] }).start();
+    const b = await new BulletDevice('B', bStore, relay, { files: [MANAGER] }).start();
+    const aTemplates = a.realm.require(MANAGER);
     a.sync.setupStorageListener();
     b.sync.setupStorageListener();
     await a.connect();

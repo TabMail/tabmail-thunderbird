@@ -491,14 +491,10 @@ function setupRuntimeMessageListener() {
             try {
                 const { addTemplate } = await import("./modules/templateManager.js");
                 const template = await addTemplate(message.template || {});
-                if (template) {
-                    sendResponse({ ok: true, template });
-                } else {
-                    sendResponse({ ok: false, error: "Failed to add template" });
-                }
+                sendResponse({ ok: true, template });
             } catch (e) {
                 log(`templates-add failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -517,7 +513,7 @@ function setupRuntimeMessageListener() {
                 }
             } catch (e) {
                 log(`templates-update failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -532,7 +528,7 @@ function setupRuntimeMessageListener() {
                 sendResponse({ ok: success, error: success ? null : "Template not found" });
             } catch (e) {
                 log(`templates-delete failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -547,7 +543,7 @@ function setupRuntimeMessageListener() {
                 sendResponse({ ok: true, imported: result.imported, skipped: result.skipped });
             } catch (e) {
                 log(`templates-import failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -577,7 +573,7 @@ function setupRuntimeMessageListener() {
                 sendResponse({ ok: true, count });
             } catch (e) {
                 log(`templates-reset failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -618,30 +614,26 @@ function setupRuntimeMessageListener() {
         (async () => {
             try {
                 const { reorderTemplates } = await import("./modules/templateManager.js");
-                const success = await reorderTemplates(message.orderedIds || []);
-                sendResponse({ ok: success, error: success ? null : "Failed to reorder templates" });
+                await reorderTemplates(message.orderedIds || []);
+                sendResponse({ ok: true });
             } catch (e) {
                 log(`templates-reorder failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
     }
 
-    if (message.command === "templates-save-all") {
-        log("Received templates-save-all command");
+    if (message.command === "templates-dedupe") {
+        log("Received templates-dedupe command");
         (async () => {
             try {
-                const { loadTemplates, saveTemplates } = await import("./modules/templateManager.js");
-                // Preserve deleted tombstones (UI only has visible templates)
-                const existing = await loadTemplates();
-                const tombstones = existing.filter((t) => t.deleted);
-                const combined = [...(message.templates || []), ...tombstones];
-                const success = await saveTemplates(combined);
-                sendResponse({ ok: success, error: success ? null : "Failed to save templates" });
+                const { dedupeTemplates } = await import("./modules/templateManager.js");
+                const { templates, removed } = await dedupeTemplates();
+                sendResponse({ ok: true, templates, removed });
             } catch (e) {
-                log(`templates-save-all failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                log(`templates-dedupe failed: ${e}`, "error");
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
