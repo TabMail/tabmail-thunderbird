@@ -13,13 +13,16 @@
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore } from './support/bulletDevices.js';
 import { openPage } from './support/promptsPage.js';
 
 const ROOT = new URL('../', import.meta.url);
 const REMINDERS = 'agent/modules/reminderStateStore.js';
 const STORAGE = 'prompts/modules/storage.js';
+const ACTION_CONFIG = 'agent/modules/actionCompactConfig.js';
+/** The prompts page's two compaction sliders: [id, the setting it saves, its stored value]. */
+const SLIDERS = [['action-compact-threshold', 'compact_threshold', 150], ['action-compact-threshold-chars', 'compact_threshold_chars', 20000]];
 const MAP_KEY = 'disabled_reminders_v2';
 const ACTION_KEY = 'user_prompts:action_config';
 const DAY = 86400 * 1000;
@@ -41,7 +44,10 @@ async function device() {
     'device_sync_ts:actionConfig': ago(2 * DAY),
     prompt_history_migrated: true,
   });
-  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [REMINDERS], retries: 2 }).start();
+  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [REMINDERS, ACTION_CONFIG], retries: 2 }).start();
+  // The prompts page reads the stored settings through the real module.
+  const stubs = d.stubs.bind(d);
+  d.stubs = () => ({ ...stubs(), [ACTION_CONFIG]: d.realm.require(ACTION_CONFIG) });
   devices.push(d);
   return { d, store, reminders: d.realm.require(REMINDERS) };
 }
@@ -154,21 +160,36 @@ describe('a reminder or settings change refused because the prompt store stayed 
     expect(store.values[ACTION_KEY]).toEqual(before);
   });
 
-  it('the prompts page shows the busy notice when a moved slider is not saved', async () => {
+  it.each(SLIDERS)('the prompts page shows the busy notice once when the %s slider is not saved, and shows the stored value again', async (id, _, stored) => {
     const { d, store } = await device();
     const before = structuredClone(store.values[ACTION_KEY]);
     const ui = await openPage(d);
     pages.push(ui);
-    const slider = ui.document.getElementById('action-compact-threshold');
+    const slider = ui.document.getElementById(id);
+    expect(Number(slider.value)).toBe(stored);
     const release = await holdSemaphore(d);
     const count = ui.statuses.length;
-    slider.value = '250';
+    slider.value = String(stored * 2);
     slider.dispatchEvent(new ui.dom.window.Event('change'));
     await ui.settled(count);
+    const { ACTION_SETTINGS_BUSY_ERROR } = d.page([ACTION_CONFIG, STORAGE, 'prompts/modules/markdown.js']).require(STORAGE);
+    expect(ui.statuses.slice(count)).toEqual([[ACTION_SETTINGS_BUSY_ERROR, true]]);
+    await vi.waitFor(() => expect(Number(slider.value)).toBe(stored), { timeout: 1000 });
     await release();
-    const { ACTION_SETTINGS_BUSY_ERROR } = d.page(['agent/modules/actionCompactConfig.js', STORAGE, 'prompts/modules/markdown.js']).require(STORAGE);
-    expect(ui.statuses.slice(count)[0]).toEqual([ACTION_SETTINGS_BUSY_ERROR, true]);
     expect(store.values[ACTION_KEY]).toEqual(before);
+  });
+
+  it.each(SLIDERS)('control: the %s slider saves its value once the store is free', async (id, setting, stored) => {
+    const { d, store } = await device();
+    const ui = await openPage(d);
+    pages.push(ui);
+    const slider = ui.document.getElementById(id);
+    const before = structuredClone(store.values[ACTION_KEY]);
+    slider.value = String(stored * 2);
+    slider.dispatchEvent(new ui.dom.window.Event('change'));
+    await vi.waitFor(() => expect(store.values[ACTION_KEY][setting]).toBe(stored * 2), { timeout: 1000 });
+    expect(store.values[ACTION_KEY]).toEqual({ ...before, [setting]: stored * 2 });
+    expect(store.values['device_sync_ts:actionConfig'] > before.ts || Date.parse(store.values['device_sync_ts:actionConfig']) > Date.now() - DAY).toBe(true);
   });
 
   it('the chat tool reminder_del tells the model the reminders are busy', async () => {

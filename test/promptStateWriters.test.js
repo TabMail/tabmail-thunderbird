@@ -21,6 +21,7 @@ import { createRealm } from './support/deviceRealm.js';
 
 const REMINDERS = 'agent/modules/reminderStateStore.js';
 const ACTION_CONFIG = 'agent/modules/actionCompactConfig.js';
+const TEMPLATES = 'agent/modules/templateManager.js';
 const STORAGE = 'prompts/modules/storage.js';
 const ACTION_KEY = 'user_prompts:action_config';
 const ACTION_TS = 'device_sync_ts:actionConfig';
@@ -319,6 +320,56 @@ describe('a received prompt_state is applied as received', () => {
     expect(sent().at(-1).message.data.disabledReminders['m:local']).toMatchObject({ enabled: false });
     expect((env.store.values.prompt_history ?? []).filter((entry) => entry.source === 'local_edit')).toHaveLength(1);
   }, 10000);
+
+  it('a received template merge and its tombstone clean-up are not stamped now, sent back or recorded as a local edit', async () => {
+    const old = ago(2 * DAY);
+    const store = new DeviceStore({
+      prompt_history_migrated: true,
+      user_templates: [{ id: 'gone', name: 'Gone', deleted: true, deletedAt: ago(100 * DAY), updatedAt: ago(100 * DAY) }],
+      'device_sync_ts:templates': old,
+    });
+    const d = await new BulletDevice('A', store, new BulletRelay(), { files: [TEMPLATES] }).start();
+    devices.push(d);
+    await d.connect();
+    const sent = () => d.relay.legacy.filter(({ from, message }) => from === 'A' && message.type === 'prompt_state');
+    const localEdits = () => (store.values.prompt_history ?? []).filter((entry) => entry.source === 'local_edit');
+    const before = sent().length;
+    const incoming = { id: 'peer', name: 'Peer', enabled: true, instructions: [], exampleReply: '', updatedAt: ago(60 * 1000) };
+    await d.receive({ type: 'prompt_state', data: { templates: [incoming], templates_updated_at: incoming.updatedAt } });
+    expect(store.values.user_templates.map((t) => t.id)).toEqual(['peer']);
+    // Past the broadcast and edit-history debounces.
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    expect(store.values['device_sync_ts:templates']).toBe(old);
+    expect(sent().length).toBe(before);
+    expect(localEdits()).toEqual([]);
+
+    await d.realm.require(TEMPLATES).addTemplate({ name: 'Local' });
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    expect(store.values['device_sync_ts:templates'] > old).toBe(true);
+    expect(sent().length).toBe(before + 1);
+    expect(localEdits()).toHaveLength(1);
+  }, 10000);
+});
+
+describe('a device that has only the old disabled-reminders list', () => {
+  it('sends it as the map with its timestamp, without storing the map, and a peer with an older enabled entry takes it', async () => {
+    const at = ago(DAY);
+    const store = new DeviceStore({ prompt_history_migrated: true, [V1_KEY]: ['m:legacy'], [MAP_TS]: at });
+    const a = await new BulletDevice('A', store, new BulletRelay(), { files: [REMINDERS, ACTION_CONFIG] }).start();
+    devices.push(a);
+    await a.connect();
+    const payload = a.relay.legacy.find(({ from, message }) => from === 'A' && message.type === 'prompt_state')?.message;
+    expect(payload?.data.disabledReminders).toEqual({ 'm:legacy': { enabled: false, ts: at } });
+    expect(payload.data.disabledReminders_updated_at).toBe(at);
+    expect(store.values[MAP_KEY]).toBeUndefined();
+
+    const peer = new DeviceStore({ prompt_history_migrated: true, [MAP_KEY]: { 'm:legacy': { enabled: true, ts: ago(2 * DAY) } } });
+    const b = await new BulletDevice('B', peer, a.relay, { files: [REMINDERS, ACTION_CONFIG] }).start();
+    devices.push(b);
+    await b.connect();
+    await b.receive(payload);
+    expect(peer.values[MAP_KEY]['m:legacy']).toEqual({ enabled: false, ts: at });
+  });
 });
 
 describe('the sequence from the issue', () => {
