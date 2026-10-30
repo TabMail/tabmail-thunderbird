@@ -134,6 +134,12 @@ function shownLabels(captured, matches) {
   return captured ? captured.filter(([, text]) => matches(normalizeUnicode(text))) : null;
 }
 
+/** Whether the parsed bullet `shown` is the reminder `row`: the same text, due date, time and time zone. Two
+ * reminders with the same text and another date are other bullets, with other labels. */
+function sameReminder(shown, row) {
+  return !!shown && shown.content === row.content && shown.dueDate === row.dueDate && shown.dueTime === row.dueTime && shown.timezone === row.timezone;
+}
+
 /**
  * Build complete reminder list by combining message and KB reminders
  * Adds hash to each reminder and syncs state (removing orphaned disabled entries)
@@ -169,7 +175,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       ...r,
       type: "reminder",
       source: "kb",
-      labels: shownLabels(kbView.captured, (text) => parseRemindersFromKB(`- ${text}`)[0]?.content === r.content),
+      labels: shownLabels(kbView.captured, (text) => sameReminder(parseRemindersFromKB(`- ${text}`)[0], r)),
     }));
 
     // Build task items in the unified shape

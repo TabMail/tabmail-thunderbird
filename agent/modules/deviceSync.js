@@ -138,7 +138,9 @@ const _pendingProbes = new Map();
 // DS-RECEIVE: received messages for the prompt store, applied one after another in arrival order. One refused
 // as busy is applied again after SETTINGS.deviceSync.busyReapplyMs, holding nothing while it waits, and every
 // message after it waits behind it. `receiveConnection` is renewed whenever the connection ends: every message
-// still waiting from before is then dropped (peers send their state on the next connect).
+// still waiting from before is then dropped (peers send their state on the next connect). The chain and the
+// count of waiting messages belong to one connection: a new connection starts its own, so its messages never
+// wait for an apply of an older connection that has not returned (its hold ends with its lease, DS-LEASE).
 let receiveChain = Promise.resolve();
 let receiveConnection = 0;
 let waitingReceives = 0;
@@ -482,7 +484,7 @@ function enqueueReceive(what, apply) {
     } catch (e) {
       log(`${PFX}A received message (${what}) could not be applied: ${e}`, "error");
     } finally {
-      waitingReceives -= 1;
+      if (connection === receiveConnection) waitingReceives -= 1;
     }
   });
   return receiveChain;
@@ -506,6 +508,8 @@ async function applyWhileConnected(what, apply, connection) {
  * (peers send their state on the next connect). */
 async function receivesEnded() {
   receiveConnection += 1;
+  receiveChain = Promise.resolve();
+  waitingReceives = 0;
   const { bulletSyncDisconnected } = await import("./promptStore.js");
   bulletSyncDisconnected();
 }
@@ -791,17 +795,18 @@ async function handlePromptState(data, store) {
 
   // ─── TaskCache: per-key CRDT merge — skip if epoch-zero ────────
   let taskCacheMerged = false;
-  if (willMergeTaskCache) {
+  if (willMergeTaskCache && Object.keys(data.taskCache).length > 0) {
+    suppressBroadcast = true;
     try {
-      if (Object.keys(data.taskCache).length > 0) {
-        const { mergeIncomingCache } = await import("./taskExecutionCache.js");
-        suppressBroadcast = true;
-        await mergeIncomingCache(data.taskCache);
-        taskCacheMerged = true;
-        suppressBroadcast = false;
-      }
+      const { mergeIncomingCache } = await import("./taskExecutionCache.js");
+      // In this message's hold, never a nested acquire (DS-SEMAPHORE).
+      await mergeIncomingCache(data.taskCache, store);
+      taskCacheMerged = true;
     } catch (e) {
+      // DS-RECEIVE: a hold that ended before the save applies the whole message again.
+      if (e?.busy === true) throw e;
       log(`${PFX}TaskCache CRDT merge failed: ${e}`, "warn");
+    } finally {
       suppressBroadcast = false;
     }
   }

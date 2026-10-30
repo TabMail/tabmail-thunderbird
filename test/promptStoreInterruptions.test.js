@@ -100,6 +100,23 @@ describe('every commit that saved a change moves the counter: an AI write read b
     expect(replaced.at(-1).kb).toContain('Before the restore');
     await expect(a.prompts.writeAfterRead('kb', read, `${read.content}\n- Refined note`, 'refine')).rejects.toMatchObject({ changed: true });
   });
+
+  it('an accepted restore whose texts are already the stored ones', async () => {
+    const { a } = await devices();
+    await a.add('kb', '', 'Kept note');
+
+    // The control: with no restore in between, the AI write is saved.
+    const control = await a.prompts.readBeforeAI('kb', 'refine');
+    expect(await a.prompts.writeAfterRead('kb', control, `${control.content}\n- Control note`, 'refine')).toEqual({ outcome: 'saved' });
+
+    const same = { kb: await a.prompts.readText('kb') };
+    const read = await a.prompts.readBeforeAI('kb', 'refine');
+    const stored = a.store.values[PROMPT_KEYS.kb];
+    await a.restore(same);
+    expect(a.store.values[PROMPT_KEYS.kb]).toBe(stored);
+    await expect(a.prompts.writeAfterRead('kb', read, `${read.content}\n- Refined note`, 'refine')).rejects.toMatchObject({ changed: true });
+    expect(await texts(a)).not.toContain('Refined note');
+  });
 });
 
 describe('a message refused as busy on a connection that ended', () => {
@@ -196,6 +213,37 @@ describe('more received messages waiting than the bound (DS-RECEIVE)', () => {
     await b.add('kb', '', 'Peer note on the new connection');
     await flush(relay);
     await vi.waitFor(async () => expect(await texts(a)).toContain('Peer note on the new connection'), { timeout: 2000 });
+  });
+});
+
+describe('a received message stuck in its apply when its connection ends (DS-RECEIVE, DS-LEASE)', () => {
+  it("never holds up the next connection's messages: a peer note sent after a reconnect lands while it is still stuck", async () => {
+    const { relay, a, b } = await connected({ leaseMs: 40 });
+    await b.add('kb', '', 'Stuck peer note');
+    // The merge reads the prompt history in its hold just before it commits; the first such read never
+    // returns until the test lets it.
+    const stuck = gate();
+    let paused = false;
+    a.store.beforeGet = async (keys) => {
+      if (keys === 'prompt_history' && !paused) {
+        paused = true;
+        await stuck.promise;
+      }
+    };
+    const delivering = flush(relay);
+    try {
+      await vi.waitFor(() => expect(paused).toBe(true), { timeout: 2000 });
+      await vi.waitFor(() => expect(a.logs.some(({ message }) => message.includes('past its lease'))).toBe(true), { timeout: 2000 });
+      await a.disconnect();
+      await a.connect();
+      await b.add('kb', '', 'Note on the new connection');
+      // Delivered in the background: a delivery blocked behind the stuck apply would never return.
+      void flush(relay);
+      await vi.waitFor(async () => expect(await texts(a)).toContain('Note on the new connection'), { timeout: 2000 });
+    } finally {
+      stuck.open();
+      await delivering;
+    }
   });
 });
 

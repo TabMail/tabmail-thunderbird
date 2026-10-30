@@ -556,6 +556,38 @@ describe("the add-on's own writer names (DS-NAME)", () => {
   });
 });
 
+describe('a writer name is memory only (DS-NAME)', () => {
+  it('is stored only inside the labels and the seen map of the fields it wrote, never as a writer of its own', async () => {
+    const relay = new BulletRelay();
+    const a = await new BulletDevice('A', new DeviceStore(), relay).start();
+    const b = await new BulletDevice('B', new DeviceStore(), relay).start();
+    await a.add('kb', '', 'First note');
+    await a.add('composition', 'general', 'First rule');
+    await a.delete('kb', '', 'First note');
+    await a.add('kb', '', 'Second note');
+    for (const device of [a, b]) await device.connect();
+    await quiesce(relay);
+    const name = (await a.state('kb')).bullets.find((bullet) => bullet.text === 'Second note').name;
+    expect(a.prompts.engine.writer?.name).toBe(name);
+
+    for (const device of [a, b]) {
+      for (const [key, value] of Object.entries(device.store.values)) {
+        if (!key.startsWith('bullet_state:')) {
+          expect(JSON.stringify(value) ?? '', key).not.toContain(name);
+          continue;
+        }
+        // A stored state is its skeleton, its bullets and its seen map, nothing else.
+        expect(Object.keys(value).sort(), key).toEqual(['bullets', 'head', 'seen', 'tail']);
+        const elsewhere = { head: value.head, tail: value.tail, bullets: value.bullets.map(([section, text]) => [section, text]) };
+        expect(JSON.stringify(elsewhere), key).not.toContain(name);
+      }
+    }
+    // The control: the name is in the labels and the seen map.
+    expect(a.store.values['bullet_state:kb'].bullets.some((bullet) => bullet[2] === name)).toBe(true);
+    expect(Object.keys(a.store.values['bullet_state:kb'].seen)).toContain(name);
+  });
+});
+
 describe('the prompt store route', () => {
   it.each(['read', 'write'])('refuses %s of a field that is not one of the three, inside a hold, and writes nothing', async (op) => {
     const a = await device('A', 1, new BulletRelay()).start();

@@ -90,7 +90,8 @@ const { formatRemindersForDisplay, getDisplayedReminderHashes, buildReminderList
 
 // Get mocked modules for controlling behavior in async tests
 const { buildInboxContext } = await import('../agent/modules/inboxContext.js');
-const { getKBReminders } = await import('../agent/modules/kbReminderGenerator.js');
+const { getKBReminders, parseRemindersFromKB } = await import('../agent/modules/kbReminderGenerator.js');
+const { readView } = await import('../agent/modules/promptStore.js');
 const { getSummaryWithHeaderId } = await import('../agent/modules/summaryGenerator.js');
 
 // ---------------------------------------------------------------------------
@@ -314,6 +315,37 @@ describe('buildReminderList', () => {
     expect(result.reminders[0].source).toBe('kb');
     expect(result.reminders[0].content).toBe('Follow up on project');
     expect(result.counts.kb).toBe(1);
+  });
+
+  it('gives each KB reminder the labels of its own bullet only: same text, other date, other labels (DS-DISPLAYED)', async () => {
+    const { parseRemindersFromKB: parse } = await vi.importActual('../agent/modules/kbReminderGenerator.js');
+    parseRemindersFromKB.mockImplementation(parse);
+    const due = (days) => {
+      const d = new Date();
+      d.setDate(d.getDate() + days);
+      return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+    };
+    const first = `[Reminder] Due ${due(7)}, Call the supplier`;
+    const second = `[Reminder] Due ${due(14)}, Call the supplier`;
+    const content = `- ${first}\n- ${second}`;
+    readView.mockResolvedValue({ content, captured: [['', first, 'w1', 1], ['', second, 'w2', 1]] });
+    buildInboxContext.mockResolvedValue('[]');
+    getKBReminders.mockResolvedValue(parse(content));
+
+    let result;
+    try {
+      result = await buildReminderList();
+    } finally {
+      parseRemindersFromKB.mockImplementation(() => []);
+      readView.mockResolvedValue({ content: '', captured: [] });
+    }
+
+    const kb = result.reminders.filter((r) => r.source === 'kb');
+    expect(kb).toHaveLength(2);
+    if (kb.length !== 2) return;
+    const byDate = Object.fromEntries(kb.map((r) => [r.dueDate, r.labels]));
+    expect(byDate[due(7).replaceAll('/', '-')]).toEqual([['', first, 'w1', 1]]);
+    expect(byDate[due(14).replaceAll('/', '-')]).toEqual([['', second, 'w2', 1]]);
   });
 
   it('includes message reminders when summaries have reminders', async () => {

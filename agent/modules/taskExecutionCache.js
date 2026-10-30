@@ -44,6 +44,31 @@ async function saveCache(cache) {
 }
 
 /**
+ * One read-change-save of the cache map in a hold of the prompt semaphore (DS-SEMAPHORE), so two writers
+ * never save over each other's entries: `store`, the hold of a received message's apply, or else a hold of
+ * its own. `change(cache)` edits the map in place and returns whether it changed it. The map is saved only
+ * while the hold lasts (DS-LEASE); a hold that ended first throws a `busy` error and saves nothing.
+ * @returns {Promise<boolean>} Whether the map was saved
+ */
+async function changeCache(change, store) {
+  if (store) return changeCacheIn(store, change);
+  const { withPromptStore } = await import("./promptStore.js");
+  return withPromptStore((hold) => changeCacheIn(hold, change), { label: "task cache" });
+}
+
+async function changeCacheIn(store, change) {
+  const cache = await loadCache();
+  if (!change(cache)) return false;
+  if (!store.holds()) {
+    const error = new Error("the task cache's hold ended before its save");
+    error.busy = true;
+    throw error;
+  }
+  await saveCache(cache);
+  return true;
+}
+
+/**
  * Build the composite key for a cache entry.
  * @param {string} taskHash - e.g., "t:12345"
  * @param {string} dateStr - e.g., "2026-03-27"
@@ -80,19 +105,24 @@ export async function getCachedResult(taskHash, dateStr) {
  * @param {string} sessionId - Chat session ID
  */
 export async function setCachedResult(taskHash, dateStr, content, sessionId) {
-  const cache = await loadCache();
   const key = cacheKey(taskHash, dateStr);
+  try {
+    await changeCache((cache) => {
+      cache[key] = {
+        content,
+        sessionId,
+        ts: new Date().toISOString(),
+      };
 
-  cache[key] = {
-    content,
-    sessionId,
-    ts: new Date().toISOString(),
-  };
-
-  // Evict oldest entries if this taskHash has too many
-  evictExcessEntries(cache, taskHash);
-
-  await saveCache(cache);
+      // Evict oldest entries if this taskHash has too many
+      evictExcessEntries(cache, taskHash);
+      return true;
+    });
+  } catch (e) {
+    if (e?.busy !== true) throw e;
+    log(`[TaskCache] Result for ${key} not cached: ${e}`, "warn");
+    return;
+  }
   log(`[TaskCache] Cached result for ${key}`);
 }
 
@@ -135,26 +165,27 @@ export async function getAllCachedResults() {
  * CRDT merge: per-key, newer timestamp wins.
  * Does NOT trigger a broadcast (used by Device Sync receiver).
  * @param {Object} incomingMap - Map of {compositeKey: {content, sessionId, ts}}
+ * @param {Object} store - The hold of the received message's apply, which the merge saves in (never a
+ *   nested acquire); a hold that ended before the save throws a `busy` error, so the message is applied again
  */
-export async function mergeIncomingCache(incomingMap) {
-  const cache = await loadCache();
+export async function mergeIncomingCache(incomingMap, store) {
   let merged = 0;
+  let total = 0;
+  await changeCache((cache) => {
+    for (const [key, inEntry] of Object.entries(incomingMap)) {
+      if (!inEntry || typeof inEntry.ts !== "string") continue;
 
-  for (const [key, inEntry] of Object.entries(incomingMap)) {
-    if (!inEntry || typeof inEntry.ts !== "string") continue;
-
-    const localEntry = cache[key];
-    if (!localEntry || inEntry.ts > localEntry.ts) {
-      cache[key] = inEntry;
-      merged++;
+      const localEntry = cache[key];
+      if (!localEntry || inEntry.ts > localEntry.ts) {
+        cache[key] = inEntry;
+        merged++;
+      }
     }
-  }
+    total = Object.keys(cache).length;
+    return merged > 0;
+  }, store);
 
-  if (merged > 0) {
-    await saveCache(cache);
-  }
-
-  log(`[TaskCache] CRDT merge: ${merged} entries adopted from ${Object.keys(incomingMap).length} incoming (local total: ${Object.keys(cache).length})`);
+  log(`[TaskCache] CRDT merge: ${merged} entries adopted from ${Object.keys(incomingMap).length} incoming (local total: ${total})`);
 }
 
 /**
@@ -164,35 +195,40 @@ export async function mergeIncomingCache(incomingMap) {
  * @param {Set<string>} activeTaskHashes - Set of task hashes currently in KB
  */
 export async function gcOrphanedEntries(activeTaskHashes) {
-  const cache = await loadCache();
-  if (Object.keys(cache).length === 0) return;
-
   const now = Date.now();
   const maxAge = GC_AGE_DAYS * 86400 * 1000;
   let removed = 0;
 
-  for (const [key, entry] of Object.entries(cache)) {
-    // Extract taskHash from composite key "taskHash_YYYY-MM-DD"
-    const lastUnderscore = key.lastIndexOf("_");
-    if (lastUnderscore === -1) {
-      // Malformed key, remove it
-      delete cache[key];
-      removed++;
-      continue;
-    }
+  try {
+    await changeCache((cache) => {
+      for (const [key, entry] of Object.entries(cache)) {
+        // Extract taskHash from composite key "taskHash_YYYY-MM-DD"
+        const lastUnderscore = key.lastIndexOf("_");
+        if (lastUnderscore === -1) {
+          // Malformed key, remove it
+          delete cache[key];
+          removed++;
+          continue;
+        }
 
-    const taskHash = key.substring(0, lastUnderscore);
-    if (activeTaskHashes.has(taskHash)) continue;
+        const taskHash = key.substring(0, lastUnderscore);
+        if (activeTaskHashes.has(taskHash)) continue;
 
-    const entryTime = new Date(entry.ts).getTime();
-    if (now - entryTime > maxAge) {
-      delete cache[key];
-      removed++;
-    }
+        const entryTime = new Date(entry.ts).getTime();
+        if (now - entryTime > maxAge) {
+          delete cache[key];
+          removed++;
+        }
+      }
+      return removed > 0;
+    });
+  } catch (e) {
+    if (e?.busy !== true) throw e;
+    log(`[TaskCache] GC not saved (the next check-in runs it again): ${e}`, "warn");
+    return;
   }
 
   if (removed > 0) {
-    await saveCache(cache);
     log(`[TaskCache] GC removed ${removed} orphaned entries older than ${GC_AGE_DAYS} days`);
   }
 }

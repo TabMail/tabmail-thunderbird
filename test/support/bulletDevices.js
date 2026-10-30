@@ -243,9 +243,12 @@ export class BulletDevice {
         return array;
       },
     };
+    // A module the device is given as a file runs for real, in place of its default stub.
+    const defaults = this.stubs();
+    for (const file of device.options.files ?? []) delete defaults[file];
     const realm = createRealm({
       files: [...FILES, ...(device.options.files ?? [])],
-      stubs: { ...this.stubs(), ...device.options.stubs },
+      stubs: { ...defaults, ...device.options.stubs },
       expose: { 'agent/modules/promptStore.js': ['engine', 'change', 'holder'] },
       globals: {
         browser: { storage: this.store.api(), tmDeviceSync, runtime: { getURL: (path) => `moz-extension://synthetic/${path}` } },

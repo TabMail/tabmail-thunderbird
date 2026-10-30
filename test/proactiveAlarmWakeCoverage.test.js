@@ -13,6 +13,8 @@ vi.mock('../agent/modules/reminderStateStore.js', () => ({ hashReminder: r => r.
 vi.mock('../agent/modules/reminderBuilder.js', () => ({ buildReminderList: vi.fn(async () => ({ reminders: [] })) }));
 vi.mock('../chat/modules/helpers.js', () => ({ getUserName: async () => 'Reader' }));
 vi.mock('../chat/modules/chatWindowUtils.js', () => ({ isChatWindowOpen: vi.fn(async () => false), openOrFocusChatWindow: vi.fn(async () => {}) }));
+// The task cache saves in a hold of the prompt semaphore; its contention is covered by taskCacheSemaphore.
+vi.mock('../agent/modules/promptStore.js', () => ({ withPromptStore: async (body) => body({ holds: () => true }) }));
 vi.mock('../agent/modules/promptGenerator.js', () => ({ getUserKBPrompt: vi.fn(async () => '') }));
 vi.mock('../chat/modules/markdown.js', () => ({ renderMarkdown: async s => s }));
 vi.mock('../agent/modules/llm.js', () => ({ sendChat: vi.fn(async () => { throw new Error('forbidden live or unexpected LLM call'); }) }));

@@ -596,6 +596,57 @@ describe('TB-062: email_search query construction', () => {
 });
 
 // ---------------------------------------------------------------------------
+// TB-062c: a search sends only its own search request (#174)
+// ---------------------------------------------------------------------------
+// The background's FTS handler runs only the commands it knows and refuses any
+// other with an error. So every runtime message a search tool sends is its own
+// search request, retries included.
+describe('TB-062c: a search sends only its own search request', () => {
+  let originalImpl;
+  beforeEach(() => {
+    clearStorage();
+    vi.clearAllMocks();
+    emailSearch.resetPaginationSessions();
+    memorySearch.resetPaginationSessions();
+    originalImpl = browser.runtime.sendMessage.getMockImplementation();
+  });
+  afterEach(() => {
+    browser.runtime.sendMessage.mockImplementation(originalImpl);
+  });
+
+  // `notReady` requests are answered undefined first (no handler yet), then the search answers.
+  async function sentMessages(tool, cmd, args, notReady) {
+    let unanswered = notReady;
+    browser.runtime.sendMessage.mockImplementation(async (msg) => {
+      if (msg?.type !== 'fts' || msg?.cmd !== cmd) return undefined;
+      if (unanswered > 0) { unanswered -= 1; return undefined; }
+      return [];
+    });
+    const result = await tool.run(args);
+    expect(result).not.toHaveProperty('error');
+    return browser.runtime.sendMessage.mock.calls.map((c) => c[0]);
+  }
+
+  it.each([
+    ['email_search', 'search', 0, () => emailSearch],
+    ['email_search', 'search', 2, () => emailSearch],
+    ['memory_search', 'memorySearch', 0, () => memorySearch],
+    ['memory_search', 'memorySearch', 2, () => memorySearch],
+  ])('%s sends only %s requests (%i not-ready answers first)', async (_name, cmd, notReady, tool) => {
+    const sent = await sentMessages(tool(), cmd, { query: 'quarterly report' }, notReady);
+    expect(sent).toHaveLength(notReady + 1);
+    for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd });
+  });
+
+  // A listing of recent conversations (no query) fetches in steps; still only its own requests.
+  it.each([0, 2])('memory_search listing sends only memorySearch requests (%i not-ready answers first)', async (notReady) => {
+    const sent = await sentMessages(memorySearch, 'memorySearch', {}, notReady);
+    expect(sent).toHaveLength(notReady + 1);
+    for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd: 'memorySearch' });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TB-062b: email_search sorts in the search, then pages its best matches (#150)
 // ---------------------------------------------------------------------------
 describe('TB-062b: email_search sort and fetch size', () => {
