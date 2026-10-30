@@ -189,8 +189,13 @@ export function bundledFetch(catalog) {
   return async (url) => {
     const path = String(url).replace(/^moz-extension:\/\/[^/]+\//, '');
     const text = path === CATALOG_FILE ? JSON.stringify(catalog) : readFileSync(new URL(path, ROOT), 'utf8');
-    return { ok: true, status: 200, text: async () => text };
+    return { ok: true, status: 200, text: async () => text, json: async () => JSON.parse(text) };
   };
+}
+
+/** `stubs` without the modules a realm loads as files: a test that loads one runs the real module. */
+function stubsFor(stubs, files) {
+  return Object.fromEntries(Object.entries(stubs).filter(([path]) => !files.includes(path)));
 }
 
 /**
@@ -302,7 +307,7 @@ export class BulletDevice {
     };
     return createRealm({
       files: [...FILES, ...files],
-      stubs: this.stubs(),
+      stubs: stubsFor(this.stubs(), [...FILES, ...files]),
       globals: {
         browser: { storage: this.store.api(), runtime: { getURL: (path) => `moz-extension://synthetic/${path}`, sendMessage } },
         crypto: globalThis.crypto,

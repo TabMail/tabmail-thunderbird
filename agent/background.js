@@ -628,19 +628,15 @@ function setupRuntimeMessageListener() {
         return true;
     }
 
-    if (message.command === "templates-save-all") {
-        log("Received templates-save-all command");
+    if (message.command === "templates-dedupe") {
+        log("Received templates-dedupe command");
         (async () => {
             try {
-                const { loadTemplates, saveTemplates } = await import("./modules/templateManager.js");
-                // Preserve deleted tombstones (UI only has visible templates)
-                const existing = await loadTemplates();
-                const tombstones = existing.filter((t) => t.deleted);
-                const combined = [...(message.templates || []), ...tombstones];
-                const success = await saveTemplates(combined);
-                sendResponse({ ok: success, error: success ? null : "Failed to save templates" });
+                const { dedupeTemplates } = await import("./modules/templateManager.js");
+                const { templates, removed } = await dedupeTemplates();
+                sendResponse({ ok: true, templates, removed });
             } catch (e) {
-                log(`templates-save-all failed: ${e}`, "error");
+                log(`templates-dedupe failed: ${e}`, "error");
                 sendResponse({ ok: false, error: String(e) });
             }
         })();

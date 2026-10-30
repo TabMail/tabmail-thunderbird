@@ -767,11 +767,14 @@ async function handlePromptState(data, store) {
         const { mergeTemplates, gcDeletedTemplates } = await import("./templateManager.js");
         const beforeTemplates = JSON.stringify((await browser.storage.local.get(FIELD_KEYS.templates))[FIELD_KEYS.templates] || []);
         suppressBroadcast = true;
-        await mergeTemplates(validTemplates);
-        await gcDeletedTemplates();
+        await mergeTemplates(validTemplates, store);
+        await gcDeletedTemplates(store);
         const afterTemplates = JSON.stringify((await browser.storage.local.get(FIELD_KEYS.templates))[FIELD_KEYS.templates] || []);
         templatesMerged = beforeTemplates !== afterTemplates;
       } catch (e) {
+        // DS-RECEIVE: a merge whose hold ended before its save is refused as busy, so the whole message is
+        // applied again (the merge is per template, newer wins: applying it again changes nothing twice).
+        if (e?.changed === true) throw Object.assign(new Error(`the templates' merge was not saved: ${e.message}`), { busy: true });
         log(`${PFX}Template CRDT merge failed: ${e}`, "warn");
       } finally {
         suppressBroadcast = false;

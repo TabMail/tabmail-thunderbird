@@ -342,16 +342,13 @@ async function loadTemplates() {
         if (response && response.ok && Array.isArray(response.templates)) {
             templates = response.templates;
             
-            // Deduplicate templates by ID (keep first occurrence)
-            const deduplicationResult = deduplicateTemplates(templates);
-            if (deduplicationResult.hadDuplicates) {
-                templates = deduplicationResult.templates;
-                log(`${PFX}Cleaned up ${deduplicationResult.removedCount} duplicate templates`);
-                // Save the cleaned list back to storage
-                await browser.runtime.sendMessage({
-                    command: "templates-save-all",
-                    templates: templates,
-                });
+            // A repeated id: the background removes the duplicates from the stored list as it is now (the
+            // first kept), never this page's copy, which a newer edit may have replaced.
+            if (new Set(templates.map((t) => t.id)).size !== templates.length) {
+                const cleaned = await browser.runtime.sendMessage({ command: "templates-dedupe" });
+                if (!cleaned?.ok) throw new Error(cleaned?.error || "Failed to remove duplicate templates");
+                templates = cleaned.templates;
+                log(`${PFX}Cleaned up ${cleaned.removed} duplicate templates`);
             }
             
             renderTemplateList();
@@ -363,33 +360,6 @@ async function loadTemplates() {
         log(`${PFX}Error loading templates: ${e}`, "error");
         showStatus("Failed to load templates", true);
     }
-}
-
-/**
- * Remove duplicate templates by ID, keeping the first occurrence
- * @param {Array} templateList - Array of templates
- * @returns {{templates: Array, hadDuplicates: boolean, removedCount: number}}
- */
-function deduplicateTemplates(templateList) {
-    const seen = new Set();
-    const deduplicated = [];
-    let removedCount = 0;
-    
-    for (const template of templateList) {
-        if (seen.has(template.id)) {
-            log(`${PFX}Found duplicate template: ${template.name} (${template.id})`);
-            removedCount++;
-        } else {
-            seen.add(template.id);
-            deduplicated.push(template);
-        }
-    }
-    
-    return {
-        templates: deduplicated,
-        hadDuplicates: removedCount > 0,
-        removedCount,
-    };
 }
 
 /**
