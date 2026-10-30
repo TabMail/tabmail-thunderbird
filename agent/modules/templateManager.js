@@ -520,8 +520,8 @@ async function loadDefaultTemplates() {
 /**
  * Initialize templates with defaults if not already done.
  * This loads templates from the bundled default_templates.json file. In one hold of the prompt semaphore
- * the flag is checked again and the defaults the stored list lacks (by id) are added after it, saved with
- * the flag: a template saved before this ran is kept.
+ * the defaults the stored list lacks (by id) are added after it, saved with the flag: a template saved
+ * before this ran is kept, and a second run adds nothing.
  *
  * @returns {Promise<{initialized: number}>}
  */
@@ -538,8 +538,7 @@ export async function initializeDefaultTemplates() {
 
         const { withPromptStore } = await import("./promptStore.js");
         const initialized = await withPromptStore(async (store) => {
-            const { templates, migrated } = await store.templates();
-            if (migrated) return 0;
+            const { templates } = await store.templates();
             const ids = new Set(templates.map((t) => t.id));
             const added = defaultTemplates.filter((t) => !ids.has(t.id));
             await store.saveTemplates([...templates, ...added], { migrated: true });

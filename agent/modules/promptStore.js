@@ -417,11 +417,10 @@ async function hostRecordHistory(token, source, fields, templates) {
 const TEMPLATES_KEY = "user_templates";
 const TEMPLATES_MIGRATED_KEY = "templates_migrated";
 
-/** The stored templates (tombstones included) and whether the first-run defaults were added, read in a
- * hold (its save checks the hold). */
+/** The stored templates (tombstones included), read in a hold (its save checks the hold). */
 async function hostTemplates() {
-  const stored = await browser.storage.local.get([TEMPLATES_KEY, TEMPLATES_MIGRATED_KEY]);
-  return { templates: Array.isArray(stored[TEMPLATES_KEY]) ? stored[TEMPLATES_KEY] : [], migrated: stored[TEMPLATES_MIGRATED_KEY] === true };
+  const stored = await browser.storage.local.get(TEMPLATES_KEY);
+  return { templates: Array.isArray(stored[TEMPLATES_KEY]) ? stored[TEMPLATES_KEY] : [] };
 }
 
 /** Saves `templates` as the whole stored list, and the first-run flag with it when `migrated`, if the hold
@@ -634,11 +633,10 @@ class PromptStoreHold {
     await this.#call("recordHistory", { source, fields, templates });
   }
 
-  /** The stored templates, tombstones included, and whether the first-run defaults were added:
-   * { templates, migrated }. */
+  /** The stored templates, tombstones included: { templates }. */
   async templates() {
-    const { templates, migrated } = await this.#call("templates", {});
-    return { templates, migrated };
+    const { templates } = await this.#call("templates", {});
+    return { templates };
   }
 
   /** Saves `templates` as the whole stored list (with the first-run flag set when `migrated`). Throws a

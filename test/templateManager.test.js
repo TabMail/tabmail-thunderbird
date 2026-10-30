@@ -28,7 +28,7 @@ vi.mock('../agent/modules/quoteAndSignature.js', () => ({}));
 // save after `refuseSaves` is set is refused as the background refuses one whose hold ended.
 const hold = { refuseSaves: false };
 const promptStore = {
-  templates: async () => ({ templates: storageData.user_templates ?? [], migrated: storageData.templates_migrated === true }),
+  templates: async () => ({ templates: storageData.user_templates ?? [] }),
   saveTemplates: vi.fn(async (templates, { migrated = false } = {}) => {
     if (hold.refuseSaves) throw Object.assign(new Error('the templates changed while this was worked on, so nothing was saved'), { changed: true });
     await browser.storage.local.set(migrated ? { user_templates: templates, templates_migrated: true } : { user_templates: templates });
