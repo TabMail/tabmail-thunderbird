@@ -457,14 +457,10 @@ document.addEventListener("DOMContentLoaded", () => {
     await resetWholeField("kb", "Knowledge Base");
   });
 
-  // KB Compress button
+  // KB Compress button: never greyed while the request runs (nothing is greyed for working).
   document.getElementById("compress-kb").addEventListener("click", async () => {
     const compressBtn = document.getElementById("compress-kb");
-    const spinner = document.getElementById("compress-kb-spinner");
-    const originalText = compressBtn.textContent;
-    compressBtn.disabled = true;
-    compressBtn.textContent = "Compressing\u2026";
-    spinner.style.display = "inline-block";
+    showStatus("Compressing the knowledge base\u2026");
     try {
       const result = await browser.runtime.sendMessage({ command: "kb-compress" });
       if (result && result.ok) {
@@ -476,10 +472,6 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (e) {
       showStatus("Compress failed: " + e.message, true);
-    } finally {
-      compressBtn.disabled = false;
-      compressBtn.textContent = originalText;
-      spinner.style.display = "none";
     }
   });
 
@@ -511,14 +503,10 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Compact now button
+  // Compact now button: never greyed while the request runs (nothing is greyed for working).
   document.getElementById("action-compact-now")?.addEventListener("click", async () => {
     const btn = document.getElementById("action-compact-now");
-    const spinner = document.getElementById("action-compact-now-spinner");
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = "Compacting…";
-    if (spinner) spinner.style.display = "inline-block";
+    showStatus("Compacting the action rules\u2026");
     try {
       const result = await browser.runtime.sendMessage({ command: "action-compact-now" });
       if (result && result.ok) {
@@ -544,10 +532,6 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (e) {
       showStatus("Compaction failed: " + e.message, true);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = originalText;
-      if (spinner) spinner.style.display = "none";
     }
   });
 

@@ -6,7 +6,8 @@
 // multi-part one, a released device's prompt_state), a history restore and a template reset is held after
 // each of its storage reads and writes in turn while its hold runs past its lease. Only the invariant is
 // asserted: everything saves, or the work stays retryable and saves later, without a reconnect (a received
-// message by itself, DS-RECEIVE; a user's restore or reset when the user does it again).
+// message by itself, DS-RECEIVE; a user's restore or reset when the user does it again). A whole-field reset of
+// each of the three fields is held the same way while a newer edit is saved: the edit is never erased.
 
 import { describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore, PROMPT_KEYS } from './support/bulletDevices.js';
@@ -171,6 +172,72 @@ describe('every await of every receive path, restore and reset keeps the invaria
         if (failure !== null) failures.push(`at ${at} of ${count}: ${failure}`);
       }
       expect(failures).toEqual([]);
+    }, 120000);
+  }
+});
+
+/** Each field's section a test line goes in. */
+const RESET_SECTIONS = { kb: '', composition: 'general', action: 'delete' };
+const NEWER = 'Newer user note';
+
+/** Resets `field` held after its `at`-th storage read or write (0: never held) until its lease ran out, then
+ * saves a newer edit and lets the reset go on. Returns the reset's outcome, whether the newer edit is kept,
+ * whether resetting again then clears it, and how many reads and writes the reset made. */
+async function resetPastLease(field, at) {
+  const a = await new BulletDevice('A', new DeviceStore(), new BulletRelay(), OPTIONS).start();
+  await a.add(field, RESET_SECTIONS[field], 'Earlier note');
+  const stop = gate();
+  const held = gate();
+  let count = 0;
+  let armed = true;
+  a.store.afterIO = async () => {
+    if (!armed) return;
+    count += 1;
+    if (count !== at) return;
+    armed = false;
+    held.open();
+    await stop.promise;
+  };
+  const running = a.reset(field).then(() => 'saved', (e) => (e?.changed === true ? 'changed' : `failed: ${e}`));
+  const has = () => (a.store.values[PROMPT_KEYS[field]] ?? '').includes(NEWER);
+  try {
+    if (at === 0) return { outcome: await running, kept: null, count };
+    const reached = await Promise.race([held.promise.then(() => true), running.then(() => false)]);
+    if (!reached) return { outcome: await running, kept: null, count };
+    const holder = a.prompts.holder;
+    if (holder) await vi.waitFor(() => expect(a.prompts.holder).not.toBe(holder), WAIT);
+    await a.add(field, RESET_SECTIONS[field], NEWER);
+    stop.open();
+    const outcome = await running;
+    const kept = has();
+    await a.reset(field);
+    return { outcome, kept, clearedAgain: !has(), count };
+  } finally {
+    stop.open();
+    a.store.afterIO = undefined;
+    await running;
+    await a.sync.cleanupDeviceSync();
+  }
+}
+
+describe('a whole-field reset whose lease ran out never erases an edit saved after it (DS-LEASE)', () => {
+  for (const field of Object.keys(RESET_SECTIONS)) {
+    it(`the ${field} reset, its lease running out at each storage read and write`, async () => {
+      const { outcome: control, count } = await resetPastLease(field, 0);
+      expect(control).toBe('saved');
+      expect(count).toBeGreaterThan(0);
+      const failures = [];
+      const outcomes = new Set();
+      for (let at = 1; at <= count; at += 1) {
+        const { outcome, kept, clearedAgain } = await resetPastLease(field, at);
+        outcomes.add(outcome);
+        if (kept === false) failures.push(`at ${at} of ${count}: the newer edit was erased (${outcome})`);
+        if (kept !== null && !clearedAgain) failures.push(`at ${at} of ${count}: resetting again kept the newer edit`);
+        if (outcome.startsWith('failed')) failures.push(`at ${at} of ${count}: ${outcome}`);
+      }
+      expect(failures).toEqual([]);
+      // Some read or write of the reset comes before its save, so the expired reset was refused there.
+      expect(outcomes).toContain('changed');
     }, 120000);
   }
 });

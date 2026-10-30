@@ -838,10 +838,36 @@ describe('the real prompts page reports a failure as a failure, changes nothing,
   }
 
   const backend = [
-    { name: 'Compress', field: 'kb', command: 'kb-compress', selector: '#compress-kb', failed: 'Compress failed: Synthetic failure', done: 'Knowledge base compressed successfully!' },
-    { name: 'Compact Now', field: 'action', command: 'action-compact-now', selector: '#action-compact-now', failed: 'Compaction failed: Synthetic failure', done: 'Merged 1 rule' },
+    { name: 'Compress', field: 'kb', command: 'kb-compress', selector: '#compress-kb', caption: 'Compress', working: 'Compressing the knowledge base\u2026', failed: 'Compress failed: Synthetic failure', done: 'Knowledge base compressed successfully!' },
+    { name: 'Compact Now', field: 'action', command: 'action-compact-now', selector: '#action-compact-now', caption: 'Compact now', working: 'Compacting the action rules\u2026', failed: 'Compaction failed: Synthetic failure', done: 'Merged 1 rule' },
   ];
-  for (const { name, field, command, selector, failed, done } of backend) {
+  for (const { name, field, command, selector, caption, working, failed, done } of backend) {
+    // DS-NO-BUSY-UI: nothing is greyed for working.
+    it(`${name} leaves its button as it was while the background works on it, and says it is working`, async () => {
+      const opened = await seeded([field]);
+      const answers = [];
+      const ui = await openPage(opened.a, { commands: { [command]: () => new Promise((resolve) => { answers.push(resolve); }) } });
+      await ui.tab(field);
+      const button = ui.document.querySelector(selector);
+      await ui.click(selector);
+      await vi.waitFor(() => expect(answers).toHaveLength(1), { interval: 1 });
+      expect(ui.lastStatus()).toEqual([working]);
+      expect(button.disabled).toBe(false);
+      expect(button.textContent).toBe(caption);
+      // Clicked again while the first request runs: a second request, the button still as it was.
+      await ui.click(selector);
+      await vi.waitFor(() => expect(answers).toHaveLength(2), { interval: 1 });
+      expect(button.disabled).toBe(false);
+      expect(button.textContent).toBe(caption);
+      answers[0]({ ok: false, error: 'Synthetic failure' });
+      await vi.waitFor(() => expect(ui.lastStatus()).toEqual([failed, true]), { interval: 1 });
+      answers[1]({ ok: false, error: 'Synthetic failure' });
+      await vi.waitFor(() => expect(ui.statuses.filter(([text]) => text === failed)).toHaveLength(2), { interval: 1 });
+      expect(button.disabled).toBe(false);
+      expect(button.textContent).toBe(caption);
+      ui.dom.window.close();
+    });
+
     it(`${name} whose background reply is not ok says so, with no success shown and nothing changed; the retry succeeds`, async () => {
       const { shapes } = AT[field];
       let fail = true;

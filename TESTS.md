@@ -14,7 +14,7 @@
 | `test/promptStoreWriters.test.js` | 34 | Every writer through `withPromptStore`; refines read and write in separate holds (DS-AI); page edits against the labels shown (DS-DISPLAYED); chat tool `editText` busy answer |
 | `test/promptStoreWritersSync.test.js` | 44 | Writers next to a peer's bullets: text written as read (DS-TEXT), skeleton kept (DS-SKELETON) |
 | `test/promptStoreInterruptions.test.js` | 36 | DS-COUNTER moves only on a saved change, and on every accepted restore; DS-RECEIVE drop at connection end, arrival order, waiting bound (parts of incomplete snapshots counted), a stuck apply never holding up the next connection; a field read past its lease refused; the prompt getters never reading storage themselves; DS-HISTORY reset/merge records; DS-LEASE history holds |
-| `test/promptsPageLive.test.js` | 83 | The real prompts page on simulated devices: every edit saved at once against the labels shown, Reset, marker refusals, sign-out keeps every line |
+| `test/promptsPageLive.test.js` | 85 | The real prompts page on simulated devices: every edit saved at once against the labels shown, Reset, marker refusals, sign-out keeps every line; Compress and Compact now never grey their button while the request runs (DS-NO-BUSY-UI) |
 | `test/promptsPageSync.test.js` | 15 | Prompts page edits converging across two devices |
 | `test/shownItemRemoval.test.js` | 4 | Tasks/Reminders delete removes exactly the shown labels; already removed; busy |
 | `test/reminderBuilder.test.js` | 39 | Each KB reminder carries the labels of its own bullet only (same text, other date) |
@@ -23,7 +23,7 @@
 | `test/deviceSyncReceiveConnection.test.js` | 6 | Sign-out never waits; section reset keeps a newer line; a refine answering after sign-out is saved |
 | `test/busyReplayLease.test.js` | 5 | A busy message applies once a stuck holder's lease ends; a malformed identity dropped before it waits (DS-VALIDATE) |
 | `test/taskCacheSemaphore.test.js` | 6 | The task-result cache changed only in a hold of the prompt semaphore: a local result or clean-up during a peer merge keeps both; a merge past its lease saves nothing and is applied again |
-| `test/interruptionSweep.test.js` | 5 | Interruptions at every await of the store's operations (lease expiry) |
+| `test/interruptionSweep.test.js` | 8 | Interruptions at every await of the store's operations (lease expiry); a whole-field reset of the knowledge base, the writing style and the action rules held past its lease at each storage read and write never erases an edit saved after it, and resetting again clears it (a reset ignoring its lease is detected in all three) |
 | `test/signedOutLocalEdits.test.js` | 8 | Signed-out edits saved with their history |
 | `test/signedOutScreens.test.js` | 6 | Signed out, every screen shows and edits what is on this device |
 | `test/noWipeFence.test.js` | 5 | Nothing removes the prompt fields or their history |
