@@ -18,11 +18,11 @@
 
 import { buildInboxContext } from "./inboxContext.js";
 import { parseTasksFromKB, getTaskHash } from "./kbTaskParser.js";
-import { getKBReminders } from "./kbReminderGenerator.js";
-import { getUserKBPrompt } from "./promptGenerator.js";
+import { getKBReminders, parseRemindersFromKB } from "./kbReminderGenerator.js";
+import { readView } from "./promptStore.js";
 import { gcStaleEntries, getDisabledHashes, getDisabledMap, hashReminder, mergeIncoming } from "./reminderStateStore.js";
 import { getSummaryWithHeaderId } from "./summaryGenerator.js";
-import { log } from "./utils.js";
+import { log, normalizeUnicode } from "./utils.js";
 
 // Re-export setEnabled for convenience (used by background.js message handlers)
 export { setEnabled } from "./reminderStateStore.js";
@@ -127,6 +127,13 @@ async function collectMessageReminders() {
   }
 }
 
+/** The labels the KB view `captured` shows for the bullets `matches(text)` picks, so a delete from the
+ * Tasks or Reminders tab removes exactly those (DS-DISPLAYED); null when the view has none (an unsaved
+ * upgrade, or the KB was not read): such an item can't be deleted from the tab. */
+function shownLabels(captured, matches) {
+  return captured ? captured.filter(([, text]) => matches(normalizeUnicode(text))) : null;
+}
+
 /**
  * Build complete reminder list by combining message and KB reminders
  * Adds hash to each reminder and syncs state (removing orphaned disabled entries)
@@ -139,12 +146,18 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
     log(`[ReminderBuilder] Building complete reminder list (includeDisabled=${includeDisabled})...`, 'debug');
 
     // Collect reminders from both sources in parallel
-    const [messageReminders, kbReminders, disabledHashes, kbText] = await Promise.all([
+    // The KB's text and the labels it shows, read together; not read (the store stayed busy), no KB task
+    // is listed and no KB item can be deleted.
+    const [messageReminders, kbReminders, disabledHashes, kbView] = await Promise.all([
       collectMessageReminders(),
       getKBReminders(),
       getDisabledHashes(),
-      getUserKBPrompt(),
+      readView("kb").catch((e) => {
+        log(`[ReminderBuilder] KB not read: ${e}`, "warn");
+        return { content: "", captured: null };
+      }),
     ]);
+    const kbText = normalizeUnicode(kbView.content.trim());
 
     // Parse task entries from KB text
     const taskEntries = parseTasksFromKB(kbText || "");
@@ -156,6 +169,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       ...r,
       type: "reminder",
       source: "kb",
+      labels: shownLabels(kbView.captured, (text) => parseRemindersFromKB(`- ${text}`)[0]?.content === r.content),
     }));
 
     // Build task items in the unified shape
@@ -174,6 +188,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       hash: getTaskHash(task),
       enabled: !disabledHashes.has(getTaskHash(task)),
       rawLine: task.rawLine,
+      labels: shownLabels(kbView.captured, (text) => text === task.rawLine.replace(/^-\s*/, "")),
     }));
 
     // Combine all reminders and add hash + enabled status

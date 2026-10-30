@@ -215,18 +215,6 @@ export async function remove(keys) {
   // log("remove", keyArr);
 }
 
-/** Clear the whole objectStore */
-export async function clear() {
-  await withStore("readwrite", (store) => store.clear());
-  
-  // Reset key cache
-  if (keyCacheInitialized) {
-    keyCache.clear();
-  }
-  
-  // log("clear all");
-}
-
 /** Return all key/value pairs */
 export async function getAll() {
   const out = {};

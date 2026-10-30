@@ -47,7 +47,7 @@ function simpleHash(str) {
  *   "- Reminder: reminder text"
  * Returns array of { dueDate: "YYYY-MM-DD" | null, dueTime: "HH:MM" | null, timezone: string | null, content: "reminder text" }
  */
-function parseRemindersFromKB(kbContent) {
+export function parseRemindersFromKB(kbContent) {
   if (!kbContent || !kbContent.trim()) {
     return [];
   }

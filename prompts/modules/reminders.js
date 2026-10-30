@@ -233,6 +233,7 @@ async function handleReminderDelete(reminder) {
             hash: reminder.hash,
             content: reminder.content,
             type: reminder.type,
+            labels: reminder.labels,
         });
 
         if (!response || !response.ok) {
@@ -247,7 +248,9 @@ async function handleReminderDelete(reminder) {
         log(`[Prompts] Reminder ${reminder.hash} deleted`);
     } catch (e) {
         log(`[Prompts] Error deleting reminder: ${e}`, "error");
-        showStatus("Failed to delete reminder", true);
+        showStatus(`Failed to delete reminder: ${e.message}`, true);
+        // Reload to show the list as it is now
+        loadReminders();
     }
 }
 

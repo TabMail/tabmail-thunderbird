@@ -1,10 +1,10 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ store: {}, native: new Map(), events: [], query: vi.fn(), resolve: vi.fn(), remove: vi.fn(), sort: vi.fn(), clear: vi.fn() }));
+const h = vi.hoisted(() => ({ store: {}, native: new Map(), events: [], query: vi.fn(), resolve: vi.fn(), remove: vi.fn(), sort: vi.fn() }));
 vi.mock('../agent/modules/idbStorage.js', () => ({
  get: async keys => Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>k in h.store).map(k=>[k,h.store[k]])),
  set: async values => { h.events.push('commit'); Object.assign(h.store, values); },
  remove: async keys => { await h.remove(); h.events.push('commit'); for(const k of keys) delete h.store[k]; },
- clear: async () => { await h.clear(); h.store={}; }, getAllKeys: async()=>Object.keys(h.store),
+ getAllKeys: async()=>Object.keys(h.store),
  purgeOlderThanByPrefixes: vi.fn(),
 }));
 vi.mock('../agent/modules/utils.js', () => ({
@@ -18,7 +18,7 @@ const header={id:1,headerMessageId:'synthetic@example.test',folder};
 const key='acc:/INBOX:synthetic@example.test';
 let owner;
 beforeEach(async()=>{
- vi.resetModules(); vi.useFakeTimers(); h.store={};h.native=new Map();h.events=[];h.sort.mockClear();h.clear.mockReset();h.remove.mockReset();h.query.mockReset();h.resolve.mockReset();
+ vi.resetModules(); vi.useFakeTimers(); h.store={};h.native=new Map();h.events=[];h.sort.mockClear();h.remove.mockReset();h.query.mockReset();h.resolve.mockReset();
  h.query.mockResolvedValue({messages:[header,{...header,id:2}]});
  h.resolve.mockResolvedValue({status:'resolved',weIds:[1,2],folder});
  globalThis.browser={messages:{query:h.query,get:async()=>header},tmHdr:{setAction:async(id,a)=>{h.events.push(`paint:${id}:${a}`);h.native.set(id,a);return true;}},tmMessageHeaderChip:{refreshAll:async()=>h.events.push('chips')},tmMultiMessageChip:{refreshAll:async()=>{}},folders:{query:async()=>[folder]},accounts:{list:async()=>[]}};
@@ -61,14 +61,6 @@ describe('ordering and recovery boundaries',()=>{
   h.query.mockRejectedValue(new Error('synthetic unavailable inventory'));
   await owner.setAction(header,'reply');
   expect(h.native.size).toBe(0);expect(h.store[`action:${key}`]).toBe('reply');
- });
- it('invalidates a token minted while the wipe is awaiting commit',async()=>{
-  h.store[`action:${key}`]='reply';let release;
-  h.clear.mockImplementationOnce(()=>new Promise(r=>{release=r;}));
-  const wiping=owner.wipeAll();await vi.waitFor(()=>expect(release).toBeTypeOf('function'));
-  const token=owner.beginAutomaticWork(key);release({status:'resolved',weIds:[1],folder});await wiping;
-  expect(await owner.setAction(header,'reply',{token})).toBeNull();
-  await owner.setAction(header,'none');expect(h.native.get(1)).toBe('none');
  });
  it('serializes same-tick writes through their native projections',async()=>{
   let release;browser.tmHdr.setAction=vi.fn(async(id,a)=>{if(a==='reply'&&id===1)await new Promise(r=>{release=r;});h.native.set(id,a);return true;});
@@ -121,13 +113,6 @@ describe('ordering and recovery boundaries',()=>{
 
 
 describe('mutation boundary regression coverage',()=>{
- it('wipes non-action storage as well as actions and invalidates earlier work',async()=>{
-  h.store={other:'synthetic', [`action:${key}`]:'reply'};
-  const token=owner.beginAutomaticWork(key);
-  await owner.wipeAll();
-  expect(h.store).toEqual({});
-  expect(await owner.setAction(header,'reply',{token})).toBeNull();
- });
  it('rejects invalid action values without committing or projecting',async()=>{
   expect(await owner.setAction(header,'invalid')).toBeNull();
   expect(h.store).toEqual({});expect(h.events).toEqual([]);
@@ -183,10 +168,10 @@ it('routes metadata retention through the serialized owner',async()=>{
 });
 
 describe('lifecycle outcomes for work without an existing row',()=>{
- it.each(['wipe','suspend','clear all'])('refuses pre-%s work and accepts newly-started work',async transition=>{
+ it.each(['suspend','clear all'])('refuses pre-%s work and accepts newly-started work',async transition=>{
   const token=owner.beginAutomaticWork(key);
   expect(h.store[`action:${key}`]).toBeUndefined();
-  if(transition==='wipe')await owner.wipeAll();else if(transition==='clear all')await owner.clearAllActions();else owner.cleanupActionCache();
+  if(transition==='clear all')await owner.clearAllActions();else owner.cleanupActionCache();
   expect(await owner.setAction(header,'reply',{token,meta:{userprompt:'synthetic old prompt'}})).toBeNull();
   expect(h.store).toEqual({});expect(h.native.size).toBe(0);
   const fresh=owner.beginAutomaticWork(key);

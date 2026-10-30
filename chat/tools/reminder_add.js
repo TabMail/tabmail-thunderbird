@@ -6,7 +6,7 @@
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { applyKBPatch } from "../../agent/modules/patchApplier.js";
-import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { editText } from "../../agent/modules/promptStore.js";
 import { log, normalizeUnicode } from "../../agent/modules/utils.js";
 
 /**
@@ -68,30 +68,23 @@ export async function run(args = {}, options = {}) {
     const entry = formatReminderEntry(text, dueDate, dueTime);
     log(`[TMDBG Tools] reminder_add: formatted entry='${entry.slice(0, 140)}' len=${entry.length}`);
 
-    // Load current KB
-    const current = (await getUserKBPrompt()) || "";
+    // The KB read, changed and saved in one hold of the prompt store.
+    const refused = await editText("kb", "reminder_add", (current) => {
 
-    const patchText = `ADD\n${entry}`;
-    const updated = applyKBPatch(current, patchText);
-    if (updated == null) {
-      log(`[TMDBG Tools] reminder_add: applyKBPatch returned null`, "error");
-      return { error: "failed to update knowledge base" };
-    }
+      const patchText = `ADD\n${entry}`;
+      const updated = applyKBPatch(current, patchText);
+      if (updated == null) {
+        log(`[TMDBG Tools] reminder_add: applyKBPatch returned null`, "error");
+        return { error: "failed to update knowledge base" };
+      }
 
-    if (updated === current) {
-      log(`[TMDBG Tools] reminder_add: no-op (duplicate)`);
-      return `No change (duplicate reminder).`;
-    }
-
-    // Persist
-    try {
-      const key = "user_prompts:user_kb.md";
-      await browser.storage.local.set({ [key]: updated });
-      log(`[TMDBG Tools] reminder_add: persisted user_kb.md (${updated.length} chars)`);
-    } catch (e) {
-      log(`[TMDBG Tools] reminder_add: failed to persist user_kb.md: ${e}`, "error");
-      return { error: "failed to persist knowledge base" };
-    }
+      if (updated === current) {
+        log(`[TMDBG Tools] reminder_add: no-op (duplicate)`);
+        return `No change (duplicate reminder).`;
+      }
+      return { save: updated };
+    });
+    if (refused) return refused;
 
     // Notify listeners
     try {

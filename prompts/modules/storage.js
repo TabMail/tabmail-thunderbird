@@ -8,70 +8,51 @@
 
 import { readActionConfig, ACTION_CONFIG_KEY } from "../../agent/modules/actionCompactConfig.js";
 import { SETTINGS } from "../../agent/modules/config.js";
+import { defaultTexts, holdsSectionMarker, SECTION_MARKER_REFUSAL, withPromptStore } from "../../agent/modules/promptStore.js";
+import { addItems, replaceItems } from "./markdown.js";
 import { log } from "../../agent/modules/utils.js";
 
 /**
- * Load prompt file from storage
+ * One action on what the page shows of `field` (DS-DISPLAYED): `change(content)` applied to `view.content`,
+ * the text shown, and the result saved against `view.captured`, the labels shown with it, in one hold of
+ * the prompt semaphore. The text is never read again: only shown labels whose text the action removed are
+ * deleted, and a bullet that arrived since is kept. `change` returns null when what the user acted on is
+ * not in the text. Resolves "saved", "unchanged" (nothing left to change: what it removes was already
+ * removed) or "gone"; rejects when it could not be saved.
  */
-export async function loadPromptFile(filename) {
-    try {
-        const response = await browser.runtime.sendMessage({
-            command: "read-prompt-file",
-            filename,
-        });
-        
-        if (!response || response.error || !response.ok) {
-            throw new Error(response?.error || "Failed to load prompt file");
-        }
-        
-        return response.content;
-    } catch (e) {
-        log(`[Prompts] Failed to load ${filename}: ${e}`, "error");
-        throw e;
-    }
+export function editShown(field, view, change) {
+    if (view.captured === null) return Promise.reject(new Error(`${field} could not be saved`));
+    const next = change(view.content);
+    if (next === null) return Promise.resolve("gone");
+    if (next === view.content) return Promise.resolve("unchanged");
+    const result = withPromptStore(async (store) => (await store.write(field, view.captured, next)).outcome, { label: "prompts page edit" });
+    result.catch((e) => log(`[Prompts] Edit of ${field} failed: ${e}`, "error"));
+    return result;
 }
 
 /**
- * Save prompt file to storage
+ * The user's line `text` added as the last item of the section `where` ({ key, copy }) of `view`, what the
+ * page shows of `field`. For the writing style and the action rules, a line holding a section marker is
+ * refused (R23): written into the field, it would be read back as a header or the footer. Resolves as
+ * `editShown` does.
  */
-export async function savePromptFile(filename, content) {
-    try {
-        const response = await browser.runtime.sendMessage({
-            command: "write-prompt-file",
-            filename,
-            content,
-        });
-        
-        if (!response || response.error || !response.ok) {
-            throw new Error(response?.error || "Failed to save prompt file");
-        }
-        
-        return true;
-    } catch (e) {
-        log(`[Prompts] Failed to save ${filename}: ${e}`, "error");
-        throw e;
-    }
+export function addLine(field, view, where, text) {
+    if (holdsSectionMarker(field, [text])) return Promise.reject(new Error(SECTION_MARKER_REFUSAL));
+    return editShown(field, view, (content) => addItems(field, content, where, [text]));
 }
 
 /**
- * Reset prompt file to default
+ * Section Reset: the items of the copy `where` of the section shown in `view` replaced by that section's
+ * defaults, fetched first, in one edit against the labels shown. Resolves as `editShown` does.
  */
-export async function resetPromptFile(filename) {
-    try {
-        const response = await browser.runtime.sendMessage({
-            command: "reset-prompt-file",
-            filename,
-        });
-        
-        if (!response || response.error || !response.ok) {
-            throw new Error(response?.error || "Failed to reset prompt file");
-        }
-        
-        return true;
-    } catch (e) {
-        log(`[Prompts] Failed to reset ${filename}: ${e}`, "error");
-        throw e;
-    }
+export async function resetSection(field, view, where) {
+    const defaults = await defaultTexts(field, where.key);
+    return editShown(field, view, (content) => replaceItems(field, content, where, defaults));
+}
+
+/** Reset Entire Prompt and the knowledge base's Reset: DS-RESET of `field`. */
+export function resetWholeField(field) {
+    return withPromptStore((store) => store.reset([field]), { label: "prompts page reset" });
 }
 
 /**

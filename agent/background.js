@@ -8,6 +8,7 @@ import { primeProactiveAlarmListener } from "./modules/proactiveCheckin.js";
 import { SETTINGS } from "./modules/config.js";
 import { attachDeviceSyncTransportListener, setAICacheProbeHandler, setupStorageListener } from "./modules/deviceSync.js";
 import * as idb from "./modules/idbStorage.js";
+import { handlePromptStoreMessage, initPromptStoreHost } from "./modules/promptStore.js";
 import { ensureSignedIn, signOut } from "./modules/supabaseAuth.js";
 // Indexing disabled – import removed
 import { initContextMenus } from "./modules/contextMenus.js";
@@ -93,6 +94,8 @@ setAICacheProbeHandler(async (probeKeys, fields) => {
     }
     return results;
 });
+// This page is the one place the knowledge base and the rules are changed (promptStore.js).
+initPromptStoreHost().catch((e) => log(`[PromptStore] Start failed: ${e}`, "error"));
 attachDeviceSyncTransportListener();
 setupStorageListener();
 
@@ -257,14 +260,17 @@ function setupRuntimeMessageListener() {
     }
 
     if (message.command === "delete-kb-reminder") {
-        const { hash, content, type } = message;
+        const { hash, content, type, labels } = message;
         log(`Received delete-kb-reminder command for: ${hash} (type=${type})`);
+        // The labels the tab showed for the item: exactly those are deleted (DS-DISPLAYED). None (the tab
+        // read the KB while an upgrade was unsaved): nothing can be deleted from it.
+        if (!Array.isArray(labels)) return Promise.resolve({ ok: false, error: "This item can't be deleted right now. Reload the list and try again." });
         return (async () => {
             try {
                 const toolModule = type === "task"
                     ? await import("../chat/tools/task_del.js")
                     : await import("../chat/tools/reminder_del.js");
-                const result = await toolModule.run({ text: content });
+                const result = await toolModule.run({ text: content }, { labels });
                 if (result.ok) {
                     log(`Successfully deleted KB ${type || "reminder"}: ${hash}`);
                     return { ok: true };
@@ -357,91 +363,6 @@ function setupRuntimeMessageListener() {
                 return { ok: false, error: String(e) };
             }
         })();
-    }
-
-    if (message.command === "reset-user-prompts") {
-        log("Received reset-user-prompts command from popup – copying bundled prompts to storage.local.");
-        (async () => {
-            try {
-                async function _fetchBundled(name) {
-                    const url = browser.runtime.getURL(`prompts/${name}`);
-                    const resp = await fetch(url);
-                    if (!resp.ok) {
-                        throw new Error(`Fetch bundled ${name} failed (${resp.status})`);
-                    }
-                    return resp.text();
-                }
-                const { resetFieldToDefault } = await import("./modules/deviceSync.js");
-                const ua = await _fetchBundled("user_action.md");
-                const uc = await _fetchBundled("user_composition.md");
-                await resetFieldToDefault("action", ua);
-                await resetFieldToDefault("composition", uc);
-                log("Reset user prompts completed successfully (epoch-zero timestamps).");
-            } catch (e) {
-                log(`Reset user prompts failed: ${e}`, "error");
-            }
-        })();
-        return { ok: true };
-    }
-
-    if (message.command === "reset-action-prompt") {
-        log("Received reset-action-prompt – restoring bundled user_action.md into storage.local.");
-        (async () => {
-            try {
-                const url = browser.runtime.getURL("prompts/user_action.md");
-                const resp = await fetch(url);
-                if (!resp.ok) throw new Error(`Fetch bundled user_action.md failed (${resp.status})`);
-                const text = await resp.text();
-                const { resetFieldToDefault } = await import("./modules/deviceSync.js");
-                await resetFieldToDefault("action", text);
-                log(`Action prompt reset complete (epoch-zero timestamp). Sending response ok.`);
-                sendResponse({ ok: true });
-            } catch (e) {
-                log(`reset-action-prompt failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
-            }
-        })();
-        return true; // keep message channel open for async sendResponse
-    }
-
-    if (message.command === "reset-composition-prompt") {
-        log("Received reset-composition-prompt – restoring bundled user_composition.md into storage.local.");
-        (async () => {
-            try {
-                const url = browser.runtime.getURL("prompts/user_composition.md");
-                const resp = await fetch(url);
-                if (!resp.ok) throw new Error(`Fetch bundled user_composition.md failed (${resp.status})`);
-                const text = await resp.text();
-                const { resetFieldToDefault } = await import("./modules/deviceSync.js");
-                await resetFieldToDefault("composition", text);
-                log(`Composition prompt reset complete (epoch-zero timestamp). Sending response ok.`);
-                sendResponse({ ok: true });
-            } catch (e) {
-                log(`reset-composition-prompt failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
-            }
-        })();
-        return true; // keep message channel open for async sendResponse
-    }
-
-    if (message.command === "reset-kb-prompt") {
-        log("Received reset-kb-prompt – restoring bundled user_kb.md into storage.local.");
-        (async () => {
-            try {
-                const url = browser.runtime.getURL("prompts/user_kb.md");
-                const resp = await fetch(url);
-                if (!resp.ok) throw new Error(`Fetch bundled user_kb.md failed (${resp.status})`);
-                const text = await resp.text();
-                const { resetFieldToDefault } = await import("./modules/deviceSync.js");
-                await resetFieldToDefault("kb", text);
-                log(`KB prompt reset complete (epoch-zero timestamp). Sending response ok.`);
-                sendResponse({ ok: true });
-            } catch (e) {
-                log(`reset-kb-prompt failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
-            }
-        })();
-        return true; // keep message channel open for async sendResponse
     }
 
     if (message.command === "kb-update-from-window-close") {
@@ -544,80 +465,8 @@ function setupRuntimeMessageListener() {
         return { ok: true }; // Immediate response, sign-out continues async
     }
 
-    if (message.command === "read-prompt-file") {
-        log(`Received read-prompt-file command for ${message.filename}`);
-        (async () => {
-            try {
-                const storageKey = `user_prompts:${message.filename}`;
-                const stored = await browser.storage.local.get([storageKey]);
-                
-                if (stored[storageKey]) {
-                    sendResponse({ ok: true, content: stored[storageKey] });
-                } else {
-                    // Fall back to bundled version
-                    const url = browser.runtime.getURL(`prompts/${message.filename}`);
-                    const resp = await fetch(url);
-                    if (!resp.ok) {
-                        throw new Error(`Failed to fetch bundled ${message.filename} (${resp.status})`);
-                    }
-                    const content = await resp.text();
-                    sendResponse({ ok: true, content });
-                }
-            } catch (e) {
-                log(`read-prompt-file failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
-            }
-        })();
-        return true; // keep message channel open for async sendResponse
-    }
-
-    if (message.command === "write-prompt-file") {
-        log(`Received write-prompt-file command for ${message.filename}`);
-        (async () => {
-            try {
-                const storageKey = `user_prompts:${message.filename}`;
-                // Stamp new sync timestamp on local edit (last-write-wins)
-                const updatedAt = new Date().toISOString();
-                await browser.storage.local.set({ [storageKey]: message.content, device_sync_updated_at: updatedAt });
-                log(`Successfully wrote ${message.filename} to storage`);
-                sendResponse({ ok: true });
-            } catch (e) {
-                log(`write-prompt-file failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
-            }
-        })();
-        return true; // keep message channel open for async sendResponse
-    }
-
-    if (message.command === "reset-prompt-file") {
-        log(`Received reset-prompt-file command for ${message.filename}`);
-        (async () => {
-            try {
-                const url = browser.runtime.getURL(`prompts/${message.filename}`);
-                const resp = await fetch(url);
-                if (!resp.ok) {
-                    throw new Error(`Failed to fetch bundled ${message.filename} (${resp.status})`);
-                }
-                const text = await resp.text();
-                // Map filename → sync field name
-                const fieldMap = { "user_action.md": "action", "user_composition.md": "composition", "user_kb.md": "kb" };
-                const field = fieldMap[message.filename];
-                if (field) {
-                    const { resetFieldToDefault } = await import("./modules/deviceSync.js");
-                    await resetFieldToDefault(field, text);
-                } else {
-                    // Unknown file — write directly (no sync field to reset)
-                    const storageKey = `user_prompts:${message.filename}`;
-                    await browser.storage.local.set({ [storageKey]: text });
-                }
-                log(`Successfully reset ${message.filename} to default (epoch-zero timestamp)`);
-                sendResponse({ ok: true });
-            } catch (e) {
-                log(`reset-prompt-file failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
-            }
-        })();
-        return true; // keep message channel open for async sendResponse
+    if (message.command === "prompt-store") {
+        return handlePromptStoreMessage(message);
     }
 
     // --- Template Management Commands ---

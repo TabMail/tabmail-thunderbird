@@ -272,6 +272,17 @@ export const SETTINGS = {
     deviceSync: {
         broadcastDebounceMs: 500, // Debounce auto-broadcast after local edits (ms)
         maxBackups: 10,           // Max backup snapshots in ring buffer before applying incoming sync
+        messageMaxBytes: 126976,  // Budget of one bullet_state message (bytes): below the relay's 128 KiB, over which it drops a message
+        busyReapplyMs: 2 * 1000,  // Wait before a received message whose apply found the prompt semaphore busy is applied again
+        maxWaitingReceives: 256,  // Most received messages waiting to be applied on one connection; past it the connection is renewed
+        historyDebounceMs: 2 * 1000, // Quiet time after a local prompt edit before its history entry is recorded
+    },
+    // The one prompt semaphore per device (promptStore.js): every read and change of the three prompt fields holds it.
+    promptSemaphore: {
+        leaseMs: 15 * 1000,       // Longest hold of a read-change-save; a holder past it loses the semaphore and its save is refused
+        retries: 5,               // Tries after a busy refusal before giving up (retryWithBackoff)
+        retryBaseDelayMs: 200,    // First wait after a busy refusal; each next one doubles
+        retryJitterMs: 100,       // Most random time added to each wait, so two waiting writers do not retry in step
     },
     // Proactive reachout / notification settings
     notifications: {

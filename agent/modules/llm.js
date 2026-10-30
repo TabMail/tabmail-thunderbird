@@ -9,6 +9,7 @@
 
 import { assertAiBackendAllowed } from "../../chat/modules/privacySettings.js";
 import { SETTINGS, getBackendUrl } from "./config.js";
+import { retryWithBackoff } from "./retryWithBackoff.js";
 import { setThink } from "./thinkBuffer.js";
 import { log, normalizeUnicode } from "./utils.js";
 
@@ -430,78 +431,6 @@ async function readSSEStream(response, abortSignal = null, onToolExecution = nul
   }
   
   return finalResponse;
-}
-
-/**
- * Retry helper with exponential backoff for network errors.
- * 
- * @param {Function} fn - Async function to retry
- * @param {number} maxRetries - Maximum number of retries (default: 3)
- * @param {number} baseDelay - Base delay in ms (default: 1000)
- * @param {AbortSignal|null} abortSignal - Optional abort signal
- * @returns {Promise<any>} - Result from function
- */
-async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000, abortSignal = null) {
-  let lastError = null;
-  
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    // Check if aborted
-    if (abortSignal && abortSignal.aborted) {
-      throw new DOMException("User stopped execution", "AbortError");
-    }
-    
-    try {
-      return await fn();
-    } catch (e) {
-      lastError = e;
-      
-      // Don't retry on user abort
-      if (e.name === "AbortError") {
-        throw e;
-      }
-      
-      // Don't retry on 4xx client errors (except 408 Request Timeout, 429 Too Many Requests)
-      const is4xxError = e.message && /Request failed: (4\d{2})/.test(e.message);
-      const statusMatch = e.message && e.message.match(/Request failed: (\d{3})/);
-      const statusCode = statusMatch ? parseInt(statusMatch[1]) : null;
-      
-      if (is4xxError && statusCode !== 408 && statusCode !== 429) {
-        log(`[RETRY] Not retrying 4xx client error: ${e.message}`, "warn");
-        throw e;
-      }
-      
-      // Don't retry on 5xx server errors (backend should handle retries internally)
-      const is5xxError = e.message && /Request failed: (5\d{2})/.test(e.message);
-      if (is5xxError) {
-        log(`[RETRY] Not retrying 5xx server error: ${e.message}`, "warn");
-        throw e;
-      }
-      
-      // Only retry network errors (fetch failures, timeouts, connection drops)
-      const isNetworkError = (
-        e.name === "TypeError" || // Network errors are typically TypeErrors
-        e.message.includes("network") ||
-        e.message.includes("Connection lost") ||
-        e.message.includes("Connection timeout") ||
-        e.message.includes("Failed to fetch") ||
-        statusCode === 408 ||
-        statusCode === 429
-      );
-      
-      if (!isNetworkError || attempt === maxRetries) {
-        log(`[RETRY] Max retries reached or non-retriable error: ${e.message}`, "error");
-        throw lastError;
-      }
-      
-      // Calculate delay with exponential backoff + jitter
-      const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
-      log(`[RETRY] Attempt ${attempt + 1}/${maxRetries} failed: ${e.message}. Retrying in ${Math.round(delay)}ms...`, "warn");
-      
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-  
-  throw lastError;
 }
 
 /**

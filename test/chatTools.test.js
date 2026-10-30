@@ -10,11 +10,20 @@
 // modules. We mock all browser-dependent modules and set up globalThis.browser.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { promptStoreHost } from './support/promptStoreHost.js';
 
 // ---------------------------------------------------------------------------
 // globalThis.browser mock
 // ---------------------------------------------------------------------------
 const storageData = {};
+
+// The tools read and save the KB through the real client side of promptStore.js (DS-CAPTURE, R32),
+// against this stand-in for the background, which keeps the field as plain markdown in storageData.
+const promptStore = promptStoreHost();
+promptStore.text = async (field) => storageData[`user_prompts:user_${field}.md`] || '';
+promptStore.saved = async ({ field, content }) => {
+  await globalThis.browser.storage.local.set({ [`user_prompts:user_${field}.md`]: content });
+};
 
 globalThis.browser = {
   storage: {
@@ -39,6 +48,8 @@ globalThis.browser = {
   },
   runtime: {
     sendMessage: vi.fn(async (msg) => {
+      const stored = await promptStore.answer(msg);
+      if (stored !== undefined) return stored;
       // FTS search mock
       if (msg?.type === 'fts' && msg?.cmd === 'search') {
         return [
@@ -99,6 +110,7 @@ vi.mock('../agent/modules/config.js', () => ({
     events: {
       userKBPromptUpdated: 'user-kb-prompt-updated',
     },
+    promptSemaphore: { leaseMs: 15000, retries: 2, retryBaseDelayMs: 1, retryJitterMs: 0 },
   },
 }));
 
@@ -109,6 +121,7 @@ vi.mock('../agent/modules/promptGenerator.js', () => ({
     return storageData[key] || '';
   }),
 }));
+
 
 // Mock patchApplier.js with a simplified implementation
 vi.mock('../agent/modules/patchApplier.js', () => ({
@@ -241,6 +254,9 @@ const reminderDel = await import('../chat/tools/reminder_del.js');
 const emailSearch = await import('../chat/tools/email_search.js');
 const kbAdd = await import('../chat/tools/kb_add.js');
 const kbDel = await import('../chat/tools/kb_del.js');
+const taskAdd = await import('../chat/tools/task_add.js');
+const taskDel = await import('../chat/tools/task_del.js');
+const taskEdit = await import('../chat/tools/task_edit.js');
 const memoryRead = await import('../chat/tools/memory_read.js');
 const memorySearch = await import('../chat/tools/memory_search.js');
 const changeSetting = await import('../chat/tools/change_setting.js');
@@ -576,57 +592,6 @@ describe('TB-062: email_search query construction', () => {
     } finally {
       if (originalImpl) browser.runtime.sendMessage.mockImplementation(originalImpl);
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// TB-062c: a search sends only its own search request (#174)
-// ---------------------------------------------------------------------------
-// The background's FTS handler runs only the commands it knows and refuses any
-// other with an error. So every runtime message a search tool sends is its own
-// search request, retries included.
-describe('TB-062c: a search sends only its own search request', () => {
-  let originalImpl;
-  beforeEach(() => {
-    clearStorage();
-    vi.clearAllMocks();
-    emailSearch.resetPaginationSessions();
-    memorySearch.resetPaginationSessions();
-    originalImpl = browser.runtime.sendMessage.getMockImplementation();
-  });
-  afterEach(() => {
-    browser.runtime.sendMessage.mockImplementation(originalImpl);
-  });
-
-  // `notReady` requests are answered undefined first (no handler yet), then the search answers.
-  async function sentMessages(tool, cmd, args, notReady) {
-    let unanswered = notReady;
-    browser.runtime.sendMessage.mockImplementation(async (msg) => {
-      if (msg?.type !== 'fts' || msg?.cmd !== cmd) return undefined;
-      if (unanswered > 0) { unanswered -= 1; return undefined; }
-      return [];
-    });
-    const result = await tool.run(args);
-    expect(result).not.toHaveProperty('error');
-    return browser.runtime.sendMessage.mock.calls.map((c) => c[0]);
-  }
-
-  it.each([
-    ['email_search', 'search', 0, () => emailSearch],
-    ['email_search', 'search', 2, () => emailSearch],
-    ['memory_search', 'memorySearch', 0, () => memorySearch],
-    ['memory_search', 'memorySearch', 2, () => memorySearch],
-  ])('%s sends only %s requests (%i not-ready answers first)', async (_name, cmd, notReady, tool) => {
-    const sent = await sentMessages(tool(), cmd, { query: 'quarterly report' }, notReady);
-    expect(sent).toHaveLength(notReady + 1);
-    for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd });
-  });
-
-  // A listing of recent conversations (no query) fetches in steps; still only its own requests.
-  it.each([0, 2])('memory_search listing sends only memorySearch requests (%i not-ready answers first)', async (notReady) => {
-    const sent = await sentMessages(memorySearch, 'memorySearch', {}, notReady);
-    expect(sent).toHaveLength(notReady + 1);
-    for (const msg of sent) expect(msg).toMatchObject({ type: 'fts', cmd: 'memorySearch' });
   });
 });
 
@@ -1999,5 +1964,92 @@ describe('Additional tool edge cases', () => {
     const result = await memoryRead.run({ timestamp: 'abc' });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('timestamp');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The task tools read the knowledge base and save against that read's labels (DS-CAPTURE).
+// ---------------------------------------------------------------------------
+describe('the task tools save against their read (DS-CAPTURE)', () => {
+  const TASK = '[Task] Schedule mon 09:00 [UTC], Weekly report.';
+
+  beforeEach(() => {
+    clearStorage();
+    vi.clearAllMocks();
+    storageData['user_prompts:user_kb.md'] = `- Some fact\n- ${TASK}`;
+  });
+
+  it('task_add', async () => {
+    const result = await taskAdd.run({ text: 'Summarize new mail', schedule_days: 'mon', schedule_time: '08:00' });
+    expect(result?.error).toBeUndefined();
+    expect(storageData['user_prompts:user_kb.md']).toContain('Summarize new mail');
+  });
+
+  it('task_del', async () => {
+    const result = await taskDel.run({ text: 'weekly report' });
+    expect(result?.error).toBeUndefined();
+    expect(storageData['user_prompts:user_kb.md']).toBe('- Some fact');
+  });
+
+  it('task_edit', async () => {
+    const result = await taskEdit.run({ find_text: 'weekly report', schedule_time: '10:00' });
+    expect(result?.ok).toBe(true);
+    expect(storageData['user_prompts:user_kb.md']).not.toContain('09:00');
+    expect(storageData['user_prompts:user_kb.md']).toContain('10:00');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R32: each tool call reads, changes and saves the knowledge base in one hold of the prompt semaphore; a
+// semaphore held through every try is reported busy.
+// ---------------------------------------------------------------------------
+describe('the knowledge base tools read, change and save in one hold of the prompt semaphore (R32)', () => {
+  const TASK = '[Task] Schedule mon 09:00 [UTC], Weekly report.';
+  const later = new Date(Date.now() + 7 * 86400000);
+  const DUE = `${later.getFullYear()}/${String(later.getMonth() + 1).padStart(2, '0')}/${String(later.getDate()).padStart(2, '0')}`;
+  const KB = `- Some fact\n- [Pinned] Synthetic note\n- Reminder: Due ${DUE}, Water the plants\n- ${TASK}`;
+  const calls = {
+    kb_add: () => kbAdd.run({ statement: 'Synthetic statement' }),
+    kb_del: () => kbDel.run({ statement: '[Pinned] Synthetic note' }),
+    reminder_add: () => reminderAdd.run({ text: 'Synthetic reminder', due_date: DUE }),
+    reminder_del: () => reminderDel.run({ text: 'Water the plants' }),
+    task_add: () => taskAdd.run({ text: 'Summarize new mail', schedule_days: 'mon', schedule_time: '08:00' }),
+    task_del: () => taskDel.run({ text: 'weekly report' }),
+    task_edit: () => taskEdit.run({ find_text: 'weekly report', schedule_time: '10:00' }),
+  };
+
+  let random;
+  beforeEach(() => {
+    clearStorage();
+    vi.clearAllMocks();
+    promptStore.clear();
+    promptStore.text = async (field) => storageData[`user_prompts:user_${field}.md`] || '';
+    promptStore.saved = async ({ field, content }) => {
+      await globalThis.browser.storage.local.set({ [`user_prompts:user_${field}.md`]: content });
+    };
+    storageData['user_prompts:user_kb.md'] = KB;
+    // retryWithBackoff waits up to a second more at random; none here.
+    random = vi.spyOn(Math, 'random').mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    random.mockRestore();
+  });
+
+  it.each(Object.keys(calls))('%s saves in one hold, released after', async (name) => {
+    const result = await calls[name]();
+    expect(result?.error).toBeUndefined();
+    expect(storageData['user_prompts:user_kb.md']).not.toBe(KB);
+    expect(promptStore.acquires).toHaveLength(1);
+    expect(promptStore.holder).toBeNull();
+  });
+
+  it.each(Object.keys(calls))('%s answers that the knowledge base is busy when the semaphore stays held, nothing saved', async (name) => {
+    promptStore.hold('a stuck writer');
+
+    const result = await calls[name]();
+
+    expect(result).toEqual({ error: "Couldn't save: the knowledge base is busy. Try again in a moment." });
+    expect(storageData['user_prompts:user_kb.md']).toBe(KB);
   });
 });

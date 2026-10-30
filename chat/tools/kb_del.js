@@ -6,7 +6,7 @@
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { applyKBPatch } from "../../agent/modules/patchApplier.js";
-import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { editText } from "../../agent/modules/promptStore.js";
 import { log, normalizeUnicode } from "../../agent/modules/utils.js";
 
 function buildDelPatch(statement) {
@@ -26,34 +26,27 @@ export async function run(args = {}, options = {}) {
 
     log(`[TMDBG Tools] kb_del: starting with statement='${statement.slice(0, 140)}' len=${statement.length}`);
 
-    // Load current KB
-    const current = (await getUserKBPrompt()) || "";
-    if (!current) {
-      log(`[TMDBG Tools] kb_del: current KB is empty or missing`, "warn");
-      return { error: "knowledge base is empty" };
-    }
+    // The KB read, changed and saved in one hold of the prompt store.
+    const refused = await editText("kb", "kb_del", (current) => {
+      if (!current) {
+        log(`[TMDBG Tools] kb_del: current KB is empty or missing`, "warn");
+        return { error: "knowledge base is empty" };
+      }
 
-    const patchText = buildDelPatch(statement);
-    const updated = applyKBPatch(current, patchText);
-    if (updated == null) {
-      log(`[TMDBG Tools] kb_del: applyKBPatch returned null`, "error");
-      return { error: "failed to delete from knowledge base (statement not found)" };
-    }
+      const patchText = buildDelPatch(statement);
+      const updated = applyKBPatch(current, patchText);
+      if (updated == null) {
+        log(`[TMDBG Tools] kb_del: applyKBPatch returned null`, "error");
+        return { error: "failed to delete from knowledge base (statement not found)" };
+      }
 
-    if (updated === current) {
-      log(`[TMDBG Tools] kb_del: no-op (statement not found)`);
-      return { error: "statement not found in knowledge base" };
-    }
-
-    // Persist
-    try {
-      const key = "user_prompts:user_kb.md";
-      await browser.storage.local.set({ [key]: updated });
-      log(`[TMDBG Tools] kb_del: persisted user_kb.md (${updated.length} chars)`);
-    } catch (e) {
-      log(`[TMDBG Tools] kb_del: failed to persist user_kb.md: ${e}`, "error");
-      return { error: "failed to persist knowledge base" };
-    }
+      if (updated === current) {
+        log(`[TMDBG Tools] kb_del: no-op (statement not found)`);
+        return { error: "statement not found in knowledge base" };
+      }
+      return { save: updated };
+    });
+    if (refused) return refused;
 
     // Notify listeners (config UI, etc.)
     try {

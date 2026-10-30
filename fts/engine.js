@@ -756,8 +756,8 @@ export const ftsSearch = {
   // Checkpoint methods (stored in browser.storage.local, not in DB)
   async clearCheckpoints() {
     log("[TMDBG FTS] Clearing checkpoints");
-    const all = await browser.storage.local.get();
-    const checkpointKeys = Object.keys(all).filter(k => k.startsWith("fts_ckp:"));
+    // Only the keys are listed: nothing else stored (the prompts among it) is read here.
+    const checkpointKeys = (await browser.storage.local.getKeys()).filter(k => k.startsWith("fts_ckp:"));
     if (checkpointKeys.length === 0) {
       log(`[TMDBG FTS] No checkpoint keys found to clear`);
       return { ok: true, clearedKeys: 0 };
@@ -768,12 +768,8 @@ export const ftsSearch = {
   },
 
   async debugCheckpoints() {
-    const all = await browser.storage.local.get();
-    const checkpointKeys = Object.keys(all).filter(k => k.startsWith("fts_ckp:"));
-    const checkpointData = {};
-    for (const key of checkpointKeys) {
-      checkpointData[key] = all[key];
-    }
+    const checkpointKeys = (await browser.storage.local.getKeys()).filter(k => k.startsWith("fts_ckp:"));
+    const checkpointData = checkpointKeys.length > 0 ? await browser.storage.local.get(checkpointKeys) : {};
     return { checkpointKeys: checkpointKeys.length, data: checkpointData };
   }
 };

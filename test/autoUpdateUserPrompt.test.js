@@ -5,6 +5,7 @@
 // autoUpdateUserPrompt.test.js — Tests for agent/modules/autoUpdateUserPrompt.js
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { promptStoreHost } from './support/promptStoreHost.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -18,6 +19,7 @@ vi.mock('../agent/modules/config.js', async (importOriginal) => ({
     logTruncateLength: 100,
     getFullDiag: {},
     actionCompaction: (await importOriginal()).SETTINGS.actionCompaction,
+    promptSemaphore: { leaseMs: 15000, retries: 2, retryBaseDelayMs: 1, retryJitterMs: 0 },
   },
 }));
 vi.mock('../agent/modules/thinkBuffer.js', () => ({
@@ -35,9 +37,11 @@ vi.mock('../agent/modules/llm.js', () => ({
 vi.mock('../agent/modules/patchApplier.js', () => ({
   applyActionPatch: vi.fn(() => null),
 }));
-vi.mock('../agent/modules/promptGenerator.js', () => ({
-  getUserActionPrompt: vi.fn(async () => ''),
-}));
+// The action rules are read and saved through the real client side of the prompt store, against a
+// stand-in for the background (DS-CAPTURE, R32): `actionText` drives what each read returns; a read and its
+// write are each one hold of the prompt semaphore, neither held across the backend call.
+const host = promptStoreHost();
+const actionText = vi.fn(async () => '');
 vi.mock('../agent/modules/utils.js', () => ({
   getUniqueMessageKey: vi.fn(async () => 'acct:INBOX:msg-1'),
   getRealSubject: vi.fn(async () => 'test subject'),
@@ -63,7 +67,7 @@ globalThis.browser = {
     onChanged: { addListener: vi.fn(), removeListener: vi.fn() },
   },
   runtime: {
-    sendMessage: vi.fn(async () => {}),
+    sendMessage: vi.fn(async (message) => host.answer(message)),
   },
 };
 
@@ -75,14 +79,21 @@ const {
 const idb = await import('../agent/modules/idbStorage.js');
 const llm = await import('../agent/modules/llm.js');
 const patchApplier = await import('../agent/modules/patchApplier.js');
-const promptGenerator = await import('../agent/modules/promptGenerator.js');
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
+/** The texts saved, in order. */
+const committed = () => savedTexts.slice();
+const savedTexts = [];
+
 beforeEach(() => {
   vi.clearAllMocks();
+  host.clear();
+  host.text = async (field) => (field === 'action' ? actionText() : '');
+  savedTexts.length = 0;
+  host.saved = async (message) => { savedTexts.push(message.content); };
 });
 
 describe('autoUpdateUserPromptOnMove', () => {
@@ -117,9 +128,7 @@ describe('autoUpdateUserPromptOnTag', () => {
     // Both should complete
   });
 
-  it('skips patch apply when user_action.md drifts during backend call', async () => {
-    // Set up cached summary + original action so the flow proceeds past its
-    // early-return guards (line 69: summary missing, line 91: orig == current).
+  it('drops the update when user_action.md changes during the backend call: nothing saved', async () => {
     idb.get.mockImplementation(async (key) => {
       if (key.startsWith('summary:')) {
         return { [key]: { blurb: 'b', subject: 's', fromSender: 'f', todos: '' } };
@@ -128,25 +137,20 @@ describe('autoUpdateUserPromptOnTag', () => {
       if (key.startsWith('action:userprompt:')) return { [key]: '' };
       return {};
     });
-
-    // First read = base ("v1"), second read (post-LLM guard) = drifted ("v2").
-    let readCount = 0;
-    promptGenerator.getUserActionPrompt.mockImplementation(async () => {
-      readCount++;
-      return readCount === 1 ? 'base v1' : 'drifted v2';
+    actionText.mockResolvedValue('base v1');
+    llm.sendChat.mockImplementationOnce(async () => {
+      expect(host.holder).toBeNull();
+      host.move(); // an edit or a sync lands during the call
+      return { assistant: '{"patch":"some patch text"}' };
     });
-
-    // Valid backend response → code reaches the guard.
-    llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":"some patch text"}' });
     llm.processJSONResponse.mockReturnValueOnce({ patch: 'some patch text' });
+    patchApplier.applyActionPatch.mockReturnValueOnce('base v1 updated');
 
     await autoUpdateUserPromptOnTag(123, 'reply', { source: 'test' });
 
-    // Guard must short-circuit: patch never applied, storage never written.
-    expect(patchApplier.applyActionPatch).not.toHaveBeenCalled();
-    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
-    // Both reads happened: base capture + post-flight re-read.
-    expect(readCount).toBe(2);
+    expect(host.writes).toHaveLength(1);
+    expect(committed()).toEqual([]);
+    expect(host.reads).toHaveLength(1);
   });
 
   it('applies patch on happy path (no drift)', async () => {
@@ -159,8 +163,7 @@ describe('autoUpdateUserPromptOnTag', () => {
       return {};
     });
 
-    // Both reads return the same base → guard allows apply.
-    promptGenerator.getUserActionPrompt.mockResolvedValue('stable base');
+    actionText.mockResolvedValue('stable base');
 
     llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":"some patch text"}' });
     llm.processJSONResponse.mockReturnValueOnce({ patch: 'some patch text' });
@@ -169,9 +172,7 @@ describe('autoUpdateUserPromptOnTag', () => {
     await autoUpdateUserPromptOnTag(123, 'reply', { source: 'test' });
 
     expect(patchApplier.applyActionPatch).toHaveBeenCalledWith('stable base', 'some patch text');
-    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:user_action.md': 'stable base updated',
-    });
+    expect(committed()).toEqual(['stable base updated']);
   });
 
   // -------------------------------------------------------------------------
@@ -189,7 +190,7 @@ describe('autoUpdateUserPromptOnTag', () => {
     });
     // Storage returns empty (no action_config key) → default threshold 200
     globalThis.browser.storage.local.get.mockResolvedValue({});
-    promptGenerator.getUserActionPrompt.mockResolvedValue('# My action rules');
+    actionText.mockResolvedValue('# My action rules');
     llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":"ADD\nreply\nSome rule"}' });
     llm.processJSONResponse.mockReturnValueOnce({ patch: 'ADD\nreply\nSome rule' });
     patchApplier.applyActionPatch.mockReturnValueOnce('# My action rules updated');
@@ -219,7 +220,7 @@ describe('autoUpdateUserPromptOnTag', () => {
       }
       return {};
     });
-    promptGenerator.getUserActionPrompt.mockResolvedValue('# My action rules');
+    actionText.mockResolvedValue('# My action rules');
     llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":"ADD\nreply\nSome rule"}' });
     llm.processJSONResponse.mockReturnValueOnce({ patch: 'ADD\nreply\nSome rule' });
     patchApplier.applyActionPatch.mockReturnValueOnce('# My action rules updated');
@@ -246,7 +247,7 @@ describe('autoUpdateUserPromptOnTag', () => {
       return {};
     });
     globalThis.browser.storage.local.get.mockResolvedValue({});
-    promptGenerator.getUserActionPrompt.mockResolvedValue('# base content');
+    actionText.mockResolvedValue('# base content');
 
     // Simulate server compaction+refine: 2 DELs of old rules, 2 ADDs of new rules
     const multiOpPatch = 'DEL\ndelete\nOld spam rule\nDEL\narchive\nOld newsletter rule\nADD\ndelete\nNew spam rule v2\nADD\narchive\nNew newsletter rule v2';
@@ -264,9 +265,7 @@ describe('autoUpdateUserPromptOnTag', () => {
     expect(patchApplier.applyActionPatch).toHaveBeenCalledTimes(1);
     expect(patchApplier.applyActionPatch).toHaveBeenCalledWith('# base content', multiOpPatch);
     // Result persisted
-    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:user_action.md': '# fully updated content after all 4 ops',
-    });
+    expect(committed()).toEqual(['# fully updated content after all 4 ops']);
   });
 
   // -------------------------------------------------------------------------
@@ -283,7 +282,7 @@ describe('autoUpdateUserPromptOnTag', () => {
       return {};
     });
     globalThis.browser.storage.local.get.mockResolvedValue({});
-    promptGenerator.getUserActionPrompt.mockResolvedValue('# base content');
+    actionText.mockResolvedValue('# base content');
 
     // Backend returns prose instead of JSON
     llm.sendChat.mockResolvedValueOnce({ assistant: 'I think you should archive emails from newsletters.' });
@@ -293,7 +292,7 @@ describe('autoUpdateUserPromptOnTag', () => {
     await expect(autoUpdateUserPromptOnTag(400, 'reply', { source: 'test' })).resolves.not.toThrow();
 
     expect(patchApplier.applyActionPatch).not.toHaveBeenCalled();
-    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+    expect(host.writes).toEqual([]);
   });
 
   // -------------------------------------------------------------------------
@@ -310,7 +309,7 @@ describe('autoUpdateUserPromptOnTag', () => {
       return {};
     });
     globalThis.browser.storage.local.get.mockResolvedValue({});
-    promptGenerator.getUserActionPrompt.mockResolvedValue('# base content');
+    actionText.mockResolvedValue('# base content');
 
     // Backend returns a well-formed JSON but with an empty patch string
     llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":""}' });
@@ -320,7 +319,7 @@ describe('autoUpdateUserPromptOnTag', () => {
 
     // patchText.trim() is "" → early return before applyActionPatch
     expect(patchApplier.applyActionPatch).not.toHaveBeenCalled();
-    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+    expect(host.writes).toEqual([]);
   });
 
   // -------------------------------------------------------------------------
@@ -342,7 +341,7 @@ describe('autoUpdateUserPromptOnTag', () => {
       return {};
     });
     globalThis.browser.storage.local.get.mockResolvedValue({});
-    promptGenerator.getUserActionPrompt.mockResolvedValue('# base content');
+    actionText.mockResolvedValue('# base content');
 
     const badPatch = 'DEL\ndelete\nRule that does not exist locally';
     llm.sendChat.mockResolvedValueOnce({ assistant: `{"patch":${JSON.stringify(badPatch)}}` });
@@ -354,8 +353,8 @@ describe('autoUpdateUserPromptOnTag', () => {
 
     // applyActionPatch was called (patch text was valid JSON with non-empty patch)
     expect(patchApplier.applyActionPatch).toHaveBeenCalledTimes(1);
-    // But storage.local.set was NOT called — no partial write
-    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+    // But nothing was saved — no partial write
+    expect(host.writes).toEqual([]);
   });
 });
 
@@ -444,8 +443,7 @@ describe('autoUpdateUserPromptOnTag — integration with real patchApplier', asy
     });
     globalThis.browser.storage.local.get.mockResolvedValue({});
 
-    // Both reads return the same fixture doc → drift guard passes → applier runs.
-    promptGenerator.getUserActionPrompt.mockResolvedValue(FIXTURE_DOC);
+    actionText.mockResolvedValue(FIXTURE_DOC);
 
     llm.sendChat.mockResolvedValueOnce({
       assistant: JSON.stringify({ patch: COMBINED_PATCH }),
@@ -459,9 +457,7 @@ describe('autoUpdateUserPromptOnTag — integration with real patchApplier', asy
     expect(patchApplier.applyActionPatch).toHaveBeenCalledWith(FIXTURE_DOC, COMBINED_PATCH);
 
     // The persisted doc must equal the exact expected post-patch document.
-    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:user_action.md': EXPECTED_DOC,
-    });
+    expect(committed()).toEqual([EXPECTED_DOC]);
   });
 });
 
@@ -500,7 +496,7 @@ describe('compactActionRulesNow', () => {
 
   // (a) sends action_compact_only: true + both thresholds + current md
   it('(a) sends action_compact_only:true, both thresholds and current_user_action_md to backend', async () => {
-    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    actionText.mockResolvedValue(COMPACT_DOC);
     llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":""}' });
     llm.processJSONResponse.mockReturnValueOnce({ patch: '' });
 
@@ -525,7 +521,7 @@ describe('compactActionRulesNow', () => {
       }
       return {};
     });
-    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    actionText.mockResolvedValue(COMPACT_DOC);
     llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":""}' });
     llm.processJSONResponse.mockReturnValueOnce({ patch: '' });
 
@@ -542,7 +538,7 @@ describe('compactActionRulesNow', () => {
       if ([].concat(key).includes('user_prompts:action_config')) throw new Error('synthetic storage failure');
       return {};
     });
-    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    actionText.mockResolvedValue(COMPACT_DOC);
     llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":""}' });
     llm.processJSONResponse.mockReturnValueOnce({ patch: '' });
 
@@ -556,7 +552,7 @@ describe('compactActionRulesNow', () => {
 
   // (b) applies returned multi-op patch and persists
   it('(b) applies returned multi-op patch and persists; applied count = number of DEL+ADD ops', async () => {
-    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    actionText.mockResolvedValue(COMPACT_DOC);
     llm.sendChat.mockResolvedValueOnce({ assistant: JSON.stringify({ patch: COMPACT_PATCH }) });
     llm.processJSONResponse.mockReturnValueOnce({ patch: COMPACT_PATCH });
     patchApplier.applyActionPatch.mockReturnValueOnce('# updated compact doc');
@@ -564,9 +560,7 @@ describe('compactActionRulesNow', () => {
     const result = await compactActionRulesNow();
 
     expect(patchApplier.applyActionPatch).toHaveBeenCalledWith(COMPACT_DOC, COMPACT_PATCH);
-    expect(globalThis.browser.storage.local.set).toHaveBeenCalledWith({
-      'user_prompts:user_action.md': '# updated compact doc',
-    });
+    expect(committed()).toEqual(['# updated compact doc']);
     expect(result).toEqual({ ok: true, applied: 3 }); // 2 DEL + 1 ADD = 3 ops
 
     // Pin: success path fires user-action-prompt-updated notification
@@ -580,42 +574,101 @@ describe('compactActionRulesNow', () => {
 
   // (c) empty patch → no write, applied:0
   it('(c) empty patch {"patch":""} → no write to storage, applied:0', async () => {
-    promptGenerator.getUserActionPrompt.mockResolvedValue(COMPACT_DOC);
+    actionText.mockResolvedValue(COMPACT_DOC);
     llm.sendChat.mockResolvedValueOnce({ assistant: '{"patch":""}' });
     llm.processJSONResponse.mockReturnValueOnce({ patch: '' });
 
     const result = await compactActionRulesNow();
 
     expect(patchApplier.applyActionPatch).not.toHaveBeenCalled();
-    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+    expect(host.writes).toEqual([]);
     // reason is additive: empty string when the backend attaches no code
     expect(result).toEqual({ ok: true, applied: 0, reason: "" });
   });
 
-  // (d) drift → no write
-  it('(d) drift during backend call → no write, ok:false reason:"drift"', async () => {
-    let readCount = 0;
-    promptGenerator.getUserActionPrompt.mockImplementation(async () => {
-      readCount++;
-      return readCount === 1 ? COMPACT_DOC : COMPACT_DOC + '\n- extra rule added concurrently';
+  // (d) the rules change during the backend call → dropped, the user told
+  it('(d) rules changed during backend call → nothing saved, ok:false reason:"drift"', async () => {
+    actionText.mockResolvedValue(COMPACT_DOC);
+    llm.sendChat.mockImplementationOnce(async () => {
+      host.move();
+      return { assistant: JSON.stringify({ patch: COMPACT_PATCH }) };
     });
-    llm.sendChat.mockResolvedValueOnce({ assistant: JSON.stringify({ patch: COMPACT_PATCH }) });
     llm.processJSONResponse.mockReturnValueOnce({ patch: COMPACT_PATCH });
 
     const result = await compactActionRulesNow();
 
-    expect(patchApplier.applyActionPatch).not.toHaveBeenCalled();
-    expect(globalThis.browser.storage.local.set).not.toHaveBeenCalled();
+    expect(committed()).toEqual([]);
     expect(result).toEqual({ ok: false, reason: 'drift' });
   });
 
   // skips when user_action.md is empty
   it('returns {ok:true,applied:0} without calling backend when user_action.md is empty', async () => {
-    promptGenerator.getUserActionPrompt.mockResolvedValue('');
+    actionText.mockResolvedValue('');
 
     const result = await compactActionRulesNow();
 
     expect(llm.sendChat).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: true, applied: 0 });
+  });
+});
+
+// R32: a tag update or a Compact reads the action rules in one hold of the prompt semaphore and writes in
+// another, holding nothing across its backend call; a write whose rules changed since its read is dropped.
+describe('the action rules writers (DS-AI)', () => {
+  const RULES = '# My action rules';
+  const writers = {
+    'a tag update': () => autoUpdateUserPromptOnTag(123, 'reply', { source: 'test' }),
+    'a Compact': () => compactActionRulesNow(),
+  };
+
+  beforeEach(() => {
+    idb.get.mockImplementation(async (key) => {
+      if (key.startsWith('summary:')) return { [key]: { blurb: 'b', subject: 's', fromSender: 'f', todos: '' } };
+      if (key.startsWith('action:orig:')) return { [key]: 'archive' };
+      if (key.startsWith('action:userprompt:')) return { [key]: '' };
+      return {};
+    });
+    actionText.mockResolvedValue(RULES);
+    llm.processJSONResponse.mockImplementation((text) => JSON.parse(text));
+    patchApplier.applyActionPatch.mockImplementation((base) => `${base}\n- Patched`);
+  });
+
+  it.each(Object.keys(writers))('%s saves its patch with the change its read returned, holding nothing during the backend call', async (name) => {
+    llm.sendChat.mockImplementation(async () => {
+      expect(host.holder).toBeNull();
+      return { assistant: '{"patch":"ADD\\nsomething"}' };
+    });
+
+    await writers[name]();
+
+    expect(committed()).toEqual([`${RULES}\n- Patched`]);
+    expect(host.writes[0].change).toBe('change 0');
+    expect(host.acquires).toHaveLength(2);
+    expect(host.holder).toBeNull();
+  });
+
+  it.each(Object.keys(writers))('%s saves nothing when the action rules change during its backend call', async (name) => {
+    llm.sendChat.mockImplementation(async () => {
+      host.move();
+      return { assistant: '{"patch":"ADD\\nsomething"}' };
+    });
+
+    await writers[name]();
+
+    expect(committed()).toEqual([]);
+  });
+
+  it('every tag update of a bulk tagging runs and is saved, each reading what the one before saved', async () => {
+    let stored = RULES;
+    actionText.mockImplementation(async () => stored);
+    host.saved = async (message) => {
+      savedTexts.push(message.content);
+      stored = message.content;
+    };
+    llm.sendChat.mockResolvedValue({ assistant: '{"patch":"ADD\\nsomething"}' });
+
+    await Promise.all([1, 2, 3].map((id) => autoUpdateUserPromptOnTag(id, 'reply', { source: 'context-menu' })));
+
+    expect(committed()).toEqual([`${RULES}\n- Patched`, `${RULES}\n- Patched\n- Patched`, `${RULES}\n- Patched\n- Patched\n- Patched`]);
   });
 });

@@ -6,9 +6,43 @@
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { applyKBPatch } from "../../agent/modules/patchApplier.js";
-import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { editText, removeShownItem } from "../../agent/modules/promptStore.js";
 import { hashReminder } from "../../agent/modules/reminderStateStore.js";
 import { log, normalizeUnicode } from "../../agent/modules/utils.js";
+
+/** What the KB edit returns when no KB reminder matches: the email reminders are searched next. */
+const NO_KB_MATCH = Symbol("no KB match");
+
+/** Snoozes the one email reminder matching `text`, or says why none was. */
+async function deleteEmailReminder(text) {
+  const textLower = text.toLowerCase();
+  // No KB match — search email-reminders (message-based) and snooze if found
+  log(`[TMDBG Tools] reminder_del: no KB match, searching email-reminders...`);
+  try {
+    const { buildReminderList } = await import("../../agent/modules/reminderBuilder.js");
+    const { reminders } = await buildReminderList({ includeDisabled: false });
+
+    const messageMatches = reminders.filter(
+      r => r.source === "message" && (r.content || "").toLowerCase().includes(textLower)
+    );
+
+    if (messageMatches.length === 1) {
+      return await snoozeEmailReminder(messageMatches[0]);
+    }
+    if (messageMatches.length > 1) {
+      log(`[TMDBG Tools] reminder_del: ${messageMatches.length} matching email-reminders found`);
+      return {
+        error: `Multiple email reminders match '${text}'. Please be more specific.`,
+        matches: messageMatches.map(m => m.content),
+      };
+    }
+  } catch (e) {
+    log(`[TMDBG Tools] reminder_del: error searching email-reminders: ${e}`, "warn");
+  }
+
+  log(`[TMDBG Tools] reminder_del: no matching reminder found for '${text}'`, "warn");
+  return { error: `No reminder found matching '${text}'.` };
+}
 
 export async function run(args = {}, options = {}) {
   try {
@@ -21,88 +55,61 @@ export async function run(args = {}, options = {}) {
 
     log(`[TMDBG Tools] reminder_del: searching for reminder matching '${text.slice(0, 140)}'`);
 
-    // Load current KB
-    const current = (await getUserKBPrompt()) || "";
-    if (!current) {
-      log(`[TMDBG Tools] reminder_del: knowledge base is empty, will check email-reminders`, "debug");
-    }
-
-    // Find lines matching reminders that contain the search text
-    // Supports both old format "- Reminder:" and new format "- [Reminder]"
-    const lines = current.split("\n");
-    const textLower = text.toLowerCase();
-    const matches = [];
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      // Match lines that start with "- Reminder:" or "- [Reminder]" (KB list format)
-      if (/^-\s*(?:Reminder:|\[Reminder\])/i.test(trimmed)) {
-        // Check if the reminder content contains the search text (case-insensitive)
-        if (trimmed.toLowerCase().includes(textLower)) {
-          // Extract the raw statement (without leading "- ")
-          const statement = trimmed.replace(/^-\s*/, "");
-          matches.push(statement);
-        }
-      }
-    }
-
-    if (matches.length === 0) {
-      // No KB match — search email-reminders (message-based) and snooze if found
-      log(`[TMDBG Tools] reminder_del: no KB match, searching email-reminders...`);
-      try {
-        const { buildReminderList } = await import("../../agent/modules/reminderBuilder.js");
-        const { reminders } = await buildReminderList({ includeDisabled: false });
-
-        const messageMatches = reminders.filter(
-          r => r.source === "message" && (r.content || "").toLowerCase().includes(textLower)
-        );
-
-        if (messageMatches.length === 1) {
-          return await snoozeEmailReminder(messageMatches[0]);
-        }
-        if (messageMatches.length > 1) {
-          log(`[TMDBG Tools] reminder_del: ${messageMatches.length} matching email-reminders found`);
-          return {
-            error: `Multiple email reminders match '${text}'. Please be more specific.`,
-            matches: messageMatches.map(m => m.content),
-          };
-        }
-      } catch (e) {
-        log(`[TMDBG Tools] reminder_del: error searching email-reminders: ${e}`, "warn");
+    // `statement` is the reminder it deletes. From the Reminders tab, `options.labels` are the labels it
+    // showed for it: exactly those are deleted (DS-DISPLAYED), never re-found by text. Otherwise the KB is
+    // read, changed and saved in one hold of the prompt store.
+    let statement;
+    const shownLabels = Array.isArray(options?.labels);
+    if (shownLabels) statement = normalizeUnicode(options.labels[0]?.[1] ?? text);
+    const refused = shownLabels ? await removeShownItem("kb", "reminder_del", options.labels) : await editText("kb", "reminder_del", (current) => {
+      if (!current) {
+        log(`[TMDBG Tools] reminder_del: knowledge base is empty, will check email-reminders`, "debug");
       }
 
-      log(`[TMDBG Tools] reminder_del: no matching reminder found for '${text}'`, "warn");
-      return { error: `No reminder found matching '${text}'.` };
-    }
+      // Find lines matching reminders that contain the search text
+      // Supports both old format "- Reminder:" and new format "- [Reminder]"
+      const lines = current.split("\n");
+      const textLower = text.toLowerCase();
+      const matches = [];
 
-    if (matches.length > 1) {
-      log(`[TMDBG Tools] reminder_del: ${matches.length} matching reminders found, returning list for clarification`);
-      return {
-        error: `Multiple reminders match '${text}'. Please be more specific.`,
-        matches: matches.map(m => m.replace(/^(?:Reminder:\s*|\[Reminder\]\s*)/, "")),
-      };
-    }
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // Match lines that start with "- Reminder:" or "- [Reminder]" (KB list format)
+        if (/^-\s*(?:Reminder:|\[Reminder\])/i.test(trimmed)) {
+          // Check if the reminder content contains the search text (case-insensitive)
+          if (normalizeUnicode(trimmed).toLowerCase().includes(textLower)) {
+            // Extract the raw statement (without leading "- ")
+            const statement = trimmed.replace(/^-\s*/, "");
+            matches.push(statement);
+          }
+        }
+      }
 
-    // Exactly one match — delete it
-    const statement = matches[0];
-    log(`[TMDBG Tools] reminder_del: found match, deleting: '${statement.slice(0, 140)}'`);
+      // No KB match: the email reminders are searched after this hold (they read the KB themselves).
+      if (matches.length === 0) return NO_KB_MATCH;
 
-    const patchText = `DEL\n${statement}`;
-    const updated = applyKBPatch(current, patchText);
-    if (updated == null || updated === current) {
-      log(`[TMDBG Tools] reminder_del: applyKBPatch failed or no change`, "error");
-      return { error: "failed to delete reminder from knowledge base" };
-    }
+      if (matches.length > 1) {
+        log(`[TMDBG Tools] reminder_del: ${matches.length} matching reminders found, returning list for clarification`);
+        return {
+          error: `Multiple reminders match '${text}'. Please be more specific.`,
+          matches: matches.map(m => m.replace(/^(?:Reminder:\s*|\[Reminder\]\s*)/, "")),
+        };
+      }
 
-    // Persist
-    try {
-      const key = "user_prompts:user_kb.md";
-      await browser.storage.local.set({ [key]: updated });
-      log(`[TMDBG Tools] reminder_del: persisted user_kb.md (${updated.length} chars)`);
-    } catch (e) {
-      log(`[TMDBG Tools] reminder_del: failed to persist user_kb.md: ${e}`, "error");
-      return { error: "failed to persist knowledge base" };
-    }
+      // Exactly one match — delete it
+      statement = matches[0];
+      log(`[TMDBG Tools] reminder_del: found match, deleting: '${statement.slice(0, 140)}'`);
+
+      const patchText = `DEL\n${statement}`;
+      const updated = applyKBPatch(current, patchText);
+      if (updated == null || updated === current) {
+        log(`[TMDBG Tools] reminder_del: applyKBPatch failed or no change`, "error");
+        return { error: "failed to delete reminder from knowledge base" };
+      }
+      return { save: updated };
+    });
+    if (refused === NO_KB_MATCH) return await deleteEmailReminder(text);
+    if (refused) return refused;
 
     // Notify listeners
     try {

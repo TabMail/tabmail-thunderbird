@@ -4,7 +4,7 @@
 
 // promptsUtils.test.js — Tests for prompts/modules/utils.js
 //
-// Pure utility functions: deepClone, flashButton, flashBorder, showStatus, autoGrowTextarea
+// Pure utility functions: flashButton, flashBorder, showStatus, autoGrowTextarea
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -20,76 +20,11 @@ vi.mock('../agent/modules/utils.js', () => ({
 // Import module under test
 // ---------------------------------------------------------------------------
 
-const { deepClone, autoGrowTextarea, showStatus, flashButton, flashBorder } = await import('../prompts/modules/utils.js');
+const { autoGrowTextarea, showStatus, flashButton, flashBorder } = await import('../prompts/modules/utils.js');
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
-describe('deepClone', () => {
-  it('clones a simple object', () => {
-    const obj = { a: 1, b: 'hello' };
-    const cloned = deepClone(obj);
-    expect(cloned).toEqual(obj);
-    expect(cloned).not.toBe(obj);
-  });
-
-  it('clones nested objects', () => {
-    const obj = { a: { b: { c: 3 } } };
-    const cloned = deepClone(obj);
-    expect(cloned.a.b.c).toBe(3);
-    cloned.a.b.c = 99;
-    expect(obj.a.b.c).toBe(3); // original unchanged
-  });
-
-  it('clones arrays', () => {
-    const arr = [1, 2, [3, 4]];
-    const cloned = deepClone(arr);
-    expect(cloned).toEqual(arr);
-    cloned[2][0] = 99;
-    expect(arr[2][0]).toBe(3);
-  });
-
-  it('clones mixed objects and arrays', () => {
-    const obj = { items: [{ name: 'a' }, { name: 'b' }] };
-    const cloned = deepClone(obj);
-    expect(cloned.items).toHaveLength(2);
-    expect(cloned.items[0].name).toBe('a');
-    cloned.items[0].name = 'changed';
-    expect(obj.items[0].name).toBe('a');
-  });
-
-  it('handles null', () => {
-    expect(deepClone(null)).toBe(null);
-  });
-
-  it('handles empty object', () => {
-    expect(deepClone({})).toEqual({});
-  });
-
-  it('handles empty array', () => {
-    expect(deepClone([])).toEqual([]);
-  });
-
-  it('handles primitive values', () => {
-    expect(deepClone(42)).toBe(42);
-    expect(deepClone('hello')).toBe('hello');
-    expect(deepClone(true)).toBe(true);
-  });
-
-  it('does not preserve functions (JSON limitation)', () => {
-    const obj = { fn: () => 42, value: 1 };
-    const cloned = deepClone(obj);
-    expect(cloned.fn).toBeUndefined();
-    expect(cloned.value).toBe(1);
-  });
-
-  it('does not preserve Date objects (becomes string)', () => {
-    const obj = { date: new Date('2026-01-01') };
-    const cloned = deepClone(obj);
-    expect(typeof cloned.date).toBe('string');
-  });
-});
 
 describe('autoGrowTextarea', () => {
   it('sets height to auto then scrollHeight + 2', () => {

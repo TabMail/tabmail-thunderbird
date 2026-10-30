@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../agent/modules/utils.js', () => ({
   log: vi.fn(),
+  normalizeUnicode: (text) => text,
 }));
 
 vi.mock('../agent/modules/config.js', () => ({
@@ -42,10 +43,12 @@ vi.mock('../agent/modules/kbTaskParser.js', () => ({
 
 vi.mock('../agent/modules/kbReminderGenerator.js', () => ({
   getKBReminders: vi.fn(async () => []),
+  parseRemindersFromKB: vi.fn(() => []),
 }));
 
-vi.mock('../agent/modules/promptGenerator.js', () => ({
-  getUserKBPrompt: vi.fn(async () => ''),
+// The knowledge base's text and the labels it shows, read in one hold (DS-DISPLAYED).
+vi.mock('../agent/modules/promptStore.js', () => ({
+  readView: vi.fn(async () => ({ content: '', captured: [] })),
 }));
 
 vi.mock('../agent/modules/summaryGenerator.js', () => ({

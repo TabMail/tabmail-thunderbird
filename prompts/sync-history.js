@@ -56,23 +56,21 @@ async function loadSyncHistory() {
     // Sort by timestamp ascending; afterEntry = next snapshot (shows what this event changed)
     const sorted = [...entries].sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
 
-    // For the newest entry, use current live state as the "after"
+    // For the newest entry, use current live state as the "after". The three texts are read through the
+    // prompt store, in one hold, never from storage here.
     let liveState = null;
     try {
-      const KEYS = {
-        composition: "user_prompts:user_composition.md",
-        action: "user_prompts:user_action.md",
-        kb: "user_prompts:user_kb.md",
-        templates: "user_templates",
-      };
-      const live = await browser.storage.local.get(Object.values(KEYS));
-      liveState = {
-        composition: live[KEYS.composition] || "",
-        action: live[KEYS.action] || "",
-        kb: live[KEYS.kb] || "",
-        templatesJSON: JSON.stringify(live[KEYS.templates] || []),
-      };
-    } catch { /* ignore */ }
+      const { withPromptStore } = await import("../agent/modules/promptStore.js");
+      const texts = await withPromptStore(async (store) => ({
+        composition: await store.text("composition"),
+        action: await store.text("action"),
+        kb: await store.text("kb"),
+      }), { label: "history page" });
+      const live = await browser.storage.local.get({ user_templates: [] });
+      liveState = { ...texts, templatesJSON: JSON.stringify(live.user_templates || []) };
+    } catch (e) {
+      log(`Live state not read: ${e}`, "warn");
+    }
 
     for (let i = sorted.length - 1; i >= 0; i--) {
       const afterEntry = i < sorted.length - 1 ? sorted[i + 1] : liveState;

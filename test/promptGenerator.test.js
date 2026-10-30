@@ -5,6 +5,7 @@
 // promptGenerator.test.js — Tests for agent/modules/promptGenerator.js
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { promptStoreHost } from './support/promptStoreHost.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -17,6 +18,7 @@ vi.mock('../agent/modules/config.js', () => ({
     debugMode: false,
     logTruncateLength: 100,
     getFullDiag: {},
+    promptSemaphore: { leaseMs: 15000, retries: 2, retryBaseDelayMs: 1, retryJitterMs: 0 },
   },
 }));
 vi.mock('../agent/modules/thinkBuffer.js', () => ({
@@ -28,20 +30,15 @@ vi.mock('../agent/modules/templateManager.js', () => ({
   getTemplatesAsPrimedPrompt: vi.fn(async () => ''),
 }));
 
+// The texts are read through the real client side of the prompt store, against a stand-in for the
+// background (R32): `texts` is what each field reads; the getters never touch storage themselves.
+const host = promptStoreHost();
+const texts = {};
 const storageData = {};
 globalThis.browser = {
   storage: {
     local: {
-      get: vi.fn(async (key) => {
-        if (typeof key === 'string') {
-          return { [key]: storageData[key] || undefined };
-        }
-        const result = {};
-        for (const [k, def] of Object.entries(key)) {
-          result[k] = storageData[k] !== undefined ? storageData[k] : def;
-        }
-        return result;
-      }),
+      get: vi.fn(async () => ({ ...storageData })),
       set: vi.fn(async (obj) => {
         Object.assign(storageData, obj);
       }),
@@ -50,14 +47,9 @@ globalThis.browser = {
   },
   runtime: {
     getURL: vi.fn((p) => `moz-extension://fake/${p}`),
+    sendMessage: vi.fn(async (message) => host.answer(message)),
   },
 };
-
-// Mock fetch for template file loading
-globalThis.fetch = vi.fn(async () => ({
-  ok: true,
-  text: async () => 'Default prompt content\n====END USER INSTRUCTIONS====',
-}));
 
 const {
   getUserCompositionPrompt,
@@ -71,53 +63,32 @@ const {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  for (const key of Object.keys(storageData)) {
-    delete storageData[key];
-  }
+  host.clear();
+  for (const key of Object.keys(texts)) delete texts[key];
+  for (const key of Object.keys(storageData)) delete storageData[key];
+  host.text = async (field) => texts[field] ?? '';
 });
 
-describe('getUserCompositionPrompt', () => {
-  it('returns stored prompt if available', async () => {
-    storageData['user_prompts:user_composition.md'] = 'My custom prompt\n====END USER INSTRUCTIONS====';
-    const result = await getUserCompositionPrompt();
-    expect(result).toContain('My custom prompt');
+const GETTERS = [
+  ['composition', getUserCompositionPrompt, 'My custom prompt\n====END USER INSTRUCTIONS===='],
+  ['action', getUserActionPrompt, 'Action prompt content'],
+  ['kb', getUserKBPrompt, 'KB prompt content'],
+];
+
+describe.each(GETTERS)('the %s getter', (field, getter, text) => {
+  it('returns the text the prompt store reads, in one hold it releases', async () => {
+    texts[field] = text;
+    expect(await getter()).toContain(text.split('\n')[0]);
+    expect(host.read).toHaveBeenCalledWith(expect.objectContaining({ field }));
+    expect(host.release).toHaveBeenCalledTimes(1);
+    expect(host.holder).toBe(null);
   });
 
-  it('falls back to bundled template when not in storage', async () => {
-    const result = await getUserCompositionPrompt();
-    expect(typeof result).toBe('string');
+  it('writes nothing: neither the store nor storage', async () => {
+    texts[field] = text;
+    await getter();
+    expect(host.write).not.toHaveBeenCalled();
+    expect(browser.storage.local.set).not.toHaveBeenCalled();
+    expect(storageData).toEqual({});
   });
-});
-
-describe('getUserActionPrompt', () => {
-  it('returns stored prompt if available', async () => {
-    storageData['user_prompts:user_action.md'] = 'Action prompt content';
-    const result = await getUserActionPrompt();
-    expect(result).toBe('Action prompt content');
-  });
-
-  it('falls back to bundled template', async () => {
-    const result = await getUserActionPrompt();
-    expect(typeof result).toBe('string');
-  });
-});
-
-describe('getUserKBPrompt', () => {
-  it('returns stored prompt if available', async () => {
-    storageData['user_prompts:user_kb.md'] = 'KB prompt content';
-    const result = await getUserKBPrompt();
-    expect(result).toBe('KB prompt content');
-  });
-
-  it('falls back to bundled template', async () => {
-    const result = await getUserKBPrompt();
-    expect(typeof result).toBe('string');
-  });
-});
-
-it.each([getUserCompositionPrompt, getUserActionPrompt, getUserKBPrompt])('returns bundled defaults without publishing a synthetic local edit (%#)', async getter => {
-  const result = await getter();
-  expect(result).toContain('Default prompt content');
-  expect(browser.storage.local.set).not.toHaveBeenCalled();
-  expect(storageData).toEqual({});
 });

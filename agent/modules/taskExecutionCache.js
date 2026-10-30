@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// taskExecutionCache.js – In-memory + storage cache for task execution results
+// taskExecutionCache.js – Storage cache for task execution results
 // Thunderbird 145 MV3
 // Keyed by "{taskHash}_{YYYY-MM-DD}". Stores content, sessionId, and timestamp.
 
@@ -16,33 +16,28 @@ const MAX_ENTRIES_PER_TASK = 10;
 // GC threshold for orphaned entries (tasks no longer in KB)
 const GC_AGE_DAYS = 90;
 
-// In-memory mirror of storage cache
-let _memoryCache = null;
-
 /**
- * Load cache from storage into memory (lazy init).
+ * Load the cache from storage. Each operation reads its own copy: there is no shared in-memory copy, so a
+ * slow first read can never put an older copy over a newer one.
  * @returns {Promise<Object>} Cache map
  */
 async function loadCache() {
-  if (_memoryCache !== null) {
-    return _memoryCache;
-  }
   try {
     const stored = await browser.storage.local.get({ [STORAGE_KEY]: {} });
-    _memoryCache = stored[STORAGE_KEY] || {};
+    return stored[STORAGE_KEY] || {};
   } catch (e) {
     log(`[TaskCache] Error loading cache from storage: ${e}`, "error");
-    _memoryCache = {};
+    return {};
   }
-  return _memoryCache;
 }
 
 /**
- * Persist the in-memory cache to storage.
+ * Persist an operation's cache map to storage.
+ * @param {Object} cache - The cache map
  */
-async function saveCache() {
+async function saveCache(cache) {
   try {
-    await browser.storage.local.set({ [STORAGE_KEY]: _memoryCache });
+    await browser.storage.local.set({ [STORAGE_KEY]: cache });
   } catch (e) {
     log(`[TaskCache] Error saving cache to storage: ${e}`, "error");
   }
@@ -97,7 +92,7 @@ export async function setCachedResult(taskHash, dateStr, content, sessionId) {
   // Evict oldest entries if this taskHash has too many
   evictExcessEntries(cache, taskHash);
 
-  await saveCache();
+  await saveCache(cache);
   log(`[TaskCache] Cached result for ${key}`);
 }
 
@@ -156,7 +151,7 @@ export async function mergeIncomingCache(incomingMap) {
   }
 
   if (merged > 0) {
-    await saveCache();
+    await saveCache(cache);
   }
 
   log(`[TaskCache] CRDT merge: ${merged} entries adopted from ${Object.keys(incomingMap).length} incoming (local total: ${Object.keys(cache).length})`);
@@ -197,7 +192,7 @@ export async function gcOrphanedEntries(activeTaskHashes) {
   }
 
   if (removed > 0) {
-    await saveCache();
+    await saveCache(cache);
     log(`[TaskCache] GC removed ${removed} orphaned entries older than ${GC_AGE_DAYS} days`);
   }
 }

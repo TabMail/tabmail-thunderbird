@@ -2,16 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// signOut.test.js — Tests for supabaseAuth.signOut() security cleanup
-//
-// Verifies that signing out clears ALL user-specific data:
-// - Supabase session token
-// - Device sync transport
-// - User prompts, templates, task cache
-// - Device sync state (timestamps, peer base, auto-enabled)
-// - Prompt history
-// - IndexedDB AI cache (summaries, actions, replies)
-// - Consent and calendar state
+// signOut.test.js — supabaseAuth.signOut() (R34): it removes the session and the consent flag (the
+// signed-out account's status) and deletes nothing else. The prompts, templates, history, Device Sync
+// state, settings and the AI cache stay: they are this device's (DS-DEVICE). It closes the Device Sync
+// transport and never waits for the prompt semaphore.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
@@ -84,15 +78,6 @@ vi.mock("../agent/modules/deviceSync.js", () => ({
   setupStorageListener: vi.fn(),
 }));
 
-// Mock idbStorage — track calls to clear
-const mockIdbClear = vi.fn(async () => {});
-vi.mock("../agent/modules/actionCache.js", () => ({
-  wipeAll: mockIdbClear,
-  get: vi.fn(async () => ({})),
-  set: vi.fn(async () => {}),
-  remove: vi.fn(async () => {}),
-}));
-
 // ─── Import after mocks ─────────────────────────────────────────────────────
 
 const { signOut, getSession } = await import(
@@ -101,7 +86,20 @@ const { signOut, getSession } = await import(
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe("signOut security cleanup", () => {
+/** Every key Device Sync carries (deviceSync.js FIELD_KEYS and TIMESTAMP_KEYS), read from its source so a
+ * newly synced field is counted too. */
+function deviceSyncKeys() {
+  const source = readFileSync(new URL("../agent/modules/deviceSync.js", import.meta.url), "utf8");
+  const ast = parse(source, { ecmaVersion: "latest", sourceType: "module" });
+  const objectValues = (name) => {
+    const decl = ast.body.flatMap((node) => node.type === "VariableDeclaration" ? node.declarations : [])
+      .find((d) => d.id.name === name);
+    return decl.init.properties.map((p) => p.value.value);
+  };
+  return [...objectValues("FIELD_KEYS"), ...objectValues("TIMESTAMP_KEYS")];
+}
+
+describe("signOut (R34)", () => {
   beforeEach(() => {
     clearStorage();
     vi.clearAllMocks();
@@ -117,146 +115,46 @@ describe("signOut security cleanup", () => {
     expect(session).toBeNull();
   });
 
-  it("calls cleanupDeviceSync to disconnect the transport", async () => {
+  it("closes the Device Sync transport and never reaches the prompt store, so it never waits for it", async () => {
     setStorage({ supabaseSession: { access_token: "tok" } });
 
-    await signOut();
+    expect(await signOut()).toBe(true);
 
     expect(mockCleanupDeviceSync).toHaveBeenCalledTimes(1);
+    const source = readFileSync(new URL("../agent/modules/supabaseAuth.js", import.meta.url), "utf8");
+    expect(source).not.toMatch(/promptStore/);
   });
 
-  it("waits for parent transport cleanup before clearing synced data", async () => {
-    let release;
-    const key = "user_prompts:user_action.md";
-    setStorage({ [key]: "synthetic rules" });
-    mockCleanupDeviceSync.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
-    const pending = signOut();
-    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
-    expect(storageData[key]).toBe("synthetic rules");
-    expect(mockIdbClear).not.toHaveBeenCalled();
-    release();
-    expect(await pending).toBe(true);
-    expect(storageData[key]).toBeUndefined();
-    expect(mockIdbClear).toHaveBeenCalledOnce();
-  });
-
-  it("clears IndexedDB AI cache", async () => {
-    setStorage({ supabaseSession: { access_token: "tok" } });
-
-    await signOut();
-
-    expect(mockIdbClear).toHaveBeenCalledTimes(1);
-  });
-
-  it("clears all user prompt storage keys", async () => {
-    const userPromptKeys = {
-      "user_prompts:user_composition.md": "my composition",
-      "user_prompts:user_action.md": "my action",
-      "user_prompts:user_kb.md": "my kb",
-      "user_templates": '{"t1": "template"}',
-      "disabled_reminders_v2": '["r1"]',
-      "task_execution_cache": '{"c1": "cached"}',
-    };
-    setStorage({ supabaseSession: { access_token: "tok" }, ...userPromptKeys });
-
-    await signOut();
-
-    for (const key of Object.keys(userPromptKeys)) {
-      expect(storageData[key]).toBeUndefined();
-    }
-  });
-
-  it("clears all device sync state keys", async () => {
-    const syncKeys = {
-      "device_sync_auto_enabled": true,
-      "device_sync_backups": "{}",
-      "device_sync_ts:composition": "2026-01-01T00:00:00Z",
-      "device_sync_ts:action": "2026-01-01T00:00:00Z",
-      "device_sync_ts:kb": "2026-01-01T00:00:00Z",
-      "device_sync_ts:templates": "2026-01-01T00:00:00Z",
-      "device_sync_ts:disabledReminders": "2026-01-01T00:00:00Z",
-      "device_sync_ts:taskCache": "2026-01-01T00:00:00Z",
-      "device_sync_ts:actionConfig": "2026-01-01T00:00:00Z",
-    };
-    setStorage({ supabaseSession: { access_token: "tok" }, ...syncKeys });
-
-    await signOut();
-
-    for (const key of Object.keys(syncKeys)) {
-      expect(storageData[key]).toBeUndefined();
-    }
-  });
-
-  it("clears every Device Sync field value and timestamp key, so none reaches the next account", async () => {
-    // Census from deviceSync.js itself: a newly synced field cannot be forgotten here.
-    const source = readFileSync(new URL("../agent/modules/deviceSync.js", import.meta.url), "utf8");
-    const ast = parse(source, { ecmaVersion: "latest", sourceType: "module" });
-    const objectValues = (name) => {
-      const decl = ast.body.flatMap((node) => node.type === "VariableDeclaration" ? node.declarations : [])
-        .find((d) => d.id.name === name);
-      return decl.init.properties.map((p) => p.value.value);
-    };
-    const keys = [...objectValues("FIELD_KEYS"), ...objectValues("TIMESTAMP_KEYS")];
-    expect(keys).toContain("user_prompts:action_config");
+  it("deletes nothing but the session and the consent flag: every synced field, its state, the history and the settings stay", async () => {
+    const keys = deviceSyncKeys();
+    expect(keys).toContain("user_prompts:user_kb.md");
+    expect(keys).toContain("user_templates");
     expect(keys).toContain("device_sync_ts:actionConfig");
     const ts = new Date().toISOString();
-    setStorage({ supabaseSession: { access_token: "tok" }, ...Object.fromEntries(keys.map((k) => [k, ts])) });
-
-    await signOut();
-
-    for (const key of keys) {
-      expect(storageData[key], key).toBeUndefined();
-    }
-  });
-
-  it("clears all peer base state keys", async () => {
-    const peerBaseKeys = {
-      "device_peer_base:composition": "base text",
-      "device_peer_base:action": "base action",
-      "device_peer_base:kb": "base kb",
-      "device_peer_base_ts:composition": "2026-01-01T00:00:00Z",
-      "device_peer_base_ts:action": "2026-01-01T00:00:00Z",
-      "device_peer_base_ts:kb": "2026-01-01T00:00:00Z",
-    };
-    setStorage({ supabaseSession: { access_token: "tok" }, ...peerBaseKeys });
-
-    await signOut();
-
-    for (const key of Object.keys(peerBaseKeys)) {
-      expect(storageData[key]).toBeUndefined();
-    }
-  });
-
-  it("clears prompt history", async () => {
-    setStorage({
-      supabaseSession: { access_token: "tok" },
+    const kept = {
+      ...Object.fromEntries(keys.map((k) => [k, ts])),
+      "bullet_state:kb": { bullets: [] },
+      "bullet_state:composition": { bullets: [] },
+      "bullet_state:action": { bullets: [] },
+      "device_sync_auto_enabled": true,
+      "device_sync_backups": "{}",
       "prompt_history": '[{"ts": 1}]',
       "prompt_history_migrated": true,
-    });
-
-    await signOut();
-
-    expect(storageData["prompt_history"]).toBeUndefined();
-    expect(storageData["prompt_history_migrated"]).toBeUndefined();
-  });
-
-  it("clears consent state but PRESERVES the default calendar", async () => {
-    // defaultCalendarId points at a LOCAL Thunderbird calendar (not sensitive
-    // account data) — clearing it just nagged the user to reconfigure after
-    // every sign-out, and auto-detect can't recover a calendar with no
-    // organizer_email. It must survive sign-out (like defaultAddressBookId).
-    setStorage({
-      supabaseSession: { access_token: "tok" },
-      "tabmailConsentRequired": false,
       "defaultCalendarId": "cal-123",
       "defaultAddressBookId": "ab-9",
-    });
+      "some_unrelated_key": "keep me",
+    };
+    setStorage({ supabaseSession: { access_token: "tok" }, tabmailConsentRequired: false, ...kept });
 
-    await signOut();
+    expect(await signOut()).toBe(true);
 
-    expect(storageData["tabmailConsentRequired"]).toBeUndefined();
-    expect(storageData["defaultCalendarId"]).toBe("cal-123");
-    expect(storageData["defaultAddressBookId"]).toBe("ab-9");
+    expect(storageData).toEqual(kept);
+    expect(browserMock.storage.local.remove.mock.calls.flat(2).sort()).toEqual(["supabaseSession", "tabmailConsentRequired"]);
+  });
+
+  it("never clears the AI cache: sign-out does not reach the action cache", () => {
+    const source = readFileSync(new URL("../agent/modules/supabaseAuth.js", import.meta.url), "utf8");
+    expect(source).not.toMatch(/actionCache/);
   });
 
   it("returns true even if deviceSync cleanup fails", async () => {
@@ -271,27 +169,5 @@ describe("signOut security cleanup", () => {
     // Session should still be cleared
     const session = await getSession();
     expect(session).toBeNull();
-  });
-
-  it("returns true even if IndexedDB clear fails", async () => {
-    mockIdbClear.mockRejectedValueOnce(new Error("IDB error"));
-    setStorage({ supabaseSession: { access_token: "tok" } });
-
-    const result = await signOut();
-
-    expect(result).toBe(true);
-  });
-
-  it("does not clear unrelated storage keys", async () => {
-    setStorage({
-      supabaseSession: { access_token: "tok" },
-      "some_unrelated_key": "keep me",
-      "another_key": 42,
-    });
-
-    await signOut();
-
-    expect(storageData["some_unrelated_key"]).toBe("keep me");
-    expect(storageData["another_key"]).toBe(42);
   });
 });

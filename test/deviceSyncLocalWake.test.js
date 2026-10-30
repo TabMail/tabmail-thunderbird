@@ -1,14 +1,27 @@
-import { expect, it, vi, afterEach } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parse } from 'acorn';
+import { SYNC_FIELDS } from '../agent/modules/bullets.js';
+import { BulletDevice, BulletRelay, DeviceStore, storeStates } from './support/bulletDevices.js';
 
 afterEach(() => vi.useRealTimers());
 async function harness({ enabled = true, connectEarly = true, failFirstAdd = false, fullStartup = false, asyncDelivery = false } = {}) {
   vi.useFakeTimers();
   const listeners = new Set(), stored = { device_sync_auto_enabled: enabled }, sent = [];
   let adds = 0;
-  const startupLogs = [], syncLogs = [];
+  const startupLogs = [], syncLogs = [], bulletCalls = [];
+  // The bullet fields' engine (promptStore.js), recorded: what this file checks is the wake and
+  // registration of the storage listener, which carries the other fields.
+  const promptStore = {
+    outgoingBulletState: async (field) => { bulletCalls.push(['outgoing', field]); return { kind: 'messages', messages: [] }; },
+    receiveLegacyPromptState: async () => [],
+    receiveBulletState: async () => ({ kind: 'ignored' }),
+    bulletSyncDisconnected: () => bulletCalls.push(['disconnected']),
+    // The connect send, through one hold, and the storage listener's history record, in a hold of its own.
+    sendBulletState: async (fields) => { for (const field of fields) await promptStore.outgoingBulletState(field); },
+    withPromptStore: async (body) => body({ recordHistory: async () => {} }),
+  };
   let finishStartup;
   const startupDone = new Promise(resolve => { finishStartup = resolve; });
   const onChanged = { addListener: fn => { if (failFirstAdd && ++adds === 1) throw new Error("synthetic registration failure"); listeners.add(fn); }, removeListener: fn => listeners.delete(fn) };
@@ -35,14 +48,14 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
   const browser = api();
   function evaluate(file, supplied = {}) {
     let source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
-    const scope = { console: {log(){},warn(){},error(){}}, Date, performance, browser, crypto: globalThis.crypto,
+    const scope = { console: {log(){},warn(){},error(){}}, Date, performance, browser, crypto: globalThis.crypto, SYNC_FIELDS,
       dynamicImport: async path => {
         if (path === "./taskExecutionCache.js") return {getAllCachedResults: async () => ({})};
-        if (path === "./bulletMerge.js") return import("../agent/modules/bulletMerge.js");
+        if (path === "./promptStore.js") return promptStore;
         throw new Error(`Unexpected fixture import: ${path}`);
       },
       window: {}, navigator: {}, setTimeout, clearTimeout, setInterval, clearInterval,
-      log(message){ syncLogs.push(message); }, SETTINGS: {}, ...supplied };
+      log(message){ syncLogs.push(message); }, SETTINGS: { deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: 2000, maxWaitingReceives: 256, historyDebounceMs: 2000 } }, ...supplied };
     const ast = parse(source, {ecmaVersion:'latest',sourceType:'module'});
     const edits = [];
     for (const node of ast.body) {
@@ -83,10 +96,7 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
     await startupDone;
     await vi.advanceTimersByTimeAsync(1);
   }
-  return {sync,stored,sent,listeners,evaluate,startupLogs,syncLogs,overrides,async writeKB(value) {
-    stored["user_prompts:user_kb.md"] = value;
-    for (const listener of [...listeners]) listener({"user_prompts:user_kb.md":{newValue:value}}, "local");
-  },async edit() {
+  return {sync,stored,sent,listeners,evaluate,startupLogs,syncLogs,overrides,bulletCalls,async edit() {
     const value=[{id:'synthetic-template',name:'Synthetic local edit'}];
     stored.user_templates=value;
     for (const listener of [...listeners]) await listener({user_templates:{newValue:value}},'local');
@@ -148,57 +158,16 @@ it('preserves edit timestamps when disconnect occurs before the broadcast deboun
   expect(h.sent).toEqual([]);
 });
 
-it('timestamps and records paused edits, then sends the newer KB to a peer on resume', async () => {
-  const local = await harness(), peer = await harness();
-  const previous = '2020-01-01T00:00:00.000Z';
-  peer.stored['user_prompts:user_kb.md'] = 'Old KB';
-  peer.stored['device_sync_ts:kb'] = previous;
-  peer.stored['device_peer_base:kb'] = 'Old KB';
-  peer.stored['device_peer_base_ts:kb'] = previous;
-  await local.sync.setAutoEnabled(false);
-  await local.writeKB('New paused KB');
-  await vi.advanceTimersByTimeAsync(2000);
-  expect(local.sent).toEqual([]);
-  expect(local.stored['device_sync_ts:kb'] > previous).toBe(true);
-  expect(local.stored.prompt_history).toEqual(expect.arrayContaining([
-    expect.objectContaining({source:'local_edit', fields:['kb'], kb:'New paused KB'}),
-  ]));
-  await local.sync.setAutoEnabled(true);
-  await local.sync.handleMessage(JSON.stringify({type:'connected',userId:'synthetic'}));
-  const message = local.sent.find(message => message.type === 'prompt_state');
-  expect(message.data.kb).toBe('New paused KB');
-  await peer.sync.handleMessage(JSON.stringify(message));
-  expect(peer.stored['user_prompts:user_kb.md']).toBe('New paused KB');
-});
-
-it('keeps a never-synced newer paused edit when an older peer state arrives', async () => {
-  const local = await harness({enabled:false});
-  await local.writeKB('New unsynced KB');
-  await vi.advanceTimersByTimeAsync(500);
-  await local.sync.setAutoEnabled(true);
-  await local.sync.handleMessage(JSON.stringify({type:'prompt_state',data:{kb:'Old peer KB',kb_updated_at:'2020-01-01T00:00:00.000Z'}}));
-  expect(local.stored['user_prompts:user_kb.md']).toBe('New unsynced KB');
-});
-
-it('does not reconnect or send when paused during the edit debounce', async () => {
-  const h = await harness();
-  await h.writeKB('Pause before send');
-  await h.sync.setAutoEnabled(false);
-  const reconnect = vi.spyOn(h.sync, 'connect');
-  await vi.advanceTimersByTimeAsync(500);
-  expect(reconnect).not.toHaveBeenCalled();
-  expect(h.sent).toEqual([]);
-  expect(h.stored['device_sync_ts:kb']).toEqual(expect.any(String));
-});
-
-it('ignores other storage areas and unrelated keys', async () => {
+it('never timestamps, records or sends a change of the bullet fields\' own keys, another area or an unrelated key', async () => {
   const h = await harness();
   for (const listener of h.listeners) {
+    listener({'user_prompts:user_kb.md':{newValue:'Local markdown'}, 'bullet_state:kb':{newValue:{bullets:[],seen:{}}}}, 'local');
+    listener({'user_prompts:user_composition.md':{newValue:'Local markdown'}}, 'local');
     listener({'user_prompts:user_kb.md':{newValue:'Other area'}}, 'sync');
     listener({unrelated:{newValue:true}}, 'local');
   }
   await vi.advanceTimersByTimeAsync(2000);
-  expect(h.stored['device_sync_ts:kb']).toBeUndefined();
+  expect(Object.keys(h.stored).filter(key => key.startsWith('device_sync_ts:'))).toEqual([]);
   expect(h.stored.prompt_history).toBeUndefined();
   expect(h.sent).toEqual([]);
 });
@@ -210,62 +179,19 @@ it('finishes real startup without turning a bundled KB default into a peer-overw
   expect(local.stored.reminder_kb_list).toBeDefined();
   expect(local.stored['user_prompts:user_kb.md']).toBeUndefined();
   expect(local.stored['device_sync_ts:kb']).toBeUndefined();
-  const peer = await harness();
-  peer.stored['user_prompts:user_kb.md'] = 'Customized peer KB';
-  peer.stored['device_sync_ts:kb'] = '2020-01-01T00:00:00.000Z';
-  peer.stored['device_peer_base:kb'] = 'Customized peer KB';
-  peer.stored['device_peer_base_ts:kb'] = '2020-01-01T00:00:00.000Z';
   await local.sync.handleMessage(JSON.stringify({type:'connected',userId:'synthetic'}));
+  // The other fields are asked for; the bullet fields are sent as labelled bullets, never asked for.
   expect(local.sent.map(message => message.type)).toEqual(['request_state']);
-  await peer.sync.handleMessage(JSON.stringify(local.sent[0]));
-  await local.sync.handleMessage(JSON.stringify(peer.sent.at(-1)));
-  expect(peer.stored['user_prompts:user_kb.md']).toBe('Customized peer KB');
-  expect(local.stored['user_prompts:user_kb.md']).toBe('Customized peer KB');
+  expect(local.sent[0].fields.filter(field => SYNC_FIELDS.includes(field))).toEqual([]);
+  expect(local.bulletCalls.filter(([call]) => call === 'outgoing').map(([, field]) => field)).toEqual(SYNC_FIELDS);
 });
 
 it('retries a failed early subscription through completed startup with one owner', async () => {
   const h = await harness({fullStartup:true,failFirstAdd:true});
   expect(h.listeners.size).toBe(1);
-  await h.writeKB('Edit after startup retry');
-  await vi.advanceTimersByTimeAsync(500);
+  const value = await h.edit();
   expect(h.sent).toHaveLength(1);
-  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{kb:'Edit after startup retry'}});
-});
-
-it('keeps remote timestamps under asynchronous delivery and preserves a newer paused peer edit', async () => {
-  const local = await harness({asyncDelivery:true});
-  const peer = await harness({enabled:false});
-  const now = Date.now();
-  const incoming = new Date(now - 60000).toISOString();
-  vi.setSystemTime(now + 10000);
-  await peer.writeKB('Newer synthetic peer edit');
-  await vi.advanceTimersByTimeAsync(600);
-  vi.setSystemTime(now + 20000);
-  await local.sync.handleMessage(JSON.stringify({type:'prompt_state',data:{kb:'Older synthetic peer edit',kb_updated_at:incoming}}));
-  await vi.advanceTimersByTimeAsync(2500);
-  expect(local.stored['device_sync_ts:kb']).toBe(incoming);
-  expect(local.sent.filter(m=>m.type==='prompt_state')).toEqual([]);
-  expect((local.stored.prompt_history || []).map(h=>h.source)).toEqual(['sync_receive']);
-  await peer.sync.setAutoEnabled(true);
-  await local.sync.handleMessage(JSON.stringify({type:'request_state',fields:['kb']}));
-  const response=local.sent.filter(m=>m.type==='prompt_state').at(-1);
-  expect(response).toBeDefined();
-  await peer.sync.handleMessage(JSON.stringify(response));
-  expect(peer.stored['user_prompts:user_kb.md']).toBe('Newer synthetic peer edit');
-});
-
-it('keeps reset at epoch zero without broadcasting defaults over peer customization', async () => {
-  const local=await harness({asyncDelivery:true});
-  const peer=await harness();
-  const timestamp=new Date(Date.now()-3600000).toISOString();
-  Object.assign(peer.stored,{'user_prompts:user_kb.md':'- Synthetic custom rule','device_sync_ts:kb':timestamp,'device_peer_base:kb':'- Synthetic custom rule','device_peer_base_ts:kb':timestamp});
-  await local.sync.resetFieldToDefault('kb','Synthetic bundled default');
-  await vi.advanceTimersByTimeAsync(2500);
-  expect(local.stored['device_sync_ts:kb']).toBe(new Date(0).toISOString());
-  expect(local.sent.map(m=>m.type)).toEqual(['request_state']);
-  expect((local.stored.prompt_history || []).some(h=>h.source==='local_edit')).toBe(false);
-  for(const message of local.sent.filter(m=>m.type==='prompt_state')) await peer.sync.handleMessage(JSON.stringify(message));
-  expect(peer.stored['user_prompts:user_kb.md']).toBe('- Synthetic custom rule');
+  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{templates:value}});
 });
 
 it('contains a first-wake reconnect failure and publishes the preserved edit after reconnect', async () => {
@@ -279,4 +205,194 @@ it('contains a first-wake reconnect failure and publishes the preserved edit aft
   await h.sync.connect();
   await h.sync.handleMessage(JSON.stringify({type:'connected',userId:'synthetic'}));
   expect(h.sent.find(m=>m.type==='prompt_state')?.data?.templates).toEqual(value);
+});
+
+// The bullet fields (knowledge base, composition, action) on simulated devices: the real deviceSync.js,
+// promptStore.js and the engine, in a process each.
+describe('the bullet fields while sync is off, at startup and on reset', () => {
+  const OLDER = '2020-01-01T00:00:00.000Z';
+
+  async function devices(...ids) {
+    vi.useFakeTimers();
+    const relay = new BulletRelay();
+    const started = [];
+    for (const id of ids) started.push(await new BulletDevice(id, new DeviceStore(), relay).start());
+    return { relay, devices: started };
+  }
+
+  async function quiesce(relay) {
+    while (await relay.deliverOldest());
+  }
+
+  async function texts(device, field = 'kb') {
+    return (await device.state(field)).bullets.map((bullet) => bullet.text);
+  }
+
+  const wakeCommits = [
+    ['an add', (device, text) => device.add('kb', '', text)],
+    ['a save of the prompts page', async (device, text) => {
+      // The page shows the field read in one hold, and saves against the labels it showed (DS-DISPLAYED).
+      const page = device.page(['prompts/modules/markdown.js', 'prompts/modules/storage.js']);
+      const view = await page.require('agent/modules/promptStore.js').readView('kb');
+      await page.require('prompts/modules/storage.js').editShown('kb', view, (content) => `${content}\n- ${text}`);
+    }],
+  ];
+
+  /** DS-SEND: the parent keeps the socket while the background page sleeps, and a woken background
+   * commits before its startup re-attaches to it. The commit is sent, once. */
+  it.each(wakeCommits)('sends %s made right after the background wakes, before startup reconnects it', async (_, commit) => {
+    const { relay, devices: [a, b] } = await devices('A', 'B');
+    await a.connect();
+    await b.connect();
+    await quiesce(relay);
+    await a.start();
+    const before = relay.sent('A', 'kb');
+    await commit(a, 'Typed right after the wake');
+    await quiesce(relay);
+    expect(relay.sent('A', 'kb')).toBe(before + 1);
+    expect(await texts(b)).toContain('Typed right after the wake');
+  });
+
+  /** ...and with the parent's socket closed, a woken background's commit is kept and no send is tried. */
+  it.each(wakeCommits)('tries no send of %s made right after a wake while the socket is closed', async (_, commit) => {
+    const { relay, devices: [a, b] } = await devices('A', 'B');
+    await a.connect();
+    await b.connect();
+    await quiesce(relay);
+    relay.leave('A');
+    await a.start();
+    const before = relay.sent('A', 'kb');
+    const logged = a.logs.length;
+    await commit(a, 'Typed right after the wake');
+    await quiesce(relay);
+    expect(relay.sent('A', 'kb')).toBe(before);
+    expect(a.logs.slice(logged).filter((entry) => entry.message.includes('could not be sent'))).toEqual([]);
+    expect(await texts(a)).toContain('Typed right after the wake');
+    expect(await texts(b)).not.toContain('Typed right after the wake');
+  });
+
+  /** The parent's answer is not kept: sync turned off while a woken background waits for it stays off,
+   * and nothing is sent or tried. */
+  it('sends nothing, and stays disconnected, when sync is turned off while a woken background asks the parent', async () => {
+    const { relay, devices: [a, b] } = await devices('A', 'B');
+    await a.connect();
+    await b.connect();
+    await quiesce(relay);
+    await a.start();
+    const transport = a.realm.context.browser.tmDeviceSync;
+    const getState = transport.getState;
+    let release;
+    let asked;
+    const askedOnce = new Promise((resolve) => { asked = resolve; });
+    transport.getState = () => {
+      transport.getState = getState;
+      asked();
+      return new Promise((resolve) => { release = () => resolve('open'); });
+    };
+    const before = relay.sent('A', 'kb');
+    const adding = a.add('kb', '', 'Typed while sync goes off');
+    await askedOnce;
+    await a.sync.setAutoEnabled(false);
+    release();
+    await adding;
+    await quiesce(relay);
+    expect(relay.sent('A', 'kb')).toBe(before);
+    expect(relay.closedSends.filter(({ from }) => from === 'A')).toEqual([]);
+    expect(a.sync.isConnected()).toBe(false);
+    expect(await texts(a)).toContain('Typed while sync goes off');
+  });
+
+  /** Only an open socket is sent on: a parent still connecting or retrying gets nothing. */
+  it.each(['connecting', 'retrying'])('a woken background whose parent answers %s tries no send', async (state) => {
+    const { relay, devices: [a, b] } = await devices('A', 'B');
+    await a.connect();
+    await b.connect();
+    await quiesce(relay);
+    await a.start();
+    const transport = a.realm.context.browser.tmDeviceSync;
+    const getState = transport.getState;
+    transport.getState = async () => state;
+    try {
+      const before = relay.sent('A', 'kb');
+      await a.add('kb', '', 'Typed while it connects');
+      await quiesce(relay);
+      expect(relay.sent('A', 'kb')).toBe(before);
+      expect(relay.closedSends.filter(({ from }) => from === 'A')).toEqual([]);
+      expect(await texts(b)).not.toContain('Typed while it connects');
+    } finally {
+      transport.getState = getState;
+    }
+  });
+
+  it('keeps an edit made while sync is off, records it, sends nothing, and sends it as labelled bullets once sync is back on', async () => {
+    const { relay, devices: [a, b] } = await devices('A', 'B');
+    await b.connect();
+    await a.sync.setAutoEnabled(false);
+    await a.add('kb', '', 'Paused fact');
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(relay.isConnected('A')).toBe(false);
+    expect(relay.sent('A', 'kb')).toBe(0);
+    expect(a.store.values.prompt_history).toEqual([expect.objectContaining({ source: 'local_edit', fields: ['kb'] })]);
+
+    await a.sync.setAutoEnabled(true);
+    expect(relay.isConnected('A')).toBe(true);
+    await a.receive({ type: 'connected', userId: 'synthetic-user' });
+    await quiesce(relay);
+    expect(await texts(b)).toContain('Paused fact');
+  });
+
+  it('turning sync off sends nothing for a later edit and does not reconnect', async () => {
+    const { relay, devices: [a, b] } = await devices('A', 'B');
+    await a.connect();
+    await b.connect();
+    await quiesce(relay);
+    const before = relay.sent('A', 'kb');
+    await a.sync.setAutoEnabled(false);
+    await a.add('kb', '', 'Edit after pausing');
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(relay.isConnected('A')).toBe(false);
+    expect(relay.sent('A', 'kb')).toBe(before);
+    expect(await texts(b)).not.toContain('Edit after pausing');
+  });
+
+  it('a released device\'s older knowledge base arriving after an unsynced edit only adds its bullets', async () => {
+    const { devices: [a] } = await devices('A');
+    await a.sync.setAutoEnabled(false);
+    await a.add('kb', '', 'Unsynced fact');
+    await a.receive({ type: 'prompt_state', data: { kb: '- Older peer fact', kb_updated_at: OLDER } });
+    expect(await texts(a)).toEqual(expect.arrayContaining(['Unsynced fact', 'Older peer fact']));
+  });
+
+  it('a new install\'s defaults never overwrite a peer\'s customized knowledge base', async () => {
+    const relay = new BulletRelay();
+    vi.useFakeTimers();
+    const store = new DeviceStore();
+    // The peer deleted every default and wrote its own.
+    storeStates(store, { kb: { bullets: [['', 'Customized peer fact', 'aaaaaaaaaaaaaaaa', 1]], seen: { aaaaaaaaaaaaaaaa: 1, 'default:kb-1': 1, 'default:kb-2': 1, 'default:kb-3': 1 } } });
+    const peer = await new BulletDevice('P', store, relay).start();
+    const fresh = await new BulletDevice('N', new DeviceStore(), relay).start();
+    await peer.connect();
+    await fresh.connect();
+    await quiesce(relay);
+    expect(await texts(peer)).toEqual(['Customized peer fact']);
+    expect(await texts(fresh)).toEqual(['Customized peer fact']);
+    // Nothing went out in the released format but the bullet fields empty at epoch zero.
+    for (const { message } of relay.legacy.filter(({ message }) => message.type === 'prompt_state')) {
+      for (const field of SYNC_FIELDS) expect(message.data[field] ?? '').toBe('');
+    }
+  });
+
+  it('a reset sends the defaults, records the state it replaced, and a peer\'s own bullets stay on both devices', async () => {
+    const { relay, devices: [a, b] } = await devices('A', 'B');
+    await a.connect();
+    await b.connect();
+    await b.add('kb', '', 'Synthetic custom rule');
+    await quiesce(relay);
+    expect(await texts(a)).toContain('Synthetic custom rule');
+    await a.reset('kb');
+    await quiesce(relay);
+    expect(a.store.values.prompt_history.map((entry) => entry.source)).toContain('reset');
+    for (const device of [a, b]) expect(await texts(device)).toContain('Synthetic custom rule');
+    for (const { message } of relay.legacy.filter(({ from, message }) => from === 'A' && message.type === 'prompt_state')) expect(message.data.kb ?? '').toBe('');
+  });
 });

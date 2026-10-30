@@ -2,318 +2,145 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// promptsMarkdown.test.js — Tests for prompts/modules/markdown.js
-//
-// Pure functions: parseMarkdown, reconstructMarkdown
-// These handle the structured markdown format for user prompt editing.
+// promptsMarkdown.test.js — prompts/modules/markdown.js: how the prompts page reads a stored text into
+// the sections it shows (pageSections), and the one-line changes it makes to it (removeItem, addItems,
+// replaceItems). Each change touches exactly the line or section acted on; every other line, the field's
+// head and footer included, comes back byte for byte.
 
-import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+import { addItems, pageSections, removeItem, replaceItems } from '../prompts/modules/markdown.js';
 
-const { parseMarkdown, reconstructMarkdown } = await import('../prompts/modules/markdown.js');
+const END = '====END USER INSTRUCTIONS====';
+const header = (name) => `# ${name} (DO NOT EDIT/DELETE THIS SECTION HEADER)`;
+const bundled = (field) => readFileSync(new URL(`../prompts/user_${field}.md`, import.meta.url), 'utf8');
+const items = (section) => section.items.map((item) => item.text);
+const shown = (field, text) => pageSections(field, text).map((section) => [section.key, section.copy, items(section)]);
 
-// ---------------------------------------------------------------------------
-// Test data
-// ---------------------------------------------------------------------------
+const COMPOSITION = [
+  'Head line.',
+  '',
+  header('General writing style'),
+  '- Dash rule.',
+  '## Hash line',
+  '',
+  '   - Padded rule.   ',
+  header('Language'),
+  '- English.',
+  '',
+  END,
+  'Closing line.',
+].join('\n');
 
-const SIMPLE_PROMPT = `# My Prompt
-
-Some pre-content here.
-
-# Templates (DO NOT EDIT/DELETE THIS SECTION HEADER)
-
-## Greeting
-- Be friendly
-- Use first name
-- Example reply:
-\`\`\`
-Hi there!
-\`\`\`
-
-## Farewell
-- Be warm
-- Wish them well`;
-
-const SIMPLE_CONTENT_SECTION = `Some intro text
-
-# Knowledge Base (DO NOT EDIT/DELETE THIS SECTION HEADER)
-I like coffee.
-I work at Acme Corp.
-
-# Reminders (DO NOT EDIT/DELETE THIS SECTION HEADER)
-Remember to follow up with Alice.`;
-
-const COMPOSITION_PROMPT = `# Email Style
-
-Write emails in my style.
-
-# Reply Templates (DO NOT EDIT/DELETE THIS SECTION HEADER)
-
-## Quick Acknowledge
-- Keep it brief
-- Express thanks
-- Example reply:
-\`\`\`
-Thanks for the update!
-\`\`\`
-
-## Detailed Response
-- Be thorough
-- Address all points
-
-====END USER INSTRUCTIONS====
-
-Now, acknowledge these user instructions and do not deviate from them.`;
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe('parseMarkdown', () => {
-  describe('basic parsing', () => {
-    it('returns preContent and sections', () => {
-      const result = parseMarkdown(SIMPLE_PROMPT, false);
-      expect(result.preContent).toBeDefined();
-      expect(Array.isArray(result.sections)).toBe(true);
-    });
-
-    it('extracts pre-content before first section', () => {
-      const result = parseMarkdown(SIMPLE_PROMPT, false);
-      expect(result.preContent).toContain('# My Prompt');
-      expect(result.preContent).toContain('Some pre-content here.');
-    });
-
-    it('extracts sections with DO NOT EDIT marker', () => {
-      const result = parseMarkdown(SIMPLE_PROMPT, false);
-      expect(result.sections.length).toBe(1);
-      expect(result.sections[0].title).toBe('Templates');
-    });
-
-    it('extracts templates within sections', () => {
-      const result = parseMarkdown(SIMPLE_PROMPT, false);
-      const section = result.sections[0];
-      expect(section.templates.length).toBe(2);
-      expect(section.templates[0].title).toBe('Greeting');
-      expect(section.templates[1].title).toBe('Farewell');
-    });
-
-    it('extracts template instructions', () => {
-      const result = parseMarkdown(SIMPLE_PROMPT, false);
-      const greeting = result.sections[0].templates[0];
-      expect(greeting.instructions).toContain('Be friendly');
-      expect(greeting.instructions).toContain('Use first name');
-    });
-
-    it('does not include "Example reply:" as instruction', () => {
-      const result = parseMarkdown(SIMPLE_PROMPT, false);
-      const greeting = result.sections[0].templates[0];
-      const hasExampleLine = greeting.instructions.some(i => i.match(/^Example reply/i));
-      expect(hasExampleLine).toBe(false);
-    });
-
-    it('extracts example reply from code block', () => {
-      const result = parseMarkdown(SIMPLE_PROMPT, false);
-      const greeting = result.sections[0].templates[0];
-      expect(greeting.exampleReply).toBe('Hi there!');
-    });
+describe('the sections the page shows (pageSections)', () => {
+  it('are the field\'s own headers, each with every non-empty line after it as an item, "- " dropped and trimmed', () => {
+    expect(shown('composition', COMPOSITION)).toEqual([
+      ['general', 0, ['Dash rule.', '## Hash line', 'Padded rule.']],
+      ['language', 0, ['English.']],
+    ]);
+    const [general] = pageSections('composition', COMPOSITION);
+    expect(general).toMatchObject({ title: 'General writing style', header: 2 });
+    expect(general.items.map((item) => item.line)).toEqual([3, 4, 6]);
   });
 
-  describe('content sections', () => {
-    it('parses multiple content sections', () => {
-      const result = parseMarkdown(SIMPLE_CONTENT_SECTION, false);
-      expect(result.sections.length).toBe(2);
-      expect(result.sections[0].title).toBe('Knowledge Base');
-      expect(result.sections[1].title).toBe('Reminders');
-    });
-
-    it('extracts section content', () => {
-      const result = parseMarkdown(SIMPLE_CONTENT_SECTION, false);
-      expect(result.sections[0].content).toContain('I like coffee');
-      expect(result.sections[0].content).toContain('I work at Acme Corp');
-    });
+  it('show nothing of the head, or of an exact or padded END line and what follows it', () => {
+    for (const end of [END, `   ${END}   `]) {
+      const text = [header('General writing style'), '- Rule.', end, '- After the end.', header('Language'), '- Hidden.'].join('\n');
+      expect(shown('composition', text)).toEqual([['general', 0, ['Rule.']]]);
+    }
   });
 
-  describe('composition prompts', () => {
-    it('stops parsing at END marker', () => {
-      const result = parseMarkdown(COMPOSITION_PROMPT, true);
-      // Should not include content after the END marker
-      const allContent = JSON.stringify(result);
-      expect(allContent).not.toContain('acknowledge these user instructions');
-    });
-
-    it('extracts templates from composition prompt', () => {
-      const result = parseMarkdown(COMPOSITION_PROMPT, true);
-      expect(result.sections.length).toBe(1);
-      expect(result.sections[0].templates.length).toBe(2);
-    });
+  it('show a line merely holding the END text, or a header mark under a name the field does not have, as an item', () => {
+    const text = [header('General writing style'), `- Sign off with ${END} here.`, header('Custom rule'), '- After.'].join('\n');
+    expect(shown('composition', text)).toEqual([['general', 0, [`Sign off with ${END} here.`, header('Custom rule'), 'After.']]]);
   });
 
-  describe('edge cases', () => {
-    it('handles empty string', () => {
-      const result = parseMarkdown('', false);
-      expect(result.preContent).toBe('');
-      expect(result.sections).toEqual([]);
-    });
+  it('count a section shown twice as its second copy', () => {
+    const text = [header('Language'), '- One.', header('General writing style'), '- Two.', header('Language'), '- Three.'].join('\n');
+    expect(shown('composition', text)).toEqual([['language', 0, ['One.']], ['general', 0, ['Two.']], ['language', 1, ['Three.']]]);
+  });
 
-    it('handles text with no sections', () => {
-      const result = parseMarkdown('Just some plain text.\nNothing special.', false);
-      expect(result.preContent).toContain('Just some plain text');
-      expect(result.sections).toEqual([]);
-    });
+  it('are one section without a header for the knowledge base, a marked line or END line among its items', () => {
+    expect(shown('kb', `- One.\n\n${END}\n${header('Language')}`)).toEqual([['', 0, ['One.', END, header('Language')]]]);
+    expect(shown('kb', '')).toEqual([['', 0, []]]);
+  });
 
-    it('handles section with no templates', () => {
-      const md = '# Section (DO NOT EDIT/DELETE THIS SECTION HEADER)\nSome content here.';
-      const result = parseMarkdown(md, false);
-      expect(result.sections.length).toBe(1);
-      expect(result.sections[0].content).toContain('Some content here');
-    });
+  it('split lines as the store does, on "\\r\\n" and "\\r" too', () => {
+    expect(shown('kb', '- One\r\n- Two\rThree')).toEqual([['', 0, ['One', 'Two', 'Three']]]);
+  });
 
-    it('handles template with no instructions', () => {
-      const md = '# Section (DO NOT EDIT/DELETE THIS SECTION HEADER)\n\n## Empty Template\n';
-      const result = parseMarkdown(md, false);
-      expect(result.sections[0].templates.length).toBe(1);
-      expect(result.sections[0].templates[0].instructions).toEqual([]);
-    });
-
-    it('handles template with no example reply', () => {
-      const md = '# Section (DO NOT EDIT/DELETE THIS SECTION HEADER)\n\n## Template\n- Instruction one\n- Instruction two';
-      const result = parseMarkdown(md, false);
-      const template = result.sections[0].templates[0];
-      expect(template.instructions.length).toBe(2);
-      expect(template.exampleReply).toBe('');
-    });
-
-    it('handles END marker inside a content section (non-composition)', () => {
-      const md = `# Content (DO NOT EDIT/DELETE THIS SECTION HEADER)
-Some stuff here.
-====END USER INSTRUCTIONS====
-This should be ignored.`;
-      const result = parseMarkdown(md, false);
-      expect(result.sections.length).toBe(1);
-      expect(result.sections[0].content).toContain('Some stuff here');
-      // Content after END marker should not appear
-      const allContent = JSON.stringify(result);
-      expect(allContent).not.toContain('This should be ignored');
-    });
-
-    it('handles multiple sections where second section has content after END marker', () => {
-      const md = `# First (DO NOT EDIT/DELETE THIS SECTION HEADER)
-First content.
-
-# Second (DO NOT EDIT/DELETE THIS SECTION HEADER)
-Second content.
-====END USER INSTRUCTIONS====
-Should be cut off.`;
-      const result = parseMarkdown(md, false);
-      expect(result.sections.length).toBe(2);
-      expect(result.sections[0].content).toContain('First content');
-      expect(result.sections[1].content).toContain('Second content');
-      const allContent = JSON.stringify(result);
-      expect(allContent).not.toContain('Should be cut off');
-    });
-
-    it('handles code block that extends to end of input', () => {
-      const md = `# Section (DO NOT EDIT/DELETE THIS SECTION HEADER)
-
-## Template
-- Instruction
-- Example reply:
-\`\`\`
-Unclosed code block content`;
-      const result = parseMarkdown(md, false);
-      const template = result.sections[0].templates[0];
-      expect(template.exampleReply).toContain('Unclosed code block content');
-    });
-
-    it('handles template with multiple instructions and multiline example', () => {
-      const md = `# Templates (DO NOT EDIT/DELETE THIS SECTION HEADER)
-
-## Multi
-- First instruction
-- Second instruction
-- Third instruction
-- Example reply:
-\`\`\`
-Line 1
-Line 2
-Line 3
-\`\`\``;
-      const result = parseMarkdown(md, false);
-      const template = result.sections[0].templates[0];
-      expect(template.instructions.length).toBe(3);
-      expect(template.exampleReply).toContain('Line 1');
-      expect(template.exampleReply).toContain('Line 3');
-    });
+  it('read the bundled texts as their sections, with the bundled rules', () => {
+    for (const field of ['composition', 'action']) {
+      const sections = pageSections(field, bundled(field));
+      expect(sections.length).toBeGreaterThan(1);
+      expect(sections.every((section) => section.copy === 0)).toBe(true);
+    }
   });
 });
 
-describe('reconstructMarkdown', () => {
-  it('reconstructs simple content sections', () => {
-    const data = parseMarkdown(SIMPLE_CONTENT_SECTION, false);
-    const rebuilt = reconstructMarkdown(data, false);
-    expect(rebuilt).toContain('# Knowledge Base (DO NOT EDIT/DELETE THIS SECTION HEADER)');
-    expect(rebuilt).toContain('I like coffee');
-    expect(rebuilt).toContain('# Reminders (DO NOT EDIT/DELETE THIS SECTION HEADER)');
+describe('removing an item (removeItem)', () => {
+  it('removes exactly its line, every other line kept byte for byte', () => {
+    const after = removeItem('composition', COMPOSITION, { key: 'general', copy: 0, text: '## Hash line' });
+    expect(after).toBe(COMPOSITION.split('\n').filter((line) => line !== '## Hash line').join('\n'));
   });
 
-  it('reconstructs composition prompts with templates', () => {
-    const data = parseMarkdown(COMPOSITION_PROMPT, true);
-    const rebuilt = reconstructMarkdown(data, true);
-    expect(rebuilt).toContain('## Quick Acknowledge');
-    expect(rebuilt).toContain('- Keep it brief');
-    expect(rebuilt).toContain('```\nThanks for the update!\n```');
-    expect(rebuilt).toContain('====END USER INSTRUCTIONS====');
+  it('finds the item by its text when the lines moved since it was shown', () => {
+    const moved = COMPOSITION.replace('- Dash rule.\n', '- Dash rule.\n- Arrived meanwhile.\n');
+    const after = removeItem('composition', moved, { key: 'general', copy: 0, text: '## Hash line' });
+    expect(after).toBe(moved.split('\n').filter((line) => line !== '## Hash line').join('\n'));
   });
 
-  it('includes pre-content', () => {
-    const data = parseMarkdown(SIMPLE_PROMPT, false);
-    const rebuilt = reconstructMarkdown(data, false);
-    expect(rebuilt).toContain('# My Prompt');
+  it('removes from the copy acted on only', () => {
+    const text = [header('Language'), '- Same.', header('General writing style'), header('Language'), '- Same.'].join('\n');
+    expect(removeItem('composition', text, { key: 'language', copy: 1, text: 'Same.' })).toBe([header('Language'), '- Same.', header('General writing style'), header('Language')].join('\n'));
   });
 
-  it('adds END marker for composition prompts', () => {
-    const data = {
-      preContent: '',
-      sections: [{ title: 'Test', templates: [], content: 'Hello' }],
-    };
-    const rebuilt = reconstructMarkdown(data, true);
-    expect(rebuilt).toContain('====END USER INSTRUCTIONS====');
-    expect(rebuilt).toContain('acknowledge these user instructions');
+  it('is null when the item or its section is gone', () => {
+    expect(removeItem('composition', COMPOSITION, { key: 'general', copy: 0, text: 'Not there.' })).toBeNull();
+    expect(removeItem('composition', COMPOSITION, { key: 'language', copy: 1, text: 'English.' })).toBeNull();
   });
 
-  it('does not add END marker for non-composition', () => {
-    const data = {
-      preContent: '',
-      sections: [{ title: 'Test', templates: [], content: 'Hello' }],
-    };
-    const rebuilt = reconstructMarkdown(data, false);
-    expect(rebuilt).not.toContain('====END USER INSTRUCTIONS====');
+  it('removes a knowledge-base line', () => {
+    expect(removeItem('kb', '- One\n- Two\n- Three', { key: '', copy: 0, text: 'Two' })).toBe('- One\n- Three');
+  });
+});
+
+describe('adding items (addItems)', () => {
+  it('adds a "- " line right after the section\'s last item, every other line kept', () => {
+    const after = addItems('composition', COMPOSITION, { key: 'general', copy: 0 }, ['New rule.']).split('\n');
+    expect(after.filter((line) => line !== '- New rule.')).toEqual(COMPOSITION.split('\n'));
+    expect(after.indexOf('- New rule.')).toBe(after.indexOf('   - Padded rule.   ') + 1);
   });
 
-  describe('round-trip', () => {
-    it('content section round-trips correctly', () => {
-      const data = parseMarkdown(SIMPLE_CONTENT_SECTION, false);
-      const rebuilt = reconstructMarkdown(data, false);
-      const reparsed = parseMarkdown(rebuilt, false);
-      expect(reparsed.sections.length).toBe(data.sections.length);
-      for (let i = 0; i < data.sections.length; i++) {
-        expect(reparsed.sections[i].title).toBe(data.sections[i].title);
-        expect(reparsed.sections[i].content.trim()).toBe(data.sections[i].content.trim());
-      }
-    });
+  it('adds right after the header of a section without items, and to the copy acted on', () => {
+    const text = [header('Language'), header('General writing style'), '- Two.', header('Language'), '- Three.'].join('\n');
+    expect(addItems('composition', text, { key: 'language', copy: 0 }, ['New.'])).toBe([header('Language'), '- New.', header('General writing style'), '- Two.', header('Language'), '- Three.'].join('\n'));
+    expect(addItems('composition', text, { key: 'language', copy: 1 }, ['New.'])).toBe(`${text}\n- New.`);
+  });
 
-    it('composition prompt round-trips correctly', () => {
-      const data = parseMarkdown(COMPOSITION_PROMPT, true);
-      const rebuilt = reconstructMarkdown(data, true);
-      const reparsed = parseMarkdown(rebuilt, true);
-      expect(reparsed.sections.length).toBe(data.sections.length);
-      expect(reparsed.sections[0].templates.length).toBe(data.sections[0].templates.length);
-      for (let i = 0; i < data.sections[0].templates.length; i++) {
-        const orig = data.sections[0].templates[i];
-        const recon = reparsed.sections[0].templates[i];
-        expect(recon.title).toBe(orig.title);
-        expect(recon.instructions).toEqual(orig.instructions);
-        expect(recon.exampleReply.trim()).toBe(orig.exampleReply.trim());
-      }
-    });
+  it('adds to an empty or a filled knowledge base', () => {
+    expect(addItems('kb', '', { key: '', copy: 0 }, ['First.'])).toBe('- First.');
+    expect(addItems('kb', '- One\n', { key: '', copy: 0 }, ['Two'])).toBe('- One\n- Two\n');
+  });
+
+  it('is null when the section is gone', () => {
+    expect(addItems('composition', COMPOSITION, { key: 'links', copy: 0 }, ['New.'])).toBeNull();
+  });
+});
+
+describe('replacing a section\'s items (replaceItems)', () => {
+  it('puts the given lines where the section\'s items were, every other line kept', () => {
+    const after = replaceItems('composition', COMPOSITION, { key: 'general', copy: 0 }, ['Default one.', 'Default two.']);
+    expect(after).toBe(['Head line.', '', header('General writing style'), '- Default one.', '- Default two.', '', header('Language'), '- English.', '', END, 'Closing line.'].join('\n'));
+  });
+
+  it('fills a section without items right after its header, and replaces only the copy acted on', () => {
+    const text = [header('Language'), '- One.', header('General writing style'), header('Language'), '- Three.'].join('\n');
+    expect(replaceItems('composition', text, { key: 'language', copy: 1 }, ['D.'])).toBe([header('Language'), '- One.', header('General writing style'), header('Language'), '- D.'].join('\n'));
+    expect(replaceItems('composition', text, { key: 'general', copy: 0 }, ['D.'])).toBe([header('Language'), '- One.', header('General writing style'), '- D.', header('Language'), '- Three.'].join('\n'));
+  });
+
+  it('is null when the section is gone', () => {
+    expect(replaceItems('composition', COMPOSITION, { key: 'language', copy: 1 }, ['D.'])).toBeNull();
   });
 });

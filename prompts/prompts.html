@@ -108,8 +108,6 @@
               <span id="compress-kb-spinner" class="kb-spinner" style="display: none;"></span>
               <button id="compress-kb" class="reload-section-btn">Compress</button>
             </div>
-            <button id="save-kb" class="save-section-btn">Save</button>
-            <button id="reload-kb" class="reload-section-btn">Reload</button>
             <button id="reset-kb" class="reset-section-btn">Reset</button>
           </div>
         </div>
@@ -146,37 +144,22 @@
         <div class="dev-prompt-section">
           <div class="dev-prompt-header">
             <h3>user_composition.md</h3>
-            <div class="dev-prompt-actions">
-              <button id="save-raw-composition" class="save-section-btn">Save</button>
-              <button id="reload-raw-composition" class="reload-section-btn">Reload</button>
-              <button id="reset-raw-composition" class="reset-section-btn">Reset</button>
-            </div>
           </div>
-          <textarea id="raw-composition-content" class="dev-prompt-textarea" spellcheck="false"></textarea>
+          <textarea id="raw-composition-content" class="dev-prompt-textarea" spellcheck="false" readonly></textarea>
         </div>
         
         <div class="dev-prompt-section">
           <div class="dev-prompt-header">
             <h3>user_action.md</h3>
-            <div class="dev-prompt-actions">
-              <button id="save-raw-action" class="save-section-btn">Save</button>
-              <button id="reload-raw-action" class="reload-section-btn">Reload</button>
-              <button id="reset-raw-action" class="reset-section-btn">Reset</button>
-            </div>
           </div>
-          <textarea id="raw-action-content" class="dev-prompt-textarea" spellcheck="false"></textarea>
+          <textarea id="raw-action-content" class="dev-prompt-textarea" spellcheck="false" readonly></textarea>
         </div>
         
         <div class="dev-prompt-section">
           <div class="dev-prompt-header">
             <h3>user_kb.md</h3>
-            <div class="dev-prompt-actions">
-              <button id="save-raw-kb" class="save-section-btn">Save</button>
-              <button id="reload-raw-kb" class="reload-section-btn">Reload</button>
-              <button id="reset-raw-kb" class="reset-section-btn">Reset</button>
-            </div>
           </div>
-          <textarea id="raw-kb-content" class="dev-prompt-textarea" spellcheck="false"></textarea>
+          <textarea id="raw-kb-content" class="dev-prompt-textarea" spellcheck="false" readonly></textarea>
         </div>
       </div>
     </div>
@@ -283,8 +266,6 @@
     </div>
 
     <div id="action-buttons">
-      <button id="save-changes" class="primary-button">Save Entire Prompt</button>
-      <button id="reload-prompts">Reload Entire Prompt</button>
       <button id="reset-prompt" class="danger-button">Reset Entire Prompt</button>
       <div id="status-message"></div>
     </div>
