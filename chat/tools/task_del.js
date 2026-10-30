@@ -6,7 +6,7 @@
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { applyKBPatch } from "../../agent/modules/patchApplier.js";
-import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { editText, removeShownItem } from "../../agent/modules/promptStore.js";
 import { log, normalizeUnicode } from "../../agent/modules/utils.js";
 
 export async function run(args = {}, options = {}) {
@@ -20,75 +20,73 @@ export async function run(args = {}, options = {}) {
 
     log(`[TMDBG Tools] task_del: searching for task matching '${text.slice(0, 140)}'`);
 
-    // Load current KB
-    const current = (await getUserKBPrompt()) || "";
-    if (!current) {
-      log(`[TMDBG Tools] task_del: knowledge base is empty`, "debug");
-      return { error: `No scheduled task found matching '${text}'.` };
-    }
+    // `statement` is the task it deletes. From the Tasks tab, `options.labels` are the labels it
+    // showed for it: exactly those are deleted (DS-DISPLAYED), never re-found by text. Otherwise the KB is
+    // read, changed and saved in one hold of the prompt store.
+    let statement;
+    const shownLabels = Array.isArray(options?.labels);
+    if (shownLabels) statement = text;
+    const refused = shownLabels ? await removeShownItem("kb", "task_del", options.labels) : await editText("kb", "task_del", (current) => {
+      if (!current) {
+        log(`[TMDBG Tools] task_del: knowledge base is empty`, "debug");
+        return { error: `No scheduled task found matching '${text}'.` };
+      }
 
-    // Optional schedule_time for disambiguation
-    const scheduleTime = typeof args?.schedule_time === "string" ? args.schedule_time.trim() : "";
+      // Optional schedule_time for disambiguation
+      const scheduleTime = typeof args?.schedule_time === "string" ? args.schedule_time.trim() : "";
 
-    // Find matching [Task] lines.
-    // If text starts with "[Task]", it's an exact rawLine match (from settings UI delete).
-    // Otherwise, do substring search optionally filtered by schedule_time.
-    const lines = current.split("\n");
-    const isExactMatch = text.startsWith("[Task]");
-    const textLower = text.toLowerCase();
-    const matches = [];
+      // Find matching [Task] lines.
+      // If text starts with "[Task]", it's an exact rawLine match (from settings UI delete).
+      // Otherwise, do substring search optionally filtered by schedule_time.
+      const lines = current.split("\n");
+      const isExactMatch = text.startsWith("[Task]");
+      const textLower = text.toLowerCase();
+      const matches = [];
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (/^(?:-\s*)?\[Task\]/i.test(trimmed)) {
-        const statement = trimmed.replace(/^-\s*/, "");
-        if (isExactMatch) {
-          if (statement.toLowerCase() === textLower) {
-            matches.push(statement);
-          }
-        } else {
-          if (trimmed.toLowerCase().includes(textLower)) {
-            // If schedule_time provided, further filter by time
-            if (scheduleTime && !trimmed.includes(scheduleTime)) continue;
-            matches.push(statement);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (/^(?:-\s*)?\[Task\]/i.test(trimmed)) {
+          const statement = trimmed.replace(/^-\s*/, "");
+          if (isExactMatch) {
+            if (normalizeUnicode(statement).toLowerCase() === textLower) {
+              matches.push(statement);
+            }
+          } else {
+            if (normalizeUnicode(trimmed).toLowerCase().includes(textLower)) {
+              // If schedule_time provided, further filter by time
+              if (scheduleTime && !trimmed.includes(scheduleTime)) continue;
+              matches.push(statement);
+            }
           }
         }
       }
-    }
 
-    if (matches.length === 0) {
-      log(`[TMDBG Tools] task_del: no matching task found for '${text}'`, "warn");
-      return { error: `No scheduled task found matching '${text}'.` };
-    }
+      if (matches.length === 0) {
+        log(`[TMDBG Tools] task_del: no matching task found for '${text}'`, "warn");
+        return { error: `No scheduled task found matching '${text}'.` };
+      }
 
-    if (matches.length > 1 && !isExactMatch) {
-      log(`[TMDBG Tools] task_del: ${matches.length} matching tasks found, returning list for clarification`);
-      return {
-        error: `Multiple scheduled tasks match '${text}'. Include the schedule time to disambiguate.`,
-        matches: matches.map(m => m.replace(/^\[Task\]\s*(?:Schedule|Once)\s*/, "")),
-      };
-    }
+      if (matches.length > 1 && !isExactMatch) {
+        log(`[TMDBG Tools] task_del: ${matches.length} matching tasks found, returning list for clarification`);
+        return {
+          error: `Multiple scheduled tasks match '${text}'. Include the schedule time to disambiguate.`,
+          matches: matches.map(m => m.replace(/^\[Task\]\s*(?:Schedule|Once)\s*/, "")),
+        };
+      }
 
-    // Exactly one match — delete it
-    const statement = matches[0];
-    log(`[TMDBG Tools] task_del: found match, deleting: '${statement.slice(0, 140)}'`);
+      // Exactly one match — delete it
+      statement = matches[0];
+      log(`[TMDBG Tools] task_del: found match, deleting: '${statement.slice(0, 140)}'`);
 
-    const patchText = `DEL\n${statement}`;
-    const updated = applyKBPatch(current, patchText);
-    if (updated == null || updated === current) {
-      log(`[TMDBG Tools] task_del: applyKBPatch failed or no change`, "error");
-      return { error: "failed to delete scheduled task from knowledge base" };
-    }
-
-    // Persist
-    try {
-      const key = "user_prompts:user_kb.md";
-      await browser.storage.local.set({ [key]: updated });
-      log(`[TMDBG Tools] task_del: persisted user_kb.md (${updated.length} chars)`);
-    } catch (e) {
-      log(`[TMDBG Tools] task_del: failed to persist user_kb.md: ${e}`, "error");
-      return { error: "failed to persist knowledge base" };
-    }
+      const patchText = `DEL\n${statement}`;
+      const updated = applyKBPatch(current, patchText);
+      if (updated == null || updated === current) {
+        log(`[TMDBG Tools] task_del: applyKBPatch failed or no change`, "error");
+        return { error: "failed to delete scheduled task from knowledge base" };
+      }
+      return { save: updated };
+    });
+    if (refused) return refused;
 
     // Notify listeners
     try {

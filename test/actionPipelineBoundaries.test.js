@@ -8,7 +8,7 @@ vi.mock('../agent/modules/idbStorage.js', () => ({
  get: async keys => Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>k in h.store).map(k=>[k,h.store[k]])),
  set: async values => { h.events.push('commit'); Object.assign(h.store, values); },
  remove: async keys => { await h.remove(); h.events.push('commit'); for(const k of keys) delete h.store[k]; },
- clear: async () => { h.store={}; }, getAllKeys: async()=>Object.keys(h.store),
+ getAllKeys: async()=>Object.keys(h.store),
  purgeOlderThanByPrefixes: vi.fn(),
 }));
 vi.mock('../agent/modules/utils.js', () => ({
@@ -123,22 +123,6 @@ it('newer thread-effective action defeats older recompute and allows fresh work'
  expect(h.store['action:'+key]).toBe('archive');expect(h.native.get(1)).toBe('archive');
  expect(afterOld).toEqual({durable:'reply',native:'reply'});
 });
-it('an older internal queue item cannot repopulate a completed wipe; fresh work can',async()=>{
- h.resolve.mockResolvedValue({weID:1,weFolder:folder,headerID:header.headerMessageId});
- dependencies.internal.mockResolvedValue(true);
- let release;dependencies.summary.mockImplementationOnce(()=>new Promise(r=>{release=r;}));
- const queue=await import('../agent/modules/messageProcessorQueue.js');
- await queue.enqueueProcessMessage(header);
- const old=queue.drainProcessMessageQueue();await waitStarted(()=>release);
- await owner.wipeAll();expect(h.store).toEqual({});
- release({id:key,blurb:'Synthetic summary'});await old;
- const afterOld={durable:h.store['action:'+key],native:h.native.get(1)};
- await queue.enqueueProcessMessage(header);await queue.drainProcessMessageQueue();
- expect(h.store['action:'+key]).toBe('none');expect(h.native.get(1)).toBe('none');
- expect(queue.getProcessMessageQueueStatus().pending).toBe(0);
- expect(afterOld).toEqual({durable:undefined,native:undefined});
-});
-
 it('invalid generated action remains retryable and a valid retry writes both stores',async()=>{
  h.resolve.mockResolvedValue({weID:1,weFolder:folder,headerID:header.headerMessageId});
  dependencies.chat.mockResolvedValueOnce({assistant:'{"action":"snooze"}'});

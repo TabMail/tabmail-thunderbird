@@ -53,6 +53,7 @@ function makeBrowser(h, store) {
         Object.assign(store, values);
       }),
       remove: vi.fn(async keys => { for (const k of [keys].flat()) delete store[k]; }),
+      getKeys: vi.fn(async () => Object.keys(store)),
     } },
     runtime: {
       getManifest: () => ({ version: '1.9.3' }),

@@ -555,11 +555,8 @@ export async function ensureMigration() {
  */
 export async function resetToDefaultTemplates() {
     try {
-        // Clear the migration flag so defaults will be reloaded
-        await browser.storage.local.remove(["templates_migrated"]);
-        log(`${PFX}Cleared templates migration flag`);
-
-        // Reload defaults
+        // Reload defaults. The migration flag stays set: a reset refused (the prompt store stayed busy) must
+        // not leave a startup to replace the user's templates with the defaults.
         const defaultTemplates = await loadDefaultTemplates();
 
         // Use epoch-zero timestamp so defaults never overwrite customized

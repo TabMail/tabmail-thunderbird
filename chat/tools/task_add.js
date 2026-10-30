@@ -6,7 +6,7 @@
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { applyKBPatch } from "../../agent/modules/patchApplier.js";
-import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { editText } from "../../agent/modules/promptStore.js";
 import { log, normalizeUnicode } from "../../agent/modules/utils.js";
 
 const VALID_DAYS = new Set(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
@@ -160,40 +160,34 @@ export async function run(args = {}, options = {}) {
     const entry = formatTaskEntry(text, { scheduleDays, scheduleDate, scheduleTime });
     log(`[TMDBG Tools] task_add: formatted entry='${entry.slice(0, 140)}' len=${entry.length}`);
 
-    // Load current KB and check max tasks
-    const current = (await getUserKBPrompt()) || "";
+    // The KB read, changed and saved in one hold of the prompt store.
+    const refused = await editText("kb", "task_add", (current) => {
+      // Load current KB and check max tasks
 
-    const taskCount = current.split("\n").filter(line => {
-      const trimmed = line.trim().replace(/^-\s*/, "");
-      return /^\[Task\]/i.test(trimmed);
-    }).length;
+      const taskCount = current.split("\n").filter(line => {
+        const trimmed = line.trim().replace(/^-\s*/, "");
+        return /^\[Task\]/i.test(trimmed);
+      }).length;
 
-    if (taskCount >= MAX_TASKS) {
-      log(`[TMDBG Tools] task_add: max tasks reached (${taskCount}/${MAX_TASKS})`, "error");
-      return { error: `Maximum number of scheduled tasks reached (${MAX_TASKS}). Please delete some before adding new ones.` };
-    }
+      if (taskCount >= MAX_TASKS) {
+        log(`[TMDBG Tools] task_add: max tasks reached (${taskCount}/${MAX_TASKS})`, "error");
+        return { error: `Maximum number of scheduled tasks reached (${MAX_TASKS}). Please delete some before adding new ones.` };
+      }
 
-    const patchText = `ADD\n${entry}`;
-    const updated = applyKBPatch(current, patchText);
-    if (updated == null) {
-      log(`[TMDBG Tools] task_add: applyKBPatch returned null`, "error");
-      return { error: "failed to update knowledge base" };
-    }
+      const patchText = `ADD\n${entry}`;
+      const updated = applyKBPatch(current, patchText);
+      if (updated == null) {
+        log(`[TMDBG Tools] task_add: applyKBPatch returned null`, "error");
+        return { error: "failed to update knowledge base" };
+      }
 
-    if (updated === current) {
-      log(`[TMDBG Tools] task_add: no-op (duplicate)`);
-      return `No change (duplicate task entry).`;
-    }
-
-    // Persist
-    try {
-      const key = "user_prompts:user_kb.md";
-      await browser.storage.local.set({ [key]: updated });
-      log(`[TMDBG Tools] task_add: persisted user_kb.md (${updated.length} chars)`);
-    } catch (e) {
-      log(`[TMDBG Tools] task_add: failed to persist user_kb.md: ${e}`, "error");
-      return { error: "failed to persist knowledge base" };
-    }
+      if (updated === current) {
+        log(`[TMDBG Tools] task_add: no-op (duplicate)`);
+        return `No change (duplicate task entry).`;
+      }
+      return { save: updated };
+    });
+    if (refused) return refused;
 
     // Notify listeners
     try {

@@ -636,9 +636,10 @@ export async function signOut() {
     // The token will naturally expire, or user can sign out globally from web
     await clearSession();
 
-    // --- SECURITY: Clear all user-specific data to prevent leaking to next user ---
+    // Sign-out deletes nothing (DS-DEVICE): the prompts, templates, history, settings and caches are this
+    // device's, kept for whoever signs in next. Only the AI calls and Device Sync need an account.
 
-    // 1. Close the parent-owned Device Sync transport before clearing synced data.
+    // 1. Close the parent-owned Device Sync transport.
     try {
       const { cleanupDeviceSync } = await import("./deviceSync.js");
       await cleanupDeviceSync();
@@ -647,63 +648,14 @@ export async function signOut() {
       log(`[SupabaseAuth] Device sync cleanup failed (non-fatal): ${e}`, "error");
     }
 
-    // 2. Clear all user-specific storage keys
-    const userStorageKeys = [
-      // User prompts
-      "user_prompts:user_composition.md",
-      "user_prompts:user_action.md",
-      "user_prompts:user_kb.md",
-      "user_templates",
-      "disabled_reminders_v2",
-      "task_execution_cache",
-      "user_prompts:action_config",
-      // Device sync state
-      "device_sync_auto_enabled",
-      "device_sync_backups",
-      "device_sync_ts:composition",
-      "device_sync_ts:action",
-      "device_sync_ts:kb",
-      "device_sync_ts:templates",
-      "device_sync_ts:disabledReminders",
-      "device_sync_ts:taskCache",
-      "device_sync_ts:actionConfig",
-      // Peer base state
-      "device_peer_base:composition",
-      "device_peer_base:action",
-      "device_peer_base:kb",
-      "device_peer_base_ts:composition",
-      "device_peer_base_ts:action",
-      "device_peer_base_ts:kb",
-      // Prompt history
-      "prompt_history",
-      "prompt_history_migrated",
-      // Consent (per-TabMail-account, must be re-evaluated for the next user)
-      "tabmailConsentRequired",
-      // NOTE: defaultCalendarId is intentionally NOT cleared. It points at a
-      // LOCAL Thunderbird calendar in this profile — not sensitive account data
-      // (the next user can already see/use every calendar regardless of login),
-      // so there's nothing to "leak". Clearing it just nagged the user to
-      // reconfigure after every sign-out (and auto-detect can't recover a
-      // calendar with no organizer_email). defaultAddressBookId — more sensitive
-      // — was never cleared here either, which is the correct treatment.
-    ];
+    // 2. The consent flag is the signed-out account's status (every sign-in sets it again), not data.
     try {
-      await browser.storage.local.remove(userStorageKeys);
-      log("[SupabaseAuth] Cleared user-specific storage keys");
+      await browser.storage.local.remove("tabmailConsentRequired");
     } catch (e) {
-      log(`[SupabaseAuth] Storage cleanup failed (non-fatal): ${e}`, "error");
+      log(`[SupabaseAuth] Consent flag cleanup failed (non-fatal): ${e}`, "error");
     }
 
-    // 3. Clear IndexedDB AI cache (summaries, actions, replies)
-    try {
-      const { wipeAll } = await import("./actionCache.js");
-      await wipeAll();
-      log("[SupabaseAuth] Cleared IndexedDB AI cache");
-    } catch (e) {
-      log(`[SupabaseAuth] IndexedDB cleanup failed (non-fatal): ${e}`, "error");
-    }
-
-    log("[SupabaseAuth] Sign-out complete with full data cleanup");
+    log("[SupabaseAuth] Sign-out complete");
 
     // NOTE: Icon update is handled by background.js after signOut() returns.
     // Do NOT sendMessage here - we're already in the background context.

@@ -193,7 +193,7 @@ describe('saveActionConfig — defaults', () => {
 
 describe('prompts page storage listener — action config refresh', () => {
   // Extract the page's real storage.onChanged callback from prompts.js.
-  async function loadPageListener(refresh) {
+  async function loadPageListener(refresh, globals = {}) {
     const { readFileSync } = await import('node:fs');
     const { runInNewContext } = await import('node:vm');
     const { parse } = await import('acorn');
@@ -214,8 +214,34 @@ describe('prompts page storage listener — action config refresh', () => {
     const { ACTION_CONFIG_TS_KEY } = await import('../agent/modules/actionCompactConfig.js');
     return runInNewContext(`(${source.slice(found[0].start, found[0].end)})`, {
       ACTION_CONFIG_TS_KEY, loadActionConfig: refresh, log: () => {},
+      FIELDS: ['composition', 'action', 'kb'], PROMPT_KEYS: { kb: 'user_prompts:user_kb.md', composition: 'user_prompts:user_composition.md', action: 'user_prompts:user_action.md' },
+      BULLET_STATE_KEYS: { kb: 'bullet_state:kb', composition: 'bullet_state:composition', action: 'bullet_state:action' },
+      loadField: () => {}, ...globals,
     });
   }
+
+  // The page keeps no text of its own: every stored change of a field's text or labels, whoever made it,
+  // re-reads that field in one hold, so the labels a later action commits against are the ones shown
+  // (DS-DISPLAYED). Another storage area, or another key, reads nothing.
+  it('re-reads each field whose text or labels changed, and nothing for another area or key', async () => {
+    const loaded = [];
+    const listener = await loadPageListener(() => {}, { loadField: (field) => { loaded.push(field); } });
+
+    listener({ 'user_prompts:user_kb.md': { newValue: '- New fact' } }, 'sync');
+    listener({ 'unrelated_key': { newValue: 1 } }, 'local');
+    expect(loaded).toEqual([]);
+
+    listener({ 'bullet_state:kb': { newValue: { bullets: [], seen: {} } } }, 'local');
+    expect(loaded).toEqual(['kb']);
+
+    loaded.length = 0;
+    listener({
+      'bullet_state:kb': { newValue: { bullets: [], seen: {} } },
+      'user_prompts:user_kb.md': { newValue: '- New fact' },
+      'user_prompts:user_action.md': { newValue: 'new action' },
+    }, 'local');
+    expect(loaded).toEqual(['action', 'kb']);
+  });
 
   it('a deliberate legacy-default save stays on the slider while the background stamps its timestamp', async () => {
     const stored = {};

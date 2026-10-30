@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// taskExecutionCache.js – In-memory + storage cache for task execution results
+// taskExecutionCache.js – Storage cache for task execution results
 // Thunderbird 145 MV3
 // Keyed by "{taskHash}_{YYYY-MM-DD}". Stores content, sessionId, and timestamp.
 
@@ -16,36 +16,56 @@ const MAX_ENTRIES_PER_TASK = 10;
 // GC threshold for orphaned entries (tasks no longer in KB)
 const GC_AGE_DAYS = 90;
 
-// In-memory mirror of storage cache
-let _memoryCache = null;
-
 /**
- * Load cache from storage into memory (lazy init).
+ * Load the cache from storage. Each operation reads its own copy: there is no shared in-memory copy, so a
+ * slow first read can never put an older copy over a newer one.
  * @returns {Promise<Object>} Cache map
  */
 async function loadCache() {
-  if (_memoryCache !== null) {
-    return _memoryCache;
-  }
   try {
     const stored = await browser.storage.local.get({ [STORAGE_KEY]: {} });
-    _memoryCache = stored[STORAGE_KEY] || {};
+    return stored[STORAGE_KEY] || {};
   } catch (e) {
     log(`[TaskCache] Error loading cache from storage: ${e}`, "error");
-    _memoryCache = {};
+    return {};
   }
-  return _memoryCache;
 }
 
 /**
- * Persist the in-memory cache to storage.
+ * Persist an operation's cache map to storage.
+ * @param {Object} cache - The cache map
  */
-async function saveCache() {
+async function saveCache(cache) {
   try {
-    await browser.storage.local.set({ [STORAGE_KEY]: _memoryCache });
+    await browser.storage.local.set({ [STORAGE_KEY]: cache });
   } catch (e) {
     log(`[TaskCache] Error saving cache to storage: ${e}`, "error");
   }
+}
+
+/**
+ * One read-change-save of the cache map in a hold of the prompt semaphore (DS-SEMAPHORE), so two writers
+ * never save over each other's entries: `store`, the hold of a received message's apply, or else a hold of
+ * its own. `change(cache)` edits the map in place and returns whether it changed it. The map is saved only
+ * while the hold lasts (DS-LEASE); a hold that ended first throws a `busy` error and saves nothing.
+ * @returns {Promise<boolean>} Whether the map was saved
+ */
+async function changeCache(change, store) {
+  if (store) return changeCacheIn(store, change);
+  const { withPromptStore } = await import("./promptStore.js");
+  return withPromptStore((hold) => changeCacheIn(hold, change), { label: "task cache" });
+}
+
+async function changeCacheIn(store, change) {
+  const cache = await loadCache();
+  if (!change(cache)) return false;
+  if (!store.holds()) {
+    const error = new Error("the task cache's hold ended before its save");
+    error.busy = true;
+    throw error;
+  }
+  await saveCache(cache);
+  return true;
 }
 
 /**
@@ -85,19 +105,24 @@ export async function getCachedResult(taskHash, dateStr) {
  * @param {string} sessionId - Chat session ID
  */
 export async function setCachedResult(taskHash, dateStr, content, sessionId) {
-  const cache = await loadCache();
   const key = cacheKey(taskHash, dateStr);
+  try {
+    await changeCache((cache) => {
+      cache[key] = {
+        content,
+        sessionId,
+        ts: new Date().toISOString(),
+      };
 
-  cache[key] = {
-    content,
-    sessionId,
-    ts: new Date().toISOString(),
-  };
-
-  // Evict oldest entries if this taskHash has too many
-  evictExcessEntries(cache, taskHash);
-
-  await saveCache();
+      // Evict oldest entries if this taskHash has too many
+      evictExcessEntries(cache, taskHash);
+      return true;
+    });
+  } catch (e) {
+    if (e?.busy !== true) throw e;
+    log(`[TaskCache] Result for ${key} not cached: ${e}`, "warn");
+    return;
+  }
   log(`[TaskCache] Cached result for ${key}`);
 }
 
@@ -140,26 +165,27 @@ export async function getAllCachedResults() {
  * CRDT merge: per-key, newer timestamp wins.
  * Does NOT trigger a broadcast (used by Device Sync receiver).
  * @param {Object} incomingMap - Map of {compositeKey: {content, sessionId, ts}}
+ * @param {Object} store - The hold of the received message's apply, which the merge saves in (never a
+ *   nested acquire); a hold that ended before the save throws a `busy` error, so the message is applied again
  */
-export async function mergeIncomingCache(incomingMap) {
-  const cache = await loadCache();
+export async function mergeIncomingCache(incomingMap, store) {
   let merged = 0;
+  let total = 0;
+  await changeCache((cache) => {
+    for (const [key, inEntry] of Object.entries(incomingMap)) {
+      if (!inEntry || typeof inEntry.ts !== "string") continue;
 
-  for (const [key, inEntry] of Object.entries(incomingMap)) {
-    if (!inEntry || typeof inEntry.ts !== "string") continue;
-
-    const localEntry = cache[key];
-    if (!localEntry || inEntry.ts > localEntry.ts) {
-      cache[key] = inEntry;
-      merged++;
+      const localEntry = cache[key];
+      if (!localEntry || inEntry.ts > localEntry.ts) {
+        cache[key] = inEntry;
+        merged++;
+      }
     }
-  }
+    total = Object.keys(cache).length;
+    return merged > 0;
+  }, store);
 
-  if (merged > 0) {
-    await saveCache();
-  }
-
-  log(`[TaskCache] CRDT merge: ${merged} entries adopted from ${Object.keys(incomingMap).length} incoming (local total: ${Object.keys(cache).length})`);
+  log(`[TaskCache] CRDT merge: ${merged} entries adopted from ${Object.keys(incomingMap).length} incoming (local total: ${total})`);
 }
 
 /**
@@ -169,35 +195,40 @@ export async function mergeIncomingCache(incomingMap) {
  * @param {Set<string>} activeTaskHashes - Set of task hashes currently in KB
  */
 export async function gcOrphanedEntries(activeTaskHashes) {
-  const cache = await loadCache();
-  if (Object.keys(cache).length === 0) return;
-
   const now = Date.now();
   const maxAge = GC_AGE_DAYS * 86400 * 1000;
   let removed = 0;
 
-  for (const [key, entry] of Object.entries(cache)) {
-    // Extract taskHash from composite key "taskHash_YYYY-MM-DD"
-    const lastUnderscore = key.lastIndexOf("_");
-    if (lastUnderscore === -1) {
-      // Malformed key, remove it
-      delete cache[key];
-      removed++;
-      continue;
-    }
+  try {
+    await changeCache((cache) => {
+      for (const [key, entry] of Object.entries(cache)) {
+        // Extract taskHash from composite key "taskHash_YYYY-MM-DD"
+        const lastUnderscore = key.lastIndexOf("_");
+        if (lastUnderscore === -1) {
+          // Malformed key, remove it
+          delete cache[key];
+          removed++;
+          continue;
+        }
 
-    const taskHash = key.substring(0, lastUnderscore);
-    if (activeTaskHashes.has(taskHash)) continue;
+        const taskHash = key.substring(0, lastUnderscore);
+        if (activeTaskHashes.has(taskHash)) continue;
 
-    const entryTime = new Date(entry.ts).getTime();
-    if (now - entryTime > maxAge) {
-      delete cache[key];
-      removed++;
-    }
+        const entryTime = new Date(entry.ts).getTime();
+        if (now - entryTime > maxAge) {
+          delete cache[key];
+          removed++;
+        }
+      }
+      return removed > 0;
+    });
+  } catch (e) {
+    if (e?.busy !== true) throw e;
+    log(`[TaskCache] GC not saved (the next check-in runs it again): ${e}`, "warn");
+    return;
   }
 
   if (removed > 0) {
-    await saveCache();
     log(`[TaskCache] GC removed ${removed} orphaned entries older than ${GC_AGE_DAYS} days`);
   }
 }

@@ -26,11 +26,12 @@ export async function loadWebSearchSettings(log) {
 
     log(`[Config] loadWebSearchSettings: key="${WEB_SEARCH_STORAGE_KEY}" raw=${JSON.stringify(raw)} (type=${typeof raw}) → enabled=${enabled}`);
 
-    // Also dump all storage keys containing "webSearch" or "web_search" for diagnosis
+    // Also dump all storage keys containing "webSearch" or "web_search" for diagnosis. Only the keys are
+    // listed, then those read: nothing else stored (the prompts among it) is read here.
     try {
-      const allStorage = await browser.storage.local.get(null);
-      const relevantKeys = Object.keys(allStorage).filter(k => k.toLowerCase().includes("websearch") || k.toLowerCase().includes("web_search"));
-      log(`[Config] loadWebSearchSettings: relevant storage keys: ${JSON.stringify(relevantKeys.map(k => `${k}=${JSON.stringify(allStorage[k])} (${typeof allStorage[k]})`))}`)
+      const relevantKeys = (await browser.storage.local.getKeys()).filter(k => k.toLowerCase().includes("websearch") || k.toLowerCase().includes("web_search"));
+      const relevant = relevantKeys.length > 0 ? await browser.storage.local.get(relevantKeys) : {};
+      log(`[Config] loadWebSearchSettings: relevant storage keys: ${JSON.stringify(relevantKeys.map(k => `${k}=${JSON.stringify(relevant[k])} (${typeof relevant[k]})`))}`)
     } catch (_) {}
 
     const cb = $("web-search-enabled");

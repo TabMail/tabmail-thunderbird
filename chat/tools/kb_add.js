@@ -6,7 +6,7 @@
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { applyKBPatch } from "../../agent/modules/patchApplier.js";
-import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { editText } from "../../agent/modules/promptStore.js";
 import { log, normalizeUnicode } from "../../agent/modules/utils.js";
 
 function buildAddPatch(statement) {
@@ -28,33 +28,26 @@ export async function run(args = {}, options = {}) {
 
     log(`[TMDBG Tools] kb_add: starting with statement='${statement.slice(0, 140)}' len=${statement.length}`);
 
-    // Load current KB
-    const current = (await getUserKBPrompt()) || "";
-    if (!current) {
-      log(`[TMDBG Tools] kb_add: current KB is empty or missing`, "warn");
-    }
+    // The KB read, changed and saved in one hold of the prompt store.
+    const refused = await editText("kb", "kb_add", (current) => {
+      if (!current) {
+        log(`[TMDBG Tools] kb_add: current KB is empty or missing`, "warn");
+      }
 
-    const patchText = buildAddPatch(statement);
-    const updated = applyKBPatch(current, patchText);
-    if (updated == null) {
-      log(`[TMDBG Tools] kb_add: applyKBPatch returned null`, "error");
-      return { error: "failed to update knowledge base" };
-    }
+      const patchText = buildAddPatch(statement);
+      const updated = applyKBPatch(current, patchText);
+      if (updated == null) {
+        log(`[TMDBG Tools] kb_add: applyKBPatch returned null`, "error");
+        return { error: "failed to update knowledge base" };
+      }
 
-    if (updated === current) {
-      log(`[TMDBG Tools] kb_add: no-op (duplicate or unchanged)`);
-      return `No change (duplicate or unchanged).`;
-    }
-
-    // Persist
-    try {
-      const key = "user_prompts:user_kb.md";
-      await browser.storage.local.set({ [key]: updated });
-      log(`[TMDBG Tools] kb_add: persisted user_kb.md (${updated.length} chars)`);
-    } catch (e) {
-      log(`[TMDBG Tools] kb_add: failed to persist user_kb.md: ${e}`, "error");
-      return { error: "failed to persist knowledge base" };
-    }
+      if (updated === current) {
+        log(`[TMDBG Tools] kb_add: no-op (duplicate or unchanged)`);
+        return `No change (duplicate or unchanged).`;
+      }
+      return { save: updated };
+    });
+    if (refused) return refused;
 
     // Notify listeners (config UI, etc.)
     try {

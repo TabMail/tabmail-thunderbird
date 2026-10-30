@@ -8,7 +8,7 @@
 
 import { SETTINGS } from "../../agent/modules/config.js";
 import { applyKBPatch } from "../../agent/modules/patchApplier.js";
-import { getUserKBPrompt } from "../../agent/modules/promptGenerator.js";
+import { editText } from "../../agent/modules/promptStore.js";
 import { log, normalizeUnicode } from "../../agent/modules/utils.js";
 
 const TASK_SCHEDULE_REGEX = /^\[Task\]\s*Schedule\s+([\w,]+)\s+(\d{2}:\d{2})(?:\s+\[([^\]]+)\])?,\s*(.+)$/i;
@@ -21,92 +21,90 @@ export async function run(args = {}, options = {}) {
       return { error: "missing find_text" };
     }
 
-    // Load current KB and find matching task
-    const current = (await getUserKBPrompt()) || "";
-    const lines = current.split("\n");
-    const findLower = findText.toLowerCase();
-    const matches = [];
+    // The KB read, changed and saved in one hold of the prompt store, setting the task it replaces and the new one.
+    let oldStatement, currentInstruction, newInstruction, newEntry;
+    const refused = await editText("kb", "task_edit", (current) => {
+      // Load current KB and find matching task
+      const lines = current.split("\n");
+      const findLower = findText.toLowerCase();
+      const matches = [];
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (/^(?:-\s*)?\[Task\]/i.test(trimmed) && trimmed.toLowerCase().includes(findLower)) {
-        matches.push(trimmed);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (/^(?:-\s*)?\[Task\]/i.test(trimmed) && normalizeUnicode(trimmed).toLowerCase().includes(findLower)) {
+          matches.push(trimmed);
+        }
       }
-    }
 
-    if (matches.length === 0) {
-      return { error: `No scheduled task found matching '${findText}'.` };
-    }
-    if (matches.length > 1) {
-      return {
-        error: `Multiple tasks match '${findText}'. Please be more specific.`,
-        matches: matches.map(m => m.replace(/^-\s*/, "").replace(/^\[Task\]\s*/, "")),
-      };
-    }
+      if (matches.length === 0) {
+        return { error: `No scheduled task found matching '${findText}'.` };
+      }
+      if (matches.length > 1) {
+        return {
+          error: `Multiple tasks match '${findText}'. Please be more specific.`,
+          matches: matches.map(m => m.replace(/^-\s*/, "").replace(/^\[Task\]\s*/, "")),
+        };
+      }
 
-    const oldLine = matches[0];
-    const oldStatement = oldLine.replace(/^-\s*/, "");
+      const oldLine = matches[0];
+      oldStatement = oldLine.replace(/^-\s*/, "");
 
-    // Parse the existing task to extract current values
-    let currentDays = null, currentDate = null, currentTime = null, currentTz = null, currentInstruction = null;
-    let isOneOff = false;
+      // Parse the existing task to extract current values
+      let currentDays = null, currentDate = null, currentTime = null, currentTz = null;
+      currentInstruction = null;
+      let isOneOff = false;
 
-    const schedMatch = oldStatement.match(TASK_SCHEDULE_REGEX);
-    const onceMatch = oldStatement.match(TASK_ONCE_REGEX);
+      const schedMatch = oldStatement.match(TASK_SCHEDULE_REGEX);
+      const onceMatch = oldStatement.match(TASK_ONCE_REGEX);
 
-    if (schedMatch) {
-      currentDays = schedMatch[1];
-      currentTime = schedMatch[2];
-      currentTz = schedMatch[3] || null;
-      currentInstruction = schedMatch[4].trim();
-    } else if (onceMatch) {
-      isOneOff = true;
-      currentDate = onceMatch[1];
-      currentTime = onceMatch[2];
-      currentTz = onceMatch[3] || null;
-      currentInstruction = onceMatch[4].trim();
-    } else {
-      return { error: "Could not parse the existing task format." };
-    }
+      if (schedMatch) {
+        currentDays = schedMatch[1];
+        currentTime = schedMatch[2];
+        currentTz = schedMatch[3] || null;
+        currentInstruction = schedMatch[4].trim();
+      } else if (onceMatch) {
+        isOneOff = true;
+        currentDate = onceMatch[1];
+        currentTime = onceMatch[2];
+        currentTz = onceMatch[3] || null;
+        currentInstruction = onceMatch[4].trim();
+      } else {
+        return { error: "Could not parse the existing task format." };
+      }
 
-    // Apply updates — only change provided fields
-    const newInstruction = args.text ? normalizeUnicode(args.text).trim() : currentInstruction;
-    const newTime = args.schedule_time || currentTime;
-    const newTz = currentTz || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      // Apply updates — only change provided fields
+      newInstruction = args.text ? normalizeUnicode(args.text).trim() : currentInstruction;
+      const newTime = args.schedule_time || currentTime;
+      const newTz = currentTz || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-    let newEntry;
-    if (args.schedule_date) {
-      // Switching to one-off
-      newEntry = `[Task] Once ${args.schedule_date} ${newTime} [${newTz}], ${newInstruction}`;
-    } else if (args.schedule_days) {
-      // Switching to or keeping recurring
-      newEntry = `[Task] Schedule ${args.schedule_days} ${newTime} [${newTz}], ${newInstruction}`;
-    } else if (isOneOff) {
-      // Keeping one-off
-      newEntry = `[Task] Once ${currentDate} ${newTime} [${newTz}], ${newInstruction}`;
-    } else {
-      // Keeping recurring
-      newEntry = `[Task] Schedule ${currentDays} ${newTime} [${newTz}], ${newInstruction}`;
-    }
+      if (args.schedule_date) {
+        // Switching to one-off
+        newEntry = `[Task] Once ${args.schedule_date} ${newTime} [${newTz}], ${newInstruction}`;
+      } else if (args.schedule_days) {
+        // Switching to or keeping recurring
+        newEntry = `[Task] Schedule ${args.schedule_days} ${newTime} [${newTz}], ${newInstruction}`;
+      } else if (isOneOff) {
+        // Keeping one-off
+        newEntry = `[Task] Once ${currentDate} ${newTime} [${newTz}], ${newInstruction}`;
+      } else {
+        // Keeping recurring
+        newEntry = `[Task] Schedule ${currentDays} ${newTime} [${newTz}], ${newInstruction}`;
+      }
 
-    // Apply as DEL + ADD
-    const delPatch = `DEL\n${oldStatement}`;
-    const afterDel = applyKBPatch(current, delPatch);
-    if (afterDel == null || afterDel === current) {
-      return { error: "Failed to remove old task entry." };
-    }
-    const addPatch = `ADD\n${newEntry}`;
-    const updated = applyKBPatch(afterDel, addPatch);
-    if (updated == null) {
-      return { error: "Failed to add updated task entry." };
-    }
-
-    // Persist
-    try {
-      await browser.storage.local.set({ "user_prompts:user_kb.md": updated });
-    } catch (e) {
-      return { error: "Failed to persist knowledge base." };
-    }
+      // Apply as DEL + ADD
+      const delPatch = `DEL\n${oldStatement}`;
+      const afterDel = applyKBPatch(current, delPatch);
+      if (afterDel == null || afterDel === current) {
+        return { error: "Failed to remove old task entry." };
+      }
+      const addPatch = `ADD\n${newEntry}`;
+      const updated = applyKBPatch(afterDel, addPatch);
+      if (updated == null) {
+        return { error: "Failed to add updated task entry." };
+      }
+      return { save: updated };
+    });
+    if (refused) return refused;
 
     // Notify listeners
     try {

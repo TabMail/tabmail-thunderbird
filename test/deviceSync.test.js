@@ -5,7 +5,8 @@
 // deviceSync.test.js — Device sync merge logic tests (Tier 3 — mock-dependent)
 //
 // Tests the per-field timestamp merge, echo prevention, virgin device detection,
-// 3-way merge with bulletMerge, template CRDT merge, and disabled reminders merge.
+// template CRDT merge and disabled reminders merge, and the hand-off of the three bullet
+// fields (composition, action, kb) to promptStore.js (mocked here).
 //
 // Strategy: mock browser.storage.local and dynamic imports, then import deviceSync
 // and invoke handleMessage (via the module's internal socket.onmessage pathway)
@@ -117,7 +118,7 @@ vi.mock('../agent/modules/utils.js', () => ({
 vi.mock('../agent/modules/config.js', async (importOriginal) => ({
   getDeviceSyncUrl: vi.fn(async () => 'https://sync.tabmail.ai'),
   SETTINGS: {
-    deviceSync: { broadcastDebounceMs: 500 },
+    deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: 2000, maxWaitingReceives: 256, historyDebounceMs: 2000 },
     actionCompaction: (await importOriginal()).SETTINGS.actionCompaction,
   },
 }));
@@ -137,8 +138,10 @@ vi.mock('../agent/modules/thinkBuffer.js', () => ({
 const mergeTemplatesCalls = [];
 const gcDeletedTemplatesCalls = [];
 vi.mock('../agent/modules/templateManager.js', () => ({
-  mergeTemplates: vi.fn(async (incoming) => {
+  // As the module does, saves nothing once `current()` (the message's connection lasts) fails.
+  mergeTemplates: vi.fn(async (incoming, current = () => true) => {
     mergeTemplatesCalls.push(incoming);
+    if (!current()) return;
     // Simulate merge: store incoming templates
     const existing = storageData['user_templates'] || [];
     const merged = [...existing];
@@ -158,8 +161,9 @@ vi.mock('../agent/modules/templateManager.js', () => ({
 // Track mergeIncoming calls for reminderStateStore
 const mergeIncomingCalls = [];
 vi.mock('../agent/modules/reminderStateStore.js', () => ({
-  mergeIncoming: vi.fn(async (map) => {
+  mergeIncoming: vi.fn(async (map, current = () => true) => {
     mergeIncomingCalls.push(map);
+    if (!current()) return;
     // Simulate per-hash merge
     const existing = storageData['disabled_reminders_v2'] || {};
     for (const [hash, entry] of Object.entries(map)) {
@@ -171,33 +175,73 @@ vi.mock('../agent/modules/reminderStateStore.js', () => ({
   }),
 }));
 
-// Mock bulletMerge.js (dynamic import inside handlePromptState)
-vi.mock('../agent/modules/bulletMerge.js', () => ({
-  mergeFlatField: vi.fn((base, local, remote) => {
-    // Simple simulation: combine unique lines from local and remote
-    const localLines = local.split('\n').filter(Boolean);
-    const remoteLines = remote.split('\n').filter(Boolean);
-    const baseLines = new Set(base.split('\n').filter(Boolean));
-    const result = [...localLines];
-    for (const line of remoteLines) {
-      if (!result.includes(line) && !baseLines.has(line)) {
-        result.push(line);
-      } else if (!result.includes(line) && baseLines.has(line)) {
-        // line is in base and remote but not in local — local removed it
-        // Don't add back
-      } else if (!result.includes(line)) {
-        result.push(line);
-      }
+// Mock promptStore.js: the three bullet fields (composition, action, kb) are merged there (its own
+// tests and the shared vectors cover that); here it is the collaborator deviceSync hands them to.
+// Every operation is one hold of the prompt semaphore (`withPromptStore`), whose store merges a received
+// message, imports a released device's texts, sends fields, puts the texts back or runs deviceSync's own
+// history functions in the hold, as the background's prompt store does: a send reads what to send
+// (`outgoingBulletState`) and hands it to deviceSync.sendMessages. Signed in or not, the hold is taken
+// (DS-DEVICE: only AI calls and Device Sync need an account).
+vi.mock('../agent/modules/promptStore.js', () => {
+  const sync = () => import('../agent/modules/deviceSync.js');
+  const held = () => true;
+  const outgoingBulletState = vi.fn(async (field) => ({ kind: 'messages', messages: [{ type: 'bullet_state', v: 1, field }] }));
+  const send = async (fields) => {
+    for (const field of fields) {
+      const outgoing = await outgoingBulletState(field);
+      if (outgoing.kind === 'messages') await (await sync()).sendMessages(field, outgoing.messages);
     }
-    return result.join('\n');
-  }),
-  mergeSectionedField: vi.fn((base, local, remote, headers) => {
-    // Simple simulation: return local + remote additions
-    return local + '\n' + remote.replace(base, '').trim();
-  }),
-  COMPOSITION_SECTIONS: ['General writing style', 'Language'],
-  ACTION_SECTIONS: ['delete', 'archive', 'reply', 'none'],
-}));
+  };
+  // What the background's merge of a received bullet_state did, and the fields its import of a released
+  // device's texts changed: set by each test. The store sends what they call for before its hold ends.
+  const receiveBulletState = vi.fn(async () => ({ kind: 'ignored' }));
+  const receiveLegacyPromptState = vi.fn(async () => []);
+  const restoreHandle = {
+    // A merge whose incoming labels differed sends the field back (DS-SEND).
+    receive: vi.fn(async (message) => {
+      const result = await receiveBulletState(message);
+      if (result.kind === 'merged' && result.send) await send([result.field]);
+      return result;
+    }),
+    // An import that added texts sends the fields it changed (DS-LEGACY-IN, DS-SEND).
+    receiveLegacy: vi.fn(async (data) => {
+      const fields = await receiveLegacyPromptState(data);
+      await send(fields);
+      return fields;
+    }),
+    send: vi.fn(send),
+    holds: vi.fn(held),
+    // As the background's prompt store: the texts (not modelled here), then the entry's templates in the hold.
+    restore: vi.fn(async (entry) => {
+      (await sync()).writeRestoredTemplates(JSON.parse(entry.templatesJSON || '[]'), held);
+    }),
+    resetField: vi.fn(async (field, value) => {
+      const deviceSync = await sync();
+      await deviceSync.recordHistory('reset', [field], held);
+      await deviceSync.writeFieldDefault(field, value, held);
+    }),
+    history: vi.fn(async () => (await sync()).readHistory(held)),
+    recordHistory: vi.fn(async (source, fields, templates) => (await sync()).recordHistory(source, fields, held, templates)),
+  };
+  const withPromptStore = vi.fn(async (body) => body(restoreHandle));
+  return {
+    receiveBulletState,
+    receiveLegacyPromptState,
+    outgoingBulletState,
+    withPromptStore,
+    sendBulletState: vi.fn((fields) => withPromptStore((store) => store.send(fields))),
+    restoreHandle,
+    bulletSyncDisconnected: vi.fn(),
+    heldSnapshotParts: vi.fn(() => 0),
+    // The texts the store shows, for a history entry: here the saved texts (the defaults of a field never
+    // saved are the store's own, tested with the real store).
+    shownTexts: vi.fn(async () => {
+      const keys = { composition: 'user_prompts:user_composition.md', action: 'user_prompts:user_action.md', kb: 'user_prompts:user_kb.md' };
+      const saved = await browser.storage.local.get(Object.values(keys));
+      return Object.fromEntries(Object.entries(keys).map(([field, key]) => [field, saved[key] ?? '']));
+    }),
+  };
+});
 
 // ─── Constants (mirrored from deviceSync.js) ────────────────────────────────────
 
@@ -215,18 +259,6 @@ const TIMESTAMP_KEYS = {
   kb: 'device_sync_ts:kb',
   templates: 'device_sync_ts:templates',
   disabledReminders: 'device_sync_ts:disabledReminders',
-};
-
-const PEER_BASE_KEYS = {
-  composition: 'device_peer_base:composition',
-  action: 'device_peer_base:action',
-  kb: 'device_peer_base:kb',
-};
-
-const PEER_BASE_TS_KEYS = {
-  composition: 'device_peer_base_ts:composition',
-  action: 'device_peer_base_ts:action',
-  kb: 'device_peer_base_ts:kb',
 };
 
 const EPOCH_ZERO = '1970-01-01T00:00:00.000Z';
@@ -306,6 +338,8 @@ describe('Device Sync', () => {
     clearStorage();
     resetMockCalls();
     mockWebSocketInstances = [];
+    // Someone is signed in, as Device Sync needs.
+    setStorage({ supabaseSession: { access_token: 'synthetic-access' } });
   });
 
   afterEach(async () => {
@@ -388,48 +422,42 @@ describe('Device Sync', () => {
       // No socket, so no send attempt — verified by no error
     });
 
-    it('restoreFromHistory suppresses broadcast during apply then broadcasts after', async () => {
-      // Set up initial state
+    it('restoreFromHistory hands the three texts to the prompt store and writes the templates', async () => {
       setStorage({
         [FIELD_KEYS.composition]: 'Current',
-        [FIELD_KEYS.action]: 'Current action',
-        [FIELD_KEYS.kb]: 'Current kb',
-        [FIELD_KEYS.templates]: [],
-        [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
-        [TIMESTAMP_KEYS.action]: '2026-03-10T00:00:00Z',
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
+        [FIELD_KEYS.templates]: [{ id: 't-old', name: 'Old' }],
         [TIMESTAMP_KEYS.templates]: '2026-03-10T00:00:00Z',
       });
-
       const entry = {
         id: 'test-entry',
         composition: 'Restored comp',
         action: 'Restored action',
         kb: 'Restored kb',
-        templatesJSON: JSON.stringify([]),
+        templatesJSON: JSON.stringify([{ id: 't-new', name: 'New' }]),
       };
 
-      // restoreFromHistory sets suppressBroadcast=true during write,
-      // then calls broadcastState after
       await deviceSync.restoreFromHistory(entry);
 
-      // Verify restored state was written
-      expect(storageData[FIELD_KEYS.composition]).toBe('Restored comp');
-      expect(storageData[FIELD_KEYS.action]).toBe('Restored action');
-      expect(storageData[FIELD_KEYS.kb]).toBe('Restored kb');
+      const promptStore = await import('../agent/modules/promptStore.js');
+      // One hold of the prompt semaphore puts the texts back.
+      expect(promptStore.withPromptStore).toHaveBeenCalledTimes(1);
+      expect(promptStore.restoreHandle.restore).toHaveBeenCalledWith(entry);
+      // The text keys are written only by the prompt store (R10: a captured edit, never an overwrite).
+      expect(storageData[FIELD_KEYS.composition]).toBe('Current');
+      expect(storageData[FIELD_KEYS.templates]).toEqual([{ id: 't-new', name: 'New' }]);
     });
 
     it('resetFieldToDefault suppresses broadcast during reset', async () => {
       setStorage({
-        [FIELD_KEYS.composition]: 'Custom rules',
-        [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
+        [FIELD_KEYS.templates]: [{ id: 't1', name: 'Custom' }],
+        [TIMESTAMP_KEYS.templates]: '2026-03-10T00:00:00Z',
       });
 
-      await deviceSync.resetFieldToDefault('composition', 'Default rules');
+      await deviceSync.resetFieldToDefault('templates', []);
 
       // Should have written default value with epoch-zero timestamp
-      expect(storageData[FIELD_KEYS.composition]).toBe('Default rules');
-      expect(storageData[TIMESTAMP_KEYS.composition]).toBe(EPOCH_ZERO);
+      expect(storageData[FIELD_KEYS.templates]).toEqual([]);
+      expect(storageData[TIMESTAMP_KEYS.templates]).toBe(EPOCH_ZERO);
     });
   });
 
@@ -473,13 +501,23 @@ describe('Device Sync', () => {
 
     it('resetFieldToDefault sets timestamp to epoch-zero', async () => {
       setStorage({
-        [FIELD_KEYS.kb]: 'Custom KB content',
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
+        [FIELD_KEYS.disabledReminders]: { hash1: { enabled: false, ts: '2026-01-01T00:00:00Z' } },
+        [TIMESTAMP_KEYS.disabledReminders]: '2026-03-10T00:00:00Z',
       });
 
-      await deviceSync.resetFieldToDefault('kb', 'Default KB');
+      await deviceSync.resetFieldToDefault('disabledReminders', {});
 
-      expect(storageData[TIMESTAMP_KEYS.kb]).toBe(EPOCH_ZERO);
+      expect(storageData[TIMESTAMP_KEYS.disabledReminders]).toBe(EPOCH_ZERO);
+    });
+
+    it('resetFieldToDefault leaves the bullet fields to the prompt store (DS-RESET)', async () => {
+      for (const field of ['composition', 'action', 'kb']) {
+        setStorage({ [FIELD_KEYS[field]]: `Custom ${field}`, [TIMESTAMP_KEYS[field]]: '2026-03-10T00:00:00Z' });
+        await deviceSync.resetFieldToDefault(field, `Default ${field}`);
+        expect(storageData[FIELD_KEYS[field]]).toBe(`Custom ${field}`);
+        expect(storageData[TIMESTAMP_KEYS[field]]).toBe('2026-03-10T00:00:00Z');
+      }
+      expect(browserMock.storage.local.set).not.toHaveBeenCalled();
     });
 
     it('resetFieldToDefault rejects invalid field names', async () => {
@@ -543,74 +581,6 @@ describe('Device Sync', () => {
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
       const hasPromptState = sentMessages.some((m) => m.type === 'prompt_state');
       expect(hasPromptState).toBe(true);
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // TB-093: Peer-base merge (3-way with bulletMerge)
-  // ═══════════════════════════════════════════════════════════════════════════
-  describe('TB-093: Peer-base merge (3-way with bulletMerge)', () => {
-    it('peer base keys are separate from field keys', () => {
-      // Verify peer base keys don't collide with field or timestamp keys
-      const allFieldKeys = new Set([
-        ...Object.values(FIELD_KEYS),
-        ...Object.values(TIMESTAMP_KEYS),
-      ]);
-      for (const key of Object.values(PEER_BASE_KEYS)) {
-        expect(allFieldKeys.has(key)).toBe(false);
-      }
-      for (const key of Object.values(PEER_BASE_TS_KEYS)) {
-        expect(allFieldKeys.has(key)).toBe(false);
-      }
-    });
-
-    it('peer base stores the raw incoming value (not merged result)', () => {
-      // This is a design invariant: peer_base = incoming, NOT the merged result
-      // We verify the keys exist and are structured correctly
-      expect(PEER_BASE_KEYS.composition).toBe('device_peer_base:composition');
-      expect(PEER_BASE_KEYS.action).toBe('device_peer_base:action');
-      expect(PEER_BASE_KEYS.kb).toBe('device_peer_base:kb');
-    });
-
-    it('3-way merge scenario: local changed, remote changed, base known', async () => {
-      // Set up the 3-way merge scenario in storage
-      const base = '- rule A\n- rule B';
-      const local = '- rule A\n- rule B\n- local rule C';
-      const remote = '- rule A\n- rule B\n- remote rule D';
-
-      setStorage({
-        [FIELD_KEYS.kb]: local,
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
-        [PEER_BASE_KEYS.kb]: base,
-        [PEER_BASE_TS_KEYS.kb]: '2026-03-08T00:00:00Z',
-      });
-
-      // The merge function (mocked) would produce a merged result
-      const { mergeFlatField } = await import('../agent/modules/bulletMerge.js');
-      const merged = mergeFlatField(base, local, remote);
-
-      // Both local and remote additions should be present
-      expect(merged).toContain('- local rule C');
-      expect(merged).toContain('- remote rule D');
-      expect(merged).toContain('- rule A');
-      expect(merged).toContain('- rule B');
-    });
-
-    it('fast-forward when no local changes since last sync', async () => {
-      // local === peer_base means no local changes → fast forward to remote
-      const base = '- rule A\n- rule B';
-
-      setStorage({
-        [FIELD_KEYS.kb]: base, // local unchanged from peer base
-        [TIMESTAMP_KEYS.kb]: '2026-03-08T00:00:00Z',
-        [PEER_BASE_KEYS.kb]: base,
-        [PEER_BASE_TS_KEYS.kb]: '2026-03-08T00:00:00Z',
-      });
-
-      // In a fast-forward scenario, local == peer_base, so result = remote
-      const local = storageData[FIELD_KEYS.kb];
-      const peerBase = storageData[PEER_BASE_KEYS.kb];
-      expect(local).toBe(peerBase); // Confirms fast-forward condition
     });
   });
 
@@ -868,6 +838,27 @@ describe('Device Sync', () => {
   // Additional: History management
   // ═══════════════════════════════════════════════════════════════════════════
   describe('History management', () => {
+    // The history is the device's: kept, shown and recorded signed in or not (R34).
+    beforeEach(() => setStorage({ supabaseSession: { access_token: 'synthetic-access' } }));
+
+    it('while nobody is signed in, loadHistory returns the history and a commit is recorded', async () => {
+      vi.useFakeTimers();
+      try {
+        setStorage({ prompt_history_migrated: true, prompt_history: [{ id: '1', source: 'local_edit', kb: '- Kept' }], [FIELD_KEYS.kb]: 'Before kb' });
+        delete storageData.supabaseSession;
+        expect(await deviceSync.loadHistory()).toEqual([{ id: '1', source: 'local_edit', kb: '- Kept' }]);
+        // A local edit's record takes its own hold, signed out too.
+        deviceSync.scheduleEditHistory(['kb']);
+        await vi.runAllTimersAsync();
+        const history = storageData['prompt_history'];
+        expect(history).toHaveLength(2);
+        expect(history[0]).toEqual({ id: '1', source: 'local_edit', kb: '- Kept' });
+        expect(history[1]).toMatchObject({ source: 'local_edit', fields: ['kb'], kb: 'Before kb' });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('loadHistory returns empty array when no history', async () => {
       const history = await deviceSync.loadHistory();
       expect(history).toEqual([]);
@@ -889,53 +880,12 @@ describe('Device Sync', () => {
       expect(history[1].source).toBe('sync_receive');
     });
 
-    it('restoreFromHistory records pre-restore state in history', async () => {
+    it('restoreFromHistory writes the templates with a fresh timestamp so the restore propagates', async () => {
       setStorage({
         prompt_history_migrated: true,
-        [FIELD_KEYS.composition]: 'Before',
-        [FIELD_KEYS.action]: 'Before action',
-        [FIELD_KEYS.kb]: 'Before kb',
         [FIELD_KEYS.templates]: [],
-        [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
-        [TIMESTAMP_KEYS.action]: '2026-03-10T00:00:00Z',
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
-        [TIMESTAMP_KEYS.templates]: '2026-03-10T00:00:00Z',
-      });
-
-      const entry = {
-        id: 'restore-entry',
-        composition: 'Restored',
-        action: 'Restored action',
-        kb: 'Restored kb',
-        templatesJSON: JSON.stringify([]),
-      };
-
-      await deviceSync.restoreFromHistory(entry);
-
-      // Check that history was recorded (pre-restore snapshot)
-      const history = storageData['prompt_history'];
-      expect(history).toBeDefined();
-      expect(history.length).toBeGreaterThanOrEqual(1);
-      // The first entry should be the "reset" snapshot before restore
-      const resetEntry = history.find((h) => h.source === 'reset');
-      expect(resetEntry).toBeDefined();
-      expect(resetEntry.composition).toBe('Before');
-    });
-
-    it('restoreFromHistory writes fresh timestamps so restore propagates', async () => {
-      setStorage({
-        prompt_history_migrated: true,
-        [FIELD_KEYS.composition]: 'Old',
-        [FIELD_KEYS.action]: 'Old',
-        [FIELD_KEYS.kb]: 'Old',
-        [FIELD_KEYS.templates]: [],
-        [TIMESTAMP_KEYS.composition]: '2026-03-01T00:00:00Z',
-        [TIMESTAMP_KEYS.action]: '2026-03-01T00:00:00Z',
-        [TIMESTAMP_KEYS.kb]: '2026-03-01T00:00:00Z',
         [TIMESTAMP_KEYS.templates]: '2026-03-01T00:00:00Z',
       });
-
-      const beforeRestore = new Date().toISOString();
 
       await deviceSync.restoreFromHistory({
         id: 'r1',
@@ -945,9 +895,30 @@ describe('Device Sync', () => {
         templatesJSON: '[]',
       });
 
-      // Timestamps should be updated to current time (not epoch-zero)
-      expect(storageData[TIMESTAMP_KEYS.composition] > '2026-03-01T00:00:00Z').toBe(true);
-      expect(storageData[TIMESTAMP_KEYS.composition]).not.toBe(EPOCH_ZERO);
+      expect(storageData[TIMESTAMP_KEYS.templates] > '2026-03-01T00:00:00Z').toBe(true);
+      expect(storageData[TIMESTAMP_KEYS.templates]).not.toBe(EPOCH_ZERO);
+    });
+
+    it('a local edit\'s history is recorded once, after the quiet period, for the edits made within it (DS-HISTORY)', async () => {
+      vi.useFakeTimers();
+      try {
+        // Earlier tests' storage writes scheduled history records of their own: let them land first.
+        await vi.runAllTimersAsync();
+        clearStorage();
+        setStorage({ prompt_history_migrated: true, [FIELD_KEYS.kb]: 'Before kb' });
+        deviceSync.scheduleEditHistory(['kb']);
+        await vi.advanceTimersByTimeAsync(1000);
+        deviceSync.scheduleEditHistory(['action']);
+        await vi.advanceTimersByTimeAsync(1999);
+        expect(storageData['prompt_history']).toBeUndefined();
+
+        await vi.runAllTimersAsync();
+        expect(storageData['prompt_history']).toHaveLength(1);
+        expect(storageData['prompt_history'][0]).toMatchObject({ source: 'local_edit', kb: 'Before kb' });
+        expect([...storageData['prompt_history'][0].fields].sort()).toEqual(['action', 'kb']);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('loadHistory migrates legacy backups on first call', async () => {
@@ -1014,16 +985,22 @@ describe('Device Sync', () => {
       expect(deviceSync.isConnected()).toBe(false);
     });
 
-    it('cleanupDeviceSync removes storage change listener', () => {
-      // Set up a storage listener first
-      deviceSync.setupStorageListener();
+    it('cleanupDeviceSync (sign-out) keeps the storage change listener, so a local edit while signed out still gets its timestamp (R34)', async () => {
+      const fresh = await import('../agent/modules/deviceSync.js?cleanupKeepsListener');
+      browserMock.storage.onChanged.addListener.mockClear();
+      browserMock.storage.onChanged.removeListener.mockClear();
+      fresh.setupStorageListener();
+      expect(browserMock.storage.onChanged.addListener).toHaveBeenCalledTimes(1);
+      const listener = browserMock.storage.onChanged.addListener.mock.calls[0][0];
 
-      const removeListenerCallCount = browserMock.storage.onChanged.removeListener.mock.calls.length;
-
-      deviceSync.cleanupDeviceSync();
-
-      // removeListener should have been called
-      expect(browserMock.storage.onChanged.removeListener.mock.calls.length).toBeGreaterThan(removeListenerCallCount);
+      await fresh.cleanupDeviceSync();
+      expect(browserMock.storage.onChanged.removeListener).not.toHaveBeenCalled();
+      const before = Date.now();
+      listener({ [FIELD_KEYS.templates]: { newValue: [] } }, 'local');
+      await vi.waitFor(() => expect(Date.parse(storageData[TIMESTAMP_KEYS.templates])).toBeGreaterThanOrEqual(before));
+      // Still the one listener.
+      fresh.setupStorageListener();
+      expect(browserMock.storage.onChanged.addListener).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1031,241 +1008,38 @@ describe('Device Sync', () => {
   // handlePromptState via socket.onmessage — core merge logic
   // ═══════════════════════════════════════════════════════════════════════════
   describe('handlePromptState via socket messages', () => {
-    it('skips fields with epoch-zero incoming timestamp', async () => {
+    it('hands a released device\'s texts to the prompt store and sends the fields it changed (DS-LEGACY-IN)', async () => {
       const ws = await establishConnection();
+      const promptStore = await import('../agent/modules/promptStore.js');
+      promptStore.receiveLegacyPromptState.mockResolvedValueOnce(['kb']);
+      setStorage({ [FIELD_KEYS.kb]: 'Local KB', [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z' });
+      ws.sent = [];
+      const data = {
+        composition: 'Remote comp', composition_updated_at: '2026-03-12T00:00:00Z',
+        action: 'Remote action', action_updated_at: '2026-03-12T00:00:00Z',
+        kb: 'Newer Remote KB', kb_updated_at: '2026-03-12T00:00:00Z',
+      };
 
-      setStorage({
-        ...storageData, // preserve existing from establishConnection
-        [FIELD_KEYS.kb]: 'Local KB content',
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
-      });
+      await sendSocketMessage(ws, { type: 'prompt_state', data });
 
-      const beforeKb = storageData[FIELD_KEYS.kb];
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          kb: 'Remote KB from virgin device',
-          kb_updated_at: EPOCH_ZERO,
-          updatedAt: EPOCH_ZERO,
-        },
-      });
-
-      // Local KB should not have changed
-      expect(storageData[FIELD_KEYS.kb]).toBe(beforeKb);
-    });
-
-    it('skips stale fields (incoming ts <= peer_base ts)', async () => {
-      const ws = await establishConnection();
-
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.kb]: 'Local KB',
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
-        [PEER_BASE_KEYS.kb]: 'Previous remote KB',
-        [PEER_BASE_TS_KEYS.kb]: '2026-03-09T00:00:00Z',
-      });
-
-      const beforeKb = storageData[FIELD_KEYS.kb];
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          kb: 'Stale remote KB',
-          kb_updated_at: '2026-03-08T00:00:00Z', // older than peer_base_ts
-          updatedAt: '2026-03-08T00:00:00Z',
-        },
-      });
-
-      // Local KB should not have changed
-      expect(storageData[FIELD_KEYS.kb]).toBe(beforeKb);
-    });
-
-    it('LWW accept: first sync with no peer base, incoming newer', async () => {
-      const ws = await establishConnection();
-
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.kb]: 'Local KB',
-        [TIMESTAMP_KEYS.kb]: '2026-03-08T00:00:00Z',
-        // No peer base keys — first sync
-      });
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          kb: 'Newer Remote KB',
-          kb_updated_at: '2026-03-12T00:00:00Z',
-          updatedAt: '2026-03-12T00:00:00Z',
-        },
-      });
-
-      // Incoming is newer, so LWW should accept remote
-      expect(storageData[FIELD_KEYS.kb]).toBe('Newer Remote KB');
-      // Peer base should be set to the incoming value
-      expect(storageData[PEER_BASE_KEYS.kb]).toBe('Newer Remote KB');
-      expect(storageData[PEER_BASE_TS_KEYS.kb]).toBe('2026-03-12T00:00:00Z');
-    });
-
-    it('LWW keep local: first sync with no peer base, local newer', async () => {
-      const ws = await establishConnection();
-
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.kb]: 'Newer Local KB',
-        [TIMESTAMP_KEYS.kb]: '2026-03-15T00:00:00Z',
-        // No peer base keys — first sync
-      });
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          kb: 'Older Remote KB',
-          kb_updated_at: '2026-03-08T00:00:00Z',
-          updatedAt: '2026-03-08T00:00:00Z',
-        },
-      });
-
-      // Local is newer, so LWW should keep local
-      expect(storageData[FIELD_KEYS.kb]).toBe('Newer Local KB');
-      // Peer base should still be updated to incoming value
-      expect(storageData[PEER_BASE_KEYS.kb]).toBe('Older Remote KB');
-    });
-
-    it('fast-forward: local unchanged from peer base', async () => {
-      const ws = await establishConnection();
-
-      const base = '- rule A\n- rule B';
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.kb]: base, // local same as peer base
-        [TIMESTAMP_KEYS.kb]: '2026-03-08T00:00:00Z',
-        [PEER_BASE_KEYS.kb]: base,
-        [PEER_BASE_TS_KEYS.kb]: '2026-03-08T00:00:00Z',
-      });
-
-      const remote = '- rule A\n- rule B\n- rule C';
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          kb: remote,
-          kb_updated_at: '2026-03-12T00:00:00Z',
-          updatedAt: '2026-03-12T00:00:00Z',
-        },
-      });
-
-      // Fast-forward: local had no changes, so accept remote entirely
-      expect(storageData[FIELD_KEYS.kb]).toBe(remote);
-    });
-
-    it('3-way merge: both sides changed kb (flat field)', async () => {
-      const ws = await establishConnection();
-
-      const base = '- rule A\n- rule B';
-      const local = '- rule A\n- rule B\n- local rule C';
-      const remote = '- rule A\n- rule B\n- remote rule D';
-
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.kb]: local,
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
-        [PEER_BASE_KEYS.kb]: base,
-        [PEER_BASE_TS_KEYS.kb]: '2026-03-08T00:00:00Z',
-      });
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          kb: remote,
-          kb_updated_at: '2026-03-12T00:00:00Z',
-          updatedAt: '2026-03-12T00:00:00Z',
-        },
-      });
-
-      // 3-way merge should combine both local and remote additions
-      const result = storageData[FIELD_KEYS.kb];
-      expect(result).toContain('- local rule C');
-      expect(result).toContain('- remote rule D');
-      // Peer base should be updated to incoming (NOT merged result)
-      expect(storageData[PEER_BASE_KEYS.kb]).toBe(remote);
-    });
-
-    it('3-way merge: both sides changed composition (sectioned field)', async () => {
-      const ws = await establishConnection();
-
-      const base = 'base composition';
-      const local = 'base composition\nlocal addition';
-      const remote = 'base composition\nremote addition';
-
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.composition]: local,
-        [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
-        [PEER_BASE_KEYS.composition]: base,
-        [PEER_BASE_TS_KEYS.composition]: '2026-03-08T00:00:00Z',
-      });
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          composition: remote,
-          composition_updated_at: '2026-03-12T00:00:00Z',
-          updatedAt: '2026-03-12T00:00:00Z',
-        },
-      });
-
-      // mergeSectionedField should have been called for composition
-      const { mergeSectionedField } = await import('../agent/modules/bulletMerge.js');
-      expect(mergeSectionedField).toHaveBeenCalled();
-    });
-
-    it('3-way merge: both sides changed action (sectioned field)', async () => {
-      const ws = await establishConnection();
-
-      const base = 'base action';
-      const local = 'base action\nlocal change';
-      const remote = 'base action\nremote change';
-
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.action]: local,
-        [TIMESTAMP_KEYS.action]: '2026-03-10T00:00:00Z',
-        [PEER_BASE_KEYS.action]: base,
-        [PEER_BASE_TS_KEYS.action]: '2026-03-08T00:00:00Z',
-      });
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          action: remote,
-          action_updated_at: '2026-03-12T00:00:00Z',
-          updatedAt: '2026-03-12T00:00:00Z',
-        },
-      });
-
-      // Verify action was processed (sectioned merge for action uses ACTION_SECTIONS)
-      expect(storageData[PEER_BASE_KEYS.action]).toBe(remote);
-    });
-
-    it('skips non-string fields for text merge', async () => {
-      const ws = await establishConnection();
-
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.kb]: 'Local KB',
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
-      });
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          kb: 12345, // Not a string — should be skipped
-          kb_updated_at: '2026-03-15T00:00:00Z',
-        },
-      });
-
+      expect(promptStore.receiveLegacyPromptState).toHaveBeenCalledWith(data);
+      const sent = ws.sent.map((raw) => JSON.parse(raw));
+      expect(sent.filter((m) => m.type === 'bullet_state').map((m) => m.field)).toEqual(['kb']);
+      // deviceSync never writes a bullet field's text or timestamp itself.
       expect(storageData[FIELD_KEYS.kb]).toBe('Local KB');
+      expect(storageData[TIMESTAMP_KEYS.kb]).toBe('2026-03-10T00:00:00Z');
+      expect(storageData[FIELD_KEYS.composition]).toBeUndefined();
+    });
+
+    it('sends no bullet_state when the import changed nothing', async () => {
+      const ws = await establishConnection();
+      const promptStore = await import('../agent/modules/promptStore.js');
+      promptStore.receiveLegacyPromptState.mockResolvedValueOnce([]);
+      ws.sent = [];
+
+      await sendSocketMessage(ws, { type: 'prompt_state', data: { kb: '- known', kb_updated_at: '2026-03-12T00:00:00Z' } });
+
+      expect(ws.sent.map((raw) => JSON.parse(raw)).some((m) => m.type === 'bullet_state')).toBe(false);
     });
 
     it('handles prompt_state with templates CRDT merge', async () => {
@@ -1416,66 +1190,6 @@ describe('Device Sync', () => {
       expect(mergeIncomingCalls).toHaveLength(0);
     });
 
-    it('records history on sync_receive when fields change', async () => {
-      const ws = await establishConnection();
-
-      setStorage({
-        ...storageData,
-        prompt_history_migrated: true,
-        [FIELD_KEYS.kb]: 'Old KB',
-        [TIMESTAMP_KEYS.kb]: '2026-03-08T00:00:00Z',
-        // No peer base — first sync → LWW
-      });
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          kb: 'New KB from peer',
-          kb_updated_at: '2026-03-12T00:00:00Z',
-        },
-      });
-
-      // History should contain a sync_receive entry
-      const history = storageData['prompt_history'];
-      if (history && history.length > 0) {
-        const syncEntry = history.find((h) => h.source === 'sync_receive');
-        expect(syncEntry).toBeDefined();
-        expect(syncEntry.fields).toContain('kb');
-      }
-    });
-
-    it('handles multiple text fields in one prompt_state', async () => {
-      const ws = await establishConnection();
-
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.composition]: 'Old comp',
-        [FIELD_KEYS.action]: 'Old action',
-        [FIELD_KEYS.kb]: 'Old kb',
-        [TIMESTAMP_KEYS.composition]: '2026-03-08T00:00:00Z',
-        [TIMESTAMP_KEYS.action]: '2026-03-08T00:00:00Z',
-        [TIMESTAMP_KEYS.kb]: '2026-03-08T00:00:00Z',
-        // No peer base — first sync → LWW
-      });
-
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          composition: 'New comp',
-          composition_updated_at: '2026-03-12T00:00:00Z',
-          action: 'New action',
-          action_updated_at: '2026-03-12T00:00:00Z',
-          kb: 'New kb',
-          kb_updated_at: '2026-03-12T00:00:00Z',
-        },
-      });
-
-      // All fields should be updated via LWW
-      expect(storageData[FIELD_KEYS.composition]).toBe('New comp');
-      expect(storageData[FIELD_KEYS.action]).toBe('New action');
-      expect(storageData[FIELD_KEYS.kb]).toBe('New kb');
-    });
-
     it('no-op when prompt_state has no data', async () => {
       const ws = await establishConnection();
 
@@ -1497,6 +1211,80 @@ describe('Device Sync', () => {
   // handleMessage routing — other message types
   // ═══════════════════════════════════════════════════════════════════════════
   describe('handleMessage routing', () => {
+    it('hands bullet_state to the prompt store and sends the field back only when the merge differed (DS-SEND)', async () => {
+      const ws = await establishConnection();
+      const promptStore = await import('../agent/modules/promptStore.js');
+      const message = { type: 'bullet_state', v: 1, field: 'kb', sender: 's', snap: 'x', part: 1, parts: 1, bullets: [], seen: {} };
+      const outcomes = [
+        [{ kind: 'merged', field: 'kb', changed: true, send: true }, ['kb']],
+        [{ kind: 'merged', field: 'kb', changed: true, send: false }, []],
+        [{ kind: 'partial' }, []],
+        [{ kind: 'conflict', field: 'kb' }, []],
+        [{ kind: 'invalid', field: 'kb', reason: 'r' }, []],
+        [{ kind: 'unsaved', field: 'kb' }, []],
+      ];
+      for (const [outcome, sentFields] of outcomes) {
+        ws.sent = [];
+        promptStore.receiveBulletState.mockResolvedValueOnce(outcome);
+        await sendSocketMessage(ws, message);
+        expect(promptStore.receiveBulletState).toHaveBeenLastCalledWith(message);
+        expect(ws.sent.map((raw) => JSON.parse(raw)).filter((m) => m.type === 'bullet_state').map((m) => m.field)).toEqual(sentFields);
+      }
+    });
+
+    it('sends the three bullet fields on connected, before anything else (DS-SEND)', async () => {
+      const ws = await establishConnection();
+      ws.sent = [];
+      await sendSocketMessage(ws, { type: 'connected', userId: 'test-user-id' });
+      const sent = ws.sent.map((raw) => JSON.parse(raw));
+      expect(sent.slice(0, 3).map((m) => [m.type, m.field])).toEqual([
+        ['bullet_state', 'kb'], ['bullet_state', 'composition'], ['bullet_state', 'action'],
+      ]);
+    });
+
+    it('sends every part of a field\'s outgoing state, in order (DS-CHUNK)', async () => {
+      const ws = await establishConnection();
+      ws.sent = [];
+      await deviceSync.sendMessages('kb', [{ type: 'bullet_state', field: 'kb', part: 1, parts: 2 }, { type: 'bullet_state', field: 'kb', part: 2, parts: 2 }]);
+      expect(ws.sent.map((raw) => JSON.parse(raw)).map((m) => [m.field, m.part])).toEqual([['kb', 1], ['kb', 2]]);
+    });
+
+    it('sends no bullet_state while disconnected', async () => {
+      const ws = await establishConnection();
+      await deviceSync.disconnect();
+      ws.sent = [];
+      await deviceSync.sendMessages('kb', [{ type: 'bullet_state', field: 'kb', part: 1, parts: 1 }]);
+      expect(ws.sent).toEqual([]);
+    });
+
+    it('a closed connection drops the incomplete snapshots (DS-CHUNK)', async () => {
+      await establishConnection();
+      const promptStore = await import('../agent/modules/promptStore.js');
+      promptStore.bulletSyncDisconnected.mockClear();
+      await Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async({ type: 'close' })));
+      expect(promptStore.bulletSyncDisconnected).toHaveBeenCalledTimes(1);
+    });
+
+    it('an explicit disconnect drops the incomplete snapshots too (DS-CHUNK)', async () => {
+      await establishConnection();
+      const promptStore = await import('../agent/modules/promptStore.js');
+      promptStore.bulletSyncDisconnected.mockClear();
+      await deviceSync.disconnect();
+      expect(promptStore.bulletSyncDisconnected).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers a request_state for the bullet fields with masked texts (DS-LEGACY-OUT)', async () => {
+      const ws = await establishConnection();
+      setStorage({ [FIELD_KEYS.kb]: '- Synthetic private fact', [FIELD_KEYS.composition]: '- Synthetic style' });
+      ws.sent = [];
+      await sendSocketMessage(ws, { type: 'request_state', fields: ['kb', 'composition', 'action'] });
+      const reply = ws.sent.map((raw) => JSON.parse(raw)).find((m) => m.type === 'prompt_state');
+      expect(reply.data).toMatchObject({
+        kb: '', kb_updated_at: EPOCH_ZERO, composition: '', composition_updated_at: EPOCH_ZERO, action: '', action_updated_at: EPOCH_ZERO,
+      });
+      expect(JSON.stringify(reply)).not.toContain('Synthetic');
+    });
+
     it('handles request_state by broadcasting back', async () => {
       const ws = await establishConnection();
       ws.sent = []; // clear messages from connection
@@ -2094,11 +1882,12 @@ describe('Device Sync', () => {
         expect(parentTransport.listeners.size).toBe(1);
         await Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async({
           type: 'message', data: JSON.stringify({ type: 'prompt_state', data: {
-            composition: 'Synthetic replay', composition_updated_at: '2026-09-20T00:00:00Z',
+            templates: [{ id: 't-replay', name: 'Synthetic replay', updatedAt: '2026-09-20T00:00:00Z' }],
+            templates_updated_at: '2026-09-20T00:00:00Z',
           } }),
         })));
         expect(fresh.isConnected()).toBe(true);
-        expect(storageData[FIELD_KEYS.composition]).toBe('Synthetic replay');
+        expect(storageData[FIELD_KEYS.templates]).toContainEqual(expect.objectContaining({ name: 'Synthetic replay' }));
       } finally {
         await fresh.cleanupDeviceSync();
         parentTransport.listeners = oldListeners;
@@ -2110,17 +1899,19 @@ describe('Device Sync', () => {
       ws.sent.length = 0;
       const deliver = () => Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async({ type: 'probe' })));
       await deliver();
-      expect(ws.sent.map(raw => JSON.parse(raw))).toContainEqual({ type: 'request_state', fields: expect.arrayContaining(['composition', 'action', 'kb']) });
+      // R9: the probe names only the prompt_state fields, never the bullet fields' texts.
+      expect(ws.sent.map(raw => JSON.parse(raw))).toContainEqual({ type: 'request_state', fields: ['templates', 'disabledReminders', 'taskCache', 'actionConfig'] });
       parentTransport.disconnect();
       await expect(deliver()).resolves.toBeDefined();
     });
 
-    it('cleanup also waits for the connected handshake broadcast to settle', async () => {
+    it('cleanup never waits for the connected handshake broadcast (R32: sign-out never waits)', async () => {
       await establishConnection();
       const realGet = browserMock.storage.local.get.getMockImplementation();
       let releaseRead;
       browserMock.storage.local.get.mockImplementation(keys => {
-        if (!releaseRead && Array.isArray(keys) && keys.includes(FIELD_KEYS.composition)) {
+        // The broadcast's read of the timestamps (it never reads the texts).
+        if (!releaseRead && Array.isArray(keys) && keys.includes(TIMESTAMP_KEYS.composition)) {
           return new Promise(resolve => { releaseRead = async () => resolve(await realGet(keys)); });
         }
         return realGet(keys);
@@ -2136,7 +1927,7 @@ describe('Device Sync', () => {
         const returnedBeforeBroadcast = cleaned;
         await releaseRead();
         await Promise.all([incoming, cleanup]);
-        expect(returnedBeforeBroadcast).toBe(false);
+        expect(returnedBeforeBroadcast).toBe(true);
       } finally { browserMock.storage.local.get.mockImplementation(realGet); }
     });
 
@@ -2175,10 +1966,11 @@ describe('Device Sync', () => {
       const deliver = event => Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async(event)));
       await establishConnection();
       const message = { type: 'message', data: JSON.stringify({ type: 'prompt_state', data: {
-        composition: 'Synthetic peer rule', composition_updated_at: '2026-09-20T00:00:00Z',
+        templates: [{ id: 't-peer', name: 'Synthetic peer rule', updatedAt: '2026-09-20T00:00:00Z' }],
+        templates_updated_at: '2026-09-20T00:00:00Z',
       } }) };
       await deliver(message);
-      expect(storageData[FIELD_KEYS.composition]).toBe('Synthetic peer rule');
+      expect(storageData[FIELD_KEYS.templates]).toContainEqual(expect.objectContaining({ name: 'Synthetic peer rule' }));
       await deviceSync.disconnect();
       clearStorage();
       const socketsBefore = mockWebSocketInstances.length;
@@ -2190,42 +1982,45 @@ describe('Device Sync', () => {
       expect(mockWebSocketInstances).toHaveLength(socketsBefore);
     });
 
-    it('cleanup waits for an incoming write before the caller clears account data', async () => {
+    // DS-LEGACY-IN: the per-item merges run with no connection check. They are
+    // idempotent and order-free, so one that finishes after its connection ended writes valid peer data.
+    it('cleanup never waits for an incoming message being applied, and its per-item merge still lands after the connection ended (DS-LEGACY-IN)', async () => {
       await establishConnection();
       const realGet = browserMock.storage.local.get.getMockImplementation();
+      // The read just before the templates merge (after the history's): paused, so the message is applying
+      // when the connection ends.
+      let templateReads = 0;
       let releaseRead;
-      browserMock.storage.local.get.mockImplementationOnce(keys => new Promise(resolve => {
-        releaseRead = async () => resolve(await realGet(keys));
-      }));
+      browserMock.storage.local.get.mockImplementation(keys => {
+        if (keys === FIELD_KEYS.templates && ++templateReads === 2) {
+          return new Promise(resolve => { releaseRead = async () => resolve(await realGet(keys)); });
+        }
+        return realGet(keys);
+      });
       const incoming = Promise.all([...parentTransport.listeners].map(({ fire }) => fire.async({
         type: 'message', data: JSON.stringify({ type: 'prompt_state', data: {
-          composition: 'Synthetic old-account rule', composition_updated_at: '2026-09-20T00:00:00Z',
+          templates: [{ id: 't-old', name: 'Synthetic late rule', updatedAt: '2026-09-20T00:00:00Z' }],
+          templates_updated_at: '2026-09-20T00:00:00Z',
         } }),
       })));
       await vi.waitFor(() => expect(releaseRead).toBeTypeOf('function'));
-      let cleaned = false;
-      const cleanup = deviceSync.cleanupDeviceSync().then(() => { cleaned = true; });
-      for (let i = 0; i < 20; i++) await Promise.resolve();
-      const returnedBeforeWrite = cleaned;
+      await deviceSync.cleanupDeviceSync();
       await releaseRead();
-      await Promise.all([incoming, cleanup]);
-      expect(returnedBeforeWrite).toBe(false);
-      expect(storageData[FIELD_KEYS.composition]).toBe('Synthetic old-account rule');
-      clearStorage();
-      await Promise.resolve();
-      expect(storageData).toEqual({});
+      await incoming;
+      browserMock.storage.local.get.mockImplementation(realGet);
+      expect(storageData[FIELD_KEYS.templates] ?? []).toContainEqual(expect.objectContaining({ name: 'Synthetic late rule' }));
     });
 
     it('finishes both local resets when the parent disconnected before the close event arrives', async () => {
       await establishConnection();
       parentTransport.disconnect();
       expect(deviceSync.isConnected()).toBe(true);
-      await expect(deviceSync.resetFieldToDefault('action', 'Action default')).resolves.toBeUndefined();
-      await expect(deviceSync.resetFieldToDefault('composition', 'Composition default')).resolves.toBeUndefined();
-      expect(storageData[FIELD_KEYS.action]).toBe('Action default');
-      expect(storageData[FIELD_KEYS.composition]).toBe('Composition default');
-      expect(storageData[TIMESTAMP_KEYS.action]).toBe(EPOCH_ZERO);
-      expect(storageData[TIMESTAMP_KEYS.composition]).toBe(EPOCH_ZERO);
+      await expect(deviceSync.resetFieldToDefault('templates', [])).resolves.toBeUndefined();
+      await expect(deviceSync.resetFieldToDefault('disabledReminders', {})).resolves.toBeUndefined();
+      expect(storageData[FIELD_KEYS.templates]).toEqual([]);
+      expect(storageData[FIELD_KEYS.disabledReminders]).toEqual({});
+      expect(storageData[TIMESTAMP_KEYS.templates]).toBe(EPOCH_ZERO);
+      expect(storageData[TIMESTAMP_KEYS.disabledReminders]).toBe(EPOCH_ZERO);
     });
 
     it('explicit Sync Now reconnects immediately while startup respects the retry delay', async () => {
@@ -2266,7 +2061,7 @@ describe('Device Sync', () => {
     it('a stale attempt that rejects does not un-coalesce the current attempt', async () => {
       const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
       let rejectStale, releaseFresh;
-      browserMock.storage.local.remove.mockImplementationOnce(() => new Promise((_, reject) => { rejectStale = reject; }));
+      browserMock.storage.local.set.mockImplementationOnce(() => new Promise((_, reject) => { rejectStale = reject; }));
       getDeviceSyncUrl.mockImplementationOnce(() => new Promise(r => { releaseFresh = r; }));
       setStorage({ device_sync_auto_enabled: true });
       const stale = deviceSync.connect();
@@ -2321,7 +2116,7 @@ describe('Device Sync', () => {
     });
 
     it('a rejected attempt releases the single-flight so the next connect() retries', async () => {
-      browserMock.storage.local.remove.mockImplementationOnce(async () => { throw new Error('storage unavailable'); });
+      browserMock.storage.local.set.mockImplementationOnce(async () => { throw new Error('storage unavailable'); });
       setStorage({ device_sync_auto_enabled: true });
       await expect(deviceSync.connect()).rejects.toThrow('storage unavailable');
       expect(mockWebSocketInstances).toHaveLength(0);
@@ -2385,19 +2180,20 @@ describe('Device Sync', () => {
         old.onclose({ code: 1006, reason: 'delayed retired close' });
         expect(deviceSync.isConnected()).toBe(true);
 
-        setStorage({ [FIELD_KEYS.kb]: 'Local before peer repair' });
+        setStorage({ [FIELD_KEYS.templates]: [{ id: 't-local', name: 'Local before peer repair', updatedAt: new Date().toISOString() }] });
         await vi.advanceTimersByTimeAsync(300000);
         const frames = current.sent.map((frame) => JSON.parse(frame));
         expect(frames.filter((frame) => frame.type === 'ping')).toHaveLength(10);
         expect(frames.filter((frame) => frame.type === 'request_state')).toHaveLength(1);
-        expect(frames.find((frame) => frame.type === 'request_state').fields).toContain('kb');
+        expect(frames.find((frame) => frame.type === 'request_state').fields).toContain('templates');
+        expect(frames.find((frame) => frame.type === 'request_state').fields).not.toContain('kb');
         expect(old.sent).toHaveLength(0);
         current.onmessage({ data: JSON.stringify({ type: 'prompt_state', data: {
-          kb: 'Current peer repair', kb_updated_at: new Date().toISOString(),
+          templates: [{ id: 't-peer', name: 'Current peer repair', updatedAt: new Date().toISOString() }],
+          templates_updated_at: new Date().toISOString(),
         } }) });
-        await vi.waitFor(() => expect(storageData[FIELD_KEYS.kb]).toBe('Current peer repair'));
-        expect(storageData[PEER_BASE_KEYS.kb]).toBe('Current peer repair');
-        expect((storageData.prompt_history || []).at(-1).kb).toBe('Local before peer repair');
+        await vi.waitFor(() => expect(storageData[FIELD_KEYS.templates]).toContainEqual(expect.objectContaining({ name: 'Current peer repair' })));
+        expect((storageData.prompt_history || []).at(-1).templatesJSON).toContain('Local before peer repair');
 
         await deviceSync.cleanupDeviceSync();
         expect(current.readyState).toBe(WebSocket.CLOSED);
@@ -2549,25 +2345,15 @@ describe('Device Sync', () => {
   // setupStorageListener
   // ═══════════════════════════════════════════════════════════════════════════
   describe('setupStorageListener', () => {
-    it('registers a storage change listener', () => {
+    it('registers one storage change listener, however often it is called', async () => {
+      const fresh = await import('../agent/modules/deviceSync.js?registersOnce');
       browserMock.storage.onChanged.addListener.mockClear();
 
-      deviceSync.setupStorageListener();
+      fresh.setupStorageListener();
+      fresh.setupStorageListener();
 
-      expect(browserMock.storage.onChanged.addListener).toHaveBeenCalled();
-    });
-
-    it('does not register duplicate listener on second call', () => {
-      // First call already happened above, call again
-      const callCount = browserMock.storage.onChanged.addListener.mock.calls.length;
-
-      deviceSync.setupStorageListener();
-
-      // Should not have added another listener
-      expect(browserMock.storage.onChanged.addListener.mock.calls.length).toBe(callCount);
-
-      // Clean up so future tests start fresh
-      deviceSync.cleanupDeviceSync();
+      expect(browserMock.storage.onChanged.addListener).toHaveBeenCalledTimes(1);
+      await fresh.cleanupDeviceSync();
     });
   });
 
@@ -2580,18 +2366,18 @@ describe('Device Sync', () => {
 
       setStorage({
         ...storageData,
-        [FIELD_KEYS.action]: 'Custom action',
-        [TIMESTAMP_KEYS.action]: '2026-03-10T00:00:00Z',
+        [FIELD_KEYS.templates]: [{ id: 't1', name: 'Custom' }],
+        [TIMESTAMP_KEYS.templates]: '2026-03-10T00:00:00Z',
       });
       ws.sent = [];
 
-      await deviceSync.resetFieldToDefault('action', 'Default action');
+      await deviceSync.resetFieldToDefault('templates', []);
 
       // Should have sent request_state for the reset field
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
       const requestState = sentMessages.find((m) => m.type === 'request_state');
       expect(requestState).toBeDefined();
-      expect(requestState.fields).toEqual(['action']);
+      expect(requestState.fields).toEqual(['templates']);
     });
 
     it('resetFieldToDefault for templates works', async () => {
@@ -2641,9 +2427,13 @@ describe('Device Sync', () => {
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
       const promptState = sentMessages.find((m) => m.type === 'prompt_state');
       expect(promptState).toBeDefined();
-      expect(promptState.data.composition).toBe('My comp');
-      expect(promptState.data.action).toBe('My action');
-      expect(promptState.data.kb).toBe('My kb');
+      // DS-LEGACY-OUT: the bullet fields' texts are never sent in prompt_state; a released receiver
+      // skips them at epoch zero.
+      for (const field of ['composition', 'action', 'kb']) {
+        expect(promptState.data[field]).toBe('');
+        expect(promptState.data[`${field}_updated_at`]).toBe(EPOCH_ZERO);
+      }
+      expect(JSON.stringify(promptState)).not.toContain('My comp');
       expect(promptState.data.templates).toEqual([{ id: 't1', name: 'T1' }]);
     });
 
@@ -2664,8 +2454,9 @@ describe('Device Sync', () => {
       const sentMessages = ws.sent.map((s) => JSON.parse(s));
       const promptState = sentMessages.find((m) => m.type === 'prompt_state');
       expect(promptState).toBeDefined();
-      // Only kb should be included
-      expect(promptState.data.kb).toBe('My kb');
+      // Only kb should be included, masked (DS-LEGACY-OUT)
+      expect(promptState.data.kb).toBe('');
+      expect(promptState.data.kb_updated_at).toBe(EPOCH_ZERO);
       // composition should not be present since we only asked for kb
       expect(promptState.data.composition).toBeUndefined();
     });
@@ -2675,39 +2466,6 @@ describe('Device Sync', () => {
   // initTimestampsIfNeeded: legacy base migration
   // ═══════════════════════════════════════════════════════════════════════════
   describe('initTimestampsIfNeeded via connect', () => {
-    it('migrates legacy sync base keys to peer base on connect', async () => {
-      setStorage({
-        'device_sync_auto_enabled': true,
-        // Legacy base keys
-        'device_sync_base:composition': 'legacy comp base',
-        'device_sync_base:action': 'legacy action base',
-        'device_sync_base:kb': 'legacy kb base',
-        // Some timestamps so device is not virgin
-        [TIMESTAMP_KEYS.composition]: '2026-03-10T00:00:00Z',
-        [TIMESTAMP_KEYS.action]: '2026-03-10T00:00:00Z',
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
-        [TIMESTAMP_KEYS.templates]: '2026-03-10T00:00:00Z',
-        [TIMESTAMP_KEYS.disabledReminders]: '2026-03-10T00:00:00Z',
-      });
-
-      await deviceSync.connect();
-      const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
-      if (ws && ws.onopen) {
-        ws.readyState = WebSocket.OPEN;
-        ws.onopen();
-      }
-
-      // Peer base keys should now be populated from legacy
-      expect(storageData[PEER_BASE_KEYS.composition]).toBe('legacy comp base');
-      expect(storageData[PEER_BASE_KEYS.action]).toBe('legacy action base');
-      expect(storageData[PEER_BASE_KEYS.kb]).toBe('legacy kb base');
-
-      // Legacy keys should be removed
-      expect(storageData['device_sync_base:composition']).toBeUndefined();
-      expect(storageData['device_sync_base:action']).toBeUndefined();
-      expect(storageData['device_sync_base:kb']).toBeUndefined();
-    });
-
     it('initializes timestamps to epoch-zero for new device', async () => {
       setStorage({
         'device_sync_auto_enabled': true,
@@ -2750,22 +2508,21 @@ describe('Device Sync', () => {
 
       setStorage({
         ...storageData,
-        [FIELD_KEYS.kb]: 'Local',
-        [TIMESTAMP_KEYS.kb]: '2026-03-05T00:00:00Z',
-        // No peer base
+        [FIELD_KEYS.templates]: [],
+        [TIMESTAMP_KEYS.templates]: '2026-03-05T00:00:00Z',
       });
 
       await sendSocketMessage(ws, {
         type: 'prompt_state',
         data: {
-          kb: 'Remote via fallback',
+          templates: [{ id: 't-fallback', name: 'Remote via fallback', updatedAt: '2026-03-12T00:00:00Z' }],
           // No per-field timestamp, but has global updatedAt
           updatedAt: '2026-03-12T00:00:00Z',
         },
       });
 
       // Should use global updatedAt as fallback for timestamp
-      expect(storageData[FIELD_KEYS.kb]).toBe('Remote via fallback');
+      expect(storageData[FIELD_KEYS.templates]).toContainEqual(expect.objectContaining({ name: 'Remote via fallback' }));
     });
 
     it('broadcastState handles readLocalState error gracefully', async () => {
@@ -2780,36 +2537,6 @@ describe('Device Sync', () => {
 
       // Restore
       browserMock.storage.local.get = originalGet;
-    });
-
-    it('3-way merge where merged result equals local (no-op)', async () => {
-      const ws = await establishConnection();
-
-      // Set up scenario where 3-way merge produces same as local
-      const base = '- rule A';
-      const local = '- rule A'; // No changes from base
-      const remote = '- rule A'; // Also no changes
-
-      setStorage({
-        ...storageData,
-        [FIELD_KEYS.kb]: local,
-        [TIMESTAMP_KEYS.kb]: '2026-03-10T00:00:00Z',
-        [PEER_BASE_KEYS.kb]: base,
-        [PEER_BASE_TS_KEYS.kb]: '2026-03-08T00:00:00Z',
-      });
-
-      // local === peer_base so this is actually fast-forward to remote
-      // which also === local, so no change
-      await sendSocketMessage(ws, {
-        type: 'prompt_state',
-        data: {
-          kb: remote,
-          kb_updated_at: '2026-03-12T00:00:00Z',
-        },
-      });
-
-      // Peer base should still be updated
-      expect(storageData[PEER_BASE_KEYS.kb]).toBe(remote);
     });
   });
 });
@@ -2871,28 +2598,6 @@ describe('real Settings owner boundary',()=>{
 describe('bounded transient sync resources',()=>{
   beforeEach(()=>{clearStorage();resetMockCalls();mockWebSocketInstances=[];});
   afterEach(async()=>{await deviceSync.cleanupDeviceSync();vi.useRealTimers();});
-  it('settled incoming work leaves no retained event records after writing data',async()=>{
-    await establishConnection();
-    const sizes=[];
-    for(let n=1;n<=12;n++) {
-      const value=`Synthetic revision ${n}`;
-      const added = [];
-      const originalAdd = Set.prototype.add;
-      const addSpy = vi.spyOn(Set.prototype, 'add').mockImplementation(function(value) {
-        added.push({ owner: this, value }); return originalAdd.call(this, value);
-      });
-      let work;
-      try { work = [...parentTransport.listeners].map(({fire})=>fire.async({type:'message',data:JSON.stringify({type:'prompt_state',data:{
-        composition:value,composition_updated_at:`2027-01-${String(n).padStart(2,'0')}T00:00:00Z`,
-      }})})); } finally { addSpy.mockRestore(); }
-      await Promise.all(work);
-      expect(storageData[FIELD_KEYS.composition]).toBe(value);
-      const owned = added.filter(entry => work.includes(entry.value));
-      expect(owned).toHaveLength(1);
-      sizes.push(owned[0].owner.size);
-    }
-    expect(sizes).toEqual(Array(12).fill(0));
-  });
   it('successful probes return peer data and rejected sends release request records and timers',async()=>{
     vi.useFakeTimers();const ws=await establishConnection();
     const original=browserMock.tmDeviceSync.send;
@@ -3025,20 +2730,19 @@ describe('Device Sync actionConfig (compaction thresholds)', () => {
   it('a null incoming config does not abort the rest of the same prompt_state', async () => {
     const ws = await establishConnection();
     setStorage({ [ACTION_CONFIG_KEY]: { compact_threshold: 400, compact_threshold_chars: 30000 } });
-    const compositionTs = isoDaysFromNow(-1);
+    const templatesTs = isoDaysFromNow(-1);
 
     await sendSocketMessage(ws, {
       type: 'prompt_state',
       data: {
         actionConfig: null, actionConfig_updated_at: isoDaysFromNow(-1),
-        composition: 'Synthetic peer rule', composition_updated_at: compositionTs,
+        templates: [{ id: 't-peer', name: 'Synthetic peer rule', updatedAt: templatesTs }], templates_updated_at: templatesTs,
       },
     });
 
     expect(storageData[ACTION_CONFIG_KEY]).toEqual({ compact_threshold: 400, compact_threshold_chars: 30000 });
     expect(storageData[ACTION_CONFIG_TS_KEY]).toBeUndefined();
-    expect(storageData[FIELD_KEYS.composition]).toBe('Synthetic peer rule');
-    expect(storageData[TIMESTAMP_KEYS.composition]).toBe(compositionTs);
+    expect(storageData[FIELD_KEYS.templates]).toContainEqual(expect.objectContaining({ name: 'Synthetic peer rule' }));
   });
 
   it('stores only the two thresholds from an incoming config', async () => {
@@ -3146,10 +2850,10 @@ describe('Device Sync actionConfig (compaction thresholds)', () => {
 
   it('a local slider save stamps a timestamp but records no prompt history', async () => {
     vi.useFakeTimers();
+    const fresh = await import('../agent/modules/deviceSync.js?sliderSave');
     try {
-      deviceSync.cleanupDeviceSync();
       browserMock.storage.onChanged.addListener.mockClear();
-      deviceSync.setupStorageListener();
+      fresh.setupStorageListener();
       const listener = browserMock.storage.onChanged.addListener.mock.calls.at(-1)[0];
       const before = Date.now();
 
@@ -3159,7 +2863,7 @@ describe('Device Sync actionConfig (compaction thresholds)', () => {
       expect(Date.parse(storageData[ACTION_CONFIG_TS_KEY])).toBeGreaterThanOrEqual(before);
       expect(storageData.prompt_history ?? []).toEqual([]);
     } finally {
-      deviceSync.cleanupDeviceSync();
+      await fresh.cleanupDeviceSync();
       vi.useRealTimers();
     }
   });

@@ -8,7 +8,7 @@ vi.mock('../agent/modules/idbStorage.js', () => ({
  get: async keys => Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>k in h.store).map(k=>[k,h.store[k]])),
  set: async values => { h.events.push('commit'); Object.assign(h.store, values); },
  remove: async keys => { await h.remove(); h.events.push('commit'); for(const k of keys) delete h.store[k]; },
- clear: async () => { h.store={}; }, getAllKeys: async()=>Object.keys(h.store),
+ getAllKeys: async()=>Object.keys(h.store),
  purgeOlderThanByPrefixes: vi.fn(),
 }));
 vi.mock('../agent/modules/utils.js', () => ({

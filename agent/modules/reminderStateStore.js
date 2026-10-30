@@ -54,15 +54,18 @@ export function hashReminder(reminder) {
 
 // ─── v1 → v2 Migration ──────────────────────────────────────────────────
 
-let _migrated = false;
+let _migration = null;
 
 /**
- * Migrate v1 array to v2 CRDT map on first access.
+ * Migrate v1 array to v2 CRDT map on first access. Every caller awaits the one migration, so none reads or
+ * writes the v2 map before it has finished (a write meanwhile would be overwritten by the v1 copy).
  */
-async function migrateIfNeeded() {
-  if (_migrated) return;
-  _migrated = true;
+function migrateIfNeeded() {
+  _migration ??= migrate();
+  return _migration;
+}
 
+async function migrate() {
   try {
     const stored = await browser.storage.local.get([DISABLED_REMINDERS_KEY_V1, DISABLED_REMINDERS_KEY_V2]);
 

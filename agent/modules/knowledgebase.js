@@ -6,7 +6,7 @@ import { formatTimestampForAgent, renderToPlainText } from "../../chat/modules/h
 import { addChatToQueue, getUnrememberedSessions, markSessionsAsRemembered } from "./chatHistoryQueue.js";
 import { SETTINGS } from "./config.js";
 import { sendChat } from "./llm.js";
-import { getUserKBPrompt } from "./promptGenerator.js";
+import { readBeforeAI, writeAfterRead } from "./promptStore.js";
 import {
     log,
     saveChatLog
@@ -48,7 +48,9 @@ async function getKbConfig() {
 }
 
 // ----------------------------------------------------------
-// Simple serialized queue (semaphore of 1) for kb updates
+// Simple serialized queue (semaphore of 1) for kb updates (DS-REFINE-QUEUE): each refine's backend call
+// starts after the last one's write, so it reads what that one saved. The queue holds nothing of the
+// prompt store; each refine reads when it runs and writes against the change counter it read (DS-AI).
 // ----------------------------------------------------------
 let _kbUpdateChain = Promise.resolve();
 
@@ -136,8 +138,10 @@ async function _kbUpdateImpl(conversationHistory = []) {
         }
         const chatHistory = chatHistoryParts.join("\n\n");
 
-        // Current user_kb.md from storage.local
-        const currentUserKBMd = (await getUserKBPrompt()) || "";
+        // Current user_kb.md, the labels it shows and the change counter, read before the backend call
+        // (DS-AI): the refine deletes only labels whose text it drops, never a bullet that arrives meanwhile.
+        const read = await readBeforeAI("kb", "kbUpdate");
+        const currentUserKBMd = read.content.trim();
 
         // Load KB config (user-configurable thresholds)
         const kbConfig = await getKbConfig();
@@ -191,30 +195,19 @@ async function _kbUpdateImpl(conversationHistory = []) {
         const refinedKb = response.refined_kb;
         log(`-- KB -- Received refined KB from backend (${refinedKb.length} chars)`);
 
-        // 3-way merge: treat refinement as a "remote" change.
-        //   base   = KB snapshot before the backend call (currentUserKBMd)
-        //   local  = current KB (may have drifted via sync/config edits during flight)
-        //   remote = refined KB from backend
-        // Prevents clobbering concurrent local edits. Matches _periodicKbUpdateImpl.
-        const { mergeFlatField } = await import("./bulletMerge.js");
-        const currentKBNow = (await getUserKBPrompt()) || "";
-        const mergedKb = mergeFlatField(currentUserKBMd, currentKBNow, refinedKb);
-        const kbChanged = mergedKb !== currentKBNow;
-
-        // Skip save if no change, but still mark session as remembered
-        if (!kbChanged) {
-            log(`-- KB -- No changes to KB after 3-way merge`);
-        } else {
-            // Persist merged KB back to storage.local
-            try {
-                const key = "user_prompts:user_kb.md";
-                await browser.storage.local.set({ [key]: mergedKb });
-                log(`-- KB -- KB saved via 3-way merge (${mergedKb.length} chars)`);
-            } catch (e) {
-                log(`-- KB -- Failed to persist merged user_kb.md: ${e}`, "error");
-                // Still mark session as remembered even if save fails
-                // to prevent infinite reprocessing
+        // The refined KB saved against that read. Dropped when the knowledge base changed during the call
+        // or the store stayed busy: its sessions stay unremembered and are refined again next time. Any
+        // other failed save still marks them remembered, to prevent infinite reprocessing.
+        let kbChanged = false;
+        try {
+            kbChanged = (await writeAfterRead("kb", read, refinedKb, "kbUpdate")).outcome === "saved";
+            log(kbChanged ? `-- KB -- KB saved (${refinedKb.length} chars)` : `-- KB -- No changes to KB`);
+        } catch (e) {
+            if (e?.changed || e?.busy) {
+                log(`-- KB -- Refined KB dropped: ${e.message}`);
+                return;
             }
+            log(`-- KB -- Failed to persist refined user_kb.md: ${e}`, "error");
         }
 
         // Index sessions to memory database (for memory_search tool)
@@ -277,17 +270,21 @@ export async function kbUpdate(conversationHistory = []) {
     return _runExclusively("kbUpdate", () => _kbUpdateImpl(conversationHistory));
 }
 
+/** What a Compress the user started says when the knowledge base changed during its backend call (DS-AI). */
+export const KB_CHANGED_MEANWHILE = "The knowledge base changed while it was being compressed, so nothing was saved. Try again.";
+
 /**
  * Compress/refine the KB without chat history.
  * Triggered manually from the prompts config page.
- * Returns { ok, refined_kb, error }.
+ * Returns { ok, error }.
  */
 export async function kbCompress() {
     return _runExclusively("kbCompress", async () => {
         try {
-            const currentUserKBMd = (await getUserKBPrompt()) || "";
-            if (!currentUserKBMd.trim()) {
-                return { ok: true, refined_kb: "" };
+            const read = await readBeforeAI("kb", "kbCompress");
+            const currentUserKBMd = read.content.trim();
+            if (!currentUserKBMd) {
+                return { ok: true };
             }
 
             const kbConfig = await getKbConfig();
@@ -324,10 +321,17 @@ export async function kbCompress() {
             }
 
             const updatedKb = response.refined_kb;
-            const kbChanged = updatedKb !== currentUserKBMd;
+            let kbChanged = false;
+            try {
+                kbChanged = (await writeAfterRead("kb", read, updatedKb, "kbCompress")).outcome === "saved";
+            } catch (e) {
+                if (!e?.changed) throw e;
+                // The user started this: they are told, and can run it again on the knowledge base as it is now.
+                log(`-- KB -- Compressed KB dropped: ${e.message}`);
+                return { ok: false, error: KB_CHANGED_MEANWHILE };
+            }
 
             if (kbChanged) {
-                await browser.storage.local.set({ "user_prompts:user_kb.md": updatedKb });
                 log(`-- KB -- Compressed KB saved (${updatedKb.split('\n').filter(l => l.trim()).length} entries)`);
 
                 // Trigger reminder extraction after KB save
@@ -343,7 +347,8 @@ export async function kbCompress() {
                 log(`-- KB -- No changes after compress`);
             }
 
-            const result = { ok: true, refined_kb: updatedKb };
+            // The page shows what was saved by reading the store again (the text and its labels together).
+            const result = { ok: true };
             if (response.debug_steps) {
                 result.debug_steps = response.debug_steps;
             }
@@ -495,9 +500,19 @@ async function _periodicKbUpdateImpl(options = {}) {
             }
             const chatHistory = chatHistoryParts.join("\n\n");
 
+            // The KB as it is now, its labels and the change counter (DS-AI). A failed read ends the run
+            // here, the cursor where the last chunk left it.
+            let read;
+            try {
+                read = await readBeforeAI("kb", "periodicKbUpdate");
+            } catch (e) {
+                log(`-- KB Periodic -- Chunk ${chunkIndex}: KB not read, stopping: ${e}`, "warn");
+                return;
+            }
+
             // Send to backend for KB refinement
             try {
-                const currentUserKBMd = (await getUserKBPrompt()) || "";
+                const currentUserKBMd = read.content.trim();
                 const kbConfig = await getKbConfig();
                 const currentTime = formatTimestampForAgent();
 
@@ -524,18 +539,12 @@ async function _periodicKbUpdateImpl(options = {}) {
                 if (response && typeof response.refined_kb === "string") {
                     const refinedKb = response.refined_kb;
 
-                    // 3-way merge: treat refinement as a "remote" change.
-                    // base = KB snapshot before backend call (currentUserKBMd)
-                    // local = current KB (may have changed via sync/tools during the flight)
-                    // remote = refined KB from backend
-                    const { mergeFlatField } = await import("./bulletMerge.js");
-                    const currentKBNow = (await getUserKBPrompt()) || "";
-                    const mergedKb = mergeFlatField(currentUserKBMd, currentKBNow, refinedKb);
-
-                    if (mergedKb !== currentKBNow) {
-                        const key = "user_prompts:user_kb.md";
-                        await browser.storage.local.set({ [key]: mergedKb });
-                        log(`-- KB Periodic -- Chunk ${chunkIndex}: KB updated via 3-way merge (${mergedKb.length} chars)`);
+                    // Saved against the read before the backend call. Dropped when the knowledge base changed
+                    // during the call or the store stayed busy: the run stops (below), the cursor where the
+                    // chunk before this one left it, so the next run refines this chunk again.
+                    const key = "user_prompts:user_kb.md";
+                    if ((await writeAfterRead("kb", read, refinedKb, "periodicKbUpdate")).outcome === "saved") {
+                        log(`-- KB Periodic -- Chunk ${chunkIndex}: KB updated (${refinedKb.length} chars)`);
 
                         // Notify listeners
                         try {
@@ -549,7 +558,7 @@ async function _periodicKbUpdateImpl(options = {}) {
                             generateKBReminders(false).catch(() => {});
                         } catch (_) {}
                     } else {
-                        log(`-- KB Periodic -- Chunk ${chunkIndex}: no KB changes after 3-way merge`);
+                        log(`-- KB Periodic -- Chunk ${chunkIndex}: no KB changes`);
                     }
                 } else {
                     log(`-- KB Periodic -- Chunk ${chunkIndex}: no refined_kb in response`, "warn");
@@ -557,6 +566,10 @@ async function _periodicKbUpdateImpl(options = {}) {
 
                 saveChatLog("tabmail_kb_periodic", Date.now(), [systemMsg], response);
             } catch (e) {
+                if (e?.changed || e?.busy) {
+                    log(`-- KB Periodic -- Chunk ${chunkIndex}: refined KB dropped, stopping: ${e.message}`);
+                    return;
+                }
                 log(`-- KB Periodic -- Chunk ${chunkIndex} failed: ${e}`, "error");
                 // Continue to next chunk — partial progress is saved via cursor
             }

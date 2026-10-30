@@ -95,9 +95,3 @@ export function flashBorder(element, color = "blue") {
     }, 600);
 }
 
-/**
- * Deep clone an object
- */
-export function deepClone(obj) {
-    return JSON.parse(JSON.stringify(obj));
-}

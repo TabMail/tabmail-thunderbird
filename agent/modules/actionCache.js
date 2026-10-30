@@ -204,14 +204,6 @@ export function clearAllActions() {
     return cleared;
   });
 }
-export function wipeAll() {
-  return _enqueue(async () => {
-    // Privacy cleanup must not depend on message inventory or repaint reads.
-    await idb.clear();
-    _epoch++;
-    _workTokens.clear();
-  });
-}
 export function purgeMetadataOlderThan(cutoffTs) {
   return _enqueue(() => idb.purgeOlderThanByPrefixes(METADATA_PREFIXES, cutoffTs));
 }

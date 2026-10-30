@@ -9,11 +9,12 @@ import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
 // Import modular components
 import { clearTestOutput, runKbRefineTest } from "./modules/developer.js";
 import { initHistoryHandlers, loadChatHistory, showClearAllConfirmation } from "./modules/history.js";
-import { parseMarkdown, reconstructMarkdown } from "./modules/markdown.js";
+import { BULLET_STATE_KEYS, PROMPT_KEYS, readView, SECTION_MARKER_REFUSAL } from "../agent/modules/promptStore.js";
+import { pageSections, removeItem } from "./modules/markdown.js";
 import { loadReminders } from "./modules/reminders.js";
 import { loadTasks } from "./modules/tasks.js";
-import { loadActionConfig, loadKbConfig, loadPromptFile, resetPromptFile, saveActionConfig, saveKbConfig, savePromptFile } from "./modules/storage.js";
-import { autoGrowTextarea, deepClone, flashBorder, flashButton, showStatus } from "./modules/utils.js";
+import { addLine as addStoredLine, editShown, loadActionConfig, loadKbConfig, resetSection as resetStoredSection, resetWholeField as resetStoredField, saveActionConfig, saveKbConfig } from "./modules/storage.js";
+import { autoGrowTextarea, flashBorder, flashButton, showStatus } from "./modules/utils.js";
 
 // Inject TabMail palette CSS
 injectPaletteIntoDocument(document).then(() => {
@@ -26,112 +27,270 @@ injectPaletteIntoDocument(document).then(() => {
 // Supports both new format "[Reminder]" and legacy format "Reminder:"
 const REMINDER_LINE_REGEX = /^-\s*(?:Reminder:|\[Reminder\])\s*/i;
 
+// The page keeps no text of its own: each edit is saved when it is made. It shows each field's stored
+// text and the labels it shows, read together and read again on every storage change, and each action on
+// it (remove a line, add one, reset a section) is one edit of the text shown, saved right away against
+// the labels shown with it (DS-DISPLAYED).
+const FIELDS = ["composition", "action", "kb"];
+
+/** Per field, what is shown: { content, captured } from one read of the store (`readView`). */
+const shown = { composition: null, action: null, kb: null };
+/** Per field, how many reads the page has started: only the last one started is shown. */
+const readsStarted = { composition: 0, action: 0, kb: 0 };
+/** Per add box ("field:key#copy"), what the user typed and its refusal: not part of any text, kept
+ * through re-renders until it is added or changed. */
+const addBoxes = new Map();
+
+const ADD_PLACEHOLDER = { composition: "Add rule...", action: "Add rule...", kb: "Add knowledge base entry..." };
+
+function boxKey(field, where) {
+  return `${field}:${where.key}#${where.copy}`;
+}
+
+/** Shows `e` for a failed edit; a refused add keeps its text and says why in its box. */
+function editFailed(e, field, where) {
+  if (where && e.message === SECTION_MARKER_REFUSAL) setBoxError(field, where, e.message);
+  showStatus(`Failed to save: ${e.message}`, true);
+  log(`[Prompts] Failed to save ${field}: ${e}`, "error");
+}
+
+function setBoxError(field, where, error) {
+  const key = boxKey(field, where);
+  const box = addBoxes.get(key) ?? { value: "", error: "" };
+  addBoxes.set(key, { ...box, error });
+  const errorEl = document.querySelector(`.bullet-add-error[data-box="${key}"]`);
+  if (errorEl) errorEl.textContent = error;
+}
+
+async function removeLine(field, where, text) {
+  try {
+    const outcome = await editShown(field, shown[field], (content) => removeItem(field, content, { ...where, text }));
+    showStatus(outcome === "saved" ? "Saved" : "That line was already removed");
+  } catch (e) {
+    editFailed(e, field);
+  }
+}
+
+async function addLine(field, where, text) {
+  const key = boxKey(field, where);
+  try {
+    const outcome = await addStoredLine(field, shown[field], where, text);
+    if (outcome === "gone") {
+      setBoxError(field, where, "This section is no longer in the text, so nothing changed.");
+      return;
+    }
+    // Added: the box empties, unless the user has typed something else meanwhile.
+    if ((addBoxes.get(key)?.value ?? "").trim() === text) {
+      addBoxes.delete(key);
+      const input = document.querySelector(`.bullet-add-input[data-box="${key}"]`);
+      if (input) input.value = "";
+      setBoxError(field, where, "");
+    }
+    showStatus("Saved");
+  } catch (e) {
+    editFailed(e, field, where);
+  }
+}
+
 /**
- * Create a structured bullet list editor (add/remove items).
- * Replaces textarea-based editing for composition, action, and KB sections.
- * @param {string} content - Raw text with "- " prefixed bullets
- * @param {function} onChange - Called with new content string when items change
- * @param {string} [placeholder] - Placeholder for the add input
- * @returns {HTMLElement} The bullet list editor DOM element
+ * A section's editor: its items, each with a remove button, and an add box. `where` ({ key, copy }) is
+ * the section the actions edit; the add box keeps what the user typed through re-renders.
  */
-function createBulletListEditor(content, onChange, placeholder = "Add item...") {
+function createBulletListEditor(field, where, items) {
+  const key = boxKey(field, where);
   const container = document.createElement("div");
   container.className = "bullet-list-editor";
 
-  function parseBullets(text) {
-    if (!text) return [];
-    return text.split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.startsWith("- "))
-      .map((l) => l.slice(2));
+  items.forEach((item) => {
+    const itemDiv = document.createElement("div");
+    itemDiv.className = "bullet-item";
+
+    const textSpan = document.createElement("span");
+    textSpan.className = "bullet-text";
+    textSpan.textContent = item.text;
+    itemDiv.appendChild(textSpan);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "bullet-delete-btn";
+    deleteBtn.textContent = "×"; // ×
+    deleteBtn.title = "Remove this item";
+    deleteBtn.addEventListener("click", () => removeLine(field, where, item.text));
+    itemDiv.appendChild(deleteBtn);
+
+    container.appendChild(itemDiv);
+  });
+
+  const box = addBoxes.get(key) ?? { value: "", error: "" };
+  const addRow = document.createElement("div");
+  addRow.className = "bullet-add-row";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "bullet-add-input";
+  input.placeholder = ADD_PLACEHOLDER[field];
+  input.dataset.box = key;
+  input.value = box.value;
+
+  const addBtn = document.createElement("button");
+  addBtn.className = "bullet-add-btn";
+  addBtn.textContent = "Add";
+  addBtn.disabled = input.value.trim() === "";
+
+  const errorEl = document.createElement("div");
+  errorEl.className = "bullet-add-error";
+  errorEl.dataset.box = key;
+  errorEl.textContent = box.error;
+
+  input.addEventListener("input", () => {
+    addBoxes.set(key, { value: input.value, error: "" });
+    errorEl.textContent = "";
+    addBtn.disabled = input.value.trim() === "";
+  });
+
+  function addItem() {
+    const text = input.value.trim();
+    if (!text) return;
+    addLine(field, where, text);
   }
 
-  function serializeBullets(items) {
-    return items.map((b) => `- ${b}`).join("\n");
-  }
-
-  let items = parseBullets(content);
-
-  function render() {
-    container.innerHTML = "";
-
-    for (let i = 0; i < items.length; i++) {
-      const itemDiv = document.createElement("div");
-      itemDiv.className = "bullet-item";
-
-      const textSpan = document.createElement("span");
-      textSpan.className = "bullet-text";
-      textSpan.textContent = items[i];
-      itemDiv.appendChild(textSpan);
-
-      const deleteBtn = document.createElement("button");
-      deleteBtn.className = "bullet-delete-btn";
-      deleteBtn.textContent = "\u00D7"; // ×
-      deleteBtn.title = "Remove this item";
-      deleteBtn.addEventListener("click", () => {
-        items.splice(i, 1);
-        onChange(serializeBullets(items));
-        render();
-      });
-      itemDiv.appendChild(deleteBtn);
-
-      container.appendChild(itemDiv);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addItem();
     }
+  });
+  addBtn.addEventListener("click", addItem);
 
-    // Add row
-    const addRow = document.createElement("div");
-    addRow.className = "bullet-add-row";
-
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "bullet-add-input";
-    input.placeholder = placeholder;
-
-    const addBtn = document.createElement("button");
-    addBtn.className = "bullet-add-btn";
-    addBtn.textContent = "Add";
-    addBtn.disabled = true;
-
-    input.addEventListener("input", () => {
-      addBtn.disabled = input.value.trim() === "";
-    });
-
-    function addItem() {
-      const text = input.value.trim();
-      if (!text) return;
-      items.push(text);
-      onChange(serializeBullets(items));
-      input.value = "";
-      addBtn.disabled = true;
-      render();
-      // Re-focus the input after render
-      requestAnimationFrame(() => {
-        const newInput = container.querySelector(".bullet-add-input");
-        if (newInput) newInput.focus();
-      });
-    }
-
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        addItem();
-      }
-    });
-    addBtn.addEventListener("click", addItem);
-
-    addRow.appendChild(input);
-    addRow.appendChild(addBtn);
-    container.appendChild(addRow);
-  }
-
-  // Allow external update (e.g., reload from disk)
-  container.updateContent = (newContent) => {
-    items = parseBullets(newContent);
-    render();
-  };
-
-  render();
+  addRow.appendChild(input);
+  addRow.appendChild(addBtn);
+  container.appendChild(addRow);
+  container.appendChild(errorEl);
   return container;
+}
+
+/** Re-renders `field` from its stored text, keeping the focus in an add box the user is typing in. */
+function renderField(field) {
+  const focused = document.activeElement?.classList?.contains("bullet-add-input") ? document.activeElement.dataset.box : null;
+  const caret = focused ? document.activeElement.selectionStart : null;
+  if (field === "kb") renderKb();
+  else renderSections(field);
+  // The Developer tab's raw text is a read-only view of what is shown.
+  const raw = document.getElementById(`raw-${field}-content`);
+  if (raw) raw.value = shown[field]?.content ?? "";
+  if (focused) {
+    const input = document.querySelector(`.bullet-add-input[data-box="${focused}"]`);
+    if (input) {
+      input.focus();
+      if (caret !== null) input.setSelectionRange(caret, caret);
+    }
+  }
+}
+
+// Render a writing-style or action field's sections
+function renderSections(field) {
+  const container = document.getElementById(field === "composition" ? "composition-sections" : "action-sections");
+  container.innerHTML = "";
+
+  if (shown[field] === null) {
+    container.innerHTML = "<p>Loading...</p>";
+    return;
+  }
+
+  for (const section of pageSections(field, shown[field].content)) {
+    const where = { key: section.key, copy: section.copy };
+    const sectionDiv = document.createElement("div");
+    sectionDiv.className = "section-container";
+
+    const headerDiv = document.createElement("div");
+    headerDiv.className = "section-header";
+
+    const titleEl = document.createElement("h3");
+    titleEl.textContent = section.title;
+    if (field === "action") {
+      const countSpan = document.createElement("span");
+      countSpan.className = "kb-entry-count";
+      countSpan.textContent = ` (${section.items.length})`;
+      titleEl.appendChild(countSpan);
+    }
+    headerDiv.appendChild(titleEl);
+
+    const actionsDiv = document.createElement("div");
+    actionsDiv.className = "section-header-actions";
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "reset-section-btn";
+    resetBtn.textContent = "Reset";
+    resetBtn.title = "Reset this section to default";
+    resetBtn.addEventListener("click", () => {
+      flashButton(resetBtn, "red");
+      resetSection(field, section.title, where);
+    });
+    actionsDiv.appendChild(resetBtn);
+    headerDiv.appendChild(actionsDiv);
+    sectionDiv.appendChild(headerDiv);
+
+    const contentDiv = document.createElement("div");
+    contentDiv.className = "section-content";
+    const simpleDiv = document.createElement("div");
+    simpleDiv.className = "simple-content";
+    const bulletEditor = createBulletListEditor(field, where, section.items);
+    bulletEditor.setAttribute("data-section", section.title);
+    simpleDiv.appendChild(bulletEditor);
+    contentDiv.appendChild(simpleDiv);
+    sectionDiv.appendChild(contentDiv);
+    container.appendChild(sectionDiv);
+  }
+}
+
+// Render the knowledge base
+function renderKb() {
+  const kbContainer = document.getElementById("kb-content-container");
+  if (kbContainer && shown.kb !== null) {
+    kbContainer.innerHTML = "";
+    const bulletEditor = createBulletListEditor("kb", { key: "", copy: 0 }, pageSections("kb", shown.kb.content)[0].items);
+    bulletEditor.id = "kb-bullet-editor";
+    kbContainer.appendChild(bulletEditor);
+  }
+  updateKbEntryCount();
+}
+
+/** Shows `field`'s text and its labels as the store reads them now, unless a later read was started
+ * meanwhile (a storage change since): that one shows a newer state. */
+async function loadField(field) {
+  const started = ++readsStarted[field];
+  try {
+    const view = await readView(field);
+    if (readsStarted[field] !== started) return;
+    shown[field] = view;
+    renderField(field);
+  } catch (e) {
+    log(`[Prompts] Failed to read ${field}: ${e}`, "error");
+    if (readsStarted[field] === started) showStatus(`Failed to load: ${e.message}`, true);
+  }
+}
+
+/** Section Reset: the items of the copy the user clicked replaced by the section's defaults, in one edit;
+ * every other line, another copy of the section included, is kept. */
+async function resetSection(field, title, where) {
+  if (!confirm(`Are you sure you want to reset "${title}" to default? This cannot be undone.`)) return;
+  try {
+    const outcome = await resetStoredSection(field, shown[field], where);
+    if (outcome === "gone") throw new Error("Section not found in the text");
+    showStatus(`Reset: ${title}`);
+    log(`[Prompts] Reset section: ${title}`);
+  } catch (e) {
+    showStatus(`Failed to reset: ${e.message}`, true);
+    log(`[Prompts] Failed to reset section: ${e}`, "error");
+  }
+}
+
+/** Reset Entire Prompt and the knowledge base's Reset: DS-RESET of `field`, the one clicked for. */
+async function resetWholeField(field, promptName) {
+  try {
+    await resetStoredField(field);
+    showStatus(`Reset entire ${promptName} to default!`);
+  } catch (e) {
+    showStatus(`Failed to reset: ${e.message}`, true);
+  }
 }
 
 // Sync toggle state
@@ -155,421 +314,7 @@ function updateSyncToggleUI(autoEnabled, connected) {
 
 // Current state
 let currentPrompt = "composition";
-let compositionData = null;
-let actionData = null;
-let kbData = null;
-let originalCompositionData = null; // Store original for reload
-let originalActionData = null; // Store original for reload
-let originalKbData = null; // Store original for reload
 let isDebugMode = false; // Track debug mode state
-let lastKnownCompositionMd = null; // Raw markdown last loaded/saved — for detecting external changes
-let lastKnownActionMd = null; // Raw markdown last loaded/saved — for detecting external changes
-
-// Note: parseMarkdown, reconstructMarkdown, loadPromptFile, savePromptFile, resetPromptFile
-// are now imported from modules
-
-// Render composition templates
-function renderCompositionTemplates() {
-  const container = document.getElementById("composition-sections");
-  container.innerHTML = "";
-  
-  if (!compositionData || !compositionData.sections) {
-    container.innerHTML = "<p>Loading...</p>";
-    return;
-  }
-  
-  for (const section of compositionData.sections) {
-    // Skip template sections - templates are now managed in the separate Templates page
-    if (section.templates && section.templates.length > 0) {
-      continue;
-    }
-    
-    // Create section container
-    const sectionDiv = document.createElement("div");
-    sectionDiv.className = "section-container";
-    
-    // Section header
-    const headerDiv = document.createElement("div");
-    headerDiv.className = "section-header";
-    
-    const titleEl = document.createElement("h3");
-    titleEl.textContent = section.title;
-    headerDiv.appendChild(titleEl);
-    
-    // Add section actions for all sections
-    const actionsDiv = document.createElement("div");
-    actionsDiv.className = "section-header-actions";
-    
-    const saveBtn = document.createElement("button");
-    saveBtn.className = "save-section-btn";
-    saveBtn.textContent = "Save";
-    saveBtn.title = section.templates.length > 0 
-      ? "Save all templates in this section" 
-      : "Save this section (Ctrl/Cmd+S)";
-    saveBtn.addEventListener("click", () => {
-      flashButton(saveBtn, "blue");
-      // Flash the actual textarea, not the container
-      const textarea = sectionDiv.querySelector("textarea");
-      if (textarea) flashBorder(textarea, "blue");
-      saveSectionBlock(section, "composition");
-    });
-    actionsDiv.appendChild(saveBtn);
-    
-    const reloadBtn = document.createElement("button");
-    reloadBtn.className = "reload-section-btn";
-    reloadBtn.textContent = "Reload";
-    reloadBtn.title = section.templates.length > 0
-      ? "Reload all templates in this section from disk"
-      : "Reload this section from disk";
-    reloadBtn.addEventListener("click", () => {
-      flashButton(reloadBtn, "blue");
-      // Flash the actual textarea, not the container
-      const textarea = sectionDiv.querySelector("textarea");
-      if (textarea) flashBorder(textarea, "blue");
-      reloadSectionBlock(section, "composition");
-    });
-    actionsDiv.appendChild(reloadBtn);
-    
-    const resetBtn = document.createElement("button");
-    resetBtn.className = "reset-section-btn";
-    resetBtn.textContent = "Reset";
-    resetBtn.title = section.templates.length > 0
-      ? "Reset all templates in this section to default"
-      : "Reset this section to default";
-    resetBtn.addEventListener("click", () => {
-      flashButton(resetBtn, "red");
-      // Flash the actual textarea, not the container
-      const textarea = sectionDiv.querySelector("textarea");
-      if (textarea) flashBorder(textarea, "red");
-      resetSectionBlock(section, "composition");
-    });
-    actionsDiv.appendChild(resetBtn);
-    
-    headerDiv.appendChild(actionsDiv);
-    
-    sectionDiv.appendChild(headerDiv);
-    
-    // Section content
-    const contentDiv = document.createElement("div");
-    contentDiv.className = "section-content";
-    
-    // For non-template sections (like "General writing style")
-    if (section.templates.length === 0) {
-      const simpleDiv = document.createElement("div");
-      simpleDiv.className = "simple-content";
-
-      const bulletEditor = createBulletListEditor(
-        section.content || "",
-        (newContent) => { section.content = newContent; },
-        "Add rule..."
-      );
-      bulletEditor.setAttribute("data-section", section.title);
-      simpleDiv.appendChild(bulletEditor);
-      contentDiv.appendChild(simpleDiv);
-    } else {
-      // Render templates
-      for (let i = 0; i < section.templates.length; i++) {
-        const template = section.templates[i];
-        const templateDiv = createTemplateItem(template, section, i);
-        contentDiv.appendChild(templateDiv);
-      }
-      
-      // Add template button
-      const addBtn = document.createElement("button");
-      addBtn.className = "add-template-btn";
-      addBtn.textContent = "Create New Template";
-      addBtn.addEventListener("click", () => {
-        const newTemplate = {
-          title: "New Template",
-          instructions: [],
-          exampleReply: "",
-          rawLines: [],
-        };
-        section.templates.push(newTemplate);
-        renderCompositionTemplates();
-      });
-      contentDiv.appendChild(addBtn);
-    }
-    
-    sectionDiv.appendChild(contentDiv);
-    container.appendChild(sectionDiv);
-  }
-  
-  // Auto-grow for composition (which is visible by default on load)
-  requestAnimationFrame(() => {
-    const simpleTextareas = container.querySelectorAll(".simple-content textarea");
-    simpleTextareas.forEach(ta => {
-      autoGrowTextarea(ta);
-      log(`[Prompts] Auto-growing composition textarea for: ${ta.getAttribute("data-section")}, scrollHeight: ${ta.scrollHeight}`);
-    });
-    
-    // Also auto-grow template textareas
-    const templateTextareas = container.querySelectorAll(".template-field-textarea");
-    templateTextareas.forEach(ta => {
-      autoGrowTextarea(ta);
-    });
-  });
-}
-
-// Create template item UI
-function createTemplateItem(template, section, index) {
-  const templateDiv = document.createElement("div");
-  templateDiv.className = "template-item";
-  
-  // Template header with title and delete button
-  const headerDiv = document.createElement("div");
-  headerDiv.className = "template-header";
-  
-  const titleWrapper = document.createElement("div");
-  titleWrapper.className = "template-title-input-wrapper";
-  
-  const titleLabel = document.createElement("label");
-  titleLabel.className = "template-title-label";
-  titleLabel.textContent = "Template Title";
-  titleWrapper.appendChild(titleLabel);
-  
-  const titleInput = document.createElement("input");
-  titleInput.type = "text";
-  titleInput.className = "template-title-input";
-  titleInput.value = template.title;
-  titleInput.addEventListener("input", () => {
-    template.title = titleInput.value;
-  });
-  titleWrapper.appendChild(titleInput);
-  
-  headerDiv.appendChild(titleWrapper);
-  
-  const actionsDiv = document.createElement("div");
-  actionsDiv.className = "template-actions";
-  
-  const saveBtn = document.createElement("button");
-  saveBtn.className = "save-section-btn";
-  saveBtn.textContent = "Save";
-  saveBtn.title = "Save this template (Ctrl/Cmd+S)";
-  saveBtn.addEventListener("click", () => {
-    flashButton(saveBtn, "blue");
-    // Flash all textareas in the template (title, instructions, example)
-    const textareas = templateDiv.querySelectorAll("textarea");
-    const titleInput = templateDiv.querySelector(".template-title-input");
-    if (titleInput) flashBorder(titleInput, "blue");
-    textareas.forEach(ta => flashBorder(ta, "blue"));
-    saveTemplateBlock(template, section, "composition");
-  });
-  actionsDiv.appendChild(saveBtn);
-  
-  const reloadBtn = document.createElement("button");
-  reloadBtn.className = "reload-section-btn";
-  reloadBtn.textContent = "Reload";
-  reloadBtn.title = "Reload this template from disk";
-  reloadBtn.addEventListener("click", () => {
-    flashButton(reloadBtn, "blue");
-    // Flash all textareas in the template (title, instructions, example)
-    const textareas = templateDiv.querySelectorAll("textarea");
-    const titleInput = templateDiv.querySelector(".template-title-input");
-    if (titleInput) flashBorder(titleInput, "blue");
-    textareas.forEach(ta => flashBorder(ta, "blue"));
-    reloadTemplateBlock(template, section, index, "composition");
-  });
-  actionsDiv.appendChild(reloadBtn);
-  
-  // Check if template is marked for deletion
-  if (template.markedForDeletion) {
-    templateDiv.classList.add("marked-for-deletion");
-    
-    const undoBtn = document.createElement("button");
-    undoBtn.className = "undo-delete-btn";
-    undoBtn.textContent = "Undo";
-    undoBtn.title = "Undo deletion of this template";
-    undoBtn.addEventListener("click", () => {
-      delete template.markedForDeletion;
-      renderCompositionTemplates();
-      showStatus(`Restored template: ${template.title}`);
-    });
-    actionsDiv.appendChild(undoBtn);
-    
-    const deleteNowBtn = document.createElement("button");
-    deleteNowBtn.className = "delete-now-btn";
-    deleteNowBtn.textContent = "Delete Now";
-    deleteNowBtn.title = "Permanently delete this template immediately";
-    deleteNowBtn.addEventListener("click", async () => {
-      flashButton(deleteNowBtn, "red");
-      section.templates.splice(index, 1);
-      
-      // Save immediately
-      const markdown = reconstructMarkdown(compositionData, true);
-      await savePromptFile("user_composition.md", markdown);
-      originalCompositionData = deepClone(compositionData);
-      
-      renderCompositionTemplates();
-      showStatus(`Deleted template: ${template.title}`);
-    });
-    actionsDiv.appendChild(deleteNowBtn);
-  } else {
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "delete-template-btn";
-    deleteBtn.textContent = "Mark for Delete";
-    deleteBtn.title = "Mark this template for deletion (will be deleted when you save or close)";
-    deleteBtn.addEventListener("click", () => {
-      flashButton(deleteBtn, "red");
-      flashBorder(templateDiv, "red");
-      template.markedForDeletion = true;
-      renderCompositionTemplates();
-      showStatus(`Marked for deletion: ${template.title} (will be deleted on save or page close)`);
-    });
-    actionsDiv.appendChild(deleteBtn);
-  }
-  
-  headerDiv.appendChild(actionsDiv);
-  templateDiv.appendChild(headerDiv);
-  
-  // Instructions field
-  const instructionsField = document.createElement("div");
-  instructionsField.className = "template-field";
-  
-  const instructionsLabel = document.createElement("label");
-  instructionsLabel.className = "template-field-label";
-  instructionsLabel.textContent = "Instructions";
-  instructionsField.appendChild(instructionsLabel);
-  
-  const instructionsTextarea = document.createElement("textarea");
-  instructionsTextarea.className = "template-field-textarea";
-  instructionsTextarea.placeholder = "Enter instructions (one per line, will be saved as bullet points)";
-  instructionsTextarea.value = template.instructions.join("\n");
-  instructionsTextarea.addEventListener("input", () => {
-    template.instructions = instructionsTextarea.value.split("\n").filter(line => line.trim());
-    autoGrowTextarea(instructionsTextarea);
-  });
-  instructionsField.appendChild(instructionsTextarea);
-  
-  templateDiv.appendChild(instructionsField);
-  
-  // Call autoGrow after element is in DOM
-  requestAnimationFrame(() => autoGrowTextarea(instructionsTextarea));
-  
-  // Example reply field
-  const exampleField = document.createElement("div");
-  exampleField.className = "template-field";
-  
-  const exampleLabel = document.createElement("label");
-  exampleLabel.className = "template-field-label";
-  exampleLabel.textContent = "Example Reply";
-  exampleField.appendChild(exampleLabel);
-  
-  const exampleTextarea = document.createElement("textarea");
-  exampleTextarea.className = "template-field-textarea example-reply";
-  exampleTextarea.placeholder = "Enter example reply...";
-  exampleTextarea.value = template.exampleReply || "";
-  exampleTextarea.addEventListener("input", () => {
-    template.exampleReply = exampleTextarea.value;
-    autoGrowTextarea(exampleTextarea);
-  });
-  exampleField.appendChild(exampleTextarea);
-  
-  templateDiv.appendChild(exampleField);
-  
-  // Call autoGrow after element is in DOM
-  requestAnimationFrame(() => autoGrowTextarea(exampleTextarea));
-  
-  return templateDiv;
-}
-
-// Render action sections
-function renderActionSections() {
-  const container = document.getElementById("action-sections");
-  container.innerHTML = "";
-  
-  if (!actionData || !actionData.sections) {
-    container.innerHTML = "<p>Loading...</p>";
-    return;
-  }
-  
-  for (const section of actionData.sections) {
-    const sectionDiv = document.createElement("div");
-    sectionDiv.className = "section-container";
-
-    // Section header
-    const headerDiv = document.createElement("div");
-    headerDiv.className = "section-header";
-
-    const titleEl = document.createElement("h3");
-    titleEl.textContent = section.title;
-    const countSpan = document.createElement("span");
-    countSpan.className = "kb-entry-count";
-    const countBullets = (content) => content
-      ? content.split("\n").map(l => l.trim()).filter(l => l.startsWith("- ") && l.length > 2).length
-      : 0;
-    countSpan.textContent = ` (${countBullets(section.content)})`;
-    titleEl.appendChild(countSpan);
-    headerDiv.appendChild(titleEl);
-    
-    // Add section actions
-    const actionsDiv = document.createElement("div");
-    actionsDiv.className = "section-header-actions";
-    
-      const saveBtn = document.createElement("button");
-      saveBtn.className = "save-section-btn";
-      saveBtn.textContent = "Save";
-      saveBtn.title = "Save this section (Ctrl/Cmd+S)";
-      saveBtn.addEventListener("click", () => {
-        flashButton(saveBtn, "blue");
-        // Flash the actual textarea, not the container
-        const textarea = sectionDiv.querySelector("textarea");
-        if (textarea) flashBorder(textarea, "blue");
-        saveSectionBlock(section, "action");
-      });
-      actionsDiv.appendChild(saveBtn);
-      
-      const reloadBtn = document.createElement("button");
-      reloadBtn.className = "reload-section-btn";
-      reloadBtn.textContent = "Reload";
-      reloadBtn.title = "Reload this section from disk";
-      reloadBtn.addEventListener("click", () => {
-        flashButton(reloadBtn, "blue");
-        // Flash the actual textarea, not the container
-        const textarea = sectionDiv.querySelector("textarea");
-        if (textarea) flashBorder(textarea, "blue");
-        reloadSectionBlock(section, "action");
-      });
-      actionsDiv.appendChild(reloadBtn);
-      
-      const resetBtn = document.createElement("button");
-      resetBtn.className = "reset-section-btn";
-      resetBtn.textContent = "Reset";
-      resetBtn.title = "Reset this section to default";
-      resetBtn.addEventListener("click", () => {
-        flashButton(resetBtn, "red");
-        // Flash the actual textarea, not the container
-        const textarea = sectionDiv.querySelector("textarea");
-        if (textarea) flashBorder(textarea, "red");
-        resetSectionBlock(section, "action");
-      });
-      actionsDiv.appendChild(resetBtn);
-    
-    headerDiv.appendChild(actionsDiv);
-    sectionDiv.appendChild(headerDiv);
-    
-    // Section content
-    const contentDiv = document.createElement("div");
-    contentDiv.className = "section-content";
-    
-    const simpleDiv = document.createElement("div");
-    simpleDiv.className = "simple-content";
-
-    const bulletEditor = createBulletListEditor(
-      section.content || "",
-      (newContent) => { section.content = newContent; countSpan.textContent = ` (${countBullets(newContent)})`; },
-      "Add rule..."
-    );
-    bulletEditor.setAttribute("data-section", section.title);
-    simpleDiv.appendChild(bulletEditor);
-    contentDiv.appendChild(simpleDiv);
-    sectionDiv.appendChild(contentDiv);
-    container.appendChild(sectionDiv);
-  }
-  
-  // Don't auto-grow immediately - will be done when tab becomes visible
-  // The tab switching function will handle this
-}
 
 // Tab switching
 function switchTab(promptType) {
@@ -609,8 +354,6 @@ function switchTab(promptType) {
     loadChatHistory();
   } else if (promptType === "developer") {
     document.getElementById("developer-editor").classList.add("active");
-    // Reload raw content when switching to developer tab
-    loadRawContent();
   }
 
   // Re-calculate textarea heights after tab is visible (except for developer, reminders, history tabs)
@@ -630,290 +373,19 @@ function switchTab(promptType) {
 
 // Note: Utility functions, reminders, chat history, KB config now in modules
 
-// Load KB content
-async function loadKbContent() {
-  try {
-    const content = await loadPromptFile("user_kb.md");
-    kbData = content;
-    originalKbData = content; // Store backup for reload
-
-    // Replace textarea with bullet list editor
-    const kbContainer = document.getElementById("kb-content-container");
-    if (kbContainer) {
-      kbContainer.innerHTML = "";
-      const bulletEditor = createBulletListEditor(
-        content,
-        (newContent) => { kbData = newContent; updateKbEntryCount(); },
-        "Add knowledge base entry..."
-      );
-      bulletEditor.id = "kb-bullet-editor";
-      kbContainer.appendChild(bulletEditor);
-    }
-
-    updateKbEntryCount();
-    log(`[Prompts] KB content loaded`);
-  } catch (e) {
-    log(`[Prompts] Failed to load KB: ${e}`, "error");
-    showStatus(`Failed to load KB: ${e.message}`, true);
-  }
-}
-
 // Update KB entry count display
 function updateKbEntryCount() {
   const countSpan = document.getElementById("kb-entry-count");
   const maxBulletsSlider = document.getElementById("kb-max-bullets");
   if (!countSpan) return;
 
-  const content = kbData || "";
+  const content = shown.kb?.content || "";
   const lines = content.split("\n").filter(l => l.trim());
   // Exclude reminder lines (consistent with backend counting)
   const entryCount = lines.filter(l => !REMINDER_LINE_REGEX.test(l.trim())).length;
   const maxBullets = maxBulletsSlider ? parseInt(maxBulletsSlider.value, 10) : 200;
 
   countSpan.textContent = `(${entryCount}/${maxBullets})`;
-}
-
-// Save KB content
-async function saveKbContent() {
-  try {
-    const content = kbData || "";
-    await savePromptFile("user_kb.md", content);
-    originalKbData = content;
-
-    showStatus("KB saved successfully!");
-    log(`[Prompts] KB saved`);
-  } catch (e) {
-    log(`[Prompts] Failed to save KB: ${e}`, "error");
-    showStatus(`Failed to save KB: ${e.message}`, true);
-  }
-}
-
-// Reload KB content from disk
-async function reloadKbContent() {
-  try {
-    const content = await loadPromptFile("user_kb.md");
-    kbData = content;
-    originalKbData = content;
-
-    const bulletEditor = document.getElementById("kb-bullet-editor");
-    if (bulletEditor && bulletEditor.updateContent) {
-      bulletEditor.updateContent(content);
-    }
-
-    updateKbEntryCount();
-    showStatus("KB reloaded from disk!");
-    log(`[Prompts] KB reloaded`);
-  } catch (e) {
-    log(`[Prompts] Failed to reload KB: ${e}`, "error");
-    showStatus(`Failed to reload KB: ${e.message}`, true);
-  }
-}
-
-// Reset KB to default
-async function resetKbContent() {
-  try {
-    await resetPromptFile("user_kb.md");
-    const content = await loadPromptFile("user_kb.md");
-    kbData = content;
-    originalKbData = content;
-
-    const bulletEditor = document.getElementById("kb-bullet-editor");
-    if (bulletEditor && bulletEditor.updateContent) {
-      bulletEditor.updateContent(content);
-    }
-
-    updateKbEntryCount();
-    showStatus("KB reset to default!");
-    log(`[Prompts] KB reset to default`);
-  } catch (e) {
-    log(`[Prompts] Failed to reset KB: ${e}`, "error");
-    showStatus(`Failed to reset KB: ${e.message}`, true);
-  }
-}
-
-// Block-wise operations
-
-// Save a single section
-async function saveSectionBlock(section, promptType) {
-  try {
-    const filename = promptType === "composition" ? "user_composition.md" : "user_action.md";
-    const data = promptType === "composition" ? compositionData : actionData;
-    
-    // For composition sections with templates, actually delete marked templates
-    if (promptType === "composition" && section.templates && section.templates.length > 0) {
-      section.templates = section.templates.filter(t => !t.markedForDeletion);
-    }
-    
-    const markdown = reconstructMarkdown(data, promptType === "composition");
-
-    // Track saved content BEFORE savePromptFile to prevent storage listener from re-rendering
-    if (promptType === "composition") {
-      lastKnownCompositionMd = markdown;
-      originalCompositionData = deepClone(compositionData);
-    } else {
-      lastKnownActionMd = markdown;
-      originalActionData = deepClone(actionData);
-    }
-
-    await savePromptFile(filename, markdown);
-
-    showStatus(`Saved: ${section.title}`);
-    log(`[Prompts] Saved section: ${section.title}`);
-  } catch (e) {
-    showStatus(`Failed to save: ${e.message}`, true);
-    log(`[Prompts] Failed to save section: ${e}`, "error");
-  }
-}
-
-// Save a single template
-async function saveTemplateBlock(template, section, promptType) {
-  try {
-    const filename = promptType === "composition" ? "user_composition.md" : "user_action.md";
-    const data = promptType === "composition" ? compositionData : actionData;
-
-    const markdown = reconstructMarkdown(data, promptType === "composition");
-
-    // Track saved content BEFORE savePromptFile to prevent storage listener from re-rendering
-    if (promptType === "composition") {
-      lastKnownCompositionMd = markdown;
-      originalCompositionData = deepClone(compositionData);
-    } else {
-      lastKnownActionMd = markdown;
-      originalActionData = deepClone(actionData);
-    }
-
-    await savePromptFile(filename, markdown);
-
-    showStatus(`Saved template: ${template.title}`);
-    log(`[Prompts] Saved template: ${template.title}`);
-  } catch (e) {
-    showStatus(`Failed to save: ${e.message}`, true);
-    log(`[Prompts] Failed to save template: ${e}`, "error");
-  }
-}
-
-// Reload a single section from disk
-async function reloadSectionBlock(section, promptType) {
-  try {
-    const filename = promptType === "composition" ? "user_composition.md" : "user_action.md";
-    const content = await loadPromptFile(filename);
-    if (promptType === "composition") lastKnownCompositionMd = content;
-    else lastKnownActionMd = content;
-    const parsedData = parseMarkdown(content, promptType === "composition");
-    
-    // Find the matching section
-    const matchingSection = parsedData.sections.find(s => s.title === section.title);
-    if (matchingSection) {
-      // Update section content only - don't re-render to avoid height recalculation issues
-      section.content = matchingSection.content;
-      section.templates = matchingSection.templates;
-      
-      // Update the bullet editor directly instead of re-rendering everything
-      const data = promptType === "composition" ? compositionData : actionData;
-      const sectionIndex = data.sections.findIndex(s => s.title === section.title);
-      if (sectionIndex >= 0) {
-        const container = promptType === "composition"
-          ? document.getElementById("composition-sections")
-          : document.getElementById("action-sections");
-        const sectionDivs = container.querySelectorAll(".section-container");
-        if (sectionDivs[sectionIndex]) {
-          const bulletEditor = sectionDivs[sectionIndex].querySelector(".bullet-list-editor");
-          if (bulletEditor && bulletEditor.updateContent) {
-            bulletEditor.updateContent(matchingSection.content || "");
-          }
-        }
-      }
-      
-      showStatus(`Reloaded: ${section.title}`);
-      log(`[Prompts] Reloaded section: ${section.title}`);
-    } else {
-      throw new Error("Section not found in file");
-    }
-  } catch (e) {
-    showStatus(`Failed to reload: ${e.message}`, true);
-    log(`[Prompts] Failed to reload section: ${e}`, "error");
-  }
-}
-
-// Reload a single template from disk
-async function reloadTemplateBlock(template, section, index, promptType) {
-  try {
-    const filename = promptType === "composition" ? "user_composition.md" : "user_action.md";
-    const content = await loadPromptFile(filename);
-    const parsedData = parseMarkdown(content, promptType === "composition");
-    
-    // Find the matching section and template
-    const matchingSection = parsedData.sections.find(s => s.title === section.title);
-    if (matchingSection && matchingSection.templates[index]) {
-      // Update template content
-      Object.assign(template, matchingSection.templates[index]);
-      
-      // Re-render
-      renderCompositionTemplates();
-      
-      showStatus(`Reloaded template: ${template.title}`);
-      log(`[Prompts] Reloaded template: ${template.title}`);
-    } else {
-      throw new Error("Template not found in file");
-    }
-  } catch (e) {
-    showStatus(`Failed to reload: ${e.message}`, true);
-    log(`[Prompts] Failed to reload template: ${e}`, "error");
-  }
-}
-
-// Reset a single section to default
-async function resetSectionBlock(section, promptType) {
-  if (!confirm(`Are you sure you want to reset "${section.title}" to default? This cannot be undone.`)) {
-    return;
-  }
-  
-  try {
-    const filename = promptType === "composition" ? "user_composition.md" : "user_action.md";
-    
-    // Get default file content
-    await resetPromptFile(filename);
-    const defaultContent = await loadPromptFile(filename);
-    const defaultData = parseMarkdown(defaultContent, promptType === "composition");
-    
-    // Find the section in default data
-    const defaultSection = defaultData.sections.find(s => s.title === section.title);
-    if (!defaultSection) {
-      throw new Error("Section not found in default file");
-    }
-    
-    // Get current data
-    const currentData = promptType === "composition" ? compositionData : actionData;
-    
-    // Replace only this section with default
-    const sectionIndex = currentData.sections.findIndex(s => s.title === section.title);
-    if (sectionIndex >= 0) {
-      currentData.sections[sectionIndex] = deepClone(defaultSection);
-      
-      // Save the modified (not fully reset) data back
-      const markdown = reconstructMarkdown(currentData, promptType === "composition");
-      await savePromptFile(filename, markdown);
-
-      // Track saved content for external-change detection
-      if (promptType === "composition") {
-        lastKnownCompositionMd = markdown;
-        originalCompositionData = deepClone(compositionData);
-        renderCompositionTemplates();
-      } else {
-        lastKnownActionMd = markdown;
-        originalActionData = deepClone(actionData);
-        renderActionSections();
-      }
-      
-      showStatus(`Reset: ${section.title}`);
-      log(`[Prompts] Reset section: ${section.title}`);
-    } else {
-      throw new Error("Section not found in current data");
-    }
-  } catch (e) {
-    showStatus(`Failed to reset: ${e.message}`, true);
-    log(`[Prompts] Failed to reset section: ${e}`, "error");
-  }
 }
 
 // Check if debug mode is enabled
@@ -934,153 +406,21 @@ async function checkDebugMode() {
   }
 }
 
-// Load raw content for developer tab
-async function loadRawContent() {
-  try {
-    const compositionContent = await loadPromptFile("user_composition.md");
-    document.getElementById("raw-composition-content").value = compositionContent;
-    
-    const actionContent = await loadPromptFile("user_action.md");
-    document.getElementById("raw-action-content").value = actionContent;
-    
-    const kbContent = await loadPromptFile("user_kb.md");
-    document.getElementById("raw-kb-content").value = kbContent;
-    
-    log("[Prompts] Loaded raw content for developer tab");
-  } catch (e) {
-    log(`[Prompts] Failed to load raw content: ${e}`, "error");
-  }
-}
-
 // Initialize
 async function initialize() {
   try {
     // Check debug mode first
     await checkDebugMode();
-    
-    // Load composition prompt
-    const compositionContent = await loadPromptFile("user_composition.md");
-    lastKnownCompositionMd = compositionContent;
-    compositionData = parseMarkdown(compositionContent, true);
-    originalCompositionData = deepClone(compositionData);
-    renderCompositionTemplates();
-
-    // Load action prompt
-    const actionContent = await loadPromptFile("user_action.md");
-    lastKnownActionMd = actionContent;
-    actionData = parseMarkdown(actionContent, false);
-    originalActionData = deepClone(actionData);
-    renderActionSections();
-    
-    // Load action config
+    for (const field of FIELDS) await loadField(field);
     await loadActionConfig();
-
-    // Load KB content and config
-    await loadKbContent();
     await loadKbConfig();
     // Re-update count now that loadKbConfig has set the real max_bullets slider value
     updateKbEntryCount();
-
-    // Load raw content if debug mode is enabled
-    if (isDebugMode) {
-      await loadRawContent();
-    }
-    
     log("[Prompts] Initialized successfully");
   } catch (e) {
     log(`[Prompts] Failed to initialize: ${e}`, "error");
     showStatus("Failed to load prompts", true);
   }
-}
-
-// Keyboard shortcut helper - finds the focused element's section/template
-function findFocusedBlock() {
-  const focusedElement = document.activeElement;
-  
-  log(`[Prompts] Finding focused block, activeElement: ${focusedElement ? focusedElement.tagName : "none"}`);
-  
-  // Check if it's a textarea
-  if (focusedElement && focusedElement.tagName === "TEXTAREA") {
-    // Find the parent template-item or simple-content
-    let parent = focusedElement.closest(".template-item");
-    if (parent) {
-      // It's a template - find which one
-      const allTemplates = document.querySelectorAll(".template-item");
-      const index = Array.from(allTemplates).indexOf(parent);
-      
-      log(`[Prompts] Focused on template, index: ${index}, currentPrompt: ${currentPrompt}`);
-      
-      if (currentPrompt === "composition") {
-        // Find section containing this template
-        let sectionIndex = 0;
-        let templateIndex = 0;
-        for (const section of compositionData.sections) {
-          if (templateIndex + section.templates.length > index) {
-            const localIndex = index - templateIndex;
-            log(`[Prompts] Found template in section "${section.title}", localIndex: ${localIndex}`);
-            return { 
-              type: "template", 
-              section: section, 
-              template: section.templates[localIndex],
-              index: localIndex,
-              promptType: "composition"
-            };
-          }
-          templateIndex += section.templates.length;
-          sectionIndex++;
-        }
-      }
-    }
-    
-    parent = focusedElement.closest(".simple-content");
-    if (parent) {
-      // Check if it's the KB textarea
-      if (focusedElement.closest("#kb-content-container")) {
-        log(`[Prompts] Focused on KB bullet editor`);
-        return {
-          type: "kb"
-        };
-      }
-      
-      // It's a simple section - scope to the current tab's container
-      const sectionContainer = parent.closest(".section-container");
-      
-      // Get sections only from the current tab's container to avoid index mismatch
-      let containerId;
-      if (currentPrompt === "composition") {
-        containerId = "#composition-sections";
-      } else if (currentPrompt === "action") {
-        containerId = "#action-sections";
-      } else {
-        log(`[Prompts] Unknown prompt type for section lookup: ${currentPrompt}`);
-        return null;
-      }
-      
-      const allSections = document.querySelectorAll(`${containerId} .section-container`);
-      const index = Array.from(allSections).indexOf(sectionContainer);
-      
-      log(`[Prompts] Focused on simple section, index: ${index}, currentPrompt: ${currentPrompt}, containerId: ${containerId}, totalSections: ${allSections.length}`);
-      
-      if (currentPrompt === "composition" && index >= 0 && index < compositionData.sections.length) {
-        log(`[Prompts] Found composition section: "${compositionData.sections[index].title}"`);
-        return { 
-          type: "section", 
-          section: compositionData.sections[index],
-          promptType: "composition"
-        };
-      } else if (currentPrompt === "action" && index >= 0 && index < actionData.sections.length) {
-        log(`[Prompts] Found action section: "${actionData.sections[index].title}"`);
-        return { 
-          type: "section", 
-          section: actionData.sections[index],
-          promptType: "action"
-        };
-      }
-    }
-  }
-  
-  log(`[Prompts] No focused block found`);
-  return null;
 }
 
 // Event listeners
@@ -1092,211 +432,29 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
   
-  // Keyboard shortcuts
-  document.addEventListener("keydown", (e) => {
-    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-    const ctrlKey = isMac ? e.metaKey : e.ctrlKey;
-    
-    // Ctrl/Cmd+S to save focused block
-    if (ctrlKey && e.key.toLowerCase() === 's') {
-      e.preventDefault();
-      
-      const focused = findFocusedBlock();
-      log(`[Prompts] Ctrl+S pressed, focused: ${focused ? focused.type : "none"}`);
-      
-      if (focused) {
-        if (focused.type === "template") {
-          // Flash all fields in the template (title, instructions, example)
-          const focusedElement = document.activeElement;
-          const templateDiv = focusedElement.closest(".template-item");
-          if (templateDiv) {
-            const titleInput = templateDiv.querySelector(".template-title-input");
-            const textareas = templateDiv.querySelectorAll("textarea");
-            if (titleInput) flashBorder(titleInput, "blue");
-            textareas.forEach(ta => flashBorder(ta, "blue"));
-          }
-          saveTemplateBlock(focused.template, focused.section, focused.promptType);
-        } else if (focused.type === "section") {
-          // Flash the focused textarea
-          const focusedTextarea = document.activeElement;
-          if (focusedTextarea && focusedTextarea.tagName === "TEXTAREA") {
-            flashBorder(focusedTextarea, "blue");
-          }
-          saveSectionBlock(focused.section, focused.promptType);
-        } else if (focused.type === "kb") {
-          // Flash KB container
-          const kbContainer = document.getElementById("kb-content-container");
-          if (kbContainer) flashBorder(kbContainer, "blue");
-          saveKbContent();
-        }
-      } else {
-        // No specific focus, save entire file
-        (async () => {
-          try {
-            if (currentPrompt === "composition") {
-              const markdown = reconstructMarkdown(compositionData, true);
-              await savePromptFile("user_composition.md", markdown);
-              lastKnownCompositionMd = markdown;
-              originalCompositionData = deepClone(compositionData);
-            } else if (currentPrompt === "action") {
-              const markdown = reconstructMarkdown(actionData, false);
-              await savePromptFile("user_action.md", markdown);
-              lastKnownActionMd = markdown;
-              originalActionData = deepClone(actionData);
-            } else if (currentPrompt === "kb") {
-              await saveKbContent();
-            }
-            showStatus("Saved all changes!");
-          } catch (e) {
-            showStatus("Failed to save: " + e.message, true);
-          }
-        })();
-      }
-    }
-  });
-  
-  // Save all changes (global button)
-  document.getElementById("save-changes").addEventListener("click", async () => {
-    const saveBtn = document.getElementById("save-changes");
-    flashButton(saveBtn, "blue");
-    
-    try {
-      if (currentPrompt === "composition") {
-        // Actually delete marked templates
-        for (const section of compositionData.sections) {
-          if (section.templates && section.templates.length > 0) {
-            section.templates = section.templates.filter(t => !t.markedForDeletion);
-          }
-        }
-        
-        const markdown = reconstructMarkdown(compositionData, true);
-        await savePromptFile("user_composition.md", markdown);
-        lastKnownCompositionMd = markdown;
-        originalCompositionData = deepClone(compositionData);
-        renderCompositionTemplates();
-        showStatus("Saved entire Email Composition!");
-      } else if (currentPrompt === "action") {
-        const markdown = reconstructMarkdown(actionData, false);
-        await savePromptFile("user_action.md", markdown);
-        lastKnownActionMd = markdown;
-        originalActionData = deepClone(actionData);
-        showStatus("Saved entire Action Classification!");
-      } else if (currentPrompt === "kb") {
-        await saveKbContent();
-        showStatus("Saved Knowledge Base!");
-      } else {
-        showStatus("Cannot save from Developer tab", true);
-        return;
-      }
-    } catch (e) {
-      showStatus("Failed to save: " + e.message, true);
-    }
-  });
-  
-  // Reload prompts (global button)
-  document.getElementById("reload-prompts").addEventListener("click", async () => {
-    const reloadBtn = document.getElementById("reload-prompts");
-    flashButton(reloadBtn, "blue");
-    
-    try {
-      if (currentPrompt === "composition") {
-        const content = await loadPromptFile("user_composition.md");
-        lastKnownCompositionMd = content;
-        compositionData = parseMarkdown(content, true);
-        originalCompositionData = deepClone(compositionData);
-        renderCompositionTemplates();
-        showStatus("Reloaded entire Email Composition from disk!");
-      } else if (currentPrompt === "action") {
-        const content = await loadPromptFile("user_action.md");
-        lastKnownActionMd = content;
-        actionData = parseMarkdown(content, false);
-        originalActionData = deepClone(actionData);
-        renderActionSections();
-        showStatus("Reloaded entire Action Classification from disk!");
-      } else {
-        showStatus("Use the Developer tab buttons to reload raw files", true);
-        return;
-      }
-    } catch (e) {
-      showStatus("Failed to reload: " + e.message, true);
-    }
-  });
-  
-  // Reset prompt (global button)
+  // Reset Entire Prompt: the field of the tab it was clicked on, only.
   document.getElementById("reset-prompt").addEventListener("click", async () => {
-    if (currentPrompt === "developer") {
+    const field = currentPrompt;
+    if (!FIELDS.includes(field)) {
       showStatus("Use the Developer tab buttons to reset raw files", true);
       return;
     }
-    
-    const filename = currentPrompt === "composition" ? "user_composition.md" 
-      : currentPrompt === "action" ? "user_action.md" 
-      : "user_kb.md";
-    const promptName = currentPrompt === "composition" ? "Email Composition" 
-      : currentPrompt === "action" ? "Action Classification" 
-      : "Knowledge Base";
-    
+    const promptName = field === "composition" ? "Email Composition" : field === "action" ? "Action Classification" : "Knowledge Base";
     if (!confirm(`Are you sure you want to reset ALL "${promptName}" to default? This cannot be undone.`)) {
       return;
     }
-    
-    const resetBtn = document.getElementById("reset-prompt");
-    flashButton(resetBtn, "red");
-    
-    try {
-      await resetPromptFile(filename);
-      
-      // Reload the specific prompt type
-      if (currentPrompt === "composition") {
-        const content = await loadPromptFile("user_composition.md");
-        lastKnownCompositionMd = content;
-        compositionData = parseMarkdown(content, true);
-        originalCompositionData = deepClone(compositionData);
-        renderCompositionTemplates();
-      } else if (currentPrompt === "action") {
-        const content = await loadPromptFile("user_action.md");
-        lastKnownActionMd = content;
-        actionData = parseMarkdown(content, false);
-        originalActionData = deepClone(actionData);
-        renderActionSections();
-      } else if (currentPrompt === "kb") {
-        await resetKbContent();
-      }
-      
-      showStatus(`Reset entire ${promptName} to default!`);
-    } catch (e) {
-      showStatus("Failed to reset: " + e.message, true);
-    }
-  });
-  
-  // KB entry count is updated via bullet editor's onChange callback (see loadKbContent)
-
-  // KB-specific buttons
-  document.getElementById("save-kb").addEventListener("click", async () => {
-    const saveBtn = document.getElementById("save-kb");
-    flashButton(saveBtn, "blue");
-    const kbContainer = document.getElementById("kb-content-container");
-    if (kbContainer) flashBorder(kbContainer, "blue");
-    await saveKbContent();
-  });
-
-  document.getElementById("reload-kb").addEventListener("click", async () => {
-    const reloadBtn = document.getElementById("reload-kb");
-    flashButton(reloadBtn, "blue");
-    const kbContainer = document.getElementById("kb-content-container");
-    if (kbContainer) flashBorder(kbContainer, "blue");
-    await reloadKbContent();
+    flashButton(document.getElementById("reset-prompt"), "red");
+    await resetWholeField(field, promptName);
   });
 
   document.getElementById("reset-kb").addEventListener("click", async () => {
     if (!confirm("Are you sure you want to reset the Knowledge Base to default? This cannot be undone.")) {
       return;
     }
-    const resetBtn = document.getElementById("reset-kb");
-    flashButton(resetBtn, "red");
+    flashButton(document.getElementById("reset-kb"), "red");
     const kbContainer = document.getElementById("kb-content-container");
     if (kbContainer) flashBorder(kbContainer, "red");
-    await resetKbContent();
+    await resetWholeField("kb", "Knowledge Base");
   });
 
   // KB Compress button
@@ -1310,15 +468,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const result = await browser.runtime.sendMessage({ command: "kb-compress" });
       if (result && result.ok) {
-        // Update bullet editor with refined KB
-        if (typeof result.refined_kb === "string") {
-          kbData = result.refined_kb;
-          const bulletEditor = document.getElementById("kb-bullet-editor");
-          if (bulletEditor && bulletEditor.updateContent) {
-            bulletEditor.updateContent(result.refined_kb);
-          }
-          updateKbEntryCount();
-        }
+        // The storage listener shows what was saved, with its labels.
         flashButton(compressBtn, "blue");
         showStatus("Knowledge base compressed successfully!");
       } else {
@@ -1385,17 +535,10 @@ document.addEventListener("DOMContentLoaded", () => {
         const msg = result.applied > 0
           ? `Merged ${result.applied} rule${result.applied !== 1 ? "s" : ""}`
           : (REASON_TEXT[result.reason] || "Nothing to compact");
+        // The storage listener shows the merged rules once they are saved.
         showStatus(msg);
-        // Reload action sections so merged rules appear immediately
-        try {
-          const content = await loadPromptFile("user_action.md");
-          lastKnownActionMd = content;
-          actionData = parseMarkdown(content, false);
-          originalActionData = deepClone(actionData);
-          renderActionSections();
-        } catch (_) {}
       } else if (result && result.ok === false && result.reason === "drift") {
-        showStatus("Compaction skipped: rules were modified concurrently", true);
+        showStatus("The action rules changed while they were being compacted, so nothing was saved. Try again.", true);
       } else {
         showStatus("Compaction failed: " + (result?.error || "unknown error"), true);
       }
@@ -1432,191 +575,8 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("test-kb-refine").addEventListener("click", runKbRefineTest);
   document.getElementById("clear-test-output").addEventListener("click", clearTestOutput);
 
-  // Raw developer tab handlers
-  document.getElementById("save-raw-composition").addEventListener("click", async () => {
-    try {
-      const content = document.getElementById("raw-composition-content").value;
-      await savePromptFile("user_composition.md", content);
-      lastKnownCompositionMd = content;
+  // The raw texts on the Developer tab are a read-only view of what is stored, shown with each field.
 
-      // Reload parsed data
-      compositionData = parseMarkdown(content, true);
-      originalCompositionData = deepClone(compositionData);
-      renderCompositionTemplates();
-
-      showStatus("Saved user_composition.md");
-    } catch (e) {
-      showStatus("Failed to save: " + e.message, true);
-    }
-  });
-
-  document.getElementById("reload-raw-composition").addEventListener("click", async () => {
-    try {
-      const content = await loadPromptFile("user_composition.md");
-      lastKnownCompositionMd = content;
-      document.getElementById("raw-composition-content").value = content;
-      showStatus("Reloaded user_composition.md");
-    } catch (e) {
-      showStatus("Failed to reload: " + e.message, true);
-    }
-  });
-
-  document.getElementById("reset-raw-composition").addEventListener("click", async () => {
-    if (!confirm("Are you sure you want to reset user_composition.md to default? This cannot be undone.")) {
-      return;
-    }
-    try {
-      await resetPromptFile("user_composition.md");
-      const content = await loadPromptFile("user_composition.md");
-      lastKnownCompositionMd = content;
-      document.getElementById("raw-composition-content").value = content;
-
-      // Reload parsed data
-      compositionData = parseMarkdown(content, true);
-      originalCompositionData = deepClone(compositionData);
-      renderCompositionTemplates();
-
-      showStatus("Reset user_composition.md");
-    } catch (e) {
-      showStatus("Failed to reset: " + e.message, true);
-    }
-  });
-
-  document.getElementById("save-raw-action").addEventListener("click", async () => {
-    try {
-      const content = document.getElementById("raw-action-content").value;
-      await savePromptFile("user_action.md", content);
-      lastKnownActionMd = content;
-
-      // Reload parsed data
-      actionData = parseMarkdown(content, false);
-      originalActionData = deepClone(actionData);
-      renderActionSections();
-
-      showStatus("Saved user_action.md");
-    } catch (e) {
-      showStatus("Failed to save: " + e.message, true);
-    }
-  });
-
-  document.getElementById("reload-raw-action").addEventListener("click", async () => {
-    try {
-      const content = await loadPromptFile("user_action.md");
-      lastKnownActionMd = content;
-      document.getElementById("raw-action-content").value = content;
-      showStatus("Reloaded user_action.md");
-    } catch (e) {
-      showStatus("Failed to reload: " + e.message, true);
-    }
-  });
-  
-  document.getElementById("reset-raw-action").addEventListener("click", async () => {
-    if (!confirm("Are you sure you want to reset user_action.md to default? This cannot be undone.")) {
-      return;
-    }
-    try {
-      await resetPromptFile("user_action.md");
-      const content = await loadPromptFile("user_action.md");
-      lastKnownActionMd = content;
-      document.getElementById("raw-action-content").value = content;
-
-      // Reload parsed data
-      actionData = parseMarkdown(content, false);
-      originalActionData = deepClone(actionData);
-      renderActionSections();
-
-      showStatus("Reset user_action.md");
-    } catch (e) {
-      showStatus("Failed to reset: " + e.message, true);
-    }
-  });
-  
-  // Raw KB handlers
-  document.getElementById("save-raw-kb").addEventListener("click", async () => {
-    try {
-      const content = document.getElementById("raw-kb-content").value;
-      await savePromptFile("user_kb.md", content);
-      
-      // Reload KB data
-      kbData = content;
-      originalKbData = content;
-      const bulletEditor1 = document.getElementById("kb-bullet-editor");
-      if (bulletEditor1 && bulletEditor1.updateContent) {
-        bulletEditor1.updateContent(content);
-      }
-      updateKbEntryCount();
-
-      showStatus("Saved user_kb.md");
-    } catch (e) {
-      showStatus("Failed to save: " + e.message, true);
-    }
-  });
-  
-  document.getElementById("reload-raw-kb").addEventListener("click", async () => {
-    try {
-      const content = await loadPromptFile("user_kb.md");
-      document.getElementById("raw-kb-content").value = content;
-      showStatus("Reloaded user_kb.md");
-    } catch (e) {
-      showStatus("Failed to reload: " + e.message, true);
-    }
-  });
-  
-  document.getElementById("reset-raw-kb").addEventListener("click", async () => {
-    if (!confirm("Are you sure you want to reset user_kb.md to default? This cannot be undone.")) {
-      return;
-    }
-    try {
-      await resetPromptFile("user_kb.md");
-      const content = await loadPromptFile("user_kb.md");
-      document.getElementById("raw-kb-content").value = content;
-      
-      // Reload KB data
-      kbData = content;
-      originalKbData = content;
-      const bulletEditor2 = document.getElementById("kb-bullet-editor");
-      if (bulletEditor2 && bulletEditor2.updateContent) {
-        bulletEditor2.updateContent(content);
-      }
-      updateKbEntryCount();
-
-      showStatus("Reset user_kb.md");
-    } catch (e) {
-      showStatus("Failed to reset: " + e.message, true);
-    }
-  });
-  
-  // Clean up marked templates when page closes
-  window.addEventListener("beforeunload", async (e) => {
-    // Check if there are any marked templates
-    let hasMarkedTemplates = false;
-    for (const section of compositionData.sections) {
-      if (section.templates && section.templates.some(t => t.markedForDeletion)) {
-        hasMarkedTemplates = true;
-        break;
-      }
-    }
-    
-    if (hasMarkedTemplates) {
-      // Actually delete marked templates before closing
-      for (const section of compositionData.sections) {
-        if (section.templates && section.templates.length > 0) {
-          section.templates = section.templates.filter(t => !t.markedForDeletion);
-        }
-      }
-      
-      // Save silently
-      try {
-        const markdown = reconstructMarkdown(compositionData, true);
-        lastKnownCompositionMd = markdown;
-        await savePromptFile("user_composition.md", markdown);
-        log("[Prompts] Cleaned up marked templates on page close");
-      } catch (error) {
-        log(`[Prompts] Failed to save on close: ${error}`, "error");
-      }
-    }
-  });
-  
   // Refresh tasks button
   document.getElementById("refresh-tasks").addEventListener("click", async () => {
     const refreshBtn = document.getElementById("refresh-tasks");
@@ -1648,48 +608,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initialize history-specific handlers (search, pagination, delete old)
   initHistoryHandlers();
   
-  // Storage listener for auto-reloading when prompts change externally
+  // Every stored text change is shown, whoever made it: the page keeps no text of its own.
   browser.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
 
-    // KB content changed (e.g., background KB refinement, kb_add/kb_del tools)
-    if (changes["user_prompts:user_kb.md"]) {
-      const newValue = changes["user_prompts:user_kb.md"].newValue;
-      // Skip if this page already has the same content (self-save)
-      if (newValue !== undefined && kbData !== newValue) {
-        log("[Prompts] KB content changed externally, reloading");
-        kbData = newValue;
-        originalKbData = newValue;
-        const bulletEditor = document.getElementById("kb-bullet-editor");
-        if (bulletEditor && bulletEditor.updateContent) {
-          bulletEditor.updateContent(newValue);
-        }
-        updateKbEntryCount();
-      }
-    }
-
-    // Composition prompt changed externally
-    if (changes["user_prompts:user_composition.md"] && compositionData) {
-      const newValue = changes["user_prompts:user_composition.md"].newValue;
-      if (newValue !== undefined && newValue !== lastKnownCompositionMd) {
-        log("[Prompts] Composition prompt changed externally, reloading");
-        lastKnownCompositionMd = newValue;
-        compositionData = parseMarkdown(newValue, true);
-        originalCompositionData = deepClone(compositionData);
-        if (currentPrompt === "composition") renderCompositionTemplates();
-      }
-    }
-
-    // Action prompt changed externally (e.g., auto-update from tag corrections)
-    if (changes["user_prompts:user_action.md"] && actionData) {
-      const newValue = changes["user_prompts:user_action.md"].newValue;
-      if (newValue !== undefined && newValue !== lastKnownActionMd) {
-        log("[Prompts] Action prompt changed externally, reloading");
-        lastKnownActionMd = newValue;
-        actionData = parseMarkdown(newValue, false);
-        originalActionData = deepClone(actionData);
-        if (currentPrompt === "action") renderActionSections();
-      }
+    for (const field of FIELDS) {
+      if (changes[PROMPT_KEYS[field]] || changes[BULLET_STATE_KEYS[field]]) loadField(field);
     }
 
     // Compaction thresholds changed. Refresh on the timestamp, not the value: a sync
@@ -1791,44 +715,18 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.disabled = true;
     btn.textContent = "Syncing...";
     try {
-      await browser.runtime.sendMessage({ command: "device-sync-now" });
+      const result = await browser.runtime.sendMessage({ command: "device-sync-now" });
+      if (!result?.ok) throw new Error(result?.error || "no reply");
+      // What peers send is shown by the storage listener once it is saved.
       btn.textContent = "Synced!";
-      // Reload prompts in case peers sent updates
-      await reloadAllPromptData();
       setTimeout(() => { btn.textContent = "Sync Now"; btn.disabled = false; }, 1500);
     } catch (e) {
+      showStatus(`Sync failed: ${e.message}`, true);
       log(`[Prompts] Sync Now failed: ${e}`, "error");
       btn.textContent = "Sync Now";
       btn.disabled = false;
     }
   });
 });
-
-// ─── Reload All Prompt Data (after restore) ─────────────────────────────
-
-async function reloadAllPromptData() {
-  try {
-    // Reload composition
-    const compositionContent = await loadPromptFile("user_composition.md");
-    lastKnownCompositionMd = compositionContent;
-    compositionData = parseMarkdown(compositionContent, true);
-    originalCompositionData = deepClone(compositionData);
-    if (currentPrompt === "composition") renderCompositionTemplates();
-
-    // Reload action
-    const actionContent = await loadPromptFile("user_action.md");
-    lastKnownActionMd = actionContent;
-    actionData = parseMarkdown(actionContent, false);
-    originalActionData = deepClone(actionData);
-    if (currentPrompt === "action") renderActionSections();
-
-    // Reload KB
-    await loadKbContent();
-
-    log("[Prompts] Reloaded all prompt data after restore");
-  } catch (e) {
-    log(`[Prompts] Error reloading prompt data: ${e}`, "error");
-  }
-}
 
 // (Sync history functions moved to standalone sync-history.js page)

@@ -8,7 +8,7 @@ import { origKey as actionOrigKey, userPromptKey as actionUserPromptKey } from "
 import * as idb from "./idbStorage.js";
 import { processJSONResponse, sendChat } from "./llm.js";
 import { applyActionPatch } from "./patchApplier.js";
-import { getUserActionPrompt } from "./promptGenerator.js";
+import { readBeforeAI, writeAfterRead } from "./promptStore.js";
 import {
     getRealSubject,
     getUniqueMessageKey,
@@ -46,7 +46,9 @@ export async function autoUpdateUserPromptOnMove(messageId, payload = {}) {
 }
 
 // ----------------------------------------------------------
-// Simple serialized queue (semaphore of 1) for onTag updates
+// Simple serialized queue (semaphore of 1) for onTag updates (DS-REFINE-QUEUE): each refine's backend call
+// starts after the last one's write, so it reads what that one saved. The queue holds nothing of the
+// prompt store; each refine reads when it runs and writes against the change counter it read (DS-AI).
 // ----------------------------------------------------------
 let _autoPromptUpdateChain = Promise.resolve();
 
@@ -111,9 +113,11 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
             return;
         }
 
-        // Current user_action.md from storage.local (initialize if absent)
-        const currentUserActionMd = (await getUserActionPrompt()) || "";
-        if (!currentUserActionMd) {
+        // Current user_action.md, its labels and the change counter, read before the backend call (DS-AI)
+        const read = await readBeforeAI("action", "autoUpdateUserPromptOnTag");
+        // Untrimmed: the device's own lines around the rules are kept as they are (DS-SKELETON).
+        const currentUserActionMd = read.content;
+        if (!currentUserActionMd.trim()) {
             log(`[TMDBG AutoPrompt] user_action.md empty or missing; skipping.`);
             return;
         }
@@ -155,17 +159,6 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
             return;
         }
 
-        // Re-read user_action.md — a concurrent mutation (device sync, config-page
-        // edit, another flow) may have occurred during the backend call. If the base
-        // has drifted, skip to avoid overwriting the concurrent update.
-        const latestActionMd = (await getUserActionPrompt()) || "";
-        if (latestActionMd !== currentUserActionMd) {
-            log(`[TMDBG AutoPrompt] SKIP — user_action.md changed concurrently during backend call ` +
-                `(base len ${currentUserActionMd.length}, latest len ${latestActionMd.length}) for ${uniqueKey}.`);
-            saveChatLog("tabmail_action_update", uniqueKey, messages, resp.assistant);
-            return;
-        }
-
         // Apply action patch
         const updated = applyActionPatch(currentUserActionMd, patchText);
         if (updated == null) {
@@ -179,13 +172,15 @@ async function _autoUpdateUserPromptOnTagImpl(messageId, action, extra = {}) {
             return;
         }
 
-        // Persist updated guideline back to storage.local
+        // Saved against the read before the backend call. Dropped, with nothing saved, when the rules
+        // changed during the call (an edit, a sync, another refine) or the store stayed busy.
         try {
-            const key = "user_prompts:user_action.md";
-            await browser.storage.local.set({ [key]: updated });
+            await writeAfterRead("action", read, updated, "autoUpdateUserPromptOnTag");
             log(`[TMDBG AutoPrompt] user_action.md updated (len ${updated.length}) for ${uniqueKey}.`);
         } catch (e) {
-            log(`[TMDBG AutoPrompt] Failed to persist updated user_action.md: ${e}`, "error");
+            log(`[TMDBG AutoPrompt] ${e?.changed || e?.busy ? "SKIP" : "Failed to persist updated user_action.md"}: ${e} (${uniqueKey})`, e?.changed || e?.busy ? "info" : "error");
+            saveChatLog("tabmail_action_update", uniqueKey, messages, resp.assistant);
+            return;
         }
 
         // Notify listeners (e.g., config page) that action prompt was updated
@@ -223,7 +218,9 @@ function _countPatchOps(patchText) {
 async function _compactActionRulesNowImpl() {
     log("[TMDBG AutoPrompt] compactActionRulesNow: start");
 
-    const currentUserActionMd = (await getUserActionPrompt()) || "";
+    const read = await readBeforeAI("action", "compactActionRulesNow");
+    // Untrimmed: the device's own lines around the rules are kept as they are (DS-SKELETON).
+    const currentUserActionMd = read.content;
     if (!currentUserActionMd.trim()) {
         log("[TMDBG AutoPrompt] compactActionRulesNow: user_action.md empty; nothing to compact.");
         return { ok: true, applied: 0 };
@@ -266,13 +263,6 @@ async function _compactActionRulesNowImpl() {
         return { ok: true, applied: 0, reason };
     }
 
-    // Drift guard: re-read to detect concurrent mutation during backend call
-    const latestActionMd = (await getUserActionPrompt()) || "";
-    if (latestActionMd !== currentUserActionMd) {
-        log(`[TMDBG AutoPrompt] compactActionRulesNow: SKIP — user_action.md drifted during backend call.`);
-        return { ok: false, reason: "drift" };
-    }
-
     const updated = applyActionPatch(currentUserActionMd, patchText);
     if (updated == null) {
         log("[TMDBG AutoPrompt] compactActionRulesNow: applyActionPatch failed (null).", "warn");
@@ -283,12 +273,15 @@ async function _compactActionRulesNowImpl() {
         return { ok: true, applied: 0 };
     }
 
-    // Persist
+    // Saved against the read before the backend call (DS-AI). Dropped when the rules changed meanwhile.
     try {
-        const key = "user_prompts:user_action.md";
-        await browser.storage.local.set({ [key]: updated });
+        await writeAfterRead("action", read, updated, "compactActionRulesNow");
         log(`[TMDBG AutoPrompt] compactActionRulesNow: user_action.md updated (len ${updated.length}).`);
     } catch (e) {
+        if (e?.changed) {
+            log(`[TMDBG AutoPrompt] compactActionRulesNow: SKIP — user_action.md changed during backend call.`);
+            return { ok: false, reason: "drift" };
+        }
         log(`[TMDBG AutoPrompt] compactActionRulesNow: Failed to persist: ${e}`, "error");
         return { ok: false, error: String(e) };
     }

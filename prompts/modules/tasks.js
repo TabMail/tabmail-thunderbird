@@ -167,6 +167,7 @@ async function handleTaskDelete(task) {
             hash: task.hash,
             content: task.rawLine || task.content,
             type: "task",
+            labels: task.labels,
         });
 
         if (!response || !response.ok) {
@@ -181,7 +182,9 @@ async function handleTaskDelete(task) {
         log(`[Prompts] Task ${task.hash} deleted`);
     } catch (e) {
         log(`[Prompts] Error deleting task: ${e}`, "error");
-        showStatus("Failed to delete task", true);
+        showStatus(`Failed to delete task: ${e.message}`, true);
+        // Reload to show the list as it is now
+        loadTasks();
     }
 }
 

@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import { isMarkerText } from "./bullets.js";
 import { log, normalizeUnicode } from "./utils.js";
 
 const PFX = "[PatchApplier] ";
@@ -141,6 +142,14 @@ function applySingleOperation(content, operation, contentText, actionType = null
             log(`${PFX}Empty content text`, "warn");
             return null;
         }
+
+        // R23: an added rule holding the section-header mark or the END marker would be read back as a
+        // header or the skeleton, taking the rules after it with it, so the update makes none. Deleting
+        // such a rule creates nothing and is applied.
+        if (operation === "ADD" && actionType !== null && isMarkerText("action", contentText)) {
+            log(`${PFX}Added action rule holds a section marker; skipping the update`, "warn");
+            return null;
+        }
         
         const normalizedContent = normalizeContent(contentText);
         const contentLines = content.split('\n');
@@ -197,7 +206,8 @@ function applySingleOperation(content, operation, contentText, actionType = null
             // Normalize by removing trailing periods from both sides for comparison
             // since KB entries may or may not have periods
             let contentRemoved = false;
-            const normalizedContentForComparison = normalizedContent.trim().toLowerCase().replace(/\.$/, '');
+            // Both sides normalized: the stored line keeps the punctuation it was typed with.
+            const normalizedContentForComparison = normalizeUnicode(normalizedContent).trim().toLowerCase().replace(/\.$/, '');
             
             log(`${PFX}DEL operation details:`);
             log(`${PFX}  Original content text: ${JSON.stringify(contentText)}`);

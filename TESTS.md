@@ -8,7 +8,29 @@
 
 | File | Tests | Coverage Area |
 |------|-------|---------------|
-| `test/bulletMerge.test.js` | 12 | 3-way merge algorithm, sectioned/flat merge, dedup |
+| `test/deviceSyncVectors.test.js` | 102 | Shared Device Sync v2 vectors (byte-identical with iOS): labelled-bullet merge, capture, add, dedup, reset, render, wire |
+| `test/promptSemaphore.test.js` | 22 | DS-SEMAPHORE/DS-LEASE: one holder; a caller whose lease ran out releases nothing when it finishes (the holder after it keeps the semaphore and the next in line waits for that holder); request order (callers wait in line at the background, first come first served across the background, the prompts page and a chat window; a caller asking as the holder lets go still waits behind the line; a waiter whose `acquireWaitMs` ran out leaves the line refused as busy and is never handed the semaphore; a head whose caller has gone loses it with its lease and the next in line gets it; a sign-out completes at once with callers in line); a nested call waits its wait and is refused; lease expiry is no counter change, sign-out never reaches a holder |
+| `test/gestureOrderInversion.test.js` | 4 | Request order end to end: a page delete then a tool add, and a tool add then a tool delete, of one knowledge-base line, the older gesture waiting while the store is held; the line ends as the later gesture left it (red on the client-backoff semaphore: `saved, unchanged` and `saved, not found`), with in-order controls |
+| `test/promptStoreWriters.test.js` | 34 | Every writer through `withPromptStore`; refines read and write in separate holds (DS-AI); page edits against the labels shown (DS-DISPLAYED); chat tool `editText` busy answer |
+| `test/promptStoreWritersSync.test.js` | 44 | Writers next to a peer's bullets: text written as read (DS-TEXT), skeleton kept (DS-SKELETON) |
+| `test/promptStoreInterruptions.test.js` | 47 | DS-COUNTER moves only on a saved change, and on every accepted restore; DS-RECEIVE drop at connection end, arrival order, waiting bound (parts of incomplete snapshots counted), a stuck apply never holding up the next connection; a field read past its lease refused; the prompt getters never reading storage themselves; DS-HISTORY reset/merge records, including a first-use reset of each field recording the defaults the store showed (restoring it shows them again) and a knowledge base saved empty recorded empty, read first or reset before any read (controls); a reset, restore or merge whose history save fails leaves the knowledge base as it was, with a working-history merge control; a received bullet_state or prompt_state whose upgrade outlives its lease is applied again and lands with the text from before; DS-LEASE history holds |
+| `test/promptsPageLive.test.js` | 85 | The real prompts page on simulated devices: every edit saved at once against the labels shown, Reset, marker refusals, sign-out keeps every line; Compress and Compact now show their own model request on their button (disabled, caption, spinner) and give it back when it ends |
+| `test/promptsPageSync.test.js` | 15 | Prompts page edits converging across two devices |
+| `test/shownItemRemoval.test.js` | 4 | Tasks/Reminders delete removes exactly the shown labels; already removed; busy |
+| `test/shownItemIdentity.test.js` | 3 | Two knowledge-base bullets that read the same once normalized (curly and straight quotes in a task; the old and new reminder prefixes) are two Tasks/Reminders items built by the real builder and parsers, and deleting one removes only its own bullet on this device and a connected peer; one bullet alone carries its own label (control) |
+| `test/shownItemStaleReminder.test.js` | 1 | A cached knowledge-base reminder whose bullet was deleted is still listed but deletes nothing from the Reminders tab: an unrelated note is kept and the answer is already removed (real generator, cache, builder and prompt store) |
+| `test/reminderBuilder.test.js` | 39 | Each KB reminder carries the labels of its own bullet only (same text, other date) |
+| `test/refineQueueAcrossReset.test.js` | 4 | DS-REFINE-QUEUE: a refine queued before a reset runs after it; one read before it is refused |
+| `test/deviceSyncRulings.test.js` | 40 | Upgrade, unsaved upgrade, marker refusals, the writer name never stored (DS-NAME), routing of the prompt-store message; a history restore of the writing style and the action rules brings back the entry's rules and keeps this device's own leading and closing text (DS-SKELETON) |
+| `test/deviceSyncReceiveConnection.test.js` | 9 | Sign-out never waits; a section Reset reads its defaults inside its hold, so a whole-field reset and a newer line, or a history restore emptying the section (writing style and action rules), asked for meanwhile land after it; Sync Now on a connected pair sends the three bullet fields, so a note whose send was lost reaches the peer; a refine answering after sign-out is saved |
+| `test/busyReplayLease.test.js` | 5 | A busy message applies once a stuck holder's lease ends; a malformed identity dropped before it waits (DS-VALIDATE) |
+| `test/taskCacheSemaphore.test.js` | 6 | The task-result cache changed only in a hold of the prompt semaphore: a local result or clean-up during a peer merge keeps both; a merge past its lease saves nothing and is applied again |
+| `test/interruptionSweep.test.js` | 8 | Interruptions at every await of the store's operations (lease expiry); a whole-field reset of the knowledge base, the writing style and the action rules held past its lease at each storage read and write never erases an edit saved after it, and resetting again clears it (a reset ignoring its lease is detected in all three) |
+| `test/signedOutLocalEdits.test.js` | 8 | Signed-out edits saved with their history |
+| `test/signedOutScreens.test.js` | 6 | Signed out, every screen shows and edits what is on this device |
+| `test/noWipeFence.test.js` | 5 | Nothing removes the prompt fields or their history |
+| `test/promptStoreFence.test.js` | 3 | The three fields are reached only through the prompt store |
+| `test/storageKeyOnlyReads.test.js` | 2 | Diagnostics read storage by key, never the whole of it |
 | `test/kbReminderGenerator.test.js` | 10 | Reminder parsing from KB content |
 | `test/patchApplier.test.js` | 13 | Markdown patch application (add/remove lines) |
 | `test/utils.test.js` | 159 | normalizeUnicode, date formatting, isInboxFolder, email extraction, escapeHtml |
@@ -42,20 +64,9 @@
 
 ## 1. Tier 1 — Pure Logic (No Mocks)
 
-### 1.1 Bullet Merge (agent/modules/bulletMerge.js) ✅
+### 1.1 Labelled bullets (agent/modules/bullets.js, agent/modules/bulletSync.js) ✅
 
-| # | Test | Expected | Category |
-|---|------|----------|----------|
-| TB-001 | 3-way merge: base + local addition + remote addition | Both additions present | Happy path |
-| TB-002 | 3-way merge: base + local removal + remote addition | Addition kept, removal applied | Merge |
-| TB-003 | 3-way merge: both sides remove same bullet | Bullet removed once | Conflict |
-| TB-004 | 3-way merge: both sides add same bullet | No duplicate | Dedup |
-| TB-005 | 3-way merge: empty base | All additions from both sides | Edge case |
-| TB-006 | 3-way merge: empty local and remote | Base returned | Edge case |
-| TB-007 | Sectioned merge with headers | Per-section merge | Sectioned |
-| TB-008 | Flat merge (no headers) | Global merge | Flat |
-| TB-009 | Merge with whitespace variations | Normalized comparison | Normalization |
-| TB-010 | Large input (1000+ bullets) | Doesn't hang | Performance |
+The three-way text merge (`bulletMerge.js`) was replaced by labelled bullets: each bullet carries its writer's label, a merge unions labels with a seen map, and an edit deletes only the labels it showed. The cases are the shared vectors in `test/device-sync-vectors.json`, run by `test/deviceSyncVectors.test.js` (byte-identical with iOS).
 
 ### 1.2 KB Reminder Generator (agent/modules/kbReminderGenerator.js) ✅
 
@@ -164,7 +175,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-090 | State merge with per-field timestamps | Newer wins per field | Merge |
 | TB-091 | Echo prevention (suppressBroadcast flag) | No infinite loop | Echo |
 | TB-092 | Virgin device detection (all epoch-zero) | Skip broadcast, probe | Detection |
-| TB-093 | Peer-base merge (3-way with bulletMerge) | Correct merge result | Algorithm |
+| TB-093 | Labelled-bullet merge of a received snapshot (DS-MERGE) | Labels unioned, deletions by seen map | Algorithm |
 | TB-094 | Template CRDT merge (by ID, newer updatedAt wins) | Correct per-template | CRDT |
 | TB-095 | DisabledReminders merge (per-hash, newer ts wins) | Correct per-hash | CRDT  |
 
@@ -466,7 +477,7 @@ global.browser = browserMock;
 
 ```
 test/
-  bulletMerge.test.js         # 3-way merge edge cases
+  deviceSyncVectors.test.js   # Shared Device Sync v2 vectors (labelled bullets)
   kbReminderGenerator.test.js # Reminder parsing formats
   patchApplier.test.js        # Markdown patch application
   utils.test.js               # Utility functions, normalization, folder detection
