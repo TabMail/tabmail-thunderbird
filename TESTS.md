@@ -8,7 +8,25 @@
 
 | File | Tests | Coverage Area |
 |------|-------|---------------|
-| `test/bulletMerge.test.js` | 12 | 3-way merge algorithm, sectioned/flat merge, dedup |
+| `test/deviceSyncVectors.test.js` | 102 | Shared Device Sync v2 vectors (byte-identical with iOS): labelled-bullet merge, capture, add, dedup, reset, render, wire |
+| `test/promptSemaphore.test.js` | 16 | DS-SEMAPHORE/DS-LEASE: one holder, backoff then busy, lease expiry is no counter change, sign-out never reaches a holder |
+| `test/promptStoreWriters.test.js` | 35 | Every writer through `withPromptStore`; refines read and write in separate holds (DS-AI); page edits against the labels shown (DS-DISPLAYED); chat tool `editText` busy answer |
+| `test/promptStoreWritersSync.test.js` | 44 | Writers next to a peer's bullets: text written as read (DS-TEXT), skeleton kept (DS-SKELETON) |
+| `test/promptStoreInterruptions.test.js` | 11 | DS-COUNTER moves only on a saved change; DS-RECEIVE drop at connection end, arrival order, waiting bound; DS-HISTORY reset/merge records; DS-LEASE history holds |
+| `test/promptsPageLive.test.js` | 83 | The real prompts page on simulated devices: every edit saved at once against the labels shown, Reset, marker refusals, sign-out keeps every line |
+| `test/promptsPageSync.test.js` | 15 | Prompts page edits converging across two devices |
+| `test/shownItemRemoval.test.js` | 4 | Tasks/Reminders delete removes exactly the shown labels; already removed; busy |
+| `test/refineQueueAcrossReset.test.js` | 4 | DS-REFINE-QUEUE: a refine queued before a reset runs after it; one read before it is refused |
+| `test/deviceSyncRulings.test.js` | 37 | Upgrade, unsaved upgrade, marker refusals, routing of the prompt-store message |
+| `test/deviceSyncReceiveConnection.test.js` | 6 | Sign-out never waits; section reset keeps a newer line; a refine answering after sign-out is saved |
+| `test/busyReplayLease.test.js` | 4 | A busy message applies once a stuck holder's lease ends |
+| `test/interruptionSweep.test.js` | 5 | Interruptions at every await of the store's operations (lease expiry) |
+| `test/signedOutLocalEdits.test.js` | 8 | Signed-out edits saved with their history |
+| `test/signedOutScreens.test.js` | 6 | Signed out, every screen shows and edits what is on this device |
+| `test/noWipeFence.test.js` | 5 | Nothing removes the prompt fields or their history |
+| `test/promptStoreFence.test.js` | 3 | The three fields are reached only through the prompt store |
+| `test/storageKeyOnlyReads.test.js` | 2 | Diagnostics read storage by key, never the whole of it |
+| `test/retryWithBackoff.test.js` | 12 | The backoff helper the semaphore acquires with |
 | `test/kbReminderGenerator.test.js` | 10 | Reminder parsing from KB content |
 | `test/patchApplier.test.js` | 13 | Markdown patch application (add/remove lines) |
 | `test/utils.test.js` | 159 | normalizeUnicode, date formatting, isInboxFolder, email extraction, escapeHtml |
@@ -42,20 +60,9 @@
 
 ## 1. Tier 1 — Pure Logic (No Mocks)
 
-### 1.1 Bullet Merge (agent/modules/bulletMerge.js) ✅
+### 1.1 Labelled bullets (agent/modules/bullets.js, agent/modules/bulletSync.js) ✅
 
-| # | Test | Expected | Category |
-|---|------|----------|----------|
-| TB-001 | 3-way merge: base + local addition + remote addition | Both additions present | Happy path |
-| TB-002 | 3-way merge: base + local removal + remote addition | Addition kept, removal applied | Merge |
-| TB-003 | 3-way merge: both sides remove same bullet | Bullet removed once | Conflict |
-| TB-004 | 3-way merge: both sides add same bullet | No duplicate | Dedup |
-| TB-005 | 3-way merge: empty base | All additions from both sides | Edge case |
-| TB-006 | 3-way merge: empty local and remote | Base returned | Edge case |
-| TB-007 | Sectioned merge with headers | Per-section merge | Sectioned |
-| TB-008 | Flat merge (no headers) | Global merge | Flat |
-| TB-009 | Merge with whitespace variations | Normalized comparison | Normalization |
-| TB-010 | Large input (1000+ bullets) | Doesn't hang | Performance |
+The three-way text merge (`bulletMerge.js`) was replaced by labelled bullets: each bullet carries its writer's label, a merge unions labels with a seen map, and an edit deletes only the labels it showed. The cases are the shared vectors in `test/device-sync-vectors.json`, run by `test/deviceSyncVectors.test.js` (byte-identical with iOS).
 
 ### 1.2 KB Reminder Generator (agent/modules/kbReminderGenerator.js) ✅
 
@@ -164,7 +171,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-090 | State merge with per-field timestamps | Newer wins per field | Merge |
 | TB-091 | Echo prevention (suppressBroadcast flag) | No infinite loop | Echo |
 | TB-092 | Virgin device detection (all epoch-zero) | Skip broadcast, probe | Detection |
-| TB-093 | Peer-base merge (3-way with bulletMerge) | Correct merge result | Algorithm |
+| TB-093 | Labelled-bullet merge of a received snapshot (DS-MERGE) | Labels unioned, deletions by seen map | Algorithm |
 | TB-094 | Template CRDT merge (by ID, newer updatedAt wins) | Correct per-template | CRDT |
 | TB-095 | DisabledReminders merge (per-hash, newer ts wins) | Correct per-hash | CRDT  |
 
@@ -466,7 +473,7 @@ global.browser = browserMock;
 
 ```
 test/
-  bulletMerge.test.js         # 3-way merge edge cases
+  deviceSyncVectors.test.js   # Shared Device Sync v2 vectors (labelled bullets)
   kbReminderGenerator.test.js # Reminder parsing formats
   patchApplier.test.js        # Markdown patch application
   utils.test.js               # Utility functions, normalization, folder detection

@@ -287,6 +287,8 @@ describe('the real prompts page saves each edit at once and keeps every stored l
         const kb = await held(opened.a, 'kb');
         const untouched = await held(opened.a, otherField);
         await ui.click('#reset-prompt');
+        await vi.waitFor(() => expect(ui.lastStatus()[0]).toMatch(/^Reset entire /), { timeout: 4000 });
+        await settleMany(30);
         // Before anything is delivered: A holds the catalog defaults, and the page shows them.
         expect(await held(opened.a, field)).toEqual(defaultsOf(field));
         expect(sorted(ui.shown(field))).toEqual(defaultsOf(field));
@@ -618,6 +620,8 @@ describe('the real prompts page saves each edit at once and keeps every stored l
       const ui = await openPage(opened.a);
       const composition = await held(opened.a, 'composition');
       await ui.click('#reset-kb');
+      await vi.waitFor(() => expect(ui.lastStatus()[0]).toMatch(/^Reset entire /), { timeout: 4000 });
+      await settleMany(30);
       expect(await held(opened.a, 'kb')).toEqual(defaultsOf('kb'));
       expect(sorted(ui.shown('kb'))).toEqual(defaultsOf('kb'));
       expect(await held(opened.a, 'composition')).toEqual(composition);
@@ -653,10 +657,9 @@ function gate() {
   return { promise, open };
 }
 
-/** Sign-out on device `d`, as the background runs it: the prompt store's session ended, then Device Sync
- * closed. Nothing is removed (R34). */
+/** Sign-out on device `d`, as the background runs it: Device Sync closed. The prompt store is not reached,
+ * and nothing is removed (DS-DEVICE). */
 async function signOut(d) {
-  await d.prompts.promptSessionChanged();
   await d.sync.cleanupDeviceSync();
 }
 
@@ -676,7 +679,7 @@ describe('the real prompts page shows the catalog defaults where nothing is stor
       ui.dom.window.close();
     });
 
-    it(`after a sign-out the open ${field} page keeps showing every line (R34)`, async () => {
+    it(`after a sign-out the open ${field} page keeps showing every line (DS-DEVICE)`, async () => {
       const opened = await seeded([field]);
       const ui = await openPage(opened.a);
       await ui.tab(field);
@@ -690,10 +693,10 @@ describe('the real prompts page shows the catalog defaults where nothing is stor
   }
 });
 
-// R32: every edit of the page reads and writes its field in one hold of the prompt semaphore, so edits, a
-// Reset and a sign-out run one at a time: an edit is never written into a field its read did not see, and
-// a sign-out ends whatever holds the semaphore, so an edit begun before it writes nothing afterwards; it
-// deletes nothing (R34).
+// DS-SEMAPHORE and DS-CAPTURE: every edit of the page writes its field in one hold of the prompt semaphore,
+// against the labels the page showed, so edits and a Reset run one at a time. An add shown before a Reset
+// that commits after it adds only its new line: what the Reset cleared is not brought back. A sign-out never
+// reaches the prompt store, so an edit made before it is saved like any other (DS-DEVICE).
 describe('the real prompts page runs its edits, a reset and a sign-out one at a time', () => {
   // Enough tries that an edit or a Reset waiting for the held write outlasts the test's hold (each wait
   // doubles from 1 ms here).
@@ -716,7 +719,7 @@ describe('the real prompts page runs its edits, a reset and a sign-out one at a 
   for (const field of FIELDS) {
     const key = AT[field].shapes;
 
-    it(`two ${field} adds and a Reset, the first add still saving, end as one of them run after another, the waiting add never saved after the Reset; one made after is saved`, async () => {
+    it(`two ${field} adds and a Reset, the first add still saving, end as one of them run after another; the Reset's clearing is never undone; one made after is saved`, async () => {
       const opened = await devices({ connected: false, retries: WAITING });
       await opened.a.add(field, key, 'Kept until the reset.');
       const { ui, release } = await heldPage(opened);
@@ -725,21 +728,21 @@ describe('the real prompts page runs its edits, a reset and a sign-out one at a 
       await ui.enter(field, key, 'Second, waiting.');
       await ui.click(field === 'kb' ? '#reset-kb' : '#reset-prompt');
       release();
-      // Both adds and the Reset have answered: the second add saved, or refused as changed.
-      const changed = ([text, error]) => error && text === 'Failed to save: the prompts changed while this was worked on, so nothing was saved';
+      // Both adds and the Reset have answered, each saved.
       await vi.waitFor(() => {
-        expect(ui.statuses.filter(([text]) => text === 'Saved').length + ui.statuses.filter(changed).length).toBe(2);
+        expect(ui.statuses.filter(([text]) => text === 'Saved').length).toBe(2);
         expect(ui.statuses.some(([text]) => text.startsWith('Reset entire'))).toBe(true);
       }, { timeout: 4000 });
       await settleMany(30);
+      expect(ui.statuses.filter(([, error]) => error)).toEqual([]);
 
-      // The first add saved before the reset, which then removed it. The second, made before the reset,
-      // ran before it (removed with it) or is refused once it saved (R32: a reset ends the generation of
-      // everything begun before it). Either way the field is the defaults; nothing is half applied.
+      // The first add saved before the Reset, which then removed it. The second ran before the Reset
+      // (removed with it) or after it: then it adds its own new line and nothing the Reset cleared.
+      const order = ui.statuses.filter(([text]) => text === 'Saved' || text.startsWith('Reset entire')).map(([text]) => text);
+      const secondAfterReset = order.at(-1) === 'Saved';
       const stored = await held(opened.a, field);
-      expect(sorted(stored)).toEqual(sorted(defaultsOf(field)));
-      for (const typed of ['First, saving.', 'Second, waiting.', 'Kept until the reset.']) expect(textOf(opened.a, field)).not.toContain(typed);
-      expect(ui.statuses.filter(([text, error]) => error && !changed([text, error]))).toEqual([]);
+      expect(sorted(stored)).toEqual(sorted([...defaultsOf(field), ...(secondAfterReset ? [[key, 'Second, waiting.']] : [])]));
+      for (const typed of ['First, saving.', 'Kept until the reset.']) expect(textOf(opened.a, field)).not.toContain(typed);
       expect(sorted(ui.shown(field))).toEqual(sorted(stored));
 
       await ui.enter(field, key, 'Made after the reset.');
@@ -748,7 +751,7 @@ describe('the real prompts page runs its edits, a reset and a sign-out one at a 
       ui.dom.window.close();
     });
 
-    it(`two ${field} adds made before a sign-out, the first still saving, write nothing after the next sign-in`, async () => {
+    it(`two ${field} adds made before a sign-out, the first still saving, are both saved and reach the peer after the next sign-in (DS-DEVICE)`, async () => {
       const opened = await devices();
       await opened.a.add(field, key, 'Old account line.');
       await flush(opened.relay);
@@ -757,22 +760,20 @@ describe('the real prompts page runs its edits, a reset and a sign-out one at a 
       await ui.enter(field, key, 'First, saving.');
       await ui.enter(field, key, 'Second, waiting.');
       await signOut(opened.a);
-      await opened.a.prompts.promptSessionChanged();
-      await opened.a.connect();
-      await flush(opened.relay);
-      const sent = opened.relay.sent('A', field);
+      // The new connection sends its state in a hold of the semaphore, so it waits for the held write.
+      const reconnecting = opened.a.connect();
       release();
+      await vi.waitFor(() => expect(ui.statuses.filter(([text]) => text === 'Saved').length).toBe(2), { timeout: 4000 });
+      await reconnecting;
       await settleMany(30);
       await flush(opened.relay);
 
+      expect(ui.statuses.filter(([, error]) => error)).toEqual([]);
       expect(textOf(opened.a, field)).toContain('Old account line.');
       for (const typed of ['First, saving.', 'Second, waiting.']) {
-        expect(textOf(opened.a, field) ?? '').not.toContain(typed);
-        expect(await held(opened.b, field)).not.toContainEqual([key, typed]);
+        expect(textOf(opened.a, field)).toContain(typed);
+        expect(await held(opened.b, field)).toContainEqual([key, typed]);
       }
-      expect(opened.relay.sent('A', field)).toBe(sent);
-      expect(ui.statuses.some(([text]) => text === 'Saved')).toBe(false);
-      expect(ui.statuses.filter(([text, error]) => error && text.startsWith('Failed to save'))).toHaveLength(2);
       ui.dom.window.close();
     });
   }

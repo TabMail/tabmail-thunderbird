@@ -5,9 +5,10 @@
 // promptStoreInterruptions.test.js — on simulated devices running the real promptStore.js and deviceSync.js:
 // every commit that saved a change moves the counter, so an AI write read before it is refused, and one that
 // saved nothing leaves it (DS-COUNTER, DS-AI); a received message waiting when its connection ends is
-// dropped, and messages waiting as busy are each applied in arrival order (DS-RECEIVE); a history read or
-// write in a hold that ran past its lease saves nothing then, and does the next time (DS-LEASE); signed out,
-// startup reads the texts (DS-DEVICE).
+// dropped, messages waiting as busy are each applied in arrival order, and more waiting than the bound
+// renews the connection (DS-RECEIVE); a reset and a merge record the state they replace (DS-HISTORY); a
+// history read or write in a hold that ran past its lease saves nothing then, and does the next time
+// (DS-LEASE); signed out, startup reads the texts (DS-DEVICE).
 
 import { describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore, PROMPT_KEYS } from './support/bulletDevices.js';
@@ -143,6 +144,58 @@ describe("a released device's messages refused as busy", () => {
     await Promise.all([first, second]);
 
     await vi.waitFor(async () => expect(await texts(a)).toEqual(expect.arrayContaining(['First released note', 'Second released note'])), { timeout: 2000 });
+  });
+});
+
+describe('a reset and a merge record the state they replace (DS-HISTORY)', () => {
+  const history = (d, source) => (d.store.values.prompt_history ?? []).filter((entry) => entry.source === source);
+
+  it('a whole-field reset records the text it replaced, before its commit', async () => {
+    const { a } = await devices();
+    await a.add('kb', '', 'Before the reset');
+
+    await a.reset('kb');
+
+    expect(await texts(a)).not.toContain('Before the reset');
+    expect(history(a, 'reset').at(-1)).toMatchObject({ fields: ['kb'], kb: expect.stringContaining('Before the reset') });
+  });
+
+  it("a peer's merge that changes the text records the text it replaced", async () => {
+    const { relay, a, b } = await connected();
+    await a.add('kb', '', 'Own note');
+    await flush(relay);
+    await b.add('kb', '', 'Peer note');
+    await flush(relay);
+
+    expect(await texts(a)).toContain('Peer note');
+    const entry = history(a, 'sync_receive').at(-1);
+    expect(entry.fields).toContain('kb');
+    expect(entry.kb).toContain('Own note');
+    expect(entry.kb).not.toContain('Peer note');
+  });
+});
+
+describe('more received messages waiting than the bound (DS-RECEIVE)', () => {
+  it('renews the connection: the waiting ones are dropped, and a peer state sent on the new connection lands', async () => {
+    const { relay, a, b } = await connected({ maxWaitingReceives: 2 });
+    const { open, done } = await holdOn(a, 'a long writer');
+    const now = new Date().toISOString();
+    // Not awaited: each waits for the holder, as its socket's handler would.
+    const waiting = ['First', 'Second'].map((name) => a.receive({ type: 'prompt_state', data: { kb: `- ${name} waiting note`, kb_updated_at: now } }));
+    await vi.waitFor(() => expect(a.logs.some(({ message }) => message.includes('is applied again shortly'))).toBe(true), { timeout: 2000 });
+    const past = a.receive({ type: 'prompt_state', data: { kb: '- Past the bound note', kb_updated_at: now } });
+
+    await vi.waitFor(() => expect(a.logs.some(({ message }) => message.includes('received messages are waiting: the connection is renewed'))).toBe(true), { timeout: 2000 });
+    await vi.waitFor(() => expect(a.logs.some(({ message }) => message.includes('was dropped: its connection ended'))).toBe(true), { timeout: 2000 });
+    open();
+    await done;
+    await Promise.all([...waiting, past]);
+    await vi.waitFor(() => expect(relay.isConnected('A')).toBe(true), { timeout: 2000 });
+    for (const name of ['First waiting note', 'Second waiting note', 'Past the bound note']) expect(await texts(a)).not.toContain(name);
+
+    await b.add('kb', '', 'Peer note on the new connection');
+    await flush(relay);
+    await vi.waitFor(async () => expect(await texts(a)).toContain('Peer note on the new connection'), { timeout: 2000 });
   });
 });
 

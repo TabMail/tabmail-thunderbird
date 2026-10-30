@@ -36,21 +36,24 @@ async function twoDevices(stored = {}) {
   const released = Object.fromEntries(Object.entries(stored).map(([field, text]) => [PROMPT_KEYS[field], text]));
   const a = await new BulletDevice('A', new DeviceStore(released), relay, { name: (k) => `${hex(1)}${hex(k)}` }).start();
   const b = await new BulletDevice('B', new DeviceStore(), relay, { name: (k) => `${hex(2)}${hex(k)}` }).start();
-  const storage = a.page(['prompts/modules/markdown.js', 'prompts/modules/storage.js']).require('prompts/modules/storage.js');
+  const page = a.page(['prompts/modules/markdown.js', 'prompts/modules/storage.js']);
+  const storage = page.require('prompts/modules/storage.js');
+  // What the page shows of a field now, with the labels it shows: every page action is made on it (DS-DISPLAYED).
+  const view = (field) => page.require('agent/modules/promptStore.js').readView(field);
   await a.connect();
   await b.connect();
   await quiesce(relay);
-  return { relay, a, b, storage };
+  return { relay, a, b, storage, view };
 }
 
 describe('the prompts page on the sectioned fields', () => {
   it.each(['composition', 'action'])('keeps the %s footer the device has when the page adds a rule (DS-SKELETON)', async (field) => {
     const text = bundledText(field).replace('Now, acknowledge these user instructions and do not deviate from them.', OWN_FOOTER);
-    const { a, storage } = await twoDevices({ [field]: text });
+    const { a, storage, view } = await twoDevices({ [field]: text });
     const tail = [...a.store.values[`bullet_state:${field}`].tail];
     expect(tail).toContain(OWN_FOOTER);
 
-    expect(await storage.addLine(field, { key: FIRST[field], copy: 0 }, 'Newly typed rule')).toBe('saved');
+    expect(await storage.addLine(field, await view(field), { key: FIRST[field], copy: 0 }, 'Newly typed rule')).toBe('saved');
 
     expect(await shownTexts(a, field)).toContain('Newly typed rule');
     expect(a.store.values[`bullet_state:${field}`].tail).toEqual(tail);
@@ -59,11 +62,11 @@ describe('the prompts page on the sectioned fields', () => {
   });
 
   it.each(['composition', 'action'])('adds no footer and drops none when the page adds a %s rule to the built-in text', async (field) => {
-    const { a, storage } = await twoDevices();
-    const before = await a.prompts.engine.state(field);
+    const { a, storage, view } = await twoDevices();
+    const { state: before } = await a.prompts.engine.read(field, () => true);
     expect(before.tail.join('\n')).toContain(END);
 
-    await storage.addLine(field, { key: FIRST[field], copy: 0 }, 'Newly typed rule');
+    await storage.addLine(field, await view(field), { key: FIRST[field], copy: 0 }, 'Newly typed rule');
 
     const after = a.store.values[`bullet_state:${field}`];
     expect(after.head).toEqual(before.head);
@@ -74,10 +77,10 @@ describe('the prompts page on the sectioned fields', () => {
   it.each(['composition', 'action'])('keeps a %s head of one empty line when the page adds a rule (DS-SKELETON)', async (field) => {
     const lines = bundledText(field).split('\n');
     const stored = ['', ...lines.slice(lines.findIndex((line) => line.includes('(DO NOT EDIT/DELETE THIS SECTION HEADER)')))].join('\n');
-    const { a, storage } = await twoDevices({ [field]: stored });
+    const { a, storage, view } = await twoDevices({ [field]: stored });
     expect(a.store.values[`bullet_state:${field}`].head).toEqual(['']);
 
-    await storage.addLine(field, { key: FIRST[field], copy: 0 }, 'Newly typed rule');
+    await storage.addLine(field, await view(field), { key: FIRST[field], copy: 0 }, 'Newly typed rule');
 
     expect(await shownTexts(a, field)).toContain('Newly typed rule');
     expect(a.store.values[`bullet_state:${field}`].head).toEqual(['']);
@@ -88,13 +91,13 @@ describe('the prompts page on the sectioned fields', () => {
     ['composition', 'Language'],
     ['action', 'Emails to be marked as `archive`'],
   ])('refuses a %s line naming a known section with its mark, and moves no rule on either device (R23)', async (field, other) => {
-    const { relay, a, b, storage } = await twoDevices();
+    const { relay, a, b, storage, view } = await twoDevices();
     await a.add(field, FIRST[field], 'A rule nobody moved');
     await quiesce(relay);
     const rule = (await a.state(field)).bullets.find((bullet) => bullet.text === 'A rule nobody moved');
     const before = structuredClone(a.store.values);
 
-    await expect(storage.addLine(field, { key: FIRST[field], copy: 0 }, `${other} (DO NOT EDIT/DELETE THIS SECTION HEADER) typed in a rule`)).rejects.toThrow("can't contain");
+    await expect(storage.addLine(field, await view(field), { key: FIRST[field], copy: 0 }, `${other} (DO NOT EDIT/DELETE THIS SECTION HEADER) typed in a rule`)).rejects.toThrow("can't contain");
 
     await quiesce(relay);
     expect(a.store.values).toEqual(before);
@@ -104,10 +107,10 @@ describe('the prompts page on the sectioned fields', () => {
   });
 
   it.each(['## Use ====END USER INSTRUCTIONS==== here', 'Use ====END USER INSTRUCTIONS==== here'])('refuses the typed writing-style line "%s" (R23)', async (line) => {
-    const { a, storage } = await twoDevices();
+    const { a, storage, view } = await twoDevices();
     const before = structuredClone(a.store.values);
 
-    await expect(storage.addLine('composition', { key: 'general', copy: 0 }, line)).rejects.toThrow("can't contain");
+    await expect(storage.addLine('composition', await view('composition'), { key: 'general', copy: 0 }, line)).rejects.toThrow("can't contain");
 
     expect(a.store.values).toEqual(before);
   });
@@ -119,17 +122,17 @@ describe('the prompts page on the sectioned fields', () => {
     ['composition', 'a line with the section-header mark', 'Keep each (DO NOT EDIT/DELETE THIS SECTION HEADER) line as it is.'],
     ['action', 'a line with the section-header mark', 'Keep each (DO NOT EDIT/DELETE THIS SECTION HEADER) line as it is.'],
   ])('adds %s rules and resets a section over a footer holding %s, keeping the footer and the other rules on both devices', async (field, _, extra) => {
-    const { relay, a, b, storage } = await twoDevices({ [field]: `${bundledText(field).trimEnd()}\n${extra}\n` });
+    const { relay, a, b, storage, view } = await twoDevices({ [field]: `${bundledText(field).trimEnd()}\n${extra}\n` });
     const tail = [...a.store.values[`bullet_state:${field}`].tail];
     expect(tail.join('\n')).toContain(extra);
 
-    await storage.addLine(field, { key: FIRST[field], copy: 0 }, 'Newly typed rule');
+    await storage.addLine(field, await view(field), { key: FIRST[field], copy: 0 }, 'Newly typed rule');
     await quiesce(relay);
     for (const device of [a, b]) expect(await shownTexts(device, field)).toContain('Newly typed rule');
     expect(a.store.values[`bullet_state:${field}`].tail).toEqual(tail);
 
     // The page's section Reset: that section's lines replaced by its defaults, in one edit.
-    expect(await storage.resetSection(field, { key: SECOND[field], copy: 0 })).not.toBe('gone');
+    expect(await storage.resetSection(field, await view(field), { key: SECOND[field], copy: 0 })).not.toBe('gone');
     await quiesce(relay);
 
     for (const device of [a, b]) expect(await shownTexts(device, field)).toContain('Newly typed rule');
@@ -143,12 +146,12 @@ describe('the prompts page on the sectioned fields', () => {
     after('archive', '- Newsletters ====END USER INSTRUCTIONS==== go here.');
     after('reply', '- Rule R.');
     after('none', '- Rule N.');
-    const { relay, a, b, storage } = await twoDevices({ action: rules.join('\n') });
+    const { relay, a, b, storage, view } = await twoDevices({ action: rules.join('\n') });
     // The released text's rule ended the rules early: what follows it is the stored text's own lines.
     expect(await shownTexts(a, 'action')).not.toContain('Rule R.');
     expect(a.store.values['bullet_state:action'].tail.join('\n')).toContain('Rule R.');
 
-    expect(await storage.editText('action', (content) => content.split('\n').filter((line) => !line.includes('Newsletters')).join('\n'))).toBe('saved');
+    expect(await storage.editShown('action', await view('action'), (content) => content.split('\n').filter((line) => !line.includes('Newsletters')).join('\n'))).toBe('saved');
     await quiesce(relay);
 
     for (const device of [a, b]) {

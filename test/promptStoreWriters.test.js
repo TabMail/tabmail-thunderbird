@@ -3,11 +3,12 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // promptStoreWriters.test.js — every writer reaches the three prompt fields through withPromptStore, one
-// hold of the device's prompt semaphore per brief read-change-write (R32). The knowledge base refines read
-// in one hold, ask the backend with nothing held, and write in another with the change their read
-// returned: a refine whose knowledge base changed meanwhile is dropped. The prompts page reads, changes and
-// saves each edit in one hold. The real client side of promptStore.js runs here, against a stand-in for
-// the background (support/promptStoreHost.js).
+// hold of the device's prompt semaphore per brief read-change-write (DS-SEMAPHORE). The knowledge base
+// refines read in one hold, ask the backend with nothing held, and write in another with the change their
+// read returned: a refine whose knowledge base changed meanwhile is dropped (DS-AI). The prompts page saves
+// each edit in one hold against the labels it showed, never reading the text again (DS-DISPLAYED); a chat
+// tool reads, changes and saves in one hold. The real client side of promptStore.js runs here, against a
+// stand-in for the background (support/promptStoreHost.js).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promptStoreHost } from './support/promptStoreHost.js';
@@ -54,9 +55,9 @@ const { sendChat } = await import('../agent/modules/llm.js');
 const { loadTurns } = await import('../chat/modules/persistentChatStore.js');
 const { markSessionsAsRemembered } = await import('../agent/modules/chatHistoryQueue.js');
 const { indexChatSession } = await import('../fts/memoryIndexer.js');
-const { readBeforeAI, withPromptStore, writeAfterRead } = await import('../agent/modules/promptStore.js');
+const { editText, KB_BUSY_ERROR, readBeforeAI, readView, withPromptStore, writeAfterRead } = await import('../agent/modules/promptStore.js');
 const { KB_CHANGED_MEANWHILE, kbCompress, kbUpdate, periodicKbUpdate } = await import('../agent/modules/knowledgebase.js');
-const { editText, resetWholeField } = await import('../prompts/modules/storage.js');
+const { editShown, resetWholeField } = await import('../prompts/modules/storage.js');
 
 /** The writes the host saved: those carrying the change current when they arrived. */
 const savedWrites = new Set();
@@ -88,7 +89,7 @@ beforeEach(() => {
   cursor.advanced = [];
 });
 
-describe('the one way to the prompt fields (withPromptStore, R32)', () => {
+describe('the one way to the prompt fields (withPromptStore, DS-SEMAPHORE)', () => {
   it('acquires the semaphore, runs its body with a hold, releases it, and returns what the body returns', async () => {
     const result = await withPromptStore(async (store) => {
       expect(host.holder).not.toBeNull();
@@ -148,9 +149,11 @@ describe('the one way to the prompt fields (withPromptStore, R32)', () => {
     expect(host.read).not.toHaveBeenCalled();
   });
 
-  it('a hold that lost the semaphore (a lease ended, a sign-out) has every call refused', async () => {
+  it('a hold that lost the semaphore when its lease ended has every call refused (DS-LEASE)', async () => {
     await expect(withPromptStore(async (store) => {
-      host.signOut();
+      // The background ended the lease and the next writer took the semaphore.
+      host.holder = null;
+      host.hold('the next writer');
       await store.read('kb');
     })).rejects.toMatchObject({ changed: true });
     expect(host.reads).toEqual([]);
@@ -171,7 +174,7 @@ describe('the one way to the prompt fields (withPromptStore, R32)', () => {
     expect(host.writes).toEqual([{ command: 'prompt-store', op: 'write', token: expect.any(String), field: 'kb', captured: host.reads[0], content: '- Refined', change: 'change 0' }]);
   });
 
-  it('a read while an upgrade is unsaved (R22) throws: nothing is edited against that text', async () => {
+  it('a read while an upgrade is unsaved (DS-UNSAVED-UPGRADE) throws: nothing is edited against that text', async () => {
     host.unsaved = true;
 
     await expect(readBeforeAI('kb', 'synthetic refine')).rejects.toThrow('kb could not be saved');
@@ -195,9 +198,8 @@ describe('the knowledge base refines', () => {
 
     await refines[name]();
 
-    // One hold to read, one to write; the periodic refine first takes one brief hold with its event's
-    // generation, before it indexes any turn.
-    expect(host.acquires).toHaveLength(name === 'the periodic refine' ? 3 : 2);
+    // One hold to read, one to write.
+    expect(host.acquires).toHaveLength(2);
     expect(host.reads).toHaveLength(1);
     expect(host.writes).toEqual([{ command: 'prompt-store', op: 'write', token: expect.any(String), field: 'kb', captured: host.reads[0], content: '- Refined fact', change: 'change 0' }]);
     expect(saved()).toHaveLength(1);
@@ -220,19 +222,6 @@ describe('the knowledge base refines', () => {
 
     await refines[name]();
 
-    expect(host.writes).toHaveLength(1);
-    expect(saved()).toEqual([]);
-  });
-
-  it.each(Object.keys(refines))('%s is dropped when a sign-out lands during its backend call', async (name) => {
-    sendChat.mockImplementation(async () => {
-      host.signOut();
-      return { refined_kb: '- Refined fact' };
-    });
-
-    await refines[name]();
-
-    // Its write reaches the store and is refused there: the sign-out moved the change.
     expect(host.writes).toHaveLength(1);
     expect(saved()).toEqual([]);
   });
@@ -276,41 +265,6 @@ describe('the knowledge base refines', () => {
     await kbUpdate([{ role: 'user', content: 'Synthetic question' }]);
 
     expect(indexChatSession).not.toHaveBeenCalled();
-    expect(markSessionsAsRemembered).not.toHaveBeenCalled();
-  });
-
-  it('a chat session whose backend call outlasted a sign-out neither indexes nor marks its sessions remembered', async () => {
-    sendChat.mockImplementation(async () => {
-      host.signOut();
-      return { refined_kb: '- Refined fact' };
-    });
-
-    await kbUpdate([{ role: 'user', content: 'Synthetic question' }]);
-
-    expect(host.writes).toHaveLength(1);
-    expect(saved()).toEqual([]);
-    expect(indexChatSession).not.toHaveBeenCalled();
-    expect(markSessionsAsRemembered).not.toHaveBeenCalled();
-  });
-
-  it('a refine asked for before a sign-out and the next sign-in, waiting behind another, reads nothing and calls no backend', async () => {
-    // The first refine's backend call lasts until `release`; the second is asked for meanwhile.
-    let release;
-    sendChat.mockImplementationOnce(async () => {
-      await new Promise((resolve) => { release = resolve; });
-      return { refined_kb: '- First refine' };
-    });
-    const first = kbUpdate([{ role: 'user', content: 'First question' }]);
-    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
-    const second = kbUpdate([{ role: 'user', content: 'Second question' }]);
-    // Its event's generation is taken now, before it waits for the first.
-    await vi.waitFor(() => expect(host.generation).toHaveBeenCalledTimes(2));
-    host.signOut();
-    release();
-    await Promise.all([first, second]);
-
-    expect(sendChat).toHaveBeenCalledTimes(1);
-    expect(host.reads).toHaveLength(1);
     expect(markSessionsAsRemembered).not.toHaveBeenCalled();
   });
 
@@ -366,58 +320,62 @@ describe('the knowledge base refines', () => {
     expect(cursor.advanced).toHaveLength(2);
     expect(host.writes.map((write) => write.change)).toEqual(['change 0', 'change 2']);
   });
-
-  it('the periodic refine stops at a chunk whose write fails, the cursor where the chunk before left it', async () => {
-    pairCount = 12;
-    host.writeOutcome = 'unsaved';
-    sendChat.mockResolvedValue({ refined_kb: '- Refined fact' });
-
-    await periodicKbUpdate({ skipTimeGuard: true });
-
-    expect(sendChat).toHaveBeenCalledOnce();
-    expect(cursor.advanced).toEqual([]);
-  });
 });
 
-describe('the prompts page', () => {
-  it('reads, changes and saves each edit in one hold, against the labels of that read', async () => {
-    expect(await editText('kb', (text) => `${text}\n- Added fact`)).toBe('saved');
-    host.text = async () => '- Stored fact\n- Added fact';
-    expect(await editText('kb', (text) => text.replace('- Stored fact\n', ''))).toBe('saved');
+describe('the prompts page (DS-DISPLAYED)', () => {
+  it('saves each edit in one hold against the labels it showed, never reading the text again', async () => {
+    const view = await readView('kb');
+    expect(view.content).toBe('- Stored fact');
+    host.text = async () => '- Stored fact\n- A peer fact that arrived since';
+
+    expect(await editShown('kb', view, (text) => `${text}\n- Added fact`)).toBe('saved');
 
     expect(host.acquires).toHaveLength(2);
-    expect(host.writes.map(({ captured, content, change }) => [captured, content, change])).toEqual([
-      [host.reads[0], '- Stored fact\n- Added fact', 'change 0'],
-      [host.reads[1], '- Added fact', 'change 1'],
-    ]);
+    expect(host.reads).toHaveLength(1);
+    // A user edit carries no change: it is never refused because something else saved meanwhile.
+    expect(host.writes).toEqual([{ command: 'prompt-store', op: 'write', token: expect.any(String), field: 'kb', captured: view.captured, content: '- Stored fact\n- Added fact' }]);
     expect(host.holder).toBeNull();
   });
 
-  it('an edit made while another writer holds the semaphore waits, then applies to the text as that writer left it', async () => {
+  it('an edit made while another writer holds the semaphore waits, then saves against the labels it showed', async () => {
+    const view = await readView('kb');
     const free = host.hold();
-    host.text = async () => '- Stored fact\n- From the other writer';
     const acquire = host.implementation('acquire');
     host.acquire.mockImplementation(async (message) => {
-      if (host.acquires.length === 2) free(); // the other writer is done before the third try
+      if (host.acquires.length === 3) free(); // the other writer is done before the third try of the edit
       return acquire(message);
     });
-    const edit = editText('kb', (text) => `${text}\n- Added fact`);
 
-    expect(await edit).toBe('saved');
-    expect(host.acquires).toHaveLength(3);
-    expect(saved().map((write) => write.content)).toEqual(['- Stored fact\n- From the other writer\n- Added fact']);
+    expect(await editShown('kb', view, (text) => `${text}\n- Added fact`)).toBe('saved');
+    expect(host.acquires).toHaveLength(4);
+    expect(host.reads).toHaveLength(1);
+    expect(saved().map((write) => [write.captured, write.content])).toEqual([[view.captured, '- Stored fact\n- Added fact']]);
   });
 
   it('an edit gives up with a busy error when the semaphore stays held, nothing written', async () => {
+    const view = await readView('kb');
     host.hold('a stuck writer');
 
-    await expect(editText('kb', (text) => `${text}\n- Added fact`)).rejects.toMatchObject({ busy: true });
+    await expect(editShown('kb', view, (text) => `${text}\n- Added fact`)).rejects.toMatchObject({ busy: true });
     expect(host.writes).toEqual([]);
   });
 
-  it('writes nothing when what the user acted on is gone, or the edit changes nothing', async () => {
-    expect(await editText('composition', () => null)).toBe('gone');
-    expect(await editText('composition', (text) => text)).toBe('unchanged');
+  it('writes nothing, and takes no hold, when what the user acted on is gone or the edit changes nothing', async () => {
+    const view = await readView('composition');
+    const acquires = host.acquires.length;
+
+    expect(await editShown('composition', view, () => null)).toBe('gone');
+    expect(await editShown('composition', view, (text) => text)).toBe('unchanged');
+    expect(host.acquires).toHaveLength(acquires);
+    expect(host.writes).toEqual([]);
+  });
+
+  it('refuses an edit of a text shown while an upgrade was unsaved (DS-UNSAVED-UPGRADE), nothing written', async () => {
+    host.unsaved = true;
+    const view = await readView('kb');
+    expect(view.captured).toBeNull();
+
+    await expect(editShown('kb', view, (text) => `${text}\n- Added fact`)).rejects.toThrow('kb could not be saved');
     expect(host.writes).toEqual([]);
   });
 
@@ -426,5 +384,27 @@ describe('the prompts page', () => {
 
     expect(host.resets).toEqual([{ command: 'prompt-store', op: 'reset', token: expect.any(String), fields: ['action'] }]);
     expect(host.holder).toBeNull();
+  });
+});
+
+describe('a chat tool edit (DS-SEMAPHORE)', () => {
+  it('reads, changes and saves in one hold, against the labels of that read', async () => {
+    expect(await editText('kb', 'synthetic tool', (text) => ({ save: `${text}\n- Added fact` }))).toBeNull();
+
+    expect(host.acquires).toHaveLength(1);
+    expect(host.writes).toEqual([{ command: 'prompt-store', op: 'write', token: expect.any(String), field: 'kb', captured: host.reads[0], content: '- Stored fact\n- Added fact' }]);
+    expect(host.holder).toBeNull();
+  });
+
+  it("returns the tool's own result with nothing saved when its edit finds nothing to change", async () => {
+    expect(await editText('kb', 'synthetic tool', () => ({ error: 'not found' }))).toEqual({ error: 'not found' });
+    expect(host.writes).toEqual([]);
+  });
+
+  it('answers the busy error when the semaphore stays held, nothing written', async () => {
+    host.hold('a stuck writer');
+
+    expect(await editText('kb', 'synthetic tool', (text) => ({ save: `${text}\n- Added fact` }))).toEqual({ error: KB_BUSY_ERROR });
+    expect(host.writes).toEqual([]);
   });
 });

@@ -18,6 +18,11 @@ export const settle = () => new Promise((resolve) => setImmediate(resolve));
 export const settleMany = async (n = 40) => {
   for (let i = 0; i < n; i++) await settle();
 };
+/** The most turns an action waits for the page to report on it. An action that reports nothing (a typed
+ * line refused in its box, an edit whose write a test holds) waits this long and goes on. */
+const STATUS_WAIT_SETTLES = 400;
+/** Turns given to the page after its report, for it to show the result. */
+const AFTER_STATUS_SETTLES = 20;
 
 /**
  * The page on device `a`, `DOMContentLoaded` fired. `commands` answers the runtime messages that are not
@@ -96,13 +101,20 @@ export async function openPage(a, { commands = {}, beforeStore = async () => {},
     statuses,
     commands: sent,
     lastStatus: () => statuses.at(-1),
+    /** Lets the page run until it reports something after `count` reports, then show the result. */
+    settled: async (count) => {
+      await settleMany();
+      for (let i = 0; i < STATUS_WAIT_SETTLES && statuses.length === count; i++) await settle();
+      await settleMany(AFTER_STATUS_SETTLES);
+    },
     tab: async (name) => {
       document.querySelector(`.prompt-tab[data-prompt="${name}"]`).click();
       await settle();
     },
     click: async (selector) => {
+      const count = statuses.length;
       document.querySelector(selector).click();
-      await settleMany();
+      await ui.settled(count);
     },
     section,
     /** The editor of `field`'s section `key` ('' for the knowledge base), the `copy`-th shown. */
@@ -115,8 +127,9 @@ export async function openPage(a, { commands = {}, beforeStore = async () => {},
       item.querySelector('.bullet-delete-btn').click();
     },
     remove: async (field, key, text, copy = 0) => {
+      const count = statuses.length;
       ui.removeNow(field, key, text, copy);
-      await settleMany();
+      await ui.settled(count);
     },
     type: (field, key, text, copy = 0) => {
       const input = ui.editor(field, key, copy).querySelector('.bullet-add-input');
@@ -126,22 +139,25 @@ export async function openPage(a, { commands = {}, beforeStore = async () => {},
     },
     /** Types `text` into the add box and presses Enter. */
     enter: async (field, key, text, copy = 0) => {
+      const count = statuses.length;
       ui.type(field, key, text, copy).dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-      await settleMany();
+      await ui.settled(count);
     },
     /** Types `text` into the add box and presses its Add button. */
     add: async (field, key, text, copy = 0) => {
       ui.type(field, key, text, copy);
+      const count = statuses.length;
       ui.editor(field, key, copy).querySelector('.bullet-add-btn').click();
-      await settleMany();
+      await ui.settled(count);
     },
     box: (field, key, copy = 0) => ({
       value: ui.editor(field, key, copy).querySelector('.bullet-add-input').value,
       error: ui.editor(field, key, copy).querySelector('.bullet-add-error').textContent,
     }),
     resetSection: async (field, key, copy = 0) => {
+      const count = statuses.length;
       section(field, key, copy).querySelector('.reset-section-btn').click();
-      await settleMany();
+      await ui.settled(count);
     },
     /** What the page shows for `field`: [section key, item text] pairs, every copy of a section. */
     shown: (field) => {
