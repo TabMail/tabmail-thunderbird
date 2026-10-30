@@ -69,6 +69,8 @@ export class DeviceStore {
           return values;
         },
         set: async (values) => {
+          // A test can fail or hold a write before it lands.
+          if (store.beforeSet) await store.beforeSet(values);
           if ((store.failNext || store.failing) && Object.keys(values).some((key) => key.startsWith('bullet_state:'))) {
             store.failNext = false;
             throw new Error('synthetic storage failure');

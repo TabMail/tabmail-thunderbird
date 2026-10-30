@@ -14,6 +14,7 @@
 // result must be kept.
 // Controls: the same writer uninterrupted, and one that only waits, both land with the newer edit kept.
 
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore } from './support/bulletDevices.js';
 import { createRealm } from './support/deviceRealm.js';
@@ -252,6 +253,31 @@ describe('controls: the same writers land, and a writer that waits applies to wh
   });
 });
 
+/** Whether a read or write touches the template list. */
+const namesTemplates = (keys) => (typeof keys === 'string' ? keys === 'user_templates' : Array.isArray(keys) ? keys.includes('user_templates') : Object.hasOwn(keys ?? {}, 'user_templates'));
+
+const FAULTS = [
+  ['read', (store) => { store.beforeGet = async (keys) => { if (namesTemplates(keys)) throw new Error('synthetic template read failure'); }; }],
+  ['write', (store) => { store.beforeSet = async (values) => { if (namesTemplates(values)) throw new Error('synthetic template write failure'); }; }],
+];
+const LOCAL_CASES = CASES.filter((writer) => !writer.reapplied && writer.name !== 'history restore');
+// A reset replaces the list without reading it (only its history record of what it replaces does).
+const reads = (writer) => !writer.name.startsWith('reset');
+
+describe('a template read or write that fails refuses the change, keeps what was stored, and lets the next change land', () => {
+  it.each(LOCAL_CASES.flatMap((writer) => FAULTS.filter(([fault]) => fault === 'write' || reads(writer)).map(([fault, inject]) => ({ ...writer, fault, inject }))))('$name, from the $context, its template $fault failing', async (writer) => {
+    const env = await deviceFor(writer);
+    const before = structuredClone({ templates: env.store.values.user_templates, migrated: env.store.values.templates_migrated });
+    writer.inject(env.store);
+    await expect(Promise.resolve().then(() => writer.run(env[writer.context], env))).rejects.toThrow(`synthetic template ${writer.fault} failure`);
+    expect({ templates: env.store.values.user_templates, migrated: env.store.values.templates_migrated }).toEqual(before);
+    env.store.beforeGet = null;
+    env.store.beforeSet = null;
+    await writer.run(env[writer.context], env);
+    expect(writer.landed(env.store)).toBe(true);
+  });
+});
+
 describe('the sequence from the issue', () => {
   it('an older update of a template resumes after a newer update of it: the newer value is kept', async () => {
     const env = await device({ leaseMs: 40 });
@@ -262,5 +288,26 @@ describe('the sequence from the issue', () => {
     open();
     await expect(older).rejects.toMatchObject({ changed: true });
     expect(stored(env.store).find((t) => t.id === 'own').name).toBe('Newer action');
+  });
+
+  it('first-run defaults waiting for the bundled list never revive a default imported and deleted meanwhile', async () => {
+    const env = await device({ values: { user_templates: [], templates_migrated: false } });
+    const defaults = JSON.parse(readFileSync(new URL('../templates/default_templates.json', import.meta.url), 'utf8'));
+    const { promise, open } = gate();
+    let fetched;
+    const fetching = new Promise((resolve) => { fetched = resolve; });
+    env.d.realm.context.fetch = async () => { fetched(); await promise; return { ok: true, json: async () => structuredClone(defaults) }; };
+    const older = env.background.initializeDefaultTemplates();
+    await fetching;
+    const [first] = defaults;
+    await env.page.importTemplates(JSON.stringify([first]));
+    expect(await env.page.deleteTemplate(first.id)).toBe(true);
+    const tombstone = structuredClone(stored(env.store).find((t) => t.id === first.id));
+    open();
+    await older;
+    expect(stored(env.store).filter((t) => t.id === first.id)).toEqual([tombstone]);
+    expect(tombstone.deleted).toBe(true);
+    expect(env.store.values.templates_migrated).toBe(true);
+    expect(stored(env.store).length).toBe(defaults.length);
   });
 });

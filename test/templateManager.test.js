@@ -409,6 +409,16 @@ describe('importTemplates', () => {
   it('throws on invalid JSON', async () => {
     await expect(importTemplates('not-json')).rejects.toThrow();
   });
+
+  it('with overwrite, replaces the template of the same id once and keeps the others; without, adds it as a copy', async () => {
+    storageData.user_templates = [createTemplate({ id: 'a', name: 'A' }), createTemplate({ id: 'b', name: 'B' })];
+    expect(await importTemplates(JSON.stringify([createTemplate({ id: 'a', name: 'Replacement' })]), true)).toEqual({ imported: 1, skipped: 0 });
+    expect(stored().map((t) => [t.id, t.name])).toEqual([['a', 'Replacement'], ['b', 'B']]);
+    expect(await importTemplates(JSON.stringify([createTemplate({ id: 'a', name: 'Copy' })]))).toEqual({ imported: 1, skipped: 0 });
+    expect(stored().slice(0, 2).map((t) => [t.id, t.name])).toEqual([['a', 'Replacement'], ['b', 'B']]);
+    expect(stored()[2]).toMatchObject({ name: 'Copy' });
+    expect(stored()[2].id).not.toBe('a');
+  });
 });
 
 describe('getTemplatesAsPrimedPrompt', () => {

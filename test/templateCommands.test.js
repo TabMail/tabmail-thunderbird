@@ -248,11 +248,16 @@ describe('a template change refused because the prompt store stayed busy is repo
     const { d, store, manager } = await device(stored(), { retries: 2 });
     const request = registrar(d, manager);
     expect(await request({ command: 'templates-update', id: 'own', updates: { name: 'Renamed' } })).toMatchObject({ ok: true });
+    expect(await request({ command: 'templates-reorder', orderedIds: ['dup', 'own'] })).toEqual({ ok: true });
+    expect(store.values.user_templates.map((t) => t.id)).toEqual(['dup', 'own']);
     const toggle = d.page([MANAGER, 'chat/tools/template_toggle.js']).require('chat/tools/template_toggle.js');
     expect(await toggle.run({ template_id: 'own', enabled: false })).toMatchObject({ ok: true });
     const flow = await chatFlow(d, FLOWS[0][1], FLOWS[0][2], FLOWS[0][3]);
     expect(flow.state).toBe('exec_success');
     const { page, status } = await templatesPage(store, request);
+    page.onDragStart({ dataTransfer: { setData() {}, effectAllowed: '' }, target: { closest: () => ({ classList: { add() {} } }) } }, 'own');
+    await page.onDrop({ preventDefault() {} }, store.values.user_templates[0].id);
+    expect(status()).toBe('Template order saved');
     await page.addNewTemplate();
     expect(status()).toBe('Template created');
     const own = store.values.user_templates.find((t) => t.id === 'own');
