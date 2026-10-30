@@ -750,3 +750,28 @@ describe('the default catalog', () => {
     expect(parse(field, bundled).bullets.map((bullet) => [bullet.section, bullet.text])).toEqual(defaultCatalog.defaults.filter((entry) => entry.field === field).map((entry) => [entry.section, entry.text]));
   });
 });
+
+describe("a history restore keeps this device's own text around the rules (DS-RESTORE, DS-SKELETON)", () => {
+  it.each([
+    ['composition', 'general', 'General writing style'],
+    ['action', 'delete', 'Emails to be marked as `delete`'],
+  ])('%s: an entry recorded with an older leading and closing text brings back its rules, not that text', async (field, section, header) => {
+    const older = `Old local leading text\n# ${header} (DO NOT EDIT/DELETE THIS SECTION HEADER)\n- Historical rule\n====END USER INSTRUCTIONS====\nOld local closing text\n`;
+    const a = await new BulletDevice('A', new DeviceStore({ [PROMPT_KEYS[field]]: older }), new BulletRelay()).start();
+    expect(await a.prompts.readText(field)).toContain('Historical rule');
+    // The entry as the real history writer records it, then a reset puts in the bundled text around the rules.
+    await a.prompts.withPromptStore((store) => store.recordHistory('local_edit', [field]));
+    const entry = structuredClone(a.store.values.prompt_history.at(-1));
+    expect(entry[field]).toContain('Old local leading text');
+    expect(entry[field]).toContain('Old local closing text');
+    await a.reset(field);
+    const current = structuredClone(a.store.values[`bullet_state:${field}`]);
+    expect(current.head.join('\n')).not.toContain('Old local leading text');
+
+    await a.sync.restoreFromHistory(entry);
+
+    const restored = a.store.values[`bullet_state:${field}`];
+    expect(restored.bullets.some(([shownIn, text]) => shownIn === section && text === 'Historical rule')).toBe(true);
+    expect({ head: restored.head, tail: restored.tail }).toEqual({ head: current.head, tail: current.tail });
+  });
+});
