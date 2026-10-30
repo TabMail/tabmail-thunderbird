@@ -232,6 +232,7 @@ vi.mock('../agent/modules/promptStore.js', () => {
     sendBulletState: vi.fn((fields) => withPromptStore((store) => store.send(fields))),
     restoreHandle,
     bulletSyncDisconnected: vi.fn(),
+    heldSnapshotParts: vi.fn(() => 0),
   };
 });
 

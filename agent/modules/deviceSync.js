@@ -141,9 +141,13 @@ const _pendingProbes = new Map();
 // still waiting from before is then dropped (peers send their state on the next connect). The chain and the
 // count of waiting messages belong to one connection: a new connection starts its own, so its messages never
 // wait for an apply of an older connection that has not returned (its hold ends with its lease, DS-LEASE).
+// `heldParts` is how many parts of incomplete snapshots the engine held after the last bullet_state apply:
+// they count toward the bound with the waiting messages, so a sender that keeps restarting with a part lost
+// never makes the receiver hold more (DS-CHUNK); renewing the connection drops them.
 let receiveChain = Promise.resolve();
 let receiveConnection = 0;
 let waitingReceives = 0;
+let heldParts = 0;
 
 // ─── Per-field Timestamps ───────────────────────────────────────────────
 
@@ -471,8 +475,8 @@ export async function sendMessages(field, messages) {
  * @param {() => Promise<void>} apply - The message's apply, in its own hold of the prompt semaphore
  */
 function enqueueReceive(what, apply) {
-  if (waitingReceives >= SETTINGS.deviceSync.maxWaitingReceives) {
-    log(`${PFX}${waitingReceives} received messages are waiting: the connection is renewed`, "warn");
+  if (waitingReceives + heldParts >= SETTINGS.deviceSync.maxWaitingReceives) {
+    log(`${PFX}${waitingReceives} received messages are waiting and ${heldParts} parts of incomplete snapshots are held: the connection is renewed`, "warn");
     renewConnection().catch((e) => log(`${PFX}Renewing the connection failed: ${e}`, "warn"));
     return;
   }
@@ -510,6 +514,7 @@ async function receivesEnded() {
   receiveConnection += 1;
   receiveChain = Promise.resolve();
   waitingReceives = 0;
+  heldParts = 0;
   const { bulletSyncDisconnected } = await import("./promptStore.js");
   bulletSyncDisconnected();
 }
@@ -528,8 +533,9 @@ function receiveBulletState(parsed) {
     return;
   }
   return enqueueReceive(`bullet_state ${parsed.field}`, async () => {
-    const { withPromptStore } = await import("./promptStore.js");
+    const { withPromptStore, heldSnapshotParts } = await import("./promptStore.js");
     await withPromptStore((store) => store.receive(parsed), { label: "sync apply" });
+    heldParts = heldSnapshotParts();
   });
 }
 

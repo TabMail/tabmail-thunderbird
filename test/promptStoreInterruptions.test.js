@@ -202,7 +202,7 @@ describe('more received messages waiting than the bound (DS-RECEIVE)', () => {
     await vi.waitFor(() => expect(a.logs.some(({ message }) => message.includes('is applied again shortly'))).toBe(true), { timeout: 2000 });
     const past = a.receive({ type: 'prompt_state', data: { kb: '- Past the bound note', kb_updated_at: now } });
 
-    await vi.waitFor(() => expect(a.logs.some(({ message }) => message.includes('received messages are waiting: the connection is renewed'))).toBe(true), { timeout: 2000 });
+    await vi.waitFor(() => expect(a.logs.some(({ message }) => message.includes('the connection is renewed'))).toBe(true), { timeout: 2000 });
     await vi.waitFor(() => expect(a.logs.some(({ message }) => message.includes('was dropped: its connection ended'))).toBe(true), { timeout: 2000 });
     open();
     await done;
@@ -213,6 +213,48 @@ describe('more received messages waiting than the bound (DS-RECEIVE)', () => {
     await b.add('kb', '', 'Peer note on the new connection');
     await flush(relay);
     await vi.waitFor(async () => expect(await texts(a)).toContain('Peer note on the new connection'), { timeout: 2000 });
+  });
+});
+
+describe('parts of incomplete snapshots count toward the bound (DS-RECEIVE, DS-CHUNK)', () => {
+  /** How many parts of incomplete snapshots `d` holds. */
+  const heldParts = (d) => [...d.prompts.engine.buffers.values()].reduce((sum, buffer) => sum + buffer.received.size, 0);
+  const bound = 4;
+  // Small enough that B's notes go out in two parts; each note alone still fits.
+  const budget = 2000;
+  const note = (name) => `${name} ${'long synthetic note text '.repeat(30)}`.trim();
+
+  it('a sender that restarts again and again with a part lost each time never makes the receiver hold more than the bound', async () => {
+    const { relay, a, b } = await connected({ maxWaitingReceives: bound, budget });
+    for (const name of ['First', 'Second', 'Third']) await b.add('kb', '', note(name));
+    await flush(relay);
+    let most = 0;
+    for (let restart = 0; restart < bound * 3; restart += 1) {
+      await b.restart();
+      await b.connect();
+      const snapshot = [...relay.snapshots.values()].filter((s) => s.from === 'B' && s.field === 'kb').at(-1);
+      expect(snapshot.parts.length).toBeGreaterThan(1);
+      relay.drop(snapshot.id, ['A'], snapshot.parts.map((_, index) => index + 1).slice(1));
+      await flush(relay);
+      most = Math.max(most, heldParts(a));
+    }
+    expect(most).toBeLessThanOrEqual(bound);
+    expect(a.logs.some(({ message }) => message.includes('the connection is renewed'))).toBe(true);
+
+    // The renewed connection still syncs a whole split snapshot.
+    await vi.waitFor(() => expect(relay.isConnected('A')).toBe(true), { timeout: 2000 });
+    await b.add('kb', '', note('After the renewal'));
+    await flush(relay);
+    await vi.waitFor(async () => expect((await texts(a)).some((text) => text.startsWith('After the renewal'))).toBe(true), { timeout: 2000 });
+  });
+
+  it('a split snapshot whose parts all arrive is merged and holds nothing after (control)', async () => {
+    const { relay, a, b } = await connected({ maxWaitingReceives: bound, budget });
+    for (const name of ['First', 'Second', 'Third']) await b.add('kb', '', note(name));
+    await flush(relay);
+    expect((await texts(a)).filter((text) => text.endsWith('note text'))).toHaveLength(3);
+    expect(heldParts(a)).toBe(0);
+    expect(a.logs.some(({ message }) => message.includes('the connection is renewed'))).toBe(false);
   });
 });
 
@@ -309,5 +351,86 @@ describe('the prompt history read in a hold that runs past its lease (DS-LEASE)'
     await reading;
     expect(a.store.values.prompt_history).toBeUndefined();
     expect((await a.sync.loadHistory())[0].kb).toContain('A released backup note');
+  });
+});
+
+describe('a field read whose hold runs past its lease (DS-LEASE, DS-AI)', () => {
+  const SECTIONS = { kb: '', composition: 'general', action: 'delete' };
+  const reads = {
+    text: (d, field) => d.prompts.readText(field),
+    view: (d, field) => d.prompts.readView(field),
+    ai: (d, field) => d.prompts.readBeforeAI(field, 'a refine'),
+  };
+  const cases = Object.keys(SECTIONS).flatMap((field) => Object.keys(reads).map((mode) => [field, mode]));
+
+  /** Pauses `d`'s second read of `field`'s stored state (the read's own, after the hold's first look), its
+   * result already copied, until `open()`. */
+  function pauseFieldRead(d, field) {
+    const stop = gate();
+    const state = { paused: false, open: stop.open };
+    let count = 0;
+    d.store.afterIO = async (op, key) => {
+      if (op !== 'get' || key !== `bullet_state:${field}` || state.paused) return;
+      count += 1;
+      if (count !== 2) return;
+      state.paused = true;
+      await stop.promise;
+    };
+    return state;
+  }
+
+  it.each(cases)('a %s %s read is refused as changed once a newer edit was saved after its lease ended', async (field, mode) => {
+    const { a } = await devices({ leaseMs: 40 });
+    await a.add(field, SECTIONS[field], 'Initial note');
+    const pause = pauseFieldRead(a, field);
+    const result = reads[mode](a, field).then((value) => ({ value }), (error) => ({ changed: error.changed === true }));
+    try {
+      await vi.waitFor(() => expect(pause.paused).toBe(true), { interval: 1 });
+      await vi.waitFor(() => expect(a.prompts.holder).toBeNull(), { interval: 2, timeout: 2000 });
+      await a.add(field, SECTIONS[field], 'Newer user note');
+    } finally {
+      pause.open();
+    }
+    expect(await result).toEqual({ changed: true });
+    expect(await a.prompts.readText(field)).toContain('Newer user note');
+  });
+
+  it.each(cases)('a %s %s read within its lease returns the stored text (control)', async (field, mode) => {
+    const { a } = await devices({ leaseMs: 40 });
+    await a.add(field, SECTIONS[field], 'Initial note');
+    const value = await reads[mode](a, field);
+    expect(typeof value === 'string' ? value : value.content).toContain('Initial note');
+  });
+});
+
+describe('the three prompt getters while the store stays busy (DS-SEMAPHORE)', () => {
+  const SECTIONS = { kb: '', composition: 'general', action: 'delete' };
+  const GETTERS = { kb: 'getUserKBPrompt', composition: 'getUserCompositionPrompt', action: 'getUserActionPrompt' };
+
+  it.each(Object.keys(GETTERS))('the %s getter answers empty without reading the stored text itself, and the text once the store is free', async (field) => {
+    const a = await new BulletDevice('A', new DeviceStore(), new BulletRelay(), { retries: 0 }).start();
+    await a.add(field, SECTIONS[field], 'Synthetic stored user note');
+    const stubs = a.stubs.bind(a);
+    a.stubs = () => ({
+      ...stubs(),
+      'agent/modules/utils.js': { log() {}, normalizeUnicode: (text) => text },
+      'agent/modules/templateManager.js': { ensureMigration: async () => {}, getTemplatesAsPrimedPrompt: async () => '' },
+    });
+    const page = a.page(['agent/modules/promptGenerator.js']);
+    // Every storage read the page makes itself: a getter reaches the texts only through the prompt store.
+    const direct = [];
+    const get = page.context.browser.storage.local.get;
+    page.context.browser.storage.local.get = async (keys) => { direct.push(keys); return get(keys); };
+    const getter = page.require('agent/modules/promptGenerator.js')[GETTERS[field]];
+    const { open, done } = await holdOn(a, 'a long writer');
+    try {
+      expect(await getter()).toBe('');
+      expect(direct).toEqual([]);
+    } finally {
+      open();
+      await done;
+    }
+    expect(await getter()).toContain('Synthetic stored user note');
+    expect(direct).toEqual([]);
   });
 });

@@ -61,8 +61,13 @@ async function flush(relay) {
   }
 }
 
+/** How many times a page action waiting for the semaphore tries again (doubling from 1 ms, about 4 s in all):
+ * no page test expects a busy answer, so an action that waits behind another's write under load must not get
+ * one (the default 5 tries give up after about 31 ms). */
+const PAGE_RETRIES = 12;
+
 /** Devices A and B; A starts from `stored` (field to released text), upgraded at its start. */
-async function devices({ connected = true, stored = {}, retries } = {}) {
+async function devices({ connected = true, stored = {}, retries = PAGE_RETRIES } = {}) {
   const relay = new BulletRelay();
   const released = Object.fromEntries(Object.entries(stored).map(([field, text]) => [PROMPT_KEYS[field], text]));
   const a = await new BulletDevice('A', new DeviceStore(released), relay, { name: (k) => `000000030000000${k}`, retries }).start();

@@ -274,7 +274,7 @@ export const SETTINGS = {
         maxBackups: 10,           // Max backup snapshots in ring buffer before applying incoming sync
         messageMaxBytes: 126976,  // Budget of one bullet_state message (bytes): below the relay's 128 KiB, over which it drops a message
         busyReapplyMs: 2 * 1000,  // Wait before a received message whose apply found the prompt semaphore busy is applied again
-        maxWaitingReceives: 256,  // Most received messages waiting to be applied on one connection; past it the connection is renewed
+        maxWaitingReceives: 256,  // Most received messages waiting to be applied on one connection, counting parts of incomplete snapshots held; past it the connection is renewed
         historyDebounceMs: 2 * 1000, // Quiet time after a local prompt edit before its history entry is recorded
     },
     // The one prompt semaphore per device (promptStore.js): every read and change of the three prompt fields holds it.

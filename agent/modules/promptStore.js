@@ -713,3 +713,8 @@ export function outgoingBulletState(field) {
 export function bulletSyncDisconnected() {
   engine?.disconnected();
 }
+
+/** How many parts of incomplete snapshots the engine holds (DS-RECEIVE bound). Background only. */
+export function heldSnapshotParts() {
+  return engine?.heldParts() ?? 0;
+}

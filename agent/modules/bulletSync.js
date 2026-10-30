@@ -167,6 +167,13 @@ export class BulletSync {
     this.buffers.clear();
   }
 
+  /** How many parts of snapshots not merged yet are held: DS-RECEIVE counts them toward its bound. */
+  heldParts() {
+    let parts = 0;
+    for (const buffer of this.buffers.values()) parts += buffer.received.size;
+    return parts;
+  }
+
   /** DS-LEGACY-IN: a released device's `prompt_state` data, additions only, every field in one commit.
    * Returns the commit's outcome. */
   receiveLegacy(data, holds) {
