@@ -140,7 +140,7 @@ describe('a template change refused because the prompt store stayed busy is repo
   ];
 
   it.each(WRITERS.flatMap(([name, run]) => ['background', 'chat window'].map((context) => [name, context, run])))('%s, from the %s: rejects with the busy notice, nothing saved', async (_, context, run) => {
-    const { d, store, manager } = await device(stored(), { retries: 2 });
+    const { d, store, manager } = await device(stored(), { acquireWaitMs: 50 });
     const m = context === 'background' ? manager : d.page([MANAGER]).require(MANAGER);
     const before = structuredClone(store.values.user_templates);
     const release = await holdSemaphore(d);
@@ -160,7 +160,7 @@ describe('a template change refused because the prompt store stayed busy is repo
   ];
 
   it.each(COMMANDS)('the background replies busy to $command', async (message) => {
-    const { d, store, manager } = await device(stored(), { retries: 2 });
+    const { d, store, manager } = await device(stored(), { acquireWaitMs: 50 });
     const before = structuredClone(store.values.user_templates);
     const request = registrar(d, manager);
     const release = await holdSemaphore(d);
@@ -185,7 +185,7 @@ describe('a template change refused because the prompt store stayed busy is repo
   ];
 
   it.each(PAGE_ACTIONS)('the templates page shows the busy notice for %s', async (_, act, prepare) => {
-    const { d, store, manager } = await device(stored(), { retries: 2 });
+    const { d, store, manager } = await device(stored(), { acquireWaitMs: 50 });
     const request = registrar(d, manager);
     const { page, document, status } = await templatesPage(store, request);
     prepare?.(store);
@@ -223,7 +223,7 @@ describe('a template change refused because the prompt store stayed busy is repo
   ];
 
   it.each(FLOWS)('the chat flow %s fails with the busy notice', async (_, file, exec, args) => {
-    const { d, store, manager } = await device(stored(), { retries: 2 });
+    const { d, store, manager } = await device(stored(), { acquireWaitMs: 50 });
     const before = structuredClone(store.values.user_templates);
     const release = await holdSemaphore(d);
     const { shown, failReason, state } = await chatFlow(d, file, exec, args);
@@ -235,7 +235,7 @@ describe('a template change refused because the prompt store stayed busy is repo
   });
 
   it('the chat tool template_toggle tells the model the templates are busy', async () => {
-    const { d, store, manager } = await device(stored(), { retries: 2 });
+    const { d, store, manager } = await device(stored(), { acquireWaitMs: 50 });
     const toggle = d.page([MANAGER, 'chat/tools/template_toggle.js']).require('chat/tools/template_toggle.js');
     const release = await holdSemaphore(d);
     const result = await toggle.run({ template_id: 'own', enabled: false });
@@ -245,7 +245,7 @@ describe('a template change refused because the prompt store stayed busy is repo
   });
 
   it('control: each caller saves once the store is free', async () => {
-    const { d, store, manager } = await device(stored(), { retries: 2 });
+    const { d, store, manager } = await device(stored(), { acquireWaitMs: 50 });
     const request = registrar(d, manager);
     expect(await request({ command: 'templates-update', id: 'own', updates: { name: 'Renamed' } })).toMatchObject({ ok: true });
     expect(await request({ command: 'templates-reorder', orderedIds: ['dup', 'own'] })).toEqual({ ok: true });

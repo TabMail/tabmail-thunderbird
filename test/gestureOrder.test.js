@@ -45,7 +45,7 @@ async function device() {
     'device_sync_ts:actionConfig': ago(2 * DAY),
     [MAP_KEY]: {},
   });
-  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [TEMPLATES, REMINDERS, ACTION_CONFIG], retries: 12 }).start();
+  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [TEMPLATES, REMINDERS, ACTION_CONFIG] }).start();
   devices.push(d);
   const page = d.page([TEMPLATES, REMINDERS]);
   return {

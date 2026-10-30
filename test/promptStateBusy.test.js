@@ -44,7 +44,7 @@ async function device() {
     'device_sync_ts:actionConfig': ago(2 * DAY),
     prompt_history_migrated: true,
   });
-  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [REMINDERS, ACTION_CONFIG], retries: 2 }).start();
+  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [REMINDERS, ACTION_CONFIG], acquireWaitMs: 50 }).start();
   // The prompts page reads the stored settings through the real module.
   const stubs = d.stubs.bind(d);
   d.stubs = () => ({ ...stubs(), [ACTION_CONFIG]: d.realm.require(ACTION_CONFIG) });
@@ -171,7 +171,9 @@ describe('a reminder or settings change refused because the prompt store stayed 
     const count = ui.statuses.length;
     slider.value = String(stored * 2);
     slider.dispatchEvent(new ui.dom.window.Event('change'));
-    await ui.settled(count);
+    // The store answers busy after its wait; then the page has had time to report anything else.
+    await vi.waitFor(() => expect(ui.statuses.length).toBeGreaterThan(count), { timeout: 1000 });
+    await ui.settled(ui.statuses.length);
     const { ACTION_SETTINGS_BUSY_ERROR } = d.page([ACTION_CONFIG, STORAGE, 'prompts/modules/markdown.js']).require(STORAGE);
     expect(ui.statuses.slice(count)).toEqual([[ACTION_SETTINGS_BUSY_ERROR, true]]);
     await vi.waitFor(() => expect(Number(slider.value)).toBe(stored), { timeout: 1000 });

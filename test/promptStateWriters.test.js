@@ -63,7 +63,7 @@ function sliders(rules, chars) {
 async function device({ leaseMs = 15000, values = {} } = {}) {
   const store = new DeviceStore({ ...storedState(), prompt_history_migrated: true, ...values });
   for (const [key, value] of Object.entries(values)) if (value === undefined) delete store.values[key];
-  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [REMINDERS, ACTION_CONFIG], leaseMs, retries: 12 }).start();
+  const d = await new BulletDevice('A', store, new BulletRelay(), { files: [REMINDERS, ACTION_CONFIG], leaseMs }).start();
   d.sync.setupStorageListener();
   devices.push(d);
   const chat = d.page([REMINDERS]);

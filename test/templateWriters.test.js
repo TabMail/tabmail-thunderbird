@@ -59,7 +59,7 @@ async function device({ leaseMs = 15000, values = {} } = {}) {
     ...values,
   });
   const relay = new BulletRelay();
-  const d = await new BulletDevice('A', store, relay, { files: [MANAGER], leaseMs, retries: 12 }).start();
+  const d = await new BulletDevice('A', store, relay, { files: [MANAGER], leaseMs }).start();
   devices.push(d);
   return {
     d,
