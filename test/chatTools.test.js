@@ -110,7 +110,7 @@ vi.mock('../agent/modules/config.js', () => ({
     events: {
       userKBPromptUpdated: 'user-kb-prompt-updated',
     },
-    promptSemaphore: { leaseMs: 15000, retries: 2, retryBaseDelayMs: 1, retryJitterMs: 0 },
+    promptSemaphore: { leaseMs: 15000, acquireWaitMs: 20 },
   },
 }));
 
@@ -2069,7 +2069,6 @@ describe('the knowledge base tools read, change and save in one hold of the prom
     task_edit: () => taskEdit.run({ find_text: 'weekly report', schedule_time: '10:00' }),
   };
 
-  let random;
   beforeEach(() => {
     clearStorage();
     vi.clearAllMocks();
@@ -2079,12 +2078,6 @@ describe('the knowledge base tools read, change and save in one hold of the prom
       await globalThis.browser.storage.local.set({ [`user_prompts:user_${field}.md`]: content });
     };
     storageData['user_prompts:user_kb.md'] = KB;
-    // retryWithBackoff waits up to a second more at random; none here.
-    random = vi.spyOn(Math, 'random').mockReturnValue(0);
-  });
-
-  afterEach(() => {
-    random.mockRestore();
   });
 
   it.each(Object.keys(calls))('%s saves in one hold, released after', async (name) => {

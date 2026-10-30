@@ -10,8 +10,9 @@
  * the one engine (bulletSync.js) and the device's one prompt semaphore. Any other page (the prompts page,
  * the history page) reaches it through a "prompt-store" runtime message.
  *
- * `withPromptStore` is the only way to read or change a field (DS-SEMAPHORE): it acquires the semaphore
- * with capped backoff, runs the caller's brief read-change-write and releases it however that ends. A hold
+ * `withPromptStore` is the only way to read or change a field (DS-SEMAPHORE): it acquires the semaphore,
+ * waiting in line behind every earlier caller for at most `acquireWaitMs` (request order), runs the caller's
+ * brief read-change-write and releases it however that ends. A hold
  * past its lease loses the semaphore, and every write asks whether it still holds it immediately before the
  * storage write (DS-LEASE). An edit commits against the labels it read (DS-CAPTURE), so a bullet that
  * arrived meanwhile is never deleted by it. An AI writer reads in one hold, asks the model holding nothing,
@@ -22,7 +23,6 @@
 import { BulletSync } from "./bulletSync.js";
 import { displayedSections, isMarkerText, parse, render, SYNC_FIELDS } from "./bullets.js";
 import { SETTINGS } from "./config.js";
-import { retryWithBackoff } from "./retryWithBackoff.js";
 import { log } from "./utils.js";
 
 const PFX = "[PromptStore] ";
@@ -229,23 +229,56 @@ function isHost() {
 
 // ─── The semaphore ──────────────────────────────────────────────────────
 
+/** DS-SEMAPHORE request order: the callers waiting for the semaphore, first come first served, each
+ * { label, resolve, timer }. The semaphore is handed to the head when it frees, so a later request never takes
+ * it while an earlier one still waits. A waiter still in line after `acquireWaitMs` leaves it and is refused
+ * as busy; one handed the semaphore whose caller has gone loses it with the lease. */
+const waiting = [];
+
+/** The semaphore for `label`: at once when it is free, else after every earlier waiter, or { outcome: "busy" }
+ * once `acquireWaitMs` passed in line. It is never free while anyone waits: whatever frees it hands it on. */
 function hostAcquire(label) {
-  if (holder) return { outcome: "busy", label: holder.label };
+  if (holder === null) return { outcome: "acquired", token: grant(label) };
+  return new Promise((resolve) => {
+    const waiter = { label, resolve, timer: null };
+    waiter.timer = setTimeout(() => {
+      const index = waiting.indexOf(waiter);
+      if (index < 0) return;
+      waiting.splice(index, 1);
+      resolve({ outcome: "busy", label: holder?.label ?? "the prompt store" });
+    }, SETTINGS.promptSemaphore.acquireWaitMs);
+    waiting.push(waiter);
+  });
+}
+
+/** Makes `label` the holder, under a lease, and returns its token. */
+function grant(label) {
   const token = crypto.randomUUID();
   const leaseMs = SETTINGS.promptSemaphore.leaseMs;
   const timer = setTimeout(() => {
     if (holder?.token !== token) return;
     log(`${PFX}${label} held the prompt semaphore past its lease (${leaseMs}ms): it is released and nothing more of it is saved`, "error");
     holder = null;
+    handOn();
   }, leaseMs);
   holder = { token, label, timer, changed: new Set() };
-  return { outcome: "acquired", token };
+  return token;
+}
+
+/** The semaphore freed: it goes to the first waiter in line. */
+function handOn() {
+  if (holder !== null) return;
+  const next = waiting.shift();
+  if (next === undefined) return;
+  clearTimeout(next.timer);
+  next.resolve({ outcome: "acquired", token: grant(next.label) });
 }
 
 function hostRelease(token) {
   if (holder?.token === token) {
     clearTimeout(holder.timer);
     holder = null;
+    handOn();
   }
   return { outcome: "released" };
 }
@@ -604,17 +637,17 @@ async function acquire(label) {
 /**
  * The one way to read or change the knowledge base, the writing style and the action rules
  * (DS-SEMAPHORE): acquires the device's prompt semaphore, runs `body(store)` and releases it, however
- * `body` ends. While another holds it the acquire is tried again with backoff (SETTINGS.promptSemaphore)
- * and, after the last try, rejects with a `busy` error. Sign-in state never refuses it (DS-DEVICE). `body`
- * is a brief read-change-write: it never awaits an AI call (DS-AI) and never calls this again (DS-NESTED:
- * a nested call is refused as busy once its tries run out). Returns what `body` returns.
+ * `body` ends. While another holds it the caller waits in line behind every earlier caller (request order)
+ * and, after `SETTINGS.promptSemaphore.acquireWaitMs` in line, rejects with a `busy` error. Sign-in state
+ * never refuses it (DS-DEVICE). `body` is a brief read-change-write: it never awaits an AI call (DS-AI) and
+ * never calls this again (DS-NESTED: a nested call waits its full wait and is refused as busy). Returns what
+ * `body` returns.
  *
  * @param {(store: PromptStoreHold) => Promise<any>} body
  * @param {{ label?: string }} [options] - what holds it, for the logs
  */
 export async function withPromptStore(body, { label = "prompt store" } = {}) {
-  const { retries, retryBaseDelayMs, retryJitterMs } = SETTINGS.promptSemaphore;
-  const token = await retryWithBackoff(() => acquire(label), retries, retryBaseDelayMs, null, (e) => e.busy === true, retryJitterMs);
+  const token = await acquire(label);
   const hold = new PromptStoreHold(token);
   try {
     return await body(hold);

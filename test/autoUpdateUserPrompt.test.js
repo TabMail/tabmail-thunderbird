@@ -19,7 +19,7 @@ vi.mock('../agent/modules/config.js', async (importOriginal) => ({
     logTruncateLength: 100,
     getFullDiag: {},
     actionCompaction: (await importOriginal()).SETTINGS.actionCompaction,
-    promptSemaphore: { leaseMs: 15000, retries: 2, retryBaseDelayMs: 1, retryJitterMs: 0 },
+    promptSemaphore: { leaseMs: 15000, acquireWaitMs: 20 },
   },
 }));
 vi.mock('../agent/modules/thinkBuffer.js', () => ({

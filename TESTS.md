@@ -9,8 +9,9 @@
 | File | Tests | Coverage Area |
 |------|-------|---------------|
 | `test/deviceSyncVectors.test.js` | 102 | Shared Device Sync v2 vectors (byte-identical with iOS): labelled-bullet merge, capture, add, dedup, reset, render, wire |
-| `test/promptSemaphore.test.js` | 16 | DS-SEMAPHORE/DS-LEASE: one holder, backoff then busy, lease expiry is no counter change, sign-out never reaches a holder |
-| `test/promptStoreWriters.test.js` | 35 | Every writer through `withPromptStore`; refines read and write in separate holds (DS-AI); page edits against the labels shown (DS-DISPLAYED); chat tool `editText` busy answer |
+| `test/promptSemaphore.test.js` | 21 | DS-SEMAPHORE/DS-LEASE: one holder; request order (callers wait in line at the background, first come first served across the background, the prompts page and a chat window; a caller asking as the holder lets go still waits behind the line; a waiter whose `acquireWaitMs` ran out leaves the line refused as busy and is never handed the semaphore; a head whose caller has gone loses it with its lease and the next in line gets it; a sign-out completes at once with callers in line); a nested call waits its wait and is refused; lease expiry is no counter change, sign-out never reaches a holder |
+| `test/gestureOrderInversion.test.js` | 4 | Request order end to end: a page delete then a tool add, and a tool add then a tool delete, of one knowledge-base line, the older gesture waiting while the store is held; the line ends as the later gesture left it (red on the client-backoff semaphore: `saved, unchanged` and `saved, not found`), with in-order controls |
+| `test/promptStoreWriters.test.js` | 34 | Every writer through `withPromptStore`; refines read and write in separate holds (DS-AI); page edits against the labels shown (DS-DISPLAYED); chat tool `editText` busy answer |
 | `test/promptStoreWritersSync.test.js` | 44 | Writers next to a peer's bullets: text written as read (DS-TEXT), skeleton kept (DS-SKELETON) |
 | `test/promptStoreInterruptions.test.js` | 36 | DS-COUNTER moves only on a saved change, and on every accepted restore; DS-RECEIVE drop at connection end, arrival order, waiting bound (parts of incomplete snapshots counted), a stuck apply never holding up the next connection; a field read past its lease refused; the prompt getters never reading storage themselves; DS-HISTORY reset/merge records; DS-LEASE history holds |
 | `test/promptsPageLive.test.js` | 83 | The real prompts page on simulated devices: every edit saved at once against the labels shown, Reset, marker refusals, sign-out keeps every line |
@@ -28,7 +29,6 @@
 | `test/noWipeFence.test.js` | 5 | Nothing removes the prompt fields or their history |
 | `test/promptStoreFence.test.js` | 3 | The three fields are reached only through the prompt store |
 | `test/storageKeyOnlyReads.test.js` | 2 | Diagnostics read storage by key, never the whole of it |
-| `test/retryWithBackoff.test.js` | 12 | The backoff helper the semaphore acquires with |
 | `test/kbReminderGenerator.test.js` | 10 | Reminder parsing from KB content |
 | `test/patchApplier.test.js` | 13 | Markdown patch application (add/remove lines) |
 | `test/utils.test.js` | 159 | normalizeUnicode, date formatting, isInboxFolder, email extraction, escapeHtml |

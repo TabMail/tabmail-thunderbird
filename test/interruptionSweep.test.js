@@ -11,7 +11,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore, PROMPT_KEYS } from './support/bulletDevices.js';
 
-const OPTIONS = { leaseMs: 100, retries: 0, busyReapplyMs: 20 };
+const OPTIONS = { leaseMs: 100, acquireWaitMs: 0, busyReapplyMs: 20 };
 const WAIT = { timeout: 3000, interval: 10 };
 const gate = () => {
   let open;

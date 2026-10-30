@@ -25,7 +25,7 @@ function gate() {
 
 async function device(store, options = {}) {
   const relay = new BulletRelay();
-  const a = await new BulletDevice('A', store, relay, { retries: 10, busyReapplyMs: 5, files: [CACHE_FILE], ...options }).start();
+  const a = await new BulletDevice('A', store, relay, { acquireWaitMs: 2000, busyReapplyMs: 5, files: [CACHE_FILE], ...options }).start();
   await a.connect();
   while (await relay.deliverOldest()) { /* the connect's own messages */ }
   return { a, cache: a.realm.require(CACHE_FILE) };
@@ -117,7 +117,7 @@ describe('the task cache while a peer cache is merged (DS-SEMAPHORE)', () => {
   });
 
   it('a task result that cannot get the semaphore is not cached, and the check-in goes on', async () => {
-    const { a, cache } = await device(new DeviceStore(), { retries: 0 });
+    const { a, cache } = await device(new DeviceStore(), { acquireWaitMs: 0 });
     const hold = gate();
     let held = false;
     const holding = a.prompts.withPromptStore(async () => { held = true; await hold.promise; }, { label: 'a long writer' });

@@ -10,15 +10,14 @@
 // tool reads, changes and saves in one hold. The real client side of promptStore.js runs here, against a
 // stand-in for the background (support/promptStoreHost.js).
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { promptStoreHost } from './support/promptStoreHost.js';
 
 let pairCount = 3;
 const host = promptStoreHost();
-const RETRIES = 3;
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn(), normalizeUnicode: (text) => text, saveChatLog: vi.fn() }));
-vi.mock('../agent/modules/config.js', () => ({ SETTINGS: { events: {}, promptSemaphore: { leaseMs: 15000, retries: 3, retryBaseDelayMs: 1, retryJitterMs: 0 } } }));
+vi.mock('../agent/modules/config.js', () => ({ SETTINGS: { events: {}, promptSemaphore: { leaseMs: 15000, acquireWaitMs: 20 } } }));
 vi.mock('../agent/modules/llm.js', () => ({ sendChat: vi.fn() }));
 vi.mock('../agent/modules/chatHistoryQueue.js', () => ({
   addChatToQueue: vi.fn(async () => 'session-1'),
@@ -72,11 +71,6 @@ function gate() {
   return { promise, open };
 }
 
-let random;
-afterEach(() => {
-  random.mockRestore();
-});
-
 beforeEach(() => {
   vi.clearAllMocks();
   host.clear();
@@ -84,8 +78,6 @@ beforeEach(() => {
   host.saved = async (message) => { savedWrites.add(message); };
   savedWrites.clear();
   pairCount = 3;
-  // retryWithBackoff waits up to a second more at random; none here.
-  random = vi.spyOn(Math, 'random').mockReturnValue(0);
   cursor.advanced = [];
 });
 
@@ -110,27 +102,14 @@ describe('the one way to the prompt fields (withPromptStore, DS-SEMAPHORE)', () 
     expect(await withPromptStore(async (store) => store.text('kb'))).toBe('- Stored fact');
   });
 
-  it('tries a busy semaphore again with backoff and runs once it is free', async () => {
-    const free = host.hold();
-    host.acquire.mockImplementation(async (message) => {
-      host.acquires.push(message);
-      if (host.acquires.length === 3) free();
-      if (host.holder) return { outcome: 'busy', label: host.holder.label };
-      host.holder = { token: 'token late', label: message.label };
-      return { outcome: 'acquired', token: 'token late' };
-    });
-
-    expect(await withPromptStore(async (store) => store.text('kb'))).toBe('- Stored fact');
-    expect(host.acquires).toHaveLength(3);
-  });
-
-  it('gives up after the configured tries with a busy error, its body never run', async () => {
+  it("asks the background once and rejects with a busy error when its wait in line ran out, its body never run", async () => {
     host.hold('a stuck writer');
     const body = vi.fn();
 
     await expect(withPromptStore(body)).rejects.toMatchObject({ busy: true, message: 'the prompt store is busy (a stuck writer)' });
     expect(body).not.toHaveBeenCalled();
-    expect(host.acquires).toHaveLength(RETRIES + 1);
+    // The background does the waiting (request order): a page never retries on its own.
+    expect(host.acquires).toHaveLength(1);
   });
 
   it('refuses a call made from inside its own body: the inner one gives up as busy, and the outer one still releases', async () => {
@@ -337,17 +316,22 @@ describe('the prompts page (DS-DISPLAYED)', () => {
     expect(host.holder).toBeNull();
   });
 
-  it('an edit made while another writer holds the semaphore waits, then saves against the labels it showed', async () => {
+  it('an edit made while another writer holds the semaphore waits in line, then saves against the labels it showed', async () => {
     const view = await readView('kb');
     const free = host.hold();
     const acquire = host.implementation('acquire');
-    host.acquire.mockImplementation(async (message) => {
-      if (host.acquires.length === 3) free(); // the other writer is done before the third try of the edit
-      return acquire(message);
-    });
+    // The background answers the acquire once the other writer is done, as its line does.
+    let answer;
+    host.acquire.mockImplementation((message) => new Promise((resolve) => { answer = () => resolve(acquire(message)); }));
 
-    expect(await editShown('kb', view, (text) => `${text}\n- Added fact`)).toBe('saved');
-    expect(host.acquires).toHaveLength(4);
+    const edit = editShown('kb', view, (text) => `${text}\n- Added fact`);
+    await vi.waitFor(() => expect(answer).toBeDefined(), { interval: 1 });
+    expect(host.writes).toEqual([]);
+    free();
+    answer();
+    expect(await edit).toBe('saved');
+    // The view's read, then the edit's one ask: the page never asks again on its own.
+    expect(host.acquires).toHaveLength(2);
     expect(host.reads).toHaveLength(1);
     expect(saved().map((write) => [write.captured, write.content])).toEqual([[view.captured, '- Stored fact\n- Added fact']]);
   });

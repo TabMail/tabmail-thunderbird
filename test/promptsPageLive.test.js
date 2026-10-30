@@ -61,16 +61,15 @@ async function flush(relay) {
   }
 }
 
-/** How many times a page action waiting for the semaphore tries again (doubling from 1 ms, about 4 s in all):
- * no page test expects a busy answer, so an action that waits behind another's write under load must not get
- * one (the default 5 tries give up after about 31 ms). */
-const PAGE_RETRIES = 12;
+/** How long a page action waits in line for the semaphore: no page test expects a busy answer, so an action
+ * that waits behind another's write under load must not get one. */
+const PAGE_WAIT_MS = 4000;
 
 /** Devices A and B; A starts from `stored` (field to released text), upgraded at its start. */
-async function devices({ connected = true, stored = {}, retries = PAGE_RETRIES } = {}) {
+async function devices({ connected = true, stored = {} } = {}) {
   const relay = new BulletRelay();
   const released = Object.fromEntries(Object.entries(stored).map(([field, text]) => [PROMPT_KEYS[field], text]));
-  const a = await new BulletDevice('A', new DeviceStore(released), relay, { name: (k) => `000000030000000${k}`, retries }).start();
+  const a = await new BulletDevice('A', new DeviceStore(released), relay, { name: (k) => `000000030000000${k}`, acquireWaitMs: PAGE_WAIT_MS }).start();
   const b = await new BulletDevice('B', new DeviceStore(), relay, { name: (k) => `000000010000000${k}` }).start();
   if (connected) {
     await a.connect();
@@ -703,10 +702,6 @@ describe('the real prompts page shows the catalog defaults where nothing is stor
 // that commits after it adds only its new line: what the Reset cleared is not brought back. A sign-out never
 // reaches the prompt store, so an edit made before it is saved like any other (DS-DEVICE).
 describe('the real prompts page runs its edits, a reset and a sign-out one at a time', () => {
-  // Enough tries that an edit or a Reset waiting for the held write outlasts the test's hold (each wait
-  // doubles from 1 ms here).
-  const WAITING = 12;
-
   /** The page on A, the first edit's write held until `release()`. */
   async function heldPage(opened) {
     const hold = gate();
@@ -725,7 +720,7 @@ describe('the real prompts page runs its edits, a reset and a sign-out one at a 
     const key = AT[field].shapes;
 
     it(`two ${field} adds and a Reset, the first add still saving, end as one of them run after another; the Reset's clearing is never undone; one made after is saved`, async () => {
-      const opened = await devices({ connected: false, retries: WAITING });
+      const opened = await devices({ connected: false });
       await opened.a.add(field, key, 'Kept until the reset.');
       const { ui, release } = await heldPage(opened);
       await ui.tab(field);

@@ -21,7 +21,7 @@ async function devices(options = {}) {
 }
 
 async function connected(options = {}) {
-  const { relay, a, b } = await devices({ retries: 2, busyReapplyMs: 20, ...options });
+  const { relay, a, b } = await devices({ acquireWaitMs: 5, busyReapplyMs: 20, ...options });
   await a.connect();
   await b.connect();
   await flush(relay);
@@ -408,7 +408,7 @@ describe('the three prompt getters while the store stays busy (DS-SEMAPHORE)', (
   const GETTERS = { kb: 'getUserKBPrompt', composition: 'getUserCompositionPrompt', action: 'getUserActionPrompt' };
 
   it.each(Object.keys(GETTERS))('the %s getter answers empty without reading the stored text itself, and the text once the store is free', async (field) => {
-    const a = await new BulletDevice('A', new DeviceStore(), new BulletRelay(), { retries: 0 }).start();
+    const a = await new BulletDevice('A', new DeviceStore(), new BulletRelay(), { acquireWaitMs: 0 }).start();
     await a.add(field, SECTIONS[field], 'Synthetic stored user note');
     const stubs = a.stubs.bind(a);
     a.stubs = () => ({

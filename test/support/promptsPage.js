@@ -38,7 +38,7 @@ export async function openPage(a, { commands = {}, beforeStore = async () => {},
   const sent = [];
   const storage = a.store.api();
   const realm = createRealm({
-    files: ['agent/modules/bullets.js', 'agent/modules/bulletSync.js', 'agent/modules/retryWithBackoff.js', 'agent/modules/promptStore.js', 'prompts/modules/storage.js', 'prompts/modules/markdown.js', 'prompts/prompts.js'],
+    files: ['agent/modules/bullets.js', 'agent/modules/bulletSync.js', 'agent/modules/promptStore.js', 'prompts/modules/storage.js', 'prompts/modules/markdown.js', 'prompts/prompts.js'],
     expose: { 'prompts/prompts.js': ['shown'] },
     stubs: {
       ...a.stubs(),

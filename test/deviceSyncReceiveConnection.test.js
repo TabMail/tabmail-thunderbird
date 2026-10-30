@@ -154,10 +154,10 @@ describe('a refine whose model answers after a sign-out (DS-DEVICE)', () => {
   function refineOn(a, whileAsking) {
     const counts = { indexed: 0, remembered: 0 };
     const realm = createRealm({
-      files: ['agent/modules/knowledgebase.js', 'agent/modules/promptStore.js', 'agent/modules/bulletSync.js', 'agent/modules/bullets.js', 'agent/modules/retryWithBackoff.js'],
+      files: ['agent/modules/knowledgebase.js', 'agent/modules/promptStore.js', 'agent/modules/bulletSync.js', 'agent/modules/bullets.js'],
       stubs: {
         'agent/modules/utils.js': { log() {}, saveChatLog() {}, normalizeUnicode: (t) => t },
-        'agent/modules/config.js': { SETTINGS: { promptSemaphore: { retries: 1, retryBaseDelayMs: 1, retryJitterMs: 0 }, events: {} } },
+        'agent/modules/config.js': { SETTINGS: { promptSemaphore: { acquireWaitMs: 20 }, events: {} } },
         'agent/modules/llm.js': { sendChat: async () => { await whileAsking(); return { refined_kb: '- Refined note' }; } },
         'agent/modules/chatHistoryQueue.js': {
           addChatToQueue: async () => 'session-one',

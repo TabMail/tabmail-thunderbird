@@ -5,7 +5,7 @@
 // promptSemaphore.test.js — the one prompt semaphore of a device (DS-SEMAPHORE), on simulated devices running
 // the real promptStore.js: `withPromptStore` is the only way to read or change the knowledge base, the
 // writing style and the action rules. It never blocks forever (released on every exit, a lease, no nested
-// hold, capped tries), and a sign-out or sign-in never waits for it and never reaches it. Nothing is per
+// hold, a bounded wait in line), callers get it in the order they asked, and a sign-out or sign-in never waits for it and never reaches it. Nothing is per
 // account (DS-DEVICE): signed out, the prompts are read and written as when signed in, a sign-out or a
 // different account's sign-in deletes nothing, and work pending across one is saved like any other.
 
@@ -13,6 +13,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore, PROMPT_KEYS, SIGNED_IN } from './support/bulletDevices.js';
 
 const HISTORY = 'prompt_history';
+/** A timer can fire up to this much before `Date.now()` shows its delay passed. */
+const TIMER_SLACK_MS = 2;
 
 async function device(options = {}) {
   const relay = new BulletRelay();
@@ -39,8 +41,6 @@ async function holdOn(d, label = 'a slow writer') {
   await vi.waitFor(() => expect(store).toBeDefined(), { interval: 1 });
   return { open, done, store: () => store };
 }
-
-const retriesLogged = (d) => d.logs.filter(({ message }) => message.startsWith('[RETRY] Attempt')).length;
 
 /** Signs `d` out as supabaseAuth's signOut does: the session removed, then Device Sync closed. The prompt
  * store is not reached, and nothing else is removed. */
@@ -80,9 +80,9 @@ describe('the prompt semaphore never blocks forever', () => {
       if (!reply.ok) throw new Error(`refused by the background: ${reply.error}`);
     })).rejects.toThrow('refused by the background');
     expect(a.prompts.holder).toBeNull();
-    // The next caller acquires it at once.
+    // The next caller acquires it at once, with nobody left in line.
     await a.prompts.withPromptStore((store) => store.read('kb'));
-    expect(retriesLogged(a)).toBe(0);
+    expect(a.prompts.waiting).toEqual([]);
   });
 
   it('a hold that ends cannot be used again', async () => {
@@ -113,36 +113,135 @@ describe('the prompt semaphore never blocks forever', () => {
     expect(texts).toContain('Refined note');
   });
 
-  it('a call inside a hold is refused as busy after its tries; the outer hold goes on and is released', async () => {
-    const { a } = await device({ retries: 3 });
+  it('a call inside a hold waits its wait in line and is refused as busy; the outer hold goes on and is released', async () => {
+    const { a } = await device({ acquireWaitMs: 30 });
     const outcome = await a.prompts.withPromptStore(async (store) => {
+      const started = Date.now();
       const inner = await a.prompts.withPromptStore((nested) => nested.read('kb')).catch((e) => e);
+      const waited = Date.now() - started;
       const after = await store.read('kb');
-      return { inner, after };
+      return { inner, waited, after };
     }, { label: 'outer' });
     expect(outcome.inner).toMatchObject({ busy: true, message: 'the prompt store is busy (outer)' });
+    expect(outcome.waited).toBeGreaterThanOrEqual(30 - TIMER_SLACK_MS);
     expect(outcome.after.captured).not.toBeNull();
-    expect(retriesLogged(a)).toBe(3);
     expect(a.prompts.holder).toBeNull();
+    expect(a.prompts.waiting).toEqual([]);
   });
 
-  it('a waiting call gets the semaphore when the holder lets go within its tries', async () => {
-    const { a } = await device({ retries: 8 });
+  it('a waiting call gets the semaphore as soon as the holder lets go, within its wait', async () => {
+    const { a } = await device({ acquireWaitMs: 2000 });
     const { open, done } = await holdOn(a);
     const waiting = a.prompts.withPromptStore((store) => store.text('kb'), { label: 'waiting reader' });
-    await vi.waitFor(() => expect(retriesLogged(a)).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(a.prompts.waiting.map(({ label }) => label)).toEqual(['waiting reader']), { interval: 1 });
     open();
     await done;
     expect(typeof (await waiting)).toBe('string');
   });
 
-  it('a holder that never lets go makes the others give up after the configured tries, never wait forever', async () => {
-    const { a } = await device({ retries: 4 });
+  it('a holder that never lets go makes the others give up after their wait in line, never wait forever', async () => {
+    const { a } = await device({ acquireWaitMs: 30 });
     const { open, done } = await holdOn(a, 'a stuck writer');
+    const started = Date.now();
     await expect(a.prompts.readText('kb')).rejects.toMatchObject({ busy: true, message: 'the prompt store is busy (a stuck writer)' });
-    expect(retriesLogged(a)).toBe(4);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(30 - TIMER_SLACK_MS);
+    expect(a.prompts.waiting).toEqual([]);
     open();
     await done;
+  });
+});
+
+describe('callers wait in line for the semaphore, first come first served (DS-SEMAPHORE request order)', () => {
+  /** Starts `run` and waits until it is the `n`th in line, so the order of asking is fixed. Returns
+   * { done }, its promise (wrapped, so awaiting this does not wait for it). */
+  async function inLine(d, run, n) {
+    const done = run();
+    await vi.waitFor(() => expect(d.prompts.waiting).toHaveLength(n), { interval: 1 });
+    return { done };
+  }
+
+  it('the background, the prompts page and a chat window get it in the order they asked', async () => {
+    const { a } = await device({ acquireWaitMs: 4000 });
+    const promptsPage = a.page([]).require('agent/modules/promptStore.js');
+    const chatWindow = a.page([]).require('agent/modules/promptStore.js');
+    const order = [];
+    const ask = (prompts, label) => () => prompts.withPromptStore(async () => { order.push(label); }, { label });
+    const { open, done } = await holdOn(a);
+    const asked = [
+      await inLine(a, ask(a.prompts, 'background first'), 1),
+      await inLine(a, ask(promptsPage, 'prompts page'), 2),
+      await inLine(a, ask(chatWindow, 'chat window'), 3),
+      await inLine(a, ask(a.prompts, 'background last'), 4),
+    ];
+    expect(a.prompts.waiting.map(({ label }) => label)).toEqual(['background first', 'prompts page', 'chat window', 'background last']);
+    open();
+    await done;
+    await Promise.all(asked.map(({ done }) => done));
+    expect(order).toEqual(['background first', 'prompts page', 'chat window', 'background last']);
+    expect(a.prompts.holder).toBeNull();
+    expect(a.prompts.waiting).toEqual([]);
+  });
+
+  it('a caller asking as the holder lets go still waits behind the one already in line', async () => {
+    const { a } = await device({ acquireWaitMs: 4000 });
+    const order = [];
+    const { open, done } = await holdOn(a);
+    const earlier = await inLine(a, () => a.prompts.withPromptStore(async () => { order.push('earlier'); }, { label: 'earlier' }), 1);
+    open();
+    await done;
+    // Released: the one in line holds it already, so a caller asking now still comes after it.
+    const later = a.prompts.withPromptStore(async () => { order.push('later'); }, { label: 'later' });
+    await Promise.all([earlier.done, later]);
+    expect(order).toEqual(['earlier', 'later']);
+  });
+
+  it('a waiter whose wait ran out leaves the line: it is refused as busy and the semaphore goes past it', async () => {
+    const { a } = await device({ acquireWaitMs: 40 });
+    const { open, done } = await holdOn(a, 'a slow writer');
+    const started = Date.now();
+    const refused = await a.prompts.withPromptStore(() => 'ran', { label: 'impatient' }).catch((e) => e);
+    expect(refused).toMatchObject({ busy: true, message: 'the prompt store is busy (a slow writer)' });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(40 - TIMER_SLACK_MS);
+    expect(a.prompts.waiting).toEqual([]);
+    open();
+    await done;
+    // Free at once, not handed to the caller that already gave up.
+    expect(a.prompts.holder).toBeNull();
+    expect(await a.prompts.withPromptStore(() => 'ran')).toBe('ran');
+  });
+
+  it('a head whose caller has gone loses the semaphore with its lease, and the next in line then gets it', async () => {
+    const leaseMs = 50;
+    const { a } = await device({ leaseMs, acquireWaitMs: 4000 });
+    // Two pages that asked and closed: nobody uses or releases what they are handed.
+    const closed = (label) => a.prompts.handlePromptStoreMessage({ command: 'prompt-store', op: 'acquire', label });
+    const first = await closed('a closed page');
+    expect(first).toMatchObject({ ok: true, outcome: 'acquired' });
+    const second = closed('another closed page');
+    await vi.waitFor(() => expect(a.prompts.waiting).toHaveLength(1), { interval: 1 });
+    const started = Date.now();
+    expect(await a.prompts.withPromptStore(() => 'ran', { label: 'live caller' })).toBe('ran');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(leaseMs - TIMER_SLACK_MS);
+    expect(await second).toMatchObject({ ok: true, outcome: 'acquired' });
+    expect(a.logs.filter(({ message }) => message.includes('held the prompt semaphore past its lease')).map(({ message }) => message.split(' held')[0]))
+      .toEqual([expect.stringContaining('a closed page'), expect.stringContaining('another closed page')]);
+    expect(a.prompts.holder).toBeNull();
+  });
+
+  it('a sign-out completes at once while callers wait in line, and they then get the semaphore in order', async () => {
+    const { a } = await device({ acquireWaitMs: 4000 });
+    await a.connect();
+    const order = [];
+    const { open, done } = await holdOn(a);
+    const asked = [
+      await inLine(a, () => a.prompts.withPromptStore(async () => { order.push('first'); }, { label: 'first' }), 1),
+      await inLine(a, () => a.prompts.withPromptStore(async () => { order.push('second'); }, { label: 'second' }), 2),
+    ];
+    await signOut(a);
+    expect(a.prompts.waiting.map(({ label }) => label)).toEqual(['first', 'second']);
+    open();
+    await Promise.all([done, ...asked.map((caller) => caller.done)]);
+    expect(order).toEqual(['first', 'second']);
   });
 });
 
@@ -237,7 +336,7 @@ describe('a sign-out or a sign-in deletes nothing, whichever account signs in (D
 // message received after it waits behind it.
 describe('a sync message received while the semaphore stays busy', () => {
   async function connected(options) {
-    const { relay, a, b } = await device({ retries: 2, busyReapplyMs: 20, ...options });
+    const { relay, a, b } = await device({ acquireWaitMs: 5, busyReapplyMs: 20, ...options });
     await a.connect();
     await b.connect();
     while (await relay.deliverOldest()) { /* the connect exchange */ }
@@ -325,7 +424,7 @@ describe('a sync message received while the semaphore stays busy', () => {
 describe('a chunked sync message received while the semaphore stays busy', () => {
   it("an older snapshot's waiting part is applied before a newer snapshot's parts: both complete, with every note", async () => {
     const relay = new BulletRelay();
-    const options = { retries: 2, busyReapplyMs: 300, budget: 450 };
+    const options = { acquireWaitMs: 5, busyReapplyMs: 300, budget: 450 };
     const a = await new BulletDevice('A', new DeviceStore(), relay, options).start();
     const b = await new BulletDevice('B', new DeviceStore(), relay, options).start();
     await a.connect();

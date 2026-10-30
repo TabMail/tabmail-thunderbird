@@ -280,9 +280,7 @@ export const SETTINGS = {
     // The one prompt semaphore per device (promptStore.js): every read and change of the three prompt fields holds it.
     promptSemaphore: {
         leaseMs: 15 * 1000,       // Longest hold of a read-change-save; a holder past it loses the semaphore and its save is refused
-        retries: 5,               // Tries after a busy refusal before giving up (retryWithBackoff)
-        retryBaseDelayMs: 200,    // First wait after a busy refusal; each next one doubles
-        retryJitterMs: 100,       // Most random time added to each wait, so two waiting writers do not retry in step
+        acquireWaitMs: 6 * 1000,  // Longest a caller waits in line (first come, first served) while another holds it; past it the caller is refused as busy
     },
     // Proactive reachout / notification settings
     notifications: {

@@ -22,7 +22,7 @@ function gate() {
 
 it.each([false, true])('a message refused as busy is applied without a reconnect, also while a stuck read\'s hold ended at its lease (lease ended: %s)', async (expire) => {
   const relay = new BulletRelay();
-  const options = { leaseMs: 100, retries: 0, busyReapplyMs: 20 };
+  const options = { leaseMs: 100, acquireWaitMs: 0, busyReapplyMs: 20 };
   const a = await new BulletDevice('A', new DeviceStore(), relay, options).start();
   const b = await new BulletDevice('B', new DeviceStore(), relay, options).start();
   await a.connect();
@@ -65,7 +65,7 @@ it.each([false, true])('a message refused as busy is applied without a reconnect
 
 it.each([false, true])('a released device\'s prompt_state refused as busy is applied without a reconnect, also while a stuck read\'s hold ended at its lease (lease ended: %s)', async (expire) => {
   const relay = new BulletRelay();
-  const options = { leaseMs: 100, retries: 0, busyReapplyMs: 20 };
+  const options = { leaseMs: 100, acquireWaitMs: 0, busyReapplyMs: 20 };
   const a = await new BulletDevice('A', new DeviceStore(), relay, options).start();
   await a.connect();
   await a.add('kb', '', 'Own durable note');
@@ -99,7 +99,7 @@ it.each([false, true])('a released device\'s prompt_state refused as busy is app
 // never touches a valid message waiting there.
 it('drops a part with a malformed identity at once, while a valid busy one waits, which is then applied', async () => {
   const relay = new BulletRelay();
-  const options = { retries: 0, busyReapplyMs: 20 };
+  const options = { acquireWaitMs: 0, busyReapplyMs: 20 };
   const a = await new BulletDevice('A', new DeviceStore(), relay, options).start();
   const b = await new BulletDevice('B', new DeviceStore(), relay, options).start();
   await a.connect();

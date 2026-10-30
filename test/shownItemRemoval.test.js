@@ -19,8 +19,8 @@ async function flush(relay) {
 
 async function connected() {
   const relay = new BulletRelay();
-  const a = await new BulletDevice('A', new DeviceStore(), relay, { retries: 2, busyReapplyMs: 20 }).start();
-  const b = await new BulletDevice('B', new DeviceStore(), relay, { retries: 2, busyReapplyMs: 20 }).start();
+  const a = await new BulletDevice('A', new DeviceStore(), relay, { acquireWaitMs: 5, busyReapplyMs: 20 }).start();
+  const b = await new BulletDevice('B', new DeviceStore(), relay, { acquireWaitMs: 5, busyReapplyMs: 20 }).start();
   await a.connect();
   await b.connect();
   await flush(relay);

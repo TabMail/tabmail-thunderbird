@@ -18,7 +18,7 @@ vi.mock('../agent/modules/config.js', () => ({
     debugMode: false,
     logTruncateLength: 100,
     getFullDiag: {},
-    promptSemaphore: { leaseMs: 15000, retries: 2, retryBaseDelayMs: 1, retryJitterMs: 0 },
+    promptSemaphore: { leaseMs: 15000, acquireWaitMs: 20 },
   },
 }));
 vi.mock('../agent/modules/thinkBuffer.js', () => ({

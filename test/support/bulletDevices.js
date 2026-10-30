@@ -13,7 +13,7 @@ import { parse, render } from '../../agent/modules/bullets.js';
 import { createRealm } from './deviceRealm.js';
 
 const ROOT = new URL('../../', import.meta.url);
-const FILES = ['agent/modules/bullets.js', 'agent/modules/bulletSync.js', 'agent/modules/retryWithBackoff.js', 'agent/modules/promptStore.js', 'agent/modules/deviceSync.js'];
+const FILES = ['agent/modules/bullets.js', 'agent/modules/bulletSync.js', 'agent/modules/promptStore.js', 'agent/modules/deviceSync.js'];
 /** A stored sign-in session: Device Sync connects only while signed in; the prompt store never asks
  * (DS-DEVICE). */
 export const SIGNED_IN = { access_token: 'synthetic-access', refresh_token: 'synthetic-refresh', expires_at: 0 };
@@ -249,7 +249,7 @@ export class BulletDevice {
     const realm = createRealm({
       files: [...FILES, ...(device.options.files ?? [])],
       stubs: { ...defaults, ...device.options.stubs },
-      expose: { 'agent/modules/promptStore.js': ['engine', 'change', 'holder'] },
+      expose: { 'agent/modules/promptStore.js': ['engine', 'change', 'holder', 'waiting'] },
       globals: {
         browser: { storage: this.store.api(), tmDeviceSync, runtime: { getURL: (path) => `moz-extension://synthetic/${path}` } },
         crypto,
@@ -277,7 +277,7 @@ export class BulletDevice {
       'agent/modules/config.js': {
         SETTINGS: {
           deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: device.options.busyReapplyMs ?? 20, maxWaitingReceives: device.options.maxWaitingReceives ?? 256, historyDebounceMs: 2000, get messageMaxBytes() { return device.options.budget ?? DEFAULT_BUDGET; } },
-          promptSemaphore: { leaseMs: device.options.leaseMs ?? 15000, retries: device.options.retries ?? 5, retryBaseDelayMs: 1, retryJitterMs: 0 },
+          promptSemaphore: { leaseMs: device.options.leaseMs ?? 15000, acquireWaitMs: device.options.acquireWaitMs ?? 1000 },
         },
         getDeviceSyncUrl: async () => 'https://sync.example.com',
       },
