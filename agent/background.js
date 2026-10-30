@@ -237,7 +237,7 @@ function setupRuntimeMessageListener() {
                 return { ok: true };
             } catch (e) {
                 log(`Error disabling reminder: ${e}`, "error");
-                return { ok: false, error: String(e) };
+                return { ok: false, error: String(e), busy: e?.busy === true };
             }
         })();
     }
@@ -254,7 +254,7 @@ function setupRuntimeMessageListener() {
                 return { ok: true };
             } catch (e) {
                 log(`Error enabling reminder: ${e}`, "error");
-                return { ok: false, error: String(e) };
+                return { ok: false, error: String(e), busy: e?.busy === true };
             }
         })();
     }

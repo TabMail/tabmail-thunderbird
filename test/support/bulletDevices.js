@@ -285,6 +285,7 @@ export class BulletDevice {
         SETTINGS: {
           deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: device.options.busyReapplyMs ?? 20, maxWaitingReceives: device.options.maxWaitingReceives ?? 256, historyDebounceMs: 2000, get messageMaxBytes() { return device.options.budget ?? DEFAULT_BUDGET; } },
           promptSemaphore: { leaseMs: device.options.leaseMs ?? 15000, acquireWaitMs: device.options.acquireWaitMs ?? 1000 },
+          actionCompaction: { defaultRules: 200, minRules: 100, maxRules: 500, stepRules: 10, defaultChars: 32000, minChars: 16000, maxChars: 80000, stepChars: 1000, legacyDefaultRules: 100, legacyDefaultChars: 16000 },
         },
         getDeviceSyncUrl: async () => 'https://sync.example.com',
       },
@@ -299,8 +300,9 @@ export class BulletDevice {
   /** A page of the add-on on this device (the prompts page, a chat window): `files` in a realm of its
    * own, which reaches the prompt store as every page does, by `runtime.sendMessage` to the background,
    * routed there as background.js routes it (`command: "prompt-store"`), each message copied both ways.
-   * `stubs` replaces more modules for this page. Returns the realm. */
-  page(files, stubs = {}) {
+   * `stubs` replaces more modules for this page; `globals` adds to its globals (a `document`); `expose`
+   * maps a file to module-level names its module object also returns. Returns the realm. */
+  page(files, stubs = {}, globals = {}, expose = {}) {
     const device = this;
     const sendMessage = async (message) => {
       const copy = structuredClone(message);
@@ -317,7 +319,9 @@ export class BulletDevice {
         TextEncoder,
         setTimeout, clearTimeout,
         console: { log() {}, warn() {}, error() {} },
+        ...globals,
       },
+      expose,
     });
   }
 

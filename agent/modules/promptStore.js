@@ -424,12 +424,28 @@ async function hostTemplates() {
 }
 
 /** Saves `templates` as the whole stored list, and the first-run flag with it when `migrated`, if the hold
- * still holds the semaphore at the write. Templates are not AI-written: the change counter stays. */
-async function hostSaveTemplates(token, templates, migrated) {
+ * still holds the semaphore at the write: a local edit unless `received` (deviceSync.js writeField).
+ * Templates are not AI-written: the change counter stays. */
+async function hostSaveTemplates(token, templates, migrated, received) {
   if (!Array.isArray(templates)) throw new Error("templates must be a list");
-  if (!holding(token)()) return { outcome: "changed" };
-  await browser.storage.local.set(migrated ? { [TEMPLATES_KEY]: templates, [TEMPLATES_MIGRATED_KEY]: true } : { [TEMPLATES_KEY]: templates });
-  return { outcome: "saved" };
+  const { writeField } = await import("./deviceSync.js");
+  const extra = migrated ? { [TEMPLATES_MIGRATED_KEY]: true } : {};
+  return { outcome: (await writeField("templates", templates, holding(token), { edit: !received, extra })) ? "saved" : "changed" };
+}
+
+/** A `prompt_state` field (the action settings, the disabled reminders, ...; never a bullet field) as
+ * stored, with its timestamp, read in a hold: { value, updatedAt }. */
+async function hostField(field) {
+  const { readStoredField } = await import("./deviceSync.js");
+  return readStoredField(field);
+}
+
+/** Saves a `prompt_state` field if the hold still holds the semaphore at the write: a local edit, stamped
+ * and sent, unless `received` (written as is, with its timestamp `at` when given). */
+async function hostSaveField(token, field, value, received, at) {
+  const { writeField } = await import("./deviceSync.js");
+  const written = await writeField(field, value, holding(token), received ? { at } : { edit: true });
+  return { outcome: written ? "saved" : "changed" };
 }
 
 const OPERATIONS = {
@@ -453,7 +469,9 @@ const HELD = {
   history: (message) => hostHistory(message.token),
   recordHistory: (message) => hostRecordHistory(message.token, message.source, message.fields, message.templates),
   templates: () => hostTemplates(),
-  saveTemplates: (message) => hostSaveTemplates(message.token, message.templates, message.migrated === true),
+  saveTemplates: (message) => hostSaveTemplates(message.token, message.templates, message.migrated === true, message.received === true),
+  field: (message) => hostField(message.field),
+  saveField: (message) => hostSaveField(message.token, message.field, message.value, message.received === true, message.at),
 };
 
 function operation(op) {
@@ -639,11 +657,26 @@ class PromptStoreHold {
     return { templates };
   }
 
-  /** Saves `templates` as the whole stored list (with the first-run flag set when `migrated`). Throws a
-   * `changed` error, with nothing saved, when the hold ended first. */
-  async saveTemplates(templates, { migrated = false } = {}) {
-    const response = await this.#call("saveTemplates", { templates, migrated });
+  /** Saves `templates` as the whole stored list (with the first-run flag set when `migrated`): a local edit,
+   * sent to peers, unless `received` (a merge of a received message). Throws a `changed` error, with
+   * nothing saved, when the hold ended first. */
+  async saveTemplates(templates, { migrated = false, received = false } = {}) {
+    const response = await this.#call("saveTemplates", { templates, migrated, received });
     if (response.outcome === "changed") throw changedError("the templates");
+  }
+
+  /** A `prompt_state` field (not a bullet field) as stored, with its timestamp: { value, updatedAt }. */
+  async field(field) {
+    const { value, updatedAt } = await this.#call("field", { field });
+    return { value, updatedAt };
+  }
+
+  /** Saves a `prompt_state` field (not a bullet field): a local edit, stamped now and sent to peers, unless
+   * `received` (a merge of a received message, stored with the timestamp `at` when given). Throws a
+   * `changed` error, with nothing saved, when the hold ended first. */
+  async saveField(field, value, { received = false, at } = {}) {
+    const response = await this.#call("saveField", { field, value, received, at });
+    if (response.outcome === "changed") throw changedError(field);
   }
 
   /** Whether this hold still holds the semaphore (background only). */
@@ -668,13 +701,14 @@ async function acquire(label) {
 }
 
 /**
- * The one way to read or change the knowledge base, the writing style, the action rules and the templates
- * (DS-SEMAPHORE): acquires the device's prompt semaphore, runs `body(store)` and releases it, however
- * `body` ends. While another holds it the caller waits in line behind every earlier caller (request order)
- * and, after `SETTINGS.promptSemaphore.acquireWaitMs` in line, rejects with a `busy` error. Sign-in state
- * never refuses it (DS-DEVICE). `body` is a brief read-change-write: it never awaits an AI call (DS-AI) and
- * never calls this again (DS-NESTED: a nested call waits its full wait and is refused as busy). Returns what
- * `body` returns.
+ * The one way to read or change the knowledge base, the writing style, the action rules, the templates and
+ * every other store a received message writes (the action settings, the disabled reminders) (DS-SEMAPHORE):
+ * acquires the device's prompt semaphore, runs `body(store)` and releases it, however `body` ends. While
+ * another holds it the caller waits in line behind every earlier caller (request order) and, after
+ * `SETTINGS.promptSemaphore.acquireWaitMs` in line, rejects with a `busy` error. Sign-in state never refuses
+ * it (DS-DEVICE). `body` is a brief read-change-write: it never awaits an AI call (DS-AI) and never calls
+ * this again (DS-NESTED: a nested call waits its full wait and is refused as busy). Returns what `body`
+ * returns.
  *
  * @param {(store: PromptStoreHold) => Promise<any>} body
  * @param {{ label?: string }} [options] - what holds it, for the logs

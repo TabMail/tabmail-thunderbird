@@ -274,7 +274,7 @@ export async function mergeTemplates(incoming, store) {
     }
 
     if (adopted > 0) {
-        await store.saveTemplates(Array.from(merged.values()));
+        await store.saveTemplates(Array.from(merged.values()), { received: true });
         log(`${PFX}CRDT merge: ${adopted} templates adopted from ${incoming.length} incoming (local total: ${merged.size})`);
     } else {
         log(`${PFX}CRDT merge: 0 templates adopted from ${incoming.length} incoming`);
@@ -304,7 +304,7 @@ export async function gcDeletedTemplates(store) {
     });
 
     if (removed > 0) {
-        await store.saveTemplates(filtered);
+        await store.saveTemplates(filtered, { received: true });
         log(`${PFX}GC removed ${removed} deleted template tombstones older than 90 days`);
     }
 }

@@ -173,7 +173,8 @@ async function snoozeEmailReminder(reminder) {
     await setEnabled(reminder.hash, false);
   } catch (e) {
     log(`[TMDBG Tools] reminder_del: failed to disable email-reminder: ${e}`, "error");
-    return { error: "failed to disable email reminder" };
+    // A busy store's notice tells the model to try again in a moment (DS-NO-BUSY-UI).
+    return { error: e?.busy === true ? e.message : "failed to disable email reminder" };
   }
 
   log(`[TMDBG Tools] reminder_del: success (email-reminder snoozed)`);

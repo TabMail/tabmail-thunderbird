@@ -161,17 +161,22 @@ vi.mock('../agent/modules/templateManager.js', () => ({
 // Track mergeIncoming calls for reminderStateStore
 const mergeIncomingCalls = [];
 vi.mock('../agent/modules/reminderStateStore.js', () => ({
-  mergeIncoming: vi.fn(async (map, current = () => true) => {
+  // As the module does, merges in the hold it runs in, `store`, and returns how many entries it took:
+  // refused (`changed`) once that hold ended.
+  mergeIncoming: vi.fn(async (map, store = { holds: () => true }) => {
     mergeIncomingCalls.push(map);
-    if (!current()) return;
+    if (!store.holds()) throw Object.assign(new Error('the reminders changed while this was worked on, so nothing was saved'), { changed: true });
     // Simulate per-hash merge
     const existing = storageData['disabled_reminders_v2'] || {};
+    let taken = 0;
     for (const [hash, entry] of Object.entries(map)) {
       if (!existing[hash] || entry.ts > existing[hash].ts) {
         existing[hash] = entry;
+        taken += 1;
       }
     }
     storageData['disabled_reminders_v2'] = existing;
+    return taken;
   }),
 }));
 
@@ -221,6 +226,12 @@ vi.mock('../agent/modules/promptStore.js', () => {
       await deviceSync.writeFieldDefault(field, value, held);
     }),
     history: vi.fn(async () => (await sync()).readHistory(held)),
+    // A prompt_state field read and written in the hold, as the background's prompt store does.
+    field: vi.fn(async (field) => (await sync()).readStoredField(field)),
+    saveField: vi.fn(async (field, value, { received = false, at } = {}) => {
+      const saved = await (await sync()).writeField(field, value, held, received ? { at } : { edit: true });
+      if (!saved) throw Object.assign(new Error(`the ${field} changed while this was worked on, so nothing was saved`), { changed: true });
+    }),
     recordHistory: vi.fn(async (source, fields, templates) => (await sync()).recordHistory(source, fields, held, templates)),
   };
   const withPromptStore = vi.fn(async (body) => body(restoreHandle));
@@ -911,8 +922,12 @@ describe('Device Sync', () => {
       await fresh.cleanupDeviceSync();
       expect(browserMock.storage.onChanged.removeListener).not.toHaveBeenCalled();
       const before = Date.now();
-      listener({ [FIELD_KEYS.templates]: { newValue: [] } }, 'local');
-      await vi.waitFor(() => expect(Date.parse(storageData[TIMESTAMP_KEYS.templates])).toBeGreaterThanOrEqual(before));
+      // The task cache, written outside the prompt store, is stamped by the listener.
+      listener({ task_execution_cache: { newValue: {} } }, 'local');
+      await vi.waitFor(() => expect(Date.parse(storageData['device_sync_ts:taskCache'])).toBeGreaterThanOrEqual(before));
+      // A field edited in a hold is stamped in its own write, signed in or not.
+      await fresh.writeField('templates', [], () => true, { edit: true });
+      expect(Date.parse(storageData[TIMESTAMP_KEYS.templates])).toBeGreaterThanOrEqual(before);
       // Still the one listener.
       fresh.setupStorageListener();
       expect(browserMock.storage.onChanged.addListener).toHaveBeenCalledTimes(1);
@@ -1976,7 +1991,7 @@ describe('Device Sync', () => {
     it('a stale attempt that rejects does not un-coalesce the current attempt', async () => {
       const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
       let rejectStale, releaseFresh;
-      browserMock.storage.local.set.mockImplementationOnce(() => new Promise((_, reject) => { rejectStale = reject; }));
+      getDeviceSyncUrl.mockImplementationOnce(() => new Promise((_, reject) => { rejectStale = reject; }));
       getDeviceSyncUrl.mockImplementationOnce(() => new Promise(r => { releaseFresh = r; }));
       setStorage({ device_sync_auto_enabled: true });
       const stale = deviceSync.connect();
@@ -2031,7 +2046,8 @@ describe('Device Sync', () => {
     });
 
     it('a rejected attempt releases the single-flight so the next connect() retries', async () => {
-      browserMock.storage.local.set.mockImplementationOnce(async () => { throw new Error('storage unavailable'); });
+      const { getDeviceSyncUrl } = await import('../agent/modules/config.js');
+      getDeviceSyncUrl.mockImplementationOnce(async () => { throw new Error('storage unavailable'); });
       setStorage({ device_sync_auto_enabled: true });
       await expect(deviceSync.connect()).rejects.toThrow('storage unavailable');
       expect(mockWebSocketInstances).toHaveLength(0);
@@ -2377,29 +2393,18 @@ describe('Device Sync', () => {
     });
   });
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // initTimestampsIfNeeded: legacy base migration
-  // ═══════════════════════════════════════════════════════════════════════════
-  describe('initTimestampsIfNeeded via connect', () => {
-    it('initializes timestamps to epoch-zero for new device', async () => {
-      setStorage({
-        'device_sync_auto_enabled': true,
-        // No timestamps at all
-      });
-
+  // A device with no field timestamps is never edited: every reader takes a missing timestamp as epoch zero,
+  // so a connect writes none (a write there, outside the prompt semaphore, could undo an edit's timestamp).
+  describe('a new device with no field timestamps', () => {
+    it('connects without writing any', async () => {
+      setStorage({ 'device_sync_auto_enabled': true });
       await deviceSync.connect();
       const ws = mockWebSocketInstances[mockWebSocketInstances.length - 1];
       if (ws && ws.onopen) {
         ws.readyState = WebSocket.OPEN;
         ws.onopen();
       }
-
-      // All timestamp keys should now exist with epoch-zero
-      expect(storageData[TIMESTAMP_KEYS.composition]).toBe(EPOCH_ZERO);
-      expect(storageData[TIMESTAMP_KEYS.action]).toBe(EPOCH_ZERO);
-      expect(storageData[TIMESTAMP_KEYS.kb]).toBe(EPOCH_ZERO);
-      expect(storageData[TIMESTAMP_KEYS.templates]).toBe(EPOCH_ZERO);
-      expect(storageData[TIMESTAMP_KEYS.disabledReminders]).toBe(EPOCH_ZERO);
+      for (const key of Object.values(TIMESTAMP_KEYS)) expect(storageData[key]).toBeUndefined();
     });
   });
 
@@ -2763,19 +2768,20 @@ describe('Device Sync actionConfig (compaction thresholds)', () => {
     expect(request.fields).toContain('actionConfig');
   });
 
-  it('a local slider save stamps a timestamp but records no prompt history', async () => {
+  it('a local slider save stamps its timestamp in the same write but records no prompt history', async () => {
     vi.useFakeTimers();
     const fresh = await import('../agent/modules/deviceSync.js?sliderSave');
     try {
-      browserMock.storage.onChanged.addListener.mockClear();
-      fresh.setupStorageListener();
-      const listener = browserMock.storage.onChanged.addListener.mock.calls.at(-1)[0];
       const before = Date.now();
+      const config = { compact_threshold: 200, compact_threshold_chars: 18000 };
+      const writes = browserMock.storage.local.set.mock.calls.length;
 
-      listener({ [ACTION_CONFIG_KEY]: { newValue: { compact_threshold: 200, compact_threshold_chars: 18000 } } }, 'local');
+      await fresh.writeField('actionConfig', config, () => true, { edit: true });
+      const [write] = browserMock.storage.local.set.mock.calls.slice(writes);
+      expect(write[0][ACTION_CONFIG_KEY]).toEqual(config);
+      expect(Date.parse(write[0][ACTION_CONFIG_TS_KEY])).toBeGreaterThanOrEqual(before);
       await vi.advanceTimersByTimeAsync(5000);
 
-      expect(Date.parse(storageData[ACTION_CONFIG_TS_KEY])).toBeGreaterThanOrEqual(before);
       expect(storageData.prompt_history ?? []).toEqual([]);
     } finally {
       await fresh.cleanupDeviceSync();

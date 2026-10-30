@@ -19,9 +19,9 @@ const OWNER = 'agent/modules/promptStore.js';
 
 /** Writes outside the prompt store, each with why it is safe. */
 const ALLOWED = [
-  // A prompt_state field's write (a reset, a history restore's templates) by a holder of the prompt store;
-  // it refuses the three bullet fields before writing.
-  'agent/modules/deviceSync.js writeLegacyField',
+  // A prompt_state field's write (a local edit, a received value, a reset, a history restore) by a holder
+  // of the prompt store; it refuses the three bullet fields before writing.
+  'agent/modules/deviceSync.js writeField',
 ];
 
 function isSyncKey(value) {

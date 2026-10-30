@@ -7,6 +7,7 @@
  */
 
 import { log } from "../../agent/modules/utils.js";
+import { REMINDERS_BUSY_ERROR } from "../../agent/modules/reminderStateStore.js";
 import { showStatus } from "./utils.js";
 
 // Module state
@@ -126,7 +127,7 @@ async function handleTaskToggle(hash, enabled) {
         });
 
         if (!response || !response.ok) {
-            throw new Error(response?.error || "Failed to update task");
+            throw Object.assign(new Error(response?.error || "Failed to update task"), { busy: response?.busy === true });
         }
 
         // Update local data
@@ -149,7 +150,7 @@ async function handleTaskToggle(hash, enabled) {
         log(`[Prompts] Task ${hash} toggled to enabled=${enabled}`);
     } catch (e) {
         log(`[Prompts] Error toggling task: ${e}`, "error");
-        showStatus("Failed to update task", true);
+        showStatus(e?.busy === true ? REMINDERS_BUSY_ERROR : "Failed to update task", true);
         // Reload to get correct state
         loadTasks();
     }

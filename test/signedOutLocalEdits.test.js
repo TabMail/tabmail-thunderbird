@@ -94,16 +94,10 @@ describe('local edits while signed out (R34)', () => {
     await a.connect();
     await b.connect();
     if (signOut) expect(await authOn(a).signOut()).toBe(true);
-    const page = createRealm({
-      files: ['prompts/modules/storage.js', 'prompts/modules/markdown.js', 'agent/modules/bullets.js', 'agent/modules/actionCompactConfig.js'],
-      stubs: {
-        'agent/modules/promptStore.js': {},
-        'agent/modules/utils.js': { log() {} },
-        'agent/modules/config.js': { SETTINGS: { actionCompaction: { defaultRules: 200, defaultChars: 32000 } } },
-      },
-      globals: { browser: { storage: a.store.api() } },
+    // The prompts page's save, through the background's prompt store.
+    const page = a.page(['agent/modules/actionCompactConfig.js', 'prompts/modules/storage.js', 'prompts/modules/markdown.js'], {}, {
+      document: { getElementById: (id) => ({ value: id.endsWith('-chars') ? '40000' : '250' }) },
     });
-    page.context.document = { getElementById: (id) => ({ value: id.endsWith('-chars') ? '40000' : '250' }) };
     await page.require('prompts/modules/storage.js').saveActionConfig();
     if (signOut) {
       a.store.values.supabaseSession = structuredClone(SIGNED_IN);

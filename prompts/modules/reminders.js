@@ -7,6 +7,7 @@
  */
 
 import { log } from "../../agent/modules/utils.js";
+import { REMINDERS_BUSY_ERROR } from "../../agent/modules/reminderStateStore.js";
 import { showStatus } from "./utils.js";
 
 // Module state
@@ -192,7 +193,7 @@ async function handleReminderToggle(hash, enabled) {
         });
         
         if (!response || !response.ok) {
-            throw new Error(response?.error || "Failed to update reminder");
+            throw Object.assign(new Error(response?.error || "Failed to update reminder"), { busy: response?.busy === true });
         }
         
         // Update local data
@@ -215,7 +216,7 @@ async function handleReminderToggle(hash, enabled) {
         log(`[Prompts] Reminder ${hash} toggled to enabled=${enabled}`);
     } catch (e) {
         log(`[Prompts] Error toggling reminder: ${e}`, "error");
-        showStatus("Failed to update reminder", true);
+        showStatus(e?.busy === true ? REMINDERS_BUSY_ERROR : "Failed to update reminder", true);
         // Reload to get correct state
         loadReminders();
     }

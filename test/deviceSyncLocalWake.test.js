@@ -50,7 +50,7 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
     let source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
     const scope = { console: {log(){},warn(){},error(){}}, Date, performance, browser, crypto: globalThis.crypto, SYNC_FIELDS,
       dynamicImport: async path => {
-        if (path === "./taskExecutionCache.js") return {getAllCachedResults: async () => ({})};
+        if (path === "./taskExecutionCache.js") return {getAllCachedResults: async () => stored.task_execution_cache ?? {}};
         if (path === "./promptStore.js") return promptStore;
         throw new Error(`Unexpected fixture import: ${path}`);
       },
@@ -96,27 +96,29 @@ async function harness({ enabled = true, connectEarly = true, failFirstAdd = fal
     await startupDone;
     await vi.advanceTimersByTimeAsync(1);
   }
+  // A local edit of the task cache, the one field still written outside a hold of the prompt store,
+  // which the storage listener stamps and sends.
   return {sync,stored,sent,listeners,evaluate,startupLogs,syncLogs,overrides,bulletCalls,async edit() {
-    const value=[{id:'synthetic-template',name:'Synthetic local edit'}];
-    stored.user_templates=value;
-    for (const listener of [...listeners]) await listener({user_templates:{newValue:value}},'local');
+    const value={'synthetic-key':{result:'Synthetic local edit',ts:new Date().toISOString()}};
+    stored.task_execution_cache=value;
+    for (const listener of [...listeners]) await listener({task_execution_cache:{newValue:value}},'local');
     await vi.advanceTimersByTimeAsync(500);
     return value;
   }};
 }
 it('timestamps and broadcasts the first local edit while startup is awaiting', async () => {
   const h=await harness(); const value=await h.edit();
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.stored['device_sync_ts:taskCache']).toEqual(expect.any(String));
   expect(h.sent).toHaveLength(1);
-  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{templates:value,templates_updated_at:h.stored['device_sync_ts:templates']}});
+  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{taskCache:value,taskCache_updated_at:h.stored['device_sync_ts:taskCache']}});
   expect(h.listeners.size).toBe(1);
 });
 it('warm registration handles the same local edit as a positive control', async () => {
   const h=await harness(); h.sync.setupStorageListener(); h.sync.setupStorageListener();
   const value=await h.edit();
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.stored['device_sync_ts:taskCache']).toEqual(expect.any(String));
   expect(h.sent).toHaveLength(1);
-  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{templates:value}});
+  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{taskCache:value}});
   expect(h.listeners.size).toBe(1);
 });
 
@@ -124,12 +126,22 @@ it('reconnects the module to its existing parent before the first broadcast', as
   const h = await harness({ connectEarly: false });
   const value = await h.edit();
   expect(h.sent).toHaveLength(1);
-  expect(h.sent[0]).toMatchObject({ type: 'prompt_state', data: { templates: value } });
+  expect(h.sent[0]).toMatchObject({ type: 'prompt_state', data: { taskCache: value } });
+});
+// A field edited in a hold of the prompt store is stamped in its own write and sent the same way.
+it.each([true, false])('stamps and sends a held local edit made right after a wake (module connected first: %s)', async (connectEarly) => {
+  const h = await harness({ connectEarly });
+  const value = [{ id: 'synthetic-template', name: 'Synthetic held edit' }];
+  expect(await h.sync.writeField('templates', value, () => true, { edit: true })).toBe(true);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.sent).toHaveLength(1);
+  expect(h.sent[0]).toMatchObject({ type: 'prompt_state', data: { templates: value, templates_updated_at: h.stored['device_sync_ts:templates'] } });
 });
 it('timestamps local edits while auto-sync is disabled without sending', async () => {
   const h = await harness({ enabled: false });
   await h.edit();
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.stored['device_sync_ts:taskCache']).toEqual(expect.any(String));
   expect(h.sent).toEqual([]);
 });
 it('retries a failed registration without duplicating the successful owner', async () => {
@@ -146,7 +158,7 @@ it('ignores an event delivered while suppression is still active', async () => {
   const work = h.edit();
   vm.runInContext('suppressBroadcast = false', h.sync);
   await work;
-  expect(h.stored['device_sync_ts:templates']).toBeUndefined();
+  expect(h.stored['device_sync_ts:taskCache']).toBeUndefined();
   expect(h.sent).toEqual([]);
 });
 it('preserves edit timestamps when disconnect occurs before the broadcast debounce', async () => {
@@ -154,7 +166,7 @@ it('preserves edit timestamps when disconnect occurs before the broadcast deboun
   const work = h.edit();
   await h.sync.disconnect();
   await work;
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.stored['device_sync_ts:taskCache']).toEqual(expect.any(String));
   expect(h.sent).toEqual([]);
 });
 
@@ -191,20 +203,20 @@ it('retries a failed early subscription through completed startup with one owner
   expect(h.listeners.size).toBe(1);
   const value = await h.edit();
   expect(h.sent).toHaveLength(1);
-  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{templates:value}});
+  expect(h.sent[0]).toMatchObject({type:'prompt_state',data:{taskCache:value}});
 });
 
 it('contains a first-wake reconnect failure and publishes the preserved edit after reconnect', async () => {
   const h=await harness({connectEarly:false});
   h.overrides['browser.tmDeviceSync.getState']=async()=>{throw new Error('synthetic transport failure');};
   const value=await h.edit();
-  expect(h.stored['device_sync_ts:templates']).toEqual(expect.any(String));
+  expect(h.stored['device_sync_ts:taskCache']).toEqual(expect.any(String));
   expect(h.sent).toEqual([]);
   expect(h.syncLogs.some(m=>m.includes('Debounced broadcast failed'))).toBe(true);
   h.overrides['browser.tmDeviceSync.getState']=async()=> 'open';
   await h.sync.connect();
   await h.sync.handleMessage(JSON.stringify({type:'connected',userId:'synthetic'}));
-  expect(h.sent.find(m=>m.type==='prompt_state')?.data?.templates).toEqual(value);
+  expect(h.sent.find(m=>m.type==='prompt_state')?.data?.taskCache).toEqual(value);
 });
 
 // The bullet fields (knowledge base, composition, action) on simulated devices: the real deviceSync.js,

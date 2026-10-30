@@ -43,6 +43,16 @@ const addBoxes = new Map();
 
 const ADD_PLACEHOLDER = { composition: "Add rule...", action: "Add rule...", kb: "Add knowledge base entry..." };
 
+/** Saves the compaction sliders; one refused shows why and puts the stored values back on the sliders. */
+async function saveCompactionSliders() {
+  try {
+    await saveActionConfig();
+  } catch (e) {
+    showStatus(e?.busy === true ? e.message : `Failed to save: ${e.message}`, true);
+    await loadActionConfig();
+  }
+}
+
 function boxKey(field, where) {
   return `${field}:${where.key}#${where.copy}`;
 }
@@ -492,9 +502,7 @@ document.addEventListener("DOMContentLoaded", () => {
         actionCompactVal.textContent = actionCompactSlider.value;
       });
     }
-    actionCompactSlider.addEventListener("change", async () => {
-      await saveActionConfig();
-    });
+    actionCompactSlider.addEventListener("change", saveCompactionSliders);
   }
 
   // Action config chars slider: sync displayed value on input, auto-save on change
@@ -506,9 +514,7 @@ document.addEventListener("DOMContentLoaded", () => {
         actionCompactCharsVal.textContent = actionCompactCharsSlider.value;
       });
     }
-    actionCompactCharsSlider.addEventListener("change", async () => {
-      await saveActionConfig();
-    });
+    actionCompactCharsSlider.addEventListener("change", saveCompactionSliders);
   }
 
   // Compact now button
@@ -616,10 +622,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (changes[PROMPT_KEYS[field]] || changes[BULLET_STATE_KEYS[field]]) loadField(field);
     }
 
-    // Compaction thresholds changed. Refresh on the timestamp, not the value: a sync
-    // write carries both, while this page's own save carries only the value and the
-    // background stamps the timestamp afterwards. Reading before that stamp resolves a
-    // deliberate legacy-default value as never edited and shows the migrated default.
+    // Compaction thresholds changed. Every write carries the value and its timestamp together; reading
+    // without the timestamp would resolve a deliberate legacy-default value as never edited.
     if (changes[ACTION_CONFIG_TS_KEY]) {
       log("[Prompts] Action config changed, refreshing sliders");
       loadActionConfig();
