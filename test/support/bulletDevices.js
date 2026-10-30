@@ -297,8 +297,8 @@ export class BulletDevice {
   /** A page of the add-on on this device (the prompts page, a chat window): `files` in a realm of its
    * own, which reaches the prompt store as every page does, by `runtime.sendMessage` to the background,
    * routed there as background.js routes it (`command: "prompt-store"`), each message copied both ways.
-   * Returns the realm. */
-  page(files) {
+   * `stubs` replaces more modules for this page. Returns the realm. */
+  page(files, stubs = {}) {
     const device = this;
     const sendMessage = async (message) => {
       const copy = structuredClone(message);
@@ -307,7 +307,7 @@ export class BulletDevice {
     };
     return createRealm({
       files: [...FILES, ...files],
-      stubs: stubsFor(this.stubs(), [...FILES, ...files]),
+      stubs: stubsFor({ ...this.stubs(), ...stubs }, [...FILES, ...files]),
       globals: {
         browser: { storage: this.store.api(), runtime: { getURL: (path) => `moz-extension://synthetic/${path}`, sendMessage } },
         crypto: globalThis.crypto,

@@ -86,6 +86,7 @@ const {
   hasMigratedTemplates,
   markTemplatesMigrated,
   initializeDefaultTemplates,
+  TEMPLATES_BUSY_ERROR,
 } = await import('../agent/modules/templateManager.js');
 
 // ---------------------------------------------------------------------------
@@ -165,18 +166,27 @@ describe('loadTemplates', () => {
   });
 });
 
-describe('a writer whose hold ended before its save', () => {
-  it('saves nothing and reports failure', async () => {
+describe('a writer refused by the prompt store', () => {
+  it('saves nothing and throws the refusal when its hold ended before its save', async () => {
     const t = createTemplate({ id: 'kept', name: 'Kept' });
     storageData.user_templates = [t];
     hold.refuseSaves = true;
-    expect(await addTemplate({ name: 'New' })).toBe(null);
-    expect(await updateTemplate('kept', { name: 'Changed' })).toBe(null);
-    expect(await deleteTemplate('kept')).toBe(false);
-    expect(await reorderTemplates(['kept'])).toBe(false);
+    await expect(addTemplate({ name: 'New' })).rejects.toMatchObject({ changed: true });
+    await expect(updateTemplate('kept', { name: 'Changed' })).rejects.toMatchObject({ changed: true });
+    await expect(deleteTemplate('kept')).rejects.toMatchObject({ changed: true });
+    await expect(reorderTemplates(['kept'])).rejects.toMatchObject({ changed: true });
     await expect(importTemplates(JSON.stringify([{ id: 'imp', name: 'Imported' }]))).rejects.toMatchObject({ changed: true });
+    await expect(dedupeTemplates()).resolves.toMatchObject({ removed: 0 });
     expect(browser.storage.local.set).not.toHaveBeenCalled();
     expect(stored()).toEqual([t]);
+  });
+
+  it('reports a busy store as TEMPLATES_BUSY_ERROR (DS-NO-BUSY-UI)', async () => {
+    const { withPromptStore } = await import('../agent/modules/promptStore.js');
+    storageData.user_templates = [createTemplate({ id: 'kept', name: 'Kept' })];
+    withPromptStore.mockRejectedValueOnce(Object.assign(new Error('the prompt store is busy (another writer)'), { busy: true }));
+    await expect(updateTemplate('kept', { name: 'Changed' })).rejects.toMatchObject({ busy: true, message: TEMPLATES_BUSY_ERROR });
+    expect(stored()[0].name).toBe('Kept');
   });
 });
 
@@ -353,8 +363,7 @@ describe('reorderTemplates', () => {
       createTemplate({ id: 'b', name: 'B' }),
       createTemplate({ id: 'c', name: 'C' }),
     ];
-    const result = await reorderTemplates(['c', 'a', 'b']);
-    expect(result).toBe(true);
+    await reorderTemplates(['c', 'a', 'b']);
     expect(stored().map((t) => t.id)).toEqual(['c', 'a', 'b']);
   });
 });

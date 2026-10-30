@@ -11,6 +11,7 @@
  */
 
 import { getTemplateWorkerUrl } from "../agent/modules/config.js";
+import { TEMPLATES_BUSY_ERROR } from "../agent/modules/templateManager.js";
 import { log } from "../agent/modules/utils.js";
 import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
 
@@ -24,6 +25,16 @@ injectPaletteIntoDocument(document)
     });
 
 const PFX = "[Templates] ";
+
+/** A failed template command's error, marked busy when the background found the templates busy. */
+function commandError(response, text) {
+    return Object.assign(new Error(response?.error || text), { busy: response?.busy === true });
+}
+
+/** What a failed template change shows: the busy notice when the templates were busy (DS-NO-BUSY-UI). */
+function failureStatus(e, text) {
+    return e?.busy === true ? TEMPLATES_BUSY_ERROR : text;
+}
 
 // State
 let templates = [];
@@ -346,7 +357,7 @@ async function loadTemplates() {
             // first kept), never this page's copy, which a newer edit may have replaced.
             if (new Set(templates.map((t) => t.id)).size !== templates.length) {
                 const cleaned = await browser.runtime.sendMessage({ command: "templates-dedupe" });
-                if (!cleaned?.ok) throw new Error(cleaned?.error || "Failed to remove duplicate templates");
+                if (!cleaned?.ok) throw commandError(cleaned, "Failed to remove duplicate templates");
                 templates = cleaned.templates;
                 log(`${PFX}Cleaned up ${cleaned.removed} duplicate templates`);
             }
@@ -358,7 +369,7 @@ async function loadTemplates() {
         }
     } catch (e) {
         log(`${PFX}Error loading templates: ${e}`, "error");
-        showStatus("Failed to load templates", true);
+        showStatus(failureStatus(e, "Failed to load templates"), true);
     }
 }
 
@@ -494,11 +505,11 @@ async function onDrop(e, targetTemplateId) {
             log(`${PFX}Reordered templates saved`);
             showStatus("Template order saved");
         } else {
-            throw new Error(response?.error || "Failed to save order");
+            throw commandError(response, "Failed to save order");
         }
     } catch (e) {
         log(`${PFX}Error saving template order: ${e}`, "error");
-        showStatus("Failed to save template order", true);
+        showStatus(failureStatus(e, "Failed to save template order"), true);
         // Reload to restore correct order
         await loadTemplates();
     }
@@ -655,11 +666,11 @@ async function addNewTemplate() {
             showStatus("Template created");
             log(`${PFX}Added new template: ${response.template.id}`);
         } else {
-            throw new Error(response?.error || "Failed to create template");
+            throw commandError(response, "Failed to create template");
         }
     } catch (e) {
         log(`${PFX}Error adding template: ${e}`, "error");
-        showStatus("Failed to create template", true);
+        showStatus(failureStatus(e, "Failed to create template"), true);
     }
 }
 
@@ -702,11 +713,11 @@ async function saveCurrentTemplate() {
             showStatus("Template saved");
             log(`${PFX}Saved template: ${selectedTemplateId}`);
         } else {
-            throw new Error(response?.error || "Failed to save template");
+            throw commandError(response, "Failed to save template");
         }
     } catch (e) {
         log(`${PFX}Error saving template: ${e}`, "error");
-        showStatus("Failed to save template", true);
+        showStatus(failureStatus(e, "Failed to save template"), true);
     }
 }
 
@@ -740,11 +751,11 @@ async function duplicateCurrentTemplate() {
             showStatus("Template duplicated");
             log(`${PFX}Duplicated template: ${response.template.id}`);
         } else {
-            throw new Error(response?.error || "Failed to duplicate template");
+            throw commandError(response, "Failed to duplicate template");
         }
     } catch (e) {
         log(`${PFX}Error duplicating template: ${e}`, "error");
-        showStatus("Failed to duplicate template", true);
+        showStatus(failureStatus(e, "Failed to duplicate template"), true);
     }
 }
 
@@ -778,11 +789,11 @@ async function deleteCurrentTemplate() {
             showStatus("Template deleted");
             log(`${PFX}Deleted template: ${selectedTemplateId}`);
         } else {
-            throw new Error(response?.error || "Failed to delete template");
+            throw commandError(response, "Failed to delete template");
         }
     } catch (e) {
         log(`${PFX}Error deleting template: ${e}`, "error");
-        showStatus("Failed to delete template", true);
+        showStatus(failureStatus(e, "Failed to delete template"), true);
     }
 }
 
@@ -816,11 +827,11 @@ async function toggleTemplateEnabled(id, enabled) {
             showStatus(enabled ? "Template enabled" : "Template disabled");
             log(`${PFX}Toggled template ${id}: enabled=${enabled}`);
         } else {
-            throw new Error(response?.error || "Failed to toggle template");
+            throw commandError(response, "Failed to toggle template");
         }
     } catch (e) {
         log(`${PFX}Error toggling template: ${e}`, "error");
-        showStatus("Failed to update template", true);
+        showStatus(failureStatus(e, "Failed to update template"), true);
         // Reload to restore correct state
         await loadTemplates();
     }
@@ -865,11 +876,11 @@ async function confirmImport() {
             showStatus(`Imported ${response.imported} template(s)`);
             log(`${PFX}Imported ${response.imported} templates, skipped ${response.skipped}`);
         } else {
-            throw new Error(response?.error || "Failed to import templates");
+            throw commandError(response, "Failed to import templates");
         }
     } catch (e) {
         log(`${PFX}Error importing templates: ${e}`, "error");
-        showStatus(`Import failed: ${e.message}`, true);
+        showStatus(failureStatus(e, `Import failed: ${e.message}`), true);
     }
 }
 
@@ -915,11 +926,11 @@ async function resetToDefaults() {
             showStatus(`Reset to ${response.count} default templates`);
             log(`${PFX}Reset to ${response.count} default templates`);
         } else {
-            throw new Error(response?.error || "Failed to reset templates");
+            throw commandError(response, "Failed to reset templates");
         }
     } catch (e) {
         log(`${PFX}Error resetting templates: ${e}`, "error");
-        showStatus("Failed to reset templates", true);
+        showStatus(failureStatus(e, "Failed to reset templates"), true);
     }
 }
 

@@ -7,14 +7,16 @@
 // history restore, startup) and from a page (the chat window's template tools and flows), on a simulated
 // device running the real templateManager.js, promptStore.js and deviceSync.js.
 //
-// The invariant, over every writer: an older template update that resumes after a newer one never
-// replaces the newer value. An older writer is held right after one of its template reads (each in turn)
-// until its lease ends; a newer edit from the other context saves meanwhile; the older one then resumes.
-// The newer value must be kept.
+// The invariant, over every writer: an older template update that resumes after a newer action never
+// replaces it. An older writer is held right after one of its template reads or writes (each in turn)
+// until its lease ends; a newer action runs meanwhile (a newer edit from the other context, a reset to
+// the defaults, or a sign-out and then a newer edit); the older one then resumes. The newer action's
+// result must be kept.
 // Controls: the same writer uninterrupted, and one that only waits, both land with the newer edit kept.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore } from './support/bulletDevices.js';
+import { createRealm } from './support/deviceRealm.js';
 
 const MANAGER = 'agent/modules/templateManager.js';
 const DAY = 86400 * 1000;
@@ -45,6 +47,9 @@ function storedTemplates() {
 
 const devices = [];
 
+/** Lets work queued behind a resumed writer (a reapplied message, a page's reply) run. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
+
 async function device({ leaseMs = 15000, values = {} } = {}) {
   const store = new DeviceStore({
     user_templates: storedTemplates(),
@@ -72,26 +77,41 @@ afterEach(async () => {
 const stored = (store) => store.values.user_templates ?? [];
 const named = (store, name) => stored(store).filter((t) => t.name === name && !t.deleted);
 
-/** Whether a storage read is one a template writer makes: the templates, or the first-run flag. */
-function readsTemplates(keys) {
+/** Whether a storage read or write is one a template writer makes: the templates, or the first-run flag. */
+function touchesTemplates(keys) {
   const list = typeof keys === 'string' ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys ?? {});
   return list.includes('user_templates') || list.includes('templates_migrated');
 }
 
-/** Holds the `k`-th template read (from 1) after it lands, until `open()`; `held` resolves once it is
- * held. Counts the template reads in `reads.count`. */
-function holdTemplateRead(store, k = 1) {
+/** Holds the `k`-th template read or write (from 1) after it lands, until `open()`; `held` resolves once
+ * it is held. Counts them in `io.count`, and names each in `io.ops` ('get' or 'set'). */
+function holdTemplateIO(store, k = 1) {
   const { promise, open } = gate();
   let reached;
   const held = new Promise((resolve) => { reached = resolve; });
-  const reads = { count: 0 };
+  const io = { count: 0, ops: [] };
   store.afterIO = async (op, keys) => {
-    if (op !== 'get' || !readsTemplates(keys)) return;
-    if (++reads.count !== k) return;
+    if (!touchesTemplates(keys)) return;
+    io.ops.push(op);
+    if (++io.count !== k) return;
     reached();
     await promise;
   };
-  return { held, open, reads };
+  return { held, open, io };
+}
+
+/** supabaseAuth.js on the device's background, for its sign-out. */
+function auth(d) {
+  return createRealm({
+    files: ['agent/modules/supabaseAuth.js'],
+    stubs: {
+      'agent/modules/config.js': { SETTINGS: {}, getBackendUrl: async () => 'https://backend.example.com' },
+      'agent/modules/utils.js': { log() {} },
+      'agent/modules/deviceSync.js': d.sync,
+      'agent/modules/promptStore.js': d.prompts,
+    },
+    globals: { browser: { storage: d.store.api() }, setTimeout, clearTimeout },
+  }).require('agent/modules/supabaseAuth.js');
 }
 
 /** A prompt_state from a released peer carrying one newer template. */
@@ -143,30 +163,67 @@ async function deviceFor(writer, options = {}) {
   return env;
 }
 
-/** How many template reads `writer` makes, run uninterrupted. */
-async function templateReads(writer) {
+/** The template reads and writes `writer` makes, run uninterrupted ('get' or 'set', in order). */
+async function templateIO(writer) {
   const env = await deviceFor(writer);
-  const { reads } = holdTemplateRead(env.store, 0);
+  const { io } = holdTemplateIO(env.store, 0);
   await writer.run(env[writer.context], env);
   await vi.waitFor(() => expect(writer.landed(env.store)).toBe(true), { timeout: 2000 });
-  return reads.count;
+  return io.ops.slice();
 }
 
-describe('an older template update that resumes after a newer one never replaces it (#193)', () => {
-  it.each(CASES)('$name, from the $context, held at each template read it makes', async (writer) => {
-    const count = await templateReads(writer);
-    expect(count).toBeGreaterThan(0);
-    for (let k = 1; k <= count; k++) {
+/**
+ * The newer actions run while an older writer is held past its lease. `run` returns what `kept` checks.
+ * `replaces`: the newer action replaces the whole list, so a received message the older writer finished
+ * applying first is gone after it. A received message a sign-out ends is not applied again (DS-RECEIVE
+ * needs a connection).
+ */
+const NEWER_ACTIONS = [
+  {
+    name: 'a newer edit',
+    run: async (env, writer) => expect(await newerEdit(env, writer.context)).toMatchObject({ name: 'Newer action' }),
+    kept: (env, _, at) => expect(named(env.store, 'Newer action'), at).toHaveLength(1),
+  },
+  {
+    name: 'a reset to the defaults', replaces: true,
+    run: async (env) => {
+      expect(await env.background.resetToDefaultTemplates()).toBeGreaterThan(0);
+      return structuredClone(stored(env.store));
+    },
+    // A message applied again after the reset adds its own template to the reset list; nothing else changes.
+    kept: (env, reset, at, writer) => {
+      if (!writer.reapplied) return expect(stored(env.store), at).toEqual(reset);
+      for (const t of reset) expect(stored(env.store), at).toContainEqual(t);
+    },
+  },
+  {
+    name: 'a sign-out, then a newer edit', signsOut: true,
+    run: async (env, writer) => {
+      expect(await auth(env.d).signOut()).toBe(true);
+      expect(await newerEdit(env, writer.context)).toMatchObject({ name: 'Newer action' });
+    },
+    kept: (env, _, at) => expect(named(env.store, 'Newer action'), at).toHaveLength(1),
+  },
+];
+
+describe('an older template update that resumes after a newer action never replaces it (#193)', () => {
+  it.each(CASES.flatMap((writer) => NEWER_ACTIONS.map((newer) => ({ ...writer, newer }))))('$name, from the $context, held at each template read and write it makes, then $newer.name', async (writer) => {
+    const ops = await templateIO(writer);
+    expect(ops).toContain('get');
+    expect(ops).toContain('set');
+    for (let k = 1; k <= ops.length; k++) {
+      const at = `held after ${ops[k - 1]} ${k} of ${ops.length}`;
       const env = await deviceFor(writer, { leaseMs: 40 });
-      const { held, open } = holdTemplateRead(env.store, k);
+      const { held, open } = holdTemplateIO(env.store, k);
       const older = Promise.resolve().then(() => writer.run(env[writer.context], env)).then(() => 'done', (e) => `refused: ${e}`);
       await held;
-      // The older writer's hold ends at its lease; the newer edit then saves.
-      expect(await newerEdit(env, writer.context), `held at read ${k} of ${count}`).toMatchObject({ name: 'Newer action' });
+      // The older writer's hold ends at its lease; the newer action then runs.
+      const result = await writer.newer.run(env, writer);
       open();
       await older;
-      await vi.waitFor(() => expect(named(env.store, 'Newer action'), `held at read ${k} of ${count}`).toHaveLength(1), { timeout: 2000 });
-      if (writer.reapplied) await vi.waitFor(() => expect(writer.landed(env.store), `held at read ${k} of ${count}`).toBe(true), { timeout: 2000 });
+      if (writer.reapplied && !writer.newer.signsOut && !writer.newer.replaces) await vi.waitFor(() => expect(writer.landed(env.store), at).toBe(true), { timeout: 2000 });
+      await settle();
+      writer.newer.kept(env, result, at, writer);
     }
   });
 });
@@ -183,7 +240,7 @@ describe('controls: the same writers land, and a writer that waits applies to wh
 
   it.each(CASES)('$name, from the $context, while a newer edit waits for it', async (writer) => {
     const env = await deviceFor(writer);
-    const { held, open } = holdTemplateRead(env.store);
+    const { held, open } = holdTemplateIO(env.store);
     const older = Promise.resolve().then(() => writer.run(env[writer.context], env));
     await held;
     const newer = newerEdit(env, writer.context);
@@ -198,12 +255,12 @@ describe('controls: the same writers land, and a writer that waits applies to wh
 describe('the sequence from the issue', () => {
   it('an older update of a template resumes after a newer update of it: the newer value is kept', async () => {
     const env = await device({ leaseMs: 40 });
-    const { held, open } = holdTemplateRead(env.store);
+    const { held, open } = holdTemplateIO(env.store);
     const older = env.background.updateTemplate('own', { name: 'Older action' });
     await held;
     expect(await env.page.updateTemplate('own', { name: 'Newer action' })).toMatchObject({ name: 'Newer action' });
     open();
-    expect(await older).toBeNull();
+    await expect(older).rejects.toMatchObject({ changed: true });
     expect(stored(env.store).find((t) => t.id === 'own').name).toBe('Newer action');
   });
 });

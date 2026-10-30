@@ -28,6 +28,15 @@ import { log } from "./utils.js";
 const PFX = "[TemplateManager] ";
 const STORAGE_KEY = "user_templates";
 
+/** What a template change reports when the prompt store stayed busy through every try (DS-NO-BUSY-UI): the
+ * templates page shows it, a chat tool hands it to the model. */
+export const TEMPLATES_BUSY_ERROR = "Couldn't save: the templates are busy. Try again in a moment.";
+
+/** `e`, or, when it is a busy refusal, the error every template change reports for one. */
+function templatesError(e) {
+    return e?.busy === true ? Object.assign(new Error(TEMPLATES_BUSY_ERROR), { busy: true }) : e;
+}
+
 /**
  * Generate a random UUID v4 for templates
  * @returns {string}
@@ -97,22 +106,26 @@ export async function loadTemplates() {
  * the stored list (tombstones included) is read, `change(templates)` run on a copy, and what it returns as
  * `save` written as the whole list, checked at the write. From a page the hold is the background's, reached
  * by runtime message. Throws when the hold ended before the save (`changed`) or the semaphore stayed held
- * (`busy`), with nothing saved.
+ * (`busy`, as TEMPLATES_BUSY_ERROR), with nothing saved.
  * @param {string} label - What writes, for the logs
  * @param {(templates: Template[]) => { save: Template[]|null, result: any }} change - `save` null saves nothing
  * @returns {Promise<any>} - the `result` of `change`
  */
 async function editTemplates(label, change) {
     const { withPromptStore } = await import("./promptStore.js");
-    return withPromptStore(async (store) => {
-        const { templates } = await store.templates();
-        const { save, result } = change(templates);
-        if (save) {
-            await store.saveTemplates(save);
-            log(`${PFX}Saved ${save.length} templates (${label})`);
-        }
-        return result;
-    }, { label });
+    try {
+        return await withPromptStore(async (store) => {
+            const { templates } = await store.templates();
+            const { save, result } = change(templates);
+            if (save) {
+                await store.saveTemplates(save);
+                log(`${PFX}Saved ${save.length} templates (${label})`);
+            }
+            return result;
+        }, { label });
+    } catch (e) {
+        throw templatesError(e);
+    }
 }
 
 /**
@@ -128,7 +141,7 @@ export async function getTemplate(id) {
 /**
  * Add a new template
  * @param {Partial<Template>} templateData - Template data
- * @returns {Promise<Template|null>}
+ * @returns {Promise<Template>} - throws when it couldn't be saved (TEMPLATES_BUSY_ERROR while the store stays busy)
  */
 export async function addTemplate(templateData) {
     try {
@@ -138,7 +151,7 @@ export async function addTemplate(templateData) {
         return newTemplate;
     } catch (e) {
         log(`${PFX}Error adding template: ${e}`, "error");
-        return null;
+        throw e;
     }
 }
 
@@ -146,7 +159,7 @@ export async function addTemplate(templateData) {
  * Update an existing template
  * @param {string} id - Template ID
  * @param {Partial<Template>} updates - Fields to update
- * @returns {Promise<Template|null>}
+ * @returns {Promise<Template|null>} - null when no template has that id; throws when it couldn't be saved
  */
 export async function updateTemplate(id, updates) {
     try {
@@ -172,14 +185,14 @@ export async function updateTemplate(id, updates) {
         return updated;
     } catch (e) {
         log(`${PFX}Error updating template: ${e}`, "error");
-        return null;
+        throw e;
     }
 }
 
 /**
  * Delete a template (soft-delete: sets deleted=true for device sync propagation).
  * @param {string} id - Template ID
- * @returns {Promise<boolean>}
+ * @returns {Promise<boolean>} - false when no template has that id; throws when it couldn't be saved
  */
 export async function deleteTemplate(id) {
     try {
@@ -199,7 +212,7 @@ export async function deleteTemplate(id) {
         return true;
     } catch (e) {
         log(`${PFX}Error deleting template: ${e}`, "error");
-        return false;
+        throw e;
     }
 }
 
@@ -299,7 +312,7 @@ export async function gcDeletedTemplates(store) {
 /**
  * Reorder templates
  * @param {string[]} orderedIds - Array of template IDs in desired order
- * @returns {Promise<boolean>}
+ * @returns {Promise<void>} - throws when it couldn't be saved
  */
 export async function reorderTemplates(orderedIds) {
     try {
@@ -322,10 +335,9 @@ export async function reorderTemplates(orderedIds) {
             return { save: reordered, result: reordered.length };
         });
         log(`${PFX}Reordered ${count} templates`);
-        return true;
     } catch (e) {
         log(`${PFX}Error reordering templates: ${e}`, "error");
-        return false;
+        throw e;
     }
 }
 
@@ -587,6 +599,6 @@ export async function resetToDefaultTemplates() {
         return defaultTemplates.length;
     } catch (e) {
         log(`${PFX}Reset to defaults failed: ${e}`, "error");
-        throw e;
+        throw templatesError(e);
     }
 }

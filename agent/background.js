@@ -491,14 +491,10 @@ function setupRuntimeMessageListener() {
             try {
                 const { addTemplate } = await import("./modules/templateManager.js");
                 const template = await addTemplate(message.template || {});
-                if (template) {
-                    sendResponse({ ok: true, template });
-                } else {
-                    sendResponse({ ok: false, error: "Failed to add template" });
-                }
+                sendResponse({ ok: true, template });
             } catch (e) {
                 log(`templates-add failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -517,7 +513,7 @@ function setupRuntimeMessageListener() {
                 }
             } catch (e) {
                 log(`templates-update failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -532,7 +528,7 @@ function setupRuntimeMessageListener() {
                 sendResponse({ ok: success, error: success ? null : "Template not found" });
             } catch (e) {
                 log(`templates-delete failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -547,7 +543,7 @@ function setupRuntimeMessageListener() {
                 sendResponse({ ok: true, imported: result.imported, skipped: result.skipped });
             } catch (e) {
                 log(`templates-import failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -577,7 +573,7 @@ function setupRuntimeMessageListener() {
                 sendResponse({ ok: true, count });
             } catch (e) {
                 log(`templates-reset failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -618,11 +614,11 @@ function setupRuntimeMessageListener() {
         (async () => {
             try {
                 const { reorderTemplates } = await import("./modules/templateManager.js");
-                const success = await reorderTemplates(message.orderedIds || []);
-                sendResponse({ ok: success, error: success ? null : "Failed to reorder templates" });
+                await reorderTemplates(message.orderedIds || []);
+                sendResponse({ ok: true });
             } catch (e) {
                 log(`templates-reorder failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;
@@ -637,7 +633,7 @@ function setupRuntimeMessageListener() {
                 sendResponse({ ok: true, templates, removed });
             } catch (e) {
                 log(`templates-dedupe failed: ${e}`, "error");
-                sendResponse({ ok: false, error: String(e) });
+                sendResponse({ ok: false, error: String(e), busy: e?.busy === true });
             }
         })();
         return true;

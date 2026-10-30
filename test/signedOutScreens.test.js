@@ -139,7 +139,7 @@ describe('the templates page while nobody is signed in', () => {
     delete a.store.values.supabaseSession;
     const page = await loadPage(a, {
       html: 'templates/templates.html',
-      files: ['templates/templates.js'],
+      files: ['templates/templates.js', 'agent/modules/templateManager.js'],
       stubs: { 'agent/modules/config.js': { getTemplateWorkerUrl: async () => 'https://templates.example.com' } },
       runtime: {
         sendMessage: async (message) => (message.command === 'templates-load'
