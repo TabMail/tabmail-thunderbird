@@ -580,7 +580,7 @@ button:focus-visible {
   display: none;
 }
 
-/* KB Compress and Compact now groups */
+/* KB Compress spinner */
 .kb-compress-group {
   display: flex;
   align-items: center;
@@ -596,6 +596,20 @@ button:focus-visible {
   border-right: none;
   padding-right: 0;
   margin-right: 0;
+}
+
+.kb-spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid color-mix(in srgb, var(--in-content-page-color) 25%, transparent);
+  border-top-color: var(--in-content-accent-color);
+  border-radius: 50%;
+  animation: kbSpin 0.8s linear infinite;
+}
+
+@keyframes kbSpin {
+  to { transform: rotate(360deg); }
 }
 
 /* KB section note (between header and textarea) */

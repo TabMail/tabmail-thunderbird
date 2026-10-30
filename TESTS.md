@@ -14,7 +14,7 @@
 | `test/promptStoreWriters.test.js` | 34 | Every writer through `withPromptStore`; refines read and write in separate holds (DS-AI); page edits against the labels shown (DS-DISPLAYED); chat tool `editText` busy answer |
 | `test/promptStoreWritersSync.test.js` | 44 | Writers next to a peer's bullets: text written as read (DS-TEXT), skeleton kept (DS-SKELETON) |
 | `test/promptStoreInterruptions.test.js` | 36 | DS-COUNTER moves only on a saved change, and on every accepted restore; DS-RECEIVE drop at connection end, arrival order, waiting bound (parts of incomplete snapshots counted), a stuck apply never holding up the next connection; a field read past its lease refused; the prompt getters never reading storage themselves; DS-HISTORY reset/merge records; DS-LEASE history holds |
-| `test/promptsPageLive.test.js` | 85 | The real prompts page on simulated devices: every edit saved at once against the labels shown, Reset, marker refusals, sign-out keeps every line; Compress and Compact now never grey their button while the request runs (DS-NO-BUSY-UI) |
+| `test/promptsPageLive.test.js` | 85 | The real prompts page on simulated devices: every edit saved at once against the labels shown, Reset, marker refusals, sign-out keeps every line; Compress and Compact now show their own model request on their button (disabled, caption, spinner) and give it back when it ends |
 | `test/promptsPageSync.test.js` | 15 | Prompts page edits converging across two devices |
 | `test/shownItemRemoval.test.js` | 4 | Tasks/Reminders delete removes exactly the shown labels; already removed; busy |
 | `test/reminderBuilder.test.js` | 39 | Each KB reminder carries the labels of its own bullet only (same text, other date) |
