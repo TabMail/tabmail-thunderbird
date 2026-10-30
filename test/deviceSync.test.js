@@ -233,6 +233,13 @@ vi.mock('../agent/modules/promptStore.js', () => {
     restoreHandle,
     bulletSyncDisconnected: vi.fn(),
     heldSnapshotParts: vi.fn(() => 0),
+    // The texts the store shows, for a history entry: here the saved texts (the defaults of a field never
+    // saved are the store's own, tested with the real store).
+    shownTexts: vi.fn(async () => {
+      const keys = { composition: 'user_prompts:user_composition.md', action: 'user_prompts:user_action.md', kb: 'user_prompts:user_kb.md' };
+      const saved = await browser.storage.local.get(Object.values(keys));
+      return Object.fromEntries(Object.entries(keys).map(([field, key]) => [field, saved[key] ?? '']));
+    }),
   };
 });
 

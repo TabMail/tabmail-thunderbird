@@ -127,11 +127,19 @@ async function collectMessageReminders() {
   }
 }
 
-/** The labels the KB view `captured` shows for the bullets `matches(text)` picks, so a delete from the
- * Tasks or Reminders tab removes exactly those (DS-DISPLAYED); null when the view has none (an unsaved
- * upgrade, or the KB was not read): such an item can't be deleted from the tab. */
-function shownLabels(captured, matches) {
-  return captured ? captured.filter(([, text]) => matches(normalizeUnicode(text))) : null;
+/** Gives each listed KB item the label of the ONE bullet it was read from, so a delete from the Tasks or
+ * Reminders tab removes exactly that bullet (DS-DISPLAYED). The returned `claim(matches)` takes the first
+ * bullet of the KB view `captured` that `matches(text)` picks and no earlier item took: two bullets that read
+ * the same once normalized (curly and straight quotes, "Reminder:" and "[Reminder]") are two items, each
+ * deleting only its own bullet. Null when the view has none (an unsaved upgrade, or the KB was not read):
+ * such an item can't be deleted from the tab. */
+function labelClaimer(captured) {
+  const unclaimed = captured ? [...captured] : null;
+  return (matches) => {
+    if (unclaimed === null) return null;
+    const index = unclaimed.findIndex(([, text]) => matches(normalizeUnicode(text)));
+    return index < 0 ? [] : unclaimed.splice(index, 1);
+  };
 }
 
 /** Whether the parsed bullet `shown` is the reminder `row`: the same text, due date, time and time zone. Two
@@ -164,6 +172,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       }),
     ]);
     const kbText = normalizeUnicode(kbView.content.trim());
+    const claim = labelClaimer(kbView.captured);
 
     // Parse task entries from KB text
     const taskEntries = parseTasksFromKB(kbText || "");
@@ -175,7 +184,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       ...r,
       type: "reminder",
       source: "kb",
-      labels: shownLabels(kbView.captured, (text) => sameReminder(parseRemindersFromKB(`- ${text}`)[0], r)),
+      labels: claim((text) => sameReminder(parseRemindersFromKB(`- ${text}`)[0], r)),
     }));
 
     // Build task items in the unified shape
@@ -194,7 +203,7 @@ export async function buildReminderList({ includeDisabled = false } = {}) {
       hash: getTaskHash(task),
       enabled: !disabledHashes.has(getTaskHash(task)),
       rawLine: task.rawLine,
-      labels: shownLabels(kbView.captured, (text) => text === task.rawLine.replace(/^-\s*/, "")),
+      labels: claim((text) => text === task.rawLine.replace(/^-\s*/, "")),
     }));
 
     // Combine all reminders and add hash + enabled status

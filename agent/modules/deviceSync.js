@@ -202,15 +202,18 @@ async function initTimestampsIfNeeded() {
 export async function recordHistory(source, fields, holds, templates) {
   try {
     await migrateBackupsToHistoryIfNeeded(holds);
-    const state = await readLocalState();
+    const state = await readLocalState(["templates"]);
+    // What the store shows, defaults included for a field never saved (a raw read would record "").
+    const { shownTexts } = await import("./promptStore.js");
+    const texts = await shownTexts();
     const entry = {
       id: crypto.randomUUID(),
       timestamp: new Date().toISOString(),
       source,
       fields,
-      composition: state.composition || "",
-      action: state.action || "",
-      kb: state.kb || "",
+      composition: texts.composition,
+      action: texts.action,
+      kb: texts.kb,
       templatesJSON: JSON.stringify(templates ?? state.templates ?? []),
     };
 

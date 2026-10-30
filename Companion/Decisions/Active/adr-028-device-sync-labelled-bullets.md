@@ -24,8 +24,10 @@ had touched. Timestamps on the whole field could not tell the cases apart.
 - **One way in: the prompt semaphore.** `promptStore.js`, in the background page, is the only code
   that reads or writes the three fields, and every access runs in one hold of one semaphore
   (`withPromptStore`). Pages and the chat window reach it through a `prompt-store` runtime message.
-  An acquire refused as busy is tried again with backoff and then reported as busy; nothing is
-  greyed out. A hold has a lease: a holder past it is released and nothing more of it is saved.
+  Callers wait in line in the order they asked (first come, first served), each for at most
+  `acquireWaitMs`, and one still waiting then is reported as busy; nothing is retried, so an older
+  request never lands after a newer one. The semaphore never greys out a control: a page may still
+  show progress on a request the user started (a spinner on Compress or Compact). A hold has a lease: a holder past it is released and nothing more of it is saved.
   Template read-change-saves run through the same semaphore, with no template-specific hook.
 - **Screens act on what they showed.** A screen reads the text and its labels together
   (`readView`) and saves against the labels it showed (`editShown`, `addLine`, `resetSection`,

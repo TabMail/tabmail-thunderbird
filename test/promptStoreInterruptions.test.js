@@ -177,6 +177,34 @@ describe('a reset and a merge record the state they replace (DS-HISTORY)', () =>
     expect(history(a, 'reset').at(-1)).toMatchObject({ fields: ['kb'], kb: expect.stringContaining('Before the reset') });
   });
 
+  it.each(['kb', 'composition', 'action'])('a %s reset on first use records the defaults the store showed, and restoring it shows them again', async (field) => {
+    const a = await new BulletDevice('A', new DeviceStore(), new BulletRelay()).start();
+    const shown = {};
+    for (const each of ['kb', 'composition', 'action']) shown[each] = await a.prompts.readText(each);
+    expect(shown[field]).not.toBe('');
+
+    await a.reset(field);
+
+    const entry = history(a, 'reset').at(-1);
+    expect({ kb: entry.kb, composition: entry.composition, action: entry.action }).toEqual(shown);
+    await a.sync.restoreFromHistory(entry);
+    expect(await a.prompts.readText(field)).toBe(shown[field]);
+  });
+
+  it('a knowledge base saved empty is recorded empty (control)', async () => {
+    const a = await new BulletDevice('A', new DeviceStore({ [PROMPT_KEYS.kb]: '' }), new BulletRelay()).start();
+    expect(await a.prompts.readText('kb')).toBe('');
+    await a.reset('composition');
+    expect(history(a, 'reset').at(-1).kb).toBe('');
+  });
+
+  it('a knowledge base saved empty before labels, reset before anything reads it, is recorded empty (control)', async () => {
+    const a = await new BulletDevice('A', new DeviceStore({ [PROMPT_KEYS.kb]: '' }), new BulletRelay()).start();
+    await a.reset('composition');
+    expect(history(a, 'reset').at(-1).kb).toBe('');
+    expect(await a.prompts.readText('kb')).toBe('');
+  });
+
   it("a peer's merge that changes the text records the text it replaced", async () => {
     const { relay, a, b } = await connected();
     await a.add('kb', '', 'Own note');

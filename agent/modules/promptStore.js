@@ -724,6 +724,18 @@ function notSaved(field, label, e) {
   return { error: e?.busy ? KB_BUSY_ERROR : `failed to persist knowledge base: ${e?.message ?? e}` };
 }
 
+/** DS-HISTORY: the texts the store shows for the three fields, read in a hold (background only): each
+ * field's saved text, an empty one included, or, for a field never saved, the text of its defaults. */
+export async function shownTexts() {
+  const saved = await browser.storage.local.get(SYNC_FIELDS.map((field) => PROMPT_KEYS[field]));
+  const texts = {};
+  for (const field of SYNC_FIELDS) {
+    const text = saved[PROMPT_KEYS[field]];
+    texts[field] = typeof text === "string" ? text : render(field, await (await initPromptStoreHost()).stored(field));
+  }
+  return texts;
+}
+
 /** The texts DS-DEFAULT puts in `field`'s section `section`, in order: what a reset of that section shows. */
 export async function defaultTexts(field, section) {
   const catalog = JSON.parse(await fetchBundled(CATALOG_FILE));
