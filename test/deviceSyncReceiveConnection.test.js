@@ -99,16 +99,16 @@ describe('a received message and a sign-out (DS-RECEIVE, DS-DEVICE)', () => {
   });
 });
 
-describe('a section reset and a newer action (DS-DISPLAYED)', () => {
-  /** The prompts page's storage module on a fresh device holding a line in the general writing style, the
+describe('a section reset and a newer action (DS-DISPLAYED, DS-SEMAPHORE request order)', () => {
+  /** The prompts page's storage module on a fresh device holding `line` in the section `key` of `field`, the
    * page's view read, and the section's Reset started on it with its defaults fetch paused until `open()`. */
-  async function pausedSectionReset() {
+  async function pausedSectionReset(field = 'composition', key = 'general', line = 'Line the reset replaces') {
     const a = await new BulletDevice('A', new DeviceStore(), new BulletRelay()).start();
-    await a.add('composition', 'general', 'Line the reset replaces');
+    await a.editSection(field, key, () => [line]);
     const page = a.page(['prompts/modules/storage.js', 'prompts/modules/markdown.js']);
     const storage = page.require('prompts/modules/storage.js');
-    const view = await page.require('agent/modules/promptStore.js').readView('composition');
-    expect(view.content).toContain('Line the reset replaces');
+    const view = await page.require('agent/modules/promptStore.js').readView(field);
+    expect(view.content).toContain(line);
     const fetchDefaults = page.context.fetch;
     const stop = gate();
     const state = { paused: false };
@@ -118,26 +118,52 @@ describe('a section reset and a newer action (DS-DISPLAYED)', () => {
       await stop.promise;
       return response;
     };
-    const resetting = storage.resetSection('composition', view, { key: 'general', copy: 0 })
+    const resetting = storage.resetSection(field, view, { key, copy: 0 })
       .then((value) => ({ value }), (error) => ({ error: String(error) }));
     await vi.waitFor(() => expect(state.paused).toBe(true));
     return { a, resetting, open: stop.open };
   }
 
-  it('a section reset whose defaults arrive after a whole-field reset and a newer line keeps the newer line', async () => {
+  it('a whole-field reset and a newer line asked for while a section reset reads its defaults land after it: the newer line is kept', async () => {
     const { a, resetting, open } = await pausedSectionReset();
+    let later;
     try {
-      await a.reset('composition');
-      await a.add('composition', 'general', 'Newer user action');
+      let done = false;
+      later = (async () => {
+        await a.reset('composition');
+        await a.add('composition', 'general', 'Newer user action');
+      })().finally(() => { done = true; });
+      // Asked for: in line behind the Reset, or done if nothing held the store.
+      await vi.waitFor(() => expect(done || a.prompts.waiting.length === 1).toBe(true));
     } finally {
       open();
     }
-    // It deletes only the labels it showed, which the whole-field reset already removed, and the defaults it
-    // adds are already there: nothing is left for it to change. It never re-reads the text, so the newer line
-    // of the section is not taken for one it replaces.
-    expect(await resetting).toEqual({ value: 'unchanged' });
+    // The Reset asked first, so it saves first; the later reset and line follow it.
+    expect(await resetting).toEqual({ value: 'saved' });
+    await later;
     expect(a.store.values[PROMPT_KEYS.composition]).toContain('Newer user action');
     expect(a.store.values[PROMPT_KEYS.composition]).not.toContain('Line the reset replaces');
+  });
+
+  it.each([
+    ['composition', 'general', 'General writing style'],
+    ['action', 'delete', 'Emails to be marked as `delete`'],
+  ])('a %s section reset reading its defaults never adds them back after a later history restore that empties the section', async (field, key, header) => {
+    // The section holds only the user's own rule, none of its defaults: the Reset would add them.
+    const { a, resetting, open } = await pausedSectionReset(field, key, 'Custom rule');
+    let restoring;
+    try {
+      let restored = false;
+      restoring = a.sync.restoreFromHistory({ [field]: `# ${header} (DO NOT EDIT/DELETE THIS SECTION HEADER)\n`, templatesJSON: '[]' }).finally(() => { restored = true; });
+      // Asked for: in line behind the Reset, or done if nothing held the store.
+      await vi.waitFor(() => expect(restored || a.prompts.waiting.length === 1).toBe(true));
+    } finally {
+      open();
+    }
+    expect(await resetting).toEqual({ value: 'saved' });
+    await restoring;
+    // The restore was asked for last, so the section ends as it left it: empty.
+    expect((await a.state(field)).bullets.filter((bullet) => bullet.section === key)).toEqual([]);
   });
 
   it('a section reset with nothing else happening while it fetches is saved', async () => {
@@ -145,6 +171,32 @@ describe('a section reset and a newer action (DS-DISPLAYED)', () => {
     open();
     expect(await resetting).toEqual({ value: 'saved' });
     expect(a.store.values[PROMPT_KEYS.composition]).not.toContain('Line the reset replaces');
+  });
+});
+
+describe('Sync Now on a connected pair (DS-NO-REQUEST)', () => {
+  it('sends the three bullet fields: a note whose send was lost reaches the peer', async () => {
+    const relay = new BulletRelay();
+    const a = await new BulletDevice('A', new DeviceStore(), relay).start();
+    const b = await new BulletDevice('B', new DeviceStore(), relay).start();
+    try {
+      await a.connect();
+      await b.connect();
+      await flush(relay);
+      await a.add('kb', '', 'Own note');
+      for (const snapshot of relay.snapshots.values()) relay.drop(snapshot.id);
+      expect(await b.prompts.readText('kb')).not.toContain('Own note');
+      const before = Object.fromEntries(['kb', 'composition', 'action'].map((field) => [field, relay.sent('A', field)]));
+
+      await a.sync.syncNow();
+      await flush(relay);
+
+      expect(Object.fromEntries(['kb', 'composition', 'action'].map((field) => [field, relay.sent('A', field) - before[field]]))).toEqual({ kb: 1, composition: 1, action: 1 });
+      expect(await b.prompts.readText('kb')).toContain('Own note');
+    } finally {
+      await a.sync.cleanupDeviceSync();
+      await b.sync.cleanupDeviceSync();
+    }
   });
 });
 

@@ -279,8 +279,9 @@ export class BulletSync {
   }
 
   async mergeSnapshot(field, bullets, seen, holds) {
-    // Nothing is merged into an upgrade not saved yet: the upgrade commits all its fields at once.
-    if (Object.keys(await this.upgraded(holds)).length > 0) return { kind: "unsaved", field };
+    // Nothing is merged into an upgrade not saved yet: the upgrade commits all its fields at once. One not
+    // saved because the hold ended is stale, so the message is applied again (DS-RECEIVE).
+    if (Object.keys(await this.upgraded(holds)).length > 0) return { kind: holds() ? "unsaved" : "stale", field };
     const local = await this.stored(field);
     const result = merge(local, { bullets, seen });
     if (result.kind === "conflict") {
@@ -326,7 +327,7 @@ export class BulletSync {
    * { outcome: "saved" | "unchanged" | "unsaved" | "stale", fields } with the fields it changed. */
   async commit(changes, kind, holds) {
     const pending = await this.upgraded(holds);
-    if (Object.keys(pending).length > 0) return { outcome: "unsaved", fields: [] };
+    if (Object.keys(pending).length > 0) return { outcome: holds() ? "unsaved" : "stale", fields: [] };
     const states = {};
     for (const [field, change] of changes) {
       const before = states[field] ?? (await this.stored(field));

@@ -245,6 +245,33 @@ describe('callers wait in line for the semaphore, first come first served (DS-SE
   });
 });
 
+describe('a caller whose lease ran out releases nothing when it finally finishes (DS-LEASE)', () => {
+  it('the holder after it keeps the semaphore, and the next in line starts only when that holder finishes', async () => {
+    const { a } = await device({ leaseMs: 100, acquireWaitMs: 2000 });
+    const expired = gate();
+    const current = gate();
+    let expiredStarted = false;
+    let currentStarted = false;
+    const events = [];
+    const old = a.prompts.withPromptStore(async () => { expiredStarted = true; await expired.promise; }, { label: 'expired caller' });
+    await vi.waitFor(() => expect(expiredStarted).toBe(true), { interval: 1 });
+    await vi.waitFor(() => expect(a.prompts.holder).toBeNull(), { interval: 2 });
+    const now = a.prompts.withPromptStore(async () => { currentStarted = true; events.push('current started'); await current.promise; events.push('current finished'); }, { label: 'current caller' });
+    await vi.waitFor(() => expect(currentStarted).toBe(true), { interval: 1 });
+    const last = a.prompts.withPromptStore(async () => { events.push('last writer'); }, { label: 'last writer' });
+    try {
+      expired.open();
+      await old.catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(events).toEqual(['current started']);
+    } finally {
+      current.open();
+      await Promise.allSettled([old, now, last]);
+    }
+    expect(events).toEqual(['current started', 'current finished', 'last writer']);
+  });
+});
+
 describe('a sign-out never waits for the semaphore and never reaches it (DS-DEVICE)', () => {
   it('completes while a holder never lets go, deletes nothing, and the holder goes on and saves', async () => {
     const { a } = await device();

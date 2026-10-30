@@ -200,35 +200,31 @@ async function initTimestampsIfNeeded() {
  * @param {Array} [templates] - The templates to record, when not the stored ones
  */
 export async function recordHistory(source, fields, holds, templates) {
-  try {
-    await migrateBackupsToHistoryIfNeeded(holds);
-    const state = await readLocalState(["templates"]);
-    // What the store shows, defaults included for a field never saved (a raw read would record "").
-    const { shownTexts } = await import("./promptStore.js");
-    const texts = await shownTexts();
-    const entry = {
-      id: crypto.randomUUID(),
-      timestamp: new Date().toISOString(),
-      source,
-      fields,
-      composition: texts.composition,
-      action: texts.action,
-      kb: texts.kb,
-      templatesJSON: JSON.stringify(templates ?? state.templates ?? []),
-    };
+  await migrateBackupsToHistoryIfNeeded(holds);
+  const state = await readLocalState(["templates"]);
+  // What the store shows, defaults included for a field never saved (a raw read would record "").
+  const { shownTexts } = await import("./promptStore.js");
+  const texts = await shownTexts();
+  const entry = {
+    id: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    source,
+    fields,
+    composition: texts.composition,
+    action: texts.action,
+    kb: texts.kb,
+    templatesJSON: JSON.stringify(templates ?? state.templates ?? []),
+  };
 
-    const stored = await browser.storage.local.get(HISTORY_KEY);
-    const history = stored[HISTORY_KEY] || [];
-    history.push(entry);
-    while (history.length > MAX_HISTORY_ENTRIES) history.shift();
-    if (!holds()) {
-      log(`${PFX}History not recorded: the prompt semaphore was lost meanwhile (its lease)`);
-      return;
-    }
-    await browser.storage.local.set({ [HISTORY_KEY]: history });
-  } catch (e) {
-    log(`${PFX}Failed to record history: ${e}`, "warn");
+  const stored = await browser.storage.local.get(HISTORY_KEY);
+  const history = stored[HISTORY_KEY] || [];
+  history.push(entry);
+  while (history.length > MAX_HISTORY_ENTRIES) history.shift();
+  if (!holds()) {
+    log(`${PFX}History not recorded: the prompt semaphore was lost meanwhile (its lease)`);
+    return;
   }
+  await browser.storage.local.set({ [HISTORY_KEY]: history });
 }
 
 /**
@@ -564,6 +560,15 @@ async function probeAllFields() {
  * Public "Sync Now" — broadcasts local state AND requests state from peers.
  * Used by manual sync buttons.
  */
+/** DS-NO-REQUEST: the three bullet fields are sent on connect and on Sync Now, through the received-message
+ * chain so a busy prompt store sends them shortly after. */
+function sendBulletFields() {
+  return enqueueReceive("bullet send", async () => {
+    const { sendBulletState } = await import("./promptStore.js");
+    await sendBulletState(SYNC_FIELDS);
+  });
+}
+
 export async function syncNow() {
   if (!connected) {
     log(`${PFX}syncNow: not connected, attempting connect first`);
@@ -571,6 +576,7 @@ export async function syncNow() {
     await connect();
     return; // connect will broadcastAllFields on success
   }
+  await sendBulletFields();
   await broadcastState();
   await probeAllFields();
 }
@@ -856,7 +862,8 @@ async function handlePromptState(data, store) {
     ...(taskCacheMerged ? ["taskCache"] : []),
   ];
   if (actuallyChanged.length > 0) {
-    await recordHistory("sync_receive", actuallyChanged, () => store.holds(), preMergeTemplates);
+    // Recorded after the merge it describes: a failure loses only this entry.
+    await recordHistory("sync_receive", actuallyChanged, () => store.holds(), preMergeTemplates).catch((e) => log(`${PFX}Failed to record history: ${e}`, "warn"));
   }
   if (actuallyChanged.length > 0 || actionConfigApplied) {
     log(`${PFX}Applied incoming prompt_state (${[...actuallyChanged, ...(actionConfigApplied ? ["actionConfig"] : [])].join(", ")})`);
@@ -994,12 +1001,7 @@ async function handleMessage(rawData) {
     switch (parsed.type) {
       case "connected":
         log(`${PFX}Connected as user ${parsed.userId?.substring(0, 8)}...`);
-        // DS-NO-REQUEST: the three bullet fields are always sent on connect, through the received-message
-        // chain so a busy prompt store sends them shortly after.
-        await enqueueReceive("connect send", async () => {
-          const { sendBulletState } = await import("./promptStore.js");
-          await sendBulletState(SYNC_FIELDS);
-        });
+        await sendBulletFields();
         // Virgin device (all timestamps epoch-zero): skip the prompt_state broadcast, probe peers instead.
         // Prevents default values from triggering LWW overwrites on established devices.
         {

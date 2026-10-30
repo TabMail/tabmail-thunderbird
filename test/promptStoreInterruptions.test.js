@@ -220,6 +220,76 @@ describe('a reset and a merge record the state they replace (DS-HISTORY)', () =>
   });
 });
 
+describe('a reset, restore or merge whose history record fails changes nothing (DS-HISTORY)', () => {
+  /** `a`'s history saves fail, as with a full disk; every other save works. */
+  function failHistorySaves(a) {
+    const api = a.realm.context.browser.storage.local;
+    const set = api.set;
+    api.set = async (values) => {
+      if (Object.hasOwn(values, 'prompt_history')) throw new Error('synthetic history save failure');
+      return set(values);
+    };
+  }
+
+  it.each(['reset', 'restore', 'merge'])('a %s keeps the knowledge base it would replace', async (operation) => {
+    const { a } = await devices();
+    await a.add('kb', '', 'Before the change');
+    const before = structuredClone(a.store.values['bullet_state:kb']);
+    failHistorySaves(a);
+    if (operation === 'reset') await a.reset('kb').catch(() => {});
+    else if (operation === 'restore') await a.sync.restoreFromHistory({ kb: '', templatesJSON: '[]' }).catch(() => {});
+    // A peer that saw the note and no longer holds it: a merge would delete it.
+    else await a.receive({ type: 'bullet_state', v: 1, field: 'kb', sender: 'peer', snap: 'one', part: 1, parts: 1, bullets: [], seen: before.seen });
+    expect(a.store.values['bullet_state:kb']).toEqual(before);
+    expect(a.store.values[PROMPT_KEYS.kb]).toContain('Before the change');
+  });
+
+  it('with history saves working, the same merge deletes the note (control)', async () => {
+    const { a } = await devices();
+    await a.add('kb', '', 'Before the change');
+    const before = structuredClone(a.store.values['bullet_state:kb']);
+    await a.receive({ type: 'bullet_state', v: 1, field: 'kb', sender: 'peer', snap: 'one', part: 1, parts: 1, bullets: [], seen: before.seen });
+    expect(a.store.values[PROMPT_KEYS.kb]).not.toContain('Before the change');
+  });
+});
+
+describe('a received message whose upgrade outlives its lease is applied again (DS-LEASE, DS-RECEIVE, DS-UPGRADE)', () => {
+  const peerNote = () => ({ type: 'bullet_state', v: 1, field: 'kb', sender: 'peer-process', snap: 'peer-snapshot', part: 1, parts: 1, bullets: [['', 'Peer note', '1234567890abcdef', 1]], seen: { '1234567890abcdef': 1 } });
+  const released = () => ({ type: 'prompt_state', data: { kb: '- Peer note', kb_updated_at: new Date().toISOString() } });
+
+  it.each([['bullet_state', peerNote], ['prompt_state', released]])('a %s: the peer note and the text from before both land', async (_, message) => {
+    const a = await new BulletDevice('A', new DeviceStore({ [PROMPT_KEYS.kb]: '- Existing legacy note' }), new BulletRelay(), { leaseMs: 50, acquireWaitMs: 200, busyReapplyMs: 5 }).start();
+    // A save failure at connect leaves the text from before not upgraded yet.
+    a.store.failing = true;
+    await a.connect();
+    a.store.failing = false;
+    const reached = gate();
+    const resume = gate();
+    let paused = false;
+    a.store.afterIO = async (op, key) => {
+      if (!paused && op === 'get' && key === 'bullet_state:kb') {
+        paused = true;
+        reached.open();
+        await resume.promise;
+      }
+    };
+    const receiving = a.receive(message());
+    try {
+      await reached.promise;
+      await vi.waitFor(() => expect(a.prompts.holder).toBeNull(), { interval: 5 });
+      resume.open();
+      await receiving;
+      await vi.waitFor(() => expect(a.store.values[PROMPT_KEYS.kb]).toContain('Peer note'), { timeout: 1000, interval: 10 });
+      expect(a.store.values[PROMPT_KEYS.kb]).toContain('Existing legacy note');
+    } finally {
+      resume.open();
+      a.store.afterIO = undefined;
+      await receiving;
+      await a.sync.cleanupDeviceSync();
+    }
+  });
+});
+
 describe('more received messages waiting than the bound (DS-RECEIVE)', () => {
   it('renews the connection: the waiting ones are dropped, and a peer state sent on the new connection lands', async () => {
     const { relay, a, b } = await connected({ maxWaitingReceives: 2 });

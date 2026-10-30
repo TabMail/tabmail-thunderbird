@@ -25,7 +25,18 @@ export function editShown(field, view, change) {
     const next = change(view.content);
     if (next === null) return Promise.resolve("gone");
     if (next === view.content) return Promise.resolve("unchanged");
-    const result = withPromptStore(async (store) => (await store.write(field, view.captured, next)).outcome, { label: "prompts page edit" });
+    return saveShown(field, view, async () => next, "prompts page edit");
+}
+
+/** `editShown`'s save, in one hold: `next()` gives the text to save, or null ("gone") or the shown text
+ * ("unchanged") to save nothing. */
+function saveShown(field, view, next, label) {
+    const result = withPromptStore(async (store) => {
+        const text = await next();
+        if (text === null) return "gone";
+        if (text === view.content) return "unchanged";
+        return (await store.write(field, view.captured, text)).outcome;
+    }, { label });
     result.catch((e) => log(`[Prompts] Edit of ${field} failed: ${e}`, "error"));
     return result;
 }
@@ -43,11 +54,13 @@ export function addLine(field, view, where, text) {
 
 /**
  * Section Reset: the items of the copy `where` of the section shown in `view` replaced by that section's
- * defaults, fetched first, in one edit against the labels shown. Resolves as `editShown` does.
+ * defaults, in one edit against the labels shown. The defaults are read inside the hold, so the Reset takes
+ * its place in line when the user clicks, before any later action (DS-SEMAPHORE request order). Resolves as
+ * `editShown` does.
  */
-export async function resetSection(field, view, where) {
-    const defaults = await defaultTexts(field, where.key);
-    return editShown(field, view, (content) => replaceItems(field, content, where, defaults));
+export function resetSection(field, view, where) {
+    if (view.captured === null) return Promise.reject(new Error(`${field} could not be saved`));
+    return saveShown(field, view, async () => replaceItems(field, view.content, where, await defaultTexts(field, where.key)), "prompts page section reset");
 }
 
 /** Reset Entire Prompt and the knowledge base's Reset: DS-RESET of `field`. */
