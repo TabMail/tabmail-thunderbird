@@ -84,10 +84,11 @@ function accountOf(session) {
   }
 }
 
-/** Whether two stored sessions (null when signed out) are the same account. A session whose account
- * cannot be read is never the same as another. */
+/** Whether two sessions are the same account. Signed out (null, or a session that could not be read) is
+ * never the same as anything, so a sign-out always closes Device Sync, and so does a session whose
+ * account cannot be read. */
 function sameAccount(a, b) {
-  if (!a || !b) return !a && !b;
+  if (!a || !b) return false;
   const account = accountOf(a);
   return account !== null && account === accountOf(b);
 }
@@ -111,24 +112,13 @@ function storeSession(session) {
 }
 
 async function switchSession(session) {
-  const changed = !sameAccount(await getSession(), session);
-  if (changed) {
-    // Leaving never waits: messages still waiting from the old devices are dropped, nothing more is sent.
-    try {
-      const { cleanupDeviceSync } = await import("./deviceSync.js");
-      await cleanupDeviceSync();
-      log("[SupabaseAuth] The account changed: Device Sync left the previous account's devices");
-    } catch (e) {
-      log(`[SupabaseAuth] Device Sync could not be closed for the account change: ${e}`, "error");
-    }
-  }
-  if (session) await browser.storage.local.set({ supabaseSession: session });
-  else await browser.storage.local.remove("supabaseSession");
-  if (changed && session) {
-    // Not awaited: the connect reads the token, and a refresh it starts stores its session through here.
-    const { connect } = await import("./deviceSync.js");
-    connect().catch((e) => log(`[SupabaseAuth] Device Sync could not connect as the new account: ${e}`, "warn"));
-  }
+  const write = () => (session
+    ? browser.storage.local.set({ supabaseSession: session })
+    : browser.storage.local.remove("supabaseSession"));
+  if (sameAccount(await getSession(), session)) return write();
+  // Leaving never waits: messages still waiting from the old devices are dropped, nothing more is sent.
+  const { changeAccount } = await import("./deviceSync.js");
+  return changeAccount(write, !!session);
 }
 
 /**

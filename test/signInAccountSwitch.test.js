@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 
 const storageData = {};
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
-vi.mock('../agent/modules/deviceSync.js', () => ({ cleanupDeviceSync: vi.fn(async () => {}), connect: vi.fn(async () => {}) }));
+vi.mock('../agent/modules/deviceSync.js', () => ({ changeAccount: vi.fn(async (storeSession) => storeSession()) }));
 vi.mock('../agent/modules/config.js', () => ({
   getBackendUrl: vi.fn(async () => 'https://backend.example.com'),
   SETTINGS: { authSignInTimeoutMs: 60 * 1000, authWindow: { defaultWidth: 500, defaultHeight: 700 } },

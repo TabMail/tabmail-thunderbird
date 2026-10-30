@@ -204,4 +204,187 @@ describe('Device Sync follows the signed-in account on every path (DS-DEVICE)', 
   });
 });
 
+/** A promise and the function that resolves it. */
+function gate() {
+  let open;
+  const promise = new Promise((resolve) => { open = resolve; });
+  return { promise, open };
+}
+
+/** Resolves with `promise`'s value, or rejects once `ms` pass first (a write chain that never settles). */
+function within(promise, ms) {
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`still waiting after ${ms} ms`)), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/** A seeded generator in [0, 1) (mulberry32), so a failing schedule can be replayed. */
+function seeded(seed) {
+  let t = seed >>> 0;
+  return () => {
+    t = (t + 0x6d2b79f5) >>> 0;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** D ends on `to`'s devices (none when null), and nothing it does afterwards reaches A's. */
+async function endsOn(ctx, to) {
+  const { groups, d, peerA } = ctx;
+  if (to) {
+    await vi.waitFor(() => expect(groups[to].isConnected('D')).toBe(true));
+    await d.listener()({ type: 'message', data: JSON.stringify({ type: 'connected', userId: to }) });
+  }
+  await quiesce([groups.A, groups.B]);
+  const sentOnA = sentBy(groups.A, d);
+  expect((await d.add('kb', '', 'Fact after the change')).outcome).toBe('saved');
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  await quiesce([groups.A, groups.B]);
+  expect(groups.A.isConnected('D')).toBe(to === 'A');
+  expect(groups.B.isConnected('D')).toBe(to === 'B');
+  expect(sentBy(groups.A, d)).toEqual(sentOnA);
+  expect(await kb(peerA)).not.toContain('Fact after the change');
+}
+
+describe('an account change is one step: nothing connects as the old account during it, and every write lands in order', () => {
+  it.each([
+    { name: 'a sign-in to another account', to: 'B' },
+    { name: 'a sign-out', to: null },
+  ])('$name: a connect asked for while the session is written does not connect as the old account', async (path) => {
+    const ctx = await start();
+    const { world, d } = ctx;
+    world.signInAs = session('B');
+    let independent = null;
+    // Device Sync's own connect (startup, sync turned on) asked for at the session write, which then
+    // takes a while.
+    const ask = async () => {
+      independent ??= d.sync.connect();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+    d.store.beforeSet = async (values) => { if (Object.hasOwn(values, 'supabaseSession')) await ask(); };
+    d.store.beforeRemove = async (keys) => { if ([keys].flat().includes('supabaseSession')) await ask(); };
+
+    expect(await (path.to ? d.auth.ensureSignedIn() : d.auth.signOut())).toBe(true);
+    expect(independent).not.toBe(null);
+    await independent;
+
+    await endsOn(ctx, path.to);
+  });
+
+  it.each([1, 2, 3, 4, 5, 6, 7, 8])('a connect asked for at a seeded point of a session write for another account (seed %i) never connects as the old account', async (seed) => {
+    const ctx = await start();
+    const { d } = ctx;
+    const random = seeded(seed);
+    const ticks = Math.floor(random() * 40);
+    // The session write takes a seeded while.
+    const writeMs = Math.floor(random() * 4) * 10;
+    d.store.beforeSet = async (values) => {
+      if (Object.hasOwn(values, 'supabaseSession')) await new Promise((resolve) => setTimeout(resolve, writeMs));
+    };
+    // B's session, as a page's sign-in sends it to the background.
+    const write = d.auth.handleStoreSessionMessage({ session: session('B') });
+    // Some microtasks and macrotasks into the write, Device Sync's own connect is asked for.
+    for (let n = 0; n < ticks; n++) await (random() < 0.5 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, 0)));
+    const independent = d.sync.connect();
+    expect((await write).ok).toBe(true);
+    await independent;
+
+    await endsOn(ctx, 'B');
+  });
+
+  it('a sign-out closes Device Sync even when the stored session cannot be read', async () => {
+    const ctx = await start();
+    const { d } = ctx;
+    let failed = false;
+    d.store.beforeGet = async (keys) => {
+      if (!failed && JSON.stringify(keys ?? null).includes('supabaseSession')) {
+        failed = true;
+        throw new Error('storage unavailable');
+      }
+    };
+
+    expect(await d.auth.signOut()).toBe(true);
+    expect(failed).toBe(true);
+    expect(d.store.values.supabaseSession).toBeUndefined();
+
+    await endsOn(ctx, null);
+  });
+
+  it('a sign-in still stores the new session when leaving the old devices fails', async () => {
+    const ctx = await start();
+    const { groups, world, d } = ctx;
+    world.signInAs = session('B');
+    const leave = groups.A.leave;
+    // The transport drops its socket, then its close reports an error.
+    groups.A.leave = (id) => { groups.A.leave = leave; leave.call(groups.A, id); throw new Error('synthetic socket error'); };
+
+    expect(await d.auth.ensureSignedIn()).toBe(true);
+
+    expect(accountOf(d.store.values.supabaseSession.access_token)).toBe('B');
+    await vi.waitFor(() => expect(groups.B.isConnected('D')).toBe(true));
+  });
+
+  it('a sign-out asked for while a sign-in is being written lands after it: the device ends signed out', async () => {
+    const ctx = await start();
+    const { world, d } = ctx;
+    world.signInAs = session('B');
+    const held = gate();
+    const writes = [];
+    d.store.beforeSet = async (values) => {
+      if (!Object.hasOwn(values, 'supabaseSession')) return;
+      writes.push(accountOf(values.supabaseSession.access_token));
+      await held.promise;
+    };
+    d.store.beforeRemove = async (keys) => { if ([keys].flat().includes('supabaseSession')) writes.push(null); };
+
+    const signIn = d.auth.ensureSignedIn();
+    await vi.waitFor(() => expect(writes).toEqual(['B']), { timeout: 10000 });
+    // The sign-out, from a page, while B's write has not finished.
+    const signOut = d.page([AUTH]).require(AUTH).signOut();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(writes).toEqual(['B']);
+    held.open();
+    expect(await signIn).toBe(true);
+    expect(await signOut).toBe(true);
+
+    expect(writes).toEqual(['B', null]);
+    expect(d.store.values.supabaseSession).toBeUndefined();
+    await endsOn(ctx, null);
+  });
+
+  it('a session write that fails does not stop the next one', async () => {
+    const ctx = await start();
+    const { world, d } = ctx;
+    world.signInAs = session('B');
+    let failed = false;
+    d.store.beforeSet = async (values) => {
+      if (!failed && Object.hasOwn(values, 'supabaseSession')) {
+        failed = true;
+        throw new Error('storage unavailable');
+      }
+    };
+
+    await d.auth.ensureSignedIn();
+    expect(failed).toBe(true);
+    expect(await within(d.auth.signOut(), 5000)).toBe(true);
+
+    expect(d.store.values.supabaseSession).toBeUndefined();
+    await endsOn(ctx, null);
+  });
+
+  it("a sign-in whose session must be refreshed to connect finishes, and Device Sync connects with the refreshed session", async () => {
+    const ctx = await start();
+    const { world, d } = ctx;
+    // B's session is about to expire: connecting refreshes it, which writes the session again.
+    world.signInAs = { ...session('B'), expires_at: Math.floor(Date.now() / 1000) + 30 };
+    world.refreshAs = session('B', 2);
+
+    expect(await within(d.auth.ensureSignedIn(), 5000)).toBe(true);
+
+    await vi.waitFor(() => expect(d.store.values.supabaseSession.access_token).toBe(token('B', 2)));
+    await endsOn(ctx, 'B');
+  });
+});
+
 vi.setConfig({ testTimeout: 20000 });

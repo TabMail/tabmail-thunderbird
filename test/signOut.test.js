@@ -67,10 +67,11 @@ vi.mock("../agent/modules/config.js", () => ({
   SETTINGS: { deviceSync: { broadcastDebounceMs: 500 } },
 }));
 
-// Mock deviceSync — track calls to cleanupDeviceSync
-const mockCleanupDeviceSync = vi.fn();
+// Mock deviceSync — track the account change the sign-out makes (it stores the session it is given).
+const mockChangeAccount = vi.fn(async (storeSession) => storeSession());
 vi.mock("../agent/modules/deviceSync.js", () => ({
-  cleanupDeviceSync: mockCleanupDeviceSync,
+  changeAccount: mockChangeAccount,
+  cleanupDeviceSync: vi.fn(),
   disconnect: vi.fn(),
   connect: vi.fn(),
   isConnected: vi.fn(() => false),
@@ -122,7 +123,8 @@ describe("signOut (R34)", () => {
 
     expect(await signOut()).toBe(true);
 
-    expect(mockCleanupDeviceSync).toHaveBeenCalledTimes(1);
+    expect(mockChangeAccount).toHaveBeenCalledTimes(1);
+    expect(mockChangeAccount.mock.calls[0][1]).toBe(false);
     const source = readFileSync(new URL("../agent/modules/supabaseAuth.js", import.meta.url), "utf8");
     expect(source).not.toMatch(/promptStore/);
   });
@@ -159,17 +161,13 @@ describe("signOut (R34)", () => {
     expect(source).not.toMatch(/actionCache/);
   });
 
-  it("returns true even if deviceSync cleanup fails", async () => {
-    mockCleanupDeviceSync.mockImplementationOnce(() => {
-      throw new Error("WebSocket error");
-    });
+  it("closes Device Sync even when the session read fails (signed out is never the same account)", async () => {
     setStorage({ supabaseSession: { access_token: "tok" } });
+    browserMock.storage.local.get.mockRejectedValueOnce(new Error("storage unavailable"));
 
-    const result = await signOut();
+    expect(await signOut()).toBe(true);
 
-    expect(result).toBe(true);
-    // Session should still be cleared
-    const session = await getSession();
-    expect(session).toBeNull();
+    expect(mockChangeAccount).toHaveBeenCalledTimes(1);
+    expect(await getSession()).toBeNull();
   });
 });
