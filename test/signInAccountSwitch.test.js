@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 
 const storageData = {};
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
+vi.mock('../agent/modules/deviceSync.js', () => ({ changeAccount: vi.fn(async (storeSession) => storeSession()) }));
 vi.mock('../agent/modules/config.js', () => ({
   getBackendUrl: vi.fn(async () => 'https://backend.example.com'),
   SETTINGS: { authSignInTimeoutMs: 60 * 1000, authWindow: { defaultWidth: 500, defaultHeight: 700 } },
@@ -56,7 +57,9 @@ const browserMock = {
 };
 globalThis.browser = browserMock;
 
-const { ensureSignedIn } = await import('../agent/modules/supabaseAuth.js');
+const { ensureSignedIn, initSessionHost } = await import('../agent/modules/supabaseAuth.js');
+// As the background page, the one place the session is stored.
+initSessionHost();
 
 /** Runs the sign-in to its end, the window's polls and waits passing at once. */
 async function signIn() {

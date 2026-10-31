@@ -9,7 +9,7 @@ import { SETTINGS } from "./modules/config.js";
 import { attachDeviceSyncTransportListener, setAICacheProbeHandler } from "./modules/deviceSync.js";
 import * as idb from "./modules/idbStorage.js";
 import { handlePromptStoreMessage, initPromptStoreHost } from "./modules/promptStore.js";
-import { ensureSignedIn, signOut } from "./modules/supabaseAuth.js";
+import { ensureSignedIn, handleStoreSessionMessage, initSessionHost, signOut } from "./modules/supabaseAuth.js";
 // Indexing disabled – import removed
 import { initContextMenus } from "./modules/contextMenus.js";
 import { isInboxFolder } from "./modules/folderUtils.js";
@@ -94,6 +94,8 @@ setAICacheProbeHandler(async (probeKeys, fields) => {
     }
     return results;
 });
+// This page is the one place the session is stored, so Device Sync follows every account change (supabaseAuth.js).
+initSessionHost();
 // This page is the one place the knowledge base and the rules are changed (promptStore.js).
 initPromptStoreHost().catch((e) => log(`[PromptStore] Start failed: ${e}`, "error"));
 attachDeviceSyncTransportListener();
@@ -466,6 +468,10 @@ function setupRuntimeMessageListener() {
 
     if (message.command === "prompt-store") {
         return handlePromptStoreMessage(message);
+    }
+
+    if (message.command === "store-session") {
+        return handleStoreSessionMessage(message);
     }
 
     // --- Template Management Commands ---

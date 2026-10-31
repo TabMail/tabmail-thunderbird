@@ -1015,6 +1015,8 @@ async function handleMessage(rawData) {
  * Called automatically on startup (always-on sync).
  */
 export function connect() {
+  // An account change holds every connect until the new session is stored (changeAccount).
+  if (accountChange) return accountChange.then(connect);
   transportDisconnected = false;
   if (connectPromise) return connectPromise;
   const generation = connectionGeneration;
@@ -1079,6 +1081,34 @@ export async function cleanupDeviceSync() {
 
   await disconnect();
   log(`${PFX}Device sync cleaned up`);
+}
+
+// An account change in progress (changeAccount); null otherwise.
+let accountChange = null;
+
+/**
+ * An account change (DS-DEVICE), from supabaseAuth's one session writer: leaves the current account's
+ * devices, runs `storeSession` (the new session's write), then, when `signedIn`, connects as the new
+ * account. No connection starts in between: a connect asked for meanwhile waits for the change, so none
+ * is made with the session being replaced. The last connect is not awaited: it reads the token, and a
+ * refresh it starts writes the session, after this change.
+ */
+export async function changeAccount(storeSession, signedIn) {
+  let settle;
+  accountChange = new Promise((resolve) => { settle = resolve; });
+  try {
+    try {
+      await cleanupDeviceSync();
+      log(`${PFX}The account changed: left the previous account's devices`);
+    } catch (e) {
+      log(`${PFX}Could not leave the previous account's devices: ${e}`, "error");
+    }
+    await storeSession();
+  } finally {
+    accountChange = null;
+    settle();
+  }
+  if (signedIn) connect().catch((e) => log(`${PFX}Could not connect as the new account: ${e}`, "warn"));
 }
 
 /**

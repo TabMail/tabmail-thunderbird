@@ -85,6 +85,8 @@ export class DeviceStore {
           if (store.afterIO) await store.afterIO('set', values);
         },
         remove: async (keys) => {
+          // A test can hold a removal before it lands.
+          if (store.beforeRemove) await store.beforeRemove(keys);
           if (store.failRemove && (typeof keys === 'string' ? [keys] : keys).some((key) => key.startsWith('bullet_state:'))) {
             store.failRemove = false;
             throw new Error('synthetic storage failure');
@@ -204,7 +206,11 @@ function stubsFor(stubs, files) {
  * A Thunderbird device: its store, and the background process running on it, which restarts.
  * options: { name(k) → its k-th fresh writer name (16 hex), budget (read at each send), catalog,
  * files (more of the add-on's modules to load, such as the writers), stubs (more stubs, or
- * replacements, by path) }
+ * replacements, by path), settings (more SETTINGS), browser (more browser APIs, for the background and
+ * its pages), globals (more globals), fetch(url, init, bundled) (in place of the bundled files' fetch),
+ * groupFor(url) → the relay a connect to `url` joins (the Device Sync group of its token's account) }
+ * Given agent/modules/supabaseAuth.js as a file, the background stores the session, as background.js
+ * makes it (initSessionHost), and its pages ask it to.
  */
 export class BulletDevice {
   constructor(id, store, relay, options = {}) {
@@ -225,7 +231,8 @@ export class BulletDevice {
     let listener = null;
     const tmDeviceSync = {
       getState: async () => (device.relay.isConnected(device.id) ? 'open' : 'closed'),
-      connect: async () => {
+      connect: async (url) => {
+        if (device.options.groupFor) device.relay = device.options.groupFor(url);
         device.relay.join(device.id, (text) => listener?.({ type: 'message', data: text }));
         return 'open';
       },
@@ -258,12 +265,13 @@ export class BulletDevice {
       stubs: { ...defaults, ...device.options.stubs },
       expose: { 'agent/modules/promptStore.js': ['engine', 'change', 'holder', 'waiting'] },
       globals: {
-        browser: { storage: this.store.api(), tmDeviceSync, runtime: { getURL: (path) => `moz-extension://synthetic/${path}` } },
+        browser: { storage: this.store.api(), tmDeviceSync, runtime: { getURL: (path) => `moz-extension://synthetic/${path}` }, ...device.options.browser },
         crypto,
-        fetch: bundledFetch(device.options.catalog ?? defaultCatalog),
+        fetch: this.fetch(),
         TextEncoder,
         setTimeout, clearTimeout, setInterval, clearInterval,
         console: { log() {}, warn() {}, error() {} },
+        ...device.options.globals,
       },
     });
     this.realm = realm;
@@ -272,8 +280,18 @@ export class BulletDevice {
     this.bullets = realm.require('agent/modules/bullets.js');
     await this.prompts.initPromptStoreHost();
     this.sync.attachDeviceSyncTransportListener();
+    if (device.options.files?.includes('agent/modules/supabaseAuth.js')) {
+      this.auth = realm.require('agent/modules/supabaseAuth.js');
+      this.auth.initSessionHost();
+    }
     this.listener = () => listener;
     return this;
+  }
+
+  /** The device's fetch: the bundled files, or the test's in their place. */
+  fetch() {
+    const bundled = bundledFetch(this.options.catalog ?? defaultCatalog);
+    return this.options.fetch ? (url, init) => this.options.fetch(url, init, bundled) : bundled;
   }
 
   /** The modules every realm on this device gets in place of the add-on's own. */
@@ -286,8 +304,10 @@ export class BulletDevice {
           deviceSync: { broadcastDebounceMs: 500, busyReapplyMs: device.options.busyReapplyMs ?? 20, maxWaitingReceives: device.options.maxWaitingReceives ?? 256, historyDebounceMs: 2000, get messageMaxBytes() { return device.options.budget ?? DEFAULT_BUDGET; } },
           promptSemaphore: { leaseMs: device.options.leaseMs ?? 15000, acquireWaitMs: device.options.acquireWaitMs ?? 1000 },
           actionCompaction: { defaultRules: 200, minRules: 100, maxRules: 500, stepRules: 10, defaultChars: 32000, minChars: 16000, maxChars: 80000, stepChars: 1000, legacyDefaultRules: 100, legacyDefaultChars: 16000 },
+          ...device.options.settings,
         },
         getDeviceSyncUrl: async () => 'https://sync.example.com',
+        getBackendUrl: async () => 'https://backend.example.com',
       },
       'agent/modules/actionCompactConfig.js': { resolveActionConfig: (value) => value, readActionConfig: async () => ({}), ACTION_CONFIG_KEY: 'action_compact_config' },
       'agent/modules/supabaseAuth.js': { getAccessToken: async () => 'synthetic-token' },
@@ -306,6 +326,7 @@ export class BulletDevice {
     const device = this;
     const sendMessage = async (message) => {
       const copy = structuredClone(message);
+      if (copy?.command === 'store-session' && device.auth) return structuredClone(await device.auth.handleStoreSessionMessage(copy));
       if (copy?.command !== 'prompt-store') return undefined;
       return structuredClone(await device.prompts.handlePromptStoreMessage(copy));
     };
@@ -313,12 +334,13 @@ export class BulletDevice {
       files: [...FILES, ...files],
       stubs: stubsFor({ ...this.stubs(), ...stubs }, [...FILES, ...files]),
       globals: {
-        browser: { storage: this.store.api(), runtime: { getURL: (path) => `moz-extension://synthetic/${path}`, sendMessage } },
+        browser: { storage: this.store.api(), runtime: { getURL: (path) => `moz-extension://synthetic/${path}`, sendMessage }, ...device.options.browser },
         crypto: globalThis.crypto,
-        fetch: bundledFetch(device.options.catalog ?? defaultCatalog),
+        fetch: this.fetch(),
         TextEncoder,
         setTimeout, clearTimeout,
         console: { log() {}, warn() {}, error() {} },
+        ...device.options.globals,
         ...globals,
       },
       expose,
