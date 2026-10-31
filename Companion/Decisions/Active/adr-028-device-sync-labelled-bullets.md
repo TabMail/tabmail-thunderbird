@@ -73,10 +73,15 @@ had touched. Timestamps on the whole field could not tell the cases apart.
   `storeSession` in supabaseAuth.js, run only by the background page (`initSessionHost`; a page sends
   `store-session`): a sign-in from the popup, an automatic re-sign-in after a refused AI call, a token
   refresh (in the background or a page), a refused refresh, a sign-out. When the stored account (the
-  access token's subject) differs from the new one, Device Sync is closed first (`cleanupDeviceSync`:
-  waiting messages dropped, nothing more sent, nothing waited for), then the session is stored, then
-  Device Sync connects as the new account. A write of the same account keeps the connection. Writes
-  run one after another. Before this, an automatic re-sign-in to another account kept syncing with the
+  access token's subject) differs from the new one, or either side is signed out, Device Sync runs the
+  change (`changeAccount` in deviceSync.js): it closes first (`cleanupDeviceSync`: waiting messages
+  dropped, nothing more sent, nothing waited for), then the session is stored, then it connects as the
+  new account (not awaited: a refresh that connect starts writes the session after the change). A
+  connect asked for during the change (startup, sync turned on) waits for it, so none is made with the
+  session being replaced. Signed out is never "the same account", so a sign-out closes Device Sync
+  even when the stored session could not be read. A write of the same account keeps the connection.
+  Writes run one after another, and a failed write releases the connects waiting for it and does not
+  stop the next. Before this, an automatic re-sign-in to another account kept syncing with the
   old account's devices until the next reconnect.
 
 ## Consequences

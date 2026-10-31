@@ -8,7 +8,8 @@
 // account, from the background or a page, a refused refresh, a sign-out), Device Sync leaves the old
 // account's devices before the new session is stored: from then on nothing this device sends reaches
 // them and nothing they sent is applied. Then it syncs with the new account's devices. A sign-in or
-// refresh of the same account keeps the connection. Simulated devices (bulletDevices.js) with the real
+// refresh of the same account keeps the connection. The change is one step: no connect asked for during it
+// connects as the old account, and session writes land in order. Simulated devices (bulletDevices.js) with the real
 // supabaseAuth, Device Sync and prompt store; each connection joins the group of its token's account.
 
 import { describe, expect, it, vi } from 'vitest';
@@ -353,20 +354,28 @@ describe('an account change is one step: nothing connects as the old account dur
     await endsOn(ctx, null);
   });
 
-  it('a session write that fails does not stop the next one', async () => {
+  it('a session write that fails releases the connects waiting for it and does not stop the next write', async () => {
     const ctx = await start();
-    const { world, d } = ctx;
+    const { groups, world, d } = ctx;
     world.signInAs = session('B');
     let failed = false;
+    let waiting = null;
     d.store.beforeSet = async (values) => {
       if (!failed && Object.hasOwn(values, 'supabaseSession')) {
         failed = true;
+        // Device Sync's own connect, asked for during the change, then the write fails.
+        waiting = d.sync.connect();
+        await new Promise((resolve) => setTimeout(resolve, 20));
         throw new Error('storage unavailable');
       }
     };
 
     await d.auth.ensureSignedIn();
     expect(failed).toBe(true);
+    // The waiting connect goes ahead with the session still stored: A's.
+    await within(waiting, 5000);
+    expect(accountOf(d.store.values.supabaseSession.access_token)).toBe('A');
+    await vi.waitFor(() => expect(groups.A.isConnected('D')).toBe(true));
     expect(await within(d.auth.signOut(), 5000)).toBe(true);
 
     expect(d.store.values.supabaseSession).toBeUndefined();
