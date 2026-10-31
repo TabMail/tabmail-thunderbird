@@ -326,7 +326,12 @@ export class BulletDevice {
     const device = this;
     const sendMessage = async (message) => {
       const copy = structuredClone(message);
-      if (copy?.command === 'store-session' && device.auth) return structuredClone(await device.auth.handleStoreSessionMessage(copy));
+      if (copy?.command === 'store-session' && device.auth) {
+        const reply = await device.auth.handleStoreSessionMessage(copy);
+        // A test can hold the background's reply on its way back to the page.
+        if (device.beforeSessionReply) await device.beforeSessionReply(copy);
+        return structuredClone(reply);
+      }
       if (copy?.command !== 'prompt-store') return undefined;
       return structuredClone(await device.prompts.handlePromptStoreMessage(copy));
     };

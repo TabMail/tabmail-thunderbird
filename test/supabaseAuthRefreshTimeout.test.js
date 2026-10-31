@@ -486,9 +486,11 @@ describe("token refresh timeout (issue #55)", () => {
     storageData.supabaseSession = {access_token:'synthetic-current',refresh_token:'synthetic-current-refresh',expires_at:Math.floor(Date.now()/1000)+3600};
     await drainRetryBudget();
     expect(settled).toEqual(['first','second']);
-    expect(await first).toBeNull();
+    // After the timed-out refresh, the first call reads the stored session again: the newer one stored
+    // meanwhile answers it, never the refresh's own result (#203).
+    expect(await first).toMatchObject({assistant:'synthetic recovered'});
     expect(await second).toMatchObject({assistant:'synthetic recovered'});
-    expect(backendCalls).toBe(1);
+    expect(backendCalls).toBe(2);
   });
 
   it("a stalled refresh releases the downstream AI semaphore slot so the next call proceeds", async () => {
