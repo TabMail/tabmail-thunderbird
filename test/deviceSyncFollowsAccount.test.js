@@ -68,15 +68,18 @@ function sentBy(group, d) {
 async function start({ refreshRetries = 1 } = {}) {
   const groups = { A: new BulletRelay(), B: new BulletRelay() };
   // refreshAs: the session a token refresh answers (null: refused), or a function of the refresh token
-  // sent. refreshGate: a promise every refresh's reply waits for (a slow refresh). refreshes: how many
-  // refreshes were sent. atDone: called when the sign-in reaches its last step.
-  const world = { signInAs: null, refreshAs: null, refreshGate: null, refreshes: 0, atDone: null };
+  // sent. refreshGate: a promise every refresh's reply waits for (a slow refresh), or a function of the
+  // refresh token sent returning one. refreshes: how many refreshes were sent; sent: their refresh tokens.
+  // atDone: called when the sign-in reaches its last step.
+  const world = { signInAs: null, refreshAs: null, refreshGate: null, refreshes: 0, sent: [], atDone: null };
   const fetch = async (url, init, bundled) => {
     const href = String(url);
     if (href.startsWith(`${SUPABASE}/auth/v1/token`)) {
+      const sent = JSON.parse(init.body).refresh_token;
       world.refreshes += 1;
-      if (world.refreshGate) await world.refreshGate;
-      const answer = typeof world.refreshAs === 'function' ? world.refreshAs(JSON.parse(init.body).refresh_token) : world.refreshAs;
+      world.sent.push(sent);
+      if (world.refreshGate) await (typeof world.refreshGate === 'function' ? world.refreshGate(sent) : world.refreshGate);
+      const answer = typeof world.refreshAs === 'function' ? world.refreshAs(sent) : world.refreshAs;
       if (answer === null) return { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) };
       return { ok: true, status: 200, json: async () => answer };
     }
@@ -600,6 +603,62 @@ describe('a token refresh that finishes after a newer sign-in or a sign-out neve
     await vi.waitFor(() => expect(groups.B.isConnected('D')).toBe(true));
     await d.listener()({ type: 'message', data: JSON.stringify({ type: 'connected', userId: 'B' }) });
     await endsOn(ctx, 'B');
+  });
+
+  /** A newer session of A that expires within the minute, stored as a sign-in stores it: same account, so
+   * Device Sync keeps its connection and does not ask for a token of its own. */
+  async function storeExpiringA2(d) {
+    expect(await d.auth.handleStoreSessionMessage({ session: { ...session('A', 2), expires_at: Math.floor(Date.now() / 1000) + 30 } })).toEqual({ ok: true });
+  }
+
+  it.each(['background', 'page'])('a call in the %s runs at most one refresh: when its refresh finishes after a newer session that itself needs refreshing, it answers no token, and the next call refreshes that one', async (where) => {
+    const { world, d } = await start();
+    const slow = gate();
+    world.refreshGate = (sent) => (sent === 'refresh-A-1' ? slow.promise : null);
+    world.refreshAs = (sent) => ({ 'refresh-A-1': session('A', 3), 'refresh-A-2': session('A', 4) })[sent] ?? null;
+    expiring(d);
+    const auth = authIn(d, where);
+    const first = callers(auth);
+    await vi.waitFor(() => expect(world.sent).toEqual(['refresh-A-1']));
+    await storeExpiringA2(d);
+    slow.open();
+
+    // The first callers ran their one refresh; A2 is not refreshed for them, and A3 was not stored.
+    expect(await within(first, 5000)).toEqual([null, null, null]);
+    expect(world.sent).toEqual(['refresh-A-1']);
+    expect(d.store.values.supabaseSession.refresh_token).toBe('refresh-A-2');
+    // The next call refreshes the stored A2.
+    expect(await within(auth.getAccessToken(), 5000)).toBe(token('A', 4));
+    expect(world.sent).toEqual(['refresh-A-1', 'refresh-A-2']);
+    expect(d.store.values.supabaseSession.access_token).toBe(token('A', 4));
+  });
+
+  it.each(['background', 'page'])('in the %s, a call that arrives after an older refresh finishes joins the newer session\'s refresh already under way', async (where) => {
+    const { world, d } = await start();
+    const slowA1 = gate();
+    const slowA2 = gate();
+    world.refreshGate = (sent) => ({ 'refresh-A-1': slowA1.promise, 'refresh-A-2': slowA2.promise })[sent] ?? null;
+    world.refreshAs = (sent) => ({ 'refresh-A-1': session('A', 3), 'refresh-A-2': session('A', 4) })[sent] ?? null;
+    expiring(d);
+    const auth = authIn(d, where);
+    // A1's refresh is under way; a newer A2 that needs refreshing is stored, and a call starts its refresh.
+    const older = auth.getAccessToken();
+    await vi.waitFor(() => expect(world.sent).toEqual(['refresh-A-1']));
+    await storeExpiringA2(d);
+    const early = auth.getAccessToken();
+    await vi.waitFor(() => expect(world.sent).toEqual(['refresh-A-1', 'refresh-A-2']));
+    // A1's refresh finishes (not stored: A2 replaced its session); then another call for A2 arrives.
+    slowA1.open();
+    expect(await within(older, 5000)).toBe(null);
+    const late = auth.getAccessToken();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // It joined: A2 was sent once.
+    expect(world.sent).toEqual(['refresh-A-1', 'refresh-A-2']);
+    slowA2.open();
+
+    expect(await within(Promise.all([early, late]), 5000)).toEqual([token('A', 4), token('A', 4)]);
+    expect(world.sent).toEqual(['refresh-A-1', 'refresh-A-2']);
+    expect(d.store.values.supabaseSession.access_token).toBe(token('A', 4));
   });
 
   it('a refused refresh whose clear fails answers no token, never the expired one', async () => {
