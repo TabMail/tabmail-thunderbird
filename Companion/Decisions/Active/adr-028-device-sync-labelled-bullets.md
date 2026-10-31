@@ -83,6 +83,22 @@ had touched. Timestamps on the whole field could not tell the cases apart.
   Writes run one after another, and a failed write releases the connects waiting for it and does not
   stop the next. Before this, an automatic re-sign-in to another account kept syncing with the
   old account's devices until the next reconnect.
+- **The stored session is the only truth (#201, #203).** A token refresh writes only through a compare
+  against it and answers nothing. Its write carries the refresh token it started from (`from`, sent
+  with a page's `store-session`), and `switchSession` stores it only while the stored session still has
+  that refresh token; a refused refresh's clear is the same compare. So a refresh that finishes after a
+  newer sign-in (to any account) or a sign-out never brings the older session back, and Device Sync stays
+  with the newer one. A stored session that cannot be read fails the compare: nothing is written. A
+  refresh the server answered is not sent again, even when its write fails, because the server has
+  already rotated the refresh token. `getAccessToken` reads the stored session, joins the refresh of that
+  session under way in its realm or runs one (`refreshOnce`, keyed by refresh token), then reads the
+  stored session again: it answers that session's token if it is valid, or null. A caller therefore
+  never gets a token that was not stored, or one of a replaced session (before this, a page's refresh
+  whose reply arrived after a sign-in to another account answered the old account's token, and AI calls
+  were made as it). A newer session that itself needs a refresh answers null to callers of the older
+  refresh; the next call refreshes it. Considered and rejected: the refresh returning its own token after
+  checking it (every check after an `await` is stale by the next one), and a waiter re-answering
+  recursively (unbounded, and each crossing needed its own case).
 
 ## Consequences
 

@@ -28,6 +28,15 @@ concurrent waiters, per-attempt signal actually aborted, session preserved, zero
 healthy refresh afterwards; 4xx and 5xx paths preserved; downstream `sendChat` with
 `maxAgentWorkers: 1` unwinds and the next call proceeds. Red on pre-fix code (waiters never settle).
 
+## Since #201/#203: one refresh per session, and the answer is the stored session
+
+`_refreshInProgress` (one shared promise whose result was the token) is replaced by `_refreshes`, a
+map from refresh token to its refresh under way (`refreshOnce`). A refresh answers nothing; when it
+settles, every waiter reads the stored session again and answers its token if valid, or null. The
+deadline above is unchanged and still bounds every waiter. One consequence for the timeout test: a
+caller waiting on a timed-out refresh now gets a newer session stored meanwhile, not null. Rule and
+rationale: ADR-028, "The stored session is the only truth".
+
 ## Not changed
 
 Heartbeat/SSE behaviour, the queue, the non-SSE JSON-body branch in `sendChatCompletions` (which

@@ -42,11 +42,13 @@ async function setSession(session) {
 
 /**
  * Clears the stored Supabase session.
+ *
+ * @param {string} [from] - a refused token refresh's clear: the refresh token it started from
  */
-async function clearSession() {
+async function clearSession(from) {
   try {
-    await storeSession(null);
-    log("[SupabaseAuth] Session cleared");
+    await storeSession(null, from);
+    log(from === undefined ? "[SupabaseAuth] Session cleared" : "[SupabaseAuth] Refused session cleared, unless a newer one replaced it");
   } catch (e) {
     log(`[SupabaseAuth] Failed to clear session: ${e}`, "error");
   }
@@ -66,7 +68,7 @@ export function initSessionHost() {
 
 /** The background's "store-session" runtime message handler: returns the write's promise. */
 export function handleStoreSessionMessage(message) {
-  return storeSession(message?.session ?? null).then(
+  return storeSession(message?.session ?? null, message?.from).then(
     () => ({ ok: true }),
     (e) => ({ ok: false, error: String(e) }),
   );
@@ -98,34 +100,61 @@ function sameAccount(a, b) {
  * is which devices this one syncs with (DS-DEVICE). When the account changes, by any path, Device Sync
  * leaves the old account's devices before the new session is stored, so nothing is sent to them or taken
  * from them after it, then connects as the new account. Nothing on the device is removed.
+ *
+ * The stored session is the only truth. A token refresh's write (`from`) is a compare against it: it is
+ * written only while the stored session is still the one the refresh started from, so a refresh that
+ * finishes after a newer sign-in or a sign-out never replaces it (#201), and one whose stored session
+ * cannot be read is not written.
  * @param {{access_token: string, refresh_token: string, expires_at: number}|null} session - null signs out
+ * @param {string} [from] - a token refresh's write: the refresh token it started from
  */
-function storeSession(session) {
+function storeSession(session, from) {
   if (!_sessionHost) {
-    return browser.runtime.sendMessage({ command: "store-session", session }).then((response) => {
+    return browser.runtime.sendMessage({ command: "store-session", session, from }).then((response) => {
       if (!response?.ok) throw new Error(response?.error || "the background did not store the session");
     });
   }
-  const write = _sessionWrites.then(() => switchSession(session));
+  const write = _sessionWrites.then(() => switchSession(session, from));
   _sessionWrites = write.catch(() => {});
   return write;
 }
 
-async function switchSession(session) {
+async function switchSession(session, from) {
+  // A read that fails is no session: a sign-in or sign-out goes ahead (signed out is never the same
+  // account, so Device Sync follows); a refresh's write is not stored.
+  const stored = await getSession();
+  if (from !== undefined && stored?.refresh_token !== from) {
+    log("[SupabaseAuth] Refresh not stored: a newer sign-in or a sign-out replaced the session it refreshed");
+    return;
+  }
   const write = () => (session
     ? browser.storage.local.set({ supabaseSession: session })
     : browser.storage.local.remove("supabaseSession"));
-  if (sameAccount(await getSession(), session)) return write();
+  if (sameAccount(stored, session)) return write();
   // Leaving never waits: messages still waiting from the old devices are dropped, nothing more is sent.
   const { changeAccount } = await import("./deviceSync.js");
   return changeAccount(write, !!session);
 }
 
+// A token is refreshed when it expires within this many seconds.
+const REFRESH_BEFORE_EXPIRY_S = 60;
+
+/** Whether a session's access token is expired or expires soon, so it is refreshed before use. */
+function needsRefresh(session) {
+  const now = Math.floor(Date.now() / 1000);
+  log(`[SupabaseAuth] Token expires_at: ${session.expires_at}, now: ${now}, diff: ${session.expires_at - now}s`);
+  return !!session.expires_at && session.expires_at - now < REFRESH_BEFORE_EXPIRY_S;
+}
+
 /**
- * Gets a valid access token, refreshing if necessary.
- * Uses a mutex to prevent race conditions when multiple calls happen simultaneously.
- * 
- * @returns {Promise<string|null>} The access token, or null if not logged in
+ * Gets a valid access token of the session stored now, refreshing it if necessary.
+ *
+ * The stored session is the only answer. A refresh stores its session through a compare against the one
+ * it started from and answers nothing, so after it the stored session is read again: a caller never gets
+ * a token that was not stored, or one of a session a newer sign-in or a sign-out replaced (#203). Callers
+ * of the same session join one refresh; each runs at most one.
+ *
+ * @returns {Promise<string|null>} The access token, or null if signed out or no valid session is stored
  */
 export async function getAccessToken() {
   log("[SupabaseAuth] getAccessToken() called");
@@ -135,50 +164,44 @@ export async function getAccessToken() {
     log("[SupabaseAuth] No session, returning null");
     return null;
   }
-
-  // Check if token is expired or about to expire (within 60 seconds)
-  const now = Math.floor(Date.now() / 1000);
-  log(`[SupabaseAuth] Token expires_at: ${session.expires_at}, now: ${now}, diff: ${session.expires_at - now}s`);
-  if (session.expires_at && session.expires_at - now < 60) {
-    log("[SupabaseAuth] Token expired or expiring soon, refreshing...");
-    
-    // If a refresh is already in progress, wait for it instead of starting a new one
-    if (_refreshInProgress) {
-      log("[SupabaseAuth] Refresh already in progress, waiting for result...");
-      try {
-        const result = await _refreshInProgress;
-        log(`[SupabaseAuth] Waited for in-progress refresh, result: ${result ? "success" : "failed"}`);
-        return result;
-      } catch (e) {
-        log(`[SupabaseAuth] Error waiting for in-progress refresh: ${e}`, "error");
-        return null;
-      }
-    }
-    
-    // Start a new refresh and store the promise so other callers can wait
-    log("[SupabaseAuth] Starting new refresh (no other refresh in progress)");
-    _refreshInProgress = performTokenRefreshWithRetry(session.refresh_token);
-    
-    try {
-      const result = await _refreshInProgress;
-      return result;
-    } finally {
-      // Clear the in-progress flag after completion (success or failure)
-      _refreshInProgress = null;
-      log("[SupabaseAuth] Refresh completed, cleared in-progress flag");
-    }
+  if (!needsRefresh(session)) {
+    log("[SupabaseAuth] Returning existing access token");
+    return session.access_token;
   }
 
-  log("[SupabaseAuth] Returning existing access token");
-  return session.access_token;
+  log("[SupabaseAuth] Token expired or expiring soon, refreshing...");
+  await refreshOnce(session.refresh_token);
+  const stored = await getSession();
+  if (!stored || needsRefresh(stored)) {
+    log("[SupabaseAuth] No valid session stored after the refresh, returning null", "warn");
+    return null;
+  }
+  log("[SupabaseAuth] Returning the stored access token after the refresh");
+  return stored.access_token;
+}
+
+/** Joins the refresh of `refreshToken`'s session under way in this realm, or starts it. Settles when it
+ * is done, with nothing: its outcome is the stored session. */
+function refreshOnce(refreshToken) {
+  const running = _refreshes.get(refreshToken);
+  if (running) {
+    log("[SupabaseAuth] Refresh of this session already in progress, waiting for it...");
+    return running;
+  }
+  log("[SupabaseAuth] Starting new refresh (no other refresh of this session in progress)");
+  const refresh = performTokenRefreshWithRetry(refreshToken).finally(() => {
+    if (_refreshes.get(refreshToken) === refresh) _refreshes.delete(refreshToken);
+    log("[SupabaseAuth] Refresh completed, cleared in-progress entry");
+  });
+  _refreshes.set(refreshToken, refresh);
+  return refresh;
 }
 
 /**
- * Performs token refresh with retry logic and exponential backoff.
- * This is separated from getAccessToken() to enable the mutex pattern.
- * 
+ * Performs token refresh with retry logic and exponential backoff. Answers nothing: a refreshed session
+ * is stored through the compare, and a refused one is cleared through it.
+ *
  * @param {string} refreshToken - The refresh token to use
- * @returns {Promise<string|null>} The new access token, or null if all attempts failed
  */
 async function performTokenRefreshWithRetry(refreshToken) {
   const maxRetries = SETTINGS.authTokenRefreshRetries;
@@ -188,10 +211,7 @@ async function performTokenRefreshWithRetry(refreshToken) {
     log(`[SupabaseAuth] Refresh attempt ${attempt}/${maxRetries}`);
     const refreshed = await refreshAccessToken(refreshToken);
 
-    if (refreshed && refreshed !== REFRESH_NETWORK_ERROR) {
-      log("[SupabaseAuth] Token refreshed successfully");
-      return refreshed.access_token;
-    }
+    if (refreshed === REFRESH_ANSWERED) return;
 
     if (refreshed !== REFRESH_NETWORK_ERROR) {
       // Definitive auth failure (4xx) — token is revoked/invalid
@@ -207,10 +227,11 @@ async function performTokenRefreshWithRetry(refreshToken) {
         log("[SupabaseAuth] All refresh attempts failed due to network errors — keeping session for later retry", "warn");
       } else {
         // At least one attempt got a definitive 4xx — token is revoked.
+        // Through the compare: a newer sign-in or a sign-out that replaced it while it waited stays.
         log("[SupabaseAuth] Token refresh rejected by server (4xx), clearing session", "error");
-        await clearSession();
+        await clearSession(refreshToken);
       }
-      return null;
+      return;
     }
 
     // Wait before retrying (exponential backoff: 1s, 2s, 4s)
@@ -218,21 +239,22 @@ async function performTokenRefreshWithRetry(refreshToken) {
     log(`[SupabaseAuth] Refresh failed, retrying in ${backoffMs}ms...`, "warn");
     await sleep(backoffMs);
   }
-
-  // Shouldn't reach here, but return null for safety
-  return null;
 }
 
 // Sentinel returned by refreshAccessToken when the failure is a network/transient
 // error (as opposed to a definitive auth rejection like 400/401/403).
 const REFRESH_NETWORK_ERROR = Symbol("REFRESH_NETWORK_ERROR");
+// Sentinel returned by refreshAccessToken when the server answered with a new session: it was offered
+// to the stored session through the compare, and is not sent again.
+const REFRESH_ANSWERED = Symbol("REFRESH_ANSWERED");
 
 /**
- * Refreshes the access token using the refresh token.
+ * Refreshes the access token using the refresh token, and stores the new session through the compare
+ * against the one it started from.
  *
  * @param {string} refreshToken
- * @returns {Promise<{access_token: string, refresh_token: string, expires_at: number}|null|Symbol>}
- *   - session object on success
+ * @returns {Promise<null|Symbol>}
+ *   - REFRESH_ANSWERED when the server answered with a new session (stored, or not: the stored session says)
  *   - null on definitive auth failure (4xx — token revoked/invalid)
  *   - REFRESH_NETWORK_ERROR on transient failure (network error, 5xx)
  */
@@ -288,9 +310,14 @@ async function refreshAccessToken(refreshToken) {
       expires_at: data.expires_at,
     };
 
-    await setSession(newSession);
-    log("[SupabaseAuth] Token refreshed successfully");
-    return newSession;
+    try {
+      await storeSession(newSession, refreshToken);
+      log("[SupabaseAuth] Token refresh answered; stored unless a newer session replaced the refreshed one");
+    } catch (e) {
+      // Not sent again: the server has already rotated the refresh token it was sent.
+      log(`[SupabaseAuth] Refreshed session not stored: ${e}`, "error");
+    }
+    return REFRESH_ANSWERED;
   } catch (e) {
     log(`[SupabaseAuth] Token refresh network error: ${e.message || e}`, "error");
     return REFRESH_NETWORK_ERROR;
@@ -734,8 +761,8 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 let _reAuthInProgress = false;
 let _reAuthWindowId = null;
 
-// Track ongoing refresh to prevent race conditions
-let _refreshInProgress = null; // Will hold a Promise when refresh is in progress
+// The refresh under way in this realm for each refresh token: callers of the same session join it.
+const _refreshes = new Map();
 
 /**
  * Reset auth state (called on extension startup).
@@ -744,7 +771,7 @@ export function resetAuthState() {
   log("[SupabaseAuth] Resetting auth state");
   _reAuthInProgress = false;
   _reAuthWindowId = null;
-  _refreshInProgress = null;
+  _refreshes.clear();
 }
 
 /**

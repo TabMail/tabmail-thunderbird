@@ -9,8 +9,11 @@
 // account's devices before the new session is stored: from then on nothing this device sends reaches
 // them and nothing they sent is applied. Then it syncs with the new account's devices. A sign-in or
 // refresh of the same account keeps the connection. The change is one step: no connect asked for during it
-// connects as the old account, and session writes land in order. Simulated devices (bulletDevices.js) with the real
-// supabaseAuth, Device Sync and prompt store; each connection joins the group of its token's account.
+// connects as the old account, and session writes land in order. The stored session is the only truth: a
+// token refresh that finishes after a newer sign-in or a sign-out stores nothing (#201), and every caller
+// of getAccessToken gets a token of the session stored now, or none (#203). Simulated devices
+// (bulletDevices.js) with the real supabaseAuth, Device Sync and prompt store; each connection joins the
+// group of its token's account.
 
 import { describe, expect, it, vi } from 'vitest';
 import { BulletDevice, BulletRelay, DeviceStore } from './support/bulletDevices.js';
@@ -62,14 +65,23 @@ function sentBy(group, d) {
  * Device D signed in to account A, with a peer on A and one on B, each with a fact of its own. A's peer
  * then writes "Late fact from A", which is on its way to D when the path runs.
  */
-async function start() {
+async function start({ refreshRetries = 1 } = {}) {
   const groups = { A: new BulletRelay(), B: new BulletRelay() };
-  const world = { signInAs: null, refreshAs: null };
+  // refreshAs: the session a token refresh answers (null: refused), or a function of the refresh token
+  // sent. refreshGate: a promise every refresh's reply waits for (a slow refresh), or a function of the
+  // refresh token sent returning one. refreshes: how many refreshes were sent; sent: their refresh tokens.
+  // atDone: called when the sign-in reaches its last step.
+  const world = { signInAs: null, refreshAs: null, refreshGate: null, refreshes: 0, sent: [], atDone: null };
   const fetch = async (url, init, bundled) => {
     const href = String(url);
     if (href.startsWith(`${SUPABASE}/auth/v1/token`)) {
-      if (world.refreshAs === null) return { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) };
-      return { ok: true, status: 200, json: async () => world.refreshAs };
+      const sent = JSON.parse(init.body).refresh_token;
+      world.refreshes += 1;
+      world.sent.push(sent);
+      if (world.refreshGate) await (typeof world.refreshGate === 'function' ? world.refreshGate(sent) : world.refreshGate);
+      const answer = typeof world.refreshAs === 'function' ? world.refreshAs(sent) : world.refreshAs;
+      if (answer === null) return { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) };
+      return { ok: true, status: 200, json: async () => answer };
     }
     // The backend: this session is no longer accepted (an expired subscription or session).
     if (href.startsWith('https://backend.example.com/')) return { ok: false, status: 401, headers: { get: () => 'application/json' }, json: async () => ({}) };
@@ -80,13 +92,16 @@ async function start() {
     windows: { create: async () => ({ id: 41 }), get: async () => ({ id: 41 }), remove: async () => {} },
     tabs: {
       query: async () => [{ id: 42 }],
-      get: async () => ({ id: 42, url: `https://tabmail.ai/auth/tb-done#s=${Buffer.from(JSON.stringify(world.signInAs)).toString('base64')}` }),
+      get: async () => {
+        world.atDone?.();
+        return { id: 42, url: `https://tabmail.ai/auth/tb-done#s=${Buffer.from(JSON.stringify(world.signInAs)).toString('base64')}` };
+      },
       update: async () => {}, remove: async () => {},
     },
     webNavigation: { onCreatedNavigationTarget: { addListener() {}, removeListener() {} } },
   };
   const settings = {
-    supabaseUrl: SUPABASE, supabaseAnonKey: 'synthetic-anon', authTokenRefreshRetries: 1, authTokenRefreshTimeoutMs: 5000,
+    supabaseUrl: SUPABASE, supabaseAnonKey: 'synthetic-anon', authTokenRefreshRetries: refreshRetries, authTokenRefreshTimeoutMs: 5000,
     authSignInTimeoutMs: 60000, authWindow: { defaultWidth: 500, defaultHeight: 700 }, authAutoReauthEnabled: true,
   };
   const d = await new BulletDevice('D', new DeviceStore({ supabaseSession: session('A') }), groups.A, {
@@ -392,6 +407,341 @@ describe('an account change is one step: nothing connects as the old account dur
     expect(await within(d.auth.ensureSignedIn(), 5000)).toBe(true);
 
     await vi.waitFor(() => expect(d.store.values.supabaseSession.access_token).toBe(token('B', 2)));
+    await endsOn(ctx, 'B');
+  });
+
+  it.each([
+    { name: 'a sign-in from the popup', run: ({ d }) => d.auth.ensureSignedIn() },
+    { name: 'an automatic re-sign-in in a chat window', run: ({ d }) => d.page([AUTH]).require(AUTH).handleAuthError(refused()) },
+  ])('$name whose read of the stored session fails still leaves the old account\'s devices before the new session is stored', async (path) => {
+    const ctx = await start();
+    const { world, d } = ctx;
+    world.signInAs = session('B');
+    let armed = false;
+    let failed = false;
+    // The sign-in's session write reads the stored session first: that read fails.
+    world.atDone = () => { armed = true; };
+    d.store.beforeGet = async (keys) => {
+      if (armed && !failed && JSON.stringify(keys ?? null).includes('supabaseSession')) {
+        failed = true;
+        throw new Error('storage unavailable');
+      }
+    };
+    const seen = atTheWrite(ctx);
+
+    await path.run(ctx);
+    await vi.waitFor(() => expect(seen.writes).toBeGreaterThan(0), { timeout: 10000 });
+
+    expect(failed).toBe(true);
+    expect(seen.onA).toBe(false);
+    expect(accountOf(d.store.values.supabaseSession.access_token)).toBe('B');
+    await endsOn(ctx, 'B');
+  });
+});
+
+/** Every account D's session was written as, in order (null for a removal). */
+function sessionWrites(d) {
+  const writes = [];
+  const set = d.store.beforeSet;
+  const remove = d.store.beforeRemove;
+  d.store.beforeSet = async (values) => {
+    if (Object.hasOwn(values, 'supabaseSession')) writes.push(accountOf(values.supabaseSession.access_token));
+    if (set) await set(values);
+  };
+  d.store.beforeRemove = async (keys) => {
+    if ([keys].flat().includes('supabaseSession')) writes.push(null);
+    if (remove) await remove(keys);
+  };
+  return writes;
+}
+
+/** The session module of the background or of a page. */
+function authIn(d, where) {
+  return where === 'background' ? d.auth : d.page([AUTH]).require(AUTH);
+}
+
+/** Three callers of `getAccessToken` at once, as concurrent AI calls make them. */
+function callers(auth) {
+  return Promise.all([auth.getAccessToken(), auth.getAccessToken(), auth.getAccessToken()]);
+}
+
+describe('a token refresh that finishes after a newer sign-in or a sign-out never replaces it (#201)', () => {
+  it.each([
+    { name: 'a sign-in to another account', where: 'background', reply: 'session', newer: 'B' },
+    { name: 'a sign-in to another account', where: 'page', reply: 'session', newer: 'B' },
+    { name: 'a sign-in to another account', where: 'background', reply: 'refused', newer: 'B' },
+    { name: 'a sign-in to another account', where: 'page', reply: 'refused', newer: 'B' },
+    { name: 'a new sign-in to the same account', where: 'background', reply: 'session', newer: 'A' },
+    { name: 'a new sign-in to the same account', where: 'page', reply: 'refused', newer: 'A' },
+    { name: 'a sign-out', where: 'background', reply: 'session', newer: null },
+    { name: 'a sign-out', where: 'page', reply: 'session', newer: null },
+  ])('$name while a refresh in the $where waits for its reply ($reply): the newer session stays, and Device Sync with it', async (path) => {
+    const ctx = await start();
+    const { groups, world, d, peerA, peerB } = ctx;
+    const slow = gate();
+    world.refreshGate = slow.promise;
+    world.refreshAs = path.reply === 'session' ? session('A', 3) : null;
+    expiring(d);
+    const writes = sessionWrites(d);
+    const refresh = callers(authIn(d, path.where));
+    // The refresh is sent and waits for its reply.
+    await vi.waitFor(() => expect(world.refreshes).toBe(1));
+
+    const newer = path.newer === null ? null : session(path.newer, 2);
+    if (newer) {
+      world.signInAs = newer;
+      expect(await d.auth.ensureSignedIn()).toBe(true);
+    } else {
+      expect(await d.auth.signOut()).toBe(true);
+    }
+    const settled = writes.length;
+    slow.open();
+    const answers = await within(refresh, 5000);
+
+    // The refresh stored nothing after the newer write: the old session never comes back. It was sent
+    // once and not again.
+    expect(writes.slice(settled)).toEqual([]);
+    expect(world.refreshes).toBe(1);
+    expect(d.store.values.supabaseSession?.access_token ?? null).toBe(newer?.access_token ?? null);
+    // Its callers get the session that is stored now, or none.
+    expect(answers).toEqual([1, 2, 3].map(() => newer?.access_token ?? null));
+    if (path.newer === 'B') {
+      await vi.waitFor(() => expect(groups.B.isConnected('D')).toBe(true));
+      await d.listener()({ type: 'message', data: JSON.stringify({ type: 'connected', userId: 'B' }) });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(groups.A.isConnected('D')).toBe(path.newer === 'A');
+    expect(groups.B.isConnected('D')).toBe(path.newer === 'B');
+    if (path.newer !== 'A') {
+      expect((await d.add('kb', '', 'Fact after the change')).outcome).toBe('saved');
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      await quiesce([groups.A, groups.B]);
+      expect(await kb(peerA)).not.toContain('Fact after the change');
+      if (path.newer === 'B') expect(await kb(peerB)).toContain('Fact after the change');
+    }
+  });
+
+  it.each([
+    { where: 'background', newer: 'A' },
+    { where: 'page', newer: 'A' },
+    { where: 'background', newer: 'B' },
+    { where: 'page', newer: 'B' },
+    { where: 'background', newer: null },
+    { where: 'page', newer: null },
+  ])('a refresh in the $where whose session write cannot read the stored session ($newer stored meanwhile, if any) stores nothing, is not sent again, and answers the session stored now or none', async (path) => {
+    // Two attempts allowed: the refresh the server answered is still not sent again.
+    const ctx = await start({ refreshRetries: 2 });
+    const { groups, world, d } = ctx;
+    const slow = gate();
+    world.refreshGate = slow.promise;
+    world.refreshAs = session('A', 3);
+    expiring(d);
+    const refresh = callers(authIn(d, path.where));
+    await vi.waitFor(() => expect(world.refreshes).toBe(1));
+    // 'A': nothing newer. 'B' or null: a sign-in to another account, or a sign-out, lands meanwhile.
+    if (path.newer === 'B') {
+      world.signInAs = session('B', 2);
+      expect(await d.auth.ensureSignedIn()).toBe(true);
+      await vi.waitFor(() => expect(groups.B.isConnected('D')).toBe(true));
+    } else if (path.newer === null) {
+      expect(await d.auth.signOut()).toBe(true);
+    }
+    const before = d.store.values.supabaseSession ?? null;
+    const writes = sessionWrites(d);
+    // The next read of the session, the refresh's write's, fails.
+    let failed = false;
+    d.store.beforeGet = async (keys) => {
+      if (!failed && JSON.stringify(keys ?? null).includes('supabaseSession')) {
+        failed = true;
+        throw new Error('storage unavailable');
+      }
+    };
+    slow.open();
+
+    // A's stored session is about to expire: none. B's is valid: B's.
+    expect(await within(refresh, 5000)).toEqual([1, 2, 3].map(() => (path.newer === 'B' ? token('B', 2) : null)));
+    expect(failed).toBe(true);
+    expect(world.refreshes).toBe(1);
+    expect(writes).toEqual([]);
+    expect(d.store.values.supabaseSession ?? null).toEqual(before);
+    if (path.newer === 'A') {
+      expect(groups.A.isConnected('D')).toBe(true);
+      return;
+    }
+    if (path.newer === 'B') await d.listener()({ type: 'message', data: JSON.stringify({ type: 'connected', userId: 'B' }) });
+    await endsOn(ctx, path.newer);
+  });
+
+  it.each([
+    { where: 'background', reply: 'session' },
+    { where: 'page', reply: 'session' },
+    { where: 'background', reply: 'refused' },
+    { where: 'page', reply: 'refused' },
+  ])('callers of a refresh in the $where ($reply) that finishes after a sign-in whose session is about to expire get that session refreshed, or no token: never the expired one', async (path) => {
+    const ctx = await start();
+    const { groups, world, d } = ctx;
+    const slow = gate();
+    world.refreshGate = slow.promise;
+    world.refreshAs = (sent) => ({ 'refresh-A-1': path.reply === 'session' ? session('A', 3) : null, 'refresh-B-2': session('B', 3) })[sent] ?? null;
+    expiring(d);
+    const refresh = callers(authIn(d, path.where));
+    await vi.waitFor(() => expect(world.refreshes).toBe(1));
+    // A sign-in to B whose session expires within the minute. A's refresh answers once B is stored.
+    world.signInAs = { ...session('B', 2), expires_at: Math.floor(Date.now() / 1000) + 30 };
+    const writes = sessionWrites(d);
+    const signIn = d.auth.ensureSignedIn();
+    await vi.waitFor(() => expect(writes).toEqual(['B']), { timeout: 10000 });
+    slow.open();
+
+    expect(await within(signIn, 5000)).toBe(true);
+    const answers = await within(refresh, 5000);
+    for (const answer of answers) expect([null, token('B', 3)]).toContain(answer);
+    await vi.waitFor(() => expect(d.store.values.supabaseSession.access_token).toBe(token('B', 3)));
+    // Nothing of A's was stored, and nothing was removed: B's sign-in, then B's refresh.
+    expect(writes).toEqual(['B', 'B']);
+    expect(world.refreshes).toBe(2);
+    await vi.waitFor(() => expect(groups.B.isConnected('D')).toBe(true));
+    await d.listener()({ type: 'message', data: JSON.stringify({ type: 'connected', userId: 'B' }) });
+    await endsOn(ctx, 'B');
+  });
+
+  /** A newer session of A that expires within the minute, stored as a sign-in stores it: same account, so
+   * Device Sync keeps its connection and does not ask for a token of its own. */
+  async function storeExpiringA2(d) {
+    expect(await d.auth.handleStoreSessionMessage({ session: { ...session('A', 2), expires_at: Math.floor(Date.now() / 1000) + 30 } })).toEqual({ ok: true });
+  }
+
+  it.each(['background', 'page'])('a call in the %s runs at most one refresh: when its refresh finishes after a newer session that itself needs refreshing, it answers no token, and the next call refreshes that one', async (where) => {
+    const { world, d } = await start();
+    const slow = gate();
+    world.refreshGate = (sent) => (sent === 'refresh-A-1' ? slow.promise : null);
+    world.refreshAs = (sent) => ({ 'refresh-A-1': session('A', 3), 'refresh-A-2': session('A', 4) })[sent] ?? null;
+    expiring(d);
+    const auth = authIn(d, where);
+    const first = callers(auth);
+    await vi.waitFor(() => expect(world.sent).toEqual(['refresh-A-1']));
+    await storeExpiringA2(d);
+    slow.open();
+
+    // The first callers ran their one refresh; A2 is not refreshed for them, and A3 was not stored.
+    expect(await within(first, 5000)).toEqual([null, null, null]);
+    expect(world.sent).toEqual(['refresh-A-1']);
+    expect(d.store.values.supabaseSession.refresh_token).toBe('refresh-A-2');
+    // The next call refreshes the stored A2.
+    expect(await within(auth.getAccessToken(), 5000)).toBe(token('A', 4));
+    expect(world.sent).toEqual(['refresh-A-1', 'refresh-A-2']);
+    expect(d.store.values.supabaseSession.access_token).toBe(token('A', 4));
+  });
+
+  it.each(['background', 'page'])('in the %s, a call that arrives after an older refresh finishes joins the newer session\'s refresh already under way', async (where) => {
+    const { world, d } = await start();
+    const slowA1 = gate();
+    const slowA2 = gate();
+    world.refreshGate = (sent) => ({ 'refresh-A-1': slowA1.promise, 'refresh-A-2': slowA2.promise })[sent] ?? null;
+    world.refreshAs = (sent) => ({ 'refresh-A-1': session('A', 3), 'refresh-A-2': session('A', 4) })[sent] ?? null;
+    expiring(d);
+    const auth = authIn(d, where);
+    // A1's refresh is under way; a newer A2 that needs refreshing is stored, and a call starts its refresh.
+    const older = auth.getAccessToken();
+    await vi.waitFor(() => expect(world.sent).toEqual(['refresh-A-1']));
+    await storeExpiringA2(d);
+    const early = auth.getAccessToken();
+    await vi.waitFor(() => expect(world.sent).toEqual(['refresh-A-1', 'refresh-A-2']));
+    // A1's refresh finishes (not stored: A2 replaced its session); then another call for A2 arrives.
+    slowA1.open();
+    expect(await within(older, 5000)).toBe(null);
+    const late = auth.getAccessToken();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // It joined: A2 was sent once.
+    expect(world.sent).toEqual(['refresh-A-1', 'refresh-A-2']);
+    slowA2.open();
+
+    expect(await within(Promise.all([early, late]), 5000)).toEqual([token('A', 4), token('A', 4)]);
+    expect(world.sent).toEqual(['refresh-A-1', 'refresh-A-2']);
+    expect(d.store.values.supabaseSession.access_token).toBe(token('A', 4));
+  });
+
+  it('a refused refresh whose clear fails answers no token, never the expired one', async () => {
+    const { world, d } = await start();
+    world.refreshAs = null;
+    expiring(d);
+    let failed = false;
+    d.store.beforeRemove = async (keys) => {
+      if (!failed && [keys].flat().includes('supabaseSession')) {
+        failed = true;
+        throw new Error('storage unavailable');
+      }
+    };
+
+    expect(await d.auth.getAccessToken()).toBe(null);
+    expect(failed).toBe(true);
+    expect(world.refreshes).toBe(1);
+  });
+
+  it('a refresh with nothing newer stores its session and answers it (control)', async () => {
+    const { world, d } = await start();
+    world.refreshAs = session('A', 3);
+    expiring(d);
+    expect(await callers(d.auth)).toEqual([token('A', 3), token('A', 3), token('A', 3)]);
+    expect(d.store.values.supabaseSession.access_token).toBe(token('A', 3));
+    expect(world.refreshes).toBe(1);
+  });
+});
+
+describe('a caller only ever gets a token of the session stored now, or none (#203)', () => {
+  it.each(['background', 'page'])('a refresh in the %s whose session write fails answers no token to any caller, is not sent again, and the next call refreshes the session still stored', async (where) => {
+    // Two attempts allowed: the refresh the server answered is still not sent again.
+    const { world, d } = await start({ refreshRetries: 2 });
+    world.refreshAs = session('A', 3);
+    expiring(d);
+    const before = structuredClone(d.store.values.supabaseSession);
+    let failed = false;
+    d.store.beforeSet = async (values) => {
+      if (!failed && Object.hasOwn(values, 'supabaseSession')) {
+        failed = true;
+        throw new Error('storage unavailable');
+      }
+    };
+    const auth = authIn(d, where);
+
+    expect(await within(callers(auth), 5000)).toEqual([null, null, null]);
+    expect(failed).toBe(true);
+    expect(world.refreshes).toBe(1);
+    expect(d.store.values.supabaseSession).toEqual(before);
+
+    // The next call refreshes the session still stored, with its own refresh token, and recovers.
+    world.refreshAs = (sent) => (sent === before.refresh_token ? session('A', 4) : null);
+    expect(await within(auth.getAccessToken(), 5000)).toBe(token('A', 4));
+    expect(d.store.values.supabaseSession.access_token).toBe(token('A', 4));
+    expect(world.refreshes).toBe(2);
+  });
+
+  it('a refresh in a page whose stored reply reaches it after a sign-in to another account answers that account\'s token', async () => {
+    const ctx = await start();
+    const { world, d } = ctx;
+    world.refreshAs = session('A', 3);
+    expiring(d);
+    const reached = gate();
+    const held = gate();
+    // A's refreshed session is stored; the background's reply to the page is slow to arrive.
+    d.beforeSessionReply = async (message) => {
+      if (message.session && accountOf(message.session.access_token) === 'A') {
+        d.beforeSessionReply = null;
+        reached.open();
+        await held.promise;
+      }
+    };
+    const refresh = callers(authIn(d, 'page'));
+    await within(reached.promise, 5000);
+    expect(d.store.values.supabaseSession.access_token).toBe(token('A', 3));
+
+    // Meanwhile the user signs in to B.
+    world.signInAs = session('B', 2);
+    expect(await d.auth.ensureSignedIn()).toBe(true);
+    held.open();
+
+    expect(await within(refresh, 5000)).toEqual([token('B', 2), token('B', 2), token('B', 2)]);
+    expect(d.store.values.supabaseSession.access_token).toBe(token('B', 2));
     await endsOn(ctx, 'B');
   });
 });
