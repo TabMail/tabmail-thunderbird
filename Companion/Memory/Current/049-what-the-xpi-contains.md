@@ -34,7 +34,8 @@ export only option names web-ext knows: it merges named exports into the config 
   `globToRegExp`, a small case-sensitive reader of the `*`/`**` syntax the lists use. It throws on any
   other glob syntax rather than misreading it. **Do not use `node:path` `matchesGlob` here:** on macOS it
   matches case-insensitively (even `path.posix`), so `**/*.log` would match `build.LOG`, which web-ext
-  keeps. The test pins the reader to web-ext 9.1.0's own verdicts for case, dot names and folders.
+  keeps. The test pins the reader to web-ext 9.1.0's own verdicts for case, dot names, folders, and names that only start with a pattern
+  (`testing/` is not `test`, `x.log.gz` is not `*.log`).
 - `scripts/check-xpi-contents.mjs <xpi>` lists a built XPI (`unzip -Z1`) and fails (exit 1) on any file the
   rules leave out, a missing manifest or license notice, or an unreadable XPI; exit 2 without a path.
   Release builds run it after `web-ext build`. It is a CLI only and runs unconditionally: an "am I the
