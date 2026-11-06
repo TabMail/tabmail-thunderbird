@@ -1669,7 +1669,8 @@ function configSurface(saved, listeners = new Set()) {
   for (const raw of match[1].split(',')) {
    const name=raw.trim();
    if (!name || ['handleAppearanceChange','loadAppearanceSettings','handleAutocompleteSettingsChange','loadAutocompleteSettings','$'].includes(name)) continue;
-   w[name]=['createPromptEditorsInputHandler','createPromptsUpdatedRuntimeListener'].includes(name)?()=>()=>{}:async()=>{};
+   // The Acknowledgments handler is synchronous and returns whether it took the click.
+   w[name]=name==='handleAcknowledgmentsClick'?()=>false:['createPromptEditorsInputHandler','createPromptsUpdatedRuntimeListener'].includes(name)?()=>()=>{}:async()=>{};
   }
  }
  w.browser.storage=storageFor(saved,listeners);

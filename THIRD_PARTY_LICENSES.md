@@ -2,7 +2,8 @@
 
 The TabMail Thunderbird add-on bundles the following third-party components.
 These are **not** covered by the add-on's MPL-2.0 license; each retains its own
-license as noted below. They live under `compose/libs/` and `chat/libs/`, unmodified,
+license as noted below. They live under `compose/libs/` and `chat/libs/`, unmodified except where a
+section says otherwise,
 and each component's full license text ships beside it in the file named on its
 **License** line. The settings page's Acknowledgments dialog
 (`config/modules/acknowledgments.js`) lists the same components.

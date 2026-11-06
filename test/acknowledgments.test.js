@@ -87,6 +87,17 @@ const JSDIFF_MIN_SHA256 = { "5.2.0": "c9bd9f7442db093c796b51b62ae199b619c158fd76
 
 // How each section's recorded version is read back from the shipped files.
 // diff-match-patch has no tagged releases, so it records no version number.
+// Where each section's copyright line can be read in the shipped files. A line
+// holding several statements ("Copyright ..., Copyright ...") is checked one
+// statement at a time.
+const COPYRIGHT_EVIDENCE = {
+  "PDF.js": PDFJS_FILES,
+  "Adobe CMap resources": ["chat/libs/pdfjs/cmaps/LICENSE"],
+  "core-js": ["chat/libs/pdfjs/LICENSE-core-js"],
+  "diff-match-patch": ["compose/libs/diff-match-patch.js"],
+  jsdiff: ["compose/libs/LICENSE-jsdiff"],
+};
+
 const VERSION_EVIDENCE = {
   "PDF.js": (version) => PDFJS_FILES.every((f) => read(f).includes(`"${version}"`)),
   "Adobe CMap resources": (version, pdfjsVersion) => version === `as in \`pdfjs-dist\` ${pdfjsVersion}`,
@@ -107,6 +118,18 @@ describe("every shipped third-party component is credited", () => {
       const covered = documented.some((doc) => doc.replace(/\/$/, "") === path);
       expect(covered, `${path} is not in THIRD_PARTY_LICENSES.md`).toBe(true);
     }
+  });
+
+  it("nothing more of pdfjs-dist ships than the parts credited", () => {
+    // pdfjs-dist also has standard_fonts/, wasm/ and iccs/, each with its own
+    // third-party licenses. Bundling one must come with its credits, so a new
+    // entry here fails until it is added (to this list and to the credits).
+    expect(readdirSync(join(ROOT, "chat/libs/pdfjs")).sort()).toEqual(
+      ["LICENSE", "LICENSE-core-js", "cmaps", "pdf.min.mjs", "pdf.worker.min.mjs"],
+    );
+    const cmaps = readdirSync(join(ROOT, "chat/libs/pdfjs/cmaps"));
+    expect(cmaps).toContain("LICENSE");
+    expect(cmaps.filter((name) => name !== "LICENSE" && !name.endsWith(".bcmap"))).toEqual([]);
   });
 
   it("every file THIRD_PARTY_LICENSES.md names exists", () => {
@@ -140,6 +163,20 @@ describe("every shipped third-party component is credited", () => {
       expect(evidence, `${section.name} has no version check`).toBeDefined();
       expect(section.version, `${section.heading} records no version`).not.toBeNull();
       expect(evidence(section.version, pdfjsVersion), `${section.name}: version ${section.version}`).toBe(true);
+    }
+  });
+
+  it("each third-party component's copyright line is the one its shipped files carry", () => {
+    const thirdParty = shippedSections().filter((s) => s.source);
+    for (const section of thirdParty) {
+      const files = COPYRIGHT_EVIDENCE[section.name];
+      expect(files, `${section.name} has no copyright check`).toBeDefined();
+      expect(section.copyright, `${section.heading} records no copyright`).not.toBeNull();
+      for (const statement of section.copyright.split(/, (?=Copyright )/)) {
+        for (const file of files) {
+          expect(read(file), `${file} does not carry "${statement}"`).toContain(statement);
+        }
+      }
     }
   });
 
@@ -384,6 +421,18 @@ describe("the footer link and dialog colors", () => {
         expect(token, `${property}: ${value} is not a palette color`).toMatch(NON_COLOR_TOKEN);
       }
     }
+  });
+
+  it("keeps the dialog's padding on its content, so a click on the dialog itself is a backdrop click", () => {
+    const rule = (selector) => {
+      const match = block.match(new RegExp(`(?:^|\\n)${selector.replace(/\./g, "\\.")} \\{([^}]*)\\}`));
+      expect(match, `${selector} has no rule`).not.toBeNull();
+      return match[1];
+    };
+    expect(rule(".tm-ack-dialog")).toMatch(/(^|\n)\s*padding:\s*0;/);
+    expect(rule(".tm-ack-dialog-content")).toMatch(/(^|\n)\s*padding:\s*[1-9]\d*px;/);
+    const dialog = new JSDOM(CONFIG_HTML).window.document.getElementById("acknowledgments-dialog");
+    expect([...dialog.children].map((el) => el.className)).toEqual(["tm-ack-dialog-content"]);
   });
 
   it("uses only variables the palette defines for both the light and the dark theme", () => {
