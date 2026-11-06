@@ -1000,6 +1000,22 @@
     </section>
 
     <p id="status"></p>
+
+    <footer class="tm-config-footer">
+      <button type="button" id="open-acknowledgments" class="tm-link-button">Acknowledgments</button>
+    </footer>
+
+    <!-- Open source acknowledgments; the list is rendered by modules/acknowledgments.js -->
+    <dialog id="acknowledgments-dialog" class="tm-ack-dialog" aria-labelledby="acknowledgments-title">
+      <div class="tm-ack-dialog-content">
+        <h3 id="acknowledgments-title">Acknowledgments</h3>
+        <p class="tm-ack-intro">TabMail is built with the help of these open source libraries. We're grateful to their authors and contributors.</p>
+        <ul id="acknowledgments-list" class="tm-ack-list"></ul>
+        <div class="tm-ack-buttons">
+          <button type="button" id="close-acknowledgments">Done</button>
+        </div>
+      </div>
+    </dialog>
   </div>
 
   <script src="../compose/modules/config.js"></script>

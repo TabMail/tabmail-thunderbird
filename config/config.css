@@ -1600,3 +1600,100 @@ section > div[style*="background-color"] {
   border-radius: 4px;
 }
 
+
+/* Footer link and the open source Acknowledgments dialog */
+.tm-config-footer {
+  margin: 24px 0 8px 0;
+  text-align: center;
+}
+
+.tm-link-button {
+  background: none;
+  border: none;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-weight: normal;
+  color: var(--in-content-page-color);
+  opacity: 0.7;
+  text-decoration: underline;
+}
+
+.tm-link-button:hover {
+  background: none;
+  opacity: 1;
+}
+
+/* Padding lives on the inner wrapper, so a click on the dialog element itself
+   is a click on its backdrop (acknowledgments.js closes on it). */
+.tm-ack-dialog {
+  padding: 0;
+  width: min(480px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 8px;
+}
+
+.tm-ack-dialog-content {
+  padding: 20px;
+}
+
+.tm-ack-dialog h3 {
+  margin: 0 0 12px 0;
+  font-size: 18px;
+}
+
+.tm-ack-intro {
+  margin: 0 0 16px 0;
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+.tm-ack-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--panel-separator-color);
+}
+
+.tm-ack-list li {
+  border-bottom: 1px solid var(--panel-separator-color);
+}
+
+.tm-ack-link {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 4px;
+  text-decoration: none;
+  color: var(--in-content-page-color);
+}
+
+.tm-ack-link:hover .tm-ack-name {
+  text-decoration: underline;
+}
+
+.tm-ack-link:focus-visible {
+  outline: 2px solid var(--in-content-accent-color);
+  outline-offset: 2px;
+}
+
+.tm-ack-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--in-content-accent-color);
+}
+
+.tm-ack-license,
+.tm-ack-copyright {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.tm-ack-buttons {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
