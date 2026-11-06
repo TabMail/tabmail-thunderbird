@@ -9,7 +9,9 @@
 // node_modules and *.xpi / *.zip.
 //
 // scripts/check-xpi-contents.mjs checks a built XPI against this list, and
-// test/xpiContents.test.js keeps the list in step with the repository.
+// test/xpiContents.test.js keeps the list in step with the repository. Use only
+// `*` and `**` in patterns: the check reads those, case-sensitively as web-ext
+// does, and refuses any other glob syntax.
 
 export default {
   ignoreFiles: [
