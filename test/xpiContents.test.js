@@ -206,7 +206,11 @@ describe("xpiProblems", () => {
   });
 });
 
-describe("scripts/check-xpi-contents.mjs on a built XPI", () => {
+// Each case runs zip and a node process. A full suite on a busy machine has taken longer than
+// vitest's 5 s default for one of them.
+const CLI_TEST_TIMEOUT_MS = 60_000;
+
+describe("scripts/check-xpi-contents.mjs on a built XPI", { timeout: CLI_TEST_TIMEOUT_MS }, () => {
   let dir;
   afterEach(() => {
     if (dir) rmSync(dir, { recursive: true, force: true });
