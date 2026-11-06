@@ -23,7 +23,7 @@ tabmail-thunderbird/
 │   ├── chat.html / .js / .css  # Main chat window
 │   ├── experiments/            # Experiment APIs (glodaSearch, tmCalendar, tmWebFetch, messageSelection)
 │   ├── fsm/                    # Finite State Machines (email, calendar, contacts actions)
-│   ├── libs/pdfjs/             # Bundled pdf.js (legacy build, worker, CMaps) — attachment_read_pdf
+│   ├── libs/pdfjs/             # Bundled pdf.js (legacy build, worker, CMaps) — attachment_read_pdf; license texts beside it
 │   ├── tools/                  # 31 chat tool implementations
 │   │   └── core.js             # Tool registry — update when adding tools
 │   └── modules/                # 20+ support modules (converse, persistence, context, markdown)
@@ -35,12 +35,12 @@ tabmail-thunderbird/
 ├── compose/                     # Email composition enhancement
 │   ├── background.js           # Compose background routing
 │   ├── compose-autocomplete.js # Autocomplete for compose window
-│   ├── libs/                   # Utility libraries
+│   ├── libs/                   # Bundled diff libraries + their LICENSE-* texts (see THIRD_PARTY_LICENSES.md)
 │   └── modules/                # 16 modules (core, edit, diff, undo, caret, state)
 │
 ├── config/                      # Settings UI & configuration
 │   ├── config.html / .js / .css # Full settings page
-│   ├── modules/                # 22 settings modules (storage, UI, privacy)
+│   ├── modules/                # 24 settings modules (storage, UI, privacy, acknowledgments dialog)
 │   └── tweaks/                 # Tweak configurations
 │
 ├── fts/                         # Full-Text Search engine

@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import { handleAcknowledgmentsClick } from "./acknowledgments.js";
 import { handleAppearanceChange, loadAppearanceSettings } from "./appearance.js";
 import { handleAutocompleteSettingsChange, loadAutocompleteSettings } from "./autocompleteSettings.js";
 import { handleComposeSettingsChange, loadComposeSettings } from "./composeSettings.js";
@@ -277,6 +278,8 @@ export async function initConfigPage({
 
   // Setup document click handler
   configDOMListeners.documentClickHandler = async (e) => {
+    // First and synchronous: it may preventDefault a link click.
+    if (handleAcknowledgmentsClick(e, log)) return;
     await handleUiTweaksClick(e);
     await handleByokClick(e, log);
 
