@@ -95,7 +95,12 @@ tabmail-thunderbird/
 │   └── modules/                # 16 welcome modules
 │
 ├── icons/                       # SVG icon assets
-└── marketplace/                 # Marketplace UI
+├── marketplace/                 # Marketplace UI
+│
+├── web-ext-config.mjs           # web-ext ignoreFiles: what stays out of the XPI
+├── scripts/                     # Developer tooling (not in the XPI)
+│   └── check-xpi-contents.mjs  # Fails a built XPI with an excluded file or a missing notice
+└── test/                        # Vitest suites (not in the XPI)
 ```
 
 ---
