@@ -11,11 +11,20 @@ license and copyright line, each name linked to its upstream. Same intro line as
 1. Every entry under `compose/libs/` and `chat/libs/` appears in a `THIRD_PARTY_LICENSES.md` section,
    either in its heading or as the license file on its **License** line.
 2. Every third-party section (one with a **Source**) names a license file under those directories,
-   and that file holds that license's text. Every file a section heading names exists.
-3. The dialog's entries are exactly the third-party sections: same upstream URL, license and copyright.
+   and that file is the upstream text byte for byte (its SHA-256 is pinned in `LICENSE_SHA256`). Every
+   file a section heading names exists.
+3. Each section's **Version** is the one the shipped files carry (`VERSION_EVIDENCE`): the pdf.js version
+   string in both pdf files, the embedded `core-js/blob/v<version>/LICENSE`, and the pinned SHA-256 of
+   jsdiff's `diff.min.js`, which carries no version string. CMaps follow pdf.js; diff-match-patch has no
+   tagged release.
+4. The dialog's entries are exactly the third-party sections: same name (the dialog may add how it
+   ships, e.g. "core-js (bundled inside PDF.js)"), upstream URL, license and copyright.
 
-Adding a vendored library therefore means: the file, its `LICENSE-<name>` text beside it, a section in
-`THIRD_PARTY_LICENSES.md`, and an `ACKNOWLEDGMENTS` entry.
+The dialog shows name, license, copyright and upstream, like the iOS dialog, but no version. Versions
+live in `THIRD_PARTY_LICENSES.md`, so a library update touches the document and the pins, not the dialog.
+
+Adding or updating a vendored library therefore means: the file, its upstream `LICENSE-<name>` text beside
+it with its pin, a section in `THIRD_PARTY_LICENSES.md` with a version check, and an `ACKNOWLEDGMENTS` entry.
 
 **What ships (audited 2026-11-06):**
 
@@ -45,3 +54,11 @@ Adding a vendored library therefore means: the file, its `LICENSE-<name>` text b
   backdrop click (closes it). Escape closes it natively.
 - No palette token exists for a backdrop color, so `::backdrop` keeps the UA default.
 - jsdom 26 has `HTMLDialogElement` but no `showModal()`/`close()`; the test stubs both on the instance.
+- The dialog tests run through the real `initConfigPage` on the real `config.html`. The test reads
+  `init.js`'s imports and stubs every one except `acknowledgments.js` and `dom.js`, so a new import in
+  `init.js` needs no test change. That is how the tests pin the handler's place in the page: it opens the
+  dialog, cancels a link's navigation during the click, and leaves every other control (Refresh) to its
+  own handlers.
+- The dialog's colors are checked against the palette: every color declaration in the block uses
+  `var(--name)` with no fallback and no literal, and each name is defined in both the light and the dark
+  branch of `buildPaletteCSS`.
