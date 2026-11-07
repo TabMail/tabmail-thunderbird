@@ -41,7 +41,7 @@ beforeEach(() => {
   });
   globalThis.browser={
     storage:{local:{get,set:vi.fn(async values=>Object.assign(data,clone(values))),remove:vi.fn(async keys=>{for(const k of [].concat(keys)) delete data[k];})}},
-    alarms:{onAlarm:{addListener:vi.fn(fn=>listeners.add(fn)),removeListener:vi.fn(fn=>listeners.delete(fn))},create:vi.fn(async(name,spec)=>{alarms.set(name,clone(spec));}),clear:vi.fn(async name=>alarms.delete(name))},
+    alarms:{onAlarm:{addListener:vi.fn(fn=>listeners.add(fn)),removeListener:vi.fn(fn=>listeners.delete(fn))},create:vi.fn(async(name,spec)=>{alarms.set(name,clone(spec));}),clear:vi.fn(async name=>alarms.delete(name)),get:vi.fn(async name=>(alarms.has(name)?{name,...alarms.get(name)}:undefined))},
     runtime:{sendMessage:vi.fn(async()=>{}),getManifest:()=>({version:'synthetic'})},
     notifications:{create:vi.fn(async()=>{})}
   };
@@ -187,7 +187,7 @@ it('commits a task result before opening chat to read its initial history', asyn
   expect(sendChat).toHaveBeenCalledTimes(1);
   expect((await store.loadTurns()).filter(t => t._taskHash === hash)).toHaveLength(1);
 });
-it('live task delivery survives an open chat save and duplicate notification', async () => {
+it('live task delivery shows the result once in the open chat and stores it once', async () => {
   data['task.enabled'] = true;
   data.chat_turns = [{ role: 'assistant', content: 'Earlier', _id: 'earlier', _chars: 7 }];
   const { hash } = await setDueTaskText();
@@ -198,7 +198,7 @@ it('live task delivery survives an open chat save and duplicate notification', a
   const store = await import('../chat/modules/persistentChatStore.js');
   const { ctx } = await import('../chat/modules/context.js');
   ctx.persistedTurns = [...await store.loadTurns(), { role: 'user', _id: 'local', _chars: 5, content: 'Local' }];
-  ctx.chatMeta = { totalChars: 12 };
+  ctx.chatMeta = {};
   ctx.agentConverseMessages = [];
   const { insertTaskResultBubble } = await import('../chat/modules/init.js');
   // Run the actual live-message consumer so the producer/consumer payload is covered.
@@ -221,12 +221,13 @@ it('live task delivery survives an open chat save and duplicate notification', a
   expect(message).toBeDefined();
   receive(message);
   await settle();
-  // The same write used by chat's unload must retain the live task and local work.
-  await store.saveTurnsImmediate(ctx.persistedTurns);
+  // The window shows it once beside its own turns; the store holds it once,
+  // added to what was stored.
+  expect(ctx.persistedTurns.filter(t => t._taskHash === hash)).toHaveLength(1);
+  expect(ctx.persistedTurns.some(t => t._id === 'local')).toBe(true);
   const saved = await store.loadTurns();
   expect(saved.filter(t => t._taskHash === hash)).toHaveLength(1);
-  expect(saved.some(t => t._id === 'local')).toBe(true);
-  expect(ctx.chatMeta.totalChars).toBe(saved.reduce((sum, t) => sum + (t._chars || 0), 0));
+  expect(saved[0]._id).toBe('earlier');
   const { createNewAgentBubble } = await import('../chat/chat.js');
   expect(createNewAgentBubble).toHaveBeenCalledTimes(1);
 });

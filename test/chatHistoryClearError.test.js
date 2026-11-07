@@ -14,6 +14,7 @@
 // next.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { quietAlarms, sendToBackground } from './support/storedTurnsRoute.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
@@ -78,6 +79,7 @@ function fakeHelper() {
   const memory = new Map();
   const helper = { memory, clear: 'ok', clearHeld: null };
   helper.sendMessage = vi.fn(async msg => {
+    if (msg.command === 'chat-turns-change') return sendToBackground(msg);
     switch (msg.cmd) {
       case 'memoryStats':
         return { docs: memory.size, usedBytes: memory.size, dbBytes: memory.size };
@@ -109,7 +111,7 @@ async function openPage() {
   globalThis.Option = dom.window.Option;
   const storage = fakeStorage();
   const helper = fakeHelper();
-  globalThis.browser = { storage, runtime: { sendMessage: helper.sendMessage } };
+  globalThis.browser = { storage, alarms: quietAlarms(), runtime: { sendMessage: helper.sendMessage } };
   const store = await import('../chat/modules/persistentChatStore.js');
   const { indexChatTurn } = await import('../fts/memoryIndexer.js');
   const history = await import('../prompts/modules/history.js');

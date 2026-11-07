@@ -37,7 +37,7 @@ beforeEach(() => {
   });
   globalThis.browser={
     storage:{local:{get,set:vi.fn(async values=>Object.assign(data,clone(values))),remove:vi.fn(async keys=>{for(const k of [].concat(keys)) delete data[k];})}},
-    alarms:{onAlarm:{addListener:vi.fn(fn=>listeners.add(fn)),removeListener:vi.fn(fn=>listeners.delete(fn))},create:vi.fn(async(name,spec)=>{alarms.set(name,clone(spec));}),clear:vi.fn(async name=>alarms.delete(name))},
+    alarms:{onAlarm:{addListener:vi.fn(fn=>listeners.add(fn)),removeListener:vi.fn(fn=>listeners.delete(fn))},create:vi.fn(async(name,spec)=>{alarms.set(name,clone(spec));}),clear:vi.fn(async name=>alarms.delete(name)),get:vi.fn(async name=>(alarms.has(name)?{name,...alarms.get(name)}:undefined))},
     runtime:{sendMessage:vi.fn(async()=>{}),getManifest:()=>({version:'synthetic'})},
     notifications:{create:vi.fn(async()=>{})}
   };

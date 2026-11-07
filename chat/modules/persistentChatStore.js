@@ -15,6 +15,8 @@ import { get as idbGet, set as idbSet, remove as idbRemove, getAllKeys as idbGet
 // Storage keys
 // ---------------------------------------------------------------------------
 const TURNS_KEY = "chat_turns";
+// The changes queued for the stored turns, oldest first (written only by storedTurnsQueue.js).
+const QUEUED_KEY = "chat_turns_pending";
 const META_KEY = "chat_meta";
 const IDMAP_KEY = "chat_id_map";
 
@@ -27,87 +29,120 @@ const CHARS_PER_EXCHANGE = 500; // approximate average for derived char cap
 // ---------------------------------------------------------------------------
 // Debounce helpers
 // ---------------------------------------------------------------------------
-let _saveTurnsTimer = null;
-const SAVE_DEBOUNCE_MS = 500;
-
 let _saveIdMapTimer = null;
 const IDMAP_DEBOUNCE_MS = 500;
 
 // ---------------------------------------------------------------------------
-// Turns: load / save / append
+// Turns: load / change / append
 // ---------------------------------------------------------------------------
 
 /**
- * Load persisted turns from storage.
+ * The stored turns as they are once every queued change has been applied:
+ * the stored turns and the queue are read together and the queued changes
+ * applied to them in order, so a queued Clear All or removal already counts.
  * Returns array (empty if none or corrupted).
  */
 export async function loadTurns() {
   try {
-    const result = await browser.storage.local.get(TURNS_KEY);
-    const turns = result[TURNS_KEY];
-    if (Array.isArray(turns)) {
-      log(`[PersistentChat] Loaded ${turns.length} turns from storage`, 'debug');
-      return turns;
+    const result = await browser.storage.local.get([TURNS_KEY, QUEUED_KEY]);
+    let turns = Array.isArray(result[TURNS_KEY]) ? result[TURNS_KEY] : [];
+    const queued = Array.isArray(result[QUEUED_KEY]) ? result[QUEUED_KEY] : [];
+    for (const item of queued) {
+      if (isTurnsOperation(item?.op)) turns = applyTurnsOperation(turns, item.op).turns;
     }
+    log(`[PersistentChat] Loaded ${turns.length} turns from storage (${queued.length} queued change(s) applied)`, 'debug');
+    return turns;
   } catch (e) {
     log(`[PersistentChat] Failed to load turns: ${e}`, "error");
   }
   return [];
 }
 
-/**
- * Save turns to storage (debounced).
- * Call after mutations; actual write happens after SAVE_DEBOUNCE_MS idle.
- */
-export function saveTurns(turns) {
-  if (_saveTurnsTimer) clearTimeout(_saveTurnsTimer);
-  _saveTurnsTimer = setTimeout(async () => {
-    _saveTurnsTimer = null;
-    try {
-      await browser.storage.local.set({ [TURNS_KEY]: turns });
-      log(`[PersistentChat] Saved ${turns.length} turns (${JSON.stringify(turns).length} bytes)`, 'debug');
-    } catch (e) {
-      log(`[PersistentChat] Failed to save turns: ${e}`, "error");
-    }
-  }, SAVE_DEBOUNCE_MS);
+/** True for a change to the stored turns (an operation object). */
+export function isTurnsOperation(op) {
+  return !!op && typeof op === "object" && !Array.isArray(op);
 }
 
 /**
- * Force-save turns immediately (bypass debounce).
- * Used on beforeunload where timers won't fire.
+ * Apply one change to a list of turns, without touching storage. The parts
+ * apply in this order: clear every turn; remove these ids; remove turns older
+ * than keepFrom (ms); replace turns by id; append (an id already present is
+ * not added again), then keep the list within the budget. Applying a sequence
+ * of changes again to its own result gives the same result.
+ *
+ * @param {object[]} turns - not mutated
+ * @param {{ clear?: boolean, remove?: string[], keepFrom?: number, update?: object[], append?: object[] }} op
+ * @returns {{ turns: object[], removed: number }}
  */
-export async function saveTurnsImmediate(turns) {
-  if (_saveTurnsTimer) {
-    clearTimeout(_saveTurnsTimer);
-    _saveTurnsTimer = null;
+export function applyTurnsOperation(turns, op) {
+  let next = [...turns];
+  let removed = 0;
+  const drop = shouldDrop => {
+    const kept = next.filter(t => !shouldDrop(t));
+    removed += next.length - kept.length;
+    next = kept;
+  };
+  if (op.clear) drop(() => true);
+  if (op.remove) {
+    const ids = new Set(op.remove);
+    drop(t => ids.has(t._id));
   }
-  try {
-    await browser.storage.local.set({ [TURNS_KEY]: turns });
-    log(`[PersistentChat] Force-saved ${turns.length} turns`, 'debug');
-  } catch (e) {
-    log(`[PersistentChat] Failed to force-save turns: ${e}`, "error");
+  if (op.keepFrom !== undefined) drop(t => (t._ts || 0) < op.keepFrom);
+  if (op.update) {
+    const byId = new Map(op.update.map(t => [t._id, t]));
+    next = next.map(t => byId.get(t._id) || t);
   }
+  if (op.append) {
+    const known = new Set(next.map(t => t._id));
+    next.push(...op.append.filter(t => !known.has(t._id)));
+    enforceBudget(next);
+  }
+  return { turns: next, removed };
 }
 
 /**
- * Append a turn, enforce budget, return { evictedTurns }.
- * Caller should handle eviction cleanup (idMap, DOM indicators).
+ * Change the stored turns from an extension page. Sends the operation to the
+ * background's queue (storedTurnsQueue.js), the one writer of chat_turns,
+ * which persists it before answering and applies it in arrival order. Answers
+ * once it is applied, or after CHAT_SETTINGS.turnsQueue.applyWaitMs with it
+ * still queued (applied later, in order). Rejects only when the background
+ * did not take it.
+ *
+ * @param {{ clear?: boolean, remove?: string[], keepFrom?: number, update?: object[], append?: object[] }} op
+ *   see storedTurnsQueue.enqueueTurnsChange
+ * @returns {Promise<{ applied: true, removed: number } | { applied: false, queued: true }>}
+ */
+export async function changeTurns(op) {
+  return requireTaken(await browser.runtime.sendMessage({ command: "chat-turns-change", id: generateTurnId(), op }));
+}
+
+/**
+ * A reply from the stored turns' queue, if it took the change (applied, or
+ * queued to be applied in order); throws its error otherwise. Every caller of
+ * the queue checks its reply here, so a refused change is never taken as stored.
+ */
+export function requireTaken(reply) {
+  if (!reply?.applied && !reply?.queued) throw new Error(reply?.error || "the background did not take the change");
+  return reply;
+}
+
+/**
+ * Add a turn the chat window shows: to the window's own copy (`turns`, for
+ * display and the model's context, kept within the budget; mutated in place)
+ * and to the stored turns (through the background's queue).
  *
  * @param {object} turn - Turn object with _id, _ts, _type, _chars, role, content, etc.
- * @param {object[]} turns - Current turns array (mutated in place)
- * @param {object} meta - Current metadata (mutated: totalChars updated)
- * @returns {{ evictedTurns: object[] }}
+ * @param {object[]} turns - The window's turns (mutated in place)
+ * @returns {Promise<{ evictedTurns: object[] }>} the turns the window's copy dropped, for the caller's cleanup
  */
-export async function appendTurn(turn, turns, meta) {
+export async function appendTurn(turn, turns) {
   turns.push(turn);
-  meta.totalChars = (meta.totalChars || 0) + (turn._chars || 0);
-
-  const evictedTurns = enforceBudget(turns, meta);
-
-  // Debounced save
-  saveTurns(turns);
-  saveMeta(meta);
-
+  const evictedTurns = enforceBudget(turns);
+  try {
+    await changeTurns({ append: [turn] });
+  } catch (e) {
+    log(`[PersistentChat] Failed to store turn ${turn._id}: ${e}`, "error");
+  }
   return { evictedTurns };
 }
 
@@ -116,16 +151,16 @@ export async function appendTurn(turn, turns, meta) {
 // ---------------------------------------------------------------------------
 
 /**
- * Enforce two-level budget: exchange count, then derived char cap.
- * Mutates turns array and meta.totalChars in place.
+ * Enforce two-level budget: exchange count, then derived char cap, counted
+ * from the turns themselves. Mutates turns in place.
  *
  * @param {object[]} turns - Turns array (mutated)
- * @param {object} meta - Metadata (mutated: totalChars)
  * @returns {object[]} evicted turns
  */
-export function enforceBudget(turns, meta) {
+export function enforceBudget(turns) {
   const maxMessages = MAX_EXCHANGES * 2; // user + assistant per exchange
   const maxChars = MAX_EXCHANGES * CHARS_PER_EXCHANGE;
+  let totalChars = turns.reduce((sum, t) => sum + (t._chars || 0), 0);
 
   const evictedList = [];
 
@@ -133,20 +168,20 @@ export function enforceBudget(turns, meta) {
   while (turns.length > maxMessages) {
     if (_isHeadProtected(turns)) break;
     const evicted = turns.shift();
-    meta.totalChars -= evicted._chars || 0;
+    totalChars -= evicted._chars || 0;
     evictedList.push(evicted);
   }
 
   // Step 2: Enforce derived char cap (handles unusually long messages)
-  while (meta.totalChars > maxChars && turns.length > 0) {
+  while (totalChars > maxChars && turns.length > 0) {
     if (_isHeadProtected(turns)) break;
     const evicted = turns.shift();
-    meta.totalChars -= evicted._chars || 0;
+    totalChars -= evicted._chars || 0;
     evictedList.push(evicted);
   }
 
   if (evictedList.length > 0) {
-    log(`[PersistentChat] Evicted ${evictedList.length} turns (maxExchanges=${MAX_EXCHANGES}, maxChars=${maxChars}, remaining=${turns.length}, chars=${meta.totalChars})`, 'debug');
+    log(`[PersistentChat] Evicted ${evictedList.length} turns (maxExchanges=${MAX_EXCHANGES}, maxChars=${maxChars}, remaining=${turns.length}, chars=${totalChars})`, 'debug');
   }
 
   return evictedList;
@@ -172,14 +207,14 @@ function _isHeadProtected(turns) {
 
 /**
  * Load chat metadata.
- * @returns {{ lastActivityTs: number, totalChars: number, lastKbUpdateTs: number, kbCursorId: string|null }}
+ * @returns {{ lastActivityTs: number, lastKbUpdateTs: number, kbCursorId: string|null }}
  */
 export async function loadMeta() {
   try {
     const result = await browser.storage.local.get(META_KEY);
     const meta = result[META_KEY];
     if (meta && typeof meta === "object") {
-      log(`[PersistentChat] Loaded meta: lastActivity=${meta.lastActivityTs}, chars=${meta.totalChars}, cursor=${meta.kbCursorId || "null"}`, 'debug');
+      log(`[PersistentChat] Loaded meta: lastActivity=${meta.lastActivityTs}, cursor=${meta.kbCursorId || "null"}`, 'debug');
       return meta;
     }
   } catch (e) {
@@ -187,14 +222,13 @@ export async function loadMeta() {
   }
   return {
     lastActivityTs: 0,
-    totalChars: 0,
     lastKbUpdateTs: 0,
     kbCursorId: null,
   };
 }
 
 /**
- * Save metadata (debounced via saveTurns timer — piggybacks on same cycle).
+ * Save metadata.
  */
 export function saveMeta(meta) {
   // Use immediate save for meta since it's small and important
@@ -369,15 +403,17 @@ export async function turnsToLLMMessages(turns) {
 }
 
 /**
- * Filter persistedTurns to exclude KB-summarized prior sessions, then convert
- * to LLM messages. Checks kb_last_summarized_ts from storage; if a session_break
- * predates that marker, all turns up to and including it are dropped (already
- * distilled into KB). persistedTurns is never mutated.
+ * The stored turns as the model's context: drop KB-summarized prior sessions,
+ * then convert to LLM messages. Reads the stored turns, so turns Chat History
+ * removed are left out even while an open window still shows them. Checks
+ * kb_last_summarized_ts from storage; if a session_break predates that
+ * marker, all turns up to and including it are dropped (already distilled
+ * into KB).
  *
- * @param {Array} persistedTurns - Full persisted turns array
  * @returns {Promise<Array>} - LLM-format messages (without system message)
  */
-export async function filterAndConvertTurns(persistedTurns) {
+export async function filterAndConvertTurns() {
+  const persistedTurns = await loadTurns();
   const { kb_last_summarized_ts } = await browser.storage.local.get("kb_last_summarized_ts");
 
   if (!kb_last_summarized_ts) {

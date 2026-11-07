@@ -116,7 +116,7 @@ vi.mock('../fts/memoryIndexer.js', () => ({
 // ---------------------------------------------------------------------------
 import {
   loadTurns,
-  saveTurnsImmediate,
+  changeTurns,
   enforceBudget,
   loadMeta,
   saveMeta,
@@ -180,17 +180,25 @@ describe('persistentChatStore', () => {
     });
   });
 
-  // --- saveTurnsImmediate ---
-  describe('saveTurnsImmediate', () => {
-    it('should save turns to storage immediately', async () => {
-      const turns = [{ _id: '1', role: 'user', content: 'test' }];
-      await saveTurnsImmediate(turns);
-      expect(storageData['chat_turns']).toEqual(turns);
+  // --- changeTurns ---
+  describe('changeTurns', () => {
+    it('sends the operation to the background with an id and returns its answer', async () => {
+      browser.runtime.sendMessage.mockResolvedValueOnce({ applied: true, removed: 2 });
+      await expect(changeTurns({ keepFrom: 5 })).resolves.toEqual({ applied: true, removed: 2 });
+      const [message] = browser.runtime.sendMessage.mock.calls[0];
+      expect(message).toEqual({ command: 'chat-turns-change', id: expect.any(String), op: { keepFrom: 5 } });
     });
 
-    it('should not throw when storage write fails', async () => {
-      browser.storage.local.set.mockRejectedValueOnce(new Error('write fail'));
-      await expect(saveTurnsImmediate([])).resolves.toBeUndefined();
+    it('returns a change still queued', async () => {
+      browser.runtime.sendMessage.mockResolvedValueOnce({ applied: false, queued: true });
+      await expect(changeTurns({ clear: true })).resolves.toEqual({ applied: false, queued: true });
+    });
+
+    it('rejects when the background did not take the change', async () => {
+      browser.runtime.sendMessage.mockResolvedValueOnce(undefined);
+      await expect(changeTurns({ clear: true })).rejects.toThrow('did not take');
+      browser.runtime.sendMessage.mockResolvedValueOnce({ applied: false, error: 'synthetic' });
+      await expect(changeTurns({ clear: true })).rejects.toThrow('synthetic');
     });
   });
 
@@ -201,8 +209,7 @@ describe('persistentChatStore', () => {
         { _id: '1', _chars: 100, _type: 'user' },
         { _id: '2', _chars: 100, _type: 'assistant' },
       ];
-      const meta = { totalChars: 200 };
-      const evicted = enforceBudget(turns, meta);
+      const evicted = enforceBudget(turns);
       expect(evicted).toEqual([]);
       expect(turns.length).toBe(2);
     });
@@ -213,8 +220,7 @@ describe('persistentChatStore', () => {
       for (let i = 0; i < 102; i++) {
         turns.push({ _id: String(i), _chars: 10, _type: i % 2 === 0 ? 'user' : 'assistant' });
       }
-      const meta = { totalChars: 1020 };
-      const evicted = enforceBudget(turns, meta);
+      const evicted = enforceBudget(turns);
       expect(evicted.length).toBe(2);
       expect(turns.length).toBe(100);
       expect(evicted[0]._id).toBe('0');
@@ -222,16 +228,15 @@ describe('persistentChatStore', () => {
     });
 
     it('should evict turns when char budget is exceeded', () => {
-      // MAX_EXCHANGES * CHARS_PER_EXCHANGE = 50 * 500 = 25000
+      // MAX_EXCHANGES * CHARS_PER_EXCHANGE = 50 * 500 = 25000, counted from the turns
       const turns = [
         { _id: '1', _chars: 20000, _type: 'user' },
         { _id: '2', _chars: 10000, _type: 'assistant' },
       ];
-      const meta = { totalChars: 30000 };
-      const evicted = enforceBudget(turns, meta);
+      const evicted = enforceBudget(turns);
       expect(evicted.length).toBe(1);
       expect(evicted[0]._id).toBe('1');
-      expect(meta.totalChars).toBe(10000);
+      expect(turns.map(t => t._id)).toEqual(['2']);
     });
 
     it('should protect head turn when it is a session boundary', () => {
@@ -241,8 +246,7 @@ describe('persistentChatStore', () => {
       for (let i = 0; i < 101; i++) {
         turns.push({ _id: String(i), _chars: 10, _type: i % 2 === 0 ? 'user' : 'assistant' });
       }
-      const meta = { totalChars: 1010 };
-      const evicted = enforceBudget(turns, meta);
+      enforceBudget(turns);
       // The session_break at index 0 should be protected when it's the last session boundary
       // and eviction should stop
       expect(turns[0]._type).toBe('session_break');
@@ -250,8 +254,7 @@ describe('persistentChatStore', () => {
 
     it('should not evict when turns is empty', () => {
       const turns = [];
-      const meta = { totalChars: 0 };
-      const evicted = enforceBudget(turns, meta);
+      const evicted = enforceBudget(turns);
       expect(evicted).toEqual([]);
     });
   });
@@ -262,14 +265,13 @@ describe('persistentChatStore', () => {
       const meta = await loadMeta();
       expect(meta).toEqual({
         lastActivityTs: 0,
-        totalChars: 0,
         lastKbUpdateTs: 0,
         kbCursorId: null,
       });
     });
 
     it('should return stored metadata', async () => {
-      const fakeMeta = { lastActivityTs: 123, totalChars: 456, lastKbUpdateTs: 789, kbCursorId: 'abc' };
+      const fakeMeta = { lastActivityTs: 123, lastKbUpdateTs: 789, kbCursorId: 'abc' };
       storageData['chat_meta'] = fakeMeta;
       const meta = await loadMeta();
       expect(meta).toEqual(fakeMeta);
@@ -285,7 +287,7 @@ describe('persistentChatStore', () => {
   // --- saveMetaImmediate ---
   describe('saveMetaImmediate', () => {
     it('should save meta to storage', async () => {
-      const meta = { lastActivityTs: 100, totalChars: 50 };
+      const meta = { lastActivityTs: 100, kbCursorId: null };
       await saveMetaImmediate(meta);
       expect(storageData['chat_meta']).toEqual(meta);
     });
@@ -396,7 +398,8 @@ describe('persistentChatStore', () => {
         { _id: '1', _ts: 100, role: 'user', content: 'hello' },
         { _id: '2', _ts: 200, role: 'assistant', content: 'hi' },
       ];
-      const msgs = await filterAndConvertTurns(turns);
+      storageData['chat_turns'] = turns;
+      const msgs = await filterAndConvertTurns();
       expect(msgs.length).toBe(2);
       expect(msgs[0].content).toBe('hello');
     });
@@ -408,7 +411,8 @@ describe('persistentChatStore', () => {
         { _id: '2', _ts: 200, _type: 'session_break', role: 'system', content: '' },
         { _id: '3', _ts: 600, _type: 'user', role: 'user', content: 'new' },
       ];
-      const msgs = await filterAndConvertTurns(turns);
+      storageData['chat_turns'] = turns;
+      const msgs = await filterAndConvertTurns();
       expect(msgs.length).toBe(1);
       expect(msgs[0].content).toBe('new');
     });
@@ -420,7 +424,8 @@ describe('persistentChatStore', () => {
         { _id: '2', _ts: 200, _type: 'session_break', role: 'system', content: '' },
         { _id: '3', _ts: 300, _type: 'user', role: 'user', content: 'b' },
       ];
-      const msgs = await filterAndConvertTurns(turns);
+      storageData['chat_turns'] = turns;
+      const msgs = await filterAndConvertTurns();
       // session_break at ts=200 > marker 50, so no cutting
       expect(msgs.length).toBe(3);
     });
@@ -528,14 +533,22 @@ describe('persistentChatStore', () => {
 
   // --- appendTurn ---
   describe('appendTurn', () => {
-    it('should append turn and update meta totalChars', async () => {
-      const turns = [];
-      const meta = { totalChars: 0 };
+    it('adds the turn to the window copy and sends only that turn to the store', async () => {
+      browser.runtime.sendMessage.mockResolvedValueOnce({ applied: true, removed: 0 });
+      const turns = [{ _id: 'shown-only', _chars: 1 }];
       const turn = { _id: '1', _chars: 50, role: 'user', content: 'hello' };
-      const { evictedTurns } = await appendTurn(turn, turns, meta);
-      expect(turns.length).toBe(1);
-      expect(meta.totalChars).toBe(50);
+      const { evictedTurns } = await appendTurn(turn, turns);
+      expect(turns.map(t => t._id)).toEqual(['shown-only', '1']);
+      expect(browser.runtime.sendMessage.mock.calls[0][0].op).toEqual({ append: [turn] });
       expect(evictedTurns).toEqual([]);
+    });
+
+    it('keeps the turn shown and returns the copy\'s evictions when the background does not take it', async () => {
+      browser.runtime.sendMessage.mockRejectedValueOnce(new Error('no receiver'));
+      const turns = [{ _id: 'old', _chars: 20000, role: 'user' }];
+      const { evictedTurns } = await appendTurn({ _id: 'new', _chars: 10000, role: 'user' }, turns);
+      expect(turns.map(t => t._id)).toEqual(['new']);
+      expect(evictedTurns.map(t => t._id)).toEqual(['old']);
     });
   });
 

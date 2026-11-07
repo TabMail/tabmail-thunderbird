@@ -27,9 +27,7 @@ import {
   loadTurns,
   loadMeta,
   saveMeta,
-  saveTurns,
-  saveTurnsImmediate,
-  saveMetaImmediate,
+  changeTurns,
   turnsToLLMMessages,
   migrateFromSessions,
   generateTurnId,
@@ -86,7 +84,7 @@ export async function initAndGreetUser() {
       for (const turn of persistedTurns) {
         turn._refs = collectTurnRefs(turn);
       }
-      saveTurns(persistedTurns);
+      await changeTurns({ update: persistedTurns });
       buildRefCounts(persistedTurns);
       await browser.storage.local.set({ "chat_refs_migration_v1": Date.now() });
       log(`[TMDBG Init] Refs migration complete`);
@@ -162,6 +160,15 @@ export async function initAndGreetUser() {
 // Returning user: rebuild conversation from persistent turns
 // ---------------------------------------------------------------------------
 
+// Remove turns this window dropped from its copy at load from the stored turns too.
+async function _removeStoredTurns(turns) {
+  try {
+    await changeTurns({ remove: turns.map(t => t._id) });
+  } catch (e) {
+    log(`[TMDBG Init] Failed to remove ${turns.length} stored turn(s): ${e}`, "warn");
+  }
+}
+
 async function _initReturningUser(persistedTurns, meta, systemMessage, userName) {
   log(`[TMDBG Init] Returning user: ${persistedTurns.length} persisted turns, lastActivity=${meta.lastActivityTs}`);
 
@@ -183,24 +190,21 @@ async function _initReturningUser(persistedTurns, meta, systemMessage, userName)
   const extraBreaks = trailingSpecial.filter(t => t._type === "session_break").slice(1);
   const strippedCount = strippedNudges.length + extraBreaks.length;
   for (const nudge of strippedNudges) {
-    meta.totalChars -= (nudge._chars || 0);
     unregisterTurnRefs(nudge);
   }
   // Re-add exactly one session_break (the most recent one found)
   if (keptBreak) persistedTurns.push(keptBreak);
   if (strippedCount > 0) {
     log(`[TMDBG Init] Stripped ${strippedNudges.length} trailing nudge(s) and ${extraBreaks.length} extra session_break(s)`);
-    saveTurns(persistedTurns);
-    saveMeta(meta);
+    await _removeStoredTurns([...strippedNudges, ...extraBreaks]);
   }
 
   // Enforce budget on load
-  const evictedOnLoad = enforceBudget(persistedTurns, meta);
+  const evictedOnLoad = enforceBudget(persistedTurns);
   if (evictedOnLoad.length > 0) {
     log(`[TMDBG Init] Budget enforcement on load evicted ${evictedOnLoad.length} turns`);
     cleanupEvictedIds(evictedOnLoad);
-    saveTurns(persistedTurns);
-    saveMeta(meta);
+    await _removeStoredTurns(evictedOnLoad);
   }
 
   // Build agentConverseMessages: system prompt + all persisted turns
@@ -436,13 +440,11 @@ async function _initFirstTimeUser(meta, systemMessage, userName, inboxCounts) {
   registerTurnRefs(greetingTurn);
 
   ctx.persistedTurns.push(greetingTurn);
-  meta.totalChars = greetingTurn._chars;
   meta.lastActivityTs = Date.now();
   saveMeta(meta);
 
-  // Use direct storage save for first turn (no existing turns to append to)
   try {
-    await browser.storage.local.set({ chat_turns: ctx.persistedTurns });
+    await changeTurns({ append: [greetingTurn] });
     log(`[TMDBG Init] Persisted greeting turn`);
   } catch (e) {
     log(`[TMDBG Init] Failed to persist greeting turn: ${e}`, "warn");
@@ -535,7 +537,11 @@ async function _insertSessionBreak(meta) {
 
   // Persist immediately (must survive page reloads to serve as grey boundary)
   turns.push(breakTurn);
-  saveTurns(turns);
+  try {
+    await changeTurns({ append: [breakTurn] });
+  } catch (e) {
+    log(`[TMDBG Init] Failed to persist session_break: ${e}`, "warn");
+  }
 
   // Add to agentConverseMessages so LLM sees the session break
   ctx.agentConverseMessages.push({
@@ -722,8 +728,8 @@ async function _insertNudge(meta, text, type) {
 /**
  * Insert a task result bubble into the chat. Unlike nudges, task result bubbles
  * are PERMANENT — they are NOT replaced by subsequent welcome-back or proactive
- * messages. The turn is already persisted via appendTurn in proactiveCheckin.js;
- * merge those turns into this window too, so its next save retains the result.
+ * messages. The turns are already stored by proactiveCheckin.js; this adds them
+ * to this window's own copy only, for display and its cleanup of evicted turns.
  */
 export async function insertTaskResultBubble(text, taskTurns) {
   if (!ctx.chatMeta) {
@@ -738,18 +744,16 @@ export async function insertTaskResultBubble(text, taskTurns) {
   }
   if (ctx.persistedTurns.some(t => t._id === result._id)) return;
 
-  // Merge synchronously before any await: preserve this window's local turns and
-  // let repeated notifications recognize the same result while a save is pending.
+  // Merge synchronously before any await, so a repeated notification
+  // recognizes the same result.
   const knownIds = new Set(ctx.persistedTurns.map(t => t._id));
   for (const turn of taskTurns) {
     if (!turn?._id || knownIds.has(turn._id)) continue;
     if (turn._type !== "session_break" && turn._type !== "task_result") continue;
     ctx.persistedTurns.push(turn);
     knownIds.add(turn._id);
-    ctx.chatMeta.totalChars = (ctx.chatMeta.totalChars || 0) + (turn._chars || 0);
   }
-  cleanupEvictedIds(enforceBudget(ctx.persistedTurns, ctx.chatMeta));
-  await Promise.all([saveTurnsImmediate(ctx.persistedTurns), saveMetaImmediate(ctx.chatMeta)]);
+  cleanupEvictedIds(enforceBudget(ctx.persistedTurns));
 
   log(`[TMDBG Init] Inserting task result bubble`);
 
