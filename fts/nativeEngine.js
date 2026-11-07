@@ -53,7 +53,7 @@ const STORAGE_KEY_EMBEDDING_REBUILD_STATUS = "fts_embedding_rebuild_status";
 // allows by closing the native port that kept the page alive.
 const SESSION_KEY_UPDATE_REQUESTS = "ftsNativeUpdateRequests";
 // Automatic requests sent again after a success answer the reconnected helper did
-// not apply. Each follows the update reconnect, so they are spaced like it.
+// not apply.
 const UPDATE_REASKS_AFTER_SUCCESS = 2;
 // A re-ask waits until this long after the success it repeats. On Windows that
 // success left an apply copy retrying its swap for 5.5 s (native-fts ADR-NF-024:
