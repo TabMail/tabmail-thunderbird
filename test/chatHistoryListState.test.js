@@ -134,6 +134,8 @@ describe('Chat History says none is kept or found only when an answer said so', 
   it.each([
     ['answers an error', () => ({ error: 'helper busy' }), 'Search failed: helper busy'],
     ['is rejected', () => new Error('helper disconnected'), 'Search failed: Error: helper disconnected'],
+    ['gets no reply', () => undefined, 'Search failed: no reply from the search helper'],
+    ['gets a reply that is not a list', () => ({ ok: true }), 'Search failed: no reply from the search helper'],
   ])('a search that %s, asked while the listing on open is pending, waits for it, then is said with the listing still shown', async (_how, reply, said) => {
     const helper = fakeHelper(entriesOf(3));
     const listing = gate();

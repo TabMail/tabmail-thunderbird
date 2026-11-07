@@ -128,7 +128,9 @@ export function searchChatHistory(query) {
         let answer;
         try {
             const results = await fetchMemoryEntries(q);
-            answer = results?.error ? { error: results.error } : { entries: Array.isArray(results) ? results : [] };
+            // Anything but a list failed, as an error does: no reply comes while
+            // the background starts or reloads. It never shows as no matches.
+            answer = Array.isArray(results) ? { entries: results } : { error: results?.error || "no reply from the search helper" };
         } catch (e) {
             answer = { error: String(e) };
         }

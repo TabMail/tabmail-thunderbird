@@ -488,6 +488,38 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(page.shown()).toEqual(entriesOf(3, 10).map(view));
     expect(page.label()).not.toContain('Search:');
   });
+
+  // #225: a search the helper does not answer with a list failed; it never
+  // shows as a search that found nothing. No listener answers while the
+  // background starts or reloads.
+  it.each([
+    ['no reply', undefined, 'Search failed: no reply from the search helper'],
+    ['an empty reply', null, 'Search failed: no reply from the search helper'],
+    ['a reply that is not a list', { ok: true }, 'Search failed: no reply from the search helper'],
+    ['an error', { error: 'Native RPC timed out' }, 'Search failed: Native RPC timed out'],
+  ])('a search answered by %s says it failed and keeps the search shown before', async (_why, reply, said) => {
+    const found = entriesOf(2, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper([...entriesOf(3, 10, Date.now() - 60_000, 'newest'), ...found]);
+    const page = await openPage(helper);
+    await search(page, 'planning');
+    await settle();
+    expect(page.shown()).toEqual(found.map(view));
+    const before = page.label();
+    expect(before).toContain('planning');
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg => (msg.cmd === 'memorySearch' && msg.q === 'harbour' ? reply : answer(msg)));
+    await search(page, 'harbour');
+    await settle();
+    expect(page.status()).toBe(said);
+    expect(page.statusIsError()).toBe(true);
+    expect(page.shown()).toEqual(found.map(view));
+    expect(page.label()).toBe(before);
+    // Shown again after a removal, the page is still the search shown before.
+    page.d.querySelector('#history-list .history-remove-btn').click();
+    await settle();
+    expect(page.shown()).toEqual(found.slice(1).map(view));
+    expect(page.label()).toBe('Active turns: 0 Searchable entries: 4 Search: "planning" (1 results)');
+  });
 });
 
 // #153 and #154: the tab opens on memory's newest entries, as Voice's
