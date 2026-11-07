@@ -1180,3 +1180,134 @@ describe("native folder-membership v1 contract", () => {
       .toEqual(["hello", "init", "indexBatch"]);
   });
 });
+
+describe("native helper update reconnect", () => {
+  const manifestFetch = () => vi.fn(async () => ({
+    ok: true,
+    json: async () => ({
+      latest: {
+        version: "0.11.3",
+        downloadUrl: "https://cdn.test/native-fts.zip",
+        sha256: "ab".repeat(32),
+        signature: "test-signature",
+      },
+    }),
+  }));
+  const installBrowser = (...ports) => {
+    const connectNative = vi.fn();
+    for (const port of ports) connectNative.mockReturnValueOnce(port);
+    globalThis.browser = {
+      tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      runtime: {
+        connectNative,
+        getManifest: vi.fn(() => ({
+          version: "1.7.3",
+          browser_specific_settings: { gecko: { id: "thunderbird@tabmail.ai" } },
+        })),
+        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
+      },
+      tmUpdates: { showUpdateBar: vi.fn(async () => {}) },
+    };
+  };
+  const methods = port => port.messages.map(message => message.method);
+  const freshRow = {
+    msgId: "account:/Client:message@example.com",
+    folderId: "opaque-folder-17",
+    body: "",
+  };
+
+  it("treats a helper that exits without answering its update as an ordinary disconnect", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true, deferUpdateRequest: true });
+    const second = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    const outcome = initNativeFts().then(() => ({ ok: true }), error => ({ ok: false, error }));
+    for (let turn = 0; turn < 30 && !methods(first).includes("updateRequest"); turn++) {
+      await Promise.resolve();
+    }
+    expect(methods(first)).toEqual(["hello", "updateCheck", "updateRequest"]);
+    first.disconnect();
+    expect((await outcome).ok).toBe(false);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("missing");
+
+    // No reconnect inside the cooldown: the dropped update is not taken for a restart.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(browser.runtime.connectNative).toHaveBeenCalledOnce();
+
+    // After the cooldown an ordinary request reconnects, and the same update is
+    // not requested again this session.
+    await vi.advanceTimersByTimeAsync(31_000);
+    await nativeFtsSearch.indexBatch([freshRow]);
+    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("available");
+  });
+
+  it("does not request an update that failed again on a later connection, but a manual check does", async () => {
+    vi.resetModules();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true });
+    const second = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await initNativeFts();
+    expect(methods(first)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(first.disconnect).not.toHaveBeenCalled();
+    first.disconnect();
+    expect(nativeFtsSearch.getHostStatus().status).toBe("missing");
+    expect(await nativeFtsSearch.recheckAvailability()).toBe(true);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init"]);
+
+    const manual = await nativeFtsSearch.manualCheckAndUpdateHost();
+    expect(manual).toEqual({ ok: false, error: "test_update_not_applied" });
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init", "updateCheck", "updateRequest"]);
+    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
+  });
+
+  it("reconnects once after a successful update and does not repeat it when the old helper is still installed", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", manifestFetch());
+    const updated = {
+      success: true,
+      oldVersion: "0.11.2",
+      newVersion: "0.11.3",
+      requiresRestart: true,
+      message: "updated",
+    };
+    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    // The swap did not happen (e.g. another profile's helper held the file):
+    // the reconnect finds the same old version, which would answer success again.
+    const second = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    installBrowser(first, second);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    expect(await initNativeFts()).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.disconnect).toHaveBeenCalledOnce();
+    expect(nativeFtsSearch.getHostStatus().status).not.toBe("missing");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    for (let turn = 0; turn < 30 && nativeFtsSearch.getHostStatus().status !== "available"; turn++) {
+      await Promise.resolve();
+    }
+    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init"]);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("available");
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
+    expect(second.disconnect).not.toHaveBeenCalled();
+
+    // The update's reconnect was used up: a later disconnect is ordinary.
+    second.disconnect();
+    expect(nativeFtsSearch.getHostStatus().status).toBe("missing");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
+  });
+});

@@ -117,3 +117,15 @@ membership cleanup incomplete, so orphan and session completion never finish whi
 folder's own exact repair still runs, because folder work no longer waits on global cleanup. (2) A session
 that has to migrate many NULL-owner rows pays bounded extra folder sweeps and memo writes. Both fail
 closed, and the owner accepted both.
+
+**Amendment (2026-11-06): the update reconnect follows the success response only.** The update
+reconnect used to be armed before `updateRequest` was sent, so any disconnect during an update counted as
+a restart. A helper that exited on a failed update (native-fts #64, released helpers up to 0.12.2) was
+reconnected after 1 s, bypassing the 60 s cooldown, and asked again: a tight loop for as long as the update
+kept failing. Now the reconnect is armed on receipt of the success response, in the port's message
+listener, before any continuation runs (the helper may exit right after writing it). The disconnect that
+follows consumes it. Any other disconnect, including one during a failed update, is ordinary: `missing`,
+under the cooldown. In addition, the automatic (bootstrap) update sends at most one `updateRequest` per
+target version per Thunderbird session (in-memory set): a failing update, or one that answers success
+but is not applied (another profile's helper holding the file), is not repeated on every reconnect. The
+manual "Check for Updates" always sends its request and records the version too. Owner ruling 2026-11-06.
