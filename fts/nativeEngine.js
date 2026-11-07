@@ -60,6 +60,27 @@ const UPDATE_REASKS_AFTER_SUCCESS = 2;
 // 500 ms, then 20 attempts 250 ms apart) from the one path every update copies
 // its apply helper to, so an update sent sooner can fail copying over it.
 const UPDATE_REASK_AFTER_SUCCESS_MS = 6_000;
+// Whether the automatic update may ask for a version, given its record entry.
+const automaticAskAllowed = entry => !entry
+  || (entry.lastSucceeded && entry.requests <= UPDATE_REASKS_AFTER_SUCCESS);
+// The one way to change the update-request record. Changes run one after another,
+// each reading the record fresh and writing it back, so two update checks never
+// write over each other: their attempts are numbered in order, and only the
+// latest attempt for a version can mark it succeeded. `change` gets the version's
+// entry and returns its new one, or undefined to leave the record as it is.
+let updateRequestChanges = Promise.resolve();
+function changeUpdateRequest(version, change) {
+  const run = updateRequestChanges.then(async () => {
+    const all = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTS))
+      ?.[SESSION_KEY_UPDATE_REQUESTS] || {};
+    const entry = change(all[version]);
+    if (entry) {
+      await browser.storage.session.set({ [SESSION_KEY_UPDATE_REQUESTS]: { ...all, [version]: entry } });
+    }
+  });
+  updateRequestChanges = run.catch(() => {});
+  return run;
+}
 
 // Update server URL - points to the same CDN as addon updates.
 // Native-FTS updates are platform-first so each OS/arch can be deployed independently:
@@ -372,17 +393,17 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
   if (!updateCheck.canUpdate) {
     return { updateAvailable: true, canUpdate: false, latestVersion: latestRelease.version };
   }
-  const updateRequests = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTS))
-    ?.[SESSION_KEY_UPDATE_REQUESTS] || {};
+  const version = latestRelease.version;
+  const previous = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTS))
+    ?.[SESSION_KEY_UPDATE_REQUESTS]?.[version];
   if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update attempts");
-  const previous = updateRequests[latestRelease.version];
-  if (bootstrapState && previous
-      && !(previous.lastSucceeded && previous.requests <= UPDATE_REASKS_AFTER_SUCCESS)) {
-    log(`[TMDBG FTS] Update to ${latestRelease.version} was already requested this session; not repeating it automatically`, "warn");
-    return { updateAvailable: true, canUpdate: true, updated: false, latestVersion: latestRelease.version };
-  }
+  const alreadyRequested = () => {
+    log(`[TMDBG FTS] Update to ${version} was already requested this session; not repeating it automatically`, "warn");
+    return { updateAvailable: true, canUpdate: true, updated: false, latestVersion: version };
+  };
+  if (bootstrapState && !automaticAskAllowed(previous)) return alreadyRequested();
   if (bootstrapState && previous) {
-    log(`[TMDBG FTS] Update to ${latestRelease.version} answered success but the helper still needs it; asking again (${previous.requests}/${UPDATE_REASKS_AFTER_SUCCESS})`, "warn");
+    log(`[TMDBG FTS] Update to ${version} answered success but the helper still needs it; asking again (${previous.requests}/${UPDATE_REASKS_AFTER_SUCCESS})`, "warn");
     const waitMs = previous.succeededAtMs + UPDATE_REASK_AFTER_SUCCESS_MS - Date.now();
     if (waitMs > 0) {
       await new Promise(resolve => setTimeout(resolve, waitMs));
@@ -390,12 +411,11 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
     }
   }
   // Recorded before the request is sent: if it cannot be recorded, none is sent.
-  const requests = (previous?.requests || 0) + 1;
-  await browser.storage.session.set({
-    [SESSION_KEY_UPDATE_REQUESTS]: {
-      ...updateRequests,
-      [latestRelease.version]: { requests, lastSucceeded: false },
-    },
+  let requests;
+  await changeUpdateRequest(version, entry => {
+    if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update attempt record");
+    requests = (entry?.requests || 0) + 1;
+    return { requests, lastSucceeded: false };
   });
 
   const updateResult = await nativeRPC('updateRequest', {
@@ -413,15 +433,11 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
     log(`[TMDBG FTS] ✅ Host update successful! Prompting for Thunderbird restart.`);
     // Lets the reconnect ask again if this success is not applied. If it cannot
     // be recorded, the update is not asked again this session.
+    // Only while this is the latest attempt: a newer one decides for itself.
     try {
-      const current = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTS))
-        ?.[SESSION_KEY_UPDATE_REQUESTS];
-      await browser.storage.session.set({
-        [SESSION_KEY_UPDATE_REQUESTS]: {
-          ...current,
-          [latestRelease.version]: { requests, lastSucceeded: true, succeededAtMs: Date.now() },
-        },
-      });
+      await changeUpdateRequest(version, entry => (entry?.requests === requests
+        ? { requests, lastSucceeded: true, succeededAtMs: Date.now() }
+        : undefined));
     } catch (e) {
       log(`[TMDBG FTS] Could not record the successful update request: ${e}`, "warn");
     }

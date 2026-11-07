@@ -154,9 +154,13 @@ sent sooner would fail copying over the running one and answer an error, ending 
 reconnected helper runs the old binary, that apply copy cannot win anyway, so the wait costs no chance of
 success. The 1 s update reconnect is unchanged. A generation replaced during the wait sends nothing, and
 the next connection gets the re-ask. A failed answer records `lastSucceeded: false` and stops the re-asks. After the last re-ask the update waits for the
-next start. The attempt is still recorded before the request is sent (no record, no request). The success
-is recorded after the answer, from a fresh read of the record. If that write fails, the update is not
-asked again this session, which was the behaviour before this amendment. A manual check still always
+next start. The attempt is still recorded before the request is sent (no record, no request). Every change to
+the record goes through one function, `changeUpdateRequest`, which runs changes one after another, each
+reading the record fresh and writing it back. So two overlapping update checks (two Settings pages)
+number their attempts in order. A success marks the version only while its attempt is still the latest,
+so an older success cannot reopen a version a newer attempt left unanswered or failed. The success is
+recorded after the answer and before the update banner, which may never finish. If that write fails, the
+update is not asked again this session, which was the behaviour before this amendment. A manual check still always
 sends, and it records its request in the same way. Rejected: renaming the running binary aside in the
 helper, which reverses ADR-NF-024; and measuring the helper's swap window. Worst case: every swap loses and
 the update lands at the next start, as before. Owner ruling 2026-11-07 (option C).
