@@ -949,15 +949,11 @@ export async function renderMarkdown(mdText) {
         const isDivider = /^\s*\|\s*(:?-+:?\s*\|\s*)+:?-+:?\s*\|?\s*$/.test(alignLine);
         const body = isDivider ? tableLines.slice(2) : tableLines.slice(1);
         
-        // Process cells: escape HTML but preserve common HTML entities and <br> tags
+        // Process cells as the rest of the reply is processed: escape the text,
+        // apply bold and italic, then put back the renderer's own link and code
+        // markup. The cell also keeps <br> tags and character references.
         const processCellContent = (cellText) => {
           let processed = cellText.trim();
-          
-          // Restore link and code placeholders BEFORE escaping (they were added before table extraction)
-          // These placeholders contain already-safe HTML that should not be escaped
-          processed = processed.replace(/@@SPECIAL_LINK_(\d+)@@/g, (_, i) => specialLinkHtml[Number(i)] || "");
-          processed = processed.replace(/@@LINK_(\d+)@@/g, (_, i) => linkHtml[Number(i)] || "");
-          processed = processed.replace(/@@CODE_(\d+)@@/g, (_, i) => inlineCodeHtml[Number(i)] || "");
           
           // Temporarily protect <br> tags (with various formats)
           const brPlaceholders = [];
@@ -975,19 +971,8 @@ export async function renderMarkdown(mdText) {
             return `@@TABLECELL_ENTITY_${idx}@@`;
           });
           
-          // Temporarily protect already-rendered HTML tags from link/code restoration
-          const htmlTagPlaceholders = [];
-          processed = processed.replace(/<[^>]+>/g, (match) => {
-            const idx = htmlTagPlaceholders.length;
-            htmlTagPlaceholders.push(match);
-            return `@@TABLECELL_HTML_${idx}@@`;
-          });
-          
-          // Now escape any remaining HTML (but not our protected placeholders)
+          // Escape the text; the link and code placeholders hold no character it changes
           processed = escapeHtml(processed);
-          
-          // Restore HTML tags (from link/code restoration)
-          processed = processed.replace(/@@TABLECELL_HTML_(\d+)@@/g, (_, i) => htmlTagPlaceholders[Number(i)] || '');
           
           // Apply markdown formatting to table cells (bold and italic)
           // Bold: match **text** without crossing newlines
@@ -1001,6 +986,12 @@ export async function renderMarkdown(mdText) {
           
           // Restore <br> tags
           processed = processed.replace(/@@TABLECELL_BR_(\d+)@@/g, (_, i) => brPlaceholders[Number(i)] || '');
+          
+          // Restore link and code placeholders last, after formatting, as the
+          // rest of the reply does, so emphasis never runs inside their markup
+          processed = processed.replace(/@@SPECIAL_LINK_(\d+)@@/g, (_, i) => specialLinkHtml[Number(i)] || "");
+          processed = processed.replace(/@@LINK_(\d+)@@/g, (_, i) => linkHtml[Number(i)] || "");
+          processed = processed.replace(/@@CODE_(\d+)@@/g, (_, i) => inlineCodeHtml[Number(i)] || "");
           
           return processed;
         };
