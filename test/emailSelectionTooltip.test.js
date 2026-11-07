@@ -76,6 +76,13 @@ describe('the email selection tooltip shows todos and summary as written', () =>
     ]);
   });
 
+  it('only the bullet separates todos; an asterisk inside a todo stays in it', async () => {
+    expect(shape(await hover({ todos: '• Calculate 2 * 3 • Reply' }))).toEqual([
+      ['STRONG', '', [['#text', 'Todos:']]],
+      ['UL', 'tooltip-todos', [['LI', 'Calculate 2 * 3'], ['LI', 'Reply']]],
+    ]);
+  });
+
   it('hovering again shows the same tooltip once, not twice', async () => {
     const tooltip = await hover({ blurb: 'Once' });
     const row = document.querySelector('.email-item-row');

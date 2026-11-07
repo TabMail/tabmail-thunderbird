@@ -86,6 +86,19 @@ describe('the summary bubble shows todos and summary as written', () => {
     expect(inline.replace(/\s+/g, ' ').trim()).toBe('Todos: • • Summary:');
   });
 
+  it('only the bullet separates todos; an asterisk inside a todo stays in it', () => {
+    const { bubble, content } = openMessage();
+    bubble.displaySummary('Plan', '• Calculate 2 * 3 • Reply', false);
+    expect(shape(content())).toEqual([
+      ['DIV', 'tm-container', [
+        ['STRONG', '', 'Todos:'],
+        ['UL', 'tm-list', [['LI', '', 'Calculate 2 * 3'], ['LI', '', 'Reply']]],
+        ['STRONG', '', 'Summary:'],
+        ['DIV', 'tm-summary', 'Plan'],
+      ]],
+    ]);
+  });
+
   it('a notice shows its icon and text', () => {
     const { bubble, content } = openMessage();
     bubble.displaySummary('Not logged in, please sign in', '', true);
