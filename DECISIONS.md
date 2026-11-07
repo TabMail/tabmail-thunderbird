@@ -139,7 +139,7 @@
 
 ## ADR-023: Native FTS Signing-Key Cutover Uses One Bridge Release, Then Revokes the Previous Key
 
-- **[Full ADR](Companion/Decisions/Active/adr-023-native-fts-routine-signing-key-cutover.md)** — 2026-11-06: Windows self-update cutoff `NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION` (set by the native-fts #65 release, null until then) makes an older Windows helper `unsupported` on the same reinstall path, no new UI; the support check fails closed when hello or the platform lookup fails. v0.11.1 is the old-signed bridge that trusts both public keys; after the bridge and reinstall UI were verified, the pending signer was promoted on 2026-08-13. v0.11.2 removes the previous public key and trusts only the promoted signer. Thunderbird 1.7.2+ marks pre-0.11.1 helpers `unsupported`, stops FTS, and offers a live-detected reinstall that preserves the existing index.
+- **[Full ADR](Companion/Decisions/Active/adr-023-native-fts-routine-signing-key-cutover.md)** — 2026-11-06: Windows self-update cutoff `NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION` (0.12.3, the native-fts #65 release) makes an older Windows helper `unsupported` on the same reinstall path, no new UI; the support check fails closed when hello or the platform lookup fails. v0.11.1 is the old-signed bridge that trusts both public keys; after the bridge and reinstall UI were verified, the pending signer was promoted on 2026-08-13. v0.11.2 removes the previous public key and trusts only the promoted signer. Thunderbird 1.7.2+ marks pre-0.11.1 helpers `unsupported`, stops FTS, and offers a live-detected reinstall that preserves the existing index.
 
 ## ADR-024: Opaque Native Folder Membership Resolves Legacy Composite-Key Ambiguity
 

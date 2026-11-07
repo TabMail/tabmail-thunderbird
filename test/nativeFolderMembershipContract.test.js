@@ -849,7 +849,6 @@ describe("native folder-membership v1 contract", () => {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       storage: { session: sessionStore() },
       runtime: {
-        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn(() => port),
         getManifest: vi.fn(() => ({
           version: "1.7.3",
@@ -922,7 +921,6 @@ describe("native folder-membership v1 contract", () => {
         tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
         storage: { session: sessionStore() },
         runtime: {
-          getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
           connectNative: vi.fn()
             .mockReturnValueOnce(first)
             .mockReturnValueOnce(second),
@@ -1005,7 +1003,6 @@ describe("native folder-membership v1 contract", () => {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       storage: { session: sessionStore() },
       runtime: {
-        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
           .mockReturnValueOnce(second),
@@ -1166,7 +1163,6 @@ describe("native folder-membership v1 contract", () => {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       storage: { session: sessionStore() },
       runtime: {
-        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
           .mockReturnValueOnce(second),

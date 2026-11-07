@@ -49,8 +49,8 @@ afterEach(() => {
   delete globalThis.browser;
 });
 
-// The shipped Windows cutoff is set by the native-fts release that carries the
-// apply-update fix; these tests configure one.
+// The Windows tests use the shipped cutoff, so a change to it fails them; this
+// override exists only for the no-cutoff case.
 async function withWindowsCutoff(version) {
   vi.resetModules();
   vi.doMock("../fts/nativeCompatibility.js", async importOriginal => ({
@@ -96,8 +96,8 @@ describe("native FTS unsupported helper state propagation", () => {
     });
   });
 
-  it("disconnects a Windows helper older than the configured cutoff through the same path", async () => {
-    await withWindowsCutoff("0.12.3");
+  it("disconnects a Windows helper older than the shipped cutoff through the same path", async () => {
+    vi.resetModules();
     const port = makeNativePort("0.12.2");
     installBrowser(vi.fn(() => port), vi.fn(async () => ({ os: "win", arch: "x86-64" })));
     const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
@@ -119,7 +119,7 @@ describe("native FTS unsupported helper state propagation", () => {
     ["mac", "0.12.2"],
     ["linux", "0.12.2"],
   ])("keeps a %s helper v%s in use under the Windows cutoff", async (os, hostVersion) => {
-    await withWindowsCutoff("0.12.3");
+    vi.resetModules();
     const port = makeNativePort(hostVersion, { canSelfUpdate: false });
     installBrowser(vi.fn(() => port), vi.fn(async () => ({ os, arch: "x86-64" })));
     const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
@@ -137,7 +137,7 @@ describe("native FTS unsupported helper state propagation", () => {
     ["rejects", () => Promise.reject(new Error("platform unavailable"))],
     ["throws", () => { throw new TypeError("getPlatformInfo is not a function"); }],
   ])("does not use a helper when the platform lookup %s under the Windows cutoff", async (_, lookup) => {
-    await withWindowsCutoff("0.12.3");
+    vi.resetModules();
     const port = makeNativePort("0.12.2", { canSelfUpdate: false });
     installBrowser(vi.fn(() => port), vi.fn(lookup));
     const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
@@ -147,11 +147,11 @@ describe("native FTS unsupported helper state propagation", () => {
     expect(port.methods).toEqual(["hello"]);
     expect(port.disconnected).toBe(true);
     expect(nativeFtsSearch.getHostAvailability()).toBe(false);
-    expect(nativeFtsSearch.getHostStatus().status).not.toBe("available");
+    expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "missing" });
   });
 
   it("does not use a helper whose hello fails", async () => {
-    await withWindowsCutoff("0.12.3");
+    vi.resetModules();
     const port = makeNativePort("0.12.3", { canSelfUpdate: false, helloError: "hello failed" });
     installBrowser(vi.fn(() => port), vi.fn(async () => ({ os: "win", arch: "x86-64" })));
     const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
@@ -161,7 +161,7 @@ describe("native FTS unsupported helper state propagation", () => {
     expect(port.methods).toEqual(["hello"]);
     expect(port.disconnected).toBe(true);
     expect(nativeFtsSearch.getHostAvailability()).toBe(false);
-    expect(nativeFtsSearch.getHostStatus().status).not.toBe("available");
+    expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "missing" });
   });
 
   it("does not ask for the platform while no Windows cutoff is configured", async () => {
@@ -178,7 +178,7 @@ describe("native FTS unsupported helper state propagation", () => {
   });
 
   it("does not let a generation replaced during the platform lookup close its replacement", async () => {
-    await withWindowsCutoff("0.12.3");
+    vi.resetModules();
     const stale = makeNativePort("0.12.2");
     const current = makeNativePort("0.12.3", { canSelfUpdate: false });
     let releaseStalePlatform;
