@@ -1388,6 +1388,42 @@ describe("native helper update reconnect", () => {
     expect(methods(next)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
   });
 
+  it("waits no longer than the re-ask wait when the clock moves back after the success", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const second = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    expect(await initNativeFts()).toBe(true);
+    // The success is recorded; then the system clock is set back an hour.
+    vi.setSystemTime(Date.now() - 3_600_000);
+    const successAt = Date.now();
+    for (let turn = 0; turn < 50 && !first.disconnect.mock.calls.length; turn++) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    expect(first.disconnect).toHaveBeenCalledOnce();
+    // A search write right after the exit reconnects at once, without the
+    // reconnect delay, so the re-ask is timed by its own wait alone.
+    const write = nativeFtsSearch.indexBatch([freshRow]);
+    let reaskedAfter = null;
+    for (let turn = 0; turn < 300 && reaskedAfter === null; turn++) {
+      await vi.advanceTimersByTimeAsync(50);
+      if (methods(second).includes("updateRequest")) reaskedAfter = Date.now() - successAt;
+    }
+
+    // Asked again once the full re-ask wait has passed (the previous apply copy
+    // has finished), and not an hour later.
+    expect(reaskedAfter).toBeGreaterThanOrEqual(6_000);
+    expect(reaskedAfter).toBeLessThan(6_200);
+    expect(updateRequests(second)).toEqual([publishedRequest]);
+    expect(await write).toEqual({ ok: true, count: 1 });
+    expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest", "init", "indexBatch"]);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("available");
+  });
+
   it("serves from the new helper once a re-asked update is applied", async () => {
     vi.resetModules();
     vi.useFakeTimers();

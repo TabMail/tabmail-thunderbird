@@ -397,7 +397,10 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
   if (bootstrapState && !automaticAskAllowed(previous)) return alreadyRequested();
   if (bootstrapState && previous) {
     log(`[TMDBG FTS] Update to ${version} answered success but the helper still needs it; asking again (${previous.requests}/${UPDATE_REASKS_AFTER_SUCCESS})`, "warn");
-    const waitMs = previous.succeededAtMs + UPDATE_REASK_AFTER_SUCCESS_MS - Date.now();
+    // At most the re-ask wait: a clock set back since the success would otherwise
+    // hold the helper's start for as long as the clock moved.
+    const waitMs = Math.min(previous.succeededAtMs + UPDATE_REASK_AFTER_SUCCESS_MS - Date.now(),
+      UPDATE_REASK_AFTER_SUCCESS_MS);
     if (waitMs > 0) {
       await new Promise(resolve => setTimeout(resolve, waitMs));
       _assertNativeStateCurrent(bootstrapState, "update re-ask wait");
