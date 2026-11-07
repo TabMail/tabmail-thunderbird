@@ -1215,7 +1215,6 @@ describe("native helper update reconnect", () => {
     globalThis.browser = {
       storage: { session: sessionStore() },
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
-      storage: { session: sessionStore() },
       runtime: {
         connectNative,
         getManifest: vi.fn(() => ({
