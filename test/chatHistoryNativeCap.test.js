@@ -155,6 +155,9 @@ const search = async (page, query) => {
   page.d.getElementById('history-search-input').value = query;
   page.d.getElementById('history-search-btn').click();
 };
+// Waits until the search has answered: the stats name it. A count of entries
+// shown is no sign of that, as the listing it replaces can show as many.
+const searched = (page, query) => vi.waitFor(() => expect(page.label()).toContain(`Search: "${query}"`));
 
 // What the page shows of an entry: its first 400 characters (code points), and
 // an ellipsis when it goes on.
@@ -184,7 +187,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     const page = await openPage(helper);
 
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
+    await searched(page, 'planning');
+    expect(page.shown()).toHaveLength(20);
     expect(page.shown()).toEqual(entries.slice(0, 20).map(view));
     expect(page.shown()[0].request).toMatch(/^planning u{100}$/);
     expect(page.shown()[0].reply).toMatch(/^a+…$/);
@@ -219,7 +223,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     helper.sendMessage.mockImplementation(async msg => answer({ ...msg, previewChars: undefined }));
 
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(2));
+    await searched(page, 'planning');
+    expect(page.shown()).toHaveLength(2);
     expect(page.shown()).toEqual([{ request: 'planning', reply: 'done' }, view(long)]);
   });
 
@@ -234,7 +239,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     const helper = fakeHelper([make('exact', exact, 0), make('over', over, 1), make('emoji', emoji, 2), make('emojiOver', emojiOver, 3)]);
     const page = await openPage(helper);
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(4));
+    await searched(page, 'planning');
+    expect(page.shown()).toHaveLength(4);
     expect(page.shown()).toEqual([exact, `${over.slice(0, 400)}…`, emoji, `${[...emojiOver].slice(0, 400).join('')}…`].map(asReply));
   });
 
@@ -267,7 +273,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     ]);
     const page = await openPage(helper);
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(7));
+    await searched(page, 'planning');
+    expect(page.shown()).toHaveLength(7);
     expect(page.shown()).toEqual([
       { request: 'planning\nthe trip', reply: 'Booked the planning call.' },
       { request: '', reply: 'Welcome back.\n\nThe planning call is at 3.' },
@@ -317,7 +324,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     const agent380 = make('agent380', `[USER]: request ${'q'.repeat(372)}\n\n[AGENT]: the reply`, 2);
     const page = await openPage(fakeHelper([agent381, assistant377, agent380]));
     await search(page, 'request');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(3));
+    await searched(page, 'request');
+    expect(page.shown()).toHaveLength(3);
     expect(page.shown()).toEqual([
       { request: `request ${'q'.repeat(373)}…`, reply: NOTE },
       { request: `request ${'q'.repeat(369)}…`, reply: NOTE },
@@ -340,7 +348,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     const entry = { memId: 'event', sessionId: 's', role: 'session', content: `[USER]: ${request}\n\n[AGENT]: ${reply}`, dateMs: Date.now() - 60_000 };
     const page = await openPage(fakeHelper([entry]));
     await search(page, 'plan an event');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(1));
+    await searched(page, 'plan an event');
+    expect(page.shown()).toHaveLength(1);
     expect(page.shown()).toEqual([{ request, reply }]);
     const marks = part => {
       const box = page.d.querySelector(`#history-list ${part}`);
@@ -361,7 +370,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     };
     const page = await openPage(fakeHelper([entry]));
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(1));
+    await searched(page, 'planning');
+    expect(page.shown()).toHaveLength(1);
     expect(page.shown()).toEqual([{ request: `what's <b>bold</b> & "quoted" planning?`, reply: `it's <img src=x onerror="globalThis.__injected=1"> & planning done` }]);
     expect(page.d.querySelectorAll('#history-list img, #history-list b')).toHaveLength(0);
     expect([...page.d.querySelectorAll('#history-list .search-highlight')].map(el => el.textContent)).toEqual(['planning', 'planning']);
@@ -401,10 +411,13 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
 
     await search(page, 'first');
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
-    releaseFirst();
+    // The later search waits in line behind the earlier one.
     await new Promise(r => setTimeout(r, 0));
+    expect(helper.sendMessage.mock.calls.filter(([msg]) => msg.cmd === 'memorySearch' && msg.q === 'planning')).toHaveLength(0);
+    releaseFirst();
+    await searched(page, 'planning');
     expect(page.shown()).toEqual(entries.slice(0, 20).map(view));
+    expect(page.label()).not.toContain('"first"');
     expect(page.d.getElementById('history-empty').style.display).toBe('none');
     page.d.getElementById('history-next-page').click();
     expect(page.pageInfo()).toBe('Page 2 of 2');
@@ -432,7 +445,8 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     const helper = fakeHelper([...alpha, ...beta]);
     const page = await openPage(helper);
     await search(page, 'alpha');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(20));
+    await searched(page, 'alpha');
+    expect(page.shown()).toHaveLength(20);
     expect(page.shown()).toEqual(alpha.slice(0, 20).map(view));
 
     const releaseSearch = hold(helper, 'memorySearch');
@@ -487,6 +501,38 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     // No results: the newest entries listed on open stay.
     expect(page.shown()).toEqual(entriesOf(3, 10).map(view));
     expect(page.label()).not.toContain('Search:');
+  });
+
+  // #225: a search the helper does not answer with a list failed; it never
+  // shows as a search that found nothing. No listener answers while the
+  // background starts or reloads.
+  it.each([
+    ['no reply', undefined, 'Search failed: no reply from the search helper'],
+    ['an empty reply', null, 'Search failed: no reply from the search helper'],
+    ['a reply that is not a list', { ok: true }, 'Search failed: no reply from the search helper'],
+    ['an error', { error: 'Native RPC timed out' }, 'Search failed: Native RPC timed out'],
+  ])('a search answered by %s says it failed and keeps the search shown before', async (_why, reply, said) => {
+    const found = entriesOf(2, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper([...entriesOf(3, 10, Date.now() - 60_000, 'newest'), ...found]);
+    const page = await openPage(helper);
+    await search(page, 'planning');
+    await settle();
+    expect(page.shown()).toEqual(found.map(view));
+    const before = page.label();
+    expect(before).toContain('planning');
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg => (msg.cmd === 'memorySearch' && msg.q === 'harbour' ? reply : answer(msg)));
+    await search(page, 'harbour');
+    await settle();
+    expect(page.status()).toBe(said);
+    expect(page.statusIsError()).toBe(true);
+    expect(page.shown()).toEqual(found.map(view));
+    expect(page.label()).toBe(before);
+    // Shown again after a removal, the page is still the search shown before.
+    page.d.querySelector('#history-list .history-remove-btn').click();
+    await settle();
+    expect(page.shown()).toEqual(found.slice(1).map(view));
+    expect(page.label()).toBe('Active turns: 0 Searchable entries: 4 Search: "planning" (1 results)');
   });
 });
 
@@ -551,6 +597,8 @@ describe('Chat History lists the newest conversations and removes one', () => {
     ['an error', async () => ({ error: 'Native helper disconnected' }), 'Native helper disconnected'],
     ['a throw', async () => { throw new Error('Could not establish connection'); }, 'Could not establish connection'],
     ['no reply', async () => undefined, 'no reply from the search helper'],
+    ['an empty reply', async () => null, 'no reply from the search helper'],
+    ['a reply that is not a list', async () => ({ ok: true }), 'no reply from the search helper'],
   ])('says why it could not list, on %s, and still shows the stats', async (_, listing, why) => {
     const helper = fakeHelper(entriesOf(3, 10));
     const answer = helper.sendMessage.getMockImplementation();
@@ -563,7 +611,8 @@ describe('Chat History lists the newest conversations and removes one', () => {
     // A search that works shows its results in its place, and the list that works next clears it.
     helper.sendMessage.mockImplementation(answer);
     await search(page, 'planning');
-    await vi.waitFor(() => expect(page.shown()).toHaveLength(3));
+    await searched(page, 'planning');
+    expect(page.shown()).toHaveLength(3);
     type(page, '');
     await vi.waitFor(() => expect(header(page)).toBe('Newest Conversations'));
     expect(page.shown()).toEqual(entriesOf(3, 10).map(view));

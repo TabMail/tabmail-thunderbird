@@ -118,7 +118,10 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   set: a listing's or search's answer replaces the entries, page 1, the mode and the query; a failed
   listing says why in the list's place ("Couldn't list past conversations: …", nothing it replaced
   shown again on a later render); a failed search leaves what is shown and says why in the status
-  line (the tab opens on a listing and a search waits behind it, so something is always shown); "No
+  line (the tab opens on a listing and a search waits behind it, so something is always shown); a
+  reply that is anything but a list is a failure (no listener answers while the background starts
+  or reloads), decided once in `fetchMemoryEntries`, the one request both the listing and a search
+  send, so neither shows it as none kept or no matches (#225); "No
   conversations kept yet." or `No results found for "<query>".` comes only from an answer that had
   none (`answeredNone`); removing every entry shown says "Removed every conversation shown.", for a
   listing and a search alike, and does not list again (memory can hold more than the 100 shown;

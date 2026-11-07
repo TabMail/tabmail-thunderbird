@@ -134,6 +134,8 @@ describe('Chat History says none is kept or found only when an answer said so', 
   it.each([
     ['answers an error', () => ({ error: 'helper busy' }), 'Search failed: helper busy'],
     ['is rejected', () => new Error('helper disconnected'), 'Search failed: Error: helper disconnected'],
+    ['gets no reply', () => undefined, 'Search failed: no reply from the search helper'],
+    ['gets a reply that is not a list', () => ({ ok: true }), 'Search failed: no reply from the search helper'],
   ])('a search that %s, asked while the listing on open is pending, waits for it, then is said with the listing still shown', async (_how, reply, said) => {
     const helper = fakeHelper(entriesOf(3));
     const listing = gate();
@@ -150,6 +152,29 @@ describe('Chat History says none is kept or found only when an answer said so', 
     expect(page.shown()).toEqual([0, 1, 2].map(i => requestOf('planning', i)));
     expect(page.empty()).toBeNull();
     expect(page.stats()).toContain('Searchable entries: 3');
+    expect(page.stats()).not.toContain('Search:');
+  });
+
+  // A failed search changes nothing shown: the next render (here a removal's)
+  // still shows the listing, on the page it was on, with no search in the stats.
+  it.each([
+    ['answers an error', () => ({ error: 'helper busy' })],
+    ['is rejected', () => new Error('helper disconnected')],
+    ['gets no reply', () => undefined],
+    ['gets a reply that is not a list', () => ({ ok: true })],
+  ])('a search that %s while page 2 of the listing is shown leaves that page and no search after a removal', async (_how, reply) => {
+    const helper = fakeHelper(entriesOf(25));
+    const page = await openPage(helper);
+    page.d.getElementById('history-next-page').click();
+    expect(page.pageInfo()).toBe('Page 2 of 2');
+    helper.holdWith(msg => (msg.cmd === 'memorySearch' && msg.q === 'harbour' ? { until: null, reply } : null));
+    await page.history.searchChatHistory('harbour');
+    expect(page.status()).toMatch(/^Search failed: /);
+    page.removeButton(0).click();
+    await settle();
+    expect(page.pageInfo()).toBe('Page 2 of 2');
+    expect(page.shown()).toEqual([21, 22, 23, 24].map(i => requestOf('planning', i)));
+    expect(page.stats()).toContain('Searchable entries: 24');
     expect(page.stats()).not.toContain('Search:');
   });
 
