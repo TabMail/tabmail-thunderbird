@@ -768,8 +768,8 @@ export async function clearChatHistory() {
         // with { error } rather than rejecting, so the reply is checked; any
         // failure ends in the failure status below, never the success one.
         // The one-time migrations' flags stay, cleared or not: without them
-        // the next startup runs those again, and the chat store's clears
-        // memory, removing what the user says after this.
+        // those run again, and the chat store's, at the next chat-window
+        // open, clears memory, removing what the user says after this.
         const clearReply = await browser.runtime.sendMessage({
             type: "fts",
             cmd: "memoryClear"

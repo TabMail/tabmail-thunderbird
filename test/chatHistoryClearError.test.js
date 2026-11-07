@@ -72,10 +72,11 @@ function fakeStorage() {
   };
 }
 
-// A helper holding memory rows; `helper.clear` sets how memoryClear answers.
+// A helper holding memory rows; `helper.clear` sets how memoryClear answers,
+// and `helper.clearHeld`, when set, is awaited before it answers.
 function fakeHelper() {
   const memory = new Map();
-  const helper = { memory, clear: 'ok' };
+  const helper = { memory, clear: 'ok', clearHeld: null };
   helper.sendMessage = vi.fn(async msg => {
     switch (msg.cmd) {
       case 'memoryStats':
@@ -86,6 +87,7 @@ function fakeHelper() {
         for (const row of msg.rows) memory.set(row.memId, row);
         return { ok: true, count: msg.rows.length };
       case 'memoryClear':
+        if (helper.clearHeld) await helper.clearHeld;
         if (helper.clear === 'error') return { error: 'clear' };
         if (helper.clear === 'rejection') throw new Error('Native FTS helper not connected');
         // No listener answers while the background starts or reloads.
@@ -121,9 +123,12 @@ async function openPage() {
     store,
     indexChatTurn,
     // Clear All as the user does it: open the confirmation, then confirm.
-    async clearAll() {
+    startClearAll() {
       history.showClearAllConfirmation();
       d.getElementById('modal-confirm').click();
+    },
+    async clearAll() {
+      this.startClearAll();
       await vi.waitFor(() => expect(statusEl.textContent === CLEARED || statusEl.textContent.startsWith(FAILED)).toBe(true));
     },
     status: () => statusEl.textContent,
@@ -146,7 +151,7 @@ describe('Chat History Clear All reports what the helper did (#146)', () => {
     });
   }
 
-  it('keeps memory written after a confirmed Clear All through the next startup', async () => {
+  it('keeps memory written after a confirmed Clear All through the next chat-window open', async () => {
     const page = await openPage();
     await page.store.migrateFromSessions();
     await page.indexChatTurn('old request', 'old reply', 'old', Date.now() - HOUR_MS);
@@ -159,6 +164,23 @@ describe('Chat History Clear All reports what the helper did (#146)', () => {
     await page.store.migrateFromSessions();
     expect(page.helper.memory.has('turn:newer')).toBe(true);
   });
+
+  // Until the helper answers, nothing is said done: a slow clear (the helper
+  // connecting, or near its deadline) reads as pending, then as it answered.
+  for (const kind of ['ok', 'no reply']) {
+    it(`says it is clearing, never cleared, until memoryClear answers (${kind})`, async () => {
+      const page = await openPage();
+      page.helper.clear = kind;
+      let release;
+      page.helper.clearHeld = new Promise(resolve => { release = resolve; });
+      page.startClearAll();
+      await vi.waitFor(() => expect(page.helper.sendMessage.mock.calls.some(([m]) => m.cmd === 'memoryClear')).toBe(true));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(page.status()).toBe('Clearing chat history...');
+      release();
+      await vi.waitFor(() => expect(page.status()).toBe(kind === 'ok' ? CLEARED : FAILED_BECAUSE[kind]));
+    });
+  }
 
   it('says cleared when the helper clears its memory', async () => {
     const page = await openPage();

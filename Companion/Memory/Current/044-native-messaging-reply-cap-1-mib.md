@@ -138,7 +138,7 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   from a helper without the trim is read first). Clear All, confirmed or not, never removes the
   one-time migrations' flags (`memory_fts_migration_v1_done`, `memory_fts_migrated_sessions`,
   `chat_turns_migration_v1`, `chat_turns_migration_v2`, `chat_refs_migration_v1`): it used to
-  remove them after a confirmed clear, so the next chat-window open ran the chat store's v2
+  remove them after any reply without an error (no reply included), so the next chat-window open ran the chat store's v2
   migration again, whose memoryClear removed every conversation kept since the Clear All. With
   memory and the legacy queue already empty, the migrations have nothing left to do. A confirmed
   removal takes the entry out of what is shown at once (page kept, clamped by render), then the stats

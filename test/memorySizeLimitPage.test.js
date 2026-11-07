@@ -158,6 +158,12 @@ describe('Chat History size limit on the real page', () => {
     expect(page.d.getElementById('status-message').className).toBe('error');
     expect(page.data.memorySizeLimitBytes).toBe(GB);
     expect(page.trims()).toBe(1);
+    // The tab shows the saved limit, so a lower one chosen next is asked
+    // about before anything is removed.
+    await vi.waitFor(() => expect(page.label()).toBe('Memory used: 300 MB of 1 GB'));
+    page.choose(500 * MB);
+    expect(page.asking()).toBe(true);
+    expect(page.trims()).toBe(1);
   });
 
   it('says the limit applies once the helper updates when the helper has no trim', async () => {
