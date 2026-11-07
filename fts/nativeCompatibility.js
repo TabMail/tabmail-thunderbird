@@ -15,7 +15,7 @@ export const NATIVE_FTS_PREVIOUS_SIGNER_RETIREMENT_AT = "2026-08-13T16:00:00.000
 // Set to that release's version by the release that carries the fix; until then
 // (null) no Windows rule applies. A Windows helper older than this is unsupported
 // and takes the existing reinstall path.
-export const NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION = null;
+export const NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION = "0.12.3";
 
 export function versionLessThan(a, b) {
   const pa = String(a || "").split(".").map(Number);

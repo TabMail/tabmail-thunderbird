@@ -34,4 +34,6 @@ and is `null` until then (no Windows rule). When set, `getNativeFtsCompatibility
 `minimumSupportedVersion`. That is the same disconnect and the same "Search helper update required"
 prompt with its re-download button: no new UI or copy (owner ruling: a hard cutoff, no soft prompt). The
 platform is asked only while a cutoff is configured, and the bootstrap generation is revalidated after that
-await. Release order: the native-fts release and installers first, then the add-on that sets the cutoff.
+await. The support check fails closed: a hello or platform lookup that fails leaves the helper's
+support unknown, so it is not used (the connect fails, and the next connect asks again); only the update
+check after it is best-effort. Release order: the native-fts release and installers first, then the add-on that sets the cutoff.

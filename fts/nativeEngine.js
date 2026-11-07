@@ -507,54 +507,57 @@ async function markSchemaVersionAsIndexed(schemaVersion) {
  * Returns true if an update was applied (caller should wait for reconnect).
  */
 async function initCheckAndUpdateHost(bootstrapState) {
-  try {
-    // Say hello to get host version
-    const manifest = browser.runtime.getManifest();
-    const addonVersion = manifest.version;
+  // Whether the helper may be used is decided here, outside the update check's
+  // catch below: a failed hello or platform lookup leaves its support unknown,
+  // so the helper is not used (the connect fails, and the next one asks again).
+  // Say hello to get host version
+  const manifest = browser.runtime.getManifest();
+  const addonVersion = manifest.version;
 
-    log(`[TMDBG FTS] Addon version: ${addonVersion}, Min host version: ${MIN_HOST_VERSION}`);
+  log(`[TMDBG FTS] Addon version: ${addonVersion}, Min host version: ${MIN_HOST_VERSION}`);
 
-    const connectionHostInfo = await nativeRPC(
-      'hello',
-      { addonVersion },
-      { bootstrapPhase: "hello", expectedState: bootstrapState },
-    );
-    log(`[TMDBG FTS] Native host version: ${connectionHostInfo.hostVersion}, installed at: ${connectionHostInfo.installPath}`);
-    log(`[TMDBG FTS] Native host impl: ${connectionHostInfo.hostImpl || "unknown"}`);
-    log(`[TMDBG FTS] Can self-update: ${connectionHostInfo.canSelfUpdate}, User install: ${connectionHostInfo.isUserInstall}`);
+  const connectionHostInfo = await nativeRPC(
+    'hello',
+    { addonVersion },
+    { bootstrapPhase: "hello", expectedState: bootstrapState },
+  );
+  log(`[TMDBG FTS] Native host version: ${connectionHostInfo.hostVersion}, installed at: ${connectionHostInfo.installPath}`);
+  log(`[TMDBG FTS] Native host impl: ${connectionHostInfo.hostImpl || "unknown"}`);
+  log(`[TMDBG FTS] Can self-update: ${connectionHostInfo.canSelfUpdate}, User install: ${connectionHostInfo.isUserInstall}`);
 
-    // The platform is needed only by the Windows rule, so it is asked only once
-    // that rule is configured.
-    const os = NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION
-      ? (await browser.runtime.getPlatformInfo())?.os
-      : null;
-    _assertNativeStateCurrent(bootstrapState, "compatibility platform");
-    const compatibility = getNativeFtsCompatibility(connectionHostInfo.hostVersion, Date.now(), {
-      os,
-      windowsMinimumVersion: NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION,
+  // The platform is needed only by the Windows rule, so it is asked only once
+  // that rule is configured.
+  const os = NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION
+    ? (await browser.runtime.getPlatformInfo())?.os
+    : null;
+  _assertNativeStateCurrent(bootstrapState, "compatibility platform");
+  const compatibility = getNativeFtsCompatibility(connectionHostInfo.hostVersion, Date.now(), {
+    os,
+    windowsMinimumVersion: NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION,
+  });
+  if (!compatibility.supported) {
+    setFtsHostStatus("unsupported", {
+      hostVersion: connectionHostInfo.hostVersion,
+      minimumSupportedVersion: compatibility.minimumSupportedVersion,
+      retirementAt: compatibility.retirementAt,
     });
-    if (!compatibility.supported) {
-      setFtsHostStatus("unsupported", {
-        hostVersion: connectionHostInfo.hostVersion,
-        minimumSupportedVersion: compatibility.minimumSupportedVersion,
-        retirementAt: compatibility.retirementAt,
-      });
-      log(
-        `[TMDBG FTS] Host v${connectionHostInfo.hostVersion} is unsupported (os=${os || "any"}); ` +
-        `v${compatibility.minimumSupportedVersion}+ must be reinstalled`,
-        "warn"
-      );
-      const portToClose = nativePort;
-      nativePort = null;
-      try { portToClose?.disconnect(); } catch (_) {}
-      const error = new Error(
-        `Native FTS helper v${connectionHostInfo.hostVersion} is no longer supported; ` +
-        `reinstall v${compatibility.minimumSupportedVersion} or newer`
-      );
-      error.code = "NATIVE_FTS_UNSUPPORTED";
-      throw error;
-    }
+    log(
+      `[TMDBG FTS] Host v${connectionHostInfo.hostVersion} is unsupported (os=${os || "any"}); ` +
+      `v${compatibility.minimumSupportedVersion}+ must be reinstalled`,
+      "warn"
+    );
+    const portToClose = nativePort;
+    nativePort = null;
+    try { portToClose?.disconnect(); } catch (_) {}
+    const error = new Error(
+      `Native FTS helper v${connectionHostInfo.hostVersion} is no longer supported; ` +
+      `reinstall v${compatibility.minimumSupportedVersion} or newer`
+    );
+    error.code = "NATIVE_FTS_UNSUPPORTED";
+    throw error;
+  }
 
+  try {
     // Inform user about auto-migration with popup window
     if (connectionHostInfo.userLocalReady && connectionHostInfo.isSystemInstall) {
       log(`[TMDBG FTS] ✅ Auto-migrated to user-local install! Restart Thunderbird to enable auto-updates.`, "info");
@@ -601,9 +604,8 @@ async function initCheckAndUpdateHost(bootstrapState) {
     return false; // No update performed
   } catch (error) {
     if (error?.code === "NATIVE_FTS_STALE_GENERATION") throw error;
-    if (error?.code === "NATIVE_FTS_UNSUPPORTED") throw error;
-    // Expected when the helper isn't installed; rate-limited by the reconnect
-    // cooldown so it won't spam. warn (not error) to avoid drowning real errors.
+    // The update check is best-effort: the helper, already found supported
+    // above, stays in use. warn (not error) to avoid drowning real errors.
     log(`[TMDBG FTS] Update check failed: ${error.message}`, "warn");
     // Don't throw - allow FTS to work even if update check fails
     return false;

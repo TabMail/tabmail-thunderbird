@@ -9,12 +9,12 @@ vi.mock("../agent/modules/config.js", () => ({
   SETTINGS: { memoryManagement: { nativeRpcTimeoutMs: 1_000 } },
 }));
 
-function makeNativePort(hostVersion, { canSelfUpdate = true } = {}) {
+function makeNativePort(hostVersion, { canSelfUpdate = true, helloError = null } = {}) {
   const messageListeners = [];
   const disconnectListeners = [];
   const methods = [];
-  const respond = (message, result) => Promise.resolve().then(() => {
-    for (const listener of messageListeners) listener({ id: message.id, result });
+  const respond = (message, result, error) => Promise.resolve().then(() => {
+    for (const listener of messageListeners) listener(error ? { id: message.id, error } : { id: message.id, result });
   });
 
   return {
@@ -24,7 +24,8 @@ function makeNativePort(hostVersion, { canSelfUpdate = true } = {}) {
     onDisconnect: { addListener: (listener) => disconnectListeners.push(listener) },
     postMessage(message) {
       methods.push(message.method);
-      if (message.method === "hello") {
+      if (message.method === "hello" && helloError) respond(message, null, helloError);
+      else if (message.method === "hello") {
         respond(message, {
           hostVersion,
           canSelfUpdate,
@@ -76,13 +77,7 @@ describe("native FTS unsupported helper state propagation", () => {
     vi.resetModules();
 
     const port = makeNativePort("0.10.1");
-    globalThis.browser = {
-      tmMsgNotify: { getFtsDataDir: async () => "/test/profile/browser-extension-data/thunderbird@tabmail.ai" },
-      runtime: {
-        connectNative: vi.fn(() => port),
-        getManifest: vi.fn(() => ({ version: "1.7.2" })),
-      },
-    };
+    installBrowser(vi.fn(() => port), vi.fn(async () => ({ os: "mac", arch: "aarch64" })));
 
     const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
 
@@ -134,6 +129,39 @@ describe("native FTS unsupported helper state propagation", () => {
     expect(port.disconnected).toBe(false);
     expect(port.methods).toEqual(["hello", "init"]);
     expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion });
+  });
+
+  // A helper is used only once it is known to be supported: where its version or
+  // the platform cannot be read, its support is unknown and it is not used.
+  it.each([
+    ["rejects", () => Promise.reject(new Error("platform unavailable"))],
+    ["throws", () => { throw new TypeError("getPlatformInfo is not a function"); }],
+  ])("does not use a helper when the platform lookup %s under the Windows cutoff", async (_, lookup) => {
+    await withWindowsCutoff("0.12.3");
+    const port = makeNativePort("0.12.2", { canSelfUpdate: false });
+    installBrowser(vi.fn(() => port), vi.fn(lookup));
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await expect(initNativeFts()).rejects.toThrow();
+
+    expect(port.methods).toEqual(["hello"]);
+    expect(port.disconnected).toBe(true);
+    expect(nativeFtsSearch.getHostAvailability()).toBe(false);
+    expect(nativeFtsSearch.getHostStatus().status).not.toBe("available");
+  });
+
+  it("does not use a helper whose hello fails", async () => {
+    await withWindowsCutoff("0.12.3");
+    const port = makeNativePort("0.12.3", { canSelfUpdate: false, helloError: "hello failed" });
+    installBrowser(vi.fn(() => port), vi.fn(async () => ({ os: "win", arch: "x86-64" })));
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await expect(initNativeFts()).rejects.toThrow("hello failed");
+
+    expect(port.methods).toEqual(["hello"]);
+    expect(port.disconnected).toBe(true);
+    expect(nativeFtsSearch.getHostAvailability()).toBe(false);
+    expect(nativeFtsSearch.getHostStatus().status).not.toBe("available");
   });
 
   it("does not ask for the platform while no Windows cutoff is configured", async () => {

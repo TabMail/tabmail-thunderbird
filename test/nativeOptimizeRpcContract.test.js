@@ -50,6 +50,7 @@ async function initializedNativeSearch(optimizeResult) {
   globalThis.browser = {
     tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
     runtime: {
+      getPlatformInfo: vi.fn(async () => ({ os: 'mac', arch: 'aarch64' })),
       connectNative: vi.fn(() => port),
       getManifest: vi.fn(() => ({
         version: '1.7.2',
