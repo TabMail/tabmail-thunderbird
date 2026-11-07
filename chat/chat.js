@@ -16,7 +16,7 @@ import { cleanupScrollObservers, initAggressiveScrollStick, isAtBottom, scrollTo
 import { mergeIdMapFromHeadless, persistIdMapImmediate, remapUniqueId } from "./modules/idTranslator.js";
 import { checkAndInsertWelcomeBack, initAndGreetUser, insertProactiveNudge, insertTaskResultBubble } from "./modules/init.js";
 import { cleanupMentionAutocomplete, clearContentEditable, extractMarkdownFromContentEditable, initMentionAutocomplete } from "./modules/mentionAutocomplete.js";
-import { saveMetaImmediate, saveTurnsImmediate } from "./modules/persistentChatStore.js";
+import { saveMetaImmediate } from "./modules/persistentChatStore.js";
 import { initChatLink, disconnectChatLink } from "../chatlink/modules/core.js";
 import { addToolBubbleToGroup, cleanupToolGroups, isToolCollapseEnabled } from "./modules/toolCollapse.js";
 
@@ -730,9 +730,9 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // Window close: force-save persistent state and cleanup (BEST-EFFORT ONLY)
   window.addEventListener("beforeunload", () => {
-    // Force-save persistent state first (turns, meta, idMap) — timers won't fire after unload
+    // Force-save meta and idMap first — timers won't fire after unload. The
+    // turns are stored as each one is added; the window's copy is never saved.
     try {
-     if (ctx.persistedTurns) saveTurnsImmediate(ctx.persistedTurns);
       if (ctx.chatMeta) saveMetaImmediate(ctx.chatMeta);
       persistIdMapImmediate();
       log(`[TMDBG Chat] Force-saved persistent chat state on window close`);

@@ -10,12 +10,13 @@
 // helper; any request can be held.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { quietAlarms, sendToBackground } from './support/storedTurnsRoute.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
-vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn() }));
+vi.mock('../chat/modules/persistentChatStore.js', async importOriginal => ({ ...await importOriginal(), clearAllThinking: vi.fn() }));
 vi.mock('../fts/nativeEngine.js', () => ({
   nativeMemorySearch: { indexBatch: rows => globalThis.browser.runtime.sendMessage({ type: 'fts', cmd: 'memoryIndexBatch', rows }) },
 }));
@@ -73,6 +74,7 @@ function fakeHelper(entries) {
     }
   };
   const sendMessage = vi.fn(async msg => {
+    if (msg.command === 'chat-turns-change') return sendToBackground(msg);
     const held = hold(msg);
     if (held) {
       const reply = typeof held.reply === 'function' ? held.reply(msg) : held.atRelease ? null : answer(msg);
@@ -100,6 +102,7 @@ async function openPage(helper, { awaitListing = true } = {}) {
   globalThis.Option = dom.window.Option;
   globalThis.browser = {
     storage: { onChanged: { addListener() {} }, local: { get: vi.fn(async () => ({})), set: vi.fn(async () => {}), remove: vi.fn(async () => {}) } },
+    alarms: quietAlarms(),
     runtime: { sendMessage: helper.sendMessage },
   };
   const history = await import('../prompts/modules/history.js');
@@ -541,14 +544,22 @@ describe('Chat History keeps the latest answer and the pending state across requ
     const helper = fakeHelper(entriesOf(2));
     const page = await openPage(helper);
     const usage = () => page.d.getElementById('history-usage-label').textContent;
-    globalThis.browser.storage.local.get.mockImplementation(async key => (
-      key === 'chat_turns' ? { chat_turns: [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }] } : {}
+    const turnsRead = keys => Array.isArray(keys) && keys.includes('chat_turns');
+    globalThis.browser.storage.local.get.mockImplementation(async keys => (
+      turnsRead(keys) ? { chat_turns: [{ _id: 'a', role: 'user', content: 'a' }, { _id: 'b', role: 'assistant', content: 'b' }] } : {}
     ));
     await page.history.loadChatHistory();
     expect(page.stats()).toContain('Active turns: 2');
     expect(usage()).toMatch(/^Memory used: \d/);
-    globalThis.browser.storage.local.get.mockImplementation(async key => {
-      if (key === 'chat_turns') throw new Error('turn count unavailable');
+    // A queued removal is counted at once, as every reader sees it.
+    globalThis.browser.storage.local.get.mockImplementation(async keys => (turnsRead(keys) ? {
+      chat_turns: [{ _id: 'a', role: 'user', content: 'a' }, { _id: 'b', role: 'assistant', content: 'b' }],
+      chat_turns_pending: [{ id: 'queued-remove', op: { remove: ['a'] } }],
+    } : {}));
+    await page.history.loadChatHistory();
+    expect(page.stats()).toContain('Active turns: 1');
+    globalThis.browser.storage.local.get.mockImplementation(async keys => {
+      if (turnsRead(keys)) throw new Error('turn count unavailable');
       return {};
     });
     helper.holdWith(msg => (msg.cmd === 'memoryStats' ? { until: null, reply: () => new Error('stats unavailable') } : null));

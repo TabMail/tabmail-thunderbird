@@ -828,53 +828,47 @@ async function _deliverTaskResult(task, taskHash, content, sessionId) {
 
   // Persist as proper chat turns (not ephemeral nudge) — survives window close
   try {
-    const { appendTurn, loadTurns, loadMeta, generateTurnId, saveTurnsImmediate, saveMetaImmediate } = await import("../../chat/modules/persistentChatStore.js");
+    const { loadTurns, generateTurnId, requireTaken } = await import("../../chat/modules/persistentChatStore.js");
+    const { enqueueTurnsChange } = await import("../../chat/modules/storedTurnsQueue.js");
 
+    // Insert a session break before the task result (skip if last turn is already one)
     const turns = await loadTurns();
-    const meta = await loadMeta();
-
-    if (turns && meta) {
-      // Insert a session break before the task result (skip if last turn is already one)
-      const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
-      if (!lastTurn || lastTurn._type !== "session_break") {
-        const breakTurn = {
-          role: "assistant",
-          content: "Scheduled task executed in the background",
-          _id: generateTurnId(),
-          _ts: Date.now(),
-          _type: "session_break",
-          _chars: 0,
-        };
-        await appendTurn(breakTurn, turns, meta);
-        taskTurns.push(breakTurn);
-      }
-
-      // Persist the task result as a proper assistant turn
-      const taskTurn = {
+    const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+    if (!lastTurn || lastTurn._type !== "session_break") {
+      taskTurns.push({
         role: "assistant",
-        content: message,
+        content: "Scheduled task executed in the background",
         _id: generateTurnId(),
-        _ts: Date.now() + 1,
-        _type: "task_result",
-        _chars: message.length,
-        _taskHash: taskHash,
-        _sessionId: sessionId,
-      };
-
-      try {
-        const { renderMarkdown } = await import("../../chat/modules/markdown.js");
-        taskTurn._rendered = await renderMarkdown(message);
-      } catch (e) {
-        log(`[ProActReach] Failed to render task result markdown: ${e}`, "warn");
-      }
-
-      await appendTurn(taskTurn, turns, meta);
-      taskTurns.push(taskTurn);
-      // appendTurn debounces its write. Chat must read the new result when it
-      // opens below, rather than load and later save the previous history.
-      await Promise.all([saveTurnsImmediate(turns), saveMetaImmediate(meta)]);
-      log(`[ProActReach] Persisted task result as chat turn (${message.length} chars)`);
+        _ts: Date.now(),
+        _type: "session_break",
+        _chars: 0,
+      });
     }
+
+    // Persist the task result as a proper assistant turn
+    const taskTurn = {
+      role: "assistant",
+      content: message,
+      _id: generateTurnId(),
+      _ts: Date.now() + 1,
+      _type: "task_result",
+      _chars: message.length,
+      _taskHash: taskHash,
+      _sessionId: sessionId,
+    };
+
+    try {
+      const { renderMarkdown } = await import("../../chat/modules/markdown.js");
+      taskTurn._rendered = await renderMarkdown(message);
+    } catch (e) {
+      log(`[ProActReach] Failed to render task result markdown: ${e}`, "warn");
+    }
+
+    taskTurns.push(taskTurn);
+    // Queued (applied in order, kept until applied) before chat opens below,
+    // and normally applied by then, so it reads the new result.
+    requireTaken(await enqueueTurnsChange({ append: taskTurns }, generateTurnId()));
+    log(`[ProActReach] Persisted task result as chat turn (${message.length} chars)`);
   } catch (e) {
     log(`[ProActReach] Failed to persist task result: ${e}`, "warn");
   }

@@ -148,5 +148,19 @@ export const CHAT_SETTINGS = {
   // After this time, the FSM session auto-cancels with a timeout message.
   // Set to 0 to disable. Default: 5 minutes (300000ms)
   chatLinkFsmTimeoutMs: 300000,
+  // --- Stored chat turns (chat_turns) ---
+  // Every change to the stored turns is queued in the background and applied
+  // in arrival order (storedTurnsQueue.js). A caller waits at most
+  // applyWaitMs in all, then goes on with its change still queued (or told it
+  // was refused). An apply's read is limited to applyTimeoutMs; a change that
+  // fails or whose read runs past it is retried after retryDelayMs (at least
+  // a minute while the background is suspended). At most maxQueued changes
+  // wait to be applied; beyond that a change is refused.
+  turnsQueue: {
+    applyWaitMs: 6 * 1000,
+    applyTimeoutMs: 5 * 1000,
+    maxQueued: 1000,
+    retryDelayMs: 10 * 1000,
+  },
 };
 

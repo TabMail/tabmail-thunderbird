@@ -16,7 +16,7 @@ const MB = 1024 ** 2;
 const GB = 1024 ** 3;
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
-vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn() }));
+vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn(), loadTurns: vi.fn(async () => []) }));
 
 afterEach(() => {
   delete globalThis.browser;

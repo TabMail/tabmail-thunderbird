@@ -23,6 +23,7 @@ import { kbCompress, kbUpdate } from "./modules/knowledgebase.js";
 import { scanAllInboxes } from "./modules/messageProcessor.js";
 import { invalidateUserEmailCache } from "./modules/senderFilter.js";
 import { enqueueProcessMessage, initProcessMessageQueue } from "./modules/messageProcessorQueue.js";
+import { handleStoredTurnsMessage } from "../chat/modules/storedTurnsQueue.js";
 import { attachOnMovedListeners, attachOnUpdatedListener } from "./modules/onMoved.js";
 import { purgeExpiredReplyEntries } from "./modules/replyGenerator.js";
 import { purgeExpiredSummaryEntries } from "./modules/summaryGenerator.js";
@@ -472,6 +473,11 @@ function setupRuntimeMessageListener() {
 
     if (message.command === "store-session") {
         return handleStoreSessionMessage(message);
+    }
+
+    // Changes to the stored chat turns, queued and applied in order here.
+    if (message.command === "chat-turns-change") {
+        return handleStoredTurnsMessage(message);
     }
 
     // --- Template Management Commands ---

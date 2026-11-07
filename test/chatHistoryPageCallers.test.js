@@ -67,7 +67,7 @@ async function openSettingsPage(helper) {
       'agent/modules/actionCompactConfig.js': { ACTION_CONFIG_TS_KEY: 'action-config-ts' },
       'theme/palette/palette.js': { injectPaletteIntoDocument: async () => {} },
       'prompts/modules/developer.js': { clearTestOutput: noop, runKbRefineTest: noop },
-      'chat/modules/persistentChatStore.js': { clearAllThinking: async () => {} },
+      'chat/modules/persistentChatStore.js': { clearAllThinking: async () => {}, loadTurns: async () => [] },
       'agent/modules/promptStore.js': { BULLET_STATE_KEYS: {}, PROMPT_KEYS: {}, SECTION_MARKER_REFUSAL: 'refused', readView: async () => ({ content: '', captured: {} }) },
       'prompts/modules/markdown.js': { pageSections: () => [{ key: '', title: 'Section', copy: 0, items: [] }], removeItem: noop },
       'prompts/modules/reminders.js': { loadReminders: noop },

@@ -7,6 +7,7 @@
 // and the Chat History tab's usage bar and limit choice.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { quietAlarms, sendToBackground } from './support/storedTurnsRoute.js';
 
 const MB = 1024 ** 2;
 const GB = 1024 ** 3;
@@ -25,7 +26,7 @@ vi.mock('../agent/modules/config.js', () => ({
 vi.mock('../prompts/modules/utils.js', () => ({ showStatus: vi.fn() }));
 // Thinking tokens kept in IndexedDB, as Clear All finds them.
 const { thinkingRows } = vi.hoisted(() => ({ thinkingRows: new Map() }));
-vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn(async () => thinkingRows.clear()) }));
+vi.mock('../chat/modules/persistentChatStore.js', async importOriginal => ({ ...await importOriginal(), clearAllThinking: vi.fn(async () => thinkingRows.clear()) }));
 
 function makeStorage(initial = {}) {
   const data = { ...initial };
@@ -553,12 +554,13 @@ describe('Chat History usage bar', () => {
     const storage = makeStorage(stored);
     let changed = false;
     const sendMessage = vi.fn(async msg => {
+      if (msg.command === 'chat-turns-change') return sendToBackground(msg);
       if (msg.cmd === 'memoryStats') return changed && statsAfter !== undefined ? statsAfter : stats;
       if (msg.cmd === 'memoryTrim') { changed = true; return trimResult; }
       if (msg.cmd === 'memoryClear') { changed = true; return { ok: true }; }
       return [];
     });
-    globalThis.browser = { storage, runtime: { sendMessage } };
+    globalThis.browser = { storage, alarms: quietAlarms(), runtime: { sendMessage } };
     const el = makeUsageDom();
     const history = await import('../prompts/modules/history.js');
     const { showStatus } = await import('../prompts/modules/utils.js');
@@ -777,6 +779,7 @@ describe('Chat History usage bar', () => {
       chat_turns_migration_v1: true,
       chat_turns_migration_v2: true,
       chat_refs_migration_v1: true,
+      chat_turns_pending: [], // the stored turns' queue, with the Clear All applied
     });
     expect(thinkingRows.size).toBe(0);
     expect(el['history-usage-label'].textContent).toBe('Memory used: 64 KB of 250 MB');

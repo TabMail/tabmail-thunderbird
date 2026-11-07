@@ -17,12 +17,12 @@ import {
 } from "./helpers.js";
 import {
   appendTurn,
+  changeTurns,
   filterAndConvertTurns,
   generateTurnId,
   indexTurnToFTS,
   saveThinking,
   removeThinking,
-  saveTurns,
   saveMeta,
 } from "./persistentChatStore.js";
 import { cleanupEvictedIds, collectTurnRefs, registerTurnRefs, unregisterTurnRefs, processToolResultTBtoLLM } from "./idTranslator.js";
@@ -167,11 +167,7 @@ export async function retryLastMessage() {
         if (lastTurn.role === "user") {
           unregisterTurnRefs(lastTurn);
           ctx.persistedTurns.pop();
-          if (ctx.chatMeta) {
-            ctx.chatMeta.totalChars -= lastTurn._chars || 0;
-          }
-          saveTurns(ctx.persistedTurns);
-          saveMeta(ctx.chatMeta);
+          await changeTurns({ remove: [lastTurn._id] });
           log(`[TMDBG Converse] Removed last persisted user turn for retry`);
         }
       }
@@ -309,7 +305,7 @@ export async function agentConverse(userText) {
       if (pendingNudge && ctx.persistedTurns && ctx.chatMeta) {
         pendingNudge._refs = collectTurnRefs(pendingNudge);
         registerTurnRefs(pendingNudge);
-        const { evictedTurns: nudgeEvicted } = await appendTurn(pendingNudge, ctx.persistedTurns, ctx.chatMeta);
+        const { evictedTurns: nudgeEvicted } = await appendTurn(pendingNudge, ctx.persistedTurns);
         if (nudgeEvicted?.length) {
           const evictedAssistantIds = nudgeEvicted.filter(t => t.role === "assistant" && t._id).map(t => t._id);
           if (evictedAssistantIds.length) {
@@ -330,10 +326,10 @@ export async function agentConverse(userText) {
       log(`[CONVERSE] Failed to persist pending nudge: ${e}`, "warn");
     }
 
-    // JIT KB filter: rebuild agentConverseMessages from persistedTurns,
+    // JIT KB filter: rebuild agentConverseMessages from the stored turns,
     // dropping prior-session turns already distilled into KB
     const sysMsg = ctx.agentConverseMessages[0];
-    const filtered = await filterAndConvertTurns(ctx.persistedTurns);
+    const filtered = await filterAndConvertTurns();
     ctx.agentConverseMessages = [sysMsg, ...filtered];
     const messages = ctx.agentConverseMessages;
 
@@ -429,7 +425,7 @@ export async function agentConverse(userText) {
     ctx._lastPersistedUserTurn = userTurn;
     try {
       if (ctx.persistedTurns && ctx.chatMeta) {
-        const { evictedTurns } = await appendTurn(userTurn, ctx.persistedTurns, ctx.chatMeta);
+        const { evictedTurns } = await appendTurn(userTurn, ctx.persistedTurns);
         if (evictedTurns?.length) {
           const evictedAssistantIds = evictedTurns.filter(t => t.role === "assistant" && t._id).map(t => t._id);
           if (evictedAssistantIds.length) {
@@ -1195,7 +1191,7 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null,
     }
     try {
       if (ctx.persistedTurns && ctx.chatMeta) {
-        const { evictedTurns } = await appendTurn(assistantTurn, ctx.persistedTurns, ctx.chatMeta);
+        const { evictedTurns } = await appendTurn(assistantTurn, ctx.persistedTurns);
         if (evictedTurns?.length) {
           const evictedAssistantIds = evictedTurns.filter(t => t.role === "assistant" && t._id).map(t => t._id);
           if (evictedAssistantIds.length) {

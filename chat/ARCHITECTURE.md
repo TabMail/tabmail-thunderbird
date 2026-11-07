@@ -65,6 +65,7 @@ chat/
 └── modules/                # Support modules
     ├── converse.js         # Main conversation engine (LLM interaction)
     ├── persistentChatStore.js # Chat history persistence
+    ├── storedTurnsQueue.js    # The one writer of the stored chat turns (background only)
     ├── context.js          # Context management (selected messages, etc.)
     ├── contacts.js         # Contact integration
     ├── markdown.js         # Markdown rendering

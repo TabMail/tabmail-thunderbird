@@ -13,12 +13,13 @@
 // that sends one (a clear, a write) fails its test.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { quietAlarms, sendToBackground } from './support/storedTurnsRoute.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
-vi.mock('../chat/modules/persistentChatStore.js', () => ({ clearAllThinking: vi.fn() }));
+vi.mock('../chat/modules/persistentChatStore.js', async importOriginal => ({ ...await importOriginal(), clearAllThinking: vi.fn() }));
 // The memory writers' direct path to the helper, routed to the same message
 // path their other writes take, so a test captures every row they store.
 vi.mock('../fts/nativeEngine.js', () => ({
@@ -74,6 +75,7 @@ function fakeHelper(entries, { removes = true } = {}) {
     return out;
   };
   const sendMessage = vi.fn(async msg => {
+    if (msg.command === 'chat-turns-change') return sendToBackground(msg);
     replies.calls.push(msg);
     if (replies.calls.length > MAX_HELPER_REQUESTS) throw new Error('runaway: too many helper requests');
     switch (msg.cmd) {
@@ -130,6 +132,7 @@ async function openPage(helper) {
         remove: vi.fn(async () => {}),
       },
     },
+    alarms: quietAlarms(),
     runtime: { sendMessage: helper.sendMessage },
   };
   const history = await import('../prompts/modules/history.js');

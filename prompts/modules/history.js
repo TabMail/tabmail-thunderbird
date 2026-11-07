@@ -10,12 +10,11 @@
 
 import { log } from "../../agent/modules/utils.js";
 import { showStatus } from "./utils.js";
-import { clearAllThinking } from "../../chat/modules/persistentChatStore.js";
+import { changeTurns, clearAllThinking, loadTurns } from "../../chat/modules/persistentChatStore.js";
 import { SETTINGS } from "../../agent/modules/config.js";
 import { CHAT_SETTINGS } from "../../chat/modules/chatConfig.js";
 import { formatBytes, getMemorySizeLimitBytes, setMemorySizeLimitBytes } from "../../fts/memorySizeLimit.js";
 
-const CHAT_TURNS_KEY = "chat_turns";
 const CHAT_META_KEY = "chat_meta";
 const CHAT_ID_MAP_KEY = "chat_id_map";
 const PAGE_SIZE = 20;
@@ -103,12 +102,9 @@ async function listMemory() {
         log(`[Prompts] Failed to get Memory FTS stats: ${e}`, "warn");
         memoryFtsStats = null;
     }
-    try {
-        const result = await browser.storage.local.get(CHAT_TURNS_KEY);
-        turnsCount = (result[CHAT_TURNS_KEY] || []).length;
-    } catch (e) {
-        turnsCount = 0;
-    }
+    // The stored turns with the queued changes applied, as every reader sees
+    // them, so a queued Clear All or Delete Old is counted at once.
+    turnsCount = (await loadTurns()).length;
     let answer;
     try {
         memorySizeLimitBytes = await getMemorySizeLimitBytes();
@@ -666,21 +662,13 @@ async function deleteOldHistory(days) {
         const cutoffMs = Date.now() - (days * 24 * 60 * 60 * 1000);
         const cutoffDate = new Date(cutoffMs);
 
-        // 1. Trim old turns from chat_turns
-        let turnsDeleted = 0;
-        try {
-            const result = await browser.storage.local.get(CHAT_TURNS_KEY);
-            const turns = result[CHAT_TURNS_KEY] || [];
-            const oldCount = turns.length;
-            const kept = turns.filter(t => (t._ts || 0) >= cutoffMs);
-            turnsDeleted = oldCount - kept.length;
-            if (turnsDeleted > 0) {
-                await browser.storage.local.set({ [CHAT_TURNS_KEY]: kept });
-                log(`[Prompts] Deleted ${turnsDeleted} old turns from chat_turns`);
-            }
-        } catch (e) {
-            log(`[Prompts] Failed to trim old turns: ${e}`, "warn");
-        }
+        // 1. Trim old turns from chat_turns (queued in the background and
+        // applied in order; one not applied yet is applied once it can be)
+        // A change not taken ends here, in the failure status below.
+        const reply = await changeTurns({ keepFrom: cutoffMs });
+        const turnsQueued = !reply.applied;
+        const turnsDeleted = reply.removed || 0;
+        log(`[Prompts] Old turns from chat_turns: ${turnsQueued ? "removal queued" : `deleted ${turnsDeleted}`}`);
 
         // 2. Delete old entries from Memory FTS: those older than the cutoff,
         // listed by date a page at a time with the shortest preview (a reply
@@ -735,7 +723,8 @@ async function deleteOldHistory(days) {
 
         // A stop says what was removed and why the rest was not (an older
         // helper refuses the listing until it is updated, ADR-NF-018).
-        const deleted = `Deleted ${turnsDeleted} turns + ${ftsDeleted} search entries older than ${cutoffDate.toLocaleDateString()}`;
+        const turnsPart = turnsQueued ? "Old turns queued for removal" : `Deleted ${turnsDeleted} turns`;
+        const deleted = `${turnsPart} + ${ftsDeleted} search entries older than ${cutoffDate.toLocaleDateString()}`;
         showStatus(ftsError ? `${deleted}, then stopped: ${ftsError.message}` : deleted, ftsError !== null);
 
         await loadChatHistory();
@@ -754,7 +743,8 @@ export async function clearChatHistory() {
         showStatus("Clearing chat history...");
 
         // Clear persistent chat turns, metadata, idMap
-        await browser.storage.local.remove([CHAT_TURNS_KEY, CHAT_META_KEY, CHAT_ID_MAP_KEY]);
+        await changeTurns({ clear: true });
+        await browser.storage.local.remove([CHAT_META_KEY, CHAT_ID_MAP_KEY]);
         log("[Prompts] Cleared chat_turns, chat_meta, chat_id_map");
 
         // Clear thinking tokens from IDB
