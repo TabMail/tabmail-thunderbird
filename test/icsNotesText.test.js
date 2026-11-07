@@ -20,6 +20,7 @@ const { parseIcsToEvents, ICS_PARSER_SETTINGS } = await import('../chat/modules/
 
 let dom;
 let pageParsed;
+let pageActivated;
 
 // Records every way markup can be parsed into the page's own document: an
 // element's markup setters, a range's fragment and the document's write.
@@ -52,7 +53,13 @@ function watchPageParsing(win) {
 beforeEach(() => {
   dom = new JSDOM('<body></body>');
   pageParsed = [];
+  pageActivated = [];
   watchPageParsing(dom.window);
+  // An element the page knows comes alive only once it belongs to the page's
+  // document: it records that, as anything active in the page could act.
+  dom.window.customElements.define('notes-probe', class extends dom.window.HTMLElement {
+    constructor() { super(); pageActivated.push(this.textContent); }
+  });
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
   globalThis.DOMParser = dom.window.DOMParser;
@@ -91,6 +98,9 @@ const NOTES = [
   ['a title before the notes', '<title>Bring the deck</title><p>Room 4</p>', 'Bring the deckRoom 4'],
   ['a whole document with a head', '<html><head><title>Agenda</title></head><body><p>Room 4</p></body></html>', 'AgendaRoom 4'],
   ['a noscript part', '<noscript>Bring <b>the deck</b></noscript><p>Room 4</p>', 'Bring the deckRoom 4'],
+  ['a style part in a head', '<html><head><style>.agenda{color:blue}</style></head><body>Ready</body></html>', '.agenda{color:blue}Ready'],
+  ['white space at both edges', ' \t Ready \t ', 'Ready'],
+  ['an element the page knows', '<notes-probe>Ready</notes-probe>', 'Ready'],
 ];
 
 describe('the page watch sees markup parsed into the page', () => {
@@ -112,17 +122,28 @@ describe('the page watch sees markup parsed into the page', () => {
     own.createRange().createContextualFragment('<b>x</b>');
     expect(pageParsed).toEqual([]);
   });
+
+  it('an element the page knows comes alive once copied into the page, not before', () => {
+    const own = new DOMParser().parseFromString('', 'text/html');
+    const holder = own.createElement('div');
+    holder.innerHTML = '<notes-probe>Ready</notes-probe>';
+    expect(pageActivated).toEqual([]);
+    document.importNode(holder, true);
+    expect(pageActivated).toEqual(['Ready']);
+  });
 });
 
 describe('calendar notes read as text in their own document', () => {
   it.each(NOTES)('a DESCRIPTION holding %s gives its text', (_label, notes, text) => {
     expect(notesOf([`DESCRIPTION:${notes}`])).toBe(text);
     expect(pageParsed).toEqual([]);
+    expect(pageActivated).toEqual([]);
   });
 
   it.each(NOTES)('an HTML X-ALT-DESC holding %s gives its text, over the DESCRIPTION', (_label, notes, text) => {
     expect(notesOf(['DESCRIPTION:Plain notes', `X-ALT-DESC;FMTTYPE=text/html:${notes}`])).toBe(text);
     expect(pageParsed).toEqual([]);
+    expect(pageActivated).toEqual([]);
   });
 
   it('no note is ever parsed into the page', () => {
@@ -131,6 +152,7 @@ describe('calendar notes read as text in their own document', () => {
       notesOf([`X-ALT-DESC;FMTTYPE=text/html:${notes}`]);
     }
     expect(pageParsed).toEqual([]);
+    expect(pageActivated).toEqual([]);
     expect(document.body.innerHTML).toBe('');
   });
 
