@@ -489,14 +489,19 @@
     }
     const { root, contentEl } = scaffold;
 
+    // The summary, todos and notice are shown as written: text, never markup.
+    const element = (tag, text, className) => {
+      const el = document.createElement(tag);
+      if (className) el.className = className;
+      if (text) el.textContent = text;
+      return el;
+    };
+
     // Warning message gets special visual treatment
     if (isWarning && blurb) {
-      const warningHtml = `
-        <div class="tm-warning">
-          <span class="tm-warning-icon">⚠️</span>
-          <span class="tm-warning-text">${blurb}</span>
-        </div>`;
-      contentEl.innerHTML = warningHtml;
+      const warning = element("div", "", "tm-warning");
+      warning.append(element("span", "⚠️", "tm-warning-icon"), element("span", blurb, "tm-warning-text"));
+      contentEl.replaceChildren(warning);
       showBubbleIfNeeded("displayWarning");
       syncBubbleToViewport();
       signalSummaryBubbleReady("warning");
@@ -504,7 +509,7 @@
       return;
     }
 
-    let todosHtml = '';
+    let todosNode = null;
     if (todos && todos.trim()) {
       // Split on bullet characters for each item.
       let items = todos.split('•').map(s => s.trim()).filter(Boolean);
@@ -516,32 +521,24 @@
         .map(it => it.replace(/^[-•*\s]+/, '').trim());
 
       if (items.length) {
-        todosHtml = '<ul class="tm-list">' +
-                     items.map(it => `<li>${it}</li>`).join('') +
-                     '</ul>';
+        todosNode = element("ul", "", "tm-list");
+        todosNode.append(...items.map(it => element("li", it)));
       } else {
-        todosHtml = todos;
+        // Shown inline between the two headings, so keep a space on each side.
+        todosNode = document.createTextNode(` ${todos} `);
       }
     }
 
-    const contentHtml = todosHtml ? `
-        <div class="tm-container">
-          <strong>Todos:</strong>
-          ${todosHtml}
-          <strong>Summary:</strong>
-          <div class="tm-summary">${blurb || 'Analyzing email…'}</div>
-        </div>` : `
-        <div class="tm-container">
-          <strong>Summary:</strong>
-          <div class="tm-summary">${blurb || 'Analyzing email…'}</div>
-        </div>`;
+    const container = element("div", "", "tm-container");
+    if (todosNode) container.append(element("strong", "Todos:"), todosNode);
+    container.append(element("strong", "Summary:"), element("div", blurb || 'Analyzing email…', "tm-summary"));
 
     // Only update content; styles are one-time setup for snappy rendering.
-    contentEl.innerHTML = contentHtml;
+    contentEl.replaceChildren(container);
     // console.log('[TMDBG Bubble] displaySummary updated');
     showBubbleIfNeeded("displaySummary");
     syncBubbleToViewport();
-    logContentTokenStats(blurb, todosHtml);
+    logContentTokenStats(blurb, todos);
     logComputedHostStyles('After displaySummary');
     logLayoutDiagnostics('after displaySummary');
     if (ENABLE_DIAGNOSTICS) {

@@ -166,9 +166,11 @@ function sinksOf(source) {
 
 // Where the pages' scripts set an image or frame source or make an element
 // that loads one, with the code it sets, as of today. Each names only an
-// image the add-on ships; the list in chat/modules/helpers.js makes a ul or ol.
+// image the add-on ships; the list in chat/modules/helpers.js makes a ul or ol,
+// and the email selection tooltip there a strong, ul, li or div.
 const CENSUS = [
   'chat/modules/helpers.js: createElement(listTag)',
+  'chat/modules/helpers.js: createElement(tag)',
   'config/modules/appearance.js: src = src',
   'welcome/modules/dynamicImages.js: src = "assets/dark-card-view.webp"',
   'welcome/modules/dynamicImages.js: src = "assets/light-card-view.webp"',
