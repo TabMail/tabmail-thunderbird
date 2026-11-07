@@ -133,10 +133,14 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   confirms it: an error, a throw, or no reply at all (no listener answers while the background starts
   or reloads) is a failure, said in the status line, and the entry and its button stay. The page's
   other memory writes read their reply by the same rule, decided once in `memoryWriteFailure`
-  (#248): Delete Old stops at an unconfirmed removal without counting it, Clear All says it failed
-  and keeps the migration flags (so the next startup's migration does not clear what is written
-  after it), and a size-limit trim says applying it failed (the limit stays saved; an
-  `unsupported` answer from a helper without the trim is read first). A confirmed
+  (#248): Delete Old stops at an unconfirmed removal without counting it, Clear All says it failed,
+  and a size-limit trim says applying it failed (the limit stays saved; an `unsupported` answer
+  from a helper without the trim is read first). Clear All, confirmed or not, never removes the
+  one-time migrations' flags (`memory_fts_migration_v1_done`, `memory_fts_migrated_sessions`,
+  `chat_turns_migration_v1`, `chat_turns_migration_v2`, `chat_refs_migration_v1`): it used to
+  remove them after a confirmed clear, so the next chat-window open ran the chat store's v2
+  migration again, whose memoryClear removed every conversation kept since the Clear All. With
+  memory and the legacy queue already empty, the migrations have nothing left to do. A confirmed
   removal takes the entry out of what is shown at once (page kept, clamped by render), then the stats
   are read again; a stats read that fails after it is said too, and the usage shows unavailable, as
   on load. (The candidate before the rebuild let requests overlap and ordered their answers with a

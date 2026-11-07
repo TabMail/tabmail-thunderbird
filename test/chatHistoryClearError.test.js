@@ -10,7 +10,8 @@
 // whose memoryClear succeeds, answers an error, rejects, gets no reply, or
 // answers without confirming it (#248). Storage keeps
 // what is written, and the chat store's migration and memory writer are the
-// real ones, so a failed clear is checked against what happens next.
+// real ones, so a clear, failed or confirmed, is checked against what happens
+// next.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -28,6 +29,15 @@ vi.mock('../agent/modules/idbStorage.js', () => ({
 const CLEARED = 'Chat history cleared';
 const FAILED = 'Failed to clear chat history';
 const HOUR_MS = 60 * 60 * 1000;
+// What the one-time migrations wrote once they ran. Each is read at startup;
+// the chat store's v2 migration clears memory when its flag is missing.
+const MIGRATION_FLAGS = [
+  'memory_fts_migration_v1_done',
+  'memory_fts_migrated_sessions',
+  'chat_turns_migration_v1',
+  'chat_turns_migration_v2',
+  'chat_refs_migration_v1',
+];
 
 afterEach(() => {
   delete globalThis.browser;
@@ -114,6 +124,34 @@ async function openPage() {
 }
 
 describe('Chat History Clear All reports what the helper did (#146)', () => {
+  // A Clear All removes what is kept, never the record that the one-time
+  // migrations ran: without it the next startup would run them again, and
+  // the chat store's would clear what the user said after the Clear All.
+  for (const kind of ['ok', 'error', 'rejection', 'no reply', 'unconfirmed reply']) {
+    it(`keeps every migration flag through a Clear All answered with ${kind}`, async () => {
+      const page = await openPage();
+      for (const key of MIGRATION_FLAGS) page.storage.data[key] = 1;
+      page.helper.clear = kind;
+      await page.clearAll();
+      expect(page.status()).toBe(kind === 'ok' ? CLEARED : FAILED);
+      expect(MIGRATION_FLAGS.filter(key => !(key in page.storage.data))).toEqual([]);
+    });
+  }
+
+  it('keeps memory written after a confirmed Clear All through the next startup', async () => {
+    const page = await openPage();
+    await page.store.migrateFromSessions();
+    await page.indexChatTurn('old request', 'old reply', 'old', Date.now() - HOUR_MS);
+    await page.clearAll();
+    expect(page.status()).toBe(CLEARED);
+    expect(page.helper.memory.size).toBe(0);
+
+    // The chat window stays open and keeps the next exchange.
+    await page.indexChatTurn('new request', 'new reply', 'newer', Date.now());
+    await page.store.migrateFromSessions();
+    expect(page.helper.memory.has('turn:newer')).toBe(true);
+  });
+
   it('says cleared when the helper clears its memory', async () => {
     const page = await openPage();
     await page.indexChatTurn('request', 'reply', 'old', Date.now() - HOUR_MS);

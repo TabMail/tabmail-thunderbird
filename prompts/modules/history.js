@@ -270,11 +270,6 @@ function renderMemoryUsage() {
         : "The size limit applies once the search helper updates.";
 }
 
-/**
- * Store a new size limit and apply it now: the helper removes the oldest
- * entries until memory fits, or as many as its time allows (`withinLimit`
- * false), and the rest go with the next entries kept.
- */
 // Why a memory write (a removal, Clear All, a trim) was not done, or null
 // when the helper confirmed it with ok: true. Anything else failed, as an
 // error does: no reply comes while the background starts or reloads.
@@ -282,6 +277,11 @@ function memoryWriteFailure(reply) {
     return reply?.ok === true ? null : (reply?.error || "the search helper did not confirm it");
 }
 
+/**
+ * Store a new size limit and apply it now: the helper removes the oldest
+ * entries until memory fits, or as many as its time allows (`withinLimit`
+ * false), and the rest go with the next entries kept.
+ */
 async function changeMemorySizeLimit(bytes) {
     let saved = false;
     try {
@@ -766,9 +766,10 @@ export async function clearChatHistory() {
 
         // Clear Memory FTS database. The FTS engine answers a failed clear
         // with { error } rather than rejecting, so the reply is checked; any
-        // failure ends in the failure status below, never the success one,
-        // and leaves the migration flags, so the next startup's migration
-        // does not clear what is written after this.
+        // failure ends in the failure status below, never the success one.
+        // The one-time migrations' flags stay, cleared or not: without them
+        // the next startup runs those again, and the chat store's clears
+        // memory, removing what the user says after this.
         const clearReply = await browser.runtime.sendMessage({
             type: "fts",
             cmd: "memoryClear"
@@ -776,15 +777,6 @@ export async function clearChatHistory() {
         const failed = memoryWriteFailure(clearReply);
         if (failed) throw new Error(`Memory FTS clear failed: ${failed}`);
         log("[Prompts] Memory FTS cleared");
-
-        // Clear migration flags
-        await browser.storage.local.remove([
-            "memory_fts_migration_v1_done",
-            "memory_fts_migrated_sessions",
-            "chat_turns_migration_v1",
-            "chat_turns_migration_v2",
-            "chat_refs_migration_v1"
-        ]);
 
         // Re-read everything, so the usage row shows what the helper now holds.
         await loadChatHistory();

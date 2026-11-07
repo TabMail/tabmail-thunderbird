@@ -752,7 +752,7 @@ describe('Chat History usage bar', () => {
     expect(el['history-usage-note'].textContent).toContain('once the search helper is running');
   });
 
-  it('Clear All removes the chat history and keeps the chosen limit', async () => {
+  it('Clear All removes the chat history and keeps the chosen limit and the migration flags', async () => {
     thinkingRows.set('fixture', 'thinking fixture');
     const { history, el, storage } = await loadHistory({
       stats: { docs: 9, dbBytes: 2 * MB, usedBytes: 2 * MB },
@@ -770,7 +770,14 @@ describe('Chat History usage bar', () => {
       },
     });
     await history.clearChatHistory();
-    expect(storage.data).toEqual({ memorySizeLimitBytes: 250 * MB });
+    expect(storage.data).toEqual({
+      memorySizeLimitBytes: 250 * MB,
+      memory_fts_migration_v1_done: true,
+      memory_fts_migrated_sessions: ['fixture'],
+      chat_turns_migration_v1: true,
+      chat_turns_migration_v2: true,
+      chat_refs_migration_v1: true,
+    });
     expect(thinkingRows.size).toBe(0);
     expect(el['history-usage-label'].textContent).toBe('Memory used: 64 KB of 250 MB');
   });
