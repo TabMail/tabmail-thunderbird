@@ -1496,18 +1496,25 @@ describe("native helper update reconnect", () => {
     expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion: "0.11.3" });
   });
 
-  it("does not ask again for a version whose newer attempt never answered success", async () => {
+  it("asks again at the reconnect when one of two overlapping checks for a version succeeds and the other is never answered", async () => {
     vi.resetModules();
     vi.useFakeTimers();
     const published = { version: "0.11.2" };
     vi.stubGlobal("fetch", manifestFetch(published));
     const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
-    // The helper stops reading once its first update succeeds: the second gets no answer.
-    let sent = 0;
+    // The first update's answer is held until the second is sent; the helper
+    // exits after answering it, so the second is never answered.
+    let held = null;
+    let dropped = false;
     const post = first.postMessage;
     first.postMessage = message => {
-      if (message.method === "updateRequest" && ++sent > 1) {
+      if (message.method === "updateRequest" && !held) {
+        held = message;
+        return;
+      }
+      if (message.method === "updateRequest") {
         first.messages.push(message);
+        dropped = true;
         return;
       }
       post(message);
@@ -1516,67 +1523,33 @@ describe("native helper update reconnect", () => {
     installBrowser(first, second);
     const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
     await initNativeFts();
-
-    // Two settings pages ask for the same version at once.
-    published.version = "0.11.3";
-    const both = Promise.all([
-      nativeFtsSearch.manualCheckAndUpdateHost(),
-      nativeFtsSearch.manualCheckAndUpdateHost(),
-    ]);
-    let settled = false;
-    both.then(() => { settled = true; });
-    for (let turn = 0; turn < 50 && !settled; turn++) await vi.advanceTimersByTimeAsync(5);
-    const [a, b] = await both;
-    expect(a).toMatchObject({ ok: true, updated: true });
-    expect(b.ok).toBe(false);
-    expect(first.messages.filter(m => m.method === "updateRequest")).toHaveLength(2);
-    expect(browser.storage.session.data.get("ftsNativeUpdateRequests")["0.11.3"])
-      .toEqual({ requests: 2, lastSucceeded: false });
-
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(methods(second)).toEqual(["hello", "updateCheck", "init"]);
-    expect(await nativeFtsSearch.indexBatch([freshRow])).toEqual({ ok: true, count: 1 });
-  });
-
-  it("does not let an older success recorded late reopen a version a newer attempt failed", async () => {
-    vi.resetModules();
-    vi.useFakeTimers();
-    const published = { version: "0.11.2" };
-    vi.stubGlobal("fetch", manifestFetch(published));
-    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
-    const second = makeNativePort(true, null, { canSelfUpdate: true });
-    const third = makeNativePort(true, null, { canSelfUpdate: true });
-    installBrowser(first, second, third);
     const session = browser.storage.session;
-    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
-    await initNativeFts();
 
-    // The successful update's own record read is held until the end.
+    // Two settings pages ask for the same version, one after the other.
     published.version = "0.11.3";
-    const realGet = session.get.getMockImplementation();
-    let reads = 0;
-    let releaseSuccessRead;
-    session.get.mockImplementation(key => (++reads === 3
-      ? new Promise(resolve => { releaseSuccessRead = () => resolve(realGet(key)); })
-      : realGet(key)));
-    const manual = nativeFtsSearch.manualCheckAndUpdateHost();
-    for (let turn = 0; turn < 50 && !releaseSuccessRead; turn++) await vi.advanceTimersByTimeAsync(0);
-    expect(releaseSuccessRead).toBeDefined();
-    await runUpdateReconnect(first, nativeFtsSearch);
-    expect(methods(second)).toEqual(["hello", "updateCheck", "init"]);
-
-    // A newer manual check on the reconnected helper answers failure.
-    const newer = nativeFtsSearch.manualCheckAndUpdateHost();
-    releaseSuccessRead();
-    expect(await manual).toMatchObject({ ok: true, updated: true });
-    expect(await newer).toEqual({ ok: false, error: "test_update_not_applied" });
+    const earlier = nativeFtsSearch.manualCheckAndUpdateHost();
+    for (let turn = 0; turn < 50 && !held; turn++) await vi.advanceTimersByTimeAsync(0);
+    expect(held).not.toBeNull();
+    const later = nativeFtsSearch.manualCheckAndUpdateHost();
+    for (let turn = 0; turn < 50 && !dropped; turn++) await vi.advanceTimersByTimeAsync(0);
+    expect(dropped).toBe(true);
     expect(session.data.get("ftsNativeUpdateRequests")["0.11.3"])
       .toEqual({ requests: 2, lastSucceeded: false });
 
-    second.disconnect();
-    await vi.advanceTimersByTimeAsync(61_000);
-    expect(await nativeFtsSearch.recheckAvailability()).toBe(true);
-    expect(methods(third)).toEqual(["hello", "updateCheck", "init"]);
+    // The earlier one succeeds; the reconnected helper still reports the old version.
+    post(held);
+    expect(await earlier).toMatchObject({ ok: true, updated: true });
+    for (let turn = 0; turn < 50 && !first.disconnect.mock.calls.length; turn++) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    expect((await later).ok).toBe(false);
+    expect(updateRequests(first)).toEqual([publishedRequest, publishedRequest]);
+    expect(session.data.get("ftsNativeUpdateRequests")["0.11.3"]).toMatchObject({ lastSucceeded: true });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(updateRequests(second)).toEqual([publishedRequest]);
+    expect(await nativeFtsSearch.indexBatch([freshRow])).toEqual({ ok: true, count: 1 });
   });
 
   it("does not ask again automatically while a newer manual attempt is recorded, and the manual success is asked again", async () => {
@@ -1942,7 +1915,7 @@ describe("native helper update reconnect", () => {
     expect((await staleOutcome).ok).toBe(false);
     expect(session.data.size).toBe(0);
 
-    // The failed change does not block the next one.
+    // The replacement asks for the update.
     await initNativeFts();
     expect(methods(stale)).toEqual(["hello", "updateCheck"]);
     expect(methods(current)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);

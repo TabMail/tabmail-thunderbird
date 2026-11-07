@@ -63,23 +63,16 @@ const UPDATE_REASK_AFTER_SUCCESS_MS = 6_000;
 // Whether the automatic update may ask for a version, given its record entry.
 const automaticAskAllowed = entry => !entry
   || (entry.lastSucceeded && entry.requests <= UPDATE_REASKS_AFTER_SUCCESS);
-// The one way to change the update-request record. Changes run one after another,
-// each reading the record fresh and writing it back, so two update checks never
-// write over each other: their attempts are numbered in order, and only the
-// latest attempt for a version can mark it succeeded. `change` gets the version's
-// entry and returns its new one, or undefined to leave the record as it is.
-let updateRequestChanges = Promise.resolve();
-function changeUpdateRequest(version, change) {
-  const run = updateRequestChanges.then(async () => {
-    const all = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTS))
-      ?.[SESSION_KEY_UPDATE_REQUESTS] || {};
-    const entry = change(all[version]);
-    if (entry) {
-      await browser.storage.session.set({ [SESSION_KEY_UPDATE_REQUESTS]: { ...all, [version]: entry } });
-    }
-  });
-  updateRequestChanges = run.catch(() => {});
-  return run;
+// Changes the update-request record: reads it fresh and writes the version's new
+// entry back. `change` gets the version's entry and returns its new one, or
+// undefined to leave the record as it is.
+async function changeUpdateRequest(version, change) {
+  const all = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTS))
+    ?.[SESSION_KEY_UPDATE_REQUESTS] || {};
+  const entry = change(all[version]);
+  if (entry) {
+    await browser.storage.session.set({ [SESSION_KEY_UPDATE_REQUESTS]: { ...all, [version]: entry } });
+  }
 }
 
 // Update server URL - points to the same CDN as addon updates.
@@ -411,8 +404,8 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
     }
   }
   // Recorded before the request is sent: if it cannot be recorded, none is sent.
-  // The automatic update is allowed again on the entry it numbers, since another
-  // attempt may have been recorded while this one waited.
+  // The automatic update checks again on the entry it numbers, since a manual
+  // attempt may have been recorded while it waited.
   let requests;
   await changeUpdateRequest(version, entry => {
     if (bootstrapState) {
@@ -439,11 +432,8 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
     log(`[TMDBG FTS] ✅ Host update successful! Prompting for Thunderbird restart.`);
     // Lets the reconnect ask again if this success is not applied. If it cannot
     // be recorded, the update is not asked again this session.
-    // Only while this is the latest attempt: a newer one decides for itself.
     try {
-      await changeUpdateRequest(version, entry => (entry?.requests === requests
-        ? { requests, lastSucceeded: true, succeededAtMs: Date.now() }
-        : undefined));
+      await changeUpdateRequest(version, () => ({ requests, lastSucceeded: true, succeededAtMs: Date.now() }));
     } catch (e) {
       log(`[TMDBG FTS] Could not record the successful update request: ${e}`, "warn");
     }

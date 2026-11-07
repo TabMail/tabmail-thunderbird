@@ -154,11 +154,14 @@ sent sooner would fail copying over the running one and answer an error, ending 
 reconnected helper runs the old binary, that apply copy cannot win anyway, so the wait costs no chance of
 success. The 1 s update reconnect is unchanged. A generation replaced during the wait sends nothing, and
 the next connection gets the re-ask. A failed answer records `lastSucceeded: false` and stops the re-asks. After the last re-ask the update waits for the
-next start. The attempt is still recorded before the request is sent (no record, no request). Every change to
-the record goes through one function, `changeUpdateRequest`, which runs changes one after another, each
-reading the record fresh and writing it back. So two overlapping update checks (two Settings pages)
-number their attempts in order. A success marks the version only while its attempt is still the latest,
-so an older success cannot reopen a version a newer attempt left unanswered or failed. The automatic update checks it may still ask inside that same change, on the entry it numbers, because a manual attempt can be recorded while it waits; if a newer attempt is pending it sends nothing and the helper starts. The success is
+next start. The attempt is still recorded before the request is sent (no record, no request). Each change to
+the record (`changeUpdateRequest`) reads it fresh and writes it back, as the guard did. The automatic
+update checks again that it may ask on the entry it is about to number, after its wait, because a manual
+attempt can be recorded meanwhile; if one is pending it sends nothing and the helper starts. Any success
+marks the version: with two overlapping Settings checks the success makes the helper exit before the other
+is answered, and the reconnected old helper is asked again, as the rule says. The changes are not queued
+(2026-11-07 review: a queue and a latest-attempt-only success rule were tried and deleted; they blocked
+that re-ask). Two overlapping checks can lose one count, which allows at most one more bounded re-ask. The success is
 recorded after the answer and before the update banner, which may never finish. If that write fails, the
 update is not asked again this session, which was the behaviour before this amendment. A manual check still always
 sends, and it records its request in the same way. Rejected: renaming the running binary aside in the
