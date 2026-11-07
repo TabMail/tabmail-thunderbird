@@ -524,7 +524,8 @@
         todosNode = element("ul", "", "tm-list");
         todosNode.append(...items.map(it => element("li", it)));
       } else {
-        todosNode = document.createTextNode(todos);
+        // Shown inline between the two headings, so keep a space on each side.
+        todosNode = document.createTextNode(` ${todos} `);
       }
     }
 

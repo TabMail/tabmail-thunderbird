@@ -88,7 +88,7 @@ describe('the email selection tooltip shows todos and summary as written', () =>
   });
 
   it('with neither, it says there are no details', async () => {
-    for (const item of [{}, { blurb: '', todos: '   ' }]) {
+    for (const item of [{}, { blurb: '', todos: '   ' }, { todos: '• •' }]) {
       const tooltip = await hover(item);
       expect(tooltip.innerHTML).toBe('(No details)');
     }
