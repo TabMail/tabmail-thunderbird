@@ -62,10 +62,11 @@ function inLine(what, job) {
  * the chat's memory_search fetches (100 everywhere, #150), each the start the
  * page shows. The helper answers the start of each entry (previewChars):
  * Thunderbird refuses a native message over 1 MiB, and entries are stored
- * whole.
+ * whole. Answers `{ entries }`, or `{ error }` for any reply that is not a
+ * list; a rejected request rejects.
  */
-function fetchMemoryEntries(q) {
-    return browser.runtime.sendMessage({
+async function fetchMemoryEntries(q) {
+    const reply = await browser.runtime.sendMessage({
         type: "fts",
         cmd: "memorySearch",
         q,
@@ -74,6 +75,9 @@ function fetchMemoryEntries(q) {
         // One more than shown, so an entry that goes on is told from one that ends there.
         previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars + 1
     });
+    // Anything but a list failed, as an error does: no reply comes while the
+    // background starts or reloads. It never shows as none kept or no matches.
+    return Array.isArray(reply) ? { entries: reply } : { error: reply?.error || "no reply from the search helper" };
 }
 
 /**
@@ -108,8 +112,7 @@ async function listMemory() {
     let answer;
     try {
         memorySizeLimitBytes = await getMemorySizeLimitBytes();
-        const listed = await fetchMemoryEntries("");
-        answer = Array.isArray(listed) ? { entries: listed } : { error: listed?.error || "no reply from the search helper" };
+        answer = await fetchMemoryEntries("");
     } catch (e) {
         answer = { error: String(e?.message || e) };
     }
@@ -127,10 +130,7 @@ export function searchChatHistory(query) {
         log(`[Prompts] Searching chat history for: "${q}"`);
         let answer;
         try {
-            const results = await fetchMemoryEntries(q);
-            // Anything but a list failed, as an error does: no reply comes while
-            // the background starts or reloads. It never shows as no matches.
-            answer = Array.isArray(results) ? { entries: results } : { error: results?.error || "no reply from the search helper" };
+            answer = await fetchMemoryEntries(q);
         } catch (e) {
             answer = { error: String(e) };
         }
