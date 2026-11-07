@@ -8,17 +8,22 @@
 // and none of them makes a frame.
 //
 // The page code checked is what the pages actually load: each page's scripts
-// and stylesheets, the background scripts, and every module they import. A
-// static reading cannot see a source a script builds at run time from parts;
-// the checks below catch every way the pages write one today, and each check
-// is shown to catch the forms it is for.
+// and stylesheets, the background scripts, and every module they import. Each
+// script is read as JavaScript: every string and template part in it is
+// checked, and every place it sets an image or frame source, or makes an image
+// or frame element, is listed and must match the list below, so a new one is
+// looked at. A static reading cannot tell what a source built at run time
+// will hold; the list makes each such place one someone has looked at. Each
+// check is shown to catch the forms it is for.
 
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
+import { parse, tokenizer } from 'acorn';
 
-const root = process.cwd();
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ORIGIN = 'moz-extension://addon/';
 const skipped = new Set(['node_modules', 'test', '.git', 'coverage', 'web-ext-artifacts']);
 const rel = path => relative(root, path);
@@ -68,18 +73,22 @@ const cssUrls = text => [
 
 // What a page's markup loads or would frame, read as the browser reads it:
 // every reference against the page's base address.
+// Markup inside a template is read too: a script may copy it into the page.
 function markupProblems(html, url) {
   const { document } = new JSDOM(html, { url }).window;
-  const problems = [...document.querySelectorAll('iframe, frame, embed, object')].map(el => `a ${el.localName}`);
+  const parts = [document];
+  for (let i = 0; i < parts.length; i++) parts.push(...[...parts[i].querySelectorAll('template')].map(t => t.content));
+  const all = selector => parts.flatMap(part => [...part.querySelectorAll(selector)]);
+  const problems = all('iframe, frame, embed, object').map(el => `a ${el.localName}`);
   const refs = [
-    ...[...document.querySelectorAll('img')].flatMap(img => [img.getAttribute('src'), img.getAttribute('data-light-src'), img.getAttribute('data-dark-src'), ...srcsetCandidates(img.getAttribute('srcset'))]),
-    ...[...document.querySelectorAll('picture source, img[srcset]')].flatMap(el => srcsetCandidates(el.getAttribute('srcset'))),
-    ...[...document.querySelectorAll('input[type="image"]')].map(el => el.getAttribute('src')),
-    ...[...document.querySelectorAll('video[poster]')].map(el => el.getAttribute('poster')),
-    ...[...document.querySelectorAll('image, use')].flatMap(el => [el.getAttribute('href'), el.getAttribute('xlink:href')]),
-    ...[...document.querySelectorAll('link[rel~="icon"], link[rel~="stylesheet"]')].map(link => link.getAttribute('href')),
-    ...[...document.querySelectorAll('[style]')].flatMap(el => cssUrls(el.getAttribute('style'))),
-    ...[...document.querySelectorAll('style')].flatMap(el => cssUrls(el.textContent)),
+    ...all('img').flatMap(img => [img.getAttribute('src'), img.getAttribute('data-light-src'), img.getAttribute('data-dark-src'), ...srcsetCandidates(img.getAttribute('srcset'))]),
+    ...all('picture source, img[srcset]').flatMap(el => srcsetCandidates(el.getAttribute('srcset'))),
+    ...all('input[type="image"]').map(el => el.getAttribute('src')),
+    ...all('video[poster]').map(el => el.getAttribute('poster')),
+    ...all('image, use').flatMap(el => [el.getAttribute('href'), el.getAttribute('xlink:href')]),
+    ...all('link[rel~="icon"], link[rel~="stylesheet"]').map(link => link.getAttribute('href')),
+    ...all('[style]').flatMap(el => cssUrls(el.getAttribute('style'))),
+    ...all('style').flatMap(el => cssUrls(el.textContent)),
   ].filter(ref => ref !== null && ref !== undefined);
   for (const ref of refs) if (!insideAddOn(ref, document.baseURI)) problems.push(ref);
   return problems;
@@ -89,33 +98,88 @@ function markupProblems(html, url) {
 const styleProblems = (text, url) => cssUrls(text).filter(ref => !ref.startsWith('#') && !insideAddOn(ref, url));
 
 const IMAGE_FILE = /\.(?:png|jpe?g|gif|svg|webp|ico|bmp|avif)(?:[?#][^'"`\s]*)?$/i;
+const PARSE = { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true, allowAwaitOutsideFunction: true };
 
-// What a page script writes that the policy blocks. It reads every string in
-// the script, wherever it is used, so a source kept in a variable first or
-// set over several lines is still seen.
+// What a page script's strings hold that the policy blocks: every string and
+// template part, read as JavaScript reads it, wherever it is used, so a source
+// kept in a variable first or set over several lines is still seen.
 function scriptProblems(source) {
   const problems = [];
-  // Comments are not code: block comments, and line comments starting a line.
-  const text = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  const strings = [...text.matchAll(/(['"`])((?:\\.|(?!\1)[^\\])*?)\1/gs)].map(m => m[2]);
+  const strings = [...tokenizer(source, PARSE)]
+    .filter(t => t.type.label === 'string' || t.type.label === 'template')
+    .map(t => t.type.label === 'string' ? source.slice(t.start + 1, t.end - 1) : source.slice(t.start, t.end));
   for (const s of strings) {
     const value = s.trim();
     if (/^data:[a-z]/i.test(value)) problems.push(`a data address: ${value.slice(0, 40)}`);
     if (/^blob:/i.test(value)) problems.push(`a blob address: ${value.slice(0, 40)}`);
     if (/^(?:https?:)?\/\//i.test(value) && IMAGE_FILE.test(value)) problems.push(`an image from outside: ${value}`);
-    if (/<(?:iframe|frame|embed|object)[\s>]/.test(value)) problems.push('a frame in markup');
+    if (/<(?:iframe|frame|embed|object)[\s>]/i.test(value)) problems.push('a frame in markup');
     for (const m of value.matchAll(/<(?:img|source|image|use)\b[^>]*?\b(?:src|srcset|href|xlink:href)\s*=\s*\\?["']\s*([^"'\\]*)/gi)) {
       for (const ref of srcsetCandidates(m[1])) if (!ref.startsWith('${') && !insideAddOn(ref, ORIGIN)) problems.push(`an image from outside in markup: ${ref}`);
     }
     for (const ref of cssUrls(value)) if (!ref.startsWith('${') && !insideAddOn(ref, ORIGIN)) problems.push(`a style image from outside: ${ref}`);
   }
-  if (/createElement(?:NS)?\(\s*(?:[^,)]*,\s*)?['"`](?:iframe|frame|embed|object)['"`]/i.test(text)) problems.push('a frame made by script');
-  // A blob address is only ever handed to a download, never shown.
-  for (const m of text.matchAll(/createObjectURL\(/g)) {
-    if (!/downloads\.download\(/.test(text.slice(m.index, m.index + 600))) problems.push('a blob address not handed to a download');
-  }
   return problems;
 }
+
+// Every place a page script sets an image or frame source or makes an image or
+// frame element, each with the code it sets: an assignment to src, srcset or
+// poster (by dot or by name), setAttribute or setAttributeNS of one of those
+// or of href, Object.assign of one, new Image, and createElement or
+// createElementNS of an image or frame element. A name worked out at run time
+// counts as one of these.
+const SOURCE_PROPS = new Set(['src', 'srcset', 'poster']);
+const SOURCE_ATTRS = new Set(['src', 'srcset', 'poster', 'href', 'xlink:href']);
+const SOURCE_ELEMENTS = new Set(['img', 'image', 'picture', 'source', 'video', 'iframe', 'frame', 'embed', 'object']);
+function sinksOf(source) {
+  const sinks = [];
+  const code = node => source.slice(node.start, node.end);
+  const name = node => node?.type === 'MemberExpression'
+    ? (node.computed ? (typeof node.property.value === 'string' ? node.property.value : code(node.property)) : node.property.name)
+    : node?.type === 'Identifier' ? node.name : null;
+  // A string the code names outright, or null when it is worked out at run time.
+  const constant = node => node?.type === 'Literal' && typeof node.value === 'string' ? node.value.toLowerCase()
+    : node?.type === 'TemplateLiteral' && node.expressions.length === 0 ? node.quasis[0].value.cooked.toLowerCase() : null;
+  const named = (node, set) => constant(node) === null || set.has(constant(node));
+  const visit = node => {
+    if (!node || typeof node.type !== 'string') return;
+    if (node.type === 'AssignmentExpression' && node.left.type === 'MemberExpression' && SOURCE_PROPS.has(name(node.left))) sinks.push(`${name(node.left)} = ${code(node.right)}`);
+    if (node.type === 'CallExpression') {
+      const callee = name(node.callee);
+      const args = node.arguments;
+      const call = `${callee}(${args.map(code).join(', ')})`;
+      if (callee === 'setAttribute' && args.length && named(args[0], SOURCE_ATTRS)) sinks.push(call);
+      if (callee === 'setAttributeNS' && args.length > 1 && named(args[1], SOURCE_ATTRS)) sinks.push(call);
+      if ((callee === 'createElement' || callee === 'createElementNS') && args.length && named(args.at(-1), SOURCE_ELEMENTS)) sinks.push(call);
+      if (callee === 'assign' && args.some(a => a.type === 'ObjectExpression' && a.properties.some(p => SOURCE_PROPS.has(p.key?.name ?? p.key?.value)))) sinks.push(`Object.assign(${args.map(code).join(', ')})`);
+    }
+    if (node.type === 'NewExpression' && name(node.callee) === 'Image') sinks.push(`new Image(${node.arguments.map(code).join(', ')})`);
+    for (const key of Object.keys(node)) {
+      const value = node[key];
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value.type === 'string') visit(value);
+    }
+  };
+  visit(parse(source, PARSE));
+  return sinks;
+}
+
+// Where the pages' scripts set an image or frame source or make an element
+// that loads one, with the code it sets, as of today. Each names only an
+// image the add-on ships; the list in chat/modules/helpers.js makes a ul or ol.
+const CENSUS = [
+  'chat/modules/helpers.js: createElement(listTag)',
+  'config/modules/appearance.js: src = src',
+  'welcome/modules/dynamicImages.js: src = "assets/dark-card-view.webp"',
+  'welcome/modules/dynamicImages.js: src = "assets/light-card-view.webp"',
+  'welcome/modules/dynamicImages.js: src = `assets/${themeToUse}-card-view.webp`',
+  'welcome/modules/dynamicImages.js: src = `assets/${themeToUse}-table-view.webp`',
+  'welcome/modules/dynamicImages.js: src = `assets/${themeToUse}-toggle-menu.webp`',
+  'welcome/modules/dynamicImages.js: src = `assets/${themeToUse}-toggle-menu.webp`',
+  'welcome/modules/dynamicImages.js: src = `assets/example-tagsort-disabled${themeSuffix}.webp`',
+  'welcome/modules/dynamicImages.js: src = `assets/example-tagsort-enabled${themeSuffix}.webp`',
+  'welcome/modules/logo.js: src = isDark ? "assets/logo-dark.svg" : "assets/logo-light.svg"',
+];
 
 // Every module a script imports, by its path in the add-on.
 const importsOf = (text, from) => [
@@ -198,12 +262,13 @@ describe('the checks catch what the policy blocks', () => {
   it.each([
     ['a data image kept in a variable first', 'const logo = "data:image/png;base64,AAAA";\nimg.src = logo;'],
     ['a remote image set over several lines', 'img.src =\n  isDark\n    ? "https://example.com/dark.png"\n    : "https://example.com/light.png";'],
-    ['a frame made by script, its source set by name', 'const f = document.createElement("iframe");\nf["src"] = page;'],
     ['a frame written as markup', 'box.innerHTML = `<iframe src="x.html"></iframe>`;'],
     ['an image from outside written as markup', 'box.innerHTML = `<img src="https://example.com/a.png">`;'],
     ['a style image from outside', 'el.style.backgroundImage = "url(https://example.com/a.png)";'],
-    ['a blob address shown, not downloaded', 'img.src = URL.createObjectURL(blob);'],
     ['a protocol-relative image', 'const u = "//example.com/a.png";'],
+    ['a remote image after a regular expression holding a quote', 'const q = /["\']/g; // it\'s a quote\nimg.src = "https://example.com/a.png";'],
+    ['a remote image after a quote in a comment', '// the user\'s logo\nimg.src = "https://example.com/a.png"; // it\'s set'],
+    ['a remote image in a template part', 'img.src = dark ? `${base}/a.png` : `${""}https://example.com/a.png`;'],
   ])('a script with %s', (_label, text) => {
     expect(scriptProblems(text)).not.toEqual([]);
   });
@@ -216,6 +281,41 @@ describe('the checks catch what the policy blocks', () => {
       'await browser.downloads.download({ url, filename });',
       'fetch("https://api.example.com/v1/items");',
     ].join('\n'))).toEqual([]);
+  });
+
+  it.each([
+    ['an image source set by dot', 'img.src = a;', ['src = a']],
+    ['an image source set by name', 'img["srcset"] = a;', ['srcset = a']],
+    ['a poster set', 'video.poster = a;', ['poster = a']],
+    ['a source attribute set', 'el.setAttribute("src", a);', ['setAttribute("src", a)']],
+    ['a link attribute set in a namespace', 'el.setAttributeNS(ns, "xlink:href", a);', ['setAttributeNS(ns, "xlink:href", a)']],
+    ['an attribute named at run time', 'el.setAttribute(name, a);', ['setAttribute(name, a)']],
+    ['a source set through Object.assign', 'Object.assign(img, { src: a });', ['Object.assign(img, { src: a })']],
+    ['an image made', 'const i = new Image();', ['new Image()']],
+    ['an image element made', 'document.createElement("img");', ['createElement("img")']],
+    ['a frame element made', 'document.createElement(`iframe`);', ['createElement(`iframe`)']],
+    ['an SVG image made', 'document.createElementNS(svg, "image");', ['createElementNS(svg, "image")']],
+    ['an element named at run time', 'document.createElement(tag);', ['createElement(tag)']],
+    ['a blob address shown', 'img.src = URL.createObjectURL(blob);', ['src = URL.createObjectURL(blob)']],
+  ])('a script with %s lists it as a source it sets', (_label, text, sinks) => {
+    expect(sinksOf(text)).toEqual(sinks);
+  });
+
+  it('a script setting no image or frame source lists none', () => {
+    expect(sinksOf([
+      'el.setAttribute("class", "x");',
+      'document.createElement("div");',
+      'a.href = url;',
+      'Object.assign(el.style, { color: "red" });',
+      'const url = URL.createObjectURL(blob);',
+    ].join('\n'))).toEqual([]);
+  });
+
+  it.each([
+    ['a frame inside a template', '<template><iframe src="x.html"></iframe></template>'],
+    ['an image from outside inside a nested template', '<template><div><template><img src="https://example.com/a.png"></template></div></template>'],
+  ])('markup with %s', (_label, html) => {
+    expect(markupProblems(html, page)).not.toEqual([]);
   });
 
   it.each([
@@ -236,7 +336,10 @@ describe('the add-on\'s pages use nothing the policy blocks', () => {
       'chat/chat.js', 'prompts/prompts.js', 'popup/popup.js', 'config/config.js', 'welcome/welcome.js',
       'agent/background.js', 'chat/modules/markdown.js', 'prompts/modules/history.js', 'agent/modules/utils.js',
     ]));
-    expect(code.styles.map(rel).length).toBeGreaterThan(0);
+    expect(code.styles.map(rel).sort()).toEqual(expect.arrayContaining([
+      'chat/chat.css', 'config/config.css', 'marketplace/marketplace.css', 'popup/popup.css',
+      'prompts/prompts.css', 'templates/templates.css', 'welcome/welcome.css',
+    ]));
     expect(code.scripts.length).toBeGreaterThan(100);
     expect(code.scripts.some(vendored)).toBe(false);
   });
@@ -248,6 +351,14 @@ describe('the add-on\'s pages use nothing the policy blocks', () => {
   it('the scripts the pages load set no image or frame the policy blocks', () => {
     const problems = code.scripts.flatMap(path => scriptProblems(readFileSync(path, 'utf8')).map(p => `${rel(path)}: ${p}`));
     expect(problems).toEqual([]);
+  });
+
+  // Each place the pages' scripts set an image or frame source, with what it
+  // sets: each names an image the add-on ships. A new one fails here until it
+  // is looked at and added.
+  it('the scripts the pages load set image sources only where listed', () => {
+    const sinks = code.scripts.flatMap(path => sinksOf(readFileSync(path, 'utf8')).map(s => `${rel(path)}: ${s}`)).sort();
+    expect(sinks).toEqual(CENSUS);
   });
 
   it('the stylesheets the pages load name only images the add-on ships', () => {
