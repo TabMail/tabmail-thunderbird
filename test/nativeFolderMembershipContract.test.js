@@ -1286,46 +1286,136 @@ describe("native helper update reconnect", () => {
     expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
   });
 
-  it("reconnects once after a successful update and does not repeat it when the old helper is still installed", async () => {
+  const updated = {
+    success: true,
+    oldVersion: "0.11.2",
+    newVersion: "0.11.3",
+    requiresRestart: true,
+    message: "updated",
+  };
+  // Runs the update reconnect of the port that answered success: its disconnect,
+  // then the reconnect that follows it.
+  const runUpdateReconnect = async (port, nativeFtsSearch) => {
+    // A zero-delay timer set during a fake-timer tick is due 1 ms later, so the
+    // helper's exit is stepped to in small ticks, well short of the reconnect delay.
+    for (let turn = 0; turn < 50 && !port.disconnect.mock.calls.length; turn++) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    expect(port.disconnect).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    const next = browser.runtime.connectNative.mock.results.at(-1).value;
+    expect(next).not.toBe(port);
+    // Settled once the reconnected helper is serving or has been asked again.
+    for (let turn = 0; turn < 50
+      && nativeFtsSearch.getHostStatus().status !== "available"
+      && !methods(next).includes("updateRequest"); turn++) {
+      await vi.advanceTimersByTimeAsync(0);
+    }
+  };
+
+  it("asks again a bounded number of times while a successful update is not applied, then leaves it for the next start", async () => {
     vi.resetModules();
     vi.useFakeTimers();
     vi.stubGlobal("fetch", manifestFetch());
-    const updated = {
-      success: true,
-      oldVersion: "0.11.2",
-      newVersion: "0.11.3",
-      requiresRestart: true,
-      message: "updated",
-    };
-    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
-    // The swap did not happen (e.g. another profile's helper held the file):
-    // the reconnect finds the same old version, which would answer success again.
-    const second = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
-    installBrowser(first, second);
+    // The swap never lands (Windows: the old helper's rename loses to the
+    // reconnect): every reconnect finds the old version, which answers success again.
+    const ports = [0, 1, 2, 3].map(() =>
+      makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated }));
+    installBrowser(...ports);
     const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
 
     expect(await initNativeFts()).toBe(true);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(first.disconnect).toHaveBeenCalledOnce();
-    expect(nativeFtsSearch.getHostStatus().status).not.toBe("missing");
-
-    await vi.advanceTimersByTimeAsync(1_000);
-    for (let turn = 0; turn < 30 && nativeFtsSearch.getHostStatus().status !== "available"; turn++) {
-      await Promise.resolve();
+    for (const port of ports.slice(0, 3)) {
+      await runUpdateReconnect(port, nativeFtsSearch);
+      expect(nativeFtsSearch.getHostStatus().status).not.toBe("missing");
     }
-    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
-    expect(methods(second)).toEqual(["hello", "updateCheck", "init"]);
+    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(4);
+    for (const port of ports.slice(0, 3)) {
+      expect(methods(port)).toEqual(["hello", "updateCheck", "updateRequest"]);
+    }
+    // The first request and two re-asks; the fourth connection stops asking.
+    expect(methods(ports[3])).toEqual(["hello", "updateCheck", "init"]);
     expect(nativeFtsSearch.getHostStatus().status).toBe("available");
 
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
-    expect(second.disconnect).not.toHaveBeenCalled();
+    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(4);
+    expect(ports[3].disconnect).not.toHaveBeenCalled();
 
     // The update's reconnect was used up: a later disconnect is ordinary.
-    second.disconnect();
+    ports[3].disconnect();
     expect(nativeFtsSearch.getHostStatus().status).toBe("missing");
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
+    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(4);
+
+    // The next Thunderbird session asks again.
+    vi.resetModules();
+    const next = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(next);
+    await (await import("../fts/nativeEngine.js")).initNativeFts();
+    expect(methods(next)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+  });
+
+  it("serves from the new helper once a re-asked update is applied", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const second = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const third = makeNativePort(true, null, { canSelfUpdate: true, hostVersion: "0.11.3" });
+    installBrowser(first, second, third);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    expect(await initNativeFts()).toBe(true);
+    await runUpdateReconnect(first, nativeFtsSearch);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest"]);
+    await runUpdateReconnect(second, nativeFtsSearch);
+
+    expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion: "0.11.3" });
+    await nativeFtsSearch.indexBatch([freshRow]);
+    expect(methods(third)).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
+  });
+
+  it("stops asking again once a re-asked update fails", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const second = makeNativePort(true, null, { canSelfUpdate: true });
+    const third = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second, third);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    expect(await initNativeFts()).toBe(true);
+    await runUpdateReconnect(first, nativeFtsSearch);
+    // The re-ask answers failure; the helper stays connected and search starts.
+    expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("available");
+
+    second.disconnect();
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(await nativeFtsSearch.recheckAvailability()).toBe(true);
+    expect(methods(third)).toEqual(["hello", "updateCheck", "init"]);
+  });
+
+  it("does not ask again when the successful answer cannot be recorded", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const second = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    installBrowser(first, second);
+    const session = browser.storage.session;
+    const realSet = session.set.getMockImplementation();
+    session.set
+      .mockImplementationOnce(realSet)
+      .mockImplementationOnce(async () => { throw new Error("session storage unavailable"); });
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    expect(await initNativeFts()).toBe(true);
+    expect(browser.tmUpdates.showUpdateBar).toHaveBeenCalled();
+    await runUpdateReconnect(first, nativeFtsSearch);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init"]);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("available");
   });
 
   it("does not repeat a failed update after the background is unloaded and woken in the same session", async () => {
@@ -1506,7 +1596,8 @@ describe("native helper update reconnect", () => {
     releaseSet();
     await init;
 
-    expect(session.data.get("ftsNativeUpdateRequestedVersions")).toEqual(["0.11.3"]);
+    expect(session.data.get("ftsNativeUpdateRequests"))
+      .toEqual({ "0.11.3": { requests: 1, lastSucceeded: false } });
     expect(methods(port)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
     expect(nativeFtsSearch.getHostStatus().status).toBe("available");
   });

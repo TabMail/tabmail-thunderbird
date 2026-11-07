@@ -135,3 +135,22 @@ empty set. The version is recorded before the request is sent (no record, no req
 generation is revalidated after the read so a replaced generation cannot record a version its replacement
 then skips. The manual "Check for Updates" always sends its request and records the version too (owner
 blessed). Owner ruling 2026-11-06.
+
+**Amendment (2026-11-07): a successful update that is not applied is asked again, a bounded number of
+times.** On Windows the old helper's swap is a single rename (native-fts ADR-NF-024: a failed swap keeps
+the installed binary). It is refused while a helper still runs that binary, so the update reconnect 1 s
+after a success answer can make it lose: native-fts #69 measured about 1 update in 10 lost, and #73 tracks
+it. The reconnected helper then still needs the update, and the once-per-session guard above left it for
+the next Thunderbird start. Now the session record is per target version,
+`{ [version]: { requests, lastSucceeded } }` under `browser.storage.session` key `ftsNativeUpdateRequests`
+(the old `ftsNativeUpdateRequestedVersions` array is gone; storage.session does not outlive the add-on
+update). The automatic update is sent if the version was never requested this session, or if its last
+request answered success and at most `UPDATE_REASKS_AFTER_SUCCESS` (2) re-asks have been sent. That is the
+only exception to the guard. Each re-ask follows the update reconnect, so it has the same spacing. A failed
+answer records `lastSucceeded: false` and stops the re-asks. After the last re-ask the update waits for the
+next start. The attempt is still recorded before the request is sent (no record, no request). The success
+is recorded after the answer, from a fresh read of the record. If that write fails, the update is not
+asked again this session, which was the behaviour before this amendment. A manual check still always
+sends, and it records its request in the same way. Rejected: renaming the running binary aside in the
+helper, which reverses ADR-NF-024; and measuring the helper's swap window. Worst case: every swap loses and
+the update lands at the next start, as before. Owner ruling 2026-11-07 (option C).
