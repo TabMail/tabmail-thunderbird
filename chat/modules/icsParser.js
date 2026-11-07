@@ -78,11 +78,13 @@ function parseProperty(line) {
 }
 
 // Notes come from a mail attachment: they are read in a document of their own,
-// never as markup in the page that reads the mail.
+// never as markup in the page that reads the mail. They are read as an element's
+// content, so text in a title or head part of the notes is kept.
 function stripHtmlAndNormalize(html) {
   try {
-    const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
-    const text = doc.body?.textContent || "";
+    const holder = new DOMParser().parseFromString("", "text/html").createElement("div");
+    holder.innerHTML = String(html || "");
+    const text = holder.textContent || "";
     return text.replace(/\s+/g, " ").trim();
   } catch (_) {
     return String(html || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
