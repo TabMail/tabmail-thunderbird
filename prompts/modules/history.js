@@ -439,23 +439,27 @@ function escapeHtml(str) {
 }
 
 /**
- * Highlight search terms in text
+ * `text` as HTML, each search word of `query` marked: the words of at least
+ * two UTF-16 units (one emoji is a word), wherever they occur and whatever their case, the longer
+ * word where two start at one place (as Voice's Settings > Memory marks them).
+ * The words are found in the text itself in one pass, and each part is escaped
+ * on its own, so a word never matches inside a mark or an escaped character.
  */
 function highlightSearchTerms(text, query) {
     if (!text || !query) return escapeHtml(text);
 
-    const terms = query.split(/\s+/).filter(t => t.length >= 2);
+    const terms = query.split(/\s+/).filter(t => t.length >= 2).sort((a, b) => b.length - a.length);
     if (terms.length === 0) return escapeHtml(text);
 
-    let result = escapeHtml(text);
-
-    for (const term of terms) {
-        const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(`(${escapedTerm})`, 'gi');
-        result = result.replace(regex, '<span class="search-highlight">$1</span>');
+    const pattern = new RegExp(terms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join("|"), "gi");
+    let result = "";
+    let at = 0;
+    for (const found of text.matchAll(pattern)) {
+        result += escapeHtml(text.slice(at, found.index));
+        result += `<span class="search-highlight">${escapeHtml(found[0])}</span>`;
+        at = found.index + found[0].length;
     }
-
-    return result;
+    return result + escapeHtml(text.slice(at));
 }
 
 /**

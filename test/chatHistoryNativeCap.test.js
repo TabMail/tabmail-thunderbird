@@ -323,6 +323,26 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect([...page.d.querySelectorAll('#history-list .history-search-result-request .search-highlight')].map(el => el.textContent)).toEqual(['request', 'request', 'request']);
   });
 
+  it('marks every word of a search of several words, in the request and the reply, showing both exactly (#158)', async () => {
+    const request = 'Plan an event for Friday.';
+    const reply = 'Planned an event & sent the <plan>.';
+    const entry = { memId: 'event', sessionId: 's', role: 'session', content: `[USER]: ${request}\n\n[AGENT]: ${reply}`, dateMs: Date.now() - 60_000 };
+    const page = await openPage(fakeHelper([entry]));
+    await search(page, 'plan an event');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(1));
+    expect(page.shown()).toEqual([{ request, reply }]);
+    const marks = part => {
+      const box = page.d.querySelector(`#history-list ${part}`);
+      expect([...box.querySelectorAll('*')].map(el => [el.tagName, [...el.attributes].map(a => `${a.name}=${a.value}`)]))
+        .toEqual([...box.children].map(() => ['SPAN', ['class=search-highlight']]));
+      // No search word is left unmarked between the marks.
+      for (const node of box.childNodes) if (node.nodeType === 3) expect(node.textContent).not.toMatch(/plan|an|event/i);
+      return [...box.children].map(el => el.textContent);
+    };
+    expect(marks('.history-search-result-request')).toEqual(['Plan', 'an', 'event']);
+    expect(marks('.history-search-result-reply')).toEqual(['Plan', 'an', 'event', 'plan']);
+  });
+
   it('shows HTML-special characters in the request and the reply as text, highlighted, with no element made from them', async () => {
     const entry = {
       memId: 'html', sessionId: 'persistent_chat', role: 'session', dateMs: Date.now() - 60_000,
