@@ -1227,6 +1227,18 @@ describe("native helper update reconnect", () => {
     };
   };
   const methods = port => port.messages.map(message => message.method);
+  // Every update request carries the whole published release: the helper checks
+  // its signature over these fields, so a re-ask for any other tuple would fail.
+  const publishedRequest = {
+    targetVersion: "0.11.3",
+    updateUrl: "https://cdn.test/native-fts.zip",
+    sha256: "ab".repeat(32),
+    signature: "test-signature",
+    platform: "macos-universal",
+  };
+  const updateRequests = port => port.messages
+    .filter(message => message.method === "updateRequest")
+    .map(message => message.params);
   const freshRow = {
     msgId: "account:/Client:message@example.com",
     folderId: "opaque-folder-17",
@@ -1347,6 +1359,7 @@ describe("native helper update reconnect", () => {
     expect(browser.runtime.connectNative).toHaveBeenCalledTimes(4);
     for (const port of ports.slice(0, 3)) {
       expect(methods(port)).toEqual(["hello", "updateCheck", "updateRequest"]);
+      expect(updateRequests(port)).toEqual([publishedRequest]);
     }
     // The first request and two re-asks; the fourth connection stops asking.
     expect(methods(ports[3])).toEqual(["hello", "updateCheck", "init"]);
@@ -1385,6 +1398,8 @@ describe("native helper update reconnect", () => {
     expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest"]);
     await runUpdateReconnect(second, nativeFtsSearch);
 
+    expect(updateRequests(first)).toEqual([publishedRequest]);
+    expect(updateRequests(second)).toEqual([publishedRequest]);
     expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion: "0.11.3" });
     await nativeFtsSearch.indexBatch([freshRow]);
     expect(methods(third)).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
