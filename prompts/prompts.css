@@ -1206,6 +1206,30 @@ button:focus-visible {
   color: var(--in-content-deemphasized-text);
   background: color-mix(in srgb, var(--in-content-page-color) 5%, transparent);
   border-bottom: 1px solid var(--panel-separator-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.history-remove-btn {
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: normal;
+  border: 1px solid var(--panel-separator-color);
+  border-radius: 4px;
+  background: var(--in-content-box-background);
+  color: var(--in-content-page-color);
+  cursor: pointer;
+}
+
+.history-remove-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--in-content-page-color) 10%, transparent);
+}
+
+.history-remove-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .history-search-result-content {

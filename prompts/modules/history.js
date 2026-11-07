@@ -3,9 +3,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 /**
- * Chat History tab functionality
- * Default: shows the memory's size and an empty list
- * Search: queries Memory FTS and shows a preview of each entry, as Voice does
+ * Chat History tab functionality, as Voice's Settings > Memory shows memory:
+ * the memory's size, then its newest entries, or the best matches of a search,
+ * each a preview of what was asked and what the agent did, each removable.
  */
 
 import { log } from "../../agent/modules/utils.js";
@@ -22,7 +22,7 @@ const PAGE_SIZE = 20;
 // Said in place of a reply when a long request fills the preview.
 const PREVIEW_NO_REPLY_NOTE = "The rest is not shown: the request is too long to preview.";
 
-let displayData = []; // unified display list (turns or FTS results)
+let displayData = []; // the entries shown (a listing's or a search's)
 let memoryFtsStats = null;
 let memorySizeLimitBytes = null;
 let turnsCount = 0;
@@ -30,101 +30,134 @@ let currentPage = 1;
 let totalPages = 1;
 let currentSearchQuery = "";
 let isSearchMode = false;
-// A search that answers after a later search or a reload doesn't render over
-// it. A page change while a search is pending pages the results shown.
-let searchToken = 0;
+// What the list shows is set by `showAnswer` alone, from the listing or search
+// that finished last. Said in the list's place when a listing failed.
+let listError = null;
+// Whether the answer shown had no entries: only then does the list say none is
+// kept or found. Removing every entry shown does not make it so; the list then
+// says what was done.
+let answeredNone = false;
+// The query of the latest listing or search asked for ("" for a listing).
+let requestedQuery = "";
+// Entries whose removal is waiting or running, by memId: their button says so.
+const removing = new Set();
 
-/**
- * Load chat history — shows stats + search bar only (no entries until search).
- */
-export async function loadChatHistory() {
-    try {
-        log("[Prompts] Loading chat history stats...");
-        searchToken++;
-
-        // Reset search mode
-        currentSearchQuery = "";
-        isSearchMode = false;
-        currentPage = 1;
-        displayData = [];
-
-        // Clear search input
-        const searchInput = document.getElementById("history-search-input");
-        if (searchInput) searchInput.value = "";
-
-        // Load Memory FTS stats (for display)
-        try {
-            memoryFtsStats = await browser.runtime.sendMessage({
-                type: "fts",
-                cmd: "memoryStats"
-            });
-        } catch (e) {
-            log(`[Prompts] Failed to get Memory FTS stats: ${e}`, "warn");
-            memoryFtsStats = null;
-        }
-
-        memorySizeLimitBytes = await getMemorySizeLimitBytes();
-
-        // Load active turns count for stats display
-        try {
-            const result = await browser.storage.local.get(CHAT_TURNS_KEY);
-            turnsCount = (result[CHAT_TURNS_KEY] || []).length;
-        } catch (e) {
-            turnsCount = 0;
-        }
-
-        renderChatHistory();
-    } catch (e) {
-        log(`[Prompts] Error loading chat history: ${e}`, "error");
-        document.getElementById("history-list").innerHTML =
-            '<div class="history-loading">Failed to load chat history</div>';
-    }
+// Listings, searches and removals run one at a time, in the order they were
+// asked: each starts once the one before it has finished, however it finished,
+// so a later one always reads memory after an earlier one's change, and the
+// list ends on the last one asked. None puts another in line. Each one before
+// it ends within the search helper's own request deadline once the helper is
+// running; the wait for a helper that is still starting is #244.
+let line = Promise.resolve();
+function inLine(what, job) {
+    line = line.then(job).catch(e => {
+        log(`[Prompts] Chat History ${what} failed: ${e}`, "error");
+        showStatus(`Chat History ${what} failed: ${e?.message || e}`, true);
+    });
+    return line;
 }
 
 /**
- * Search chat history using Memory FTS. The helper answers the start of each
- * result (previewChars), which is what the page shows: Thunderbird refuses a
- * native message over 1 MiB, and memory entries are stored whole.
+ * Memory's newest entries (no query), or the best matches of `q`: as many as
+ * the chat's memory_search fetches (100 everywhere, #150), each the start the
+ * page shows. The helper answers the start of each entry (previewChars):
+ * Thunderbird refuses a native message over 1 MiB, and entries are stored
+ * whole.
  */
-export async function searchChatHistory(query) {
-    if (!query || query.trim().length === 0) {
-        await loadChatHistory();
+function fetchMemoryEntries(q) {
+    return browser.runtime.sendMessage({
+        type: "fts",
+        cmd: "memorySearch",
+        q,
+        limit: CHAT_SETTINGS.memorySearchMaxResults,
+        ignoreDate: true,
+        // One more than shown, so an entry that goes on is told from one that ends there.
+        previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars + 1
+    });
+}
+
+/**
+ * Load chat history: the stats, then memory's newest entries.
+ */
+export function loadChatHistory() {
+    log("[Prompts] Loading chat history...");
+    requestedQuery = "";
+    // Emptied when the listing is asked for, not when it answers, so words
+    // typed while it waits in line stay.
+    const searchInput = document.getElementById("history-search-input");
+    if (searchInput) searchInput.value = "";
+    return inLine("listing", listMemory);
+}
+
+// The listing's reads, all in its own turn. A failed stats read shows memory's
+// size as unavailable and a failed turns read shows 0 (#241); a failed read of
+// the size limit or of the entries is the listing's answer, said in the list.
+async function listMemory() {
+    try {
+        memoryFtsStats = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryStats" });
+    } catch (e) {
+        log(`[Prompts] Failed to get Memory FTS stats: ${e}`, "warn");
+        memoryFtsStats = null;
+    }
+    try {
+        const result = await browser.storage.local.get(CHAT_TURNS_KEY);
+        turnsCount = (result[CHAT_TURNS_KEY] || []).length;
+    } catch (e) {
+        turnsCount = 0;
+    }
+    let answer;
+    try {
+        memorySizeLimitBytes = await getMemorySizeLimitBytes();
+        const listed = await fetchMemoryEntries("");
+        answer = Array.isArray(listed) ? { entries: listed } : { error: listed?.error || "no reply from the search helper" };
+    } catch (e) {
+        answer = { error: String(e?.message || e) };
+    }
+    showAnswer({ query: "", ...answer });
+}
+
+/**
+ * Search chat history using Memory FTS: the best matches, each a preview.
+ */
+export function searchChatHistory(query) {
+    if (!query || query.trim().length === 0) return loadChatHistory();
+    const q = query.trim();
+    requestedQuery = q;
+    return inLine("search", async () => {
+        log(`[Prompts] Searching chat history for: "${q}"`);
+        let answer;
+        try {
+            const results = await fetchMemoryEntries(q);
+            answer = results?.error ? { error: results.error } : { entries: Array.isArray(results) ? results : [] };
+        } catch (e) {
+            answer = { error: String(e) };
+        }
+        showAnswer({ query: q, ...answer });
+    });
+}
+
+/**
+ * Set the list from what a listing (query "") or a search finished with. The
+ * only place the list's contents and what it says are set; a removal only
+ * takes its entry out.
+ */
+function showAnswer({ query, entries, error }) {
+    if (query && error) {
+        // A failed search leaves what is shown. The tab opens on a listing,
+        // and a search waits in line behind it, so something is always shown.
+        log(`[Prompts] Search failed: ${error}`, "error");
+        showStatus("Search failed: " + error, true);
         return;
     }
-
-    const search = ++searchToken;
-    try {
-        log(`[Prompts] Searching chat history for: "${query}"`);
-        const q = query.trim();
-
-        const results = await browser.runtime.sendMessage({
-            type: "fts",
-            cmd: "memorySearch",
-            q,
-            // The best matches, as many as the chat's memory_search fetches (100 everywhere, #150).
-            limit: CHAT_SETTINGS.memorySearchMaxResults,
-            ignoreDate: true,
-            // One more than shown, so an entry that goes on is told from one that ends there.
-            previewChars: SETTINGS.memoryManagement.chatHistorySearchPreviewChars + 1
-        });
-        if (search !== searchToken) return;
-        if (results?.error) {
-            log(`[Prompts] Search failed: ${results.error}`, "error");
-            showStatus("Search failed: " + results.error, true);
-            return;
-        }
-
-        currentSearchQuery = q;
-        isSearchMode = true;
-        currentPage = 1;
-        displayData = Array.isArray(results) ? results : [];
-        log(`[Prompts] Search returned ${displayData.length} results`);
-
-        renderChatHistory();
-    } catch (e) {
-        log(`[Prompts] Search failed: ${e}`, "error");
-        showStatus("Search failed: " + e, true);
-    }
+    if (error) log(`[Prompts] Listing chat history failed: ${error}`, "warn");
+    currentSearchQuery = query;
+    isSearchMode = query !== "";
+    currentPage = 1;
+    displayData = error ? [] : entries;
+    listError = error ? `Couldn't list past conversations: ${error}` : null;
+    answeredNone = !error && entries.length === 0;
+    if (isSearchMode) log(`[Prompts] Search returned ${displayData.length} results`);
+    renderChatHistory();
 }
 
 /**
@@ -166,14 +199,16 @@ function renderChatHistory() {
     if (!displayData || displayData.length === 0) {
         container.innerHTML = "";
         paginationDiv.style.display = "none";
-        if (isSearchMode) {
-            emptyMessage.textContent = `No results found for "${currentSearchQuery}".`;
-            emptyMessage.style.display = "block";
+        if (listError) {
+            emptyMessage.textContent = listError;
+        } else if (answeredNone) {
+            emptyMessage.textContent = isSearchMode
+                ? `No results found for "${currentSearchQuery}".`
+                : "No conversations kept yet.";
         } else {
-            // Default view: no entries shown, just stats + search bar
-            emptyMessage.textContent = "Use the search bar to find past conversations.";
-            emptyMessage.style.display = "block";
+            emptyMessage.textContent = "Removed every conversation shown.";
         }
+        emptyMessage.style.display = "block";
         return;
     }
 
@@ -271,16 +306,14 @@ async function changeMemorySizeLimit(bytes) {
 }
 
 /**
- * Render search results: each entry's preview as what was asked, then what
- * the agent did.
+ * Render entries: each one's preview as what was asked, then what the agent
+ * did, with a button that removes it.
  */
 function renderFtsEntries(container, entries) {
-    if (isSearchMode) {
-        const headerDiv = document.createElement("div");
-        headerDiv.className = "history-section-header";
-        headerDiv.textContent = `Search Results (${displayData.length} total)`;
-        container.appendChild(headerDiv);
-    }
+    const headerDiv = document.createElement("div");
+    headerDiv.className = "history-section-header";
+    headerDiv.textContent = isSearchMode ? `Search Results (${displayData.length} total)` : "Newest Conversations";
+    container.appendChild(headerDiv);
 
     for (const entry of entries) {
         const entryDiv = document.createElement("div");
@@ -296,7 +329,19 @@ function renderFtsEntries(container, entries) {
 
         const dateHeader = document.createElement("div");
         dateHeader.className = "history-search-result-date";
-        dateHeader.textContent = `Conversation from ${dateStr}`;
+        const dateLabel = document.createElement("span");
+        dateLabel.textContent = `Conversation from ${dateStr}`;
+        dateHeader.appendChild(dateLabel);
+        // Removes this entry from memory, as Voice's Remove does, saying so
+        // while the removal is pending.
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "history-remove-btn";
+        const pending = removing.has(entry.memId);
+        removeBtn.textContent = pending ? "Removing…" : "Remove";
+        removeBtn.disabled = pending;
+        removeBtn.setAttribute("aria-label", `Remove the conversation from ${dateStr}`);
+        removeBtn.addEventListener("click", () => removeEntry(entry.memId));
+        dateHeader.appendChild(removeBtn);
         entryDiv.appendChild(dateHeader);
 
         // What was asked, then what the agent did, as Voice shows them;
@@ -358,6 +403,56 @@ function exchangeOf(text) {
     if (turn) return { request: turn[1], agent: turn[2] ?? "" };
     const reply = /^\[(?:AGENT|ASSISTANT)\]: ([\s\S]*)$/.exec(text);
     return { request: "", agent: reply ? reply[1] : text };
+}
+
+/**
+ * Remove one entry from memory (#154), in line after whatever was asked before
+ * it. The helper confirms a removal with { ok: true }; anything else is a
+ * failure, said in the status line, and the entry stays. A confirmed removal
+ * leaves the entries shown at once, whatever page they are on; the stats are
+ * then read again.
+ */
+function removeEntry(memId) {
+    if (removing.has(memId)) return;
+    removing.add(memId);
+    // In line before the render that shows it pending, so its turn always
+    // comes and ends it, whatever that render does.
+    const turn = inLine("removal", async () => {
+        try {
+            await removeAndReadStats(memId);
+        } finally {
+            // Pending until its turn ends, so a press before then sends nothing.
+            removing.delete(memId);
+        }
+        renderChatHistory();
+    });
+    renderChatHistory();
+    return turn;
+}
+
+async function removeAndReadStats(memId) {
+    let failure = null;
+    try {
+        const result = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryRemoveBatch", ids: [memId] });
+        if (result?.ok !== true) throw new Error(result?.error || "the search helper did not confirm it");
+        displayData = displayData.filter(entry => entry.memId !== memId);
+        log(`[Prompts] Removed chat history entry ${memId}`);
+    } catch (e) {
+        log(`[Prompts] Removing a chat history entry failed: ${e}`, "error");
+        failure = "Couldn't remove the conversation: " + (e?.message || e);
+        showStatus(failure, true);
+    }
+    renderChatHistory();
+
+    try {
+        memoryFtsStats = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryStats" });
+        if (!memoryFtsStats || memoryFtsStats.error) throw new Error(memoryFtsStats?.error || "no reply from the search helper");
+    } catch (e) {
+        log(`[Prompts] Failed to get Memory FTS stats: ${e}`, "warn");
+        // Shown as unavailable, as when the tab loads.
+        memoryFtsStats = null;
+        showStatus([failure, "Couldn't read memory's size: " + (e?.message || e)].filter(Boolean).join(" "), true);
+    }
 }
 
 /**
@@ -706,6 +801,12 @@ export function initHistoryHandlers() {
         searchInput.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
                 searchChatHistory(searchInput.value);
+            }
+        });
+        // Clearing the box goes back to the newest entries, without Enter.
+        searchInput.addEventListener("input", () => {
+            if (searchInput.value.trim() === "" && requestedQuery !== "") {
+                loadChatHistory();
             }
         });
     }
