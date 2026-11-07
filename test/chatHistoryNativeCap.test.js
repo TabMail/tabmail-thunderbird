@@ -61,7 +61,18 @@ function fakeHelper(entries, { removes = true } = {}) {
     }
     return result;
   };
-  const cut = (text, n) => (Number.isInteger(n) && n > 0 ? [...text].slice(0, n).join('') : text);
+  // The first n code points, reading no further than them.
+  const cut = (text, n) => {
+    if (!Number.isInteger(n) || n <= 0) return text;
+    let out = '';
+    let count = 0;
+    for (const ch of text) {
+      if (count === n) break;
+      out += ch;
+      count += 1;
+    }
+    return out;
+  };
   const sendMessage = vi.fn(async msg => {
     replies.calls.push(msg);
     if (replies.calls.length > MAX_HELPER_REQUESTS) throw new Error('runaway: too many helper requests');
@@ -192,9 +203,9 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
 
     expect(helper.replies.overCap).toBe(0);
     expect(helper.replies.largest).toBeLessThan(NATIVE_MESSAGE_CAP_BYTES / 4);
-    // One search; browsing changes nothing stored.
-    expect(helper.replies.calls.map(m => m.cmd).filter(c => c !== 'memoryStats')).toEqual(['memorySearch']);
-    expect(helper.replies.calls.find(m => m.cmd === 'memorySearch').limit).toBe(100);
+    // The newest entries on open, then one search; browsing changes nothing stored.
+    expect(helper.replies.calls.map(m => m.cmd).filter(c => c !== 'memoryStats')).toEqual(['memorySearch', 'memorySearch']);
+    expect(helper.replies.calls.filter(m => m.cmd === 'memorySearch').map(m => [m.q, m.limit])).toEqual([['', 100], ['planning', 100]]);
     expect(helper.stored).toEqual(entries);
   });
 
@@ -436,16 +447,29 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     expect(page.shown()).toEqual(beta.map(view));
   });
 
-  it('a search that answers after the tab reloads shows nothing', async () => {
-    const helper = fakeHelper(entriesOf(3, 10));
+  it('a search that answers after the tab reloads does not show over the newest entries', async () => {
+    const newest = entriesOf(3, 10, Date.now() - 60_000, 'newest');
+    const found = entriesOf(2, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper([...newest, ...found]);
     const page = await openPage(helper);
-    const releaseSearch = hold(helper, 'memorySearch');
+    const answer = helper.sendMessage.getMockImplementation();
+    let releaseSearch;
+    const held = new Promise(r => { releaseSearch = r; });
+    helper.sendMessage.mockImplementation(async msg => {
+      if (msg.cmd === 'memorySearch' && msg.q === 'planning') await held;
+      return answer(msg);
+    });
     await search(page, 'planning');
-    await page.history.loadChatHistory();
-    releaseSearch();
+    const listings = () => helper.replies.calls.filter(m => m.cmd === 'memorySearch' && m.q === '').length;
+    const before = listings();
+    const reload = page.history.loadChatHistory();
     await settle();
-    expect(page.shown()).toEqual([]);
-    expect(page.d.getElementById('history-empty').textContent).toBe('Use the search bar to find past conversations.');
+    // The reload waits in line behind the search.
+    expect(listings()).toBe(before);
+    releaseSearch();
+    await reload;
+    expect(listings()).toBe(before + 1);
+    expect(page.shown()).toEqual([...newest, ...found].map(view));
     expect(page.label()).not.toContain('Search:');
   });
 
@@ -460,8 +484,514 @@ describe('TB-193: Chat History search and the native-messaging cap', () => {
     await search(page, 'planning');
     await settle();
     expect(page.status()).toBe('Search failed: Chat memory search needs a newer search helper.');
-    expect(page.shown()).toEqual([]);
+    // No results: the newest entries listed on open stay.
+    expect(page.shown()).toEqual(entriesOf(3, 10).map(view));
     expect(page.label()).not.toContain('Search:');
+  });
+});
+
+// #153 and #154: the tab opens on memory's newest entries, as Voice's
+// Settings > Memory does, and any entry shown can be removed on its own.
+describe('Chat History lists the newest conversations and removes one', () => {
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+  };
+  // Holds the helper's answers to messages `when` picks, each answered as the
+  // helper stood when it was asked, until released.
+  function holdWhen(helper, when) {
+    const answer = helper.sendMessage.getMockImplementation();
+    let release;
+    const held = new Promise(r => { release = r; });
+    helper.sendMessage.mockImplementation(async msg => {
+      if (!when(msg)) return answer(msg);
+      const reply = await answer(msg);
+      await held;
+      return reply;
+    });
+    return () => release();
+  }
+  const empty = page => page.d.getElementById('history-empty');
+  const header = page => page.d.querySelector('#history-list .history-section-header')?.textContent;
+  const buttons = page => [...page.d.querySelectorAll('#history-list .history-remove-btn')];
+  const removeAt = (page, i) => buttons(page)[i].click();
+  const input = page => page.d.getElementById('history-search-input');
+  const type = (page, value) => {
+    input(page).value = value;
+    input(page).dispatchEvent(new page.d.defaultView.Event('input'));
+  };
+  const removals = helper => helper.replies.calls.filter(m => m.cmd === 'memoryRemoveBatch').map(m => m.ids);
+  const searches = helper => helper.replies.calls.filter(m => m.cmd === 'memorySearch');
+
+  it('opens on the newest 100 of 250 entries of 200 KB, newest first, with every reply under the cap', async () => {
+    const entries = entriesOf(250, 200_000);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    expect(header(page)).toBe('Newest Conversations');
+    expect(page.shown()).toEqual(entries.slice(0, 20).map(view));
+    expect(page.pageInfo()).toBe('Page 1 of 5');
+    for (let p = 2; p <= 5; p++) page.d.getElementById('history-next-page').click();
+    expect(page.shown()).toEqual(entries.slice(80, 100).map(view));
+    expect(page.label()).toBe('Active turns: 0 Searchable entries: 250');
+    expect(page.d.querySelector('#history-list .search-highlight')).toBeNull();
+    expect(searches(helper).map(m => [m.q, m.limit, m.ignoreDate, m.previewChars])).toEqual([['', 100, true, 401]]);
+    expect(helper.replies.overCap).toBe(0);
+    expect(helper.replies.largest).toBeLessThan(NATIVE_MESSAGE_CAP_BYTES / 4);
+    expect(empty(page).style.display).toBe('none');
+  });
+
+  it('says when no conversation is kept', async () => {
+    const page = await openPage(fakeHelper([]));
+    expect(page.shown()).toEqual([]);
+    expect(empty(page).textContent).toBe('No conversations kept yet.');
+    expect(empty(page).style.display).toBe('block');
+    expect(page.d.getElementById('history-pagination').style.display).toBe('none');
+  });
+
+  it.each([
+    ['an error', async () => ({ error: 'Native helper disconnected' }), 'Native helper disconnected'],
+    ['a throw', async () => { throw new Error('Could not establish connection'); }, 'Could not establish connection'],
+    ['no reply', async () => undefined, 'no reply from the search helper'],
+  ])('says why it could not list, on %s, and still shows the stats', async (_, listing, why) => {
+    const helper = fakeHelper(entriesOf(3, 10));
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg => (msg.cmd === 'memorySearch' ? listing() : answer(msg)));
+    const page = await openPage(helper);
+    expect(page.shown()).toEqual([]);
+    expect(empty(page).textContent).toBe(`Couldn't list past conversations: ${why}`);
+    expect(empty(page).style.display).toBe('block');
+    expect(page.label()).toBe('Active turns: 0 Searchable entries: 3');
+    // A search that works shows its results in its place, and the list that works next clears it.
+    helper.sendMessage.mockImplementation(answer);
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.shown()).toHaveLength(3));
+    type(page, '');
+    await vi.waitFor(() => expect(header(page)).toBe('Newest Conversations'));
+    expect(page.shown()).toEqual(entriesOf(3, 10).map(view));
+  });
+
+  it('goes back to the newest entries when the search box is cleared, without Enter', async () => {
+    const newest = entriesOf(3, 10, Date.now() - 60_000, 'newest');
+    const found = entriesOf(2, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper([...newest, ...found]);
+    const page = await openPage(helper);
+    // Typing does not search, and clearing a box that holds no search lists nothing again.
+    type(page, 'plan');
+    type(page, '');
+    expect(searches(helper)).toHaveLength(1);
+    type(page, 'planning');
+    page.d.getElementById('history-search-btn').click();
+    await vi.waitFor(() => expect(page.label()).toContain('"planning" (2 results)'));
+    expect(page.shown()).toEqual(found.map(view));
+    // Spaces alone count as cleared.
+    type(page, '   ');
+    await vi.waitFor(() => expect(header(page)).toBe('Newest Conversations'));
+    expect(page.shown()).toEqual([...newest, ...found].map(view));
+    expect(page.label()).not.toContain('Search:');
+    expect(input(page).value).toBe('');
+    expect(searches(helper).map(m => m.q)).toEqual(['', 'planning', '']);
+  });
+
+  it('a cleared box goes back to the newest entries while its search is still pending', async () => {
+    const newest = entriesOf(3, 10, Date.now() - 60_000, 'newest');
+    const found = entriesOf(2, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper([...newest, ...found]);
+    const page = await openPage(helper);
+    const release = holdWhen(helper, msg => msg.cmd === 'memorySearch' && msg.q === 'planning');
+    await search(page, 'planning');
+    type(page, '');
+    await settle();
+    release();
+    await settle();
+    expect(header(page)).toBe('Newest Conversations');
+    expect(page.shown()).toEqual([...newest, ...found].map(view));
+    expect(searches(helper).map(m => m.q)).toEqual(['', 'planning', '']);
+  });
+
+  it('a listing that answers late does not show over a later search', async () => {
+    const newest = entriesOf(3, 10, Date.now() - 60_000, 'newest');
+    const found = entriesOf(2, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper([...newest, ...found]);
+    const page = await openPage(helper);
+    const release = holdWhen(helper, msg => msg.cmd === 'memorySearch' && msg.q === '');
+    const reload = page.history.loadChatHistory();
+    await settle();
+    await search(page, 'planning');
+    await settle();
+    // The search waits in line behind the listing; the listing shows first.
+    expect(searches(helper).filter(m => m.q === 'planning')).toHaveLength(0);
+    release();
+    await reload;
+    await vi.waitFor(() => expect(page.label()).toContain('"planning" (2 results)'));
+    expect(page.shown()).toEqual(found.map(view));
+    expect(page.label()).toContain('"planning" (2 results)');
+    expect(page.label()).toContain('Searchable entries: 5');
+  });
+
+  it("a listing's stats read late show once a later search shows its results", async () => {
+    const found = entriesOf(2, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper(found);
+    const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    let releaseStats;
+    const held = new Promise(r => { releaseStats = r; });
+    let statsAsked = 0;
+    helper.sendMessage.mockImplementation(async msg => {
+      if (msg.cmd !== 'memoryStats' || ++statsAsked > 1) return answer(msg);
+      await held;
+      return { docs: 7, usedBytes: 1, dbBytes: 1 };
+    });
+    const reload = page.history.loadChatHistory();
+    await search(page, 'planning');
+    await settle();
+    // The search waits in line behind the listing, stats read and all.
+    expect(searches(helper).filter(m => m.q === 'planning')).toHaveLength(0);
+    releaseStats();
+    await reload;
+    await vi.waitFor(() => expect(page.label()).toContain('"planning" (2 results)'));
+    expect(page.shown()).toEqual(found.map(view));
+    expect(page.label()).toContain('Searchable entries: 7');
+    expect(page.label()).toContain('"planning" (2 results)');
+  });
+
+  it('removes one entry on its button, with no confirmation, saying so while it is pending, and keeps the page', async () => {
+    const entries = entriesOf(45, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    page.d.getElementById('history-next-page').click();
+    expect(page.pageInfo()).toBe('Page 2 of 3');
+    // Each button names the entry it removes, by the date shown beside it.
+    expect(buttons(page).map(b => [b.textContent, b.disabled, b.getAttribute('aria-label')]))
+      .toEqual(buttons(page).map(b => ['Remove', false, `Remove the c${b.previousElementSibling.textContent.slice(1)}`]));
+    expect(buttons(page).map(b => b.previousElementSibling.textContent)).toEqual(entries.slice(20, 40).map(e => expect.stringMatching(/^Conversation from \w{3} \d{1,2}, \d{4}/)));
+    expect(new Set(buttons(page).map(b => b.getAttribute('aria-label'))).size).toBe(20);
+
+    const release = holdWhen(helper, msg => msg.cmd === 'memoryRemoveBatch');
+    removeAt(page, 1);
+    removeAt(page, 3);
+    await settle();
+    expect(buttons(page).map(b => [b.textContent, b.disabled]).filter(([, disabled]) => disabled))
+      .toEqual([['Removing…', true], ['Removing…', true]]);
+    expect([1, 3].map(i => buttons(page)[i].textContent)).toEqual(['Removing…', 'Removing…']);
+    // A click on a pending button sends nothing more; a page change keeps it pending.
+    buttons(page)[1].disabled = false;
+    removeAt(page, 1);
+    page.d.getElementById('history-prev-page').click();
+    page.d.getElementById('history-next-page').click();
+    expect([1, 3].map(i => buttons(page)[i].textContent)).toEqual(['Removing…', 'Removing…']);
+    expect(page.d.getElementById('history-modal-overlay').style.display).toBe('none');
+
+    release();
+    await settle();
+    const left = entries.filter((_, i) => i !== 21 && i !== 23);
+    expect(removals(helper)).toEqual([[entries[21].memId], [entries[23].memId]]);
+    expect(helper.stored).toEqual(left);
+    expect(page.pageInfo()).toBe('Page 2 of 3');
+    expect(page.shown()).toEqual(left.slice(20, 40).map(view));
+    expect(buttons(page).every(b => b.textContent === 'Remove' && !b.disabled)).toBe(true);
+    expect(page.label()).toBe('Active turns: 0 Searchable entries: 43');
+    expect(page.status()).toBe('');
+  });
+
+  it('removing the last entry of the last page shows the page before it', async () => {
+    const entries = entriesOf(21, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    page.d.getElementById('history-next-page').click();
+    expect(page.pageInfo()).toBe('Page 2 of 2');
+    removeAt(page, 0);
+    await settle();
+    expect(page.d.getElementById('history-pagination').style.display).toBe('none');
+    expect(page.shown()).toEqual(entries.slice(0, 20).map(view));
+  });
+
+  it('removing the only entry says it was removed', async () => {
+    const helper = fakeHelper(entriesOf(1, 10));
+    const page = await openPage(helper);
+    removeAt(page, 0);
+    await settle();
+    expect(page.shown()).toEqual([]);
+    expect(empty(page).textContent).toBe('Removed every conversation shown.');
+    expect(page.label()).toBe('Active turns: 0 Searchable entries: 0');
+  });
+
+  it('removes an entry from search results and keeps the search', async () => {
+    const newest = entriesOf(3, 10, Date.now() - 60_000, 'newest');
+    const found = entriesOf(3, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper([...newest, ...found]);
+    const page = await openPage(helper);
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.label()).toContain('"planning" (3 results)'));
+    removeAt(page, 0);
+    await settle();
+    expect(removals(helper)).toEqual([[found[0].memId]]);
+    expect(page.shown()).toEqual(found.slice(1).map(view));
+    expect(header(page)).toBe('Search Results (2 total)');
+    expect(page.label()).toContain('"planning" (2 results)');
+    expect(page.label()).toContain('Searchable entries: 5');
+    expect(page.d.querySelector('#history-list .search-highlight')?.textContent).toBe('planning');
+  });
+
+  it.each([
+    ['an error', async () => ({ error: 'Native RPC timed out' }), 'Native RPC timed out'],
+    ['a throw', async () => { throw new Error('Could not establish connection'); }, 'Could not establish connection'],
+    // No listener answered (the background starting or reloading): nothing confirms the removal.
+    ['no reply', async () => undefined, 'the search helper did not confirm it'],
+    ['a reply that does not confirm it', async () => ({ ok: false, count: 0 }), 'the search helper did not confirm it'],
+  ])('says why a removal failed, on %s, and keeps the entry with its button', async (_, removal, why) => {
+    const entries = entriesOf(3, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg => (msg.cmd === 'memoryRemoveBatch' ? removal() : answer(msg)));
+    removeAt(page, 1);
+    await settle();
+    expect(page.status()).toBe(`Couldn't remove the conversation: ${why}`);
+    expect(page.statusIsError()).toBe(true);
+    expect(page.shown()).toEqual(entries.map(view));
+    expect(buttons(page).map(b => [b.textContent, b.disabled])).toEqual(Array(3).fill(['Remove', false]));
+    // The button works again.
+    helper.sendMessage.mockImplementation(answer);
+    removeAt(page, 1);
+    await settle();
+    expect(page.shown()).toEqual([entries[0], entries[2]].map(view));
+  });
+
+  it('shows a confirmed removal at once, before the stats are read again', async () => {
+    const entries = entriesOf(3, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    const release = holdWhen(helper, msg => msg.cmd === 'memoryStats');
+    removeAt(page, 1);
+    await settle();
+    expect(helper.stored).toEqual([entries[0], entries[2]]);
+    expect(page.shown()).toEqual([entries[0], entries[2]].map(view));
+    expect(buttons(page).map(b => [b.textContent, b.disabled])).toEqual(Array(2).fill(['Remove', false]));
+    expect(page.label()).toBe('Active turns: 0 Searchable entries: 3');
+    release();
+    await settle();
+    expect(page.label()).toBe('Active turns: 0 Searchable entries: 2');
+  });
+
+  it.each([
+    ['an error', async () => ({ error: 'stats unavailable' }), 'stats unavailable'],
+    ['a throw', async () => { throw new Error('stats unavailable'); }, 'stats unavailable'],
+    ['no reply', async () => undefined, 'no reply from the search helper'],
+  ])('says the stats could not be read after a removal, on %s, and shows them unavailable', async (_, stats, why) => {
+    const entries = entriesOf(3, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg => (msg.cmd === 'memoryStats' ? stats() : answer(msg)));
+    removeAt(page, 1);
+    await settle();
+    expect(helper.stored).toEqual([entries[0], entries[2]]);
+    expect(page.shown()).toEqual([entries[0], entries[2]].map(view));
+    expect(page.status()).toBe(`Couldn't read memory's size: ${why}`);
+    expect(page.statusIsError()).toBe(true);
+    expect(page.d.getElementById('history-usage-label').textContent).toMatch(/^Memory used: unavailable/);
+    expect(buttons(page).map(b => [b.textContent, b.disabled])).toEqual(Array(2).fill(['Remove', false]));
+  });
+
+  it('says both when a removal and the stats read after it fail', async () => {
+    const entries = entriesOf(3, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg => {
+      if (msg.cmd === 'memoryRemoveBatch') return { error: 'Native RPC timed out' };
+      if (msg.cmd === 'memoryStats') throw new Error('stats unavailable');
+      return answer(msg);
+    });
+    removeAt(page, 1);
+    await settle();
+    expect(page.status()).toBe("Couldn't remove the conversation: Native RPC timed out Couldn't read memory's size: stats unavailable");
+    expect(page.shown()).toEqual(entries.map(view));
+  });
+
+  it('a listing sent before a removal is confirmed leaves the removed entry out', async () => {
+    const entries = entriesOf(3, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    // The listing is answered as memory stood when it was asked: with the entry.
+    const release = holdWhen(helper, msg => msg.cmd === 'memorySearch' && msg.q === '');
+    const reload = page.history.loadChatHistory();
+    await vi.waitFor(() => expect(searches(helper)).toHaveLength(2));
+    removeAt(page, 0);
+    await settle();
+    // The removal waits in line behind the listing, and says it is pending.
+    expect(removals(helper)).toHaveLength(0);
+    expect(helper.stored).toEqual(entries);
+    expect(buttons(page)[0].textContent).toBe('Removing…');
+    release();
+    await reload;
+    await vi.waitFor(() => expect(helper.stored).toEqual(entries.slice(1)));
+    await settle();
+    expect(page.shown()).toEqual(entries.slice(1).map(view));
+    expect(header(page)).toBe('Newest Conversations');
+  });
+
+  it('a search sent while a removal is pending leaves the entry out once the removal is confirmed', async () => {
+    const entries = entriesOf(3, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    let releaseRemoval;
+    const removalHeld = new Promise(r => { releaseRemoval = r; });
+    helper.sendMessage.mockImplementation(async msg => {
+      if (msg.cmd === 'memoryRemoveBatch') await removalHeld;
+      return answer(msg);
+    });
+    removeAt(page, 0);
+    await settle();
+    await search(page, 'planning');
+    await settle();
+    // The search waits in line behind the pending removal.
+    expect(searches(helper)).toHaveLength(1);
+    expect(helper.stored).toEqual(entries);
+    releaseRemoval();
+    await vi.waitFor(() => expect(page.label()).toContain('"planning" (2 results)'));
+    expect(helper.stored).toEqual(entries.slice(1));
+    expect(page.shown()).toEqual(entries.slice(1).map(view));
+    expect(page.label()).toContain('"planning" (2 results)');
+  });
+
+  it("removes only the memory entry: the chat's turns, metadata, id map and thinking stay", async () => {
+    const entries = entriesOf(3, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    const initial = { chat_turns: [{ role: 'user', content: 'kept turn' }], chat_meta: { kept: 'metadata' }, chat_id_map: { kept: 'mapping' } };
+    const data = structuredClone(initial);
+    browser.storage.local.get.mockImplementation(async key => (typeof key === 'string' ? { [key]: data[key] } : {}));
+    browser.storage.local.set.mockImplementation(async patch => { Object.assign(data, patch); });
+    browser.storage.local.remove.mockImplementation(async keys => { for (const key of [keys].flat()) delete data[key]; });
+    const { clearAllThinking } = await import('../chat/modules/persistentChatStore.js');
+    clearAllThinking.mockClear();
+    removeAt(page, 0);
+    await settle();
+    expect(helper.stored).toEqual(entries.slice(1));
+    expect(page.shown()).toEqual(entries.slice(1).map(view));
+    expect(data).toEqual(initial);
+    expect(clearAllThinking).not.toHaveBeenCalled();
+    expect(helper.replies.calls.map(m => m.cmd).filter(c => c !== 'memoryStats' && c !== 'memorySearch')).toEqual(['memoryRemoveBatch']);
+  });
+
+  it('Delete Old, Clear All, a lower size limit and a reload each list what memory then holds', async () => {
+    const recent = entriesOf(3, 10, Date.now() - 60_000, 'recent');
+    const old = entriesOf(3, 10, Date.now() - 40 * DAY_MS, 'old');
+    const helper = fakeHelper([...recent, ...old]);
+    const page = await openPage(helper);
+    expect(page.shown()).toEqual([...recent, ...old].map(view));
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async msg => {
+      if (msg.cmd === 'memoryTrim') return { trimmed: helper.stored.splice(-1).length, withinLimit: true };
+      if (msg.cmd === 'memoryClear') { helper.stored.splice(0); return { ok: true }; }
+      return answer(msg);
+    });
+
+    page.d.getElementById('delete-old-history').click();
+    page.d.getElementById('delete-days-input').value = '30';
+    page.d.getElementById('modal-confirm').click();
+    await vi.waitFor(() => expect(page.status()).toMatch(/^Deleted /));
+    await settle();
+    expect(page.shown()).toEqual(recent.map(view));
+    expect(page.label()).toContain('Searchable entries: 3');
+
+    // A reload (Refresh, or coming back to the tab) shows an entry kept since.
+    const kept = entriesOf(1, 10, Date.now(), 'kept')[0];
+    helper.stored.unshift(kept);
+    await page.history.loadChatHistory();
+    expect(page.shown()).toEqual([kept, ...recent].map(view));
+
+    const select = page.d.getElementById('history-size-limit');
+    select.value = select.options[0].value;
+    select.dispatchEvent(new page.d.defaultView.Event('change'));
+    page.d.getElementById('modal-confirm').click();
+    await vi.waitFor(() => expect(page.status()).toMatch(/^Size limit set/));
+    await settle();
+    expect(page.shown()).toEqual([kept, ...recent.slice(0, 2)].map(view));
+
+    await page.history.clearChatHistory();
+    expect(page.shown()).toEqual([]);
+    expect(empty(page).textContent).toBe('No conversations kept yet.');
+    expect(page.label()).toBe('Active turns: 0 Searchable entries: 0');
+  });
+
+  it.each([
+    ['the Search button', page => page.d.getElementById('history-search-btn').click()],
+    ['Enter', page => input(page).dispatchEvent(new page.d.defaultView.KeyboardEvent('keydown', { key: 'Enter' }))],
+  ])('a blank search by %s lists what memory holds now', async (_, submit) => {
+    const found = entriesOf(2, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper(found);
+    const page = await openPage(helper);
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.label()).toContain('"planning" (2 results)'));
+    const kept = entriesOf(1, 10, Date.now(), 'kept')[0];
+    helper.stored.unshift(kept);
+    // Set without an input event: only the submit lists.
+    input(page).value = '  ';
+    submit(page);
+    await vi.waitFor(() => expect(header(page)).toBe('Newest Conversations'));
+    expect(page.shown()).toEqual([kept, ...found].map(view));
+    expect(searches(helper).map(m => m.q)).toEqual(['', 'planning', '']);
+  });
+
+  it('keeps no removal past the request it could change: what is kept is bounded, however many are removed', async () => {
+    const helper = fakeHelper([]);
+    const page = await openPage(helper);
+    // Every Set or Map the page keeps a removed id in, to read what it still holds.
+    const holders = [];
+    const add = Set.prototype.add;
+    const set = Map.prototype.set;
+    const keep = (holder, id) => { if (typeof id === 'string' && id.startsWith('cycle') && !holders.includes(holder)) holders.push(holder); };
+    const spies = [
+      vi.spyOn(Set.prototype, 'add').mockImplementation(function (id) { keep(this, id); return add.call(this, id); }),
+      vi.spyOn(Map.prototype, 'set').mockImplementation(function (id, value) { keep(this, id); return set.call(this, id, value); }),
+    ];
+    const held = () => Math.max(0, ...holders.map(holder => [...holder.keys()].filter(id => String(id).startsWith('cycle')).length));
+    try {
+      for (let i = 0; i < 30; i++) {
+        helper.stored.unshift({ ...entriesOf(1, 10, Date.now(), 'cycle')[0], memId: `cycle${i}` });
+        if (i % 2) {
+          await page.history.loadChatHistory();
+        } else {
+          await search(page, 'cycle');
+          await vi.waitFor(() => expect(page.label()).toContain('"cycle" (1 results)'));
+        }
+        removeAt(page, 0);
+        await settle();
+        expect(page.shown()).toEqual([]);
+        // At most the one removal made since the last request was sent.
+        expect(held()).toBeLessThanOrEqual(1);
+      }
+      await page.history.loadChatHistory();
+      expect(held()).toBe(0);
+      expect(helper.stored).toEqual([]);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
+
+  it('a search sent before a removal is confirmed leaves the removed entry out; one sent after shows what memory holds', async () => {
+    const found = entriesOf(3, 10, Date.now() - 600_000, 'planning');
+    const helper = fakeHelper(found);
+    const page = await openPage(helper);
+    // The search is answered as memory stood when it was asked: with the entry.
+    const release = holdWhen(helper, msg => msg.cmd === 'memorySearch' && msg.q === 'planning');
+    await search(page, 'planning');
+    removeAt(page, 0);
+    await settle();
+    // The removal waits in line behind the search.
+    expect(removals(helper)).toHaveLength(0);
+    expect(helper.stored).toEqual(found);
+    release();
+    await vi.waitFor(() => expect(page.label()).toContain('"planning" (2 results)'));
+    expect(helper.stored).toEqual(found.slice(1));
+    expect(page.shown()).toEqual(found.slice(1).map(view));
+    // The same entry written to memory again shows in the next search.
+    helper.stored.unshift(found[0]);
+    await search(page, 'planning');
+    await vi.waitFor(() => expect(page.label()).toContain('"planning" (3 results)'));
+    expect(page.shown()).toEqual(found.map(view));
   });
 });
 
@@ -619,5 +1149,72 @@ describe('TB-193: Chat History "delete old" and the native-messaging cap', () =>
     expect(page.status()).toContain('3 search entries');
     expect(page.status()).not.toContain('stopped');
     expect(page.statusIsError()).toBe(false);
+  });
+});
+
+
+
+// One removal settling leaves another's pending state alone, and a search
+// whose request is rejected is said and leaves the page as it was.
+describe('Chat History removals settle on their own, and a rejected search is said', () => {
+  it('one removal failing while another is pending leaves the other pending, sent once', async () => {
+    const entries = entriesOf(3, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    const answer = helper.sendMessage.getMockImplementation();
+    let releaseFirst;
+    let releaseSecond;
+    const first = new Promise(resolve => { releaseFirst = resolve; });
+    const second = new Promise(resolve => { releaseSecond = resolve; });
+    helper.sendMessage.mockImplementation(async message => {
+      if (message.cmd === 'memoryRemoveBatch' && message.ids[0] === entries[0].memId) {
+        await first;
+        return { error: 'first removal refused' };
+      }
+      if (message.cmd === 'memoryRemoveBatch' && message.ids[0] === entries[1].memId) await second;
+      return answer(message);
+    });
+    const buttons = () => [...page.d.querySelectorAll('#history-list .history-remove-btn')];
+    buttons()[0].click();
+    buttons()[1].click();
+    expect(buttons().map(button => button.disabled)).toEqual([true, true, false]);
+    releaseFirst();
+    await vi.waitFor(() => expect(page.status()).toContain('first removal refused'));
+    try {
+      expect(buttons()[0].disabled).toBe(false);
+      expect(buttons()[1].disabled).toBe(true);
+      expect(buttons()[1].textContent).toBe('Removing…');
+      buttons()[1].click();
+      expect(helper.sendMessage.mock.calls.filter(([message]) => message.cmd === 'memoryRemoveBatch' && message.ids[0] === entries[1].memId)).toHaveLength(1);
+    } finally {
+      releaseSecond();
+      await vi.waitFor(() => expect(helper.stored).toEqual([entries[0], entries[2]]));
+    }
+    expect(page.shown()).toEqual([entries[0], entries[2]].map(view));
+    expect(buttons().map(button => button.disabled)).toEqual([false, false]);
+  });
+
+  it('a rejected search reports its failure, keeps the displayed query and entries, and can search again', async () => {
+    const entries = entriesOf(3, 10);
+    const helper = fakeHelper(entries);
+    const page = await openPage(helper);
+    await page.history.searchChatHistory('planning');
+    const before = page.shown();
+    const answer = helper.sendMessage.getMockImplementation();
+    helper.sendMessage.mockImplementation(async message => {
+      if (message.cmd === 'memorySearch' && message.q === 'unavailable') throw new Error('helper disconnected');
+      return answer(message);
+    });
+    await page.history.searchChatHistory('unavailable');
+    expect(helper.sendMessage.mock.calls.some(([message]) => message.cmd === 'memorySearch' && message.q === 'unavailable')).toBe(true);
+    expect(page.status()).toContain('helper disconnected');
+    expect(page.statusIsError()).toBe(true);
+    expect(page.shown()).toEqual(before);
+    expect(page.label()).toContain('"planning" (3 results)');
+    expect(helper.stored).toEqual(entries);
+    helper.sendMessage.mockImplementation(answer);
+    await page.history.searchChatHistory('no-match');
+    expect(page.shown()).toEqual([]);
+    expect(page.label()).toContain('"no-match" (0 results)');
   });
 });

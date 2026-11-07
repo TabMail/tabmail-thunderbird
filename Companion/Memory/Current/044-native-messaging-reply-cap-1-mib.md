@@ -95,10 +95,49 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   request, and removes each page as it comes; each request starts at the last date listed and skips
   the ids already listed there, so it ends even if a removal removes nothing. Pinned by
   `test/chatHistoryNativeCap.test.js` (TB-193).
+- **Chat History lists and removes (2026-11-06, issues #153 and #154).** The tab opens on memory's
+  newest entries, as Voice's Settings > Memory does: the same request as a search with `q: ""`
+  (`fetchMemoryEntries`: `memorySearchMaxResults` 100, `ignoreDate`, the same 401-character
+  previews), so it stays under the cap the way the search does; Voice lists 200, this tab keeps the
+  one number it uses everywhere. Clearing the search box (spaces count as cleared) goes back to the
+  list without Enter. Each entry has a Remove button: `memoryRemoveBatch` with its one `memId`, no
+  confirmation (as Voice), only the memory entry removed (the chat's own turns are untouched).
+  **One line, in the order asked (2026-11-07 rebuild).** Listings, searches and removals run one at
+  a time through `inLine`, a promise chain: each starts once the one before it has finished, however
+  it finished (a `.catch` on the chain logs an unexpected throw and says it in the status line, so
+  the line always moves on). None puts another in line, and the wait is bounded: each request ends
+  within the helper's own deadline (`nativeEngine.js` `RPC_TIMEOUT_MS`, 60 s). So a later request
+  always reads memory after an earlier one's change, and the list ends on the last one asked; there
+  is no superseded answer to filter or drop. A listing's reads (stats, turns, the size limit, the
+  entries) all run inside its own turn, so any failure, the size-limit read included, is its answer.
+  `showAnswer({query, entries, error})` is the only place the list's contents and what it says are
+  set: a listing's or search's answer replaces the entries, page 1, the mode and the query; a failed
+  listing says why in the list's place ("Couldn't list past conversations: …", nothing it replaced
+  shown again on a later render); a failed search leaves what is shown and says why in the status
+  line (the tab opens on a listing and a search waits behind it, so something is always shown); "No
+  conversations kept yet." or `No results found for "<query>".` comes only from an answer that had
+  none (`answeredNone`); removing every entry shown says "Removed every conversation shown.", for a
+  listing and a search alike, and does not list again (memory can hold more than the 100 shown;
+  Refresh, a search or the History tab asks again). The search box is emptied when a listing is
+  asked for, not when it answers, so words typed while it waits stay. A removal's button is
+  disabled and reads "Removing…" from the press until its turn ends (the `removing` set, kept across
+  re-renders and page changes; a second press sends nothing). Only the helper's `{ ok: true }`
+  confirms it: an error, a throw, or no reply at all (no listener answers while the background starts
+  or reloads) is a failure, said in the status line, and the entry and its button stay. A confirmed
+  removal takes the entry out of what is shown at once (page kept, clamped by render), then the stats
+  are read again; a stats read that fails after it is said too, and the usage shows unavailable, as
+  on load. (The candidate before the rebuild let requests overlap and ordered their answers with a
+  token, a filter of removals confirmed since each request, and an answered-yet flag; review kept
+  finding states those missed, among them a failed size-limit read bringing back the
+  entries a listing replaced. It was rebuilt from main on the line above rather than patched. An
+  even earlier candidate listed again automatically after removals; that emptied the search box
+  under the user's typing and was deleted.)
+  Pinned by `test/chatHistoryNativeCap.test.js` and `test/chatHistoryListState.test.js`; the History
+  tab, its Refresh button, and a blank Search or Enter list through the real `prompts.js` in
+  `test/chatHistoryPageCallers.test.js` and the page tests.
   Residual: one entry over 1 MiB on its own still passes the cap when `memory_read` reads it whole: **owner-accepted 2026-10-21** ("requires a single
-  turn being over 1MB which is very unlikely"; revisit if it happens). An older helper ignores
-  `previewChars` and answers whole rows (200 a search, 500 a request for "delete old", as before)
-  until it updates.
+  turn being over 1MB which is very unlikely"; revisit if it happens). An older helper is refused
+  (see the 2026-10-24 entry above): the tab's listing and search say to update the search helper.
 - **The chat's `memory_read` (2026-10-21, issue #151).** It asked the helper's `memoryRead` for
   every entry within ±`tolerance_minutes` (10 by default), and the helper answered up to 50 of them
   whole, oldest first, so a few long sessions near the timestamp passed the cap with none over 1 MiB.
