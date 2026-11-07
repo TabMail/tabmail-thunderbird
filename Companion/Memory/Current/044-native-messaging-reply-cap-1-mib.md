@@ -106,10 +106,14 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   a time through `inLine`, a promise chain: each starts once the one before it has finished, however
   it finished (a `.catch` on the chain logs an unexpected throw and says it in the status line, so
   the line always moves on). None puts another in line, and the wait is bounded: each request ends
-  within the helper's own deadline (`nativeEngine.js` `RPC_TIMEOUT_MS`, 60 s). So a later request
+  within the helper's own deadline (`nativeEngine.js` `RPC_TIMEOUT_MS`, 60 s) once the helper is
+  running; the wait for a helper that is still starting has no deadline of its own (issue #244,
+  shared by every helper request, not only this tab's). So a later request
   always reads memory after an earlier one's change, and the list ends on the last one asked; there
   is no superseded answer to filter or drop. A listing's reads (stats, turns, the size limit, the
-  entries) all run inside its own turn, so any failure, the size-limit read included, is its answer.
+  entries) all run inside its own turn. A failed stats read shows memory's size as unavailable, as
+  before, with the entries still listed; a failed read of the size limit or of the entries is the
+  listing's answer.
   `showAnswer({query, entries, error})` is the only place the list's contents and what it says are
   set: a listing's or search's answer replaces the entries, page 1, the mode and the query; a failed
   listing says why in the list's place ("Couldn't list past conversations: …", nothing it replaced
@@ -120,7 +124,8 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   listing and a search alike, and does not list again (memory can hold more than the 100 shown;
   Refresh, a search or the History tab asks again). The search box is emptied when a listing is
   asked for, not when it answers, so words typed while it waits stay. A removal's button is
-  disabled and reads "Removing…" from the press until its turn ends (the `removing` set, kept across
+  disabled and reads "Removing…" from the press until its whole turn ends, the stats read after it
+  included, also when that turn throws (the `removing` set, cleared in a `finally`, kept across
   re-renders and page changes; a second press sends nothing). Only the helper's `{ ok: true }`
   confirms it: an error, a throw, or no reply at all (no listener answers while the background starts
   or reloads) is a failure, said in the status line, and the entry and its button stay. A confirmed

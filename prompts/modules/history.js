@@ -45,8 +45,9 @@ const removing = new Set();
 // Listings, searches and removals run one at a time, in the order they were
 // asked: each starts once the one before it has finished, however it finished,
 // so a later one always reads memory after an earlier one's change, and the
-// list ends on the last one asked. None puts another in line. The wait is
-// bounded: each one before it ends within the search helper's own deadline.
+// list ends on the last one asked. None puts another in line. Each one before
+// it ends within the search helper's own request deadline once the helper is
+// running; the wait for a helper that is still starting is #244.
 let line = Promise.resolve();
 function inLine(what, job) {
     line = line.then(job).catch(e => {
@@ -88,7 +89,9 @@ export function loadChatHistory() {
     return inLine("listing", listMemory);
 }
 
-// The listing's reads, every one inside it, so any failure is its answer.
+// The listing's reads, all in its own turn. A failed stats read shows memory's
+// size as unavailable, as on main; a failed read of the size limit or of the
+// entries is the listing's answer, said in the list.
 async function listMemory() {
     try {
         memoryFtsStats = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryStats" });
@@ -414,32 +417,39 @@ function removeEntry(memId) {
     removing.add(memId);
     renderChatHistory();
     return inLine("removal", async () => {
-        let failure = null;
         try {
-            const result = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryRemoveBatch", ids: [memId] });
-            if (result?.ok !== true) throw new Error(result?.error || "the search helper did not confirm it");
-            displayData = displayData.filter(entry => entry.memId !== memId);
-            log(`[Prompts] Removed chat history entry ${memId}`);
-        } catch (e) {
-            log(`[Prompts] Removing a chat history entry failed: ${e}`, "error");
-            failure = "Couldn't remove the conversation: " + (e?.message || e);
-            showStatus(failure, true);
+            await removeAndReadStats(memId);
         } finally {
+            // Pending until its turn ends, so a press before then sends nothing.
             removing.delete(memId);
         }
         renderChatHistory();
-
-        try {
-            memoryFtsStats = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryStats" });
-            if (!memoryFtsStats || memoryFtsStats.error) throw new Error(memoryFtsStats?.error || "no reply from the search helper");
-        } catch (e) {
-            log(`[Prompts] Failed to get Memory FTS stats: ${e}`, "warn");
-            // Shown as unavailable, as when the tab loads.
-            memoryFtsStats = null;
-            showStatus([failure, "Couldn't read memory's size: " + (e?.message || e)].filter(Boolean).join(" "), true);
-        }
-        renderChatHistory();
     });
+}
+
+async function removeAndReadStats(memId) {
+    let failure = null;
+    try {
+        const result = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryRemoveBatch", ids: [memId] });
+        if (result?.ok !== true) throw new Error(result?.error || "the search helper did not confirm it");
+        displayData = displayData.filter(entry => entry.memId !== memId);
+        log(`[Prompts] Removed chat history entry ${memId}`);
+    } catch (e) {
+        log(`[Prompts] Removing a chat history entry failed: ${e}`, "error");
+        failure = "Couldn't remove the conversation: " + (e?.message || e);
+        showStatus(failure, true);
+    }
+    renderChatHistory();
+
+    try {
+        memoryFtsStats = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryStats" });
+        if (!memoryFtsStats || memoryFtsStats.error) throw new Error(memoryFtsStats?.error || "no reply from the search helper");
+    } catch (e) {
+        log(`[Prompts] Failed to get Memory FTS stats: ${e}`, "warn");
+        // Shown as unavailable, as when the tab loads.
+        memoryFtsStats = null;
+        showStatus([failure, "Couldn't read memory's size: " + (e?.message || e)].filter(Boolean).join(" "), true);
+    }
 }
 
 /**

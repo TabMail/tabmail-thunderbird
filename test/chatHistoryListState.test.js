@@ -700,6 +700,71 @@ describe('Chat History runs listings, searches and removals one at a time, in th
     expect(page.stats()).toContain('Search: "planning" (2 results)');
   });
 
+  it('a search asked while a removal reads the stats again waits for that read', async () => {
+    const helper = fakeHelper(entriesOf(3));
+    const page = await openPage(helper);
+    const stats = gate();
+    let removed = false;
+    helper.holdWith(msg => {
+      if (msg.cmd === 'memoryRemoveBatch') { removed = true; return null; }
+      return removed && msg.cmd === 'memoryStats' ? { until: stats.until, atRelease: true } : null;
+    });
+    page.removeButton(0).click();
+    await vi.waitFor(() => expect(removed).toBe(true));
+    await settle();
+    const searching = page.history.searchChatHistory('planning');
+    await settle();
+    expect(sent(helper, msg => msg.cmd === 'memorySearch' && msg.q === 'planning')).toBe(0);
+    stats.open();
+    await searching;
+    expect(sent(helper, msg => msg.cmd === 'memorySearch' && msg.q === 'planning')).toBe(1);
+    expect(page.shown()).toEqual([1, 2].map(i => requestOf('planning', i)));
+    expect(page.stats()).toContain('Searchable entries: 2');
+  });
+
+  it('a failed removal stays pending until its stats read ends, so a press meanwhile sends nothing', async () => {
+    const helper = fakeHelper(entriesOf(2));
+    const page = await openPage(helper);
+    const stats = gate();
+    let failed = false;
+    helper.holdWith(msg => {
+      if (msg.cmd === 'memoryRemoveBatch') { failed = true; return { until: null, reply: () => ({ error: 'locked' }) }; }
+      return failed && msg.cmd === 'memoryStats' ? { until: stats.until, atRelease: true } : null;
+    });
+    const state = () => [page.removeButton(0).textContent, page.removeButton(0).disabled];
+    page.removeButton(0).click();
+    await vi.waitFor(() => expect(page.status()).toBe("Couldn't remove the conversation: locked"));
+    await settle();
+    expect(state()).toEqual(['Removing…', true]);
+    page.removeButton(0).click();
+    await settle();
+    stats.open();
+    await settle();
+    expect(sent(helper, msg => msg.cmd === 'memoryRemoveBatch')).toBe(1);
+    expect(state()).toEqual(['Remove', false]);
+    expect(page.shown()).toEqual([0, 1].map(i => requestOf('planning', i)));
+  });
+
+  it('a removal whose render throws still ends pending', async () => {
+    const helper = fakeHelper(entriesOf(2));
+    const page = await openPage(helper);
+    const removal = gate();
+    helper.holdWith(msg => (msg.cmd === 'memoryRemoveBatch' ? { until: removal.until, reply: () => ({ error: 'locked' }) } : null));
+    page.removeButton(1).click();
+    await settle();
+    // The stats bar is gone: the render after the removal's reply throws.
+    const bar = page.d.getElementById('history-stats');
+    bar.remove();
+    removal.open();
+    await settle();
+    expect(page.status()).toMatch(/^Chat History removal failed: /);
+    page.d.getElementById('history-list').before(bar);
+    await page.history.loadChatHistory();
+    expect(page.shown()).toEqual([0, 1].map(i => requestOf('planning', i)));
+    expect(page.removeButton(1).textContent).toBe('Remove');
+    expect(page.removeButton(1).disabled).toBe(false);
+  });
+
   it('a listing that fails unexpectedly says so, and the search asked after it still runs', async () => {
     const helper = fakeHelper(entriesOf(2));
     const page = await openPage(helper);
@@ -795,5 +860,36 @@ describe('Chat History says a listing failed when the size limit cannot be read,
     expect(page.shown()).toEqual([]);
     expect(page.d.querySelector('#history-list .history-section-header')).toBeNull();
     expect(page.empty()).toBe(FAILED);
+  });
+});
+
+describe('Chat History Remove button colours come from the theme', () => {
+  // Every colour of the Remove button and the header row it sits in is one of
+  // Thunderbird's own theme variables, which follow the light and dark themes:
+  // no literal colour and no fallback that would hide a missing variable.
+  const css = readFileSync(resolve('prompts/prompts.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .map(([, selector, body]) => ({ selector: selector.trim(), body }))
+    .filter(rule => /\.history-remove-btn\b/.test(rule.selector));
+  const colourDeclarations = rules.flatMap(rule => rule.body.split(';')
+    .map(d => d.trim()).filter(Boolean)
+    .map(d => ({ selector: rule.selector, property: d.slice(0, d.indexOf(':')).trim(), value: d.slice(d.indexOf(':') + 1).trim() }))
+    .filter(d => /^(color|background|background-color|border|border-color|outline|outline-color|box-shadow)$/.test(d.property)));
+
+  it('styles the button in its normal, hover and disabled states', () => {
+    expect(rules.map(rule => rule.selector)).toEqual(['.history-remove-btn', '.history-remove-btn:hover:not(:disabled)', '.history-remove-btn:disabled']);
+    expect(colourDeclarations.map(d => d.property)).toEqual(['border', 'background', 'color', 'background']);
+  });
+
+  it.each(['color', 'background', 'border'])('every %s is a theme variable, with no literal colour and no fallback', property => {
+    const declared = colourDeclarations.filter(d => d.property === property);
+    expect(declared.length).toBeGreaterThan(0);
+    for (const { value } of declared) {
+      const vars = [...value.matchAll(/var\(([^)]*)\)/g)].map(m => m[1].trim());
+      expect(vars.length).toBeGreaterThan(0);
+      for (const name of vars) expect(name).toMatch(/^--(in-content|panel)-[a-z-]+$/);
+      const rest = value.replace(/var\([^)]*\)/g, '').replace(/color-mix\(in srgb,|\d+(\.\d+)?(%|px)?|solid|transparent|[(),\s]/g, '');
+      expect(rest).toBe('');
+    }
   });
 });
