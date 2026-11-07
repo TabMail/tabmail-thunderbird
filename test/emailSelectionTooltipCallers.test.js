@@ -69,7 +69,10 @@ function hoverEachRow() {
   const rows = [...document.querySelectorAll('.email-item-row')];
   expect(rows).toHaveLength(2);
   const tooltip = document.querySelector('.email-item-tooltip');
-  tooltip.getBoundingClientRect = () => ({ width: 100, height: 40 });
+  // Its height follows the text it holds when measured, so a tooltip measured
+  // before it holds the hovered row's text is placed wrongly (the rows' texts
+  // differ in length).
+  tooltip.getBoundingClientRect = () => ({ width: 100, height: tooltip.textContent.length });
   for (const index of [0, 1, 0]) {
     const row = rows[index];
     const expected = h.headers[index];
@@ -84,7 +87,9 @@ function hoverEachRow() {
     expect(tooltip.style.display).toBe('block');
     expect(row.classList.contains('hovered')).toBe(true);
     expect(tooltip.style.left).toBe('192px');
-    expect(tooltip.style.top).toBe(index ? '556px' : '44px');
+    // The second row is in the lower half, so the tooltip sits above it, 4px
+    // clear of its top; the first sits 4px below its row.
+    expect(tooltip.style.top).toBe(index ? `${600 - tooltip.textContent.length - 4}px` : '44px');
     row.dispatchEvent(new window.MouseEvent('mouseleave'));
     expect(tooltip.style.display).toBe('none');
     expect(row.classList.contains('hovered')).toBe(false);
