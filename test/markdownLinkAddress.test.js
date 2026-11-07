@@ -120,7 +120,7 @@ const BLOCKS = [
 describe('a chat link is the address written in every block it can sit in', () => {
   const addresses = [
     'https://example.com/a"b',
-    'https://example.com/"data-x="yes',
+    'https://example.com/"q="yes',
     "https://example.com/it's",
     'https://example.com/q?a=1&b=2&amp;c&quot;d',
     'https://example.com/<b>x</b>',
@@ -146,7 +146,7 @@ describe('a chat link is the address written in every block it can sit in', () =
 describe('a chat link is one anchor with the address written', () => {
   it.each([
     ['a double quote', 'https://example.com/a"b'],
-    ['a quote then attribute-like text', 'https://example.com/"data-x="yes'],
+    ['a quote then attribute-like text', 'https://example.com/"q="yes'],
     ['a single quote', "https://example.com/it's"],
     ['an ampersand and a query', 'https://example.com/q?a=1&b=2&amp;c'],
     ['angle brackets', 'https://example.com/<b>x</b>'],
@@ -157,16 +157,25 @@ describe('a chat link is one anchor with the address written', () => {
   });
 
   it('seeded addresses of quote, bracket, ampersand and equals pieces', async () => {
-    const pieces = ['"', "'", '<', '>', '&', '=', 'a', '/', '?', '#', ';', 'amp', 'quot', 'x '.trim(), '"onclick="', '"style="'];
+    const pieces = ['"', "'", '<', '>', '&', '=', 'a', '/', '?', '#', ';', 'amp', 'quot', 'x', '"x="', '"y="'];
+    // A 31-bit generator in integer arithmetic, drawn from its high bits: the
+    // low bits of such a generator repeat with a short period.
     let seed = 225673;
-    const next = () => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed;
+    const draw = n => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+      return Math.floor((seed / 2147483648) * n);
     };
+    const drawn = new Set();
+    const addresses = new Set();
     for (let n = 0; n < 300; n++) {
-      const length = 1 + (next() % 10);
-      const address = `https://example.com/${Array.from({ length }, () => pieces[next() % pieces.length]).join('')}`;
+      const length = 1 + draw(10);
+      const parts = Array.from({ length }, () => pieces[draw(pieces.length)]);
+      parts.forEach(part => drawn.add(part));
+      const address = `https://example.com/${parts.join('')}`;
+      addresses.add(address);
       for (const anchors of await anchorsFor(address)) expectOneLink(anchors, address);
     }
+    expect([...drawn].sort()).toEqual([...pieces].sort());
+    expect(addresses.size).toBeGreaterThan(250);
   });
 });
