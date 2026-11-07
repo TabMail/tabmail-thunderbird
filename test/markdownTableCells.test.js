@@ -4,8 +4,8 @@
 
 // A chat reply's Markdown table cell renders its text as the rest of the
 // reply does: tags written in the text show as text, and bold, italic, code
-// and links come out as they do in a paragraph. Each case renders the same
-// text once in a table cell and once as a paragraph and compares the two.
+// and links come out as they do in a paragraph. Most cases render the same
+// text in a header cell, a body cell and a paragraph and compare the three.
 
 import { describe, it, expect, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
@@ -119,7 +119,7 @@ describe('a table cell renders its text as the rest of the reply does', () => {
     }
   });
 
-  it('marker-shaped text the renderer did not make adds no markup to a cell', async () => {
+  it('marker-shaped text naming no fragment the renderer made adds no markup to a cell', async () => {
     const inline = 'a @@CODE_9@@ b @@LINK_99@@ c @@SPECIAL_LINK_99@@ d';
     const { cell, paragraph } = await cellAndParagraph(inline);
     expect(cell.children).toHaveLength(0);
@@ -141,22 +141,44 @@ describe('a table cell renders its text as the rest of the reply does', () => {
     expect(refCell.textContent).toBe('a <b> & c');
   });
 
+  it('a link whose text is code comes out as in a paragraph', async () => {
+    const { cell, paragraph } = await cellAndParagraph('[`notes.txt`](https://example.com/n) and *x*');
+    expect(cell.querySelector('a code')?.textContent).toBe('notes.txt');
+    expect(cell.querySelector('a').getAttribute('href')).toBe('https://example.com/n');
+    expect(cell.textContent).not.toContain('@@');
+    expect(cell.innerHTML).toBe(paragraph.innerHTML);
+  });
+
   it('seeded texts of tag, quote, emphasis, code and link pieces render in a cell as in a paragraph', async () => {
-    const pieces = ['<', '>', '</', '/>', 'img', 'src', '=', '"', "'", ' ', '*', '**', '`', '&', 'a', 'x', '[x](https://example.com/q)', '<a href="https://example.com/">'];
+    const pieces = ['<', '>', '</', '/>', 'img', 'src', '=', '"', "'", ' ', '*', '**', '`', '&', 'a', 'x', '[x](https://example.com/q)', '<a href="https://example.com/">', '[`c`](https://example.com/q)'];
+    // A 31-bit linear congruential generator in exact integer arithmetic,
+    // drawn from its high bits (its low bits repeat with short periods).
     let seed = 158153;
-    const next = () => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed;
+    const next = n => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+      return Math.floor((seed / 2147483648) * n);
     };
+    const drawn = new Array(pieces.length).fill(0);
+    const elements = new Set();
+    let tagShaped = 0;
     for (let n = 0; n < 400; n++) {
-      const length = 1 + (next() % 12);
-      const text = `x ${Array.from({ length }, () => pieces[next() % pieces.length]).join('')} x`;
+      const length = 1 + next(12);
+      const picks = Array.from({ length }, () => next(pieces.length));
+      for (const i of picks) drawn[i] += 1;
+      const text = `x ${picks.map(i => pieces[i]).join('')} x`;
+      if (/<[^<>]*>/.test(text)) tagShaped += 1;
       const { cell, paragraph } = await cellAndParagraph(text);
       expect(cell.innerHTML, text).toBe(paragraph.innerHTML);
       for (const element of cell.querySelectorAll('*')) {
+        elements.add(element.nodeName);
         expect(['STRONG', 'EM', 'CODE', 'A'], text).toContain(element.nodeName);
         if (element.nodeName === 'A') expect(element.getAttribute('href'), text).toBe('https://example.com/q');
       }
     }
+    // The texts hold what they are said to: every piece, tag-shaped text, and
+    // each kind of markup the renderer makes.
+    expect(drawn.every(count => count > 0), JSON.stringify(drawn)).toBe(true);
+    expect(tagShaped).toBeGreaterThan(40);
+    expect([...elements].sort()).toEqual(['A', 'CODE', 'EM', 'STRONG']);
   });
 });

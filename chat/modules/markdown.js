@@ -674,7 +674,7 @@ export async function renderMarkdown(mdText) {
       return `@@LINK_${idx}@@`;
     });
 
-    // Process tables before HTML escaping to preserve HTML entities and tags in cells
+    // Tables are cut out before HTML escaping, so each cell keeps its <br> and character references
     const tableData = [];
     const tableTempLines = src.split(/\r?\n/);
     const linesWithTableMarkers = [];
