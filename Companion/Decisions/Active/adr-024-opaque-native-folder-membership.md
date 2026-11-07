@@ -152,7 +152,8 @@ copy retrying its swap for 5.5 s (500 ms, then 20 attempts 250 ms apart), and ev
 apply helper to the one path `%TEMP%\tabmail-native-fts-update\fts_helper_apply_update.exe`. An update
 sent sooner would fail copying over the running one and answer an error, ending the re-asks. While the
 reconnected helper runs the old binary, that apply copy cannot win anyway, so the wait costs no chance of
-success. The 1 s update reconnect is unchanged. A generation replaced during the wait sends nothing, and
+success. The wait is capped at those 6 s, so a clock set back after the success cannot hold the
+helper's start for longer. The 1 s update reconnect is unchanged. A generation replaced during the wait sends nothing, and
 the next connection gets the re-ask. A failed answer records `lastSucceeded: false` and stops the re-asks. After the last re-ask the update waits for the
 next start. The attempt is still recorded before the request is sent (no record, no request). Each change to
 the record (`changeUpdateRequest`) reads it fresh and writes it back, as the guard did. The automatic

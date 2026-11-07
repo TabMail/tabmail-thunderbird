@@ -1388,6 +1388,28 @@ describe("native helper update reconnect", () => {
     expect(methods(next)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
   });
 
+  it("waits no longer than the re-ask wait when the clock moves back after the success", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const second = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    expect(await initNativeFts()).toBe(true);
+    // The success is recorded; then the system clock is set back an hour.
+    vi.setSystemTime(Date.now() - 3_600_000);
+    const reaskedAfter = await runUpdateReconnect(first, nativeFtsSearch);
+
+    // Asked again within the reconnect delay plus one re-ask wait, not an hour later.
+    expect(reaskedAfter).not.toBeNull();
+    expect(reaskedAfter).toBeLessThan(7_500);
+    expect(updateRequests(second)).toEqual([publishedRequest]);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("available");
+  });
+
   it("serves from the new helper once a re-asked update is applied", async () => {
     vi.resetModules();
     vi.useFakeTimers();
