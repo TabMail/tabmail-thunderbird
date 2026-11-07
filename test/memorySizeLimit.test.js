@@ -673,14 +673,16 @@ describe('Chat History usage bar', () => {
     expect(showStatus.mock.calls).toEqual([['Size limit set to 2 GB. It applies once the search helper updates.']]);
   });
 
-  it('says only the new limit when no search engine answers the trim', async () => {
+  // No reply comes while the background starts or reloads: the limit is
+  // saved, and the next memory write applies it.
+  it('says applying the limit failed when no search engine answers the trim, keeping the stored limit', async () => {
     const { changeMemorySizeLimit, storage, showStatus } = await loadHistory({
       stats: { docs: 1, dbBytes: MB, usedBytes: MB },
       trimResult: undefined,
     });
     await changeMemorySizeLimit(2 * GB);
     expect(storage.data.memorySizeLimitBytes).toBe(2 * GB);
-    expect(showStatus.mock.calls).toEqual([['Size limit set to 2 GB.']]);
+    expect(showStatus.mock.calls).toEqual([['Size limit saved, but applying it failed: the search helper did not confirm it', true]]);
   });
 
   it('reports a failed trim as an error, keeping the stored limit', async () => {

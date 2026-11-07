@@ -7,7 +7,8 @@
 // memoryClear with `{ error }` rather than rejecting, so the page must read
 // the reply. This runs the real page (prompts/prompts.html) through the
 // Clear All confirmation against a fake helper that holds memory rows and
-// whose memoryClear succeeds, answers an error, or rejects. Storage keeps
+// whose memoryClear succeeds, answers an error, rejects, gets no reply, or
+// answers without confirming it (#248). Storage keeps
 // what is written, and the chat store's migration and memory writer are the
 // real ones, so a failed clear is checked against what happens next.
 
@@ -69,6 +70,9 @@ function fakeHelper() {
       case 'memoryClear':
         if (helper.clear === 'error') return { error: 'clear' };
         if (helper.clear === 'rejection') throw new Error('Native FTS helper not connected');
+        // No listener answers while the background starts or reloads.
+        if (helper.clear === 'no reply') return undefined;
+        if (helper.clear === 'unconfirmed reply') return {};
         memory.clear();
         return { ok: true };
       default:
@@ -120,7 +124,7 @@ describe('Chat History Clear All reports what the helper did (#146)', () => {
     expect(page.helper.memory.size).toBe(0);
   });
 
-  for (const [failure, answer] of [['error', 'an error'], ['rejection', 'a rejection']]) {
+  for (const [failure, answer] of [['error', 'an error'], ['rejection', 'a rejection'], ['no reply', 'no reply'], ['unconfirmed reply', 'a reply that does not confirm it']]) {
     it(`says it failed when the helper's memoryClear answers with ${answer}`, async () => {
       const page = await openPage();
       page.helper.clear = failure;

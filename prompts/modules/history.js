@@ -275,6 +275,13 @@ function renderMemoryUsage() {
  * entries until memory fits, or as many as its time allows (`withinLimit`
  * false), and the rest go with the next entries kept.
  */
+// Why a memory write (a removal, Clear All, a trim) was not done, or null
+// when the helper confirmed it with ok: true. Anything else failed, as an
+// error does: no reply comes while the background starts or reloads.
+function memoryWriteFailure(reply) {
+    return reply?.ok === true ? null : (reply?.error || "the search helper did not confirm it");
+}
+
 async function changeMemorySizeLimit(bytes) {
     let saved = false;
     try {
@@ -282,16 +289,17 @@ async function changeMemorySizeLimit(bytes) {
         saved = true;
         log(`[Prompts] Memory size limit set to ${bytes} bytes`);
         const result = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryTrim" });
+        const failed = memoryWriteFailure(result);
         if (result?.unsupported) {
             showStatus(`Size limit set to ${formatBytes(bytes)}. It applies once the search helper updates.`);
-        } else if (result?.error) {
-            log(`[Prompts] Applying the memory size limit failed: ${result.error}`, "warn");
-            showStatus("Size limit saved, but applying it failed: " + result.error, true);
+        } else if (failed) {
+            log(`[Prompts] Applying the memory size limit failed: ${failed}`, "warn");
+            showStatus("Size limit saved, but applying it failed: " + failed, true);
         } else {
-            const removed = result?.trimmed || 0;
+            const removed = result.trimmed || 0;
             let status = `Size limit set to ${formatBytes(bytes)}.`;
             if (removed > 0) status += removed === 1 ? " Removed the oldest entry." : ` Removed the ${removed} oldest entries.`;
-            if (result?.withinLimit === false) status += " More are removed as new conversations are kept.";
+            if (result.withinLimit === false) status += " More are removed as new conversations are kept.";
             showStatus(status);
         }
         await loadChatHistory();
@@ -436,7 +444,8 @@ async function removeAndReadStats(memId) {
     let failure = null;
     try {
         const result = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryRemoveBatch", ids: [memId] });
-        if (result?.ok !== true) throw new Error(result?.error || "the search helper did not confirm it");
+        const failed = memoryWriteFailure(result);
+        if (failed) throw new Error(failed);
         displayData = displayData.filter(entry => entry.memId !== memId);
         log(`[Prompts] Removed chat history entry ${memId}`);
     } catch (e) {
@@ -705,8 +714,9 @@ async function deleteOldHistory(days) {
                         cmd: "memoryRemoveBatch",
                         ids
                     });
-                    if (result?.error) throw new Error(result.error);
-                    ftsDeleted += result?.count ?? ids.length;
+                    const failed = memoryWriteFailure(result);
+                    if (failed) throw new Error(failed);
+                    ftsDeleted += result.count ?? ids.length;
                 }
                 // Fewer than asked: none older are left.
                 if (page.length < limit) break;
@@ -755,13 +765,16 @@ export async function clearChatHistory() {
         }
 
         // Clear Memory FTS database. The FTS engine answers a failed clear
-        // with { error } rather than rejecting, so the reply is checked; either
-        // failure ends in the failure status below, never the success one.
+        // with { error } rather than rejecting, so the reply is checked; any
+        // failure ends in the failure status below, never the success one,
+        // and leaves the migration flags, so the next startup's migration
+        // does not clear what is written after this.
         const clearReply = await browser.runtime.sendMessage({
             type: "fts",
             cmd: "memoryClear"
         });
-        if (clearReply?.error) throw new Error(`Memory FTS clear failed: ${clearReply.error}`);
+        const failed = memoryWriteFailure(clearReply);
+        if (failed) throw new Error(`Memory FTS clear failed: ${failed}`);
         log("[Prompts] Memory FTS cleared");
 
         // Clear migration flags
