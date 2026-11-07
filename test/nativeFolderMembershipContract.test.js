@@ -1400,15 +1400,27 @@ describe("native helper update reconnect", () => {
     expect(await initNativeFts()).toBe(true);
     // The success is recorded; then the system clock is set back an hour.
     vi.setSystemTime(Date.now() - 3_600_000);
-    const reaskedAfter = await runUpdateReconnect(first, nativeFtsSearch);
+    const successAt = Date.now();
+    for (let turn = 0; turn < 50 && !first.disconnect.mock.calls.length; turn++) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    expect(first.disconnect).toHaveBeenCalledOnce();
+    // A search write right after the exit reconnects at once, without the
+    // reconnect delay, so the re-ask is timed by its own wait alone.
+    const write = nativeFtsSearch.indexBatch([freshRow]);
+    let reaskedAfter = null;
+    for (let turn = 0; turn < 300 && reaskedAfter === null; turn++) {
+      await vi.advanceTimersByTimeAsync(50);
+      if (methods(second).includes("updateRequest")) reaskedAfter = Date.now() - successAt;
+    }
 
-    // Asked again after one full re-ask wait (the apply copy has finished) and
-    // within the reconnect delay plus that wait, not an hour later.
-    expect(reaskedAfter).not.toBeNull();
+    // Asked again once the full re-ask wait has passed (the previous apply copy
+    // has finished), and not an hour later.
     expect(reaskedAfter).toBeGreaterThanOrEqual(6_000);
-    expect(reaskedAfter).toBeLessThan(7_500);
+    expect(reaskedAfter).toBeLessThan(6_200);
     expect(updateRequests(second)).toEqual([publishedRequest]);
-    expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(await write).toEqual({ ok: true, count: 1 });
+    expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest", "init", "indexBatch"]);
     expect(nativeFtsSearch.getHostStatus().status).toBe("available");
   });
 
