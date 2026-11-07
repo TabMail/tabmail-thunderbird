@@ -1402,8 +1402,10 @@ describe("native helper update reconnect", () => {
     vi.setSystemTime(Date.now() - 3_600_000);
     const reaskedAfter = await runUpdateReconnect(first, nativeFtsSearch);
 
-    // Asked again within the reconnect delay plus one re-ask wait, not an hour later.
+    // Asked again after one full re-ask wait (the apply copy has finished) and
+    // within the reconnect delay plus that wait, not an hour later.
     expect(reaskedAfter).not.toBeNull();
+    expect(reaskedAfter).toBeGreaterThanOrEqual(6_000);
     expect(reaskedAfter).toBeLessThan(7_500);
     expect(updateRequests(second)).toEqual([publishedRequest]);
     expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
