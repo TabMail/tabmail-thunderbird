@@ -673,14 +673,16 @@ describe('Chat History usage bar', () => {
     expect(showStatus.mock.calls).toEqual([['Size limit set to 2 GB. It applies once the search helper updates.']]);
   });
 
-  it('says only the new limit when no search engine answers the trim', async () => {
+  // No reply comes while the background starts or reloads: the limit is
+  // saved, and the next memory write applies it.
+  it('says applying the limit failed when no search engine answers the trim, keeping the stored limit', async () => {
     const { changeMemorySizeLimit, storage, showStatus } = await loadHistory({
       stats: { docs: 1, dbBytes: MB, usedBytes: MB },
       trimResult: undefined,
     });
     await changeMemorySizeLimit(2 * GB);
     expect(storage.data.memorySizeLimitBytes).toBe(2 * GB);
-    expect(showStatus.mock.calls).toEqual([['Size limit set to 2 GB.']]);
+    expect(showStatus.mock.calls).toEqual([['Size limit saved, but applying it failed: the search helper did not confirm it', true]]);
   });
 
   it('reports a failed trim as an error, keeping the stored limit', async () => {
@@ -750,7 +752,7 @@ describe('Chat History usage bar', () => {
     expect(el['history-usage-note'].textContent).toContain('once the search helper is running');
   });
 
-  it('Clear All removes the chat history and keeps the chosen limit', async () => {
+  it('Clear All removes the chat history and keeps the chosen limit and the migration flags', async () => {
     thinkingRows.set('fixture', 'thinking fixture');
     const { history, el, storage } = await loadHistory({
       stats: { docs: 9, dbBytes: 2 * MB, usedBytes: 2 * MB },
@@ -768,7 +770,14 @@ describe('Chat History usage bar', () => {
       },
     });
     await history.clearChatHistory();
-    expect(storage.data).toEqual({ memorySizeLimitBytes: 250 * MB });
+    expect(storage.data).toEqual({
+      memorySizeLimitBytes: 250 * MB,
+      memory_fts_migration_v1_done: true,
+      memory_fts_migrated_sessions: ['fixture'],
+      chat_turns_migration_v1: true,
+      chat_turns_migration_v2: true,
+      chat_refs_migration_v1: true,
+    });
     expect(thinkingRows.size).toBe(0);
     expect(el['history-usage-label'].textContent).toBe('Memory used: 64 KB of 250 MB');
   });

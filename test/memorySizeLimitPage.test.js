@@ -45,7 +45,7 @@ describe('Chat History size limit on the real page', () => {
   // helper's trim brings memory to `afterTrim`. `stats`, when given, answers
   // memoryStats instead (`'reject'` rejects the call); `setStats` changes it
   // after the page loaded.
-  async function openPage({ usedBytes, stored, afterTrim = usedBytes, stats: givenStats }) {
+  async function openPage({ usedBytes, stored, afterTrim = usedBytes, stats: givenStats, trimReply }) {
     let stats = givenStats;
     vi.resetModules();
     const dom = new JSDOM(readFileSync(resolve('prompts/prompts.html'), 'utf8'));
@@ -60,6 +60,7 @@ describe('Chat History size limit on the real page', () => {
         return { docs: 3, dbBytes: usedBytes, usedBytes: trimmed ? afterTrim : usedBytes };
       }
       if (msg.cmd === 'memoryTrim') {
+        if (trimReply) return trimReply();
         trimmed = true;
         return { ok: true, trimmed: afterTrim < usedBytes ? 2 : 0, usedBytes: afterTrim, withinLimit: true };
       }
@@ -142,6 +143,34 @@ describe('Chat History size limit on the real page', () => {
     expect(trims()).toBe(1);
     expect(select.value).toBe(String(100 * MB));
     expect(d.getElementById('status-message').textContent).toBe('Size limit set to 100 MB. Removed the 2 oldest entries.');
+  });
+
+  // The limit is saved, so the next memory write applies it; the tab says
+  // applying it failed. No reply comes while the background starts or reloads.
+  it.each([
+    ['an error', () => ({ error: 'database is locked' }), 'database is locked'],
+    ['no reply', () => undefined, 'the search helper did not confirm it'],
+    ['a reply that does not confirm it', () => ({ trimmed: 0 }), 'the search helper did not confirm it'],
+  ])('says applying the limit failed when the trim answers with %s', async (_name, trimReply, reason) => {
+    const page = await openPage({ usedBytes: 300 * MB, stored: 250 * MB, trimReply });
+    page.choose(GB);
+    await vi.waitFor(() => expect(page.status()).toBe(`Size limit saved, but applying it failed: ${reason}`));
+    expect(page.d.getElementById('status-message').className).toBe('error');
+    expect(page.data.memorySizeLimitBytes).toBe(GB);
+    expect(page.trims()).toBe(1);
+    // The tab shows the saved limit, so a lower one chosen next is asked
+    // about before anything is removed.
+    await vi.waitFor(() => expect(page.label()).toBe('Memory used: 300 MB of 1 GB'));
+    page.choose(500 * MB);
+    expect(page.asking()).toBe(true);
+    expect(page.trims()).toBe(1);
+  });
+
+  it('says the limit applies once the helper updates when the helper has no trim', async () => {
+    const page = await openPage({ usedBytes: 300 * MB, stored: 250 * MB, trimReply: () => ({ ok: false, unsupported: true }) });
+    page.choose(GB);
+    await vi.waitFor(() => expect(page.status()).toBe('Size limit set to 1 GB. It applies once the search helper updates.'));
+    expect(page.data.memorySizeLimitBytes).toBe(GB);
   });
 
   // Before confirming: the modal is shown, storage is unchanged and no trim

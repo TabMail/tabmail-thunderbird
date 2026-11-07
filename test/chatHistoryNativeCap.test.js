@@ -932,7 +932,7 @@ describe('Chat History lists the newest conversations and removes one', () => {
     expect(page.shown()).toEqual([...recent, ...old].map(view));
     const answer = helper.sendMessage.getMockImplementation();
     helper.sendMessage.mockImplementation(async msg => {
-      if (msg.cmd === 'memoryTrim') return { trimmed: helper.stored.splice(-1).length, withinLimit: true };
+      if (msg.cmd === 'memoryTrim') return { ok: true, trimmed: helper.stored.splice(-1).length, withinLimit: true };
       if (msg.cmd === 'memoryClear') { helper.stored.splice(0); return { ok: true }; }
       return answer(msg);
     });
@@ -1118,7 +1118,12 @@ describe('TB-193: Chat History "delete old" and the native-messaging cap', () =>
     expect(helper.stored).toHaveLength(700);
   });
 
-  it('stops at a failed removal and does not count it', async () => {
+  // No reply comes while the background starts or reloads.
+  it.each([
+    ['an error', { error: 'Native RPC timed out' }, 'Native RPC timed out'],
+    ['no reply', undefined, 'the search helper did not confirm it'],
+    ['a reply that does not confirm it', {}, 'the search helper did not confirm it'],
+  ])('stops at a removal that answers with %s and does not count it', async (_name, failed, reason) => {
     const now = Date.now();
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(now);
@@ -1128,13 +1133,13 @@ describe('TB-193: Chat History "delete old" and the native-messaging cap', () =>
     const answer = helper.sendMessage.getMockImplementation();
     let removals = 0;
     helper.sendMessage.mockImplementation(async msg => {
-      if (msg.cmd === 'memoryRemoveBatch' && ++removals === 2) return { error: 'Native RPC timed out' };
+      if (msg.cmd === 'memoryRemoveBatch' && ++removals === 2) return failed;
       return answer(msg);
     });
 
     await deleteOlderThan(page, 30);
     expect(page.status()).toContain('500 search entries');
-    expect(page.status()).toContain('then stopped: Native RPC timed out');
+    expect(page.status()).toContain(`then stopped: ${reason}`);
     expect(page.statusIsError()).toBe(true);
     expect(removals).toBe(2);
     expect(helper.stored).toHaveLength(700);
