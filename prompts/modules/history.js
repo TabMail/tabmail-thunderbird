@@ -775,7 +775,7 @@ export async function clearChatHistory() {
             cmd: "memoryClear"
         });
         const failed = memoryWriteFailure(clearReply);
-        if (failed) throw new Error(`Memory FTS clear failed: ${failed}`);
+        if (failed) throw new Error(failed);
         log("[Prompts] Memory FTS cleared");
 
         // Re-read everything, so the usage row shows what the helper now holds.
@@ -784,7 +784,7 @@ export async function clearChatHistory() {
         log("[Prompts] Chat history cleared");
     } catch (e) {
         log(`[Prompts] Error clearing chat history: ${e}`, "error");
-        showStatus("Failed to clear chat history", true);
+        showStatus("Failed to clear chat history: " + (e?.message || e), true);
     }
 }
 

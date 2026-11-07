@@ -28,6 +28,14 @@ vi.mock('../agent/modules/idbStorage.js', () => ({
 
 const CLEARED = 'Chat history cleared';
 const FAILED = 'Failed to clear chat history';
+// What the status says for each way memoryClear can fail: the helper's
+// reason, or that it did not confirm the clear.
+const FAILED_BECAUSE = {
+  error: `${FAILED}: clear`,
+  rejection: `${FAILED}: Native FTS helper not connected`,
+  'no reply': `${FAILED}: the search helper did not confirm it`,
+  'unconfirmed reply': `${FAILED}: the search helper did not confirm it`,
+};
 const HOUR_MS = 60 * 60 * 1000;
 // What the one-time migrations wrote once they ran. Each is read at startup;
 // the chat store's v2 migration clears memory when its flag is missing.
@@ -116,7 +124,7 @@ async function openPage() {
     async clearAll() {
       history.showClearAllConfirmation();
       d.getElementById('modal-confirm').click();
-      await vi.waitFor(() => expect([CLEARED, FAILED]).toContain(statusEl.textContent));
+      await vi.waitFor(() => expect(statusEl.textContent === CLEARED || statusEl.textContent.startsWith(FAILED)).toBe(true));
     },
     status: () => statusEl.textContent,
     statusIsError: () => statusEl.className === 'error',
@@ -133,7 +141,7 @@ describe('Chat History Clear All reports what the helper did (#146)', () => {
       for (const key of MIGRATION_FLAGS) page.storage.data[key] = 1;
       page.helper.clear = kind;
       await page.clearAll();
-      expect(page.status()).toBe(kind === 'ok' ? CLEARED : FAILED);
+      expect(page.status()).toBe(kind === 'ok' ? CLEARED : FAILED_BECAUSE[kind]);
       expect(MIGRATION_FLAGS.filter(key => !(key in page.storage.data))).toEqual([]);
     });
   }
@@ -163,11 +171,11 @@ describe('Chat History Clear All reports what the helper did (#146)', () => {
   });
 
   for (const [failure, answer] of [['error', 'an error'], ['rejection', 'a rejection'], ['no reply', 'no reply'], ['unconfirmed reply', 'a reply that does not confirm it']]) {
-    it(`says it failed when the helper's memoryClear answers with ${answer}`, async () => {
+    it(`says it failed, and why, when the helper's memoryClear answers with ${answer}`, async () => {
       const page = await openPage();
       page.helper.clear = failure;
       await page.clearAll();
-      expect(page.status()).toBe(FAILED);
+      expect(page.status()).toBe(FAILED_BECAUSE[failure]);
       expect(page.statusIsError()).toBe(true);
     });
 
@@ -180,7 +188,7 @@ describe('Chat History Clear All reports what the helper did (#146)', () => {
       await page.indexChatTurn('old request', 'old reply', 'old', Date.now() - HOUR_MS);
       page.helper.clear = failure;
       await page.clearAll();
-      expect(page.status()).toBe(FAILED);
+      expect(page.status()).toBe(FAILED_BECAUSE[failure]);
       expect(page.helper.memory.has('turn:old')).toBe(true);
 
       page.helper.clear = 'ok';

@@ -133,7 +133,7 @@ Recorded 2026-10-19. Found in the tier-1 review of the no-query `memory_search` 
   confirms it: an error, a throw, or no reply at all (no listener answers while the background starts
   or reloads) is a failure, said in the status line, and the entry and its button stay. The page's
   other memory writes read their reply by the same rule, decided once in `memoryWriteFailure`
-  (#248): Delete Old stops at an unconfirmed removal without counting it, Clear All says it failed,
+  (#248): Delete Old stops at an unconfirmed removal without counting it, Clear All says it failed and why,
   and a size-limit trim says applying it failed (the limit stays saved; an `unsupported` answer
   from a helper without the trim is read first). Clear All, confirmed or not, never removes the
   one-time migrations' flags (`memory_fts_migration_v1_done`, `memory_fts_migrated_sessions`,
