@@ -1374,7 +1374,7 @@ describe("native helper update reconnect", () => {
     expect(methods(next)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
   });
 
-  it("requests each newly published target once, and indexing stays usable", async () => {
+  it("requests each newly published target once, also when an earlier one is published again", async () => {
     vi.resetModules();
     const published = { version: "0.11.3" };
     vi.stubGlobal("fetch", manifestFetch(published));
@@ -1387,6 +1387,8 @@ describe("native helper update reconnect", () => {
     published.version = "0.11.4";
     expect(await nativeFtsSearch.recheckAvailability()).toBe(true);
     ports[1].disconnect();
+    // Still an upgrade for the 0.11.2 helper, and already tried this session.
+    published.version = "0.11.3";
     expect(await nativeFtsSearch.recheckAvailability()).toBe(true);
     await nativeFtsSearch.indexBatch([freshRow]);
 
@@ -1482,6 +1484,48 @@ describe("native helper update reconnect", () => {
     await initNativeFts();
     expect(methods(stale)).toEqual(["hello", "updateCheck"]);
     expect(methods(current)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("available");
+  });
+
+  it("sends the update only after its attempt is recorded", async () => {
+    vi.resetModules();
+    vi.stubGlobal("fetch", manifestFetch());
+    const port = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(port);
+    const session = browser.storage.session;
+    const realSet = session.set.getMockImplementation();
+    let releaseSet;
+    session.set.mockImplementationOnce(items => new Promise(resolve => {
+      releaseSet = () => resolve(realSet(items));
+    }));
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    const init = initNativeFts();
+    for (let turn = 0; turn < 30 && !releaseSet; turn++) await Promise.resolve();
+    for (let turn = 0; turn < 30; turn++) await Promise.resolve();
+    expect(methods(port)).toEqual(["hello", "updateCheck"]);
+    releaseSet();
+    await init;
+
+    expect(session.data.get("ftsNativeUpdateRequestedVersions")).toEqual(["0.11.3"]);
+    expect(methods(port)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("available");
+  });
+
+  it("does not send the update when its attempt cannot be recorded, and search still starts", async () => {
+    vi.resetModules();
+    vi.stubGlobal("fetch", manifestFetch());
+    const port = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(port);
+    browser.storage.session.set.mockImplementationOnce(async () => {
+      throw new Error("session storage unavailable");
+    });
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await initNativeFts();
+    await nativeFtsSearch.indexBatch([freshRow]);
+
+    expect(methods(port)).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
     expect(nativeFtsSearch.getHostStatus().status).toBe("available");
   });
 });
