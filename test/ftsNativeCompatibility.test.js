@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   NATIVE_FTS_BRIDGE_VERSION,
   NATIVE_FTS_PREVIOUS_SIGNER_RETIREMENT_AT,
+  NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION,
   getNativeFtsCompatibility,
 } from "../fts/nativeCompatibility.js";
 import { getFtsHelperPrompt } from "../fts/helperPrompt.js";
@@ -28,6 +29,51 @@ describe("native FTS signing-key overlap compatibility", () => {
   it("keeps the bridge supported so it can update under the current signer", () => {
     expect(getNativeFtsCompatibility("0.11.1", RETIREMENT_MS).supported).toBe(true);
     expect(getNativeFtsCompatibility("0.12.0", RETIREMENT_MS + 1).supported).toBe(true);
+  });
+});
+
+describe("native FTS Windows self-update cutoff", () => {
+  const AFTER = RETIREMENT_MS + 1;
+  const rule = { windowsMinimumVersion: "0.12.3" };
+
+  it("makes a Windows helper older than the configured release unsupported", () => {
+    const result = getNativeFtsCompatibility("0.12.2", AFTER, { os: "win", ...rule });
+    expect(result.supported).toBe(false);
+    expect(result.minimumSupportedVersion).toBe("0.12.3");
+  });
+
+  it("supports a Windows helper at or above the configured release", () => {
+    expect(getNativeFtsCompatibility("0.12.3", AFTER, { os: "win", ...rule }).supported).toBe(true);
+    expect(getNativeFtsCompatibility("0.13.0", AFTER, { os: "win", ...rule }).supported).toBe(true);
+  });
+
+  it("does not apply the Windows rule on other platforms", () => {
+    for (const os of ["mac", "linux"]) {
+      const result = getNativeFtsCompatibility("0.12.2", AFTER, { os, ...rule });
+      expect(result.supported).toBe(true);
+      expect(result.minimumSupportedVersion).toBe(NATIVE_FTS_BRIDGE_VERSION);
+    }
+  });
+
+  it("applies no Windows rule until a release version is configured", () => {
+    const result = getNativeFtsCompatibility("0.12.2", AFTER, { os: "win", windowsMinimumVersion: null });
+    expect(result.supported).toBe(true);
+    expect(result.minimumSupportedVersion).toBe(NATIVE_FTS_BRIDGE_VERSION);
+  });
+
+  it("keeps the signing-key bridge rule on Windows", () => {
+    const result = getNativeFtsCompatibility("0.10.1", RETIREMENT_MS, { os: "win", ...rule });
+    expect(result.supported).toBe(false);
+    expect(result.minimumSupportedVersion).toBe("0.12.3");
+    const lowRule = getNativeFtsCompatibility("0.10.1", RETIREMENT_MS, { os: "win", windowsMinimumVersion: "0.9.0" });
+    expect(lowRule.supported).toBe(false);
+    expect(lowRule.minimumSupportedVersion).toBe(NATIVE_FTS_BRIDGE_VERSION);
+  });
+
+  it("ships either no cutoff or a dotted release version", () => {
+    if (NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION !== null) {
+      expect(NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    }
   });
 });
 

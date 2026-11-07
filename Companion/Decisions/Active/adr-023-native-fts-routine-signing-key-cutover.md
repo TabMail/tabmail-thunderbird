@@ -23,3 +23,15 @@
 - The user's search index is preserved; no full reindex is caused solely by reinstalling the helper.
 - Signer promotion remains an operator-reviewed server-side action recorded independently from the local compatibility boundary.
 - Compromise response may still revoke/remove a key immediately, without waiting for a bridge, and accepts the resulting reinstall requirement.
+
+**Amendment (2026-11-06): Windows self-update cutoff on the same path.** On Windows, a helper started
+by Thunderbird could not replace itself: its apply-update copy was refused by UAC installer detection
+(os error 740) and, once renamed, killed with Thunderbird's job (native-fts #65). An older Windows helper
+therefore fails every self-update. `NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION` in
+`fts/nativeCompatibility.js` names the first native-fts release carrying the fix. It is set by that release
+and is `null` until then (no Windows rule). When set, `getNativeFtsCompatibility` marks a Windows helper
+(`runtime.getPlatformInfo().os === "win"`) older than it `unsupported`, with that version as
+`minimumSupportedVersion`. That is the same disconnect and the same "Search helper update required"
+prompt with its re-download button: no new UI or copy (owner ruling: a hard cutoff, no soft prompt). The
+platform is asked only while a cutoff is configured, and the bootstrap generation is revalidated after that
+await. Release order: the native-fts release and installers first, then the add-on that sets the cutoff.

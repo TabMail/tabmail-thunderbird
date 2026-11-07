@@ -9,6 +9,7 @@ import { log } from "../agent/modules/utils.js";
 import { SETTINGS } from "../agent/modules/config.js";
 import { getMemorySizeLimitBytes } from "./memorySizeLimit.js";
 import {
+  NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION,
   getNativeFtsCompatibility,
   versionLessThan,
 } from "./nativeCompatibility.js";
@@ -38,6 +39,15 @@ const STORAGE_KEY_LAST_INDEXED_VERSION = "ftsLastIndexedHostVersion";
 // Storage key for tracking interrupted embedding rebuild (resume on next startup)
 const STORAGE_KEY_EMBEDDING_REBUILD_STATUS = "fts_embedding_rebuild_status";
 
+// storage.session key: target versions this Thunderbird session already sent an
+// updateRequest for. The automatic update sends at most one per version per
+// session, so an update that fails, or answers success without being applied, is
+// not repeated on every reconnect. storage.session is kept in memory and cleared
+// when Thunderbird quits (the next start tries again); unlike a module variable
+// it survives the event page being unloaded while idle, which a failed update
+// allows by closing the native port that kept the page alive.
+const SESSION_KEY_UPDATE_REQUESTED_VERSIONS = "ftsNativeUpdateRequestedVersions";
+
 // Update server URL - points to the same CDN as addon updates.
 // Native-FTS updates are platform-first so each OS/arch can be deployed independently:
 //   ${UPDATE_BASE_URL}/${platformKey}/update-manifest.json
@@ -52,7 +62,14 @@ const nativeConnectionListeners = new Set();
 let nativeReadyState = null;
 let nativeInitializationPromise = null;
 let nativeInitializationState = null;
-let isUpdatingHost = false; // Flag to track if we are in the middle of an update
+// Set when an updateRequest answers success. That response is the update's
+// commit point (ADR-024): the helper exits after writing it, and only the
+// disconnect that follows reconnects at once to the new helper. Any other
+// disconnect, including one during a failed update, is ordinary and waits out
+// the reconnect cooldown. A port cannot be replaced before its own disconnect
+// (the resolved initialization stays cached until then), so that disconnect is
+// the next one and consumes the flag.
+let updateResponseCommitted = false;
 // Reliable "is the native helper installed?" signal for UI surfaces (badge /
 // popup / settings). null = not yet determined, true = handshake succeeded,
 // false = connect/handshake failed (helper not installed). connectNative()
@@ -342,8 +359,19 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
   if (!updateCheck.canUpdate) {
     return { updateAvailable: true, canUpdate: false, latestVersion: latestRelease.version };
   }
-
-  isUpdatingHost = true;
+  const requestedVersions = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTED_VERSIONS))
+    ?.[SESSION_KEY_UPDATE_REQUESTED_VERSIONS] || [];
+  if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update attempts");
+  if (bootstrapState && requestedVersions.includes(latestRelease.version)) {
+    log(`[TMDBG FTS] Update to ${latestRelease.version} was already requested this session; not repeating it automatically`, "warn");
+    return { updateAvailable: true, canUpdate: true, updated: false, latestVersion: latestRelease.version };
+  }
+  // Recorded before the request is sent: if it cannot be recorded, none is sent.
+  if (!requestedVersions.includes(latestRelease.version)) {
+    await browser.storage.session.set({
+      [SESSION_KEY_UPDATE_REQUESTED_VERSIONS]: [...requestedVersions, latestRelease.version],
+    });
+  }
 
   const updateResult = await nativeRPC('updateRequest', {
     targetVersion: latestRelease.version,
@@ -362,7 +390,6 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
     return { updateAvailable: true, canUpdate: true, updated: true, oldVersion: currentVersion, newVersion: latestRelease.version };
   } else {
     if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update failure");
-    isUpdatingHost = false;
     const updateFailure = updateResult?.message || updateResult?.error || "Update failed";
     log(`[TMDBG FTS] ❌ Host update failed: ${updateFailure}`, "error");
     return { updateAvailable: true, canUpdate: true, updated: false, error: updateFailure };
@@ -442,7 +469,16 @@ async function initCheckAndUpdateHost(bootstrapState) {
     log(`[TMDBG FTS] Native host impl: ${connectionHostInfo.hostImpl || "unknown"}`);
     log(`[TMDBG FTS] Can self-update: ${connectionHostInfo.canSelfUpdate}, User install: ${connectionHostInfo.isUserInstall}`);
 
-    const compatibility = getNativeFtsCompatibility(connectionHostInfo.hostVersion);
+    // The platform is needed only by the Windows rule, so it is asked only once
+    // that rule is configured.
+    const os = NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION
+      ? (await browser.runtime.getPlatformInfo())?.os
+      : null;
+    _assertNativeStateCurrent(bootstrapState, "compatibility platform");
+    const compatibility = getNativeFtsCompatibility(connectionHostInfo.hostVersion, Date.now(), {
+      os,
+      windowsMinimumVersion: NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION,
+    });
     if (!compatibility.supported) {
       setFtsHostStatus("unsupported", {
         hostVersion: connectionHostInfo.hostVersion,
@@ -450,7 +486,7 @@ async function initCheckAndUpdateHost(bootstrapState) {
         retirementAt: compatibility.retirementAt,
       });
       log(
-        `[TMDBG FTS] Host v${connectionHostInfo.hostVersion} is outside the signing-key overlap window; ` +
+        `[TMDBG FTS] Host v${connectionHostInfo.hostVersion} is unsupported (os=${os || "any"}); ` +
         `v${compatibility.minimumSupportedVersion}+ must be reinstalled`,
         "warn"
       );
@@ -510,10 +546,6 @@ async function initCheckAndUpdateHost(bootstrapState) {
 
     return false; // No update performed
   } catch (error) {
-    // A replaced bootstrap must not clear a newer generation's update state.
-    if (!bootstrapState || _isNativeStateCurrent(bootstrapState)) {
-      isUpdatingHost = false;
-    }
     if (error?.code === "NATIVE_FTS_STALE_GENERATION") throw error;
     if (error?.code === "NATIVE_FTS_UNSUPPORTED") throw error;
     // Expected when the helper isn't installed; rate-limited by the reconnect
@@ -576,6 +608,11 @@ async function _initNativeFtsOnce() {
       const pending = pendingRPCs.get(id);
       if (pending) {
         pendingRPCs.delete(id);
+        // Committed on receipt, before any continuation runs: the helper may
+        // exit, and this port disconnect, right after writing the response.
+        if (pending.method === "updateRequest" && !error && result?.success === true) {
+          updateResponseCommitted = true;
+        }
         if (error) {
           pending.reject(new Error(error));
         } else {
@@ -587,6 +624,8 @@ async function _initNativeFtsOnce() {
     // Handle disconnect
     connectedPort.onDisconnect.addListener(() => {
       log("[TMDBG FTS] Native helper disconnected");
+      const updateCommitted = updateResponseCommitted;
+      updateResponseCommitted = false;
       if (nativePort !== connectedPort) return;
       _rejectNativeReady(connectedReadyState, new Error("Native helper disconnected before hello"));
       nativePort = null;
@@ -598,7 +637,7 @@ async function _initNativeFtsOnce() {
       }
       // A disconnect during an intentional self-update is expected (we reconnect
       // below); otherwise the helper is gone/unavailable.
-      if (!isUpdatingHost && ftsHostStatus.status !== "unsupported") {
+      if (!updateCommitted && ftsHostStatus.status !== "unsupported") {
         setFtsHostStatus("missing");
       }
       
@@ -609,9 +648,8 @@ async function _initNativeFtsOnce() {
       pendingRPCs.clear();
       
       // Handle auto-reconnect after update
-      if (isUpdatingHost) {
+      if (updateCommitted) {
         log("[TMDBG FTS] Update detected. Reconnecting to new host version...", "info");
-        isUpdatingHost = false;
         
         // Wait briefly for file lock release / process cleanup
         setTimeout(async () => {
@@ -770,6 +808,7 @@ async function nativeRPC(
       }, RPC_TIMEOUT_MS);
 
       pendingRPCs.set(id, {
+        method,
         resolve: (val) => { clearTimeout(timer); resolve(val); },
         reject: (err) => { clearTimeout(timer); reject(err); },
       });
@@ -1168,7 +1207,6 @@ export const nativeFtsSearch = {
       }
       return { ok: false, error: result.error || "Update failed" };
     } catch (e) {
-      isUpdatingHost = false;
       log(`[TMDBG FTS] Manual update check failed: ${e}`, "error");
       return { ok: false, error: e.message || String(e) };
     }

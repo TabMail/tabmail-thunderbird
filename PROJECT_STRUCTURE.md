@@ -49,7 +49,7 @@ tabmail-thunderbird/
 │   ├── folderMembershipIdentity.js # Durable exact account/path membership identity
 │   ├── incrementalIndexer.js   # Live indexing + opaque-folder migration/exact startup reconcile
 │   ├── helperPrompt.js         # Shared install/reinstall CTA copy
-│   ├── nativeCompatibility.js  # Signing-key overlap/cutoff policy
+│   ├── nativeCompatibility.js  # Signing-key overlap/cutoff + Windows self-update cutoff policy
 │   ├── nativeEngine.js         # Native bridge (range + opaque-folder membership RPCs)
 │   ├── ftsRequest.js           # Run an FTS request in the helper's owner (background) or ask it
 │   ├── memoryIndexer.js        # In-memory indexing
