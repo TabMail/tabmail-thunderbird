@@ -158,7 +158,7 @@ next start. The attempt is still recorded before the request is sent (no record,
 the record goes through one function, `changeUpdateRequest`, which runs changes one after another, each
 reading the record fresh and writing it back. So two overlapping update checks (two Settings pages)
 number their attempts in order. A success marks the version only while its attempt is still the latest,
-so an older success cannot reopen a version a newer attempt left unanswered or failed. The success is
+so an older success cannot reopen a version a newer attempt left unanswered or failed. The automatic update checks it may still ask inside that same change, on the entry it numbers, because a manual attempt can be recorded while it waits; if a newer attempt is pending it sends nothing and the helper starts. The success is
 recorded after the answer and before the update banner, which may never finish. If that write fails, the
 update is not asked again this session, which was the behaviour before this amendment. A manual check still always
 sends, and it records its request in the same way. Rejected: renaming the running binary aside in the

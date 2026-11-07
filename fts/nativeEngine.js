@@ -411,12 +411,18 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
     }
   }
   // Recorded before the request is sent: if it cannot be recorded, none is sent.
+  // The automatic update is allowed again on the entry it numbers, since another
+  // attempt may have been recorded while this one waited.
   let requests;
   await changeUpdateRequest(version, entry => {
-    if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update attempt record");
+    if (bootstrapState) {
+      _assertNativeStateCurrent(bootstrapState, "update attempt record");
+      if (!automaticAskAllowed(entry)) return undefined;
+    }
     requests = (entry?.requests || 0) + 1;
     return { requests, lastSucceeded: false };
   });
+  if (requests === undefined) return alreadyRequested();
 
   const updateResult = await nativeRPC('updateRequest', {
     targetVersion: latestRelease.version,

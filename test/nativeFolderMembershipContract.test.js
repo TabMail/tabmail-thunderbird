@@ -1564,6 +1564,62 @@ describe("native helper update reconnect", () => {
     expect(methods(third)).toEqual(["hello", "updateCheck", "init"]);
   });
 
+  it("does not ask again automatically while a newer manual attempt is recorded, and the manual success is asked again", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    const published = { version: "0.11.2" };
+    vi.stubGlobal("fetch", manifestFetch(published));
+    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    // The reconnected helper fails any update asked before it starts, and
+    // succeeds the one asked after (the delayed manual check).
+    const result = { success: false, message: "test_update_not_applied" };
+    const second = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: result });
+    let initialized = false;
+    const post = second.postMessage;
+    second.postMessage = message => {
+      if (message.method === "init") initialized = true;
+      if (message.method === "updateRequest" && initialized) Object.assign(result, updated);
+      post(message);
+    };
+    const third = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second, third);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+    await initNativeFts();
+    // Two manual checks for one version; the later one's record read is held.
+    const session = browser.storage.session;
+    const realGet = session.get.getMockImplementation();
+    let reads = 0;
+    let releaseSecondRead;
+    session.get.mockImplementation(key => ++reads === 2
+      ? new Promise(resolve => { releaseSecondRead = () => resolve(realGet(key)); })
+      : realGet(key));
+    published.version = "0.11.3";
+    const earlier = nativeFtsSearch.manualCheckAndUpdateHost();
+    const later = nativeFtsSearch.manualCheckAndUpdateHost();
+    for (let turn = 0; turn < 50 && !releaseSecondRead; turn++) await vi.advanceTimersByTimeAsync(0);
+    expect(releaseSecondRead).toBeDefined();
+    expect(await earlier).toMatchObject({ ok: true, updated: true });
+    // The reconnected helper is in its re-ask wait when the later attempt is recorded.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(methods(second)).toEqual(["hello", "updateCheck"]);
+    releaseSecondRead();
+    for (let turn = 0; turn < 50 && session.data.get("ftsNativeUpdateRequests")["0.11.3"].requests < 2; turn++) {
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(session.data.get("ftsNativeUpdateRequests")["0.11.3"])
+      .toEqual({ requests: 2, lastSucceeded: false });
+
+    await vi.advanceTimersByTimeAsync(7_000);
+    expect(await later).toMatchObject({ ok: true, updated: true });
+    // The automatic update did not spend an attempt over the pending manual one.
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init", "updateRequest"]);
+    expect(session.data.get("ftsNativeUpdateRequests")["0.11.3"])
+      .toMatchObject({ requests: 2, lastSucceeded: true });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(methods(third)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(await nativeFtsSearch.indexBatch([freshRow])).toEqual({ ok: true, count: 1 });
+  });
+
   it("asks again although the update banner never finishes", async () => {
     vi.resetModules();
     vi.useFakeTimers();
