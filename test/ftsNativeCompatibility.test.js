@@ -70,10 +70,8 @@ describe("native FTS Windows self-update cutoff", () => {
     expect(lowRule.minimumSupportedVersion).toBe(NATIVE_FTS_BRIDGE_VERSION);
   });
 
-  it("ships either no cutoff or a dotted release version", () => {
-    if (NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION !== null) {
-      expect(NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
-    }
+  it("ships the cutoff as a dotted release version", () => {
+    expect(NATIVE_FTS_WINDOWS_MIN_SELF_UPDATING_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });
 

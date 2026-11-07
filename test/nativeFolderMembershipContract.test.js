@@ -246,6 +246,7 @@ async function initialized(folderMembershipV1, assignmentResult = null, portOpti
   globalThis.browser = {
     tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
     runtime: {
+      getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
       connectNative: vi.fn(() => port),
       getManifest: vi.fn(() => ({
         version: "1.7.3",
@@ -536,6 +537,7 @@ describe("native folder-membership v1 contract", () => {
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
+        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn()
           .mockReturnValueOnce(capable)
           .mockReturnValueOnce(legacy),
@@ -575,6 +577,7 @@ describe("native folder-membership v1 contract", () => {
       globalThis.browser = {
         tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
         runtime: {
+          getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
           connectNative: vi.fn(() => port),
           getManifest: vi.fn(() => ({
             version: "1.7.3",
@@ -594,7 +597,7 @@ describe("native folder-membership v1 contract", () => {
 
       expect(port.messages.some(message => message.method === "indexBatch")).toBe(false);
       await port.releaseHello();
-      for (let turn = 0; turn < 5
+      for (let turn = 0; turn < 20
         && !port.messages.some(message => message.method === "init"); turn++) {
         await Promise.resolve();
       }
@@ -623,6 +626,7 @@ describe("native folder-membership v1 contract", () => {
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
+        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn()
           .mockReturnValueOnce(legacy)
           .mockReturnValueOnce(capable)
@@ -665,6 +669,7 @@ describe("native folder-membership v1 contract", () => {
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
+        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn(() => port),
         getManifest: vi.fn(() => ({
           version: "1.7.3",
@@ -689,6 +694,7 @@ describe("native folder-membership v1 contract", () => {
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
+        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
           .mockReturnValueOnce(second),
@@ -719,6 +725,7 @@ describe("native folder-membership v1 contract", () => {
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
+        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn(() => port),
         getManifest: vi.fn(() => ({
           version: "1.7.3",
@@ -759,6 +766,7 @@ describe("native folder-membership v1 contract", () => {
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
+        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
           .mockReturnValueOnce(second),
@@ -787,7 +795,7 @@ describe("native folder-membership v1 contract", () => {
 
     await Promise.resolve();
     await first.releaseHello();
-    for (let turn = 0; turn < 5
+    for (let turn = 0; turn < 20
       && !first.messages.some(message => message.method === "init"); turn++) {
       await Promise.resolve();
     }
@@ -1049,6 +1057,7 @@ describe("native folder-membership v1 contract", () => {
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
+        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn()
           .mockImplementationOnce(() => { throw new Error("native_connect_sync_failed"); })
           .mockReturnValueOnce(recovered),
@@ -1088,6 +1097,7 @@ describe("native folder-membership v1 contract", () => {
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       runtime: {
+        getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "aarch64" })),
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
           .mockReturnValueOnce(second),
@@ -1125,7 +1135,7 @@ describe("native folder-membership v1 contract", () => {
 
     const indexing = nativeFtsSearch.indexBatch([row]);
     await second.releaseHello();
-    for (let turn = 0; turn < 5
+    for (let turn = 0; turn < 20
       && !second.messages.some(message => message.method === "init"); turn++) {
       await Promise.resolve();
     }

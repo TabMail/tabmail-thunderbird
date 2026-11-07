@@ -154,6 +154,7 @@ async function initializedMemory({ capabilities, stored = {}, memoryResults, mem
     tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
     alarms: { create: vi.fn(() => Promise.resolve()) },
     runtime: {
+      getPlatformInfo: vi.fn(async () => ({ os: 'mac', arch: 'aarch64' })),
       connectNative: vi.fn(() => port),
       getManifest: vi.fn(() => ({
         version: '1.9.2',
@@ -283,7 +284,7 @@ describe('memory search on a helper without previews or the dated filter', () =>
       storage: makeStorage(),
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       alarms: { create: vi.fn(() => Promise.resolve()) },
-      runtime: { connectNative: vi.fn(() => ports.at(-1)), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
+      runtime: { getPlatformInfo: vi.fn(async () => ({ os: 'mac', arch: 'aarch64' })), connectNative: vi.fn(() => ports.at(-1)), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
     };
     const { initNativeFts, nativeMemorySearch, MEMORY_SEARCH_NEEDS_HELPER_UPDATE: refusal } = await import('../fts/nativeEngine.js');
     await initNativeFts();
@@ -308,7 +309,7 @@ describe('memory search on a helper without previews or the dated filter', () =>
       storage: makeStorage(),
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       alarms: { create: vi.fn(() => Promise.resolve()) },
-      runtime: { connectNative: vi.fn(() => ports.at(-1)), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
+      runtime: { getPlatformInfo: vi.fn(async () => ({ os: 'mac', arch: 'aarch64' })), connectNative: vi.fn(() => ports.at(-1)), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
     };
     const { initNativeFts, nativeMemorySearch, MEMORY_SEARCH_NEEDS_HELPER_UPDATE: refusal } = await import('../fts/nativeEngine.js');
     const now = Date.now();
@@ -395,6 +396,7 @@ describe('native memory size limit wire', () => {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       alarms: { create: vi.fn(() => Promise.resolve()) },
       runtime: {
+        getPlatformInfo: vi.fn(async () => ({ os: 'mac', arch: 'aarch64' })),
         connectNative: vi.fn(() => {
           const port = makeNativePort({ capabilities: { memorySizeLimitV1: true }, memoryResults: { memoryTrim: trimResult } });
           ports.push(port);
@@ -457,7 +459,7 @@ describe('native memory size limit wire', () => {
       storage,
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       alarms: { create: vi.fn(() => Promise.resolve()) },
-      runtime: { connectNative: vi.fn(() => port), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
+      runtime: { getPlatformInfo: vi.fn(async () => ({ os: 'mac', arch: 'aarch64' })), connectNative: vi.fn(() => port), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
     };
     const { initNativeFts, nativeMemorySearch } = await import('../fts/nativeEngine.js');
     const init = initNativeFts();
@@ -485,7 +487,7 @@ describe('native memory size limit wire', () => {
       storage,
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
       alarms: { create: vi.fn(() => Promise.resolve()) },
-      runtime: { connectNative: vi.fn(() => ports.at(-1)), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
+      runtime: { getPlatformInfo: vi.fn(async () => ({ os: 'mac', arch: 'aarch64' })), connectNative: vi.fn(() => ports.at(-1)), getManifest: vi.fn(() => ({ version: '1.9.2' })) },
     };
     const { initNativeFts, nativeMemorySearch } = await import('../fts/nativeEngine.js');
     await initNativeFts();

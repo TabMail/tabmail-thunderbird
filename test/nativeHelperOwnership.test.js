@@ -46,6 +46,7 @@ function freshContext() {
     tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
     storage: { local: { get: vi.fn(async defaults => ({ ...defaults })) } },
     runtime: {
+      getPlatformInfo: vi.fn(async () => ({ os: 'mac', arch: 'aarch64' })),
       connectNative: vi.fn(() => makeNativePort()),
       getManifest: vi.fn(() => ({ version: '1.7.2', browser_specific_settings: { gecko: { id: 'thunderbird@tabmail.ai' } } })),
       sendMessage: vi.fn(async () => ({ ok: true, flags: [false] })),

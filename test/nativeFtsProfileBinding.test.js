@@ -45,6 +45,7 @@ function freshContext(getFtsDataDir) {
   const messages = [];
   globalThis.browser = {
     runtime: {
+      getPlatformInfo: vi.fn(async () => ({ os: 'mac', arch: 'aarch64' })),
       connectNative: vi.fn(() => makeNativePort(messages)),
       getManifest: vi.fn(() => ({ version: '1.9.0', browser_specific_settings: { gecko: { id: 'thunderbird@tabmail.ai' } } })),
     },
