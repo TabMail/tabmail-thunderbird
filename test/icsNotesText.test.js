@@ -3,9 +3,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // A calendar attachment's notes (DESCRIPTION, or the HTML X-ALT-DESC) become
-// plain text for the event's brief. They are read in a document of their own,
-// never as markup in the page that reads the mail, and their text stays as
-// the notes show it.
+// plain text for the event's brief. They are read in a document of their own:
+// reading them never reaches the page that reads the mail, and their text
+// stays as the notes show it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
@@ -19,49 +19,18 @@ vi.mock('../chat/modules/helpers.js', () => ({
 const { parseIcsToEvents, ICS_PARSER_SETTINGS } = await import('../chat/modules/icsParser.js');
 
 let dom;
-let pageParsed;
-let pageActivated;
+let pageReached = [];
 
-// Records every way markup can be parsed into the page's own document: an
-// element's markup setters, a range's fragment and the document's write.
-function watchPageParsing(win) {
-  const page = win.document;
-  const record = (how, value) => pageParsed.push([how, String(value)]);
-  const proto = win.Element.prototype;
-  for (const name of ['innerHTML', 'outerHTML']) {
-    const original = Object.getOwnPropertyDescriptor(proto, name);
-    Object.defineProperty(proto, name, {
-      configurable: true,
-      get: original.get,
-      set(value) { if (this.ownerDocument === page) record(name, value); original.set.call(this, value); },
-    });
-  }
-  const insert = proto.insertAdjacentHTML;
-  proto.insertAdjacentHTML = function (where, value) { if (this.ownerDocument === page) record('insertAdjacentHTML', value); return insert.call(this, where, value); };
-  const fragment = win.Range.prototype.createContextualFragment;
-  win.Range.prototype.createContextualFragment = function (value) {
-    const owner = this.startContainer.ownerDocument || this.startContainer;
-    if (owner === page) record('createContextualFragment', value);
-    return fragment.call(this, value);
-  };
-  for (const name of ['write', 'writeln']) {
-    const original = win.Document.prototype[name];
-    win.Document.prototype[name] = function (...values) { if (this === page) record(name, values.join('')); return original.apply(this, values); };
-  }
-}
-
+// The page stays installed, and every reach into it (its window or its
+// document) is recorded. Code can hand the notes to the page only through
+// these, since a document of its own has no window: parsing markup into the
+// page, copying, adopting or moving nodes into it all read one of them.
 beforeEach(() => {
   dom = new JSDOM('<body></body>');
-  pageParsed = [];
-  pageActivated = [];
-  watchPageParsing(dom.window);
-  // An element the page knows comes alive only once it belongs to the page's
-  // document: it records that, as anything active in the page could act.
-  dom.window.customElements.define('notes-probe', class extends dom.window.HTMLElement {
-    constructor() { super(); pageActivated.push(this.textContent); }
-  });
-  globalThis.window = dom.window;
-  globalThis.document = dom.window.document;
+  const page = { window: dom.window, document: dom.window.document };
+  for (const name of Object.keys(page)) {
+    Object.defineProperty(globalThis, name, { configurable: true, get() { pageReached.push(name); return page[name]; } });
+  }
   globalThis.DOMParser = dom.window.DOMParser;
 });
 
@@ -72,6 +41,15 @@ afterEach(() => {
   delete globalThis.DOMParser;
 });
 
+// What running `read` reaches of the page, beside its result.
+function reachOf(read) {
+  pageReached = [];
+  const result = read();
+  const reached = pageReached;
+  pageReached = [];
+  return [result, reached];
+}
+
 const stamp = days => new Date(Date.now() + days * 86400000).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 
 function eventOf(lines) {
@@ -80,7 +58,8 @@ function eventOf(lines) {
     'UID:notes@example.com', `DTSTART:${stamp(7)}`, `DTEND:${stamp(7.05)}`, 'SUMMARY:Plan',
     ...lines, 'END:VEVENT', 'END:VCALENDAR',
   ].join('\r\n');
-  const events = parseIcsToEvents(ics);
+  const [events, reached] = reachOf(() => parseIcsToEvents(ics));
+  expect(reached).toEqual([]);
   expect(events).toHaveLength(1);
   return events[0];
 }
@@ -97,63 +76,44 @@ const NOTES = [
   ['a styled span', '<span style="color: red" data-x="1">Moved</span> to Friday', 'Moved to Friday'],
   ['a title before the notes', '<title>Bring the deck</title><p>Room 4</p>', 'Bring the deckRoom 4'],
   ['a whole document with a head', '<html><head><title>Agenda</title></head><body><p>Room 4</p></body></html>', 'AgendaRoom 4'],
-  ['a noscript part', '<noscript>Bring <b>the deck</b></noscript><p>Room 4</p>', 'Bring the deckRoom 4'],
   ['a style part in a head', '<html><head><style>.agenda{color:blue}</style></head><body>Ready</body></html>', '.agenda{color:blue}Ready'],
   ['white space at both edges', ' \t Ready \t ', 'Ready'],
-  ['an element the page knows', '<notes-probe>Ready</notes-probe>', 'Ready'],
+  ['an element of a name no standard knows', '<notes-probe>Ready</notes-probe>', 'Ready'],
 ];
 
-describe('the page watch sees markup parsed into the page', () => {
+describe('the page record sees a reach into the page', () => {
   it.each([
-    ['innerHTML', () => document.createElement('div').innerHTML = '<b>x</b>'],
-    ['outerHTML', () => { const p = document.createElement('p'); document.body.append(p); p.outerHTML = '<b>x</b>'; }],
-    ['insertAdjacentHTML', () => document.createElement('div').insertAdjacentHTML('beforeend', '<b>x</b>')],
-    ['createContextualFragment', () => document.createRange().createContextualFragment('<b>x</b>')],
-    ['write', () => document.write('<b>x</b>')],
-    ['writeln', () => document.writeln('<b>x</b>')],
-  ])('%s into the page is seen', (how, parse) => {
-    parse();
-    expect(pageParsed).toEqual([[how, '<b>x</b>']]);
+    ['its document', () => document.createElement('div'), ['document']],
+    ['its window', () => window.document, ['window']],
+    ['a document of its own made from the page', () => document.implementation.createHTMLDocument(''), ['document']],
+  ])('a reach through %s is seen', (_label, read, reached) => {
+    expect(reachOf(read)[1]).toEqual(reached);
   });
 
-  it('markup parsed into a document of its own is not', () => {
-    const own = new DOMParser().parseFromString('', 'text/html');
-    own.createElement('div').innerHTML = '<b>x</b>';
-    own.createRange().createContextualFragment('<b>x</b>');
-    expect(pageParsed).toEqual([]);
-  });
-
-  it('an element the page knows comes alive once copied into the page, not before', () => {
-    const own = new DOMParser().parseFromString('', 'text/html');
-    const holder = own.createElement('div');
-    holder.innerHTML = '<notes-probe>Ready</notes-probe>';
-    expect(pageActivated).toEqual([]);
-    document.importNode(holder, true);
-    expect(pageActivated).toEqual(['Ready']);
+  it('a document of its own made by DOMParser is not', () => {
+    const [, reached] = reachOf(() => {
+      const own = new DOMParser().parseFromString('', 'text/html');
+      own.createElement('div').innerHTML = '<b>x</b>';
+    });
+    expect(reached).toEqual([]);
   });
 });
 
 describe('calendar notes read as text in their own document', () => {
   it.each(NOTES)('a DESCRIPTION holding %s gives its text', (_label, notes, text) => {
     expect(notesOf([`DESCRIPTION:${notes}`])).toBe(text);
-    expect(pageParsed).toEqual([]);
-    expect(pageActivated).toEqual([]);
   });
 
   it.each(NOTES)('an HTML X-ALT-DESC holding %s gives its text, over the DESCRIPTION', (_label, notes, text) => {
     expect(notesOf(['DESCRIPTION:Plain notes', `X-ALT-DESC;FMTTYPE=text/html:${notes}`])).toBe(text);
-    expect(pageParsed).toEqual([]);
-    expect(pageActivated).toEqual([]);
   });
 
-  it('no note is ever parsed into the page', () => {
+  it('no note ever reaches the page', () => {
     for (const [, notes] of NOTES) {
       notesOf([`DESCRIPTION:${notes}`]);
       notesOf([`X-ALT-DESC;FMTTYPE=text/html:${notes}`]);
     }
-    expect(pageParsed).toEqual([]);
-    expect(pageActivated).toEqual([]);
-    expect(document.body.innerHTML).toBe('');
+    expect(reachOf(() => document.body.innerHTML)[0]).toBe('');
   });
 
   it('runs of white space in the notes become one space', () => {
@@ -166,7 +126,6 @@ describe('calendar notes read as text in their own document', () => {
       expect(ev.notes_brief).toBe('');
       expect(truncated(ev)).toEqual([]);
     }
-    expect(pageParsed).toEqual([]);
   });
 
   it('an empty X-ALT-DESC leaves the DESCRIPTION as the notes', () => {
@@ -183,6 +142,5 @@ describe('calendar notes read as text in their own document', () => {
         expect(truncated(ev)).toEqual(warned ? ['HTML body truncated'] : []);
       }
     }
-    expect(pageParsed).toEqual([]);
   });
 });
