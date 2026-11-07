@@ -669,7 +669,8 @@ export async function renderMarkdown(mdText) {
     src = src.replace(/\[([^\]]+?)\]\(([^\)\s]+?)\)/g, (_, text, url) => {
       const idx = linkHtml.length;
       const safeText = escapeHtml(text);
-      const safeUrl = sanitizeUrl(url);
+      // Escaped as attribute text, so the address is exactly the one written.
+      const safeUrl = escapeHtml(sanitizeUrl(url));
       linkHtml.push(`<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeText}</a>`);
       return `@@LINK_${idx}@@`;
     });
