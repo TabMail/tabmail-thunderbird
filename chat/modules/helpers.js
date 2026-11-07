@@ -1206,7 +1206,15 @@ export async function renderEmailSelectionList(container, emailArray, options = 
           todosValue: item.todos
         });
       } catch(_) {}
-      let todosHtml = "";
+      // Built from text nodes: the todos and summary show as written, as in
+      // the message list's own tooltip.
+      const element = (tag, text, className) => {
+        const el = document.createElement(tag);
+        if (className) el.className = className;
+        if (text !== undefined) el.textContent = text;
+        return el;
+      };
+      const parts = [];
       if (item.todos && item.todos.trim()) {
         const items = item.todos
           .split("•")
@@ -1214,20 +1222,19 @@ export async function renderEmailSelectionList(container, emailArray, options = 
           .filter(Boolean)
           .map((it) => it.replace(/^[-•*\s]+/, ""));
         if (items.length) {
-          todosHtml =
-            '<strong>Todos:</strong><ul class="tooltip-todos">' +
-            items.map((it) => `<li>${it}</li>`).join("") +
-            "</ul>";
+          const list = element("ul", undefined, "tooltip-todos");
+          list.append(...items.map((it) => element("li", it)));
+          parts.push(element("strong", "Todos:"), list);
         }
       }
-      const summaryHtml = item.blurb
-        ? `<strong>Summary:</strong><div class="tooltip-summary">${item.blurb}</div>`
-        : "";
-      const tooltipContent = (todosHtml + summaryHtml) || "(No details)";
+      if (item.blurb) {
+        parts.push(element("strong", "Summary:"), element("div", item.blurb, "tooltip-summary"));
+      }
+      if (parts.length === 0) parts.push("(No details)");
+      tooltip.replaceChildren(...parts);
       try {
-        console.log(`[TMDBG EmailSelect] Tooltip content: ${tooltipContent.substring(0, 100)}`);
+        console.log(`[TMDBG EmailSelect] Tooltip content: ${tooltip.textContent.substring(0, 100)}`);
       } catch(_) {}
-      tooltip.innerHTML = tooltipContent;
 
       const rowRect = row.getBoundingClientRect();
 
