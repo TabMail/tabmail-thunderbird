@@ -1414,8 +1414,8 @@ describe('Additional branch coverage', () => {
     expect(events[0].join_url).toBe('https://bluejeans.com/123456');
   });
 
-  it('stripHtmlAndNormalize uses regex fallback when document is unavailable', () => {
-    // In Vitest (Node.js), document is not available, so the regex fallback is used
+  it('stripHtmlAndNormalize uses regex fallback when DOMParser is unavailable', () => {
+    // In Vitest (Node.js), DOMParser is not available, so the regex fallback is used
     const ics = wrapIcs(simpleVevent([
       'UID:html@example.com',
       'SUMMARY:HTML Desc',
