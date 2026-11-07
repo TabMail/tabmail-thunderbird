@@ -90,8 +90,8 @@ export function loadChatHistory() {
 }
 
 // The listing's reads, all in its own turn. A failed stats read shows memory's
-// size as unavailable, as on main; a failed read of the size limit or of the
-// entries is the listing's answer, said in the list.
+// size as unavailable and a failed turns read shows 0 (#241); a failed read of
+// the size limit or of the entries is the listing's answer, said in the list.
 async function listMemory() {
     try {
         memoryFtsStats = await browser.runtime.sendMessage({ type: "fts", cmd: "memoryStats" });
@@ -415,8 +415,9 @@ function exchangeOf(text) {
 function removeEntry(memId) {
     if (removing.has(memId)) return;
     removing.add(memId);
-    renderChatHistory();
-    return inLine("removal", async () => {
+    // In line before the render that shows it pending, so its turn always
+    // comes and ends it, whatever that render does.
+    const turn = inLine("removal", async () => {
         try {
             await removeAndReadStats(memId);
         } finally {
@@ -425,6 +426,8 @@ function removeEntry(memId) {
         }
         renderChatHistory();
     });
+    renderChatHistory();
+    return turn;
 }
 
 async function removeAndReadStats(memId) {

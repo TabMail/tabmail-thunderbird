@@ -512,6 +512,47 @@ describe('Chat History keeps the latest answer and the pending state across requ
     expect(page.empty()).toBeNull();
   });
 
+  it('a listing shows the turns and memory size it read, and resets them when a later read fails', async () => {
+    const helper = fakeHelper(entriesOf(2));
+    const page = await openPage(helper);
+    const usage = () => page.d.getElementById('history-usage-label').textContent;
+    globalThis.browser.storage.local.get.mockImplementation(async key => (
+      key === 'chat_turns' ? { chat_turns: [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }] } : {}
+    ));
+    await page.history.loadChatHistory();
+    expect(page.stats()).toContain('Active turns: 2');
+    expect(usage()).toMatch(/^Memory used: \d/);
+    globalThis.browser.storage.local.get.mockImplementation(async key => {
+      if (key === 'chat_turns') throw new Error('turn count unavailable');
+      return {};
+    });
+    helper.holdWith(msg => (msg.cmd === 'memoryStats' ? { until: null, reply: () => new Error('stats unavailable') } : null));
+    await page.history.loadChatHistory();
+    expect(page.stats()).toContain('Active turns: 0');
+    expect(usage()).toMatch(/^Memory used: unavailable/);
+    expect(page.shown()).toEqual([0, 1].map(i => requestOf('planning', i)));
+  });
+
+  it('a Remove press whose first render throws still ends pending once its turn ends', async () => {
+    const helper = fakeHelper(entriesOf(2));
+    const page = await openPage(helper);
+    const removal = gate();
+    helper.holdWith(msg => (msg.cmd === 'memoryRemoveBatch' ? { until: removal.until, reply: () => ({ error: 'locked' }) } : null));
+    const button = page.removeButton(1);
+    // The stats bar is gone: the render the press makes throws.
+    const bar = page.d.getElementById('history-stats');
+    bar.remove();
+    button.click();
+    page.d.getElementById('history-list').before(bar);
+    removal.open();
+    await settle();
+    expect(sent(helper, msg => msg.cmd === 'memoryRemoveBatch')).toBe(1);
+    await page.history.loadChatHistory();
+    expect(page.shown()).toEqual([0, 1].map(i => requestOf('planning', i)));
+    expect(page.removeButton(1).textContent).toBe('Remove');
+    expect(page.removeButton(1).disabled).toBe(false);
+  });
+
   it('a listing that fails after entries were shown says why in the list', async () => {
     const helper = fakeHelper(entriesOf(2));
     const page = await openPage(helper);
