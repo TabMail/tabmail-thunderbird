@@ -77,11 +77,12 @@ function parseProperty(line) {
   }
 }
 
+// Notes come from a mail attachment: they are read in a document of their own,
+// never as markup in the page that reads the mail.
 function stripHtmlAndNormalize(html) {
   try {
-    const tmp = document.createElement("div");
-    tmp.innerHTML = String(html || "");
-    const text = tmp.textContent || tmp.innerText || "";
+    const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+    const text = doc.body?.textContent || "";
     return text.replace(/\s+/g, " ").trim();
   } catch (_) {
     return String(html || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
