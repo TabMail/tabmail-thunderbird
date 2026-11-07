@@ -497,6 +497,21 @@ describe('Chat History keeps the latest answer and the pending state across requ
     expect(page.pageInfo()).toBe('Page 3 of 3');
   });
 
+  it('a listing whose turns count cannot be read still shows what memory now holds', async () => {
+    const helper = fakeHelper(entriesOf(2));
+    const page = await openPage(helper);
+    expect(page.shown()).toEqual([0, 1].map(i => requestOf('planning', i)));
+    helper.stored.splice(0, helper.stored.length, ...entriesOf(1, 'budget'));
+    globalThis.browser.storage.local.get.mockImplementation(async key => {
+      if (key === 'chat_turns') throw new Error('turn count unavailable');
+      return {};
+    });
+    await page.history.loadChatHistory();
+    expect(page.shown()).toEqual([requestOf('budget', 0)]);
+    expect(page.stats()).toContain('Active turns: 0');
+    expect(page.empty()).toBeNull();
+  });
+
   it('a listing that fails after entries were shown says why in the list', async () => {
     const helper = fakeHelper(entriesOf(2));
     const page = await openPage(helper);
