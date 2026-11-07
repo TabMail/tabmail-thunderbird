@@ -1418,6 +1418,89 @@ describe("native helper update reconnect", () => {
     expect(nativeFtsSearch.getHostStatus().status).toBe("available");
   });
 
+  it("keeps a target that failed suppressed after another target succeeds without being applied", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    const published = { version: "0.11.3" };
+    vi.stubGlobal("fetch", manifestFetch(published));
+    const first = makeNativePort(true, null, { canSelfUpdate: true });
+    const second = makeNativePort(true, null, {
+      canSelfUpdate: true,
+      updateRequestResult: { ...updated, newVersion: "0.11.4" },
+    });
+    const third = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second, third);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+    const requested = port => port.messages
+      .filter(message => message.method === "updateRequest")
+      .map(message => message.params.targetVersion);
+
+    // 0.11.3 fails; then 0.11.4 answers success but its swap does not land.
+    await initNativeFts();
+    expect(requested(first)).toEqual(["0.11.3"]);
+    first.disconnect();
+    published.version = "0.11.4";
+    await initNativeFts();
+    expect(requested(second)).toEqual(["0.11.4"]);
+
+    // The reconnect finds 0.11.3 published again: it already failed this session.
+    published.version = "0.11.3";
+    await runUpdateReconnect(second, nativeFtsSearch);
+    expect(requested(third)).toEqual([]);
+    expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion: "0.11.2" });
+    expect(await nativeFtsSearch.indexBatch([freshRow])).toEqual({ ok: true, count: 1 });
+    expect(methods(third)).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
+  });
+
+  it("keeps a second manual target's attempt when the first one succeeds and its helper exits", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    const fetchManifest = manifestFetch({ version: "0.11.2" });
+    vi.stubGlobal("fetch", fetchManifest);
+    const first = makeNativePort(true, null, {
+      canSelfUpdate: true,
+      updateRequestResult: updated,
+      updateExitScheduler: callback => callback(),
+    });
+    // A helper stops reading once its first update succeeds, so a second
+    // update sent before it exits gets no answer.
+    let updateRequests = 0;
+    const post = first.postMessage;
+    first.postMessage = message => {
+      if (message.method === "updateRequest" && ++updateRequests > 1) {
+        first.messages.push(message);
+        return;
+      }
+      post(message);
+    };
+    const second = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+    await initNativeFts();
+
+    // Two settings pages check at once while a newer version is published.
+    const manifest = version => ({ ok: true, json: async () => ({ latest: {
+      version, downloadUrl: "https://cdn.test/native-fts.zip", sha256: "ab".repeat(32), signature: "test-signature",
+    } }) });
+    fetchManifest.mockResolvedValueOnce(manifest("0.11.3"))
+      .mockResolvedValueOnce(manifest("0.11.4"))
+      .mockImplementation(async () => manifest("0.11.4"));
+    const [a, b] = await Promise.all([
+      nativeFtsSearch.manualCheckAndUpdateHost(),
+      nativeFtsSearch.manualCheckAndUpdateHost(),
+    ]);
+    expect(a).toMatchObject({ ok: true, updated: true, newVersion: "0.11.3" });
+    expect(b.ok).toBe(false);
+    expect(first.messages.filter(m => m.method === "updateRequest").map(m => m.params.targetVersion))
+      .toEqual(["0.11.3", "0.11.4"]);
+
+    // The update reconnect finds 0.11.4, already requested this session.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion: "0.11.2" });
+    expect(await nativeFtsSearch.indexBatch([freshRow])).toEqual({ ok: true, count: 1 });
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
+  });
+
   it("does not repeat a failed update after the background is unloaded and woken in the same session", async () => {
     vi.resetModules();
     vi.stubGlobal("fetch", manifestFetch());
