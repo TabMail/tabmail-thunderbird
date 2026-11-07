@@ -9,7 +9,7 @@ vi.mock("../agent/modules/config.js", () => ({
   SETTINGS: { memoryManagement: { nativeRpcTimeoutMs: 1_000 } },
 }));
 
-function makeNativePort(hostVersion, { canSelfUpdate = true, helloError = null } = {}) {
+function makeNativePort(hostVersion, { canSelfUpdate = true, helloError = null, answers = {} } = {}) {
   const messageListeners = [];
   const disconnectListeners = [];
   const methods = [];
@@ -35,6 +35,7 @@ function makeNativePort(hostVersion, { canSelfUpdate = true, helloError = null }
         });
       }
       if (message.method === "init") respond(message, { dbPath: "/test/fts.sqlite" });
+      if (Object.hasOwn(answers, message.method)) respond(message, answers[message.method]);
     },
     disconnect() {
       this.disconnected = true;
@@ -45,6 +46,7 @@ function makeNativePort(hostVersion, { canSelfUpdate = true, helloError = null }
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   vi.doUnmock("../fts/nativeCompatibility.js");
   delete globalThis.browser;
 });
@@ -162,6 +164,50 @@ describe("native FTS unsupported helper state propagation", () => {
     expect(port.disconnected).toBe(true);
     expect(nativeFtsSearch.getHostAvailability()).toBe(false);
     expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "missing" });
+  });
+
+  // A supported Windows helper still updates itself: the support check comes
+  // first, then the update check, and only then is the helper used.
+  it("checks a supported Windows helper for updates before using it", async () => {
+    vi.resetModules();
+    const port = makeNativePort("0.12.3", {
+      answers: { updateCheck: { needsUpdate: false, canUpdate: true }, search: { hits: ["from-helper"] } },
+    });
+    installBrowser(vi.fn(() => port), vi.fn(async () => ({ os: "win", arch: "x86-64" })));
+    const manifestFetch = vi.fn(async () => ({ ok: true, json: async () => ({ latest: { version: "0.12.3" } }) }));
+    vi.stubGlobal("fetch", manifestFetch);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await initNativeFts();
+
+    expect(manifestFetch).toHaveBeenCalledOnce();
+    expect(String(manifestFetch.mock.calls[0][0])).toContain("/windows-x86_64/");
+    expect(port.methods).toEqual(["hello", "updateCheck", "init"]);
+    expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion: "0.12.3" });
+    await expect(nativeFtsSearch.search("q")).resolves.toMatchObject({ hits: ["from-helper"] });
+  });
+
+  // The update check is best-effort: once support is established, a failed
+  // update-only platform lookup must not stop the helper from being used.
+  it("keeps a supported Windows helper in use when only the update's platform lookup fails", async () => {
+    vi.resetModules();
+    const port = makeNativePort("0.12.3", { answers: { search: { hits: ["from-helper"] } } });
+    const getPlatformInfo = vi.fn()
+      .mockImplementationOnce(async () => ({ os: "win", arch: "x86-64" }))
+      .mockImplementation(async () => { throw new Error("platform unavailable"); });
+    installBrowser(vi.fn(() => port), getPlatformInfo);
+    const manifestFetch = vi.fn();
+    vi.stubGlobal("fetch", manifestFetch);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await initNativeFts();
+
+    expect(getPlatformInfo).toHaveBeenCalledTimes(2);
+    expect(manifestFetch).not.toHaveBeenCalled();
+    expect(port.methods).toEqual(["hello", "init"]);
+    expect(port.disconnected).toBe(false);
+    expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion: "0.12.3" });
+    await expect(nativeFtsSearch.search("q")).resolves.toMatchObject({ hits: ["from-helper"] });
   });
 
   it("does not ask for the platform while no Windows cutoff is configured", async () => {
