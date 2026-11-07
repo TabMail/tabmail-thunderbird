@@ -40,7 +40,7 @@ const STORAGE_KEY_LAST_INDEXED_VERSION = "ftsLastIndexedHostVersion";
 const STORAGE_KEY_EMBEDDING_REBUILD_STATUS = "fts_embedding_rebuild_status";
 
 // storage.session key: the updateRequests this Thunderbird session sent, per
-// target version: { [version]: { requests, lastSucceeded } }. The automatic
+// target version: { [version]: { requests, lastSucceeded, succeededAtMs } }. The automatic
 // update sends one per version per session, so an update that fails is not
 // repeated on every reconnect. The one exception: when the last request for that
 // version answered success and the reconnected helper still needs it, the update
@@ -55,6 +55,11 @@ const SESSION_KEY_UPDATE_REQUESTS = "ftsNativeUpdateRequests";
 // Automatic requests sent again after a success answer the reconnected helper did
 // not apply. Each follows the update reconnect, so they are spaced like it.
 const UPDATE_REASKS_AFTER_SUCCESS = 2;
+// A re-ask waits until this long after the success it repeats. On Windows that
+// success left an apply copy retrying its swap for 5.5 s (native-fts ADR-NF-024:
+// 500 ms, then 20 attempts 250 ms apart) from the one path every update copies
+// its apply helper to, so an update sent sooner can fail copying over it.
+const UPDATE_REASK_AFTER_SUCCESS_MS = 6_000;
 
 // Update server URL - points to the same CDN as addon updates.
 // Native-FTS updates are platform-first so each OS/arch can be deployed independently:
@@ -378,6 +383,11 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
   }
   if (bootstrapState && previous) {
     log(`[TMDBG FTS] Update to ${latestRelease.version} answered success but the helper still needs it; asking again (${previous.requests}/${UPDATE_REASKS_AFTER_SUCCESS})`, "warn");
+    const waitMs = previous.succeededAtMs + UPDATE_REASK_AFTER_SUCCESS_MS - Date.now();
+    if (waitMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      _assertNativeStateCurrent(bootstrapState, "update re-ask wait");
+    }
   }
   // Recorded before the request is sent: if it cannot be recorded, none is sent.
   const requests = (previous?.requests || 0) + 1;
@@ -409,7 +419,7 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
       await browser.storage.session.set({
         [SESSION_KEY_UPDATE_REQUESTS]: {
           ...current,
-          [latestRelease.version]: { requests, lastSucceeded: true },
+          [latestRelease.version]: { requests, lastSucceeded: true, succeededAtMs: Date.now() },
         },
       });
     } catch (e) {

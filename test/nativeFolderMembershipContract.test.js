@@ -1302,15 +1302,22 @@ describe("native helper update reconnect", () => {
       await vi.advanceTimersByTimeAsync(5);
     }
     expect(port.disconnect).toHaveBeenCalledOnce();
+    const exitedAt = Date.now();
     await vi.advanceTimersByTimeAsync(1_000);
     const next = browser.runtime.connectNative.mock.results.at(-1).value;
     expect(next).not.toBe(port);
-    // Settled once the reconnected helper is serving or has been asked again.
-    for (let turn = 0; turn < 50
-      && nativeFtsSearch.getHostStatus().status !== "available"
+    // Settled once the reconnected helper is serving or has been asked again;
+    // returns how long after the helper's exit it was asked again, if it was.
+    for (let turn = 0; turn < 150
+      && !methods(next).includes("init")
       && !methods(next).includes("updateRequest"); turn++) {
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    for (let turn = 0; turn < 50 && methods(next).includes("init")
+      && nativeFtsSearch.getHostStatus().status !== "available"; turn++) {
       await vi.advanceTimersByTimeAsync(0);
     }
+    return methods(next).includes("updateRequest") ? Date.now() - exitedAt : null;
   };
 
   it("asks again a bounded number of times while a successful update is not applied, then leaves it for the next start", async () => {
@@ -1325,10 +1332,18 @@ describe("native helper update reconnect", () => {
     const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
 
     expect(await initNativeFts()).toBe(true);
+    const reasked = [];
     for (const port of ports.slice(0, 3)) {
-      await runUpdateReconnect(port, nativeFtsSearch);
+      reasked.push(await runUpdateReconnect(port, nativeFtsSearch));
       expect(nativeFtsSearch.getHostStatus().status).not.toBe("missing");
     }
+    // Each re-ask waits until the previous update's apply copy has finished
+    // (6 s after its success), though the helper reconnected after 1 s.
+    for (const after of reasked.slice(0, 2)) {
+      expect(after).toBeGreaterThanOrEqual(6_000);
+      expect(after).toBeLessThan(6_500);
+    }
+    expect(reasked[2]).toBeNull();
     expect(browser.runtime.connectNative).toHaveBeenCalledTimes(4);
     for (const port of ports.slice(0, 3)) {
       expect(methods(port)).toEqual(["hello", "updateCheck", "updateRequest"]);
@@ -1416,6 +1431,54 @@ describe("native helper update reconnect", () => {
     await runUpdateReconnect(first, nativeFtsSearch);
     expect(methods(second)).toEqual(["hello", "updateCheck", "init"]);
     expect(nativeFtsSearch.getHostStatus().status).toBe("available");
+  });
+
+  it("does not ask a helper that goes away during the re-ask wait, and asks its successor", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const second = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const third = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second, third);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    expect(await initNativeFts()).toBe(true);
+    for (let turn = 0; turn < 50 && !first.disconnect.mock.calls.length; turn++) {
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(methods(second)).toEqual(["hello", "updateCheck"]);
+    second.disconnect();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(methods(second)).toEqual(["hello", "updateCheck"]);
+    expect(browser.storage.session.data.get("ftsNativeUpdateRequests")["0.11.3"])
+      .toMatchObject({ requests: 1, lastSucceeded: true });
+
+    // A later connection still gets the re-ask the gone helper never received.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await nativeFtsSearch.recheckAvailability()).toBe(true);
+    expect(methods(third)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+  });
+
+  it("asks again at the reconnect when a successful manual update is not applied", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    const published = { version: "0.11.2" };
+    vi.stubGlobal("fetch", manifestFetch(published));
+    const first = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const second = makeNativePort(true, null, { canSelfUpdate: true, updateRequestResult: updated });
+    const third = makeNativePort(true, null, { canSelfUpdate: true, hostVersion: "0.11.3" });
+    installBrowser(first, second, third);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await initNativeFts();
+    published.version = "0.11.3";
+    expect(await nativeFtsSearch.manualCheckAndUpdateHost()).toMatchObject({ ok: true, updated: true });
+    expect(await runUpdateReconnect(first, nativeFtsSearch)).toBeGreaterThanOrEqual(6_000);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "updateRequest"]);
+    await runUpdateReconnect(second, nativeFtsSearch);
+    expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion: "0.11.3" });
   });
 
   it("keeps a target that failed suppressed after another target succeeds without being applied", async () => {
