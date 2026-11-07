@@ -16,7 +16,7 @@ vi.mock('../agent/modules/utils.js', () => ({
 }));
 vi.mock('../agent/modules/config.js', () => ({ SETTINGS: { debugMode: false, logFolder: 'logs' } }));
 vi.mock('../chat/modules/entityResolver.js', () => ({
-  resolveContactDetails: vi.fn(async () => ({ name: 'Sam *Example*', email: 'sam@example.com', emails: ['sam@example.com'] })),
+  resolveContactDetails: vi.fn(async id => ({ name: `Sam ${id} *Example*`, email: 'sam@example.com', emails: ['sam@example.com'] })),
   resolveEventDetails: vi.fn(async () => null),
 }));
 vi.mock('../chat/modules/helpers.js', () => ({ getGenericTimezoneAbbr: vi.fn(() => 'PT') }));
@@ -31,13 +31,17 @@ const parse = html => {
   return body;
 };
 
-// The text rendered in a table's one body cell, and as a paragraph.
+// The text rendered in a table's first header cell and first body cell, and as
+// a paragraph. The header renders it as the body cell does.
 async function cellAndParagraph(text) {
-  const table = parse(await renderMarkdown(`| Header | Other |\n| --- | --- |\n| ${text} | x |`));
+  const table = parse(await renderMarkdown(`| ${text} | Other |\n| --- | --- |\n| ${text} | x |`));
+  const headers = table.querySelectorAll('thead th');
   const cells = table.querySelectorAll('tbody td');
   const paragraph = parse(await renderMarkdown(text)).querySelector('p');
+  expect(headers).toHaveLength(2);
   expect(cells).toHaveLength(2);
   expect(paragraph).not.toBeNull();
+  expect(headers[0].innerHTML, text).toBe(cells[0].innerHTML);
   return { cell: cells[0], paragraph };
 }
 
@@ -85,9 +89,47 @@ describe('a table cell renders its text as the rest of the reply does', () => {
     const { cell, paragraph } = await cellAndParagraph('Ask [Contact](42) and *note*');
     const links = cell.querySelectorAll('a.tm-contact-link');
     expect(links).toHaveLength(1);
-    expect(links[0].textContent).toContain('Sam *Example*');
+    expect(links[0].textContent).toContain('Sam 42 *Example*');
     expect(cell.querySelector('em').textContent).toBe('note');
     expect(cell.innerHTML).toBe(paragraph.innerHTML);
+  });
+
+  it('each link in headers, rows and tables keeps its own address', async () => {
+    const md = [
+      '| [a](https://example.com/h1) | [Contact](11) |', '| --- | --- |', '| [b](https://example.com/r1) | [Contact](12) |', '',
+      '| [c](https://example.com/h2) | [Contact](13) |', '| --- | --- |', '| [d](https://example.com/r2) | [Contact](14) |',
+    ].join('\n');
+    const body = parse(await renderMarkdown(md));
+    expect(body.querySelectorAll('table')).toHaveLength(2);
+    const plain = [...body.querySelectorAll('a:not(.tm-contact-link)')];
+    expect(plain.map(a => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['a', 'https://example.com/h1'], ['b', 'https://example.com/r1'], ['c', 'https://example.com/h2'], ['d', 'https://example.com/r2'],
+    ]);
+    const contacts = [...body.querySelectorAll('a.tm-contact-link')];
+    expect(contacts.map(a => a.getAttribute('data-tm-id'))).toEqual(['11', '12', '13', '14']);
+    expect(contacts.map(a => a.textContent.includes(`Sam ${a.getAttribute('data-tm-id')} *Example*`))).toEqual([true, true, true, true]);
+  });
+
+  it('numeric character references show as their characters in a header and a cell', async () => {
+    const text = '&#60;img&#62; &#x3C;b&#X3e; &#0060;i&#x003E; &#38;';
+    const table = parse(await renderMarkdown(`| ${text} | B |\n| --- | --- |\n| ${text} | x |`));
+    for (const cell of [table.querySelector('thead th'), table.querySelector('tbody td')]) {
+      expect(cell.children).toHaveLength(0);
+      expect(cell.textContent).toBe('<img> <b> <i> &');
+    }
+  });
+
+  it('marker-shaped text the renderer did not make adds no markup to a cell', async () => {
+    const inline = 'a @@CODE_9@@ b @@LINK_99@@ c @@SPECIAL_LINK_99@@ d';
+    const { cell, paragraph } = await cellAndParagraph(inline);
+    expect(cell.children).toHaveLength(0);
+    expect(cell.innerHTML).toBe(paragraph.innerHTML);
+    const local = 'e @@TABLECELL_ENTITY_5@@ f @@TABLECELL_BR_5@@ g';
+    const table = parse(await renderMarkdown(`| ${local} | B |\n| --- | --- |\n| ${local} | x |`));
+    for (const c of [table.querySelector('thead th'), table.querySelector('tbody td')]) {
+      expect(c.children).toHaveLength(0);
+      expect(c.textContent).toBe('e  f  g');
+    }
   });
 
   it('a line break and character references still render in a cell', async () => {
