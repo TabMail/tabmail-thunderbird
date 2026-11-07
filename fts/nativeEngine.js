@@ -39,14 +39,41 @@ const STORAGE_KEY_LAST_INDEXED_VERSION = "ftsLastIndexedHostVersion";
 // Storage key for tracking interrupted embedding rebuild (resume on next startup)
 const STORAGE_KEY_EMBEDDING_REBUILD_STATUS = "fts_embedding_rebuild_status";
 
-// storage.session key: target versions this Thunderbird session already sent an
-// updateRequest for. The automatic update sends at most one per version per
-// session, so an update that fails, or answers success without being applied, is
-// not repeated on every reconnect. storage.session is kept in memory and cleared
+// storage.session key: the updateRequests this Thunderbird session sent, per
+// target version: { [version]: { requests, lastSucceeded, succeededAtMs } }. The automatic
+// update sends one per version per session, so an update that fails is not
+// repeated on every reconnect. The one exception: when the last request for that
+// version answered success and the reconnected helper still needs it, the update
+// is asked again, at most UPDATE_REASKS_AFTER_SUCCESS times. A success answer that
+// is not applied is usually the old helper's swap losing to the reconnect (Windows,
+// native-fts #73); asking again starts a new swap. After the last re-ask the
+// update is left for the next start. storage.session is kept in memory and cleared
 // when Thunderbird quits (the next start tries again); unlike a module variable
 // it survives the event page being unloaded while idle, which a failed update
 // allows by closing the native port that kept the page alive.
-const SESSION_KEY_UPDATE_REQUESTED_VERSIONS = "ftsNativeUpdateRequestedVersions";
+const SESSION_KEY_UPDATE_REQUESTS = "ftsNativeUpdateRequests";
+// Automatic requests sent again after a success answer the reconnected helper did
+// not apply.
+const UPDATE_REASKS_AFTER_SUCCESS = 2;
+// A re-ask waits until this long after the success it repeats. On Windows that
+// success left an apply copy retrying its swap for 5.5 s (native-fts ADR-NF-024:
+// 500 ms, then 20 attempts 250 ms apart) from the one path every update copies
+// its apply helper to, so an update sent sooner can fail copying over it.
+const UPDATE_REASK_AFTER_SUCCESS_MS = 6_000;
+// Whether the automatic update may ask for a version, given its record entry.
+const automaticAskAllowed = entry => !entry
+  || (entry.lastSucceeded && entry.requests <= UPDATE_REASKS_AFTER_SUCCESS);
+// Changes the update-request record: reads it fresh and writes the version's new
+// entry back. `change` gets the version's entry and returns its new one, or
+// undefined to leave the record as it is.
+async function changeUpdateRequest(version, change) {
+  const all = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTS))
+    ?.[SESSION_KEY_UPDATE_REQUESTS] || {};
+  const entry = change(all[version]);
+  if (entry) {
+    await browser.storage.session.set({ [SESSION_KEY_UPDATE_REQUESTS]: { ...all, [version]: entry } });
+  }
+}
 
 // Update server URL - points to the same CDN as addon updates.
 // Native-FTS updates are platform-first so each OS/arch can be deployed independently:
@@ -359,19 +386,36 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
   if (!updateCheck.canUpdate) {
     return { updateAvailable: true, canUpdate: false, latestVersion: latestRelease.version };
   }
-  const requestedVersions = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTED_VERSIONS))
-    ?.[SESSION_KEY_UPDATE_REQUESTED_VERSIONS] || [];
+  const version = latestRelease.version;
+  const previous = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTS))
+    ?.[SESSION_KEY_UPDATE_REQUESTS]?.[version];
   if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update attempts");
-  if (bootstrapState && requestedVersions.includes(latestRelease.version)) {
-    log(`[TMDBG FTS] Update to ${latestRelease.version} was already requested this session; not repeating it automatically`, "warn");
-    return { updateAvailable: true, canUpdate: true, updated: false, latestVersion: latestRelease.version };
+  const alreadyRequested = () => {
+    log(`[TMDBG FTS] Update to ${version} was already requested this session; not repeating it automatically`, "warn");
+    return { updateAvailable: true, canUpdate: true, updated: false, latestVersion: version };
+  };
+  if (bootstrapState && !automaticAskAllowed(previous)) return alreadyRequested();
+  if (bootstrapState && previous) {
+    log(`[TMDBG FTS] Update to ${version} answered success but the helper still needs it; asking again (${previous.requests}/${UPDATE_REASKS_AFTER_SUCCESS})`, "warn");
+    const waitMs = previous.succeededAtMs + UPDATE_REASK_AFTER_SUCCESS_MS - Date.now();
+    if (waitMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      _assertNativeStateCurrent(bootstrapState, "update re-ask wait");
+    }
   }
   // Recorded before the request is sent: if it cannot be recorded, none is sent.
-  if (!requestedVersions.includes(latestRelease.version)) {
-    await browser.storage.session.set({
-      [SESSION_KEY_UPDATE_REQUESTED_VERSIONS]: [...requestedVersions, latestRelease.version],
-    });
-  }
+  // The automatic update checks again on the entry it numbers, since a manual
+  // attempt may have been recorded while it waited.
+  let requests;
+  await changeUpdateRequest(version, entry => {
+    if (bootstrapState) {
+      _assertNativeStateCurrent(bootstrapState, "update attempt record");
+      if (!automaticAskAllowed(entry)) return undefined;
+    }
+    requests = (entry?.requests || 0) + 1;
+    return { requests, lastSucceeded: false };
+  });
+  if (requests === undefined) return alreadyRequested();
 
   const updateResult = await nativeRPC('updateRequest', {
     targetVersion: latestRelease.version,
@@ -386,6 +430,13 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
     // The response is the commit point: from here onward the captured port may
     // disappear before, during, or after UI work and must not be revalidated.
     log(`[TMDBG FTS] ✅ Host update successful! Prompting for Thunderbird restart.`);
+    // Lets the reconnect ask again if this success is not applied. If it cannot
+    // be recorded, the update is not asked again this session.
+    try {
+      await changeUpdateRequest(version, () => ({ requests, lastSucceeded: true, succeededAtMs: Date.now() }));
+    } catch (e) {
+      log(`[TMDBG FTS] Could not record the successful update request: ${e}`, "warn");
+    }
     await showNativeUpdateBanner(latestRelease.version);
     return { updateAvailable: true, canUpdate: true, updated: true, oldVersion: currentVersion, newVersion: latestRelease.version };
   } else {
