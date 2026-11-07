@@ -39,6 +39,15 @@ const STORAGE_KEY_LAST_INDEXED_VERSION = "ftsLastIndexedHostVersion";
 // Storage key for tracking interrupted embedding rebuild (resume on next startup)
 const STORAGE_KEY_EMBEDDING_REBUILD_STATUS = "fts_embedding_rebuild_status";
 
+// storage.session key: target versions this Thunderbird session already sent an
+// updateRequest for. The automatic update sends at most one per version per
+// session, so an update that fails, or answers success without being applied, is
+// not repeated on every reconnect. storage.session is kept in memory and cleared
+// when Thunderbird quits (the next start tries again); unlike a module variable
+// it survives the event page being unloaded while idle, which a failed update
+// allows by closing the native port that kept the page alive.
+const SESSION_KEY_UPDATE_REQUESTED_VERSIONS = "ftsNativeUpdateRequestedVersions";
+
 // Update server URL - points to the same CDN as addon updates.
 // Native-FTS updates are platform-first so each OS/arch can be deployed independently:
 //   ${UPDATE_BASE_URL}/${platformKey}/update-manifest.json
@@ -61,11 +70,6 @@ let nativeInitializationState = null;
 // (the resolved initialization stays cached until then), so that disconnect is
 // the next one and consumes the flag.
 let updateResponseCommitted = false;
-// Target versions this Thunderbird session already sent an updateRequest for.
-// The automatic update sends at most one per version per session, so an update
-// that fails, or answers success without being applied, is not repeated on every
-// reconnect. In memory only: the next Thunderbird start tries again.
-const updateRequestedVersions = new Set();
 // Reliable "is the native helper installed?" signal for UI surfaces (badge /
 // popup / settings). null = not yet determined, true = handshake succeeded,
 // false = connect/handshake failed (helper not installed). connectNative()
@@ -355,11 +359,19 @@ async function fetchAndApplyUpdate(currentVersion, canSelfUpdate, bootstrapState
   if (!updateCheck.canUpdate) {
     return { updateAvailable: true, canUpdate: false, latestVersion: latestRelease.version };
   }
-  if (bootstrapState && updateRequestedVersions.has(latestRelease.version)) {
+  const requestedVersions = (await browser.storage.session.get(SESSION_KEY_UPDATE_REQUESTED_VERSIONS))
+    ?.[SESSION_KEY_UPDATE_REQUESTED_VERSIONS] || [];
+  if (bootstrapState) _assertNativeStateCurrent(bootstrapState, "update attempts");
+  if (bootstrapState && requestedVersions.includes(latestRelease.version)) {
     log(`[TMDBG FTS] Update to ${latestRelease.version} was already requested this session; not repeating it automatically`, "warn");
     return { updateAvailable: true, canUpdate: true, updated: false, latestVersion: latestRelease.version };
   }
-  updateRequestedVersions.add(latestRelease.version);
+  // Recorded before the request is sent: if it cannot be recorded, none is sent.
+  if (!requestedVersions.includes(latestRelease.version)) {
+    await browser.storage.session.set({
+      [SESSION_KEY_UPDATE_REQUESTED_VERSIONS]: [...requestedVersions, latestRelease.version],
+    });
+  }
 
   const updateResult = await nativeRPC('updateRequest', {
     targetVersion: latestRelease.version,

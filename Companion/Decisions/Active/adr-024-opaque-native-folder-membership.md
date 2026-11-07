@@ -126,6 +126,12 @@ kept failing. Now the reconnect is armed on receipt of the success response, in 
 listener, before any continuation runs (the helper may exit right after writing it). The disconnect that
 follows consumes it. Any other disconnect, including one during a failed update, is ordinary: `missing`,
 under the cooldown. In addition, the automatic (bootstrap) update sends at most one `updateRequest` per
-target version per Thunderbird session (in-memory set): a failing update, or one that answers success
-but is not applied (another profile's helper holding the file), is not repeated on every reconnect. The
-manual "Check for Updates" always sends its request and records the version too. Owner ruling 2026-11-06.
+target version per Thunderbird session: a failing update, or one that answers success but is not
+applied (another profile's helper holding the file), is not repeated on every reconnect. The attempted
+versions live in `browser.storage.session` (key `ftsNativeUpdateRequestedVersions`), which is in memory
+and cleared when Thunderbird quits. A module variable is not enough: the MV3 event page unloads when idle
+once a failed update has closed the native port that kept it alive, and a later wake would start with an
+empty set. The version is recorded before the request is sent (no record, no request), and the bootstrap
+generation is revalidated after the read so a replaced generation cannot record a version its replacement
+then skips. The manual "Check for Updates" always sends its request and records the version too (owner
+blessed). Owner ruling 2026-11-06.

@@ -11,6 +11,18 @@ vi.mock("../agent/modules/config.js", () => ({
   SETTINGS: { memoryManagement: { nativeRpcTimeoutMs: 1_000 } },
 }));
 
+// In-memory stand-in for browser.storage.session: one per browser session.
+function sessionStore() {
+  const data = new Map();
+  return {
+    data,
+    get: vi.fn(async key => (data.has(key) ? { [key]: structuredClone(data.get(key)) } : {})),
+    set: vi.fn(async items => {
+      for (const [key, value] of Object.entries(items)) data.set(key, structuredClone(value));
+    }),
+  };
+}
+
 function makeNativePort(
   folderMembershipV1,
   assignmentResult = null,
@@ -827,6 +839,7 @@ describe("native folder-membership v1 contract", () => {
     });
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      storage: { session: sessionStore() },
       runtime: {
         connectNative: vi.fn(() => port),
         getManifest: vi.fn(() => ({
@@ -898,6 +911,7 @@ describe("native folder-membership v1 contract", () => {
       });
       globalThis.browser = {
         tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+        storage: { session: sessionStore() },
         runtime: {
           connectNative: vi.fn()
             .mockReturnValueOnce(first)
@@ -979,6 +993,7 @@ describe("native folder-membership v1 contract", () => {
     const second = makeNativePort(true);
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      storage: { session: sessionStore() },
       runtime: {
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
@@ -1136,6 +1151,7 @@ describe("native folder-membership v1 contract", () => {
     const second = makeNativePort(true);
     globalThis.browser = {
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      storage: { session: sessionStore() },
       runtime: {
         connectNative: vi.fn()
           .mockReturnValueOnce(first)
@@ -1182,11 +1198,11 @@ describe("native folder-membership v1 contract", () => {
 });
 
 describe("native helper update reconnect", () => {
-  const manifestFetch = () => vi.fn(async () => ({
+  const manifestFetch = (published = { version: "0.11.3" }) => vi.fn(async () => ({
     ok: true,
     json: async () => ({
       latest: {
-        version: "0.11.3",
+        version: published.version,
         downloadUrl: "https://cdn.test/native-fts.zip",
         sha256: "ab".repeat(32),
         signature: "test-signature",
@@ -1197,7 +1213,9 @@ describe("native helper update reconnect", () => {
     const connectNative = vi.fn();
     for (const port of ports) connectNative.mockReturnValueOnce(port);
     globalThis.browser = {
+      storage: { session: sessionStore() },
       tmMsgNotify: { getFtsDataDir: async () => '/test/profile/browser-extension-data/thunderbird@tabmail.ai' },
+      storage: { session: sessionStore() },
       runtime: {
         connectNative,
         getManifest: vi.fn(() => ({
@@ -1310,4 +1328,161 @@ describe("native helper update reconnect", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
   });
+
+  it("does not repeat a failed update after the background is unloaded and woken in the same session", async () => {
+    vi.resetModules();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true, deferUpdateRequest: true });
+    const second = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second);
+    const sessionBrowser = globalThis.browser;
+    const before = await import("../fts/nativeEngine.js");
+    const outcome = before.initNativeFts().then(() => ({ ok: true }), error => ({ ok: false, error }));
+    for (let turn = 0; turn < 30 && !methods(first).includes("updateRequest"); turn++) {
+      await Promise.resolve();
+    }
+    first.disconnect();
+    expect((await outcome).ok).toBe(false);
+
+    // The idle event page is unloaded; a later event starts it again in the
+    // same Thunderbird session, so the module and its variables are new.
+    vi.resetModules();
+    globalThis.browser = sessionBrowser;
+    const after = await import("../fts/nativeEngine.js");
+    expect(after.nativeFtsSearch).not.toBe(before.nativeFtsSearch);
+    await after.initNativeFts();
+
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init"]);
+    expect(after.nativeFtsSearch.getHostStatus().status).toBe("available");
+    await after.nativeFtsSearch.indexBatch([freshRow]);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
+  });
+
+  it("tries the update again in a new Thunderbird session", async () => {
+    vi.resetModules();
+    vi.stubGlobal("fetch", manifestFetch());
+    const first = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first);
+    await (await import("../fts/nativeEngine.js")).initNativeFts();
+    expect(methods(first)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+
+    // A new session starts with an empty storage.session.
+    vi.resetModules();
+    const next = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(next);
+    await (await import("../fts/nativeEngine.js")).initNativeFts();
+    expect(methods(next)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+  });
+
+  it("requests each newly published target once, and indexing stays usable", async () => {
+    vi.resetModules();
+    const published = { version: "0.11.3" };
+    vi.stubGlobal("fetch", manifestFetch(published));
+    const ports = [0, 1, 2].map(() => makeNativePort(true, null, { canSelfUpdate: true }));
+    installBrowser(...ports);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await initNativeFts();
+    ports[0].disconnect();
+    published.version = "0.11.4";
+    expect(await nativeFtsSearch.recheckAvailability()).toBe(true);
+    ports[1].disconnect();
+    expect(await nativeFtsSearch.recheckAvailability()).toBe(true);
+    await nativeFtsSearch.indexBatch([freshRow]);
+
+    const requested = port => port.messages
+      .filter(message => message.method === "updateRequest")
+      .map(message => message.params.targetVersion);
+    expect(requested(ports[0])).toEqual(["0.11.3"]);
+    expect(requested(ports[1])).toEqual(["0.11.4"]);
+    expect(requested(ports[2])).toEqual([]);
+    expect(methods(ports[2])).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
+  });
+
+  it("does not repeat automatically a target first requested by a manual check", async () => {
+    vi.resetModules();
+    const published = { version: "0.11.2" };
+    vi.stubGlobal("fetch", manifestFetch(published));
+    const first = makeNativePort(true, null, { canSelfUpdate: true });
+    const second = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(first, second);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await initNativeFts();
+    expect(methods(first)).toEqual(["hello", "updateCheck", "init"]);
+    published.version = "0.11.3";
+    expect(await nativeFtsSearch.manualCheckAndUpdateHost())
+      .toEqual({ ok: false, error: "test_update_not_applied" });
+    expect(methods(first)).toEqual(["hello", "updateCheck", "init", "updateCheck", "updateRequest"]);
+
+    first.disconnect();
+    expect(await nativeFtsSearch.recheckAvailability()).toBe(true);
+    await nativeFtsSearch.indexBatch([freshRow]);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
+  });
+
+  it("reconnects at once after a successful manual update and serves from the new helper", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    const published = { version: "0.11.2" };
+    vi.stubGlobal("fetch", manifestFetch(published));
+    const first = makeNativePort(true, null, {
+      canSelfUpdate: true,
+      updateRequestResult: {
+        success: true,
+        oldVersion: "0.11.2",
+        newVersion: "0.11.3",
+        requiresRestart: true,
+        message: "updated",
+      },
+    });
+    const second = makeNativePort(true, null, { canSelfUpdate: true, hostVersion: "0.11.3" });
+    installBrowser(first, second);
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    await initNativeFts();
+    published.version = "0.11.3";
+    expect(await nativeFtsSearch.manualCheckAndUpdateHost()).toMatchObject({ ok: true, updated: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.disconnect).toHaveBeenCalledOnce();
+    expect(nativeFtsSearch.getHostStatus().status).not.toBe("missing");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    for (let turn = 0; turn < 30 && nativeFtsSearch.getHostStatus().status !== "available"; turn++) {
+      await Promise.resolve();
+    }
+    expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
+    expect(nativeFtsSearch.getHostStatus()).toEqual({ status: "available", hostVersion: "0.11.3" });
+    await nativeFtsSearch.indexBatch([freshRow]);
+    expect(methods(second)).toEqual(["hello", "updateCheck", "init", "indexBatch"]);
+  });
+
+  it("does not let a generation replaced while it reads the attempts record suppress its replacement's update", async () => {
+    vi.resetModules();
+    vi.stubGlobal("fetch", manifestFetch());
+    const stale = makeNativePort(true, null, { canSelfUpdate: true });
+    const current = makeNativePort(true, null, { canSelfUpdate: true });
+    installBrowser(stale, current);
+    const session = browser.storage.session;
+    const realGet = session.get.getMockImplementation();
+    let releaseGet;
+    session.get.mockImplementationOnce(key => new Promise(resolve => {
+      releaseGet = () => resolve(realGet(key));
+    }));
+    const { initNativeFts, nativeFtsSearch } = await import("../fts/nativeEngine.js");
+
+    const staleOutcome = initNativeFts().then(() => ({ ok: true }), error => ({ ok: false, error }));
+    for (let turn = 0; turn < 30 && !releaseGet; turn++) await Promise.resolve();
+    expect(methods(stale)).toEqual(["hello", "updateCheck"]);
+    stale.disconnect();
+    releaseGet();
+    expect((await staleOutcome).ok).toBe(false);
+    expect(session.data.size).toBe(0);
+
+    await initNativeFts();
+    expect(methods(stale)).toEqual(["hello", "updateCheck"]);
+    expect(methods(current)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(nativeFtsSearch.getHostStatus().status).toBe("available");
+  });
 });
+
