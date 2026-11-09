@@ -26,6 +26,8 @@ vi.mock("../agent/modules/supabaseAuth.js", () => ({
 }));
 
 const ADDON_VERSION = "9.8.7";
+// One token per send: the first send, after the rate-limit wait, after the new sign-in.
+const TOKENS = ["first-token", "after-wait-token", "after-sign-in-token"];
 
 globalThis.window = globalThis.window || {};
 globalThis.browser = {
@@ -37,6 +39,7 @@ globalThis.browser = {
 };
 
 const { SETTINGS } = await import("../agent/modules/config.js");
+const { getAccessToken } = await import("../agent/modules/supabaseAuth.js");
 const { sendChatCompletions, _testExports } = await import("../agent/modules/llm.js");
 
 function json(status, body) {
@@ -55,6 +58,8 @@ describe("completions request headers", () => {
       json(500, { error: "unavailable" }), // the retry after a new sign-in
     ];
     const fetchMock = vi.fn(async () => responses.shift());
+    getAccessToken.mockClear();
+    for (const token of TOKENS) getAccessToken.mockResolvedValueOnce(token);
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
@@ -62,11 +67,12 @@ describe("completions request headers", () => {
     ).rejects.toThrow("Request failed after re-auth: 500");
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(getAccessToken).toHaveBeenCalledTimes(3);
     expect(SETTINGS.protocolVersion).toMatch(/^\d+\.\d+\.\d+$/);
-    for (const [, options] of fetchMock.mock.calls) {
+    for (const [index, [, options]] of fetchMock.mock.calls.entries()) {
       expect(options.headers).toEqual({
         "Content-Type": "application/json",
-        "Authorization": "Bearer access-token",
+        "Authorization": `Bearer ${TOKENS[index]}`,
         "X-Client-Version": ADDON_VERSION,
         "X-Client-Protocol": SETTINGS.protocolVersion,
       });
