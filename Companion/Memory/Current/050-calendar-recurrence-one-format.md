@@ -14,9 +14,16 @@ same design (tabmail-ios #421).
 - **Printing:** `chat/modules/recurrence.js` prints it as `recurrence: {"freq":"WEEKLY","byDay":["MO"],"until":"2099-10-31"}`
   in `calendar_event_read`, and as ` (↻ {...})` in the `calendar_search`/`calendar_read` listing.
 - **Only the stated fields are shown.** `interval` 1 and `wkst` MO are omitted.
-- **The rule is read from `recurrenceInfo` only** (`rruleOfItem`, used by both read tools and by the split): its
-  first RRULE item. An EXRULE is never read as the rule (Thunderbird expands only the first positive RRULE), and
-  writing a rule leaves it on the series. RRULE is a
+- **The rule is read from `recurrenceInfo` only** (`ruleValuesOfItem` / `rruleOfItem`, used by both read tools and
+  by the split): the fields describe its first rule item. **Thunderbird 140-160 expands EVERY rule item** (no
+  `MAX_RULES` before comm-central 162), and an imported EXRULE becomes one more of them: `CalRecurrenceRule` is
+  always positive (`isNegative: false`, "We don't support EXRULE anymore") and its `icalProperty` always names
+  itself RRULE. So a series another app wrote with two RRULEs (RFC 5545: SHOULD NOT) or an RFC 2445 EXRULE repeats
+  by both. Each further rule is shown in `other` as `RRULE:<value>`, so restating the fields (which writes one rule)
+  is refused and `{}` clears them all; a split of such a series is refused before anything is written (capping
+  writes one rule and would delete the others' occurrences on the earlier part; the simpler choice over capping
+  every rule, whose own UNTIL or COUNT may end before the split). Correction: this note used to say an
+  EXRULE is never expanded and is kept by a write; Thunderbird's own source says otherwise. RRULE is a
   promoted property of `calItemBase`: Thunderbird neither imports it into the item's properties when parsing nor
   serializes it, so `getProperty("RRULE")` returns only an in-memory echo a caller set, which survives `clone()` and
   Thunderbird's own event dialog and can name an older rule. TabMail no longer sets it.

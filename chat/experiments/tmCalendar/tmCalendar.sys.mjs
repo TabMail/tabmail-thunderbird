@@ -351,22 +351,30 @@ const RECURRENCE_DAY_CODE = /^(MO|TU|WE|TH|FR|SA|SU)$/;
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 
-// The event's rule as an RRULE value, from its recurrence info: the only place
-// Thunderbird stores and expands a rule. Its RRULE property is never read: it is
-// neither imported from nor written to the stored event, so it can hold an
-// older rule than the one the series follows. The first RRULE item, the one
-// Thunderbird expands and `setRuleOnItem` replaces; an EXRULE (an exclusion
-// pattern, never expanded) is not the series' rule even when listed first.
-function rruleOfItem(item) {
+// The event's rules as RRULE values, in stored order, from its recurrence info:
+// the only place Thunderbird stores and expands a rule. Its RRULE property is
+// never read: it is neither imported from nor written to the stored event, so it
+// can hold an older rule than the one the series follows. Thunderbird expands
+// EVERY rule item, and an imported EXRULE becomes one more of them (its rule
+// object is always positive and names itself RRULE), so a series can repeat by
+// more than one rule even though RFC 5545 says it SHOULD NOT.
+function ruleValuesOfItem(item) {
+  const values = [];
   try {
     const rinfo = item?.recurrenceInfo;
     const items = rinfo && typeof rinfo.getRecurrenceItems === "function" ? (rinfo.getRecurrenceItems({}) || []) : [];
     for (const r of items) {
       const raw = String(r?.icalProperty?.value || "");
-      if (isRuleItem(r) && /\bFREQ=/i.test(raw)) return raw;
+      if (isRuleItem(r) && /\bFREQ=/i.test(raw)) values.push(raw);
     }
   } catch (_) {}
-  return "";
+  return values;
+}
+
+// The event's first rule, the one the tools' fields describe (any further rule
+// is shown as `other`), or "" when it does not repeat.
+function rruleOfItem(item) {
+  return ruleValuesOfItem(item)[0] || "";
 }
 
 // The zone a timed event's occurrences are expanded in: its start's own zone.
@@ -406,7 +414,7 @@ function untilDayFromIcs(value, item) {
 
 // An event's rule in the tools' fields, or null when it does not repeat.
 function recurrenceFieldsOfItem(item) {
-  const rrule = rruleOfItem(item);
+  const [rrule, ...furtherRules] = ruleValuesOfItem(item);
   if (!rrule) return null;
   const f = {};
   const other = [];
@@ -443,6 +451,10 @@ function recurrenceFieldsOfItem(item) {
       other.push(`BYSETPOS=${bySetPos}`);
     }
   }
+  // A further rule adds its own occurrences, which the fields above cannot
+  // express: shown in `other`, so restating the fields (which would leave one
+  // rule) is refused and the series keeps every rule.
+  for (const further of furtherRules) other.push(`RRULE:${further}`);
   const out = {};
   for (const k of ["freq", "interval", "count", "until"]) if (k in f) out[k] = f[k];
   if (byDay) out.byDay = byDay;
@@ -2063,6 +2075,12 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const currentRrule = rruleOfItem(master);
             if (!currentRrule) {
               return { ok: false, error: "master event has no parseable RRULE (its recurrenceInfo holds no FREQ=… rule)" };
+            }
+            // A series that repeats by more than one rule is refused before
+            // anything is written: capping writes one rule, which would delete
+            // the other rules' occurrences on the earlier part.
+            if (ruleValuesOfItem(master).length > 1) {
+              return { ok: false, error: "this series repeats by more than one rule, which a split cannot keep; nothing was changed. Change it in the calendar app" };
             }
 
             // 6. Cap the master's RRULE: drop any existing UNTIL/COUNT, append our UNTIL.

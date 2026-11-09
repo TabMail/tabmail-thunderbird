@@ -14,7 +14,12 @@
 //   - writing a rule keeps the series' excluded and added dates and changed
 //     occurrences, on an edit and on the earlier part of a split;
 //   - the rule is read from where Thunderbird stores it, never an in-memory echo;
+//   - a series with more than one rule shows the others, is never restated to
+//     one rule and is not split;
 //   - `{}` clears the rule;
+//   - the argument shapes Thunderbird delivers (omitted fields null) keep the
+//     rule on an edit that does not mention it;
+//   - a last day after a daylight saving change keeps its frame;
 //   - a rule the tools cannot write is refused before the confirmation card.
 
 // West of UTC, so a UTC UNTIL instant names the NEXT day in UTC digits.
@@ -251,12 +256,24 @@ describe('write: what was read, written back, reads the same', () => {
     });
   }
 
-  it('writing a rule leaves exactly one rule, even where the series had two', async () => {
-    const second = recurrenceItem('RRULE', 'FREQ=MONTHLY;BYMONTHDAY=1');
-    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=WEEKLY;BYDAY=MO', { extraItems: [second] })] });
-    await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { freq: 'DAILY' } });
-    expect(ruleValues(savedItem(calendar))).toEqual(['FREQ=DAILY']);
-  });
+  // Thunderbird expands every rule a series holds, and an imported EXRULE is one
+  // more of them, so a second rule adds its own occurrences. The fields name one
+  // rule; restating them would leave only that one.
+  for (const secondName of ['RRULE', 'EXRULE']) {
+    it(`a series with a second rule (stored as ${secondName}) shows it, so restating is refused and {} clears both`, async () => {
+      const make = () => series('FREQ=WEEKLY;BYDAY=MO', { extraItems: [recurrenceItem(secondName, 'FREQ=MONTHLY;BYMONTHDAY=1')] });
+      const read = loadCalendarBridge(bridgeUrl, { items: [make()] });
+      const fields = await readFields(read.api);
+      expect(fields).toEqual({ freq: 'WEEKLY', byDay: ['MO'], other: 'RRULE:FREQ=MONTHLY;BYMONTHDAY=1' });
+      expect(otherPartsRefusal({ freq: 'WEEKLY', byDay: ['MO'], until: LAST_DAY }, fields)).toMatch(/RRULE:FREQ=MONTHLY;BYMONTHDAY=1/);
+      expect(otherPartsRefusal({}, fields)).toBeNull();
+
+      const cleared = loadCalendarBridge(bridgeUrl, { items: [make()] });
+      expect(await cleared.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: {} })).toMatchObject({ ok: true });
+      expect(ruleValues(savedItem(cleared.calendar))).toEqual([]);
+      expect(await readFields(cleared.api)).toBeNull();
+    });
+  }
 
   it('a series created with a last day stores it in the start\'s value type', async () => {
     const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [] });
@@ -525,26 +542,85 @@ describe('split: the earlier part keeps its exceptions and the stored rule', () 
     expect(named(master, 'RDATE')).toEqual(['20991020T090000']);
   });
 
-  it('an excluding rule stored before the rule is kept, and the rule is the one read, restated and split', async () => {
-    const make = () => {
-      const ev = series('FREQ=DAILY');
-      ev.recurrenceInfo.getRecurrenceItems().unshift(recurrenceItem('EXRULE', 'FREQ=WEEKLY;BYDAY=FR'));
-      return ev;
-    };
-    const read = loadCalendarBridge(bridgeUrl, { items: [make()] });
-    expect(await readFields(read.api)).toEqual({ freq: 'DAILY' });
+  // Capping writes one rule, so the earlier part would lose every occurrence of
+  // the series' other rules; the split is refused before anything is written.
+  for (const secondName of ['RRULE', 'EXRULE']) {
+    it(`a series with a second rule (stored as ${secondName}) is not split, and nothing in the calendar changes`, async () => {
+      const master = series('FREQ=WEEKLY;BYDAY=MO', { extraItems: [recurrenceItem(secondName, 'FREQ=MONTHLY;BYMONTHDAY=1')] });
+      const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const res = await api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: '2099-10-15T17:00:00', patch: { title: 'Renamed' } });
+      expect(res).toMatchObject({ ok: false });
+      expect(res.error).toMatch(/more than one rule/);
+      expect(modifications).toEqual([]);
+      expect(calendar.items).toHaveLength(1);
+      expect(calendar.items[0]).toBe(master);
+      expect(ruleValues(master)).toEqual(['FREQ=WEEKLY;BYDAY=MO', 'FREQ=MONTHLY;BYMONTHDAY=1']);
+    });
+  }
+});
 
-    const restate = loadCalendarBridge(bridgeUrl, { items: [make()] });
-    expect(await restate.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { freq: 'DAILY', until: LAST_DAY } })).toMatchObject({ ok: true });
-    const saved = savedItem(restate.calendar);
-    expect(named(saved, 'EXRULE')).toEqual(['FREQ=WEEKLY;BYDAY=FR']);
-    expect(ruleValues(saved)).toHaveLength(1);
-    expect(ruleValues(saved)[0]).toMatch(/^FREQ=DAILY;UNTIL=/);
+// Thunderbird's schema layer hands an experiment every optional property the
+// schema declares and the caller omitted as null, recursively (Schemas.sys.mjs),
+// so the bridge never sees an absent `recurrence`: an edit that does not mention
+// the rule passes `recurrence: null`, and `{}` arrives with every field null.
+// The bridge tests above pass plain objects; these pass the shapes Thunderbird
+// delivers. The invariant: an edit that does not mention the rule keeps it.
+describe('Thunderbird\'s argument shapes: an edit that does not mention the rule keeps it', () => {
+  const NULL_RECURRENCE_FIELDS = { freq: null, interval: null, count: null, until: null, byDay: null, byMonthDay: null, byMonth: null, wkst: null };
+  const followingPart = (calendar) => calendar.items.find((it) => it.id !== 'ser');
 
-    const { capped, fresh } = await splitAt(make(), '2099-10-15T17:00:00');
-    expect(named(capped, 'EXRULE')).toEqual(['FREQ=WEEKLY;BYDAY=FR']);
-    expect(ruleValues(capped)).toHaveLength(1);
-    expect(ruleValues(capped)[0]).toMatch(/^FREQ=DAILY;UNTIL=/);
-    expect(ruleValues(fresh)).toEqual(['FREQ=DAILY']);
+  it('a series edit with recurrence null keeps the rule', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=WEEKLY;BYDAY=MO')] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', title: 'Renamed', recurrence: null, patch: null, exdates_add: null, edit_scope: null, recurrence_id: null });
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(savedItem(calendar))).toEqual(['FREQ=WEEKLY;BYDAY=MO']);
+  });
+
+  it('a this-and-following edit with recurrence null keeps the rule on the following part', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY')] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00', title: 'Renamed', recurrence: null, patch: null });
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(followingPart(calendar))).toEqual(['FREQ=DAILY']);
+  });
+
+  it('{} with every field null on a this-and-following edit stops the following part repeating', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY')] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00', recurrence: { ...NULL_RECURRENCE_FIELDS } });
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(followingPart(calendar))).toEqual([]);
+  });
+
+  it('a rule whose omitted fields are null is written without them', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY')] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { ...NULL_RECURRENCE_FIELDS, freq: 'WEEKLY', byDay: ['MO'] } });
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(savedItem(calendar))).toEqual(['FREQ=WEEKLY;BYDAY=MO']);
+  });
+});
+
+// Daylight saving time ends in the user's zone (America/Vancouver) on
+// 2099-11-01, so a bound in November has a different UTC offset from a start in
+// October. The last day is computed with the offset of that day, never the
+// start's.
+describe('a last day after daylight saving time ends keeps its frame', () => {
+  it('a split after the change reads its cap as the day before the split', async () => {
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY')] });
+    const res = await api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: '2099-11-15T17:00:00', patch: { title: 'Renamed' } });
+    expect(res).toMatchObject({ ok: true });
+    expect((await readFields(api)).until).toBe('2099-11-14');
+  });
+
+  it('a last day after the change keeps that day\'s late-evening occurrence', async () => {
+    const start = fakeDateTime(START_DAY, 23, 30);
+    const ev = fakeEvent({ id: 'ser', title: 'Sync', startDate: start, endDate: fakeDateTime(START_DAY, 23, 50) });
+    ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY')]);
+    ev.recurrenceInfo.item = ev;
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [ev] });
+    await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { freq: 'DAILY', until: '2099-11-30' } });
+    const [rule] = ruleValues(savedItem(calendar));
+    const m = /UNTIL=(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/.exec(rule);
+    expect(m).not.toBeNull();
+    expect(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toBeGreaterThanOrEqual(new Date(2099, 10, 30, 23, 30).getTime());
+    expect(lastDayAdmitted(start, untilOf(rule))).toBe('2099-11-30');
   });
 });
