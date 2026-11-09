@@ -865,9 +865,8 @@ async function _deliverTaskResult(task, taskHash, content, sessionId) {
     }
 
     taskTurns.push(taskTurn);
-    // Queued (applied in order, kept until applied) before chat opens below,
-    // and normally applied by then, so it reads the new result.
-    requireTaken(await enqueueTurnsChange({ append: taskTurns }, generateTurnId()));
+    // Applied before chat opens below, so it reads the new result.
+    requireTaken(await enqueueTurnsChange({ append: taskTurns }));
     log(`[ProActReach] Persisted task result as chat turn (${message.length} chars)`);
   } catch (e) {
     log(`[ProActReach] Failed to persist task result: ${e}`, "warn");

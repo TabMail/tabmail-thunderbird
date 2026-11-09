@@ -24,8 +24,8 @@ import { posix } from 'node:path';
 import { parse } from 'acorn';
 
 const QUEUE = 'chat/modules/storedTurnsQueue.js';
-// Each key and the one function in the queue that writes it.
-const WRITERS = { chat_turns: '_apply', chat_turns_pending: '_save' };
+// Each key and the one function in the writer that writes it.
+const WRITERS = { chat_turns: '_apply' };
 const WRITE_METHODS = ['set', 'remove', 'clear'];
 
 function sources(patterns = ['*.js', '*.mjs']) {

@@ -25,12 +25,7 @@ export function storedTurnsRoute(queue) {
   return send;
 }
 
-/** An alarms API for pages whose background test double runs the queue. */
-export function quietAlarms() {
-  return { onAlarm: { addListener() {} }, create: async () => {}, clear: async () => {}, get: async () => undefined };
-}
-
-/** Answer `message` as the background does, from the current module registry's queue. */
+/** Answer `message` as the background does, from the current module registry's writer. */
 export async function sendToBackground(message) {
   const queue = await import('../../chat/modules/storedTurnsQueue.js');
   return storedTurnsRoute(queue)(message);

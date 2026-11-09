@@ -102,8 +102,6 @@ async function listMemory() {
         log(`[Prompts] Failed to get Memory FTS stats: ${e}`, "warn");
         memoryFtsStats = null;
     }
-    // The stored turns with the queued changes applied, as every reader sees
-    // them, so a queued Clear All or Delete Old is counted at once.
     turnsCount = (await loadTurns()).length;
     let answer;
     try {
@@ -662,13 +660,10 @@ async function deleteOldHistory(days) {
         const cutoffMs = Date.now() - (days * 24 * 60 * 60 * 1000);
         const cutoffDate = new Date(cutoffMs);
 
-        // 1. Trim old turns from chat_turns (queued in the background and
-        // applied in order; one not applied yet is applied once it can be)
-        // A change not taken ends here, in the failure status below.
-        const reply = await changeTurns({ keepFrom: cutoffMs });
-        const turnsQueued = !reply.applied;
-        const turnsDeleted = reply.removed || 0;
-        log(`[Prompts] Old turns from chat_turns: ${turnsQueued ? "removal queued" : `deleted ${turnsDeleted}`}`);
+        // 1. Trim old turns from chat_turns (applied in the background, in
+        // order). A change not applied ends here, in the failure status below.
+        const turnsDeleted = (await changeTurns({ keepFrom: cutoffMs })).removed || 0;
+        log(`[Prompts] Old turns from chat_turns: deleted ${turnsDeleted}`);
 
         // 2. Delete old entries from Memory FTS: those older than the cutoff,
         // listed by date a page at a time with the shortest preview (a reply
@@ -723,8 +718,7 @@ async function deleteOldHistory(days) {
 
         // A stop says what was removed and why the rest was not (an older
         // helper refuses the listing until it is updated, ADR-NF-018).
-        const turnsPart = turnsQueued ? "Old turns queued for removal" : `Deleted ${turnsDeleted} turns`;
-        const deleted = `${turnsPart} + ${ftsDeleted} search entries older than ${cutoffDate.toLocaleDateString()}`;
+        const deleted = `Deleted ${turnsDeleted} turns + ${ftsDeleted} search entries older than ${cutoffDate.toLocaleDateString()}`;
         showStatus(ftsError ? `${deleted}, then stopped: ${ftsError.message}` : deleted, ftsError !== null);
 
         await loadChatHistory();

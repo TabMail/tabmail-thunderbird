@@ -13,7 +13,7 @@
 // that sends one (a clear, a write) fails its test.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { quietAlarms, sendToBackground } from './support/storedTurnsRoute.js';
+import { sendToBackground } from './support/storedTurnsRoute.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
@@ -132,7 +132,6 @@ async function openPage(helper) {
         remove: vi.fn(async () => {}),
       },
     },
-    alarms: quietAlarms(),
     runtime: { sendMessage: helper.sendMessage },
   };
   const history = await import('../prompts/modules/history.js');

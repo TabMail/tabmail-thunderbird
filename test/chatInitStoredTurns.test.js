@@ -68,7 +68,6 @@ beforeEach(() => {
         remove: vi.fn(async keys => { for (const k of [keys].flat()) delete data[k]; }),
       },
     },
-    alarms: { onAlarm: { addListener: () => {} }, create: async () => {}, clear: async () => {}, get: async () => undefined },
     // The background's answer: the stored turns' queue, through its real handler.
     runtime: {
       sendMessage: vi.fn(async msg => {
@@ -99,7 +98,7 @@ async function openWindowWhileATaskStoresItsResult() {
   let stored = false;
   browser.storage.local.get.mockImplementation(async keys => {
     const value = await get(keys);
-    if (Array.isArray(keys) && keys.includes('chat_turns') && !stored) {
+    if ([keys].flat().includes('chat_turns') && !stored) {
       stored = true;
       await store.changeTurns({ append: [turn('task', 'task_result', 'assistant')] });
     }
@@ -200,39 +199,23 @@ it('adds message references to the stored turns once, changing no others', async
   expect(data.chat_refs_migration_v1).toBeTruthy();
 });
 
-it('opens the window, showing the stored turns, while its changes wait behind one that cannot be applied yet, then applies them', async () => {
+it('opens the window after a change sent before it failed, and applies the window\'s own changes after it', async () => {
   data.chat_turns = [turn('u1'), turn('a1', 'normal', 'assistant'), turn('greeting', 'welcome_back', 'assistant')];
-  const { CHAT_SETTINGS } = await import('../chat/modules/chatConfig.js');
-  const { applyWaitMs, retryDelayMs } = CHAT_SETTINGS.turnsQueue;
-  // A change another page sent first (adding references to a1), whose apply
-  // keeps failing for now.
-  const set = browser.storage.local.set.getMockImplementation();
-  let failing = true;
-  browser.storage.local.set.mockImplementation(async values => {
-    if (failing && 'chat_turns' in values) throw new Error('synthetic write failure');
-    return set(values);
-  });
+  // A change another page sent first (adding references to a1), whose write fails.
+  browser.storage.local.set.mockRejectedValueOnce(new Error('synthetic write failure'));
   const store = await import('../chat/modules/persistentChatStore.js');
   const first = store.changeTurns({ update: [{ ...turn('a1', 'normal', 'assistant'), _refs: ['r'] }] });
 
   const { initAndGreetUser } = await import('../chat/modules/init.js');
   const { awaitUserInput } = await import('../chat/modules/converse.js');
-  const opening = initAndGreetUser();
-  // The greeting's removal, then the session break, each wait their bounded time.
-  await vi.advanceTimersByTimeAsync(applyWaitMs);
-  await vi.advanceTimersByTimeAsync(applyWaitMs);
-  await opening;
-  await first;
+  await initAndGreetUser();
 
+  await expect(first).rejects.toThrow('synthetic write failure');
   const { ctx } = await import('../chat/modules/context.js');
   expect(awaitUserInput).toHaveBeenCalled();
-  expect(ctx.persistedTurns.map(t => t._id).slice(0, 2)).toEqual(['u1', 'a1']);
   const sessionBreak = ctx.persistedTurns.at(-1);
   expect(sessionBreak._type).toBe('session_break');
-  expect(storedIds()).toEqual(['u1', 'a1', 'greeting']);
-
-  failing = false;
-  await vi.advanceTimersByTimeAsync(retryDelayMs);
+  // The greeting's removal and the session break were applied after the failure.
   expect(storedIds()).toEqual(['u1', 'a1', sessionBreak._id]);
-  expect(data.chat_turns[1]._refs).toEqual(['r']);
+  expect(data.chat_turns[1]._refs).toBeUndefined();
 });

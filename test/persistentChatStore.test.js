@@ -182,21 +182,16 @@ describe('persistentChatStore', () => {
 
   // --- changeTurns ---
   describe('changeTurns', () => {
-    it('sends the operation to the background with an id and returns its answer', async () => {
+    it('sends the operation to the background and returns its answer', async () => {
       browser.runtime.sendMessage.mockResolvedValueOnce({ applied: true, removed: 2 });
       await expect(changeTurns({ keepFrom: 5 })).resolves.toEqual({ applied: true, removed: 2 });
       const [message] = browser.runtime.sendMessage.mock.calls[0];
-      expect(message).toEqual({ command: 'chat-turns-change', id: expect.any(String), op: { keepFrom: 5 } });
+      expect(message).toEqual({ command: 'chat-turns-change', op: { keepFrom: 5 } });
     });
 
-    it('returns a change still queued', async () => {
-      browser.runtime.sendMessage.mockResolvedValueOnce({ applied: false, queued: true });
-      await expect(changeTurns({ clear: true })).resolves.toEqual({ applied: false, queued: true });
-    });
-
-    it('rejects when the background did not take the change', async () => {
+    it('rejects when the background did not apply the change', async () => {
       browser.runtime.sendMessage.mockResolvedValueOnce(undefined);
-      await expect(changeTurns({ clear: true })).rejects.toThrow('did not take');
+      await expect(changeTurns({ clear: true })).rejects.toThrow('did not apply');
       browser.runtime.sendMessage.mockResolvedValueOnce({ applied: false, error: 'synthetic' });
       await expect(changeTurns({ clear: true })).rejects.toThrow('synthetic');
     });
@@ -509,6 +504,21 @@ describe('persistentChatStore', () => {
     it('should skip v1 migration when flag is already set', async () => {
       storageData['chat_turns_migration_v1'] = Date.now();
       storageData['chat_turns_migration_v2'] = Date.now();
+      storageData['chat_turns_migration_v3'] = Date.now();
+      await migrateFromSessions();
+      expect(removedKeys.length).toBe(0);
+    });
+
+    it('should run v3 migration (remove the persisted turns queue) once', async () => {
+      storageData['chat_turns_migration_v1'] = Date.now();
+      storageData['chat_turns_migration_v2'] = Date.now();
+      storageData['chat_turns_pending'] = [{ id: 'old', op: { clear: true } }];
+      storageData['chat_turns'] = [{ _id: 'kept' }];
+      await migrateFromSessions();
+      expect('chat_turns_pending' in storageData).toBe(false);
+      expect(storageData['chat_turns']).toEqual([{ _id: 'kept' }]);
+      expect(storageData['chat_turns_migration_v3']).toBeDefined();
+      removedKeys.length = 0;
       await migrateFromSessions();
       expect(removedKeys.length).toBe(0);
     });
