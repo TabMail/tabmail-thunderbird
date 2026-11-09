@@ -621,11 +621,15 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
       log(`[COMPLETIONS] Failed to get manifest version: ${e}`, "warn");
     }
 
-    const headers = {
+    // The backend picks this add-on's prompts and chat tools by X-Client-Protocol;
+    // X-Client-Version is the add-on's own version.
+    const requestHeaders = (token) => ({
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${accessToken}`,
-      "X-Client-Version": clientVersion
-    };
+      "Authorization": `Bearer ${token}`,
+      "X-Client-Version": clientVersion,
+      "X-Client-Protocol": SETTINGS.protocolVersion,
+    });
+    const headers = requestHeaders(accessToken);
     if (!abortSignal) {
       internalAbortController = new AbortController();
       effectiveSignal = internalAbortController.signal;
@@ -712,11 +716,7 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
 
         response = await fetch(url, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${retryAccessToken}`,
-            "X-Client-Version": clientVersion
-          },
+          headers: requestHeaders(retryAccessToken),
           body: JSON.stringify(payloadWithOptions),
           signal: effectiveSignal,
         });
@@ -779,11 +779,7 @@ export async function sendChatCompletions(payload, abortSignal = null, onToolExe
 
           response = await fetch(url, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${newAccessToken}`,
-              "X-Client-Version": clientVersion
-            },
+            headers: requestHeaders(newAccessToken),
             body: JSON.stringify(payloadWithOptions),
             signal: abortSignal,
           });

@@ -56,7 +56,7 @@ When creating a new client-side chat tool:
 4. Implement in `chat/tools/<name>.js` (export `run(args, options)`)
 5. Register in `chat/tools/core.js`: import, add to `TOOL_IMPL`, add activity label in `getToolActivityLabel`
 
-> **CRITICAL:** The version in the schema filename IS the minimum client version. Clients with version < that version won't see the tool.
+> **CRITICAL:** The version in the schema filename IS the minimum protocol version: the backend picks tools and prompts by `X-Client-Protocol` (`SETTINGS.protocolVersion` in `agent/modules/config.js`), not by the add-on's version. An add-on whose protocol is below it won't see the tool; raise `protocolVersion` in the change that handles the new schema.
 
 ---
 

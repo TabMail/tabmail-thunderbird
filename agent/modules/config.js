@@ -10,6 +10,10 @@ export const SETTINGS = {
     backendBaseProd: "api", // for production (e.g., autocomplete-api.tabmail.ai)
     backendBaseDev: "dev", // for development (e.g., autocomplete-dev.tabmail.ai)
     backendDomain: "tabmail.ai", // root domain
+    // Sent as X-Client-Protocol: the version the backend picks this add-on's prompts and chat tools at.
+    // Raise it, in the change that needs it, to the release that change ships in, once the backend's
+    // prompt and tool files for that version are deployed.
+    protocolVersion: "1.11.1",
     // Status page URL for server health issues
     statusPageUrl: "https://tabmail.ai/status.html",
     // Health check configuration
