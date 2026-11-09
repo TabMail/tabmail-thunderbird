@@ -36,8 +36,14 @@ same design (tabmail-ios #421).
   is at or after the start's time of day, otherwise the day before; an all-day series ends on the bound's day.
   Converting the instant into a zone and taking its date was wrong whenever the bound's time is before the
   occurrence time, e.g. every split cap (split minus one second) read one day late.
+  Thunderbird's own zone conversion (`CalDateTime.getInTimezone`, ical.js `convertToZone`) does not always keep
+  the instant: near a daylight saving change it can land an hour off. When the converted value's `nativeTime`
+  differs from the bound's, the bound is not shown as a day; the UNTIL part stays in `other`, so restating the
+  rule is refused rather than written back one occurrence short or long.
 - **BYSETPOS:** one weekday at one position folds to its ordinal (`BYDAY=TU;BYSETPOS=2` becomes `2TU`) only where
-  BYDAY is the only day filter: MONTHLY, or YEARLY with at most one BYMONTH, and never with a BYMONTHDAY. BYSETPOS
+  BYDAY is the only day filter: MONTHLY, or YEARLY with exactly one BYMONTH, at a position a month can hold (1 to 5
+  from either end), and never with a BYMONTHDAY. A whole-year yearly ordinal is not folded: Thunderbird expands
+  `FREQ=YEARLY;BYDAY=-20MO` differently from `BYDAY=MO;BYSETPOS=-20`, so BYSETPOS stays in `other`. BYSETPOS
   counts within the days the other parts name, so `BYDAY=FR;BYMONTHDAY=1,...,14;BYSETPOS=-1` is the second Friday,
   while `-1FR` with that BYMONTHDAY names no day at all. Elsewhere
   (`FREQ=YEARLY;BYMONTH=3,9;BYDAY=TU;BYSETPOS=2` is only the 2nd Tuesday of March) BYSETPOS stays in `other`.
@@ -55,7 +61,8 @@ same design (tabmail-ios #421).
     rather than reaching Thunderbird's schema check after the card;
   - `until` is a real plain date `YYYY-MM-DD` (the last day of the series); a date-time is refused, because it
     cannot be stored in the start's value type (RFC 5545 3.3.10) and the read side only ever shows a plain date;
-  - `byDay` matches `^[+-]?([1-9]|[1-4][0-9]|5[0-3])?(MO|TU|WE|TH|FR|SA|SU)$`;
+  - `byDay` matches `^(?:[+-]?(?:[1-9]|[1-4][0-9]|5[0-3]))?(MO|TU|WE|TH|FR|SA|SU)$`: a sign only before a position,
+    as RFC 5545's BYDAY grammar has it (`+MO` and `-TU` are refused);
   - `byMonthDay` is ±1..31, `byMonth` is 1..12, and `wkst` is a day code;
   - `other` cannot be written.
 
@@ -103,5 +110,12 @@ same design (tabmail-ios #421).
   info without a base item throws as `appendRecurrenceItem` does.
 - MONTHLY folds are pinned by occurrence too: `monthlyDays` enumerates RFC 5545 days independently of the bridge, and
   a rule read and written back must name the same days over 24 months, or restating it must be refused.
-- `test/calendarTools.test.js` covers the refusal wiring before the card.
+- `test/calendarTools.test.js` covers the refusal wiring before the card, and that a valid rule reaches the card
+  with every field.
+- `test/calendarRecurrenceNative.test.js` runs the bridge against Thunderbird's own date and recurrence code
+  (`test/fixtures/mozilla/Ical.sys.mjs` and `CalDateTime.sys.mjs`, unmodified copies pinned by revision and SHA-256
+  in that directory's README), because the fakes convert zones with JavaScript dates, which always keep the
+  instant. It writes last days around both daylight saving changes for early, midday and late starts, reads them
+  back, and requires either the same native occurrences after restating or the UNTIL part in `other`; the same for
+  bounds other apps store; and it checks the BYSETPOS folds and non-folds against native expansion.
 - Bridge accessor calls (`untilDayFromIcs`, `untilForRRule` → `getTimezoneService`; `setRuleOnItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.

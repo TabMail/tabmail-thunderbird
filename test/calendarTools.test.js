@@ -324,6 +324,13 @@ describe('calendar_event_edit', () => {
       expect(cleared.failReason).toBeUndefined();
     });
 
+    it('a sign without a position is refused, as the format allows a sign only before one', async () => {
+      const sess = await runEdit({ event_id: 'found-event', recurrence: { freq: 'MONTHLY', byDay: ['-TU'] } }, 'pid-rec-9');
+      expect(sess.failReason).toBe('recurrence.byDay has an invalid value "-TU": day codes MO..SU, optionally with a position such as 2TU or -1FR');
+      expect(ctx.state).toBe('exec_fail');
+      expect(sess.editEventArgs).toBeUndefined();
+    });
+
     it('`null` recurrence is the same as omitting it', async () => {
       const sess = await runEdit({ event_id: 'found-event', title: 'Renamed', recurrence: null }, 'pid-rec-4');
       expect(sess.failReason).toBeUndefined();
@@ -407,6 +414,7 @@ describe('calendar_event_create refuses a recurrence it cannot write before the 
     [0, 'recurrence has an invalid value "0": an object of recurrence fields'],
     ['', 'recurrence has an invalid value "": an object of recurrence fields'],
     [{ freq: 'YEARLY', byDay: ['MO'], other: 'BYWEEKNO=20' }, 'recurrence.other has an invalid value "BYWEEKNO=20": the create tool cannot write these; tell the user to create this series in the calendar app'],
+    [{ freq: 'MONTHLY', byDay: ['+MO'] }, 'recurrence.byDay has an invalid value "+MO": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
   ];
   noRule.forEach(([recurrence, message], i) => {
     it(`refuses ${JSON.stringify(recurrence)} before the confirmation card`, async () => {
@@ -422,6 +430,26 @@ describe('calendar_event_create refuses a recurrence it cannot write before the 
       expect(ctx.state).toBe('exec_fail');
       expect(ctx.fsmSessions[pid].createEventArgs).toBeUndefined();
     });
+  });
+
+  it('a rule it can write reaches the confirmation card with every field', async () => {
+    const rules = [
+      { freq: 'MONTHLY', interval: 2, count: 6, byDay: ['2TU', '-1FR'], byMonth: [3, 9], wkst: 'SU' },
+      { freq: 'YEARLY', until: '2099-12-31', byMonthDay: [1, -1], byMonth: [1] },
+    ];
+    for (const [i, recurrence] of rules.entries()) {
+      const pid = `pid-create-rule-${i}`;
+      ctx.fsmSessions[pid] = {};
+      ctx.state = null;
+      await calendarEventCreateRun(
+        { calendar_id: 'cal1', title: 'Team sync', start_iso: '2099-10-06T10:00:00', end_iso: '2099-10-06T10:30:00', recurrence },
+        { callId: pid },
+      );
+      await new Promise((r) => setTimeout(r, 5));
+      expect(ctx.fsmSessions[pid].failReason, pid).toBeUndefined();
+      expect(ctx.state, pid).toBe('calendar_event_create_list');
+      expect(ctx.fsmSessions[pid].createEventArgs.recurrence, pid).toEqual(recurrence);
+    }
   });
 });
 

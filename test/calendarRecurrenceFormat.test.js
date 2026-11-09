@@ -197,6 +197,19 @@ describe('read: the rule in the edit tool\'s own fields', () => {
     expect(await readFields(daily.api)).toEqual({ freq: 'DAILY', byDay: ['TU'], other: 'BYSETPOS=1' });
     const monthDay = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=1,2,3,4,5,6,7;BYDAY=TU;BYSETPOS=1')] });
     expect((await readFields(monthDay.api)).other).toBe('BYSETPOS=1');
+    // A yearly ordinal without one month counts weeks of the year, which
+    // Thunderbird expands differently from BYSETPOS; a position past the fifth
+    // names no weekday of a month.
+    const wholeYear = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=YEARLY;BYDAY=MO;BYSETPOS=-20')] });
+    expect(await readFields(wholeYear.api)).toEqual({ freq: 'YEARLY', byDay: ['MO'], other: 'BYSETPOS=-20' });
+    const wholeYearFirst = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=YEARLY;BYDAY=MO;BYSETPOS=1')] });
+    expect(await readFields(wholeYearFirst.api)).toEqual({ freq: 'YEARLY', byDay: ['MO'], other: 'BYSETPOS=1' });
+    for (const pos of ['6', '-6', '10']) {
+      const far = loadCalendarBridge(bridgeUrl, { items: [series(`FREQ=MONTHLY;BYDAY=MO;BYSETPOS=${pos}`)] });
+      expect(await readFields(far.api)).toEqual({ freq: 'MONTHLY', byDay: ['MO'], other: `BYSETPOS=${pos}` });
+    }
+    const fifth = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=MONTHLY;BYDAY=MO;BYSETPOS=-5')] });
+    expect(await readFields(fifth.api)).toEqual({ freq: 'MONTHLY', byDay: ['-5MO'] });
   });
 
   it('the query rows carry the same fields', async () => {
@@ -300,15 +313,22 @@ describe('write: what was read, written back, reads the same', () => {
     expect(ruleValues(savedItem(calendar))).toEqual(['FREQ=DAILY;UNTIL=20991031']);
   });
 
-  it('writing a rule keeps the series\' excluded and added dates', async () => {
+  it('writing a rule keeps the series\' excluded and added dates, and its changed occurrences', async () => {
     const exdate = recurrenceItem('EXDATE', '20991020T170000');
     const rdate = recurrenceItem('RDATE', '20991102T170000');
-    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=WEEKLY;BYDAY=MO', { extraItems: [exdate, rdate] })] });
+    const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-12', 19), endDate: fakeDateTime('2099-10-12', 20), recurrenceId: fakeDateTime('2099-10-12', 17) });
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=WEEKLY;BYDAY=MO', { extraItems: [exdate, rdate], exceptions: [moved] })] });
     await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { freq: 'WEEKLY', byDay: ['TU'] } });
-    const items = savedItem(calendar).recurrenceInfo.getRecurrenceItems();
+    const info = savedItem(calendar).recurrenceInfo;
+    const items = info.getRecurrenceItems();
     expect(items).toContain(exdate);
     expect(items).toContain(rdate);
     expect(ruleValues(savedItem(calendar))).toEqual(['FREQ=WEEKLY;BYDAY=TU']);
+    expect(info.getExceptionIds().map(String)).toEqual(['20991012T170000']);
+    const kept = info.getExceptionFor(fakeDateTime('2099-10-12', 17));
+    expect(kept.title).toBe('Moved');
+    expect(kept.startDate.toString()).toBe('20991012T190000');
+    expect(kept.endDate.toString()).toBe('20991012T200000');
   });
 
   it('a rule written over a series with two rules leaves only the rule written', async () => {
@@ -422,6 +442,8 @@ describe('a rule the tools cannot write is refused, naming the field and value',
     [{ freq: 'WEEKLY', byDay: ['MO', 'MONDAY'] }, 'recurrence.byDay has an invalid value "MONDAY": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'WEEKLY', byDay: ['MO;BYHOUR=9'] }, 'recurrence.byDay has an invalid value "MO;BYHOUR=9": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'MONTHLY', byDay: ['54MO'] }, 'recurrence.byDay has an invalid value "54MO": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
+    [{ freq: 'MONTHLY', byDay: ['+MO'] }, 'recurrence.byDay has an invalid value "+MO": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
+    [{ freq: 'MONTHLY', byDay: ['-TU'] }, 'recurrence.byDay has an invalid value "-TU": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'WEEKLY', byDay: 'MO' }, 'recurrence.byDay has an invalid value "MO": a list of day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'MONTHLY', byMonthDay: [0] }, 'recurrence.byMonthDay has an invalid value "0": integers from 1 to 31 or -31 to -1'],
     [{ freq: 'MONTHLY', byMonthDay: [32] }, 'recurrence.byMonthDay has an invalid value "32": integers from 1 to 31 or -31 to -1'],

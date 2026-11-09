@@ -404,6 +404,11 @@ function untilDayFromIcs(value, item) {
   bound.resetTo(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mi), Number(ss), utc);
   const start = item?.startDate;
   const inFrame = bound.getInTimezone(zonedStartZone(item) || utc);
+  // Thunderbird's zone conversion does not always keep the instant (near the
+  // autumn change it can land an hour off). A day read from such a value could
+  // drop or add an occurrence when written back, so the bound is not shown as
+  // a day: it stays in `other`, and restating the rule is refused.
+  if (inFrame.nativeTime !== bound.nativeTime) return "";
   let day = Date.UTC(inFrame.year, inFrame.month, inFrame.day);
   if (start && !start.isDate) {
     const boundTime = (inFrame.hour * 60 + inFrame.minute) * 60 + inFrame.second;
@@ -438,16 +443,19 @@ function recurrenceFieldsOfItem(item) {
     else if (key === "BYSETPOS") bySetPos = val;
     else other.push(part.trim());
   }
-  // One weekday at one position is its RFC 5545 ordinal form within a month or
-  // a single-month year: BYDAY=TU;BYSETPOS=2 is BYDAY=2TU, because BYSETPOS
-  // counts within the days the other parts produce and BYDAY is then the only
-  // day filter. Anything wider (other frequencies, several months, a BYMONTHDAY
-  // filter, or any other part that changes the set it counts in) stays in `other`.
+  // One weekday at one position is its RFC 5545 ordinal form within a month:
+  // BYDAY=TU;BYSETPOS=2 is BYDAY=2TU, because BYSETPOS counts within the days
+  // the other parts produce and BYDAY is then the only day filter. That holds
+  // for MONTHLY and for YEARLY with one BYMONTH, at a position a month can hold
+  // (1 to 5 from either end). Anything wider (a whole year, where Thunderbird
+  // expands a yearly ordinal differently from BYSETPOS, several months, a
+  // BYMONTHDAY filter, or any other part that changes the set it counts in)
+  // stays in `other`.
   if (bySetPos !== null) {
     const pos = bySetPos.split(",");
     const sameDays = !f.byMonthDay && other.length === 0
-      && (f.freq === "MONTHLY" || (f.freq === "YEARLY" && (!f.byMonth || f.byMonth.length === 1)));
-    if (sameDays && pos.length === 1 && /^[+-]?\d+$/.test(pos[0]) && byDay && byDay.length === 1 && RECURRENCE_DAY_CODE.test(byDay[0])) {
+      && (f.freq === "MONTHLY" || (f.freq === "YEARLY" && f.byMonth && f.byMonth.length === 1));
+    if (sameDays && pos.length === 1 && /^[+-]?[1-5]$/.test(pos[0]) && byDay && byDay.length === 1 && RECURRENCE_DAY_CODE.test(byDay[0])) {
       byDay = [`${Number(pos[0])}${byDay[0]}`];
     } else {
       other.push(`BYSETPOS=${bySetPos}`);

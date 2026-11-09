@@ -14,7 +14,7 @@
 
 const FREQS = ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
 const DAY_CODE = /^(MO|TU|WE|TH|FR|SA|SU)$/;
-const BY_DAY = /^[+-]?([1-9]|[1-4][0-9]|5[0-3])?(MO|TU|WE|TH|FR|SA|SU)$/;
+const BY_DAY = /^(?:[+-]?(?:[1-9]|[1-4][0-9]|5[0-3]))?(MO|TU|WE|TH|FR|SA|SU)$/;
 const PLAIN_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const FIELDS = ["freq", "interval", "count", "until", "byDay", "byMonthDay", "byMonth", "wkst", "other"];
 
