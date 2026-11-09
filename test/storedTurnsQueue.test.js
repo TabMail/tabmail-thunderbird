@@ -12,15 +12,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { storedTurnsRoute } from './support/storedTurnsRoute.js';
 
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
+// The turns' stored thinking, kept as IndexedDB would keep it.
+const idb = vi.hoisted(() => ({ data: new Map() }));
 vi.mock('../agent/modules/idbStorage.js', () => ({
-  get: vi.fn(async () => ({})), set: vi.fn(async () => {}), remove: vi.fn(async () => {}), getAllKeys: vi.fn(async () => []),
+  get: vi.fn(async keys => Object.fromEntries([keys].flat().filter(k => idb.data.has(k)).map(k => [k, idb.data.get(k)]))),
+  set: vi.fn(async values => { for (const [k, v] of Object.entries(values)) idb.data.set(k, v); }),
+  remove: vi.fn(async keys => { for (const k of [keys].flat()) idb.data.delete(k); }),
+  getAllKeys: vi.fn(async () => [...idb.data.keys()]),
 }));
 
 const copy = value => (value === undefined ? undefined : structuredClone(value));
-let data, queue;
+let data, queue, store;
 
 beforeEach(async () => {
   vi.resetModules();
+  idb.data.clear();
   data = {
     chat_turns: [
       { _id: 'a', _ts: 100, _chars: 1 },
@@ -38,6 +44,7 @@ beforeEach(async () => {
     },
   };
   queue = await import('../chat/modules/storedTurnsQueue.js');
+  store = await import('../chat/modules/persistentChatStore.js');
 });
 
 afterEach(() => {
@@ -149,5 +156,50 @@ describe('order', () => {
     await expect(send({ command: 'chat-turns-change', op: { clear: true } }))
       .resolves.toEqual({ applied: false, error: 'Error: synthetic read failure' });
     expect(stored()).toEqual(['b', 'c']);
+  });
+});
+
+// A turn's stored thinking lasts as long as the stored turn: whatever removes
+// the turn (Chat History's Clear All or Delete Old, the chat window, the
+// budget) removes its thinking, and nothing else does (#256).
+describe('a removed turn takes its thinking with it', () => {
+  const thinkingOf = async ids => Object.keys(Object.fromEntries(
+    Object.entries(await store.loadThinkingBatch(ids)).filter(([, text]) => text !== null)));
+
+  beforeEach(async () => {
+    for (const id of ['a', 'b', 'c']) await store.saveThinking(id, `${id} thinking`);
+  });
+
+  it.each([
+    ['Clear All', { clear: true }, []],
+    ['a removal by id', { remove: ['b'] }, ['a', 'c']],
+    ['Delete Old', { keepFrom: 250 }, ['c']],
+    ['a change that adds nothing', { update: [{ _id: 'b', _ts: 200 }] }, ['a', 'b', 'c']],
+  ])('%s', async (_, op, kept) => {
+    await expect(change(op)).resolves.toMatchObject({ applied: true });
+    expect(stored()).toEqual(expect.arrayContaining(kept));
+    expect(await thinkingOf(['a', 'b', 'c'])).toEqual(kept);
+  });
+
+  it('the budget dropping turns to fit a new one, keeping the new one\'s', async () => {
+    await store.saveThinking('big', 'big thinking');
+    await change({ append: [{ _id: 'big', _ts: 400, _chars: 25000 }] });
+    expect(stored()).toEqual(['big']);
+    expect(await thinkingOf(['a', 'b', 'c', 'big'])).toEqual(['big']);
+  });
+
+  it('a change whose thinking cannot be removed is still applied, and the failure logged', async () => {
+    const { remove } = await import('../agent/modules/idbStorage.js');
+    remove.mockRejectedValueOnce(new Error('synthetic IDB failure'));
+    await expect(change({ remove: ['b'] })).resolves.toEqual({ applied: true, removed: 1 });
+    expect(stored()).toEqual(['a', 'c']);
+    const { log } = await import('../agent/modules/utils.js');
+    expect(log.mock.calls.some(([line]) => String(line).includes('synthetic IDB failure'))).toBe(true);
+  });
+
+  it('a change that fails to write removes no thinking', async () => {
+    browser.storage.local.set.mockRejectedValueOnce(new Error('synthetic write failure'));
+    await expect(change({ keepFrom: 250 })).resolves.toMatchObject({ applied: false });
+    expect(await thinkingOf(['a', 'b', 'c'])).toEqual(['a', 'b', 'c']);
   });
 });

@@ -47,3 +47,29 @@ its pending updates are not kept across a restart.
   `browser.storage.local` has no known hang, and a background restart clears it.
 - The census (`test/chatTurnsSingleWriter.test.js`) now covers `chat_turns` only; the rule that only
   the background loads the writer stays, since a second loader would be a second chain.
+
+## Amendment 2026-11-09: what a removed turn owns goes with it (#256, #257)
+
+Two stores hold things a turn owns: its thinking (IndexedDB, `thinking:<turn id>`) and its message
+references in the chat window's id map (`chat_id_map`, counted per turn from `_refs`). The budget
+eviction in the open window cleaned both up for the turns it evicted; Chat History's Delete Old
+cleaned up neither (#256), and a window open during a Clear All saved its whole id map back
+afterwards (#257).
+
+- **Thinking follows the stored turn.** The writer (`_apply`) removes the stored thinking of every
+  turn the change removes, including those the budget drops to fit an append
+  (`applyTurnsOperation` returns them as `gone`), after the write. A failed thinking removal is
+  logged and the change still answers applied. The window's own `removeThinking` calls on eviction
+  are deleted: the stored turns are what the model's context reads, so their thinking lasts exactly
+  as long as they do.
+- **The id map holds the stored turns' references, decided when the window opens.** The id map
+  belongs to the open chat window, which keeps the references of every turn it shows, removed or
+  not, so a shown reference never comes to name another message. Each window start rebuilds the
+  reference counts from the stored turns it loaded (`buildRefCounts`, step 3c of
+  `initAndGreetUser`) and frees every id none of them references. References of turns removed
+  while no window was open, or saved back by a window that was open during a Delete Old or Clear
+  All, are released at the next open.
+- **Not done:** the window is not told of a Clear All, so the map and metadata it saves afterwards
+  stay in storage until the chat window next opens. Nothing reads them before then; the window's
+  start releases the references, and a knowledge-base cursor naming a removed turn already reads
+  as "every turn", the state a budget eviction leaves.

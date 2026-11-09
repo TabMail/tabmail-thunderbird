@@ -17,19 +17,28 @@
 // told it failed, so the user can repeat it.
 
 import { log } from "../../agent/modules/utils.js";
-import { applyTurnsOperation } from "./persistentChatStore.js";
+import { applyTurnsOperation, removeThinking } from "./persistentChatStore.js";
 
 const TURNS_KEY = "chat_turns";
 
 let _chain = Promise.resolve();
 
-/** Apply one operation to the stored turns: read, change, write. A failed read writes nothing. */
+/**
+ * Apply one operation to the stored turns: read, change, write. A failed read
+ * writes nothing. A turn's stored thinking goes with the turn, however it is
+ * removed (Chat History's Clear All or Delete Old, the chat window, the budget).
+ */
 async function _apply(op) {
   const stored = (await browser.storage.local.get(TURNS_KEY))[TURNS_KEY];
-  const { turns, removed } = applyTurnsOperation(Array.isArray(stored) ? stored : [], op);
+  const { turns, removed, gone } = applyTurnsOperation(Array.isArray(stored) ? stored : [], op);
   if (turns.length > 0) await browser.storage.local.set({ [TURNS_KEY]: turns });
   else await browser.storage.local.remove(TURNS_KEY);
   log(`[StoredTurnsQueue] Applied change: ${turns.length} stored, ${removed} removed`, "debug");
+  try {
+    await removeThinking(gone.map(t => t._id));
+  } catch (e) {
+    log(`[StoredTurnsQueue] Failed to remove the thinking of ${gone.length} removed turn(s): ${e}`, "warn");
+  }
   return { removed };
 }
 

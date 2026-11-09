@@ -76,7 +76,7 @@ export async function initAndGreetUser() {
     log(`[TMDBG Init] Failed to init idTranslation: ${e}`, "warn");
   }
 
-  // Step 3b: One-time migration — compute _refs for existing turns, build refCounts
+  // Step 3b: One-time migration — compute _refs for existing turns
   try {
     const refsMigFlag = await browser.storage.local.get("chat_refs_migration_v1");
     if (!refsMigFlag["chat_refs_migration_v1"] && persistedTurns.length > 0) {
@@ -85,13 +85,17 @@ export async function initAndGreetUser() {
         turn._refs = collectTurnRefs(turn);
       }
       await changeTurns({ update: persistedTurns });
-      buildRefCounts(persistedTurns);
       await browser.storage.local.set({ "chat_refs_migration_v1": Date.now() });
       log(`[TMDBG Init] Refs migration complete`);
     }
   } catch (e) {
     log(`[TMDBG Init] Refs migration failed (non-fatal): ${e}`, "warn");
   }
+
+  // Step 3c: The id map keeps only the stored turns' references. Turns removed
+  // elsewhere (Chat History's Delete Old or Clear All, including one done while
+  // a window was open and saved its map afterwards) release theirs here.
+  buildRefCounts(persistedTurns);
 
   // Step 4: Build inbox context and user name (needed for both returning and first-time)
   const [inboxContextJson, userName] = await Promise.all([
