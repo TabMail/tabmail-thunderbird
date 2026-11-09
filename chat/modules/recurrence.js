@@ -66,21 +66,29 @@ function listError(field, value, isValid, allowed) {
 
 /**
  * The tool error for a `recurrence` argument the tools cannot write, or null.
- * `{}` is valid (it clears the rule). Checked before the confirmation card, so
- * a field the read tools would never show (an unknown key, a value outside its
- * field's form, `other`) is refused rather than written with a part silently
- * dropped or changed. Combinations of valid fields are not checked here (#275).
+ * Checked before the confirmation card, so a field the read tools would never
+ * show (an unknown key, a value outside its field's form, `other`) is refused
+ * rather than written with a part silently dropped or changed. Combinations of
+ * valid fields are not checked here (#275).
+ *
+ * `{}` clears the rule, so it is valid only where there is a rule to clear
+ * (`canClear`, the edit tool). On create it would make a one-off event out of
+ * a request to repeat, so it is refused there, and create's messages never
+ * suggest it.
  */
-export function recurrenceArgError(recurrence) {
+export function recurrenceArgError(recurrence, { canClear }) {
+  const clearHint = canClear ? ", or {} to clear the rule" : "";
   if (!recurrence || typeof recurrence !== "object" || Array.isArray(recurrence)) {
-    return `recurrence has an invalid value "${shown(recurrence)}": an object of recurrence fields, or {} to clear the rule`;
+    return `recurrence has an invalid value "${shown(recurrence)}": an object of recurrence fields${clearHint}`;
   }
-  if (isClearRecurrence(recurrence)) return null;
+  if (isClearRecurrence(recurrence)) {
+    return canClear ? null : `recurrence {} sets no rule: give freq, such as {"freq":"WEEKLY"}, or omit recurrence for an event that does not repeat`;
+  }
   const r = recurrence;
   for (const key of Object.keys(r)) {
     if (!FIELDS.includes(key)) return `recurrence.${key} is not a recurrence field: use ${FIELDS.slice(0, -1).join(", ")}`;
   }
-  if (!FREQS.includes(r.freq)) return invalid("freq", r.freq ?? "", `one of ${FREQS.join(", ")} (use {} to clear the rule)`);
+  if (!FREQS.includes(r.freq)) return invalid("freq", r.freq ?? "", `one of ${FREQS.join(", ")}${canClear ? " (use {} to clear the rule)" : ""}`);
   if ("interval" in r && !isPositiveInteger(r.interval)) return invalid("interval", r.interval, "a positive integer");
   if ("count" in r && !isPositiveInteger(r.count)) return invalid("count", r.count, "a positive integer");
   if ("until" in r && !(typeof r.until === "string" && isValidPlainDate(r.until))) {

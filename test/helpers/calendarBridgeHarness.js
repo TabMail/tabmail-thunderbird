@@ -193,7 +193,8 @@ export function canonicalRule(value) {
 // A calIRecurrenceRule: setting its icalProperty parses the rule, reading it
 // back gives the re-serialized value (canonicalRule). Like CalRecurrenceRule, it
 // is always a positive rule whose property is RRULE, so an imported EXRULE reads
-// back as one more RRULE (Thunderbird no longer supports exclusion rules).
+// back as one more RRULE (Thunderbird before comm-central bug 2082832, which
+// keeps an EXRULE as EXRULE).
 function fakeRecurrenceRule() {
   let prop = null;
   return {

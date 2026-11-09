@@ -255,8 +255,9 @@ describe('write: what was read, written back, reads the same', () => {
     });
   }
 
-  // Thunderbird expands every rule a series holds, and an imported EXRULE is one
-  // more of them, so a second rule adds its own occurrences. The fields name one
+  // Thunderbird expands every rule a series holds, and (before comm-central bug
+  // 2082832) an imported EXRULE is one more of them, so a second rule adds its
+  // own occurrences. The fields name one
   // rule; restating them would leave only that one.
   for (const secondName of ['RRULE', 'EXRULE']) {
     it(`a series with a second rule (stored as ${secondName}) shows it, so restating is refused and {} clears both`, async () => {
@@ -433,9 +434,23 @@ describe('a rule the tools cannot write is refused, naming the field and value',
   ];
   for (const [arg, message] of refused) {
     it(JSON.stringify(arg), () => {
-      expect(recurrenceArgError(arg)).toBe(message);
+      expect(recurrenceArgError(arg, { canClear: true })).toBe(message);
     });
   }
+
+  // Create has no rule to clear: `{}` is refused there, and none of its
+  // messages points the model at `{}`, which would make a one-off event.
+  for (const [arg, message] of refused) {
+    it(`on create, ${JSON.stringify(arg)} is refused without suggesting {}`, () => {
+      const onCreate = recurrenceArgError(arg, { canClear: false });
+      expect(onCreate).toBe(message.replace(', or {} to clear the rule', '').replace(' (use {} to clear the rule)', ''));
+      expect(onCreate).not.toContain('{}');
+    });
+  }
+  it('on create, {} is refused, naming freq', () => {
+    expect(recurrenceArgError({}, { canClear: false })).toBe(
+      'recurrence {} sets no rule: give freq, such as {"freq":"WEEKLY"}, or omit recurrence for an event that does not repeat');
+  });
 
   const accepted = [
     {},
@@ -447,7 +462,8 @@ describe('a rule the tools cannot write is refused, naming the field and value',
   ];
   for (const arg of accepted) {
     it(`accepts ${JSON.stringify(arg)}`, () => {
-      expect(recurrenceArgError(arg)).toBeNull();
+      expect(recurrenceArgError(arg, { canClear: true })).toBeNull();
+      if (Object.keys(arg).length) expect(recurrenceArgError(arg, { canClear: false })).toBeNull();
     });
   }
 

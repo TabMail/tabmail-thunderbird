@@ -19,7 +19,9 @@ same design (tabmail-ios #421).
   by the split): the fields describe its first rule item. **Thunderbird 140-160 expands EVERY rule item** (no
   `MAX_RULES` before comm-central 161), and an imported EXRULE becomes one more of them: `CalRecurrenceRule` is
   always positive (`isNegative: false`, "We don't support EXRULE anymore") and its `icalProperty` always names
-  itself RRULE. So a series another app wrote with two RRULEs (RFC 5545: SHOULD NOT) or an RFC 2445 EXRULE repeats
+  itself RRULE. That holds before comm-central bug 2082832 (2026-10-28: "Keep EXRULE properties as EXRULE, and
+  don't expand them"; "Only expand the first recurrence rule"); from that change on an EXRULE reads back as a
+  negative EXRULE, `isRuleItem` skips it, a restatement keeps it, and it never reaches `other`. So a series another app wrote with two RRULEs (RFC 5545: SHOULD NOT) or an RFC 2445 EXRULE repeats
   by both. Each further rule is shown in `other` as `RRULE:<value>`, so restating the fields (which writes one rule)
   is refused and `{}` clears them all. A split of such a series keeps only the capped first rule on the earlier part
   (#265). Correction: this note used to say an
@@ -44,7 +46,9 @@ same design (tabmail-ios #421).
 ## Writing
 
 - **Validation at the tool boundary only:** `recurrenceArgError` runs in `calendar_event_create` and `calendar_event_edit` before the confirmation card. It refuses an invalid field with `recurrence.<field> has an invalid value "<value>": <allowed>`. The checks:
-  - `freq` is in the enum and is required unless the object is `{}`;
+  - `freq` is in the enum and is required unless the object is `{}` on an edit; on create `{}` is refused too
+    (there is no rule to clear, so it would make a one-off event out of a request to repeat), and create's messages
+    never suggest `{}`;
   - `interval` and `count` are positive integers;
   - only the eight fields (and `other`, refused below) are accepted; any other key (`bySetPos`, `byHour`) is refused
     rather than reaching Thunderbird's schema check after the card;
@@ -61,7 +65,7 @@ same design (tabmail-ios #421).
   alike; create used to drop it silently and make a single event.
 
   Because invalid input is refused there, the bridge's `buildRRuleValueFromDetails` passes values through without its own checks.
-- **`{}` clears the rule:** `recurrenceInfo` becomes null. It used to default to WEEKLY. `null` in an edit is the same as omitting the field.
+- **`{}` clears the rule (edit only):** `recurrenceInfo` becomes null. It used to default to WEEKLY. On create it is refused. `null` in an edit is the same as omitting the field.
 - **Plain-date `until`** is the end of that day:
   - an all-day series gets a bare DATE;
   - a floating event gets `T235959`;

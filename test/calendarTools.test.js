@@ -388,10 +388,33 @@ describe('calendar_event_create refuses a recurrence it cannot write before the 
       { callId: pid },
     );
     await new Promise((r) => setTimeout(r, 5));
-    expect(ctx.fsmSessions[pid].failReason).toBe('recurrence has an invalid value "FREQ=WEEKLY;BYDAY=MO": an object of recurrence fields, or {} to clear the rule');
+    expect(ctx.fsmSessions[pid].failReason).toBe('recurrence has an invalid value "FREQ=WEEKLY;BYDAY=MO": an object of recurrence fields');
     expect(ctx.state).toBe('exec_fail');
     expect(ctx.fsmSessions[pid].createEventArgs).toBeUndefined();
   });
+
+  // A new event has no rule to clear, so `{}` (and a rule without freq) on
+  // create is a request to repeat that names no repeat. Accepting it would
+  // create a one-off event the user believes repeats.
+  const noRule = [
+    [{}, 'recurrence {} sets no rule: give freq, such as {"freq":"WEEKLY"}, or omit recurrence for an event that does not repeat'],
+    [{ byDay: ['TU'] }, 'recurrence.freq has an invalid value "": one of DAILY, WEEKLY, MONTHLY, YEARLY'],
+  ];
+  for (const [recurrence, message] of noRule) {
+    it(`refuses ${JSON.stringify(recurrence)} rather than creating an event that does not repeat`, async () => {
+      const pid = `pid-create-no-rule-${Object.keys(recurrence).length}`;
+      ctx.fsmSessions[pid] = {};
+      ctx.state = null;
+      await calendarEventCreateRun(
+        { calendar_id: 'cal1', title: 'Team sync', start_iso: '2099-10-06T10:00:00', end_iso: '2099-10-06T10:30:00', recurrence },
+        { callId: pid },
+      );
+      await new Promise((r) => setTimeout(r, 5));
+      expect(ctx.fsmSessions[pid].failReason).toBe(message);
+      expect(ctx.state).toBe('exec_fail');
+      expect(ctx.fsmSessions[pid].createEventArgs).toBeUndefined();
+    });
+  }
 });
 
 describe('calendar_read', () => {
@@ -474,8 +497,11 @@ describe('calendar_search query path keeps cues, timezone and recurrence text', 
       { id: 'w', calendarId: 'cal1', title: 'Weekly sync', startMs: at(9), endMs: at(9, 30), isAllDay: false, isRecurring: true, recurrence: { freq: 'WEEKLY', count: 4 }, attendeeList: [] },
       { id: 'e', calendarId: 'cal1', title: 'Evening sync', startMs: at(18, 5), endMs: at(19), isAllDay: false, attendeeList: [] },
       { id: 'x', calendarId: 'cal1', title: 'Dentist', startMs: at(14), endMs: at(15), isAllDay: false, attendeeList: [] },
+      // Repeats by dates alone (RDATE), so it has no rule fields to show.
+      { id: 'r', calendarId: 'cal1', title: 'Dated sync', startMs: at(11), endMs: at(11, 30), isAllDay: false, isRecurring: true, attendeeList: [] },
     ]);
     const result = await calendarSearchRun({ query: 'sync', calendar_ids: ['cal1'], from_date: dayKey, to_date: dayKey });
+    expect(result.results).toContain('11:00 (11 a.m.) - 11:30 (11:30 a.m.): Dated sync (↻)\tevent_id: r');
     expect(result.results).toContain(`timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
     expect(result.results).toContain('09:00 (9 a.m.) - 09:30 (9:30 a.m.): Weekly sync (↻ {"freq":"WEEKLY","count":4})\tevent_id: w');
     expect(result.results).toContain('18:05 (6:05 p.m.) - 19:00 (7 p.m.): Evening sync\tevent_id: e');

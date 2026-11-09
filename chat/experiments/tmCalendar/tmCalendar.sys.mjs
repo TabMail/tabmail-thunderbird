@@ -355,9 +355,11 @@ function pad2(n) { return String(n).padStart(2, "0"); }
 // the only place Thunderbird stores and expands a rule. Its RRULE property is
 // never read: it is neither imported from nor written to the stored event, so it
 // can hold an older rule than the one the series follows. Thunderbird expands
-// EVERY rule item, and an imported EXRULE becomes one more of them (its rule
-// object is always positive and names itself RRULE), so a series can repeat by
-// more than one rule even though RFC 5545 says it SHOULD NOT.
+// EVERY rule item, and before comm-central bug 2082832 an imported EXRULE
+// becomes one more of them (its rule object is always positive and names itself
+// RRULE; from that change on it stays a negative EXRULE, which isRuleItem
+// skips), so a series can repeat by more than one rule even though RFC 5545
+// says it SHOULD NOT.
 function ruleValuesOfItem(item) {
   const values = [];
   try {
@@ -634,7 +636,7 @@ async function queryCalendarItemsInternal(startIso, endIso, calendarIds) {
           };
           try {
             const recurrence = recurrenceFieldsOfItem(master);
-            resultItem.isRecurring = !!(master && (master.recurrenceInfo || recurrence));
+            resultItem.isRecurring = !!(master && master.recurrenceInfo);
             if (recurrence) resultItem.recurrence = recurrence;
             // Also surface EXDATEs
             try {

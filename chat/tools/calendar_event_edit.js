@@ -181,7 +181,7 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   // A rule the tool cannot write is refused before the confirmation card, so
   // the model can correct it instead of a part being silently dropped.
   if ("recurrence" in norm) {
-    const recurrenceError = recurrenceArgError(norm.recurrence);
+    const recurrenceError = recurrenceArgError(norm.recurrence, { canClear: true });
     if (recurrenceError) {
       await failOut(recurrenceError);
       return;

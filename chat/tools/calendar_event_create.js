@@ -158,7 +158,7 @@ async function _runCreateCalendarEvent(args = {}, options = {}) {
 
   // A rule the tool cannot write is refused before the confirmation card, so
   // the model can correct it instead of a part being silently dropped.
-  const recurrenceError = "recurrence" in norm ? recurrenceArgError(norm.recurrence) : null;
+  const recurrenceError = "recurrence" in norm ? recurrenceArgError(norm.recurrence, { canClear: false }) : null;
   if (recurrenceError) {
     log(`[TMDBG Tools] calendar_event_create: ${recurrenceError}`, "error");
     try {
