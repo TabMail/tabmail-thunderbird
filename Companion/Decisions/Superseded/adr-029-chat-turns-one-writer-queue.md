@@ -1,6 +1,8 @@
 # ADR-029: The Stored Chat Turns Have One Writer, a Persisted Queue in the Background
 
-**Status:** Accepted (2026-11-07). Issue #252.
+**Status:** Superseded (2026-11-08) by [ADR-030](../Active/adr-030-chat-turns-in-memory-write-chain.md): the persisted
+queue, its retry, cap, read limit and bounded wait are gone; the operations and the one background
+writer stay. Accepted 2026-11-07, issue #252.
 
 ## Context
 

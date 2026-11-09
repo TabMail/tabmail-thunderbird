@@ -7,7 +7,7 @@
 // and the model's context; it must never write that copy back, or the removed
 // turns return at the next open. Every change to the stored turns is an
 // operation (append, remove, keep newer than, clear) sent to the background's
-// one queue and applied there in order, so a removal and a new turn never
+// one writer and applied there in order, so a removal and a new turn never
 // overwrite each other.
 //
 // This runs the real settings page (prompts/prompts.html) for Clear All and
@@ -53,7 +53,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const copy = value => (value === undefined ? undefined : structuredClone(value));
 
 let data, alarmListeners;
-let store, ctx, ids, history, doc, CHAT_SETTINGS;
+let store, ctx, ids, history, doc;
 
 // Hold a promise-returning step until released.
 function hold() {
@@ -64,15 +64,14 @@ function hold() {
 }
 
 // Hold the next read of `key` (after it has read) until released: the
-// queue's own read of the stored turns, or with `loading`, a read of the turns
-// as a page or the task delivery loads them (the turns with the queue).
-function holdNextRead(key, { loading = false } = {}) {
+// writer's own read of the stored turns, or a page's or the task delivery's.
+function holdNextRead(key) {
   const h = hold();
   const get = browser.storage.local.get.getMockImplementation();
   let armed = true;
   browser.storage.local.get.mockImplementation(async keys => {
     const value = await get(keys);
-    if (armed && (loading ? Array.isArray(keys) && keys.includes(key) : keys === key)) { armed = false; h.reached(); await h.released; }
+    if (armed && [keys].flat().includes(key)) { armed = false; h.reached(); await h.released; }
     return value;
   });
   return h;
@@ -99,7 +98,7 @@ function seed() {
   };
 }
 
-// What the background answers: the stored turns' queue (its real handler),
+// What the background answers: the stored turns' writer (its real handler),
 // and the memory helper.
 let queue;
 function background(msg) {
@@ -157,7 +156,6 @@ beforeEach(async () => {
   ({ ctx } = await import('../chat/modules/context.js'));
   ids = await import('../chat/modules/idTranslator.js');
   history = await import('../prompts/modules/history.js');
-  ({ CHAT_SETTINGS } = await import('../chat/modules/chatConfig.js'));
   queue = await import('../chat/modules/storedTurnsQueue.js');
 
   // The chat window as it opens: its turns and metadata loaded.
@@ -229,8 +227,8 @@ async function closeWindow() {
 async function startDeleteOld(days, beforeConfirm = () => {}) {
   await history.loadChatHistory();
   history.initHistoryHandlers();
-  // The page has listed the turns (as every reader loads them, with the queue).
-  await vi.waitFor(() => expect(browser.storage.local.get).toHaveBeenCalledWith(['chat_turns', 'chat_turns_pending']));
+  // The page has listed the turns.
+  await vi.waitFor(() => expect(browser.storage.local.get).toHaveBeenCalledWith('chat_turns'));
   await vi.advanceTimersByTimeAsync(0);
   beforeConfirm();
   doc.getElementById('delete-old-history').click();
@@ -284,7 +282,7 @@ it('keeps a Clear All when the chat window closes without another message', asyn
   expect(await reopenedIds()).toEqual([]);
 });
 
-it('keeps a Clear All done while a message the window sent is still being saved', async () => {
+it('keeps a Clear All done after the window saved a message, through the window closing', async () => {
   const next = await send();
   await history.clearChatHistory();
   await vi.advanceTimersByTimeAsync(1000);
@@ -327,7 +325,7 @@ it('keeps both a message sent while Delete Old is removing and the removal', asy
 // after it: the result is added, the cleared turns are not written back.
 it('does not bring back cleared turns with a scheduled task result that read them before the Clear All', async () => {
   windowReceivesTaskResults();
-  const read = holdNextRead('chat_turns', { loading: true });
+  const read = holdNextRead('chat_turns');
   const running = dueTask();
   await read.atHold;
 
@@ -366,13 +364,13 @@ it('does not store a scheduled task result Clear All removed before it reached t
   expect(await reopenedIds()).toEqual([]);
 });
 
-// A scheduled task result the queue refuses is logged as not stored, never as
+// A scheduled task result whose write fails is logged as not stored, never as
 // stored.
-it('logs a scheduled task result the queue refuses as not stored', async () => {
+it('logs a scheduled task result whose write fails as not stored', async () => {
   const { log } = await import('../agent/modules/utils.js');
   const set = browser.storage.local.set.getMockImplementation();
   browser.storage.local.set.mockImplementation(async values => {
-    if ('chat_turns_pending' in values) throw new Error('synthetic save failure');
+    if ('chat_turns' in values) throw new Error('synthetic save failure');
     return set(values);
   });
   await dueTask();
@@ -433,52 +431,21 @@ it('removes a retried message from the stored turns', async () => {
   expect(storedIds()).toEqual(SEEDED);
 });
 
-// Delete Old whose removal is not applied within the wait says it is queued,
-// and the removal is applied once it can be.
-it('says Delete Old\'s removal is queued when it is not applied in time, and applies it later', async () => {
-  const { applyWaitMs, retryDelayMs } = CHAT_SETTINGS.turnsQueue;
-  let read;
-  await startDeleteOld(30, () => { read = holdNextRead('chat_turns'); });
-  await read.atHold;
-
-  await vi.advanceTimersByTimeAsync(applyWaitMs);
-  await vi.waitFor(() => expect(status()).toMatch(/^Old turns queued for removal/));
-  expect(storedIds()).toEqual(SEEDED);
-
-  await vi.advanceTimersByTimeAsync(retryDelayMs);
-  expect(storedIds()).toEqual(['recent-user', 'recent-assistant']);
-  read.release();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(storedIds()).toEqual(['recent-user', 'recent-assistant']);
-});
-
-// Delete Old whose change is not confirmed within the wait (its queue save
-// still under way) says it failed, never that it deleted; the change is still
-// applied if that save succeeds.
-it('says Delete Old failed when its change is not confirmed in time, and applies it once its save succeeds', async () => {
-  const { applyWaitMs } = CHAT_SETTINGS.turnsQueue;
-  const save = hold();
-  let armed = false;
+// Delete Old whose write fails says it failed, never that it deleted, and the
+// turns stay.
+it('says Delete Old failed when its write fails, keeping the turns', async () => {
   const set = browser.storage.local.set.getMockImplementation();
   browser.storage.local.set.mockImplementation(async values => {
-    if (armed && 'chat_turns_pending' in values) { armed = false; save.reached(); await save.released; }
+    if ('chat_turns' in values) throw new Error('synthetic save failure');
     return set(values);
   });
-  await startDeleteOld(30, () => { armed = true; });
-  await save.atHold;
+  await startDeleteOld(30);
 
-  await vi.advanceTimersByTimeAsync(applyWaitMs);
   await vi.waitFor(() => expect(status()).toMatch(/^Failed to delete old history/));
-  expect(status()).toContain(queue.CHANGE_UNCONFIRMED);
+  expect(status()).toContain('synthetic save failure');
   expect(storedIds()).toEqual(SEEDED);
-
-  save.release();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(storedIds()).toEqual(['recent-user', 'recent-assistant']);
-  expect(status()).toMatch(/^Failed to delete old history/);
 });
 
-const stats = () => doc.getElementById('history-stats').textContent.replace(/\s+/g, ' ').trim();
 const memoryCleared = () => browser.runtime.sendMessage.mock.calls.some(([msg]) => msg?.cmd === 'memoryClear');
 
 // Clear All from the page's own controls.
@@ -490,68 +457,21 @@ async function startClearAll() {
   doc.getElementById('modal-confirm').click();
 }
 
-// Chat History counts the turns as every reader sees them: a Clear All still
-// queued has already removed them.
-it('counts no turns after a Clear All that is queued and not yet applied', async () => {
-  const { applyWaitMs } = CHAT_SETTINGS.turnsQueue;
-  const read = holdNextRead('chat_turns');
-  await startClearAll();
-  await read.atHold;
-
-  await vi.advanceTimersByTimeAsync(applyWaitMs);
-  await vi.waitFor(() => expect(status()).toBe('Chat history cleared'));
-  expect(stats()).toContain('Active turns: 0');
-  expect(storedIds()).toEqual(SEEDED);
-
-  // The read ran past its limit; the Clear All is applied at its retry.
-  read.release();
-  await vi.advanceTimersByTimeAsync(CHAT_SETTINGS.turnsQueue.retryDelayMs);
-  expect(storedIds()).toEqual([]);
-});
-
-// A Clear All the queue refuses says it failed, and clears nothing that goes
+// A Clear All whose write fails says it failed, and clears nothing that goes
 // with the turns: the turns stay, and so do their metadata and memory.
-it('says Clear All failed when the queue refuses it, keeping the turns, their metadata and memory', async () => {
-  const set = browser.storage.local.set.getMockImplementation();
-  browser.storage.local.set.mockImplementation(async values => {
-    if ('chat_turns_pending' in values) throw new Error('synthetic save failure');
-    return set(values);
+it('says Clear All failed when its write fails, keeping the turns, their metadata and memory', async () => {
+  const remove = browser.storage.local.remove.getMockImplementation();
+  browser.storage.local.remove.mockImplementation(async keys => {
+    if ([keys].flat().includes('chat_turns')) throw new Error('synthetic save failure');
+    return remove(keys);
   });
   await startClearAll();
 
   await vi.waitFor(() => expect(status()).toMatch(/^Failed to clear chat history/));
   expect(status()).toContain('synthetic save failure');
-  await vi.advanceTimersByTimeAsync(CHAT_SETTINGS.turnsQueue.retryDelayMs);
   expect(storedIds()).toEqual(SEEDED);
   expect(data.chat_meta).toBeDefined();
   expect(memoryCleared()).toBe(false);
-});
-
-// A Clear All not confirmed within the wait (its queue save still under way)
-// says it failed, never that it cleared; the change is still applied if that
-// save succeeds.
-it('says Clear All failed when its change is not confirmed in time, and applies it once its save succeeds', async () => {
-  const { applyWaitMs } = CHAT_SETTINGS.turnsQueue;
-  const save = hold();
-  let armed = true;
-  const set = browser.storage.local.set.getMockImplementation();
-  browser.storage.local.set.mockImplementation(async values => {
-    if (armed && 'chat_turns_pending' in values) { armed = false; save.reached(); await save.released; }
-    return set(values);
-  });
-  await startClearAll();
-  await save.atHold;
-
-  await vi.advanceTimersByTimeAsync(applyWaitMs);
-  await vi.waitFor(() => expect(status()).toMatch(/^Failed to clear chat history/));
-  expect(status()).toContain(queue.CHANGE_UNCONFIRMED);
-  expect(memoryCleared()).toBe(false);
-  expect(storedIds()).toEqual(SEEDED);
-
-  save.release();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(storedIds()).toEqual([]);
-  expect(status()).toMatch(/^Failed to clear chat history/);
 });
 
 // A task result after a session break adds no second break.
@@ -565,9 +485,8 @@ it('adds a scheduled task result after a stored session break without another br
   expect(data.chat_turns.at(-2)._id).toBe('last-break');
 });
 
-// The queue every change to the stored turns goes through.
+// The writer every change to the stored turns goes through.
 const turnAt = id => ({ _id: id, _ts: Date.now(), _type: 'normal', _chars: 1, role: 'user', content: id });
-const now = promise => Promise.race([promise, Promise.resolve('waiting')]);
 
 it('applies changes in the order they were sent', async () => {
   const read = holdNextRead('chat_turns');
@@ -581,35 +500,7 @@ it('applies changes in the order they were sent', async () => {
   expect(storedIds()).toEqual(['recent-user', 'recent-assistant', 'a', 'b']);
 });
 
-// An apply that does not finish is given up at its time limit and tried
-// again, so it holds up nothing behind it; when it does finish, later, its
-// write is refused. A caller waits a bounded time and goes on with its change
-// still queued; nothing is lost.
-it('retries an apply whose read ran past its limit, answers a waiting caller in bounded time, and applies both in order', async () => {
-  const { applyWaitMs, applyTimeoutMs, retryDelayMs } = CHAT_SETTINGS.turnsQueue;
-  const read = holdNextRead('chat_turns');
-  const stuck = store.changeTurns({ append: [turnAt('first')] });
-  await read.atHold;
-  const next = store.changeTurns({ append: [turnAt('second')] });
-
-  await vi.advanceTimersByTimeAsync(applyWaitMs);
-  expect(await stuck).toEqual({ applied: false, queued: true });
-  expect(await next).toEqual({ applied: false, queued: true });
-  expect(storedIds()).toEqual(SEEDED);
-  expect(data.chat_turns_pending.map(item => item.op.append[0]._id)).toEqual(['first', 'second']);
-
-  // Still not finished: the retry applies both without it.
-  await vi.advanceTimersByTimeAsync(retryDelayMs);
-  expect(storedIds()).toEqual([...SEEDED, 'first', 'second']);
-  expect(data.chat_turns_pending).toEqual([]);
-
-  // The read given up on finishes now: nothing is written from it.
-  read.release();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(storedIds()).toEqual([...SEEDED, 'first', 'second']);
-});
-
-it('keeps a change whose write fails and applies it, then the ones after it, on retry', async () => {
+it('says a change whose write fails was not stored, and applies the ones after it', async () => {
   const set = browser.storage.local.set.getMockImplementation();
   browser.storage.local.set.mockImplementation(async values => {
     if ('chat_turns' in values && values.chat_turns.some(t => t._id === 'refused') && !data.refusedOnce) {
@@ -619,16 +510,12 @@ it('keeps a change whose write fails and applies it, then the ones after it, on 
     return set(values);
   });
   const sending = send();
-  const refused = store.changeTurns({ append: [turnAt('refused')] });
+  const refused = expect(store.changeTurns({ append: [turnAt('refused')] })).rejects.toThrow('synthetic write failure');
   const after = store.changeTurns({ append: [turnAt('after')] });
   const next = await sending;
-  await vi.advanceTimersByTimeAsync(CHAT_SETTINGS.turnsQueue.applyWaitMs);
-  expect(await refused).toEqual({ applied: false, queued: true });
-  expect(storedIds()).toEqual([...SEEDED, next._id]);
-
-  await vi.advanceTimersByTimeAsync(CHAT_SETTINGS.turnsQueue.retryDelayMs);
-  await after;
-  expect(storedIds()).toEqual([...SEEDED, next._id, 'refused', 'after']);
+  await refused;
+  await expect(after).resolves.toEqual({ applied: true, removed: 0 });
+  expect(storedIds()).toEqual([...SEEDED, next._id, 'after']);
 });
 
 it('stores a message the window sent while another change was applying, though the window closed meanwhile', async () => {
@@ -637,8 +524,8 @@ it('stores a message the window sent while another change was applying, though t
   await read.atHold;
   const sending = send();
   await vi.advanceTimersByTimeAsync(0);
-  // The window's change is queued before it closes; closing saves no turns.
-  expect(data.chat_turns_pending.map(item => item.op.append?.[0]._id)).toContain('new-' + sent);
+  // The window's change is with the background before it closes; closing
+  // saves no turns.
   await closeWindow();
 
   read.release();
@@ -647,24 +534,3 @@ it('stores a message the window sent while another change was applying, though t
   expect(await reopenedIds()).toEqual(['recent-user', 'recent-assistant', 'new-' + sent]);
 });
 
-it('applies changes queued before the background stopped once it starts again', async () => {
-  const get = browser.storage.local.get.getMockImplementation();
-  browser.storage.local.get.mockImplementation(async keys => {
-    if (keys === 'chat_turns') throw new Error('synthetic read failure');
-    return get(keys);
-  });
-  const cleared = store.changeTurns({ clear: true });
-  const sent = store.changeTurns({ append: [turnAt('after-clear')] });
-  await vi.advanceTimersByTimeAsync(CHAT_SETTINGS.turnsQueue.applyWaitMs);
-  await Promise.all([cleared, sent]);
-  expect(data.chat_turns_pending).toHaveLength(2);
-
-  // The background stops (its timers with it) and starts again.
-  vi.clearAllTimers();
-  browser.storage.local.get.mockImplementation(get);
-  vi.resetModules();
-  await import('../chat/modules/storedTurnsQueue.js');
-
-  await vi.waitFor(() => expect(storedIds()).toEqual(['after-clear']));
-  expect(data.chat_turns_pending).toEqual([]);
-});

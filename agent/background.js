@@ -475,7 +475,7 @@ function setupRuntimeMessageListener() {
         return handleStoreSessionMessage(message);
     }
 
-    // Changes to the stored chat turns, queued and applied in order here.
+    // Changes to the stored chat turns, applied one at a time in order here.
     if (message.command === "chat-turns-change") {
         return handleStoredTurnsMessage(message);
     }

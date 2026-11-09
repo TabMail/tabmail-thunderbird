@@ -2,14 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-// The stored chat turns (chat_turns) have one writer: the background's queue
-// (storedTurnsQueue.js), which applies every change in arrival order. A page
-// that wrote the key itself could write back an older copy of the turns,
-// undoing a Clear All or Delete Old, or dropping turns another page added;
-// one that wrote the queue itself could drop a queued change. This census
-// reads every source file of the add-on and fails on any other write of
-// either key. The queue starts draining when it is loaded, so only the
-// background may load it: a page that did would be a second drainer.
+// The stored chat turns (chat_turns) have one writer: `_apply` in the
+// background's storedTurnsQueue.js, which applies every change one at a time,
+// in arrival order, on one in-memory chain. A page that wrote the key itself
+// could write back an older copy of the turns, undoing a Clear All or Delete
+// Old, or dropping turns another page added. This census reads every source
+// file of the add-on and fails on any other write of the key. The chain
+// exists once per module instance, so only the background may load the
+// module: a page that did would run a second chain whose writes interleave
+// with the background's.
 //
 // A write is found however its key reaches it: written out, through a
 // constant, or in an object or array built up first (in steps, by spread or
@@ -24,8 +25,8 @@ import { posix } from 'node:path';
 import { parse } from 'acorn';
 
 const QUEUE = 'chat/modules/storedTurnsQueue.js';
-// Each key and the one function in the queue that writes it.
-const WRITERS = { chat_turns: '_apply', chat_turns_pending: '_save' };
+// Each key and the one function in the writer that writes it.
+const WRITERS = { chat_turns: '_apply' };
 const WRITE_METHODS = ['set', 'remove', 'clear'];
 
 function sources(patterns = ['*.js', '*.mjs']) {

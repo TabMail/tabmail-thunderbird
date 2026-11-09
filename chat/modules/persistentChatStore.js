@@ -15,8 +15,6 @@ import { get as idbGet, set as idbSet, remove as idbRemove, getAllKeys as idbGet
 // Storage keys
 // ---------------------------------------------------------------------------
 const TURNS_KEY = "chat_turns";
-// The changes queued for the stored turns, oldest first (written only by storedTurnsQueue.js).
-const QUEUED_KEY = "chat_turns_pending";
 const META_KEY = "chat_meta";
 const IDMAP_KEY = "chat_id_map";
 
@@ -37,30 +35,18 @@ const IDMAP_DEBOUNCE_MS = 500;
 // ---------------------------------------------------------------------------
 
 /**
- * The stored turns as they are once every queued change has been applied:
- * the stored turns and the queue are read together and the queued changes
- * applied to them in order, so a queued Clear All or removal already counts.
- * Returns array (empty if none or corrupted).
+ * The stored turns. Returns array (empty if none or corrupted).
  */
 export async function loadTurns() {
   try {
-    const result = await browser.storage.local.get([TURNS_KEY, QUEUED_KEY]);
-    let turns = Array.isArray(result[TURNS_KEY]) ? result[TURNS_KEY] : [];
-    const queued = Array.isArray(result[QUEUED_KEY]) ? result[QUEUED_KEY] : [];
-    for (const item of queued) {
-      if (isTurnsOperation(item?.op)) turns = applyTurnsOperation(turns, item.op).turns;
-    }
-    log(`[PersistentChat] Loaded ${turns.length} turns from storage (${queued.length} queued change(s) applied)`, 'debug');
+    const result = await browser.storage.local.get(TURNS_KEY);
+    const turns = Array.isArray(result[TURNS_KEY]) ? result[TURNS_KEY] : [];
+    log(`[PersistentChat] Loaded ${turns.length} turns from storage`, 'debug');
     return turns;
   } catch (e) {
     log(`[PersistentChat] Failed to load turns: ${e}`, "error");
   }
   return [];
-}
-
-/** True for a change to the stored turns (an operation object). */
-export function isTurnsOperation(op) {
-  return !!op && typeof op === "object" && !Array.isArray(op);
 }
 
 /**
@@ -102,34 +88,32 @@ export function applyTurnsOperation(turns, op) {
 
 /**
  * Change the stored turns from an extension page. Sends the operation to the
- * background's queue (storedTurnsQueue.js), the one writer of chat_turns,
- * which persists it before answering and applies it in arrival order. Answers
- * once it is applied, or after CHAT_SETTINGS.turnsQueue.applyWaitMs with it
- * still queued (applied later, in order). Rejects only when the background
- * did not take it.
+ * background (storedTurnsQueue.js), the one writer of chat_turns, which
+ * applies changes one at a time in arrival order and answers once this one is
+ * applied. Rejects when it was not applied.
  *
  * @param {{ clear?: boolean, remove?: string[], keepFrom?: number, update?: object[], append?: object[] }} op
  *   see storedTurnsQueue.enqueueTurnsChange
- * @returns {Promise<{ applied: true, removed: number } | { applied: false, queued: true }>}
+ * @returns {Promise<{ applied: true, removed: number }>}
  */
 export async function changeTurns(op) {
-  return requireTaken(await browser.runtime.sendMessage({ command: "chat-turns-change", id: generateTurnId(), op }));
+  return requireTaken(await browser.runtime.sendMessage({ command: "chat-turns-change", op }));
 }
 
 /**
- * A reply from the stored turns' queue, if it took the change (applied, or
- * queued to be applied in order); throws its error otherwise. Every caller of
- * the queue checks its reply here, so a refused change is never taken as stored.
+ * A reply from the stored turns' writer, if it applied the change; throws its
+ * error otherwise. Every caller of the writer checks its reply here, so a
+ * failed change is never taken as stored.
  */
 export function requireTaken(reply) {
-  if (!reply?.applied && !reply?.queued) throw new Error(reply?.error || "the background did not take the change");
+  if (!reply?.applied) throw new Error(reply?.error || "the background did not apply the change");
   return reply;
 }
 
 /**
  * Add a turn the chat window shows: to the window's own copy (`turns`, for
  * display and the model's context, kept within the budget; mutated in place)
- * and to the stored turns (through the background's queue).
+ * and to the stored turns (through the background's writer).
  *
  * @param {object} turn - Turn object with _id, _ts, _type, _chars, role, content, etc.
  * @param {object[]} turns - The window's turns (mutated in place)
@@ -518,15 +502,18 @@ export function advanceCursor(meta, lastProcessedTurnId) {
 
 const MIGRATION_V1_FLAG = "chat_turns_migration_v1";
 const MIGRATION_V2_FLAG = "chat_turns_migration_v2";
+const MIGRATION_V3_FLAG = "chat_turns_migration_v3";
 
 /**
  * One-time migrations for persistent chat. Runs at init before loading turns.
  * v1: Clean reset of old session-based chat_history_queue.
  * v2: Clear old session-based FTS entries (chat:* memIds) for consistency.
+ * v3: Delete the persisted turns queue of 1.11.x (chat_turns_pending); changes
+ *     to the stored turns are no longer kept across a restart.
  */
 export async function migrateFromSessions() {
   try {
-    const flags = await browser.storage.local.get([MIGRATION_V1_FLAG, MIGRATION_V2_FLAG]);
+    const flags = await browser.storage.local.get([MIGRATION_V1_FLAG, MIGRATION_V2_FLAG, MIGRATION_V3_FLAG]);
 
     // v1: Delete old session-based storage keys
     if (!flags[MIGRATION_V1_FLAG]) {
@@ -547,6 +534,13 @@ export async function migrateFromSessions() {
       }
       await browser.storage.local.set({ [MIGRATION_V2_FLAG]: Date.now() });
       log(`[PersistentChat] Migration v2 complete`, 'debug');
+    }
+
+    // v3: Delete the persisted turns queue
+    if (!flags[MIGRATION_V3_FLAG]) {
+      await browser.storage.local.remove("chat_turns_pending");
+      await browser.storage.local.set({ [MIGRATION_V3_FLAG]: Date.now() });
+      log(`[PersistentChat] Migration v3 complete`, 'debug');
     }
   } catch (e) {
     log(`[PersistentChat] Migration failed: ${e}`, "error");

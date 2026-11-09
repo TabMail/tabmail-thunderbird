@@ -14,7 +14,7 @@
 // next.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { quietAlarms, sendToBackground } from './support/storedTurnsRoute.js';
+import { sendToBackground } from './support/storedTurnsRoute.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
@@ -111,7 +111,7 @@ async function openPage() {
   globalThis.Option = dom.window.Option;
   const storage = fakeStorage();
   const helper = fakeHelper();
-  globalThis.browser = { storage, alarms: quietAlarms(), runtime: { sendMessage: helper.sendMessage } };
+  globalThis.browser = { storage, runtime: { sendMessage: helper.sendMessage } };
   const store = await import('../chat/modules/persistentChatStore.js');
   const { indexChatTurn } = await import('../fts/memoryIndexer.js');
   const history = await import('../prompts/modules/history.js');

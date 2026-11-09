@@ -10,7 +10,7 @@
 // helper; any request can be held.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { quietAlarms, sendToBackground } from './support/storedTurnsRoute.js';
+import { sendToBackground } from './support/storedTurnsRoute.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
@@ -102,7 +102,6 @@ async function openPage(helper, { awaitListing = true } = {}) {
   globalThis.Option = dom.window.Option;
   globalThis.browser = {
     storage: { onChanged: { addListener() {} }, local: { get: vi.fn(async () => ({})), set: vi.fn(async () => {}), remove: vi.fn(async () => {}) } },
-    alarms: quietAlarms(),
     runtime: { sendMessage: helper.sendMessage },
   };
   const history = await import('../prompts/modules/history.js');
@@ -544,20 +543,13 @@ describe('Chat History keeps the latest answer and the pending state across requ
     const helper = fakeHelper(entriesOf(2));
     const page = await openPage(helper);
     const usage = () => page.d.getElementById('history-usage-label').textContent;
-    const turnsRead = keys => Array.isArray(keys) && keys.includes('chat_turns');
+    const turnsRead = keys => [keys].flat().includes('chat_turns');
     globalThis.browser.storage.local.get.mockImplementation(async keys => (
       turnsRead(keys) ? { chat_turns: [{ _id: 'a', role: 'user', content: 'a' }, { _id: 'b', role: 'assistant', content: 'b' }] } : {}
     ));
     await page.history.loadChatHistory();
     expect(page.stats()).toContain('Active turns: 2');
     expect(usage()).toMatch(/^Memory used: \d/);
-    // A queued removal is counted at once, as every reader sees it.
-    globalThis.browser.storage.local.get.mockImplementation(async keys => (turnsRead(keys) ? {
-      chat_turns: [{ _id: 'a', role: 'user', content: 'a' }, { _id: 'b', role: 'assistant', content: 'b' }],
-      chat_turns_pending: [{ id: 'queued-remove', op: { remove: ['a'] } }],
-    } : {}));
-    await page.history.loadChatHistory();
-    expect(page.stats()).toContain('Active turns: 1');
     globalThis.browser.storage.local.get.mockImplementation(async keys => {
       if (turnsRead(keys)) throw new Error('turn count unavailable');
       return {};
