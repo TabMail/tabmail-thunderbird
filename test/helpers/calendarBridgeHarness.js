@@ -109,7 +109,10 @@ export function fakeEvent({ id, title, startDate, endDate, recurrenceId = null, 
     getAttendees: () => [],
     clone() {
       const c = fakeEvent({ id: ev.id, title: ev.title, startDate: ev.startDate.clone(), endDate: ev.endDate.clone(), recurrenceId: ev.recurrenceId, properties: Object.fromEntries(props) });
-      c.parentItem = ev.parentItem; c.calendar = ev.calendar; c.recurrenceInfo = ev.recurrenceInfo;
+      c.parentItem = ev.parentItem; c.calendar = ev.calendar;
+      // CalItemBase.cloneItemBaseInto clones the recurrence info, so a change to
+      // the clone's rule never reaches the stored item before modifyItem.
+      c.recurrenceInfo = typeof ev.recurrenceInfo?.clone === 'function' ? ev.recurrenceInfo.clone(c) : ev.recurrenceInfo;
       return c;
     },
   };
@@ -143,20 +146,57 @@ export function fakeEvent({ id, title, startDate, endDate, recurrenceId = null, 
  * CalRecurrenceRule and CalRecurrenceDate expose it, and changed occurrences
  * (`exceptions`, items with a `recurrenceId`). `getRecurrenceItems` returns the
  * LIVE list, as CalRecurrenceInfo does, so a caller deleting while iterating it
- * skips items exactly as in Thunderbird.
+ * skips items exactly as in Thunderbird. As in CalRecurrenceInfo, appending
+ * needs the item the info belongs to (`item`, set by the owner), and `clone`
+ * copies the items and changed occurrences for a cloned owner.
  */
 export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
   const list = [...items];
   const changed = [...exceptions];
-  return {
+  const info = {
+    item: null,
     occurrences: [],
     getRecurrenceItems: () => list,
-    appendRecurrenceItem: (r) => { list.push(r); },
+    appendRecurrenceItem: (r) => {
+      if (!info.item) throw new Error('NS_ERROR_NOT_INITIALIZED: recurrence info has no base item');
+      list.push(r);
+    },
+    clone: (newItem) => Object.assign(fakeRecurrenceInfo(list, { exceptions: changed }), { item: newItem }),
     deleteRecurrenceItem: (r) => { const i = list.indexOf(r); if (i >= 0) list.splice(i, 1); },
     getOccurrenceFor: () => null,
     getExceptionIds: () => changed.map((ex) => ex.recurrenceId),
     getExceptionFor: (rid) => changed.find((ex) => ex.recurrenceId.toString() === rid.toString()) || null,
     removeExceptionFor: (rid) => { const i = changed.findIndex((ex) => ex.recurrenceId.toString() === rid.toString()); if (i >= 0) changed.splice(i, 1); },
+  };
+  return info;
+}
+
+// An RRULE or EXRULE value as Thunderbird reads it back: CalRecurrenceRule keeps
+// the parsed ical.js Recur and re-serializes it (Recur.toJSON) as FREQ, COUNT,
+// INTERVAL when above 1, the BY-parts in the order given, UNTIL, then WKST
+// unless it is MO. So a rule is never read back in the order it was written.
+export function canonicalRule(value) {
+  const parts = new Map();
+  for (const part of String(value).split(';')) {
+    const eq = part.indexOf('=');
+    if (eq > 0) parts.set(part.slice(0, eq).toUpperCase(), part.slice(eq + 1));
+  }
+  const out = [`FREQ=${parts.get('FREQ')}`];
+  if (parts.has('COUNT')) out.push(`COUNT=${parts.get('COUNT')}`);
+  if (parts.has('INTERVAL') && Number(parts.get('INTERVAL')) > 1) out.push(`INTERVAL=${parts.get('INTERVAL')}`);
+  for (const [k, v] of parts) if (!['FREQ', 'COUNT', 'INTERVAL', 'UNTIL', 'WKST'].includes(k)) out.push(`${k}=${v}`);
+  if (parts.has('UNTIL')) out.push(`UNTIL=${parts.get('UNTIL')}`);
+  if (parts.has('WKST') && parts.get('WKST').toUpperCase() !== 'MO') out.push(`WKST=${parts.get('WKST')}`);
+  return out.join(';');
+}
+
+// A calIRecurrenceRule: setting its icalProperty parses the rule, reading it
+// back gives the re-serialized value (canonicalRule).
+function fakeRecurrenceRule() {
+  let prop = null;
+  return {
+    get icalProperty() { return prop; },
+    set icalProperty(p) { prop = { propertyName: p.propertyName, value: canonicalRule(p.value) }; },
   };
 }
 
@@ -166,9 +206,14 @@ export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
  * value's digits in the user's zone (a `Z` value in UTC, a bare date as a DATE).
  */
 export function recurrenceItem(propertyName, value) {
+  if (propertyName === 'RRULE' || propertyName === 'EXRULE') {
+    const rule = fakeRecurrenceRule();
+    rule.icalProperty = { propertyName, value };
+    return rule;
+  }
   const item = { icalProperty: { propertyName, value } };
   const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$/.exec(value);
-  if (m && propertyName !== 'RRULE') {
+  if (m) {
     const [, y, mo, d, hh, mi, ss, z] = m;
     item.date = hh
       ? fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, hour: +hh, minute: +mi, second: +ss, timezone: z ? UTC_ZONE : LOCAL_ZONE })
@@ -269,7 +314,7 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
     Cc: new Proxy({}, {
       get(_t, key) {
         if (key === '@mozilla.org/calendar/datetime;1') return { createInstance: () => fakeCalDateTime() };
-        if (key === '@mozilla.org/calendar/recurrence-rule;1') return { createInstance: () => ({ icalProperty: null }) };
+        if (key === '@mozilla.org/calendar/recurrence-rule;1') return { createInstance: () => fakeRecurrenceRule() };
         if (key === '@mozilla.org/calendar/recurrence-info;1') return { createInstance: () => fakeRecurrenceInfo() };
         if (key === '@mozilla.org/calendar/event;1') {
           return { createInstance: () => Object.assign(fakeEvent({ id: null, title: '', startDate: null, endDate: null }), { addAttendee() {} }) };

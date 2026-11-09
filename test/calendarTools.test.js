@@ -296,17 +296,37 @@ describe('calendar_event_edit', () => {
       }
     });
 
-    it('restating such a rule is refused for one occurrence too, explicit or inferred', async () => {
-      browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: true, id: 'found-event', recurrence: { freq: 'YEARLY', byDay: ['MO'], other: 'BYWEEKNO=20' } });
-      try {
-        const rule = { freq: 'YEARLY', byDay: ['MO'] };
-        const explicit = await runEdit({ event_id: 'found-event', edit_scope: 'this_only', recurrence_id: '2099-10-05T09:00:00', recurrence: rule }, 'pid-rec-5');
-        expect(explicit.failReason).toMatch(/^this series repeats in a way the edit tool cannot express \(BYWEEKNO=20\)/);
-        const inferred = await runEdit({ event_id: 'found-event', recurrence_id: '2099-10-05T09:00:00', recurrence: rule }, 'pid-rec-6');
-        expect(inferred.failReason).toMatch(/^this series repeats in a way the edit tool cannot express \(BYWEEKNO=20\)/);
-        expect(inferred.editEventArgs).toBeUndefined();
-      } finally {
-        browser.tmCalendar.getCalendarEventDetails.mockReset();
+    it('a recurrence on one occurrence is refused before the card, explicit or inferred, a rule or `{}`', async () => {
+      const rid = '2099-10-05T09:00:00';
+      const cases = [
+        [{ edit_scope: 'this_only', recurrence_id: rid, recurrence: { freq: 'WEEKLY', byDay: ['TH'] } }, 'pid-rec-5'],
+        [{ recurrence_id: rid, recurrence: { freq: 'WEEKLY', byDay: ['TH'] } }, 'pid-rec-6'],
+        [{ edit_scope: 'this_only', recurrence_id: rid, recurrence: {} }, 'pid-rec-9'],
+        [{ recurrence_id: rid, recurrence: {} }, 'pid-rec-10'],
+      ];
+      for (const [args, pid] of cases) {
+        const sess = await runEdit({ event_id: 'found-event', ...args }, pid);
+        expect(sess.failReason, JSON.stringify(args)).toBe("recurrence changes the whole series: use edit_scope 'all', or 'this_and_following' with recurrence_id");
+        expect(sess.editEventArgs, JSON.stringify(args)).toBeUndefined();
+      }
+    });
+
+    it('a rule reaches the card for the series, on a recurring and on a one-off event, and from an occurrence on', async () => {
+      const rule = { freq: 'WEEKLY', byDay: ['TH'] };
+      const cases = [
+        [{ freq: 'DAILY' }, {}, 'pid-rec-11'],
+        [null, {}, 'pid-rec-12'],
+        [{ freq: 'DAILY' }, { edit_scope: 'this_and_following', recurrence_id: '2099-10-05T09:00:00' }, 'pid-rec-13'],
+      ];
+      for (const [stored, scope, pid] of cases) {
+        browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: true, id: 'found-event', recurrence: stored });
+        try {
+          const sess = await runEdit({ event_id: 'found-event', ...scope, recurrence: rule }, pid);
+          expect(sess.failReason, pid).toBeUndefined();
+          expect(sess.editEventArgs, pid).toMatchObject({ recurrence: rule });
+        } finally {
+          browser.tmCalendar.getCalendarEventDetails.mockReset();
+        }
       }
     });
 
@@ -459,7 +479,7 @@ describe('calendar_search query path keeps cues, timezone and recurrence text', 
     calendarSearchResetPagination();
   });
 
-  it('renders matching rows with AM/PM cues, the timezone header and the RRULE, and excludes non-matching rows', async () => {
+  it('renders matching rows with AM/PM cues, the timezone header and the recurrence fields, and excludes non-matching rows', async () => {
     const day = new Date();
     day.setDate(day.getDate() + 7);
     day.setHours(0, 0, 0, 0);

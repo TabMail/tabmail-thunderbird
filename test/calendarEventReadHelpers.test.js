@@ -33,7 +33,7 @@ globalThis.browser = {
 };
 
 const { _testExports } = await import('../chat/tools/calendar_event_read.js');
-const { safeGetCalendarName, isWithinTolerance, buildAttendeeLines, formatFromDetails, normalizeDate } = _testExports;
+const { safeGetCalendarName, isWithinTolerance, buildAttendeeLines, formatFromDetails, formatDetailed, normalizeDate } = _testExports;
 
 // ---------------------------------------------------------------------------
 // safeGetCalendarName
@@ -275,6 +275,15 @@ describe('buildAttendeeLines', () => {
 // ---------------------------------------------------------------------------
 // formatFromDetails — event detail formatting
 // ---------------------------------------------------------------------------
+describe('formatDetailed', () => {
+  it('a recurring event in the listing shows its rule in the tools\' fields', () => {
+    const now = Date.now();
+    const recurrence = { freq: 'WEEKLY', byDay: ['MO'] };
+    const result = formatDetailed({ id: 'ser', title: 'Sync', startMs: now, endMs: now + 3600000, isRecurring: true, recurrence }, { id: 'cal1' });
+    expect(result).toContain(`recurrence: ${JSON.stringify(recurrence)}`);
+  });
+});
+
 describe('formatFromDetails', () => {
   it('formats minimal event details', () => {
     const result = formatFromDetails({ calendarId: 'cal1', id: 'evt1' });

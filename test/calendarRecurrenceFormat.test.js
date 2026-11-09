@@ -55,6 +55,7 @@ function series(rrule, { allDay = false, extraItems = [], startDate = null, exce
   const endDate = start.isDate ? fakeDate('2099-10-02') : fakeCalDateTime({ ...start, hour: start.hour + 1 });
   const ev = fakeEvent({ id: 'ser', title: 'Sync', startDate: start, endDate });
   ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', rrule), ...extraItems], { exceptions });
+  ev.recurrenceInfo.item = ev;
   return ev;
 }
 
@@ -310,6 +311,76 @@ describe('write: what was read, written back, reads the same', () => {
   });
 });
 
+// The days a MONTHLY rule names in each of `months` months from `year`/`month0`,
+// as RFC 5545 expands it, independent of the bridge: BYMONTHDAY and a plain
+// BYDAY filter the month's days, an ordinal BYDAY (2TU, -1FR) picks that
+// weekday's nth day of the whole month, and BYSETPOS then picks positions in the
+// sorted set. Only the parts these tests store are understood.
+const WEEKDAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+function monthlyDays(rule, year, month0, months) {
+  const parts = Object.fromEntries(rule.split(';').map((p) => p.split('=')));
+  expect(parts.FREQ).toBe('MONTHLY');
+  for (const k of Object.keys(parts)) expect(['FREQ', 'BYDAY', 'BYMONTHDAY', 'BYSETPOS']).toContain(k);
+  const list = (v) => (v ? v.split(',') : []);
+  const days = [];
+  for (let i = 0; i < months; i++) {
+    const first = new Date(Date.UTC(year, month0 + i, 1));
+    const y = first.getUTCFullYear(); const m = first.getUTCMonth();
+    const length = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    const weekday = (d) => WEEKDAYS[new Date(Date.UTC(y, m, d)).getUTCDay()];
+    let set = Array.from({ length }, (_, k) => k + 1);
+    const monthDays = list(parts.BYMONTHDAY).map(Number).map((n) => (n > 0 ? n : length + 1 + n));
+    if (monthDays.length) set = set.filter((d) => monthDays.includes(d));
+    const byDay = list(parts.BYDAY);
+    if (byDay.length) {
+      set = set.filter((d) => byDay.some((code) => {
+        const [, n, wd] = /^([+-]?\d*)([A-Z]{2})$/.exec(code);
+        if (weekday(d) !== wd) return false;
+        if (!n) return true;
+        const same = Array.from({ length }, (_, k) => k + 1).filter((x) => weekday(x) === wd);
+        return same.at(Number(n) > 0 ? Number(n) - 1 : Number(n)) === d;
+      }));
+    }
+    const setPos = list(parts.BYSETPOS).map(Number);
+    if (setPos.length) set = setPos.map((n) => set.at(n > 0 ? n - 1 : n)).filter((d) => d !== undefined);
+    for (const d of [...new Set(set)].sort((a, b) => a - b)) days.push(`${y}-${pad2(m + 1)}-${pad2(d)}`);
+  }
+  return days;
+}
+
+describe('a monthly rule read and written back names the same days, or restating it is refused', () => {
+  const STORED = [
+    'FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2',
+    'FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1',
+    'FREQ=MONTHLY;BYDAY=MO;BYSETPOS=1',
+    'FREQ=MONTHLY;BYDAY=WE;BYSETPOS=5',
+    'FREQ=MONTHLY;BYDAY=SU;BYSETPOS=-2',
+    'FREQ=MONTHLY;BYDAY=FR;BYMONTHDAY=1,2,3,4,5,6,7,8,9,10,11,12,13,14;BYSETPOS=-1',
+    'FREQ=MONTHLY;BYDAY=TU;BYMONTHDAY=8,9,10,11,12,13,14;BYSETPOS=1',
+    'FREQ=MONTHLY;BYDAY=MO,TU;BYSETPOS=1',
+  ];
+  for (const stored of STORED) {
+    it(stored, async () => {
+      const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series(stored)] });
+      const read = await readFields(api);
+      if (read.other) {
+        const { other, ...restated } = read;
+        expect(otherPartsRefusal(restated, read)).not.toBeNull();
+        return;
+      }
+      expect(await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: read })).toMatchObject({ ok: true });
+      const [written] = ruleValues(savedItem(calendar));
+      expect({ written, days: monthlyDays(written, 2099, 9, 24) }).toEqual({ written, days: monthlyDays(stored, 2099, 9, 24) });
+    });
+  }
+
+  it('the enumerator tells a folded rule from one that names other days', () => {
+    expect(monthlyDays('FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1', 2099, 9, 1)).toEqual(['2099-10-30']);
+    expect(monthlyDays('FREQ=MONTHLY;BYDAY=FR;BYMONTHDAY=1,2,3,4,5,6,7,8,9,10,11,12,13,14;BYSETPOS=-1', 2099, 9, 1)).toEqual(['2099-10-09']);
+    expect(monthlyDays('FREQ=MONTHLY;BYDAY=-1FR;BYMONTHDAY=1,2,3,4,5,6,7,8,9,10,11,12,13,14', 2099, 9, 1)).toEqual([]);
+  });
+});
+
 describe('a rule the tools cannot write is refused, naming the field and value', () => {
   const refused = [
     [{ freq: 'HOURLY' }, 'recurrence.freq has an invalid value "HOURLY": one of DAILY, WEEKLY, MONTHLY, YEARLY (use {} to clear the rule)'],
@@ -420,5 +491,60 @@ describe('split: the earlier part keeps its exceptions and the stored rule', () 
     const master = series('FREQ=DAILY', { allDay: true });
     const { fresh } = await splitAt(master, '2099-10-15T00:00:00', { recurrence: { freq: 'DAILY', until: LAST_DAY } });
     expect(ruleValues(fresh)).toEqual(['FREQ=DAILY;UNTIL=20991031']);
+  });
+
+  it('a rule Thunderbird stores in another part order (a week start) is split too', async () => {
+    const start = fakeDateTime(START_DAY, 17);
+    const { capped, fresh } = await splitAt(series('FREQ=DAILY;WKST=SU', { startDate: start }), '2099-10-15T17:00:00');
+    const [cap] = ruleValues(capped);
+    expect(lastDayAdmitted(start, untilOf(cap))).toBe('2099-10-14');
+    expect(cap).toMatch(/WKST=SU/);
+    expect(ruleValues(fresh)).toEqual(['FREQ=DAILY;WKST=SU']);
+  });
+
+  it('an added date and a moved occurrence exactly at the split leave the earlier part', async () => {
+    const atSplit = recurrenceItem('RDATE', '20991015T170000');
+    const before = recurrenceItem('RDATE', '20991014T170000');
+    const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-15', 19), endDate: fakeDateTime('2099-10-15', 20), recurrenceId: fakeDateTime('2099-10-15', 17) });
+    const { capped } = await splitAt(series('FREQ=DAILY', { extraItems: [before, atSplit], exceptions: [moved] }), '2099-10-15T17:00:00');
+    expect(named(capped, 'RDATE')).toEqual(['20991014T170000']);
+    expect(capped.recurrenceInfo.getExceptionIds()).toEqual([]);
+  });
+
+  it('a split that cannot rebuild the earlier part changes nothing in the calendar', async () => {
+    const unreadable = { icalProperty: { propertyName: 'RDATE', value: '20991020T090000' }, date: { compare() { throw new Error('unreadable date'); } } };
+    const master = series('FREQ=DAILY', { extraItems: [unreadable] });
+    const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: '2099-10-15T17:00:00', patch: { title: 'Renamed' } });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(/unreadable date/);
+    expect(modifications).toEqual([]);
+    expect(calendar.items).toHaveLength(1);
+    expect(calendar.items[0]).toBe(master);
+    expect(ruleValues(master)).toEqual(['FREQ=DAILY']);
+    expect(named(master, 'RDATE')).toEqual(['20991020T090000']);
+  });
+
+  it('an excluding rule stored before the rule is kept, and the rule is the one read, restated and split', async () => {
+    const make = () => {
+      const ev = series('FREQ=DAILY');
+      ev.recurrenceInfo.getRecurrenceItems().unshift(recurrenceItem('EXRULE', 'FREQ=WEEKLY;BYDAY=FR'));
+      return ev;
+    };
+    const read = loadCalendarBridge(bridgeUrl, { items: [make()] });
+    expect(await readFields(read.api)).toEqual({ freq: 'DAILY' });
+
+    const restate = loadCalendarBridge(bridgeUrl, { items: [make()] });
+    expect(await restate.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { freq: 'DAILY', until: LAST_DAY } })).toMatchObject({ ok: true });
+    const saved = savedItem(restate.calendar);
+    expect(named(saved, 'EXRULE')).toEqual(['FREQ=WEEKLY;BYDAY=FR']);
+    expect(ruleValues(saved)).toHaveLength(1);
+    expect(ruleValues(saved)[0]).toMatch(/^FREQ=DAILY;UNTIL=/);
+
+    const { capped, fresh } = await splitAt(make(), '2099-10-15T17:00:00');
+    expect(named(capped, 'EXRULE')).toEqual(['FREQ=WEEKLY;BYDAY=FR']);
+    expect(ruleValues(capped)).toHaveLength(1);
+    expect(ruleValues(capped)[0]).toMatch(/^FREQ=DAILY;UNTIL=/);
+    expect(ruleValues(fresh)).toEqual(['FREQ=DAILY']);
   });
 });

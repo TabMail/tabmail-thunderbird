@@ -178,6 +178,15 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
     return;
   }
 
+  // A rule belongs to the series: on one occurrence (edit_scope "this_only", or
+  // a recurrence_id without edit_scope, which edits one occurrence) it would
+  // land on that occurrence and never take effect, so it is refused before the
+  // confirmation card instead of being reported as done.
+  if ("recurrence" in norm && (norm.edit_scope === "this_only" || (!norm.edit_scope && norm.recurrence_id))) {
+    await failOut("recurrence changes the whole series: use edit_scope 'all', or 'this_and_following' with recurrence_id");
+    return;
+  }
+
   // A rule the tool cannot write is refused before the confirmation card, so
   // the model can correct it instead of a part being silently dropped.
   if ("recurrence" in norm) {

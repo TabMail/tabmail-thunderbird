@@ -354,14 +354,16 @@ function pad2(n) { return String(n).padStart(2, "0"); }
 // The event's rule as an RRULE value, from its recurrence info: the only place
 // Thunderbird stores and expands a rule. Its RRULE property is never read: it is
 // neither imported from nor written to the stored event, so it can hold an
-// older rule than the one the series follows.
+// older rule than the one the series follows. The first RRULE item, the one
+// Thunderbird expands and `setRuleOnItem` replaces; an EXRULE (an exclusion
+// pattern, never expanded) is not the series' rule even when listed first.
 function rruleOfItem(item) {
   try {
     const rinfo = item?.recurrenceInfo;
     const items = rinfo && typeof rinfo.getRecurrenceItems === "function" ? (rinfo.getRecurrenceItems({}) || []) : [];
     for (const r of items) {
       const raw = String(r?.icalProperty?.value || "");
-      if (/\bFREQ=/i.test(raw)) return raw;
+      if (isRuleItem(r) && /\bFREQ=/i.test(raw)) return raw;
     }
   } catch (_) {}
   return "";
@@ -427,12 +429,14 @@ function recurrenceFieldsOfItem(item) {
     else other.push(part.trim());
   }
   // One weekday at one position is its RFC 5545 ordinal form within a month or
-  // a single-month year: BYDAY=TU;BYSETPOS=2 is BYDAY=2TU. Anything wider (other
-  // frequencies, several months, a BYMONTHDAY filter) stays in `other`.
+  // a single-month year: BYDAY=TU;BYSETPOS=2 is BYDAY=2TU, because BYSETPOS
+  // counts within the days the other parts produce and BYDAY is then the only
+  // day filter. Anything wider (other frequencies, several months, a BYMONTHDAY
+  // filter, or any other part that changes the set it counts in) stays in `other`.
   if (bySetPos !== null) {
     const pos = bySetPos.split(",");
-    const sameDays = f.freq === "MONTHLY"
-      || (f.freq === "YEARLY" && (!f.byMonth || f.byMonth.length === 1) && !f.byMonthDay);
+    const sameDays = !f.byMonthDay && other.length === 0
+      && (f.freq === "MONTHLY" || (f.freq === "YEARLY" && (!f.byMonth || f.byMonth.length === 1)));
     if (sameDays && pos.length === 1 && /^[+-]?\d+$/.test(pos[0]) && byDay && byDay.length === 1 && RECURRENCE_DAY_CODE.test(byDay[0])) {
       byDay = [`${Number(pos[0])}${byDay[0]}`];
     } else {
@@ -515,7 +519,6 @@ function applyRecurrenceToItem(item, recurrenceDetails) {
     if (!recurrenceDetails || typeof recurrenceDetails !== "object") return { applied: false, cleared: false };
     const value = buildRRuleValueFromDetails(recurrenceDetails, item);
     if (!value) {
-      try { item.deleteProperty("RRULE"); } catch (_) {}
       item.recurrenceInfo = null;
       tmCalendarDebugLog("[tmCalendar] applyRecurrenceToItem: cleared recurrence");
       return { applied: false, cleared: true };
@@ -2088,10 +2091,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
               for (const rid of [...(rinfo.getExceptionIds?.() || [])]) {
                 if (rid.compare(splitDt) >= 0) rinfo.removeExceptionFor(rid);
-              }
-              // A rule Thunderbird does not take would leave the master uncapped.
-              if (rruleOfItem(cappedClone) !== cappedRrule) {
-                rebuildError = `cappedRrule '${cappedRrule}' did not register as a recurrence item — likely malformed`;
               }
             } catch (re) {
               rebuildError = String(re);

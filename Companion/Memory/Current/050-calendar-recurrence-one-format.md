@@ -14,7 +14,9 @@ same design (tabmail-ios #421).
 - **Printing:** `chat/modules/recurrence.js` prints it as `recurrence: {"freq":"WEEKLY","byDay":["MO"],"until":"2099-10-31"}`
   in `calendar_event_read`, and as ` (↻ {...})` in the `calendar_search`/`calendar_read` listing.
 - **Only the stated fields are shown.** `interval` 1 and `wkst` MO are omitted.
-- **The rule is read from `recurrenceInfo` only** (`rruleOfItem`, used by both read tools and by the split). RRULE is a
+- **The rule is read from `recurrenceInfo` only** (`rruleOfItem`, used by both read tools and by the split): its
+  first RRULE item. An EXRULE is never read as the rule (Thunderbird expands only the first positive RRULE), and
+  writing a rule leaves it on the series. RRULE is a
   promoted property of `calItemBase`: Thunderbird neither imports it into the item's properties when parsing nor
   serializes it, so `getProperty("RRULE")` returns only an in-memory echo a caller set, which survives `clone()` and
   Thunderbird's own event dialog and can name an older rule. TabMail no longer sets it.
@@ -25,8 +27,10 @@ same design (tabmail-ios #421).
   is at or after the start's time of day, otherwise the day before; an all-day series ends on the bound's day.
   Converting the instant into a zone and taking its date was wrong whenever the bound's time is before the
   occurrence time, e.g. every split cap (split minus one second) read one day late.
-- **BYSETPOS:** one weekday at one position folds to its ordinal (`BYDAY=TU;BYSETPOS=2` becomes `2TU`) only for
-  MONTHLY, or YEARLY with at most one BYMONTH and no BYMONTHDAY, where the two name the same days. Elsewhere
+- **BYSETPOS:** one weekday at one position folds to its ordinal (`BYDAY=TU;BYSETPOS=2` becomes `2TU`) only where
+  BYDAY is the only day filter: MONTHLY, or YEARLY with at most one BYMONTH, and never with a BYMONTHDAY. BYSETPOS
+  counts within the days the other parts name, so `BYDAY=FR;BYMONTHDAY=1,...,14;BYSETPOS=-1` is the second Friday,
+  while `-1FR` with that BYMONTHDAY names no day at all. Elsewhere
   (`FREQ=YEARLY;BYMONTH=3,9;BYDAY=TU;BYSETPOS=2` is only the 2nd Tuesday of March) BYSETPOS stays in `other`.
 - **`other`:** anything else goes there, e.g. BYWEEKNO, BYYEARDAY, BYHOUR, BYSETPOS with several days, or a FREQ the schema has no value for. The read line then adds "the edit tool cannot express these; omit recurrence to keep the rule".
 
@@ -50,7 +54,7 @@ same design (tabmail-ios #421).
   alike; create used to drop it silently and make a single event.
 
   Because invalid input is refused there, the bridge's `buildRRuleValueFromDetails` passes values through without its own checks.
-- **`{}` clears the rule:** `recurrenceInfo` becomes null and the RRULE property is deleted. It used to default to WEEKLY. `null` in an edit is the same as omitting the field.
+- **`{}` clears the rule:** `recurrenceInfo` becomes null. It used to default to WEEKLY. `null` in an edit is the same as omitting the field.
 - **Plain-date `until`** is the end of that day:
   - an all-day series gets a bare DATE;
   - a floating event gets `T235959`;
@@ -65,16 +69,28 @@ same design (tabmail-ios #421).
 - **Split ("this and following"):** the capped earlier part keeps its EXDATEs, RDATEs and changed occurrences before
   the split; RDATEs and changed occurrences at or after the split are removed (an RDATE is not bounded by UNTIL).
   The new series still starts as a fresh event with only a rule (no carry-over of later exceptions; filed
-  separately).
+  separately). The capped rule is not read back and compared with the one written: Thunderbird re-serializes a rule
+  in its own part order (FREQ, COUNT, INTERVAL above 1, the BY-parts, UNTIL, then WKST unless MO), so such a
+  comparison refused every split of a rule with a week start. A rebuild of the earlier part that throws refuses the
+  split before anything is written.
 - **Restated rules with `other` parts are refused,** for every edit scope: an edit that restates the rule of a
   series whose stored rule has `other` parts is refused before the card by `otherPartsRefusal`, because restating
   would drop those parts. The stored rule is fetched with the edit's `calendar_id`; when it cannot be read, a
   restatement is refused too. `{}` (stop repeating) is allowed.
+- **A recurrence on one occurrence is refused** before the card (`edit_scope` `this_only`, or a `recurrence_id`
+  without `edit_scope`, which edits one occurrence), a rule and `{}` alike: a rule belongs to the series, and set on
+  an occurrence it would never take effect. The refusal names `edit_scope` `all`, or `this_and_following` with
+  `recurrence_id`.
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar.
 
 ## How it is pinned
 
 - `test/calendarRecurrenceFormat.test.js` runs under TZ=America/Vancouver, with the real bridge in `node:vm` via `test/helpers/calendarBridgeHarness.js`. The harness's `fakeRecurrenceInfo` and `recurrenceItem` model RRULE/RDATE/EXDATE items by `icalProperty.propertyName` (RDATE/EXDATE with their `date`), changed occurrences (`exceptions`), and a LIVE `getRecurrenceItems` list; `fixedZone` and `FLOATING_ZONE` model a zone other than the user's and floating time; the calendar has `addItem` and creatable events, so the real create and split run.
 - The read and round-trip tests assert OCCURRENCES, not strings: `lastDayAdmitted` expands a daily series the way ical.js does, independently of the bridge, for four start kinds (user's zone, another zone east of UTC, floating, all-day) and bounds from every writer. A test that compares the fields read back with the fields written stays green when both sides use the same wrong frame.
+- The harness models what Thunderbird does with a rule: `fakeRecurrenceRule` re-serializes its value as
+  CalRecurrenceRule does (`canonicalRule`), a cloned event clones its recurrence info, and appending to a recurrence
+  info without a base item throws as `appendRecurrenceItem` does.
+- MONTHLY folds are pinned by occurrence too: `monthlyDays` enumerates RFC 5545 days independently of the bridge, and
+  a rule read and written back must name the same days over 24 months, or restating it must be refused.
 - `test/calendarTools.test.js` covers the refusal wiring before the card.
 - Bridge accessor calls (`untilDayFromIcs`, `untilForRRule` → `getTimezoneService`; `setRuleOnItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.
