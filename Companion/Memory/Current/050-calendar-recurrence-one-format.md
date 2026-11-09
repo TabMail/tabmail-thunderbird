@@ -48,7 +48,8 @@ same design (tabmail-ios #421).
 - **Validation at the tool boundary only:** `recurrenceArgError` runs in `calendar_event_create` and `calendar_event_edit` before the confirmation card. It refuses an invalid field with `recurrence.<field> has an invalid value "<value>": <allowed>`. The checks:
   - `freq` is in the enum and is required unless the object is `{}` on an edit; on create `{}` is refused too
     (there is no rule to clear, so it would make a one-off event out of a request to repeat), and create's messages
-    never suggest `{}`;
+    suggest neither `{}` nor leaving recurrence out to keep a rule (create's `other` refusal says to create the
+    series in the calendar app; edit's says to omit recurrence to keep the stored rule);
   - `interval` and `count` are positive integers;
   - only the eight fields (and `other`, refused below) are accepted; any other key (`bySetPos`, `byHour`) is refused
     rather than reaching Thunderbird's schema check after the card;

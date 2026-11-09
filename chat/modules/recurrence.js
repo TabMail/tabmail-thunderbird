@@ -20,6 +20,10 @@ const FIELDS = ["freq", "interval", "count", "until", "byDay", "byMonthDay", "by
 
 export const OTHER_PARTS_NOTE = "the edit tool cannot express these; omit recurrence to keep the rule";
 
+// On create there is no stored rule to keep, and leaving recurrence out would
+// make an event that does not repeat, so the note says neither.
+export const CREATE_OTHER_PARTS_NOTE = "the create tool cannot write these; tell the user to create this series in the calendar app";
+
 /** `recurrence: {...}` for calendar_event_read, or "" when the event does not repeat. */
 export function formatRecurrenceLine(recurrence) {
   if (!recurrence || typeof recurrence !== "object") return "";
@@ -73,8 +77,8 @@ function listError(field, value, isValid, allowed) {
  *
  * `{}` clears the rule, so it is valid only where there is a rule to clear
  * (`canClear`, the edit tool). On create it would make a one-off event out of
- * a request to repeat, so it is refused there, and create's messages never
- * suggest it.
+ * a request to repeat, so it is refused there, and create's messages suggest
+ * neither `{}` nor leaving recurrence out to keep a rule.
  */
 export function recurrenceArgError(recurrence, { canClear }) {
   const clearHint = canClear ? ", or {} to clear the rule" : "";
@@ -107,7 +111,7 @@ export function recurrenceArgError(recurrence, { canClear }) {
     if (e) return e;
   }
   if ("wkst" in r && !(typeof r.wkst === "string" && DAY_CODE.test(r.wkst))) return invalid("wkst", r.wkst, "one of MO, TU, WE, TH, FR, SA, SU");
-  if ("other" in r) return invalid("other", r.other, `${OTHER_PARTS_NOTE}`);
+  if ("other" in r) return invalid("other", r.other, canClear ? OTHER_PARTS_NOTE : CREATE_OTHER_PARTS_NOTE);
   return null;
 }
 
