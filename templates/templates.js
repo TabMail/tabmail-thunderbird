@@ -1452,7 +1452,7 @@ function showStatus(message, isError = false) {
 
     log(`${PFX}Status: ${message}`);
 
-    scheduleStatusHide(() => {
+    scheduleStatusHide(statusEl, () => {
         statusEl.textContent = "";
         statusEl.className = "";
     });

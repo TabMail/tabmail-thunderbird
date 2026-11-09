@@ -78,7 +78,7 @@ function showStatus(message, isError = false) {
     statusEl.textContent = message;
     statusEl.className = isError ? "visible error" : "visible";
 
-    scheduleStatusHide(() => {
+    scheduleStatusHide(statusEl, () => {
         statusEl.className = "";
     });
 }

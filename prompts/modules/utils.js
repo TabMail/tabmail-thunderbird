@@ -30,7 +30,7 @@ export function showStatus(message, isError = false) {
     statusEl.className = isError ? "error" : "success";
     statusEl.style.display = "block";
 
-    scheduleStatusHide(() => {
+    scheduleStatusHide(statusEl, () => {
         statusEl.style.display = "none";
     });
 }

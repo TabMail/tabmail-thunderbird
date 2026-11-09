@@ -154,7 +154,7 @@ describe('the templates page while nobody is signed in', () => {
 describe("the popup's Prompts and Templates entries", () => {
   const POPUP = {
     html: 'popup/popup.html',
-    files: ['popup/popup.js'],
+    files: ['popup/popup.js', 'agent/modules/statusLine.js'],
     stubs: {
       'agent/modules/config.js': { getBackendUrl: async () => 'https://backend.example.com', SETTINGS: {} },
       'agent/modules/setupChecks.js': { checkSetupConfiguration: async () => ({ ok: true, issues: [] }) },

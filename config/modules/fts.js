@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import { cancelStatusHide, scheduleStatusHide } from "../../agent/modules/statusLine.js";
 import { $ } from "./dom.js";
 import {
   FTS_HELPER_DOWNLOAD_URL,
@@ -225,6 +226,7 @@ export async function updateFtsStatus() {
       if (scanStatus?.isScanning && scanStatus?.scanType === "embeddingRebuild") {
         const progress = scanStatus.progress || {};
         const pct = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0;
+        cancelStatusHide($("fts-progress"));
         $("fts-progress").style.display = "block";
         $("fts-progress-bar").value = pct;
         $("fts-progress-text").textContent = `Rebuilding embeddings (${progress.phase || 'email'}): ${(progress.processed || 0).toLocaleString()}/${(progress.total || 0).toLocaleString()} processed, ${(progress.embedded || 0).toLocaleString()} embedded`;
@@ -249,10 +251,10 @@ export async function updateFtsStatus() {
               browser.runtime.onMessage.removeListener(embeddingProgressListener);
               $("fts-progress-bar").value = 100;
               $("fts-progress-text").textContent = "Embedding rebuild complete";
-              setTimeout(() => {
+              scheduleStatusHide($("fts-progress"), () => {
                 $("fts-progress").style.display = "none";
                 updateFtsStatus();
-              }, 3000);
+              });
             }
           } catch (_) {}
         }, 5000);
@@ -313,7 +315,6 @@ export async function ftsManualCheckAndUpdateHost() {
       if (result.updated) {
         // Update was applied
         $("status").textContent = result.message;
-        $("status").style.color = "green";
         if (versionEl) {
           versionEl.textContent = `${result.newVersion}`;
           versionEl.style.color = "green";
@@ -321,7 +322,6 @@ export async function ftsManualCheckAndUpdateHost() {
       } else if (result.updateAvailable && !result.canUpdate) {
         // Update available but can't self-update
         $("status").textContent = result.message;
-        $("status").style.color = "orange";
         if (versionEl) {
           versionEl.textContent = `${result.currentVersion} (update available: ${result.latestVersion})`;
           versionEl.style.color = "orange";
@@ -329,24 +329,15 @@ export async function ftsManualCheckAndUpdateHost() {
       } else {
         // Already up to date
         $("status").textContent = result.message;
-        $("status").style.color = "green";
         await updateFtsHostVersion();
       }
     } else {
       $("status").textContent = `Update check failed: ${result?.error || "Unknown error"}`;
-      $("status").style.color = "red";
       await updateFtsHostVersion();
     }
-
-    // Clear status after 5 seconds
-    setTimeout(() => {
-      $("status").textContent = "";
-      $("status").style.color = "";
-    }, 5000);
   } catch (e) {
     console.warn("[TMDBG Config] ftsManualCheckAndUpdateHost failed", e);
     $("status").textContent = "Update check failed: " + e.message;
-    $("status").style.color = "red";
     const btn = $("fts-check-update");
     if (btn) btn.disabled = false;
   }
@@ -363,6 +354,7 @@ export async function ftsReindexAll() {
       return;
     }
 
+    cancelStatusHide($("fts-progress"));
     $("fts-progress").style.display = "block";
     $("fts-progress-bar").value = 0;
     $("fts-progress-text").textContent = "Starting full reindex...";
@@ -394,10 +386,10 @@ export async function ftsReindexAll() {
     if (response?.ok) {
       $("fts-progress-text").textContent = `Completed: ${response.indexed} messages in ${response.batches} batches`;
 
-      setTimeout(() => {
+      scheduleStatusHide($("fts-progress"), () => {
         $("fts-progress").style.display = "none";
         updateFtsStatus(); // This will also refresh version info
-      }, 3000);
+      });
     } else {
       throw new Error(response?.error || "Reindex failed");
     }
@@ -409,6 +401,7 @@ export async function ftsReindexAll() {
 
 export async function ftsSmartReindex() {
   try {
+    cancelStatusHide($("fts-progress"));
     $("fts-progress").style.display = "block";
     $("fts-progress-bar").value = 0;
     $("fts-progress-text").textContent =
@@ -443,12 +436,12 @@ export async function ftsSmartReindex() {
         ? `, ${response.skipped} already up-to-date`
         : "";
       $("fts-progress-text").textContent = `Smart reindex completed: ${response.indexed} checked${skipMsg}`;
-      setTimeout(async () => {
+      scheduleStatusHide($("fts-progress"), async () => {
         $("fts-progress").style.display = "none";
         updateFtsStatus();
         // Refresh maintenance log after completion
         await loadMaintenanceLog();
-      }, 3000);
+      });
     } else {
       throw new Error(response?.error || "Smart reindex failed");
     }
@@ -687,6 +680,7 @@ export async function ftsMaintenanceStatus() {
 
 export async function ftsMaintenanceTrigger(type, force = true) {
   try {
+    cancelStatusHide($("fts-progress"));
     $("fts-progress").style.display = "block";
     $("fts-progress-bar").value = 0;
     $("fts-progress-text").textContent = `Running ${type} maintenance scan...`;
@@ -716,10 +710,10 @@ export async function ftsMaintenanceTrigger(type, force = true) {
       $("fts-progress-text").textContent = `${type} maintenance scan completed: ${
         result.indexed || 0
       } messages processed${result.skipped ? `, ${result.skipped} skipped` : ""}`;
-      setTimeout(async () => {
+      scheduleStatusHide($("fts-progress"), async () => {
         $("fts-progress").style.display = "none";
         await loadMaintenanceLog();
-      }, 3000);
+      });
     } else {
       $("fts-progress").style.display = "none";
       $("status").textContent = `Failed to run ${type} maintenance scan`;

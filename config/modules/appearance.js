@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import { scheduleStatusHide } from "../../agent/modules/statusLine.js";
 import { $ } from "./dom.js";
 import {
   getShowAiSummariesEnabled,
@@ -245,106 +246,6 @@ export async function loadAppearanceSettings(SETTINGS) {
   }
 }
 
-export async function saveAppearanceSettings(viewMode, SETTINGS) {
-  try {
-    if (!browser.tmPrefs) {
-      console.warn("[TMDBG Config] tmPrefs not available for saving appearance");
-      return;
-    }
-
-    const prefs = SETTINGS.appearance.prefs;
-    const defaults = SETTINGS.appearance.defaults;
-
-    // Determine settings based on view mode (0 = card, 1 = table)
-    const listViewValue = viewMode === "card" ? 0 : 1;
-
-    // Set the view preference
-    await browser.tmPrefs.setInt(prefs.listView, listViewValue);
-    console.log(`[TMDBG Config] Set listView to ${listViewValue}`);
-
-    // If card view, ensure two-row card mode is set
-    if (viewMode === "card") {
-      await browser.tmPrefs.setInt(prefs.cardRowCount, defaults.cardRowCount);
-      console.log(
-        `[TMDBG Config] Set cardRowCount to ${defaults.cardRowCount}`,
-      );
-    }
-
-    // Always set compact density for both views (0 = compact)
-    await browser.tmPrefs.setInt(prefs.density, defaults.density);
-    console.log(`[TMDBG Config] Set density to ${defaults.density} (compact)`);
-
-    // Show success status
-    const statusEl = $("appearance-status-text");
-    if (statusEl) {
-      const viewName = viewMode === "card" ? "Relaxed" : "Compact";
-      statusEl.textContent = `✓ Applied: ${viewName} view`;
-
-      // Clear status after 3 seconds
-      setTimeout(() => {
-        statusEl.textContent = "";
-      }, 3000);
-    }
-
-    console.log(
-      `[TMDBG Config] Appearance saved: viewMode=${viewMode}, listView=${listViewValue}`,
-    );
-  } catch (e) {
-    console.warn("[TMDBG Config] saveAppearanceSettings failed", e);
-    const statusEl = $("appearance-status-text");
-    if (statusEl) {
-      statusEl.textContent = "Error applying settings";
-      statusEl.style.color = "var(--tag-tm-delete)";
-    }
-  }
-}
-
-export async function saveSortOrderSettings(sortOrderValue, SETTINGS) {
-  try {
-    if (!browser.tmPrefs) {
-      console.warn("[TMDBG Config] tmPrefs not available for saving sort order");
-      return;
-    }
-
-    const prefs = SETTINGS.appearance.prefs;
-
-    // Set the sort order preference (2 = new message on top, 1 = new message bottom)
-    const sortOrderInt = sortOrderValue === "ascending" ? 1 : 2;
-    await browser.tmPrefs.setInt(prefs.sortOrder, sortOrderInt);
-    console.log(
-      `[TMDBG Config] Set sortOrder to ${sortOrderInt} (${sortOrderValue})`,
-    );
-
-    // Trigger immediate sort refresh
-    if (browser.tagSort && browser.tagSort.refreshImmediate) {
-      browser.tagSort.refreshImmediate();
-      console.log("[TMDBG Config] Triggered immediate tagSort refresh");
-    }
-
-    // Show success status
-    const statusEl = $("appearance-status-text");
-    if (statusEl) {
-      const orderName =
-        sortOrderValue === "ascending" ? "Oldest First" : "Newest First";
-      statusEl.textContent = `✓ Applied: ${orderName}`;
-
-      // Clear status after 3 seconds
-      setTimeout(() => {
-        statusEl.textContent = "";
-      }, 3000);
-    }
-
-    console.log(`[TMDBG Config] Sort order saved: ${sortOrderValue}`);
-  } catch (e) {
-    console.warn("[TMDBG Config] saveSortOrderSettings failed", e);
-    const statusEl = $("appearance-status-text");
-    if (statusEl) {
-      statusEl.textContent = "Error applying sort order";
-      statusEl.style.color = "var(--tag-tm-delete)";
-    }
-  }
-}
-
 export async function handleAppearanceChange(e, SETTINGS) {
   // Debug: log all change events
   console.log(`[TMDBG Config] handleAppearanceChange: target.name="${e.target.name}", target.id="${e.target.id}", target.value="${e.target.value}"`);
@@ -395,9 +296,9 @@ export async function handleAppearanceChange(e, SETTINGS) {
         statusEl.textContent = "Error applying theme";
         statusEl.style.color = "var(--tag-tm-delete)";
       }
-      setTimeout(() => {
+      scheduleStatusHide(statusEl, () => {
         statusEl.textContent = "";
-      }, 3000);
+      });
     }
   }
 
@@ -410,9 +311,9 @@ export async function handleAppearanceChange(e, SETTINGS) {
     const statusEl = $("appearance-status-text");
     if (statusEl) {
       statusEl.textContent = `✓ AI summaries ${enabled ? "shown" : "hidden"}`;
-      setTimeout(() => {
+      scheduleStatusHide(statusEl, () => {
         statusEl.textContent = "";
-      }, 3000);
+      });
     }
   }
 
@@ -428,9 +329,9 @@ export async function handleAppearanceChange(e, SETTINGS) {
     const statusEl = $("appearance-status-text");
     if (statusEl) {
       statusEl.textContent = `✓ Tag by thread ${enabled ? "enabled" : "disabled"}`;
-      setTimeout(() => {
+      scheduleStatusHide(statusEl, () => {
         statusEl.textContent = "";
-      }, 3000);
+      });
     }
   }
 
@@ -456,9 +357,9 @@ export async function handleAppearanceChange(e, SETTINGS) {
     const statusEl = $("appearance-status-text");
     if (statusEl) {
       statusEl.textContent = `✓ TabMail tag priority ${enabled ? "enabled" : "disabled"}`;
-      setTimeout(() => {
+      scheduleStatusHide(statusEl, () => {
         statusEl.textContent = "";
-      }, 3000);
+      });
     }
   }
 
@@ -474,9 +375,9 @@ export async function handleAppearanceChange(e, SETTINGS) {
         const statusEl = $("appearance-status-text");
         if (statusEl) {
           statusEl.textContent = `✓ GUI font size: ${fontSize}px`;
-          setTimeout(() => {
+          scheduleStatusHide(statusEl, () => {
             statusEl.textContent = "";
-          }, 3000);
+          });
         }
       } catch (err) {
         console.error("[TMDBG Config] Failed to set GUI font size:", err);
@@ -497,9 +398,9 @@ export async function handleAppearanceChange(e, SETTINGS) {
         const statusEl = $("appearance-status-text");
         if (statusEl) {
           statusEl.textContent = `✓ Message font size: ${fontSize}px`;
-          setTimeout(() => {
+          scheduleStatusHide(statusEl, () => {
             statusEl.textContent = "";
-          }, 3000);
+          });
         }
       } catch (err) {
         console.error("[TMDBG Config] Failed to set message font size:", err);
@@ -520,9 +421,9 @@ export async function handleAppearanceChange(e, SETTINGS) {
         const statusEl = $("appearance-status-text");
         if (statusEl) {
           statusEl.textContent = `✓ Monospace font size: ${fontSize}px`;
-          setTimeout(() => {
+          scheduleStatusHide(statusEl, () => {
             statusEl.textContent = "";
-          }, 3000);
+          });
         }
       } catch (err) {
         console.error("[TMDBG Config] Failed to set monospace font size:", err);
