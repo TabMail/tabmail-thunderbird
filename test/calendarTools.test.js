@@ -296,6 +296,29 @@ describe('calendar_event_edit', () => {
       }
     });
 
+    it('restating such a rule is refused for one occurrence too, explicit or inferred', async () => {
+      browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: true, id: 'found-event', recurrence: { freq: 'YEARLY', byDay: ['MO'], other: 'BYWEEKNO=20' } });
+      try {
+        const rule = { freq: 'YEARLY', byDay: ['MO'] };
+        const explicit = await runEdit({ event_id: 'found-event', edit_scope: 'this_only', recurrence_id: '2099-10-05T09:00:00', recurrence: rule }, 'pid-rec-5');
+        expect(explicit.failReason).toMatch(/^this series repeats in a way the edit tool cannot express \(BYWEEKNO=20\)/);
+        const inferred = await runEdit({ event_id: 'found-event', recurrence_id: '2099-10-05T09:00:00', recurrence: rule }, 'pid-rec-6');
+        expect(inferred.failReason).toMatch(/^this series repeats in a way the edit tool cannot express \(BYWEEKNO=20\)/);
+        expect(inferred.editEventArgs).toBeUndefined();
+      } finally {
+        browser.tmCalendar.getCalendarEventDetails.mockReset();
+      }
+    });
+
+    it('restating a rule is refused when the stored rule cannot be read; the lookup names the calendar', async () => {
+      const sess = await runEdit({ event_id: 'missing-event', calendar_id: 'cal1', recurrence: { freq: 'WEEKLY', byDay: ['MO'] } }, 'pid-rec-7');
+      expect(sess.failReason).toBe("could not read this event's current repeat rule (event not found); try again");
+      expect(sess.editEventArgs).toBeUndefined();
+      expect(browser.tmCalendar.getCalendarEventDetails).toHaveBeenCalledWith('missing-event', 'cal1');
+      const cleared = await runEdit({ event_id: 'missing-event', calendar_id: 'cal1', recurrence: {} }, 'pid-rec-8');
+      expect(cleared.failReason).toBeUndefined();
+    });
+
     it('`null` recurrence is the same as omitting it', async () => {
       const sess = await runEdit({ event_id: 'found-event', title: 'Renamed', recurrence: null }, 'pid-rec-4');
       expect(sess.failReason).toBeUndefined();
@@ -347,6 +370,20 @@ describe('calendar_event_create refuses a recurrence it cannot write before the 
     );
     await new Promise((r) => setTimeout(r, 5));
     expect(ctx.fsmSessions[pid].failReason).toBe('recurrence.byMonth has an invalid value "13": integers from 1 to 12');
+    expect(ctx.state).toBe('exec_fail');
+    expect(ctx.fsmSessions[pid].createEventArgs).toBeUndefined();
+  });
+
+  it('refuses a recurrence that is not an object, as edit does, rather than creating a single event', async () => {
+    const pid = 'pid-create-rec-string';
+    ctx.fsmSessions[pid] = {};
+    ctx.state = null;
+    await calendarEventCreateRun(
+      { calendar_id: 'cal1', title: 'Standup', start_iso: '2099-10-01T09:00:00', end_iso: '2099-10-01T09:15:00', recurrence: 'FREQ=WEEKLY;BYDAY=MO' },
+      { callId: pid },
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(ctx.fsmSessions[pid].failReason).toBe('recurrence has an invalid value "FREQ=WEEKLY;BYDAY=MO": an object of recurrence fields, or {} to clear the rule');
     expect(ctx.state).toBe('exec_fail');
     expect(ctx.fsmSessions[pid].createEventArgs).toBeUndefined();
   });

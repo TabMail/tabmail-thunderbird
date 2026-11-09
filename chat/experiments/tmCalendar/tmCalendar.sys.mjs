@@ -351,12 +351,11 @@ const RECURRENCE_DAY_CODE = /^(MO|TU|WE|TH|FR|SA|SU)$/;
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 
-// The event's rule as an RRULE value. Events synced from external providers
-// (Google, Outlook) often carry it only in recurrenceInfo, with the property empty.
+// The event's rule as an RRULE value, from its recurrence info: the only place
+// Thunderbird stores and expands a rule. Its RRULE property is never read: it is
+// neither imported from nor written to the stored event, so it can hold an
+// older rule than the one the series follows.
 function rruleOfItem(item) {
-  let v = "";
-  try { v = String(item?.getProperty?.("RRULE") || ""); } catch (_) {}
-  if (/\bFREQ=/i.test(v)) return v;
   try {
     const rinfo = item?.recurrenceInfo;
     const items = rinfo && typeof rinfo.getRecurrenceItems === "function" ? (rinfo.getRecurrenceItems({}) || []) : [];
@@ -368,26 +367,39 @@ function rruleOfItem(item) {
   return "";
 }
 
-// The zone an event's dates are read and written in: the start's own zone for a
-// timed event, the user's zone for an all-day or floating one.
-function eventZone(item) {
+// The zone a timed event's occurrences are expanded in: its start's own zone.
+// Null for an all-day or floating event, whose values Thunderbird (ical.js)
+// compares at offset 0, by their digits.
+function zonedStartZone(item) {
   const start = item?.startDate;
   const tz = start && !start.isDate ? start.timezone : null;
-  if (tz && tz.tzid && tz.tzid !== "floating") return tz;
-  return getTimezoneService().defaultTimezone;
+  return tz && tz.tzid && tz.tzid !== "floating" ? tz : null;
 }
 
-// An RRULE UNTIL value as the last day of the series, "YYYY-MM-DD". A DATE or a
-// floating date-time is read by its digits; a UTC instant by its date in the
-// event's zone. Returns "" for a value that is neither.
+// An RRULE UNTIL value as the last day of the series, "YYYY-MM-DD": the day of
+// the last occurrence the bound admits. UNTIL is inclusive (RFC 5545 3.3.10). A
+// `Z` value is that instant; a DATE or floating value is its digits at offset 0,
+// as ical.js compares them. Read in the frame occurrences are expanded in (the
+// start's zone, or offset 0), the bound's day is the last day when its time of
+// day is at or after the occurrences' start time, otherwise the day before.
+// Returns "" for a value that is not an UNTIL.
 function untilDayFromIcs(value, item) {
   const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$/i.exec(String(value || "").trim());
   if (!m) return "";
-  const [, y, mo, d, hh, mi, ss, z] = m;
-  if (!hh || !z) return `${y}-${mo}-${d}`;
-  const dt = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
-  dt.resetTo(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mi), Number(ss), getTimezoneService().UTC);
-  return toDayString(dt.getInTimezone(eventZone(item)));
+  const [, y, mo, d, hh = "00", mi = "00", ss = "00"] = m;
+  const utc = getTimezoneService().UTC;
+  const bound = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
+  bound.resetTo(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mi), Number(ss), utc);
+  const start = item?.startDate;
+  const inFrame = bound.getInTimezone(zonedStartZone(item) || utc);
+  let day = Date.UTC(inFrame.year, inFrame.month, inFrame.day);
+  if (start && !start.isDate) {
+    const boundTime = (inFrame.hour * 60 + inFrame.minute) * 60 + inFrame.second;
+    const startTime = (start.hour * 60 + start.minute) * 60 + start.second;
+    if (boundTime < startTime) day -= 86400 * 1000;
+  }
+  const last = new Date(day);
+  return `${last.getUTCFullYear()}-${pad2(last.getUTCMonth() + 1)}-${pad2(last.getUTCDate())}`;
 }
 
 // An event's rule in the tools' fields, or null when it does not repeat.
@@ -414,11 +426,14 @@ function recurrenceFieldsOfItem(item) {
     else if (key === "BYSETPOS") bySetPos = val;
     else other.push(part.trim());
   }
-  // One weekday at one position is its RFC 5545 ordinal form:
-  // BYDAY=TU;BYSETPOS=2 is BYDAY=2TU. Anything wider stays in `other`.
+  // One weekday at one position is its RFC 5545 ordinal form within a month or
+  // a single-month year: BYDAY=TU;BYSETPOS=2 is BYDAY=2TU. Anything wider (other
+  // frequencies, several months, a BYMONTHDAY filter) stays in `other`.
   if (bySetPos !== null) {
     const pos = bySetPos.split(",");
-    if (pos.length === 1 && /^[+-]?\d+$/.test(pos[0]) && byDay && byDay.length === 1 && RECURRENCE_DAY_CODE.test(byDay[0])) {
+    const sameDays = f.freq === "MONTHLY"
+      || (f.freq === "YEARLY" && (!f.byMonth || f.byMonth.length === 1) && !f.byMonthDay);
+    if (sameDays && pos.length === 1 && /^[+-]?\d+$/.test(pos[0]) && byDay && byDay.length === 1 && RECURRENCE_DAY_CODE.test(byDay[0])) {
       byDay = [`${Number(pos[0])}${byDay[0]}`];
     } else {
       other.push(`BYSETPOS=${bySetPos}`);
@@ -432,19 +447,20 @@ function recurrenceFieldsOfItem(item) {
   return out;
 }
 
-// `until` for an RRULE. A plain date is the end of that day: a bare DATE on an
-// all-day event, otherwise 23:59:59 in the event's zone rendered as UTC (a
-// floating event keeps a floating value), so the named day's occurrence is in
-// the series. A date-time is taken as the instant it names.
+// `until` for an RRULE, from the tools' plain date (the last day of the
+// series): the end of that day in the value type of the start (RFC 5545
+// 3.3.10). A bare DATE on an all-day event, a floating 23:59:59 on a floating
+// one, otherwise 23:59:59 in the start's zone rendered as UTC, so the named
+// day's occurrence is in the series. "" for anything else (the tools refuse it).
 function untilForRRule(until, item) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(until));
-  if (!m) return toIcsUntil(until);
+  if (!m) return "";
   const [, y, mo, d] = m;
-  const start = item?.startDate;
-  if (start?.isDate) return `${y}${mo}${d}`;
-  if (start?.timezone?.tzid === "floating") return `${y}${mo}${d}T235959`;
+  const zone = zonedStartZone(item);
+  if (item?.startDate?.isDate) return `${y}${mo}${d}`;
+  if (!zone) return `${y}${mo}${d}T235959`;
   const dt = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
-  dt.resetTo(Number(y), Number(mo) - 1, Number(d), 23, 59, 59, eventZone(item));
+  dt.resetTo(Number(y), Number(mo) - 1, Number(d), 23, 59, 59, zone);
   const u = dt.getInTimezone(getTimezoneService().UTC);
   return `${u.year}${pad2(u.month + 1)}${pad2(u.day)}T${pad2(u.hour)}${pad2(u.minute)}${pad2(u.second)}Z`;
 }
@@ -456,7 +472,8 @@ function buildRRuleValueFromDetails(details, item) {
   const parts = [`FREQ=${details.freq}`];
   if (Number(details.interval) > 1) parts.push(`INTERVAL=${details.interval}`);
   if (details.count) parts.push(`COUNT=${details.count}`);
-  if (details.until) parts.push(`UNTIL=${untilForRRule(details.until, item)}`);
+  const until = details.until ? untilForRRule(details.until, item) : "";
+  if (until) parts.push(`UNTIL=${until}`);
   if (Array.isArray(details.byDay) && details.byDay.length) parts.push(`BYDAY=${details.byDay.join(",")}`);
   if (Array.isArray(details.byMonthDay) && details.byMonthDay.length) parts.push(`BYMONTHDAY=${details.byMonthDay.join(",")}`);
   if (Array.isArray(details.byMonth) && details.byMonth.length) parts.push(`BYMONTH=${details.byMonth.join(",")}`);
@@ -464,9 +481,35 @@ function buildRRuleValueFromDetails(details, item) {
   return parts.join(";");
 }
 
-// Sets or clears an item's rule. Setting replaces only the RRULE item in the
-// item's recurrence info, so its excluded dates (EXDATE), added dates (RDATE)
-// and changed occurrences stay with the series. `{}` removes the recurrence.
+function isRuleItem(r) {
+  try { return String(r?.icalProperty?.propertyName || "").toUpperCase() === "RRULE"; } catch (_) { return false; }
+}
+
+// Writes `value` as the item's rule. Replaces only the RRULE items in the item's
+// own recurrence info, so its excluded dates (EXDATE), added dates (RDATE) and
+// changed occurrences stay with the series; creates the recurrence info when the
+// item has none. Every writer of a rule goes through here.
+function setRuleOnItem(item, value) {
+  const prop = getIcsService().createIcalProperty("RRULE");
+  prop.value = value;
+  const rule = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
+  rule.icalProperty = prop;
+  let rinfo = item.recurrenceInfo;
+  if (rinfo) {
+    // A copy: the native list is live, and deleting from it while iterating
+    // skips the item after each one deleted.
+    for (const r of [...(rinfo.getRecurrenceItems({}) || [])]) {
+      if (isRuleItem(r)) rinfo.deleteRecurrenceItem(r);
+    }
+  } else {
+    rinfo = Cc["@mozilla.org/calendar/recurrence-info;1"].createInstance(Ci.calIRecurrenceInfo);
+    rinfo.item = item;
+    item.recurrenceInfo = rinfo;
+  }
+  rinfo.appendRecurrenceItem(rule);
+}
+
+// Sets or clears an item's rule (`setRuleOnItem`). `{}` removes the recurrence.
 function applyRecurrenceToItem(item, recurrenceDetails) {
   try {
     if (!recurrenceDetails || typeof recurrenceDetails !== "object") return { applied: false, cleared: false };
@@ -477,22 +520,7 @@ function applyRecurrenceToItem(item, recurrenceDetails) {
       tmCalendarDebugLog("[tmCalendar] applyRecurrenceToItem: cleared recurrence");
       return { applied: false, cleared: true };
     }
-    try { item.setProperty("RRULE", value); } catch (_) {}
-    const prop = getIcsService().createIcalProperty("RRULE");
-    prop.value = value;
-    const rule = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
-    rule.icalProperty = prop;
-    let rinfo = item.recurrenceInfo;
-    if (rinfo) {
-      for (const r of rinfo.getRecurrenceItems({}) || []) {
-        if (String(r?.icalProperty?.propertyName || "").toUpperCase() === "RRULE") rinfo.deleteRecurrenceItem(r);
-      }
-    } else {
-      rinfo = Cc["@mozilla.org/calendar/recurrence-info;1"].createInstance(Ci.calIRecurrenceInfo);
-      rinfo.item = item;
-      item.recurrenceInfo = rinfo;
-    }
-    rinfo.appendRecurrenceItem(rule);
+    setRuleOnItem(item, value);
     tmCalendarDebugLog("[tmCalendar] applyRecurrenceToItem: applied RRULE=", value);
     return { applied: true, cleared: false, value };
   } catch (e) {
@@ -1518,14 +1546,14 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             try { const transpSaved = String(created?.getProperty?.("TRANSP") || ""); tmCalendarDebugLog("[tmCalendar] createCalendarEvent: initial TRANSP on created:", transpSaved || "(empty)"); } catch (_) {}
             try {
               let rruleStr = "";
-              try { rruleStr = String(created?.getProperty?.("RRULE") || ev?.getProperty?.("RRULE") || ""); } catch (_) {}
+              try { rruleStr = rruleOfItem(created) || rruleOfItem(ev); } catch (_) {}
               const rApplied = !!(rruleStr && rruleStr.includes("FREQ="));
               tmCalendarDebugLog("[tmCalendar] createCalendarEvent: recurrence applied?", rApplied, rruleStr ? `RRULE=${rruleStr}` : "(no RRULE)");
               // Verify persisted copy by re-fetching from calendar
               try {
                 const verify = created?.id ? await cal.getItem(created.id) : null;
                 let persisted = "";
-                try { persisted = String(verify?.getProperty?.("RRULE") || ""); } catch (_) {}
+                try { persisted = rruleOfItem(verify); } catch (_) {}
                 if (persisted) tmCalendarDebugLog("[tmCalendar] createCalendarEvent: persisted RRULE=", persisted);
                 try { const transp = String(verify?.getProperty?.("TRANSP") || ""); tmCalendarDebugLog("[tmCalendar] createCalendarEvent: persisted TRANSP=", transp || "(empty)"); } catch (_) {}
               } catch (ve) { console.warn("[tmCalendar] createCalendarEvent: verify fetch failed:", ve); }
@@ -1686,9 +1714,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const clone = base.clone();
             tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: editing target - scope: ${scope}, isOccurrence: ${isOccurrence}, hasSeries: ${hasSeries}`);
             
-            // Capture original RRULE for preservation when only adding EXDATEs
-            let originalRrule = "";
-            try { originalRrule = String(base.getProperty?.("RRULE") || ""); } catch (_) {}
 
             // Honor an explicit timezone on the modify call so naive ISO
             // patches land in the requested zone, mirroring createCalendarEvent.
@@ -1809,9 +1834,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (Object.prototype.hasOwnProperty.call(patch, "recurrence")) {
               const recRes = applyRecurrenceToItem(clone, patch.recurrence);
               try { if (recRes.value) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: RRULE=", recRes.value); } catch (_) {}
-              // The rule just written (or none, after `{}` cleared it) is what the
-              // preservation step below keeps.
-              try { originalRrule = String(clone.getProperty?.("RRULE") || ""); } catch (_) {}
             }
 
             // EXDATE additions (exclude specific occurrences) - route to correct target
@@ -1839,15 +1861,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 }
               }
             }
-
-            // Preserve RRULE if not explicitly changed
-            try {
-              const currentRrule = String(clone.getProperty?.("RRULE") || "");
-              if (originalRrule && !currentRrule) {
-                clone.setProperty("RRULE", originalRrule);
-                tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: preserved RRULE from base");
-              }
-            } catch (_) {}
 
             // IMPORTANT: Don't set organizer during modify operations to avoid provider rejections
 
@@ -1895,14 +1908,14 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
             try {
               let rruleStr = "";
-              try { rruleStr = String(modified?.getProperty?.("RRULE") || clone?.getProperty?.("RRULE") || ""); } catch (_) {}
+              try { rruleStr = rruleOfItem(modified) || rruleOfItem(clone); } catch (_) {}
               const rApplied = !!(rruleStr && rruleStr.includes("FREQ="));
               tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: recurrence applied?", rApplied, rruleStr ? `RRULE=${rruleStr}` : "(no RRULE)");
               // Verify persisted copy by re-fetching from calendar
               try {
                 const verify = modified?.id ? await cal.getItem(modified.id) : null;
                 let persisted = "";
-                try { persisted = String(verify?.getProperty?.("RRULE") || ""); } catch (_) {}
+                try { persisted = rruleOfItem(verify); } catch (_) {}
                 if (persisted) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: persisted RRULE=", persisted);
                 const exd = verify ? extractExdatesFromItem(verify) : "";
                 if (exd) tmCalendarDebugLog("[tmCalendar] modifyCalendarEvent: persisted EXDATE=", exd);
@@ -2043,36 +2056,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             }
             if (!untilValue) return { ok: false, error: "failed to compute UNTIL value" };
 
-            // 5. Read the current RRULE from the master.
-            // For events synced from external providers (Google, Outlook), the RRULE
-            // often lives inside recurrenceInfo.getRecurrenceItems() as a
-            // calIRecurrenceRule rather than as a string property. So we look in
-            // two places — the property first (cheaper), then the recurrenceInfo's
-            // items if the property was empty.
-            let currentRrule = "";
-            try { currentRrule = String(master.getProperty("RRULE") || ""); } catch (_) {}
-            if (!currentRrule || !/\bFREQ=/i.test(currentRrule)) {
-              try {
-                const rinfo = master.recurrenceInfo;
-                const items = (rinfo && typeof rinfo.getRecurrenceItems === "function")
-                  ? (rinfo.getRecurrenceItems({}) || [])
-                  : [];
-                for (const it of items) {
-                  // We want calIRecurrenceRule (the RRULE), not EXDATE/RDATE items.
-                  // Probe via duck-typing on `.icalProperty.value` — also tolerates
-                  // builds where `instanceof calIRecurrenceRule` isn't accessible.
-                  const v = (() => {
-                    try { return String(it && it.icalProperty && it.icalProperty.value || ""); }
-                    catch { return ""; }
-                  })();
-                  if (v && /\bFREQ=/i.test(v)) { currentRrule = v; break; }
-                }
-              } catch (e) {
-                console.warn("[tmCalendar] splitRecurringEvent: recurrenceInfo probe failed:", e);
-              }
-            }
-            if (!currentRrule || !/\bFREQ=/i.test(currentRrule)) {
-              return { ok: false, error: "master event has no parseable RRULE (neither getProperty('RRULE') nor recurrenceInfo yielded a FREQ=… rule)" };
+            // 5. Read the current RRULE from the master (its recurrence info).
+            const currentRrule = rruleOfItem(master);
+            if (!currentRrule) {
+              return { ok: false, error: "master event has no parseable RRULE (its recurrenceInfo holds no FREQ=… rule)" };
             }
 
             // 6. Cap the master's RRULE: drop any existing UNTIL/COUNT, append our UNTIL.
@@ -2085,39 +2072,25 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // 7. Modify master in-place with capped RRULE.
             // Note: we don't send any "series-ended" notification here — only the
             // new series triggers an invitation (controlled by patch.send_invitations).
+            // The clone carries the master's recurrence info, so the rule is
+            // replaced there and the earlier part keeps its excluded dates, added
+            // dates and changed occurrences. Added dates and changed occurrences at
+            // or after the split belong to the part the new series replaces, so
+            // they are removed: an added date is not bounded by UNTIL.
             const cappedClone = master.clone();
-            try { cappedClone.setProperty("RRULE", cappedRrule); } catch (e) {
-              return { ok: false, error: `failed to set capped RRULE on clone: ${e}` };
-            }
-            // Rebuild recurrenceInfo so providers expand the truncated series
-            // correctly. Validate that at least one rule was attached — a
-            // silent rebuild failure would leave the master uncapped at the
-            // expansion layer (the RRULE property is set, but Lightning would
-            // skip the new rule), and the split would be broken in a way
-            // that's hard to debug at execution time.
             let rebuildError = null;
             try {
-              const icsService = getIcsService();
-              const prop = icsService.createIcalProperty("RRULE");
-              prop.value = cappedRrule;
-              const rule = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
-              rule.icalProperty = prop;
-              const rinfo = Cc["@mozilla.org/calendar/recurrence-info;1"].createInstance(Ci.calIRecurrenceInfo);
-              rinfo.item = cappedClone;
-              if (typeof rinfo.appendRecurrenceItem === "function") rinfo.appendRecurrenceItem(rule);
-              else if (typeof rinfo.addRecurrenceItem === "function") rinfo.addRecurrenceItem(rule);
-              cappedClone.recurrenceInfo = rinfo;
-              // Verify the rule actually attached. getRecurrenceItems returns
-              // the rules currently stored on the recurrenceInfo; if the
-              // capped rule didn't register (malformed RRULE silently dropped
-              // by Lightning), we'd see an empty list here.
-              let items = [];
-              try {
-                if (typeof rinfo.getRecurrenceItems === "function") {
-                  items = rinfo.getRecurrenceItems({}) || [];
-                }
-              } catch (_) {}
-              if (items.length === 0) {
+              setRuleOnItem(cappedClone, cappedRrule);
+              const rinfo = cappedClone.recurrenceInfo;
+              for (const r of [...(rinfo.getRecurrenceItems({}) || [])]) {
+                const name = String(r?.icalProperty?.propertyName || "").toUpperCase();
+                if (name === "RDATE" && r.date && r.date.compare(splitDt) >= 0) rinfo.deleteRecurrenceItem(r);
+              }
+              for (const rid of [...(rinfo.getExceptionIds?.() || [])]) {
+                if (rid.compare(splitDt) >= 0) rinfo.removeExceptionFor(rid);
+              }
+              // A rule Thunderbird does not take would leave the master uncapped.
+              if (rruleOfItem(cappedClone) !== cappedRrule) {
                 rebuildError = `cappedRrule '${cappedRrule}' did not register as a recurrence item — likely malformed`;
               }
             } catch (re) {
@@ -2237,18 +2210,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 .join(";");
             }
             if (newRrule) {
-              try { newEv.setProperty("RRULE", newRrule); } catch (_) {}
               try {
-                const icsService2 = getIcsService();
-                const prop2 = icsService2.createIcalProperty("RRULE");
-                prop2.value = newRrule;
-                const rule2 = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
-                rule2.icalProperty = prop2;
-                const rinfo2 = Cc["@mozilla.org/calendar/recurrence-info;1"].createInstance(Ci.calIRecurrenceInfo);
-                rinfo2.item = newEv;
-                if (typeof rinfo2.appendRecurrenceItem === "function") rinfo2.appendRecurrenceItem(rule2);
-                else if (typeof rinfo2.addRecurrenceItem === "function") rinfo2.addRecurrenceItem(rule2);
-                newEv.recurrenceInfo = rinfo2;
+                setRuleOnItem(newEv, newRrule);
               } catch (re) {
                 console.warn("[tmCalendar] splitRecurringEvent: rebuild recurrenceInfo for new series failed:", re);
               }

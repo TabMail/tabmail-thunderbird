@@ -49,8 +49,8 @@ function normalizeArgs(args = {}) {
     out.organizer_email = a.organizer_email;
   }
   
-  // Recurrence (pass-through object if provided)
-  if (a && typeof a.recurrence === "object" && a.recurrence) {
+  // Recurrence (pass-through; checked by recurrenceArgError before the card).
+  if (a && a.recurrence !== undefined && a.recurrence !== null) {
     out.recurrence = a.recurrence;
   }
 
@@ -158,7 +158,7 @@ async function _runCreateCalendarEvent(args = {}, options = {}) {
 
   // A rule the tool cannot write is refused before the confirmation card, so
   // the model can correct it instead of a part being silently dropped.
-  const recurrenceError = norm.recurrence ? recurrenceArgError(norm.recurrence) : null;
+  const recurrenceError = "recurrence" in norm ? recurrenceArgError(norm.recurrence) : null;
   if (recurrenceError) {
     log(`[TMDBG Tools] calendar_event_create: ${recurrenceError}`, "error");
     try {

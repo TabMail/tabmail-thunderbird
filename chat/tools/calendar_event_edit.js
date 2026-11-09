@@ -12,7 +12,7 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";
 import { toNaiveIso } from "../modules/helpers.js";
-import { otherPartsRefusal, recurrenceArgError } from "../modules/recurrence.js";
+import { isClearRecurrence, otherPartsRefusal, recurrenceArgError } from "../modules/recurrence.js";
 
 function normalizeArgs(args = {}) {
   const a = args || {};
@@ -189,11 +189,13 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   }
 
   // Restating the rule of a series whose stored rule has parts the tool cannot
-  // express would drop those parts, so that edit is refused too. A this_only
-  // edit does not write the series' rule.
-  if ("recurrence" in norm && norm.edit_scope !== "this_only" && !(norm.recurrence_id && !norm.edit_scope)) {
-    const stored = await safeFetchEventDetails(norm.event_id);
-    const refusal = otherPartsRefusal(norm.recurrence, stored?.ok ? stored.recurrence : null);
+  // express would drop those parts, so that edit is refused too, as is a
+  // restatement when the stored rule cannot be read.
+  if ("recurrence" in norm && !isClearRecurrence(norm.recurrence)) {
+    const stored = await safeFetchEventDetails(norm.event_id, norm.calendar_id);
+    const refusal = stored?.ok
+      ? otherPartsRefusal(norm.recurrence, stored.recurrence)
+      : `could not read this event's current repeat rule (${stored?.error || "unknown error"}); try again`;
     if (refusal) {
       await failOut(refusal);
       return;
@@ -270,14 +272,16 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   await core.executeAgentAction();
 }
 
-async function safeFetchEventDetails(eventId) {
+async function safeFetchEventDetails(eventId, calendarId = null) {
   try {
     if (browser?.tmCalendar?.getCalendars && browser?.tmCalendar?.queryCalendarItems) {
       // Use experimental helper if exposed (later we can add a dedicated getEventDetails)
       // For now, try a broad query of today and match id client-side if available in cache
       // but primary path: use a dedicated bridge call if present
       if (typeof browser.tmCalendar.getCalendarEventDetails === "function") {
-        return await browser.tmCalendar.getCalendarEventDetails(String(eventId));
+        return calendarId
+          ? await browser.tmCalendar.getCalendarEventDetails(String(eventId), String(calendarId))
+          : await browser.tmCalendar.getCalendarEventDetails(String(eventId));
       }
     }
   } catch (e) {

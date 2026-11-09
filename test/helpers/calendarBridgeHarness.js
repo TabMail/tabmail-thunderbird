@@ -20,6 +20,12 @@ import vm from 'node:vm';
 
 export const UTC_ZONE = { tzid: 'UTC' };
 export const LOCAL_ZONE = { tzid: 'floating-local' };
+// RFC 5545 floating time: ical.js gives it offset 0, so it compares by its digits.
+export const FLOATING_ZONE = { tzid: 'floating' };
+/** A zone other than the user's, at a fixed offset from UTC (minutes east). */
+export function fixedZone(tzid, offsetMinutes) {
+  return { tzid, offsetMinutes };
+}
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
@@ -31,17 +37,21 @@ export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second
   };
   const epochMs = () => {
     if (dt.isDate) return Date.UTC(dt.year, dt.month, dt.day);
-    return dt.timezone === UTC_ZONE
-      ? Date.UTC(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
-      : new Date(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second).getTime();
+    const utcDigits = Date.UTC(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+    if (dt.timezone === UTC_ZONE || dt.timezone === FLOATING_ZONE) return utcDigits;
+    if (typeof dt.timezone?.offsetMinutes === 'number') return utcDigits - dt.timezone.offsetMinutes * 60000;
+    return new Date(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second).getTime();
   };
   Object.defineProperty(dt, 'nativeTime', { get: () => epochMs() * 1000 });
   dt.getInTimezone = (tz) => {
     if (dt.isDate) return dt; // ical.js: no conversion for DATE values
+    const offsetMs = tz === UTC_ZONE || tz === FLOATING_ZONE ? 0 : (typeof tz?.offsetMinutes === 'number' ? tz.offsetMinutes * 60000 : null);
+    if (offsetMs !== null) {
+      const u = new Date(epochMs() + offsetMs);
+      return fakeCalDateTime({ year: u.getUTCFullYear(), month: u.getUTCMonth(), day: u.getUTCDate(), hour: u.getUTCHours(), minute: u.getUTCMinutes(), second: u.getUTCSeconds(), timezone: tz });
+    }
     const u = new Date(epochMs());
-    return tz === UTC_ZONE
-      ? fakeCalDateTime({ year: u.getUTCFullYear(), month: u.getUTCMonth(), day: u.getUTCDate(), hour: u.getUTCHours(), minute: u.getUTCMinutes(), second: u.getUTCSeconds(), timezone: UTC_ZONE })
-      : fakeCalDateTime({ year: u.getFullYear(), month: u.getMonth(), day: u.getDate(), hour: u.getHours(), minute: u.getMinutes(), second: u.getSeconds(), timezone: LOCAL_ZONE });
+    return fakeCalDateTime({ year: u.getFullYear(), month: u.getMonth(), day: u.getDate(), hour: u.getHours(), minute: u.getMinutes(), second: u.getSeconds(), timezone: LOCAL_ZONE });
   };
   dt.clone = () => fakeCalDateTime({ ...dt });
   dt.compare = (other) => {
@@ -75,10 +85,10 @@ export function fakeDate(dayStr) {
   return fakeCalDateTime({ year: y, month: m - 1, day: d, isDate: true });
 }
 
-/** A local wall-clock date-time from "YYYY-MM-DD" digits and an hour. */
-export function fakeDateTime(dayStr, hour, minute = 0) {
+/** A wall-clock date-time from "YYYY-MM-DD" digits and an hour, in the user's zone unless `timezone` names another. */
+export function fakeDateTime(dayStr, hour, minute = 0, timezone = undefined) {
   const [y, m, d] = dayStr.split('-').map(Number);
-  return fakeCalDateTime({ year: y, month: m - 1, day: d, hour, minute });
+  return fakeCalDateTime({ year: y, month: m - 1, day: d, hour, minute, timezone });
 }
 
 /**
@@ -130,22 +140,41 @@ export function fakeEvent({ id, title, startDate, endDate, recurrenceId = null, 
 /**
  * A calIRecurrenceInfo holding RRULE / RDATE / EXDATE items, each an object
  * whose `icalProperty` names the property (`{ propertyName, value }`), as
- * CalRecurrenceRule and CalRecurrenceDate expose it.
+ * CalRecurrenceRule and CalRecurrenceDate expose it, and changed occurrences
+ * (`exceptions`, items with a `recurrenceId`). `getRecurrenceItems` returns the
+ * LIVE list, as CalRecurrenceInfo does, so a caller deleting while iterating it
+ * skips items exactly as in Thunderbird.
  */
-export function fakeRecurrenceInfo(items = []) {
+export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
   const list = [...items];
+  const changed = [...exceptions];
   return {
     occurrences: [],
-    getRecurrenceItems: () => [...list],
+    getRecurrenceItems: () => list,
     appendRecurrenceItem: (r) => { list.push(r); },
     deleteRecurrenceItem: (r) => { const i = list.indexOf(r); if (i >= 0) list.splice(i, 1); },
     getOccurrenceFor: () => null,
+    getExceptionIds: () => changed.map((ex) => ex.recurrenceId),
+    getExceptionFor: (rid) => changed.find((ex) => ex.recurrenceId.toString() === rid.toString()) || null,
+    removeExceptionFor: (rid) => { const i = changed.findIndex((ex) => ex.recurrenceId.toString() === rid.toString()); if (i >= 0) changed.splice(i, 1); },
   };
 }
 
-/** A recurrence item for `fakeRecurrenceInfo`, e.g. recurrenceItem('EXDATE', '20991020T170000'). */
+/**
+ * A recurrence item for `fakeRecurrenceInfo`, e.g. recurrenceItem('EXDATE', '20991020T170000').
+ * An RDATE or EXDATE also carries its `date` (calIRecurrenceDate), read from the
+ * value's digits in the user's zone (a `Z` value in UTC, a bare date as a DATE).
+ */
 export function recurrenceItem(propertyName, value) {
-  return { icalProperty: { propertyName, value } };
+  const item = { icalProperty: { propertyName, value } };
+  const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$/.exec(value);
+  if (m && propertyName !== 'RRULE') {
+    const [, y, mo, d, hh, mi, ss, z] = m;
+    item.date = hh
+      ? fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, hour: +hh, minute: +mi, second: +ss, timezone: z ? UTC_ZONE : LOCAL_ZONE })
+      : fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, isDate: true });
+  }
+  return item;
 }
 
 // cal.dtz.ensureDateTime: a DATE takes part in range checks as a date-time.
@@ -196,6 +225,13 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
       return new ReadableStream({ start(c) { c.enqueue(bounded); c.close(); } });
     },
     async getItem(id) { return items.find((it) => String(it.id) === String(id)) || null; },
+    // CalMemoryCalendar.addItem gives a new item an id when it has none.
+    async addItem(item) {
+      if (!item.id) item.id = `added-${items.length + 1}`;
+      item.calendar = calendar;
+      items.push(item);
+      return item;
+    },
     async modifyItem(newItem, oldItem) {
       modifications.push({ newItem, oldItem });
       if (oldItem.parentItem) {
@@ -235,6 +271,10 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
         if (key === '@mozilla.org/calendar/datetime;1') return { createInstance: () => fakeCalDateTime() };
         if (key === '@mozilla.org/calendar/recurrence-rule;1') return { createInstance: () => ({ icalProperty: null }) };
         if (key === '@mozilla.org/calendar/recurrence-info;1') return { createInstance: () => fakeRecurrenceInfo() };
+        if (key === '@mozilla.org/calendar/event;1') {
+          return { createInstance: () => Object.assign(fakeEvent({ id: null, title: '', startDate: null, endDate: null }), { addAttendee() {} }) };
+        }
+        if (key === '@mozilla.org/calendar/attendee;1') return { createInstance: () => ({}) };
         throw new Error(`XPCOM Cc[${String(key)}] lookup`);
       },
     }),

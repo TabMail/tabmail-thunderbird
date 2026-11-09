@@ -14,10 +14,20 @@ same design (tabmail-ios #421).
 - **Printing:** `chat/modules/recurrence.js` prints it as `recurrence: {"freq":"WEEKLY","byDay":["MO"],"until":"2099-10-31"}`
   in `calendar_event_read`, and as ` (↻ {...})` in the `calendar_search`/`calendar_read` listing.
 - **Only the stated fields are shown.** `interval` 1 and `wkst` MO are omitted.
-- **`until` (read)** is the last day of the series in the event's zone:
-  - A UTC `UNTIL` instant is converted with `calIDateTime.getInTimezone`. A timed event uses its start's zone; an all-day or floating event uses the user's zone.
-  - A DATE or a floating value is read by its digits.
-- **BYSETPOS:** one weekday at one position folds to its ordinal (`BYDAY=TU;BYSETPOS=2` becomes `2TU`).
+- **The rule is read from `recurrenceInfo` only** (`rruleOfItem`, used by both read tools and by the split). RRULE is a
+  promoted property of `calItemBase`: Thunderbird neither imports it into the item's properties when parsing nor
+  serializes it, so `getProperty("RRULE")` returns only an in-memory echo a caller set, which survives `clone()` and
+  Thunderbird's own event dialog and can name an older rule. TabMail no longer sets it.
+- **`until` (read)** is the last day the stored bound admits, read the way Thunderbird (ical.js) expands the rule.
+  UNTIL is inclusive (RFC 5545 3.3.10). A `Z` value is that instant; a DATE or floating value is its digits at
+  offset 0 (ical.js compares both at offset 0). In the frame occurrences are expanded in (the start's zone for a
+  timed zoned event, offset 0 for an all-day or floating one), the bound's day is the last day when its time of day
+  is at or after the start's time of day, otherwise the day before; an all-day series ends on the bound's day.
+  Converting the instant into a zone and taking its date was wrong whenever the bound's time is before the
+  occurrence time, e.g. every split cap (split minus one second) read one day late.
+- **BYSETPOS:** one weekday at one position folds to its ordinal (`BYDAY=TU;BYSETPOS=2` becomes `2TU`) only for
+  MONTHLY, or YEARLY with at most one BYMONTH and no BYMONTHDAY, where the two name the same days. Elsewhere
+  (`FREQ=YEARLY;BYMONTH=3,9;BYDAY=TU;BYSETPOS=2` is only the 2nd Tuesday of March) BYSETPOS stays in `other`.
 - **`other`:** anything else goes there, e.g. BYWEEKNO, BYYEARDAY, BYHOUR, BYSETPOS with several days, or a FREQ the schema has no value for. The read line then adds "the edit tool cannot express these; omit recurrence to keep the rule".
 
 ## Writing
@@ -25,10 +35,19 @@ same design (tabmail-ios #421).
 - **Validation at the tool boundary only:** `recurrenceArgError` runs in `calendar_event_create` and `calendar_event_edit` before the confirmation card. It refuses an invalid field with `recurrence.<field> has an invalid value "<value>": <allowed>`. The checks:
   - `freq` is in the enum and is required unless the object is `{}`;
   - `interval` and `count` are positive integers;
-  - `until` is a real date or date-time, and `count` with `until` is refused;
-  - `byDay` matches `^[+-]?([1-9]|[1-4][0-9]|5[0-3])?(MO|TU|WE|TH|FR|SA|SU)$`;
-  - `byMonthDay` is ±1..31, `byMonth` is 1..12, and `wkst` is a day code;
+  - only the eight fields (and `other`, refused below) are accepted; any other key (`bySetPos`, `byHour`) is refused
+    rather than reaching Thunderbird's schema check after the card;
+  - `until` is a real plain date `YYYY-MM-DD` (the last day of the series); a date-time is refused, because it
+    cannot be stored in the start's value type (RFC 5545 3.3.10) and the read side only ever shows a plain date;
+    `count` with `until` is refused;
+  - `byDay` matches `^[+-]?([1-9]|[1-4][0-9]|5[0-3])?(MO|TU|WE|TH|FR|SA|SU)$`; a position only with MONTHLY or YEARLY
+    (RFC 5545: WEEKLY ignores it in ical.js, DAILY never matches), and with MONTHLY only ±1..5 (ical.js
+    `RecurIterator.init` rejects more);
+  - `byMonthDay` is ±1..31 and never with WEEKLY (RFC 5545; ical.js rejects it), `byMonth` is 1..12, and `wkst` is a day code;
   - `other` cannot be written.
+
+  A non-object `recurrence` (e.g. the RRULE string the read tools printed before) is refused by create and edit
+  alike; create used to drop it silently and make a single event.
 
   Because invalid input is refused there, the bridge's `buildRRuleValueFromDetails` passes values through without its own checks.
 - **`{}` clears the rule:** `recurrenceInfo` becomes null and the RRULE property is deleted. It used to default to WEEKLY. `null` in an edit is the same as omitting the field.
@@ -37,13 +56,25 @@ same design (tabmail-ios #421).
   - a floating event gets `T235959`;
   - otherwise it is 23:59:59 in the event's zone, rendered as UTC.
 
-  So the named day's occurrence stays in the series. A date-time `until` is the instant it names, as before.
-- **Writing a rule replaces only the RRULE item** in the existing `recurrenceInfo`. EXDATE/RDATE items and changed occurrences stay with the series; they used to be dropped by a fresh `recurrenceInfo`.
-- **Restated rules with `other` parts are refused.** An edit (`all` or `this_and_following`) that restates the rule of a series whose stored rule has `other` parts is refused before the card by `otherPartsRefusal`, because restating would drop those parts. `{}` (stop repeating) is allowed.
+  So the named day's occurrence stays in the series, and reading the stored value gives the same day back.
+- **One writer of a rule, `setRuleOnItem`,** used by an edit (`applyRecurrenceToItem`), the split's cap and the
+  split's new series. It replaces only the RRULE items in the item's own `recurrenceInfo` (iterating a copy:
+  `getRecurrenceItems` is live, and deleting while iterating skips the next item) and creates a `recurrenceInfo`
+  only when there is none. EXDATE/RDATE items and changed occurrences stay with the series; they used to be
+  dropped by a fresh `recurrenceInfo`, on edits and on the split's cap.
+- **Split ("this and following"):** the capped earlier part keeps its EXDATEs, RDATEs and changed occurrences before
+  the split; RDATEs and changed occurrences at or after the split are removed (an RDATE is not bounded by UNTIL).
+  The new series still starts as a fresh event with only a rule (no carry-over of later exceptions; filed
+  separately).
+- **Restated rules with `other` parts are refused,** for every edit scope: an edit that restates the rule of a
+  series whose stored rule has `other` parts is refused before the card by `otherPartsRefusal`, because restating
+  would drop those parts. The stored rule is fetched with the edit's `calendar_id`; when it cannot be read, a
+  restatement is refused too. `{}` (stop repeating) is allowed.
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar.
 
 ## How it is pinned
 
-- `test/calendarRecurrenceFormat.test.js` runs under TZ=America/Vancouver, with the real bridge in `node:vm` via `test/helpers/calendarBridgeHarness.js`. The harness's `fakeRecurrenceInfo` and `recurrenceItem` model RRULE/RDATE/EXDATE items by `icalProperty.propertyName`.
+- `test/calendarRecurrenceFormat.test.js` runs under TZ=America/Vancouver, with the real bridge in `node:vm` via `test/helpers/calendarBridgeHarness.js`. The harness's `fakeRecurrenceInfo` and `recurrenceItem` model RRULE/RDATE/EXDATE items by `icalProperty.propertyName` (RDATE/EXDATE with their `date`), changed occurrences (`exceptions`), and a LIVE `getRecurrenceItems` list; `fixedZone` and `FLOATING_ZONE` model a zone other than the user's and floating time; the calendar has `addItem` and creatable events, so the real create and split run.
+- The read and round-trip tests assert OCCURRENCES, not strings: `lastDayAdmitted` expands a daily series the way ical.js does, independently of the bridge, for four start kinds (user's zone, another zone east of UTC, floating, all-day) and bounds from every writer. A test that compares the fields read back with the fields written stays green when both sides use the same wrong frame.
 - `test/calendarTools.test.js` covers the refusal wiring before the card.
-- New bridge accessor calls (`eventZone`, `untilDayFromIcs`, `untilForRRule` → `getTimezoneService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.
+- Bridge accessor calls (`untilDayFromIcs`, `untilForRRule` → `getTimezoneService`; `setRuleOnItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.
