@@ -438,15 +438,19 @@ describe('a rule the tools cannot write is refused, naming the field and value',
     });
   }
 
-  // Create has no rule to clear or keep. Every create refusal still names the
-  // field and value, and none points the model at a value that would make an
-  // event that does not repeat: not `{}`, not leaving recurrence out to "keep"
-  // a rule. Leaving it out is named only as the way to make a one-off event.
+  // Create has no rule to clear or keep. Every create refusal is edit's text
+  // without the `{}` hint (and, for `other`, create's own note), so it names the
+  // same field, value and allowed form, and none points the model at a value
+  // that would make an event that does not repeat: not `{}`, not leaving
+  // recurrence out to "keep" a rule. Leaving it out is named only as the way to
+  // make a one-off event.
   for (const [arg, message] of refused) {
     it(`on create, ${JSON.stringify(arg)} is refused without pointing at a one-off event`, () => {
       const onCreate = recurrenceArgError(arg, { canClear: false });
-      expect(onCreate).toEqual(expect.any(String));
-      expect(onCreate.startsWith(message.split(':')[0])).toBe(true);
+      expect(onCreate).toBe(message
+        .replace(', or {} to clear the rule', '')
+        .replace(' (use {} to clear the rule)', '')
+        .replace(OTHER_PARTS_NOTE, 'the create tool cannot write these; tell the user to create this series in the calendar app'));
       expect(onCreate).not.toContain('{}');
       expect(onCreate).not.toMatch(/keep/i);
       if (/omit recurrence/i.test(onCreate)) expect(onCreate).toContain('omit recurrence for an event that does not repeat');

@@ -398,17 +398,18 @@ describe('calendar_event_create refuses a recurrence it cannot write before the 
   // create a one-off event the user believes repeats.
   // A rule read from a series with parts the tools cannot write (`other`) is
   // refused too, and the refusal does not tell the model to leave recurrence
-  // out, which would also make an event that does not repeat.
+  // out, which would make an event that does not repeat. A value that is not
+  // an object is refused before the card as well.
   const noRule = [
     [{}, 'recurrence {} sets no rule: give freq, such as {"freq":"WEEKLY"}, or omit recurrence for an event that does not repeat'],
     [{ byDay: ['TU'] }, 'recurrence.freq has an invalid value "": one of DAILY, WEEKLY, MONTHLY, YEARLY'],
     [false, 'recurrence has an invalid value "false": an object of recurrence fields'],
     [0, 'recurrence has an invalid value "0": an object of recurrence fields'],
     ['', 'recurrence has an invalid value "": an object of recurrence fields'],
-    [{ freq: 'MONTHLY', byDay: ['FR'], other: 'BYSETPOS=-1' }, 'recurrence.other has an invalid value "BYSETPOS=-1": the create tool cannot write these; tell the user to create this series in the calendar app'],
+    [{ freq: 'YEARLY', byDay: ['MO'], other: 'BYWEEKNO=20' }, 'recurrence.other has an invalid value "BYWEEKNO=20": the create tool cannot write these; tell the user to create this series in the calendar app'],
   ];
   noRule.forEach(([recurrence, message], i) => {
-    it(`refuses ${JSON.stringify(recurrence)} rather than creating an event that does not repeat`, async () => {
+    it(`refuses ${JSON.stringify(recurrence)} before the confirmation card`, async () => {
       const pid = `pid-create-no-rule-${i}`;
       ctx.fsmSessions[pid] = {};
       ctx.state = null;
