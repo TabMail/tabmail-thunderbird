@@ -178,6 +178,21 @@ describe('persistentChatStore', () => {
       const turns = await loadTurns();
       expect(turns).toEqual([]);
     });
+
+    it('ignores changes an earlier version left saved, before the migration removes them', async () => {
+      // After an update, Chat History or the background can read the turns
+      // before the chat window's migration removes the retired saved changes.
+      const committed = [{ _id: 'kept', _ts: 100, role: 'user', content: 'kept' }];
+      storageData['chat_turns'] = committed;
+      storageData['chat_turns_pending'] = [
+        { id: 'old-1', op: { clear: true } },
+        { id: 'old-2', op: { append: [{ _id: 'retired', _ts: 200, role: 'user', content: 'retired' }] } },
+      ];
+      expect(await loadTurns()).toEqual(committed);
+      const msgs = await filterAndConvertTurns();
+      expect(msgs.map(m => m.content)).toEqual(['kept']);
+      expect(storageData['chat_turns']).toEqual(committed);
+    });
   });
 
   // --- changeTurns ---
