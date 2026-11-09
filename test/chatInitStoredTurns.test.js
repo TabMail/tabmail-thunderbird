@@ -204,13 +204,17 @@ it('opens the window after a change sent before it failed, and applies the windo
   // A change another page sent first (adding references to a1), whose write fails.
   browser.storage.local.set.mockRejectedValueOnce(new Error('synthetic write failure'));
   const store = await import('../chat/modules/persistentChatStore.js');
-  const first = store.changeTurns({ update: [{ ...turn('a1', 'normal', 'assistant'), _refs: ['r'] }] });
+  // The expectation is attached when the change is sent: the change fails
+  // while the window is still starting, and a rejection with no handler yet
+  // is reported as an error of the whole run.
+  const first = expect(store.changeTurns({ update: [{ ...turn('a1', 'normal', 'assistant'), _refs: ['r'] }] }))
+    .rejects.toThrow('synthetic write failure');
 
   const { initAndGreetUser } = await import('../chat/modules/init.js');
   const { awaitUserInput } = await import('../chat/modules/converse.js');
   await initAndGreetUser();
 
-  await expect(first).rejects.toThrow('synthetic write failure');
+  await first;
   const { ctx } = await import('../chat/modules/context.js');
   expect(awaitUserInput).toHaveBeenCalled();
   const sessionBreak = ctx.persistedTurns.at(-1);

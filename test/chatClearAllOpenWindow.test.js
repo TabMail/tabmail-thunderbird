@@ -282,7 +282,7 @@ it('keeps a Clear All when the chat window closes without another message', asyn
   expect(await reopenedIds()).toEqual([]);
 });
 
-it('keeps a Clear All done while a message the window sent is still being saved', async () => {
+it('keeps a Clear All done after the window saved a message, through the window closing', async () => {
   const next = await send();
   await history.clearChatHistory();
   await vi.advanceTimersByTimeAsync(1000);
@@ -510,10 +510,10 @@ it('says a change whose write fails was not stored, and applies the ones after i
     return set(values);
   });
   const sending = send();
-  const refused = store.changeTurns({ append: [turnAt('refused')] });
+  const refused = expect(store.changeTurns({ append: [turnAt('refused')] })).rejects.toThrow('synthetic write failure');
   const after = store.changeTurns({ append: [turnAt('after')] });
   const next = await sending;
-  await expect(refused).rejects.toThrow('synthetic write failure');
+  await refused;
   await expect(after).resolves.toEqual({ applied: true, removed: 0 });
   expect(storedIds()).toEqual([...SEEDED, next._id, 'after']);
 });

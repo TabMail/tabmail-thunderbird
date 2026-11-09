@@ -523,6 +523,19 @@ describe('persistentChatStore', () => {
       expect(removedKeys.length).toBe(0);
     });
 
+    it('keeps the v3 migration pending when removing the persisted turns queue fails', async () => {
+      storageData['chat_turns_migration_v1'] = Date.now();
+      storageData['chat_turns_migration_v2'] = Date.now();
+      storageData['chat_turns_pending'] = [{ id: 'old', op: { clear: true } }];
+      browser.storage.local.remove.mockRejectedValueOnce(new Error('synthetic remove failure'));
+      await migrateFromSessions();
+      expect(storageData['chat_turns_pending']).toBeDefined();
+      expect(storageData['chat_turns_migration_v3']).toBeUndefined();
+      await migrateFromSessions();
+      expect('chat_turns_pending' in storageData).toBe(false);
+      expect(storageData['chat_turns_migration_v3']).toBeDefined();
+    });
+
     it('should run v2 migration (FTS clear) when flag not set', async () => {
       storageData['chat_turns_migration_v1'] = Date.now();
       await migrateFromSessions();
