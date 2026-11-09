@@ -194,6 +194,7 @@ All tools export `run(args, options) → Promise<result>`. Mock `browser.*` APIs
 | TB-083 | Timeout handling | Error after timeout | Timeout |
 | TB-084 | Conversation state management | Round-trip preserves state | State |
 | TB-209 | Every completions request (first send, rate-limit retry, re-sign-in retry) sends `X-Client-Protocol` = `SETTINGS.protocolVersion` beside `X-Client-Version` = the add-on's version, each with that send's own token (`test/llmRequestHeaders.test.js`). Red before the header existed; red when either retry builds its own headers without it; red when a retry sends the first token or the header builder ignores its token | Header on all three sends | Protocol |
+| TB-210 | Status line timer (#249) on the settings, templates and marketplace pages, each page's real script in a realm with fake timers: a failure shown 100 ms before an earlier status's hide stays up for the full delay; a status alone hides after the delay, not before; many statuses in a row leave one pending hide. Red on the per-status timers (`test/statusLineTimer.test.js`) | Each status stays up for the full delay | Robustness |
 
 ### 3.3 Device Sync (agent/modules/deviceSync.js) ✅
 

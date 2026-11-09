@@ -10,6 +10,7 @@
  */
 
 import { getTemplateWorkerUrl } from "../agent/modules/config.js";
+import { scheduleStatusHide } from "../agent/modules/statusLine.js";
 import { log } from "../agent/modules/utils.js";
 import { injectPaletteIntoDocument } from "../theme/palette/palette.js";
 
@@ -76,10 +77,10 @@ function showStatus(message, isError = false) {
     const statusEl = document.getElementById("status-message");
     statusEl.textContent = message;
     statusEl.className = isError ? "visible error" : "visible";
-    
-    setTimeout(() => {
+
+    scheduleStatusHide(() => {
         statusEl.className = "";
-    }, 3000);
+    });
 }
 
 /**

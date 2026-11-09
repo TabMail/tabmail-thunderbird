@@ -6,6 +6,7 @@
  * Prompts page utility functions
  */
 
+import { scheduleStatusHide } from "../../agent/modules/statusLine.js";
 import { log } from "../../agent/modules/utils.js";
 
 /**
@@ -28,11 +29,10 @@ export function showStatus(message, isError = false) {
     statusEl.textContent = message;
     statusEl.className = isError ? "error" : "success";
     statusEl.style.display = "block";
-    
-    // Hide after 3 seconds
-    setTimeout(() => {
+
+    scheduleStatusHide(() => {
         statusEl.style.display = "none";
-    }, 3000);
+    });
 }
 
 /**
