@@ -136,8 +136,8 @@ generation is revalidated after the read so a replaced generation cannot record 
 then skips. The manual "Check for Updates" always sends its request and records the version too (owner
 blessed). Owner ruling 2026-11-06.
 
-**Amendment (2026-11-07): a successful update that is not applied is asked again, a bounded number of
-times.** On Windows the old helper's swap is a single rename (native-fts ADR-NF-024: a failed swap keeps
+**Amendment (2026-11-07, REVERTED 2026-11-09 by the amendment below): a successful update that is not
+applied is asked again, a bounded number of times.** On Windows the old helper's swap is a single rename (native-fts ADR-NF-024: a failed swap keeps
 the installed binary). It is refused while a helper still runs that binary, so the update reconnect 1 s
 after a success answer can make it lose: native-fts #69 measured about 1 update in 10 lost, and #73 tracks
 it. The reconnected helper then still needs the update, and the once-per-session guard above left it for
@@ -168,3 +168,18 @@ update is not asked again this session, which was the behaviour before this amen
 sends, and it records its request in the same way. Rejected: renaming the running binary aside in the
 helper, which reverses ADR-NF-024; and measuring the helper's swap window. Worst case: every swap loses and
 the update lands at the next start, as before. Owner ruling 2026-11-07 (option C).
+
+**Amendment (2026-11-09, #262): the re-ask and its wait cap are removed; a lost swap race updates at the
+next start.** The 2026-11-07 amendment above is reverted, together with its follow-up that capped the
+re-ask wait when the clock is set back (a case that existed only because of the re-ask). Its per-version
+record (`ftsNativeUpdateRequests`), `UPDATE_REASKS_AFTER_SUCCESS`, `UPDATE_REASK_AFTER_SUCCESS_MS`,
+`changeUpdateRequest` and their tests are deleted. The once-per-version-per-session guard of 2026-11-06 is
+back as it was: the automatic update sends at most one `updateRequest` per target version per session,
+recorded in the `browser.storage.session` array `ftsNativeUpdateRequestedVersions` before the request is
+sent, with the generation revalidated after the read; the manual "Check for Updates" always sends and
+records the version. An update that answered success but whose Windows swap lost to the 1 s reconnect
+(native-fts #73) lands at the next Thunderbird start, as it did before 2026-11-07. The cost was about 70
+lines of engine code and 546 test lines to save one restart in a rare race. The retired session key needs
+no cleanup: `storage.session` is cleared at quit and does not outlive the add-on update. If a faster path is
+wanted later, fix it at the source by delaying the reconnect after a success answer past the apply step's
+retry window (one constant), not with a re-ask record.
