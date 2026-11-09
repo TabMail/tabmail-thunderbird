@@ -256,6 +256,7 @@ const LIVE_CONSTRUCTION_CONTRACTS = [
 // consumers, so it protected none of the nine.
 const EXPECTED_ACCESSOR_CALL_SITES = [
   "applyRecurrenceToItem :: getIcsService",
+  "eventZone :: getTimezoneService",
   "getAPI > createCalendarEvent :: getCalendarManager",
   "getAPI > deleteCalendarEvent :: getCalendarManager",
   "getAPI > getCalendarEventDetails :: getCalendarManager",
@@ -270,6 +271,8 @@ const EXPECTED_ACCESSOR_CALL_SITES = [
   "sendCalendarInvitations :: getIcsService",
   "toCalIDateTime :: getTimezoneService",
   "toEpochMsUTC :: getTimezoneService",
+  "untilDayFromIcs :: getTimezoneService",
+  "untilForRRule :: getTimezoneService",
 ];
 
 // Executes the real file as a classic script, exactly as Thunderbird's

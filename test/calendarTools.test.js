@@ -54,6 +54,7 @@ globalThis.browser = {
       calendars: [{ id: 'cal1', name: 'Personal', organizer_email: 'me@example.com' }],
     })),
     modifyCalendarEvent: vi.fn(async () => ({ ok: true })),
+    createCalendarEvent: vi.fn(async () => ({ ok: true })),
     deleteCalendarEvent: vi.fn(async () => ({ ok: true })),
   },
   storage: {
@@ -139,6 +140,8 @@ import { run as calendarEventDeleteRun, completeExecution as calendarEventDelete
 import { run as calendarEventEditRun, completeExecution as calendarEventEditComplete } from '../chat/tools/calendar_event_edit.js';
 import { run as calendarReadRun, resetPaginationSessions as calendarReadResetPagination } from '../chat/tools/calendar_read.js';
 import { run as calendarSearchRun, resetPaginationSessions as calendarSearchResetPagination } from '../chat/tools/calendar_search.js';
+import { ctx } from '../chat/modules/context.js';
+import { run as calendarEventCreateRun } from '../chat/tools/calendar_event_create.js';
 
 describe('calendar_event_read', () => {
   beforeEach(() => {
@@ -262,6 +265,44 @@ describe('calendar_event_edit', () => {
     });
   });
 
+  describe('a recurrence the tool cannot write is refused before the confirmation card', () => {
+    const settle = () => new Promise((r) => setTimeout(r, 5));
+    async function runEdit(args, pid) {
+      ctx.fsmSessions[pid] = {};
+      ctx.state = null;
+      await calendarEventEditRun(args, { callId: pid });
+      await settle();
+      return ctx.fsmSessions[pid];
+    }
+
+    it('an invalid field fails the call with the field and value, and never reaches the card', async () => {
+      const sess = await runEdit({ event_id: 'found-event', recurrence: { freq: 'WEEKLY', byDay: ['MONDAY'] } }, 'pid-rec-1');
+      expect(sess.failReason).toBe('recurrence.byDay has an invalid value "MONDAY": day codes MO..SU, optionally with a position such as 2TU or -1FR');
+      expect(ctx.state).toBe('exec_fail');
+      expect(sess.editEventArgs).toBeUndefined();
+    });
+
+    it('restating a stored rule with parts the tool cannot express is refused; a title-only edit is not', async () => {
+      browser.tmCalendar.getCalendarEventDetails.mockResolvedValue({ ok: true, id: 'found-event', recurrence: { freq: 'YEARLY', byDay: ['MO'], other: 'BYWEEKNO=20' } });
+      try {
+        const sess = await runEdit({ event_id: 'found-event', recurrence: { freq: 'YEARLY', byDay: ['MO'] } }, 'pid-rec-2');
+        expect(sess.failReason).toMatch(/^this series repeats in a way the edit tool cannot express \(BYWEEKNO=20\)/);
+        expect(sess.editEventArgs).toBeUndefined();
+        const ok = await runEdit({ event_id: 'found-event', title: 'Renamed' }, 'pid-rec-3');
+        expect(ok.failReason).toBeUndefined();
+        expect(ok.editEventArgs).toMatchObject({ title: 'Renamed' });
+      } finally {
+        browser.tmCalendar.getCalendarEventDetails.mockReset();
+      }
+    });
+
+    it('`null` recurrence is the same as omitting it', async () => {
+      const sess = await runEdit({ event_id: 'found-event', title: 'Renamed', recurrence: null }, 'pid-rec-4');
+      expect(sess.failReason).toBeUndefined();
+      expect(sess.editEventArgs).not.toHaveProperty('recurrence');
+    });
+  });
+
   describe('completeExecution', () => {
     it('should return error when failReason set', async () => {
       const { ctx } = await import('../chat/modules/context.js');
@@ -296,6 +337,21 @@ describe('calendar_event_edit', () => {
 // ---------------------------------------------------------------------------
 // calendar_read tests
 // ---------------------------------------------------------------------------
+describe('calendar_event_create refuses a recurrence it cannot write before the confirmation card', () => {
+  it('names the field and value, and never stores the create arguments', async () => {
+    const pid = 'pid-create-rec';
+    ctx.fsmSessions[pid] = {};
+    await calendarEventCreateRun(
+      { calendar_id: 'cal1', title: 'Standup', start_iso: '2099-10-01T09:00:00', end_iso: '2099-10-01T09:15:00', recurrence: { freq: 'WEEKLY', byMonth: [13] } },
+      { callId: pid },
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(ctx.fsmSessions[pid].failReason).toBe('recurrence.byMonth has an invalid value "13": integers from 1 to 12');
+    expect(ctx.state).toBe('exec_fail');
+    expect(ctx.fsmSessions[pid].createEventArgs).toBeUndefined();
+  });
+});
+
 describe('calendar_read', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -373,13 +429,13 @@ describe('calendar_search query path keeps cues, timezone and recurrence text', 
     const at = (h, m = 0) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m, 0, 0).getTime();
     const dayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
     browser.tmCalendar.queryCalendarItems.mockResolvedValueOnce([
-      { id: 'w', calendarId: 'cal1', title: 'Weekly sync', startMs: at(9), endMs: at(9, 30), isAllDay: false, isRecurring: true, recurrenceRRule: 'FREQ=WEEKLY;COUNT=4', attendeeList: [] },
+      { id: 'w', calendarId: 'cal1', title: 'Weekly sync', startMs: at(9), endMs: at(9, 30), isAllDay: false, isRecurring: true, recurrence: { freq: 'WEEKLY', count: 4 }, attendeeList: [] },
       { id: 'e', calendarId: 'cal1', title: 'Evening sync', startMs: at(18, 5), endMs: at(19), isAllDay: false, attendeeList: [] },
       { id: 'x', calendarId: 'cal1', title: 'Dentist', startMs: at(14), endMs: at(15), isAllDay: false, attendeeList: [] },
     ]);
     const result = await calendarSearchRun({ query: 'sync', calendar_ids: ['cal1'], from_date: dayKey, to_date: dayKey });
     expect(result.results).toContain(`timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
-    expect(result.results).toContain('09:00 (9 a.m.) - 09:30 (9:30 a.m.): Weekly sync (↻ FREQ=WEEKLY;COUNT=4)\tevent_id: w');
+    expect(result.results).toContain('09:00 (9 a.m.) - 09:30 (9:30 a.m.): Weekly sync (↻ {"freq":"WEEKLY","count":4})\tevent_id: w');
     expect(result.results).toContain('18:05 (6:05 p.m.) - 19:00 (7 p.m.): Evening sync\tevent_id: e');
     expect(result.results).not.toContain('Dentist');
   });

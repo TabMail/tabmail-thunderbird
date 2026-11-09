@@ -45,7 +45,7 @@
             "calendarId": { "type": "string" },
             "calendarName": { "type": "string" },
             "isRecurring": { "type": "boolean" },
-            "recurrenceRRule": { "type": "string" },
+            "recurrence": { "type": "object", "optional": true, "additionalProperties": { "type": "any" }, "description": "The rule in the create/edit tools' fields (freq, interval, count, until as the last day, byDay, byMonthDay, byMonth, wkst; other = parts those fields cannot express); null when the event does not repeat." },
             "transparency": { "type": "string", "description": "Event availability: 'busy' or 'free'" },
             "error": { "type": "string", "description": "Error message if ok is false" }
           }

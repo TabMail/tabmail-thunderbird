@@ -12,6 +12,7 @@ import { log } from "../../agent/modules/utils.js";
 import { createNewAgentBubble } from "../chat.js";
 import { ctx, initFsmSession } from "../modules/context.js";
 import { toNaiveIso } from "../modules/helpers.js";
+import { otherPartsRefusal, recurrenceArgError } from "../modules/recurrence.js";
 
 function normalizeArgs(args = {}) {
   const a = args || {};
@@ -87,8 +88,9 @@ function normalizeArgs(args = {}) {
     out.organizer_email = a.organizer_email;
   }
   
-  // Recurrence (pass-through object if provided)
-  if (a && typeof a.recurrence === "object") {
+  // Recurrence (pass-through; checked by recurrenceArgError before the card).
+  // `null` is the same as omitting it: keep the rule.
+  if (a && a.recurrence !== undefined && a.recurrence !== null) {
     out.recurrence = a.recurrence;
   }
   
@@ -174,6 +176,28 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   if ((norm.edit_scope === "this_only" || norm.edit_scope === "this_and_following") && !norm.recurrence_id) {
     await failOut(`edit_scope='${norm.edit_scope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.`);
     return;
+  }
+
+  // A rule the tool cannot write is refused before the confirmation card, so
+  // the model can correct it instead of a part being silently dropped.
+  if ("recurrence" in norm) {
+    const recurrenceError = recurrenceArgError(norm.recurrence);
+    if (recurrenceError) {
+      await failOut(recurrenceError);
+      return;
+    }
+  }
+
+  // Restating the rule of a series whose stored rule has parts the tool cannot
+  // express would drop those parts, so that edit is refused too. A this_only
+  // edit does not write the series' rule.
+  if ("recurrence" in norm && norm.edit_scope !== "this_only" && !(norm.recurrence_id && !norm.edit_scope)) {
+    const stored = await safeFetchEventDetails(norm.event_id);
+    const refusal = otherPartsRefusal(norm.recurrence, stored?.ok ? stored.recurrence : null);
+    if (refusal) {
+      await failOut(refusal);
+      return;
+    }
   }
 
   // calendar_id is OPTIONAL — the bridge (tmCalendar.modifyCalendarEvent) auto-scans

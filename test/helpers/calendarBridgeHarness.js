@@ -127,6 +127,27 @@ export function fakeEvent({ id, title, startDate, endDate, recurrenceId = null, 
   return ev;
 }
 
+/**
+ * A calIRecurrenceInfo holding RRULE / RDATE / EXDATE items, each an object
+ * whose `icalProperty` names the property (`{ propertyName, value }`), as
+ * CalRecurrenceRule and CalRecurrenceDate expose it.
+ */
+export function fakeRecurrenceInfo(items = []) {
+  const list = [...items];
+  return {
+    occurrences: [],
+    getRecurrenceItems: () => [...list],
+    appendRecurrenceItem: (r) => { list.push(r); },
+    deleteRecurrenceItem: (r) => { const i = list.indexOf(r); if (i >= 0) list.splice(i, 1); },
+    getOccurrenceFor: () => null,
+  };
+}
+
+/** A recurrence item for `fakeRecurrenceInfo`, e.g. recurrenceItem('EXDATE', '20991020T170000'). */
+export function recurrenceItem(propertyName, value) {
+  return { icalProperty: { propertyName, value } };
+}
+
 // cal.dtz.ensureDateTime: a DATE takes part in range checks as a date-time.
 function ensureDateTime(dt) {
   if (!dt || !dt.isDate) return dt;
@@ -201,16 +222,19 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
   const cal = {
     manager: { getCalendars: () => [calendar] },
     timezoneService: { UTC: UTC_ZONE, defaultTimezone: LOCAL_ZONE, getTimezone: () => null },
+    icsService: { createIcalProperty: (propertyName) => ({ propertyName, value: '' }) },
   };
   const ctx = vm.createContext({
     Date, ReadableStream, Intl,
     console,
-    Ci: { calICalendar: { ITEM_FILTER_TYPE_EVENT, ITEM_FILTER_INCLUDE_OCCURRENCES }, calIDateTime: {}, nsITimer: {} },
+    Ci: { calICalendar: { ITEM_FILTER_TYPE_EVENT, ITEM_FILTER_INCLUDE_OCCURRENCES }, calIDateTime: {}, calIRecurrenceRule: {}, calIRecurrenceInfo: {}, nsITimer: {} },
     // The datetime contract is the only XPCOM lookup the query/details/modify
     // paths need; timers are optional (the bridge resolves without them).
     Cc: new Proxy({}, {
       get(_t, key) {
         if (key === '@mozilla.org/calendar/datetime;1') return { createInstance: () => fakeCalDateTime() };
+        if (key === '@mozilla.org/calendar/recurrence-rule;1') return { createInstance: () => ({ icalProperty: null }) };
+        if (key === '@mozilla.org/calendar/recurrence-info;1') return { createInstance: () => fakeRecurrenceInfo() };
         throw new Error(`XPCOM Cc[${String(key)}] lookup`);
       },
     }),

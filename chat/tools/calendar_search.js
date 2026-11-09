@@ -7,6 +7,7 @@
 import { log } from "../../agent/modules/utils.js";
 import { CHAT_SETTINGS } from "../modules/chatConfig.js";
 import { toIsoNoMs } from "../modules/helpers.js";
+import { recurrenceMark } from "../modules/recurrence.js";
 import { createToolSessions } from "../modules/toolSessions.js";
 
 // ====================================================================
@@ -413,19 +414,13 @@ async function buildCalendarSummary(args) {
       const beforeInsert = days[dayKey];
       log(`[TMDBG CalendarSummary] BEFORE INSERT: dayKey='${dayKey}' exists=${!!beforeInsert} type=${typeof beforeInsert}`);
       
-      // Surface the RRULE on recurring entries so the LLM can see UNTIL/COUNT
-      // and reason about edit_scope. Without it, the LLM saw only "(↻)" and
-      // couldn't tell a capped series from an open-ended one — that confusion
-      // produced a real incident (LLM declared an event "ended" when a
-      // successor series existed for later occurrences).
+      // Surface the rule on recurring entries, in the edit tool's own fields,
+      // so the LLM can see until/count and reason about edit_scope. Without it,
+      // the LLM saw only "(↻)" and couldn't tell a capped series from an
+      // open-ended one — that confusion produced a real incident (LLM declared
+      // an event "ended" when a successor series existed for later occurrences).
       let recurMark = "";
-      if (it.isRecurring) {
-        if (it.recurrenceRRule && /\bFREQ=/i.test(it.recurrenceRRule)) {
-          recurMark = ` (↻ ${it.recurrenceRRule})`;
-        } else {
-          recurMark = " (↻)";
-        }
-      }
+      if (it.isRecurring) recurMark = recurrenceMark(it.recurrence) || " (↻)";
       const eventId = it.id || "unknown";
       // All-day entries render as "All day" (iOS parity) — a clock range with
       // AM/PM cues would be a fabricated time for an item that has none.

@@ -301,10 +301,11 @@ describe('formatFromDetails', () => {
     expect(result).toContain('all_day: yes');
   });
 
-  it('formats recurring event with RRULE', () => {
-    const result = formatFromDetails({ calendarId: 'c', id: 'e', isRecurring: true, recurrenceRRule: 'FREQ=WEEKLY' });
+  it('formats a recurring event\'s rule in the edit tool\'s fields, never as a raw RRULE', () => {
+    const result = formatFromDetails({ calendarId: 'c', id: 'e', isRecurring: true, recurrence: { freq: 'WEEKLY', byDay: ['MO'] } });
     expect(result).toContain('recurring: yes');
-    expect(result).toContain('RRULE: FREQ=WEEKLY');
+    expect(result).toContain('recurrence: {"freq":"WEEKLY","byDay":["MO"]}');
+    expect(result).not.toContain('RRULE');
   });
 
   it('formats location', () => {
