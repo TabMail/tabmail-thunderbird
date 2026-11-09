@@ -426,13 +426,13 @@ function recurrenceFieldsOfItem(item) {
     const key = part.slice(0, eq).trim().toUpperCase();
     const val = part.slice(eq + 1).trim();
     if (key === "FREQ" && RECURRENCE_FREQS.includes(val.toUpperCase())) f.freq = val.toUpperCase();
-    else if (key === "INTERVAL" && /^\d+$/.test(val)) { if (Number(val) !== 1) f.interval = Number(val); }
+    else if (key === "INTERVAL" && /^\d+$/.test(val)) f.interval = Number(val);
     else if (key === "COUNT" && /^\d+$/.test(val)) f.count = Number(val);
     else if (key === "UNTIL" && untilDayFromIcs(val, item)) f.until = untilDayFromIcs(val, item);
     else if (key === "BYDAY") byDay = val.toUpperCase().split(",");
     else if (key === "BYMONTHDAY") f.byMonthDay = val.split(",").map(Number);
     else if (key === "BYMONTH") f.byMonth = val.split(",").map(Number);
-    else if (key === "WKST") { if (val.toUpperCase() !== "MO") f.wkst = val.toUpperCase(); }
+    else if (key === "WKST") f.wkst = val.toUpperCase();
     else if (key === "BYSETPOS") bySetPos = val;
     else other.push(part.trim());
   }
@@ -2076,12 +2076,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (!currentRrule) {
               return { ok: false, error: "master event has no parseable RRULE (its recurrenceInfo holds no FREQ=… rule)" };
             }
-            // A series that repeats by more than one rule is refused before
-            // anything is written: capping writes one rule, which would delete
-            // the other rules' occurrences on the earlier part.
-            if (ruleValuesOfItem(master).length > 1) {
-              return { ok: false, error: "this series repeats by more than one rule, which a split cannot keep; nothing was changed. Change it in the calendar app" };
-            }
 
             // 6. Cap the master's RRULE: drop any existing UNTIL/COUNT, append our UNTIL.
             const cappedRrule = currentRrule
@@ -2093,23 +2087,14 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // 7. Modify master in-place with capped RRULE.
             // Note: we don't send any "series-ended" notification here — only the
             // new series triggers an invitation (controlled by patch.send_invitations).
-            // The clone carries the master's recurrence info, so the rule is
-            // replaced there and the earlier part keeps its excluded dates, added
-            // dates and changed occurrences. Added dates and changed occurrences at
-            // or after the split belong to the part the new series replaces, so
-            // they are removed: an added date is not bounded by UNTIL.
+            // The earlier part gets a fresh recurrence info holding only the
+            // capped rule, so it does not keep its excluded dates, added dates,
+            // changed occurrences or further rules (#265).
             const cappedClone = master.clone();
             let rebuildError = null;
             try {
+              cappedClone.recurrenceInfo = null;
               setRuleOnItem(cappedClone, cappedRrule);
-              const rinfo = cappedClone.recurrenceInfo;
-              for (const r of [...(rinfo.getRecurrenceItems({}) || [])]) {
-                const name = String(r?.icalProperty?.propertyName || "").toUpperCase();
-                if (name === "RDATE" && r.date && r.date.compare(splitDt) >= 0) rinfo.deleteRecurrenceItem(r);
-              }
-              for (const rid of [...(rinfo.getExceptionIds?.() || [])]) {
-                if (rid.compare(splitDt) >= 0) rinfo.removeExceptionFor(rid);
-              }
             } catch (re) {
               rebuildError = String(re);
             }

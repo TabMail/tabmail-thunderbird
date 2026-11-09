@@ -67,8 +67,9 @@ function listError(field, value, isValid, allowed) {
 /**
  * The tool error for a `recurrence` argument the tools cannot write, or null.
  * `{}` is valid (it clears the rule). Checked before the confirmation card, so
- * an invalid rule, or one RFC 5545 forbids or Thunderbird cannot expand, is
- * refused rather than written with a part silently dropped or changed.
+ * a field the read tools would never show (an unknown key, a value outside its
+ * field's form, `other`) is refused rather than written with a part silently
+ * dropped or changed. Combinations of valid fields are not checked here (#275).
  */
 export function recurrenceArgError(recurrence) {
   if (!recurrence || typeof recurrence !== "object" || Array.isArray(recurrence)) {
@@ -85,22 +86,13 @@ export function recurrenceArgError(recurrence) {
   if ("until" in r && !(typeof r.until === "string" && isValidPlainDate(r.until))) {
     return invalid("until", r.until, "a date YYYY-MM-DD (the last day of the series)");
   }
-  if ("count" in r && "until" in r) return invalid("until", r.until, "count and until cannot both be set; give one of them");
   if ("byDay" in r) {
     const e = listError("byDay", r.byDay, (v) => typeof v === "string" && BY_DAY.test(v), "day codes MO..SU, optionally with a position such as 2TU or -1FR");
     if (e) return e;
-    // RFC 5545 3.3.10: a position only with MONTHLY or YEARLY; ical.js expands
-    // a MONTHLY position only from 1 to 5 either way.
-    for (const day of r.byDay) {
-      const pos = Number(BY_DAY.exec(day)[1] ? day.slice(0, -2) : 0);
-      if (pos && r.freq !== "MONTHLY" && r.freq !== "YEARLY") return invalid("byDay", day, "a position such as 2TU only with freq MONTHLY or YEARLY");
-      if (r.freq === "MONTHLY" && Math.abs(pos) > 5) return invalid("byDay", day, "with freq MONTHLY a position from 1 to 5 or -5 to -1");
-    }
   }
   if ("byMonthDay" in r) {
     const e = listError("byMonthDay", r.byMonthDay, (v) => Number.isInteger(v) && v !== 0 && v >= -31 && v <= 31, "integers from 1 to 31 or -31 to -1");
     if (e) return e;
-    if (r.freq === "WEEKLY") return invalid("byMonthDay", r.byMonthDay, "not with freq WEEKLY (RFC 5545)");
   }
   if ("byMonth" in r) {
     const e = listError("byMonth", r.byMonth, (v) => Number.isInteger(v) && v >= 1 && v <= 12, "integers from 1 to 12");

@@ -13,16 +13,16 @@ same design (tabmail-ios #421).
   raw `recurrenceRRule` field is gone.
 - **Printing:** `chat/modules/recurrence.js` prints it as `recurrence: {"freq":"WEEKLY","byDay":["MO"],"until":"2099-10-31"}`
   in `calendar_event_read`, and as ` (↻ {...})` in the `calendar_search`/`calendar_read` listing.
-- **Only the stated fields are shown.** `interval` 1 and `wkst` MO are omitted.
+- **Only the stated fields are shown.** Thunderbird never stores `INTERVAL=1` or `WKST=MO` (ical.js `Recur.toString`
+  omits both), so neither is ever shown.
 - **The rule is read from `recurrenceInfo` only** (`ruleValuesOfItem` / `rruleOfItem`, used by both read tools and
   by the split): the fields describe its first rule item. **Thunderbird 140-160 expands EVERY rule item** (no
-  `MAX_RULES` before comm-central 162), and an imported EXRULE becomes one more of them: `CalRecurrenceRule` is
+  `MAX_RULES` before comm-central 161), and an imported EXRULE becomes one more of them: `CalRecurrenceRule` is
   always positive (`isNegative: false`, "We don't support EXRULE anymore") and its `icalProperty` always names
   itself RRULE. So a series another app wrote with two RRULEs (RFC 5545: SHOULD NOT) or an RFC 2445 EXRULE repeats
   by both. Each further rule is shown in `other` as `RRULE:<value>`, so restating the fields (which writes one rule)
-  is refused and `{}` clears them all; a split of such a series is refused before anything is written (capping
-  writes one rule and would delete the others' occurrences on the earlier part; the simpler choice over capping
-  every rule, whose own UNTIL or COUNT may end before the split). Correction: this note used to say an
+  is refused and `{}` clears them all. A split of such a series keeps only the capped first rule on the earlier part
+  (#265). Correction: this note used to say an
   EXRULE is never expanded and is kept by a write; Thunderbird's own source says otherwise. RRULE is a
   promoted property of `calItemBase`: Thunderbird neither imports it into the item's properties when parsing nor
   serializes it, so `getProperty("RRULE")` returns only an in-memory echo a caller set, which survives `clone()` and
@@ -50,12 +50,12 @@ same design (tabmail-ios #421).
     rather than reaching Thunderbird's schema check after the card;
   - `until` is a real plain date `YYYY-MM-DD` (the last day of the series); a date-time is refused, because it
     cannot be stored in the start's value type (RFC 5545 3.3.10) and the read side only ever shows a plain date;
-    `count` with `until` is refused;
-  - `byDay` matches `^[+-]?([1-9]|[1-4][0-9]|5[0-3])?(MO|TU|WE|TH|FR|SA|SU)$`; a position only with MONTHLY or YEARLY
-    (RFC 5545: WEEKLY ignores it in ical.js, DAILY never matches), and with MONTHLY only ±1..5 (ical.js
-    `RecurIterator.init` rejects more);
-  - `byMonthDay` is ±1..31 and never with WEEKLY (RFC 5545; ical.js rejects it), `byMonth` is 1..12, and `wkst` is a day code;
+  - `byDay` matches `^[+-]?([1-9]|[1-4][0-9]|5[0-3])?(MO|TU|WE|TH|FR|SA|SU)$`;
+  - `byMonthDay` is ±1..31, `byMonth` is 1..12, and `wkst` is a day code;
   - `other` cannot be written.
+
+  Fields are checked one by one, not in combination: `count` with `until`, a positioned `byDay` outside MONTHLY or
+  YEARLY or beyond ±5 in MONTHLY, and `byMonthDay` with WEEKLY are written as given (#275).
 
   A non-object `recurrence` (e.g. the RRULE string the read tools printed before) is refused by create and edit
   alike; create used to drop it silently and make a single event.
@@ -71,12 +71,13 @@ same design (tabmail-ios #421).
 - **One writer of a rule, `setRuleOnItem`,** used by an edit (`applyRecurrenceToItem`), the split's cap and the
   split's new series. It replaces only the RRULE items in the item's own `recurrenceInfo` (iterating a copy:
   `getRecurrenceItems` is live, and deleting while iterating skips the next item) and creates a `recurrenceInfo`
-  only when there is none. EXDATE/RDATE items and changed occurrences stay with the series; they used to be
-  dropped by a fresh `recurrenceInfo`, on edits and on the split's cap.
-- **Split ("this and following"):** the capped earlier part keeps its EXDATEs, RDATEs and changed occurrences before
-  the split; RDATEs and changed occurrences at or after the split are removed (an RDATE is not bounded by UNTIL).
-  The new series still starts as a fresh event with only a rule (no carry-over of later exceptions; filed
-  separately). The capped rule is not read back and compared with the one written: Thunderbird re-serializes a rule
+  only when there is none. On an edit, EXDATE/RDATE items and changed occurrences stay with the series; they used
+  to be dropped by a fresh `recurrenceInfo`. The split's cap still starts from a fresh `recurrenceInfo` (below).
+- **Split ("this and following"):** unchanged in what it keeps. The capped earlier part gets a fresh
+  `recurrenceInfo` holding only the capped rule (through `setRuleOnItem`), so it keeps none of its EXDATEs, RDATEs,
+  changed occurrences or further rules, and no RDATE from the split on (one is not bounded by UNTIL) is left beside
+  the new series. The new series starts as a fresh event with only a rule. Keeping the earlier part's exceptions and
+  rules and carrying later ones over is #265. The capped rule is not read back and compared with the one written: Thunderbird re-serializes a rule
   in its own part order (FREQ, COUNT, INTERVAL above 1, the BY-parts, UNTIL, then WKST unless MO), so such a
   comparison refused every split of a rule with a week start. A rebuild of the earlier part that throws refuses the
   split before anything is written.
@@ -84,10 +85,8 @@ same design (tabmail-ios #421).
   series whose stored rule has `other` parts is refused before the card by `otherPartsRefusal`, because restating
   would drop those parts. The stored rule is fetched with the edit's `calendar_id`; when it cannot be read, a
   restatement is refused too. `{}` (stop repeating) is allowed.
-- **A recurrence on one occurrence is refused** before the card (`edit_scope` `this_only`, or a `recurrence_id`
-  without `edit_scope`, which edits one occurrence), a rule and `{}` alike: a rule belongs to the series, and set on
-  an occurrence it would never take effect. The refusal names `edit_scope` `all`, or `this_and_following` with
-  `recurrence_id`.
+- **A `recurrence_id` targets one occurrence** unless `edit_scope` is `this_and_following`, even with `edit_scope`
+  `all`, and a rule set on an occurrence never takes effect (#274).
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar.
 
 ## How it is pinned

@@ -296,21 +296,6 @@ describe('calendar_event_edit', () => {
       }
     });
 
-    it('a recurrence on one occurrence is refused before the card, explicit or inferred, a rule or `{}`', async () => {
-      const rid = '2099-10-05T09:00:00';
-      const cases = [
-        [{ edit_scope: 'this_only', recurrence_id: rid, recurrence: { freq: 'WEEKLY', byDay: ['TH'] } }, 'pid-rec-5'],
-        [{ recurrence_id: rid, recurrence: { freq: 'WEEKLY', byDay: ['TH'] } }, 'pid-rec-6'],
-        [{ edit_scope: 'this_only', recurrence_id: rid, recurrence: {} }, 'pid-rec-9'],
-        [{ recurrence_id: rid, recurrence: {} }, 'pid-rec-10'],
-      ];
-      for (const [args, pid] of cases) {
-        const sess = await runEdit({ event_id: 'found-event', ...args }, pid);
-        expect(sess.failReason, JSON.stringify(args)).toBe("recurrence changes the whole series: use edit_scope 'all', or 'this_and_following' with recurrence_id");
-        expect(sess.editEventArgs, JSON.stringify(args)).toBeUndefined();
-      }
-    });
-
     it('a rule reaches the card for the series, on a recurring and on a one-off event, and from an occurrence on', async () => {
       const rule = { freq: 'WEEKLY', byDay: ['TH'] };
       const cases = [

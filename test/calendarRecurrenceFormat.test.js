@@ -11,11 +11,10 @@
 //     floating, and all-day;
 //   - writing what was read admits the same occurrences, and a written last day's
 //     occurrence stays in the series;
-//   - writing a rule keeps the series' excluded and added dates and changed
-//     occurrences, on an edit and on the earlier part of a split;
+//   - writing a rule on an edit keeps the series' excluded and added dates;
 //   - the rule is read from where Thunderbird stores it, never an in-memory echo;
-//   - a series with more than one rule shows the others, is never restated to
-//     one rule and is not split;
+//   - a series with more than one rule shows the others and is never restated
+//     to one rule;
 //   - `{}` clears the rule;
 //   - the argument shapes Thunderbird delivers (omitted fields null) keep the
 //     rule on an edit that does not mention it;
@@ -133,7 +132,7 @@ describe('read: the rule in the edit tool\'s own fields', () => {
     expect(await readFields(api)).toEqual({ freq: 'WEEKLY', until: LAST_DAY, byDay: ['MO', 'WE'] });
   });
 
-  it('defaults are omitted, every writable field is shown, and the rule in recurrenceInfo is found when the property is empty', async () => {
+  it('every writable field is shown, and the rule in recurrenceInfo is found when the property is empty', async () => {
     const { api } = loadCalendarBridge(bridgeUrl, {
       items: [series('FREQ=YEARLY;INTERVAL=1;WKST=MO;COUNT=5;BYMONTH=3,9;BYMONTHDAY=1,-1')],
     });
@@ -311,6 +310,13 @@ describe('write: what was read, written back, reads the same', () => {
     expect(ruleValues(savedItem(calendar))).toEqual(['FREQ=WEEKLY;BYDAY=TU']);
   });
 
+  it('a rule written over a series with two rules leaves only the rule written', async () => {
+    const extra = recurrenceItem('RRULE', 'FREQ=MONTHLY;BYMONTHDAY=1');
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=WEEKLY;BYDAY=MO', { extraItems: [extra] })] });
+    await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { freq: 'WEEKLY', byDay: ['TU'] } });
+    expect(ruleValues(savedItem(calendar))).toEqual(['FREQ=WEEKLY;BYDAY=TU']);
+  });
+
   it('`{}` clears the rule, and the event no longer repeats', async () => {
     const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=WEEKLY;BYDAY=MO')] });
     await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: {} });
@@ -375,6 +381,7 @@ describe('a monthly rule read and written back names the same days, or restating
     'FREQ=MONTHLY;BYDAY=FR;BYMONTHDAY=1,2,3,4,5,6,7,8,9,10,11,12,13,14;BYSETPOS=-1',
     'FREQ=MONTHLY;BYDAY=TU;BYMONTHDAY=8,9,10,11,12,13,14;BYSETPOS=1',
     'FREQ=MONTHLY;BYDAY=MO,TU;BYSETPOS=1',
+    'FREQ=MONTHLY;BYDAY=TU;BYSETPOS=1,3',
   ];
   for (const stored of STORED) {
     it(stored, async () => {
@@ -408,22 +415,18 @@ describe('a rule the tools cannot write is refused, naming the field and value',
     [{ freq: 'DAILY', until: '2099-02-30' }, 'recurrence.until has an invalid value "2099-02-30": a date YYYY-MM-DD (the last day of the series)'],
     [{ freq: 'DAILY', until: 'next friday' }, 'recurrence.until has an invalid value "next friday": a date YYYY-MM-DD (the last day of the series)'],
     [{ freq: 'DAILY', until: '2099-10-31T17:00:00' }, 'recurrence.until has an invalid value "2099-10-31T17:00:00": a date YYYY-MM-DD (the last day of the series)'],
-    [{ freq: 'WEEKLY', byDay: ['2TU'] }, 'recurrence.byDay has an invalid value "2TU": a position such as 2TU only with freq MONTHLY or YEARLY'],
-    [{ freq: 'DAILY', byDay: ['-1FR'] }, 'recurrence.byDay has an invalid value "-1FR": a position such as 2TU only with freq MONTHLY or YEARLY'],
-    [{ freq: 'MONTHLY', byDay: ['TU', '6TU'] }, 'recurrence.byDay has an invalid value "6TU": with freq MONTHLY a position from 1 to 5 or -5 to -1'],
-    [{ freq: 'MONTHLY', byDay: ['-6TU'] }, 'recurrence.byDay has an invalid value "-6TU": with freq MONTHLY a position from 1 to 5 or -5 to -1'],
-    [{ freq: 'WEEKLY', byMonthDay: [15] }, 'recurrence.byMonthDay has an invalid value "[15]": not with freq WEEKLY (RFC 5545)'],
     [{ freq: 'MONTHLY', byDay: ['TU'], bySetPos: [2] }, 'recurrence.bySetPos is not a recurrence field: use freq, interval, count, until, byDay, byMonthDay, byMonth, wkst'],
     [{ freq: 'DAILY', byHour: [9] }, 'recurrence.byHour is not a recurrence field: use freq, interval, count, until, byDay, byMonthDay, byMonth, wkst'],
     ['FREQ=WEEKLY;BYDAY=MO', 'recurrence has an invalid value "FREQ=WEEKLY;BYDAY=MO": an object of recurrence fields, or {} to clear the rule'],
-    [{ freq: 'DAILY', count: 3, until: LAST_DAY }, `recurrence.until has an invalid value "${LAST_DAY}": count and until cannot both be set; give one of them`],
     [{ freq: 'WEEKLY', byDay: ['MO', 'MONDAY'] }, 'recurrence.byDay has an invalid value "MONDAY": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'WEEKLY', byDay: ['MO;BYHOUR=9'] }, 'recurrence.byDay has an invalid value "MO;BYHOUR=9": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'MONTHLY', byDay: ['54MO'] }, 'recurrence.byDay has an invalid value "54MO": day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'WEEKLY', byDay: 'MO' }, 'recurrence.byDay has an invalid value "MO": a list of day codes MO..SU, optionally with a position such as 2TU or -1FR'],
     [{ freq: 'MONTHLY', byMonthDay: [0] }, 'recurrence.byMonthDay has an invalid value "0": integers from 1 to 31 or -31 to -1'],
     [{ freq: 'MONTHLY', byMonthDay: [32] }, 'recurrence.byMonthDay has an invalid value "32": integers from 1 to 31 or -31 to -1'],
+    [{ freq: 'MONTHLY', byMonthDay: [-32] }, 'recurrence.byMonthDay has an invalid value "-32": integers from 1 to 31 or -31 to -1'],
     [{ freq: 'YEARLY', byMonth: [13] }, 'recurrence.byMonth has an invalid value "13": integers from 1 to 12'],
+    [{ freq: 'YEARLY', byMonth: [0] }, 'recurrence.byMonth has an invalid value "0": integers from 1 to 12'],
     [{ freq: 'WEEKLY', wkst: 'monday' }, 'recurrence.wkst has an invalid value "monday": one of MO, TU, WE, TH, FR, SA, SU'],
     [{ freq: 'YEARLY', other: 'BYWEEKNO=20' }, `recurrence.other has an invalid value "BYWEEKNO=20": ${OTHER_PARTS_NOTE}`],
     [[], 'recurrence has an invalid value "[]": an object of recurrence fields, or {} to clear the rule'],
@@ -458,7 +461,7 @@ describe('a rule the tools cannot write is refused, naming the field and value',
   });
 });
 
-describe('split: the earlier part keeps its exceptions and the stored rule', () => {
+describe('split: the capped rule and the following part\'s rule', () => {
   async function splitAt(master, recurrenceId, patch = { title: 'Renamed' }) {
     const loaded = loadCalendarBridge(bridgeUrl, { items: [master] });
     const res = await loaded.api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: recurrenceId, patch });
@@ -469,9 +472,6 @@ describe('split: the earlier part keeps its exceptions and the stored rule', () 
       fresh: loaded.calendar.items.find((it) => it.id !== 'ser'),
     };
   }
-  const named = (item, name) => item.recurrenceInfo.getRecurrenceItems()
-    .filter((r) => r.icalProperty.propertyName === name).map((r) => r.icalProperty.value);
-
   it('the capped series ends the day before the split, and reads and restates that way', async () => {
     const start = fakeDateTime(START_DAY, 17);
     const { api, calendar, capped, fresh } = await splitAt(series('FREQ=DAILY', { startDate: start }), '2099-10-15T17:00:00');
@@ -481,19 +481,6 @@ describe('split: the earlier part keeps its exceptions and the stored rule', () 
     expect((await readFields(api)).until).toBe('2099-10-14');
     await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { ...(await readFields(api)), interval: 2 } });
     expect(lastDayAdmitted(start, untilOf(ruleValues(savedItem(calendar))[0]))).toBe('2099-10-14');
-  });
-
-  it('cancelled, added and moved occurrences before the split stay; added and moved ones from it on go', async () => {
-    const exdate = recurrenceItem('EXDATE', '20991008T170000');
-    const earlyAdded = recurrenceItem('RDATE', '20991009T090000');
-    const lateAdded = recurrenceItem('RDATE', '20991020T090000');
-    const moved = (day) => fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime(day, 19), endDate: fakeDateTime(day, 20), recurrenceId: fakeDateTime(day, 17) });
-    const master = series('FREQ=DAILY', { extraItems: [exdate, earlyAdded, lateAdded], exceptions: [moved('2099-10-05'), moved('2099-10-18')] });
-    const { capped } = await splitAt(master, '2099-10-15T17:00:00');
-    expect(named(capped, 'EXDATE')).toEqual(['20991008T170000']);
-    expect(named(capped, 'RDATE')).toEqual(['20991009T090000']);
-    expect(capped.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991005T170000']);
-    expect(ruleValues(capped)).toHaveLength(1);
   });
 
   it('caps and continues the rule in the recurrence info, not an older in-memory echo', async () => {
@@ -519,44 +506,35 @@ describe('split: the earlier part keeps its exceptions and the stored rule', () 
     expect(ruleValues(fresh)).toEqual(['FREQ=DAILY;WKST=SU']);
   });
 
-  it('an added date and a moved occurrence exactly at the split leave the earlier part', async () => {
+  // An added date is not bounded by UNTIL, so one left on the earlier part
+  // would still happen after the split, beside the following part.
+  it('no added date or changed occurrence from the split on stays on the earlier part', async () => {
     const atSplit = recurrenceItem('RDATE', '20991015T170000');
-    const before = recurrenceItem('RDATE', '20991014T170000');
-    const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-15', 19), endDate: fakeDateTime('2099-10-15', 20), recurrenceId: fakeDateTime('2099-10-15', 17) });
-    const { capped } = await splitAt(series('FREQ=DAILY', { extraItems: [before, atSplit], exceptions: [moved] }), '2099-10-15T17:00:00');
-    expect(named(capped, 'RDATE')).toEqual(['20991014T170000']);
-    expect(capped.recurrenceInfo.getExceptionIds()).toEqual([]);
+    const later = recurrenceItem('RDATE', '20991020T090000');
+    const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-18', 19), endDate: fakeDateTime('2099-10-18', 20), recurrenceId: fakeDateTime('2099-10-18', 17) });
+    const { capped } = await splitAt(series('FREQ=DAILY', { extraItems: [atSplit, later], exceptions: [moved] }), '2099-10-15T17:00:00');
+    const kept = capped.recurrenceInfo.getRecurrenceItems().filter((r) => r.icalProperty.propertyName === 'RDATE');
+    expect(kept.filter((r) => r.date.compare(fakeDateTime('2099-10-15', 17)) >= 0)).toEqual([]);
+    expect(capped.recurrenceInfo.getExceptionIds().filter((rid) => rid.compare(fakeDateTime('2099-10-15', 17)) >= 0)).toEqual([]);
   });
 
-  it('a split that cannot rebuild the earlier part changes nothing in the calendar', async () => {
-    const unreadable = { icalProperty: { propertyName: 'RDATE', value: '20991020T090000' }, date: { compare() { throw new Error('unreadable date'); } } };
-    const master = series('FREQ=DAILY', { extraItems: [unreadable] });
+  it('a split whose capped rule cannot be set changes nothing in the calendar', async () => {
+    // Thunderbird throws when an immutable item is changed; here the earlier
+    // part's recurrence info cannot be replaced.
+    const master = series('FREQ=DAILY');
+    const clone = master.clone.bind(master);
+    master.clone = () => Object.defineProperty(clone(), 'recurrenceInfo', {
+      get: () => null, set: () => { throw new Error('item is immutable'); },
+    });
     const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
     const res = await api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: '2099-10-15T17:00:00', patch: { title: 'Renamed' } });
     expect(res).toMatchObject({ ok: false });
-    expect(res.error).toMatch(/unreadable date/);
+    expect(res.error).toMatch(/item is immutable/);
     expect(modifications).toEqual([]);
     expect(calendar.items).toHaveLength(1);
     expect(calendar.items[0]).toBe(master);
     expect(ruleValues(master)).toEqual(['FREQ=DAILY']);
-    expect(named(master, 'RDATE')).toEqual(['20991020T090000']);
   });
-
-  // Capping writes one rule, so the earlier part would lose every occurrence of
-  // the series' other rules; the split is refused before anything is written.
-  for (const secondName of ['RRULE', 'EXRULE']) {
-    it(`a series with a second rule (stored as ${secondName}) is not split, and nothing in the calendar changes`, async () => {
-      const master = series('FREQ=WEEKLY;BYDAY=MO', { extraItems: [recurrenceItem(secondName, 'FREQ=MONTHLY;BYMONTHDAY=1')] });
-      const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
-      const res = await api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: '2099-10-15T17:00:00', patch: { title: 'Renamed' } });
-      expect(res).toMatchObject({ ok: false });
-      expect(res.error).toMatch(/more than one rule/);
-      expect(modifications).toEqual([]);
-      expect(calendar.items).toHaveLength(1);
-      expect(calendar.items[0]).toBe(master);
-      expect(ruleValues(master)).toEqual(['FREQ=WEEKLY;BYDAY=MO', 'FREQ=MONTHLY;BYMONTHDAY=1']);
-    });
-  }
 });
 
 // Thunderbird's schema layer hands an experiment every optional property the
