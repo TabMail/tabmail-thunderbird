@@ -1237,6 +1237,18 @@ describe("native helper update reconnect", () => {
     };
   };
   const methods = port => port.messages.map(message => message.method);
+  // Every update request carries the whole published release: the helper checks
+  // its signature over these fields, so a request missing any of them fails.
+  const publishedRequest = {
+    targetVersion: "0.11.3",
+    updateUrl: "https://cdn.test/native-fts.zip",
+    sha256: "ab".repeat(32),
+    signature: "test-signature",
+    platform: "macos-universal",
+  };
+  const updateRequests = port => port.messages
+    .filter(message => message.method === "updateRequest")
+    .map(message => message.params);
   const freshRow = {
     msgId: "account:/Client:message@example.com",
     folderId: "opaque-folder-17",
@@ -1284,6 +1296,7 @@ describe("native helper update reconnect", () => {
 
     await initNativeFts();
     expect(methods(first)).toEqual(["hello", "updateCheck", "updateRequest", "init"]);
+    expect(updateRequests(first)).toEqual([publishedRequest]);
     expect(first.disconnect).not.toHaveBeenCalled();
     first.disconnect();
     expect(nativeFtsSearch.getHostStatus().status).toBe("missing");
@@ -1293,6 +1306,7 @@ describe("native helper update reconnect", () => {
     const manual = await nativeFtsSearch.manualCheckAndUpdateHost();
     expect(manual).toEqual({ ok: false, error: "test_update_not_applied" });
     expect(methods(second)).toEqual(["hello", "updateCheck", "init", "updateCheck", "updateRequest"]);
+    expect(updateRequests(second)).toEqual([publishedRequest]);
     expect(browser.runtime.connectNative).toHaveBeenCalledTimes(2);
   });
 
