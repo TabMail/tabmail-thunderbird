@@ -150,7 +150,7 @@ same design (tabmail-ios #421).
     following part then moves as a whole series does (`shiftSeriesWithStart`, *Whole-series time change* below:
     its changed occurrences still at their slots and its rule's days go with it, which closes #328, where a part
     moved to another day kept naming the old days; one given its own time keeps it). Superseded: the changed
-    occurrences kept their own times; then (first #287 version) every changed occurrence moved. The new times are read in the user's zone (or the edit's `timezone`) and
+    occurrences kept their own times; then (first #287 version) every changed occurrence moved. The new times are read in the user's zone (or the edit's `timezone`; one Thunderbird does not know is refused by name, nothing written, for create and every edit scope: `toCalIDateTime` throws it outside its own null-returning try, #314; before, it was read in the user's zone) and
     written in the series' frame (`toCalIDateTimeInFrameOf`, for every edit through `applyDurationPreservation`):
     a zoned series' own zone at the same instant, a floating series at the user's clock digits, kept floating (the
     inverse of `asShown`), as Thunderbird's event dialog keeps an event's zone. Read straight in the user's zone,

@@ -105,6 +105,14 @@ describe('calendar_event_edit against the real bridge, before the confirmation c
       { send_invitations: true });
   });
 
+  it('a new time in a zone the calendar does not know fails, naming the zone, and nothing is written', async () => {
+    const { sess, loaded } = await runEdit(timedEvent(), { start_iso: '2099-10-20T15:00:00', timezone: 'Test/Nowhere' });
+    expect(sess.failReason).toContain('"Test/Nowhere"');
+    expect(ctx.state).toBe('exec_fail');
+    expect(sess.editEventArgs).toBeUndefined();
+    expect(loaded.modifications).toHaveLength(0);
+  });
+
   it('an event the bridge cannot find fails before the card', async () => {
     const loaded = loadCalendarBridge(bridgeUrl, { items: [] });
     globalThis.browser.tmCalendar = loaded.api;
