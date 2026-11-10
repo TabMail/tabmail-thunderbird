@@ -45,6 +45,10 @@ same design (tabmail-ios #421).
   (`occurrenceInstantOn`, `resetTo` in the start's frame, as ical.js's iterator compares `last` with UNTIL).
   Otherwise the bound stays in `other`, and restating the rule is refused. (An earlier version checked only that
   the converted value kept its `nativeTime`; that guarded the conversion, not the day, and missed the spring gap.)
+  The day is read at the start's time of day, so a rule that also repeats at other times of day (BYHOUR,
+  BYMINUTE, BYSECOND, or a FREQ finer than DAILY, all of which the fields cannot write) keeps its UNTIL in
+  `other`: its last occurrence can fall on another day (e.g. `FREQ=DAILY;BYHOUR=9,17` with a start at 17:00 and
+  a bound at 10:00 read one day early). Only other apps write these parts.
 - **BYSETPOS** is always shown in `other`, never folded into an ordinal byDay, so restating such a rule is refused.
   RFC 5545 makes `BYDAY=TU;BYSETPOS=2` and `BYDAY=2TU` the same within a month, but Thunderbird 140 to 158 (the
   BYSETPOS code before its 159 rewrite) expand the BYSETPOS form with an extra first occurrence when the series
@@ -123,7 +127,9 @@ same design (tabmail-ios #421).
   In a zone changing at 02:00 and one changing at midnight, around both changes, for starts including the hour
   before each change: a bound a split writes (an occurrence minus one second) and a last day the tools write each
   read back as the last occurrence's day and restate to the same native occurrences, or read with UNTIL in `other`;
-  the same for bounds other apps store; and a BYSETPOS rule reads with BYSETPOS in `other`. One revision only:
+  the same for bounds other apps store; a rule repeating at other times of day (BYHOUR, HOURLY, BYMINUTE,
+  BYSECOND) shows its last occurrence's day or keeps UNTIL in `other`; and a BYSETPOS rule reads with BYSETPOS in
+  `other`. One revision only:
   version differences in recurrence expansion are why BYSETPOS is not folded. A written last day just before a
   midnight change, for a start in the first hour, keeps one more occurrence (#280, writer; left out of that sweep).
 - Bridge accessor calls (`boundFromIcs`, `occurrenceInstantOn`, `untilForRRule` → `getTimezoneService`;

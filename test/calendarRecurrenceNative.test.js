@@ -113,7 +113,8 @@ async function readAndRestate(loaded) {
   if (read.until) expect(read.until.replaceAll('-', ''), 'the last day shown is the last occurrence\'s').toBe(before.at(-1).slice(0, 8));
   if (read.other) {
     const { other, ...fields } = read;
-    expect(otherPartsRefusal(fields, read)).not.toBeNull();
+    // With every part in `other` there is nothing to restate (`{}` clears).
+    if (Object.keys(fields).length) expect(otherPartsRefusal(fields, read)).not.toBeNull();
     return { read, before, after: null };
   }
   const res = await loaded.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: read });
@@ -198,6 +199,22 @@ describe('recurrence read and restate against Thunderbird\'s own date and recurr
       const { read, before, after } = await readAndRestate(loaded);
       if (after) expect(after).toEqual(before);
       else expect(read.other).toBe(`UNTIL=${bound}`);
+    });
+  }
+
+  // Rules whose occurrences are not all at the start's time of day; each bound
+  // falls between two occurrences on its last day.
+  for (const [rule, start] of [
+    ['FREQ=DAILY;BYHOUR=9,17;UNTIL=20990620T170000Z', [17, 0]],
+    ['FREQ=HOURLY;UNTIL=20990602T170000Z', [12, 0]],
+    ['FREQ=DAILY;BYMINUTE=0,45;UNTIL=20990620T160000Z', [9, 45]],
+    ['FREQ=DAILY;BYSECOND=30;UNTIL=20990620T165915Z', [9, 59]],
+  ]) {
+    it(`a rule that repeats at other times of day (${rule}) shows its last day or keeps its bound in \`other\``, async () => {
+      const loaded = nativeBridge(rule, at(pacific, 6, 1, ...start), pacific);
+      const { read, after } = await readAndRestate(loaded);
+      if (!read.until) expect(read.other).toContain(/UNTIL=[^;]+/.exec(rule)[0]);
+      expect(after).toBeNull();
     });
   }
 

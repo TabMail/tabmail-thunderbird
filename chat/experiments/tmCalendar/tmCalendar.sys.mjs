@@ -449,6 +449,13 @@ function recurrenceFieldsOfItem(item) {
   if (!rrule) return null;
   const f = {};
   const other = [];
+  // `until` is read as the day of the last occurrence at the start's time of
+  // day. A rule that also repeats at other times of day (BYHOUR, BYMINUTE,
+  // BYSECOND, or a frequency finer than a day) can end on another day, so its
+  // UNTIL goes to `other`.
+  const keyed = new Map(rrule.split(";").map((part) => part.split("=").map((s) => s.trim().toUpperCase())));
+  const startTimeOnly = RECURRENCE_FREQS.includes(keyed.get("FREQ"))
+    && !["BYHOUR", "BYMINUTE", "BYSECOND"].some((k) => keyed.has(k));
   for (const part of rrule.split(";")) {
     const eq = part.indexOf("=");
     if (eq <= 0) continue;
@@ -457,7 +464,7 @@ function recurrenceFieldsOfItem(item) {
     if (key === "FREQ" && RECURRENCE_FREQS.includes(val.toUpperCase())) f.freq = val.toUpperCase();
     else if (key === "INTERVAL" && /^\d+$/.test(val)) f.interval = Number(val);
     else if (key === "COUNT" && /^\d+$/.test(val)) f.count = Number(val);
-    else if (key === "UNTIL" && untilDayFromIcs(val, item)) f.until = untilDayFromIcs(val, item);
+    else if (key === "UNTIL" && startTimeOnly && untilDayFromIcs(val, item)) f.until = untilDayFromIcs(val, item);
     else if (key === "BYDAY") f.byDay = val.toUpperCase().split(",");
     else if (key === "BYMONTHDAY") f.byMonthDay = val.split(",").map(Number);
     else if (key === "BYMONTH") f.byMonth = val.split(",").map(Number);
