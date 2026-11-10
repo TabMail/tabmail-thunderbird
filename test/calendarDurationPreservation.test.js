@@ -159,18 +159,6 @@ describe("applyDurationPreservation", () => {
     expect(clone.endDate._ms).toBe(PATCHED_END_MS);
   });
 
-  it("flips all_day flag onto patched start when patch.all_day is true", () => {
-    const base = mkBase();
-    const clone = mkClone();
-    applyDurationPreservation({
-      base, clone,
-      patch: { start_iso: "2026-01-01T11:00:00", all_day: true },
-      toCalIDateTime,
-      editTzOverride: null,
-    });
-    expect(clone.startDate.isDate).toBe(true);
-  });
-
   it("captures origDuration before mutating clone — bridge order does not matter", () => {
     // Regression: if origDuration were read AFTER clone.startDate was reassigned,
     // base.endDate.subtractDate(base.startDate) would still work (we read from

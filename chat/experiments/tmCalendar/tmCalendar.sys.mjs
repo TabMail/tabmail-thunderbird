@@ -59,17 +59,11 @@ function applyDurationPreservation({
 
   if (hasStartPatch) {
     const s = toCalIDateTime(String(patch.start_iso), editTzOverride);
-    if (s) {
-      if (patch.all_day) s.isDate = true;
-      clone.startDate = s;
-    }
+    if (s) clone.startDate = s;
   }
   if (hasEndPatch) {
     const e = toCalIDateTime(String(patch.end_iso), editTzOverride);
-    if (e) {
-      if (patch.all_day) e.isDate = true;
-      clone.endDate = e;
-    }
+    if (e) clone.endDate = e;
   }
 
   if (hasStartPatch && !hasEndPatch && origDuration) {
@@ -1180,6 +1174,18 @@ function asAllDayDate(dt) {
   return dt;
 }
 
+// Why an edit that gave `item` new times leaves an all-day item that ends on or
+// before its start, or null. An all-day end is the day after the last day
+// (RFC 5545: DTEND is exclusive and later than DTSTART), so a start and end on
+// one day (an edit giving an all-day event times of one day, without all_day)
+// would be a zero-length event. Refused, naming both ways to say it.
+function allDayEndError(item, patch) {
+  const s = item.startDate, e = item.endDate;
+  if (!patch.start_iso && !patch.end_iso) return null;
+  if (!s?.isDate || !e || e.compare(s) > 0) return null;
+  return "an all-day event's end_iso is the day after its last day, so it must be later than start_iso: give the next day, or all_day: false for a timed event";
+}
+
 // toCalIDateTime for an edit of `item`, whose new times it gives in the item's
 // frame, as Thunderbird's event dialog keeps an event's zone: in a zoned item's
 // own zone at the same instant, and for a floating item at the user's clock
@@ -1189,12 +1195,15 @@ function asAllDayDate(dt) {
 // excluded and added dates and changed occurrences, which Thunderbird moves
 // with the start (onStartDateChange), would no longer meet its occurrences.
 // An all-day value is the date as read, with no zone (asAllDayDate); an edit
-// from all day to timed is given as read.
+// from all day to timed is given as read. An edit that leaves all_day out keeps
+// the item's kind, as the edit tool documents ("Leave empty to keep existing"):
+// read as timed, a new date for an all-day event made it a timed one (#309).
 function toCalIDateTimeInFrameOf(item, patch) {
   const start = item && item.startDate;
+  const allDay = typeof patch.all_day === "boolean" ? patch.all_day : !!start?.isDate;
   return (iso, tzId) => {
     const dt = toCalIDateTime(iso, tzId);
-    if (dt && patch.all_day) return asAllDayDate(dt);
+    if (dt && allDay) return asAllDayDate(dt);
     if (!dt || dt.isDate || !start || start.isDate) return dt;
     const zone = start.timezone;
     if (zone?.tzid !== "floating") return dt.getInTimezone(zone);
@@ -1989,6 +1998,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (durationResult.error) {
               console.warn("[tmCalendar] modifyCalendarEvent: duration preservation failed:", durationResult.error);
             }
+            const endError = allDayEndError(clone, patch);
+            if (endError) return { ok: false, error: endError };
             if (typeof patch.location === "string") try { clone.setProperty("LOCATION", patch.location); } catch {}
             
             // Transparency (availability): apply only if provided
@@ -2472,6 +2483,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (durationResult.error) {
               console.warn("[tmCalendar] splitRecurringEvent: duration preservation failed:", durationResult.error);
             }
+            const endError = allDayEndError(newEv, patch);
+            if (endError) return { ok: false, error: endError };
 
             // A new rule for the following part (written in its start's value
             // type, after the time change); `{}` stops it repeating.

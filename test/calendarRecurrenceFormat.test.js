@@ -830,10 +830,11 @@ describe('split: the two parts make the series\' occurrences', () => {
     return loaded;
   };
   for (const [kind, makeStart] of Object.entries(TIMED_KINDS)) {
-    // A new end lengthens the event: its start and occurrences stay.
+    // A new time alone keeps the event's length: a new start moves the end, and
+    // a new end moves the start, so either way the occurrences move with it.
     for (const [change, newTime, field, newValue, moved] of [
       ['a new start', (at) => ({ start_iso: startIsoOf(after(at, 0, 1)) }), 'startDate', (at) => after(at, 0, 1), anHourLater],
-      ['a new end', (at) => ({ end_iso: startIsoOf(after(at, 0, 2)) }), 'endDate', (at) => after(at, 0, 2), (k) => k],
+      ['a new end', (at) => ({ end_iso: startIsoOf(after(at, 0, 2)) }), 'endDate', (at) => after(at, 0, 2), anHourLater],
       ['a new start given in another zone', (at) => ({ start_iso: inEastDigits(after(at, 0, 1)), timezone: EAST.tzid }), 'startDate', (at) => after(at, 0, 1), anHourLater],
     ]) {
       it(`a series ${kind}: ${change} an hour later for this and the following occurrences keeps the series' frame and dates`, async () => {
@@ -1053,7 +1054,7 @@ describe('split: the two parts make the series\' occurrences', () => {
   // RFC 5545 needs EXDATE, RDATE, UNTIL and RECURRENCE-ID in DTSTART's value
   // type, and moving the start between all-day and timed keeps theirs.
   const toAllDay = { recurrence_id: '2099-10-15T17:00:00', start_iso: '2099-10-15T00:00:00', end_iso: '2099-10-16T00:00:00', all_day: true };
-  const toTimed = { recurrence_id: '2099-10-15T00:00:00', start_iso: '2099-10-15T09:00:00', end_iso: '2099-10-15T10:00:00' };
+  const toTimed = { recurrence_id: '2099-10-15T00:00:00', start_iso: '2099-10-15T09:00:00', end_iso: '2099-10-15T10:00:00', all_day: false };
   for (const [name, make, change] of [
     ['to all-day, carrying an excluded date', () => series('FREQ=DAILY', { extraItems: [recurrenceItem('EXDATE', '20991020T170000')] }), toAllDay],
     ['to all-day, carrying an added date', () => series('FREQ=DAILY', { extraItems: [recurrenceItem('RDATE', '20991020T190000')] }), toAllDay],
