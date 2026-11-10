@@ -355,13 +355,16 @@ describe('bridge modifyCalendarEvent — edit_scope decides which item changes',
   });
 
   it('edit_scope "all" without a calendar_id finds the series by scanning the calendars', async () => {
-    const master = series();
-    const { api, modifications, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
-    const res = await api.modifyCalendarEvent({ event_id: 'standup', edit_scope: 'all', recurrence_id: unstoredRid, title: 'Team sync' });
-    expect(res).toMatchObject({ ok: true });
-    expect(modifications[0].oldItem).toBe(master);
-    expect(calendar.items[0].title).toBe('Team sync');
-    expect(master.recurrenceInfo.occurrences).toHaveLength(1);
+    for (const rid of [RID, unstoredRid]) {
+      const master = series();
+      const { api, modifications, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const res = await api.modifyCalendarEvent({ event_id: 'standup', edit_scope: 'all', recurrence_id: rid, title: 'Team sync' });
+      expect(res, rid).toMatchObject({ ok: true });
+      expect(modifications, rid).toHaveLength(1);
+      expect(modifications[0].oldItem, rid).toBe(master);
+      expect(calendar.items[0].title, rid).toBe('Team sync');
+      expect(master.recurrenceInfo.occurrences.map((o) => o.title), rid).toEqual(['Standup (moved room)']);
+    }
   });
 
   it('"this_only", or a recurrence_id without edit_scope, edits that one occurrence and leaves the series', async () => {

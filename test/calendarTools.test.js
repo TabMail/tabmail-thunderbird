@@ -332,6 +332,12 @@ describe('calendar_event_edit', () => {
         const ok = await runEdit({ event_id: 'found-event', ...scope, title: 'Renamed' }, pid);
         expect(ok.failReason, pid).toBeUndefined();
         expect(ok.editEventArgs, pid).toMatchObject({ title: 'Renamed', recurrence_id: '2099-10-05T09:00:00' });
+        // A `null` recurrence is the same as omitting it, so it puts no rule on the occurrence.
+        const pidNull = `pid-rec-occ-${n++}`;
+        const withNull = await runEdit({ event_id: 'found-event', ...scope, title: 'Renamed', recurrence: null }, pidNull);
+        expect(withNull.failReason, pidNull).toBeUndefined();
+        expect(withNull.editEventArgs, pidNull).toMatchObject({ title: 'Renamed', recurrence_id: '2099-10-05T09:00:00' });
+        expect(withNull.editEventArgs, pidNull).not.toHaveProperty('recurrence');
       }
     });
 
