@@ -162,8 +162,8 @@ same design (tabmail-ios #421).
     (`SPLIT_FIELDS_OF_AN_OCCURRENCE`, a start equal to its own included) would not reach it while the edit
     reported success. Such an edit is refused, naming the way that works: change the occurrence alone
     (`this_only`), then this and the following ones from the next occurrence. `exdates_add`, `recurrence` and
-    `all_day` alone are allowed there, and so is `organizer_email`: the edit tool fills it in from the calendar for
-    every edit that names one, so listing it refused every such split.
+    `all_day` alone are allowed there (the edit's `organizer_email` never reaches the split, below; listing it
+    refused every such split, since the edit tool fills it in for every edit that names a calendar).
   - **The following part is a copy of the series (#291),** made as Thunderbird copies an event (`calendar-clipboard.js`
     paste: `item.clone()` and a new id; nothing else is stripped): `master.clone()` with its id cleared, which the calendar
     fills on `addItem` (`onIdChange` then renames its changed occurrences); its recurrence info is replaced by the
@@ -253,7 +253,7 @@ same design (tabmail-ios #421).
   normalizer, into `exdates_add` for each start kind.
 - `test/calendarSplitKeepsProperties.test.js` pins the following part as a copy of the series (#291): every property
   and parameter, reminder, category, attachment, the organizer and each attendee entry; the edit's fields change only
-  what they name; the series' organizer stays whatever `organizer_email` the edit names; a changed attendee list; and
+  what they name; the series' organizer stays whatever `organizer_email` the edit tool fills in (through `modifyCalendarEvent`, also at a changed occurrence with only excluded dates); a changed attendee list; and
   the attendee-answer rule, kept for each non-rescheduling field and a restated value (all-day and floating series
   included), asked again of all but the organizer for each rescheduling one, a series relabelled into the user's zone
   at the same instant included (its later occurrences move at the user's daylight saving change, checked with

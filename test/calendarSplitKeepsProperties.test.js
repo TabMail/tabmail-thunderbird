@@ -101,6 +101,18 @@ async function split(master, patch, { recurrenceId = SPLIT_AT } = {}) {
   };
 }
 
+// The same split through the edit tool's bridge call, which also names the
+// organizer (the edit tool fills in the calendar's own address).
+async function editFollowing(master, args, { recurrenceId = SPLIT_AT } = {}) {
+  const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+  const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: recurrenceId, ...args });
+  return {
+    res,
+    capped: calendar.items.find((it) => it.id === 'ser'),
+    fresh: calendar.items.find((it) => it.id !== 'ser'),
+  };
+}
+
 // Everything an attendee carries: their address, name, answer and details.
 const entry = (a) => ({
   id: a.id, commonName: a.commonName, participationStatus: a.participationStatus, rsvp: a.rsvp,
@@ -144,13 +156,30 @@ describe('the following part of a split keeps the series\' properties', () => {
   // is not always the series' organizer (an invitation from someone else).
   for (const [label, address] of [['another address', 'me@example.com'], ['the organizer\'s address in another case', 'organizer@example.com']]) {
     it(`keeps the series' organizer with its details when the edit names ${label}, and asks again everyone but that organizer`, async () => {
-      const { res, capped, fresh } = await split(series(), { organizer_email: address, start_iso: '2099-10-15T19:00:00' });
+      const { res, capped, fresh } = await editFollowing(series(), { organizer_email: address, start_iso: '2099-10-15T19:00:00' });
       expect(res, res.error).toMatchObject({ ok: true });
       expect(entry(fresh.organizer)).toEqual(entry(capped.organizer));
       expect(fresh.organizer.properties).toEqual([['SENT-BY', 'mailto:assistant@example.com']]);
       expect(entries(fresh)).toEqual(ASKED_AGAIN);
     });
   }
+
+  // At an occurrence changed on its own, only excluded dates may change; the
+  // organizer the edit tool fills in is no change, and the series' stays.
+  it('keeps the series\' organizer on a this-and-following edit at an occurrence changed on its own that only excludes dates', async () => {
+    const master = series();
+    const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-15', 19), endDate: fakeDateTime('2099-10-15', 20), recurrenceId: fakeDateTime('2099-10-15', 17) });
+    master.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY')], { exceptions: [moved] });
+    master.recurrenceInfo.item = master;
+    const { res, capped, fresh } = await editFollowing(master, { organizer_email: 'me@example.com', exdates_add: ['2099-10-20T17:00:00'] }, { recurrenceId: '2099-10-15T19:00:00' });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const starts = seriesOccurrences(fresh, fakeDate('2099-10-01'), fakeDate('2099-11-01')).map(({ start }) => start.toString());
+    expect(starts).toContain('20991015T190000');
+    expect(starts).toContain('20991021T170000');
+    expect(starts).not.toContain('20991020T170000');
+    expect(entry(fresh.organizer)).toEqual(entry(capped.organizer));
+    expect(fresh.organizer.properties).toEqual([['SENT-BY', 'mailto:assistant@example.com']]);
+  });
 
   it('the edit\'s fields change only what they name', async () => {
     const { res, fresh } = await split(series(), { location: 'Room 9', transparency: 'busy' });
@@ -226,6 +255,7 @@ describe('the attendees\' answers on the following part', () => {
     'a moved start': { start_iso: '2099-10-15T19:00:00' },
     'a moved end': { end_iso: '2099-10-15T19:00:00' },
     'a later end with its start restated': { start_iso: SPLIT_AT, end_iso: '2099-10-15T19:00:00' },
+    'an earlier start with its end restated': { start_iso: '2099-10-15T16:30:00', end_iso: '2099-10-15T18:00:00' },
     'all-day occurrences': { all_day: true, start_iso: '2099-10-15T00:00:00', end_iso: '2099-10-16T00:00:00' },
     'another rule': { recurrence: { freq: 'WEEKLY' } },
     'a rule that stops repeating': { recurrence: {} },

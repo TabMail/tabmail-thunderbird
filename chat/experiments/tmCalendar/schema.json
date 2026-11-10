@@ -248,7 +248,6 @@
                     }
                   },
                   "send_invitations": { "type": "boolean", "optional": true },
-                  "organizer_email": { "type": "string", "optional": true },
                   "recurrence": {
                     "type": "object",
                     "optional": true,
