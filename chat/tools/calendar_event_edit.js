@@ -222,9 +222,9 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
   // the event (an all-day event given a time of day without all_day, an
   // all-day end on or before its start, an event or occurrence it cannot
   // find) is refused here, before the confirmation card, so the assistant can
-  // react: ask the user, or correct the call. The bridge runs the same edit up
-  // to the all-day refusals and writes nothing (check_only), so each rule
-  // lives in one place. A check that throws is left to the edit itself.
+  // react: ask the user, or correct the call. The bridge runs the same edit,
+  // guest change and invitation check included, up to its first write and
+  // writes nothing (check_only), so each rule lives in one place. A check that throws is left to the edit itself.
   if (norm.start_iso || norm.end_iso) {
     let check = null;
     try {

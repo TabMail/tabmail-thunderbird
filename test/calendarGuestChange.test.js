@@ -222,6 +222,31 @@ const ids = (item) => item.getAttendees().map((a) => a.id);
 const add = (...emails) => ({ add_attendees: emails.map((email) => ({ email })) });
 const remove = (...emails) => ({ remove_attendees: emails.map((email) => ({ email })) });
 
+// The tool checks an edit of the times against the bridge before the card,
+// with the guest change and send_invitations in it: what the write would
+// refuse is refused there, with no card and nothing written.
+describe('an edit of the times that would leave no one to invite is refused before the card', () => {
+  // A split at a changed occurrence takes no new times, whoever is invited.
+  const scopes = Object.keys(SCOPES).filter((name) => name !== 'this and following, from a changed occurrence');
+  for (const scopeName of scopes) {
+    it(`${scopeName}: everyone removed, with invitations asked for`, async () => {
+      const day = (SCOPES[scopeName].args.recurrence_id || isoAt(1)).slice(0, 10);
+      const stored = [guest('ana'), guest('bo')];
+      const own = [guest('cy')];
+      const r = await edit(scopeName, stored, own, { end_iso: `${day}T19:00:00`, ...remove('*'), send_invitations: true });
+      expect(r.schemaErrors).toEqual([]);
+      expect(r.sess.failReason).toMatch(/send_invitations=true requires at least one attendee/);
+      expect(ctx.state).toBe('exec_fail');
+      expect(r.sess.editEventArgs).toBeUndefined();
+      expect(r.loaded.modifications).toHaveLength(0);
+      expect(r.loaded.calendar.items).toHaveLength(1);
+      const series = original(r.loaded.calendar);
+      expect(ids(series)).toEqual([mail('ana'), mail('bo')]);
+      for (const ex of exceptionsOf(series)) expect(ids(ex)).toEqual([mail('cy')]);
+    });
+  }
+});
+
 describe('the schema check refuses what Thunderbird refuses', () => {
   it('takes a declared guest change and refuses an undeclared, missing or mistyped value', () => {
     expect(() => checkAgainst(modifyDetails, { event_id: 'ser', add_attendees: [{ email: 'x@example.com' }], remove_attendees: [{ email: '*' }] }, 'details')).not.toThrow();
