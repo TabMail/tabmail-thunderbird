@@ -72,7 +72,11 @@ afterwards (#257).
 - **Not done:** the window is not told of a Clear All, so the map and metadata it saves afterwards
   stay in storage until the chat window next opens. Nothing reads them before then; the window's
   start releases the references, and a knowledge-base cursor naming a removed turn already reads
-  as "every turn", the state a budget eviction leaves. Thinking can still be left behind: by a Delete
-  Old before this change, by an answer whose turn fails to store (its thinking is saved first), and by the background unloading
-  between a change's write and its thinking removal. Nothing reads it, as no stored turn names it,
-  and Clear All removes it.
+  as "every turn", the state a budget eviction leaves. The fix at the cause, one owner for the
+  references (the writer releases a removed turn's ids in the same change, and the window saves
+  only the ids it adds or releases, never its whole map), is #283.
+- **Accepted limitation (2026-11-09): leftover thinking (#284).** Thinking can still be left behind: by a
+  Delete Old before this change, by an answer whose turn fails to store (its thinking is saved
+  first), and by the background unloading between a change's write and its thinking removal.
+  Nothing reads it, as no stored turn names it, and Clear All removes it. No start-time sweep of
+  thinking no stored turn names is run.
