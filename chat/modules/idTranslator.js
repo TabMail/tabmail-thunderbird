@@ -941,9 +941,10 @@ export function unregisterTurnRefs(turn) {
 }
 
 /**
- * One-time migration helper: build refCounts from all turns' _refs arrays.
- * Also sweeps orphan IDs (in idMap but not referenced by any turn).
- * Persists the result immediately.
+ * Build refCounts from all turns' _refs arrays, and free every ID no turn
+ * references (in idMap but not in any turn's _refs). Run when the chat window
+ * opens, with the stored turns, so turns removed elsewhere release their IDs.
+ * Persists the result (debounced).
  *
  * @param {object[]} turns - All persisted turns (must have _refs populated)
  */

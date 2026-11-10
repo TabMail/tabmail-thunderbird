@@ -22,7 +22,6 @@ import {
   generateTurnId,
   indexTurnToFTS,
   saveThinking,
-  removeThinking,
   saveMeta,
 } from "./persistentChatStore.js";
 import { cleanupEvictedIds, collectTurnRefs, registerTurnRefs, unregisterTurnRefs, processToolResultTBtoLLM } from "./idTranslator.js";
@@ -307,12 +306,6 @@ export async function agentConverse(userText) {
         registerTurnRefs(pendingNudge);
         const { evictedTurns: nudgeEvicted } = await appendTurn(pendingNudge, ctx.persistedTurns);
         if (nudgeEvicted?.length) {
-          const evictedAssistantIds = nudgeEvicted.filter(t => t.role === "assistant" && t._id).map(t => t._id);
-          if (evictedAssistantIds.length) {
-            removeThinking(evictedAssistantIds).catch(e =>
-              log(`[CONVERSE] Thinking cleanup failed: ${e}`, "warn")
-            );
-          }
           cleanupEvictedIds(nudgeEvicted);
           log(`[CONVERSE] Evicted ${nudgeEvicted.length} turns after nudge persist`);
         }
@@ -427,12 +420,6 @@ export async function agentConverse(userText) {
       if (ctx.persistedTurns && ctx.chatMeta) {
         const { evictedTurns } = await appendTurn(userTurn, ctx.persistedTurns);
         if (evictedTurns?.length) {
-          const evictedAssistantIds = evictedTurns.filter(t => t.role === "assistant" && t._id).map(t => t._id);
-          if (evictedAssistantIds.length) {
-            removeThinking(evictedAssistantIds).catch(e =>
-              log(`[CONVERSE] Thinking cleanup failed: ${e}`, "warn")
-            );
-          }
           cleanupEvictedIds(evictedTurns);
           log(`[CONVERSE] Evicted ${evictedTurns.length} turns after user message`);
         }
@@ -1193,12 +1180,6 @@ async function getAgentResponse(messages, retryCount = 0, existingBubble = null,
       if (ctx.persistedTurns && ctx.chatMeta) {
         const { evictedTurns } = await appendTurn(assistantTurn, ctx.persistedTurns);
         if (evictedTurns?.length) {
-          const evictedAssistantIds = evictedTurns.filter(t => t.role === "assistant" && t._id).map(t => t._id);
-          if (evictedAssistantIds.length) {
-            removeThinking(evictedAssistantIds).catch(e =>
-              log(`[CONVERSE] Thinking cleanup failed: ${e}`, "warn")
-            );
-          }
           cleanupEvictedIds(evictedTurns);
           // Show truncation indicator in DOM
           const indicator = document.getElementById("history-truncated-indicator");

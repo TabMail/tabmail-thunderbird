@@ -58,14 +58,15 @@ export async function loadTurns() {
  *
  * @param {object[]} turns - not mutated
  * @param {{ clear?: boolean, remove?: string[], keepFrom?: number, update?: object[], append?: object[] }} op
- * @returns {{ turns: object[], removed: number }}
+ * @returns {{ turns: object[], removed: number, gone: object[] }} removed counts
+ *   the turns the change removed; gone also holds those the budget dropped
  */
 export function applyTurnsOperation(turns, op) {
   let next = [...turns];
-  let removed = 0;
+  const gone = [];
   const drop = shouldDrop => {
-    const kept = next.filter(t => !shouldDrop(t));
-    removed += next.length - kept.length;
+    const kept = [];
+    for (const t of next) (shouldDrop(t) ? gone : kept).push(t);
     next = kept;
   };
   if (op.clear) drop(() => true);
@@ -78,12 +79,13 @@ export function applyTurnsOperation(turns, op) {
     const byId = new Map(op.update.map(t => [t._id, t]));
     next = next.map(t => byId.get(t._id) || t);
   }
+  const removed = gone.length;
   if (op.append) {
     const known = new Set(next.map(t => t._id));
     next.push(...op.append.filter(t => !known.has(t._id)));
-    enforceBudget(next);
+    gone.push(...enforceBudget(next));
   }
-  return { turns: next, removed };
+  return { turns: next, removed, gone };
 }
 
 /**
