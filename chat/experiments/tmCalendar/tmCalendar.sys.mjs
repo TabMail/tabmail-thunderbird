@@ -303,16 +303,16 @@ function extractExdatesFromItem(item) {
   } catch (_) { return ""; }
 }
 
-// Excludes the occurrence whose RECURRENCE-ID is `rid` (an EXDATE), written in
-// the series' zone, as the split point is. Thunderbird removes an occurrence, a
-// changed one included, by its RECURRENCE-ID (CalRecurrenceInfo.calculateDates).
+// Excludes the occurrence whose RECURRENCE-ID is `rid`, at that RECURRENCE-ID
+// written in the series' zone, as the split point is: Thunderbird's own
+// removeOccurrenceAt, which adds the EXDATE and removes the occurrence's changed
+// copy with it. An EXDATE alone would not do: Thunderbird applies one only to a
+// query whose range holds its date (CalRecurrenceInfo.calculateDates), so a
+// changed copy moved to another day would still show there.
 function addExdateToItem(item, rid) {
-  const Ci = globalThis.Ci; const Cc = globalThis.Cc;
-  const exd = Cc["@mozilla.org/calendar/recurrence-date;1"].createInstance(Ci.calIRecurrenceDate);
-  exd.isNegative = true; // EXDATE
-  exd.date = rid.isDate ? rid.clone() : rid.getInTimezone(item.startDate.timezone);
-  item.recurrenceInfo.appendRecurrenceItem(exd);
-  tmCalendarDebugLog("[tmCalendar] addExdateToItem: added", exd.icalProperty?.value || exd.date.toString());
+  const at = rid.isDate ? rid.clone() : rid.getInTimezone(item.startDate.timezone);
+  item.recurrenceInfo.removeOccurrenceAt(at);
+  tmCalendarDebugLog("[tmCalendar] addExdateToItem: removed the occurrence at", at.toString());
 }
 
 // -------- Recurrence: one format for reading and writing --------
@@ -335,8 +335,10 @@ const OCCURRENCE_LOOKUP_REACH_MS = 2 * 86400 * 1000;
 // opposed to the series' rule or dates. A changed occurrence keeps its own copy
 // of each, so a split at one cannot apply them to it (splitRecurringEvent).
 // all_day alone changes nothing; a change to or from all-day comes with times.
+// organizer_email is not one: the edit tool fills it in from the calendar for
+// every edit that names one, so it is no change of the occurrence's.
 const SPLIT_FIELDS_OF_AN_OCCURRENCE = ["title", "location", "description", "transparency", "attendees",
-  "organizer_email", "start_iso", "end_iso"];
+  "start_iso", "end_iso"];
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 
@@ -2278,6 +2280,17 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               });
               for (const rid of [...(earlierInfo.getExceptionIds({}) || [])]) {
                 if (fromSplitOn(rid)) earlierInfo.removeExceptionFor(rid);
+              }
+              // In Thunderbird's own expansion, the earlier part must keep every
+              // occurrence the series has just before the split. A rule capped
+              // with a bare-DATE UNTIL can end it a day early: ical.js compares
+              // by instant, and an all-day start that carries a zone west of
+              // UTC falls after an UNTIL of the same day. Refused, not written.
+              const lookBack = boundFromIcs(toIcsUntil(new Date(splitDt.nativeTime / 1000 - OCCURRENCE_LOOKUP_REACH_MS).toISOString()));
+              const ridsNear = (info, keep) => [...(info.getOccurrences(lookBack, afterSplit, 0) || [])]
+                .map((occ) => occ.recurrenceId).filter(keep).map((rid) => rid.nativeTime).sort().join(",");
+              if (ridsNear(earlierInfo, () => true) !== ridsNear(master.recurrenceInfo, (rid) => !fromSplitOn(rid))) {
+                return { ok: false, error: `the part before ${splitIso} would not keep every occurrence the series has just before it in Thunderbird, so the series cannot be split there; change it in the calendar app` };
               }
               for (const rid of exdates.rids) if (!fromSplitOn(rid)) addExdateToItem(cappedClone, rid);
             } catch (re) {

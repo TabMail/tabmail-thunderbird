@@ -217,7 +217,7 @@
       {
         "name": "splitRecurringEvent",
         "type": "function",
-        "description": "Split a recurring series at recurrence_id: cap the master with UNTIL = recurrence_id - 1, then create a new series with `patch` applied starting at recurrence_id. Attendee notifications fire only on the new series.",
+        "description": "Split a recurring series at recurrence_id: cap the master so it ends before the occurrence recurrence_id names (its start as the read tools print it), then create a new series from that occurrence with `patch` applied. Attendee notifications fire only on the new series.",
         "parameters": [
           {
             "name": "details",

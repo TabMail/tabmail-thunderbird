@@ -621,12 +621,20 @@ describe('split: the two parts make the series\' occurrences', () => {
   // DATE's epoch time depends on its zone, so the split's day arithmetic must
   // not use it (east of UTC its day starts the day before in UTC; west of UTC
   // it starts after the UTC midnight that an UNTIL date names).
+  // West of UTC, ical.js, which compares a rule's UNTIL by instant, ends a
+  // series capped with a DATE UNTIL a day early: the capped day starts after
+  // the UTC midnight the UNTIL names. A split whose earlier part would lose
+  // that day is refused (below); one whose day before the split is no
+  // occurrence keeps the series.
+  const WEST_ALL_DAY_KINDS = {
+    "all-day, made in the user's zone (west of UTC)": () => fakeDate(START_DAY, LOCAL_ZONE),
+    "all-day, made in a zone west of the user's": () => fakeDate(START_DAY, WEST),
+  };
   const SPLIT_START_KINDS = {
     ...START_KINDS,
     'timed in UTC': () => fakeDateTime(START_DAY, 17, 0, UTC_ZONE),
     'all-day, made in a zone east of UTC': () => fakeDate(START_DAY, EAST),
-    "all-day, made in the user's zone (west of UTC)": () => fakeDate(START_DAY, LOCAL_ZONE),
-    "all-day, made in a zone west of the user's": () => fakeDate(START_DAY, WEST),
+    ...WEST_ALL_DAY_KINDS,
   };
   const changedAt = (start, days, title = 'Moved') => {
     const rid = after(start, days);
@@ -655,7 +663,9 @@ describe('split: the two parts make the series\' occurrences', () => {
   for (const [kind, makeStart] of Object.entries(SPLIT_START_KINDS)) {
     it(`a series ${kind}: the two parts together make the series' occurrences, its changed occurrences included`, async () => {
       const probe = makeStart();
-      const rules = ['FREQ=DAILY', 'FREQ=DAILY;COUNT=30', `FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${untilAfter(probe, 60)}`];
+      // West of UTC, only a rule with no occurrence the day before the split.
+      const weekly = `FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${untilAfter(probe, 60)}`;
+      const rules = kind in WEST_ALL_DAY_KINDS ? [weekly] : ['FREQ=DAILY', 'FREQ=DAILY;COUNT=30', weekly];
       for (const rule of rules) {
         const start = makeStart();
         const timedShift = start.isDate ? 0 : 2;
@@ -683,6 +693,25 @@ describe('split: the two parts make the series\' occurrences', () => {
         }
       }
     });
+  }
+
+  for (const [kind, makeStart] of Object.entries(WEST_ALL_DAY_KINDS)) {
+    for (const rule of ['FREQ=DAILY', 'FREQ=DAILY;COUNT=30']) {
+      it(`a series ${kind} (${rule}): a split that would end the part before it a day early is refused and writes nothing`, async () => {
+        const start = makeStart();
+        const master = seriesFrom(start, [rule], { exceptions: [changedAt(start, 7)] });
+        const rules = ruleValues(master);
+        const before = occurrenceKeys(master);
+        const at = startIsoOf(after(start, 12));
+        const { res, calendar, modifications } = await split(master, at);
+        expect(res).toMatchObject({ ok: false });
+        expect(res.error).toBe(`the part before ${at} would not keep every occurrence the series has just before it in Thunderbird, so the series cannot be split there; change it in the calendar app`);
+        expect(modifications).toEqual([]);
+        expect(calendar.items).toEqual([master]);
+        expect(ruleValues(master)).toEqual(rules);
+        expect(occurrenceKeys(master)).toEqual(before);
+      });
+    }
   }
 
   it('a series bounded by COUNT: the following part has the occurrences still to come', async () => {
@@ -834,12 +863,11 @@ describe('split: the two parts make the series\' occurrences', () => {
     expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
   });
 
-  // The last occurrence: the following part is that occurrence alone. An
-  // all-day series' UNTIL is a date, compared by its digits, never by when the
-  // day starts in the series' zone.
+  // The last occurrence: the following part is that occurrence alone. (West of
+  // UTC, an all-day series bounded by a DATE UNTIL has no occurrence on that
+  // day in Thunderbird, as above.)
   for (const [kind, makeStart, until, recurrenceId] of [
     ['timed', () => fakeDateTime(START_DAY, 17), utcUntil('2099-10-20', 17), '2099-10-20T17:00:00'],
-    ["all-day, made in the user's zone (west of UTC)", () => fakeDate(START_DAY, LOCAL_ZONE), '20991020', '2099-10-20T00:00:00'],
     ['all-day, made in a zone east of UTC', () => fakeDate(START_DAY, EAST), '20991020', '2099-10-20T00:00:00'],
   ]) {
     it(`a split at the last occurrence of a series bounded by UNTIL (${kind}) keeps that occurrence, once`, async () => {
@@ -984,7 +1012,6 @@ describe('split: the two parts make the series\' occurrences', () => {
     ['a new description', { description: 'New agenda' }],
     ['a new busy/free', { transparency: 'free' }],
     ['a changed attendee list', { attendees: [{ email: 'ana@example.com' }] }],
-    ['a new organizer', { organizer_email: 'organizer@example.com' }],
   ]) {
     it(`a this-and-following change with ${name} at an occurrence changed on its own is refused and writes nothing`, async () => {
       const start = fakeDateTime(START_DAY, 17);
@@ -1007,6 +1034,26 @@ describe('split: the two parts make the series\' occurrences', () => {
     expect(before).toContain(removed);
     const { res, capped, fresh } = await split(master, '2099-10-15T19:00:00', { exdates_add: ['2099-10-20T17:00:00'], all_day: false });
     expect(res, res.error).toMatchObject({ ok: true });
+    expect(occurrenceKeys(fresh)).toContain(`changed ${instantKey(fakeDateTime('2099-10-15', 19))} Moved`);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before.filter((k) => k !== removed));
+  });
+
+  // The edit tool fills in the organizer from the calendar for every edit that
+  // names one, so the organizer is no change of the occurrence's.
+  it('a this-and-following edit at an occurrence changed on its own that only excludes dates is made, with the organizer the edit tool fills in', async () => {
+    const start = fakeDateTime(START_DAY, 17);
+    const master = seriesFrom(start, ['FREQ=DAILY'], { exceptions: [changedAt(start, 14)] });
+    const removed = instantKey(fakeDateTime('2099-10-20', 17));
+    const before = occurrenceKeys(master);
+    expect(before).toContain(removed);
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({
+      event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T19:00:00',
+      organizer_email: 'organizer@example.com', exdates_add: ['2099-10-20T17:00:00'],
+    });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const capped = calendar.items.find((it) => it.id === 'ser');
+    const fresh = calendar.items.find((it) => it.id !== 'ser');
     expect(occurrenceKeys(fresh)).toContain(`changed ${instantKey(fakeDateTime('2099-10-15', 19))} Moved`);
     expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before.filter((k) => k !== removed));
   });
@@ -1158,6 +1205,45 @@ describe('excluded dates name occurrences by their start, as the read tools show
     expect(starts(saved)).not.toContain('20991007T190000');
     expect(starts(saved)).not.toContain('20991007T170000');
     expect(starts(saved)).toContain('20991008T170000');
+  });
+
+  // Thunderbird applies an EXDATE only to a query whose range holds its date
+  // (CalRecurrenceInfo.calculateDates), so a changed occurrence moved to
+  // another day is excluded only once its changed copy is removed too: a query
+  // over the day it moved to must not show it.
+  const movedAway = (slotDay, toDay) => fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime(toDay, 19), endDate: fakeDateTime(toDay, 20), recurrenceId: fakeDateTime(slotDay, 17) });
+  const startsOn = (item, day, nextDay) => seriesOccurrences(item, fakeDateTime(day, 0), fakeDateTime(nextDay, 0)).map(({ start }) => start.toString()).sort();
+
+  it('an edit of the whole series that excludes a changed occurrence moved to another day removes it from that day too', async () => {
+    const master = series('FREQ=DAILY', { exceptions: [movedAway('2099-10-07', '2099-10-10')] });
+    expect(startsOn(master, '2099-10-10', '2099-10-11')).toEqual(['20991010T170000', '20991010T190000']);
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', exdates_add: ['2099-10-10T19:00:00'] });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const saved = calendar.items[0];
+    expect(exdates(saved)).toEqual(['20991007T170000']);
+    expect(saved.recurrenceInfo.getExceptionFor(fakeDateTime('2099-10-07', 17))).toBeNull();
+    expect(startsOn(saved, '2099-10-10', '2099-10-11')).toEqual(['20991010T170000']);
+    expect(starts(saved)).not.toContain('20991007T170000');
+  });
+
+  it('a this-and-following edit that excludes changed occurrences moved to other days removes each from its part, and from the day it moved to', async () => {
+    const master = series('FREQ=DAILY', { exceptions: [movedAway('2099-10-07', '2099-10-10'), movedAway('2099-10-18', '2099-10-21')] });
+    expect(startsOn(master, '2099-10-21', '2099-10-22')).toEqual(['20991021T170000', '20991021T190000']);
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({
+      event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00',
+      exdates_add: ['2099-10-10T19:00:00', '2099-10-21T19:00:00'],
+    });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const capped = calendar.items.find((it) => it.id === 'ser');
+    const fresh = calendar.items.find((it) => it.id !== 'ser');
+    expect(exdates(capped)).toEqual(['20991007T170000']);
+    expect(exdates(fresh)).toEqual(['20991018T170000']);
+    expect(capped.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(fresh.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(startsOn(capped, '2099-10-10', '2099-10-11')).toEqual(['20991010T170000']);
+    expect(startsOn(fresh, '2099-10-21', '2099-10-22')).toEqual(['20991021T170000']);
   });
 
   it('an edit of the whole series that moves its start excludes the occurrence it named before the move', async () => {

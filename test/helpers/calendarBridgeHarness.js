@@ -254,6 +254,13 @@ export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
         .map(({ start, item }) => (item === base ? base.createProxy(start) : item));
       return maxCount ? found.slice(0, maxCount) : found;
     },
+    // CalRecurrenceInfo.removeOccurrenceAt: an EXDATE at the RECURRENCE-ID, and
+    // the occurrence's changed copy removed with it.
+    removeOccurrenceAt: (rid) => {
+      const exdate = recurrenceDate('EXDATE', rid.clone());
+      info.removeExceptionFor(exdate.date);
+      info.appendRecurrenceItem(exdate);
+    },
     getExceptionIds: () => changed.map((ex) => ex.recurrenceId),
     getExceptionFor: (rid) => changed[findException(rid)] || null,
     removeExceptionFor: (rid) => { const i = findException(rid); if (i >= 0) changed.splice(i, 1); },
@@ -325,10 +332,19 @@ function untilOfRule(value) {
     : fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, hour: +hh, minute: +mi, second: +ss, timezone: z ? UTC_ZONE : FLOATING_ZONE });
 }
 
+// An UNTIL value's instant as ical.js reads it from a rule's text: its digits at
+// offset 0.
+function untilInstantMs(until) {
+  return Date.UTC(until.year, until.month, until.day, until.hour, until.minute, until.second);
+}
+
 // CalRecurrenceRule.getOccurrences: the rule's occurrences from `start` in
 // [rangeStart, rangeEnd), at most `maxCount` (0 = no limit). ical.js steps the
 // start's digits; each occurrence is read in the start's frame and the series
-// ends at the first one after UNTIL.
+// ends at the first one after UNTIL, compared as ical.js's Time.compare does: by
+// instant, the occurrence in the start's zone (a DATE at midnight there) and
+// UNTIL, parsed from the rule's text, at offset 0 (a DATE or floating value has
+// no zone, a `Z` value is UTC).
 function ruleOccurrences(value, start, rangeStart, rangeEnd, maxCount) {
   const until = untilOfRule(value);
   const recur = ICAL.Recur.fromString(String(value).split(';').filter((p) => !/^UNTIL=/i.test(p)).join(';'));
@@ -342,7 +358,7 @@ function ruleOccurrences(value, start, rangeStart, rangeEnd, maxCount) {
     const occ = fakeCalDateTime({
       year: next.year, month: next.month - 1, day: next.day, hour: next.hour, minute: next.minute, second: next.second, isDate: start.isDate, timezone: start.timezone,
     });
-    if (until && occ.compare(until) > 0) break;
+    if (until && occ.nativeTime / 1000 > untilInstantMs(until)) break;
     if (rangeEnd && occ.compare(rangeEnd) >= 0) break;
     if (rangeStart && occ.compare(rangeStart) < 0) continue;
     out.push(occ);
@@ -447,8 +463,17 @@ export function seriesOccurrences(item, rangeStart, rangeEnd) {
   }
   // CalRecurrenceInfo.calculateDates: a changed occurrence replaces its slot,
   // and an EXDATE removes the occurrence with its RECURRENCE-ID, a changed one
-  // included.
-  const removed = new Set(items.filter((r) => r.date && r.isNegative).map((r) => ridKey(r.date)));
+  // included, but only an EXDATE inside the range searched (the range's start
+  // moved back by the series' duration): a changed occurrence moved away from
+  // an excluded slot still shows at its own time in a range without the slot.
+  const searchStart = rangeStart.clone();
+  if (item.endDate && item.startDate) {
+    const duration = item.endDate.subtractDate(item.startDate);
+    searchStart.addDuration({ inSeconds: duration.inSeconds, isNegative: true });
+  }
+  const removed = new Set(items
+    .filter((r) => r.date && r.isNegative && r.date.compare(searchStart) >= 0 && r.date.compare(rangeEnd) < 0)
+    .map((r) => ridKey(r.date)));
   const changed = info.getExceptionIds().map((rid) => info.getExceptionFor(rid))
     .filter((ex) => !removed.has(ridKey(ex.recurrenceId)));
   for (const key of removed) dates.delete(key);

@@ -127,6 +127,13 @@ same design (tabmail-ios #421).
     rule's UNTIL is compared with the split by `compare`, never by epoch time: an all-day UNTIL names a date, and
     west of UTC a DATE's day starts after the UTC midnight that date names, so an epoch comparison dropped a last
     occurrence on the split day.
+  - **The earlier part keeps its last occurrences, in Thunderbird's expansion:** after the cap, the earlier part's
+    occurrences over the two days before the split (`OCCURRENCE_LOOKUP_REACH_MS`) must be the series' there, by
+    RECURRENCE-ID, or the split is refused before anything is written. ical.js compares a rule's UNTIL by instant
+    (`Time.compare`, `toUnixTime`: an occurrence in its start's zone, a DATE at midnight there; a bare-date or
+    floating UNTIL at offset 0), so an all-day start that carries a zone west of UTC falls after a bare-date UNTIL
+    of its own day and the cap at the day before the split drops it. Only all-day dates the assistant wrote carry a
+    zone (#303); a split whose day before is no occurrence (a weekly rule) is unaffected.
   - **Dates and changed occurrences:** EXDATEs, RDATEs and changed occurrences before the split stay on the earlier
     part; those from the split on move to the following part (an RDATE is not bounded by UNTIL, so one left on the
     earlier part would still happen). The following part's recurrence info is a clone of the series' (Thunderbird's
@@ -141,11 +148,12 @@ same design (tabmail-ios #421).
   - **`exdates_add`** go to the part their RECURRENCE-ID falls in (see *Excluded dates* below), added before the
     time change so they move with the part.
   - **A split at an occurrence that was changed on its own** carries that occurrence into the following part with
-    its own times and fields, so an edit's title, location, description, busy/free, attendees, organizer, start or
-    end (`SPLIT_FIELDS_OF_AN_OCCURRENCE`, a start equal to its own included) would not reach it while the edit
+    its own times and fields, so an edit's title, location, description, busy/free, attendees, start or end
+    (`SPLIT_FIELDS_OF_AN_OCCURRENCE`, a start equal to its own included) would not reach it while the edit
     reported success. Such an edit is refused, naming the way that works: change the occurrence alone
     (`this_only`), then this and the following ones from the next occurrence. `exdates_add`, `recurrence` and
-    `all_day` alone are allowed there.
+    `all_day` alone are allowed there, and so is `organizer_email`: the edit tool fills it in from the calendar for
+    every edit that names one, so listing it refused every such split.
   - **Refused, writing nothing:** an EXRULE (a negative rule, comm-central 161+) the split cannot keep; a rule
     whose end or count cannot be read; a series that repeats by added dates alone (no rule to divide); a change
     to an occurrence that was changed on its own (above); an `exdates_add` value that names no occurrence; a rule item that cannot be rewritten (an immutable item throws); a time
@@ -159,9 +167,11 @@ same design (tabmail-ios #421).
 - **Excluded dates (`exdates_add`) name occurrences by their start (#265, #295),** the same contract as
   `recurrence_id`: each value is an occurrence's `start_iso` as the read tools print it, in the user's zone,
   resolved by `exdatesNamedBy` through `occurrenceNamedBy` in the series as it is before the edit. Thunderbird
-  removes an occurrence by its RECURRENCE-ID (`CalRecurrenceInfo.calculateDates` drops an exception whose id an
-  EXDATE names), which for a changed occurrence is its slot, not its start, so the EXDATE is written at the
-  RECURRENCE-ID, in the series' zone (`addExdateToItem`). A value that names no occurrence (or more than one) is
+  names an occurrence by its RECURRENCE-ID, which for a changed occurrence is its slot, not its start, so the
+  occurrence is removed at its RECURRENCE-ID, in the series' zone, with Thunderbird's own `removeOccurrenceAt`
+  (`addExdateToItem`): the EXDATE, and the changed copy removed with it. An EXDATE alone is not enough:
+  `CalRecurrenceInfo.calculateDates` applies one only to a query whose range (its start moved back by the series'
+  duration) holds its date, so a changed occurrence moved to another day still showed on that day. A value that names no occurrence (or more than one) is
   refused before anything is written, for every scope. On the whole series and on a split the EXDATEs are added
   before the time change, so a value names the occurrence the user read and `onStartDateChange` moves the EXDATE
   with the series (the order #295 reported reversed). An edit of one occurrence still writes them to the series
