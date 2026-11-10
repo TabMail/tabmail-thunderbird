@@ -57,7 +57,8 @@ for the zoned series (ical.js compares the bound with each start at midnight in 
 bound in the local evening west of UTC does not gain the next day and one at local midnight east of
 UTC does not lose its day. A date-only bound older versions wrote as `T000000Z` keeps the day it
 showed (west of UTC, the day before the date the user gave); restoring the given date there would
-move the other forms, so it is left (awaiting blessing). The digits stay, so nothing moves:
+move the other forms, and old data gets no code of its own, so it is left as shown (decided
+2026-11-10; the user can give the series a new last day). The digits stay, so nothing moves:
 `onStartDateChange` diffs the starts in UTC, where a DATE keeps its day (diff zero; comm-central also
 converts each RECURRENCE-ID into the new start's or a matching RDATE's zone, which for a DATE is a
 relabel), and `getRidKey` of a zoned DATE is its digits (converted to UTC, a relabel), so a changed
