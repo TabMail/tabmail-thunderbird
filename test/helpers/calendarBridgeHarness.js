@@ -8,15 +8,28 @@
 // mock of their output.
 //
 // calIDateTime is a fake that keeps the semantics these tests depend on:
-//   - an RFC 5545 DATE has no zone and no instant; its `nativeTime` is UTC
-//     midnight of its digits (what ical.js yields when it skips conversion);
-//   - `compare` is date-only when either side is a DATE.
+//   - a DATE's `nativeTime` is the midnight of its digits in its zone; one made
+//     without a zone has UTC midnight (what ical.js yields for floating time);
+//   - `compare` is CalDateTime.compare's: when either side is floating, both
+//     are read by their own digits; when either is a DATE, by date only, the
+//     other side read in this side's zone (a DATE is never converted);
+//     otherwise by instant.
 // The provider mirrors CalMemoryCalendar.getItems: it honours the event-type
 // filter, the count bound (0 = unlimited) and cal.item.checkIfInRange over
 // [rangeStart, rangeEnd), expanding a recurring master into its occurrences.
+//
+// A recurrence rule expands through Thunderbird's own ical.js
+// (test/fixtures/mozilla): its occurrences are the start's digits stepped by
+// the rule, read in the start's frame, and UNTIL bounds them as
+// CalDateTime.compare does. A series' getOccurrences gives its occurrences as
+// CalRecurrenceInfo does: a proxy of the series (createProxy) for each date,
+// and a changed occurrence at its own time. Setting a master's start moves its
+// recurrence the way CalRecurrenceInfo.onStartDateChange does, and setting its
+// id renames its changed occurrences (onIdChange).
 
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import ICAL from '../fixtures/mozilla/Ical.sys.mjs';
 
 export const UTC_ZONE = { tzid: 'UTC' };
 export const LOCAL_ZONE = { tzid: 'floating-local' };
@@ -36,15 +49,18 @@ export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second
     return dt;
   };
   const epochMs = () => {
-    if (dt.isDate) return Date.UTC(dt.year, dt.month, dt.day);
-    const utcDigits = Date.UTC(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+    const [hour, minute, second] = dt.isDate ? [0, 0, 0] : [dt.hour, dt.minute, dt.second];
+    const utcDigits = Date.UTC(dt.year, dt.month, dt.day, hour, minute, second);
     if (dt.timezone === UTC_ZONE || dt.timezone === FLOATING_ZONE) return utcDigits;
     if (typeof dt.timezone?.offsetMinutes === 'number') return utcDigits - dt.timezone.offsetMinutes * 60000;
-    return new Date(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second).getTime();
+    return new Date(dt.year, dt.month, dt.day, hour, minute, second).getTime();
   };
   Object.defineProperty(dt, 'nativeTime', { get: () => epochMs() * 1000 });
   dt.getInTimezone = (tz) => {
-    if (dt.isDate) return dt; // ical.js: no conversion for DATE values
+    if (dt.isDate) return dt.clone(); // ical.js: no conversion for DATE values (a copy)
+    // ical.js (Timezone.convert_time) converts nothing to or from floating
+    // time: the copy keeps its digits and takes the other zone.
+    if (tz === FLOATING_ZONE || dt.timezone === FLOATING_ZONE) return fakeCalDateTime({ ...dt, timezone: tz });
     const offsetMs = tz === UTC_ZONE || tz === FLOATING_ZONE ? 0 : (typeof tz?.offsetMinutes === 'number' ? tz.offsetMinutes * 60000 : null);
     if (offsetMs !== null) {
       const u = new Date(epochMs() + offsetMs);
@@ -54,12 +70,19 @@ export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second
     return fakeCalDateTime({ year: u.getFullYear(), month: u.getMonth(), day: u.getDate(), hour: u.getHours(), minute: u.getMinutes(), second: u.getSeconds(), timezone: LOCAL_ZONE });
   };
   dt.clone = () => fakeCalDateTime({ ...dt });
+  // CalDateTime.compare (test/fixtures/mozilla/CalDateTime.sys.mjs): when
+  // either side is floating, both are read as floating, which ical.js does by
+  // relabelling, so each by its own digits; when either side is a DATE, by date
+  // only, the other side read in this side's zone (compareDateOnlyTz; a DATE is
+  // never converted); otherwise by instant.
   dt.compare = (other) => {
-    if (dt.isDate || other.isDate) {
-      // CalDateTime.compare: date-only comparison when either side is a DATE.
-      const a = dt.getInTimezone(LOCAL_ZONE), b = other.getInTimezone(LOCAL_ZONE);
-      const ka = [a.year, a.month, a.day], kb = [b.year, b.month, b.day];
-      for (let i = 0; i < 3; i++) if (ka[i] !== kb[i]) return ka[i] < kb[i] ? -1 : 1;
+    const floating = dt.timezone === FLOATING_ZONE || other.timezone === FLOATING_ZONE;
+    const dateOnly = dt.isDate || other.isDate;
+    if (floating || dateOnly) {
+      const b = floating ? other : other.getInTimezone(dt.timezone);
+      const keys = (x) => (dateOnly ? [x.year, x.month, x.day] : [x.year, x.month, x.day, x.hour, x.minute, x.second]);
+      const ka = keys(dt), kb = keys(b);
+      for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return ka[i] < kb[i] ? -1 : 1;
       return 0;
     }
     return Math.sign(epochMs() - other.nativeTime / 1000);
@@ -69,7 +92,14 @@ export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second
     return { inSeconds: Math.abs(seconds), isNegative: seconds < 0 };
   };
   dt.addDuration = (dur) => {
-    const u = new Date(epochMs() + (dur.isNegative ? -1 : 1) * dur.inSeconds * 1000);
+    const ms = (dur.isNegative ? -1 : 1) * dur.inSeconds * 1000;
+    if (dt.isDate || dt.timezone !== LOCAL_ZONE) {
+      // ical.js steps the value's own digits and keeps its zone and value type.
+      const u = new Date(Date.UTC(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second) + ms);
+      Object.assign(dt, { year: u.getUTCFullYear(), month: u.getUTCMonth(), day: u.getUTCDate(), hour: u.getUTCHours(), minute: u.getUTCMinutes(), second: u.getUTCSeconds() });
+      return dt;
+    }
+    const u = new Date(epochMs() + ms);
     dt.resetTo(u.getFullYear(), u.getMonth(), u.getDate(), u.getHours(), u.getMinutes(), u.getSeconds(), LOCAL_ZONE);
     return dt;
   };
@@ -79,10 +109,10 @@ export function fakeCalDateTime({ year, month, day, hour = 0, minute = 0, second
   return dt;
 }
 
-/** A DATE value from "YYYY-MM-DD" digits. */
-export function fakeDate(dayStr) {
+/** A DATE value from "YYYY-MM-DD" digits, in `timezone` when given (an all-day event made in a zone). */
+export function fakeDate(dayStr, timezone = undefined) {
   const [y, m, d] = dayStr.split('-').map(Number);
-  return fakeCalDateTime({ year: y, month: m - 1, day: d, isDate: true });
+  return fakeCalDateTime({ year: y, month: m - 1, day: d, isDate: true, timezone });
 }
 
 /** A wall-clock date-time from "YYYY-MM-DD" digits and an hour, in the user's zone unless `timezone` names another. */
@@ -99,16 +129,27 @@ export function fakeDateTime(dayStr, hour, minute = 0, timezone = undefined) {
  */
 export function fakeEvent({ id, title, startDate, endDate, recurrenceId = null, properties = {}, occurrences = null }) {
   const props = new Map(Object.entries(properties));
+  let uid = id;
+  let start = startDate;
   const ev = {
-    id, title, startDate, endDate, recurrenceId, parentItem: null, calendar: null, recurrenceInfo: null,
+    title, endDate, recurrenceId, parentItem: null, calendar: null, recurrenceInfo: null,
     descriptionText: '',
     isEvent: () => true,
     getProperty: (k) => (props.has(k) ? props.get(k) : null),
     setProperty: (k, v) => { props.set(k, v); },
     deleteProperty: (k) => { props.delete(k); },
     getAttendees: () => [],
+    // CalItemBase.createProxy: the series' occurrence at `rid`, starting there
+    // and lasting as long as the series' start does.
+    createProxy(rid) {
+      const end = rid.clone();
+      if (ev.endDate) end.addDuration(ev.endDate.subtractDate(ev.startDate));
+      const proxy = fakeEvent({ id: ev.id, title: ev.title, startDate: rid.clone(), endDate: end, recurrenceId: rid.clone(), properties: Object.fromEntries(props) });
+      proxy.parentItem = ev; proxy.calendar = ev.calendar;
+      return proxy;
+    },
     clone() {
-      const c = fakeEvent({ id: ev.id, title: ev.title, startDate: ev.startDate.clone(), endDate: ev.endDate.clone(), recurrenceId: ev.recurrenceId, properties: Object.fromEntries(props) });
+      const c = fakeEvent({ id: ev.id, title: ev.title, startDate: ev.startDate.clone(), endDate: ev.endDate.clone(), recurrenceId: ev.recurrenceId?.clone ? ev.recurrenceId.clone() : ev.recurrenceId, properties: Object.fromEntries(props) });
       c.parentItem = ev.parentItem; c.calendar = ev.calendar;
       // CalItemBase.cloneItemBaseInto clones the recurrence info, so a change to
       // the clone's rule never reaches the stored item before modifyItem.
@@ -116,57 +157,147 @@ export function fakeEvent({ id, title, startDate, endDate, recurrenceId = null, 
       return c;
     },
   };
+  // CalItemBase: setting the id renames the changed occurrences (onIdChange).
+  Object.defineProperty(ev, 'id', {
+    enumerable: true,
+    configurable: true,
+    get: () => uid,
+    set: (value) => {
+      uid = value;
+      if (typeof ev.recurrenceInfo?.onIdChange === 'function') ev.recurrenceInfo.onIdChange(value);
+    },
+  });
+  // CalEvent: setting a master's start moves its recurrence with it
+  // (onStartDateChange), before the start changes.
+  Object.defineProperty(ev, 'startDate', {
+    enumerable: true,
+    configurable: true,
+    get: () => start,
+    set: (value) => {
+      if ((!ev.parentItem || ev.parentItem === ev) && typeof ev.recurrenceInfo?.onStartDateChange === 'function') {
+        ev.recurrenceInfo.onStartDateChange(value, start);
+      }
+      start = value;
+    },
+  });
   if (occurrences) {
     for (const occ of occurrences) { occ.parentItem = ev; occ.id = ev.id; }
     ev.recurrenceInfo = {
       occurrences,
       getRecurrenceItems: () => [],
-      // CalRecurrenceInfo keys exceptions by icalString: a DATE ("20261007")
-      // and a same-day DATE-TIME ("20261007T000000") are different identities,
-      // so the lookup is type-sensitive, never `compare`. On a miss the native
-      // implementation does NOT return null: it hands back a fresh proxy
-      // occurrence for that RECURRENCE-ID (item.createProxy), which a later
-      // modifyItem persists as a NEW exception. A fake that returned null here
-      // would let the calendar scan repair a wrongly-typed lookup and hide it.
-      getOccurrenceFor: (rid) => {
-        const hit = occurrences.find((o) => o.recurrenceId.toString() === rid.toString());
-        if (hit) return hit;
-        const proxy = fakeEvent({ id: ev.id, title: ev.title, startDate: rid.clone(), endDate: ev.endDate.clone(), recurrenceId: rid.clone(), properties: Object.fromEntries(props) });
-        proxy.parentItem = ev; proxy.calendar = ev.calendar; proxy.recurrenceInfo = null;
-        return proxy;
+      // CalRecurrenceInfo.getOccurrences: the occurrences in [rangeStart,
+      // rangeEnd) (cal.item.checkIfInRange), at most `maxCount` (0 = no limit).
+      getOccurrences: (rangeStart, rangeEnd, maxCount) => {
+        const found = occurrences.filter((o) => inRange(o, rangeStart, rangeEnd));
+        return maxCount ? found.slice(0, maxCount) : found;
       },
     };
   }
   return ev;
 }
 
+// CalRecurrenceInfo's getRidKey: a RECURRENCE-ID's icalString, in UTC unless
+// it is floating or UTC (a DATE is its digits). A DATE and a same-day DATE-TIME
+// are different keys.
+function ridKey(dt) {
+  return dt.isDate || dt.timezone === UTC_ZONE || dt.timezone === FLOATING_ZONE ? dt.toString() : dt.getInTimezone(UTC_ZONE).toString();
+}
+
 /**
  * A calIRecurrenceInfo holding RRULE / RDATE / EXDATE items, each an object
  * whose `icalProperty` names the property (`{ propertyName, value }`), as
  * CalRecurrenceRule and CalRecurrenceDate expose it, and changed occurrences
- * (`exceptions`, items with a `recurrenceId`). `getRecurrenceItems` returns the
- * LIVE list, as CalRecurrenceInfo does, so a caller deleting while iterating it
- * skips items exactly as in Thunderbird. As in CalRecurrenceInfo, appending
- * needs the item the info belongs to (`item`, set by the owner), and `clone`
- * copies the items and changed occurrences for a cloned owner.
+ * (`exceptions`, items with a `recurrenceId`, keyed by getRidKey).
+ * `getRecurrenceItems` returns the LIVE list, as CalRecurrenceInfo does, so a
+ * caller deleting while iterating it skips items exactly as in Thunderbird. As
+ * in CalRecurrenceInfo:
+ *   - appending needs the item the info belongs to (`item`, set by the owner),
+ *     and setting `item` makes it the changed occurrences' parent;
+ *   - `clone` copies each item and changed occurrence (cloneShallow);
+ *   - onStartDateChange moves the excluded and added dates, the UNTIL of each
+ *     rule not bounded by COUNT, and the changed occurrences' RECURRENCE-IDs
+ *     (not their own times) by the start's change;
+ *   - onIdChange gives the changed occurrences the new id;
+ *   - getOccurrences expands it (seriesOccurrences), its `item` being the series.
  */
 export function fakeRecurrenceInfo(items = [], { exceptions = [] } = {}) {
   const list = [...items];
   const changed = [...exceptions];
+  let base = null;
+  const findException = (rid) => changed.findIndex((ex) => ridKey(ex.recurrenceId) === ridKey(rid));
   const info = {
-    item: null,
+    get item() { return base; },
+    set item(value) {
+      if (value && value === base) return;
+      base = value;
+      for (const ex of changed) ex.parentItem = value;
+    },
     occurrences: [],
     getRecurrenceItems: () => list,
     appendRecurrenceItem: (r) => {
       if (!info.item) throw new Error('NS_ERROR_NOT_INITIALIZED: recurrence info has no base item');
       list.push(r);
     },
-    clone: (newItem) => Object.assign(fakeRecurrenceInfo(list, { exceptions: changed }), { item: newItem }),
+    clone: (newItem) => {
+      const copy = fakeRecurrenceInfo(
+        list.map((r) => (typeof r.clone === 'function' ? r.clone() : r)),
+        { exceptions: changed.map((ex) => Object.assign(ex.clone(), { parentItem: base })) },
+      );
+      copy.item = newItem === undefined ? base : newItem;
+      return copy;
+    },
     deleteRecurrenceItem: (r) => { const i = list.indexOf(r); if (i >= 0) list.splice(i, 1); },
-    getOccurrenceFor: () => null,
+    // CalRecurrenceInfo.getOccurrences: the series' occurrences in
+    // [rangeStart, rangeEnd) in start order, at most `maxCount` (0 = no limit):
+    // a proxy of the series for each date (createProxy), and a changed
+    // occurrence itself, at its own time.
+    getOccurrences: (rangeStart, rangeEnd, maxCount) => {
+      const found = seriesOccurrences(base, rangeStart, rangeEnd)
+        .sort((a, b) => a.start.compare(b.start))
+        .map(({ start, item }) => (item === base ? base.createProxy(start) : item));
+      return maxCount ? found.slice(0, maxCount) : found;
+    },
+    // CalRecurrenceInfo.removeOccurrenceAt: an EXDATE at the RECURRENCE-ID, and
+    // the occurrence's changed copy removed with it.
+    removeOccurrenceAt: (rid) => {
+      const exdate = recurrenceDate('EXDATE', rid.clone());
+      info.removeExceptionFor(exdate.date);
+      info.appendRecurrenceItem(exdate);
+    },
     getExceptionIds: () => changed.map((ex) => ex.recurrenceId),
-    getExceptionFor: (rid) => changed.find((ex) => ex.recurrenceId.toString() === rid.toString()) || null,
-    removeExceptionFor: (rid) => { const i = changed.findIndex((ex) => ex.recurrenceId.toString() === rid.toString()); if (i >= 0) changed.splice(i, 1); },
+    getExceptionFor: (rid) => changed[findException(rid)] || null,
+    removeExceptionFor: (rid) => { const i = findException(rid); if (i >= 0) changed.splice(i, 1); },
+    modifyException: (ex) => {
+      const own = ex.parentItem === base ? ex : Object.assign(ex.clone(), { parentItem: base });
+      const i = findException(own.recurrenceId);
+      if (i >= 0) changed[i] = own; else changed.push(own);
+    },
+    onIdChange: (id) => { for (const ex of changed) ex.id = id; },
+    onStartDateChange: (newStart, oldStart) => {
+      if (!oldStart) return;
+      const diff = newStart.subtractDate(oldStart);
+      for (const r of list) {
+        if (r.date) {
+          const moved = r.date.clone();
+          moved.addDuration(diff);
+          r.date = moved;
+        } else if (typeof r.getOccurrences === 'function' && !r.isByCount && r.untilDate) {
+          const until = r.untilDate;
+          until.addDuration(diff);
+          r.untilDate = until;
+        }
+      }
+      const moved = [];
+      for (const rid of [...info.getExceptionIds()]) {
+        const ex = info.getExceptionFor(rid).clone();
+        const shifted = rid.getInTimezone(newStart.timezone);
+        shifted.addDuration(diff);
+        ex.recurrenceId = shifted;
+        moved.push(ex);
+        info.removeExceptionFor(rid);
+      }
+      for (const ex of moved) info.modifyException(ex);
+    },
   };
   return info;
 }
@@ -190,17 +321,109 @@ export function canonicalRule(value) {
   return out.join(';');
 }
 
+// CalRecurrenceRule caps one query at this many occurrences.
+const MAX_OCCURRENCES_PER_QUERY = 10000;
+
+// A rule value's UNTIL as a date: a bare date is a DATE, a `Z` value UTC, and
+// any other date-time floating.
+function untilOfRule(value) {
+  const m = /(?:^|;)UNTIL=(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?(?:;|$)/i.exec(String(value));
+  if (!m) return null;
+  const [, y, mo, d, hh, mi, ss, z] = m;
+  return hh === undefined
+    ? fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, isDate: true })
+    : fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, hour: +hh, minute: +mi, second: +ss, timezone: z ? UTC_ZONE : FLOATING_ZONE });
+}
+
+// An UNTIL value's instant as ical.js reads it from a rule's text: its digits at
+// offset 0.
+function untilInstantMs(until) {
+  return Date.UTC(until.year, until.month, until.day, until.hour, until.minute, until.second);
+}
+
+// CalRecurrenceRule.getOccurrences: the rule's occurrences from `start` in
+// [rangeStart, rangeEnd), at most `maxCount` (0 = no limit). ical.js steps the
+// start's digits; each occurrence is read in the start's frame and the series
+// ends at the first one after UNTIL, compared as ical.js's Time.compare does: by
+// instant, the occurrence in the start's zone (a DATE at midnight there) and
+// UNTIL, parsed from the rule's text, at offset 0 (a DATE or floating value has
+// no zone, a `Z` value is UTC).
+function ruleOccurrences(value, start, rangeStart, rangeEnd, maxCount) {
+  const until = untilOfRule(value);
+  const recur = ICAL.Recur.fromString(String(value).split(';').filter((p) => !/^UNTIL=/i.test(p)).join(';'));
+  const iterator = recur.iterator(new ICAL.Time({
+    year: start.year, month: start.month + 1, day: start.day, hour: start.hour, minute: start.minute, second: start.second, isDate: start.isDate,
+  }));
+  const out = [];
+  for (let n = 0; n < MAX_OCCURRENCES_PER_QUERY; n++) {
+    const next = iterator.next();
+    if (!next) break;
+    const occ = fakeCalDateTime({
+      year: next.year, month: next.month - 1, day: next.day, hour: next.hour, minute: next.minute, second: next.second, isDate: start.isDate, timezone: start.timezone,
+    });
+    if (until && occ.nativeTime / 1000 > untilInstantMs(until)) break;
+    if (rangeEnd && occ.compare(rangeEnd) >= 0) break;
+    if (rangeStart && occ.compare(rangeStart) < 0) continue;
+    out.push(occ);
+    if (maxCount && out.length >= maxCount) break;
+  }
+  return out;
+}
+
 // A calIRecurrenceRule: setting its icalProperty parses the rule, reading it
 // back gives the re-serialized value (canonicalRule). Like CalRecurrenceRule, it
 // is always a positive rule whose property is RRULE, so an imported EXRULE reads
 // back as one more RRULE (Thunderbird before comm-central bug 2082832, which
-// keeps an EXRULE as EXRULE).
+// keeps an EXRULE as EXRULE). Its UNTIL is written in UTC unless it is a DATE or
+// floating, as CalRecurrenceRule.untilDate does.
 function fakeRecurrenceRule() {
   let prop = null;
-  return {
+  const rule = {
+    isNegative: false,
     get icalProperty() { return prop; },
     set icalProperty(p) { prop = { propertyName: 'RRULE', value: canonicalRule(p.value) }; },
+    get isByCount() { return /(?:^|;)COUNT=/i.test(prop?.value || ''); },
+    get untilDate() { return untilOfRule(prop?.value || ''); },
+    set untilDate(dt) {
+      const parts = String(prop.value).split(';').filter((p) => !/^UNTIL=/i.test(p));
+      if (dt) parts.push(`UNTIL=${dt.isDate || dt.timezone === FLOATING_ZONE ? dt.toString() : dt.getInTimezone(UTC_ZONE).toString()}`);
+      rule.icalProperty = { propertyName: 'RRULE', value: parts.join(';') };
+    },
+    getOccurrences: (start, rangeStart, rangeEnd, maxCount) => ruleOccurrences(prop.value, start, rangeStart, rangeEnd, maxCount),
+    clone() {
+      const copy = fakeRecurrenceRule();
+      copy.icalProperty = { ...prop };
+      return copy;
+    },
   };
+  return rule;
+}
+
+// A calIRecurrenceDate: an added date (RDATE), or an excluded one (EXDATE) when
+// negative. Its property is read from its date, as CalRecurrenceDate does.
+function fakeRecurrenceDate() {
+  let date = null;
+  const item = {
+    isNegative: false,
+    get date() { return date; },
+    set date(value) { date = value; },
+    get icalProperty() { return { propertyName: item.isNegative ? 'EXDATE' : 'RDATE', value: date ? date.toString() : '' }; },
+    clone() {
+      const copy = fakeRecurrenceDate();
+      copy.isNegative = item.isNegative;
+      copy.date = date && date.clone();
+      return copy;
+    },
+  };
+  return item;
+}
+
+/** An added (RDATE) or excluded (EXDATE) date of a series, from a date in any frame. */
+export function recurrenceDate(propertyName, date) {
+  const item = fakeRecurrenceDate();
+  item.isNegative = propertyName === 'EXDATE';
+  item.date = date;
+  return item;
 }
 
 /**
@@ -214,15 +437,54 @@ export function recurrenceItem(propertyName, value) {
     rule.icalProperty = { propertyName, value };
     return rule;
   }
-  const item = { icalProperty: { propertyName, value } };
   const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$/.exec(value);
-  if (m) {
-    const [, y, mo, d, hh, mi, ss, z] = m;
-    item.date = hh
-      ? fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, hour: +hh, minute: +mi, second: +ss, timezone: z ? UTC_ZONE : LOCAL_ZONE })
-      : fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, isDate: true });
+  if (!m) return { icalProperty: { propertyName, value } };
+  const [, y, mo, d, hh, mi, ss, z] = m;
+  return recurrenceDate(propertyName, hh
+    ? fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, hour: +hh, minute: +mi, second: +ss, timezone: z ? UTC_ZONE : LOCAL_ZONE })
+    : fakeCalDateTime({ year: +y, month: +mo - 1, day: +d, isDate: true }));
+}
+
+/**
+ * A series' occurrences in [rangeStart, rangeEnd), as CalRecurrenceInfo makes
+ * them: each rule's occurrences from the start and each added date, less the
+ * excluded dates (by getRidKey), with a changed occurrence in place of the one
+ * its RECURRENCE-ID names, at its own time. `{ start, item }` each, `item` the
+ * series or the changed occurrence. A single event is its own occurrence.
+ */
+export function seriesOccurrences(item, rangeStart, rangeEnd) {
+  const info = item.recurrenceInfo;
+  if (!info) return inRange(item, rangeStart, rangeEnd) ? [{ start: item.startDate, item }] : [];
+  const dates = new Map();
+  const items = info.getRecurrenceItems();
+  for (const r of items) {
+    if (r.date) {
+      if (!r.isNegative && r.date.compare(rangeStart) >= 0 && r.date.compare(rangeEnd) < 0) dates.set(ridKey(r.date), r.date);
+    } else if (typeof r.getOccurrences === 'function') {
+      for (const d of r.getOccurrences(item.startDate, rangeStart, rangeEnd, 0)) dates.set(ridKey(d), d);
+    }
   }
-  return item;
+  // CalRecurrenceInfo.calculateDates: a changed occurrence replaces its slot,
+  // and an EXDATE removes the occurrence with its RECURRENCE-ID, a changed one
+  // included, but only an EXDATE inside the range searched (the range's start
+  // moved back by the series' duration): a changed occurrence moved away from
+  // an excluded slot still shows at its own time in a range without the slot.
+  const searchStart = rangeStart.clone();
+  if (item.endDate && item.startDate) {
+    const duration = item.endDate.subtractDate(item.startDate);
+    searchStart.addDuration({ inSeconds: duration.inSeconds, isNegative: true });
+  }
+  const removed = new Set(items
+    .filter((r) => r.date && r.isNegative && r.date.compare(searchStart) >= 0 && r.date.compare(rangeEnd) < 0)
+    .map((r) => ridKey(r.date)));
+  const changed = info.getExceptionIds().map((rid) => info.getExceptionFor(rid))
+    .filter((ex) => !removed.has(ridKey(ex.recurrenceId)));
+  for (const key of removed) dates.delete(key);
+  for (const ex of info.getExceptionIds()) dates.delete(ridKey(ex));
+  return [
+    ...[...dates.values()].map((start) => ({ start, item })),
+    ...changed.filter((ex) => inRange(ex, rangeStart, rangeEnd)).map((ex) => ({ start: ex.startDate, item: ex })),
+  ];
 }
 
 // cal.dtz.ensureDateTime: a DATE takes part in range checks as a date-time.
@@ -263,7 +525,9 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
       if (filter & ITEM_FILTER_TYPE_EVENT) {
         for (const master of items) {
           if ((filter & ITEM_FILTER_INCLUDE_OCCURRENCES) && master.recurrenceInfo) {
-            for (const occ of master.recurrenceInfo.occurrences) if (inRange(occ, start, end)) found.push(occ);
+            // CalMemoryCalendar.getItems: a series' occurrences in the range, as
+            // its recurrence info expands them.
+            found.push(...master.recurrenceInfo.getOccurrences(start, end, 0));
           } else if (inRange(master, start, end)) {
             found.push(master);
           }
@@ -284,9 +548,14 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
       modifications.push({ newItem, oldItem });
       if (oldItem.parentItem) {
         // An occurrence edit persists through recurrenceInfo.modifyException:
-        // keyed by the RECURRENCE-ID's icalString, replacing the exception with
-        // that key or ADDING one (the proxy-on-miss path above lands here).
-        const list = oldItem.parentItem.recurrenceInfo.occurrences;
+        // keyed by the RECURRENCE-ID, replacing the exception with that key or
+        // ADDING one.
+        const info = oldItem.parentItem.recurrenceInfo;
+        if (typeof info.modifyException === 'function') {
+          info.modifyException(newItem);
+          return newItem;
+        }
+        const list = info.occurrences;
         const key = newItem.recurrenceId.toString();
         const idx = list.findIndex((o) => o.recurrenceId.toString() === key);
         if (idx < 0) list.push(newItem); else list[idx] = newItem;
@@ -319,6 +588,7 @@ export function loadCalendarBridge(bridgePath, { items = [], calendarId = 'cal1'
         if (key === '@mozilla.org/calendar/datetime;1') return { createInstance: () => fakeCalDateTime() };
         if (key === '@mozilla.org/calendar/recurrence-rule;1') return { createInstance: () => fakeRecurrenceRule() };
         if (key === '@mozilla.org/calendar/recurrence-info;1') return { createInstance: () => fakeRecurrenceInfo() };
+        if (key === '@mozilla.org/calendar/recurrence-date;1') return { createInstance: () => fakeRecurrenceDate() };
         if (key === '@mozilla.org/calendar/event;1') {
           return { createInstance: () => Object.assign(fakeEvent({ id: null, title: '', startDate: null, endDate: null }), { addAttendee() {} }) };
         }

@@ -19,6 +19,9 @@
 //   - the argument shapes Thunderbird delivers (omitted fields null) keep the
 //     rule on an edit that does not mention it;
 //   - a last day after a daylight saving change keeps its frame;
+//   - a "this and following" split keeps the series: the two parts' occurrences
+//     together are the series' (rules, excluded and added dates, changed
+//     occurrences), or the split is refused and writes nothing;
 //   - a rule the tools cannot write is refused before the confirmation card.
 
 // West of UTC, so a UTC UNTIL instant names the NEXT day in UTC digits.
@@ -36,7 +39,7 @@ vi.mock('../chat/modules/chatConfig.js', () => ({ CHAT_SETTINGS: {} }));
 
 const {
   loadCalendarBridge, fakeCalDateTime, fakeDate, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem,
-  fixedZone, FLOATING_ZONE,
+  recurrenceDate, seriesOccurrences, fixedZone, FLOATING_ZONE, UTC_ZONE, LOCAL_ZONE,
 } = await import('./helpers/calendarBridgeHarness.js');
 const {
   recurrenceArgError, otherPartsRefusal, formatRecurrenceLine, recurrenceMark, OTHER_PARTS_NOTE,
@@ -65,6 +68,9 @@ function series(rrule, { allDay = false, extraItems = [], startDate = null, exce
 
 // East of UTC, so a bound's day differs from the user's (Vancouver) zone.
 const EAST = fixedZone('Test/East+0900', 9 * 60);
+// West of the user's zone, so a DATE's day starts after it does for the user.
+const WEST = fixedZone('Test/West-1000', -10 * 60);
+const CAL_UTILS = 'resource:///modules/calendar/calUtils.sys.mjs';
 const DAY_MS = 86400 * 1000;
 const dayString = (ms) => { const u = new Date(ms); return `${u.getUTCFullYear()}-${pad2(u.getUTCMonth() + 1)}-${pad2(u.getUTCDate())}`; };
 
@@ -189,26 +195,24 @@ describe('read: the rule in the edit tool\'s own fields', () => {
     });
   }
 
+  // 2099-10-01 is a Thursday. A weekly rule's weeks start with the start's own
+  // week (Monday 09-28, before the start), so the first Monday is 10-05, or
+  // 10-12 every other week.
   it('the rule is read from the recurrence info, not an older in-memory RRULE property', async () => {
     const ev = series('FREQ=WEEKLY;INTERVAL=2;BYDAY=MO');
     ev.setProperty('RRULE', 'FREQ=WEEKLY;BYDAY=MO');
-    const occ = fakeEvent({ id: 'ser', title: 'Sync', startDate: fakeDateTime(START_DAY, 17), endDate: fakeDateTime(START_DAY, 18), recurrenceId: fakeDateTime(START_DAY, 17) });
-    ev.recurrenceInfo.occurrences.push(occ);
-    occ.parentItem = ev;
     const { api } = loadCalendarBridge(bridgeUrl, { items: [ev] });
     expect(await readFields(api)).toEqual({ freq: 'WEEKLY', interval: 2, byDay: ['MO'] });
-    const rows = await api.queryCalendarItems(`${START_DAY}T00:00:00`, '2099-10-02T00:00:00', ['cal1']);
+    const rows = await api.queryCalendarItems('2099-10-12T00:00:00', '2099-10-13T00:00:00', ['cal1']);
+    expect(rows).toHaveLength(1);
     expect(rows[0].recurrence).toEqual({ freq: 'WEEKLY', interval: 2, byDay: ['MO'] });
   });
 
   it('the query rows carry the same fields', async () => {
     const until = utcUntil(LAST_DAY, 23);
     const ev = series(`FREQ=WEEKLY;BYDAY=MO;UNTIL=${until}`);
-    const occ = fakeEvent({ id: 'ser', title: 'Sync', startDate: fakeDateTime(START_DAY, 17), endDate: fakeDateTime(START_DAY, 18), recurrenceId: fakeDateTime(START_DAY, 17) });
-    ev.recurrenceInfo.occurrences.push(occ);
-    occ.parentItem = ev;
     const { api } = loadCalendarBridge(bridgeUrl, { items: [ev] });
-    const rows = await api.queryCalendarItems(`${START_DAY}T00:00:00`, '2099-10-02T00:00:00', ['cal1']);
+    const rows = await api.queryCalendarItems('2099-10-05T00:00:00', '2099-10-06T00:00:00', ['cal1']);
     expect(rows).toHaveLength(1);
     expect(rows[0].recurrence).toEqual({ freq: 'WEEKLY', until: LAST_DAY, byDay: ['MO'] });
     expect(rows[0].isRecurring).toBe(true);
@@ -309,9 +313,10 @@ describe('write: what was read, written back, reads the same', () => {
     const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=WEEKLY;BYDAY=MO', { extraItems: [exdate, rdate], exceptions: [moved] })] });
     await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { freq: 'WEEKLY', byDay: ['TU'] } });
     const info = savedItem(calendar).recurrenceInfo;
-    const items = info.getRecurrenceItems();
-    expect(items).toContain(exdate);
-    expect(items).toContain(rdate);
+    // The saved item holds copies (cloning an item clones its recurrence).
+    const items = info.getRecurrenceItems().map((r) => r.icalProperty);
+    expect(items).toContainEqual(exdate.icalProperty);
+    expect(items).toContainEqual(rdate.icalProperty);
     expect(ruleValues(savedItem(calendar))).toEqual(['FREQ=WEEKLY;BYDAY=TU']);
     expect(info.getExceptionIds().map(String)).toEqual(['20991012T170000']);
     const kept = info.getExceptionFor(fakeDateTime('2099-10-12', 17));
@@ -558,12 +563,16 @@ describe('split: the capped rule and the following part\'s rule', () => {
 
   it('a split whose capped rule cannot be set changes nothing in the calendar', async () => {
     // Thunderbird throws when an immutable item is changed; here the earlier
-    // part's recurrence info cannot be replaced.
+    // part's rule cannot be rewritten.
     const master = series('FREQ=DAILY');
     const clone = master.clone.bind(master);
-    master.clone = () => Object.defineProperty(clone(), 'recurrenceInfo', {
-      get: () => null, set: () => { throw new Error('item is immutable'); },
-    });
+    master.clone = () => {
+      const copy = clone();
+      for (const r of copy.recurrenceInfo.getRecurrenceItems()) {
+        Object.defineProperty(r, 'icalProperty', { get: () => ({ propertyName: 'RRULE', value: 'FREQ=DAILY' }), set: () => { throw new Error('item is immutable'); } });
+      }
+      return copy;
+    };
     const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
     const res = await api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: '2099-10-15T17:00:00', patch: { title: 'Renamed' } });
     expect(res).toMatchObject({ ok: false });
@@ -573,6 +582,797 @@ describe('split: the capped rule and the following part\'s rule', () => {
     expect(calendar.items[0]).toBe(master);
     expect(ruleValues(master)).toEqual(['FREQ=DAILY']);
   });
+});
+
+// #265: a "this and following" split divides the series in two. The earlier
+// part keeps everything before the split and the following part everything
+// from the split on, so together they make exactly the occurrences the series
+// made: every rule (UNTIL kept, COUNT reduced to the occurrences still to come),
+// excluded and added dates, and changed occurrences. Checked by expanding all
+// three with Thunderbird's own recurrence code (seriesOccurrences), for each
+// kind of start.
+describe('split: the two parts make the series\' occurrences', () => {
+  // Wide enough for every occurrence these series make.
+  const RANGE = [fakeDate('2099-09-01'), fakeDate('2101-01-01')];
+  const instantKey = (dt) => (dt.isDate ? dt.toString() : new Date(dt.nativeTime / 1000).toISOString());
+  const occurrenceKeys = (item) => seriesOccurrences(item, ...RANGE)
+    .map(({ start, item: occ }) => (occ.recurrenceId ? `changed ${instantKey(start)} ${occ.title}` : instantKey(start)))
+    .sort();
+  // A value `days` days and `hours` hours after `start`, in its frame.
+  const after = (start, days, hours = 0) => {
+    const dt = fakeCalDateTime({ ...start });
+    dt.addDuration({ inSeconds: days * 86400 + hours * 3600, isNegative: false });
+    return dt;
+  };
+  // An UNTIL value in the start's value type (RFC 5545 3.3.10).
+  const untilAfter = (start, days) => {
+    const dt = after(start, days);
+    return dt.isDate || dt.timezone === FLOATING_ZONE ? dt.toString() : dt.getInTimezone(UTC_ZONE).toString();
+  };
+  // A recurrence_id as the read tools show it: the occurrence's start_iso, in
+  // the user's zone (floating time by its digits, an all-day occurrence as its
+  // date at midnight).
+  const startIsoOf = (dt) => {
+    if (dt.isDate) return `${dt.year}-${pad2(dt.month + 1)}-${pad2(dt.day)}T00:00:00`;
+    const d = dt.timezone === FLOATING_ZONE ? dt : dt.getInTimezone(LOCAL_ZONE);
+    return `${d.year}-${pad2(d.month + 1)}-${pad2(d.day)}T${pad2(d.hour)}:${pad2(d.minute)}:${pad2(d.second)}`;
+  };
+  // Every kind of start, a start in UTC, and all-day series made in a zone: a
+  // DATE's epoch time depends on its zone, so the split's day arithmetic must
+  // not use it (east of UTC its day starts the day before in UTC; west of UTC
+  // it starts after the UTC midnight that an UNTIL date names).
+  // West of UTC, ical.js, which compares a rule's UNTIL by instant, ends a
+  // series capped with a DATE UNTIL a day early: the capped day starts after
+  // the UTC midnight the UNTIL names. A split whose earlier part would lose
+  // that day is refused (below); one whose day before the split is no
+  // occurrence keeps the series.
+  const WEST_ALL_DAY_KINDS = {
+    "all-day, made in the user's zone (west of UTC)": () => fakeDate(START_DAY, LOCAL_ZONE),
+    "all-day, made in a zone west of the user's": () => fakeDate(START_DAY, WEST),
+  };
+  const SPLIT_START_KINDS = {
+    ...START_KINDS,
+    'timed in UTC': () => fakeDateTime(START_DAY, 17, 0, UTC_ZONE),
+    'all-day, made in a zone east of UTC': () => fakeDate(START_DAY, EAST),
+    ...WEST_ALL_DAY_KINDS,
+  };
+  const changedAt = (start, days, title = 'Moved') => {
+    const rid = after(start, days);
+    const moved = start.isDate ? after(start, days + 1) : after(start, days, 2);
+    return fakeEvent({ id: 'ser', title, startDate: moved, endDate: start.isDate ? after(start, days + 2) : after(start, days, 3), recurrenceId: rid });
+  };
+  function seriesFrom(start, rules, { extraItems = [], exceptions = [] } = {}) {
+    const endDate = after(start, start.isDate ? 1 : 0, start.isDate ? 0 : 1);
+    const ev = fakeEvent({ id: 'ser', title: 'Sync', startDate: start, endDate });
+    ev.recurrenceInfo = fakeRecurrenceInfo([...rules.map((r) => recurrenceItem('RRULE', r)), ...extraItems], { exceptions });
+    ev.recurrenceInfo.item = ev;
+    return ev;
+  }
+  async function split(master, recurrenceId, patch = { title: 'Renamed' }) {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await loaded.api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: recurrenceId, patch });
+    return {
+      ...loaded,
+      res,
+      capped: loaded.calendar.items.find((it) => it.id === 'ser'),
+      fresh: loaded.calendar.items.find((it) => it.id !== 'ser'),
+    };
+  }
+  const itemValues = (item, name) => item.recurrenceInfo.getRecurrenceItems().filter((r) => r.icalProperty.propertyName === name).map((r) => r.icalProperty.value);
+
+  for (const [kind, makeStart] of Object.entries(SPLIT_START_KINDS)) {
+    it(`a series ${kind}: the two parts together make the series' occurrences, its changed occurrences included`, async () => {
+      const probe = makeStart();
+      // West of UTC, only a rule with no occurrence the day before the split.
+      const weekly = `FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${untilAfter(probe, 60)}`;
+      const rules = kind in WEST_ALL_DAY_KINDS ? [weekly] : ['FREQ=DAILY', 'FREQ=DAILY;COUNT=30', weekly];
+      for (const rule of rules) {
+        const start = makeStart();
+        const timedShift = start.isDate ? 0 : 2;
+        const master = seriesFrom(start, [rule], {
+          extraItems: [
+            recurrenceDate('EXDATE', after(start, 3)), recurrenceDate('EXDATE', after(start, 20)),
+            recurrenceDate('RDATE', after(start, 5, timedShift)), recurrenceDate('RDATE', after(start, 22, timedShift)),
+          ],
+          exceptions: [changedAt(start, 7), changedAt(start, 18)],
+        });
+        const before = occurrenceKeys(master);
+        expect(before.length, rule).toBeGreaterThan(20);
+        expect(before.filter((k) => k.startsWith('changed ')), rule).toHaveLength(2);
+        const ruleDates = master.recurrenceInfo.getRecurrenceItems()[0].getOccurrences(start, start, RANGE[1], 0);
+        const at = ruleDates[12];
+        const { res, capped, fresh } = await split(master, startIsoOf(at));
+        expect(res, `${rule}: ${res.error}`).toMatchObject({ ok: true });
+        expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort(), rule).toEqual(before);
+        expect(fresh.startDate.toString(), rule).toBe(at.toString());
+        expect(fresh.startDate.timezone, rule).toBe(start.timezone);
+        // The earlier part's end is written in its start's value type (RFC 5545
+        // 3.3.10). A floating start's is still a UTC value, filed as #270.
+        if (kind !== 'floating') {
+          const shape = start.isDate ? /^\d{8}$/ : /^\d{8}T\d{6}Z$/;
+          for (const value of ruleValues(capped).filter((v) => /UNTIL=/.test(v))) expect(untilOf(value), `${rule}: ${value}`).toMatch(shape);
+        }
+        for (const rid of fresh.recurrenceInfo.getExceptionIds()) {
+          const ex = fresh.recurrenceInfo.getExceptionFor(rid);
+          expect(ex.parentItem, rule).toBe(fresh);
+          expect(ex.id, rule).toBe(fresh.id);
+        }
+      }
+    });
+  }
+
+  for (const [kind, makeStart] of Object.entries(WEST_ALL_DAY_KINDS)) {
+    for (const rule of ['FREQ=DAILY', 'FREQ=DAILY;COUNT=30']) {
+      it(`a series ${kind} (${rule}): a split that would end the part before it a day early is refused and writes nothing`, async () => {
+        const start = makeStart();
+        const master = seriesFrom(start, [rule], { exceptions: [changedAt(start, 7)] });
+        const rules = ruleValues(master);
+        const before = occurrenceKeys(master);
+        const at = startIsoOf(after(start, 12));
+        const { res, calendar, modifications } = await split(master, at);
+        expect(res).toMatchObject({ ok: false });
+        expect(res.error).toBe(`the part before ${at} would not keep every occurrence the series has just before it in Thunderbird, so the series cannot be split there; change it in the calendar app`);
+        expect(modifications).toEqual([]);
+        expect(calendar.items).toEqual([master]);
+        expect(ruleValues(master)).toEqual(rules);
+        expect(occurrenceKeys(master)).toEqual(before);
+      });
+    }
+  }
+
+  it('a series bounded by COUNT: the following part has the occurrences still to come', async () => {
+    const { res, capped, fresh } = await split(series('FREQ=DAILY;COUNT=20'), '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(fresh)).toEqual(['FREQ=DAILY;COUNT=6']);
+    expect(ruleValues(capped)[0]).toMatch(/^FREQ=DAILY;UNTIL=/);
+    expect(lastDayAdmitted(fakeDateTime(START_DAY, 17), untilOf(ruleValues(capped)[0]))).toBe('2099-10-14');
+  });
+
+  it('a rule that ended before the split stays on the earlier part, unchanged, and is not carried on', async () => {
+    const ended = `FREQ=DAILY;INTERVAL=3;UNTIL=${utcUntil('2099-10-07', 17)}`;
+    const master = series('FREQ=DAILY;INTERVAL=2', { extraItems: [recurrenceItem('RRULE', ended)] });
+    const before = occurrenceKeys(master);
+    const { res, capped, fresh } = await split(master, '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(capped)).toEqual([expect.stringMatching(/^FREQ=DAILY;INTERVAL=2;UNTIL=/), ended]);
+    expect(ruleValues(fresh)).toEqual(['FREQ=DAILY;INTERVAL=2']);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+  });
+
+  it('a split at an added date after the rule ended keeps that date as the following part', async () => {
+    const master = series('FREQ=DAILY;COUNT=5', { extraItems: [recurrenceItem('RDATE', '20991015T170000')] });
+    const before = occurrenceKeys(master);
+    const { res, capped, fresh } = await split(master, '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(capped)).toEqual(['FREQ=DAILY;COUNT=5']);
+    expect(ruleValues(fresh)).toEqual([]);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+  });
+
+  // 2099-10-01 and 2099-10-15 are Thursdays; 2099-10-22 is a Thursday but not the 15th.
+  it('two rules that both make an occurrence at the split are both carried on', async () => {
+    const master = series('FREQ=WEEKLY;BYDAY=TH', { extraItems: [recurrenceItem('RRULE', 'FREQ=MONTHLY;BYMONTHDAY=15')] });
+    const before = occurrenceKeys(master);
+    const { res, capped, fresh } = await split(master, '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(fresh)).toEqual(['FREQ=WEEKLY;BYDAY=TH', 'FREQ=MONTHLY;BYMONTHDAY=15']);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+  });
+
+  it('the excluded and added dates and changed occurrences from the split on go to the following part', async () => {
+    const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-18', 19), endDate: fakeDateTime('2099-10-18', 20), recurrenceId: fakeDateTime('2099-10-18', 17) });
+    const early = fakeEvent({ id: 'ser', title: 'Early', startDate: fakeDateTime('2099-10-08', 19), endDate: fakeDateTime('2099-10-08', 20), recurrenceId: fakeDateTime('2099-10-08', 17) });
+    const master = series('FREQ=DAILY', {
+      extraItems: [recurrenceItem('EXDATE', '20991005T170000'), recurrenceItem('EXDATE', '20991020T170000'), recurrenceItem('RDATE', '20991022T190000')],
+      exceptions: [early, moved],
+    });
+    const { res, capped, fresh } = await split(master, '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(itemValues(fresh, 'EXDATE')).toEqual(['20991020T170000']);
+    expect(itemValues(fresh, 'RDATE')).toEqual(['20991022T190000']);
+    expect(itemValues(capped, 'EXDATE')).toEqual(['20991005T170000']);
+    expect(itemValues(capped, 'RDATE')).toEqual([]);
+    expect(fresh.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991018T170000']);
+    expect(capped.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991008T170000']);
+    const kept = fresh.recurrenceInfo.getExceptionFor(fakeDateTime('2099-10-18', 17));
+    expect(kept).toMatchObject({ title: 'Moved', id: fresh.id });
+    expect(kept.parentItem).toBe(fresh);
+  });
+
+  it('a new time for the following part moves its dates with it, as an edit of a whole series does', async () => {
+    const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-18', 19), endDate: fakeDateTime('2099-10-18', 20), recurrenceId: fakeDateTime('2099-10-18', 17) });
+    const master = series(`FREQ=DAILY;UNTIL=${utcUntil('2099-10-30', 17)}`, { extraItems: [recurrenceItem('EXDATE', '20991020T170000')], exceptions: [moved] });
+    const following = occurrenceKeys(master).filter((k) => k.startsWith('changed') || k >= instantKey(fakeDateTime('2099-10-15', 17)));
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00', start_iso: '2099-10-15T18:00:00' });
+    expect(res).toMatchObject({ ok: true });
+    const fresh = calendar.items.find((it) => it.id !== 'ser');
+    expect(fresh.startDate.toString()).toBe('20991015T180000');
+    expect(fresh.endDate.toString()).toBe('20991015T190000');
+    expect(itemValues(fresh, 'EXDATE')).toEqual(['20991020T180000']);
+    expect(fresh.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991018T180000']);
+    const hourLater = (k) => (k.startsWith('changed') ? k : new Date(Date.parse(k) + 3600 * 1000).toISOString());
+    expect(following.length).toBeGreaterThan(10);
+    expect(occurrenceKeys(fresh)).toEqual(following.map(hourLater).sort());
+    expect(lastDayAdmitted(fresh.startDate, untilOf(ruleValues(fresh)[0]))).toBe('2099-10-30');
+  });
+
+  // A new time is read in the user's zone and written in the series' frame (its
+  // own zone at the same instant; floating at the user's clock digits), so the
+  // part, or the whole series, keeps its weekdays, and its excluded and added
+  // dates and changed occurrences move with it and still meet its occurrences.
+  // At 09:00, a start east of UTC is the day before in the user's zone.
+  const TIMED_KINDS = {
+    "timed in the user's zone": () => fakeDateTime(START_DAY, 9),
+    'timed in another zone, east of UTC': () => fakeDateTime(START_DAY, 9, 0, EAST),
+    'timed in UTC': () => fakeDateTime(START_DAY, 9, 0, UTC_ZONE),
+    'floating': () => fakeDateTime(START_DAY, 9, 0, FLOATING_ZONE),
+  };
+  const anHourLater = (k) => (k.startsWith('changed') ? k : new Date(Date.parse(k) + 3600 * 1000).toISOString());
+  function timedSeries(makeStart) {
+    const start = makeStart();
+    return seriesFrom(start, [`FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${untilAfter(start, 60)}`], {
+      extraItems: [
+        recurrenceDate('EXDATE', after(start, 4)), recurrenceDate('EXDATE', after(start, 20)),
+        recurrenceDate('RDATE', after(start, 5, 2)), recurrenceDate('RDATE', after(start, 22, 2)),
+      ],
+      exceptions: [changedAt(start, 6), changedAt(start, 18)],
+    });
+  }
+  // The edit's `timezone` says how to read its new times: the same instant,
+  // given as its digits in EAST. A floating time stands for the user's clock.
+  const digitsOf = (d) => `${d.year}-${pad2(d.month + 1)}-${pad2(d.day)}T${pad2(d.hour)}:${pad2(d.minute)}:${pad2(d.second)}`;
+  const inEastDigits = (dt) => digitsOf((dt.timezone === FLOATING_ZONE ? fakeCalDateTime({ ...dt, timezone: LOCAL_ZONE }) : dt).getInTimezone(EAST));
+  const loadKnowingEast = (master) => {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const { cal } = loaded.ctx.ChromeUtils.importESModule(CAL_UTILS);
+    cal.timezoneService.getTimezone = (tzid) => (tzid === EAST.tzid ? EAST : null);
+    return loaded;
+  };
+  for (const [kind, makeStart] of Object.entries(TIMED_KINDS)) {
+    // A new end lengthens the event: its start and occurrences stay.
+    for (const [change, newTime, field, newValue, moved] of [
+      ['a new start', (at) => ({ start_iso: startIsoOf(after(at, 0, 1)) }), 'startDate', (at) => after(at, 0, 1), anHourLater],
+      ['a new end', (at) => ({ end_iso: startIsoOf(after(at, 0, 2)) }), 'endDate', (at) => after(at, 0, 2), (k) => k],
+      ['a new start given in another zone', (at) => ({ start_iso: inEastDigits(after(at, 0, 1)), timezone: EAST.tzid }), 'startDate', (at) => after(at, 0, 1), anHourLater],
+    ]) {
+      it(`a series ${kind}: ${change} an hour later for this and the following occurrences keeps the series' frame and dates`, async () => {
+        const start = makeStart();
+        const ruleDates = timedSeries(makeStart).recurrenceInfo.getRecurrenceItems()[0].getOccurrences(start, start, RANGE[1], 0);
+        const at = ruleDates[6];
+        const plain = await split(timedSeries(makeStart), startIsoOf(at), {});
+        expect(plain.res, plain.res.error).toMatchObject({ ok: true });
+        const following = occurrenceKeys(plain.fresh);
+        expect(following.filter((k) => k.startsWith('changed '))).toHaveLength(1);
+        const { api, calendar } = loadKnowingEast(timedSeries(makeStart));
+        const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(at), ...newTime(at) });
+        expect(res, res.error).toMatchObject({ ok: true });
+        const capped = calendar.items.find((it) => it.id === 'ser');
+        const fresh = calendar.items.find((it) => it.id !== 'ser');
+        expect(fresh[field].timezone).toBe(start.timezone);
+        expect(fresh[field].toString()).toBe(newValue(at).toString());
+        expect(occurrenceKeys(capped)).toEqual(occurrenceKeys(plain.capped));
+        expect(occurrenceKeys(fresh)).toEqual(following.map(moved).sort());
+      });
+
+      it(`a series ${kind}: ${change} an hour later for the whole series keeps the series' frame and dates`, async () => {
+        const start = makeStart();
+        const master = timedSeries(makeStart);
+        const before = occurrenceKeys(master);
+        expect(before.filter((k) => k.startsWith('changed '))).toHaveLength(2);
+        const { api, calendar } = loadKnowingEast(master);
+        const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...newTime(start) });
+        expect(res, res.error).toMatchObject({ ok: true });
+        const saved = calendar.items[0];
+        expect(saved[field].timezone).toBe(start.timezone);
+        expect(saved[field].toString()).toBe(newValue(start).toString());
+        expect(occurrenceKeys(saved)).toEqual(before.map(moved).sort());
+      });
+    }
+  }
+
+  // A change to all-day uses the given date as read: put in the series' zone,
+  // west of the user's, its midnight would fall on the day before.
+  it('a timed series in a zone west of the user\'s, changed to all-day, starts on the given day', async () => {
+    const start = fakeDateTime(START_DAY, 9, 0, WEST);
+    const whole = loadCalendarBridge(bridgeUrl, { items: [seriesFrom(start, ['FREQ=DAILY'])] });
+    const res = await whole.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', start_iso: `${START_DAY}T00:00:00`, end_iso: '2099-10-02T00:00:00', all_day: true });
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(whole.calendar.items[0].startDate.isDate).toBe(true);
+    expect(whole.calendar.items[0].startDate.toString()).toBe('20991001');
+    const following = loadCalendarBridge(bridgeUrl, { items: [seriesFrom(start, ['FREQ=DAILY'])] });
+    const res2 = await following.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: startIsoOf(after(start, 14)), start_iso: '2099-10-15T00:00:00', end_iso: '2099-10-16T00:00:00', all_day: true });
+    expect(res2, res2.error).toMatchObject({ ok: true });
+    const fresh = following.calendar.items.find((it) => it.id !== 'ser');
+    expect(fresh.startDate.isDate).toBe(true);
+    expect(fresh.startDate.toString()).toBe('20991015');
+  });
+
+  // Thunderbird prints a UTC RECURRENCE-ID with a trailing Z (ical.js Time.toString).
+  it('a recurrence_id with Z names that instant, and the following part keeps the series\' zone', async () => {
+    const utcSeries = seriesFrom(fakeDateTime(START_DAY, 17, 0, UTC_ZONE), ['FREQ=DAILY']);
+    const inUtc = await split(utcSeries, '2099-10-15T17:00:00Z');
+    expect(inUtc.res).toMatchObject({ ok: true });
+    expect(inUtc.fresh.startDate.toString()).toBe('20991015T170000Z');
+    const local = series('FREQ=DAILY');
+    const before = occurrenceKeys(local);
+    const instant = new Date(2099, 9, 15, 17).toISOString().replace('.000', '');
+    const inLocal = await split(local, instant);
+    expect(inLocal.res).toMatchObject({ ok: true });
+    expect(inLocal.fresh.startDate.toString()).toBe('20991015T170000');
+    expect(inLocal.fresh.startDate.timezone).toBe(local.startDate.timezone);
+    expect([...occurrenceKeys(inLocal.capped), ...occurrenceKeys(inLocal.fresh)].sort()).toEqual(before);
+  });
+
+  it('a new rule for the following part replaces a COUNT rule with no occurrence before the split', async () => {
+    // 2099-10-01 is a Thursday: the rule's first occurrence is Monday 10-05.
+    const master = series('FREQ=WEEKLY;BYDAY=MO;COUNT=3', { extraItems: [recurrenceItem('RDATE', '20991003T170000')] });
+    const { res, fresh } = await split(master, '2099-10-03T17:00:00', { recurrence: { freq: 'WEEKLY', byDay: ['SA'] } });
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(fresh)).toEqual(['FREQ=WEEKLY;BYDAY=SA']);
+  });
+
+  it('excluded dates in the edit go to the part they fall in, one at the split to the following part', async () => {
+    const { res, capped, fresh } = await split(series('FREQ=DAILY'), '2099-10-15T17:00:00', { exdates_add: ['2099-10-10T17:00:00', '2099-10-15T17:00:00', '2099-10-20T17:00:00'] });
+    expect(res).toMatchObject({ ok: true });
+    expect(itemValues(capped, 'EXDATE')).toEqual(['20991010T170000']);
+    expect(itemValues(fresh, 'EXDATE')).toEqual(['20991015T170000', '20991020T170000']);
+  });
+
+  // An excluded date names an occurrence as the read tools show it, by its
+  // start; Thunderbird removes an occurrence by its RECURRENCE-ID, which for a
+  // changed occurrence is its slot, not its start.
+  it('an excluded date that names a changed occurrence by its start removes it from the part it is in', async () => {
+    const start = fakeDateTime(START_DAY, 17);
+    const master = seriesFrom(start, ['FREQ=DAILY'], { exceptions: [changedAt(start, 6), changedAt(start, 17)] });
+    const before = occurrenceKeys(master);
+    const early = `changed ${instantKey(fakeDateTime('2099-10-07', 19))} Moved`;
+    const late = `changed ${instantKey(fakeDateTime('2099-10-18', 19))} Moved`;
+    expect(before).toEqual(expect.arrayContaining([early, late]));
+    const { res, capped, fresh } = await split(master, '2099-10-15T17:00:00', { exdates_add: ['2099-10-07T19:00:00', '2099-10-18T19:00:00'] });
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(itemValues(capped, 'EXDATE')).toEqual(['20991007T170000']);
+    expect(itemValues(fresh, 'EXDATE')).toEqual(['20991018T170000']);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before.filter((k) => k !== early && k !== late));
+  });
+
+  it('an excluded date names an occurrence of the series before the edit, so a new time for the following part moves it with the part', async () => {
+    const master = series('FREQ=DAILY');
+    const { res, fresh } = await split(master, '2099-10-15T17:00:00', { start_iso: '2099-10-15T18:00:00', exdates_add: ['2099-10-20T17:00:00'] });
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(itemValues(fresh, 'EXDATE')).toEqual(['20991020T180000']);
+    const days = occurrenceKeys(fresh).map((k) => k.slice(0, 10));
+    expect(days).not.toContain(new Date(2099, 9, 20, 18).toISOString().slice(0, 10));
+    expect(days).toContain(new Date(2099, 9, 21, 18).toISOString().slice(0, 10));
+  });
+
+  // A changed occurrence is named by its own start, as the read tools show it,
+  // and the series divides at its slot (its RECURRENCE-ID), where it belongs.
+  it('a split at a changed occurrence names it by its start and divides the series at its slot', async () => {
+    const start = fakeDateTime(START_DAY, 17);
+    const master = seriesFrom(start, ['FREQ=DAILY'], { exceptions: [changedAt(start, 14)] });
+    const before = occurrenceKeys(master);
+    const { res, capped, fresh } = await split(master, '2099-10-15T19:00:00', {});
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(fresh.startDate.toString()).toBe('20991015T170000');
+    expect(fresh.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991015T170000']);
+    expect(capped.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+  });
+
+  // The last occurrence: the following part is that occurrence alone. (West of
+  // UTC, an all-day series bounded by a DATE UNTIL has no occurrence on that
+  // day in Thunderbird, as above.)
+  for (const [kind, makeStart, until, recurrenceId] of [
+    ['timed', () => fakeDateTime(START_DAY, 17), utcUntil('2099-10-20', 17), '2099-10-20T17:00:00'],
+    ['all-day, made in a zone east of UTC', () => fakeDate(START_DAY, EAST), '20991020', '2099-10-20T00:00:00'],
+  ]) {
+    it(`a split at the last occurrence of a series bounded by UNTIL (${kind}) keeps that occurrence, once`, async () => {
+      const master = seriesFrom(makeStart(), [`FREQ=DAILY;UNTIL=${until}`]);
+      const before = occurrenceKeys(master);
+      const { res, capped, fresh } = await split(master, recurrenceId);
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(occurrenceKeys(fresh)).toHaveLength(1);
+      expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+    });
+  }
+
+  it('when the following part cannot be added, the earlier part is put back as it was', async () => {
+    const master = series('FREQ=DAILY');
+    const rules = ruleValues(master);
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [master] });
+    loaded.calendar.addItem = async () => { throw new Error('the calendar is read-only'); };
+    const res = await loaded.api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: '2099-10-15T17:00:00', patch: { title: 'Renamed' } });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(/failed to create new series/);
+    expect(loaded.calendar.items).toHaveLength(1);
+    expect(loaded.calendar.items[0]).toBe(master);
+    expect(ruleValues(loaded.calendar.items[0])).toEqual(rules);
+  });
+
+  it('a this-and-following edit gives the following part its new end, and its all-day change', async () => {
+    const timed = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY')] });
+    const res = await timed.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00', start_iso: '2099-10-15T17:00:00', end_iso: '2099-10-15T19:30:00' });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const fresh = timed.calendar.items.find((it) => it.id !== 'ser');
+    expect(fresh.startDate.toString()).toBe('20991015T170000');
+    expect(fresh.endDate.toString()).toBe('20991015T193000');
+    const allDay = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY')] });
+    const res2 = await allDay.api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00', start_iso: '2099-10-15T00:00:00', end_iso: '2099-10-16T00:00:00', all_day: true });
+    expect(res2, res2.error).toMatchObject({ ok: true });
+    const fresh2 = allDay.calendar.items.find((it) => it.id !== 'ser');
+    expect(fresh2.startDate.isDate).toBe(true);
+    expect(fresh2.startDate.toString()).toBe('20991015');
+  });
+
+  it('a new rule for the following part does not let a time that is not an occurrence through', async () => {
+    const master = series('FREQ=DAILY');
+    const rules = ruleValues(master);
+    const { res, calendar, modifications } = await split(master, '2099-10-15T18:00:00', { recurrence: { freq: 'WEEKLY', byDay: ['SA'] } });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(/not the start of an occurrence of this series/);
+    expect(modifications).toEqual([]);
+    expect(calendar.items).toEqual([master]);
+    expect(ruleValues(master)).toEqual(rules);
+  });
+
+  it('excluded dates given with a this-and-following edit go to the part they fall in', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY')] });
+    const res = await api.modifyCalendarEvent({
+      event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00',
+      exdates_add: ['2099-10-10T17:00:00', '2099-10-15T17:00:00', '2099-10-20T17:00:00'],
+    });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const capped = calendar.items.find((it) => it.id === 'ser');
+    const fresh = calendar.items.find((it) => it.id !== 'ser');
+    expect(itemValues(capped, 'EXDATE')).toEqual(['20991010T170000']);
+    expect(itemValues(fresh, 'EXDATE')).toEqual(['20991015T170000', '20991020T170000']);
+  });
+
+  // A RECURRENCE-ID can be stored in another zone than the series' start (some
+  // servers write UTC). 20:00 in Vancouver is the next day in UTC and in a zone
+  // east of UTC, so a following part started in that zone would repeat on other
+  // weekdays.
+  for (const [zoneName, zone] of [['UTC', UTC_ZONE], ['a zone east of UTC', EAST]]) {
+    it(`a split at a changed occurrence whose RECURRENCE-ID is stored in ${zoneName} keeps the series' zone and weekdays`, async () => {
+      const start = fakeDateTime(START_DAY, 20);
+      const rid = fakeDateTime('2099-10-15', 20).getInTimezone(zone);
+      expect(rid.day).toBe(16);
+      const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-15', 21), endDate: fakeDateTime('2099-10-15', 22), recurrenceId: rid });
+      const master = seriesFrom(start, ['FREQ=WEEKLY;BYDAY=TH'], { exceptions: [moved] });
+      const before = occurrenceKeys(master);
+      expect(before.filter((k) => k.startsWith('changed '))).toHaveLength(1);
+      const { res, capped, fresh } = await split(master, '2099-10-15T21:00:00', {});
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(fresh.startDate.timezone).toBe(start.timezone);
+      expect(fresh.startDate.toString()).toBe('20991015T200000');
+      expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+    });
+  }
+
+  // RFC 5545 needs EXDATE, RDATE, UNTIL and RECURRENCE-ID in DTSTART's value
+  // type, and moving the start between all-day and timed keeps theirs.
+  const toAllDay = { recurrence_id: '2099-10-15T17:00:00', start_iso: '2099-10-15T00:00:00', end_iso: '2099-10-16T00:00:00', all_day: true };
+  const toTimed = { recurrence_id: '2099-10-15T00:00:00', start_iso: '2099-10-15T09:00:00', end_iso: '2099-10-15T10:00:00' };
+  for (const [name, make, change] of [
+    ['to all-day, carrying an excluded date', () => series('FREQ=DAILY', { extraItems: [recurrenceItem('EXDATE', '20991020T170000')] }), toAllDay],
+    ['to all-day, carrying an added date', () => series('FREQ=DAILY', { extraItems: [recurrenceItem('RDATE', '20991020T190000')] }), toAllDay],
+    ['to all-day, carrying a changed occurrence', () => series('FREQ=DAILY', { exceptions: [fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-20', 19), endDate: fakeDateTime('2099-10-20', 20), recurrenceId: fakeDateTime('2099-10-20', 17) })] }), toAllDay],
+    ['to all-day, carrying an end date', () => series(`FREQ=DAILY;UNTIL=${utcUntil('2099-10-30', 17)}`), toAllDay],
+    ['to timed, carrying an excluded date', () => series('FREQ=DAILY', { allDay: true, extraItems: [recurrenceItem('EXDATE', '20991020')] }), toTimed],
+  ]) {
+    it(`a this-and-following change ${name} is refused and writes nothing`, async () => {
+      const master = make();
+      const rules = ruleValues(master);
+      const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', ...change });
+      expect(res).toMatchObject({ ok: false });
+      expect(res.error).toMatch(/between all-day and timed/);
+      expect(modifications).toEqual([]);
+      expect(calendar.items).toEqual([master]);
+      expect(ruleValues(master)).toEqual(rules);
+    });
+  }
+
+  it('a this-and-following change to all-day with a new rule writes that rule as a date, so an end date is no bar', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series(`FREQ=DAILY;UNTIL=${utcUntil('2099-10-30', 17)}`)] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', ...toAllDay, recurrence: { freq: 'DAILY', until: '2099-10-30' } });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const fresh = calendar.items.find((it) => it.id !== 'ser');
+    expect(fresh.startDate.isDate).toBe(true);
+    expect(ruleValues(fresh)).toEqual(['FREQ=DAILY;UNTIL=20991030']);
+  });
+
+  // `recurrence: {}` ends the series at the split, leaving one event built from
+  // the series there.
+  it('ending the series at an occurrence that was changed on its own is refused, so its changes are kept', async () => {
+    const start = fakeDateTime(START_DAY, 17);
+    const master = seriesFrom(start, ['FREQ=DAILY'], { exceptions: [changedAt(start, 14)] });
+    const rules = ruleValues(master);
+    const { res, calendar, modifications } = await split(master, '2099-10-15T19:00:00', { recurrence: {} });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.error).toMatch(/changed on its own/);
+    expect(modifications).toEqual([]);
+    expect(calendar.items).toEqual([master]);
+    expect(ruleValues(master)).toEqual(rules);
+  });
+
+  // A changed occurrence is carried into the following part with its own time
+  // and details, so a change to them there would not reach it: the named
+  // occurrence would stay as it was while the edit reports success.
+  for (const [name, change] of [
+    ['a new start', { start_iso: '2099-10-15T18:00:00' }],
+    ['its own start restated', { start_iso: '2099-10-15T19:00:00' }],
+    ['a new end', { end_iso: '2099-10-15T21:00:00' }],
+    ['a new title', { title: 'Renamed' }],
+    ['a new location', { location: 'Room 9' }],
+    ['a new description', { description: 'New agenda' }],
+    ['a new busy/free', { transparency: 'free' }],
+    ['a changed attendee list', { attendees: [{ email: 'ana@example.com' }] }],
+  ]) {
+    it(`a this-and-following change with ${name} at an occurrence changed on its own is refused and writes nothing`, async () => {
+      const start = fakeDateTime(START_DAY, 17);
+      const master = seriesFrom(start, ['FREQ=DAILY'], { exceptions: [changedAt(start, 14)] });
+      const rules = ruleValues(master);
+      const { res, calendar, modifications } = await split(master, '2099-10-15T19:00:00', change);
+      expect(res).toMatchObject({ ok: false });
+      expect(res.error).toMatch(/changed on its own, so this change would not reach it/);
+      expect(modifications).toEqual([]);
+      expect(calendar.items).toEqual([master]);
+      expect(ruleValues(master)).toEqual(rules);
+    });
+  }
+
+  it('a this-and-following change of only the dates at an occurrence changed on its own keeps that occurrence as it was', async () => {
+    const start = fakeDateTime(START_DAY, 17);
+    const master = seriesFrom(start, ['FREQ=DAILY'], { exceptions: [changedAt(start, 14)] });
+    const removed = instantKey(fakeDateTime('2099-10-20', 17));
+    const before = occurrenceKeys(master);
+    expect(before).toContain(removed);
+    const { res, capped, fresh } = await split(master, '2099-10-15T19:00:00', { exdates_add: ['2099-10-20T17:00:00'], all_day: false });
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(occurrenceKeys(fresh)).toContain(`changed ${instantKey(fakeDateTime('2099-10-15', 19))} Moved`);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before.filter((k) => k !== removed));
+  });
+
+  // The edit tool fills in the organizer from the calendar for every edit that
+  // names one, so the organizer is no change of the occurrence's.
+  it('a this-and-following edit at an occurrence changed on its own that only excludes dates is made, with the organizer the edit tool fills in', async () => {
+    const start = fakeDateTime(START_DAY, 17);
+    const master = seriesFrom(start, ['FREQ=DAILY'], { exceptions: [changedAt(start, 14)] });
+    const removed = instantKey(fakeDateTime('2099-10-20', 17));
+    const before = occurrenceKeys(master);
+    expect(before).toContain(removed);
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({
+      event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T19:00:00',
+      organizer_email: 'organizer@example.com', exdates_add: ['2099-10-20T17:00:00'],
+    });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const capped = calendar.items.find((it) => it.id === 'ser');
+    const fresh = calendar.items.find((it) => it.id !== 'ser');
+    expect(occurrenceKeys(fresh)).toContain(`changed ${instantKey(fakeDateTime('2099-10-15', 19))} Moved`);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before.filter((k) => k !== removed));
+  });
+
+  it('ending the series at an ordinary occurrence leaves that occurrence as one event', async () => {
+    const { res, capped, fresh } = await split(series('FREQ=DAILY'), '2099-10-15T17:00:00', { recurrence: {} });
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(fresh.recurrenceInfo).toBeNull();
+    expect(fresh.startDate.toString()).toBe('20991015T170000');
+    expect(ruleValues(capped)[0]).toMatch(/^FREQ=DAILY;UNTIL=/);
+  });
+
+  const exrule = { icalProperty: { propertyName: 'EXRULE', value: 'FREQ=WEEKLY;BYDAY=SA' } };
+  for (const [name, make, recurrenceId, error] of [
+    ['a time that is not an occurrence', () => series('FREQ=DAILY'), '2099-10-15T18:00:00', /not the start of an occurrence of this series/],
+    ['an occurrence\'s time in the series\' zone rather than the user\'s', () => series('FREQ=DAILY', { startDate: fakeDateTime(START_DAY, 17, 0, EAST) }), '2099-10-15T17:00:00', /not the start of an occurrence of this series/],
+    ['the slot of a changed occurrence, where nothing starts now', () => series('FREQ=DAILY', { exceptions: [fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-15', 19), endDate: fakeDateTime('2099-10-15', 20), recurrenceId: fakeDateTime('2099-10-15', 17) })] }), '2099-10-15T17:00:00', /not the start of an occurrence of this series/],
+    ['a time two occurrences start at', () => series('FREQ=DAILY', { exceptions: [fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-15', 17), endDate: fakeDateTime('2099-10-15', 18), recurrenceId: fakeDateTime('2099-10-14', 17) })] }), '2099-10-15T17:00:00', /more than one occurrence/],
+    ['an occurrence of one rule but not of the other', () => series('FREQ=WEEKLY;BYDAY=TH', { extraItems: [recurrenceItem('RRULE', 'FREQ=MONTHLY;BYMONTHDAY=15')] }), '2099-10-22T17:00:00', /not an occurrence of this series' rule FREQ=MONTHLY;BYMONTHDAY=15/],
+    ['the first occurrence', () => series('FREQ=DAILY'), '2099-10-01T17:00:00', /edit the whole series/],
+    ['a time before the series', () => series('FREQ=DAILY'), '2099-09-20T17:00:00', /not the start of an occurrence of this series/],
+    ['a series that cancels occurrences by a rule', () => series('FREQ=DAILY', { extraItems: [exrule] }), '2099-10-15T17:00:00', /EXRULE/],
+    // ical.js reads the leading digits of a count; the split reads only digits.
+    ['a series whose count cannot be read', () => series('FREQ=DAILY;COUNT=30x'), '2099-10-15T17:00:00', /count cannot be read \(COUNT=30x\)/],
+    ['a series whose end cannot be read', () => series('FREQ=DAILY;UNTIL=2099x'), '2099-10-15T17:00:00', /end cannot be read \(UNTIL=2099x\)/],
+    ['a series repeated only by added dates', () => {
+      const ev = fakeEvent({ id: 'ser', title: 'Sync', startDate: fakeDateTime(START_DAY, 17), endDate: fakeDateTime(START_DAY, 18) });
+      ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RDATE', '20991015T170000'), recurrenceItem('RDATE', '20991020T170000')]);
+      ev.recurrenceInfo.item = ev;
+      return ev;
+    }, '2099-10-15T17:00:00', /no parseable RRULE/],
+  ]) {
+    it(`a split at ${name} is refused and writes nothing`, async () => {
+      const master = make();
+      const rules = ruleValues(master);
+      const { res, calendar, modifications } = await split(master, recurrenceId);
+      expect(res).toMatchObject({ ok: false });
+      expect(res.error).toMatch(error);
+      expect(modifications).toEqual([]);
+      expect(calendar.items).toEqual([master]);
+      expect(ruleValues(master)).toEqual(rules);
+    });
+  }
+});
+
+// An edit of one occurrence names it the way the read tools show it: by its
+// start, in the user's zone. A time no occurrence starts at is refused and
+// writes nothing: Thunderbird's getOccurrenceFor would make one up for any time,
+// and saving it adds an occurrence the series never had.
+describe('an edit of one occurrence names it by its start, and refuses a time that is not one', () => {
+  for (const withCalendarHint of [true, false]) {
+    const hint = withCalendarHint ? { calendar_id: 'cal1' } : {};
+    const label = withCalendarHint ? 'with the calendar' : 'searching every calendar';
+    it(`a time no occurrence starts at is refused and writes nothing (${label})`, async () => {
+      const master = series('FREQ=DAILY');
+      const { api, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const res = await api.modifyCalendarEvent({ event_id: 'ser', ...hint, edit_scope: 'this_only', recurrence_id: '2099-10-15T18:00:00', title: 'Renamed' });
+      expect(res).toMatchObject({ ok: false });
+      expect(res.error).toMatch(/not the start of an occurrence of this series/);
+      expect(modifications).toEqual([]);
+      expect(master.recurrenceInfo.getExceptionIds()).toEqual([]);
+    });
+
+    // 17:00 in a zone nine hours east of UTC is 01:00 the same day in Vancouver
+    // (UTC-7 in October).
+    it(`an occurrence's start in the user's zone edits that occurrence alone (${label})`, async () => {
+      const master = series('FREQ=DAILY', { startDate: fakeDateTime(START_DAY, 17, 0, EAST) });
+      const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const res = await api.modifyCalendarEvent({ event_id: 'ser', ...hint, edit_scope: 'this_only', recurrence_id: '2099-10-15T01:00:00', title: 'Renamed' });
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(modifications).toHaveLength(1);
+      const saved = calendar.items[0];
+      expect(saved.title).toBe('Sync');
+      expect(saved.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991015T170000']);
+      const [rid] = saved.recurrenceInfo.getExceptionIds();
+      expect(saved.recurrenceInfo.getExceptionFor(rid).title).toBe('Renamed');
+    });
+
+    it(`an all-day occurrence of a series made in a zone west of the user's is named by its date (${label})`, async () => {
+      const master = series('FREQ=DAILY', { startDate: fakeDate(START_DAY, WEST) });
+      const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const res = await api.modifyCalendarEvent({ event_id: 'ser', ...hint, edit_scope: 'this_only', recurrence_id: '2099-10-15T00:00:00', title: 'Renamed' });
+      expect(res, res.error).toMatchObject({ ok: true });
+      expect(modifications).toHaveLength(1);
+      const saved = calendar.items[0];
+      expect(saved.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991015']);
+      const [rid] = saved.recurrenceInfo.getExceptionIds();
+      expect(saved.recurrenceInfo.getExceptionFor(rid).title).toBe('Renamed');
+    });
+
+    // Two calendars hold the id. The first that holds it decides: a time its
+    // series refuses is not looked for in the other calendar's copy.
+    it(`a time the first calendar's series refuses is not edited in another calendar's copy (${label})`, async () => {
+      const first = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY')] });
+      const other = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY', { startDate: fakeDateTime(START_DAY, 18) })], calendarId: 'cal2' });
+      const { cal } = first.ctx.ChromeUtils.importESModule(CAL_UTILS);
+      cal.manager.getCalendars = () => [first.calendar, other.calendar];
+      const res = await first.api.modifyCalendarEvent({ event_id: 'ser', ...hint, edit_scope: 'this_only', recurrence_id: '2099-10-15T18:00:00', title: 'Renamed' });
+      expect(res).toMatchObject({ ok: false });
+      expect(res.error).toMatch(/not the start of an occurrence of this series/);
+      expect(first.modifications).toEqual([]);
+      expect(other.modifications).toEqual([]);
+    });
+  }
+
+  // The edit's `timezone` is for its new times. recurrence_id is the start the
+  // read tools printed, in the user's zone.
+  function inEastZone(master) {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const { cal } = loaded.ctx.ChromeUtils.importESModule(CAL_UTILS);
+    cal.timezoneService.getTimezone = (tzid) => (tzid === EAST.tzid ? EAST : null);
+    return loaded;
+  }
+
+  it('an edit of one occurrence given another zone still names it by its start in the user\'s zone', async () => {
+    const { api, calendar } = inEastZone(series('FREQ=DAILY'));
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_only', recurrence_id: '2099-10-15T17:00:00', timezone: EAST.tzid, title: 'Renamed' });
+    expect(res, res.error).toMatchObject({ ok: true });
+    expect(calendar.items[0].recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991015T170000']);
+  });
+
+  it('a split given another zone still names the occurrence by its start in the user\'s zone', async () => {
+    const { api, calendar } = inEastZone(series('FREQ=DAILY'));
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00', timezone: EAST.tzid, title: 'Renamed' });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const fresh = calendar.items.find((it) => it.id !== 'ser');
+    expect(fresh.startDate.toString()).toBe('20991015T170000');
+  });
+});
+
+// exdates_add names each occurrence by its start, as the read tools show it,
+// in the series as it is before the edit. Thunderbird removes an occurrence by
+// its RECURRENCE-ID, which for a changed occurrence is its slot, not its start.
+describe('excluded dates name occurrences by their start, as the read tools show them', () => {
+  const RANGE = [fakeDate('2099-09-01'), fakeDate('2100-01-01')];
+  const starts = (item) => seriesOccurrences(item, ...RANGE).map(({ start }) => start.toString());
+  const exdates = (item) => item.recurrenceInfo.getRecurrenceItems().filter((r) => r.icalProperty.propertyName === 'EXDATE').map((r) => r.icalProperty.value);
+  // The day's 17:00 occurrence, moved to 19:00.
+  const movedOn = (day) => fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime(day, 19), endDate: fakeDateTime(day, 20), recurrenceId: fakeDateTime(day, 17) });
+
+  it('an edit of the whole series that excludes a changed occurrence by its start removes it', async () => {
+    const master = series('FREQ=DAILY', { exceptions: [movedOn('2099-10-07')] });
+    expect(starts(master)).toContain('20991007T190000');
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', exdates_add: ['2099-10-07T19:00:00'] });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const saved = calendar.items[0];
+    expect(exdates(saved)).toEqual(['20991007T170000']);
+    expect(starts(saved)).not.toContain('20991007T190000');
+    expect(starts(saved)).not.toContain('20991007T170000');
+    expect(starts(saved)).toContain('20991008T170000');
+  });
+
+  // Thunderbird applies an EXDATE only to a query whose range holds its date
+  // (CalRecurrenceInfo.calculateDates), so a changed occurrence moved to
+  // another day is excluded only once its changed copy is removed too: a query
+  // over the day it moved to must not show it.
+  const movedAway = (slotDay, toDay) => fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime(toDay, 19), endDate: fakeDateTime(toDay, 20), recurrenceId: fakeDateTime(slotDay, 17) });
+  const startsOn = (item, day, nextDay) => seriesOccurrences(item, fakeDateTime(day, 0), fakeDateTime(nextDay, 0)).map(({ start }) => start.toString()).sort();
+
+  it('an edit of the whole series that excludes a changed occurrence moved to another day removes it from that day too', async () => {
+    const master = series('FREQ=DAILY', { exceptions: [movedAway('2099-10-07', '2099-10-10')] });
+    expect(startsOn(master, '2099-10-10', '2099-10-11')).toEqual(['20991010T170000', '20991010T190000']);
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', exdates_add: ['2099-10-10T19:00:00'] });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const saved = calendar.items[0];
+    expect(exdates(saved)).toEqual(['20991007T170000']);
+    expect(saved.recurrenceInfo.getExceptionFor(fakeDateTime('2099-10-07', 17))).toBeNull();
+    expect(startsOn(saved, '2099-10-10', '2099-10-11')).toEqual(['20991010T170000']);
+    expect(starts(saved)).not.toContain('20991007T170000');
+  });
+
+  it('a this-and-following edit that excludes changed occurrences moved to other days removes each from its part, and from the day it moved to', async () => {
+    const master = series('FREQ=DAILY', { exceptions: [movedAway('2099-10-07', '2099-10-10'), movedAway('2099-10-18', '2099-10-21')] });
+    expect(startsOn(master, '2099-10-21', '2099-10-22')).toEqual(['20991021T170000', '20991021T190000']);
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({
+      event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00',
+      exdates_add: ['2099-10-10T19:00:00', '2099-10-21T19:00:00'],
+    });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const capped = calendar.items.find((it) => it.id === 'ser');
+    const fresh = calendar.items.find((it) => it.id !== 'ser');
+    expect(exdates(capped)).toEqual(['20991007T170000']);
+    expect(exdates(fresh)).toEqual(['20991018T170000']);
+    expect(capped.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(fresh.recurrenceInfo.getExceptionIds()).toEqual([]);
+    expect(startsOn(capped, '2099-10-10', '2099-10-11')).toEqual(['20991010T170000']);
+    expect(startsOn(fresh, '2099-10-21', '2099-10-22')).toEqual(['20991021T170000']);
+  });
+
+  it('an edit of the whole series that moves its start excludes the occurrence it named before the move', async () => {
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=DAILY')] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', start_iso: '2099-10-01T18:00:00', exdates_add: ['2099-10-20T17:00:00'] });
+    expect(res, res.error).toMatchObject({ ok: true });
+    const saved = calendar.items[0];
+    expect(exdates(saved)).toEqual(['20991020T180000']);
+    expect(starts(saved)).not.toContain('20991020T180000');
+    expect(starts(saved)).toContain('20991021T180000');
+  });
+
+  for (const [name, args] of [
+    ['the whole series', {}],
+    ['one occurrence', { edit_scope: 'this_only', recurrence_id: '2099-10-15T17:00:00' }],
+    ['this and following', { edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00' }],
+  ]) {
+    it(`an excluded date no occurrence starts at is refused and writes nothing (${name})`, async () => {
+      const master = series('FREQ=DAILY');
+      const rules = ruleValues(master);
+      const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...args, title: 'Renamed', exdates_add: ['2099-10-20T17:00:00', '2099-10-20T18:00:00'] });
+      expect(res).toMatchObject({ ok: false });
+      expect(res.error).toMatch(/exdates_add 2099-10-20T18:00:00 is not the start of an occurrence of this series/);
+      expect(modifications).toEqual([]);
+      expect(calendar.items).toEqual([master]);
+      expect(master.title).toBe('Sync');
+      expect(ruleValues(master)).toEqual(rules);
+      expect(exdates(master)).toEqual([]);
+      expect(master.recurrenceInfo.getExceptionIds()).toEqual([]);
+    });
+  }
 });
 
 // Thunderbird's schema layer hands an experiment every optional property the

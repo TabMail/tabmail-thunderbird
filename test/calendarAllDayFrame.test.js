@@ -399,7 +399,8 @@ describe('edit round-trip: the recurrence token the read tool shows selects that
       expect(read.ok).toBe(true);
       const text = read.results;
       expect(field(text, 'start_iso')).toBe(`${shownDay}T00:00:00`);
-      expect(field(text, 'recurrence_id')).toBe(`${DAY}T00:00:00`);
+      // The occurrence is named by its start, the value the edit tools take.
+      expect(field(text, 'recurrence_id')).toBe(`${shownDay}T00:00:00`);
       // Feed the shown fields back through the edit tool's normalizer into the bridge.
       const args = editExports.normalizeArgs({
         event_id: field(text, 'event_id'),
