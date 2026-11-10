@@ -46,8 +46,7 @@
             "calendarId": { "type": "string" },
             "calendarName": { "type": "string" },
             "isRecurring": { "type": "boolean" },
-            "recurrenceIdIsFirst": { "type": "boolean", "optional": true, "description": "With recurrence_id: whether it names the series' first occurrence." },
-            "recurrenceIdError": { "type": "string", "optional": true, "description": "With recurrence_id: why it names no single occurrence of the series." },
+            "recurrenceIdIsFirst": { "type": "boolean", "optional": true, "description": "With recurrence_id: whether it names the series' first occurrence; absent when it names no single occurrence." },
             "recurrence": { "type": "object", "optional": true, "additionalProperties": { "type": "any" }, "description": "The rule in the create/edit tools' fields (freq, interval, count, until as the last day, byDay, byMonthDay, byMonth, wkst; other = parts those fields cannot express); null when the event does not repeat." },
             "transparency": { "type": "string", "description": "Event availability: 'busy' or 'free'" },
             "error": { "type": "string", "description": "Error message if ok is false" }
@@ -213,7 +212,7 @@
                 }
               },
               "exdates_add": { "type": "array", "optional": true, "items": { "type": "string" }, "description": "EXDATEs to add (ISO start datetimes of occurrences)." },
-              "check_only": { "type": "boolean", "optional": true, "description": "Run the edit up to its last refusal before a write and write nothing. ok: false carries the refusal." }
+              "check_only": { "type": "boolean", "optional": true, "description": "Run the edit, every refusal included, up to its first write and write nothing (a split through splitRecurringEvent's check). ok: false carries the refusal." }
             },
             "required": ["event_id"]
           }
@@ -244,7 +243,7 @@
               "calendar_id": { "type": "string", "optional": true, "description": "Optional calendar ID. If omitted, the bridge scans all calendars to locate the event." },
               "recurrence_id": { "type": "string", "description": "ISO8601 start datetime of the first occurrence that should belong to the NEW series." },
               "timezone": { "type": "string", "optional": true, "description": "Optional IANA timezone identifier for interpreting naive ISO timestamps." },
-              "check_only": { "type": "boolean", "optional": true, "description": "Build the split up to the all-day, time-move and invitation refusals and write nothing. ok: false carries the refusal." },
+              "check_only": { "type": "boolean", "optional": true, "description": "Build both parts, every refusal included, up to the first write and write nothing. ok: false carries the refusal." },
               "patch": {
                 "type": "object",
                 "optional": true,
