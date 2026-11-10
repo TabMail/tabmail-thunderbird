@@ -681,42 +681,6 @@ describe('persistentChatStore', () => {
       expect(msgs[1].thinking).toBeUndefined();
     });
 
-    it('eviction pattern: removeThinking cleans up evicted assistant thinking', async () => {
-      // Save thinking for assistant turns that will be evicted
-      await saveThinking('evict-a1', 'thought for a1');
-      await saveThinking('evict-a2', 'thought for a2');
-      // Simulate the eviction cleanup pattern used in converse.js
-      const evictedTurns = [
-        { _id: 'evict-u1', role: 'user', content: 'msg' },
-        { _id: 'evict-a1', role: 'assistant', content: 'resp1' },
-        { _id: 'evict-a2', role: 'assistant', content: 'resp2' },
-      ];
-      const evictedAssistantIds = evictedTurns
-        .filter(t => t.role === 'assistant' && t._id)
-        .map(t => t._id);
-      await removeThinking(evictedAssistantIds);
-      // Verify thinking is gone for evicted turns
-      const after = await loadThinkingBatch(['evict-a1', 'evict-a2']);
-      expect(after['evict-a1']).toBeNull();
-      expect(after['evict-a2']).toBeNull();
-    });
-
-    it('eviction pattern: user-only evictions do not call removeThinking', async () => {
-      await saveThinking('keep-a1', 'should survive');
-      // Simulate evicting only user turns
-      const evictedTurns = [
-        { _id: 'evict-u1', role: 'user', content: 'msg' },
-      ];
-      const evictedAssistantIds = evictedTurns
-        .filter(t => t.role === 'assistant' && t._id)
-        .map(t => t._id);
-      // Empty array — removeThinking is a no-op
-      await removeThinking(evictedAssistantIds);
-      // Verify unrelated thinking survives
-      const after = await loadThinkingBatch(['keep-a1']);
-      expect(after['keep-a1']).toBe('should survive');
-    });
-
     it('clearAllThinking removes all thinking entries from IDB', async () => {
       await saveThinking('t1', 'thought 1');
       await saveThinking('t2', 'thought 2');

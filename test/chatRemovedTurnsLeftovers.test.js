@@ -8,9 +8,9 @@
 // window that was open during the removal saved its own map afterwards. The
 // turns that stay keep their thinking and references.
 //
-// This runs the real settings page (prompts/prompts.html) for Delete Old and
-// Clear All, the real background writer of the stored turns, and the real
-// chat-window start (initAndGreetUser), against one storage that, as
+// This runs the real settings page (prompts/prompts.html) for Delete Old, its
+// Clear All function, the real background writer of the stored turns, and the
+// real chat-window start (initAndGreetUser), against one storage that, as
 // Thunderbird's does, keeps copies.
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -30,8 +30,10 @@ vi.mock('../agent/modules/idbStorage.js', () => ({
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
 vi.mock('../agent/modules/inboxContext.js', () => ({ buildInboxContext: async () => '[]' }));
 vi.mock('../agent/modules/promptGenerator.js', () => ({ getUserKBPrompt: async () => '' }));
+// The reminders the window's start puts in its system prompt.
+const reminders = vi.hoisted(() => ({ list: [] }));
 vi.mock('../agent/modules/reminderBuilder.js', () => ({
-  buildReminderList: async () => ({ reminders: [] }), getRandomReminders: async () => ({ reminders: [] }), formatRemindersForDisplay: () => '',
+  buildReminderList: async () => ({ reminders: reminders.list }), getRandomReminders: async () => ({ reminders: [] }), formatRemindersForDisplay: () => '',
 }));
 vi.mock('../agent/modules/knowledgebase.js', () => ({ periodicKbUpdate: async () => {} }));
 vi.mock('../agent/modules/proactiveCheckin.js', () => ({ consumePendingProactiveMessage: async () => null }));
@@ -115,6 +117,7 @@ beforeEach(async () => {
     runtime: { getManifest: () => ({ version: 'synthetic' }), sendMessage: vi.fn(msg => background(msg)) },
   };
   idb.data.clear();
+  reminders.list = [];
   const store = await import('../chat/modules/persistentChatStore.js');
   await store.saveThinking('old-assistant', 'old thinking');
   await store.saveThinking('recent-assistant', 'recent thinking');
@@ -210,4 +213,29 @@ it('Clear All with the chat window open: what the window saves back afterwards i
   const reopened = await reopenWindow();
   expect(windowReferences(reopened.ctx)).toEqual({ [n]: 'new-message' });
   expect(savedReferences()).toEqual({ [n]: 'new-message' });
+});
+
+// Every id the window's start hands out, to the stored turns' references and
+// to the reminders in its system prompt, still names its message once the
+// start is done, and the next message named gets an id of its own.
+async function expectStartIdsKept() {
+  reminders.list = [{ uniqueId: 'reminded-message', content: 'Reply to the reminded message', dueDate: null }];
+  const { ctx, ids } = await openWindow();
+  const [reminder] = JSON.parse(ctx.agentConverseMessages[0].user_reminders_json);
+  const handedOut = { 1: 'old-message', 2: 'recent-message', [reminder.uniqueId]: 'reminded-message' };
+  expect(Object.keys(handedOut)).toHaveLength(3);
+  const next = ids.toNumericId('other-message');
+  expect(Object.keys(handedOut)).not.toContain(String(next));
+  for (const [n, id] of Object.entries(handedOut)) expect(ids.toRealId(Number(n))).toBe(id);
+}
+
+it('the window\'s start keeps every id it hands out: the stored turns\' references and the system prompt\'s reminders', async () => {
+  await expectStartIdsKept();
+});
+
+it('the window\'s start keeps the references of stored turns that needed the references migration', async () => {
+  delete data.chat_refs_migration_v1;
+  for (const t of data.chat_turns) delete t._refs;
+  await expectStartIdsKept();
+  expect(data.chat_refs_migration_v1).toBeTruthy();
 });

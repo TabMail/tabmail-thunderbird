@@ -177,13 +177,14 @@ describe('a removed turn takes its thinking with it', () => {
     ['a change that adds nothing', { update: [{ _id: 'b', _ts: 200 }] }, ['a', 'b', 'c']],
   ])('%s', async (_, op, kept) => {
     await expect(change(op)).resolves.toMatchObject({ applied: true });
-    expect(stored()).toEqual(expect.arrayContaining(kept));
+    expect(stored()).toEqual(kept);
     expect(await thinkingOf(['a', 'b', 'c'])).toEqual(kept);
   });
 
   it('the budget dropping turns to fit a new one, keeping the new one\'s', async () => {
     await store.saveThinking('big', 'big thinking');
-    await change({ append: [{ _id: 'big', _ts: 400, _chars: 25000 }] });
+    // The answer counts only what the change itself removed, never the budget's drops.
+    await expect(change({ append: [{ _id: 'big', _ts: 400, _chars: 25000 }] })).resolves.toEqual({ applied: true, removed: 0 });
     expect(stored()).toEqual(['big']);
     expect(await thinkingOf(['a', 'b', 'c', 'big'])).toEqual(['big']);
   });

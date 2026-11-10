@@ -9,7 +9,8 @@
 // the chat window and Chat History send theirs as runtime messages
 // (persistentChatStore.changeTurns), the background's own code calls
 // enqueueTurnsChange. The changes run one at a time on one in-memory chain, in
-// the order they arrive, each as read, change, write, then answer. No writer
+// the order they arrive, each as read, change, write, remove the removed
+// turns' stored thinking, then answer. No writer
 // ever replaces the turns with an older copy, so a Clear All is never undone.
 //
 // Nothing is kept across a restart: a change still running when Thunderbird

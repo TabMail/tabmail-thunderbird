@@ -94,7 +94,9 @@ export async function initAndGreetUser() {
 
   // Step 3c: The id map keeps only the stored turns' references. Turns removed
   // elsewhere (Chat History's Delete Old or Clear All, including one done while
-  // a window was open and saved its map afterwards) release theirs here.
+  // a window was open and saved its map afterwards) release theirs here. It runs
+  // after step 3b gives older turns their references and before anything hands
+  // out an id (step 5's reminders), so it never frees an id still in use.
   buildRefCounts(persistedTurns);
 
   // Step 4: Build inbox context and user name (needed for both returning and first-time)
