@@ -88,13 +88,19 @@ function nativeBridge(rule, start, zone) {
   const ev = fakeEvent({ id: 'ser', title: 'Series', startDate: start, endDate: end });
   ev.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', rule)]);
   ev.recurrenceInfo.item = ev;
-  const loaded = loadCalendarBridge(resolve('chat/experiments/tmCalendar/tmCalendar.sys.mjs'), { items: [ev] });
+  return nativeLoaded([ev], zone);
+}
+
+// The bridge with Thunderbird's own dates, the user in `zone`.
+function nativeLoaded(items, zone) {
+  const loaded = loadCalendarBridge(resolve('chat/experiments/tmCalendar/tmCalendar.sys.mjs'), { items });
   const fakeCc = loaded.ctx.Cc;
   loaded.ctx.Cc = new Proxy({}, {
     get: (_t, key) => (key === '@mozilla.org/calendar/datetime;1' ? { createInstance: () => new NativeDateTime() } : fakeCc[key]),
   });
   const { cal } = loaded.ctx.ChromeUtils.importESModule('resource:///modules/calendar/calUtils.sys.mjs');
   cal.timezoneService.UTC = new NativeZone(ICAL.Timezone.utcTimezone);
+  cal.timezoneService.floating = new NativeZone(ICAL.Timezone.localTimezone);
   cal.timezoneService.defaultTimezone = new NativeZone(zone);
   return loaded;
 }
@@ -244,5 +250,26 @@ describe('recurrence read and restate against Thunderbird\'s own date and recurr
       expect(read.other, rule).toBe(/BYSETPOS=[^;]+/.exec(rule)[0]);
       expect(after, rule).toBeNull();
     }
+  });
+});
+
+// ical.js ends a series at the first occurrence after UNTIL, compared by
+// instant, and reads a bare-date UNTIL at offset 0: an all-day start written in
+// the user's zone west of UTC is after its own day's UNTIL, so the last day was
+// dropped (#303). Written as a date with no zone, as Thunderbird's event dialog
+// writes one, the series keeps it.
+describe('an all-day series the assistant creates, against Thunderbird\'s own date and recurrence code', () => {
+  it('west of UTC, a last day written is the series\' last occurrence', async () => {
+    const loaded = nativeLoaded([], pacific);
+    const res = await loaded.api.createCalendarEvent({
+      calendar_id: 'cal1', title: 'Offsite', start_iso: '2099-10-01T00:00:00', end_iso: '2099-10-02T00:00:00', all_day: true,
+      recurrence: { freq: 'DAILY', until: '2099-10-31' },
+    });
+    expect(res.ok).toBe(true);
+    const [item] = loaded.calendar.items;
+    expect({ isDate: item.startDate.isDate, zone: item.startDate.timezone.tzid }).toEqual({ isDate: true, zone: 'floating' });
+    const days = expanded(storedRule(loaded), item.startDate);
+    expect(days).toHaveLength(31);
+    expect(days.at(-1)).toBe('20991031');
   });
 });

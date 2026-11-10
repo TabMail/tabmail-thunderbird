@@ -132,8 +132,9 @@ same design (tabmail-ios #421).
     RECURRENCE-ID, or the split is refused before anything is written. ical.js compares a rule's UNTIL by instant
     (`Time.compare`, `toUnixTime`: an occurrence in its start's zone, a DATE at midnight there; a bare-date or
     floating UNTIL at offset 0), so an all-day start that carries a zone west of UTC falls after a bare-date UNTIL
-    of its own day and the cap at the day before the split drops it. Only all-day dates the assistant wrote carry a
-    zone (#303); a split whose day before is no occurrence (a weekly rule) is unaffected.
+    of its own day and the cap at the day before the split drops it. Only all-day dates the assistant wrote before
+    #303 carry a zone (since #303 it writes them floating, `asAllDayDate`, 034), or another app's; a split whose day
+    before is no occurrence (a weekly rule) is unaffected.
   - **Dates and changed occurrences:** EXDATEs, RDATEs and changed occurrences before the split stay on the earlier
     part; those from the split on move to the following part (an RDATE is not bounded by UNTIL, so one left on the
     earlier part would still happen). The following part's recurrence info is a clone of the series' (Thunderbird's
@@ -151,7 +152,8 @@ same design (tabmail-ios #421).
     a new start moved the series into it: its rule expanded there (a Thursday east of UTC can be a Wednesday in
     the user's zone), and `onStartDateChange`'s offset between a floating and a zoned start was the user's UTC
     offset plus the change, so excluded, added and changed dates no longer met the occurrences (#301). An all-day
-    value, and an edit to or from all day, are written as read. `all_day` alone
+    value (an edit to all day included) is the date as read with no zone (`asAllDayDate`, #303, note 034); an
+    edit from all day to timed is written as read. `all_day` alone
     changes nothing: the start and end it applies to come from `start_iso`/`end_iso`, so a change to or from
     all-day comes with them (and `all_day` is not one of the fields that make a split at a changed occurrence
     refused, below).
@@ -279,4 +281,4 @@ same design (tabmail-ios #421).
   spring change at midnight, for a start in the first hour, keeps one more occurrence (#280, writer; left out of that
   sweep). A monthly and a yearly rule with a stored UNTIL read their last day and restate to the same occurrences.
 - Bridge accessor calls (`boundFromIcs`, `occurrenceInstantOn`, `untilForRRule` → `getTimezoneService`;
-  `asShown`, `toCalIDateTimeInFrameOf` → `getTimezoneService`; `writeRuleItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.
+  `asShown`, `asAllDayDate`, `toCalIDateTimeInFrameOf` → `getTimezoneService`; `writeRuleItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.
