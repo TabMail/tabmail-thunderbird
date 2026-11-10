@@ -270,26 +270,25 @@ describe('the attendees\' answers on the following part', () => {
     });
   }
 
-  // A start restated in the user's zone is written there, so a series kept in
-  // another zone is relabelled at the same instant. Its later occurrences then
-  // follow the user's daylight saving time: from 2099-11-01 (the end of
-  // daylight time in Vancouver) they fall an hour from the series' own, which
-  // the answers were given for.
+  // A start restated in the user's zone is written in the series' own zone at
+  // the same instant, so its later occurrences stay where the answers were
+  // given for them, across the user's daylight saving change on 2099-11-01.
   const RANGE = [fakeDateTime('2099-09-01', 0, 0, UTC_ZONE), fakeDateTime('2100-01-01', 0, 0, UTC_ZONE)];
   const instants = (item) => seriesOccurrences(item, ...RANGE).map(({ start }) => start.nativeTime);
-  it('are asked again for a series in another zone when the start is restated in the user\'s zone, which moves later occurrences', async () => {
+  it('are kept for a series in another zone when the start is restated in the user\'s zone, and no later occurrence moves', async () => {
     const start = fakeDateTime(START_DAY, 17, 0, EAST);
     const seriesInstants = new Set(instants(series({ start })));
     // 17:00 at UTC+9 is 08:00 UTC: 01:00 in Vancouver (daylight time in October).
     const { res, fresh } = await split(series({ start }), { start_iso: '2099-10-15T01:00:00' }, { recurrenceId: '2099-10-15T01:00:00' });
     expect(res, res.error).toMatchObject({ ok: true });
-    const moved = instants(fresh).filter((t) => !seriesInstants.has(t));
-    expect(moved.length).toBeGreaterThan(0);
-    expect(entries(fresh)).toEqual(ASKED_AGAIN);
+    expect(fresh.startDate.timezone).toBe(EAST);
+    expect(instants(fresh).length).toBeGreaterThan(10);
+    expect(instants(fresh).filter((t) => !seriesInstants.has(t))).toEqual([]);
+    expect(entries(fresh)).toEqual(SERIES_ENTRIES);
   });
 
   // An all-day series is split and named by its date; a floating one by its
-  // own digits, and a start restated in the user's zone makes it zoned.
+  // own digits, and a start restated in the user's zone keeps it floating.
   for (const [label, makeStart, recurrenceId, patch, expected] of [
     ['kept for an all-day series whose day is restated', () => fakeDate(START_DAY), '2099-10-15T00:00:00',
       { all_day: true, start_iso: '2099-10-15T00:00:00', end_iso: '2099-10-16T00:00:00' }, () => SERIES_ENTRIES],
@@ -297,8 +296,8 @@ describe('the attendees\' answers on the following part', () => {
       { all_day: true, start_iso: '2099-10-16T00:00:00', end_iso: '2099-10-17T00:00:00' }, () => ASKED_AGAIN],
     ['kept for a floating series given a new title', () => fakeDateTime(START_DAY, 17, 0, FLOATING_ZONE), SPLIT_AT,
       { title: 'Renamed' }, () => SERIES_ENTRIES],
-    ['asked again for a floating series whose start is restated in the user\'s zone', () => fakeDateTime(START_DAY, 17, 0, FLOATING_ZONE), SPLIT_AT,
-      { start_iso: SPLIT_AT }, () => ASKED_AGAIN],
+    ['kept for a floating series whose start is restated in the user\'s zone', () => fakeDateTime(START_DAY, 17, 0, FLOATING_ZONE), SPLIT_AT,
+      { start_iso: SPLIT_AT }, () => SERIES_ENTRIES],
   ]) {
     it(`are ${label}`, async () => {
       const { res, fresh } = await split(series({ start: makeStart() }), patch, { recurrenceId });

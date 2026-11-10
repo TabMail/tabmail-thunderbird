@@ -255,9 +255,9 @@ same design (tabmail-ios #421).
   and parameter, reminder, category, attachment, the organizer and each attendee entry; the edit's fields change only
   what they name; the series' organizer stays whatever `organizer_email` the edit tool fills in (through `modifyCalendarEvent`, also at a changed occurrence with only excluded dates); a changed attendee list; and
   the attendee-answer rule, kept for each non-rescheduling field and a restated value (all-day and floating series
-  included), asked again of all but the organizer for each rescheduling one, a series relabelled into the user's zone
-  at the same instant included (its later occurrences move at the user's daylight saving change, checked with
-  `seriesOccurrences`). The harness models CalItemBase for it: `fakeAttendee` (CalAttendee with `clone`), attendees,
+  included, and a start restated in the user's zone, which is written in the series' own zone or kept floating, so no
+  later occurrence moves, checked with `seriesOccurrences`), asked again of all but the organizer for each
+  rescheduling one, a start given the same digits in the user's zone (another instant) included. The harness models CalItemBase for it: `fakeAttendee` (CalAttendee with `clone`), attendees,
   organizer, alarms, categories and attachments cloned with the event, property parameters, `setProperty` of an empty
   value deleting the property, and `descriptionText` as DESCRIPTION dropping its `ALTREP`.
 - MONTHLY folds are pinned by occurrence too: `monthlyDays` enumerates RFC 5545 days independently of the bridge, and
