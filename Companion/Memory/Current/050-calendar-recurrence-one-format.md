@@ -23,8 +23,8 @@ same design (tabmail-ios #421).
   don't expand them"; "Only expand the first recurrence rule"); from that change on an EXRULE reads back as a
   negative EXRULE, `isRuleItem` skips it, a restatement keeps it, and it never reaches `other`. So a series another app wrote with two RRULEs (RFC 5545: SHOULD NOT) or an RFC 2445 EXRULE repeats
   by both. Each further rule is shown in `other` as `RRULE:<value>`, so restating the fields (which writes one rule)
-  is refused and `{}` clears them all. A split of such a series keeps only the capped first rule on the earlier part
-  (#265). Correction: this note used to say an
+  is refused and `{}` clears them all. A split of such a series divides every rule at the split (#265, below).
+  Correction: this note used to say an
   EXRULE is never expanded and is kept by a write; Thunderbird's own source says otherwise. RRULE is a
   promoted property of `calItemBase`: Thunderbird neither imports it into the item's properties when parsing nor
   serializes it, so `getProperty("RRULE")` returns only an in-memory echo a caller set, which survives `clone()` and
@@ -88,19 +88,42 @@ same design (tabmail-ios #421).
   - otherwise it is 23:59:59 in the event's zone, rendered as UTC.
 
   So the named day's occurrence stays in the series, and reading the stored value gives the same day back.
-- **One writer of a rule, `setRuleOnItem`,** used by an edit (`applyRecurrenceToItem`), the split's cap and the
-  split's new series. It replaces only the RRULE items in the item's own `recurrenceInfo` (iterating a copy:
-  `getRecurrenceItems` is live, and deleting while iterating skips the next item) and creates a `recurrenceInfo`
-  only when there is none. On an edit, EXDATE/RDATE items and changed occurrences stay with the series; they used
-  to be dropped by a fresh `recurrenceInfo`. The split's cap still starts from a fresh `recurrenceInfo` (below).
-- **Split ("this and following"):** unchanged in what it keeps. The capped earlier part gets a fresh
-  `recurrenceInfo` holding only the capped rule (through `setRuleOnItem`), so it keeps none of its EXDATEs, RDATEs,
-  changed occurrences or further rules, and no RDATE from the split on (one is not bounded by UNTIL) is left beside
-  the new series. The new series starts as a fresh event with only a rule. Keeping the earlier part's exceptions and
-  rules and carrying later ones over is #265. The capped rule is not read back and compared with the one written: Thunderbird re-serializes a rule
-  in its own part order (FREQ, COUNT, INTERVAL above 1, the BY-parts, UNTIL, then WKST unless MO), so such a
-  comparison refused every split of a rule with a week start. A rebuild of the earlier part that throws refuses the
-  split before anything is written.
+- **One writer of a rule value, `writeRuleItem`,** which writes a value into one rule item in place (so the rule
+  keeps its position; the first is the one the fields describe). `setRuleOnItem` (an edit, through
+  `applyRecurrenceToItem`, and a new rule for a split's following part) creates one rule through it and replaces
+  only the RRULE items in the item's own `recurrenceInfo` (iterating a copy: `getRecurrenceItems` is live, and
+  deleting while iterating skips the next item), creating a `recurrenceInfo` only when there is none. On an edit,
+  EXDATE/RDATE items and changed occurrences stay with the series; they used to be dropped by a fresh
+  `recurrenceInfo`. The split rewrites each rule item through `writeRuleItem` (below).
+- **Split ("this and following") keeps the series (#265).** The two parts together make exactly the occurrences the
+  series made. Both are built before anything is written:
+  - **Split point:** `recurrence_id` is read in the series' own frame (`occurrenceIdInSeries`: its digits in the
+    start's zone, floating, or a DATE for an all-day series), as the read tools show it (Thunderbird prints a UTC
+    RECURRENCE-ID with a trailing `Z`, read as that instant and converted to the series' zone); the following part
+    starts there, in the series' zone. A split at or before the first occurrence is refused (edit the whole series).
+  - **Each rule (`splitRule`):** a rule whose UNTIL is before the split stays on the earlier part unchanged and is
+    not carried on; a COUNT rule whose count is used up before the split likewise. Otherwise the earlier part's copy
+    is capped (UNTIL/COUNT dropped, `UNTIL` = split minus one second, or the day before for an all-day series) and
+    the following part's copy keeps UNTIL, with COUNT reduced to the occurrences still to come (`getOccurrences`
+    from the start up to the split). A rule is expanded from its event's start, so a carried rule must make an
+    occurrence at the split (`aligned`, checked with `getOccurrences` over [split, just after]); otherwise the split
+    is refused, since the following part would not keep its dates. The split must be an occurrence of the series:
+    one a rule carries on from, or an added date (RDATE). A new rule for the following part (`recurrence`) replaces
+    the carried rules, so neither check applies to it.
+  - **Dates and changed occurrences:** EXDATEs, RDATEs and changed occurrences before the split stay on the earlier
+    part; those from the split on move to the following part (an RDATE is not bounded by UNTIL, so one left on the
+    earlier part would still happen). The following part's recurrence info is a clone of the series' (Thunderbird's
+    `CalRecurrenceInfo.clone` clones items and exceptions) with `item` set to the new event, which makes it the
+    changed occurrences' parent; the calendar's id assignment renames them (`onIdChange`).
+  - **A time change** (`start_iso`/`end_iso`/`all_day`) applies to the following part only, after its recurrence is
+    attached, so Thunderbird's `onStartDateChange` moves its EXDATEs, RDATEs, each non-COUNT rule's UNTIL and the
+    changed occurrences' RECURRENCE-IDs by the same amount, as an edit of a whole series does.
+  - **`exdates_add`** go to the part they fall in.
+  - **Refused, writing nothing:** an EXRULE (a negative rule, comm-central 161+) the split cannot keep; a rule
+    whose end or count cannot be read; a rule item that cannot be rewritten (an immutable item throws).
+  - The capped rule is not read back and compared with the one written: Thunderbird re-serializes a rule in its own
+    part order (FREQ, COUNT, INTERVAL above 1, the BY-parts, UNTIL, then WKST unless MO), so such a comparison
+    refused every split of a rule with a week start.
 - **Restated rules with `other` parts are refused,** for every edit scope: an edit that restates the rule of a
   series whose stored rule has `other` parts is refused before the card by `otherPartsRefusal`, because restating
   would drop those parts. The stored rule is fetched with the edit's `calendar_id`; when it cannot be read, a
@@ -114,8 +137,14 @@ same design (tabmail-ios #421).
 - `test/calendarRecurrenceFormat.test.js` runs under TZ=America/Vancouver, with the real bridge in `node:vm` via `test/helpers/calendarBridgeHarness.js`. The harness's `fakeRecurrenceInfo` and `recurrenceItem` model RRULE/RDATE/EXDATE items by `icalProperty.propertyName` (RDATE/EXDATE with their `date`), changed occurrences (`exceptions`), and a LIVE `getRecurrenceItems` list; `fixedZone` and `FLOATING_ZONE` model a zone other than the user's and floating time; the calendar has `addItem` and creatable events, so the real create and split run.
 - The read and round-trip tests assert OCCURRENCES, not strings: `lastDayAdmitted` expands a daily series the way ical.js does, independently of the bridge, for four start kinds (user's zone, another zone east of UTC, floating, all-day) and bounds from every writer. A test that compares the fields read back with the fields written stays green when both sides use the same wrong frame.
 - The harness models what Thunderbird does with a rule: `fakeRecurrenceRule` re-serializes its value as
-  CalRecurrenceRule does (`canonicalRule`), a cloned event clones its recurrence info, and appending to a recurrence
-  info without a base item throws as `appendRecurrenceItem` does.
+  CalRecurrenceRule does (`canonicalRule`), a cloned event clones its recurrence info (each item and changed
+  occurrence), and appending to a recurrence info without a base item throws as `appendRecurrenceItem` does. A rule
+  expands through Thunderbird's own ical.js (`getOccurrences`: the start's digits stepped, read in the start's frame,
+  UNTIL compared as CalDateTime does); setting a master's start runs `onStartDateChange` and setting its id
+  `onIdChange`; changed occurrences are keyed by `getRidKey`. `seriesOccurrences` expands a whole series (rules,
+  RDATEs less EXDATEs, changed occurrences at their own time) as CalRecurrenceInfo does.
+- Split tests assert OCCURRENCES: for each start kind and for an unbounded, a COUNT and an UNTIL rule with EXDATEs,
+  RDATEs and changed occurrences on both sides of the split, the two parts' occurrences together equal the series'.
 - MONTHLY folds are pinned by occurrence too: `monthlyDays` enumerates RFC 5545 days independently of the bridge, and
   a rule read and written back must name the same days over 24 months, or restating it must be refused.
 - `test/calendarTools.test.js` covers the refusal wiring before the card, and that a valid rule reaches the card

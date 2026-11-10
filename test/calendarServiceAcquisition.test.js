@@ -264,14 +264,15 @@ const EXPECTED_ACCESSOR_CALL_SITES = [
   "getAPI > setGoogleInvitePolicy :: getCalendarManager",
   "getAPI > splitRecurringEvent :: getCalendarManager",
   "listCalendarsInternal :: getCalendarManager",
+  "occurrenceIdInSeries :: getTimezoneService",
   "occurrenceInstantOn :: getTimezoneService",
   "queryCalendarItemsInternal :: getCalendarManager",
   "sendCalendarInvitations :: getIcsService",
-  "setRuleOnItem :: getIcsService",
   "toCalIDateTime :: getTimezoneService",
   "toEpochMsUTC :: getTimezoneService",
   "untilDayFromIcs :: getTimezoneService",
   "untilForRRule :: getTimezoneService",
+  "writeRuleItem :: getIcsService",
 ];
 
 // Executes the real file as a classic script, exactly as Thunderbird's

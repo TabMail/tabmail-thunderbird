@@ -525,15 +525,28 @@ function isRuleItem(r) {
   try { return String(r?.icalProperty?.propertyName || "").toUpperCase() === "RRULE"; } catch (_) { return false; }
 }
 
+// A series' rule cancelling occurrences (EXRULE). Thunderbird keeps one as a
+// negative rule from comm-central bug 2082832 on (see ruleValuesOfItem).
+function isNegativeRuleItem(r) {
+  try { return String(r?.icalProperty?.propertyName || "").toUpperCase() === "EXRULE"; } catch (_) { return false; }
+}
+
+// Writes `value` into one rule item, in place, so the rule keeps its position
+// among the series' rules (the first is the one the tools' fields describe).
+// Every writer of a rule value goes through here.
+function writeRuleItem(rule, value) {
+  const prop = getIcsService().createIcalProperty("RRULE");
+  prop.value = value;
+  rule.icalProperty = prop;
+}
+
 // Writes `value` as the item's rule. Replaces only the RRULE items in the item's
 // own recurrence info, so its excluded dates (EXDATE), added dates (RDATE) and
 // changed occurrences stay with the series; creates the recurrence info when the
-// item has none. Every writer of a rule goes through here.
+// item has none.
 function setRuleOnItem(item, value) {
-  const prop = getIcsService().createIcalProperty("RRULE");
-  prop.value = value;
   const rule = Cc["@mozilla.org/calendar/recurrence-rule;1"].createInstance(Ci.calIRecurrenceRule);
-  rule.icalProperty = prop;
+  writeRuleItem(rule, value);
   let rinfo = item.recurrenceInfo;
   if (rinfo) {
     // A copy: the native list is live, and deleting from it while iterating
@@ -547,6 +560,72 @@ function setRuleOnItem(item, value) {
     item.recurrenceInfo = rinfo;
   }
   rinfo.appendRecurrenceItem(rule);
+}
+
+// The occurrence a recurrence_id names, as a RECURRENCE-ID of `master`'s series.
+// The read tools show a RECURRENCE-ID as Thunderbird prints it: its digits in
+// its own frame (the series' start's zone, floating, or a DATE for an all-day
+// series), with a trailing `Z` when that frame is UTC. So the digits are read
+// back in the series' frame, not in the user's zone, and a `Z` value as UTC.
+// Null when they are not a date.
+function occurrenceIdInSeries(iso, master) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(Z?))?$/i.exec(String(iso || "").trim());
+  if (!m) return null;
+  const [, y, mo, d, hh = "00", mi = "00", ss = "00", z = ""] = m;
+  const start = master.startDate;
+  const dt = Cc["@mozilla.org/calendar/datetime;1"].createInstance(Ci.calIDateTime);
+  if (z && !start.isDate) {
+    // A UTC value, in the series' own zone when it has one, so the following
+    // part keeps the series' zone (and its daylight saving changes).
+    dt.resetTo(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mi), Number(ss), getTimezoneService().UTC);
+    const zone = zonedStartZone(master);
+    return zone ? dt.getInTimezone(zone) : dt;
+  }
+  dt.resetTo(Number(y), Number(mo) - 1, Number(d), Number(hh), Number(mi), Number(ss), start.timezone);
+  if (start.isDate) dt.isDate = true;
+  return dt;
+}
+
+// How one rule of `master`'s series divides at `split`, the first occurrence of
+// the following part (#265). `afterSplit` is the next instant after the split,
+// and `cap` the UNTIL value that ends a rule just before it.
+//   - earlier: the rule's value for the earlier part, capped at the split; null
+//     when the rule already ends before it and stays as it is.
+//   - following: its value for the following part; null when it has nothing
+//     left. UNTIL stays, and COUNT becomes the occurrences still to come.
+//   - aligned: whether the split is one of the rule's own occurrences. A rule
+//     is expanded from its event's start, and the following part starts at the
+//     split, so only a rule that makes an occurrence there keeps its dates when
+//     it carries on.
+// `{ error }` when the rule's end or count cannot be read. A rule Thunderbird
+// does not support expands to nothing, so it is never aligned.
+function splitRule(rule, master, split, afterSplit, cap) {
+  const value = String(rule?.icalProperty?.value || "");
+  const parts = value.split(";").map((p) => p.trim()).filter(Boolean);
+  const valueOf = (key) => {
+    const part = parts.find((p) => p.slice(0, p.indexOf("=")).trim().toUpperCase() === key);
+    return part === undefined ? null : part.slice(part.indexOf("=") + 1).trim();
+  };
+  const capped = parts.filter((p) => !/^(UNTIL|COUNT)=/i.test(p)).concat(`UNTIL=${cap}`).join(";");
+  const carriedOn = (following) => ({
+    earlier: capped,
+    following,
+    aligned: rule.getOccurrences(master.startDate, split, afterSplit, 0).length > 0,
+  });
+  const until = valueOf("UNTIL");
+  if (until !== null) {
+    const bound = boundFromIcs(until);
+    if (!bound) return { error: `this series' end cannot be read (UNTIL=${until})` };
+    return bound.nativeTime < split.nativeTime ? { earlier: null, following: null, aligned: false } : carriedOn(value);
+  }
+  const count = valueOf("COUNT");
+  if (count !== null) {
+    if (!/^\d+$/.test(count)) return { error: `this series' count cannot be read (COUNT=${count})` };
+    const left = Number(count) - rule.getOccurrences(master.startDate, master.startDate, split, 0).length;
+    if (!(left > 0)) return { earlier: null, following: null, aligned: false };
+    return carriedOn(parts.map((p) => (/^COUNT=/i.test(p) ? `COUNT=${left}` : p)).join(";"));
+  }
+  return carriedOn(value);
 }
 
 // Sets or clears an item's rule (`setRuleOnItem`). `{}` removes the recurrence.
@@ -1651,7 +1730,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               // Re-pack the LLM-style top-level patch fields into the shape splitRecurringEvent expects.
               const splitPatch = {};
               for (const k of ["title", "location", "description", "transparency", "attendees",
-                               "send_invitations", "organizer_email", "recurrence"]) {
+                               "send_invitations", "organizer_email", "recurrence",
+                               "start_iso", "end_iso", "all_day", "exdates_add"]) {
                 if (details[k] !== undefined) splitPatch[k] = details[k];
               }
               return await tmCalApi.splitRecurringEvent({
@@ -1995,22 +2075,29 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
         },
 
         // splitRecurringEvent — atomic-ish "this and following events" split for a
-        // recurring series. The original (master) series gets capped with UNTIL =
-        // recurrence_id - 1s (no invitation fired to attendees about that), and a
-        // NEW series is created with the same RRULE pattern starting at
-        // recurrence_id, with the caller's `patch` applied on top. Invitations
-        // (if send_invitations=true) fire exactly once, on the new series.
+        // recurring series (#265). The original (master) series becomes the
+        // earlier part: each rule is capped just before recurrence_id (no
+        // invitation fired to attendees about that), and it keeps its excluded
+        // dates, added dates and changed occurrences from before the split. A
+        // NEW series, the following part, starts at recurrence_id with the rest:
+        // each rule that carries on (UNTIL kept, COUNT reduced to the occurrences
+        // still to come) and the dates and changed occurrences from the split on,
+        // with the caller's `patch` applied on top. Together the two parts make
+        // the same occurrences as the series did. Invitations (if
+        // send_invitations=true) fire exactly once, on the new series.
         //
-        // Why a single bridge call: this keeps the "no duplicate notifications"
-        // guarantee in one place. If the new-series creation fails after the
-        // master cap succeeded, we attempt to revert the cap (best-effort).
+        // Both parts are built before anything is written, and a split that
+        // cannot keep the series is refused then. If the new-series creation
+        // fails after the master cap succeeded, we attempt to revert the cap
+        // (best-effort).
         //
         // details = {
-        //   event_id, calendar_id?, recurrence_id (required ISO of the first
-        //   occurrence that should belong to the NEW series), patch (object with
-        //   fields to apply to the new series: title, location, description,
-        //   transparency, attendees, send_invitations, organizer_email),
-        //   timezone?
+        //   event_id, calendar_id?, recurrence_id (required: the RECURRENCE-ID of
+        //   the first occurrence that should belong to the NEW series, as the
+        //   read tools show it), patch (object with fields to apply to the new
+        //   series: title, location, description, transparency, attendees,
+        //   send_invitations, organizer_email, recurrence, start_iso, end_iso,
+        //   all_day, exdates_add), timezone? (for start_iso and end_iso)
         // }
         async splitRecurringEvent(details) {
           try {
@@ -2066,13 +2153,20 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               return { ok: false, error: "event is not recurring — use modifyCalendarEvent for one-off events" };
             }
 
-            // 3. Resolve the split-point datetime in the caller's timezone.
-            const splitDt = toCalIDateTime(splitIso, tzOverride);
+            // 3. The split point: the occurrence recurrence_id names, read in the
+            // series' own frame (occurrenceIdInSeries). The following part
+            // starts there, in the series' zone.
+            const splitDt = occurrenceIdInSeries(splitIso, master);
             if (!splitDt) return { ok: false, error: "invalid recurrence_id format (expected ISO8601)" };
-            splitDt.isDate = !!master.startDate?.isDate;
+            if (splitDt.compare(master.startDate) <= 0) {
+              return { ok: false, error: "recurrence_id is the series' first occurrence: to change every occurrence, edit the whole series (edit_scope 'all')" };
+            }
 
             // 4. Compute UNTIL so the master ends BEFORE `splitDt` (the first
-            // occurrence that should belong to the new series).
+            // occurrence that should belong to the new series), and the bound
+            // just after the split (the next day for an all-day series, in its
+            // own frame; the next second otherwise), which bounds the check that
+            // a rule makes an occurrence at the split.
             //
             // RFC 5545 §3.3.10: the UNTIL value type MUST match DTSTART's.
             //   - All-day master (DTSTART is VALUE=DATE) → UNTIL must be a bare
@@ -2082,63 +2176,81 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             // `toIcsUntil` only emits the date-time form, so the all-day branch
             // formats the bare DATE itself.
             const isAllDayMaster = !!master.startDate?.isDate;
-            let untilValue;
+            const splitMs = splitDt.nativeTime / 1000;
+            const digitsOf = (ms) => {
+              const day = new Date(ms);
+              return [day.getUTCFullYear().toString().padStart(4, "0"), pad2(day.getUTCMonth() + 1), pad2(day.getUTCDate())];
+            };
+            let untilValue, afterSplit;
             if (isAllDayMaster) {
-              const dayBefore = new Date(splitDt.nativeTime / 1000 - 86400 * 1000);
-              const yyyy = dayBefore.getUTCFullYear().toString().padStart(4, "0");
-              const mm = (dayBefore.getUTCMonth() + 1).toString().padStart(2, "0");
-              const dd = dayBefore.getUTCDate().toString().padStart(2, "0");
-              untilValue = `${yyyy}${mm}${dd}`;
+              untilValue = digitsOf(splitMs - 86400 * 1000).join("");
+              afterSplit = occurrenceIdInSeries(digitsOf(splitMs + 86400 * 1000).join("-"), master);
             } else {
-              const untilJsDate = new Date(splitDt.nativeTime / 1000 - 1000);
-              untilValue = toIcsUntil(untilJsDate.toISOString());
+              untilValue = toIcsUntil(new Date(splitMs - 1000).toISOString());
+              afterSplit = boundFromIcs(toIcsUntil(new Date(splitMs + 1000).toISOString()));
             }
-            if (!untilValue) return { ok: false, error: "failed to compute UNTIL value" };
+            if (!untilValue || !afterSplit) return { ok: false, error: "failed to compute UNTIL value" };
 
-            // 5. Read the current RRULE from the master (its recurrence info).
-            const currentRrule = rruleOfItem(master);
-            if (!currentRrule) {
+            // 5. How each rule divides at the split (splitRule). The series'
+            // items are read from its recurrence info, the only place
+            // Thunderbird stores and expands them; `plans` follows their order,
+            // which a clone of the recurrence info keeps.
+            const masterItems = [...(master.recurrenceInfo.getRecurrenceItems({}) || [])];
+            if (masterItems.some(isNegativeRuleItem)) {
+              return { ok: false, error: "this series cancels occurrences by a rule (EXRULE), which a split cannot keep; change it in the calendar app" };
+            }
+            const isSeriesRule = (r) => isRuleItem(r) && /\bFREQ=/i.test(String(r?.icalProperty?.value || ""));
+            if (!masterItems.some(isSeriesRule)) {
               return { ok: false, error: "master event has no parseable RRULE (its recurrenceInfo holds no FREQ=… rule)" };
             }
+            // A new rule for the following part replaces the rules it would
+            // carry on, so they need not make an occurrence at the split.
+            const newRule = !!(patch.recurrence && typeof patch.recurrence === "object");
+            const plans = [];
+            for (const r of masterItems) {
+              if (!isSeriesRule(r)) { plans.push(null); continue; }
+              const plan = splitRule(r, master, splitDt, afterSplit, untilValue);
+              if (plan.error) return { ok: false, error: plan.error };
+              if (!newRule && plan.following && !plan.aligned) {
+                return { ok: false, error: `recurrence_id ${splitIso} is not an occurrence of this series' rule ${String(r.icalProperty.value)}, so the part from there on cannot keep its dates; use the recurrence_id of an occurrence as the read tools show it` };
+              }
+              plans.push(plan);
+            }
+            // The split must be an occurrence of the series: one a rule carries
+            // on from, or an added date.
+            const isAddedDate = (r) => String(r?.icalProperty?.propertyName || "").toUpperCase() === "RDATE";
+            if (!newRule && !plans.some((p) => p && p.following)
+                && !masterItems.some((r) => isAddedDate(r) && r.date && r.date.compare(splitDt) === 0)) {
+              return { ok: false, error: `recurrence_id ${splitIso} is not an occurrence of this series` };
+            }
+            const fromSplitOn = (dt) => !!dt && dt.compare(splitDt) >= 0;
 
-            // 6. Cap the master's RRULE: drop any existing UNTIL/COUNT, append our UNTIL.
-            const cappedRrule = currentRrule
-              .split(";")
-              .filter(p => p && !/^(UNTIL|COUNT)=/i.test(p.trim()))
-              .concat(`UNTIL=${untilValue}`)
-              .join(";");
-
-            // 7. Modify master in-place with capped RRULE.
+            // 6. The earlier part: the series before the split. Each rule is
+            // capped there; excluded and added dates and changed occurrences
+            // from the split on leave it. Nothing is written yet.
             // Note: we don't send any "series-ended" notification here — only the
             // new series triggers an invitation (controlled by patch.send_invitations).
-            // The earlier part gets a fresh recurrence info holding only the
-            // capped rule, so it does not keep its excluded dates, added dates,
-            // changed occurrences or further rules (#265).
             const cappedClone = master.clone();
-            let rebuildError = null;
             try {
-              cappedClone.recurrenceInfo = null;
-              setRuleOnItem(cappedClone, cappedRrule);
+              const earlierInfo = cappedClone.recurrenceInfo;
+              [...(earlierInfo.getRecurrenceItems({}) || [])].forEach((r, i) => {
+                if (plans[i]) {
+                  if (plans[i].earlier) writeRuleItem(r, plans[i].earlier);
+                } else if (fromSplitOn(r.date)) {
+                  earlierInfo.deleteRecurrenceItem(r);
+                }
+              });
+              for (const rid of [...(earlierInfo.getExceptionIds({}) || [])]) {
+                if (fromSplitOn(rid)) earlierInfo.removeExceptionFor(rid);
+              }
             } catch (re) {
-              rebuildError = String(re);
-            }
-            if (rebuildError) {
-              console.error("[tmCalendar] splitRecurringEvent: aborting — rebuild recurrenceInfo failed:", rebuildError);
-              return { ok: false, error: `failed to apply capped RRULE: ${rebuildError}` };
-            }
-            let cappedMaster;
-            try {
-              cappedMaster = await cal.modifyItem(cappedClone, master);
-              tmCalendarDebugLog(`[tmCalendar] splitRecurringEvent: capped master series ${eventId} with UNTIL=${untilValue}`);
-            } catch (e) {
-              return { ok: false, error: `failed to cap master series: ${e}` };
+              console.error("[tmCalendar] splitRecurringEvent: aborting — capping the earlier part failed:", re);
+              return { ok: false, error: `failed to apply capped RRULE: ${re}` };
             }
 
-            // 8. Build the new series.
+            // 7. Build the new series, the following part.
             // Strategy: start from a fresh calIEvent and copy/override fields from
-            // master + patch. The new RRULE matches the master's ORIGINAL pattern
-            // (without UNTIL/COUNT cap) so the new series continues indefinitely
-            // unless the patch overrides recurrence.
+            // master + patch. Its recurrence is the master's from the split on.
             const newEv = Cc["@mozilla.org/calendar/event;1"].createInstance(Ci.calIEvent);
 
             // Title
@@ -2155,10 +2267,6 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               newEnd.addDuration(dur);
               newEv.endDate = newEnd;
             } catch (e) {
-              // Best-effort revert of the master cap before bailing — the new
-              // series creation never happened so the calendar is in a
-              // truncated-but-no-replacement state without recovery.
-              try { await cal.modifyItem(master, cappedMaster); } catch (_) {}
               return { ok: false, error: `failed to compute new start/end: ${e}` };
             }
 
@@ -2223,24 +2331,74 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               console.warn("[tmCalendar] splitRecurringEvent: failed to set organizer:", e);
             }
 
-            // Recurrence — same RRULE pattern as master but without UNTIL/COUNT cap.
-            // (If patch.recurrence is provided, the caller wants a different rule
-            //  for the new series; respect that.)
-            let newRrule;
-            if (patch.recurrence && typeof patch.recurrence === "object") {
-              newRrule = buildRRuleValueFromDetails(patch.recurrence, newEv);
-            } else {
-              newRrule = currentRrule
-                .split(";")
-                .filter(p => p && !/^(UNTIL|COUNT)=/i.test(p.trim()))
-                .join(";");
-            }
-            if (newRrule) {
-              try {
-                setRuleOnItem(newEv, newRrule);
-              } catch (re) {
-                console.warn("[tmCalendar] splitRecurringEvent: rebuild recurrenceInfo for new series failed:", re);
+            // Recurrence — the master's from the split on: each rule that carries
+            // on (splitRule), and the excluded and added dates and changed
+            // occurrences from the split on. The clone's changed occurrences take
+            // the new series as their parent, and its id when the calendar gives
+            // it one (Thunderbird's onIdChange).
+            try {
+              const followingInfo = master.recurrenceInfo.clone();
+              followingInfo.item = newEv;
+              [...(followingInfo.getRecurrenceItems({}) || [])].forEach((r, i) => {
+                if (plans[i]) {
+                  if (newRule) return;
+                  if (!plans[i].following) followingInfo.deleteRecurrenceItem(r);
+                  else if (plans[i].following !== String(r.icalProperty.value)) writeRuleItem(r, plans[i].following);
+                } else if (!fromSplitOn(r.date)) {
+                  followingInfo.deleteRecurrenceItem(r);
+                }
+              });
+              for (const rid of [...(followingInfo.getExceptionIds({}) || [])]) {
+                if (!fromSplitOn(rid)) followingInfo.removeExceptionFor(rid);
               }
+              newEv.recurrenceInfo = followingInfo;
+            } catch (re) {
+              console.error("[tmCalendar] splitRecurringEvent: aborting — building the following part's recurrence failed:", re);
+              return { ok: false, error: `failed to build the new series' recurrence: ${re}` };
+            }
+
+            // The edit's time change, on the following part only. Setting the
+            // start of an event that has a recurrence info makes Thunderbird move
+            // its excluded and added dates, each rule's UNTIL and the changed
+            // occurrences' RECURRENCE-IDs by the same amount (onStartDateChange),
+            // so the part keeps its dates, as an edit of a whole series does.
+            const durationResult = applyDurationPreservation({
+              base: newEv,
+              clone: newEv,
+              patch,
+              toCalIDateTime,
+              editTzOverride: tzOverride,
+              log: (m) => tmCalendarDebugLog("[tmCalendar] splitRecurringEvent: " + m),
+            });
+            // The split still saves; this is the only trace that the event's length changed.
+            if (durationResult.error) {
+              console.warn("[tmCalendar] splitRecurringEvent: duration preservation failed:", durationResult.error);
+            }
+
+            // A new rule for the following part (written in its start's value
+            // type, after the time change); `{}` stops it repeating.
+            if (newRule) {
+              const recRes = applyRecurrenceToItem(newEv, patch.recurrence);
+              if (recRes.error) return { ok: false, error: `failed to apply the new series' recurrence: ${recRes.error}` };
+            }
+
+            // Excluded dates: each goes to the part it falls in, so none is lost.
+            if (Array.isArray(patch.exdates_add)) {
+              for (const iso of patch.exdates_add) {
+                const at = toCalIDateTime(String(iso));
+                if (!at) continue;
+                const part = at.compare(newEv.startDate) >= 0 ? newEv : cappedClone;
+                addExdateToItem(part, String(iso), part.startDate);
+              }
+            }
+
+            // 8. Write the earlier part.
+            let cappedMaster;
+            try {
+              cappedMaster = await cal.modifyItem(cappedClone, master);
+              tmCalendarDebugLog(`[tmCalendar] splitRecurringEvent: capped master series ${eventId} with UNTIL=${untilValue}`);
+            } catch (e) {
+              return { ok: false, error: `failed to cap master series: ${e}` };
             }
 
             // 9. Persist the new series.

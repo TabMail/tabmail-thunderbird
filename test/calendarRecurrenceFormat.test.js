@@ -19,6 +19,9 @@
 //   - the argument shapes Thunderbird delivers (omitted fields null) keep the
 //     rule on an edit that does not mention it;
 //   - a last day after a daylight saving change keeps its frame;
+//   - a "this and following" split keeps the series: the two parts' occurrences
+//     together are the series' (rules, excluded and added dates, changed
+//     occurrences), or the split is refused and writes nothing;
 //   - a rule the tools cannot write is refused before the confirmation card.
 
 // West of UTC, so a UTC UNTIL instant names the NEXT day in UTC digits.
@@ -36,7 +39,7 @@ vi.mock('../chat/modules/chatConfig.js', () => ({ CHAT_SETTINGS: {} }));
 
 const {
   loadCalendarBridge, fakeCalDateTime, fakeDate, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem,
-  fixedZone, FLOATING_ZONE,
+  recurrenceDate, seriesOccurrences, fixedZone, FLOATING_ZONE, UTC_ZONE,
 } = await import('./helpers/calendarBridgeHarness.js');
 const {
   recurrenceArgError, otherPartsRefusal, formatRecurrenceLine, recurrenceMark, OTHER_PARTS_NOTE,
@@ -309,9 +312,10 @@ describe('write: what was read, written back, reads the same', () => {
     const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [series('FREQ=WEEKLY;BYDAY=MO', { extraItems: [exdate, rdate], exceptions: [moved] })] });
     await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence: { freq: 'WEEKLY', byDay: ['TU'] } });
     const info = savedItem(calendar).recurrenceInfo;
-    const items = info.getRecurrenceItems();
-    expect(items).toContain(exdate);
-    expect(items).toContain(rdate);
+    // The saved item holds copies (cloning an item clones its recurrence).
+    const items = info.getRecurrenceItems().map((r) => r.icalProperty);
+    expect(items).toContainEqual(exdate.icalProperty);
+    expect(items).toContainEqual(rdate.icalProperty);
     expect(ruleValues(savedItem(calendar))).toEqual(['FREQ=WEEKLY;BYDAY=TU']);
     expect(info.getExceptionIds().map(String)).toEqual(['20991012T170000']);
     const kept = info.getExceptionFor(fakeDateTime('2099-10-12', 17));
@@ -558,12 +562,16 @@ describe('split: the capped rule and the following part\'s rule', () => {
 
   it('a split whose capped rule cannot be set changes nothing in the calendar', async () => {
     // Thunderbird throws when an immutable item is changed; here the earlier
-    // part's recurrence info cannot be replaced.
+    // part's rule cannot be rewritten.
     const master = series('FREQ=DAILY');
     const clone = master.clone.bind(master);
-    master.clone = () => Object.defineProperty(clone(), 'recurrenceInfo', {
-      get: () => null, set: () => { throw new Error('item is immutable'); },
-    });
+    master.clone = () => {
+      const copy = clone();
+      for (const r of copy.recurrenceInfo.getRecurrenceItems()) {
+        Object.defineProperty(r, 'icalProperty', { get: () => ({ propertyName: 'RRULE', value: 'FREQ=DAILY' }), set: () => { throw new Error('item is immutable'); } });
+      }
+      return copy;
+    };
     const { api, calendar, modifications } = loadCalendarBridge(bridgeUrl, { items: [master] });
     const res = await api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: '2099-10-15T17:00:00', patch: { title: 'Renamed' } });
     expect(res).toMatchObject({ ok: false });
@@ -573,6 +581,220 @@ describe('split: the capped rule and the following part\'s rule', () => {
     expect(calendar.items[0]).toBe(master);
     expect(ruleValues(master)).toEqual(['FREQ=DAILY']);
   });
+});
+
+// #265: a "this and following" split divides the series in two. The earlier
+// part keeps everything before the split and the following part everything
+// from the split on, so together they make exactly the occurrences the series
+// made: every rule (UNTIL kept, COUNT reduced to the occurrences still to come),
+// excluded and added dates, and changed occurrences. Checked by expanding all
+// three with Thunderbird's own recurrence code (seriesOccurrences), for each
+// kind of start.
+describe('split: the two parts make the series\' occurrences', () => {
+  // Wide enough for every occurrence these series make.
+  const RANGE = [fakeDate('2099-09-01'), fakeDate('2101-01-01')];
+  const instantKey = (dt) => (dt.isDate ? dt.toString() : new Date(dt.nativeTime / 1000).toISOString());
+  const occurrenceKeys = (item) => seriesOccurrences(item, ...RANGE)
+    .map(({ start, item: occ }) => (occ.recurrenceId ? `changed ${instantKey(start)} ${occ.title}` : instantKey(start)))
+    .sort();
+  // A value `days` days and `hours` hours after `start`, in its frame.
+  const after = (start, days, hours = 0) => {
+    const dt = fakeCalDateTime({ ...start });
+    dt.addDuration({ inSeconds: days * 86400 + hours * 3600, isNegative: false });
+    return dt;
+  };
+  // An UNTIL value in the start's value type (RFC 5545 3.3.10).
+  const untilAfter = (start, days) => {
+    const dt = after(start, days);
+    return dt.isDate || dt.timezone === FLOATING_ZONE ? dt.toString() : dt.getInTimezone(UTC_ZONE).toString();
+  };
+  // A recurrence_id as the read tools show it: its digits in the series' frame.
+  const ridString = (dt) => `${dt.year}-${pad2(dt.month + 1)}-${pad2(dt.day)}${dt.isDate ? '' : `T${pad2(dt.hour)}:${pad2(dt.minute)}:${pad2(dt.second)}`}`;
+  const changedAt = (start, days, title = 'Moved') => {
+    const rid = after(start, days);
+    const moved = start.isDate ? after(start, days + 1) : after(start, days, 2);
+    return fakeEvent({ id: 'ser', title, startDate: moved, endDate: start.isDate ? after(start, days + 2) : after(start, days, 3), recurrenceId: rid });
+  };
+  function seriesFrom(start, rules, { extraItems = [], exceptions = [] } = {}) {
+    const endDate = after(start, start.isDate ? 1 : 0, start.isDate ? 0 : 1);
+    const ev = fakeEvent({ id: 'ser', title: 'Sync', startDate: start, endDate });
+    ev.recurrenceInfo = fakeRecurrenceInfo([...rules.map((r) => recurrenceItem('RRULE', r)), ...extraItems], { exceptions });
+    ev.recurrenceInfo.item = ev;
+    return ev;
+  }
+  async function split(master, recurrenceId, patch = { title: 'Renamed' }) {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await loaded.api.splitRecurringEvent({ event_id: 'ser', calendar_id: 'cal1', recurrence_id: recurrenceId, patch });
+    return {
+      ...loaded,
+      res,
+      capped: loaded.calendar.items.find((it) => it.id === 'ser'),
+      fresh: loaded.calendar.items.find((it) => it.id !== 'ser'),
+    };
+  }
+  const itemValues = (item, name) => item.recurrenceInfo.getRecurrenceItems().filter((r) => r.icalProperty.propertyName === name).map((r) => r.icalProperty.value);
+
+  for (const [kind, makeStart] of Object.entries(START_KINDS)) {
+    it(`a series ${kind}: the two parts together make the series' occurrences, its changed occurrences included`, async () => {
+      const probe = makeStart();
+      const rules = ['FREQ=DAILY', 'FREQ=DAILY;COUNT=30', `FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=${untilAfter(probe, 60)}`];
+      for (const rule of rules) {
+        const start = makeStart();
+        const timedShift = start.isDate ? 0 : 2;
+        const master = seriesFrom(start, [rule], {
+          extraItems: [
+            recurrenceDate('EXDATE', after(start, 3)), recurrenceDate('EXDATE', after(start, 20)),
+            recurrenceDate('RDATE', after(start, 5, timedShift)), recurrenceDate('RDATE', after(start, 22, timedShift)),
+          ],
+          exceptions: [changedAt(start, 7), changedAt(start, 18)],
+        });
+        const before = occurrenceKeys(master);
+        expect(before.length, rule).toBeGreaterThan(20);
+        expect(before.filter((k) => k.startsWith('changed ')), rule).toHaveLength(2);
+        const ruleDates = master.recurrenceInfo.getRecurrenceItems()[0].getOccurrences(start, start, RANGE[1], 0);
+        const at = ruleDates[12];
+        const { res, capped, fresh } = await split(master, ridString(at));
+        expect(res, `${rule}: ${res.error}`).toMatchObject({ ok: true });
+        expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort(), rule).toEqual(before);
+        expect(fresh.startDate.toString(), rule).toBe(at.toString());
+        expect(fresh.startDate.timezone, rule).toBe(start.timezone);
+        for (const rid of fresh.recurrenceInfo.getExceptionIds()) {
+          const ex = fresh.recurrenceInfo.getExceptionFor(rid);
+          expect(ex.parentItem, rule).toBe(fresh);
+          expect(ex.id, rule).toBe(fresh.id);
+        }
+      }
+    });
+  }
+
+  it('a series bounded by COUNT: the following part has the occurrences still to come', async () => {
+    const { res, capped, fresh } = await split(series('FREQ=DAILY;COUNT=20'), '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(fresh)).toEqual(['FREQ=DAILY;COUNT=6']);
+    expect(ruleValues(capped)[0]).toMatch(/^FREQ=DAILY;UNTIL=/);
+    expect(lastDayAdmitted(fakeDateTime(START_DAY, 17), untilOf(ruleValues(capped)[0]))).toBe('2099-10-14');
+  });
+
+  it('a rule that ended before the split stays on the earlier part, unchanged, and is not carried on', async () => {
+    const ended = `FREQ=DAILY;INTERVAL=3;UNTIL=${utcUntil('2099-10-07', 17)}`;
+    const master = series('FREQ=DAILY;INTERVAL=2', { extraItems: [recurrenceItem('RRULE', ended)] });
+    const before = occurrenceKeys(master);
+    const { res, capped, fresh } = await split(master, '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(capped)).toEqual([expect.stringMatching(/^FREQ=DAILY;INTERVAL=2;UNTIL=/), ended]);
+    expect(ruleValues(fresh)).toEqual(['FREQ=DAILY;INTERVAL=2']);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+  });
+
+  it('a split at an added date after the rule ended keeps that date as the following part', async () => {
+    const master = series('FREQ=DAILY;COUNT=5', { extraItems: [recurrenceItem('RDATE', '20991015T170000')] });
+    const before = occurrenceKeys(master);
+    const { res, capped, fresh } = await split(master, '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(capped)).toEqual(['FREQ=DAILY;COUNT=5']);
+    expect(ruleValues(fresh)).toEqual([]);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+  });
+
+  // 2099-10-01 and 2099-10-15 are Thursdays; 2099-10-22 is a Thursday but not the 15th.
+  it('two rules that both make an occurrence at the split are both carried on', async () => {
+    const master = series('FREQ=WEEKLY;BYDAY=TH', { extraItems: [recurrenceItem('RRULE', 'FREQ=MONTHLY;BYMONTHDAY=15')] });
+    const before = occurrenceKeys(master);
+    const { res, capped, fresh } = await split(master, '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(fresh)).toEqual(['FREQ=WEEKLY;BYDAY=TH', 'FREQ=MONTHLY;BYMONTHDAY=15']);
+    expect([...occurrenceKeys(capped), ...occurrenceKeys(fresh)].sort()).toEqual(before);
+  });
+
+  it('the excluded and added dates and changed occurrences from the split on go to the following part', async () => {
+    const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-18', 19), endDate: fakeDateTime('2099-10-18', 20), recurrenceId: fakeDateTime('2099-10-18', 17) });
+    const early = fakeEvent({ id: 'ser', title: 'Early', startDate: fakeDateTime('2099-10-08', 19), endDate: fakeDateTime('2099-10-08', 20), recurrenceId: fakeDateTime('2099-10-08', 17) });
+    const master = series('FREQ=DAILY', {
+      extraItems: [recurrenceItem('EXDATE', '20991005T170000'), recurrenceItem('EXDATE', '20991020T170000'), recurrenceItem('RDATE', '20991022T190000')],
+      exceptions: [early, moved],
+    });
+    const { res, capped, fresh } = await split(master, '2099-10-15T17:00:00');
+    expect(res).toMatchObject({ ok: true });
+    expect(itemValues(fresh, 'EXDATE')).toEqual(['20991020T170000']);
+    expect(itemValues(fresh, 'RDATE')).toEqual(['20991022T190000']);
+    expect(itemValues(capped, 'EXDATE')).toEqual(['20991005T170000']);
+    expect(itemValues(capped, 'RDATE')).toEqual([]);
+    expect(fresh.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991018T170000']);
+    expect(capped.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991008T170000']);
+    const kept = fresh.recurrenceInfo.getExceptionFor(fakeDateTime('2099-10-18', 17));
+    expect(kept).toMatchObject({ title: 'Moved', id: fresh.id });
+    expect(kept.parentItem).toBe(fresh);
+  });
+
+  it('a new time for the following part moves its dates with it, as an edit of a whole series does', async () => {
+    const moved = fakeEvent({ id: 'ser', title: 'Moved', startDate: fakeDateTime('2099-10-18', 19), endDate: fakeDateTime('2099-10-18', 20), recurrenceId: fakeDateTime('2099-10-18', 17) });
+    const master = series(`FREQ=DAILY;UNTIL=${utcUntil('2099-10-30', 17)}`, { extraItems: [recurrenceItem('EXDATE', '20991020T170000')], exceptions: [moved] });
+    const following = occurrenceKeys(master).filter((k) => k.startsWith('changed') || k >= instantKey(fakeDateTime('2099-10-15', 17)));
+    const { api, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', edit_scope: 'this_and_following', recurrence_id: '2099-10-15T17:00:00', start_iso: '2099-10-15T18:00:00' });
+    expect(res).toMatchObject({ ok: true });
+    const fresh = calendar.items.find((it) => it.id !== 'ser');
+    expect(fresh.startDate.toString()).toBe('20991015T180000');
+    expect(fresh.endDate.toString()).toBe('20991015T190000');
+    expect(itemValues(fresh, 'EXDATE')).toEqual(['20991020T180000']);
+    expect(fresh.recurrenceInfo.getExceptionIds().map(String)).toEqual(['20991018T180000']);
+    const hourLater = (k) => (k.startsWith('changed') ? k : new Date(Date.parse(k) + 3600 * 1000).toISOString());
+    expect(following.length).toBeGreaterThan(10);
+    expect(occurrenceKeys(fresh)).toEqual(following.map(hourLater).sort());
+    expect(lastDayAdmitted(fresh.startDate, untilOf(ruleValues(fresh)[0]))).toBe('2099-10-30');
+  });
+
+  // Thunderbird prints a UTC RECURRENCE-ID with a trailing Z (ical.js Time.toString).
+  it('a recurrence_id with Z names that instant, and the following part keeps the series\' zone', async () => {
+    const utcSeries = seriesFrom(fakeDateTime(START_DAY, 17, 0, UTC_ZONE), ['FREQ=DAILY']);
+    const inUtc = await split(utcSeries, '2099-10-15T17:00:00Z');
+    expect(inUtc.res).toMatchObject({ ok: true });
+    expect(inUtc.fresh.startDate.toString()).toBe('20991015T170000Z');
+    const local = series('FREQ=DAILY');
+    const before = occurrenceKeys(local);
+    const instant = new Date(2099, 9, 15, 17).toISOString().replace('.000', '');
+    const inLocal = await split(local, instant);
+    expect(inLocal.res).toMatchObject({ ok: true });
+    expect(inLocal.fresh.startDate.toString()).toBe('20991015T170000');
+    expect(inLocal.fresh.startDate.timezone).toBe(local.startDate.timezone);
+    expect([...occurrenceKeys(inLocal.capped), ...occurrenceKeys(inLocal.fresh)].sort()).toEqual(before);
+  });
+
+  it('a new rule for the following part replaces a COUNT rule with no occurrence before the split', async () => {
+    // 2099-10-01 is a Thursday: the rule's first occurrence is Monday 10-05.
+    const master = series('FREQ=WEEKLY;BYDAY=MO;COUNT=3', { extraItems: [recurrenceItem('RDATE', '20991003T170000')] });
+    const { res, fresh } = await split(master, '2099-10-03T17:00:00', { recurrence: { freq: 'WEEKLY', byDay: ['SA'] } });
+    expect(res).toMatchObject({ ok: true });
+    expect(ruleValues(fresh)).toEqual(['FREQ=WEEKLY;BYDAY=SA']);
+  });
+
+  it('excluded dates in the edit go to the part they fall in', async () => {
+    const { res, capped, fresh } = await split(series('FREQ=DAILY'), '2099-10-15T17:00:00', { exdates_add: ['2099-10-10T17:00:00', '2099-10-20T17:00:00'] });
+    expect(res).toMatchObject({ ok: true });
+    expect(itemValues(capped, 'EXDATE')).toEqual(['20991010T170000']);
+    expect(itemValues(fresh, 'EXDATE')).toEqual(['20991020T170000']);
+  });
+
+  const exrule = { icalProperty: { propertyName: 'EXRULE', value: 'FREQ=WEEKLY;BYDAY=SA' } };
+  for (const [name, make, recurrenceId, error] of [
+    ['a time that is not an occurrence', () => series('FREQ=DAILY'), '2099-10-15T18:00:00', /not an occurrence of this series/],
+    ['an occurrence of one rule but not of the other', () => series('FREQ=WEEKLY;BYDAY=TH', { extraItems: [recurrenceItem('RRULE', 'FREQ=MONTHLY;BYMONTHDAY=15')] }), '2099-10-22T17:00:00', /not an occurrence of this series' rule FREQ=MONTHLY;BYMONTHDAY=15/],
+    ['the first occurrence', () => series('FREQ=DAILY'), '2099-10-01T17:00:00', /edit the whole series/],
+    ['a time before the series', () => series('FREQ=DAILY'), '2099-09-20T17:00:00', /edit the whole series/],
+    ['a series that cancels occurrences by a rule', () => series('FREQ=DAILY', { extraItems: [exrule] }), '2099-10-15T17:00:00', /EXRULE/],
+    ['a series whose count cannot be read', () => series('FREQ=DAILY;COUNT=x'), '2099-10-15T17:00:00', /count cannot be read \(COUNT=x\)/],
+  ]) {
+    it(`a split at ${name} is refused and writes nothing`, async () => {
+      const master = make();
+      const rules = ruleValues(master);
+      const { res, calendar, modifications } = await split(master, recurrenceId);
+      expect(res).toMatchObject({ ok: false });
+      expect(res.error).toMatch(error);
+      expect(modifications).toEqual([]);
+      expect(calendar.items).toEqual([master]);
+      expect(ruleValues(master)).toEqual(rules);
+    });
+  }
 });
 
 // Thunderbird's schema layer hands an experiment every optional property the
