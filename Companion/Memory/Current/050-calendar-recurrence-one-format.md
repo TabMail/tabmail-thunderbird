@@ -346,7 +346,11 @@ same design (tabmail-ios #421).
   Deleted copies: "edit_scope needs recurrence_id" (in the tool and in the edit flow; the bridge's message took the
   tool's wording, which names how to find it), and the tool's "new repeat rule with a move to another day", which
   compared the date text in the user's zone and so refused a move that is the same day in the series' own zone
-  (the bridge counts days in the series' zone, `NEW_RULE_MOVE`). The census of the two functions' refusals is
+  (the bridge counts days in the series' zone, `NEW_RULE_MOVE`). `getCalendarEventDetails` no longer returns
+  `recurrenceIdError`. An event_id that names no event gets `EDIT_EVENT_NOT_FOUND_ERROR` from both paths, which
+  tells the assistant to look the event up again (calendar_search or calendar_read) and not to retry the same id:
+  before #339 an edit giving no times got that guidance from the list state's read, and the bridge's own text was
+  a terse "event not found". The census of the two functions' refusals is
   `test/calendarEditRefusedBeforeCard.test.js`.
 - `test/calendarRecurrenceNative.test.js` runs the bridge against Thunderbird's own date and recurrence code
   (`test/fixtures/mozilla/Ical.sys.mjs` and `CalDateTime.sys.mjs`, unmodified copies of comm-central 226a299e,

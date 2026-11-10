@@ -121,6 +121,7 @@ const noCalendarManager = (loaded) => {
   cal.manager = null;
 };
 
+const EVENT_NOT_FOUND = "event not found: the event_id may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.";
 const SCOPE_NEEDS_RID = (scope) => `edit_scope='${scope}' requires recurrence_id (the start_iso of the target occurrence — use calendar_event_read or calendar_read to find it). Retry the call including recurrence_id.`;
 const NO_OCCURRENCE = (field, iso) => `${field} ${iso} is not the start of an occurrence of this series; pass the occurrence's start_iso as the read tools show it`;
 const KIND_CHANGE = 'changing these occurrences between all-day and timed would leave their excluded or added dates, end date or changed occurrences in the other form; change it in the calendar app';
@@ -142,13 +143,14 @@ const REFUSALS = [
   ['no event_id (the tool\'s own argument check)', oneOff, { event_id: '', title: 'Renamed' }, null, /^event_id is required\. Use calendar_search or calendar_read/],
   ['this_only with no recurrence_id', series, { edit_scope: 'this_only', title: 'Renamed' }, null, SCOPE_NEEDS_RID('this_only')],
   ['this_and_following with no recurrence_id', series, { edit_scope: 'this_and_following', title: 'Renamed' }, null, SCOPE_NEEDS_RID('this_and_following')],
-  ['an event that does not exist', null, { title: 'Renamed' }, null, 'event not found (id/recurrenceId mismatch)'],
+  ['an event that does not exist', null, { title: 'Renamed' }, null, EVENT_NOT_FOUND],
   ['one occurrence named by a time that is no occurrence', series, { edit_scope: 'this_only', recurrence_id: isoAt(4, 18), title: 'Renamed' }, null, NO_OCCURRENCE('recurrence_id', isoAt(4, 18))],
   ['one occurrence named by a time two occurrences start at', () => series({ exceptions: [changed(4, { startOn: [5, 17] })] }),
     { edit_scope: 'this_only', recurrence_id: isoAt(5), title: 'Renamed' }, null,
     `recurrence_id ${isoAt(5)} is the start of more than one occurrence of this series; change it in the calendar app`],
   ['an excluded date that names no occurrence, whole series', series, { exdates_add: [isoAt(4, 18)] }, null, NO_OCCURRENCE('exdates_add', isoAt(4, 18))],
   ['an excluded date that names no occurrence, one occurrence', series, { edit_scope: 'this_only', recurrence_id: isoAt(3), exdates_add: [isoAt(4, 18)] }, null, NO_OCCURRENCE('exdates_add', isoAt(4, 18))],
+  ['an excluded date that is not a date', series, { exdates_add: ['next week'] }, null, 'invalid exdates_add format (expected ISO8601)'],
   ['an excluded date on an event that does not repeat', oneOff, { exdates_add: [isoAt(1)] }, null, `exdates_add ${isoAt(1)} is not the start of an occurrence of this series`],
   ['a whole-series time change named by a time that is no occurrence', series, { edit_scope: 'all', recurrence_id: isoAt(1, 18), start_iso: isoAt(1, 19) }, null, NO_OCCURRENCE('recurrence_id', isoAt(1, 18))],
   ['an all-day event given a time of day without all_day', allDayOneOff, { start_iso: `${DAY(8)}T15:00:00` }, null, ALL_DAY_TIME],
@@ -169,7 +171,7 @@ const REFUSALS = [
   ['invitations for a whole series once everyone is removed', () => series({ attendees: [guest('ana')] }), { remove_attendees: [{ email: '*' }], send_invitations: true }, null, 'send_invitations=true requires at least one attendee'],
 
   // splitRecurringEvent (edit_scope 'this_and_following')
-  ['a split of an event that does not exist', null, { edit_scope: 'this_and_following', recurrence_id: isoAt(4), title: 'Renamed' }, null, 'event not found'],
+  ['a split of an event that does not exist', null, { edit_scope: 'this_and_following', recurrence_id: isoAt(4), title: 'Renamed' }, null, EVENT_NOT_FOUND],
   ['a split of an event that does not repeat', oneOff, { edit_scope: 'this_and_following', recurrence_id: isoAt(1), title: 'Renamed' }, null, 'event is not recurring — use modifyCalendarEvent for one-off events'],
   ['a split at a time that is no occurrence', series, { edit_scope: 'this_and_following', recurrence_id: isoAt(4, 18), title: 'Renamed' }, null, NO_OCCURRENCE('recurrence_id', isoAt(4, 18))],
   ['a split at the first occurrence', series, { edit_scope: 'this_and_following', recurrence_id: isoAt(1), title: 'Renamed' }, null,
@@ -277,6 +279,24 @@ describe('every refusal of the write is made before the confirmation card, and n
   }
 });
 
+// An event_id that names no event (stale, deleted, or another kind of id) is
+// looked up again, never retried as it is (#339: until then an edit giving no
+// times got this guidance from the read before the card).
+describe('an event_id that names no event is refused with the way to find the event', () => {
+  for (const [name, args] of [
+    ['an edit of the event or the whole series', { title: 'Renamed' }],
+    ['a split from an occurrence', { edit_scope: 'this_and_following', recurrence_id: isoAt(4), title: 'Renamed' }],
+  ]) {
+    it(name, async () => {
+      const { sess } = await runTool(series, { ...args, event_id: 'gone' });
+      expect(sess.failReason).toMatch(/^event not found: /);
+      expect(sess.failReason).toMatch(/Use calendar_search or calendar_read to look up a valid event_id/);
+      expect(sess.failReason).toMatch(/do not retry with the same event_id\.$/);
+      expect(sess.editEventArgs).toBeUndefined();
+    });
+  }
+});
+
 // The check refuses nothing the write would make: these reach the card, and
 // the confirmed edit is then written.
 describe('an edit the write makes reaches the card and is written', () => {
@@ -291,6 +311,18 @@ describe('an edit the write makes reaches the card and is written', () => {
   }
   const ruleValues = (item) => (item.recurrenceInfo?.getRecurrenceItems() || [])
     .filter((r) => r.icalProperty.propertyName === 'RRULE').map((r) => r.icalProperty.value);
+  // The tool's run up to the card: the check passes and, on its own, changes
+  // nothing (no item modified, the stored event as a second copy built the same
+  // way), before the edit is confirmed.
+  async function toCard(build, args) {
+    const before = snapshot(build());
+    const out = await runTool(build, args);
+    expect(out.sess.failReason).toBeUndefined();
+    expect(out.loaded.modifications).toEqual([]);
+    expect(out.loaded.calendar.items).toHaveLength(1);
+    expect(snapshot(out.stored[0])).toBe(before);
+    return out;
+  }
 
   it('a new rule with a move to another date in the user\'s zone that is the same day in the series\' zone', async () => {
     // 17:00 east of UTC is 01:00 in the user's zone; 15:00 there the same day
@@ -298,12 +330,10 @@ describe('an edit the write makes reaches the card and is written', () => {
     const first = fakeDateTime(DAY(1), 17, 0, EAST);
     const movedTo = fakeDateTime(DAY(1), 15, 0, EAST);
     expect(startIsoOf(first).slice(0, 10)).not.toBe(startIsoOf(movedTo).slice(0, 10));
-    const { sess, loaded, pid } = await runTool(eastSeries, {
+    const { sess, loaded, pid } = await toCard(eastSeries, {
       edit_scope: 'all', recurrence_id: startIsoOf(first), start_iso: startIsoOf(movedTo), recurrence: { freq: 'WEEKLY', byDay: ['TH'], count: 3 },
     });
-    expect(sess.failReason).toBeUndefined();
     expect(sess.editEventArgs).toMatchObject({ edit_scope: 'all', recurrence: { freq: 'WEEKLY', byDay: ['TH'], count: 3 } });
-    expect(loaded.modifications).toEqual([]);
     await confirm(pid);
     expect(sess.failReason).toBeUndefined();
     expect(loaded.calendar.items).toHaveLength(1);
@@ -315,9 +345,7 @@ describe('an edit the write makes reaches the card and is written', () => {
   });
 
   it('stopping the repeat at an occurrence not changed on its own', async () => {
-    const { sess, loaded, pid } = await runTool(() => series({ exceptions: [changed(4)] }), { edit_scope: 'this_and_following', recurrence_id: isoAt(6), recurrence: {} });
-    expect(sess.failReason).toBeUndefined();
-    expect(loaded.modifications).toEqual([]);
+    const { sess, loaded, pid } = await toCard(() => series({ exceptions: [changed(4)] }), { edit_scope: 'this_and_following', recurrence_id: isoAt(6), recurrence: {} });
     await confirm(pid);
     expect(sess.failReason).toBeUndefined();
     expect(loaded.calendar.items).toHaveLength(2);
@@ -327,9 +355,7 @@ describe('an edit the write makes reaches the card and is written', () => {
   });
 
   it('a new title for the whole series', async () => {
-    const { sess, loaded, pid } = await runTool(series, { title: 'Renamed' });
-    expect(sess.failReason).toBeUndefined();
-    expect(loaded.modifications).toEqual([]);
+    const { sess, loaded, pid } = await toCard(series, { title: 'Renamed' });
     await confirm(pid);
     expect(sess.failReason).toBeUndefined();
     expect(loaded.calendar.items).toHaveLength(1);

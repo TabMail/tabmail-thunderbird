@@ -705,6 +705,11 @@ function ruleShiftedByDays(value, days, was, now) {
   return { value: out.join(";") };
 }
 
+// An edit's event_id that names no event on the user's calendars: the id may
+// be stale or another kind of id, so the assistant looks it up again rather
+// than retrying it.
+const EDIT_EVENT_NOT_FOUND_ERROR = "event not found: the event_id may not refer to a calendar event on the user's calendars (it could be stale, deleted, or a different kind of id). Use calendar_search or calendar_read to look up a valid event_id, then retry — do not retry with the same event_id.";
+
 // A series' start that changes between all-day and timed. RFC 5545 needs its
 // excluded and added dates, each UNTIL and its changed occurrences'
 // RECURRENCE-IDs in the start's value type. Thunderbird keeps theirs and moves
@@ -2290,7 +2295,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
 
-            if (!item) return { ok: false, error: lookupError || "event not found (id/recurrenceId mismatch)" };
+            if (!item) return { ok: false, error: lookupError || EDIT_EVENT_NOT_FOUND_ERROR };
 
             // The occurrences exdates_add names, in the series as it is before
             // the edit; a value that names none is refused before anything is written.
@@ -2617,7 +2622,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                 if (await visit(c)) break;
               }
             }
-            if (!master || !cal) return { ok: false, error: "event not found" };
+            if (!master || !cal) return { ok: false, error: EDIT_EVENT_NOT_FOUND_ERROR };
 
             // 2. The series must be recurring for a split to make sense.
             if (!master.recurrenceInfo) {
