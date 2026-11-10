@@ -196,17 +196,6 @@ describe('runStateEditCalendarEventExec — edit_scope dispatch', () => {
     });
   }
 
-  it('an empty guest change is not sent', async () => {
-    setEditArgs({ event_id: 'evt-1', title: 'Renamed', add_attendees: [], remove_attendees: [] });
-
-    await runStateEditCalendarEventExec();
-
-    expect(modifyMock).toHaveBeenCalledTimes(1);
-    const args = modifyMock.mock.calls[0][0];
-    expect(args).not.toHaveProperty('add_attendees');
-    expect(args).not.toHaveProperty('remove_attendees');
-  });
-
   it('fails fast when edit_scope requires recurrence_id but none is provided', async () => {
     setEditArgs({
       event_id: 'evt-1',

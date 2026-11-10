@@ -19,7 +19,9 @@ it, with one function, to each item the edit covers.
 - Reading an address (`attendeeAddress`): trimmed, every leading `mailto:` dropped (any case, spaces after
   it), compared in lower case. Stored ids and the edit's addresses are read the same way. A removal of
   exactly `*` (after trimming) removes everyone; `mailto:*` names no one. Additions of `*` or nothing are dropped.
-- Removals first, then each addition not already listed, once, in the order given. A new guest is a new
+- Removals first, then each addition not already listed, once, in the order given. An addition whose address
+  was on the item before the change (removed and added back in one edit, or a list restated after `*`) gets its
+  stored entry back, answer included; it is placed with the additions. A new guest is a new
   `calIAttendee` at `NEEDS-ACTION` with `RSVP=TRUE`, its address in the case it was written, and a name
   only when the edit gives one.
 - Everyone who stays keeps their entry exactly as stored: their answer (`PARTSTAT`), `RSVP`, role, user

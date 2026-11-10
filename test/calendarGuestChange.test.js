@@ -59,7 +59,8 @@ const {
   loadCalendarBridge, fakeAttendee, fakeDateTime, fakeEvent, fakeRecurrenceInfo, recurrenceItem,
 } = await import('./helpers/calendarBridgeHarness.js');
 const { run } = await import('../chat/tools/calendar_event_edit.js');
-const { runStateEditCalendarEventExec } = await import('../chat/fsm/calendarEdit.js');
+const { runStateEditCalendarEventExec, runStateEditCalendarEventList } = await import('../chat/fsm/calendarEdit.js');
+const { streamText } = await import('../chat/modules/helpers.js');
 const { ctx } = await import('../chat/modules/context.js');
 
 // What the flow sends must be what the experiment declares: Thunderbird checks
@@ -247,6 +248,7 @@ const CHANGES = [
   ['a guest added with mailto: three times', add('mailto:MAILTO: mailto:dee@example.com'), ['ana', 'bo', 'cy', 'dee']],
   ['an addition of *, with spaces or mailto:, beside a guest', add(' * ', 'mailto:*', 'mailto: *', 'dee@example.com'), ['ana', 'bo', 'cy', 'dee']],
   ['an empty addition beside a guest', add('', '   ', 'mailto:', 'dee@example.com'), ['ana', 'bo', 'cy', 'dee']],
+  ['a new guest keeps the case their address was written in', add('Dee.Lee@example.com'), ['ana', 'bo', 'cy', 'Dee.Lee']],
   ['two guests added, in the order given', add('eve@example.com', 'dee@example.com'), ['ana', 'bo', 'cy', 'eve', 'dee']],
   ['a guest removed', remove('bo@example.com'), ['ana', 'cy']],
   ['a guest removed in capitals', remove('BO@EXAMPLE.COM'), ['ana', 'cy']],
@@ -290,6 +292,22 @@ for (const scopeName of Object.keys(SCOPES)) {
         ]);
       }
     });
+
+    // A guest the change removes and adds back is still the guest who was
+    // there: the stored entry, answer and name included, not a new one.
+    for (const [name, change, left] of [
+      ['a guest removed and added in one edit', { ...remove('bo@example.com'), add_attendees: [{ email: 'BO@example.com', name: 'Robert' }] }, ['ana', 'cy', 'bo']],
+      ['everyone removed and the list restated with a new guest', { ...remove('*'), ...add('cy@example.com', 'dee@example.com', 'ana@example.com') }, ['cy', 'dee', 'ana']],
+    ]) {
+      it(`${name} keeps the stored entry of each guest who was there`, async () => {
+        const { sess, items } = await edit(scopeName, all(), all(), change);
+        expect(sess.failReason).toBeUndefined();
+        const entry = (n) => (NAMES[n] ? [mail(n), NAMES[n], 'ACCEPTED', 'FALSE'] : [mail(n), null, 'NEEDS-ACTION', 'TRUE']);
+        for (const it of [...items.main, ...items.own]) {
+          expect(it.getAttendees().map((a) => [a.id, a.commonName ?? null, a.participationStatus, a.rsvp])).toEqual(left.map(entry));
+        }
+      });
+    }
 
     // A stored address is matched however it was stored: in capitals, with a
     // space after mailto:, or with mailto: repeated.
@@ -356,6 +374,37 @@ describe('sending invitations with an edit', () => {
     });
   }
 
+  // The list read is the edited item's own, after the change. Here the series
+  // has guests and the occurrence changed before has none of its own left, or
+  // the reverse.
+  for (const scopeName of Object.keys(SCOPES)) {
+    it(`an edit that ends with no guests is refused, and nothing is written (${scopeName})`, async () => {
+      const { sess, loaded } = await edit(scopeName, all(), all(), { ...remove('*'), send_invitations: true });
+      expect(sess.failReason).toMatch(/send_invitations/);
+      expect(loaded.modifications).toHaveLength(0);
+      expect(loaded.calendar.items).toHaveLength(1);
+      expect(ids(loaded.calendar.items[0])).toEqual(START.map(mail));
+    });
+
+    it(`an edit that adds the first guest is made (${scopeName})`, async () => {
+      const { sess, items } = await edit(scopeName, [], [], { ...add('dee@example.com'), send_invitations: true });
+      expect(sess.failReason).toBeUndefined();
+      for (const it of [...items.main, ...items.own]) expect(ids(it)).toEqual([mail('dee')]);
+    });
+  }
+
+  it('one occurrence with no guests of its own is refused, though its series has guests', async () => {
+    const { sess, loaded } = await edit('one occurrence, changed before', all(), [], { title: 'Review', send_invitations: true });
+    expect(sess.failReason).toMatch(/send_invitations/);
+    expect(loaded.modifications).toHaveLength(0);
+  });
+
+  it('one occurrence with guests of its own is edited, though its series has none', async () => {
+    const { sess, items } = await edit('one occurrence, changed before', [], all(), { title: 'Review', send_invitations: true });
+    expect(sess.failReason).toBeUndefined();
+    expect(items.own[0].title).toBe('Review');
+  });
+
   it('an edit that restates no guest is made when the event has guests', async () => {
     const { sess, items } = await edit('a one-off event', all(), all(), { title: 'Review', send_invitations: true });
     expect(sess.failReason).toBeUndefined();
@@ -379,4 +428,47 @@ describe('sending invitations with an edit', () => {
       expect(ids(loaded.calendar.items[0])).toEqual(guests.map((g) => g.id));
     });
   }
+});
+
+// The confirmation card is what the user confirms: it names the people added
+// and removed, and shows no count (the lists an edit covers can differ).
+describe('the confirmation card for a guest change', () => {
+  async function card(change) {
+    const loaded = loadCalendarBridge(bridgeUrl, { items: [oneOff(all())] });
+    globalThis.browser.tmCalendar = checked(loaded.api);
+    const pid = `pid-card-${nextPid += 1}`;
+    ctx.fsmSessions[pid] = { editEventArgs: { event_id: 'ser', calendar_id: 'cal1', ...change } };
+    const was = ctx.activePid;
+    ctx.activePid = pid;
+    streamText.mockClear();
+    try {
+      await runStateEditCalendarEventList();
+    } finally {
+      ctx.activePid = was;
+    }
+    const text = streamText.mock.calls.map((c) => String(c[1])).find((t) => t.includes('Proposed changes:'));
+    expect(text).toBeTruthy();
+    return String(text).split('Proposed changes:')[1];
+  }
+
+  it('names each guest added (by name when given) and each removed', async () => {
+    const text = await card({ add_attendees: [{ email: 'dee@example.com', name: 'Dee' }, { email: 'eve@example.com' }], remove_attendees: [{ email: 'bo@example.com' }] });
+    expect(text).toContain('**Attendees:**');
+    expect(text).toContain('+ Dee');
+    expect(text).toContain('+ eve@example.com');
+    expect(text).toContain('− bo@example.com');
+    expect(text).not.toMatch(/invitee/i);
+    expect(text).not.toMatch(/\d+\s*→/);
+  });
+
+  it('says when everyone is removed', async () => {
+    const text = await card({ remove_attendees: [{ email: '*' }] });
+    expect(text).toContain('− (all attendees)');
+    expect(text).not.toMatch(/invitee/i);
+  });
+
+  it('shows no attendee lines for an edit that changes no guest', async () => {
+    const text = await card({ title: 'Review' });
+    expect(text).not.toContain('**Attendees:**');
+  });
 });

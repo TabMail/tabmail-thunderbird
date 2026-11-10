@@ -1113,12 +1113,14 @@ function guestChangeOf(patch) {
 // address removes that guest whatever its case. Each addition not already
 // listed is then appended once, in the order given, as a guest who has not
 // answered. Everyone who stays keeps their entry as stored (their answer,
-// role and other details), as Thunderbird's own event dialog does.
+// role and other details), as Thunderbird's own event dialog does; so does
+// a guest the change removes and adds back (a list restated after "*").
 function applyGuestChange(item, { add, remove }) {
   const Ci = globalThis.Ci; const Cc = globalThis.Cc;
   const clearAll = remove.some((r) => String(r?.email ?? "").trim() === "*");
   const gone = new Set(remove.map((r) => attendeeAddress(r?.email)).filter((a) => a && a !== "*"));
-  const kept = clearAll ? [] : item.getAttendees().filter((a) => !gone.has(attendeeAddress(a.id)));
+  const stored = item.getAttendees();
+  const kept = clearAll ? [] : stored.filter((a) => !gone.has(attendeeAddress(a.id)));
   const listed = new Set(kept.map((a) => attendeeAddress(a.id)));
   item.removeAllAttendees();
   for (const a of kept) item.addAttendee(a);
@@ -1126,6 +1128,8 @@ function applyGuestChange(item, { add, remove }) {
     const address = attendeeAddress(a?.email);
     if (!address || address === "*" || listed.has(address)) continue;
     listed.add(address);
+    const was = stored.find((s) => attendeeAddress(s.id) === address);
+    if (was) { item.addAttendee(was); continue; }
     const att = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
     att.id = `mailto:${addressAsWritten(a.email)}`;
     if (a?.name) att.commonName = String(a.name);
@@ -2311,8 +2315,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
         //   read tools show it, of the occurrence that becomes the NEW series'
         //   first; for a changed occurrence that is its own start, not its
         //   RECURRENCE-ID), patch (object with fields to apply to the new
-        //   series: title, location, description, transparency, attendees,
-        //   send_invitations, recurrence, start_iso, end_iso, all_day,
+        //   series: title, location, description, transparency, add_attendees,
+        //   remove_attendees, send_invitations, recurrence, start_iso, end_iso, all_day,
         //   exdates_add), timezone? (for start_iso and end_iso)
         // The new series keeps the series' organizer: an edit names none (the
         // edit tool fills organizer_email with the calendar's own address, and

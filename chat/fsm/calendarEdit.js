@@ -239,10 +239,8 @@ export async function runStateEditCalendarEventList() {
   } catch (_) {}
   if (!details) {
     details = await fetchEventDetails(eventId);
-    // Persist the locally-fetched details back to the session so the exec step
-    // can fall back to this snapshot when its own re-fetch fails — without
-    // this, an empty-base resolution could silently wipe existing attendees
-    // for the delta-attendee path (calendar_event_edit-v1.5.21+).
+    // Keep the details in the session, so this state does not read the event
+    // again when it is entered again.
     if (details && details.ok) {
       try {
         const pid = ctx.activePid || ctx.activeToolCallId || 0;
@@ -333,13 +331,7 @@ export async function runStateEditCalendarEventExec() {
   }
 
   // A guest change goes to the calendar bridge as given: it applies the
-  // change to each item the edit covers. Empty lists are left out.
-  for (const key of ["add_attendees", "remove_attendees"]) {
-    if (Array.isArray(editArgs[key]) && editArgs[key].length === 0) {
-      editArgs = { ...editArgs };
-      delete editArgs[key];
-    }
-  }
+  // change to each item the edit covers.
 
   // Route by edit_scope (calendar_event_edit-v1.5.21+). Default: "all" when no
   // recurrence_id, "this_only" when recurrence_id is present (back-compat with
