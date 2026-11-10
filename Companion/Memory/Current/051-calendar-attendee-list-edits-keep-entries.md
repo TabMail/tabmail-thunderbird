@@ -11,9 +11,14 @@ bridge one flat list, `patch.attendees` (`{email, name}` per address).
   "this and following" split.
 - Everyone still on the list keeps their entry exactly as stored: their answer (`PARTSTAT`), `RSVP`, role,
   user type, name and every other parameter. Addresses are matched without regard to case and without
-  `mailto:` (`attendeeAddress`, as Thunderbird's `getAttendeeById`). The saved order is the list's order.
-- An attendee the list adds is a new `calIAttendee` at `NEEDS-ACTION` with `RSVP=TRUE`.
-- Thunderbird's own event dialog does the same: it keeps the attendee objects it does not change.
+  `mailto:` (`attendeeAddress`; Thunderbird's `getAttendeeById` also ignores case, but compares the whole
+  id). The saved order is the list's order.
+- An attendee the list adds is a new `calIAttendee` at `NEEDS-ACTION` with `RSVP=TRUE`, and a name only
+  when the list gives one.
+- Thunderbird's own event dialog does the same for everyone it keeps: it keeps the attendee objects it
+  does not change. (Its defaults for an attendee it adds are its own.)
+- A single-occurrence edit starts from that occurrence's own entries. An occurrence already changed on
+  its own keeps its own answers, not the series' answers.
 
 ## What it replaced
 
@@ -26,4 +31,5 @@ The split's following part kept entries since #291; #297 moved that step into th
 
 - The split's own rule for asking attendees again when it reschedules the following part:
   [050-calendar-recurrence-one-format.md](050-calendar-recurrence-one-format.md).
-- Tests: `test/calendarAttendeeChangeKeepsEntries.test.js` checks the rule for all three edit kinds.
+- Tests: `test/calendarAttendeeChangeKeepsEntries.test.js` checks the rule for all three edit kinds and for
+  an occurrence already changed on its own.

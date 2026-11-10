@@ -99,4 +99,33 @@ describe('an attendee change keeps everyone still on the list as stored', () => 
       expect(await edit(kind, list)).toEqual([SERIES_ENTRIES[1], added('mailto:cleo@example.com', 'Cleo'), SERIES_ENTRIES[0]]);
     });
   }
+
+  // An occurrence already changed on its own carries its own answers: here Ana
+  // declined and Ben accepted just this one. An attendee change to it keeps
+  // those, not the series' answers.
+  it('an attendee change to an occurrence already changed on its own keeps that occurrence\'s answers', async () => {
+    const ownAttendees = () => [
+      fakeAttendee({ id: 'mailto:organizer@example.com', commonName: 'Org', participationStatus: 'ACCEPTED', role: 'CHAIR', rsvp: 'FALSE' }),
+      fakeAttendee({ id: 'mailto:ana@example.com', commonName: 'Ana', participationStatus: 'DECLINED', role: 'REQ-PARTICIPANT', rsvp: 'FALSE', properties: { 'X-RESPONSE-COMMENT': 'Away that day' } }),
+      fakeAttendee({ id: 'mailto:ben@example.com', commonName: 'Ben', participationStatus: 'ACCEPTED', role: 'OPT-PARTICIPANT', rsvp: 'FALSE' }),
+    ];
+    const start = fakeDateTime('2099-10-15', 17);
+    const end = start.clone();
+    end.addDuration({ inSeconds: 3600, isNegative: false });
+    const changed = fakeEvent({ id: 'ser', title: 'Sync', startDate: start, endDate: end, recurrenceId: start.clone(), attendees: ownAttendees() });
+    const master = series();
+    master.recurrenceInfo = fakeRecurrenceInfo([recurrenceItem('RRULE', 'FREQ=DAILY')], { exceptions: [changed] });
+    master.recurrenceInfo.item = master;
+    const own = ownAttendees().map(entry);
+    expect(own).not.toEqual(SERIES_ENTRIES.slice(0, 3));
+
+    const { api } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const list = [...own.map((e) => ({ email: e.id.replace('mailto:', '') })), { email: 'dana@example.com' }];
+    const res = await api.modifyCalendarEvent({ event_id: 'ser', calendar_id: 'cal1', ...EDITS['one occurrence'].args, attendees: list });
+    expect(res, res.error).toMatchObject({ ok: true });
+
+    const saved = EDITS['one occurrence'].saved({ master });
+    // Dana was added without a name, so none is set.
+    expect(saved.getAttendees().map(entry)).toEqual([...own, added('mailto:dana@example.com', undefined)]);
+  });
 });
