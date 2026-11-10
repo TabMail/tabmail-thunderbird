@@ -1086,6 +1086,12 @@ function formatAttendees(attArr) {
   } catch (_) { return []; }
 }
 
+// An attendee's address without "mailto:", in lower case: Thunderbird matches
+// attendees by address without regard to case (getAttendeeById).
+function attendeeAddress(id) {
+  return String(id || "").replace(/^mailto:/i, "").trim().toLowerCase();
+}
+
 // An all-day value is an RFC 5545 DATE: it has no zone and no instant. ical.js
 // deliberately skips zone conversion for `isDate` values, so `toEpochMsUTC`
 // yields UTC midnight of the calendar date — and every consumer that renders
@@ -1147,6 +1153,15 @@ function toCalIDateTimeInFrameOf(item, patch) {
     kept.resetTo(shown.year, shown.month, shown.day, shown.hour, shown.minute, shown.second, zone);
     return kept;
   };
+}
+
+// Whether two event times are the same: two DATEs on the same day, or two
+// date-times at the same instant, a floating time only with another floating
+// one. A time relabelled into another zone at the same instant is the same.
+function sameTime(a, b) {
+  if (!a || !b || !!a.isDate !== !!b.isDate) return false;
+  if (a.isDate) return a.compare(b) === 0;
+  return (a.timezone?.tzid === "floating") === (b.timezone?.tzid === "floating") && a.nativeTime === b.nativeTime;
 }
 
 function toEpochMsUTC(calDt) {
@@ -2321,18 +2336,22 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               return { ok: false, error: `failed to apply capped RRULE: ${re}` };
             }
 
-            // 7. Build the new series, the following part.
-            // Strategy: start from a fresh calIEvent and copy/override fields from
-            // master + patch. Its recurrence is the master's from the split on.
-            const newEv = Cc["@mozilla.org/calendar/event;1"].createInstance(Ci.calIEvent);
+            // 7. Build the new series, the following part: a copy of the series,
+            // made as Thunderbird copies an event (calendar-clipboard.js: a
+            // clone with a new id), so it keeps every property, reminder,
+            // attachment and attendee the series has. Its id is cleared for the
+            // calendar to give it one when it is added. Its recurrence is the
+            // series' from the split on (below); until then it has none, so
+            // setting its start moves nothing with it.
+            const newEv = master.clone();
+            newEv.recurrenceInfo = null;
+            newEv.id = null;
 
             // Title
-            const newTitle = (typeof patch.title === "string" && patch.title)
-              ? patch.title
-              : (master.title || "");
-            if (newTitle) newEv.title = newTitle;
+            if (typeof patch.title === "string" && patch.title) newEv.title = patch.title;
 
-            // Start = splitDt, End = splitDt + (master.endDate - master.startDate)
+            // Start = splitDt, End = splitDt + (master.endDate - master.startDate):
+            // the occurrence at the split as the series has it.
             try {
               newEv.startDate = splitDt;
               const dur = master.endDate.subtractDate(master.startDate);
@@ -2342,57 +2361,54 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             } catch (e) {
               return { ok: false, error: `failed to compute new start/end: ${e}` };
             }
+            const slotStart = newEv.startDate.clone();
+            const slotEnd = newEv.endDate.clone();
 
-            // Location
-            const newLocation = (typeof patch.location === "string")
-              ? patch.location
-              : (() => { try { return String(master.getProperty("LOCATION") || ""); } catch { return ""; } })();
-            if (newLocation) { try { newEv.setProperty("LOCATION", newLocation); } catch {} }
+            // Location ("" removes it)
+            if (typeof patch.location === "string") newEv.setProperty("LOCATION", patch.location);
 
-            // Description (full replace — patch wins, otherwise inherit master's)
-            let newDesc;
+            // Description: a new one replaces the series' in every form, as an
+            // edit's does. Thunderbird's own HTML version goes with the text it
+            // replaces (descriptionText), and so do the HTML copies other
+            // calendars write, which would otherwise still show the old one.
             if (typeof patch.description === "string") {
-              newDesc = patch.description;
-            } else {
-              try { newDesc = String(master.getProperty("DESCRIPTION") || ""); } catch { newDesc = ""; }
+              newEv.descriptionText = patch.description;
+              for (const name of ["X-ALT-DESC", "X-MOZ-HTML", "X-MOZ-ALT-DESC"]) newEv.deleteProperty(name);
             }
-            if (newDesc) { try { newEv.setProperty("DESCRIPTION", newDesc); } catch {} }
 
-            // Transparency (busy/free) — patch wins, otherwise inherit
-            let newTransp;
+            // Transparency (busy/free)
             if (typeof patch.transparency === "string") {
-              newTransp = patch.transparency.toLowerCase() === "free" ? "TRANSPARENT" : "OPAQUE";
-            } else {
-              try { newTransp = String(master.getProperty("TRANSP") || "OPAQUE"); } catch { newTransp = "OPAQUE"; }
-            }
-            try { newEv.setProperty("TRANSP", newTransp); } catch {}
-
-            // Attendees — patch.attendees is the resolved final list (delta already
-            // applied by the JS layer). If patch.attendees is absent, inherit master's.
-            const attendeesToSet = Array.isArray(patch.attendees)
-              ? patch.attendees
-              : (() => {
-                  const list = master.getAttendees ? master.getAttendees() : [];
-                  return list.map(a => ({
-                    email: String(a.id || "").replace(/^mailto:/i, ""),
-                    name: a.commonName || "",
-                  })).filter(a => a.email);
-                })();
-            for (const a of attendeesToSet) {
-              const email = a?.email || a?.id;
-              if (!email) continue;
-              const att = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
-              att.id = String(email).startsWith("mailto:") ? String(email) : `mailto:${String(email)}`;
-              if (a?.name) try { att.commonName = String(a.name); } catch {}
-              try { att.rsvp = "TRUE"; } catch {}
-              try { newEv.addAttendee(att); } catch {}
+              newEv.setProperty("TRANSP", patch.transparency.toLowerCase() === "free" ? "TRANSPARENT" : "OPAQUE");
             }
 
-            // Organizer — inherit from master unless patch provides one
+            // Attendees: the series', each with its answer and details. A changed
+            // list (patch.attendees, the edit's additions and removals already
+            // applied by the JS layer) keeps the series' entry for everyone still
+            // on it, in the list's order, and adds the others, who have not
+            // answered yet.
+            if (Array.isArray(patch.attendees)) {
+              const onSeries = new Map(newEv.getAttendees().map((a) => [attendeeAddress(a.id), a]));
+              newEv.removeAllAttendees();
+              for (const a of patch.attendees) {
+                const email = String(a?.email || a?.id || "");
+                if (!email) continue;
+                const kept = onSeries.get(attendeeAddress(email));
+                if (kept) {
+                  newEv.addAttendee(kept);
+                  continue;
+                }
+                const att = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
+                att.id = email.startsWith("mailto:") ? email : `mailto:${email}`;
+                if (a?.name) att.commonName = String(a.name);
+                att.participationStatus = "NEEDS-ACTION";
+                att.rsvp = "TRUE";
+                newEv.addAttendee(att);
+              }
+            }
+
+            // Organizer — the series' (copied with it) unless patch provides one
             try {
-              const orgEmail = (typeof patch.organizer_email === "string" && patch.organizer_email)
-                ? patch.organizer_email
-                : (master.organizer ? String(master.organizer.id || "").replace(/^mailto:/i, "") : "");
+              const orgEmail = (typeof patch.organizer_email === "string" && patch.organizer_email) ? patch.organizer_email : "";
               if (orgEmail) {
                 const org = Cc["@mozilla.org/calendar/attendee;1"].createInstance(Ci.calIAttendee);
                 org.id = orgEmail.startsWith("mailto:") ? orgEmail : `mailto:${orgEmail}`;
@@ -2476,6 +2492,29 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               }
             }
 
+            // The attendees answered for the series' times and place. When the
+            // split moves the following occurrences (their start or end, all-day
+            // or timed, or a rule other than the one carried on) or changes their
+            // location, everyone but the organizer is asked again: Thunderbird
+            // asks every attendee again when an organizer moves a meeting
+            // (CalItipMessageSender, on a major change), and RFC 6638 3.2.8 has
+            // a scheduling server reset their answers. The following part is a
+            // new event, which a server's reset never reaches. A value the split
+            // only restates is no change.
+            const carriedRules = plans.filter((p) => p?.following).map((p) => p.following).sort().join("\n");
+            const reschedules = !sameTime(newEv.startDate, slotStart)
+              || !sameTime(newEv.endDate, slotEnd)
+              || (newRule && ruleValuesOfItem(newEv).sort().join("\n") !== carriedRules)
+              || (typeof patch.location === "string" && patch.location !== String(master.getProperty("LOCATION") || ""));
+            if (reschedules) {
+              const organizer = attendeeAddress(newEv.organizer?.id);
+              for (const att of newEv.getAttendees()) {
+                if (organizer && attendeeAddress(att.id) === organizer) continue;
+                att.participationStatus = "NEEDS-ACTION";
+                att.rsvp = "TRUE";
+              }
+            }
+
             // 8. Write the earlier part.
             let cappedMaster;
             try {
@@ -2504,7 +2543,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
 
             // 10. Invitations — fire exactly once, on the new series only.
             let invitationResult = null;
-            if (sendInvites && attendeesToSet.length > 0) {
+            if (sendInvites && newEv.getAttendees().length > 0) {
               const policy = getInvitePolicy(cal);
               tmCalendarDebugLog(`[tmCalendar] splitRecurringEvent: invite policy=${policy}`);
               if (policy === "mail") {
