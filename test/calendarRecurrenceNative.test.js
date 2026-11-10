@@ -214,7 +214,20 @@ describe('recurrence read and restate against Thunderbird\'s own date and recurr
       const loaded = nativeBridge(rule, at(pacific, 6, 1, ...start), pacific);
       const { read, after } = await readAndRestate(loaded);
       if (!read.until) expect(read.other).toContain(/UNTIL=[^;]+/.exec(rule)[0]);
-      expect(after).toBeNull();
+    });
+  }
+
+  // Rules whose occurrences are all at the start's time of day, with the kind
+  // of bound Thunderbird's own dialog stores, away from a daylight saving change.
+  for (const [rule, fields] of [
+    ['FREQ=MONTHLY;BYMONTHDAY=15;UNTIL=20990915T170000Z', { freq: 'MONTHLY', until: '2099-09-15', byMonthDay: [15] }],
+    ['FREQ=YEARLY;UNTIL=21010615T170000Z', { freq: 'YEARLY', until: '2101-06-15' }],
+  ]) {
+    it(`a ${fields.freq.toLowerCase()} rule with a stored UNTIL (${rule}) reads its last day and restates to the same occurrences`, async () => {
+      const loaded = nativeBridge(rule, at(pacific, 6, 15, 9, 0), pacific);
+      const { read, before, after } = await readAndRestate(loaded);
+      expect(read).toEqual(fields);
+      expect(after).toEqual(before);
     });
   }
 

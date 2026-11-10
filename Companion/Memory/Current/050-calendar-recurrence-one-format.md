@@ -36,9 +36,9 @@ same design (tabmail-ios #421).
   is at or after the start's time of day, otherwise the day before; an all-day series ends on the bound's day.
   Converting the instant into a zone and taking its date was wrong whenever the bound's time is before the
   occurrence time, e.g. every split cap (split minus one second) read one day late.
-  Near a daylight saving change that wall-clock reading can be an hour off: Thunderbird's own zone conversion
+  Near a daylight saving change that wall-clock reading can be off by the zone's shift: Thunderbird's own zone conversion
   (`CalDateTime.getInTimezone`, ical.js `convertToZone`) can move the instant near the autumn change, and a bound
-  in the skipped spring hour reads an hour late with the instant kept (a split cap on the change day, for a start
+  in the skipped spring interval reads that much late with the instant kept (a split cap on the change day, for a start
   in the hour before it, read as the change day). So for a timed series the day is shown only when Thunderbird's
   own comparison, by instant, agrees: the stored bound and the bound the edit tool would write for that day
   (`untilForRRule`) each keep that day's occurrence at the start's time of day and not the next day's
@@ -131,6 +131,7 @@ same design (tabmail-ios #421).
   BYSECOND) shows its last occurrence's day or keeps UNTIL in `other`; and a BYSETPOS rule reads with BYSETPOS in
   `other`. One revision only:
   version differences in recurrence expansion are why BYSETPOS is not folded. A written last day just before a
-  midnight change, for a start in the first hour, keeps one more occurrence (#280, writer; left out of that sweep).
+  spring change at midnight, for a start in the first hour, keeps one more occurrence (#280, writer; left out of that
+  sweep). A monthly and a yearly rule with a stored UNTIL read their last day and restate to the same occurrences.
 - Bridge accessor calls (`boundFromIcs`, `occurrenceInstantOn`, `untilForRRule` → `getTimezoneService`;
   `setRuleOnItem` → `getIcsService`) are listed in the exhaustive census in `test/calendarServiceAcquisition.test.js`.

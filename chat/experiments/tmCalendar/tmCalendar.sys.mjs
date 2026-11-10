@@ -346,6 +346,8 @@ function addExdateToItem(item, isoString, startDateLike) {
 // series in the event's own zone. Parts those fields cannot express are shown
 // as `other` and are never written.
 
+// Also the frequencies whose occurrences are all at the start's time of day
+// (absent BYHOUR, BYMINUTE, BYSECOND), which the `until` read relies on.
 const RECURRENCE_FREQS = ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
 
 function pad2(n) { return String(n).padStart(2, "0"); }
