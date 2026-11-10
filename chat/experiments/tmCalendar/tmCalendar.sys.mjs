@@ -59,17 +59,11 @@ function applyDurationPreservation({
 
   if (hasStartPatch) {
     const s = toCalIDateTime(String(patch.start_iso), editTzOverride);
-    if (s) {
-      if (patch.all_day) s.isDate = true;
-      clone.startDate = s;
-    }
+    if (s) clone.startDate = s;
   }
   if (hasEndPatch) {
     const e = toCalIDateTime(String(patch.end_iso), editTzOverride);
-    if (e) {
-      if (patch.all_day) e.isDate = true;
-      clone.endDate = e;
-    }
+    if (e) clone.endDate = e;
   }
 
   if (hasStartPatch && !hasEndPatch && origDuration) {
@@ -1189,12 +1183,15 @@ function asAllDayDate(dt) {
 // excluded and added dates and changed occurrences, which Thunderbird moves
 // with the start (onStartDateChange), would no longer meet its occurrences.
 // An all-day value is the date as read, with no zone (asAllDayDate); an edit
-// from all day to timed is given as read.
+// from all day to timed is given as read. An edit that leaves all_day out keeps
+// the item's kind, as the edit tool documents ("Leave empty to keep existing"):
+// read as timed, a new date for an all-day event made it a timed one (#309).
 function toCalIDateTimeInFrameOf(item, patch) {
   const start = item && item.startDate;
+  const allDay = typeof patch.all_day === "boolean" ? patch.all_day : !!start?.isDate;
   return (iso, tzId) => {
     const dt = toCalIDateTime(iso, tzId);
-    if (dt && patch.all_day) return asAllDayDate(dt);
+    if (dt && allDay) return asAllDayDate(dt);
     if (!dt || dt.isDate || !start || start.isDate) return dt;
     const zone = start.timezone;
     if (zone?.tzid !== "floating") return dt.getInTimezone(zone);

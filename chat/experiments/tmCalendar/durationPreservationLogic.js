@@ -47,17 +47,11 @@ export function applyDurationPreservation({
 
   if (hasStartPatch) {
     const s = toCalIDateTime(String(patch.start_iso), editTzOverride);
-    if (s) {
-      if (patch.all_day) s.isDate = true;
-      clone.startDate = s;
-    }
+    if (s) clone.startDate = s;
   }
   if (hasEndPatch) {
     const e = toCalIDateTime(String(patch.end_iso), editTzOverride);
-    if (e) {
-      if (patch.all_day) e.isDate = true;
-      clone.endDate = e;
-    }
+    if (e) clone.endDate = e;
   }
 
   if (hasStartPatch && !hasEndPatch && origDuration) {
