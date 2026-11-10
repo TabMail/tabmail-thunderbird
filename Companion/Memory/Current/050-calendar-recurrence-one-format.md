@@ -235,8 +235,13 @@ same design (tabmail-ios #421).
   series whose stored rule has `other` parts is refused before the card by `otherPartsRefusal`, because restating
   would drop those parts. The stored rule is fetched with the edit's `calendar_id`; when it cannot be read, a
   restatement is refused too. `{}` (stop repeating) is allowed.
-- **A `recurrence_id` targets one occurrence** unless `edit_scope` is `this_and_following`, even with `edit_scope`
-  `all`, and a rule set on an occurrence never takes effect (#274).
+- **Edit scope (#274):** only `this_only` (explicit, or a `recurrence_id` with no `edit_scope`) edits one
+  occurrence. `edit_scope` `all` edits the series and ignores `recurrence_id`: the bridge's lookup in
+  `modifyCalendarEvent` reads `recurrence_id` (through `occurrenceNamedBy`) only for `this_only`. Before #274 the lookup always resolved the
+  occurrence, so an `all` edit with a `recurrence_id` changed (or created) that one exception while the card and the
+  result said the whole series. A `recurrence` (a rule, or `{}`) on a `this_only` edit is refused before the card
+  in `_runEditCalendarEvent`, as Thunderbird never expands a rule written onto an occurrence; the edit used to report
+  success while the series kept its rule.
 - **No rule comparison.** Neither client compares a restated rule with the stored one above the provider boundary. TB writes the rule through to Thunderbird's calendar. (The split's attendee rule, above, compares in the bridge only to decide whether answers are asked again; it never refuses or skips a write.)
 
 ## How it is pinned

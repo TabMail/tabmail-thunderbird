@@ -12,6 +12,7 @@
 // here verifies the JS-only field is stripped before the bridge call.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { fileURLToPath } from 'node:url';
 
 // ---------- Module mocks ----------
 vi.mock('../agent/modules/utils.js', () => ({ log: vi.fn() }));
@@ -308,5 +309,72 @@ describe('runStateEditCalendarEventExec — resolved edit_scope echoed into edit
     });
     await runStateEditCalendarEventExec();
     expect(fsmCtx.fsmSessions['pid-test'].editResult.edit_scope).toBe('this_only');
+  });
+});
+
+// ---------- The bridge's item lookup ----------
+// The real bridge (tmCalendar.sys.mjs in node:vm over the calendar harness):
+// which item an edit changes is decided by edit_scope, and recurrence_id picks
+// one occurrence only for "this_only".
+const { loadCalendarBridge, fakeDateTime, fakeEvent } = await import('./helpers/calendarBridgeHarness.js');
+const bridgeUrl = fileURLToPath(new URL('../chat/experiments/tmCalendar/tmCalendar.sys.mjs', import.meta.url));
+
+describe('bridge modifyCalendarEvent — edit_scope decides which item changes', () => {
+  const day = RID.slice(0, 10);
+  const firstDay = (() => {
+    const d = new Date(`${day}T12:00:00`);
+    d.setDate(d.getDate() - 7);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  })();
+  // A series that started a week before RID's day, with RID's occurrence
+  // stored (changed earlier, so it has its own title).
+  function series() {
+    const stored = fakeEvent({ id: 'standup', title: 'Standup (moved room)', startDate: fakeDateTime(day, 17), endDate: fakeDateTime(day, 17, 30), recurrenceId: fakeDateTime(day, 17) });
+    return fakeEvent({ id: 'standup', title: 'Standup', startDate: fakeDateTime(firstDay, 17), endDate: fakeDateTime(firstDay, 17, 30), occurrences: [stored] });
+  }
+  // An occurrence the series expands to but has not stored: one day later.
+  const unstoredRid = (() => {
+    const d = new Date(`${day}T12:00:00`);
+    d.setDate(d.getDate() + 1);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T17:00:00`;
+  })();
+
+  it('edit_scope "all" edits the series whatever recurrence_id names, and adds or changes no occurrence', async () => {
+    for (const rid of [RID, unstoredRid]) {
+      const master = series();
+      const { api, modifications, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const res = await api.modifyCalendarEvent({ event_id: 'standup', calendar_id: 'cal1', edit_scope: 'all', recurrence_id: rid, title: 'Team sync' });
+      expect(res, rid).toMatchObject({ ok: true });
+      expect(modifications, rid).toHaveLength(1);
+      expect(modifications[0].oldItem, rid).toBe(master);
+      expect(calendar.items[0].title, rid).toBe('Team sync');
+      expect(master.recurrenceInfo.occurrences.map((o) => o.title), rid).toEqual(['Standup (moved room)']);
+    }
+  });
+
+  it('edit_scope "all" without a calendar_id finds the series by scanning the calendars', async () => {
+    const master = series();
+    const { api, modifications, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+    const res = await api.modifyCalendarEvent({ event_id: 'standup', edit_scope: 'all', recurrence_id: unstoredRid, title: 'Team sync' });
+    expect(res).toMatchObject({ ok: true });
+    expect(modifications[0].oldItem).toBe(master);
+    expect(calendar.items[0].title).toBe('Team sync');
+    expect(master.recurrenceInfo.occurrences).toHaveLength(1);
+  });
+
+  it('"this_only", or a recurrence_id without edit_scope, edits that one occurrence and leaves the series', async () => {
+    for (const scope of [{ edit_scope: 'this_only' }, {}]) {
+      const master = series();
+      const { api, modifications, calendar } = loadCalendarBridge(bridgeUrl, { items: [master] });
+      const res = await api.modifyCalendarEvent({ event_id: 'standup', calendar_id: 'cal1', ...scope, recurrence_id: RID, title: 'Team sync' });
+      expect(res).toMatchObject({ ok: true });
+      expect(modifications).toHaveLength(1);
+      expect(modifications[0].oldItem.parentItem).toBe(master);
+      expect(calendar.items[0]).toBe(master);
+      expect(master.title).toBe('Standup');
+      expect(master.recurrenceInfo.occurrences.map((o) => o.title)).toEqual(['Team sync']);
+    }
   });
 });

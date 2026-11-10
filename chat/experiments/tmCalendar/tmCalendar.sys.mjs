@@ -1892,6 +1892,10 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             if (editScope === "this_only" && !recurIdStr) {
               return { ok: false, error: "edit_scope='this_only' requires recurrence_id" };
             }
+            // Only a "this_only" edit targets one occurrence. "all" edits the
+            // series and ignores recurrence_id, so the lookup below reads it
+            // only for "this_only".
+            const occurrenceIdStr = editScope === "this_only" ? recurIdStr : "";
 
             // Validate attendees when invitations are requested
             const sendInvites = !!details.send_invitations;
@@ -1910,8 +1914,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
               ? patch.timezone
               : (typeof details.timezone === "string" && details.timezone ? details.timezone : null);
 
-            // Resolve the exact item: the event, or with a recurrence_id the
-            // occurrence of its series that starts there (occurrenceNamedBy),
+            // Resolve the exact item: the event, or for a "this_only" edit the
+            // occurrence of its series that recurrence_id names (occurrenceNamedBy),
             // which refuses a time that is not an occurrence. The first calendar
             // that holds the event decides: a refusal there is the answer, and
             // no other calendar's copy of the id is edited instead.
@@ -1919,8 +1923,8 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             let item = null, cal = null, lookupError = null, parentFound = false;
             const targetIn = (parent) => {
               parentFound = true;
-              if (!recurIdStr) return parent;
-              const named = occurrenceNamedBy(parent, recurIdStr);
+              if (!occurrenceIdStr) return parent;
+              const named = occurrenceNamedBy(parent, occurrenceIdStr);
               if (named.error) { lookupError = named.error; return null; }
               return named.occurrence;
             };
@@ -1935,7 +1939,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                     item = targetIn(parent);
                     if (item) {
                       cal = targetCal;
-                      tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found ${recurIdStr ? `occurrence for recurrenceId: ${recurIdStr}` : `item: ${eventId}`} in calendar: ${calendar_id}`);
+                      tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found ${occurrenceIdStr ? `occurrence for recurrenceId: ${occurrenceIdStr}` : `item: ${eventId}`} in calendar: ${calendar_id}`);
                     }
                   }
                 } catch (e) {
@@ -1953,7 +1957,7 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
                   item = targetIn(parent);
                   if (item) {
                     cal = c;
-                    tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found ${recurIdStr ? `occurrence for recurrenceId: ${recurIdStr}` : `item: ${eventId}`} in calendar: ${c.id}`);
+                    tmCalendarDebugLog(`[tmCalendar] modifyCalendarEvent: found ${occurrenceIdStr ? `occurrence for recurrenceId: ${occurrenceIdStr}` : `item: ${eventId}`} in calendar: ${c.id}`);
                   }
                   break;
                 } catch (e) {
