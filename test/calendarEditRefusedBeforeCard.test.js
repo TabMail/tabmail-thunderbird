@@ -279,9 +279,11 @@ describe('every refusal of the write is made before the confirmation card, and n
   }
 });
 
-// An event_id that names no event (stale, deleted, or another kind of id) is
-// looked up again, never retried as it is (#339: until then an edit giving no
-// times got this guidance from the read before the card).
+// The bridge's two refusals of an event_id that names no event (stale, deleted,
+// or another kind of id) tell the assistant to look the event up again, not to
+// retry it as it is (#339: until then an edit giving no times got this guidance
+// from the read before the card). The tool's own reads of the event before the
+// check still answer "try again" (#347).
 describe('an event_id that names no event is refused with the way to find the event', () => {
   for (const [name, args] of [
     ['an edit of the event or the whole series', { title: 'Renamed' }],
@@ -352,6 +354,15 @@ describe('an edit the write makes reaches the card and is written', () => {
     const following = loaded.calendar.items.find((it) => it.id !== 'ser');
     expect(following).toBeTruthy();
     expect(following?.recurrenceInfo).toBeFalsy();
+  });
+
+  // An edit of one occurrence writes its excluded date to the series, and only
+  // after the confirmation: the modifications and the snapshot in toCard catch
+  // a check that writes it. This row stops at the card (the confirmed write of
+  // that excluded date to the series is not modelled here).
+  it('a new title for one occurrence that also excludes another, up to the card', async () => {
+    const { sess } = await toCard(series, { edit_scope: 'this_only', recurrence_id: isoAt(3), exdates_add: [isoAt(5)], title: 'Renamed' });
+    expect(sess.editEventArgs).toMatchObject({ edit_scope: 'this_only', exdates_add: [isoAt(5)], title: 'Renamed' });
   });
 
   it('a new title for the whole series', async () => {
