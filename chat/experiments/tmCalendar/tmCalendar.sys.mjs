@@ -1136,10 +1136,10 @@ function toDayString(calDt) {
   } catch (_) { return ""; }
 }
 
-// Naive ISO shape the tools expect for an all-day date. `toNaiveIso` in the
-// tool layer re-parses a bare "YYYY-MM-DD" as UTC midnight (JS Date semantics)
-// and would shift it a day west of UTC; the "T00:00:00" suffix parses as a
-// local wall clock and round-trips unchanged through `toCalIDateTime`.
+// Naive ISO shape the tools expect for an all-day date: the "T00:00:00"
+// suffix parses as a local wall clock and round-trips unchanged through
+// `toNaiveIso` in the tool layer (which reads a bare "YYYY-MM-DD" as this
+// same shape) and `toCalIDateTime`.
 function allDayNaiveIso(dayStr) {
   return dayStr ? `${dayStr}T00:00:00` : "";
 }

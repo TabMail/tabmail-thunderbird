@@ -708,8 +708,13 @@ export function cleanupScrollObservers(container) {
  * Normalizes any datetime input to naive ISO8601 format (without timezone offset).
  * This ensures consistent format for LLM communication and correct DST handling.
  * 
+ * A bare date ("2025-01-15") is that calendar date at midnight: `new Date`
+ * would read it as UTC midnight, which is the evening before west of UTC.
+ * Input that is not a date and time returns null; it is never replaced by
+ * the current time.
+ *
  * @param {number|string|Date} input - Timestamp in ms, ISO string, or Date object
- * @returns {string} Naive ISO8601 string (e.g., "2025-01-15T14:00:00")
+ * @returns {string|null} Naive ISO8601 string (e.g., "2025-01-15T14:00:00"), or null
  */
 export function toNaiveIso(input) {
   try {
@@ -718,6 +723,8 @@ export function toNaiveIso(input) {
     if (typeof input === 'number') {
       date = new Date(input);
     } else if (typeof input === 'string') {
+      const bareDate = /^\s*(\d{4}-\d{2}-\d{2})\s*$/.exec(input);
+      if (bareDate && !isNaN(new Date(`${bareDate[1]}T00:00:00`).getTime())) return `${bareDate[1]}T00:00:00`;
       // Parse string - remove timezone offset if present
       const cleaned = input.replace(/[zZ]$/, '').replace(/[+\-]\d{2}:?\d{2}$/, '');
       date = new Date(cleaned);
@@ -725,12 +732,12 @@ export function toNaiveIso(input) {
       date = input;
     } else {
       log('[TMDBG Helpers] toNaiveIso: Invalid input type', 'warn');
-      return new Date().toISOString().slice(0, 19);
+      return null;
     }
     
     if (isNaN(date.getTime())) {
       log('[TMDBG Helpers] toNaiveIso: Invalid date', 'warn');
-      return new Date().toISOString().slice(0, 19);
+      return null;
     }
     
     // Extract local components
@@ -747,7 +754,7 @@ export function toNaiveIso(input) {
     return naive;
   } catch (e) {
     log(`[TMDBG Helpers] toNaiveIso failed: ${e}`, 'warn');
-    return new Date().toISOString().slice(0, 19);
+    return null;
   }
 }
 

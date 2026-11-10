@@ -97,9 +97,9 @@ describe('bridge: toDayString / allDayNaiveIso', () => {
     const rid = fns.allDayNaiveIso(DAY);
     expect(rid).toBe(`${DAY}T00:00:00`);
     // calendar_event_edit normalizes recurrence_id through toNaiveIso; the naive
-    // shape must survive it, whereas a bare date is shifted a day west of UTC.
+    // shape must survive it, and a bare date is read as the same day.
     expect(toNaiveIso(rid)).toBe(rid);
-    expect(toNaiveIso(DAY)).not.toBe(`${DAY}T00:00:00`);
+    expect(toNaiveIso(DAY)).toBe(rid);
   });
 });
 

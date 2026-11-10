@@ -165,6 +165,14 @@ async function _runEditCalendarEvent(args = {}, options = {}) {
 
   const norm = normalizeArgs(args);
 
+  // A date the tool cannot read (toNaiveIso gives null) is refused, never
+  // replaced by a guess.
+  const badDate = ["start_iso", "end_iso", "recurrence_id"].find((f) => typeof args?.[f] === "string" && args[f].trim() && !norm[f]);
+  if (badDate) {
+    await failOut(`${badDate} "${args[badDate]}" is not a date and time the calendar can read. Use YYYY-MM-DDTHH:MM:SS, or YYYY-MM-DD for a date, then retry.`);
+    return;
+  }
+
   if (!norm.event_id) {
     await failOut("event_id is required. Use calendar_search or calendar_read to look up the event_id of the calendar event you want to edit, then retry.");
     return;
