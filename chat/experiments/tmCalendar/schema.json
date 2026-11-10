@@ -86,6 +86,7 @@
               "start_iso": { "type": "string", "optional": true },
               "end_iso": { "type": "string", "optional": true },
               "all_day": { "type": "boolean", "optional": true },
+              "check_only": { "type": "boolean", "optional": true, "description": "Read the times up to the all-day end refusal and write nothing. ok: false carries the refusal." },
               "location": { "type": "string", "optional": true },
               "description": { "type": "string", "optional": true },
               "transparency": { "type": "string", "optional": true, "description": "Event availability: 'busy' or 'free' (default 'busy')." },

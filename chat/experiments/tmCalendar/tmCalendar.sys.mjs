@@ -2074,6 +2074,15 @@ var tmCalendar = class extends ExtensionCommonTMCal.ExtensionAPI {
             const end = toCalIDateTime(String(details.end_iso || ""), tzOverride);
             if (start) { if (details.all_day) asAllDayDate(start); ev.startDate = start; }
             if (end) { if (details.all_day) asAllDayDate(end); ev.endDate = end; }
+            // An all-day end is the day after the last day (RFC 5545: DTEND
+            // is exclusive and later than DTSTART). One on or before the
+            // start would make a zero-length event, so it is refused before
+            // anything is written; check_only stops here, for the create
+            // tool to refuse it before its confirmation card.
+            if (details.all_day && start && end && end.compare(start) <= 0) {
+              return { ok: false, error: "an all-day event's end_iso is the day after its last day, so it must be later than start_iso: for an event on one day, give the next day as end_iso, then retry" };
+            }
+            if (details.check_only) return { ok: true };
             if (details.location) { try { ev.setProperty("LOCATION", String(details.location)); } catch {} }
             
             // Handle description with optional conference URL

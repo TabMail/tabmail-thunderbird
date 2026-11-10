@@ -531,6 +531,36 @@ describe('calendar_event_create refuses a recurrence it cannot write before the 
   });
 });
 
+// The create tool checks an all-day end with the bridge before the card
+// (check_only); calendarCreateAllDayEnd.test.js runs that against the real
+// bridge. A check that throws is not a refusal: the create goes on to the
+// card, and the write refuses what the check would have.
+describe('calendar_event_create, all-day end check before the confirmation card', () => {
+  afterEach(() => {
+    browser.tmCalendar.createCalendarEvent.mockImplementation(async () => ({ ok: true }));
+  });
+
+  it('a check that throws leaves the create to the bridge', async () => {
+    browser.tmCalendar.createCalendarEvent.mockImplementation(async (d) => {
+      if (d.check_only) throw new Error('bridge down');
+      return { ok: true };
+    });
+    browser.tmCalendar.createCalendarEvent.mockClear();
+    const pid = 'pid-create-check-throws';
+    ctx.fsmSessions[pid] = {};
+    ctx.state = null;
+    await calendarEventCreateRun(
+      { calendar_id: 'cal1', title: 'Offsite', all_day: true, start_iso: '2099-10-20', end_iso: '2099-10-21' },
+      { callId: pid },
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(browser.tmCalendar.createCalendarEvent.mock.calls.map(([d]) => d)).toEqual([expect.objectContaining({ check_only: true })]);
+    expect(ctx.fsmSessions[pid].failReason).toBeUndefined();
+    expect(ctx.fsmSessions[pid].createEventArgs).toMatchObject({ title: 'Offsite', calendar_id: 'cal1' });
+    expect(ctx.state).toBe('calendar_event_create_list');
+  });
+});
+
 describe('calendar_read', () => {
   beforeEach(() => {
     vi.clearAllMocks();

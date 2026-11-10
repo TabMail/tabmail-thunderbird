@@ -39,7 +39,12 @@ the digits stay as read, a relabel converts nothing). Its callers:
   gets these refusals before its confirmation card, so the assistant can ask the user first:
   `_runEditCalendarEvent` calls `modifyCalendarEvent` with `check_only: true` for an edit that gives
   times, and the bridge runs the same edit up to this point and returns without writing (the split
-  too), so the rule is not copied into the tool;
+  too), so the rule is not copied into the tool. A create has the same end rule (#316):
+  `createCalendarEvent` refuses an all-day event whose end is on or before its start, before
+  anything is written, with a message that says what to send (the next day as `end_iso`), and the
+  create tool gets it before its card the same way (`check_only` on `createCalendarEvent`, sent
+  with the times (and `timezone` when given), the calendar and `all_day` only). A create's kind
+  is stated, so it has no time-of-day refusal (`test/calendarCreateAllDayEnd.test.js`);
 - `applyRecurrenceToItem`, which relabels an all-day item's start and end before it writes a rule,
   so a rule-only edit or a split's new rule on a series stored with a zoned start keeps the day its
   bare-date UNTIL names. Relabelling a DATE moves none of the series' dates: Thunderbird's
